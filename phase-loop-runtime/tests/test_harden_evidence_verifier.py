@@ -178,6 +178,99 @@ def _load_harden_evidence_verifier() -> Any:
     return module
 
 
+def test_repair_chain_accepts_disjoint_authorizations_landed_by_one_merge(
+    tmp_path: Path,
+) -> None:
+    verifier = _load_harden_evidence_verifier()
+    repo, reviewed, landing, _verified, _expected = (
+        verifier._self_historical_baseline_chain(tmp_path)
+    )
+    paths = verifier.FROZEN_SL0_PATHS[:2]
+
+    def manifest() -> dict[str, Any]:
+        return verifier.strict_json_loads(
+            (repo / "plans/manifest.json").read_bytes(), "test repair manifest"
+        )
+
+    def write_manifest(value: dict[str, Any], subject: str) -> None:
+        (repo / "plans/manifest.json").write_bytes(verifier.canonical_bytes(value))
+        verifier._run(["git", "add", "plans/manifest.json"], repo)
+        verifier._run(["git", "commit", "-qm", subject], repo)
+
+    value = manifest()
+    row = next(row for row in value["plans"] if row.get("phase_alias") == "HARDEN")
+    authorization_ids = ("agent-harness#1264:test:a", "agent-harness#1264:test:b")
+    base_blobs = {path: verifier.blob(repo, "HEAD", path)[0] for path in paths}
+    row["sl0_repairs"] = [
+        {
+            "authorization_id": authorization_id,
+            "entry": "authorization",
+            "issue": "Consiliency/agent-harness#1264",
+            "decision": "authorize the shared-merge regression fixture",
+            "frozen_by": "HARDEN regression test",
+            "reason": "two disjoint authorizations may share one merge",
+            "files": [{
+                "path": path,
+                "base_blob": base_blobs[path],
+                "nodes": [f"SharedMerge::{index}"],
+            }],
+            "landed": None,
+            "landed_note": "the shared merge landing follows",
+        }
+        for index, (authorization_id, path) in enumerate(
+            zip(authorization_ids, paths, strict=True)
+        )
+    ]
+    write_manifest(value, "authorize disjoint shared-merge repairs")
+
+    verifier._run(["git", "checkout", "-qb", "shared-merge-repair"], repo)
+    for index, path in enumerate(paths):
+        (repo / path).write_text(f"shared merge repair {index}\n")
+        verifier._run(["git", "add", path], repo)
+    verifier._run(["git", "commit", "-qm", "apply disjoint shared-merge repairs"], repo)
+    verifier._run(["git", "checkout", "-q", "historical-baseline"], repo)
+    verifier._run(
+        ["git", "merge", "--no-ff", "-qm", "land disjoint repairs", "shared-merge-repair"],
+        repo,
+    )
+    merge_commit = verifier._run(["git", "rev-parse", "HEAD"], repo)
+    first_parent = verifier.commit_parents(repo, merge_commit, "test repair merge")[0]
+
+    value = manifest()
+    row = next(row for row in value["plans"] if row.get("phase_alias") == "HARDEN")
+    row["sl0_repairs"].extend(
+        {
+            "authorization_id": authorization_id,
+            "entry": "landed",
+            "issue": "Consiliency/agent-harness#1264",
+            "merge_commit": merge_commit,
+            "merge_first_parent": first_parent,
+            "files": [{
+                "path": path,
+                "nodes": [f"SharedMerge::{index}"],
+                "old_blob": base_blobs[path],
+                "new_blob": verifier.blob(repo, merge_commit, path)[0],
+            }],
+            "note": "one record for this authorization's part of the shared merge",
+        }
+        for index, (authorization_id, path) in enumerate(
+            zip(authorization_ids, paths, strict=True)
+        )
+    )
+    write_manifest(value, "record shared-merge repair landings")
+    verified = verifier._run(["git", "rev-parse", "HEAD"], repo)
+
+    accepted = verifier.accepted_frozen_blobs(
+        repo,
+        reviewed,
+        landing,
+        verified,
+        set(verifier.FROZEN_SL0_PATHS),
+    )
+    for path in paths:
+        assert accepted[path] == verifier.blob(repo, verified, path)[0]
+
+
 def test_argv_effort_grammars_accept_what_each_vendor_actually_emits() -> None:
     """The verifier's effort allow-lists must not lag the clamps that feed them.
 

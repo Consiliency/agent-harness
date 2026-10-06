@@ -2902,37 +2902,55 @@ def accepted_frozen_blobs(
                 or _is_ancestor(repo, previous_merge, item["landing"]["merge_commit"])
             )
         ]
-        earliest = [
-            pair for pair in ready
+        ready_merges = {
+            item["landing"]["merge_commit"] for _authorization_id, item in ready
+        }
+        earliest_merges = [
+            merge_commit for merge_commit in ready_merges
             if all(
-                pair == other
+                merge_commit == other_merge
                 or _is_ancestor(
                     repo,
-                    pair[1]["landing"]["merge_commit"],
-                    other[1]["landing"]["merge_commit"],
+                    merge_commit,
+                    other_merge,
                 )
-                for other in ready
+                for other_merge in ready_merges
             )
         ]
-        if len(earliest) != 1:
+        if len(earliest_merges) != 1:
             fail("HARDEN repair chain is discontinuous or ambiguous")
-        authorization_id, item = earliest[0]
-        merge_commit = item["landing"]["merge_commit"]
-        first_parent = item["landing"]["merge_first_parent"]
-        if changed_paths(repo, first_parent, merge_commit) & frozen_paths != set(
-            item["files"]
+        merge_commit = earliest_merges[0]
+        merge_items = [
+            (authorization_id, item)
+            for authorization_id, item in ready
+            if item["landing"]["merge_commit"] == merge_commit
+        ]
+        if len(merge_items) != sum(
+            item["landing"]["merge_commit"] == merge_commit
+            for item in pending.values()
         ):
+            fail("HARDEN repair chain is discontinuous or ambiguous")
+        first_parent = merge_items[0][1]["landing"]["merge_first_parent"]
+        merged_paths: set[str] = set()
+        for _authorization_id, item in merge_items:
+            item_paths = set(item["files"])
+            if merged_paths & item_paths:
+                fail("HARDEN repair landings on one merge overlap paths")
+            merged_paths.update(item_paths)
+        if changed_paths(repo, first_parent, merge_commit) & frozen_paths != merged_paths:
             fail("HARDEN repair landing frozen path-set mismatch")
-        for path, file in item["files"].items():
-            if path not in accepted:
-                accepted[path] = file["old_blob"]
-            if blob(repo, first_parent, path)[0] != file["old_blob"]:
-                fail("HARDEN repair old blob differs from merge first parent")
-            if blob(repo, merge_commit, path)[0] != file["new_blob"]:
-                fail("HARDEN repair new blob differs from merge")
-            accepted[path] = file["new_blob"]
+        for _authorization_id, item in merge_items:
+            for path, file in item["files"].items():
+                if path not in accepted:
+                    accepted[path] = file["old_blob"]
+                if blob(repo, first_parent, path)[0] != file["old_blob"]:
+                    fail("HARDEN repair old blob differs from merge first parent")
+                if blob(repo, merge_commit, path)[0] != file["new_blob"]:
+                    fail("HARDEN repair new blob differs from merge")
+                accepted[path] = file["new_blob"]
         previous_merge = merge_commit
-        del pending[authorization_id]
+        for authorization_id, _item in merge_items:
+            del pending[authorization_id]
 
     if phase_alias != "HARDEN":
         if set(accepted) != frozen_paths:
