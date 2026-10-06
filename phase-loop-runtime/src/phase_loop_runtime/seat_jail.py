@@ -166,12 +166,13 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "tool use denied", "agy auto-denied a tool",
         "on the tooled profile a defect; on the sealed route expected"),
     "claude_seat_token_missing": (
-        "leg refused", "no Claude login found and no seat token override; the seat does not run",
+        "leg refused",
+        "no Claude login found and no usable seat token override; the seat does not run",
         "run `claude auth login`, then re-run"),
     "claude_seat_token_rejected": (
         "leg ended", "the seat token override was rejected (revoked or expired)",
-        "replace the override with a fresh `claude setup-token` token, or remove it to use "
-        "your Claude login"),
+        "store a fresh `claude setup-token` token with `phase-loop seat-sandbox store-token`, "
+        "or remove the override to use your Claude login"),
     "claude_seat_token_in_output": (
         "leg rejected", "seat tried to publish its credential", "revoke the token"),
     # Not a jail fault: the jail ran, and the provider refused the seat token's subscription.
@@ -182,6 +183,15 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "rotate or replace the seat token with one for another subscription, or wait for the "
         "reset"),
     # The same outcomes when the credential is the user's Claude login (plan amendment A1).
+    # Maintainer ruling 2026-10-05: a seat's credential follows the launching session's
+    # subscription; an override bound to another account (or to none) is not used.
+    "claude_seat_override_other_subscription": (
+        "seat token override ignored",
+        "the stored seat token is not bound to the subscription this session is logged in to "
+        "(or the binding or the session's account cannot be determined); the seat uses your "
+        "login",
+        "remove the override, or log in to the account it belongs to; or store a token for "
+        "this account with `phase-loop seat-sandbox store-token`"),
     "claude_seat_login_rate_limited": (
         "leg ended",
         "your Claude subscription is rate- or usage-limited (the leg detail names the reset "
@@ -328,13 +338,16 @@ def render_notice(code: object, seat_key: object) -> Notice | None:
 
 
 class SeatSandboxRefused(RuntimeError):
-    """A pre-launch or runtime refusal. ``code`` is exactly one notice literal."""
+    """A pre-launch or runtime refusal. ``code`` is exactly one notice literal; ``also`` are
+    sibling notices that explain it (never a second refusal code), e.g. an ignored seat-token
+    override beside a missing login."""
 
-    def __init__(self, code: str, message: str = "") -> None:
-        if code not in NOTICES:
+    def __init__(self, code: str, message: str = "", also: tuple[str, ...] = ()) -> None:
+        if code not in NOTICES or any(extra not in NOTICES for extra in also):
             raise ValueError(f"unknown seat sandbox code {code!r}")
         super().__init__(message or code)
         self.code = code
+        self.also = tuple(also)
 
 
 def refused(sub: str) -> str:
@@ -813,64 +826,6 @@ def state_home() -> Path:
 
 def claude_seat_token_path() -> Path:
     return state_home() / "phase-loop" / "seat-credentials" / "claude"
-
-
-def claude_seat_token_present(path: Path | None = None) -> bool:
-    """J7 step 3: presence only. Hygiene is checked at read time (step 5)."""
-    target = path or claude_seat_token_path()
-    return os.path.lexists(target)
-
-
-def _owner_only_dir(path: Path) -> bool:
-    try:
-        info = os.stat(path, follow_symlinks=False)
-    except OSError:
-        return False
-    return (stat.S_ISDIR(info.st_mode) and info.st_uid == os.geteuid()
-            and stat.S_IMODE(info.st_mode) & 0o077 == 0)
-
-
-def read_claude_seat_token(path: Path | None = None) -> bytes:
-    """Read the seat token: 0600 file in a 0700 directory, both owned by the euid.
-
-    Opened ``O_NOFOLLOW`` and checked with ``fstat``. Any failure raises
-    ``seat_sandbox_refused:token_file_unsafe``. The token is stripped of surrounding
-    whitespace and must be non-empty printable ASCII.
-    """
-    target = path or claude_seat_token_path()
-    unsafe = refused("token_file_unsafe")
-    if not _owner_only_dir(target.parent):
-        raise SeatSandboxRefused(unsafe)
-    try:
-        fd = os.open(target, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
-    except OSError as exc:
-        raise SeatSandboxRefused(unsafe) from exc
-    try:
-        info = os.fstat(fd)
-        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid()
-                or stat.S_IMODE(info.st_mode) & 0o077 or info.st_size > TOKEN_FILE_CAP_BYTES):
-            raise SeatSandboxRefused(unsafe)
-        data = os.read(fd, TOKEN_FILE_CAP_BYTES + 1)
-    finally:
-        os.close(fd)
-    token = data.strip()
-    if not token or len(data) > TOKEN_FILE_CAP_BYTES or not all(0x21 <= b <= 0x7E for b in token):
-        raise SeatSandboxRefused(unsafe)
-    return token
-
-
-def claude_seat_token_ready(path: Path | None = None) -> bool:
-    """The jailed route's authentication proof, in place of ``_claude_subscription_auth_ok``.
-
-    ``claude auth status`` does not validate a token (plan, measured), so the only local
-    proof is that a hygienic token file exists; a rejected token is recognised at run time
-    by its P2 signature (``claude_seat_token_rejected``).
-    """
-    try:
-        read_claude_seat_token(path)
-    except SeatSandboxRefused:
-        return False
-    return True
 
 
 def token_pipe(token: bytes) -> int:

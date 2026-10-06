@@ -1158,8 +1158,11 @@ are recorded on agent-harness#1132.
   one-time root step by the maintainer, never run by the runtime.
 - **Credential channels (plan amendment A1).** The Claude credential is resolved afresh at
   each jailed launch, in this order:
-  1. The seat-token override at `$XDG_STATE_HOME/phase-loop/seat-credentials/claude` (0600
-     in 0700, owned by the euid), when present.
+  1. The seat-token override, the record `$XDG_STATE_HOME/phase-loop/seat-credentials/
+     claude.override.json` (owner-only, in a 0700 directory, owned by the euid). It is
+     written only by `phase-loop seat-sandbox store-token` and used only when it is bound to
+     the account and organization the launching session is logged in to (plan amendment A4,
+     below). A hand-placed raw `seat-credentials/claude` file is never used.
   2. Otherwise, the current Claude login's `claudeAiOauth.accessToken` only, never its
      refresh token. It comes from the CLI's own store: `$CLAUDE_CONFIG_DIR/.credentials.json`
      or `~/.claude/.credentials.json`, and the login Keychain on macOS.
@@ -1229,9 +1232,72 @@ are recorded on agent-harness#1132.
   from `child_scratch_env` (`_jail_launch_env`), and that same object is handed to the
   identity probe and the launch. The seat never sees it: bwrap clears the environment and
   sets the seat's own.
-- **Seat-token rotation.** The token file is read at each jailed launch and never cached
-  across legs or rounds. A token replaced between legs (atomic rename in the same 0700
-  directory) is used by the next launch; a running leg keeps the token it was launched with.
+- **The override follows the launching session (plan amendment A4).** A seat's credential
+  follows the subscription of the session that launched the leg.
+  - **Storing:** `phase-loop seat-sandbox store-token` reads the override with no echo, or
+    from stdin. A terminal that cannot hide the input is refused. The token and its account
+    are stored as ONE record, `seat-credentials/claude.override.json`
+    (`{"schema": "seat_credential_override.v1", "account": ..., "token": ...}`).
+    - **The account** is the current login's `oauthAccount.accountUuid`, from
+      `$CLAUDE_CONFIG_DIR/.claude.json` or `~/.claude.json`, read without running the CLI.
+    - **Refused** with no login. An unsafe account file is named in the refusal.
+    - **The write:** it goes relative to the held directory descriptors (each directory
+      component opened without following links and checked on the descriptor), as a new
+      0600 file under a random name renamed into place. A store is therefore atomic, and
+      concurrent stores leave one complete record.
+  - **At launch:** the record is read once, without following a link and without blocking.
+    - **Used:** only when its account equals the launching session's account, and the
+      launch uses exactly the token bytes whose account was checked.
+    - **Not used:** when the accounts differ, when either is unknown, when the record is
+      malformed, or when only a hand-placed raw `seat-credentials/claude` exists. The seat
+      then uses the login and carries the notice `claude_seat_override_other_subscription`,
+      also on its mode line, beside any login notice. That notice is not a jail refusal.
+    - **Unsafe:** a record that is not a private regular file the euid owns refuses the
+      launch (`seat_sandbox_refused:token_file_unsafe`).
+  - **When the seat does not run:** a refusal (no login, a login short of the margin, a wait
+    that ended short) carries `claude_seat_override_other_subscription` beside its one
+    refusal code whenever a stored override was ignored. The seat's notices, the A3b
+    DEGRADED result and the mode line all carry it.
+  - **Per harness:** the rule lives once, in `override_decision(adapter)`. Each harness's
+    `SeatCredentialAdapter` answers `override_present()`, `read_override()` (the record,
+    read once) and `current_account()`, and declares its credential `sources` in precedence
+    order; an adapter without the override source never uses one. Claude is the only
+    adapter today, and `store-token` stores Claude's override.
+  - **One slot per user:** the override lives under the Unix user's `$XDG_STATE_HOME`, so
+    there is one per user, not one per config directory or account. A store from another
+    account replaces it, and sessions on the earlier account then use their login, with
+    the notice.
+  - **Independent reads:** the mode line, the A3 wait and the launch each read the decision
+    afresh. A `/login` between them can change the outcome. Every such change falls toward
+    the login, never toward an unbound override.
+  - **macOS:** the CLI keeps the login in the Keychain service named from
+    `CLAUDE_SECURESTORAGE_CONFIG_DIR` when that is set, and the account in
+    `CLAUDE_CONFIG_DIR/.claude.json`. With only the former set, the account and the login
+    can describe different identities. Set both, or neither.
+  - **Organization (maintainer ruling 2026-10-05):** the record (schema
+    `seat_credential_override.v2`) binds both `oauthAccount.accountUuid` and
+    `oauthAccount.organizationUuid`, read from the same `.claude.json`.
+    - **At launch:** the override applies only when both are known and both equal the
+      session's. A v1 or organization-less record is unbound.
+    - **Storing:** `store-token` refuses when the organization is unknown.
+  - **Permissions:** the record must be owner-only: any group or other bit refuses with
+    `token_file_unsafe`. The store opens every directory component, the state root
+    included, without following links; a linked state root is refused, naming the directory
+    to set `XDG_STATE_HOME` to.
+  - **Refusals after resolution:** a refusal raised after the credential is resolved (the
+    jail build, the pre-seed, the namespace) also carries the ignored-override notice beside
+    its one refusal code.
+  - **Modes without the notice:** sealed, unconfined and native Claude modes carry no
+    override notice, by design: the override is never their credential.
+  - **Status:** `phase-loop seat-sandbox token-status` shows the bound account and
+    organization, this session's, and whether the override applies. It exits 0 only when
+    the override applies, and never shows the token.
+- **Seat-token rotation.** The override record is read at each jailed launch and never
+  cached across legs or rounds.
+  - **Rotating:** `phase-loop seat-sandbox store-token` is the only way to rotate it. It
+    replaces the record with one rename, and the next launch uses the new token; a running
+    leg keeps the token it was launched with.
+  - **By hand:** a token file replaced by hand is ignored.
   The token is per-launch input only: neither the jail profile digest nor an EC-EXECFIND-2
   pass binds it, so replacing it trips no qualification check.
 - **A rate-limited seat token is not a jail fault.** When the provider refuses the seat

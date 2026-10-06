@@ -1520,3 +1520,85 @@ seat keep the sealed route (agent-harness#1244).
 **A3b acceptance.**
 - [ ] Each path above ends degraded, not run and typed, with no launch at all (no sealed
   argv or spawn), and a mutant that re-routes it to sealed is red.
+
+## Amendment A4 (2026-10-05): the seat's credential follows the launching session
+
+Maintainer ruling, 2026-10-05: "It should autorotate with the session's sub that launched the
+leg." Maintainer decision on how: "Store command binds it." This builds on A1. The login stays
+the default. A stored override that belongs to a different subscription must not silently
+pin seats to it.
+
+**Inputs measured on claw (Claude Code 2.1.288).**
+- **The CLI's global config:** it is `$CLAUDE_CONFIG_DIR/.claude.json` when that variable is
+  set, else `~/.claude.json`. This is read from the CLI bundle.
+- **The account identity:** the config carries `oauthAccount.accountUuid` (and
+  `organizationUuid`), so the launching session's account is readable without running the
+  CLI.
+- **The override:** a `setup-token` token records no account.
+
+**Design.**
+1. **Per-harness adapter.** `SeatCredentialAdapter` answers `override_present()`,
+   `override_path()`, `binding_path()`, `override_account()` and `current_account()`, and
+   declares its `sources` in precedence order. The rule lives once, in
+   `override_decision(adapter)`.
+2. **Storing.** `phase-loop seat-sandbox store-token` reads the token with no echo, or from
+   stdin, validates it, and reads the current account.
+   - **Refused** when there is no account, or when the credentials directory is not private.
+   - **Order:** it removes any old binding, then writes the token, then writes
+     `<override>.account` (`seat_credential_binding.v1`). Each write is 0600 and atomic, so
+     an interrupted store leaves an unbound override, which is ignored. The token is never
+     printed.
+3. **At launch.** The override is used only when both accounts are known and equal.
+   Otherwise the seat takes the login, and carries `claude_seat_override_other_subscription`
+   on the seat and its mode line. That notice is not a jail refusal and not a sealed
+   fallback. Every consumer of "is the override used" (presence, the margin, the A3 wait,
+   the modes) reads the same decision.
+4. **General.** Product code carries no fleet paths or vault specifics.
+
+**A4 acceptance.**
+- [ ] Fakes cover:
+  - a login on A with an override bound to B: the login is used, with the notice;
+  - an override bound to A: it is used;
+  - an undeterminable binding or account: the login is used, with the notice;
+  - a subscription swap;
+  - unsafe or malformed bindings;
+  - the store command (it binds, it refuses without a login, it refuses an unsafe directory,
+    an interrupted store is ignored, and it never prints the token);
+  - the launch path, the mode line, and the adapter-generic rule.
+- [ ] Every new behaviour has a mutation receipt.
+
+### A4 revision (2026-10-05, after board round 1)
+
+Two of A4's statements are revised; the rest stands.
+- **Design 2 (the store):** the token and its account are ONE record,
+  `<harness>.override.json` (`seat_credential_override.v1`), not a token file plus a separate
+  binding file.
+  - **The write:** it is relative to descriptors held on the checked directories, as a new
+    0600 file under a random name renamed into place.
+  - **The terminal:** a terminal that cannot hide the input is refused.
+- **Design 3 (at launch):** the record is read once, without following a link and without
+  blocking, and the launch uses the token bytes whose account was checked.
+  - **Unbound:** a hand-placed raw token file is unbound, and is never used.
+  - **Unsafe:** an unsafe record keeps A1's typed refusal (`token_file_unsafe`).
+  - **Malformed:** a malformed record binds nothing (login with the notice).
+  - **The mode line** keeps the ignored-override notice beside any login notice.
+
+**A4 acceptance, added:** a concurrent store during a launch's decision, two concurrent
+stores, a token replaced by hand, a linked ancestor and a swapped directory during a store,
+a non-regular account file, and a terminal that cannot hide input each have a falsifier that
+is red at the round-1 head.
+
+### A4 revision 2 (2026-10-05, president ruling on agent-harness#1253)
+
+- **The binding:** maintainer ruling 2026-10-05: the override binds the login's account AND
+  organization. Both are read from the same `oauthAccount` (`accountUuid`,
+  `organizationUuid`), and the record schema becomes v2.
+  - **When it applies:** only when both are known and both equal the session's. A v1 or
+    organization-less record binds nothing.
+  - **The store:** it refuses when the organization is unknown.
+- **The record:** it must be owner-only (any group or other bit is `token_file_unsafe`), and
+  the store's link refusal includes the state root itself.
+- **Refusals:** a refusal raised after the credential is resolved carries the
+  ignored-override notice beside its one refusal code.
+- **Rotation:** `store-token` is the only rotation path. A raw token file, unsafe or not, is
+  never read; the A1-era raw-file readers are removed.
