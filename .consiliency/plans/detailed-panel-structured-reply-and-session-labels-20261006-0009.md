@@ -21,7 +21,7 @@ This touches more than three conceptually distinct changes, so it is split into 
 | A1 | Reply schema, BAML parse op, typed parse result, corpus tests | No (new files plus three additive table entries in BAML-only files) | None. Can land now. |
 | A2 | Opt-in plumbing: flag, prompt suffix, leg detail codes, verdict derivation, JSON output | `panel_invoker.py`, `cli.py`, `advisor_board/CONTRACTS.md` | After agent-harness#1253 and agent-harness#1222 merge |
 | B | Opt-in session label helper and call sites | `launcher.py` (agent-harness#1222 touches it), `panel_invoker.py` | Helper now; call sites after agent-harness#1222 and agent-harness#1253 |
-| C | Auto-archive in Claude Code's native app | Seat epilogue in `panel_invoker.py` if H1 holds | One validation experiment |
+| C | Archive a session only after its output is verified | C1: one call at closeout acceptance (`launcher.py`/`runner.py`); C2: seat epilogue in `panel_invoker.py` | After agent-harness#1222 and agent-harness#1253; C2 also needs the maintainer's OK on hard-killing unverified seats |
 
 ## Research summary
 
@@ -101,42 +101,39 @@ This touches more than three conceptually distinct changes, so it is split into 
 - `launcher.py` — Agent View `launch_command(name=...)` calls (two sites) and the claude `-p` builder: pass `--name` when enabled — modify. After agent-harness#1222 merges.
 - `panel_invoker.py` — the three Claude TUI command builders (`_claude_tui_command`, `_broker_claude_tui_command` and its `sandboxed=` branch) — add `--name` when a label is supplied. After agent-harness#1253 and agent-harness#1222 merge.
 - The label is the Claude Code session name (`--name`, which the registry records as `nameSource: user`). The input to it is a topic only the driving agent knows, so add an opt-in `--topic <short text>` to `advisor-board` (A2/B, `cli.py`, gated) that is composed into `<repo> · <topic> · <seat_key>`; with no topic it falls back to `<repo> · <seat_key>`. The topic is sanitised and bounded like every label.
-- **AGENTS.md guidance (maintainer: "override it and edit AGENTS.md as well").** A search of the repo `AGENTS.md`, `~/.claude/AGENTS.md`, `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md` and the dotfiles copies found **no existing session-naming guidance**, so there is nothing to override. Add a short section to the repo `AGENTS.md` (and a matching line in the `advisor-board` skill sources under `phase-loop-skills/advisor-board/`) telling a driving agent to pass `--topic` with a few words naming what the board is reviewing. Land the text with the `--topic` flag, not before, so the guidance never names a flag that does not exist. The global copies live in the dotfiles repo, outside this repo; flag them to the owner, do not edit them here.
+- **Naming guidance for driving agents (maintainer: override any existing guidance and edit the guidance files).** A search of the repo `AGENTS.md`, `~/.claude/AGENTS.md`, `~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md` and the dotfiles copies found **no existing session-naming guidance**, so there is nothing to override.
+  - **Where it goes: the shipped skill, not the repo root `AGENTS.md`.** The root `AGENTS.md` is, in its own words, guidance for contributors working in this repository, and agent-harness runs mainly in client repos. A client repo receives the harness through `phase-loop install` from `phase-loop-skills/`, so the line belongs in `phase-loop-skills/advisor-board/SKILL.md` and its `_overrides/<harness>` files (then regenerated into the bundles per `docs/phase-loop/skills-canonical-source.md`). It tells the driving agent to pass `--topic` with a few words naming what the board is reviewing. A short note in `docs/TEAM-ONBOARDING.md` is optional.
+  - **Root `AGENTS.md`:** edited only if the maintainers want it for dogfooding; not part of this plan.
+  - **Owner-fleet global files** (`~/.claude/AGENTS.md`, `~/.codex/AGENTS.md`, their dotfiles sources) can carry the same line for the maintainer's own machines; they live in the dotfiles repo and are not edited here.
+  - Land the text with the `--topic` flag, not before, so the guidance never names a flag that does not exist.
 - Non-Claude executors have no name flag: label goes in the first line of the prompt **only where the host app titles from it**. The Agent View launch is special: its nonce proof reads the first user turn (`phase-loop-launch-nonce`), so a label must not alter that turn. Codex cannot be titled this way (see Research summary), so codex labelling is part of Plan C's decision, not this plan.
 - Pinned by goldens: `tests/data/launchspec_golden/launchspec_golden.json`, `tests/data/launchspec_golden/pre_d1_closeout_prompt.json`, `tests/test_broker_command_builders.py`, `tests/test_phase_loop_claude_agent_view_adapter.py`. All must pass unmodified on the default path; new tests assert the label only when enabled.
 
-### Plan C — auto-archive (analysis only; **blocked on an experiment**)
+### Plan C — archive a session only after its output is verified (measured 2026-10-06; ready to plan in detail)
 
-**Re-scoped by the maintainer (2026-10-06):** the cluttered surface is **Claude Code's own native app session list**, independent of T3 Code. The T3 `settled` state is adequate for threads viewed in T3 but does not help sessions that a non-Claude harness (usually codex) launches through the Claude TUI adapter and that then appear in Claude Code's app. Mechanisms 1 and 2 below (host-app archive, codex store) therefore **drop out** for this goal; they stay recorded only as the T3 and codex-side alternatives.
+**Scope (maintainer):** the cluttered surface is **Claude Code's own native app session list**, independent of T3 Code. **Remote Control is set to auto** and is wanted: it lets the maintainer watch running panelists in the app. The problem is what remains after a job is verified complete. **Invariant: never archive a session before the harness has verified that it produced its required output.** T3 "settled", the codex `archived_sessions` store and `codex exec --ephemeral` are out of scope for this goal.
 
-No code is proposed. The plan to produce is chosen after the experiment below runs.
+**Measured on dev0 (throwaway sessions, no prompt or one trivial prompt, `--debug-file` logs read for the CLI's own bridge lines; scratch state purged afterwards):**
+- A seat-style launch (`--safe-mode`, `--setting-sources ""`, strict empty MCP, no `--remote-control` flag) **creates a Remote Control bridge session on its own** (`[remote-bridge] Created session cse_...`). Remote Control auto does apply to harness-style seats.
+- **PTY (interactive) sessions archive themselves at exit.** Ending one with `/exit`, or with SIGTERM to the process group exactly as `_terminate_process_group` does first, or with SIGTERM while a model call was in flight, each logged `[code-session] Archive cse_... status=200` and `[remote-bridge] Torn down (archive=200)`, exiting in about 1 to 1.5 seconds. So an earlier hypothesis (that the harness's kill pre-empts the CLI's archive step) is **false for a normal SIGTERM exit**.
+- **Background (`claude --bg`, Agent View) sessions do not archive when they finish.** The probe session reached state `done` with a bridge session created and **no archive** until `claude stop <id>` was issued; `stop` then logged `Archive ... status=200` and kept the conversation, and `claude rm <id>` removed the listing. In the launcher, `adapter.stop` runs only on a launch timeout and nothing stops or removes a session on success (`claude_agent_view.py` has `stop` and `remove`; `remove` has no caller). This is the most likely source of the post-completion clutter.
+- **Not tested:** SIGKILL (expected: no teardown, no archive), the jailed route (seat token and per-seat config directory; the archive call could fail there), the brokered route's scrubbed environment, and a stalled seat that needs the 5-second grace to expire. A PTY seat that does not exit within the grace is killed and would stay in the app.
 
-**What is known locally (dev0, read-only):**
-- Claude Code keeps a live session registry in `~/.claude/sessions/<pid>.json` with `name`, `nameSource` (observed values `user` and `derived`), `kind` and `entrypoint`. A name given explicitly (`--name`, `/rename`) is `user`; the default is `derived` from the conversation. Archive state is **not** in that registry, in `~/.claude.json`, or in a transcript record I could find.
-- The CLI's cached feature flags include `tengu_bridge_unarchive_on_resume` and a `teardown_archive_timeout_ms` of 1500 inside the bridge/Remote Control configuration. That points to archive being a **bridge-session action performed at CLI teardown** (and reversed on resume), i.e. server-side state for sessions that Remote Control mirrors to the app. This is an inference from flag names, not a verified mechanism.
-- The harness ends a Claude TUI seat with `_terminate_process_group` (SIGTERM, a grace period, then SIGKILL) once the reply is read. I did not find a graceful exit step (an `/exit` or end-of-input and wait) in the matched code; I did not read the whole function.
-- The desktop app's remote server for `dev0` runs under a different user account that this account cannot read, so the app's own list and archive store were not inspected.
-- No `claude archive` command exists; `claude archive` is parsed as a prompt.
+**Design (two routes, one rule: verify first, then end the session in the way that archives it):**
+- **C1 — background (executor) sessions.** After the runner has accepted the closeout (the maintainer's "requisite output", not merely `state=done`), call the adapter's `stop` for the recorded session id. `stop` keeps the conversation and triggers the CLI's own archive; do **not** use `remove`, which deletes the listing and its conversation. Failed or unverified sessions are left alone and stay visible. The session id is already recorded as an evidence ref (`claude stop <id>`), so no new data is needed. Likely files: `launcher.py` or `runner.py` (one call at the acceptance point) and `claude_agent_view.py` (existing `stop`); `launcher.py` is touched by agent-harness#1222, so this is gated.
+- **C2 — PTY panel seats.** Today the seat is ended with SIGTERM right after its output is read, which archives it **before** the later verdict check, even if the reply is non-conforming. To honour the invariant, check the seat output **inside** `_run_claude_tui_session` while the process is still alive, using the same local conformity test the leg already uses (a parsed terminal verdict now; `extract_reply` after A2), and then choose the exit: verified, SIGTERM or `/exit` (the CLI archives); not verified, a hard kill so no teardown runs and the session stays in the app for diagnosis. This changes failure behaviour, so it needs the maintainer's explicit agreement (Open items 1). The seat epilogue is in `panel_invoker.py`, so it is gated like A2.
+- A failed first attempt followed by a verified retry leaves the first attempt visible; it was never verified. Archiving it is a separate decision.
+- **Concurrency:** none of this touches the shared `~/.claude.json` from the harness; the CLI itself does the archiving, so there is no purge race. `claude purge` is not needed for this goal.
 
-**Hypotheses to test (cheapest first):**
-- **H1 — teardown pre-empted.** A bridged TUI seat is killed before the CLI can run its own archive-on-teardown (1500 ms budget), so it is never archived. Fix would be harness-side: after a verified success, send a graceful exit and wait for the CLI to exit on its own before any TERM/KILL. No new API.
-- **H2 — not bridged, listed from local state.** The app lists seat sessions from local transcripts or the registry, and only removal clears them. Fix: `claude rm <id>` for `--bg` sessions and a serialized, fail-open `claude purge <path>` for PTY seat state.
-- **H3 — app-side state only.** Archive lives only in the app's store with no CLI hook. Then it needs an app feature or API; out of this repo.
+**Verification for C (after the gates clear):** a fake-CLI unit test that `stop` is called exactly once and only after acceptance; a test that a rejected closeout never calls it; a test that a non-conforming PTY reply takes the hard-kill exit and a conforming one the graceful exit; plus one manual run on a scratch repo that reads the CLI debug log for the archive line. No live board in tests.
 
-**Experiment (needs the owner at the app, on a scratch repo, no real review):** launch one throwaway `claude --safe-mode` seat-style TUI session through the harness's own launch path with a fake reply, then (a) end it by process-group kill, (b) end it with a graceful exit, (c) `claude rm`/`purge` it, and note after each whether the app lists it and whether it is archived. Run once with Remote Control active and once without.
-
-- **Trigger.** "Success" is: for executors, the Agent View success path (state `done`, nonce proof, readable final text) or the codex closeout accepted by the runner; for panel seats, a verified reply (today a parsed terminal verdict, later `extract_reply` success). A failed or non-conforming session stays visible for diagnosis.
-- **Mechanisms, now ordered for the Claude Code app target.**
-  1. **Graceful exit (H1):** after verified success, end the TUI gracefully and wait before any kill. Smallest change, no new API; edits the seat epilogue in `panel_invoker.py`, so it is gated like A2.
-  2. **`claude rm` / `claude purge` (H2):** `claude rm <id>` for Agent View sessions (the adapter's `remove` already exists with no caller), and a serialized, fail-open `claude purge <path>` for PTY seat state after the pool drains. `purge` rewrites the shared `~/.claude.json`, so concurrent purges are a hazard; batch it after the pool drains.
-  3. **App-side archive (H3):** needs an app feature or API; recorded, not planned here.
-  4. *(T3 / codex-side, no longer in scope):* T3 `settled`/`archived_at`, the codex `~/.codex/archived_sessions` store and `codex exec --ephemeral`. Panel codex seats already use `--ephemeral`.
-- **Existing backlog.** 443 `pl-panel` project entries sit in `~/.claude.json` on `dev0` (27 project directories). Cleaning them is a separate, owner-run `claude purge` task; nothing in this plan does it.
+- **Existing backlog.** 443 `pl-panel` project entries sit in `~/.claude.json` on `dev0` (27 project directories), and the Agent View list holds finished background sessions. Cleaning them is a separate, owner-run task (`claude stop`/`claude rm` per session, `claude purge` per path); nothing in this plan does it.
 
 ## Documentation impact
 
-- `AGENTS.md` — add section — B call sites only: session-naming guidance (`--topic`), landed together with the flag. No existing naming guidance to override.
-- `phase-loop-skills/advisor-board/SKILL.md` and its `_overrides/*` — modify — B call sites only: the same `--topic` line.
+- `phase-loop-skills/advisor-board/SKILL.md` and its `_overrides/*` — modify — B call sites only: the `--topic` line, landed with the flag; regenerate the installed bundles through the repo's canonical-source tooling. No existing naming guidance to override.
+- `docs/TEAM-ONBOARDING.md` — optional one-line note — same landing.
+- Root `AGENTS.md` — **not edited** (contributor guidance; client repos do not receive it).
 - `CHANGELOG.md` — modify — `[Unreleased]` entry per plan landed (A1: new parse op and module, no behaviour change).
 - `phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md` — add section — A2 only (deferred; agent-harness#1253 also edits this file).
 - `docs/advisor-board-capabilities-card.md` — add section — A2 only: `--reply-format`, failure kinds, non-field attachment.
@@ -192,15 +189,15 @@ git fetch origin && git diff --stat origin/main...HEAD -- \
 ## Decided
 
 - **Roadmap home: standalone** (2026-10-06), provided it does not interfere with ongoing work.
-- **Archive target: Claude Code's native app session list**, independent of T3 Code (2026-10-06).
+- **Archive target: Claude Code's native app session list**, independent of T3 Code; **Remote Control stays on auto** (it gives live visibility of running panelists); **no archive before the harness verifies the required output** (2026-10-06).
 - **agent-harness#1114 coordination:** a comment was posted on that issue proposing that its unconditional per-leg fields land first and A2's optional `reply` key follow additively in the same builder. As of 2026-10-06 that issue had no assignee, PR, branch or comment, and a targeted read-only search of the claw worktrees found no change touching those fields. The search sees committed and visible work only; claw's refs were also stale (its main checkout was thousands of commits behind), so re-run it before A2.
 
 ## Open items for the maintainer
 
-1. **Archive experiment.** May the Plan C experiment run, and where? It needs someone watching Claude Code's app list while one throwaway seat-style session is ended three ways. H1 (graceful exit) is the cheapest fix and the first thing it tests.
-2. **Is Remote Control active for harness-launched seats?** It decides whether the CLI's own archive-on-teardown applies at all (H1) or the sessions are only local files (H2).
-3. **Dotfiles copies of AGENTS.md.** The global guidance files live in the dotfiles repo, outside this one; do they get the same `--topic` line?
-4. **Codex-launched sessions in the Claude app.** Confirm that the Claude seat sessions in question are the ones the TUI adapter launches for a non-Claude driver, so the label (`--name`) and cleanup (Plan C) land in the right launch path.
+1. **Hard-kill unverified PTY seats (C2).** To keep the "never archive before verification" rule, a seat whose output fails the local conformity check must exit without the CLI's teardown, so it stays in the app. That changes failure behaviour from today's graceful-looking SIGTERM. Agree, or accept that failed seats archive too?
+2. **Which "verified" for background sessions (C1)?** This plan uses "runner accepted the closeout". If you want a stricter or looser gate (for example also the nonce proof only), say so.
+3. **Dotfiles copies of the guidance.** The owner-fleet `AGENTS.md` files live in the dotfiles repo; do they get the same `--topic` line?
+4. **Which launches fill the app list?** The measurements say background (`--bg`) launches are the ones that never archive, while PTY seats archive on a normal exit. Confirm the clutter you see is mostly finished background sessions, or point me to a specific panel seat that stays after completion; that would mean an untested path (jailed route, stalled seat, scrubbed environment).
 
 ## Execution Policy
 
