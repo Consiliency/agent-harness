@@ -114,6 +114,10 @@ def test_concurrent_first_use_runs_the_qualification_once():
     (QualificationError("no /etc/machine-id: this host has no identity"), "prerequisite_missing"),
     (QualificationError("/x must be a directory you own ...; no pass recorded"), "store_unsafe"),
     (QualificationError("sentinel never became ready: {}"), "falsifiers_failed"),
+    (QualificationError("probe failed to run: setpriv: setresuid failed: Operation not permitted"),
+     "uid_switch_denied"),
+    (QualificationError("probe failed to run: setpriv: setresgid failed: Operation not permitted"),
+     "uid_switch_denied"),
     (TimeoutError("run"), "timeout"),
     (RuntimeError("boom"), "error"),
 ])

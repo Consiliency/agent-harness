@@ -1075,6 +1075,13 @@ def seat_env(leg: str, *, token_fd: int | None, lang: str = "C.UTF-8",
     return env
 
 
+# Linux memfd seal ABI (include/uapi/linux/fcntl.h). CPython exports these from `fcntl` only
+# from 3.14, but the package supports older interpreters (agent-harness#1276), and the values
+# are kernel ABI, so they are the fallback when the module lacks them.
+_F_ADD_SEALS = 1033  # F_LINUX_SPECIFIC_BASE (1024) + 9
+_F_SEAL_SEAL, _F_SEAL_SHRINK, _F_SEAL_GROW, _F_SEAL_WRITE = 0x1, 0x2, 0x4, 0x8
+
+
 def memfd_with(name: str, data: bytes) -> int:
     """A sealed memfd holding ``data``: neither the seat nor any same-uid process can
     change it after this returns."""
@@ -1086,8 +1093,11 @@ def memfd_with(name: str, data: bytes) -> int:
         os.lseek(fd, 0, os.SEEK_SET)
         import fcntl
 
-        fcntl.fcntl(fd, fcntl.F_ADD_SEALS, fcntl.F_SEAL_SEAL | fcntl.F_SEAL_SHRINK
-                    | fcntl.F_SEAL_GROW | fcntl.F_SEAL_WRITE)
+        fcntl.fcntl(fd, getattr(fcntl, "F_ADD_SEALS", _F_ADD_SEALS),
+                    getattr(fcntl, "F_SEAL_SEAL", _F_SEAL_SEAL)
+                    | getattr(fcntl, "F_SEAL_SHRINK", _F_SEAL_SHRINK)
+                    | getattr(fcntl, "F_SEAL_GROW", _F_SEAL_GROW)
+                    | getattr(fcntl, "F_SEAL_WRITE", _F_SEAL_WRITE))
     except BaseException:
         os.close(fd)
         raise

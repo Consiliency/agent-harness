@@ -185,6 +185,25 @@ def _bwrap_filtered(argv: list[str], program: bytes | None) -> subprocess.Comple
 x86_only = pytest.mark.skipif(platform.machine() != "x86_64", reason="x86_64 syscall numbers")
 
 
+def test_memfd_with_seals_on_an_interpreter_whose_fcntl_lacks_the_seal_constants(monkeypatch):
+    """CPython exports F_ADD_SEALS and F_SEAL_* only from 3.14; the package supports older
+    interpreters, so the kernel ABI values are the fallback (agent-harness#1276)."""
+    import errno
+    import fcntl
+
+    for constant in ("F_ADD_SEALS", "F_SEAL_SEAL", "F_SEAL_SHRINK", "F_SEAL_GROW", "F_SEAL_WRITE"):
+        monkeypatch.delattr(fcntl, constant, raising=False)
+    fd = seat_jail.memfd_with("t-seal", b"PAYLOAD")
+    try:
+        assert fcntl.fcntl(fd, 1034) == 0xF   # F_GET_SEALS: seal, shrink, grow and write
+        assert os.pread(fd, 7, 0) == b"PAYLOAD"
+        with pytest.raises(OSError) as raised:
+            os.write(fd, b"x")
+        assert raised.value.errno == errno.EPERM
+    finally:
+        os.close(fd)
+
+
 @requires_userns
 @x86_only
 def test_j14_live_filter_denies_in_the_kernel():
