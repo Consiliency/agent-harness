@@ -6,7 +6,25 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
-### Full-permission review seats inside a per-seat jail (agent-harness#1132)
+## [0.7.24] - 2026-10-06
+
+### Qualified agy set adds 1.2.17 (agent-harness#1263)
+
+- `gemini_heartbeat.QUALIFIED_IMAGES` and `plans/evidence/qualified-provider-images.json`
+  now admit agy 1.2.17 (Linux x64 image SHA256
+  `c54ef90651a8646ae67334d39212c81f5946feec373ad6aa335f9ef401662bc5`, from the upstream
+  `agy_cli_linux_x64.tar.gz` asset SHA256 `b0ed8a7c…`). Its help digest equals 1.2.15's and
+  1.2.16's (`8fcf4022…`). The set is now 1.2.11, 1.2.12, 1.2.14, 1.2.15, 1.2.16 and 1.2.17.
+- All six members were requalified on the release tree (completion, cancel and owner-loss
+  each, then `--validate`), because agent-harness#1166 and agent-harness#1253 changed
+  `phase_loop_runtime/**/*.py`. Each member has its own regenerated record.
+
+### Release records (PR agent-harness#1259)
+
+- The 0.7.23 handoff record is marked published, and the `[0.7.23]` section is tidied. This
+  is documentation only.
+
+### Full-permission review seats inside a per-seat jail (agent-harness#1132; PRs agent-harness#1166, agent-harness#1253, agent-harness#1265)
 
 - New `seat_jail`, `seat_uid` and `seat_keyring_exec` modules: a per-seat bwrap jail (J1
   mounts, `--remount-ro /`, declared environment and descriptors, the J14 seccomp filter),
@@ -119,8 +137,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   prerequisites and the Gemini seat keep the sealed route (agent-harness#1244).
 - The jailed seat's identity probe lists its descriptors from a child process, not a shell
   pipeline, so a correctly confined seat is no longer refused intermittently.
-- Plan amendment A4 (maintainer ruling 2026-10-05): a jailed Claude seat's credential
-  follows the subscription of the session that launched the leg.
+- Plan amendment A4 (maintainer ruling 2026-10-05; PR agent-harness#1253): the jailed Claude
+  seat uses the launching session's login. A stored override applies only when
+  `phase-loop seat-sandbox store-token` bound it to the same account and organization.
   - **Storing:** the new `phase-loop seat-sandbox store-token` stores the seat-token
     override and the account you are logged in to as one record (read with no echo, or
     from stdin; it is never printed). The record is written with one rename, through
@@ -137,16 +156,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
     AND organization (`oauthAccount.accountUuid` and `organizationUuid`, record schema v2).
     It applies only when both equal the session's. A store with an unknown organization is
     refused, and `token-status` shows both, exiting 0 only when the override applies.
-  - **Hardening:** the record must be owner-only (any group or other bit refuses with
+  - **Record checks:** the record must be owner-only (any group or other bit refuses with
     `token_file_unsafe`), and the store refuses a state directory that is a link.
   - **Upgrade:** a hand-written override file is now ignored until it is stored again with
     `store-token`. That includes a hand-written file with unsafe permissions, which is now
     ignored rather than refused, because it is never used. A v1 (account-only) record is
     unbound and must be stored again. A host without a Claude login cannot store an
     override.
-- **Release cut:** agy requalification is required at the next release cut (both the sealed
-  and, once L3 ships, the tooled profile), and `verify_qualified_agy_image.py --route-core`
-  must pass on the final tree.
+- **agy requalification.** This release requalifies agy (see the agy entry above), and
+  `verify_qualified_agy_image.py --route-core` passes on the release tree. The tooled
+  profile is requalified once L3 ships.
 
 ## [0.7.23] - 2026-10-05
 
