@@ -565,20 +565,29 @@ def _assert_scrubbed_child_env(child):
     assert child["PATH"] == "/usr/bin"  # non-scrubbed vars preserved
 
 
-def test_launch_scrubs_and_stamps_child_env_subprocess_run(monkeypatch):
-    # The log_path=None branch spawns via subprocess.run.
-    captured: dict[str, object] = {}
+def test_unobserved_launch_scrubs_and_stamps_child_env(monkeypatch):
+    from phase_loop_runtime import panel_invoker
+    from contextlib import AbstractContextManager
 
-    def fake_run(command, **kwargs):
-        captured["env"] = kwargs.get("env")
-        return subprocess.CompletedProcess(command, 0, stdout="", stderr="")
+    class Process(AbstractContextManager):
+        returncode = 0
+        def __exit__(self, *_args):
+            pass
+        def communicate(self, *_args):
+            return '', ''
 
-    monkeypatch.setattr(launcher.subprocess, "run", fake_run)
+    captured = {}
+
+    def owned(command, **kwargs):
+        captured.update(kwargs)
+        return Process()
+
+    monkeypatch.setattr(panel_invoker, 'launch_owned', owned)
     launcher.launch(
-        ["true"],
-        env={"CLAUDECODE": "1", "CLAUDE_CODE_ENTRYPOINT": "cli", "PATH": "/usr/bin"},
+        ['true'], env={'CLAUDECODE': '1', 'CLAUDE_CODE_ENTRYPOINT': 'cli', 'PATH': '/usr/bin'},
     )
-    _assert_scrubbed_child_env(captured["env"])
+    assert captured['role'] == panel_invoker.SeatLaunchRole.EXECUTOR_TRUSTED
+    _assert_scrubbed_child_env(captured['env'])
 
 
 def test_launch_scrubs_and_stamps_child_env_popen(monkeypatch, tmp_path):

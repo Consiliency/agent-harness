@@ -85,23 +85,12 @@ INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
     # -- the choke point -------------------------------------------------------------
     ("panel_invoker.py", "launch_provider"): (
         PROVIDER_INTERFACE, "panel_invoker.py:_child_scratch_kwargs:child_scratch_env"),
-    ("panel_invoker.py", "run_provider"): (
-        PROVIDER_INTERFACE, "panel_invoker.py:_child_scratch_kwargs:child_scratch_env"),
     # -- agent CLIs launched outside the provider interface ------------------------------
-    ("convergence/adapters/base.py", "run_bounded"): (
-        RELOCATED, "convergence/adapters/base.py:_child_environment:child_scratch_env"),
-    ("launcher.py", "launch"): (
-        RELOCATED, "harness_env_signatures.py:child_executor_env:fill_child_tmp_env"),
+    # agent-harness#1222: the convergence adapters, the executor, the auth / version probes
+    # and the Claude agent-view calls now start through `launch_owned` / `run_provider`
+    # (the provider interface), so they hold no raw launch of their own.
     ("lease_supervisor.py", "_exec_executor"): (
         RELOCATED, "launcher.py:launch:child_executor_env"),
-    # The Claude agent-view list/logs/stop calls run with the TUI seat's env, built by
-    # _broker_leg_env or _subscription_env.
-    ("panel_invoker.py", "_exec_claude_agent_view_attempt"): (
-        RELOCATED, "panel_invoker.py:_exec_claude_tui_leg:_subscription_env"),
-    ("panel_invoker.py", "_stop_claude_agent"): (
-        RELOCATED, "panel_invoker.py:_exec_claude_tui_leg:_broker_leg_env"),
-    ("panel_invoker.py", "_cleanup_claude_launch_timeout"): (
-        RELOCATED, "panel_invoker.py:_exec_claude_tui_leg:_broker_leg_env"),
     # agent-harness#1132: the jailed seat's helper chain (probe and launch, one decided
     # env object).
     ("panel_invoker.py", "_require_jailed_seat_identity"): (
@@ -119,15 +108,17 @@ INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
         EXCEPTION, "agy capture/qualification jail, frozen env (agent-harness#1179)"),
     ("agy_canary_evidence.py", "_bootstrap_attest_opened"): (
         EXCEPTION, "agy capture/qualification jail, frozen env (agent-harness#1179)"),
-    # -- short probes of an agent CLI: auth or version, no session scratch ---------------
-    ("panel_invoker.py", "_leg_auth_ok"): (NOT_AGENT, "auth-status probe, no session"),
-    ("panel_invoker.py", "_claude_subscription_auth_ok"): (
-        NOT_AGENT, "`claude auth status` probe, no session"),
-    ("panel_invoker.py", "_claude_code_support_status"): (
-        NOT_AGENT, "`claude --version` probe, no session"),
-    ("launcher.py", "run_auth_preflight"): (NOT_AGENT, "operator auth-preflight probes"),
-    ("executor_availability.py", "_run_probe"): (NOT_AGENT, "executor availability probe"),
     # -- programs that are not agent CLIs (the AST cannot see the program) --------------
+    # agent-harness#1222 §5/§5a: trusted host helpers resolved to absolute paths.
+    ("review_stage.py", "host_git"): (NOT_AGENT, "git, the hardened host invocation"),
+    ("review_stage.py", "trusted_host_executable"): (
+        NOT_AGENT, "a trusted host helper's own version probe"),
+    ("sandbox_egress.py", "egress_isolation_available"): (
+        NOT_AGENT, "trusted unshare / slirp4netns / iptables capability probe"),
+    ("sandbox_egress.py", "host_addresses"): (NOT_AGENT, "trusted `ip` address listing"),
+    ("seat_keyring_exec.py", "execute"): (
+        NOT_AGENT, "the owned seat's final link: execs the chain `launch_owned` hands it, "
+                   "with that launch's decided env"),
     ("panel_invoker.py", "_require_seat_identity"): (NOT_AGENT, "/bin/sh namespace probe"),
     ("advisor_board/backing.py", "ParentUnixBroker.run_credentialless_client"): (
         NOT_AGENT, "fixed python probe in the HARDEN broker jail"),
@@ -225,15 +216,18 @@ INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
 LAUNCH_COUNTS: dict[tuple[str, str], int] = {
     ('agy_canary_evidence.py', '_bootstrap_attest_opened'): 2,
     ('agy_canary_evidence.py', 'probe_capability'): 3,
-    ('launcher.py', 'launch'): 2,
     # agent-harness#1132: the jailed seat's launch beside every other provider launch.
     ('panel_invoker.py', 'launch_provider'): 2,
-    ('panel_invoker.py', '_exec_claude_agent_view_attempt'): 2,
-    # The timed holder (unshare), the rules install and the name check (nsenter). The
-    # long-lived holders and their slirp4netns, the seat-uid-mapped pair of
+    # The timed holder (unshare) and its slirp4netns, the rules install and the name check
+    # (nsenter). The long-lived holders and their slirp4netns, the seat-uid-mapped pair of
     # agent-harness#1132 included, go through `launch_provider` under
     # `_infrastructure_launch` (PROVIDER_CALLS_WITHOUT_ENV): not agent CLIs, no decision.
-    ('sandbox_egress.py', 'isolated_network'): 3,
+    # The timed slirp4netns counts since agent-harness#1222: its program is the trusted
+    # helper path, which the walk cannot read as a literal.
+    ('sandbox_egress.py', 'isolated_network'): 4,
+    # agent-harness#1222 §5: the object-format probe, the configured-driver read and the
+    # hardened git call itself, all git.
+    ('review_stage.py', 'host_git'): 3,
     ('tdd_receipts.py', 'record_content_tdd_receipt'): 2,
     ('verification_evidence.py', 'execute_proofgate_mutation_manifest._execute_one._execute_worktree'): 2,
 }
@@ -242,8 +236,16 @@ LAUNCH_COUNTS: dict[tuple[str, str], int] = {
 #: The provider launch interface and its liveness wrapper. A call that passes no ``env``
 #: inherits this process's own environment and so takes no scratch decision; each such
 #: call must be listed here with the reason it is not an agent-CLI launch.
-PROVIDER_ENTRY_POINTS = frozenset({"launch_provider", "run_provider", "_run_leg_with_liveness"})
+PROVIDER_ENTRY_POINTS = frozenset({"launch_provider", "run_provider", "launch_owned",
+                                   "_run_leg_with_liveness"})
 PROVIDER_CALLS_WITHOUT_ENV: dict[tuple[str, str], str] = {
+    # agent-harness#1222: the owner forwards its caller's kwargs (env included) and replaces
+    # a seat's env with the seat's own, decided as CHILD_SCRATCH_PRIVATE_TMP.
+    ("panel_invoker.py", "launch_owned"): "forwards its caller's env; decides the seat's own",
+    ("launcher.py", "launch"): (
+        "the executor: `launch_owned` gets the decided child_env inside its kwargs"),
+    ("panel_invoker.py", "run_provider"): (
+        "forwards its caller's env to `launch_owned` / `launch_provider`, which decide it"),
     ("agy_qualification.py", "inspect_network"): "iptables inspection, not an agent CLI",
     ("agy_qualification.py", "run_operation"): (
         "the qualification worker (python); its agy runs in the frozen jail (agent-harness#1179)"),
@@ -790,11 +792,31 @@ def _observe(tmp_path, launch, **kwargs) -> list[str]:
     return seen.read_text(encoding="utf-8").splitlines()
 
 
+def _observe_owned(**kwargs) -> list[str]:
+    """`run_provider` starts its argv through the seat-launch owner (agent-harness#1222),
+    which cannot write a host file: the seat reports on stdout instead."""
+    result = panel_invoker.run_provider(
+        ["/bin/sh", "-c", 'printf "%s\\n%s\\n" "${TMPDIR-unset}" "${CLAUDE_CODE_TMPDIR-unset}"'],
+        env={"PATH": "/usr/bin:/bin"}, capture_output=True, text=True, **kwargs)
+    assert result.returncode == 0, result.stderr
+    return result.stdout.splitlines()
+
+
 @pytest.mark.skipif(not os.path.exists("/bin/sh"), reason="needs /bin/sh")
-@pytest.mark.parametrize("launch", [panel_invoker.launch_provider, panel_invoker.run_provider])
-def test_the_provider_interface_relocates_every_env_it_launches(tmp_path, monkeypatch, launch):
+def test_the_provider_interface_relocates_every_env_it_launches(tmp_path, monkeypatch):
     scratch = _ram_tmp(monkeypatch, tmp_path)
-    assert _observe(tmp_path, launch) == [str(scratch)] * 2
+    assert _observe(tmp_path, panel_invoker.launch_provider) == [str(scratch)] * 2
+
+
+@pytest.mark.skipif(not os.path.exists("/bin/sh"), reason="needs /bin/sh")
+@pytest.mark.parametrize("decision", [sandbox_policy.CHILD_SCRATCH_RELOCATE,
+                                      sandbox_policy.CHILD_SCRATCH_PRIVATE_TMP,
+                                      sandbox_policy.CHILD_SCRATCH_FROZEN_CAPTURE])
+def test_an_owned_launch_keeps_its_private_tmp(tmp_path, monkeypatch, decision):
+    """The owned seat's /tmp is a private tmpfs: no host scratch path is handed in, whatever
+    the caller asked for."""
+    _ram_tmp(monkeypatch, tmp_path)
+    assert _observe_owned(child_scratch=decision) == ["unset", "unset"]
 
 
 @pytest.mark.skipif(not os.path.exists("/bin/sh"), reason="needs /bin/sh")
@@ -802,7 +824,7 @@ def test_the_provider_interface_relocates_every_env_it_launches(tmp_path, monkey
                                       sandbox_policy.CHILD_SCRATCH_FROZEN_CAPTURE])
 def test_only_a_named_exception_keeps_the_env_as_built(tmp_path, monkeypatch, decision):
     _ram_tmp(monkeypatch, tmp_path)
-    assert _observe(tmp_path, panel_invoker.run_provider,
+    assert _observe(tmp_path, panel_invoker.launch_provider,
                     child_scratch=decision) == ["unset", "unset"]
 
 
@@ -824,9 +846,10 @@ def test_a_launch_with_no_env_is_never_probed_or_refused(tmp_path, monkeypatch):
     assert panel_invoker.run_provider(["true"]).returncode == 0
 
 
-def test_a_bounded_leg_is_relocated_at_the_launch(tmp_path, monkeypatch):
-    """Without a heartbeat profile, `_run_leg_with_liveness` asks the choke point to
-    relocate; only the heartbeat profile (agent-harness#1181) may keep its private /tmp."""
+def test_a_bounded_leg_is_launched_with_a_private_tmp(tmp_path, monkeypatch):
+    """A bounded leg starts through the seat-launch owner (agent-harness#1222), whose /tmp is
+    private: the choke point is asked for ``CHILD_SCRATCH_PRIVATE_TMP``, never a relocation
+    to a host path the seat cannot see."""
     seen = {}
 
     def _launch(argv, **kwargs):
@@ -834,6 +857,11 @@ def test_a_bounded_leg_is_relocated_at_the_launch(tmp_path, monkeypatch):
         raise OSError("stop at the launch")
 
     monkeypatch.setattr(panel_invoker, "launch_provider", _launch)
-    with pytest.raises(OSError):
-        panel_invoker._run_leg_with_liveness(["true"], cwd=tmp_path, env={}, deadline_s=5)
-    assert seen["decision"] == sandbox_policy.CHILD_SCRATCH_RELOCATE
+    monkeypatch.setattr(panel_invoker, "_filtered_holder_namespace", lambda: 1)
+    token = panel_invoker._EGRESS_LAUNCH_PREFIX.set(("nsenter", "-t", "1", "--net", "--"))
+    try:
+        with pytest.raises(OSError):
+            panel_invoker._run_leg_with_liveness(["true"], cwd=tmp_path, env={}, deadline_s=5)
+    finally:
+        panel_invoker._EGRESS_LAUNCH_PREFIX.reset(token)
+    assert seen["decision"] == sandbox_policy.CHILD_SCRATCH_PRIVATE_TMP

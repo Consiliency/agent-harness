@@ -495,6 +495,15 @@ def invoke_sanctioned_board_control(
         assert stat.S_IMODE(scratch.stat().st_mode) == 0o700
         if caller_repo_dir is not None:
             _replicate_test_repository(caller_repo_dir, scratch)
+        # The projection is trusted fixture input, frozen before the candidate runs.
+        from phase_loop_runtime.review_stage import host_git
+
+        host_git(scratch, "init", "-q", "--initial-branch=main", check=True, capture_output=True)
+        host_git(scratch, "add", "-A", check=True, capture_output=True)
+        host_git(scratch, "-c", "user.name=Review fixture", "-c",
+                 "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false",
+                 "commit", "--allow-empty", "-qm", "Frozen fixture controls",
+                 check=True, capture_output=True)
         assert stat.S_IMODE(scratch.stat().st_mode) == 0o700
         call_kwargs["repo_dir"] = scratch
         factory_marker = authorization if authorization is not None else object()

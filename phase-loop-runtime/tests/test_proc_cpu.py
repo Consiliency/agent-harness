@@ -97,3 +97,36 @@ def _pgrp_of(pid: int) -> int | None:
         return _proc_cpu._pgrp_and_ticks(pid)[0]
     except (OSError, ValueError, IndexError):
         return None
+
+
+@_needs_proc
+def test_cpu_ticks_include_a_descendant_with_its_own_session():
+    source = '''
+import signal,subprocess,sys,time
+child=subprocess.Popen([sys.executable,'-c','while True: pass'],start_new_session=True)
+def stop(*args):
+ child.kill()
+ child.wait()
+ raise SystemExit(0)
+signal.signal(signal.SIGTERM,stop)
+print(child.pid,flush=True)
+while True: time.sleep(.1)
+'''
+    leader = subprocess.Popen([sys.executable, '-c', source], start_new_session=True,
+                              stdout=subprocess.PIPE, text=True)
+    try:
+        descendant = int(leader.stdout.readline())
+        deadline = time.monotonic() + 5
+        ticks = 0
+        while time.monotonic() < deadline:
+            descendant_ticks = _proc_cpu._pgrp_and_ticks(descendant)[1]
+            if descendant_ticks >= 10:
+                ticks = group_cpu_ticks(leader.pid)
+                break
+            time.sleep(.02)
+        assert descendant_ticks >= 10
+        assert ticks >= descendant_ticks
+    finally:
+        leader.terminate()
+        leader.wait(timeout=5)
+        leader.stdout.close()

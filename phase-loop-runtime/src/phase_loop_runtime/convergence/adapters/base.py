@@ -27,6 +27,7 @@ Unparseable, unknown, or truncated provider output is blocked rather than
 reported as success.
 """
 from __future__ import annotations
+from contextlib import ExitStack
 
 import json
 import os
@@ -122,32 +123,52 @@ def run_bounded(request: AdapterExecutionRequest, *, provider: str) -> Convergen
     returncode = None
     primary_error = cleanup_error = None
     selector = None
+    from ... import panel_invoker, sandbox_egress
+    profile_stack = ExitStack()
     try:
-        child_env = _child_environment()
+        environment = _child_environment()
     except sandbox_policy.SandboxSpaceError:
         return _envelope(ConvergenceResultStatus.FAILED, request.attempt_id, _DETAIL_NO_SCRATCH)
+    command = list(request.argv)
+    role = panel_invoker.SeatLaunchRole.EXECUTOR_TRUSTED
+    profile = panel_invoker.SeatProfile(env=environment)
     try:
-        process = subprocess.Popen(
-            list(request.argv),
+        if request.allowed_action == "review":
+            role = panel_invoker.SeatLaunchRole.PROVIDER_REVIEW
+            prefix = profile_stack.enter_context(sandbox_egress.isolated_network(timeout_s=None, required=True))
+            token = panel_invoker._EGRESS_LAUNCH_PREFIX.set(prefix)
+            profile_stack.callback(panel_invoker._EGRESS_LAUNCH_PREFIX.reset, token)
+            command, profile = profile_stack.enter_context(panel_invoker._seat_command_profile(
+                command, env=environment, cwd=request.cwd, readonly_paths=(request.cwd,),
+            ))
+        process = panel_invoker.launch_owned(
+            command, role=role, profile=profile,
             cwd=str(request.cwd),
-            env=child_env,
+            env=environment,
             bufsize=0,
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             start_new_session=True,
         )
-    except OSError:
+    except (OSError, sandbox_egress.EgressUnavailable):
+        profile_stack.close()
         return _envelope(ConvergenceResultStatus.FAILED, request.attempt_id, _DETAIL_SPAWN_FAILED)
+    except BaseException as primary:
+        try:
+            profile_stack.close()
+        except BaseException as cleanup:
+            raise primary from cleanup
+        raise
     try:
-        deadline = time.monotonic() + request.timeout_seconds
+        deadline = None if request.allowed_action == "review" else time.monotonic() + request.timeout_seconds
         selector = selectors.DefaultSelector()
         for name, pipe in (("stdout", process.stdout), ("stderr", process.stderr)):
             os.set_blocking(pipe.fileno(), False)
             selector.register(pipe, selectors.EVENT_READ, name)
         while not overflow:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
+            remaining = deadline - time.monotonic() if deadline is not None else 0.05
+            if deadline is not None and remaining <= 0:
                 expired = True
                 break
             # Keep the leader unreaped until its group is reclaimed: its
@@ -206,7 +227,9 @@ def run_bounded(request: AdapterExecutionRequest, *, provider: str) -> Convergen
             ):
                 cleanup_error = exc
     if primary_error is not None:
+        profile_stack.close()
         raise primary_error
+    profile_stack.close()
     if cleanup_error is not None:
         if not isinstance(cleanup_error, Exception):
             raise cleanup_error

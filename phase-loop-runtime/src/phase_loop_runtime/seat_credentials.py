@@ -651,14 +651,20 @@ def resolve_claude_seat_credential(
     margin_s: float, *,
     now: Callable[[], float] | None = None,
     read_login: Callable[[], LoginToken | None] | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> SeatCredential:
     """The credential for ONE launch. Raises ``SeatSandboxRefused`` with exactly one notice
     code: ``seat_sandbox_refused:token_file_unsafe`` (an unsafe override),
     ``claude_seat_token_missing`` (neither source), or ``claude_seat_login_token_expiring``
     (a login with less than ``margin_s`` left; nothing is run to renew it)."""
     now = now or time.time
-    read_login = read_login or read_login_token
-    decision = override_decision()
+    # ``env`` (default: the process environment) names the session whose login and account
+    # decide: its CLAUDE_CONFIG_DIR, else $HOME/.claude.
+    if env is not None and not env.get("CLAUDE_CONFIG_DIR") and env.get("HOME"):
+        env = {**env, "CLAUDE_CONFIG_DIR": str(Path(env["HOME"]) / ".claude")}
+    read_login = read_login or (read_login_token if env is None else
+                                (lambda: read_login_token(env=env)))
+    decision = override_decision(ClaudeCredentialAdapter(env))
     if decision.refusal is not None:
         raise seat_jail.SeatSandboxRefused(decision.refusal)
     if decision.applies:

@@ -27,7 +27,8 @@ import pytest
 import phase_loop_runtime.panel_invoker as pi
 from phase_loop_runtime.panel_invoker import _run_claude_tui_session
 
-pytestmark = pytest.mark.skipif(shutil.which("sh") is None, reason="needs POSIX sh")
+pytestmark = [pytest.mark.skipif(shutil.which("sh") is None, reason="needs POSIX sh"),
+              pytest.mark.usefixtures("owned_review_network")]
 
 # A hermetic empty transcript: tmp cwds have no ~/.claude project, but pin it so the
 # transcript-growth heartbeat can never spuriously reset the clock in these tests.
@@ -408,26 +409,36 @@ def test_tool_only_transcript_growth_keeps_active_tui_leg_alive(tmp_path, monkey
     assistant text can remain byte-identical. The liveness heartbeat must observe that
     file growth or it will reclaim a healthy Fable review as ``claude_tui_stalled``.
     """
-    activity = iter(range(1, 100))
+    transcript = tmp_path / "owned.jsonl"
+    slug = pi.re.sub(r"[^A-Za-z0-9.-]", "-", str(tmp_path))
+    journal = '"$CLAUDE_CONFIG_DIR/projects/' + slug + '/$1.jsonl"'
+    # Genuine progress is a NEW record version (agent-harness#1194): each tick journals one.
+    record = ('{"type":"assistant","uuid":"tool-step-%s","message":{"role":"assistant",'
+              '"content":[{"type":"tool_use","id":"tool-%s","name":"Read","input":{}}]}}')
+    script = _FINITE_ANIMATION_SCRIPT.replace(
+        "sleep 0.1;", "printf '" + record + "\\n' \"$i\" \"$i\" >> " + journal + "; sleep 0.1;",
+    )
     monkeypatch.setattr(pi, "_LEG_STALL_THRESHOLD_S", 0.3)
     monkeypatch.setattr(pi, "_CLAUDE_TUI_SUBMIT_DELAY_S", 999)
     monkeypatch.setattr(pi, "_CLAUDE_TUI_TRANSCRIPT_INTERVAL_S", 0.05)
     monkeypatch.setattr(pi, "_latest_claude_transcript_text", _NO_TRANSCRIPT)
-    monkeypatch.setattr(pi, "_latest_claude_transcript_activity", lambda *a, **k: next(activity))
 
     started = time.monotonic()
     _rc, _text, status, _tail = _run_claude_tui_session(
-        command=["sh", "-c", _FINITE_ANIMATION_SCRIPT],
+        command=["sh", "-c", script],
         cwd=tmp_path,
         prompt="review this",
         output_file=tmp_path / "panel-claude.txt",
         timeout_s=10,
         env={"PATH": "/usr/bin:/bin"},
         backstop_s=10,
+        broker_transcript_path=transcript,
     )
 
     assert time.monotonic() - started >= 1.0
     assert status != "claude_tui_stalled"
+    # No verdict, so nothing is approved and no partial journal is kept on the host.
+    assert transcript.stat().st_size == 0
 
 
 def test_pending_tool_gets_one_bounded_stall_extension(tmp_path, monkeypatch):
@@ -437,15 +448,25 @@ def test_pending_tool_gets_one_bounded_stall_extension(tmp_path, monkeypatch):
     if neither its result nor any other genuine progress arrives.
     """
     monkeypatch.setattr(pi, "_CLAUDE_TUI_SUBMIT_DELAY_S", 999)
-    monkeypatch.setattr(pi, "_latest_claude_transcript_text", _NO_TRANSCRIPT)
-    monkeypatch.setattr(pi, "_latest_claude_transcript_activity", lambda *a, **k: 1)
-    monkeypatch.setattr(
-        pi, "_latest_claude_pending_tool_uses", lambda *a, **k: ("toolu-long-read",)
-    )
+    monkeypatch.setattr(pi, "_CLAUDE_TUI_TRANSCRIPT_INTERVAL_S", 0.05)
+    transcript = tmp_path / "owned.jsonl"
+    slug = pi.re.sub(r"[^A-Za-z0-9.-]", "-", str(tmp_path))
+    journal = '"$CLAUDE_CONFIG_DIR/projects/' + slug + '/$1.jsonl"'
+    event = json.dumps({"message": {"content": [{"type": "tool_use", "id": "toolu-long-read"}]}})
+    script = "printf '%s\\n' '" + event + "' > " + journal + "; " + _WEDGE_SCRIPT
+    observed = []
+    original = pi._claude_pending_tool_uses
+
+    def pending(path, **kwargs):
+        result = original(path, **kwargs)
+        observed.append((time.monotonic(), result))
+        return result
+
+    monkeypatch.setattr(pi, "_claude_pending_tool_uses", pending)
 
     started = time.monotonic()
     rc, _text, status, _tail = _run_claude_tui_session(
-        command=["sh", "-c", _WEDGE_SCRIPT],
+        command=["sh", "-c", script],
         cwd=tmp_path,
         prompt="review this",
         output_file=tmp_path / "panel-claude.txt",
@@ -453,14 +474,14 @@ def test_pending_tool_gets_one_bounded_stall_extension(tmp_path, monkeypatch):
         env={"PATH": "/usr/bin:/bin"},
         backstop_s=10,
         stall_threshold_s=0.3,
+        broker_transcript_path=transcript,
     )
     elapsed = time.monotonic() - started
 
     assert status == "claude_tui_stalled"
     assert rc != 0
-    assert 0.55 <= elapsed < 3, (
-        f"the pending tool should receive exactly one extra 0.3s window; got {elapsed:.2f}s"
-    )
+    assert len(observed) == 2 and all(item[1] == ("toolu-long-read",) for item in observed)
+    assert observed[1][0] - observed[0][0] >= 0.3, elapsed
 
 
 def test_transcript_activity_changes_when_tool_events_append(tmp_path, monkeypatch):

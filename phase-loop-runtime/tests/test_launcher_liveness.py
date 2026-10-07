@@ -13,10 +13,14 @@ class LauncherLivenessTest(unittest.TestCase):
     def test_launch_without_log_closes_stdin_when_no_payload(self):
         class Completed:
             returncode = 0
-            stdout = "ok\n"
-            stderr = ""
+            def __enter__(self):
+                return self
+            def __exit__(self, *_args):
+                pass
+            def communicate(self, *_args, **kwargs):
+                return "ok\n", ""
 
-        with patch("phase_loop_runtime.launcher.subprocess.run", return_value=Completed()) as mocked:
+        with patch("phase_loop_runtime.panel_invoker.launch_owned", return_value=Completed()) as mocked:
             result = launch(["example-cli"])
 
         self.assertEqual(result.returncode, 0)
@@ -175,15 +179,18 @@ class LauncherLivenessTest(unittest.TestCase):
         self.assertIsNone(result.heartbeat_path)
         self.assertIsNone(result.terminal_path)
 
-    def test_unobserved_child_without_ephemeral_monitor_uses_bare_run(self):
-        # Guard the opt-in boundary: default log_path=None (no ephemeral_monitor)
-        # still uses the bare subprocess.run path (probes / non-executor callers).
+    def test_unobserved_child_without_ephemeral_monitor_uses_the_launch_seam(self):
+        # An unobserved trusted executor still crosses the common launch seam.
         class Completed:
             returncode = 0
-            stdout = "ok\n"
-            stderr = ""
+            def __enter__(self):
+                return self
+            def __exit__(self, *_args):
+                pass
+            def communicate(self, *_args, **kwargs):
+                return "ok\n", ""
 
-        with patch("phase_loop_runtime.launcher.subprocess.run", return_value=Completed()) as mocked:
+        with patch("phase_loop_runtime.panel_invoker.launch_owned", return_value=Completed()) as mocked:
             result = launch(["example-cli"])
 
         self.assertEqual(result.returncode, 0)

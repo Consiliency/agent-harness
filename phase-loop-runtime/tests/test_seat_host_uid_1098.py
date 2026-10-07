@@ -1,35 +1,22 @@
-"""agent-harness#1098 item 2: every seat runs as the operator's REAL uid, locked down.
-
-Every seat runs inside ``unshare --net --mount --map-root-user``, so every host account was
-uid 0 there, and the provider CLIs key scratch by uid -- ``/tmp/claude-0``,
-``/tmp/codex-daemon-0``, ``$TMPDIR/codex-bwrap-synthetic-mount-targets-0``. On a shared host
-the first account to run a board owned those paths and every other account's seats refused
-them: "Directory /tmp/claude-0 is owned by uid 65534, expected 0".
-
-A nested user namespace now maps the operator's own uid and gid, so each account's names
-are its own again, and the capability lock-down runs AFTER that switch. Nothing on the host
-filesystem is hidden, so there is nothing to predict. Before every launch, a probe through
-the launch's own prefix must show the operator's identity and the expected capability
-lines, or the launch is refused -- in every egress mode.
-"""
+"""Operator identity, owner composition and scratch compatibility controls."""
 from __future__ import annotations
 
 from contextlib import contextmanager
+import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tarfile
 import textwrap
-import threading
-
 import pytest
 
 from phase_loop_runtime import panel_invoker, sandbox_egress, sandbox_retention
 
 
 needs_egress = pytest.mark.skipif(
-    not sandbox_egress.egress_isolation_available(),
+    os.environ.get("PHASE_LOOP_REQUIRE_SEAT_OWNER") != "1"
+    and not sandbox_egress.egress_isolation_available(),
     reason="this host cannot enforce egress isolation (no user namespaces or slirp4netns)",
 )
 
@@ -47,8 +34,11 @@ def _egress(prefix):
         panel_invoker._EGRESS_LAUNCH_PREFIX.reset(token)
 
 
-def _monitor(tmp_path):
-    return panel_invoker._ReviewMonitor(tmp_path / "m.json", "t", 0, threading.Event())
+def _owner(tmp_path, marker=None):
+    return panel_invoker._seat_owner(
+        panel_invoker._seat_filesystem_view(tmp_path, readonly_paths=(marker,) if marker else ()),
+        filtered_network=True,
+    )
 
 
 # --- construction: the switch, and its ORDER ------------------------------------------------
@@ -76,10 +66,9 @@ def test_every_composed_prefix_ends_in_the_lock_down_or_refuses(tmp_path, egress
     bounding-set drop must follow EVERY user-namespace entry, and every prefix that enters
     a namespace or an owner is probed. The single empty prefix is main's unsandboxed host
     launch (no namespace, no owner), unchanged."""
-    owner = _monitor(tmp_path).owned_command(()) if owned else ()
+    owner = _owner(tmp_path) if owned else ()
     with _egress(HOLDER if egress == "holder" else ()):
         if egress == "empty" and owned and caps:
-            # The codex supervisor route outside the namespace: refused, as on main.
             with pytest.raises(sandbox_egress.SeatIdentityUnverified):
                 panel_invoker._compose_launch_prefix(str(tmp_path), owner, caps)
             return
@@ -94,8 +83,11 @@ def test_every_composed_prefix_ends_in_the_lock_down_or_refuses(tmp_path, egress
     drops = [i for i, arg in enumerate(prefix)
              if arg.startswith("--bounding-set=") or prefix[i:i + 2] == ["--cap-drop", "ALL"]]
     assert drops and drops[-1] > last_entry, f"no lock-down after the last user-namespace entry: {prefix}"
-    if owned and not caps:
+    if owned:
         assert "/usr/bin/setpriv" not in prefix and "--user" not in prefix, "bubblewrap replaces the switch"
+        assert "--fork" not in prefix
+        assert "--mount-proc" not in prefix
+        return
     else:
         assert prefix[drops[-1]] == "--bounding-set=-all" + ("".join(f",+{c}" for c in caps))
     lock_end = prefix.index("--", drops[-1])
@@ -111,7 +103,7 @@ def test_every_composed_prefix_ends_in_the_lock_down_or_refuses(tmp_path, egress
 
 
 def test_the_switch_position_does_not_depend_on_a_chdir(tmp_path):
-    owner = _monitor(tmp_path).owned_command(())
+    owner = _owner(tmp_path)
     with _egress(HOLDER):
         prefix = panel_invoker._compose_launch_prefix(None, owner, ())
     assert prefix.index("--net") < prefix.index("/usr/bin/bwrap") < prefix.index("/usr/bin/env")
@@ -135,12 +127,12 @@ def test_the_probe_runs_through_the_exact_launch_prefix(tmp_path, monkeypatch):
 
     monkeypatch.setattr(panel_invoker.subprocess, "run", fake_run)
     monkeypatch.setattr(panel_invoker.subprocess, "Popen", FakePopen)
-    owner = _monitor(tmp_path).owned_command(())
+    owner = _owner(tmp_path)
     with _egress(HOLDER):
-        panel_invoker.launch_provider(["codex", "exec"], process_owner=owner,
+        panel_invoker.launch_provider(["/bin/echo", "exec"], process_owner=owner,
                                       retain_caps=("setfcap",), cwd=str(tmp_path))
     probe, launch = seen
-    assert launch[-2:] == ["codex", "exec"]
+    assert launch[-2:] == ["/bin/echo", "exec"]
     assert probe[:len(launch) - 2] == launch[:-2], "the probe used a different prefix"
     assert probe[len(launch) - 2:len(launch)] == ["/bin/sh", "-c"]
 
@@ -151,13 +143,12 @@ def test_only_the_gemini_owner_probes_without_its_single_use_descriptors(tmp_pat
         seen.append(list(argv)) or subprocess.CompletedProcess(
             argv, 0, "\n".join(panel_invoker._expected_seat_identity(argv)) + "\n", "")))
     monkeypatch.setattr(panel_invoker.subprocess, "Popen", lambda argv, **k: seen.append(list(argv)))
-    monitor = _monitor(tmp_path)
     fd_args = ["--info-fd", "7", "--block-fd", "8"]
-    with_fds = monitor.owned_command(())
+    with_fds = _owner(tmp_path)
     with_fds[with_fds.index("--"):with_fds.index("--")] = fd_args
     with _egress(HOLDER):
-        panel_invoker.launch_provider(["agy"], process_owner=with_fds,
-                                      probe_owner=monitor.owned_command(()), cwd=str(tmp_path))
+        panel_invoker.launch_provider(["/bin/true"], process_owner=with_fds,
+                                      probe_owner=_owner(tmp_path), cwd=str(tmp_path))
     probe, launch = seen
     assert [a for a in launch[:-1] if a not in fd_args] == probe[:len(launch) - 1 - len(fd_args)]
 
@@ -169,18 +160,19 @@ _STATUS = "id -u; id -g; grep -E '^(CapPrm|CapEff|CapBnd|NoNewPrivs):' /proc/sel
 
 @needs_egress
 def test_every_route_runs_the_seat_as_the_operator(tmp_path):
-    monitor = _monitor(tmp_path)
     routes = {
         "plain": ({}, "0000000000000000", "0"),
-        "codex": ({"process_owner": monitor.owned_command(()), "retain_caps": ("setfcap",)},
-                  "0000000080000000", "0"),
-        "owned": ({"process_owner": monitor.owned_command(())}, "0000000000000000", "1"),
+        "codex": ({"process_owner": _owner(tmp_path), "retain_caps": ("setfcap",)},
+                  "0000000000000000", "1"),
+        "owned": ({"process_owner": _owner(tmp_path)}, "0000000000000000", "1"),
     }
     with sandbox_egress.isolated_network(timeout_s=None) as prefix, _egress(prefix):
         for route, (kwargs, bounding, nnp) in routes.items():
             proc = panel_invoker.launch_provider(
                 ["/bin/sh", "-c", _STATUS], cwd=str(tmp_path),
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kwargs)
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                probe_owner=(lambda marker: _owner(tmp_path, marker)) if "process_owner" in kwargs else None,
+                **kwargs)
             out = proc.communicate(timeout=60)[0].decode().splitlines()
             assert out == [UID, GID, "CapPrm:\t0000000000000000", "CapEff:\t0000000000000000",
                            f"CapBnd:\t{bounding}", f"NoNewPrivs:\t{nnp}"], (route, out)
@@ -231,7 +223,7 @@ def test_an_owned_codex_launch_without_a_namespace_is_refused_live(tmp_path):
         with pytest.raises(sandbox_egress.SeatIdentityUnverified):
             panel_invoker.launch_provider(
                 ["/bin/sh", "-c", f"touch {ran}"], cwd=str(tmp_path),
-                process_owner=_monitor(tmp_path).owned_command(()), retain_caps=("setfcap",))
+                process_owner=_owner(tmp_path), retain_caps=("setfcap",))
     assert not ran.exists()
 
 
@@ -240,7 +232,9 @@ def test_an_owned_bwrap_launch_without_a_namespace_is_switched_and_probed(tmp_pa
     with _egress(()):
         proc = panel_invoker.launch_provider(
             ["/bin/sh", "-c", _STATUS], cwd=str(tmp_path),
-            process_owner=_monitor(tmp_path).owned_command(()),
+            process_owner=panel_invoker._seat_owner(panel_invoker._seat_filesystem_view(tmp_path)),
+            probe_owner=lambda marker: panel_invoker._seat_owner(
+                panel_invoker._seat_filesystem_view(tmp_path, readonly_paths=(marker,))),
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
     out = proc.communicate(timeout=60)[0].decode().splitlines()
     assert out == [UID, GID, "CapPrm:\t0000000000000000", "CapEff:\t0000000000000000",
@@ -254,17 +248,21 @@ _STATE_DRIVER = textwrap.dedent("""
     from pathlib import Path
     from phase_loop_runtime import panel_invoker, sandbox_egress
     base = Path(tempfile.mkdtemp())
-    monitor = panel_invoker._ReviewMonitor(base / "m.json", "t", 0, threading.Event())
-    routes = {"plain": {}, "codex": {"process_owner": monitor.owned_command(()), "retain_caps": ("setfcap",)},
-              "owned": {"process_owner": monitor.owned_command(())}}
+    routes = {"plain": False, "codex": True, "owned": True}
     status = "id -u; grep -E '^(CapPrm|CapEff|CapBnd|NoNewPrivs):' /proc/self/status"
     with sandbox_egress.isolated_network(timeout_s=None) as prefix:
         token = panel_invoker._EGRESS_LAUNCH_PREFIX.set(tuple(prefix))
         try:
-            for name, kwargs in routes.items():
+            for name, owned in routes.items():
                 try:
-                    proc = panel_invoker.launch_provider(["/bin/sh", "-c", status], cwd=str(base),
-                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kwargs)
+                    if owned:
+                        proc = panel_invoker.launch_owned(
+                            ["/bin/sh", "-c", status], role="PROVIDER_REVIEW",
+                            profile=panel_invoker.SeatProfile(env={"PATH":"/usr/bin:/bin"}),
+                            cwd=base, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                    else:
+                        proc = panel_invoker.launch_provider(["/bin/sh", "-c", status], cwd=base,
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
                     print(name, "|".join(proc.communicate(timeout=60)[0].decode().split()))
                 except sandbox_egress.SeatIdentityUnverified as exc:
                     print(name, "REFUSED", exc)
@@ -285,23 +283,33 @@ def _run_state_driver(*wrapper: str) -> dict[str, str]:
 @needs_egress
 def test_an_inherited_no_new_privs_is_expected_not_refused():
     seen = _run_state_driver("setpriv", "--no-new-privs", "--")
-    for route, bounding in (("plain", "0000000000000000"), ("codex", "0000000080000000"),
+    for route, bounding in (("plain", "0000000000000000"), ("codex", "0000000000000000"),
                             ("owned", "0000000000000000")):
         assert seen[route] == (f"{UID}|CapPrm:|0000000000000000|CapEff:|0000000000000000|"
                                f"CapBnd:|{bounding}|NoNewPrivs:|1"), (route, seen[route])
 
 
 @needs_egress
-def test_a_uid_0_operator_gets_exactly_main_s_root_seat_state():
-    """SIMULATED root: the operator is uid 0 of an outer user namespace (really the host
-    account running the test) -- the same exec semantics a real root operator sees."""
-    seen = _run_state_driver("unshare", "--user", "--map-root-user", "--mount")
-    assert seen["codex"] == ("0|CapPrm:|0000000080000000|CapEff:|0000000080000000|"
-                             "CapBnd:|0000000080000000|NoNewPrivs:|0"), seen["codex"]
-    assert seen["plain"] == ("0|CapPrm:|0000000000000000|CapEff:|0000000000000000|"
-                             "CapBnd:|0000000000000000|NoNewPrivs:|0"), seen["plain"]
-    assert seen["owned"] == ("0|CapPrm:|0000000000000000|CapEff:|0000000000000000|"
-                             "CapBnd:|0000000000000000|NoNewPrivs:|1"), seen["owned"]
+def test_a_uid_0_operator_is_refused_by_owned_routes(tmp_path):
+    source = """
+import os,subprocess
+from phase_loop_runtime import panel_invoker,sandbox_egress
+assert os.getuid()==0
+for role in ('PROVIDER_ADMIN','PROVIDER_REVIEW'):
+ try:
+  panel_invoker.launch_owned(['/bin/true'],role=role,
+    profile=panel_invoker.SeatProfile(env={'PATH':'/usr/bin:/bin'}))
+ except sandbox_egress.EgressUnavailable:
+  print(role,'REFUSED')
+ else:
+  raise AssertionError('root operator was admitted')
+"""
+    done = subprocess.run(
+        ['/usr/bin/unshare', '--user', '--map-root-user', sys.executable, '-c', source],
+        capture_output=True, text=True, timeout=30,
+    )
+    assert done.returncode == 0, done.stderr
+    assert done.stdout.splitlines() == ['PROVIDER_ADMIN REFUSED', 'PROVIDER_REVIEW REFUSED']
 
 
 def test_a_leg_without_a_namespace_is_typed_seat_identity_unavailable(tmp_path):
@@ -342,27 +350,44 @@ SEAT = textwrap.dedent("""
 """)
 
 DRIVER = textwrap.dedent("""
-    import os, subprocess, sys, tempfile, threading
+    import json, os, subprocess, sys, tempfile, threading
     from pathlib import Path
     from phase_loop_runtime import panel_invoker, sandbox_egress
+    helpers = json.loads(sys.argv[4])
+    sandbox_egress.trusted_host_executable = lambda name: helpers[name]
     if sys.argv[1] == "main":
         # main's seat identity: the holder's root, locked down, and no probe.
         panel_invoker._seat_identity_switch = lambda caps=(): [
             "/usr/bin/setpriv", "--bounding-set=-all" + "".join(",+" + c for c in caps),
             "--inh-caps=-all", "--"]
         panel_invoker._require_seat_identity = lambda *a, **k: None
+        def legacy_compose(cwd, process_owner=(), retain_caps=()):
+            prefix = panel_invoker._provider_launch_prefix(cwd, retain_caps)
+            if process_owner and retain_caps:
+                switch = panel_invoker._seat_identity_switch(retain_caps)
+                position = panel_invoker._sublist_index(prefix, switch)
+                prefix[position:position] = ["setpriv", "--pdeathsig", "SIGKILL", "--",
+                    "/usr/bin/unshare", "--pid", "--fork", "--kill-child=SIGKILL", "--mount-proc"]
+            return prefix
+        panel_invoker._compose_launch_prefix = legacy_compose
     base = Path(tempfile.mkdtemp(prefix="pl-panel-"))
     route = {"plain": {}, "codex": {
-        "process_owner": panel_invoker._ReviewMonitor(base / "m.json", "t", 0,
-                                                      threading.Event()).owned_command(()),
+        "process_owner": ["/usr/bin/bwrap", "--die-with-parent", "--unshare-pid",
+                          "--bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--"],
         "retain_caps": ("setfcap",)}}[sys.argv[2]]
     with sandbox_egress.isolated_network(timeout_s=None) as prefix:
         print("NAMESPACE-UP", file=sys.stderr, flush=True)
         token = panel_invoker._EGRESS_LAUNCH_PREFIX.set(tuple(prefix))
         try:
-            proc = panel_invoker.launch_provider(
-                [sys.executable, "-c", sys.argv[3]], cwd=str(base),
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **route)
+            if sys.argv[1] == "main":
+                proc = panel_invoker.launch_provider(
+                    [sys.executable, "-c", sys.argv[3]], cwd=str(base),
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **route)
+            else:
+                proc = panel_invoker.launch_owned(
+                    ["/usr/bin/python3", "-I", "-S", "-c", sys.argv[3]], role="PROVIDER_REVIEW",
+                    profile=panel_invoker.SeatProfile(env={"PATH":"/usr/bin:/bin"}), cwd=base,
+                    stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
             out, _ = proc.communicate(timeout=60)
         finally:
             panel_invoker._EGRESS_LAUNCH_PREFIX.reset(token)
@@ -388,17 +413,23 @@ _SCENARIOS = {
 
 
 def _run_as_a_second_account(mode: str, route: str, scenario: str) -> subprocess.CompletedProcess[str]:
+    from phase_loop_runtime import review_stage
     src = str(Path(panel_invoker.__file__).resolve().parents[1])
+    helper_names = (
+        "bash", "getent", "ip", "ip6tables", "iptables", "mount", "nsenter",
+        "setpriv", "sleep", "slirp4netns", "touch", "true", "unshare",
+    )
+    helpers = {name: review_stage.trusted_host_executable(name) for name in helper_names}
     env, foreign = _SCENARIOS[scenario]
     binds = "".join(f"mkdir -p {d}; mount --bind /usr/share {d}; " for d in foreign)
     outer = (
         "set -e; mount -t tmpfs -o mode=1777 t1098 /tmp; mount -t tmpfs -o mode=1777 t1098 /var/tmp; "
         f"mkdir -p /tmp/shared /var/tmp/shared; {binds}echo OUTER-READY >&2; "
-        f'exec unshare --user --map-user={ACCOUNT} --map-group={ACCOUNT} "$0" -c "$1" "$2" "$3" "$4"'
+        f'exec unshare --user --map-user={ACCOUNT} --map-group={ACCOUNT} "$0" -c "$1" "$2" "$3" "$4" "$5"'
     )
     return subprocess.run(
         ["unshare", "--user", "--map-root-user", "--mount", "bash", "-c", outer,
-         sys.executable, DRIVER, mode, route, SEAT],
+         sys.executable, DRIVER, mode, route, SEAT, json.dumps(helpers)],
         capture_output=True, text=True, timeout=180,
         env={**os.environ, **env, "PYTHONPATH": src + os.pathsep + os.environ.get("PYTHONPATH", "")},
     )
@@ -412,16 +443,14 @@ def test_a_second_account_s_seat_is_not_broken_by_another_account_s_scratch(rout
     if "NAMESPACE-UP" not in control.stderr:
         # Only the test's own scaffolding may skip: the outer namespaces, or the filtered
         # namespace nested inside them on main's code path. Anything after that is the code.
+        if os.environ.get("PHASE_LOOP_REQUIRE_SEAT_OWNER") == "1":
+            pytest.fail("required owner matrix cannot nest the filtered namespace")
         pytest.skip(f"cannot nest the filtered namespace here: {control.stderr.strip()[-200:]}")
     # The control is main's behaviour: the seat is uid 0 and meets another account's
     # `*-0` scratch, so the harness really presents the collision.
     assert control.returncode == 3, control.stdout + control.stderr
     assert "is owned by uid 65534, expected 0" in control.stdout
     fixed = _run_as_a_second_account("fixed", route, scenario)
-    if scenario == "foreign-own-uid":
-        assert fixed.returncode == 3, fixed.stdout + fixed.stderr
-        assert f"claude-{ACCOUNT} is owned by uid 65534, expected {ACCOUNT}" in fixed.stdout
-        return
     assert fixed.returncode == 0, fixed.stdout + fixed.stderr
     assert fixed.stdout.strip().endswith("SEAT-OK")
 

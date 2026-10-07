@@ -16,9 +16,9 @@ in-repo staging were the divergence + worktree-dirtying defects).
 from __future__ import annotations
 
 import re
-import subprocess
 from pathlib import Path
 from typing import Any, Mapping, Sequence
+from .review_stage import host_git
 
 # A RESOLVED git object name (short or full hex OID) — never a ref / branch name.
 # `committed_range_diff` validates both args against this before shelling out, so
@@ -47,8 +47,7 @@ def staged_index_diff(repo: Path, paths: Sequence[str]) -> str:
     if not paths:
         return "(no staged paths)"
     try:
-        out = subprocess.run(
-            ["git", "-C", str(repo), "diff", "--cached", "--", *paths],
+        out = host_git(repo, "diff", "--cached", "--", *paths,
             capture_output=True, text=True, timeout=30,
         )
     except Exception:
@@ -81,10 +80,10 @@ def committed_range_diff(repo: Path, base_sha: str, head_sha: str) -> str:
     _require_resolved_sha(base_sha, role="base_sha")
     _require_resolved_sha(head_sha, role="head_sha")
     try:
-        out = subprocess.run(
+        out = host_git(repo,
             # `--` after the (pre-validated) revs terminates option parsing as a
             # second layer over the regex validation, which is the primary defense.
-            ["git", "-C", str(repo), "diff", base_sha, head_sha, "--"],
+            "diff", base_sha, head_sha, "--",
             capture_output=True, text=True, timeout=30,
         )
     except Exception:

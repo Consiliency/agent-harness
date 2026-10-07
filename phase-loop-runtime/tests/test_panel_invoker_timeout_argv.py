@@ -1861,11 +1861,34 @@ def test_capture_grok_preflight_publish_rejects_after_trip(tmp_path):
 
 
 @pytest.mark.skipif(os.name == "nt", reason="preflight registry needs POSIX groups")
-def test_capture_preflight_probe_is_swept_by_fatal_latch(tmp_path):
+def test_capture_preflight_probe_is_swept_by_fatal_latch(
+    tmp_path, monkeypatch, owned_review_network,
+):
     latch = pi._ProviderQuiescenceLatch()
     primary = pi.ProviderProcessGroupQuiescenceError("fatal preflight")
     pid_marker = tmp_path / "preflight.pid"
     errors: list[BaseException] = []
+    processes = []
+    pi._precreate_seat_output(pid_marker)
+    original_profile = pi._seat_command_profile
+    original_launch = pi.launch_provider
+
+    from contextlib import contextmanager
+    from phase_loop_runtime.advisor_board.backing import start_context_carrying_thread
+
+    @contextmanager
+    def profile(command, **kwargs):
+        kwargs['outputs'] = (*kwargs.get('outputs', ()), pid_marker)
+        with original_profile(command, **kwargs) as value:
+            yield value
+
+    def launch(command, **kwargs):
+        process = original_launch(command, **kwargs)
+        processes.append(process)
+        return process
+
+    monkeypatch.setattr(pi, '_seat_command_profile', profile)
+    monkeypatch.setattr(pi, 'launch_provider', launch)
 
     class BlockingGrokAuthority:
         review_launch = None
@@ -1873,12 +1896,12 @@ def test_capture_preflight_probe_is_swept_by_fatal_latch(tmp_path):
         def preflight(self, command, *, probe_runner, publish):
             returncode = probe_runner(
                 [
-                    sys.executable,
+                    "/usr/bin/python3",
                     "-c",
                     (
                         "import os, signal, sys, time; "
                         "signal.signal(signal.SIGTERM, signal.SIG_IGN); "
-                        "import os as _o; _t=sys.argv[1]+'.partial'; open(_t,'w').write(str(os.getpid())); _o.replace(_t, sys.argv[1]); "
+                        "open(sys.argv[1],'w').write(str(os.getpid())); "
                         "time.sleep(600)"
                     ),
                     str(pid_marker),
@@ -1898,13 +1921,12 @@ def test_capture_preflight_probe_is_swept_by_fatal_latch(tmp_path):
         except BaseException as exc:
             errors.append(exc)
 
-    thread = threading.Thread(target=worker)
-    thread.start()
+    thread = start_context_carrying_thread(worker, daemon=True)
     deadline = time.monotonic() + 5
-    while not pid_marker.exists() and time.monotonic() < deadline:
+    while not pid_marker.read_text() and time.monotonic() < deadline:
         time.sleep(0.02)
-    assert pid_marker.exists()
-    pid = int(pid_marker.read_text())
+    assert pid_marker.read_text() and len(processes) == 1
+    pid = processes[0].pid
     assert latch.trip(primary) is primary
     thread.join(5)
 
@@ -1972,15 +1994,62 @@ def test_capture_stream_publication_rejects_after_paused_gate_trip(
     "max_concurrency", [1, 4], ids=["queued-sequential", "running-parallel-barrier"],
 )
 def test_capture_quiescence_failure_stops_siblings_and_retains_private_roots(
-    monkeypatch, tmp_path, max_concurrency,
+    monkeypatch, tmp_path, max_concurrency, owned_review_network,
 ):
     from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
 
     expected_capture = object()
+    prefix = pi._EGRESS_LAUNCH_PREFIX.get()
     roots: list[Path] = []
     outputs: dict[str, Path] = {}
     spawned: list[str] = []
     group_pids: dict[str, int] = {}
+    original_profile = pi._seat_command_profile
+    original_launch = pi.launch_provider
+    original_terminate = pi._terminate_process_group
+    provider_pids = []
+    from contextlib import contextmanager
+
+    @contextmanager
+    def profile(command, **kwargs):
+        if len(command) > 3 and command[0] == '/usr/bin/python3':
+            kwargs['outputs'] = (*kwargs.get('outputs', ()),
+                                 Path(command[-2]), Path(command[-1]))
+        with original_profile(command, **kwargs) as value:
+            yield value
+
+    def launch(command, **kwargs):
+        process = original_launch(command, **kwargs)
+        if command[0] == '/usr/bin/python3':
+            group_pids[Path(command[-2]).stem] = process.pid
+        return process
+
+    def terminate(process, **kwargs):
+        # The provider starts a separate session. Force a final provider write
+        # after the fatal latch trips, then exercise the real owner cleanup.
+        pending = [process.pid]
+        while pending:
+            parent = pending.pop()
+            children = Path(f'/proc/{parent}/task/{parent}/children')
+            if not children.exists():
+                continue
+            for item in children.read_text().split():
+                child = int(item)
+                pending.append(child)
+                argv = Path(f'/proc/{child}/cmdline').read_bytes().split(b'\0')
+                if len(argv) >= 5 and argv[1] == b'-c' and argv[3].endswith(b'.pid'):
+                    provider_pids.append(child)
+                    os.kill(child, signal.SIGTERM)
+                    marker = Path(os.fsdecode(argv[4]))
+                    deadline = time.monotonic() + 5
+                    while not marker.read_text() and time.monotonic() < deadline:
+                        time.sleep(.02)
+                    assert marker.read_text() == 'truthful post-trip private output'
+        return original_terminate(process, **kwargs)
+
+    monkeypatch.setattr(pi, '_terminate_process_group', terminate)
+    monkeypatch.setattr(pi, '_seat_command_profile', profile)
+    monkeypatch.setattr(pi, 'launch_provider', launch)
     cleanup_calls = 0
     result_seals = 0
     summary_calls = 0
@@ -2011,43 +2080,44 @@ def test_capture_quiescence_failure_stops_siblings_and_retains_private_roots(
                     tmp_path / f"{provider}.pid"
                     for provider in ("gemini", "claude", "grok")
                 ]
-                while (not all(path.exists() for path in sibling_markers) and
+                while (not all(path.exists() and path.read_text() for path in sibling_markers) and
                        time.monotonic() < deadline):
                     time.sleep(0.02)
-                assert all(path.exists() for path in sibling_markers)
-                group_pids.update({
-                    path.stem: int(path.read_text()) for path in sibling_markers
-                })
+                assert all(path.exists() and path.read_text() for path in sibling_markers)
             raise primary_error
         (outputs[leg] / "pre-fatal-partial-output").write_text("retained")
         pid_marker = tmp_path / f"{leg}.pid"
         sigterm_marker = outputs[leg] / "sigterm-partial-output"
-        pi._run_leg_with_liveness(
-            [
-                sys.executable,
-                "-c",
-                (
-                    "import os, signal, sys, time\n"
-                    "def on_term(_signum, _frame):\n"
-                    "    with open(sys.argv[2], 'w') as marker:\n"
-                    "        marker.write('truthful post-trip private output')\n"
-                    "signal.signal(signal.SIGTERM, on_term)\n"
-                    "_t = sys.argv[1] + '.partial'\n"
-                    "with open(_t, 'w') as marker:\n"
-                    "    marker.write(str(os.getpid()))\n"
-                    "os.replace(_t, sys.argv[1])\n"
-                    "while True:\n"
-                    "    time.sleep(1)\n"
-                ),
-                str(pid_marker),
-                str(sigterm_marker),
-            ],
-            cwd=tmp_path,
-            env=os.environ,
-            deadline_s=30,
-            stall_threshold_s=30,
-            quiescence_latch=quiescence_latch,
-        )
+        pi._precreate_seat_output(pid_marker)
+        pi._precreate_seat_output(sigterm_marker)
+        token = pi._EGRESS_LAUNCH_PREFIX.set(prefix)
+        try:
+            pi._run_leg_with_liveness(
+                [
+                    "/usr/bin/python3",
+                    "-c",
+                    (
+                        "import os, signal, sys, time\n"
+                        "def on_term(_signum, _frame):\n"
+                        "    with open(sys.argv[2], 'w') as marker:\n"
+                        "        marker.write('truthful post-trip private output')\n"
+                        "signal.signal(signal.SIGTERM, on_term)\n"
+                        "with open(sys.argv[1], 'w') as marker:\n"
+                        "    marker.write(str(os.getpid()))\n"
+                        "while True:\n"
+                        "    time.sleep(1)\n"
+                    ),
+                    str(pid_marker),
+                    str(sigterm_marker),
+                ],
+                cwd=tmp_path,
+                env=os.environ,
+                deadline_s=30,
+                stall_threshold_s=30,
+                quiescence_latch=quiescence_latch,
+            )
+        finally:
+            pi._EGRESS_LAUNCH_PREFIX.reset(token)
         (outputs[leg] / "parent-after-quiescence-marker").write_text("must-not-run")
         return "OK", "AGREE"
 
@@ -2097,7 +2167,8 @@ def test_capture_quiescence_failure_stops_siblings_and_retains_private_roots(
             assert len(spawned) == 4
             assert set(spawned) == {"codex", "gemini", "claude", "grok"}
             assert set(group_pids) == {"gemini", "claude", "grok"}
-            for pid in group_pids.values():
+            assert len(provider_pids) == 3
+            for pid in (*group_pids.values(), *provider_pids):
                 with pytest.raises(ProcessLookupError):
                     os.kill(pid, 0)
                 assert not pi._process_group_exists(pid)

@@ -990,6 +990,8 @@ def test_a_hostpath_record_keeps_its_fields_and_only_adds(tmp_path, monkeypatch)
         "sandbox_placement_backend", "sandbox_placement_receipts",
         "sandbox_placement_verified", "sandbox_local_provider_spawns",
         "sandbox_snapshot_sha256",
+        # agent-harness#1222 §5: the trusted host git that staged the tree.
+        "host_git_executable", "host_git_version",
     }
     assert set(seen) == legacy | added
     assert seen["sandbox_root_host"] == "ai" and seen["sandbox_root_fell_back"] is False
@@ -1032,11 +1034,13 @@ def test_network_helpers_cannot_attest_a_provider_launch(tmp_path, monkeypatch):
             return 0
 
     def popen(argv, **kwargs):
-        if argv[0] not in ("unshare", "slirp4netns"):
+        # The helpers are trusted absolute paths since agent-harness#1222: match by name.
+        name = Path(argv[0]).name
+        if name not in ("unshare", "slirp4netns"):
             return real_popen(argv, **kwargs)
-        helpers.append(argv[0])
-        if argv[0] == "unshare":
-            pid, ready = re.search(r"echo \$\$ > (\S+); touch (\S+);", argv[-1]).groups()
+        helpers.append(name)
+        if name == "unshare":
+            pid, ready = re.search(r"echo \$\$ > (\S+); \S*touch (\S+);", argv[-1]).groups()
             Path(pid).write_text("12345")
             Path(ready).touch()
         return Helper()

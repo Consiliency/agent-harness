@@ -469,7 +469,7 @@ class BundleStagingTest(unittest.TestCase):
             out_dir = Path(td) / "out"
             review_dir.mkdir()
             out_dir.mkdir()
-            with patch("phase_loop_runtime.panel_invoker.subprocess.run", side_effect=fake_auth), \
+            with patch.object(pi, "_leg_auth_ok", return_value=(True, "")), \
                     patch.object(pi, "_run_leg_with_liveness", side_effect=fake_liveness):
                 rc, review_text, _ = pi._exec_leg("codex", review_dir, out_dir, 600, "SENTINEL-CODEX-ARTIFACT")
 

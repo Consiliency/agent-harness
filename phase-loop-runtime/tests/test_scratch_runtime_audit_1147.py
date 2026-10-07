@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 import _scratch_audit_hook as hook
+from launch_audit_hook import tolerate_unowned
 from phase_loop_runtime import sandbox_policy
 
 _RUNTIME_MODULE = textwrap.dedent('''
@@ -88,7 +89,10 @@ def runtime(tmp_path, monkeypatch):
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     module.CLAUDE = str(claude)
-    yield module
+    # These falsifiers start an unowned fixture CLI on purpose; the seat-owner launch
+    # audit records them without failing (its own regression tests cover that guard).
+    with tolerate_unowned():
+        yield module
     hook.drain()
 
 
@@ -147,13 +151,18 @@ def test_the_marker_names_the_decision():
 
 @pytest.mark.parametrize("site", [
     "executor", "availability_probe", "auth_preflight", "leg_auth", "claude_version",
-    "claude_auth", "claude_stop", "claude_timeout_cleanup",
+    "claude_auth", "agent_view_stop",
 ])
 def test_each_runtime_launch_of_a_named_agent_carries_the_marker(tmp_path, monkeypatch, site):
     """Every launch site that starts a NAMED agent CLI outside the provider interface is
     observed carrying the decision: the executor, AUTOSEL's availability probe, the launch
     auth preflight, the leg and Claude auth / version probes, and the Claude stop and
-    timeout-cleanup calls."""
+    timeout-cleanup calls.
+
+    The executor runs on the host and relocates its scratch. Every other site starts the
+    CLI through the seat-launch owner (agent-harness#1222), whose /tmp is private: that
+    launch carries ``CHILD_SCRATCH_PRIVATE_TMP``, observed on the env object handed to the
+    spawn (the owned seat cannot write a host file)."""
     import subprocess
 
     from phase_loop_runtime import executor_availability, launcher, panel_invoker
@@ -165,12 +174,24 @@ def test_each_runtime_launch_of_a_named_agent_carries_the_marker(tmp_path, monke
     for name in ("claude", "codex"):
         cli = bin_dir / name
         cli.write_text(
-            f'#!/bin/sh\nprintf "%s" "${{{sandbox_policy.CHILD_SCRATCH_MARKER}-unset}}" > {seen}\n',
+            f'#!/bin/sh\nprintf "%s" "${{{sandbox_policy.CHILD_SCRATCH_MARKER}-unset}}" > {seen} 2>/dev/null\n',
             encoding="utf-8")
         cli.chmod(0o755)
     path = f"{bin_dir}{os.pathsep}{os.environ['PATH']}"
     monkeypatch.setenv("PATH", path)
+    monkeypatch.setattr(panel_invoker, "_PROVIDER_SEARCH_PATH", path)
     env = {"PATH": path}
+    started = []
+    original = subprocess.Popen
+
+    class _Observed(original):
+        def __init__(self, args, *a, **kwargs):
+            words = [os.fsdecode(word) for word in (args if isinstance(args, (list, tuple)) else [args])]
+            if any(word.startswith(str(bin_dir)) for word in words):
+                started.append(kwargs.get("env"))
+            super().__init__(args, *a, **kwargs)
+
+    monkeypatch.setattr(subprocess, "Popen", _Observed)
     adapter = ClaudeAgentViewAdapter(claude_bin=str(bin_dir / "claude"))
     if site == "executor":
         launcher.launch([str(bin_dir / "claude")], env=env)
@@ -186,13 +207,18 @@ def test_each_runtime_launch_of_a_named_agent_carries_the_marker(tmp_path, monke
         panel_invoker._claude_code_support_status(str(bin_dir / "claude"))
     elif site == "claude_auth":
         panel_invoker._claude_subscription_auth_ok(env)
-    elif site == "claude_stop":
-        panel_invoker._stop_claude_agent(adapter, "agent-1", str(tmp_path), env)
     else:
-        panel_invoker._cleanup_claude_launch_timeout(
-            adapter, cwd=str(tmp_path), env=env,
-            exc=subprocess.TimeoutExpired(["claude"], 1, output=b"", stderr=b""))
-    assert seen.read_text(encoding="utf-8") == sandbox_policy.CHILD_SCRATCH_RELOCATE
+        # agent-harness#1285's live stop: an executor the operator runs as itself (relocated).
+        # (agent-harness#1282 removed the uncalled panel-side timeout cleanup and stop pair.)
+        adapter.stop("agent-1", cwd=str(tmp_path))
+    if site in ("executor", "agent_view_stop"):
+        assert seen.read_text(encoding="utf-8") == sandbox_policy.CHILD_SCRATCH_RELOCATE
+        return
+    assert started, f"{site}: the fixture CLI was never started"
+    for launched in started:
+        assert sandbox_policy.decided_scratch(launched) == sandbox_policy.CHILD_SCRATCH_PRIVATE_TMP
+        assert launched[sandbox_policy.CHILD_SCRATCH_MARKER] == sandbox_policy.CHILD_SCRATCH_PRIVATE_TMP
+    assert not seen.exists(), f"{site}: the owned seat wrote a host file"
 
 
 
@@ -289,10 +315,11 @@ def test_an_unattributable_spawn_is_judged(runtime):
 
 def test_installation_proves_enforcement_and_fails_without_it(monkeypatch):
     assert hook._installed
-    hook._prove_enforcement()  # the real check passes with the real hook
-    monkeypatch.setattr(hook, "_decision_problem", lambda env, function: None)
-    with pytest.raises(RuntimeError, match="not enforcing"):
-        hook._prove_enforcement()  # a hook that accepts everything is caught
+    with tolerate_unowned():
+        hook._prove_enforcement()  # the real check passes with the real hook
+        monkeypatch.setattr(hook, "_decision_problem", lambda env, function: None)
+        with pytest.raises(RuntimeError, match="not enforcing"):
+            hook._prove_enforcement()  # a hook that accepts everything is caught
 
 
 def test_a_vetoed_registration_fails_installation(tmp_path):

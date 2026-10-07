@@ -19,6 +19,7 @@ import mimetypes
 import os
 import re
 import select
+import socket
 import shutil
 import signal
 import stat
@@ -37,7 +38,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import contextlib
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone
 from enum import Enum
+from functools import lru_cache
 from hashlib import sha256
 from pathlib import Path
 from typing import Callable, Mapping, Sequence, TypeVar, cast
@@ -69,6 +72,8 @@ from .agy_canary_evidence import (
     record_launch,
     record_provider_result,
     retain_staged_files,
+    read_seat_output,
+    write_seat_path,
     seal_provider_launches,
 )
 from .claude_agent_view import ClaudeAgentViewAdapter
@@ -219,29 +224,75 @@ _GEMINI_VIEW_FILES = (
     "/etc/ssl/certs", "/etc/pki/tls/certs", "/etc/ca-certificates",
     "/sys/devices/system/cpu", "/sys/kernel/mm/transparent_hugepage",
 )
-# The one link in the profile's private HOME whose host target is bound back writable.
-_GEMINI_CREDENTIAL_LINK = gemini_heartbeat.PRIVATE_HOME + "/.gemini/antigravity-cli/antigravity-oauth-token"
-
-
 def _gemini_credential_target(mount_args) -> str:
-    """The host file the profile's credential link points at; exactly one, or refuse."""
+    destination = gemini_heartbeat.PRIVATE_HOME + "/.gemini/antigravity-cli/antigravity-oauth-token"
     targets = [mount_args[index + 1] for index, arg in enumerate(mount_args)
-               if arg == "--symlink" and mount_args[index + 2] == _GEMINI_CREDENTIAL_LINK]
+               if arg == "--symlink" and mount_args[index + 2] == destination]
     if len(targets) != 1 or not os.path.isabs(targets[0]):
         raise ValueError("gemini_heartbeat_credential_link_invalid")
     return targets[0]
 
 
-def _gemini_filesystem_view(cwd, mount_args, extra_ro=()) -> list[str]:
-    """The Gemini heartbeat sandbox's view of the host: an allowlist, read-only.
+def _trusted_host_path(path) -> str:
+    """``abspath(path)`` with each linked PARENT component that root or the operator owns
+    resolved, once, here. The last component is never followed, and a link anyone else owns
+    is left in place, so the no-follow walks that consume the result still refuse it."""
+    absolute = os.path.abspath(os.fspath(path))
+    pending = [part for part in absolute.split("/") if part]
+    if not pending:
+        return absolute
+    leaf = pending.pop()
+    resolved = "/"
+    hops = 0
+    while pending:
+        part = pending.pop(0)
+        if part == ".":
+            continue
+        if part == "..":
+            resolved = os.path.dirname(resolved)
+            continue
+        candidate = os.path.join(resolved, part)
+        try:
+            info = os.lstat(candidate)
+            if stat.S_ISLNK(info.st_mode):
+                hops += 1
+                if hops > 40 or info.st_uid not in {0, os.getuid()}:
+                    return absolute
+                target = os.readlink(candidate)
+                if target.startswith("/"):
+                    resolved = "/"
+                pending[0:0] = [item for item in target.split("/") if item]
+                continue
+        except OSError:
+            return absolute
+        resolved = candidate
+    return os.path.join(resolved, leaf)
 
-    Nothing of the host is visible except the entries in ``_GEMINI_VIEW_SYSTEM`` and
-    ``_GEMINI_VIEW_FILES`` (read-only), a fresh ``/dev`` and ``/proc``, and the
-    subscription credential file, bound back at the path the profile's HOME links to so
-    that a token refresh still reaches it. ``/tmp`` and ``cwd`` are empty private tmpfs
-    mounts; the profile's HOME lives on the ``/dev`` mount. ``extra_ro`` files are bound
-    read-only at their own paths. The root itself is then made read-only.
-    """
+
+def _seat_bind_source(path, *, output=False) -> str:
+    path = _trusted_host_path(path)
+    directory = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        parts = Path(path).parts[1:]
+        for part in parts[:-1]:
+            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
+                            dir_fd=directory)
+            os.close(directory)
+            directory = child
+        info = os.stat(parts[-1], dir_fd=directory, follow_symlinks=False)
+        if stat.S_ISLNK(info.st_mode) or (output and (
+                not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or
+                info.st_uid != os.getuid())):
+            raise _sandbox_egress.SeatIdentityUnverified("seat_bind_source_unavailable")
+        return path
+    except (OSError, IndexError) as exc:
+        raise _sandbox_egress.SeatIdentityUnverified("seat_bind_source_unavailable") from exc
+    finally:
+        os.close(directory)
+
+
+def _seat_filesystem_view(cwd, *, readonly_paths=(), outputs=(), profile_mounts=(),
+                          broker_socket=None) -> list[str]:
     view = []
     for entry in _GEMINI_VIEW_SYSTEM:
         if os.path.islink(entry):
@@ -250,13 +301,267 @@ def _gemini_filesystem_view(cwd, mount_args, extra_ro=()) -> list[str]:
             view += ["--ro-bind", entry, entry]
     for entry in _GEMINI_VIEW_FILES:
         view += ["--ro-bind-try", entry, entry]
-    credential = _gemini_credential_target(mount_args)
     view += ["--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp",
-             "--tmpfs", os.path.abspath(cwd),
-             "--bind", os.path.realpath(credential), credential]
-    for path in extra_ro:
-        view += ["--ro-bind", path, path]
-    return view + ["--remount-ro", "/"]
+             "--tmpfs", os.path.abspath(cwd)]
+    # Each host path is bound at the path the seat's argv names; its checked source may
+    # differ only by a resolved parent link (``_trusted_host_path``).
+    for source in readonly_paths:
+        checked = _seat_bind_source(source)
+        view += ["--ro-bind", checked, os.path.abspath(source)]
+    for output in outputs:
+        checked = _seat_bind_source(output, output=True)
+        view += ["--bind", checked, os.path.abspath(output)]
+    if broker_socket is not None:
+        checked = _seat_bind_source(broker_socket)
+        if not stat.S_ISSOCK(os.lstat(checked).st_mode):
+            raise _sandbox_egress.SeatIdentityUnverified("seat_broker_socket_unavailable")
+        view += ["--bind", checked, os.path.abspath(broker_socket)]
+    # The seat starts in its cwd as the caller named it: bubblewrap would otherwise reuse
+    # the kernel's resolved cwd, which is not a path in this view when a parent is a link.
+    return [*view, *profile_mounts, "--remount-ro", "/", "--chdir", os.path.abspath(cwd)]
+
+
+def _require_owner_platform() -> None:
+    """The seat-launch owner needs Linux and sealed memfds (its profile files, its filter).
+    Anywhere else every owned launch refuses here, typed, before anything is built."""
+    if not sys.platform.startswith("linux") or not hasattr(os, "memfd_create"):
+        raise _sandbox_egress.SeatIdentityUnverified("seat_owner_unavailable")
+
+
+def _seat_owner(view, *, filtered_network=False) -> list[str]:
+    _require_owner_platform()
+    try:
+        unavailable = os.getuid() == 0 or os.stat("/usr/bin/bwrap").st_mode & stat.S_ISUID
+    except OSError as exc:
+        raise _sandbox_egress.SeatIdentityUnverified("seat_owner_unavailable") from exc
+    if unavailable:
+        raise _sandbox_egress.SeatIdentityUnverified("seat_owner_unavailable")
+    return ["/usr/bin/bwrap", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
+            "--unshare-cgroup-try", "--new-session", "--die-with-parent",
+            *(() if filtered_network else ("--unshare-net",)), *view, "--"]
+
+
+_SEAT_FD_CLOSER = (
+    "import os,sys\n"
+    "terminal=int(sys.argv[2])\n"
+    "if terminal>=0:\n"
+    " for fd in (0,1,2): os.dup2(terminal,fd)\n"
+    " if os.getsid(0)!=os.getpid(): os.setsid()\n"
+    " import fcntl,termios\n"
+    " fcntl.ioctl(0,termios.TIOCSCTTY,0)\n"
+    "keep={0,1,2}|{int(x) for x in sys.argv[1].split(',') if x}\n"
+    "for name in os.listdir('/proc/self/fd'):\n"
+    " fd=int(name)\n"
+    " if fd not in keep:\n"
+    "  try: os.close(fd)\n"
+    "  except OSError: pass\n"
+    "os.execv(sys.argv[3],sys.argv[3:])\n"
+)
+
+
+def _seat_fd_closer(keep=(), terminal_fd=None) -> list[str]:
+    return ["/usr/bin/python3", "-I", "-S", "-c", _SEAT_FD_CLOSER,
+            ",".join(str(descriptor) for descriptor in keep),
+            str(terminal_fd if terminal_fd is not None else -1)]
+
+
+_CLAUDE_JOURNAL_COLLECTOR = r"""import json,os,socket,stat,struct,subprocess,sys
+journal,output=sys.argv[1:3]
+export=int(sys.argv[3])
+command=sys.argv[4:]
+handles=[os.open('/',os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW)]
+parts=os.path.dirname(journal).split('/')[1:]
+try:
+ for part in parts:
+  handles.append(os.open(part,os.O_RDONLY|os.O_DIRECTORY|os.O_NOFOLLOW,dir_fd=handles[-1]))
+ name=os.path.basename(journal)
+ if os.listdir(handles[-1]):
+  sys.exit(125)
+ if export>=0:
+  channel=socket.socket(fileno=export)
+  namespace=os.open('/proc/self/ns/mnt',os.O_RDONLY)
+  exported=[namespace,*handles]
+  channel.sendmsg([json.dumps([parts,name]).encode()],[(socket.SOL_SOCKET,socket.SCM_RIGHTS,struct.pack('i'*len(exported),*exported))])
+  os.close(namespace)
+  channel.close()
+  for fd in handles: os.close(fd)
+  os.execv(command[0],command)
+ proc=subprocess.Popen(command)
+ rc=proc.wait()
+ if rc: sys.exit(rc)
+ for index,part in enumerate(parts):
+  current=os.stat(part,dir_fd=handles[index],follow_symlinks=False)
+  original=os.fstat(handles[index+1])
+  if (current.st_dev,current.st_ino)!=(original.st_dev,original.st_ino) or not stat.S_ISDIR(current.st_mode): sys.exit(126)
+ if os.listdir(handles[-1])!=[name]: sys.exit(126)
+ fd=os.open(name,os.O_RDONLY|os.O_NOFOLLOW|os.O_NONBLOCK,dir_fd=handles[-1])
+ info=os.fstat(fd)
+ if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or info.st_uid!=os.getuid() or info.st_size>32*1024*1024: sys.exit(127)
+ data=os.read(fd,32*1024*1024+1)
+ os.close(fd)
+ if not data.endswith(b'\n'): sys.exit(128)
+ users=0
+ final=None
+ for line in data.split(b'\n'):
+  if not line.strip(): continue
+  record=json.loads(line)
+  message=record.get('message',{})
+  if message.get('role')=='user':
+   users+=1
+   if users>1 or final is not None: sys.exit(128)
+  if message.get('role')=='assistant':
+   final=message
+   if message.get('stop_reason') not in (None,'end_turn') or any(block.get('type')=='tool_use' for block in message.get('content',[])): sys.exit(128)
+ if final is None or final.get('stop_reason')!='end_turn': sys.exit(128)
+ fd=os.open(output,os.O_WRONLY|os.O_NOFOLLOW)
+ info=os.fstat(fd)
+ if not stat.S_ISREG(info.st_mode) or info.st_nlink!=1 or info.st_uid!=os.getuid(): sys.exit(129)
+ os.ftruncate(fd,0)
+ with os.fdopen(fd,'wb') as target: target.write(data)
+except Exception as exc:
+ print("seat_journal_handoff_unavailable:"+type(exc).__name__,file=sys.stderr)
+ sys.exit(130)
+finally:
+ for fd in handles:
+  try: os.close(fd)
+  except OSError: pass
+"""
+
+
+def _claude_journal_collector_command(command, *, expected_journal: str, output: Path,
+                                      export_fd: int = -1) -> list[str]:
+    return ["/usr/bin/python3", "-I", "-S", "-c", _CLAUDE_JOURNAL_COLLECTOR,
+            expected_journal, os.path.abspath(output), str(export_fd), *command]
+
+
+class _SeatClaudeJournal:
+    def __init__(self):
+        self.reader, self.writer = socket.socketpair(socket.AF_UNIX, socket.SOCK_DGRAM)
+        self.reader.setblocking(False)
+        self.handles = []
+        self.parts = []
+        self.name = ""
+        self.identity = None
+
+    def close(self):
+        self.reader.close()
+        self.writer.close()
+        for descriptor in self.handles:
+            os.close(descriptor)
+        self.handles.clear()
+
+    def handed_off(self) -> bool:
+        """Has the collector handed over the journal directory? It does so right before it
+        executes the provider, so this is the moment the provider starts."""
+        if not self.handles:
+            self._receive()
+        return bool(self.handles)
+
+    def read(self):
+        if not self.handles and not self._receive():
+            return b""
+        return self._read_journal()
+
+    def _receive(self) -> bool:
+        try:
+            data, ancillary, flags, _ = self.reader.recvmsg(
+                8192, socket.CMSG_SPACE(256 * 4), socket.MSG_CMSG_CLOEXEC,
+            )
+        except BlockingIOError:
+            return False
+        for level, kind, payload in ancillary:
+            if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                self.handles.extend(struct.unpack("i" * (len(payload) // 4), payload))
+        if flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC):
+            raise AgyCanaryEvidenceError("seat journal handoff incomplete")
+        self.parts, self.name = json.loads(data)
+        if (not self.parts or len(self.handles) != len(self.parts) + 2
+                or any(not isinstance(part, str) or part in {"", ".", ".."} or "/" in part
+                       for part in [*self.parts, self.name])):
+            raise AgyCanaryEvidenceError("seat journal handoff invalid")
+        return True
+
+    def _read_journal(self):
+        for index, part in enumerate(self.parts):
+            current = os.stat(part, dir_fd=self.handles[index + 1], follow_symlinks=False)
+            original = os.fstat(self.handles[index + 2])
+            if (not stat.S_ISDIR(current.st_mode)
+                    or (current.st_dev, current.st_ino) != (original.st_dev, original.st_ino)):
+                raise AgyCanaryEvidenceError("seat journal directory changed")
+        names = os.listdir(self.handles[-1])
+        if not names:
+            return b""
+        if names != [self.name]:
+            raise AgyCanaryEvidenceError("seat journal directory changed")
+        info = os.stat(self.name, dir_fd=self.handles[-1], follow_symlinks=False)
+        identity = (info.st_dev, info.st_ino)
+        if self.identity is not None and self.identity != identity:
+            raise AgyCanaryEvidenceError("seat journal identity changed")
+        self.identity = identity
+        data = read_seat_output(self.handles[-1], self.name,
+                                max_bytes=32 * 1024 * 1024, expect_uid=os.getuid())
+        current = os.stat(self.name, dir_fd=self.handles[-1], follow_symlinks=False)
+        if identity != (current.st_dev, current.st_ino):
+            raise AgyCanaryEvidenceError("seat journal identity changed")
+        return data
+
+
+def _validated_claude_journal(data, *, require_terminal: bool = True):
+    if not data or not data.endswith(b"\n"):
+        return ""
+    try:
+        users = 0
+        assistant_seen = False
+        pending = set()
+        seen = set()
+        for line in data.split(b"\n"):
+            if not line.strip():
+                continue
+            record = json.loads(line)
+            message = record.get("message", {})
+            identity = record.get("uuid")
+            version = (identity, json.dumps([message.get("id"), message.get("role"),
+                                           message.get("content"), message.get("stop_reason")], sort_keys=True))
+            if identity and version in seen:
+                continue
+            if identity:
+                seen.add(version)
+            content = message.get("content")
+            if message.get("role") == "user":
+                if isinstance(content, list) and content and all(
+                        isinstance(block, dict) and block.get("type") == "tool_result" for block in content):
+                    for block in content:
+                        tool = block.get("tool_use_id")
+                        if not isinstance(tool, str) or tool not in pending:
+                            return ""
+                        pending.remove(tool)
+                    continue
+                users += 1
+                if users > 1 or assistant_seen:
+                    return ""
+            if message.get("role") == "assistant":
+                assistant_seen = True
+                if _claude_api_error_record(record, message):
+                    # A provider's journaled error is never an answer or a continuation;
+                    # the answer parser decides what it means for the turn (#1194).
+                    continue
+                if message.get("stop_reason") not in {None, "end_turn", "tool_use"}:
+                    return ""
+                tools = [block for block in content or [] if block.get("type") == "tool_use"]
+                if message.get("stop_reason") == "tool_use" and not tools:
+                    return ""
+                for block in tools:
+                    tool = block.get("id")
+                    if not isinstance(tool, str) or not tool:
+                        return ""
+                    pending.add(tool)
+        if pending:
+            return ""
+        # The route's own answer rule decides the text: the president's terminal-turn rule,
+        # or the review rule, under which a completed answer outlives a later stray error.
+        return _final_assistant_text_from_jsonl(None, require_terminal=require_terminal, data=data)
+    except (AttributeError, TypeError, ValueError, UnicodeError):
+        return ""
 
 
 class ProviderProcessGroupQuiescenceError(AgyCanaryEvidenceError):
@@ -353,27 +658,7 @@ class _ReviewMonitor:
                       probe_marker=None) -> list[str]:
         if self.cancel.is_set():
             raise _ReviewOperationCancelled("review_operation_cancelled")
-        # The PID namespace's init owns even descendants that start a new session.
-        # Kernel parent-death notification kills the namespace on abrupt owner loss.
-        # ``--proc /proc`` gives the new PID namespace its OWN procfs (agent-harness#1003):
-        # with the host /proc bind-mounted instead, a provider that starts its own
-        # bubblewrap sandbox -- codex's workspace-write sandbox -- resolves its children's
-        # /proc/<pid>/ns entries in the wrong PID namespace and fails before any command
-        # runs ("bwrap: open /proc/<pid>/ns/ns failed", bubblewrap 0.9.0 / Linux 7.0).
-        # The owner's identity checks read the host /proc from OUTSIDE and are unaffected.
-        # The Gemini profile gets an allowlisted, read-only view of the host (with its own
-        # /dev and /proc); its HOME mounts follow, on that /dev. The seat-identity probe
-        # gets the same view with only its marker file in place of the HOME mounts.
-        if gemini_profile is None:
-            view = ["--bind", "/", "/", "--dev", "/dev", "--proc", "/proc"]
-        elif probe_marker is None:
-            view = [*_gemini_filesystem_view(os.getcwd() if cwd is None else cwd,
-                                             gemini_profile.mount_args),
-                    *gemini_profile.mount_args]
-        else:
-            view = _gemini_filesystem_view(os.getcwd() if cwd is None else cwd,
-                                           gemini_profile.mount_args, extra_ro=(probe_marker,))
-        return ["/usr/bin/bwrap", "--die-with-parent", "--unshare-pid", *view, "--", *command]
+        raise _sandbox_egress.SeatIdentityUnverified("seat_launch_owner_required")
 
 
 _CaptureMutationResult = TypeVar("_CaptureMutationResult")
@@ -579,13 +864,29 @@ DEFAULT_REVIEW_SEAT_ALIASES: Mapping[str, str] = {
 
 
 def _govlean_authority_switched(repo_dir: Path | str | None) -> bool:
+    from .review_stage import trusted_review_control
+
     root = Path.cwd() if repo_dir is None else Path(repo_dir)
-    manifest_path = root / "plans" / "manifest.json"
-    if not manifest_path.exists():
-        return False
+    if _outside_any_git_work_tree(root):
+        root = Path.cwd()
+        if _outside_any_git_work_tree(root):
+            # No repository at all, so no governance to read (as when the manifest is absent).
+            return False
     try:
-        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError) as exc:
+        content = trusted_review_control(root, "plans/manifest.json")
+        if content is None:
+            return False
+        payload = json.loads(content)
+    except ValueError as exc:
+        if str(exc) == "review_base_unavailable":
+            # No main commit to read governance from (a detached clone with no main ref):
+            # never trust the candidate's own copy -- take the stricter, post-switch rule,
+            # which needs an explicit landing tier or policy.
+            return True
+        raise PresidentPolicyError(
+            "review_authority_state_invalid", "plans/manifest.json cannot prove review authority"
+        ) from exc
+    except (OSError, subprocess.SubprocessError) as exc:
         raise PresidentPolicyError(
             "review_authority_state_invalid", "plans/manifest.json cannot prove review authority"
         ) from exc
@@ -1331,6 +1632,10 @@ _CLAUDE_STOP_TIMEOUT_S = 15
 _CLAUDE_TUI_SUBMIT_DELAY_S = 8.0
 _CLAUDE_TUI_READ_INTERVAL_S = 0.25
 _CLAUDE_TUI_TRANSCRIPT_INTERVAL_S = 2.0
+# The most an owned seat's own startup (the owner's links inside the seat, before the
+# collector hands the journal over and executes the provider) may take before its silence
+# counts against the stall window (agent-harness#1282).
+_SEAT_OWNER_STARTUP_S = 60.0
 # ah#196/#223: Claude Code shows an interactive workspace-trust modal for a fresh
 # scratch cwd BEFORE it accepts a prompt (verified via a real PTY capture on 2.1.208).
 # The leg must clear that gate, then submit ONLY when the editor is prompt-ready —
@@ -2294,10 +2599,10 @@ def _canonical_review_repo_authority(repo_dir: Path | str | None) -> Path:
     """Resolve a repository identity for authorization, never for provider access."""
     candidate = Path(repo_dir) if repo_dir is not None else Path.cwd()
     try:
-        root = subprocess.check_output(
-            ["git", "-C", str(candidate), "rev-parse", "--show-toplevel"],
-            text=True, stderr=subprocess.DEVNULL, timeout=3,
-        ).strip()
+        root = _review_stage.host_git(
+            candidate, "rev-parse", "--show-toplevel", check=True,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=3,
+        ).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         raise ValueError("HARDEN review has no canonical repository authority") from None
     if not root:
@@ -2544,6 +2849,14 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "review_monitoring_unsupported_api_fallback",
     # agent-harness#896: placement refusals
     "sandbox_placement_required_unavailable", "sandbox_placement_driver_unavailable",
+    # agent-harness#1222: the seat-launch owner's refusals (typed notices in seat_jail.NOTICES)
+    "seat_owner_unavailable", "seat_bind_source_unavailable", "seat_broker_socket_unavailable",
+    "seat_launch_owner_required", "seat_output_path_unavailable", "seat_profile_unavailable",
+    "seat_provider_unavailable", "seat_filtered_egress_unavailable",
+    "executor_review_route_unsupported", "gemini_credential_near_expiry",
+    "gemini_credential_refresh_timeout", "seat_keyring_unavailable",
+    "claude_agent_view_review_unsupported", "claude_tui_journal_collection_refused",
+    "agy_image_unqualified",
     # gemini (the broker's fixed vocabulary, folded in)
     "gemini_heartbeat_broker_required", "gemini_heartbeat_capability_unavailable",
     "gemini_heartbeat_admission_handshake_failed", "gemini_broker_diagnostic_invalid",
@@ -3688,8 +4001,8 @@ def _require_staged_tree(staged_tree: Path | None) -> Path | None:
     # empty `.git/objects` directory satisfied the previous check, which a panelist can
     # fabricate inside its own writable clone (board round 3).
     try:
-        resolved = subprocess.run(
-            ["git", "-C", str(tree), "cat-file", "-e", f"{commit}^{{commit}}"],
+        resolved = _review_stage.host_git(
+            tree, "cat-file", "-e", f"{commit}^{{commit}}",
             capture_output=True, timeout=10,
         ).returncode
     except (OSError, subprocess.SubprocessError):
@@ -3857,8 +4170,8 @@ def _provider_launch_prefix(cwd, retain_caps=()):
         # which locks down after it: the switch must be made by the holder's root while it
         # still holds CAP_SETFCAP (mapping the parent namespace's root requires it since
         # Linux 5.12), and a lock-down before a user-namespace switch would be undone by it.
-        if "setpriv" in prefix:
-            start = prefix.index("setpriv")
+        start = next((index for index, item in enumerate(prefix) if Path(item).name == "setpriv"), None)
+        if start is not None:
             del prefix[start:prefix.index("--", start) + 1]
         prefix.extend(_seat_identity_switch(retain_caps))
         # Entering the holder's mount namespace otherwise resets cwd to its root, so the
@@ -3882,7 +4195,7 @@ def _provider_launch_prefix(cwd, retain_caps=()):
 
 
 def _enters_namespace(prefix: "Sequence[str]") -> bool:
-    return bool(prefix) and prefix[0] == "nsenter"
+    return bool(prefix) and Path(prefix[0]).name == "nsenter"
 
 
 def _sublist_index(haystack: "Sequence[str]", needle: "Sequence[str]") -> int:
@@ -3902,6 +4215,9 @@ def _compose_launch_prefix(cwd, process_owner=(), retain_caps=()) -> list[str]:
     """
     if isinstance(process_owner, _seat_jail.SeatJail):
         return _compose_seat_jail_prefix(process_owner, retain_caps)
+    if process_owner and os.getuid() == 0:
+        # A seat owner requires a non-root operator.
+        raise _sandbox_egress.SeatIdentityUnverified("seat_owner_unavailable")
     prefix = _provider_launch_prefix(cwd, retain_caps)
     if not process_owner:
         return prefix
@@ -3915,29 +4231,18 @@ def _compose_launch_prefix(cwd, process_owner=(), retain_caps=()) -> list[str]:
         # The codex supervisor route exists only inside the egress namespace. Without one
         # it would run the provider with the operator's full capabilities (a root operator
         # under the opt-out), and main refused it too. Refuse, typed.
-        raise _sandbox_egress.SeatIdentityUnverified(
-            "an owned codex seat needs the egress namespace; launch refused (agent-harness#1098)"
-        )
-    if retain_caps:
-        # Keep Codex out of bubblewrap so its own sandbox can create another user
-        # namespace. The unshare supervisor owns the PID namespace; the identity switch
-        # after it drops every capability except SETFCAP and re-arms the death signal.
-        prefix[position:position] = ["setpriv", "--pdeathsig", "SIGKILL", "--",
-                                     "/usr/bin/unshare", "--pid", "--fork",
-                                     "--kill-child=SIGKILL", "--mount-proc"]
-    else:
-        owner = list(process_owner)
-        if owner[0] != "/usr/bin/bwrap":
-            raise ValueError("unsupported owned provider")
-        # Bubblewrap IS the identity switch and the lock-down on this route: its own user
-        # namespace maps the operator's uid/gid and `--cap-drop ALL` empties the bounding
-        # set inside it. It replaces the switch rather than precede it -- a second switch
-        # inside it could not map a root operator once bubblewrap has dropped SETFCAP.
-        owner[1:1] = ["--unshare-user", "--uid", str(os.getuid()),
-                      "--gid", str(os.getgid()), "--cap-drop", "ALL"]
-        if namespaced:
-            del prefix[position:position + len(switch)]
-        prefix[position:position] = owner
+        # (agent-harness#1098) an owned codex seat needs the egress namespace.
+        raise _sandbox_egress.SeatIdentityUnverified("seat_filtered_egress_unavailable")
+    owner = list(process_owner)
+    if owner[0] != "/usr/bin/bwrap":
+        raise ValueError("unsupported owned provider")
+    # The mapping capability is needed before the owner enters its user namespace.
+    # Every provider still gets the same owner and drops it inside that namespace.
+    owner[1:1] = ["--unshare-user", "--uid", str(os.getuid()),
+                  "--gid", str(os.getgid()), "--cap-drop", "ALL"]
+    if namespaced:
+        del prefix[position:position + len(switch)]
+    prefix[position:position] = owner
     return prefix
 
 
@@ -3964,11 +4269,13 @@ def _compose_seat_jail_prefix(jail: "_seat_jail.SeatJail", retain_caps=()) -> li
         raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build"),
                                             "jail has no seat id or review dir")
     egress = list(_EGRESS_LAUNCH_PREFIX.get())
-    if not _enters_namespace(egress) or "setpriv" not in egress:
+    # The holder's helpers are resolved to trusted absolute paths: match setpriv by name.
+    lockdown = next((index for index, item in enumerate(egress) if Path(item).name == "setpriv"), None)
+    if not _enters_namespace(egress) or lockdown is None:
         # The jail never runs outside the seat-uid holder: without H there is no seat uid.
         raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("namespace"),
                                             "no seat-uid egress namespace")
-    enter_h = egress[:egress.index("setpriv")]
+    enter_h = egress[:lockdown]
     seat_id = jail.seat_ids[0]
     return [
         *_seat_uid.trusted_module_argv("phase_loop_runtime.seat_keyring_exec", "--"),
@@ -4094,7 +4401,7 @@ def _expected_seat_identity(prefix: "Sequence[str]", retain_caps=()) -> list[str
       (it is inherited and can never be cleared).
     """
     bounding = 0
-    for cap in retain_caps:
+    for cap in (() if "/usr/bin/bwrap" in prefix else retain_caps):
         bounding |= 1 << _CAP_NUMBERS[str(cap).lower()]
     granted = bounding if os.getuid() == 0 else 0
     no_new_privs = 1 if "/usr/bin/bwrap" in prefix or _inherited_no_new_privs() else 0
@@ -4141,10 +4448,576 @@ def _require_seat_identity(prefix: "Sequence[str]", retain_caps=()) -> None:
             seen = ["TIMEOUT"]
     expected = _expected_seat_identity(prefix, retain_caps)
     if seen != expected:
+        # Typed (the closed detail vocabulary), the measurement logged: a probe that printed
+        # nothing never started a seat (the host cannot own one: user namespaces denied, an
+        # AppArmor-restricted bwrap, a container); anything else is a seat that started but is
+        # not the operator, locked down (agent-harness#1098).
+        logging.getLogger(__name__).warning(
+            "seat identity probe refused the launch (expected %s, saw %s)", expected, seen)
         raise _sandbox_egress.SeatIdentityUnverified(
-            f"the seat is not the operator, locked down (expected {expected}, saw {seen}); "
-            "launch refused (agent-harness#1098)"
+            "seat_owner_unavailable" if not seen or seen == ["TIMEOUT"]
+            else "seat_identity_unverified")
+
+
+class SeatLaunchRole(str, Enum):
+    PROVIDER_REVIEW = "PROVIDER_REVIEW"
+    PROVIDER_ADMIN = "PROVIDER_ADMIN"
+    EXECUTOR_TRUSTED = "EXECUTOR_TRUSTED"
+
+
+@dataclass(frozen=True)
+class SeatProfile:
+    env: Mapping[str, str] = field(repr=False)
+    mount_args: tuple[str, ...] = ()
+    readonly_paths: tuple[str | Path, ...] = ()
+    outputs: tuple[str | Path, ...] = ()
+    pass_fds: tuple[int, ...] = ()
+    keep_fds: tuple[int, ...] = ()
+    terminal_fd: int | None = None
+    journal: _SeatClaudeJournal | None = field(default=None, repr=False)
+    broker_socket: str | Path | None = None
+
+
+_OWNED_LAUNCH = ContextVar("owned_provider_launch", default=False)
+_SEAT_REDACTIONS = ContextVar("seat_profile_redactions", default=())
+_SEAT_OUTPUT_IDENTITIES = ContextVar("seat_output_identities", default=None)
+
+
+def _redact_seat_credentials(text):
+    for secret in _SEAT_REDACTIONS.get():
+        text = text.replace(secret, "[credential redacted]")
+    return text
+
+
+def _seat_credential(home: Path, relative: str) -> bytes:
+    checked = _seat_bind_source(home)
+    root_fd = os.open(checked, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        return read_seat_output(root_fd, relative, max_bytes=1_000_000, expect_uid=os.getuid())
+    except AgyCanaryEvidenceError as exc:
+        raise _sandbox_egress.SeatIdentityUnverified("seat_profile_unavailable") from exc
+    finally:
+        os.close(root_fd)
+
+
+#: Credential key names (lower case, ``_`` removed) across the CLIs' stores: Claude, Codex
+#: and Gemini spell them ``*_token``; Grok holds its bearer as ``key``; OpenCode uses
+#: ``access`` / ``refresh`` / ``key``.
+_REFRESH_KEYS = frozenset({"refreshtoken", "refresh", "idtoken"})
+_SECRET_KEYS = frozenset({"token", "accesstoken", "refreshtoken", "idtoken", "apikey",
+                          "openaiapikey", "access", "refresh", "key", "bearer", "secret"})
+
+
+def _access_token_only(value):
+    if isinstance(value, dict):
+        return {key: _access_token_only(item) for key, item in value.items()
+                if key.lower().replace("_", "") not in _REFRESH_KEYS}
+    if isinstance(value, list):
+        return [_access_token_only(item) for item in value]
+    return value
+
+
+def _blank_refresh_token(value):
+    if isinstance(value, dict):
+        return {key: ("" if key.lower().replace("_", "") == "refreshtoken" else
+                      _blank_refresh_token(item)) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_blank_refresh_token(item) for item in value]
+    return value
+
+
+#: How much of each harness's stored CLI credential its seat receives: the narrowest each CLI
+#: was measured to run with (agent-harness#1222). ``access_only``: no refresh or id token.
+#: ``blank_refresh``: the refresh token's value emptied, its key kept -- the Codex CLI refuses
+#: an auth file without the key or without its id token (measured: 401, no bearer sent), and
+#: runs with an empty refresh token. The seat can never refresh either login.
+#: OpenCode: ``access_only`` drops ``refresh`` and keeps ``access``, ``expires``, ``type`` and
+#: the API-mode ``key`` (measured: a real ``opencode run`` completes with it).
+#: Codex's ``blank_refresh`` deliberately keeps the ``id_token`` (the CLI sends no bearer without
+#: it) and an ``OPENAI_API_KEY`` in API-key mode: neither can refresh the login, and both are
+#: redacted from the seat's output like every copied secret.
+_SEAT_CREDENTIAL_SHAPE = {"codex": "blank_refresh", "grok": "access_only", "opencode": "access_only"}
+
+
+def _seat_secret_values(value):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if isinstance(item, str) and len(item) >= 8 and key.lower().replace("_", "") in _SECRET_KEYS:
+                yield item
+            else:
+                yield from _seat_secret_values(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _seat_secret_values(item)
+
+
+def _seat_provider_source(command, env):
+    name = Path(command).name.lower()
+    harness = {"agy": "gemini", "gemini": "gemini", "codex.js": "codex",
+               "claude.exe": "claude", "grok-native": "grok", "opencode.exe": "opencode"}.get(name, name)
+    source = shutil.which(str(command), path=_PROVIDER_SEARCH_PATH)
+    if source is None:
+        raise FileNotFoundError("seat_provider_unavailable")
+    source = Path(source).resolve(strict=True)
+    if harness == "codex" and source.suffix == ".js":
+        package = source.parent.parent
+        machine = os.uname().machine
+        suffix = {"x86_64": "x64", "aarch64": "arm64"}.get(machine)
+        triple = {"x86_64": "x86_64-unknown-linux-musl", "aarch64": "aarch64-unknown-linux-musl"}.get(machine)
+        if suffix is None:
+            raise _sandbox_egress.SeatIdentityUnverified("seat_provider_unavailable")
+        candidates = (package / "node_modules/@openai" / ("codex-linux-" + suffix) / "vendor" / triple / "bin/codex",
+                      package / "vendor" / triple / "bin/codex")
+        source = next((path for path in candidates if path.is_file()), None)
+        if source is None:
+            raise _sandbox_egress.SeatIdentityUnverified("seat_provider_unavailable")
+    return harness, _seat_bind_source(source)
+
+
+def _gemini_credential_fresh(home):
+    try:
+        value = json.loads(_seat_credential(home, ".gemini/antigravity-cli/antigravity-oauth-token"))
+        expiry = datetime.fromisoformat(value["token"]["expiry"].replace("Z", "+00:00"))
+        return (expiry - datetime.now(timezone.utc)).total_seconds() >= 600
+    except (KeyError, TypeError, ValueError):
+        return False
+
+
+_GEMINI_REFRESH_LOCK = threading.Lock()
+
+
+def _refresh_gemini_credential(home, image):
+    with _GEMINI_REFRESH_LOCK:
+        if _gemini_credential_fresh(home):
+            return
+        with contextlib.ExitStack() as stack:
+            descriptor = image.reopen()
+            stack.callback(os.close, descriptor)
+            temporary = stack.enter_context(tempfile.TemporaryDirectory(prefix="seat-admin-"))
+            env = _broker_subscription_env()
+            env["HOME"] = str(home)
+            token = _OWNED_LAUNCH.set(True)
+            egress_token = _EGRESS_LAUNCH_PREFIX.set(())
+            try:
+                process = launch_provider(
+                    [f"/proc/self/fd/{descriptor}", "models"], cwd=temporary, env=env,
+                    pass_fds=(descriptor,), stdin=subprocess.DEVNULL,
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
+                )
+                _anchor_process_group(process)
+                try:
+                    try:
+                        process.communicate(timeout=15)
+                    except subprocess.TimeoutExpired as exc:
+                        raise _sandbox_egress.SeatIdentityUnverified(
+                            "gemini_credential_refresh_timeout",
+                        ) from exc
+                finally:
+                    _terminate_process_group(process)
+                    for pipe in (process.stdout, process.stderr):
+                        if pipe is not None:
+                            pipe.close()
+            finally:
+                _EGRESS_LAUNCH_PREFIX.reset(egress_token)
+                _OWNED_LAUNCH.reset(token)
+            if process.returncode != 0 or not _gemini_credential_fresh(home):
+                raise _sandbox_egress.SeatIdentityUnverified("gemini_credential_near_expiry")
+
+
+@contextmanager
+def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=(),
+                 broker_socket=None, gemini_profile=None, role=SeatLaunchRole.PROVIDER_REVIEW):
+    """Copy declared subscription state into a per-launch private home."""
+    _require_owner_platform()
+    home = Path(env.get("HOME", str(Path.home())))
+    if gemini_profile is not None:
+        home = Path(_gemini_credential_target(gemini_profile.mount_args)).parents[2]
+    private_home = gemini_heartbeat.PRIVATE_HOME if gemini_profile is not None else "/home/phase-loop-seat"
+    profile_env = {key: value for key, value in env.items()
+                   if key in {"LANG", "LC_ALL", "LC_CTYPE", "TERM", "NO_COLOR"}}
+    profile_env.update(HOME=private_home, PATH="/usr/bin:/bin",
+                       XDG_CONFIG_HOME=private_home + "/.config",
+                       XDG_CACHE_HOME=private_home + "/.cache",
+                       XDG_DATA_HOME=private_home + "/.local/share")
+    mounts = ["--tmpfs", private_home]
+    directories = set()
+    pass_fds = set()
+    keep_fds = set()
+    redactions = []
+    with contextlib.ExitStack() as stack:
+        if (harness == "gemini" and SeatLaunchRole(role) is SeatLaunchRole.PROVIDER_REVIEW
+                and not _gemini_credential_fresh(home)):
+            if gemini_profile is not None:
+                # The help measurement also uses this caller. Reuse its verified image;
+                # a second lookup here would recursively enter the help measurement.
+                refresh_image = gemini_heartbeat.VerifiedImage(
+                    os.open(f"/proc/self/fd/{gemini_profile.image_fd}", os.O_RDONLY | os.O_CLOEXEC),
+                    gemini_profile.evidence["provider_image_sha256"],
+                )
+                stack.callback(refresh_image.close)
+            else:
+                from . import agy_integrity
+                refresh_image = agy_integrity.check(executable)
+                stack.callback(refresh_image.close)
+            _refresh_gemini_credential(home, refresh_image)
+        def directory(path):
+            if path in directories or path == private_home:
+                return
+            directory(str(Path(path).parent))
+            directories.add(path)
+            mounts.extend(("--perms", "0700", "--dir", path))
+
+        def data_file(relative, data):
+            destination = private_home + "/" + relative
+            directory(str(Path(destination).parent))
+            descriptor = os.memfd_create("seat-profile", os.MFD_CLOEXEC)
+            stack.callback(os.close, descriptor)
+            os.write(descriptor, data)
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            pass_fds.add(descriptor)
+            mounts.extend(("--perms", "0600", "--file", str(descriptor), destination))
+
+        def credential(relative, *, access_only=False, shape=None):
+            try:
+                raw = _seat_credential(home, relative)
+            except _sandbox_egress.SeatIdentityUnverified as exc:
+                if (SeatLaunchRole(role) is SeatLaunchRole.PROVIDER_ADMIN and
+                        isinstance(getattr(exc.__cause__, "__cause__", None), FileNotFoundError)):
+                    return
+                raise
+            value = json.loads(raw)
+            if access_only or shape == "access_only":
+                value = _access_token_only(value)
+                raw = json.dumps(value, separators=(",", ":")).encode()
+            elif shape == "blank_refresh":
+                value = _blank_refresh_token(value)
+                raw = json.dumps(value, separators=(",", ":")).encode()
+            redactions.extend(_seat_secret_values(value))
+            data_file(relative, raw)
+
+        for relative in (".config", ".cache", ".local/share"):
+            directory(private_home + "/" + relative)
+        # Each seat gets the narrowest credential its CLI runs with (_SEAT_CREDENTIAL_SHAPE);
+        # no seat receives a refresh token. Every secret value is redacted from its output.
+        if harness == "codex":
+            credential(".codex/auth.json", shape=_SEAT_CREDENTIAL_SHAPE["codex"])
+            data_file(".codex/config.toml", b'cli_auth_credentials_store = "file"\n')
+            profile_env["CODEX_HOME"] = private_home + "/.codex"
+        elif harness == "claude":
+            # The one Claude credential decision (agent-harness#1253): a stored override only
+            # when bound to this session's account and organization, else the login's access
+            # token with its margin left. Delivered as the jailed seat gets it: one drained
+            # pipe, never a file in the seat's home.
+            try:
+                seat_credential = _seat_credentials.resolve_claude_seat_credential(
+                    _seat_credentials.login_margin_s(env=env), env=env)
+            except _seat_jail.SeatSandboxRefused:
+                if SeatLaunchRole(role) is not SeatLaunchRole.PROVIDER_ADMIN:
+                    raise
+                seat_credential = None
+            if seat_credential is not None:
+                token_fd = _seat_jail.token_pipe(seat_credential.token)
+                stack.callback(os.close, token_fd)
+                pass_fds.add(token_fd)
+                keep_fds.add(token_fd)
+                profile_env[_seat_jail.CLAUDE_TOKEN_FD_ENV] = str(token_fd)
+                redactions.append(seat_credential.token.decode("ascii", errors="replace"))
+            config = {"hasCompletedOnboarding": True, "bypassPermissionsModeAccepted": True,
+                      "projects": {str(cwd): {"hasTrustDialogAccepted": True}}}
+            data_file(".claude/.claude.json", json.dumps(config).encode())
+            profile_env["CLAUDE_CONFIG_DIR"] = private_home + "/.claude"
+        elif harness == "grok":
+            credential(".grok/auth.json", shape=_SEAT_CREDENTIAL_SHAPE["grok"])
+            data_file(".grok/agent_id", _seat_credential(home, ".grok/agent_id"))
+        elif harness == "gemini":
+            credential(".gemini/antigravity-cli/antigravity-oauth-token", access_only=True)
+            if gemini_profile is None:
+                data_file(".gemini/antigravity-cli/settings.json", _broker_agy_settings_bytes())
+        elif harness == "opencode":
+            credential(".local/share/opencode/auth.json", shape=_SEAT_CREDENTIAL_SHAPE["opencode"])
+        elif harness is not None:
+            raise _sandbox_egress.SeatIdentityUnverified("seat_profile_unavailable")
+        destination = "/run/phase-loop-seat/provider"
+        if gemini_profile is not None:
+            # Reuse the admitted image and blocked-wrapper handshake unchanged.
+            destination = gemini_profile.executable
+            args = gemini_profile.mount_args
+            for index, item in enumerate(args):
+                if item in {"--info-fd", "--block-fd"}:
+                    mounts.extend((item, args[index + 1]))
+            mounts.extend(("--perms", "0500", "--ro-bind-data", str(gemini_profile.image_fd), destination,
+                           "--perms", "0400", "--ro-bind-data", str(gemini_profile.settings_fd),
+                           private_home + "/.gemini/antigravity-cli/settings.json"))
+            pass_fds.update(gemini_profile.pass_fds)
+            gemini_profile.evidence["provider_agy_subscription_reference"] = "private_access_token_copy"
+        elif harness == "gemini":
+            from . import agy_integrity
+            image = agy_integrity.check(executable)
+            stack.callback(image.close)
+            descriptor = image.reopen()
+            stack.callback(os.close, descriptor)
+            pass_fds.add(descriptor)
+            mounts.extend(("--perms", "0500", "--ro-bind-data", str(descriptor), destination))
+        else:
+            source = _seat_bind_source(Path(executable).resolve(strict=True))
+            mounts.extend(("--ro-bind", source, destination))
+            native = Path(source)
+            if (harness == "codex" and native.name == "codex" and native.parent.name == "bin"
+                    and native.parent.parent.parent.name in {"vendor", "releases"}
+                    and re.fullmatch(r"(?:[^/]+-)?(?:x86_64|aarch64)-unknown-linux-musl",
+                                     native.parent.parent.name)
+                    and (native.parent.parent / "codex-path").is_dir()):
+                runtime = _seat_bind_source(native.parent.parent)
+                mounts.extend(("--ro-bind", runtime, "/run/phase-loop-seat/codex-runtime"))
+                destination = "/run/phase-loop-seat/codex-runtime/bin/codex"
+                profile_env["PATH"] = "/run/phase-loop-seat/codex-runtime/codex-path:/usr/bin:/bin"
+        token = _SEAT_REDACTIONS.set(tuple(redactions))
+        stack.callback(_SEAT_REDACTIONS.reset, token)
+        yield destination, SeatProfile(
+            env=profile_env, mount_args=tuple(mounts), readonly_paths=tuple(readonly_paths),
+            outputs=tuple(outputs), pass_fds=tuple(sorted(pass_fds)),
+            keep_fds=tuple(sorted(keep_fds)), broker_socket=broker_socket,
         )
+
+
+def _precreate_seat_output(path):
+    path = Path(os.path.abspath(path))
+    host = Path(_trusted_host_path(path))
+    parent = _seat_bind_source(path.parent)
+    descriptor = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        created = False
+        try:
+            write_seat_path(descriptor, path.name, b"")
+            created = True
+        except AgyCanaryEvidenceError as exc:
+            if not isinstance(exc.__cause__, FileExistsError):
+                raise
+            _seat_bind_source(path, output=True)
+        info = os.stat(path.name, dir_fd=descriptor, follow_symlinks=False)
+        identities = dict(_SEAT_OUTPUT_IDENTITIES.get() or {})
+        identity = (info.st_dev, info.st_ino)
+        if not created and host in identities and identities[host] != identity:
+            raise AgyCanaryEvidenceError("seat output identity changed")
+        identities[host] = identity
+        _SEAT_OUTPUT_IDENTITIES.set(identities)
+        return path
+    finally:
+        os.close(descriptor)
+
+
+@contextmanager
+def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None,
+                          gemini_profile=None, role=SeatLaunchRole.PROVIDER_REVIEW,
+                          readonly_paths=()):
+    if gemini_profile is None:
+        harness, executable = _seat_provider_source(command[0], env)
+        if harness not in {"codex", "claude", "grok", "gemini", "opencode"}:
+            harness = None
+    else:
+        harness, executable = "gemini", gemini_profile.executable
+    readonly = list(readonly_paths)
+    cwd = Path(cwd)
+    for name in ("review-bundle.md", "review-instructions.md", _review_stage.REVIEW_STAGE_TREE_DIRNAME):
+        path = cwd / name
+        if os.path.lexists(path):
+            _seat_bind_source(path)
+            readonly.append(path)
+    for index, item in enumerate(command[:-1]):
+        if item in {"--add-dir", "--cd", "--prompt-file", "--context-file", "--input-file",
+                    "--output-schema", "--append-system-prompt-file", "--system-prompt-file",
+                    "--plugin-dir", "--file"}:
+            path = Path(command[index + 1])
+            if not path.is_absolute():
+                path = cwd / path
+            if path != cwd and str(path) not in {"/dev/stdin", "/dev/null"}:
+                _seat_bind_source(path)
+                readonly.append(path)
+        if item == "--output-last-message":
+            path = Path(command[index + 1])
+            outputs = (*outputs, path if path.is_absolute() else cwd / path)
+    transcript = _precreate_seat_output(transcript_path) if transcript_path is not None else None
+    outputs = (*outputs, *((transcript,) if transcript is not None else ()))
+    outputs = tuple(_precreate_seat_output(path) for path in outputs)
+    with seat_profile(harness=harness, executable=executable, env=env, cwd=cwd,
+                      readonly_paths=readonly, outputs=tuple(path for path in outputs if path != transcript),
+                      gemini_profile=gemini_profile, role=role) as (provider, profile):
+        owned_command = [provider, *command[1:]]
+        if transcript_path is not None:
+            slug = re.sub(r"[^A-Za-z0-9.-]", "-", str(cwd))
+            profile_env = dict(profile.env)
+            profile_env.setdefault("CLAUDE_CONFIG_DIR", profile_env["HOME"] + "/.claude")
+            profile = replace(profile, env=profile_env)
+            config_dir = profile.env["CLAUDE_CONFIG_DIR"]
+            project = config_dir + "/projects/" + slug
+            transcript_name = (
+                command[command.index("--session-id") + 1] + ".jsonl"
+                if "--session-id" in command else transcript.name
+            )
+            profile = replace(profile, mount_args=(*profile.mount_args,
+                              "--dir", config_dir + "/projects",
+                              "--dir", project))
+            journal = _SeatClaudeJournal()
+            profile = replace(profile, journal=journal,
+                              pass_fds=(*profile.pass_fds, journal.writer.fileno()),
+                              keep_fds=(*profile.keep_fds, journal.writer.fileno()))
+            owned_command = _claude_journal_collector_command(
+                owned_command, expected_journal=project + "/" + transcript_name,
+                output=transcript, export_fd=journal.writer.fileno(),
+            )
+        try:
+            yield owned_command, profile
+        finally:
+            if profile.journal is not None:
+                profile.journal.close()
+            if _SEAT_REDACTIONS.get():
+                retained = (*outputs, *((transcript,) if transcript_path is not None else ()))
+                for path in dict.fromkeys(retained):
+                    # Rewritten only to remove a copied secret: an unconditional rewrite is a
+                    # read-truncate-write that loses any write landing between the two. A
+                    # secret-bearing output is still read-redact-written, which would race a
+                    # concurrent writer to the same file. That is acceptable ONLY because each
+                    # seat's outputs are its own files, precreated per launch: this profile's
+                    # seat has exited, and no other seat or profile writes them.
+                    raw = _read_seat_raw_text(path)
+                    redacted = _redact_seat_credentials(raw)
+                    if redacted != raw:
+                        _write_seat_text(path, redacted)
+
+
+def _filtered_holder_namespace() -> int:
+    prefix = _EGRESS_LAUNCH_PREFIX.get()
+    try:
+        if not _enters_namespace(prefix) or "--net" not in prefix:
+            raise ValueError("missing holder")
+        pid = int(prefix[prefix.index("-t") + 1])
+        namespace = os.stat(f"/proc/{pid}/ns/net").st_ino
+        if namespace == os.stat("/proc/self/ns/net").st_ino:
+            raise ValueError("host namespace")
+        return namespace
+    except (OSError, ValueError, IndexError) as exc:
+        raise _sandbox_egress.EgressUnavailable("seat_filtered_egress_unavailable") from exc
+
+
+def launch_owned(argv, *, role, profile: SeatProfile, supervisor=None, **kwargs):
+    role = SeatLaunchRole(role)
+    if role is not SeatLaunchRole.EXECUTOR_TRUSTED:
+        # A seat never reads the operator's terminal: stdin is closed unless given.
+        kwargs.setdefault("stdin", subprocess.DEVNULL)
+    if kwargs.get("child_scratch", _sandbox_policy.CHILD_SCRATCH_RELOCATE) not in \
+            _sandbox_policy.CHILD_SCRATCH_DECISIONS:
+        raise ValueError(f"unknown child scratch decision {kwargs['child_scratch']!r}")
+    token = _OWNED_LAUNCH.set(True)
+    try:
+        with contextlib.ExitStack() as stack:
+            command = list(argv)
+            if role is SeatLaunchRole.PROVIDER_ADMIN:
+                egress_token = _EGRESS_LAUNCH_PREFIX.set(())
+                stack.callback(_EGRESS_LAUNCH_PREFIX.reset, egress_token)
+            if role is SeatLaunchRole.EXECUTOR_TRUSTED:
+                from .agy_integrity import admitted_command
+
+                command, image_fds = stack.enter_context(admitted_command(command))
+                if image_fds:
+                    kwargs["pass_fds"] = tuple(sorted(set(kwargs.get("pass_fds", ())) |
+                                                       set(image_fds)))
+            if role is not SeatLaunchRole.EXECUTOR_TRUSTED:
+                filtered_network = role is SeatLaunchRole.PROVIDER_REVIEW
+                if filtered_network:
+                    _filtered_holder_namespace()
+                    filtered_network = True
+                from . import seat_keyring_exec, seat_seccomp
+
+                key_source = str(Path(seat_keyring_exec.__file__).resolve())
+                key_destination = "/run/phase-loop-seat/keyring.py"
+                cwd = kwargs.get("cwd", os.getcwd())
+                view = _seat_filesystem_view(
+                    cwd, readonly_paths=profile.readonly_paths, outputs=profile.outputs,
+                    profile_mounts=("--ro-bind", key_source, key_destination, *profile.mount_args),
+                    broker_socket=profile.broker_socket,
+                )
+
+                def probe_owner(marker):
+                    return _seat_owner(_seat_filesystem_view(cwd, readonly_paths=(marker,)),
+                                       filtered_network=filtered_network)
+
+                descriptor = seat_seccomp.sealed_keyring_filter()
+                stack.callback(os.close, descriptor)
+                # The seat's /tmp is a private tmpfs: its scratch is that, never a host path.
+                kwargs["env"] = dict(profile.env)
+                kwargs["child_scratch"] = _sandbox_policy.CHILD_SCRATCH_PRIVATE_TMP
+                kwargs["pass_fds"] = tuple(sorted(set(kwargs.get("pass_fds", ())) |
+                                                   set(profile.pass_fds) | {descriptor}))
+                kwargs["process_owner"] = _seat_owner(view, filtered_network=filtered_network)
+                kwargs["probe_owner"] = probe_owner
+                command = ["/usr/bin/python3", "-I", "-S", key_destination, str(descriptor),
+                           *_seat_fd_closer(profile.keep_fds, profile.terminal_fd), *command]
+            if supervisor is not None:
+                owner = kwargs.pop("process_owner", ())
+                probe_owner = kwargs.pop("probe_owner", None)
+                prefix = _compose_launch_prefix(kwargs.get("cwd"), owner)
+                if _probes_seat(prefix, owner):
+                    _require_seat_identity(
+                        lambda marker: _compose_launch_prefix(kwargs.get("cwd"), probe_owner(marker))
+                        if callable(probe_owner) else prefix,
+                    )
+                command = supervisor([*prefix, *command], kwargs.get("pass_fds", ()))
+                egress_token = _EGRESS_LAUNCH_PREFIX.set(())
+                stack.callback(_EGRESS_LAUNCH_PREFIX.reset, egress_token)
+            return launch_provider(command, **kwargs)
+    finally:
+        _OWNED_LAUNCH.reset(token)
+
+
+_PROVIDER_BASENAMES = frozenset({"codex", "codex.js", "claude", "claude.exe", "grok",
+                                "grok-native", "agy", "gemini", "opencode", "opencode.exe"})
+_PROVIDER_SEARCH_PATH = os.environ.get("PATH", os.defpath)
+
+
+def _provider_file_hash(path):
+    digest = sha256()
+    with open(path, "rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+@lru_cache(maxsize=1)
+def _recorded_provider_hashes():
+    hashes = set()
+    for name in ("codex", "claude", "grok", "agy", "opencode"):
+        source = shutil.which(name, path=_PROVIDER_SEARCH_PATH)
+        if source is None:
+            continue
+        try:
+            hashes.add(_provider_file_hash(source))
+            _, native = _seat_provider_source(source, {"PATH": _PROVIDER_SEARCH_PATH})
+            hashes.add(_provider_file_hash(native))
+        except (OSError, _sandbox_egress.EgressUnavailable):
+            continue
+    return frozenset(hashes)
+
+
+def _provider_entry(command):
+    if Path(command).name.lower() in _PROVIDER_BASENAMES:
+        return True
+    source = shutil.which(str(command), path=_PROVIDER_SEARCH_PATH)
+    if source is None:
+        return False
+    try:
+        return _provider_file_hash(source) in _recorded_provider_hashes()
+    except OSError:
+        return False
+
+
+def _names_provider(argv) -> bool:
+    """Does any word of ``argv`` start a provider? argv[0] by name or recorded file hash;
+    every later word by name, so a launcher wrapping a provider is caught too."""
+    words = [os.fsdecode(word) for word in argv if isinstance(word, (str, bytes, os.PathLike))]
+    if not words:
+        return False
+    return _provider_entry(words[0]) or any(
+        Path(word).name.lower() in _PROVIDER_BASENAMES for word in words[1:])
 
 
 def _child_scratch_kwargs(kwargs: dict, decision: str) -> None:
@@ -4190,6 +5063,12 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
     ``child_scratch``, so a new seam cannot skip the decision. The only other value is
     ``CHILD_SCRATCH_PRIVATE_TMP``, for a child jailed with its own private ``/tmp``.
     """
+    # A jailed seat's jail IS its owner (agent-harness#1132); every other provider start
+    # comes through `launch_owned`. Any word of the argv naming a provider counts, so a
+    # wrapper (`nsenter ... codex`, `env claude`) is not a way around the owner.
+    if (not _OWNED_LAUNCH.get() and not isinstance(process_owner, _seat_jail.SeatJail)
+            and _names_provider(argv)):
+        raise _sandbox_egress.SeatIdentityUnverified("seat_launch_owner_required")
     _child_scratch_kwargs(kwargs, child_scratch)
     cwd = kwargs.get("cwd")
     prefix = _compose_launch_prefix(cwd, process_owner, retain_caps)
@@ -4230,20 +5109,68 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
 
 
 def run_provider(argv, *, child_scratch=_sandbox_policy.CHILD_SCRATCH_RELOCATE,
-                 **kwargs) -> "subprocess.CompletedProcess[str]":
-    """THE one place a review provider is started and waited on. See `launch_provider`."""
-    _child_scratch_kwargs(kwargs, child_scratch)
-    prefix = _provider_launch_prefix(kwargs.get("cwd"))
-    if _probes_seat(prefix):
-        _require_seat_identity(prefix)
-    # Counted while it runs, so a record taken mid-run sees it; withdrawn when the process
-    # never started (`subprocess.run` raises OSError only when the exec itself fails).
-    _count_provider_spawn()
-    try:
-        return subprocess.run([*prefix, *argv], **kwargs)
-    except OSError:
-        _count_provider_spawn(-1)
-        raise
+                 executor: bool = False, **kwargs) -> "subprocess.CompletedProcess[str]":
+    """THE one place a review provider is started and waited on. See `launch_provider`.
+
+    Every argv but a trusted ``nsenter`` observer runs through the seat-launch owner, whose
+    /tmp is private: its scratch decision is ``CHILD_SCRATCH_PRIVATE_TMP`` whatever is asked
+    (``child_scratch`` is still validated).
+
+    ``executor=True`` is an executor CLI the operator runs as itself (the Agent View route's
+    ``claude --bg`` / ``stop`` / ``logs``): it goes through the owner's trusted executor role,
+    on the host, with ``child_scratch`` applied, exactly like the CLI executor route."""
+    if child_scratch not in _sandbox_policy.CHILD_SCRATCH_DECISIONS:
+        raise ValueError(f"unknown child scratch decision {child_scratch!r}")
+    input_value = kwargs.pop("input", None)
+    timeout = kwargs.pop("timeout", None)
+    check = kwargs.pop("check", False)
+    if input_value is not None:
+        if "stdin" in kwargs:
+            raise ValueError("stdin and input cannot both be supplied")
+        kwargs["stdin"] = subprocess.PIPE
+    if kwargs.pop("capture_output", False):
+        if "stdout" in kwargs or "stderr" in kwargs:
+            raise ValueError("capture_output conflicts with stdout or stderr")
+        kwargs.update(stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    # With no env the owned seat reads only HOME (its credentials) and locale from this
+    # process's environment; nothing is decided or probed for it here.
+    env = kwargs.get("env") if kwargs.get("env") is not None else dict(os.environ)
+    cwd = kwargs.get("cwd") or os.getcwd()
+    if not executor:
+        # A seat never reads the operator's terminal: stdin is closed unless given.
+        kwargs.setdefault("stdin", subprocess.DEVNULL)
+    with contextlib.ExitStack() as stack:
+        if executor:
+            process = stack.enter_context(launch_owned(
+                argv, role=SeatLaunchRole.EXECUTOR_TRUSTED, profile=SeatProfile(env=env),
+                child_scratch=child_scratch, **kwargs,
+            ))
+        elif argv and Path(argv[0]).name == "nsenter":
+            # Qualification observers are trusted host helpers, not provider probes.
+            command = [_review_stage.trusted_host_executable("nsenter"), *argv[1:]]
+            observer_env = kwargs.get("env") if kwargs.get("env") is not None else _subscription_env()
+            kwargs["env"] = {**observer_env, "PATH": "/usr/sbin:/usr/bin:/sbin:/bin"}
+            process = stack.enter_context(launch_provider(command, child_scratch=child_scratch,
+                                                          **kwargs))
+        else:
+            command, profile = stack.enter_context(_seat_command_profile(
+                argv, env=env, cwd=cwd, role=SeatLaunchRole.PROVIDER_ADMIN,
+            ))
+            process = stack.enter_context(launch_owned(
+                command, role=SeatLaunchRole.PROVIDER_ADMIN, profile=profile, **kwargs,
+            ))
+        try:
+            stdout, stderr = process.communicate(input_value, timeout=timeout)
+        except BaseException:
+            process.kill()
+            process.wait()
+            raise
+        stdout = _redact_seat_credentials(stdout) if isinstance(stdout, str) else stdout
+        stderr = _redact_seat_credentials(stderr) if isinstance(stderr, str) else stderr
+        result = subprocess.CompletedProcess(argv, process.returncode, stdout, stderr)
+    if check and result.returncode:
+        raise subprocess.CalledProcessError(result.returncode, argv, output=result.stdout, stderr=result.stderr)
+    return result
 
 
 def _record_sandbox_facts(
@@ -4286,7 +5213,10 @@ def _record_sandbox_facts(
             staged_at=staged_at, receipts=placement.receipts,
             authorization_sha256=placement.authorization_sha256, local_spawns=0,
         )
+    git_executable = _review_stage.trusted_host_executable("git")
     facts: dict[str, object] = {
+        "host_git_executable": git_executable,
+        "host_git_version": ".".join(map(str, _review_stage._HOST_HELPER_VERSIONS[git_executable])),
         "sandbox_root_host": root_choice.host,
         "sandbox_root_path": str(root_choice.path),
         "sandbox_root_fell_back": root_choice.fell_back,
@@ -5311,55 +6241,14 @@ def _broker_agy_settings_bytes():
 def _brokered_agy_environment(
     base_env: Mapping[str, str], evidence: dict[str, object] | None,
 ):
-    """Provide agy an owned profile and a symlink-only subscription reference.
-
-    The broker never reads or copies the OAuth token.  The temporary HOME contains
-    only a fixed deny-all action profile and a private symlink that agy itself may
-    follow for its existing subscription login.  It is reclaimed before the parent
-    broker reports the provider result.
-    """
-    token = Path.home() / ".gemini" / "antigravity-cli" / "antigravity-oauth-token"
-    try:
-        token_stat = token.stat()
-    except OSError as exc:
-        raise ValueError("brokered Gemini subscription credential reference is unavailable") from exc
-    if not stat.S_ISREG(token_stat.st_mode):
-        raise ValueError("brokered Gemini subscription credential reference is invalid")
-    # The owned HOME holds agy's working state; on the relocated scratch dir when the
-    # leg's env carries one (only the runtime's own dir survives the broker allowlist).
-    holder = tempfile.TemporaryDirectory(prefix="phase-loop-broker-agy-",
-                                         dir=base_env.get("TMPDIR") or None)
-    root = Path(holder.name)
-    _sandbox_retention.claim_scratch_dir(root)  # swept only once this process is gone
-    root.chmod(0o700)
-    config_dir = root / ".gemini" / "antigravity-cli"
-    config_dir.mkdir(parents=True, mode=0o700)
-    token_ref = config_dir / "antigravity-oauth-token"
-    os.symlink(token, token_ref)
-    settings_bytes = _broker_agy_settings_bytes()
-    settings_path = config_dir / "settings.json"
-    settings_path.write_bytes(settings_bytes)
-    settings_path.chmod(0o400)
-    config_home = root / ".config"
-    config_home.mkdir(mode=0o700)
-    env = dict(base_env)
-    env["HOME"] = str(root)
-    env["XDG_CONFIG_HOME"] = str(config_home)
+    """The common launch profile copies subscription state into the private view."""
     if evidence is not None:
         evidence.update({
-            "provider_isolation_profile": _BROKER_AGY_ISOLATION_PROFILE,
             "provider_agy_deny_actions": _BROKER_AGY_DENY_ACTIONS,
-            "provider_agy_settings_sha256": sha256(settings_bytes).hexdigest(),
-            "provider_agy_subscription_reference": "private_symlink",
+            "provider_agy_settings_sha256": sha256(_broker_agy_settings_bytes()).hexdigest(),
             "provider_agy_home_cleanup_verified": False,
         })
-    try:
-        yield env
-    finally:
-        holder.cleanup()
-        _sandbox_retention.release_scratch_dir(root)
-        if evidence is not None:
-            evidence["provider_agy_home_cleanup_verified"] = not root.exists()
+    yield dict(base_env)
 
 
 def _broker_claude_stall_threshold(prompt: str, deadline_s: int | float) -> float:
@@ -5677,7 +6566,7 @@ def _leg_auth_ok(
     if not probe:
         return True, ""
     try:
-        proc = subprocess.run(
+        proc = run_provider(
             probe,
             capture_output=True,
             text=True,
@@ -5686,8 +6575,10 @@ def _leg_auth_ok(
             stdin=subprocess.DEVNULL,
             env=_sandbox_policy.child_scratch_env(env, _sandbox_policy.CHILD_SCRATCH_RELOCATE),
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return True, ""  # probe unavailable/slow → don't block; the leg fail-closes
+    except (FileNotFoundError, subprocess.TimeoutExpired, _sandbox_egress.EgressUnavailable):
+        # Probe unavailable/slow, or the owner refused it (agent-harness#1222): inconclusive,
+        # so don't block; the leg's own launch fail-closes with its typed code.
+        return True, ""
     combined = (proc.stdout or "") + (proc.stderr or "")
     if proc.returncode != 0 or _AUTH_SIGNATURE.search(combined):
         return (
@@ -5707,7 +6598,7 @@ def _claude_subscription_auth_ok(
     TUI launches. Raw JSON and identity fields are neither logged nor returned.
     """
     try:
-        proc = subprocess.run(
+        proc = run_provider(
             ["claude", "auth", "status", "--json"],
             capture_output=True,
             text=True,
@@ -5744,7 +6635,7 @@ def _claude_code_version_tuple(text: str) -> tuple[int, int, int] | None:
 
 def _claude_code_support_status(claude_bin: str = "claude") -> tuple[bool, str]:
     try:
-        proc = subprocess.run(
+        proc = run_provider(
             [claude_bin, "--version"],
             capture_output=True,
             text=True,
@@ -5916,53 +6807,6 @@ def _timeout_expired_text(exc: subprocess.TimeoutExpired) -> str:
     return "".join(chunks)
 
 
-def _cleanup_claude_launch_timeout(
-    adapter: ClaudeAgentViewAdapter,
-    *,
-    cwd: str,
-    env: Mapping[str, str],
-    exc: subprocess.TimeoutExpired,
-) -> str:
-    session_ids: list[str] = []
-    session_id = _claude_agent_session_id(_timeout_expired_text(exc))
-    if session_id:
-        session_ids.append(session_id)
-    try:
-        list_proc = subprocess.run(
-            adapter.list_command(),
-            cwd=cwd,
-            env=_sandbox_policy.child_scratch_env(env, _sandbox_policy.CHILD_SCRATCH_RELOCATE),
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-            stdin=subprocess.DEVNULL,
-        )
-    except subprocess.TimeoutExpired:
-        list_proc = None
-        cleanup_status = "cleanup_list_timeout"
-    except Exception:
-        list_proc = None
-        cleanup_status = "cleanup_list_error"
-    else:
-        cleanup_status = (
-            "cleanup_list_failed" if list_proc.returncode != 0 else "cleanup_none"
-        )
-    if list_proc is not None and list_proc.returncode == 0:
-        for agent_id in _claude_matching_agent_ids(
-            list_proc.stdout or "", name=_CLAUDE_AGENT_NAME, cwd=cwd
-        ):
-            if agent_id not in session_ids:
-                session_ids.append(agent_id)
-    if not session_ids:
-        return cleanup_status
-    stop_statuses = [
-        f"{agent_id}:{_stop_claude_agent(adapter, agent_id, cwd, env)}"
-        for agent_id in session_ids
-    ]
-    return "cleanup=" + ",".join(stop_statuses)
-
-
 def _claude_project_dir_for_cwd(cwd: str, config_dir: "Path | str | None" = None) -> Path:
     """Where Claude writes the transcript for ``cwd``. ``config_dir`` is a private
     ``CLAUDE_CONFIG_DIR`` (a jailed seat's; agent-harness#1132); the default is the
@@ -5981,7 +6825,7 @@ def _claude_project_dir_for_cwd(cwd: str, config_dir: "Path | str | None" = None
 def _assistant_text_from_jsonl(path: Path) -> str:
     texts: list[str] = []
     try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        lines = _read_seat_text(path).splitlines()
     except OSError:
         return ""
     for line in lines:
@@ -6209,7 +7053,8 @@ def _claude_give_up_code(payload: dict) -> str:
     return _CLAUDE_GAVE_UP_BY_ERROR.get(error if isinstance(error, str) else "", _CLAUDE_GAVE_UP_OTHER)
 
 
-def _claude_transcript_outcome(path: Path, *, require_terminal: bool = False) -> _TranscriptOutcome:
+def _claude_transcript_outcome(path: Path | None, *, require_terminal: bool = False,
+                               data: bytes | None = None) -> _TranscriptOutcome:
     """Classify an exact Claude transcript once, for the answer parser and the give-up detector
     alike (agent-harness#1194 r3). Both are views of this outcome, so they cannot disagree:
 
@@ -6227,9 +7072,11 @@ def _claude_transcript_outcome(path: Path, *, require_terminal: bool = False) ->
         request, or a writer mid-append. A ``max_tokens`` stop is never terminal: the CLI
         continues it (agent-harness#1077).
     """
+    # ``data`` is a journal the host already collected; a path is read no-follow, as a
+    # regular file of this uid, bounded (``_read_seat_text``).
     try:
-        lines = path.read_text(encoding="utf-8", errors="replace").split("\n")
-    except OSError:
+        lines = (data.decode("utf-8") if data is not None else _read_seat_text(path)).split("\n")
+    except (OSError, UnicodeError, AgyCanaryEvidenceError, _sandbox_egress.SeatIdentityUnverified):
         return _TranscriptOutcome("pending")
     versions, complete, turn = _claude_live_turn(lines)
     text = _claude_answer_from_lines(lines, require_terminal=require_terminal)
@@ -6259,9 +7106,10 @@ def _claude_transcript_provider_gave_up(path: Path) -> str | None:
     return _claude_transcript_state(path)[1]
 
 
-def _final_assistant_text_from_jsonl(path: Path, *, require_terminal: bool = False) -> str:
+def _final_assistant_text_from_jsonl(path: Path | None, *, require_terminal: bool = False,
+                                     data: bytes | None = None) -> str:
     """The answer parser's view of ``_claude_transcript_outcome``: the accepted answer, or ""."""
-    return _claude_transcript_outcome(path, require_terminal=require_terminal).text
+    return _claude_transcript_outcome(path, require_terminal=require_terminal, data=data).text
 
 
 def _claude_answer_from_lines(lines: Sequence[str], *, require_terminal: bool = False) -> str:
@@ -6607,46 +7455,115 @@ def _cleanup_broker_claude_transcript(
     existed = False
     size = 0
     digest = ""
+    root = directory = None
     try:
-        metadata = path.lstat()
+        from .agy_canary_evidence import _seat_parent_descriptor
+        path = Path(_trusted_host_path(path))
+        root = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        directory, name = _seat_parent_descriptor(root, str(path).lstrip("/"))
+        metadata = os.stat(name, dir_fd=directory, follow_symlinks=False)
         existed = True
-        if not stat.S_ISREG(metadata.st_mode) or path.is_symlink():
-            raise OSError("owned Claude transcript is not a regular file")
-        contents = path.read_bytes()
+        contents = read_seat_output(directory, name, max_bytes=32 * 1024 * 1024,
+                                    expect_uid=os.getuid())
         size = len(contents)
         digest = sha256(contents).hexdigest()
-        path.unlink()
+        current = os.stat(name, dir_fd=directory, follow_symlinks=False)
+        if (current.st_dev, current.st_ino) != (metadata.st_dev, metadata.st_ino):
+            raise AgyCanaryEvidenceError("owned transcript identity changed")
+        os.unlink(name, dir_fd=directory)
+        try:
+            os.stat(name, dir_fd=directory, follow_symlinks=False)
+        except FileNotFoundError:
+            pass
+        else:
+            raise AgyCanaryEvidenceError("owned transcript removal is not verified")
     except FileNotFoundError:
         pass
-    except OSError:
+    except (OSError, AgyCanaryEvidenceError):
         if evidence is not None:
             evidence["claude_transcript_cleanup_verified"] = False
         return False
-    removed = not path.exists()
+    finally:
+        if directory is not None:
+            os.close(directory)
+        if root is not None:
+            os.close(root)
     if evidence is not None:
         evidence.update({
             "claude_transcript_existed": existed,
             "claude_transcript_sha256": digest or None,
             "claude_transcript_bytes": size,
-            "claude_transcript_cleanup_verified": removed,
+            "claude_transcript_cleanup_verified": True,
         })
-    return removed
+    return True
+
+
+def _seat_output_metadata(path):
+    root = directory = descriptor = None
+    try:
+        from .agy_canary_evidence import _seat_parent_descriptor
+        root = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        directory, name = _seat_parent_descriptor(root, _trusted_host_path(path).lstrip("/"))
+        descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                             dir_fd=directory)
+        info = os.fstat(descriptor)
+        if (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or
+                info.st_uid != os.getuid() or info.st_size > 32 * 1024 * 1024):
+            raise AgyCanaryEvidenceError("seat output is not a bounded private regular file")
+        return info
+    except FileNotFoundError:
+        return None
+    except _sandbox_egress.SeatIdentityUnverified as exc:
+        if isinstance(exc.__cause__, FileNotFoundError):
+            return None
+        raise
+    except OSError as exc:
+        raise AgyCanaryEvidenceError("seat output metadata could not be read safely") from exc
+    finally:
+        if descriptor is not None:
+            os.close(descriptor)
+        if directory is not None:
+            os.close(directory)
+        if root is not None:
+            os.close(root)
+
+
+def _seat_transcripts(project, *, prefix="", since=0):
+    root = directory = None
+    try:
+        from .agy_canary_evidence import _seat_parent_descriptor
+        root = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        directory, _ = _seat_parent_descriptor(
+            root, _trusted_host_path(project).lstrip("/") + "/seat-directory",
+        )
+        result = []
+        with os.scandir(directory) as entries:
+            for entry in entries:
+                if (not entry.name.startswith(prefix) or not entry.name.endswith(".jsonl")
+                        or not entry.is_file(follow_symlinks=False)):
+                    continue
+                path = Path(project) / entry.name
+                info = _seat_output_metadata(path)
+                if info is not None and info.st_mtime >= since - 2:
+                    result.append((path, info))
+        return sorted(result, key=lambda item: item[1].st_mtime, reverse=True)
+    except _sandbox_egress.SeatIdentityUnverified as exc:
+        if isinstance(exc.__cause__, FileNotFoundError):
+            return []
+        raise
+    except FileNotFoundError:
+        return []
+    except OSError as exc:
+        raise _sandbox_egress.SeatIdentityUnverified("seat_output_path_unavailable") from exc
+    finally:
+        if directory is not None:
+            os.close(directory)
+        if root is not None:
+            os.close(root)
 
 
 def _claude_agent_transcript_text(session_id: str, cwd: str) -> str:
-    project_dir = _claude_project_dir_for_cwd(cwd)
-    candidates: list[Path] = []
-    exact = project_dir / f"{session_id}.jsonl"
-    if exact.exists():
-        candidates.append(exact)
-    candidates.extend(
-        path
-        for path in project_dir.glob(f"{session_id}*.jsonl")
-        if path not in candidates
-    )
-    for path in sorted(
-        candidates, key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True
-    ):
+    for path, _info in _seat_transcripts(_claude_project_dir_for_cwd(cwd), prefix=session_id):
         text = _assistant_text_from_jsonl(path)
         if text:
             return text
@@ -6654,19 +7571,7 @@ def _claude_agent_transcript_text(session_id: str, cwd: str) -> str:
 
 
 def _latest_claude_transcript_text(cwd: str, *, since: float) -> str:
-    project_dir = _claude_project_dir_for_cwd(cwd)
-    try:
-        candidates = list(project_dir.glob("*.jsonl"))
-    except OSError:
-        return ""
-    fresh: list[Path] = []
-    for path in candidates:
-        try:
-            if path.stat().st_mtime >= since - 2.0:
-                fresh.append(path)
-        except OSError:
-            continue
-    for path in sorted(fresh, key=lambda p: p.stat().st_mtime, reverse=True):
+    for path, _info in _seat_transcripts(_claude_project_dir_for_cwd(cwd), since=since):
         text = _assistant_text_from_jsonl(path)
         if text:
             return text
@@ -6674,13 +7579,7 @@ def _latest_claude_transcript_text(cwd: str, *, since: float) -> str:
 
 
 def _latest_claude_final_assistant_text(cwd: str, *, since: float) -> str:
-    project_dir = _claude_project_dir_for_cwd(cwd)
-    try:
-        candidates = list(project_dir.glob("*.jsonl"))
-    except OSError:
-        return ""
-    fresh = [path for path in candidates if path.exists() and path.stat().st_mtime >= since - 2.0]
-    for path in sorted(fresh, key=lambda p: p.stat().st_mtime, reverse=True):
+    for path, _info in _seat_transcripts(_claude_project_dir_for_cwd(cwd), since=since):
         text = _final_assistant_text_from_jsonl(path)
         if text:
             return text
@@ -6688,85 +7587,45 @@ def _latest_claude_final_assistant_text(cwd: str, *, since: float) -> str:
 
 
 def _latest_claude_transcript_activity(cwd: str, *, since: float) -> int:
-    """Return a monotonic-enough byte count for fresh transcripts in ``cwd``.
-
-    Assistant prose can stay unchanged while Claude is actively issuing tools. The
-    JSONL still grows for each tool call and result, so its aggregate size is the
-    liveness signal. The scratch cwd is run-unique; summing fresh files also tolerates
-    Claude rotating to a new session file during startup.
-    """
-    project_dir = _claude_project_dir_for_cwd(cwd)
-    try:
-        candidates = list(project_dir.glob("*.jsonl"))
-    except OSError:
-        return 0
-    total = 0
-    for path in candidates:
-        try:
-            stat = path.stat()
-        except OSError:
-            continue
-        if stat.st_mtime >= since - 2.0:
-            total += stat.st_size
-    return total
+    return sum(info.st_size for _path, info in
+               _seat_transcripts(_claude_project_dir_for_cwd(cwd), since=since))
 
 
 def _latest_claude_pending_tool_uses(cwd: str, *, since: float) -> tuple[str, ...]:
-    """Return unmatched tool-use ids from the newest fresh Claude transcript.
-
-    A long-running tool can leave the JSONL byte count flat for longer than the
-    generic TUI stall window.  That is a legitimate in-flight state, unlike a
-    completed turn whose cosmetic spinner is the only remaining activity.
-    """
-    project_dir = _claude_project_dir_for_cwd(cwd)
-    try:
-        candidates = list(project_dir.glob("*.jsonl"))
-    except OSError:
-        return ()
-    fresh: list[Path] = []
-    for path in candidates:
-        try:
-            if path.stat().st_mtime >= since - 2.0:
-                fresh.append(path)
-        except OSError:
-            continue
-    for path in sorted(fresh, key=lambda p: p.stat().st_mtime, reverse=True):
-        pending: set[str] = set()
-        saw_tool_event = False
-        try:
-            lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-        except OSError:
-            continue
-        for line in lines:
-            try:
-                payload = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            message = payload.get("message") if isinstance(payload, dict) else None
-            if not isinstance(message, dict):
-                continue
-            for item in message.get("content") or []:
-                if not isinstance(item, dict):
-                    continue
-                if item.get("type") == "tool_use" and isinstance(item.get("id"), str):
-                    pending.add(item["id"])
-                    saw_tool_event = True
-                elif item.get("type") == "tool_result" and isinstance(
-                    item.get("tool_use_id"), str
-                ):
-                    pending.discard(item["tool_use_id"])
-                    saw_tool_event = True
-        if saw_tool_event:
-            return tuple(sorted(pending))
+    for path, _info in _seat_transcripts(_claude_project_dir_for_cwd(cwd), since=since):
+        return _claude_pending_tool_uses(path)
     return ()
+
+
+def _claude_pending_tool_uses(path: Path | None, *, data: bytes | None = None) -> tuple[str, ...]:
+    pending: set[str] = set()
+    text = data.decode("utf-8", errors="replace") if data is not None else _read_seat_text(path)
+    for line in text.splitlines():
+        try:
+            payload = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        message = payload.get("message") if isinstance(payload, dict) else None
+        if not isinstance(message, dict):
+            continue
+        for item in message.get("content") or []:
+            if not isinstance(item, dict):
+                continue
+            if item.get("type") == "tool_use" and isinstance(item.get("id"), str):
+                pending.add(item["id"])
+            elif item.get("type") == "tool_result" and isinstance(item.get("tool_use_id"), str):
+                pending.discard(item["tool_use_id"])
+    return tuple(sorted(pending))
 
 
 def _claude_exact_tool_diagnostic(path: Path | None) -> str:
     if path is None:
         return "tool_progress=unknown"
     try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        lines = _read_seat_text(path).splitlines()
     except OSError:
+        return "tool_progress=unknown"
+    if not lines:
         return "tool_progress=unknown"
     uses: set[str] = set()
     results: set[str] = set()
@@ -6798,10 +7657,41 @@ def _claude_exact_tool_diagnostic(path: Path | None) -> str:
 
 
 def _read_review_output(path: Path) -> str:
+    return _read_seat_text(path).strip()
+
+
+def _read_seat_text(path: Path) -> str:
+    return _redact_seat_credentials(_read_seat_raw_text(path))
+
+
+def _read_seat_raw_text(path: Path) -> str:
+    """A seat output, read no-follow as a bounded regular file of this uid; "" if absent.
+    Not redacted: callers that hand it on use ``_read_seat_text``."""
+    directory = None
     try:
-        return path.read_text(encoding="utf-8", errors="replace").strip()
-    except OSError:
+        directory = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        return read_seat_output(
+            directory, _trusted_host_path(path).lstrip("/"), max_bytes=32 * 1024 * 1024,
+            expect_uid=os.getuid()).decode("utf-8", errors="replace")
+    except (AgyCanaryEvidenceError, _sandbox_egress.SeatIdentityUnverified) as exc:
+        if isinstance(exc.__cause__, FileNotFoundError):
+            return ""
+        raise
+    except FileNotFoundError:
         return ""
+    finally:
+        if directory is not None:
+            os.close(directory)
+
+
+def _write_seat_text(path: Path, text: str):
+    path = Path(_trusted_host_path(path))
+    descriptor = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        identity = (_SEAT_OUTPUT_IDENTITIES.get() or {}).get(path)
+        write_seat_path(descriptor, str(path).lstrip("/"), text.encode("utf-8"), expected_inode=identity)
+    finally:
+        os.close(descriptor)
 
 
 def _terminate_process_group(
@@ -6987,6 +7877,7 @@ def _run_leg_with_liveness(
     if gemini_profile is not None and review_monitor is None:
         raise ValueError("gemini_heartbeat_monitor_required")
     proc = None
+    profile_stack = contextlib.ExitStack()
 
     def _popen() -> subprocess.Popen[bytes]:
         nonlocal proc
@@ -6994,13 +7885,22 @@ def _run_leg_with_liveness(
         # the filtering was computed, reported, and never applied to a provider; a prefix
         # here composes with argv, cwd, env, stdin and process-group handling unchanged,
         # so the seat lands in the namespace instead of beside it.
-        proc = launch_provider(
-            cmd,
-            process_owner=() if review_monitor is None else review_monitor.owned_command(
-                (), gemini_profile=gemini_profile, cwd=cwd),
-            probe_owner=None if gemini_profile is None else (
-                lambda marker: review_monitor.owned_command(
-                    (), gemini_profile=gemini_profile, cwd=cwd, probe_marker=marker)),
+        if review_monitor is not None and review_monitor.cancel.is_set():
+            raise _ReviewOperationCancelled("review_operation_cancelled")
+        # The request's own refusals (an unavailable profile) come before the host's.
+        owned_command, profile = profile_stack.enter_context(_seat_command_profile(
+            cmd, env=env, cwd=cwd, gemini_profile=gemini_profile,
+        ))
+        if not _EGRESS_LAUNCH_PREFIX.get():
+            # An owned review launch runs only in the filtered namespace. A leg outside any
+            # board leg (the agy --help measurement) holds none: it holds one for this
+            # launch only, so trusted host work around it stays in the parent.
+            prefix = profile_stack.enter_context(
+                _sandbox_egress.isolated_network(timeout_s=None, required=True))
+            token = _EGRESS_LAUNCH_PREFIX.set(tuple(prefix))
+            profile_stack.callback(_EGRESS_LAUNCH_PREFIX.reset, token)
+        proc = launch_owned(
+            owned_command, role=SeatLaunchRole.PROVIDER_REVIEW, profile=profile,
             retain_caps=retain_caps,
             # The heartbeat jail mounts its own private /tmp (agent-harness#1181); a host
             # scratch dir would not exist inside it. Every other leg is relocated unless
@@ -7014,7 +7914,6 @@ def _run_leg_with_liveness(
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             start_new_session=True,  # pgid == proc.pid: group CPU sampling + group kill
-            **({"pass_fds": gemini_profile.pass_fds} if gemini_profile is not None else {}),
         )
         if gemini_profile is not None:
             gemini_profile.process = proc
@@ -7049,6 +7948,7 @@ def _run_leg_with_liveness(
         try:
             _reap()
         finally:
+            profile_stack.close()
             if proc is not None:
                 for pipe in (proc.stdin, proc.stdout, proc.stderr):
                     if pipe is not None:
@@ -7078,8 +7978,8 @@ def _run_leg_with_liveness(
 
         def _decode() -> tuple[str, str]:
             return (
-                out_buf.decode("utf-8", errors="replace"),
-                err_buf.decode("utf-8", errors="replace"),
+                _redact_seat_credentials(out_buf.decode("utf-8", errors="replace")),
+                _redact_seat_credentials(err_buf.decode("utf-8", errors="replace")),
             )
 
         while True:
@@ -7164,6 +8064,7 @@ def _run_leg_with_liveness(
                         pipe.close()
                 except OSError:
                     pass
+            profile_stack.close()
         if quiescence_latch is not None:
             quiescence_latch.raise_if_set()
 
@@ -7364,6 +8265,7 @@ def _sanitized_pty_tail(
     # Bounded input for the redactor (a session buffer can be large); the cut is far from
     # the 600-character tail, so nothing it strands can reach the tail.
     text = terminal_bytes[-(_LEG_LOG_MAX_BYTES):].decode("utf-8", errors="replace")
+    text = _redact_seat_credentials(text)
     redacted = " ".join(_redact_leg_text(text, known).split())
     return redacted[-max_chars:].strip()
 
@@ -7395,6 +8297,8 @@ def _run_claude_tui_session(
     if fcntl is None or pty is None or termios is None:
         return 1, "", "claude_tui_unsupported_platform", ""
 
+    profile_stack = contextlib.ExitStack()
+    session_transcript_path = broker_transcript_path
     start_monotonic = time.monotonic()
     start_wall = time.time()
     # Leg-liveness: like the print-mode legs, the claude TUI leg is bounded by heartbeat
@@ -7415,6 +8319,11 @@ def _run_claude_tui_session(
     master_fd: int | None = None
     proc: subprocess.Popen[bytes] | None = None
     terminal_bytes = bytearray()
+    journal = None
+    journal_error = False
+    journal_started = False
+    launched_at: float | None = None
+    launch_errors = None
     prompt_sent = False
     next_transcript_check = start_monotonic + _CLAUDE_TUI_TRANSCRIPT_INTERVAL_S
     transcript_salvage = ""
@@ -7470,33 +8379,47 @@ def _run_claude_tui_session(
     broker_reads: dict[object, _TranscriptOutcome] = {}
 
     def _broker_outcome(*, require_terminal: bool) -> _TranscriptOutcome:
-        _refresh()  # a refreshed snapshot changes the key below, so it is re-classified
-        try:
-            stat = broker_transcript_path.stat()
-            key: object = (stat.st_ino, stat.st_size, stat.st_mtime_ns)
-        except OSError:
-            key = "unreadable"  # re-read as soon as the file appears or changes
+        data = None
+        if journal is not None:
+            # The owned route's journal, read on the host through the retained handles.
+            data = _journal_data()
+            key: object = ("journal", sha256(data).digest())
+        else:
+            _refresh()  # a refreshed snapshot changes the key below, so it is re-classified
+            try:
+                stat = broker_transcript_path.stat()
+                key = (stat.st_ino, stat.st_size, stat.st_mtime_ns)
+            except OSError:
+                key = "unreadable"  # re-read as soon as the file appears or changes
         if broker_reads.get("key") != key:  # type: ignore[comparison-overlap]
             broker_reads.clear()
             broker_reads["key"] = key  # type: ignore[assignment]
         elif require_terminal in broker_reads:
             return broker_reads[require_terminal]
         broker_reads[require_terminal] = outcome = _claude_transcript_outcome(
-            broker_transcript_path, require_terminal=require_terminal)
+            None if data is not None else broker_transcript_path,
+            require_terminal=require_terminal, data=data)
         return outcome
 
     def _transcript_text() -> str:
-        if broker_transcript_path is not None:
+        if journal is not None or broker_transcript_path is not None:
             return _broker_outcome(require_terminal=False).text
-        return _latest_claude_transcript_text(str(cwd), since=start_wall)
+        return ""
 
     def _transcript_activity() -> int:
-        # The unbrokered cwd scan; the exact brokered transcript is read by
-        # ``_claude_transcript_state`` below.
-        return _latest_claude_transcript_activity(str(cwd), since=start_wall)
+        # Every route reads an exact transcript; its progress is the outcome's record versions.
+        return 0
 
     def _broker_final() -> str:
+        nonlocal journal_error
         if not allow_transcript_final or broker_transcript_path is None:
+            return ""
+        if journal is not None:
+            final, refused = _journal_check(_journal_data())
+            if refused:
+                journal_error = True
+            return final
+        if seat_jail is None and (proc is None or proc.poll() != 0):
             return ""
         # A president may need a format re-ask. Hand its completed API turn to
         # invoke_president even when the text lacks the required ruling grammar;
@@ -7509,13 +8432,66 @@ def _run_claude_tui_session(
             broker_transcript_path, require_terminal=mode == "president")
 
     def _pending_tool_uses() -> tuple[str, ...]:
-        # Brokered Claude has an empty tool surface, so only the exact assistant
-        # transcript is relevant; it must never inspect a neighboring session.
-        if broker_transcript_path is not None:
-            return ()
-        return _latest_claude_pending_tool_uses(str(cwd), since=start_wall)
+        if journal is not None:
+            return _claude_pending_tool_uses(None, data=_journal_data())
+        return _claude_pending_tool_uses(session_transcript_path) if session_transcript_path else ()
+
+    def _owner_refusal(code: str) -> bool:
+        """Did the owner's final link refuse with ``code`` (its private stderr file)?"""
+        if launch_errors is None:
+            return False
+        launch_errors.seek(0)
+        return code.encode() in launch_errors.read(4096)
+
+    def _journal_data():
+        nonlocal journal_error
+        try:
+            return journal.read()
+        except (OSError, AgyCanaryEvidenceError, ValueError, TypeError):
+            journal_error = True
+            return b""
+
+    journal_checks: dict[bytes, tuple[str, bool]] = {}
+
+    def _journal_check(data: bytes) -> tuple[str, bool]:
+        """``(validated final text, refused)`` for collected journal bytes, decided once per
+        distinct content (agent-harness#1194: an unchanged transcript is not re-parsed every
+        tick). ``refused`` is a terminal answer the validator does not accept."""
+        key = sha256(data).digest()
+        if key not in journal_checks:
+            final = _validated_claude_journal(data, require_terminal=mode == "president")
+            refused = not final and bool(_final_assistant_text_from_jsonl(
+                None, require_terminal=mode == "president", data=data))
+            journal_checks.clear()
+            journal_checks[key] = (final, refused)
+        return journal_checks[key]
+
+    def _canonical_complete(text):
+        if not _completion_ok(text, mode):
+            return False
+        return journal is None or bool(_journal_check(_journal_data())[0])
 
     def _finish(rc: int, text: str, log: str) -> tuple[int, str, str, str]:
+        if rc == 0:
+            if review_monitor is not None and review_monitor.cancel.is_set():
+                return 1, "", "review_operation_cancelled", ""
+            if journal is not None:
+                _terminate_process_group(proc, force_group=True)
+                data = _journal_data()
+                final = _validated_claude_journal(data, require_terminal=mode == "president")
+                if journal_error or not final:
+                    return 1, "", "claude_tui_journal_collection_refused", ""
+                _write_seat_text(session_transcript_path, data.decode("utf-8"))
+                if log.startswith("claude_tui_broker_"):
+                    text = final
+                elif log == "claude_tui_file_output":
+                    text = _current_output()
+                    if not _completion_ok(text, mode):
+                        return 1, "", "claude_tui_missing_canonical_output", ""
+            elif seat_jail is None and (proc is None or proc.poll() != 0):
+                return 1, "", "claude_tui_journal_collection_refused", ""
+            if review_monitor is not None and review_monitor.cancel.is_set():
+                return 1, "", "review_operation_cancelled", ""
         # Attach a bounded, redacted, control-stripped PTY tail to every NON-OK
         # return so a startup/liveness failure is diagnosable (ah#196/#223); an OK
         # file verdict carries no tail.
@@ -7530,14 +8506,31 @@ def _run_claude_tui_session(
                 f"elapsed_s={finished_at - start_monotonic:.1f} "
                 f"last_progress_age_s={finished_at - last_heartbeat:.1f} "
                 f"child_running={str(proc is not None and proc.poll() is None).lower()}"
-                f" {_claude_exact_tool_diagnostic(broker_transcript_path)}"
+                f" {_claude_exact_tool_diagnostic(session_transcript_path)}"
             )
             tail = diagnostic + (f"; {tail}" if tail else "")
         # The marker is ours (provenance by type for the detail prefix, agent-harness#1102).
-        return rc, text, _HarnessCode(log) if log else log, tail
+        return rc, _redact_seat_credentials(text), _HarnessCode(log) if log else log, tail
 
     try:
+        command = list(command)
+        if seat_jail is None:
+            # The owned route (every Claude seat that is not jailed): the host collects
+            # the exact session journal through retained handles.
+            if "--session-id" not in command:
+                command.extend(("--session-id", str(uuid.uuid4())))
+            if session_transcript_path is None:
+                directory = profile_stack.enter_context(tempfile.TemporaryDirectory(prefix="seat-journal-"))
+                session_id = command[command.index("--session-id") + 1]
+                session_transcript_path = Path(directory) / (str(uuid.UUID(session_id)) + ".jsonl")
+            owned_command, profile = profile_stack.enter_context(_seat_command_profile(
+                command, env=env, cwd=cwd, outputs=(output_file,), transcript_path=session_transcript_path,
+            ))
+            journal = profile.journal
         master_fd, slave_fd = pty.openpty()
+        if seat_jail is None:
+            profile = replace(profile, pass_fds=(*profile.pass_fds, slave_fd), terminal_fd=slave_fd)
+            launch_errors = profile_stack.enter_context(tempfile.TemporaryFile())
         # ah#196/#223 R1: pin a wide window so a long scratch-cwd path renders
         # un-wrapped (default ~80 cols would split the path token across lines).
         try:
@@ -7554,19 +8547,27 @@ def _run_claude_tui_session(
                 # `_popen`, so a TUI seat launched OUTSIDE the namespace entirely -- the
                 # gap the board named as "I cannot establish that every alternative
                 # provider-launch path uses `_popen`".
-                # A jailed seat (agent-harness#1132) launches through its jail, whose own
-                # --unshare-pid owns the process tree; `launch_provider` replaces the cwd,
-                # environment and descriptors with the jail's declared ones.
-                return launch_provider(
-                    command,
-                    process_owner=seat_jail if seat_jail is not None
-                    else () if review_monitor is None else review_monitor.owned_command(()),
-                    probe_owner=probe_jail,
+                if seat_jail is not None:
+                    # A jailed seat (agent-harness#1132) launches through its jail, whose own
+                    # --unshare-pid owns the process tree; `launch_provider` replaces the cwd,
+                    # environment and descriptors with the jail's declared ones.
+                    return launch_provider(
+                        command, process_owner=seat_jail, probe_owner=probe_jail,
+                        cwd=str(cwd), env=dict(env), stdin=slave_fd, stdout=slave_fd,
+                        stderr=slave_fd, text=False, close_fds=True, start_new_session=True,
+                    )
+                if review_monitor is not None and review_monitor.cancel.is_set():
+                    raise _ReviewOperationCancelled("review_operation_cancelled")
+                return launch_owned(
+                    owned_command, role=SeatLaunchRole.PROVIDER_REVIEW, profile=profile,
                     cwd=str(cwd),
                     env=dict(env),
-                    stdin=slave_fd,
-                    stdout=slave_fd,
-                    stderr=slave_fd,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    # The owner's own refusals (before the seat's terminal is attached) go
+                    # to a private file, never the PTY: a host process holding the PTY would
+                    # hide the seat's EOF (#48).
+                    stderr=launch_errors,
                     text=False,
                     close_fds=True,
                     start_new_session=True,
@@ -7577,13 +8578,26 @@ def _run_claude_tui_session(
                 _anchor_process_group(proc)
             else:
                 proc = quiescence_latch.launch(_popen)
+            # The seat's silence is measured from the moment its provider exists. The
+            # owned launch's setup (the namespace identity probe, the seat profile) comes
+            # first and is not the provider's silence (agent-harness#1282). The wall-clock
+            # deadline still runs from the session's start.
+            last_heartbeat = last_novel = launched_at = time.monotonic()
+            next_transcript_check = last_heartbeat + _CLAUDE_TUI_TRANSCRIPT_INTERVAL_S
         finally:
             os.close(slave_fd)
+    except _sandbox_egress.EgressUnavailable:
+        profile_stack.close()
+        if master_fd is not None:
+            os.close(master_fd)
+        raise
     except FileNotFoundError:
+        profile_stack.close()
         if master_fd is not None:
             os.close(master_fd)
         return 127, "", "missing_claude_cli", ""
     except Exception as exc:
+        profile_stack.close()
         if master_fd is not None:
             os.close(master_fd)
         if type(exc) is _seat_jail.SeatSandboxRefused:
@@ -7650,8 +8664,15 @@ def _run_claude_tui_session(
                         # (`proc.poll() or 1`) so _classify_leg fails closed — matching
                         # the proc.poll()/deadline sibling paths. Promoting a transcript
                         # verdict to OK here would be a race-dependent false-green.
+                        if proc is not None and proc.poll() is None:
+                            try:
+                                proc.wait(timeout=2)
+                            except subprocess.TimeoutExpired:
+                                pass
                         review_text = _current_output()
-                        if _completion_ok(review_text, mode):
+                        if proc.poll() == 127 and _owner_refusal("seat_keyring_unavailable"):
+                            return _finish(127, "", "seat_keyring_unavailable")
+                        if _canonical_complete(review_text):
                             return _finish(0, review_text, "claude_tui_file_output")
                         transcript_text = transcript_salvage or _transcript_text()
                         broker_final = _broker_final()
@@ -7669,6 +8690,8 @@ def _run_claude_tui_session(
                             review_text or transcript_text,
                             "claude_tui_pty_eof_no_output",
                         )
+            if journal_error:
+                return _finish(1, "", "claude_tui_journal_collection_refused")
             now = time.monotonic()
             # ah#196/#223 startup gate (PRE-SUBMIT only). Answer the workspace-trust
             # modal once, then submit on editor quiescence — never paste on a blind
@@ -7765,7 +8788,7 @@ def _run_claude_tui_session(
                 last_review_len = len(review_text)
                 last_heartbeat = now
                 last_output_progress = now
-            if _completion_ok(review_text, mode):
+            if _canonical_complete(review_text):
                 return _finish(0, review_text, "claude_tui_file_output")
             if now >= next_transcript_check:
                 next_transcript_check = now + _CLAUDE_TUI_TRANSCRIPT_INTERVAL_S
@@ -7775,7 +8798,7 @@ def _run_claude_tui_session(
                 # same single read yields the provider's typed give-up. The unbrokered cwd
                 # scan keeps byte growth: it may see a neighbouring session.
                 outcome = (_broker_outcome(require_terminal=mode == "president")
-                           if broker_transcript_path is not None else None)
+                           if broker_transcript_path is not None or journal is not None else None)
                 transcript_activity = (outcome.versions if outcome is not None
                                        else _transcript_activity())
                 # #188: the session transcript growing (tool calls, streamed
@@ -7818,7 +8841,7 @@ def _run_claude_tui_session(
             if proc.poll() is not None:
                 review_text = _current_output()
                 transcript_text = transcript_salvage or _transcript_text()
-                if _completion_ok(review_text, mode):
+                if _canonical_complete(review_text):
                     return _finish(0, review_text, "claude_tui_file_output")
                 broker_final = _broker_final()
                 if broker_final and review_monitor is not None and review_monitor.cancel.is_set():
@@ -7841,9 +8864,20 @@ def _run_claude_tui_session(
             # stall: no GENUINE progress for the threshold while still running. The
             # canonical verdict is the review FILE (checked above); nothing to nudge for a
             # wedged TUI, so fail closed (rc forced non-zero, like the #48/deadline paths).
+            if (journal is not None and launched_at is not None and not journal_started
+                    and now - launched_at < _SEAT_OWNER_STARTUP_S):
+                # The owned seat is still running the owner's own links (keyring and filter,
+                # descriptor closer, journal collector): not the provider's silence. The
+                # collector hands the journal over right before it executes the provider,
+                # and the provider's silence is measured from then (agent-harness#1282).
+                try:
+                    journal_started = journal.handed_off()
+                except AgyCanaryEvidenceError:
+                    journal_error = True
+                last_heartbeat = now
             if review_monitor is None and now - last_heartbeat >= stall_threshold_s:
                 review_text = _current_output()
-                if _completion_ok(review_text, mode):
+                if _canonical_complete(review_text):
                     return _finish(0, review_text, "claude_tui_file_output")
                 # agent-harness#343: an unmatched tool_use means the reviewer is
                 # legitimately blocked inside a tool whose transcript cannot grow
@@ -7881,29 +8915,9 @@ def _run_claude_tui_session(
                     os.close(master_fd)
                 except OSError:
                     pass
+            profile_stack.close()
         if quiescence_latch is not None:
             quiescence_latch.raise_if_set()
-
-
-def _stop_claude_agent(
-    adapter: ClaudeAgentViewAdapter, session_id: str, cwd: str, env: Mapping[str, str]
-) -> str:
-    try:
-        proc = subprocess.run(
-            adapter.stop_command(session_id),
-            cwd=cwd,
-            env=_sandbox_policy.child_scratch_env(env, _sandbox_policy.CHILD_SCRATCH_RELOCATE),
-            capture_output=True,
-            text=True,
-            timeout=_CLAUDE_STOP_TIMEOUT_S,
-            check=False,
-            stdin=subprocess.DEVNULL,
-        )
-    except subprocess.TimeoutExpired:
-        return "stop_timeout"
-    except FileNotFoundError:
-        return "stop_unavailable"
-    return "stopped" if proc.returncode == 0 else "stop_failed"
 
 
 def _normalize_claude_agent_state(value: object) -> str:
@@ -8575,7 +9589,7 @@ def _exec_claude_tui_leg(
     tui_cwd = out_dir.resolve() if brokered else out_dir
     broker_session_id = str(uuid.uuid4()) if brokered else None
     broker_transcript_path = (
-        _claude_project_dir_for_cwd(str(tui_cwd)) / f"{broker_session_id}.jsonl"
+        out_dir / f"claude-{broker_session_id}.jsonl"
         if broker_session_id is not None
         else None
     )
@@ -9141,104 +10155,7 @@ def _exec_claude_agent_view_attempt(
     env: Mapping[str, str],
     effort: str = "max",
 ) -> tuple[str, str]:
-    command = adapter.launch_command(
-        None,
-        name=_CLAUDE_AGENT_NAME,
-        model=DEFAULT_LEG_MODELS["claude"],
-        effort=effort,
-        # Plan mode can block review-sized prompts; Read-only access lets Claude inspect the staged Markdown file.
-        permission="default",
-        safe_mode=True,
-        strict_mcp_config=True,
-        mcp_config=json.dumps({"mcpServers": {}}),
-        tools="Read",
-    )
-    try:
-        # The THIRD provider-launch seam. It has no production caller today (only a test
-        # reaches it), which is exactly why it is wired: an unwired seam that acquires a
-        # caller later is a silent hole. `test_the_real_launch_carries_the_prefix` drives
-        # this seam with a marker prefix and observes the launch, rather than trusting
-        # that it stays unreachable.
-        proc = run_provider(
-            command,
-            cwd=str(review_dir),
-            env=env,
-            capture_output=True,
-            text=True,
-            timeout=min(timeout_s, _CLAUDE_LAUNCH_TIMEOUT_S),
-            check=False,
-            input=prompt,
-        )
-    except subprocess.TimeoutExpired as exc:
-        cleanup_status = _cleanup_claude_launch_timeout(
-            adapter, cwd=str(review_dir), env=env, exc=exc
-        )
-        return "TIMEOUT", f"timeout after {timeout_s}s; {cleanup_status}"
-    except FileNotFoundError:
-        return "UNAVAILABLE", "missing_claude_cli"
-
-    launch_log = (proc.stdout or "") + (proc.stderr or "")
-    if proc.returncode != 0:
-        return _classify_leg(proc.returncode, "", launch_log), launch_log
-    session_id = _claude_agent_session_id(launch_log)
-    if not session_id:
-        return "DEGRADED", "claude_agent_session_id_missing"
-
-    deadline = time.monotonic() + timeout_s
-    last_review = ""
-    cwd = str(review_dir)
-    while True:
-        remaining = max(1.0, deadline - time.monotonic())
-        transcript_text = _claude_agent_transcript_text(session_id, cwd)
-        if transcript_text:
-            last_review = transcript_text
-            if terminal_verdict(last_review) is not None:
-                return _classify_leg(0, last_review, ""), last_review
-        try:
-            logs_proc = subprocess.run(
-                adapter.logs_command(session_id),
-                cwd=cwd,
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=min(30.0, remaining),
-                check=False,
-                stdin=subprocess.DEVNULL,
-            )
-        except subprocess.TimeoutExpired:
-            logs_proc = None
-        if logs_proc is not None and logs_proc.returncode == 0:
-            last_review = logs_proc.stdout or ""
-            if terminal_verdict(last_review) is not None:
-                return _classify_leg(0, last_review, ""), last_review
-
-        state = None
-        try:
-            list_proc = subprocess.run(
-                adapter.list_command(),
-                cwd=cwd,
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=min(30.0, remaining),
-                check=False,
-                stdin=subprocess.DEVNULL,
-            )
-        except subprocess.TimeoutExpired:
-            list_proc = None
-        if list_proc is not None and list_proc.returncode == 0:
-            state = _claude_agent_state(list_proc.stdout or "", session_id, cwd)
-        if state in {"done", "blocked", "failed", "stopped"}:
-            if state == "done" and last_review:
-                return _classify_leg(0, last_review, ""), last_review
-            if state == "blocked":
-                stop_status = _stop_claude_agent(adapter, session_id, cwd, env)
-                return "DEGRADED", f"claude_agent_state:{state}; stop={stop_status}"
-            return "DEGRADED", f"claude_agent_state:{state or 'unknown'}"
-        if time.monotonic() >= deadline:
-            stop_status = _stop_claude_agent(adapter, session_id, cwd, env)
-            return "TIMEOUT", f"timeout after {timeout_s}s; stop={stop_status}"
-        time.sleep(min(_CLAUDE_POLL_INTERVAL_S, max(0.0, deadline - time.monotonic())))
+    return "UNAVAILABLE", "claude_agent_view_review_unsupported"
 
 
 def _review_bytes(review_dir: Path) -> int:
@@ -9588,7 +10505,7 @@ def _exec_leg(
                     "utf-8", errors="replace"
                 )
                 if agy_capture is not None and out_file.exists()
-                else (out_file.read_text(encoding="utf-8") if out_file.exists() else "")
+                else _read_seat_text(out_file)
             )
             rc = proc.returncode
             # ah#252: codex echoes BOTH the user prompt and its own final message
@@ -9640,6 +10557,8 @@ def _exec_leg(
         # An earlier version of this comment attributed the observed EMPTY to the transient
         # stall. That was wrong: reproduction showed the `read_file` denial.
         out_file = out_dir / "panel-gemini.txt"
+        if agy_capture is None:
+            _precreate_seat_output(out_file)
         # ABDHOME: the agy leg bakes effort INTO the model name. effort-absent keeps
         # the shared default model verbatim; a seat renders
         # ``(base, effort)`` -> ``"<base> (Word)"`` (idempotent on an already-baked
@@ -9952,10 +10871,12 @@ def _exec_leg(
             )
             review_text = written.decode("utf-8", errors="replace")
         else:
-            out_file.write_text(review_text, encoding="utf-8")
+            _write_seat_text(out_file, review_text)
         return rc, review_text, log_text
     if leg == "grok":
         out_file = out_dir / "panel-grok.txt"
+        if agy_capture is None:
+            _precreate_seat_output(out_file)
         # grok's headless single-turn (`-p`) prints the clean response to stdout and
         # exits — like agy, its stdout IS the review (no --output-last-message file).
         # The prompt is the small STAGED-BUNDLE POINTER (files live under --cwd), so
@@ -10078,7 +10999,7 @@ def _exec_leg(
             )
             review_text = written.decode("utf-8", errors="replace")
         else:
-            out_file.write_text(review_text, encoding="utf-8")
+            _write_seat_text(out_file, review_text)
         return rc, review_text, log_text
     # claude uses the TUI-backed subscription route, handled by `_exec_claude_tui_leg`.
     return 0, "", _HarnessCode("unavailable")
@@ -11932,7 +12853,7 @@ def invoke_board(
             # The configured rung order (built-in < user < repo), refused before any
             # seat runs when malformed -- never a silent fall back to the built-in.
             try:
-                configured_ladder = load_president_ladder(repo_dir, env=base_env)
+                configured_ladder = load_president_ladder(repo_dir, env=base_env, review_base=True)
             except BoardConfigError as exc:
                 raise PresidentPolicyError(PRESIDENT_LADDER_INVALID, str(exc)) from exc
             president_invoke = build_president_invoke(

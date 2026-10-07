@@ -23,7 +23,6 @@ Plus the skip-with-warning fail-closed boundary for omnigent/breadth seats.
 from __future__ import annotations
 
 import os
-import subprocess
 import tempfile
 import unittest
 from contextlib import contextmanager
@@ -111,25 +110,16 @@ class EffortReachesEachCliTests(unittest.TestCase):
         self.assertIn("--effort", cmd)
         self.assertEqual(cmd[cmd.index("--effort") + 1], "high")
 
-    def test_off_host_agent_view_leg_threads_effort(self) -> None:
-        # The Agent-View (off-host TUI) leg is one of the named built-3; it is
-        # currently dormant (no caller today — the live claude leg uses the local
-        # TUI route), but its per-seat effort must plumb through for when Agent-View
-        # is re-enabled. Prove the effort reaches the adapter's launch command.
-        captured: dict = {}
-
-        class _FakeAdapter:
+    def test_off_host_agent_view_review_refuses_before_adapter_launch(self) -> None:
+        class Adapter:
             def launch_command(self, _prompt, **kwargs):
-                captured["effort"] = kwargs.get("effort")
-                return ["claude", "--effort", kwargs.get("effort", "")]
+                raise AssertionError('retired review transport launched')
 
-        with patch.object(subprocess, "run", side_effect=FileNotFoundError), \
-                tempfile.TemporaryDirectory() as rd:
-            status, _ = pi._exec_claude_agent_view_attempt(
-                _FakeAdapter(), review_dir=Path(rd), timeout_s=600, prompt="p", env={}, effort="low"
+        with tempfile.TemporaryDirectory() as rd:
+            status, detail = pi._exec_claude_agent_view_attempt(
+                Adapter(), review_dir=Path(rd), timeout_s=600, prompt='p', env={}, effort='low',
             )
-        self.assertEqual(captured["effort"], "low")
-        self.assertEqual(status, "UNAVAILABLE")  # missing CLI → fail-closed, effort still threaded
+        self.assertEqual((status, detail), ('UNAVAILABLE', 'claude_agent_view_review_unsupported'))
 
 
 class DefaultBoardByteEquivalenceTests(unittest.TestCase):

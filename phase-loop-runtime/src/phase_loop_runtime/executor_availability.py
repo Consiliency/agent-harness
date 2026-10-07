@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import shutil
 import os
+import shlex
 import subprocess
 import time
 from typing import Callable
@@ -66,16 +67,16 @@ _auth_cache: dict[tuple[str, tuple[str, ...]], tuple[float, bool]] = {}
 def _run_probe(probe: str) -> subprocess.CompletedProcess:
     # A probe may start an agent CLI, so it takes the scratch decision like any launch
     # (agent-harness#1147); a refusal under PHASE_LOOP_SANDBOX_REFUSE_RAM fails the probe.
+    from .panel_invoker import run_provider
     from .sandbox_policy import CHILD_SCRATCH_RELOCATE, SandboxSpaceError, child_scratch_env
 
     try:
         env = child_scratch_env(os.environ, CHILD_SCRATCH_RELOCATE)
     except SandboxSpaceError as exc:
         return subprocess.CompletedProcess(probe, 1, "", str(exc))
-    return subprocess.run(
-        probe,
+    return run_provider(
+        shlex.split(probe),
         env=env,
-        shell=True,
         text=True,
         capture_output=True,
         check=False,
