@@ -46,9 +46,10 @@ REASON_FIXES: Mapping[str, str] = {
         "the host denied the seat's uid switch inside bwrap. On Ubuntu 24.04 and later the cause "
         "is usually the AppArmor profile that confines bwrap's children (`unpriv_bwrap`, from "
         "`bwrap-userns-restrict`), which denies capability setuid and setgid; "
-        "`journalctl -k | grep unpriv_bwrap` shows the denial. A host administrator has to permit "
-        "those capabilities for the jail's bwrap (see agent-harness#1276), then run "
-        "`phase-loop seat-sandbox qualify`. Until then the seat does not run"),
+        "`journalctl -k | grep unpriv_bwrap` shows the denial. A host administrator installs the "
+        "narrow override that only the jail's `setpriv` step uses: `python3 -m "
+        "phase_loop_runtime.seat_jail_apparmor` prints the root script (`--revert` removes it). "
+        "Then run `phase-loop seat-sandbox qualify`. Until then the seat does not run"),
     "falsifiers_failed": (
         "run `phase-loop seat-sandbox qualify` to see which check failed, and report a defect"),
     "timeout": "another qualification is still running or hung; retry, or run "

@@ -1075,9 +1075,10 @@ def seat_env(leg: str, *, token_fd: int | None, lang: str = "C.UTF-8",
     return env
 
 
-# Linux memfd seal ABI (include/uapi/linux/fcntl.h). CPython exports these from `fcntl` only
-# from 3.14, but the package supports older interpreters (agent-harness#1276), and the values
-# are kernel ABI, so they are the fallback when the module lacks them.
+# Linux memfd seal ABI (include/uapi/linux/fcntl.h). Whether CPython's `fcntl` exports these
+# depends on the build: distribution interpreters do, python-build-standalone ones (what `uv`
+# installs) do not (agent-harness#1276). The values are kernel ABI, so they are the fallback
+# when the module lacks them.
 _F_ADD_SEALS = 1033  # F_LINUX_SPECIFIC_BASE (1024) + 9
 _F_SEAL_SEAL, _F_SEAL_SHRINK, _F_SEAL_GROW, _F_SEAL_WRITE = 0x1, 0x2, 0x4, 0x8
 

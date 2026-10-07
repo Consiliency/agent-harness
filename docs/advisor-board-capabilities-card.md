@@ -569,6 +569,29 @@ same modes are written to `seat-modes.json` in the stream directory.
 conventional). The runtime never runs these. Without them the seat stays sealed with
 `seat_sandbox_unavailable_seat_uid`. The host must also have `dev.tty.legacy_tiocsti = 0`.
 
+**Ubuntu 24.04+ and 26.04: the AppArmor override (agent-harness#1276).** Ubuntu's
+`bwrap-userns-restrict` profile runs every child of `/usr/bin/bwrap` as
+`bwrap//&unpriv_bwrap`, whose `audit deny capability` rule denies every capability. The
+jail's `setpriv` uid switch then fails (`setresuid failed: Operation not permitted`;
+`journalctl -k | grep unpriv_bwrap` shows the denial) and qualification ends
+`seat_jail_qualification_failed` with the typed reason `uid_switch_denied`. A host without that
+profile (Ubuntu 22.04, and 24.04 as measured) needs nothing. The jail itself is unchanged.
+- **The fix is host policy, installed by an administrator.** `python3 -m
+  phase_loop_runtime.seat_jail_apparmor` prints a root script. It adds one small named profile
+  that is entered only for `/usr/bin/setpriv` (no path attachment, so a plain `setpriv` is
+  untouched), grants it `setuid`, `setgid` and `setpcap`, and hands the seat back to
+  `bwrap//&unpriv_bwrap` on its next exec. It uses the local include the shipped profile
+  provides, appends between markers instead of overwriting, and is idempotent. The runtime
+  never runs it.
+- **What it changes for the seat:** nothing it could use. Measured on Ubuntu 26.04 (bubblewrap
+  0.11.1): after the drop the seat has the seat uid, empty permitted, effective and bounding
+  sets and no-new-privs, and cannot switch uid again; other bwrap children keep
+  `bwrap//&unpriv_bwrap`; the full qualification records a pass.
+- **Revert:** `python3 -m phase_loop_runtime.seat_jail_apparmor --revert` prints the script
+  that removes the block and the profile and reloads the shipped profile. `--profile` and
+  `--local` print the two policy texts for review.
+- **Then:** run `phase-loop seat-sandbox qualify` on the host.
+
 **Claude seat credential.** By default, the seat uses the subscription you are logged in
 with.
 - **What is read, and when:** at every jailed launch, the runtime reads only the current

@@ -6,12 +6,27 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Seat jail on Ubuntu 24.04+ / 26.04: a narrow AppArmor override (agent-harness#1276)
+
+- New `seat_jail_apparmor` module. Ubuntu's `bwrap-userns-restrict` profile runs bwrap's children
+  as `bwrap//&unpriv_bwrap`, which denies every capability, so the jail's `setpriv` uid switch
+  fails and the jail cannot qualify. `python3 -m phase_loop_runtime.seat_jail_apparmor` prints a
+  root script that installs a small named profile used only for that `setpriv` step (setuid,
+  setgid and setpcap, stacked with `bwrap`, handing the seat back to `bwrap//&unpriv_bwrap`),
+  through the local include the shipped profile already provides. It never overwrites an
+  existing local file and `--revert` removes it. The runtime does not run it: it needs root and
+  changes host security policy. Measured on Ubuntu 26.04 (bubblewrap 0.11.1): after the drop the
+  seat has empty permitted, effective and bounding sets and cannot switch uid again, other
+  bwrap children are unchanged, and `phase-loop seat-sandbox qualify` records a pass.
+  `uid_switch_denied` now names this command.
+
 ### Seat jail: Python 3.10 to 3.13 support, and a typed reason when the host denies the uid switch (agent-harness#1276)
 
-- `seat_jail.memfd_with` no longer needs `fcntl.F_ADD_SEALS`, which CPython exports only from
-  3.14. It falls back to the kernel ABI values, so the jailed launch and the host
-  qualification work on every supported interpreter. Before this, the first jailed launch on
-  Python 3.10 to 3.13 raised `AttributeError`.
+- `seat_jail.memfd_with` no longer needs `fcntl.F_ADD_SEALS`, which not every CPython build
+  exports (distribution builds do; the python-build-standalone builds that `uv` installs, 3.11
+  to 3.13, do not). It falls back to the kernel ABI values, so the jailed launch and the host
+  qualification work on every interpreter. Before this, the first jailed launch on such an
+  interpreter raised `AttributeError`.
 - A qualification whose probe cannot switch to the seat uid (`setpriv: setresuid failed`,
   `setresgid failed`) now fails with the typed reason `uid_switch_denied` and a literal fix, not
   `falsifiers_failed` ("report a defect"). The usual cause is a host security policy, not a
