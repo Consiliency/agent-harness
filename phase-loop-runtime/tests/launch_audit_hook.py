@@ -150,8 +150,16 @@ _INSTALLED_ALLOWED = [0]
 
 class allow_installed_inference:
     """Within this block the installed provider may run for inference. Only for the opt-in
-    live jailed-seat test (marked ``host_seat_credentials``), whose purpose is to run the real
-    CLI inside the host's jail (agent-harness#1282)."""
+    live jailed-seat test, whose purpose is to run the real CLI inside the host's jail
+    (agent-harness#1282). ``node`` is the calling pytest item; anything but an item marked
+    ``host_seat_credentials`` is refused, so no ordinary test can enable it."""
+
+    def __init__(self, node=None):
+        marker = getattr(node, "get_closest_marker", None)
+        if marker is None or marker("host_seat_credentials") is None:
+            raise RuntimeError(
+                "installed-inference exemption refused: only a test marked "
+                "host_seat_credentials may run the installed provider")
 
     def __enter__(self):
         _INSTALLED_ALLOWED[0] += 1

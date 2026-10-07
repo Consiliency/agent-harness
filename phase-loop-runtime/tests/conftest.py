@@ -194,7 +194,7 @@ def _isolate_claude_seat_host_state(request, monkeypatch, tmp_path):
         # It also runs the installed Claude CLI on purpose (agent-harness#1282).
         from launch_audit_hook import allow_installed_inference
 
-        with allow_installed_inference():
+        with allow_installed_inference(request.node):
             yield
         return
     from phase_loop_runtime import seat_jail
