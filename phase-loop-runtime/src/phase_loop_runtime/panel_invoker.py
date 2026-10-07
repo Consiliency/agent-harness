@@ -5055,12 +5055,16 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
 
 
 def run_provider(argv, *, child_scratch=_sandbox_policy.CHILD_SCRATCH_RELOCATE,
-                 **kwargs) -> "subprocess.CompletedProcess[str]":
+                 executor: bool = False, **kwargs) -> "subprocess.CompletedProcess[str]":
     """THE one place a review provider is started and waited on. See `launch_provider`.
 
     Every argv but a trusted ``nsenter`` observer runs through the seat-launch owner, whose
     /tmp is private: its scratch decision is ``CHILD_SCRATCH_PRIVATE_TMP`` whatever is asked
-    (``child_scratch`` is still validated)."""
+    (``child_scratch`` is still validated).
+
+    ``executor=True`` is an executor CLI the operator runs as itself (the Agent View route's
+    ``claude --bg`` / ``stop`` / ``logs``): it goes through the owner's trusted executor role,
+    on the host, with ``child_scratch`` applied, exactly like the CLI executor route."""
     if child_scratch not in _sandbox_policy.CHILD_SCRATCH_DECISIONS:
         raise ValueError(f"unknown child scratch decision {child_scratch!r}")
     input_value = kwargs.pop("input", None)
@@ -5079,7 +5083,12 @@ def run_provider(argv, *, child_scratch=_sandbox_policy.CHILD_SCRATCH_RELOCATE,
     env = kwargs.get("env") if kwargs.get("env") is not None else dict(os.environ)
     cwd = kwargs.get("cwd") or os.getcwd()
     with contextlib.ExitStack() as stack:
-        if argv and Path(argv[0]).name == "nsenter":
+        if executor:
+            process = stack.enter_context(launch_owned(
+                argv, role=SeatLaunchRole.EXECUTOR_TRUSTED, profile=SeatProfile(env=env),
+                child_scratch=child_scratch, **kwargs,
+            ))
+        elif argv and Path(argv[0]).name == "nsenter":
             # Qualification observers are trusted host helpers, not provider probes.
             command = [_review_stage.trusted_host_executable("nsenter"), *argv[1:]]
             observer_env = kwargs.get("env") if kwargs.get("env") is not None else _subscription_env()

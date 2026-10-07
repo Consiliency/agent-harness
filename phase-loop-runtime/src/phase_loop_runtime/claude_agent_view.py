@@ -173,7 +173,10 @@ def _provider_runner(argv, **kwargs) -> subprocess.CompletedProcess[str]:
     from .panel_invoker import run_provider
 
     env = kwargs.pop("env", None)
-    return run_provider(argv, env=dict(os.environ) if env is None else env, **kwargs)
+    # An executor the operator runs as itself, never a review seat (agent-harness#1222): the
+    # Agent View review route is refused before it gets here.
+    return run_provider(argv, env=dict(os.environ) if env is None else env, executor=True,
+                        **kwargs)
 
 
 class ClaudeAgentViewAdapter:

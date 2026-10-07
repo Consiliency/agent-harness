@@ -980,13 +980,16 @@ class TestRound3Coverage:
             return real(argv, **kwargs)
 
         monkeypatch.setattr(panel_invoker, "run_provider", _spy)
+        seen = tmp_path / "seen.txt"
         result = ClaudeAgentViewAdapter()._runner(
-            _print_scratch_script(), cwd=str(tmp_path), text=True,
+            _record_scratch_script(seen), cwd=str(tmp_path), text=True,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False,
         )
         assert result.returncode == 0 and len(calls) == 1
-        # Through the seat-launch owner (agent-harness#1222): its /tmp is private.
-        assert result.stdout.splitlines() == ["unset"] * 2
+        # The Agent View route is an EXECUTOR the operator runs as itself (agent-harness#1222:
+        # the trusted executor role, never a review seat): on the host, scratch relocated.
+        assert seen.read_text(encoding="utf-8").splitlines() == [
+            str(cache / "phase-loop" / "tmp")] * 2
 
     def test_the_print_executor_route_relocates_at_the_launch(self, tmp_path, monkeypatch):
         from phase_loop_runtime import launcher

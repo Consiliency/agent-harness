@@ -592,7 +592,7 @@
   {"count": 1, "function": "launch_owned", "module": "panel_invoker", "primitive": "launch_provider", "role": "owned"},
   {"count": 2, "function": "launch_provider", "module": "panel_invoker", "primitive": "subprocess.Popen", "role": "owned"},
   {"count": 2, "function": "load_native_leg_fill", "module": "panel_invoker", "primitive": "io.read_text", "role": "host-io"},
-  {"count": 1, "function": "run_provider", "module": "panel_invoker", "primitive": "launch_owned", "role": "owned"},
+  {"count": 2, "function": "run_provider", "module": "panel_invoker", "primitive": "launch_owned", "role": "owned"},
   {"count": 1, "function": "run_provider", "module": "panel_invoker", "primitive": "launch_provider", "role": "host-helper"},
   {"count": 1, "function": "seat_profile", "module": "panel_invoker", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "_file_timestamp", "module": "phase_loop_drift_audit", "primitive": "io.stat", "role": "host-io"},

@@ -59,6 +59,7 @@ class _DispatchPrep(NamedTuple):
     # only on stderr (which detached/CI runs may not capture). None otherwise.
     autosel_provenance: object = None
 
+from .agent_view_cleanup import stop_verified_session as stop_verified_agent_view_session
 from .broker import validate_delegation_request
 from .baml_modular import BamlValidationError, BamlWorkerError
 from .capability_registry import (
@@ -3925,6 +3926,9 @@ def run_loop(
                             "access_attempts": (),
                         }
                 child_automation = _parsed_child_automation(result, spec)
+                # A finished Agent View session stays open in the app until it is stopped; stop
+                # it only now that its closeout passed schema verification, never on a failure.
+                stop_verified_agent_view_session(result, child_automation, cwd=spec.wrapped_cwd or None)
                 if runner_verification:
                     child_automation["runner_verification"] = runner_verification
                 if failed_launch_closeout_override and child_automation:
