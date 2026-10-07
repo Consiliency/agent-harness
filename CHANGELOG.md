@@ -6,6 +6,27 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Strict, machine-consumable panel-seat replies (groundwork; not wired to any seat yet)
+
+- New `panel_reply` module: a closed, typed reply for advisor-board seats (`verdict`, `summary`,
+  `findings[]` with `severity`, `title`, `body`, optional `location`; an advisory mode with no
+  verdict) and `extract_reply`, the verifier. A reply verifies only if it contains exactly one
+  JSON object that matches the schema with no coercion and no extra fields, and carries the data
+  its mode requires (review mode needs a verdict; `DISAGREE` needs a blocking finding, `AGREE`
+  allows none, `PARTIALLY AGREE` needs a finding; advisory mode forbids a verdict). It never raises
+  on seat content: it returns the reply or a typed failure (`empty`, `too_large`, `no_json`,
+  `ambiguous_reply`, `schema_mismatch`, `verdict_missing`, `verdict_forbidden`,
+  `verdict_inconsistent`), and the failure detail names fields, never reply text.
+  `render_reply_instructions` renders the prompt text from the same model, so the schema a seat is
+  shown cannot drift from the one it is checked against.
+- **Why not the BAML parser:** a spike against baml-bridge 0.20.1 showed its `.parse` is lenient by
+  design. It repaired a truncated reply into `AGREE` with its findings dropped, turned `findings:
+  "none"` into an empty list, and took the first of two JSON objects. A verifier must reject those,
+  so verification is a strict Python extraction plus a strict pydantic model; nothing here touches
+  the BAML worker or `baml_src`.
+- Nothing calls it yet: wiring it to a seat (an opt-in `--reply-format json`) waits for the unified
+  seat-launch owner (agent-harness#1282).
+
 ### Finished Claude Agent View sessions are stopped once their closeout is verified
 
 - A `claude --bg` session that reaches `done` is not stopped by Claude Code: its Remote Control
