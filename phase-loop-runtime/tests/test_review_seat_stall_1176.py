@@ -221,6 +221,7 @@ def test_live_but_progressless_seat_is_surfaced_not_killed(tmp_path, monkeypatch
     assert "Thinking" not in warnings[0] and "Please perform" not in warnings[0]
 
 
+@pytest.mark.usefixtures("owned_review_network")
 def test_print_mode_leg_with_cpu_heartbeat_but_no_output_is_surfaced(tmp_path, monkeypatch):
     """The print-mode liveness loop shares the monitor: a child burning CPU (its heartbeat) with
     no output gets the notice and still runs to completion."""
@@ -239,10 +240,11 @@ def test_print_mode_leg_with_cpu_heartbeat_but_no_output_is_surfaced(tmp_path, m
     guard = threading.Timer(20, release.touch)
     guard.start()
     try:
+        # The seat cannot see the host's tmp_path: it is released by its own clock instead.
         result = panel._run_leg_with_liveness(
-            [sys.executable, "-c",
-             "from pathlib import Path\n"
-             f"while not Path({str(release)!r}).exists():\n    sum(range(10000))\n"
+            ["/usr/bin/python3", "-c",
+             "import time\nend = time.monotonic() + 1.5\n"
+             "while time.monotonic() < end:\n    sum(range(10000))\n"
              "print('verdict')\n"],
             cwd=tmp_path, env=os.environ, deadline_s=.05, stall_threshold_s=.05,
             review_monitor=monitor,
@@ -364,8 +366,11 @@ def test_grok_a_session_never_turns_a_completed_answer_into_a_degraded_give_up(t
 
 
 @pytest.mark.usefixtures("owned_review_network")
-def test_an_accepted_review_file_wins_over_a_journaled_give_up(tmp_path, monkeypatch):
-    """The ordering invariant: the review path is checked first."""
+def test_a_review_file_without_a_complete_journal_ends_on_the_give_up(tmp_path, monkeypatch):
+    """On the owned route (agent-harness#1222) a review file is accepted only with the seat's
+    complete, validated journal, so a file beside a journaled give-up is not an answer: the
+    leg ends with the typed give-up. (Replaces "an accepted review file wins over a journaled
+    give-up", the unowned route's ordering.)"""
     _fast_tui(monkeypatch)
     transcript = tmp_path / "session.jsonl"
     output = tmp_path / "panel-claude.txt"
@@ -383,8 +388,7 @@ def test_an_accepted_review_file_wins_over_a_journaled_give_up(tmp_path, monkeyp
     finally:
         guard.cancel()
         release.touch()
-    assert (rc, log) == (0, "claude_tui_file_output")
-    assert text.strip().endswith("AGREE")
+    assert (rc, log, text) == (1, "claude_seat_output_budget_exhausted", "")
 
 
 # --- round 1: re-journaled records are identity, not position or progress (codex F001) ----------
@@ -1288,6 +1292,7 @@ def test_r5_a_thinking_record_without_text_is_not_a_rejected_answer(tmp_path):
     assert panel._claude_transcript_outcome(path).text == "Review complete\nAGREE"
 
 
+@pytest.mark.usefixtures("owned_review_network")
 @pytest.mark.parametrize("heartbeat_only", [False, True])
 def test_r5_session_waits_for_the_text_flushed_after_its_thinking(tmp_path, monkeypatch, heartbeat_only):
     """N4-1 / G4-1, staged: the text record lands 1 s after its thinking record. At r4 the leg
@@ -1300,9 +1305,9 @@ def test_r5_session_waits_for_the_text_flushed_after_its_thinking(tmp_path, monk
     first = "".join(json.dumps(r) + "\n" for r in [REQUEST, THINKING_FIRST])
     second = json.dumps(TEXT_AFTER) + "\n"
     script = (
-        "import sys, time\nfrom pathlib import Path\n"
+        "import sys, time\nfrom pathlib import Path\n" + _JOURNAL +
         "print('Claude Code fake provider ready for review', flush=True)\n"
-        f"p = Path({str(transcript)!r}); time.sleep(.2); p.write_text({first!r})\n"
+        f"p = _journal; time.sleep(.2); p.write_text({first!r})\n"
         "time.sleep(1)\n"
         f"with p.open('a') as f: f.write({second!r})\n"
         f"while not Path({str(release)!r}).exists():\n"
@@ -1314,7 +1319,7 @@ def test_r5_session_waits_for_the_text_flushed_after_its_thinking(tmp_path, monk
     guard.start()
     try:
         rc, text, log, _ = panel._run_claude_tui_session(
-            command=[sys.executable, "-c", script], cwd=tmp_path,
+            command=["/usr/bin/python3", "-c", script], cwd=tmp_path,
             prompt="input", output_file=tmp_path / "absent", timeout_s=10,
             backstop_s=10, stall_threshold_s=3, env=os.environ,
             review_monitor=monitor if heartbeat_only else None,
@@ -1422,8 +1427,11 @@ def test_an_earlier_sidechain_record_cannot_answer_the_current_request(
     finally:
         guard.cancel()
         release.touch()
-    outcome = panel._claude_transcript_outcome(transcript, require_terminal=mode == "president")
-    _, _, turn = panel._claude_live_turn(transcript.read_text().split("\n"))
+    # A refused leg keeps no journal on the host (agent-harness#1222): judge the records the
+    # seat journaled.
+    journaled = write(tmp_path / "journaled.jsonl", records)
+    outcome = panel._claude_transcript_outcome(journaled, require_terminal=mode == "president")
+    _, _, turn = panel._claude_live_turn(journaled.read_text().split("\n"))
     assert not any(payload.get("uuid") == answer["uuid"] for payload, _ in turn)
     assert rc != 0 and text == "", (rc, text, log, outcome)
     assert outcome.kind == ("gave_up" if terminal_error else "pending")

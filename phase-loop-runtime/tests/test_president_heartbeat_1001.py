@@ -288,7 +288,11 @@ print("Claude Code ready for your message", flush=True)
 wire = b""
 while not wire.endswith(b"\x1bOM"):
     wire += os.read(0, 65536)
-Path("owned.jsonl").write_text(json.dumps({"type": "assistant", "uuid": "fixture-record",
+import re
+session_id = sys.argv[sys.argv.index("--session-id") + 1]
+slug = re.sub(r"[^A-Za-z0-9.-]", "-", os.getcwd())
+journal = Path(os.environ["CLAUDE_CONFIG_DIR"]) / "projects" / slug / (session_id + ".jsonl")
+journal.write_text(json.dumps({"type": "assistant", "uuid": "fixture-record",
     "message": {"id": "fixture-message", "role": "assistant", "stop_reason": None if sys.argv[1] == "null" else sys.argv[1],
                 "content": [{"type": "text", "text": "I think it is fine"}]}}) + "\n")
 Path("terminal-written").write_text("ready")
@@ -480,8 +484,8 @@ def _run_terminal_child(tmp_path, monkeypatch, *, shape, interval_s, cancel_on_f
         launched.append(proc)
         return proc
 
-    def extract(path, *, require_terminal=False):
-        final = real_extract(path, require_terminal=require_terminal)
+    def extract(path, *, require_terminal=False, **kwargs):
+        final = real_extract(path, require_terminal=require_terminal, **kwargs)
         if cancel_on_final_read and require_terminal and final:
             cancel.set()  # cancellation lands during the final read
         return final

@@ -842,18 +842,16 @@ class TestEveryAgentLaunchIsRelocated:
         env = sandbox_policy.fill_child_tmp_env({"PATH": "/usr/bin"})
         assert Path(env["TMPDIR"]).is_relative_to(disk_tmp), env
 
-    def test_a_bounded_agy_home_is_created_in_the_relocated_dir(self, tmp_path, monkeypatch):
+    def test_a_bounded_agy_leg_creates_no_host_home(self, tmp_path, monkeypatch):
+        """agent-harness#1222: agy's home is the seat's private home, built inside the owner
+        from the declared credential copy; no host directory stands in for it."""
         from phase_loop_runtime import panel_invoker
 
-        home = tmp_path / "home"
-        token = home / ".gemini/antigravity-cli/antigravity-oauth-token"
-        token.parent.mkdir(parents=True)
-        token.write_text("reference", encoding="utf-8")
-        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
         scratch = tmp_path / "scratch"
         scratch.mkdir()
-        with panel_invoker._brokered_agy_environment({"TMPDIR": str(scratch)}, None) as env:
-            assert Path(env["HOME"]).parent == scratch, env
+        base = {"TMPDIR": str(scratch), "HOME": str(tmp_path / "home")}
+        with panel_invoker._brokered_agy_environment(base, None) as env:
+            assert env == base and list(scratch.iterdir()) == []
 
     def test_the_bounded_gemini_president_is_relocated(self, tmp_path, monkeypatch):
         from types import SimpleNamespace
@@ -875,7 +873,8 @@ class TestEveryAgentLaunchIsRelocated:
             president_adapter.PresidentInvoke._launch_gemini(
                 fake_self, "gemini-3.8-flash-high", "prompt", tmp_path)
         assert seen.get("TMPDIR") == str(cache / "phase-loop" / "tmp"), seen
-        assert Path(seen["HOME"]).parent == cache / "phase-loop" / "tmp", seen
+        # agent-harness#1222: the seat builds its own private home; the caller's is handed on.
+        assert seen["HOME"] == str(tmp_path), seen
 
     def test_a_component_owned_by_another_account_is_refused(self, tmp_path, monkeypatch):
         cache = tmp_path / "cache"
@@ -950,6 +949,11 @@ class TestEveryAgentLaunchIsRelocated:
             sandbox_policy.fill_child_tmp_env({"PATH": "/usr/bin"})
 
 
+def _print_scratch_script() -> list[str]:
+    """For an owned launch, which cannot write a host file: the seat prints its scratch."""
+    return ["/bin/sh", "-c", 'printf "%s\\n%s\\n" "${TMPDIR-unset}" "${CLAUDE_CODE_TMPDIR-unset}"']
+
+
 def _record_scratch_script(seen: Path) -> list[str]:
     return ["/bin/sh", "-c",
             'printf "%s\\n%s\\n" "${TMPDIR-unset}" "${CLAUDE_CODE_TMPDIR-unset}" > "$0"', str(seen)]
@@ -976,14 +980,13 @@ class TestRound3Coverage:
             return real(argv, **kwargs)
 
         monkeypatch.setattr(panel_invoker, "run_provider", _spy)
-        seen = tmp_path / "seen.txt"
         result = ClaudeAgentViewAdapter()._runner(
-            _record_scratch_script(seen), cwd=str(tmp_path), text=True,
+            _print_scratch_script(), cwd=str(tmp_path), text=True,
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False,
         )
         assert result.returncode == 0 and len(calls) == 1
-        assert seen.read_text(encoding="utf-8").splitlines() == [
-            str(cache / "phase-loop" / "tmp")] * 2
+        # Through the seat-launch owner (agent-harness#1222): its /tmp is private.
+        assert result.stdout.splitlines() == ["unset"] * 2
 
     def test_the_print_executor_route_relocates_at_the_launch(self, tmp_path, monkeypatch):
         from phase_loop_runtime import launcher
@@ -1049,14 +1052,16 @@ class TestRound3Coverage:
         assert envelope.status.value == "failed"
         assert "RAM fallback is refused" in envelope.detail
 
-    def test_the_credentialless_president_home_is_in_the_relocated_dir(self, tmp_path, monkeypatch):
+    def test_the_gemini_president_creates_no_host_home(self, tmp_path, monkeypatch):
+        """agent-harness#1222: the president's agy home is the seat's private home; a missing
+        credential refuses inside the owner's profile, never through a host stand-in home."""
         from phase_loop_runtime import president_adapter
 
         monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "no-home"))
         scratch = tmp_path / "scratch"
         scratch.mkdir()
         with president_adapter._president_agy_environment({"TMPDIR": str(scratch)}) as env:
-            assert Path(env["HOME"]).parent == scratch, env
+            assert "HOME" not in env and list(scratch.iterdir()) == []
 
     def test_an_empty_env_still_gets_the_decision(self, tmp_path, monkeypatch):
         from phase_loop_runtime import panel_invoker
@@ -1064,10 +1069,10 @@ class TestRound3Coverage:
         cache = tmp_path / "cache"
         monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
         _slash_tmp_is_ram(monkeypatch)
-        seen = tmp_path / "seen.txt"
-        panel_invoker.run_provider(_record_scratch_script(seen), env={})
-        assert seen.read_text(encoding="utf-8").splitlines() == [
-            str(cache / "phase-loop" / "tmp")] * 2
+        result = panel_invoker.run_provider(_print_scratch_script(), env={},
+                                            capture_output=True, text=True)
+        # Owned (agent-harness#1222): decided CHILD_SCRATCH_PRIVATE_TMP, nothing relocated in.
+        assert result.stdout.splitlines() == ["unset"] * 2
 
     def test_a_base_others_may_write_must_be_sticky(self, tmp_path):
         base = tmp_path / "base"
@@ -1182,31 +1187,9 @@ class TestPerRunScratchRecordsItsOwner:
         launcher._cleanup_paths((str(staged),))
         assert not Path(str(staged) + sandbox_retention.OWNER_SUFFIX).exists()
 
-    def test_the_owned_agy_home(self, tmp_path, monkeypatch):
-        from phase_loop_runtime import panel_invoker
-
-        home = tmp_path / "home"
-        token = home / ".gemini/antigravity-cli/antigravity-oauth-token"
-        token.parent.mkdir(parents=True)
-        token.write_text("reference", encoding="utf-8")
-        monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
-        scratch = tmp_path / "scratch"
-        scratch.mkdir()
-        with panel_invoker._brokered_agy_environment({"TMPDIR": str(scratch)}, None) as env:
-            agy_home = Path(env["HOME"])
-            assert self._owned_by_us(agy_home)
-        assert not Path(str(agy_home) + sandbox_retention.OWNER_SUFFIX).exists()
-
-    def test_the_credentialless_president_home(self, tmp_path, monkeypatch):
-        from phase_loop_runtime import president_adapter
-
-        monkeypatch.setattr(Path, "home", classmethod(lambda cls: tmp_path / "no-home"))
-        scratch = tmp_path / "scratch"
-        scratch.mkdir()
-        with president_adapter._president_agy_environment({"TMPDIR": str(scratch)}) as env:
-            empty = Path(env["HOME"])
-            assert self._owned_by_us(empty)
-        assert not Path(str(empty) + sandbox_retention.OWNER_SUFFIX).exists()
+    # agent-harness#1222: the owned agy home and the credentialless president home are no
+    # longer host scratch directories (the seat's home is private to it), so they hold no
+    # owner record; see TestEveryAgentLaunchIsRelocated / TestRound3Coverage.
 
     def test_the_falsifier_dependency_snapshot(self, tmp_path, monkeypatch):
         from phase_loop_runtime import review_stage

@@ -484,7 +484,7 @@ class _SeatClaudeJournal:
         return data
 
 
-def _validated_claude_journal(data):
+def _validated_claude_journal(data, *, require_terminal: bool = True):
     if not data or not data.endswith(b"\n"):
         return ""
     try:
@@ -535,7 +535,9 @@ def _validated_claude_journal(data):
                     pending.add(tool)
         if pending:
             return ""
-        return _final_assistant_text_from_jsonl(None, require_terminal=True, data=data)
+        # The route's own answer rule decides the text: the president's terminal-turn rule,
+        # or the review rule, under which a completed answer outlives a later stray error.
+        return _final_assistant_text_from_jsonl(None, require_terminal=require_terminal, data=data)
     except (AttributeError, TypeError, ValueError, UnicodeError):
         return ""
 
@@ -8317,9 +8319,8 @@ def _run_claude_tui_session(
         if not allow_transcript_final or broker_transcript_path is None:
             return ""
         if journal is not None:
-            data = _journal_data()
-            final = _validated_claude_journal(data)
-            if not final and _final_assistant_text_from_jsonl(None, require_terminal=True, data=data):
+            final, refused = _journal_check(_journal_data())
+            if refused:
                 journal_error = True
             return final
         if seat_jail is None and (proc is None or proc.poll() != 0):
@@ -8354,10 +8355,25 @@ def _run_claude_tui_session(
             journal_error = True
             return b""
 
+    journal_checks: dict[bytes, tuple[str, bool]] = {}
+
+    def _journal_check(data: bytes) -> tuple[str, bool]:
+        """``(validated final text, refused)`` for collected journal bytes, decided once per
+        distinct content (agent-harness#1194: an unchanged transcript is not re-parsed every
+        tick). ``refused`` is a terminal answer the validator does not accept."""
+        key = sha256(data).digest()
+        if key not in journal_checks:
+            final = _validated_claude_journal(data, require_terminal=mode == "president")
+            refused = not final and bool(_final_assistant_text_from_jsonl(
+                None, require_terminal=mode == "president", data=data))
+            journal_checks.clear()
+            journal_checks[key] = (final, refused)
+        return journal_checks[key]
+
     def _canonical_complete(text):
         if not _completion_ok(text, mode):
             return False
-        return journal is None or bool(_validated_claude_journal(_journal_data()))
+        return journal is None or bool(_journal_check(_journal_data())[0])
 
     def _finish(rc: int, text: str, log: str) -> tuple[int, str, str, str]:
         if rc == 0:
@@ -8366,7 +8382,7 @@ def _run_claude_tui_session(
             if journal is not None:
                 _terminate_process_group(proc, force_group=True)
                 data = _journal_data()
-                final = _validated_claude_journal(data)
+                final = _validated_claude_journal(data, require_terminal=mode == "president")
                 if journal_error or not final:
                     return 1, "", "claude_tui_journal_collection_refused", ""
                 _write_seat_text(session_transcript_path, data.decode("utf-8"))

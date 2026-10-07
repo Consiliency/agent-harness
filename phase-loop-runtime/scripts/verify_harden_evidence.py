@@ -2382,7 +2382,10 @@ SANDBOX_KEYS = frozenset({
     "sandbox_placement_backend", "sandbox_placement_receipts", "sandbox_placement_verified",
     "sandbox_local_provider_spawns", "sandbox_snapshot_sha256",
 })
-SANDBOX_OPTIONAL_KEYS = frozenset({"sandbox_seat_identity", "sandbox_root_unapplied_reason"})
+SANDBOX_OPTIONAL_KEYS = frozenset({"sandbox_seat_identity", "sandbox_root_unapplied_reason",
+                                   # agent-harness#1222 §5: the trusted host git that staged it.
+                                   "host_git_executable", "host_git_version"})
+HOST_GIT_VERSION = re.compile(r"^[0-9]{1,4}(\.[0-9]{1,6}){1,3}$")
 PLACEMENT_RECEIPT_STEPS = ("prepared", "committed", "launched", "completed")
 PLACEMENT_REF = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 PLACEMENT_CAPABILITIES = frozenset({
@@ -2398,6 +2401,13 @@ def verify_sandbox_placement(broker: dict[str, Any]) -> None:
 
     ``sandbox_snapshot_sha256`` is the AUTHORIZATION's staged-tree digest, written by the
     producer from the authorization and never from a receipt."""
+    if "host_git_executable" in broker or "host_git_version" in broker:
+        executable = broker.get("host_git_executable")
+        version = broker.get("host_git_version")
+        if (not isinstance(executable, str) or not executable.startswith("/")
+                or not executable.endswith("/git") or not isinstance(version, str)
+                or not HOST_GIT_VERSION.fullmatch(version)):
+            fail("broker host git identity is malformed")
     authorized = text(broker["sandbox_snapshot_sha256"], "broker.sandbox_snapshot_sha256", pattern=HEX64)
     backend = text(broker["sandbox_placement_backend"], "broker.sandbox_placement_backend")
     spawns = integer(broker["sandbox_local_provider_spawns"], "broker.sandbox_local_provider_spawns")

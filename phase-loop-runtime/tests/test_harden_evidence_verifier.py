@@ -514,6 +514,12 @@ def test_a_sandboxed_broker_record_round_trips_and_backend_claims_do_not(tmp_pat
     # An undeclared sandbox key is still refused: the set is enumerated, not a prefix.
     with pytest.raises(verifier.EvidenceError):
         verify({**sandboxed, "sandbox_anything_else": True})
+    # The host git identity (agent-harness#1222) is recorded, and only in its exact shape.
+    assert sandboxed["host_git_executable"].endswith("/git")
+    for broken in ({"host_git_version": "2.x"}, {"host_git_executable": "git"},
+                   {"host_git_executable": "/usr/bin/sh"}):
+        with pytest.raises(verifier.EvidenceError):
+            verify({**sandboxed, **broken})
 
     # Each condition of the placement check, refused on its own (agent-harness#1246 r1).
     remote = {**backend_only, "sandbox_placement_receipts": [
