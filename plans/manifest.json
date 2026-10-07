@@ -5161,6 +5161,24 @@
           "landed_note": "appended as exactly one separate landed entry after agent-harness#1292 merges, naming authorization_id agent-harness#1292:PANEL-EFFORT:HARDEN, under the chain rule of this row's first authorization. This entry is never mutated once on main."
         },
         {
+          "authorization_id": "agent-harness#1292:PANEL-EFFORT:HARDEN",
+          "entry": "landed",
+          "issue": "Consiliency/agent-harness#1292",
+          "merge_commit": "9f0a65bb534a1fb4b946c8749546b842880cde0e",
+          "merge_first_parent": "9fe77c4061a97f95f6b44aa77f77ce42cd533f8e",
+          "files": [
+            {
+              "path": "phase-loop-runtime/tests/test_advisor_board_backing_homebrew.py",
+              "nodes": [
+                "DefaultBoardByteEquivalenceTests::test_default_board_seam_calls_default_spawn_with_seat_effort_and_scrubbed_env"
+              ],
+              "old_blob": "efa0ac113641bfee736effd4c53bcf92faa6069b",
+              "new_blob": "a01138d6b8a35363fc47e22c2eb9dd46a7b24b66"
+            }
+          ],
+          "note": "old_blob equals the authorization's base_blob and the path's blob at the merge's first parent; new_blob equals the path's blob at the merge. Appended once after the merge; never mutated."
+        },
+        {
           "authorization_id": "agent-harness#1222:SEATOWNER:HARDEN",
           "entry": "authorization",
           "issue": "Consiliency/agent-harness#1222",
