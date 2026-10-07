@@ -5090,6 +5090,12 @@
           "roadmap_sha256": "59982ada79f91fa771e62010ebb4adad5e07c900f75ef4fec4ff1d6ce5a626ef",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1264"
+        },
+        {
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1295",
+          "plan_sha256": "93057f32d83a170976f24a02c5a819e6ae4c31059b73981a8a0a31c498865daf",
+          "roadmap_sha256": "59982ada79f91fa771e62010ebb4adad5e07c900f75ef4fec4ff1d6ce5a626ef"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/fdaed78f/codex-v10-plan-harden/20260730T035939Z-01-harden-plan.md",
