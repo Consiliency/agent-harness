@@ -504,6 +504,13 @@ def parse_canonical_json(data: bytes, label: str) -> Any:
     return value
 
 
+def parse_retained_json(data: bytes, label: str) -> Any:
+    """Parse exact run-owned JSON bytes without imposing derived encoding."""
+    value = strict_json_loads(data, label)
+    reject_secret_payloads(value, label)
+    return value
+
+
 def closed(value: Any, keys: set[str], label: str) -> dict[str, Any]:
     if not isinstance(value, dict) or set(value) != keys:
         fail(f"{label}: unknown or missing field")
@@ -709,9 +716,7 @@ def run_owned_receipt(store: ArtifactStore, repo: Path, ref: dict[str, str], lab
         fail(f"{label}: canonical run receipt is unavailable")
     if canonical != copied:
         fail(f"{label}: copied receipt differs from canonical run receipt")
-    value = parse_canonical_json(copied, label)
-    reject_secret_payloads(value, label)
-    return value
+    return parse_retained_json(copied, label)
 
 
 _GIT_CONFIG = (
@@ -3151,7 +3156,22 @@ def validate_sl4_boundary(
         if _is_ancestor(repo, sl4_landing, commit_id):
             continue
         parents = commit_parents(repo, commit_id, "post-SL-4 production source")
-        if parents and changed_paths(repo, parents[0], commit_id) & sl5_paths:
+        if parents:
+            source_paths = changed_paths(repo, parents[0], commit_id)
+        else:
+            source_paths = set(
+                _git_lines(
+                    repo,
+                    "ls-tree",
+                    "-r",
+                    "--name-only",
+                    commit_id,
+                    "--",
+                    *sorted(sl5_paths),
+                    label="parentless post-SL-4 production source",
+                )
+            )
+        if source_paths & sl5_paths:
             fail("SL-5 production source does not descend from the reviewed SL-4 landing")
     after_boundary = False
     for commit_id in history:
@@ -3534,8 +3554,7 @@ def retained_input_nonces(store: ArtifactStore, retained: Any) -> set[str]:
         reject_raw_secret_bytes(raw, "authority retained input")
         if raw.lstrip()[:1] not in {b"{", b"["}:
             continue
-        value = parse_canonical_json(raw, "authority retained input")
-        reject_secret_payloads(value, "authority retained input")
+        value = parse_retained_json(raw, "authority retained input")
         collect(value)
         # Historical approval seats are the pre-production review operation
         # identities.  They are not output seats, so protect them from reuse
@@ -3567,7 +3586,7 @@ def retained_historical_review_sessions(
         raw = store.read(ref, "authority retained input", distinct=False)
         if raw.lstrip()[:1] not in {b"{", b"["}:
             continue
-        value = parse_canonical_json(raw, "authority retained input")
+        value = parse_retained_json(raw, "authority retained input")
         if not isinstance(value, dict) or value.get("schema") != "harden_sl0_approval.v1":
             continue
         seats = value.get("seats")
@@ -3609,7 +3628,7 @@ def retained_role_attestations(
         raw = store.read(ref, "authority retained input", distinct=False)
         if raw.lstrip()[:1] not in {b"{", b"["}:
             continue
-        value = parse_canonical_json(raw, "authority retained input")
+        value = parse_retained_json(raw, "authority retained input")
         if not isinstance(value, dict) or value.get("schema") != "harden_role_attestation.v1":
             if _contains_schema(value, "harden_role_attestation.v1"):
                 fail("retained role operation nonce inventory is malformed")
@@ -3668,7 +3687,7 @@ def retained_plan_authority(
         raw = store.read(ref, "authority retained input", distinct=False)
         if raw.lstrip()[:1] not in {b"{", b"["}:
             continue
-        value = parse_canonical_json(raw, "authority retained input")
+        value = parse_retained_json(raw, "authority retained input")
         if not isinstance(value, dict) or value.get("schema") != "harden_plan_authority.v1":
             if _contains_schema(value, "harden_plan_authority.v1"):
                 fail("retained plan authority inventory is malformed")
@@ -3711,7 +3730,7 @@ def retained_review_requests(
         raw = store.read(ref, "authority retained input", distinct=False)
         if raw.lstrip()[:1] not in {b"{", b"["}:
             continue
-        value = parse_canonical_json(raw, "authority retained input")
+        value = parse_retained_json(raw, "authority retained input")
         if not isinstance(value, dict) or value.get("schema") != "harden_review_request.v1":
             if _contains_schema(value, "harden_review_request.v1"):
                 fail("retained review request inventory is malformed")
@@ -3808,8 +3827,7 @@ def retained_execution_runs(
         raw = store.read(ref, "authority retained input", distinct=False)
         if raw.lstrip()[:1] not in {b"{", b"["}:
             continue
-        value = parse_canonical_json(raw, "authority retained input")
-        reject_secret_payloads(value, "authority retained input")
+        value = parse_retained_json(raw, "authority retained input")
         if isinstance(value, dict) and value.get("schema") == "harden_execution_runs.v1":
             indexes.append(value)
     if len(indexes) != 1:
@@ -6678,6 +6696,28 @@ def self_test() -> None:
                 return
             raise AssertionError(name + " was accepted")
 
+        escaped_unicode_receipt = (
+            json.dumps(
+                {"report": "reviewed retained evidence — AGREE"},
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=True,
+            )
+            + "\n"
+        ).encode("ascii")
+        retained_unicode = parse_retained_json(
+            escaped_unicode_receipt, "self-test escaped Unicode receipt"
+        )
+        if retained_unicode != {"report": "reviewed retained evidence — AGREE"}:
+            raise AssertionError("escaped Unicode receipt was not preserved")
+        direct_rejected(
+            "derived-evidence-requires-literal-unicode-canonical-json",
+            lambda: parse_canonical_json(
+                escaped_unicode_receipt,
+                "self-test derived escaped Unicode receipt",
+            ),
+        )
+
         integration_root = root / "exact-integration-merge"
         integration_root.mkdir()
         integration_repo, integration_refs = _self_git(
@@ -6931,6 +6971,45 @@ def self_test() -> None:
                 sl0_landing,
                 merged_pre_sl4_base,
                 merged_pre_sl4_head,
+            ),
+        )
+
+        orphan_tree = _run(
+            ["git", "rev-parse", merged_pre_sl4_head + "^{tree}"], sl4_repo
+        )
+        orphan_source = _run(
+            [
+                "git", "commit-tree", orphan_tree,
+                "-m", "parentless pre-SL-4 production source",
+            ],
+            sl4_repo,
+        )
+        if commit_parents(sl4_repo, orphan_source, "parentless production source"):
+            raise AssertionError("orphan production fixture has a parent")
+        orphan_merge_head = _run(
+            [
+                "git", "commit-tree", orphan_tree,
+                "-p", sl4_landing,
+                "-p", orphan_source,
+                "-m", "merge parentless pre-SL-4 production",
+            ],
+            sl4_repo,
+        )
+        orphan_merge_base, orphan_merge_paths = candidate_contribution_paths(
+            sl4_repo,
+            sl0_landing,
+            orphan_merge_head,
+            sl5_production_paths(sl4_repo, orphan_merge_head),
+        )
+        if orphan_merge_base != sl4_landing or orphan_merge_paths != {sl5_path}:
+            raise AssertionError("parentless production fixture has the wrong contribution")
+        direct_rejected(
+            "parentless-SL-5-production-merged-after-boundary",
+            lambda: validate_sl4_boundary(
+                sl4_repo,
+                sl0_landing,
+                orphan_merge_base,
+                orphan_merge_head,
             ),
         )
 
