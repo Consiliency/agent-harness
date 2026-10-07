@@ -3073,6 +3073,7 @@ def validate_sl4_boundary(
             fail("HARDEN plan lost the SL-4 lane")
         return
     sl4_paths = plan_owned_paths(repo, revision, "SL-4")
+    sl5_paths = sl5_production_paths(repo, revision)
     matches: list[str] = []
     for commit_id in history:
         parents = commit_parents(repo, commit_id, "HARDEN SL-4 landing")
@@ -3106,8 +3107,11 @@ def validate_sl4_boundary(
         if not after_boundary:
             continue
         parent = commit_parents(repo, commit_id, "post-SL-4 history")[0]
-        if changed_paths(repo, parent, commit_id) & sl4_paths:
+        delta = changed_paths(repo, parent, commit_id)
+        if delta & sl4_paths:
             fail("frozen SL-4 test changed after its reviewed landing")
+        if delta & sl5_paths:
+            fail("SL-5 production changed before the derived review base")
 
 
 def verify_git_and_inventory(
@@ -3536,6 +3540,16 @@ def retained_role_operation_nonces(
 ) -> set[str]:
     """Return the three raw role operation nonces retained by the producer."""
     roles: dict[str, str] = {}
+
+    def contains_role_attestation(value: Any) -> bool:
+        if isinstance(value, dict):
+            if value.get("schema") == "harden_role_attestation.v1":
+                return True
+            return any(contains_role_attestation(item) for item in value.values())
+        if isinstance(value, list):
+            return any(contains_role_attestation(item) for item in value)
+        return False
+
     for item in retained:
         ref = artifact_ref(item, "authority retained input")
         raw = store.read(ref, "authority retained input", distinct=False)
@@ -3543,6 +3557,8 @@ def retained_role_operation_nonces(
             continue
         value = parse_canonical_json(raw, "authority retained input")
         if not isinstance(value, dict) or value.get("schema") != "harden_role_attestation.v1":
+            if contains_role_attestation(value):
+                fail("retained role operation nonce inventory is malformed")
             continue
         value = closed(
             value,
@@ -6483,6 +6499,32 @@ def self_test() -> None:
             ),
         )
 
+        _run(["git", "checkout", "-qb", "upstream-main", sl4_landing], sl4_repo)
+        (sl4_repo / "README.md").write_text("upstream\n", encoding="utf-8")
+        _run(["git", "add", "README.md"], sl4_repo)
+        _run(["git", "commit", "-qm", "unrelated upstream work"], sl4_repo)
+        _run(["git", "checkout", "-qb", "upstream-feature", sl4_landing], sl4_repo)
+        (sl4_repo / sl5_path).write_text("VALUE = 20\n", encoding="utf-8")
+        _run(["git", "add", sl5_path], sl4_repo)
+        _run(["git", "commit", "-qm", "first SL-5 change"], sl4_repo)
+        _run(["git", "merge", "--no-ff", "-qm", "merge upstream", "upstream-main"], sl4_repo)
+        (sl4_repo / sl5_path).write_text("VALUE = 21\n", encoding="utf-8")
+        _run(["git", "add", sl5_path], sl4_repo)
+        _run(["git", "commit", "-qm", "second SL-5 change"], sl4_repo)
+        upstream_merge_head = _run(["git", "rev-parse", "HEAD"], sl4_repo)
+        upstream_merge_base, _ = candidate_contribution_paths(
+            sl4_repo,
+            sl0_landing,
+            upstream_merge_head,
+            sl5_production_paths(sl4_repo, upstream_merge_head),
+        )
+        direct_rejected(
+            "upstream-merge-hides-earlier-SL-5",
+            lambda: validate_sl4_boundary(
+                sl4_repo, sl0_landing, upstream_merge_base, upstream_merge_head
+            ),
+        )
+
         _run(["git", "checkout", "-q", "main"], sl4_repo)
         sl4_file.write_text("def test_sl4(): assert False\n", encoding="utf-8")
         _run(["git", "add", sl4_path], sl4_repo)
@@ -6547,6 +6589,40 @@ def self_test() -> None:
         direct_rejected(
             "role-operation-nonce-as-final-review-session",
             lambda: reject_role_operation_nonce_reuse({"7" * 64}, {"7" * 64}),
+        )
+
+        def retained_role(role: str, operation_nonce: str) -> dict[str, Any]:
+            return {
+                "schema": "harden_role_attestation.v1",
+                "annotation": "self-test retained role",
+                "role": role,
+                "identity": role + "-identity",
+                "vendor": "self-test-vendor",
+                "session_sha256": sha256((role + "-session").encode()),
+                "evidence_id": sha256(b"self-test-role-evidence"),
+                "issued_at": "2026-10-07T00:00:00Z",
+                "operation_nonce": operation_nonce,
+            }
+
+        role_inputs = [
+            retained_input(retained_role(role, str(index) * 64), "role-" + role)
+            for index, role in enumerate(
+                ("coordinator", "author", "reviewer"), start=7
+            )
+        ]
+        if retained_role_operation_nonces(input_store, role_inputs) != {
+            "7" * 64, "8" * 64, "9" * 64
+        }:
+            raise AssertionError("retained role operation nonce inventory drifted")
+        nested_role = retained_input(
+            [retained_role("coordinator", "a" * 64)],
+            "nested-role",
+        )
+        direct_rejected(
+            "nested-retained-role-attestation",
+            lambda: retained_role_operation_nonces(
+                input_store, [*role_inputs, nested_role]
+            ),
         )
 
         registry_schema = {
