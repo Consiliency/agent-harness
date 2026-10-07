@@ -3401,7 +3401,15 @@ def retained_input_nonces(store: ArtifactStore, retained: Any) -> set[str]:
             if isinstance(seats, list):
                 for seat in seats:
                     if isinstance(seat, dict) and "session_sha256" in seat:
-                        reusable.add(text(seat["session_sha256"], "historical reviewer operation nonce", pattern=HEX64))
+                        session = text(
+                            seat["session_sha256"],
+                            "historical reviewer operation nonce",
+                            pattern=HEX64,
+                        )
+                        if session in values:
+                            fail("duplicate input operation nonce")
+                        values.add(session)
+                        reusable.add(session)
     return reusable
 
 
@@ -6153,6 +6161,41 @@ def self_test() -> None:
             "self-test reviewed input",
         ) != integration_refs["landing"][0]:
             raise AssertionError("exact reviewed commit selected the wrong integration merge")
+
+        input_collision_root = root / "input-nonce-collision"
+        input_collision_root.mkdir()
+
+        def retained_input(value: dict[str, Any], name: str) -> dict[str, str]:
+            raw = canonical_bytes(value)
+            path = name + ".json"
+            (input_collision_root / path).write_bytes(raw)
+            return {"path": path, "sha256": sha256(raw)}
+
+        process_input = retained_input(
+            {"schema": "self_test_receipt.v1", "process_nonce": "1" * 64},
+            "process",
+        )
+        historical_input = retained_input(
+            {
+                "schema": "harden_sl0_approval.v1",
+                "operation_nonce": "2" * 64,
+                "seats": [{"session_sha256": "1" * 64}],
+            },
+            "historical",
+        )
+        input_store = ArtifactStore(input_collision_root)
+        direct_rejected(
+            "process-before-historical-session-reuse",
+            lambda: retained_input_nonces(
+                input_store, [process_input, historical_input]
+            ),
+        )
+        direct_rejected(
+            "historical-session-before-process-reuse",
+            lambda: retained_input_nonces(
+                input_store, [historical_input, process_input]
+            ),
+        )
 
         registry_schema = {
             "schema": "harden_evidence_registry.v1",
