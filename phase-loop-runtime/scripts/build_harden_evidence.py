@@ -79,6 +79,13 @@ def _json(data: bytes, label: str) -> Any:
         raise BuildError(str(exc)) from exc
 
 
+def _retained_json(data: bytes, label: str) -> Any:
+    try:
+        return V.parse_retained_json(data, label)
+    except Exception as exc:
+        raise BuildError(str(exc)) from exc
+
+
 def _closed(value: Any, keys: set[str], label: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise BuildError(f"{label} must be an object")
@@ -656,7 +663,14 @@ def derive_live_facts(inputs: Path, *, evidence_root: Path, repo: Path) -> dict[
         counts[name] = {key: summary[key] for key in ("passed", "failed", "skipped")}
     routes: list[dict[str, str]] = []
     for round_name in ("candidate", "canonical_main"):
-        request = _json(_read(evidence_root, artifacts[round_name + "_review_request"], "review request")[1], "review request")
+        request = _retained_json(
+            _read(
+                evidence_root,
+                artifacts[round_name + "_review_request"],
+                "review request",
+            )[1],
+            "review request",
+        )
         value = request.get("routes")
         if not isinstance(value, list):
             raise BuildError("review routes are malformed")
@@ -669,7 +683,14 @@ def derive_live_facts(inputs: Path, *, evidence_root: Path, repo: Path) -> dict[
         "candidate": sorted(candidate_changes),
         "canonical_main": sorted(_git_lines(repo, "diff-tree", "--no-commit-id", "--name-only", "-r", git["candidate"]["commit"], git["canonical_main"]["commit"])),
     }
-    author = _json(_read(evidence_root, manifest["role_attestations"]["author"], "author attestation")[1], "author attestation")
+    author = _retained_json(
+        _read(
+            evidence_root,
+            manifest["role_attestations"]["author"],
+            "author attestation",
+        )[1],
+        "author attestation",
+    )
     if not isinstance(author.get("vendor"), str) or author["vendor"] != plan.get("author_vendor"):
         raise BuildError("author attestation is malformed")
     return {"schema": "harden_live_facts.v1", "git": git, "changed_paths": changed,
@@ -779,7 +800,7 @@ def _prepare_stage(inputs: Path, source_root: Path, evidence_root: Path, repo: P
             raise BuildError(str(exc)) from exc
         if observed_bytes != canonical:
             raise BuildError(name + " canonical run receipt differs from retained observation")
-        observed = _json(observed_bytes, name)
+        observed = _retained_json(observed_bytes, name)
         raw = retained(artifacts[name + "_raw"], name + " raw")
         junit = retained(artifacts[name + "_junit"], name + " junit")
         return {"receipt": _receipt(evidence_root, name, observed, raw, junit, kind=kind), "raw": raw, "junit": junit}
@@ -853,7 +874,7 @@ def _prepare_stage(inputs: Path, source_root: Path, evidence_root: Path, repo: P
         ref for _source, ref in sorted(copies.items())
     ]
     def role_attestation(name: str) -> dict[str, str]:
-        source = _json(
+        source = _retained_json(
             (evidence_root / retained(manifest["role_attestations"][name], name + " role")["path"]).read_bytes(),
             name + " role",
         )
