@@ -374,6 +374,41 @@ restored from outside).
 4. Close out on Consiliency/agent-harness#789 with the result JSON, the
    attestation digests, and the per-host re-pin evidence.
 
+## 8a. Recovering a sealed, failed publication (`attested_not_landed`)
+
+Use this when a human or governed publication failed with an ambiguous
+provider outcome (for example `outcome_ambiguous_blocked` / `push-unconfirmed`),
+the publish transaction for the **current** head is `TERMINAL_SEALED`, and the
+operator has reviewed the case and established that the push did not land.
+Runtime 0.7.24 and earlier refuse this retry after the rotation
+(`broker admission precondition denied`) and leave a new unsealed owner in the
+successor generation. Re-pin to a release that contains agent-harness#1296
+before rotating.
+
+1. Leave the worktree, branch, commit, plan file and verification artifact
+   exactly as they were. Do not make an empty commit, switch branch, force
+   push, rebuild the proof, or edit checkpoint or broker files.
+2. Build the attestation (§3) with `disposition: attested_not_landed`, no
+   `observed_head`, and the owner's `owner_nonce` and `transaction_id` copied
+   verbatim. The `transaction_id` must equal the sealed checkpoint's; a
+   disposition that binds no transaction id authorizes nothing. A later missing
+   remote ref, or a successful `git push --dry-run`, is not proof that the
+   historical attempt had no effect. The attestation is the operator's judgement
+   and should cite the review in `evidence_url`.
+3. Preflight (§4) until the verdict is the string `ready`, then execute (§7).
+4. Restart any broker process (§8 step 1).
+5. Retry the **same** publication call with the same plan and verification
+   artifact. Expected: one provider call for the exact sealed commit,
+   `status: published`, and a new
+   `publish-transactions/<node>/<transaction_id>.recovery.<generation>.json`
+   beside the unchanged checkpoint. A second retry is answered from evidence
+   with no provider call.
+
+If the retry is refused with `sealed_publication_recovery_required`, the
+message names what did not bind (no disposition, no transaction id, a different
+transaction, or an inventory that does not authenticate). Nothing was written;
+fix the input and retry.
+
 ## 9. Residuals carried out of the 2026-09-09 preparation
 
 - Consiliency/agent-harness#819 — `fab_gate` circular import on `git+main`

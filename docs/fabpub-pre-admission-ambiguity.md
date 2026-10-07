@@ -234,6 +234,33 @@ than in `attested_by`. The dispositions:
   absent. The key is **not** carried, so the successor publishes it afresh
   exactly once, after which ordinary idempotency holds.
 
+  A failed publication normally leaves its publish transaction
+  `TERMINAL_SEALED` (the broker seals on every terminal class, including
+  `outcome_ambiguous_blocked`). A retry of the same, unchanged head resumes that
+  sealed transaction, and the successor re-admits it as-is (agent-harness#1296):
+  same transaction, commit, ref, owned paths and plan/verification digests. It
+  does so only when the successor's authenticated receipt disposes the key
+  `attested_not_landed` **and** the sealed attestation's `transaction_id` (bound
+  from the predecessor's adapter-start owner) equals the transaction being
+  admitted. The checkpoint is never rewound or rewritten; the re-admission is
+  recorded once beside it as
+  `<transaction_id>.recovery.<generation>.json` (`PublishSealedHeadRecovery.v1`:
+  rotation, attestation and inventory digests, predecessor owner nonce,
+  ambiguity digest, commit, ref, paths and plan/proof digests). If that attempt
+  is ambiguous again, the successor blocks like any partition and needs its own
+  rotation. A later rotation for an unrelated key does not carry this
+  disposition, so a still-unpublished sealed transaction then needs a fresh
+  attestation.
+
+  Any other sealed current-head transaction is refused with
+  `SealedPublicationRecoveryRequired` before any owner, admission or evidence
+  write. The human route reports it as `sealed_publication_recovery_required`
+  with next step `adjudicate_sealed_publication_by_partition_rotation`.
+  Separately, the broker now checks the transaction-state precondition
+  **before** it writes the adapter-start owner, so a denied admission no
+  longer leaves an unsealed owner that the next attempt would promote to
+  permanent ambiguity.
+
 A blocked key the attestation leaves undisposed, a disposition it does not know,
 digests that do not match the predecessor's bytes, or a predecessor that is not
 `epoch_blocked` are all typed `PartitionRotationRefused` refusals before any

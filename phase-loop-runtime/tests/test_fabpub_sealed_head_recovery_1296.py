@@ -1,0 +1,302 @@
+"""Consiliency/agent-harness#1296: recovery of a sealed, failed current-head publication.
+
+A publication whose adapter returned ``outcome_ambiguous_blocked`` leaves the
+publish transaction ``TERMINAL_SEALED`` (the broker seals on every terminal
+class) and the partition ambiguity-blocked with an unsealed adapter-start
+owner.  The supported recovery is a partition rotation whose operator
+attestation disposes the effect ``attested_not_landed``.  On 0.7.24 the
+successor then routed the retry to ``_fresh_publish``, wrote a fresh owner and
+refused at admission (``broker admission precondition denied``) because the
+precondition required ``COMMITTED_HEAD_RESOLVED``: the supported recovery
+rejected the very transaction it exists to recover, and left a new blocker.
+
+``test_fabpub_partition_rotation_789d.py`` A2 never saw this: it blocks a
+``COMMITTED_HEAD_RESOLVED`` transaction synthetically.  Every test here drives
+the block through a real failed publish, so the transaction is sealed exactly
+as production seals it.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from _fabpub_tdd_guard import FABPUB_SKIP_REASON, fabpub_capability_active
+from test_fabpub_partition_rotation_789d import (
+    ATTESTED_NOT_LANDED,
+    OBSERVED_LANDED,
+    _attestation,
+    _block_key,
+    _bootstrap,
+    _publish_on_successor,
+    _release_all,
+    _release_router,
+    _rotate,
+    _routed_service,
+    _store_bytes,
+)
+from test_fabpub_recovery_controls_789 import _no_remote_probe
+from test_fabpub_shared_epoch import _CountingAdapter, _git, _jsonl, _stage
+
+pytestmark = pytest.mark.skipif(not fabpub_capability_active(), reason=FABPUB_SKIP_REASON)
+
+AMBIGUOUS = "outcome_ambiguous_blocked"
+
+
+def _inspect(p):
+    from phase_loop_runtime.publishing import inspect_publish_resume_candidate
+
+    return inspect_publish_resume_candidate(
+        p.repo,
+        checkpoint_root=p.transaction.checkpoint_root,
+        node_id=p.transaction.store.node_id,
+    )
+
+
+def _checkpoint_bytes(p) -> dict[str, bytes]:
+    """Every byte of the transaction store, keyed by file name."""
+    root = p.transaction.store.root
+    return {path.name: path.read_bytes() for path in sorted(root.iterdir()) if path.is_file()}
+
+
+def _failed_sealed_publish(tmp_path, monkeypatch):
+    """Bootstrap, then a REAL publish whose provider outcome is ambiguous.
+
+    Returns the fixture, alpha's partition and the effect key.  Afterwards the
+    transaction is ``TERMINAL_SEALED`` for the current head, generation 0 holds
+    one ``outcome_ambiguous_blocked`` row and an UNSEALED owner naming the key:
+    the incident shape of treesitter-chunker#480.
+    """
+    fx = _bootstrap(tmp_path, monkeypatch)
+    p = fx.alpha
+    p.service.adapter = _CountingAdapter(terminal_state=AMBIGUOUS)
+    key = p.service._dedup_key(p.request)
+    failed = p.service.execute(p.request)
+    assert failed.accepted is False
+    assert failed.evidence.terminal_state == AMBIGUOUS
+    assert len(p.service.adapter.calls) == 1
+    assert _inspect(p).state == "TERMINAL_SEALED"
+    owner = json.loads((p.container / "adapter-start-owner.json").read_text(encoding="utf-8"))
+    assert owner["effect_key"] == key and owner["sealed"] is False
+    assert owner["transaction_id"] == p.transaction.transaction_id
+    assert p.service.evidence_store.epoch_blocked is True
+    return fx, p, key
+
+
+def _broker_state(root: Path) -> dict:
+    """Store bytes minus the lock file, which opening the section creates empty."""
+    return {name: data for name, data in _store_bytes(root).items() if name != "admissions.lock"}
+
+
+def _owner(root: Path) -> dict | None:
+    path = root / "adapter-start-owner.json"
+    return json.loads(path.read_text(encoding="utf-8")) if path.exists() else None
+
+
+def test_sealed_head_attested_not_landed_publishes_the_exact_candidate_once(tmp_path, monkeypatch):
+    """The incident: one provider call for the exact sealed candidate, then provider-free replay."""
+    fx, p, key = _failed_sealed_publish(tmp_path, monkeypatch)
+    attestation = _attestation(p, dispositions={key: ATTESTED_NOT_LANDED})
+    assert attestation["effects"][key]["transaction_id"] == p.transaction.transaction_id
+    outcome = _rotate(None, p, attestation=attestation)
+    assert outcome.state == "ACTIVE" and outcome.generation == 1
+    gen0 = _store_bytes(p.container)
+    checkpoint = _checkpoint_bytes(p)
+
+    adapter = _CountingAdapter()
+    with _no_remote_probe(monkeypatch) as probes:
+        first, calls = _publish_on_successor(None, outcome, p, p.request, adapter=adapter)
+        assert not isinstance(first, Exception), f"recovery refused: {first!r}"
+        assert first.accepted is True, first.reason
+        assert len(calls) == 1, "the recovered candidate must reach the provider exactly once"
+        sent = calls[0]
+        assert (sent.branch, sent.head_sha) == (p.request.branch, p.transaction.expected_commit_oid)
+        assert tuple(sent.owned_paths) == tuple(p.transaction.owned_paths)
+        assert sent.admission.fence_token == p.transaction.transaction_id
+
+        replay, calls = _publish_on_successor(None, outcome, p, p.request, adapter=adapter)
+        assert not isinstance(replay, Exception), f"replay refused: {replay!r}"
+        assert replay.accepted is True
+        assert len(calls) == 1, "the replay reached the provider again"
+        assert replay.evidence.evidence_reference == first.evidence.evidence_reference
+    assert probes == []
+
+    # The predecessor generation and the original checkpoint bytes are untouched.
+    assert _store_bytes(p.container) == gen0
+    after = _checkpoint_bytes(p)
+    assert {name: after[name] for name in checkpoint} == checkpoint
+    assert _inspect(p).state == "TERMINAL_SEALED"
+    # The successor owner is sealed by the observed terminal: no new blocker.
+    owner = _owner(outcome.store_root)
+    assert owner is not None and owner["sealed"] is True
+    assert owner["transaction_id"] == p.transaction.transaction_id
+
+    # Provenance: one write-once record beside the checkpoint binds the recovery.
+    added = sorted(set(after) - set(checkpoint))
+    assert added == [f"{p.transaction.transaction_id}.recovery.1.json"], added
+    record = json.loads(after[added[0]])
+    predecessor_owner = attestation["effects"][key]
+    assert record["schema"] == "PublishSealedHeadRecovery.v1"
+    assert record["effect_key"] == key
+    assert record["transaction_id"] == p.transaction.transaction_id
+    assert record["predecessor_owner_nonce"] == predecessor_owner["owner_nonce"]
+    assert record["ambiguity_digest"] == predecessor_owner["ambiguity_digest"]
+    assert record["cutover_id"] == outcome.cutover_id
+    assert record["attestation_sha256"] == outcome.receipt.attestation_sha256
+    assert record["inventory_sha256"] == outcome.receipt.inventory_sha256
+    assert (record["predecessor_generation"], record["generation"]) == (0, 1)
+    assert record["expected_commit_oid"] == p.transaction.expected_commit_oid
+    assert record["exact_ref"] == p.transaction.exact_ref
+    assert record["owned_paths"] == list(p.transaction.owned_paths)
+    assert record["roadmap_digest"] == p.request.admission.roadmap_digest
+    assert record["verification_plan_digest"] == p.request.admission.verification_plan_digest
+    assert record["historical_disposition"] == ATTESTED_NOT_LANDED
+    assert p.adapter.calls == []  # the original fixture adapter was replaced, never reached
+
+
+def test_sealed_head_observed_landed_replays_without_provider_or_owner(tmp_path, monkeypatch):
+    """``observed_landed`` over a sealed transaction stays a provider-free duplicate."""
+    fx, p, key = _failed_sealed_publish(tmp_path, monkeypatch)
+    attestation = _attestation(
+        p, dispositions={key: OBSERVED_LANDED}, observed_head=p.transaction.expected_commit_oid
+    )
+    outcome = _rotate(None, p, attestation=attestation)
+    checkpoint = _checkpoint_bytes(p)
+    with _no_remote_probe(monkeypatch) as probes:
+        result, calls = _publish_on_successor(None, outcome, p, p.request)
+    assert probes == []
+    assert not isinstance(result, Exception), f"duplicate refused: {result!r}"
+    assert result.accepted is True
+    assert calls == []
+    assert _owner(outcome.store_root) is None
+    assert _checkpoint_bytes(p) == checkpoint
+
+
+@pytest.mark.parametrize("state", ["ADMISSION_DURABLE", "TERMINAL_SEALED"])
+def test_unadjudicated_sealed_transaction_refuses_without_owner_or_admission(tmp_path, monkeypatch, state):
+    """No rotation adjudicated the key: refuse typed, before ANY owner/admission write."""
+    from phase_loop_runtime.convergence.broker.verbs import SealedPublicationRecoveryRequired
+
+    fx = _bootstrap(tmp_path, monkeypatch)
+    p = fx.alpha
+    while p.transaction.state != state:
+        from phase_loop_runtime.publishing import PublishTransactionState as S
+
+        p.transaction.project(S.ORDERED[S.ORDERED.index(p.transaction.state) + 1])
+    before = _broker_state(p.container)
+    with _no_remote_probe(monkeypatch) as probes:
+        with pytest.raises(PermissionError) as refused:
+            p.service.execute(p.request)
+    assert probes == []
+    assert p.adapter.calls == []
+    assert _broker_state(p.container) == before, "the refusal wrote broker state"
+    assert _owner(p.container) is None
+    if state == "TERMINAL_SEALED":
+        assert isinstance(refused.value, SealedPublicationRecoveryRequired)
+        message = str(refused.value)
+        assert "TERMINAL_SEALED" in message
+        assert p.transaction.transaction_id in message
+        assert "fabpub-rotate-partition" in message
+        assert "attested_not_landed" in message
+
+
+def test_sealed_head_without_bound_transaction_refuses_after_rotation(tmp_path, monkeypatch):
+    """A not-landed disposition that binds no transaction id authorizes nothing.
+
+    The block here has no adapter-start owner, so the attestation (correctly)
+    carries no ``transaction_id``.  Recovery must not infer the binding.
+    """
+    from phase_loop_runtime.convergence.broker.verbs import SealedPublicationRecoveryRequired
+    from phase_loop_runtime.publishing import PublishTransactionState as S
+
+    fx = _bootstrap(tmp_path, monkeypatch)
+    p = fx.alpha
+    key = p.service._dedup_key(p.request)
+    while p.transaction.state != S.TERMINAL_SEALED:
+        p.transaction.project(S.ORDERED[S.ORDERED.index(p.transaction.state) + 1])
+    _block_key(p, key)
+    attestation = _attestation(p, dispositions={key: ATTESTED_NOT_LANDED})
+    assert "transaction_id" not in attestation["effects"][key]
+    outcome = _rotate(None, p, attestation=attestation)
+    result, calls = _publish_on_successor(None, outcome, p, p.request)
+    assert isinstance(result, SealedPublicationRecoveryRequired), result
+    assert "binds no transaction" in str(result)
+    assert calls == []
+    assert _owner(outcome.store_root) is None
+    assert _jsonl(outcome.store_root / "admissions.jsonl") == []
+
+
+def test_sealed_head_recovery_is_single_use_after_a_second_failure(tmp_path, monkeypatch):
+    """A recovery attempt that fails again blocks the successor; it is not retried blindly."""
+    fx, p, key = _failed_sealed_publish(tmp_path, monkeypatch)
+    outcome = _rotate(None, p, attestation=_attestation(p, dispositions={key: ATTESTED_NOT_LANDED}))
+    again = _CountingAdapter(terminal_state=AMBIGUOUS)
+    first, calls = _publish_on_successor(None, outcome, p, p.request, adapter=again)
+    assert not isinstance(first, Exception) and first.accepted is False
+    assert len(calls) == 1
+    second, calls = _publish_on_successor(None, outcome, p, p.request, adapter=again)
+    assert not isinstance(second, Exception), second
+    assert second.accepted is False and second.evidence.terminal_state == AMBIGUOUS
+    assert len(calls) == 1, "an ambiguous recovery attempt was retried without a new rotation"
+
+
+def test_publish_from_worktree_recovers_the_sealed_current_head(tmp_path, monkeypatch):
+    """The SDK route: fail, rotate, then the same publish call completes the same commit."""
+    from phase_loop_runtime.publishing import PublishAuthorityPreimages, publish_from_worktree
+    from test_fabpub_shared_epoch import _authority_preimage
+
+    fx = _bootstrap(tmp_path, monkeypatch)
+    p = fx.alpha
+    _git(p.repo, "checkout", "-q", "-b", "feat/sdk")
+    _stage(p.repo, "sdk.py", "def sdk():\n    return 1\n")
+    root = tmp_path / "coordinator" / "sdk"
+    authority = PublishAuthorityPreimages(root, _authority_preimage(p.identity, "feat/sdk"))
+
+    def publish(adapter):
+        routed = _routed_service(p, adapter)
+        try:
+            return publish_from_worktree(
+                p.repo,
+                ("sdk.py",),
+                broker_client=routed.service,
+                publish_authority=authority,
+                checkpoint_root=root,
+            )
+        finally:
+            _release_router(routed)
+
+    _release_all(p)
+    failed = publish(_CountingAdapter(terminal_state=AMBIGUOUS))
+    assert failed["status"] == "publication_blocked", failed
+    head = _git(p.repo, "rev-parse", "HEAD")
+    gen0_evidence = _jsonl(p.container / "evidence.jsonl")
+    key = gen0_evidence[-1]["idempotency_key"]
+    assert gen0_evidence[-1]["state"] == AMBIGUOUS
+    outcome = _rotate(None, p, attestation=_attestation(p, dispositions={key: ATTESTED_NOT_LANDED}))
+    assert outcome.generation == 1
+    adapter = _CountingAdapter()
+    published = publish(adapter)
+    assert published["status"] == "published", published
+    assert published["head_sha"] == head, "recovery published a different commit"
+    assert len(adapter.calls) == 1
+    again = publish(adapter)
+    assert again["status"] == "published", again
+    assert len(adapter.calls) == 1
+    assert _git(p.repo, "rev-parse", "HEAD") == head
+
+
+def test_human_handoff_names_the_rotation_recovery(tmp_path, monkeypatch):
+    """The human route reports the precise next step, not a generic authority repair."""
+    from phase_loop_runtime.publishing import _human_publication_handoff
+
+    fx = _bootstrap(tmp_path, monkeypatch)
+    handoff = _human_publication_handoff(
+        fx.alpha.repo, next_step="adjudicate_sealed_publication_by_partition_rotation"
+    )
+    assert handoff["next_step"] == "adjudicate_sealed_publication_by_partition_rotation"
+    assert handoff["rotate_command"][:2] == ["phase-loop", "fabpub-rotate-partition"]
+    assert str(fx.alpha.repo.resolve()) in handoff["rotate_command"]
+    assert "attested_not_landed" in handoff["rotate_requires"]
+    assert "not proof" in handoff["rotate_requires"]

@@ -807,6 +807,8 @@ A0_ALLOW_LIST = (
     ("live.py", "_snapshot_predecessor", "store_root"),
     ("live.py", "_target_store_lock_paths", "target_namespace"),
     ("live.py", "authenticated_partition_floor", "store_root"),
+    # agent-harness#1296: reads the receipt governing the ACTIVE generation's store.
+    ("live.py", "attested_not_landed_recovery", "store_root"),
     ("live.py", "bootstrap_zero_history_authority", '"repositories"'),
     ("live.py", "fabpub_activation_barrier", '"repositories"'),
     ("live.py", "fabpub_activation_barrier", "store_root"),
@@ -833,6 +835,7 @@ A0_CLASSIFICATION = {
         "_make_promotion_capability_factory.mint",
         "_onboard_zero_legacy_repository_under_seal",
         "_partition_layout",
+        "attested_not_landed_recovery",
         "authenticated_partition_floor",
         "fabpub_activation_barrier",
         "load_partition_receipt",

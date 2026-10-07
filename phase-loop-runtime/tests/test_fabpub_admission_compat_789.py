@@ -729,7 +729,7 @@ def test_second_entry_contention_message_is_distinct(tmp_path, request, monkeypa
     section_calls: list[str] = []
     block_calls: list[str] = []
 
-    def contended_section(request_, owner, make_request, attempt_id):
+    def contended_section(request_, owner, make_request, attempt_id, expected_state=None):
         section_calls.append(attempt_id)
         return foreign, None, None
 

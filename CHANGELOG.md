@@ -6,6 +6,27 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### FABPUB: a sealed, failed current-head publication can be recovered by rotation (agent-harness#1296)
+
+- After a publication fails with an ambiguous outcome, its transaction is `TERMINAL_SEALED`.
+  The documented recovery, a partition rotation that disposes the effect `attested_not_landed`,
+  then refused the retry of that exact transaction (`broker admission precondition denied`),
+  because fresh admission required `COMMITTED_HEAD_RESOLVED`. The refusal also left a new
+  unsealed adapter-start owner in the successor generation, so the next attempt would block it
+  again. This blocked treesitter-chunker#480.
+- The successor generation now re-admits the sealed transaction unchanged, once. This requires
+  its authenticated receipt to dispose the key `attested_not_landed` and the sealed attestation's
+  `transaction_id` (bound from the predecessor's owner) to equal the transaction. The checkpoint
+  is not rewound; a write-once `<transaction_id>.recovery.<generation>.json` records the rotation,
+  digests, predecessor owner and plan/proof bindings. A replay makes no provider call, and the
+  predecessor generation's bytes are unchanged.
+- Any other sealed current-head transaction is refused with `SealedPublicationRecoveryRequired`
+  before any write. The human route returns `sealed_publication_recovery_required` with the
+  rotation as its next step. The broker now checks the transaction-state precondition before it
+  writes the adapter-start owner, so no denied admission leaves an owner behind.
+- `observed_landed` recovery is unchanged and stays provider-free. The procedure is in
+  `docs/fabpub-partition-rotation-runbook.md` §8a.
+
 ### Lower panel effort defaults and a larger configurable Claude output budget
 
 - Built-in advisor-board presets lower effort by one canonical level. Default and

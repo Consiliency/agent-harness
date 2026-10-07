@@ -1420,6 +1420,77 @@ def sealed_partition_effects(receipt: LegacyRepositoryPartitionReceipt) -> dict[
     return effects
 
 
+def attested_not_landed_recovery(store_root: Path, key: str) -> dict | None:
+    """The rotation adjudication that lets a SEALED publish transaction publish once.
+
+    agent-harness#1296: a publication whose provider outcome was ambiguous
+    seals its transaction and blocks the partition.  When a rotation's
+    operator attestation disposes that effect ``attested_not_landed``, the
+    successor generation may admit the exact sealed transaction once.  This
+    returns the authenticated facts that bind that admission, or ``None`` when
+    the receipt governing ``store_root`` adjudicates no such disposition for
+    ``key``.
+
+    The facts come only from authenticated bytes: the receipt is loaded and
+    chain-checked by ``load_partition_receipt``, and the sealed inventory (which
+    embeds the attestation) must digest to the receipt's ``inventory_sha256``,
+    ``partition_map_sha256`` and ``attestation_sha256``.  The entry's
+    ``transaction_id`` is whatever the ceremony bound from the predecessor's
+    adapter-start owner; it is returned as found (possibly ``None``) and the
+    caller decides whether it binds the transaction being admitted.
+
+    Only the ACTIVE generation's receipt is consulted: a later rotation for
+    an unrelated key does not carry this disposition forward, so the recovery
+    then refuses and needs a fresh attestation.  That is deliberate.
+    """
+    receipt = load_partition_receipt(Path(store_root))
+    if not isinstance(receipt, RotatedPartitionReceipt):
+        return None
+    disposition = receipt.adjudicated_effect_dispositions.get(key)
+    if not isinstance(disposition, dict) or disposition.get("disposition") != DISPOSITION_ATTESTED_NOT_LANDED:
+        return None
+    inventory_path = Path(receipt.global_journal_path).parent / f"{receipt.cutover_id}.inventory.json"
+    try:
+        sealed = json.loads(inventory_path.read_bytes())
+    except FileNotFoundError:
+        raise LegacyCutoverConflict(f"the sealed rotation inventory at {inventory_path} is missing") from None
+    except ValueError as error:
+        raise LegacyCutoverConflict(
+            f"the sealed rotation inventory at {inventory_path} is not JSON: {error}"
+        ) from error
+    attestation = sealed.get("attestation") if isinstance(sealed, dict) else None
+    if (
+        not isinstance(attestation, dict)
+        or _inventory_digest(sealed) != receipt.inventory_sha256
+        or _partition_map_digest(sealed.get("partitions", {})) != receipt.partition_map_sha256
+        or sealed.get("attestation_sha256") != receipt.attestation_sha256
+        or hashlib.sha256(canonical_bytes(attestation)).hexdigest() != receipt.attestation_sha256
+    ):
+        raise LegacyCutoverConflict(
+            f"the sealed rotation inventory at {inventory_path} is not the inventory the partition "
+            "receipt digests"
+        )
+    entry = attestation.get("effects", {}).get(key)
+    if not isinstance(entry, dict) or entry.get("disposition") != DISPOSITION_ATTESTED_NOT_LANDED:
+        raise LegacyCutoverConflict(
+            f"the sealed attestation of rotation {receipt.cutover_id!r} disagrees with its receipt for {key!r}"
+        )
+    return {
+        "cutover_id": receipt.cutover_id,
+        "generation": receipt.generation,
+        "predecessor_generation": receipt.predecessor_generation,
+        "attestation_sha256": receipt.attestation_sha256,
+        "inventory_sha256": receipt.inventory_sha256,
+        "attested_by": attestation.get("attested_by"),
+        "effect_key": key,
+        "historical_disposition": DISPOSITION_ATTESTED_NOT_LANDED,
+        "evidence_url": entry.get("evidence_url"),
+        "ambiguity_digest": entry.get("ambiguity_digest"),
+        "transaction_id": entry.get("transaction_id"),
+        "predecessor_owner_nonce": entry.get("owner_nonce"),
+    }
+
+
 # --- SOL-10: an UNFORGEABLE promotion capability ---------------------------
 #
 # A boolean flag is not authority, and a module-global sentinel is reachable as
