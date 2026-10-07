@@ -631,17 +631,28 @@ def derive_live_facts(inputs: Path, *, evidence_root: Path, repo: Path) -> dict[
         allowed_production = V.lane_owned_paths_since(
             repo, git["landing"]["commit"], git["canonical_main"]["commit"], "SL-5"
         )
-        candidate_base, candidate_changes = V.candidate_contribution_paths(
-            repo,
-            git["landing"]["commit"],
-            git["candidate"]["commit"],
-            allowed_production,
-        )
+        if V.plan_has_lane(repo, git["canonical_main"]["commit"], "SL-4"):
+            candidate_base, _canonical_tip = V.canonical_candidate_fork(
+                repo,
+                git["candidate"]["commit"],
+                git["canonical_main"]["commit"],
+            )
+            candidate_changes = V.changed_paths(
+                repo, candidate_base, git["candidate"]["commit"]
+            )
+        else:
+            candidate_base, candidate_changes = V.candidate_contribution_paths(
+                repo,
+                git["landing"]["commit"],
+                git["candidate"]["commit"],
+                allowed_production,
+            )
         V.validate_sl4_boundary(
             repo,
             git["landing"]["commit"],
             candidate_base,
             git["canonical_main"]["commit"],
+            candidate=git["candidate"]["commit"],
         )
     except Exception as exc:
         raise BuildError(str(exc)) from exc
