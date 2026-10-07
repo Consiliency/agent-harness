@@ -2724,6 +2724,13 @@ def launch(
     # `_launch_contract_blocker` emits a structured stalled_child_observation blocker
     # instead of wedging. Wall-clock timeout stays opt-in (the "no short timeout on
     # CLI legs" rule); the quiet/CPU-idle detector is what catches the wedge.
+    # An owned review seat's copied secrets never leave the launch: every line it returns,
+    # streams or logs passes the seat's redaction while its profile is live (agent-harness#1282).
+    if _review_profile is not None:
+        from .panel_invoker import _redact_seat_credentials as redact_seat
+    else:
+        def redact_seat(text: str) -> str:
+            return text
     ephemeral_run_dir: tempfile.TemporaryDirectory | None = None
     if log_path is None and (ephemeral_monitor or _supervisor_lease_fd is not None) and not dry_run:
         ephemeral_run_dir = tempfile.TemporaryDirectory(prefix="phase-loop-ephemeral-run-")
@@ -2790,7 +2797,8 @@ def launch(
                 raise
             completed = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
         return _with_changed_paths(
-            LaunchResult(command=command, returncode=completed.returncode, output=completed.stdout + completed.stderr),
+            LaunchResult(command=command, returncode=completed.returncode,
+                         output=redact_seat(completed.stdout + completed.stderr)),
             change_snapshot,
             cwd,
         )
@@ -2869,6 +2877,7 @@ def launch(
                     except Empty:
                         line = None
                     if line:
+                        line = redact_seat(line)
                         output_parts.append(line)
                         log.write(line)
                         log.flush()
@@ -2934,6 +2943,7 @@ def launch(
                             except Empty:
                                 break
                             if line:
+                                line = redact_seat(line)
                                 output_parts.append(line)
                                 log.write(line)
                                 log.flush()
