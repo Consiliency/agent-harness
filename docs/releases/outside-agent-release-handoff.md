@@ -8,15 +8,15 @@ or make production merge enforcement live.
 ## Package Identity
 
 - Package: `phase-loop-runtime`
-- Version: `0.7.24`
-- Runtime `phase_loop_runtime.__version__`: `0.7.24`
-- Version pin prepared for downstream pinning: `phase-loop-runtime==0.7.24`
+- Version: `0.7.25`
+- Runtime `phase_loop_runtime.__version__`: `0.7.25`
+- Version pin prepared for downstream pinning: `phase-loop-runtime==0.7.25`
 - Console scripts: `phase-loop`, `codex-phase-loop`, `phase-loop-closeout-audit`, `roadmap-ownership`
 
 ## Validator Identity
 
 - Governed-pipeline validator authority: `governed_pipeline_validator`
-- Validator version: `0.7.24`
+- Validator version: `0.7.25`
 - Validator command: `phase-loop outside-agent-validate`
 - Advisory preflight command: `phase-loop outside-agent-preflight`
 - Advisory output remains supporting evidence only; governed-pipeline remains
@@ -47,6 +47,34 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 - `redaction_posture`: `metadata_only`
 
 ## Release-Check Evidence
+
+### This release: 0.7.25 (prepared; not published)
+
+- `publication_status=prepared`. The package is not published, no tag exists, and the
+  publish workflow is not dispatched. Tagging and publication are the maintainer's step.
+- `0.7.25` is an interim maintenance release. It does not claim `EC-RELEASE-1`,
+  `EC-RELEASE-5` or `EC-RELEASE-6`: no pilot trains are claimed and the v10 RELEASE phase
+  remains `committed`. It does not declare `production-ready`.
+- Content above the `v0.7.24` tag commit (`c3a29003`):
+  - FABPUB recovery of a failed current-head publication after an `attested_not_landed`
+    partition rotation (agent-harness#1296, agent-harness#1298). This is the release's reason:
+    it unblocks treesitter-chunker#480;
+  - lower panel effort defaults and a configurable Claude panel output budget
+    (agent-harness#1292);
+  - the strict panel-reply schema groundwork, not yet wired to any seat (agent-harness#1286);
+  - Agent View sessions stopped after a verified closeout (agent-harness#1285);
+  - seat jail portability on Python 3.10–3.13 and the AppArmor override for Ubuntu 24.04+
+    (agent-harness#1276);
+  - plans only: the HARDEN registry contract, historical baseline and dispositions
+    (agent-harness#1279, agent-harness#1270, agent-harness#1294, agent-harness#1295), the
+    0.7.24 published record (agent-harness#1268), and this release's v10 reseal, whose
+    appended plan-authority rows cite agent-harness#1296.
+- The qualified agy image set is unchanged from `0.7.24`.
+- Python 3.12 cold import: in a fresh py3.12 venv, the prepared wheel imports `0.7.25`
+  (including `PublicationRecoveryRequired`), `compileall` of the installed package succeeds
+  under `-W error`, and `phase-loop --help` loads.
+
+### Previous release: 0.7.24 (published)
 
 - `publication_status=published`
 - `0.7.24` is an interim maintenance release. It does not claim `EC-RELEASE-1`,
@@ -574,7 +602,19 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 
 ## Sealed Implementation Evidence
 
-### This release: 0.7.24 (published)
+### This release: 0.7.25 (prepared)
+
+The digests below are from the pre-tag local build of the release candidate, produced by
+`uv build` under `umask 022` from a `git archive` export of release commit `f23bb782`
+(`phase-loop-runtime/` tree `cf396160`). They are a preparation measurement, not a
+publication record; as for earlier releases, the published digests will differ, because
+archive bytes are timestamp/toolchain-dependent.
+
+- prepared direct-wheel sha256: `12f91df7ddb2af0f66f2890bb0363dffe09719a476f0d10e0f9c817afc439df4`
+- prepared direct-sdist sha256: `939296634d0485082a4ca38d5368ba0de5abdd2f9254780698a2523d80511018`
+- sdist-derived-wheel sha256: not claimed, for the reason recorded for `0.7.14` below.
+
+### Previous release: 0.7.24 (published)
 
 The published digests are the `SHA256SUMS` tuples recorded by trusted-publish workflow
 `37447105615` from its build of the tagged commit `c3a29003`, equal to the digests PyPI
@@ -787,15 +827,14 @@ this metadata document.
 
 ## Package Surface Inventory
 
-Measured on the prepared `0.7.24` build described above; the published archives have the same
-member counts and contents.
+Measured on the prepared `0.7.25` build described above.
 
-- Wheel artifact: `phase_loop_runtime-0.7.24-py3-none-any.whl`
-- Sdist artifact: `phase_loop_runtime-0.7.24.tar.gz`
-- Wheel top-level entries: `phase_loop_runtime`, `phase_loop_runtime-0.7.24.data`, `phase_loop_runtime-0.7.24.dist-info`
-- Wheel file count: `489`
+- Wheel artifact: `phase_loop_runtime-0.7.25-py3-none-any.whl`
+- Sdist artifact: `phase_loop_runtime-0.7.25.tar.gz`
+- Wheel top-level entries: `phase_loop_runtime`, `phase_loop_runtime-0.7.25.data`, `phase_loop_runtime-0.7.25.dist-info`
+- Wheel file count: `492`
 - Sdist top-level entries: `MANIFEST.in`, `PKG-INFO`, `README.md`, `protocol`, `pyproject.toml`, `setup.cfg`, `src`, `tests`
-- Sdist file count: `1032` regular files (`1167` archive members including directories)
+- Sdist file count: `1039` regular files (`1174` archive members including directories)
 - Wheel console entry points: `phase-loop = phase_loop_runtime.cli:main`; `codex-phase-loop = phase_loop_runtime.cli:main`; `phase-loop-closeout-audit = phase_loop_runtime.closeout_classifier:console_main`; `roadmap-ownership = phase_loop_runtime.roadmap_ownership:console_main` (plus the `phase_loop_runtime.profile_commands` and `phase_loop_runtime.skill_sources` plugin groups)
 - Runtime plugin entry points: `dotfiles = phase_loop_runtime.dotfiles_profile_plugin:register_profile_commands`; `dotfiles = phase_loop_runtime.skill_sources_plugin:register_skill_sources`
 
@@ -803,7 +842,8 @@ member counts and contents.
 
 `0.7.24` is published (PyPI, trusted-publish workflow `37447105615`), so governed-pipeline
 may consume it as an authoritative validator by pinning `phase-loop-runtime==0.7.24`
-(`0.7.23`, workflow `37334248609`, remains a valid earlier pin). In either case, call:
+(`0.7.23`, workflow `37334248609`, remains a valid earlier pin). `0.7.25` is prepared, not
+published; do not pin it until this record says it is published. In either case, call:
 
 ```bash
 phase-loop outside-agent-validate path/to/outside-agent-submission.json \

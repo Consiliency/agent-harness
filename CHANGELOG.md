@@ -6,6 +6,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+## [0.7.25] - 2026-10-07
+
 ### FABPUB: a failed current-head publication can be recovered by rotation (agent-harness#1296)
 
 - After a publication fails with an ambiguous outcome, its transaction is past
