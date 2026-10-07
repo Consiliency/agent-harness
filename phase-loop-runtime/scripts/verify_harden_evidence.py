@@ -2144,6 +2144,34 @@ def sl5_production_paths(repo: Path, revision: str) -> set[str]:
     )
 
 
+def lane_owned_paths_since(
+    repo: Path, landing: str, revision: str, lane: str
+) -> set[str]:
+    """Retain every path assigned to a lane after the tests-only landing."""
+    if (
+        lane == "SL-5"
+        and not plan_has_lane(repo, revision, "SL-5")
+        and not plan_has_lane(repo, revision, "SL-4")
+    ):
+        return sl5_production_paths(repo, revision)
+    revisions = _git_lines(
+        repo, "rev-list", "--reverse", f"{landing}..{revision}", "--",
+        "plans/phase-plan-v10-HARDEN.md",
+        label=f"HARDEN {lane} ownership history",
+    )
+    paths: set[str] = set()
+    declared = False
+    for commit_id in [landing, *revisions, revision]:
+        if plan_has_lane(repo, commit_id, lane):
+            declared = True
+            paths.update(plan_owned_paths(repo, commit_id, lane))
+        elif declared:
+            fail(f"HARDEN plan lost the {lane} lane")
+    if not paths:
+        fail(f"HARDEN plan has no {lane} ownership")
+    return paths
+
+
 def manifest_plan_rows(repo: Path, revision: str) -> list[dict[str, Any]]:
     """Read the phase rows from the Git-bound canonical manifest."""
     _, manifest_bytes = blob(repo, revision, "plans/manifest.json")
@@ -3119,14 +3147,17 @@ def validate_sl4_boundary(
         if any(plan_has_lane(repo, commit_id, "SL-4") for commit_id in [landing, *history]):
             fail("HARDEN plan lost the SL-4 lane")
         return
-    sl4_paths = plan_owned_paths(repo, revision, "SL-4")
-    sl5_paths = sl5_production_paths(repo, revision)
+    sl4_paths = lane_owned_paths_since(repo, landing, revision, "SL-4")
+    sl5_paths = lane_owned_paths_since(repo, landing, revision, "SL-5")
     matches: list[str] = []
     for commit_id in history:
         parents = commit_parents(repo, commit_id, "HARDEN SL-4 landing")
         if len(parents) < 2:
             continue
-        if changed_paths(repo, parents[0], commit_id) != sl4_paths:
+        if not plan_has_lane(repo, commit_id, "SL-4"):
+            continue
+        commit_sl4_paths = plan_owned_paths(repo, commit_id, "SL-4")
+        if changed_paths(repo, parents[0], commit_id) != commit_sl4_paths:
             continue
         source_base = git_scalar(
             repo,
@@ -3134,18 +3165,35 @@ def validate_sl4_boundary(
             parents[0],
             parents[1],
         )
-        if changed_paths(repo, source_base, parents[1]) != sl4_paths:
+        if changed_paths(repo, source_base, parents[1]) != commit_sl4_paths:
             continue
         if all(
             blob(repo, commit_id, path)[0] == blob(repo, parents[1], path)[0]
-            for path in sl4_paths
+            for path in commit_sl4_paths
         ):
             matches.append(commit_id)
     if not matches:
         fail("reviewed SL-4 landing is missing")
-    # A later tests-only correction restarts SL-4, so the latest exact landing
-    # is the boundary that SL-5 must preserve.
-    sl4_landing = matches[-1]
+    # A correction restarts SL-4 only when its first-parent line has not already
+    # carried SL-5 production; otherwise it could hide that production.
+    sl4_landing = matches[0]
+    for correction in matches[1:]:
+        first_parent = commit_parents(repo, correction, "HARDEN SL-4 correction")[0]
+        intervening = _git_lines(
+            repo, "rev-list", "--first-parent", "--reverse",
+            f"{sl4_landing}..{first_parent}",
+            label="HARDEN SL-4 correction history",
+        )
+        if any(
+            changed_paths(
+                repo,
+                commit_parents(repo, item, "HARDEN SL-4 correction history")[0],
+                item,
+            ) & sl5_paths
+            for item in intervening
+        ):
+            continue
+        sl4_landing = correction
     reachable_after_boundary = _git_lines(
         repo,
         "rev-list",
@@ -3220,7 +3268,7 @@ def verify_git_and_inventory(
     if commits["candidate"][1] != commits["canonical_main"][1] or changed_paths(repo, candidate, main):
         fail("canonical main does not preserve the exact candidate tree")
     contribution_base, _candidate_paths = candidate_contribution_paths(
-        repo, landing, candidate, sl5_production_paths(repo, main)
+        repo, landing, candidate, lane_owned_paths_since(repo, landing, main, "SL-5")
     )
     validate_sl4_boundary(repo, landing, contribution_base, main)
     commits["review_base"] = (
@@ -5186,9 +5234,7 @@ def verify(
     reject_role_operation_nonce_reuse(role_operation_nonces, nonces)
     if len(seat_sessions) != 8:
         fail("reviewer authority lacks eight unique seat sessions")
-    role_sessions = verify_roles(store, data["roles"], evidence_id, expected_coordinator_session, expected_author_session, author_vendor, seat_sessions, retained_roles)
-    for session in sorted(role_sessions):
-        claim_nonce(session, nonces, "role session")
+    verify_roles(store, data["roles"], evidence_id, expected_coordinator_session, expected_author_session, author_vendor, seat_sessions, retained_roles)
     if (input_nonces & nonces) - review_request_nonces:
         fail("retained input operation nonce reused by a derived operation")
     verify_historical_sl0(
@@ -6884,6 +6930,38 @@ def self_test() -> None:
             lambda: sl5_production_paths(sl4_repo, missing_sl5_head),
         )
 
+        _run(["git", "checkout", "-qb", "ownership-rewrite", sl4_landing], sl4_repo)
+        (sl4_repo / sl5_path).write_text("VALUE = 14\n", encoding="utf-8")
+        _run(["git", "add", sl5_path], sl4_repo)
+        _run(["git", "commit", "-qm", "SL-5 before ownership rewrite"], sl4_repo)
+        decoy_path = "phase-loop-runtime/scripts/decoy.py"
+        plan_path.write_text(
+            "# HARDEN\n\n"
+            f"### SL-0 - tests\n- **Owned files**: `{sl0_path}`\n\n"
+            f"### SL-4 - supplemental tests\n- **Owned files**: `{sl4_path}`\n\n"
+            f"### SL-5 - production\n- **Owned files**: `{decoy_path}`\n",
+            encoding="utf-8",
+        )
+        _run(["git", "add", str(plan_path.relative_to(sl4_repo))], sl4_repo)
+        _run(["git", "commit", "-qm", "rewrite SL-5 ownership"], sl4_repo)
+        decoy = sl4_repo / decoy_path
+        decoy.write_text("VALUE = 1\n", encoding="utf-8")
+        _run(["git", "add", decoy_path], sl4_repo)
+        _run(["git", "commit", "-qm", "decoy review suffix"], sl4_repo)
+        ownership_head = _run(["git", "rev-parse", "HEAD"], sl4_repo)
+        ownership_base, _ = candidate_contribution_paths(
+            sl4_repo,
+            sl0_landing,
+            ownership_head,
+            lane_owned_paths_since(sl4_repo, sl0_landing, ownership_head, "SL-5"),
+        )
+        direct_rejected(
+            "SL-5-ownership-rewrite-hides-production",
+            lambda: validate_sl4_boundary(
+                sl4_repo, sl0_landing, ownership_base, ownership_head
+            ),
+        )
+
         _run(["git", "checkout", "-qb", "upstream-main", sl4_landing], sl4_repo)
         (sl4_repo / "README.md").write_text("upstream\n", encoding="utf-8")
         _run(["git", "add", "README.md"], sl4_repo)
@@ -7036,8 +7114,11 @@ def self_test() -> None:
             between_sl4_head,
             sl5_production_paths(sl4_repo, between_sl4_head),
         )
-        validate_sl4_boundary(
-            sl4_repo, sl0_landing, between_sl4_base, between_sl4_head
+        direct_rejected(
+            "candidate-local-SL-4-correction-hides-production",
+            lambda: validate_sl4_boundary(
+                sl4_repo, sl0_landing, between_sl4_base, between_sl4_head
+            ),
         )
 
         _run(["git", "checkout", "-q", "main"], sl4_repo)
