@@ -172,15 +172,15 @@ the matrix at load time).
 
 | Preset                  | Purpose               | Seats (model · effort · harness · lens) |
 | ----------------------- | --------------------- | ---------------------------------------- |
-| `default`               | premerge-review       | gpt-6-astra · max · codex · red-team ; gemini-3.8-flash · high · gemini · alternative-approach ; claude-opus-5-5 · max · claude · correctness ; grok-4.7 · max · grok · adversarial |
-| `code-review`           | code-review           | grok-4.7 · max · grok · adversarial ; claude-opus-5-5 · max · claude · correctness ; gpt-6-astra · max · codex · red-team ; gemini-3.8-flash · high · gemini · alternative-approach |
-| `brainstorm`            | brainstorm            | claude-sonnet-5 · high · claude · adversarial ; gpt-6-astra · high · codex · supportive ; gemini-3.8-flash · high · gemini · lateral |
-| `doc-edit`              | doc-edit              | claude-sonnet-5 · medium · claude · copyedit ; gpt-6-astra · medium · codex · structure |
-| `legal-review`          | legal-review          | gpt-6-astra · max · codex · opposing-counsel ; gemini-3.8-flash · high · gemini · risk-liability ; claude-opus-5-5 · max · claude · authority-verification |
-| `legal-strategy-review` | legal-strategy-review | gpt-6-astra · max · codex · red-team ; gemini-3.8-flash · high · gemini · alternatives ; claude-opus-5-5 · max · claude · downside-ethics |
-| `legal-brainstorm`      | legal-brainstorm      | claude-sonnet-5 · high · claude · aggressive ; gpt-6-astra · high · codex · conservative ; gemini-3.8-flash · high · gemini · creative |
-| `general`               | general               | gpt-6-astra · max · codex · adversarial ; gemini-3.8-flash · high · gemini · alternative ; claude-opus-5-5 · max · claude · completeness |
-| `solo`                  | general               | claude-opus-5-5 · max · claude · completeness |
+| `default`               | premerge-review       | gpt-6-astra · high · codex · red-team ; gemini-3.8-flash · medium · gemini · alternative-approach ; claude-opus-5-5 · high · claude · correctness ; grok-4.7 · high · grok · adversarial |
+| `code-review`           | code-review           | grok-4.7 · high · grok · adversarial ; claude-opus-5-5 · high · claude · correctness ; gpt-6-astra · high · codex · red-team ; gemini-3.8-flash · medium · gemini · alternative-approach |
+| `brainstorm`            | brainstorm            | claude-sonnet-5 · medium · claude · adversarial ; gpt-6-astra · medium · codex · supportive ; gemini-3.8-flash · medium · gemini · lateral |
+| `doc-edit`              | doc-edit              | claude-sonnet-5 · low · claude · copyedit ; gpt-6-astra · low · codex · structure |
+| `legal-review`          | legal-review          | gpt-6-astra · high · codex · opposing-counsel ; gemini-3.8-flash · medium · gemini · risk-liability ; claude-opus-5-5 · high · claude · authority-verification |
+| `legal-strategy-review` | legal-strategy-review | gpt-6-astra · high · codex · red-team ; gemini-3.8-flash · medium · gemini · alternatives ; claude-opus-5-5 · high · claude · downside-ethics |
+| `legal-brainstorm`      | legal-brainstorm      | claude-sonnet-5 · medium · claude · aggressive ; gpt-6-astra · medium · codex · conservative ; gemini-3.8-flash · medium · gemini · creative |
+| `general`               | general               | gpt-6-astra · high · codex · adversarial ; gemini-3.8-flash · medium · gemini · alternative ; claude-opus-5-5 · high · claude · completeness |
+| `solo`                  | general               | claude-opus-5-5 · high · claude · completeness |
 
 **Catch-alls for unmodeled tasks.** `general` (top-tier cross-vendor panel) and
 `solo` (one top-end member) are the domain-agnostic fallbacks — hand either any task
