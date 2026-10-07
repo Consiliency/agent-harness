@@ -621,8 +621,8 @@ def derive_live_facts(inputs: Path, *, evidence_root: Path, repo: Path) -> dict[
         frozen_authority = sorted(
             V.plan_owned_paths(repo, git["canonical_main"]["commit"], "SL-0")
         )
-        allowed_production = V.sl5_production_paths(
-            repo, git["canonical_main"]["commit"]
+        allowed_production = V.lane_owned_paths_since(
+            repo, git["landing"]["commit"], git["canonical_main"]["commit"], "SL-5"
         )
         candidate_base, candidate_changes = V.candidate_contribution_paths(
             repo,
@@ -750,7 +750,9 @@ def _prepare_stage(inputs: Path, source_root: Path, evidence_root: Path, repo: P
     retained = lambda ref, label: _retained(ref, copies, label)
     def item(name: str) -> Any:
         reference = retained(artifacts[name], name)
-        return _json(_regular_bytes(evidence_root, reference, name), name)
+        return V.parse_retained_json(
+            _regular_bytes(evidence_root, reference, name), name
+        )
     plan, sl0, execution = item("plan_authority"), item("sl0_review"), item("execution_runs")
     git = facts["git"]
     landing_parent = _git(repo, "rev-parse", git["landing"]["commit"] + "^")
@@ -1331,7 +1333,10 @@ def seal(pre_completion: Path, evidence_root: Path, repo: Path, ledger: Path, ou
         if (
             ledger_bytes is not None
             and expected_digest is not None
-            and "role artifact binding mismatch" in str(exc)
+            and (
+                "role artifact binding mismatch" in str(exc)
+                or "retained plan authority is detached from derived evidence" in str(exc)
+            )
             and _completion_event_digest_differs(ledger_bytes, expected_digest)
         ):
             raise BuildError("pre-completion digest mismatch") from exc
