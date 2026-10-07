@@ -3128,27 +3128,90 @@ def candidate_contribution_paths(
     return contribution_base, contribution_paths
 
 
+def canonical_candidate_fork(
+    repo: Path,
+    candidate: str,
+    canonical_main: str,
+) -> tuple[str, str]:
+    """Return the candidate fork and canonical tip that preceded integration."""
+    ancestor(repo, candidate, canonical_main, "canonical candidate integration")
+    cursor = canonical_main
+    while cursor != candidate:
+        parents = commit_parents(repo, cursor, "canonical candidate integration")
+        if not parents:
+            fail("canonical main lacks a candidate integration boundary")
+        if _is_ancestor(repo, candidate, parents[0]):
+            cursor = parents[0]
+            continue
+        if len(parents) < 2 or candidate not in parents[1:]:
+            fail("canonical main lacks an exact candidate integration merge")
+        canonical_parent = parents[0]
+        fork = git_scalar(repo, "merge-base", candidate, canonical_parent)
+        return fork, canonical_parent
+    fail("multi-commit candidate lacks a canonical integration merge")
+
+
+def changed_paths_from_first_parent(
+    repo: Path,
+    commit_id: str,
+    label: str,
+) -> set[str]:
+    """Return one commit's first-parent delta, or every root-tree path."""
+    parents = commit_parents(repo, commit_id, label)
+    if parents:
+        return changed_paths(repo, parents[0], commit_id)
+    return set(
+        _git_lines(
+            repo,
+            "ls-tree",
+            "-r",
+            "--name-only",
+            commit_id,
+            label=label,
+        )
+    )
+
+
 def validate_sl4_boundary(
     repo: Path,
     landing: str,
     contribution_base: str,
     revision: str,
+    *,
+    candidate: str | None = None,
 ) -> None:
     """Prove the reviewed SL-4 merge and its subsequent immutability."""
+    canonical_tip = contribution_base
     history = _git_lines(
         repo,
         "rev-list",
         "--first-parent",
         "--reverse",
-        f"{landing}..{contribution_base}",
+        f"{landing}..{canonical_tip}",
         label="HARDEN SL-4 first-parent history",
     )
     if not plan_has_lane(repo, revision, "SL-4"):
         if any(plan_has_lane(repo, commit_id, "SL-4") for commit_id in [landing, *history]):
             fail("HARDEN plan lost the SL-4 lane")
         return
+    if candidate is not None:
+        candidate_fork, canonical_tip = canonical_candidate_fork(
+            repo, candidate, revision
+        )
+        if candidate_fork != contribution_base:
+            fail("derived review base differs from the canonical candidate fork")
+        history = _git_lines(
+            repo,
+            "rev-list",
+            "--first-parent",
+            "--reverse",
+            f"{landing}..{canonical_tip}",
+            label="HARDEN canonical SL-4 first-parent history",
+        )
     sl4_paths = lane_owned_paths_since(repo, landing, revision, "SL-4")
     sl5_paths = lane_owned_paths_since(repo, landing, revision, "SL-5")
+    if sl4_paths & sl5_paths:
+        fail("HARDEN SL-4 and SL-5 ownership overlaps")
     matches: list[str] = []
     for commit_id in history:
         parents = commit_parents(repo, commit_id, "HARDEN SL-4 landing")
@@ -3157,6 +3220,8 @@ def validate_sl4_boundary(
         if not plan_has_lane(repo, commit_id, "SL-4"):
             continue
         commit_sl4_paths = plan_owned_paths(repo, commit_id, "SL-4")
+        if commit_sl4_paths != sl4_paths:
+            continue
         if changed_paths(repo, parents[0], commit_id) != commit_sl4_paths:
             continue
         source_base = git_scalar(
@@ -3174,66 +3239,48 @@ def validate_sl4_boundary(
             matches.append(commit_id)
     if not matches:
         fail("reviewed SL-4 landing is missing")
-    # A correction restarts SL-4 only when its first-parent line has not already
-    # changed owned tests or production; otherwise it could hide that drift.
-    sl4_landing = matches[0]
-    for correction in matches[1:]:
-        first_parent = commit_parents(repo, correction, "HARDEN SL-4 correction")[0]
-        intervening = _git_lines(
-            repo, "rev-list", "--first-parent", "--reverse",
-            f"{sl4_landing}..{first_parent}",
-            label="HARDEN SL-4 correction history",
-        )
-        if any(
-            changed_paths(
-                repo,
-                commit_parents(repo, item, "HARDEN SL-4 correction history")[0],
-                item,
-            ) & (sl4_paths | sl5_paths)
-            for item in intervening
-        ):
-            continue
-        sl4_landing = correction
+    sl4_landing = matches[-1]
     reachable_after_boundary = _git_lines(
         repo,
         "rev-list",
-        f"{sl4_landing}..{revision}",
+        f"{sl4_landing}..{canonical_tip}",
         label="HARDEN post-SL-4 reachable history",
     )
     for commit_id in reachable_after_boundary:
-        if _is_ancestor(repo, sl4_landing, commit_id):
-            continue
-        parents = commit_parents(repo, commit_id, "post-SL-4 production source")
-        if parents:
-            source_paths = changed_paths(repo, parents[0], commit_id)
-        else:
-            source_paths = set(
-                _git_lines(
-                    repo,
-                    "ls-tree",
-                    "-r",
-                    "--name-only",
-                    commit_id,
-                    "--",
-                    *sorted(sl5_paths),
-                    label="parentless post-SL-4 production source",
-                )
-            )
-        if source_paths & sl5_paths:
-            fail("SL-5 production source does not descend from the reviewed SL-4 landing")
-    after_boundary = False
-    for commit_id in history:
-        if commit_id == sl4_landing:
-            after_boundary = True
-            continue
-        if not after_boundary:
-            continue
-        parent = commit_parents(repo, commit_id, "post-SL-4 history")[0]
-        delta = changed_paths(repo, parent, commit_id)
-        if delta & sl4_paths:
+        source_paths = changed_paths_from_first_parent(
+            repo, commit_id, "post-SL-4 reachable history"
+        )
+        if source_paths & sl4_paths:
             fail("frozen SL-4 test changed after its reviewed landing")
-        if delta & sl5_paths:
-            fail("SL-5 production changed before the derived review base")
+        if not _is_ancestor(repo, sl4_landing, commit_id) and source_paths & sl5_paths:
+            fail("SL-5 production source does not descend from the reviewed SL-4 landing")
+    if candidate is not None:
+        candidate_paths = changed_paths(repo, contribution_base, candidate)
+        if not candidate_paths or not candidate_paths <= sl5_paths:
+            fail("candidate changed paths escape HARDEN SL-5 ownership")
+        candidate_history = _git_lines(
+            repo,
+            "rev-list",
+            f"{contribution_base}..{candidate}",
+            label="HARDEN candidate reachable history",
+        )
+        for commit_id in candidate_history:
+            parents = commit_parents(repo, commit_id, "HARDEN candidate history")
+            canonical_parents = [
+                parent for parent in parents
+                if _is_ancestor(repo, parent, canonical_tip)
+            ]
+            if len(parents) > 1 and canonical_parents:
+                delta = set().union(*(
+                    changed_paths(repo, parent, commit_id)
+                    for parent in canonical_parents
+                ))
+            else:
+                delta = changed_paths_from_first_parent(
+                    repo, commit_id, "HARDEN candidate reachable history"
+                )
+            if delta - sl5_paths:
+                fail("candidate history changes paths outside HARDEN SL-5 ownership")
 
 
 def verify_git_and_inventory(
@@ -3267,10 +3314,22 @@ def verify_git_and_inventory(
     ancestor(repo, candidate, main, "canonical main")
     if commits["candidate"][1] != commits["canonical_main"][1] or changed_paths(repo, candidate, main):
         fail("canonical main does not preserve the exact candidate tree")
-    contribution_base, _candidate_paths = candidate_contribution_paths(
-        repo, landing, candidate, lane_owned_paths_since(repo, landing, main, "SL-5")
+    allowed_production = lane_owned_paths_since(repo, landing, main, "SL-5")
+    if plan_has_lane(repo, main, "SL-4"):
+        contribution_base, _canonical_tip = canonical_candidate_fork(
+            repo, candidate, main
+        )
+    else:
+        contribution_base, _candidate_paths = candidate_contribution_paths(
+            repo, landing, candidate, allowed_production
+        )
+    validate_sl4_boundary(
+        repo,
+        landing,
+        contribution_base,
+        main,
+        candidate=candidate,
     )
-    validate_sl4_boundary(repo, landing, contribution_base, main)
     commits["review_base"] = (
         contribution_base,
         git_scalar(repo, "rev-parse", contribution_base + "^{tree}"),
@@ -6850,7 +6909,12 @@ def self_test() -> None:
         )
         if contribution_base != sl4_landing:
             raise AssertionError("SL-5 contribution base missed reviewed SL-4")
-        validate_sl4_boundary(sl4_repo, sl0_landing, contribution_base, sl5_head)
+        validate_sl4_boundary(
+            sl4_repo,
+            sl0_landing,
+            contribution_base,
+            sl5_head,
+        )
 
         _run(["git", "checkout", "-qb", "empty-suffix", sl4_landing], sl4_repo)
         (sl4_repo / sl5_path).write_text("VALUE = 10\n", encoding="utf-8")
@@ -6899,7 +6963,7 @@ def self_test() -> None:
         direct_rejected(
             "mixed-source-SL-4-landing",
             lambda: validate_sl4_boundary(
-                sl4_repo, sl0_landing, mixed_base, mixed_head
+                sl4_repo, sl0_landing, mixed_base, mixed_head, candidate=mixed_head
             ),
         )
 
@@ -6928,7 +6992,11 @@ def self_test() -> None:
         direct_rejected(
             "missing-SL-4-lane",
             lambda: validate_sl4_boundary(
-                sl4_repo, sl0_landing, missing_lane_base, missing_lane_head
+                sl4_repo,
+                sl0_landing,
+                missing_lane_base,
+                missing_lane_head,
+                candidate=missing_lane_head,
             ),
         )
 
@@ -6975,7 +7043,11 @@ def self_test() -> None:
         direct_rejected(
             "SL-5-ownership-rewrite-hides-production",
             lambda: validate_sl4_boundary(
-                sl4_repo, sl0_landing, ownership_base, ownership_head
+                sl4_repo,
+                sl0_landing,
+                ownership_base,
+                ownership_head,
+                candidate=ownership_head,
             ),
         )
 
@@ -7080,7 +7152,11 @@ def self_test() -> None:
         direct_rejected(
             "merged-ownership-rewrite-hides-production",
             lambda: validate_sl4_boundary(
-                sl4_repo, history_landing, history_base, history_head
+                sl4_repo,
+                history_landing,
+                history_base,
+                history_head,
+                candidate=history_head,
             ),
         )
 
@@ -7106,7 +7182,11 @@ def self_test() -> None:
         direct_rejected(
             "upstream-merge-hides-earlier-SL-5",
             lambda: validate_sl4_boundary(
-                sl4_repo, sl0_landing, upstream_merge_base, upstream_merge_head
+                sl4_repo,
+                sl0_landing,
+                upstream_merge_base,
+                upstream_merge_head,
+                candidate=upstream_merge_head,
             ),
         )
 
@@ -7171,6 +7251,7 @@ def self_test() -> None:
                 sl0_landing,
                 merged_pre_sl4_base,
                 merged_pre_sl4_head,
+                candidate=merged_pre_sl4_head,
             ),
         )
 
@@ -7210,6 +7291,7 @@ def self_test() -> None:
                 sl0_landing,
                 orphan_merge_base,
                 orphan_merge_head,
+                candidate=orphan_merge_head,
             ),
         )
 
@@ -7239,7 +7321,11 @@ def self_test() -> None:
         direct_rejected(
             "candidate-local-SL-4-correction-hides-production",
             lambda: validate_sl4_boundary(
-                sl4_repo, sl0_landing, between_sl4_base, between_sl4_head
+                sl4_repo,
+                sl0_landing,
+                between_sl4_base,
+                between_sl4_head,
+                candidate=between_sl4_head,
             ),
         )
 
@@ -7283,8 +7369,184 @@ def self_test() -> None:
         direct_rejected(
             "candidate-local-SL-4-correction-hides-test-drift",
             lambda: validate_sl4_boundary(
-                sl4_repo, sl0_landing, test_drift_base, test_drift_head
+                sl4_repo,
+                sl0_landing,
+                test_drift_base,
+                test_drift_head,
+                candidate=test_drift_head,
             ),
+        )
+
+        _run(["git", "checkout", "-qb", "merged-test-drift", sl4_landing], sl4_repo)
+        _run(["git", "checkout", "-qb", "merged-test-drift-source"], sl4_repo)
+        sl4_file.write_text("def test_sl4(): assert False\n", encoding="utf-8")
+        _run(["git", "add", sl4_path], sl4_repo)
+        _run(["git", "commit", "-qm", "side-branch SL-4 drift"], sl4_repo)
+        sl4_file.write_text("def test_sl4(): pass\n", encoding="utf-8")
+        _run(["git", "add", sl4_path], sl4_repo)
+        _run(["git", "commit", "-qm", "restore frozen SL-4 bytes"], sl4_repo)
+        (sl4_repo / sl5_path).write_text("VALUE = 43\n", encoding="utf-8")
+        _run(["git", "add", sl5_path], sl4_repo)
+        _run(["git", "commit", "-qm", "production after side-branch drift"], sl4_repo)
+        _run(["git", "checkout", "-q", "merged-test-drift"], sl4_repo)
+        _run(
+            [
+                "git", "merge", "--no-ff", "-qm", "merge restored test and production",
+                "merged-test-drift-source",
+            ],
+            sl4_repo,
+        )
+        merged_drift_head = _run(["git", "rev-parse", "HEAD"], sl4_repo)
+        merged_drift_base, _ = candidate_contribution_paths(
+            sl4_repo,
+            sl0_landing,
+            merged_drift_head,
+            lane_owned_paths_since(sl4_repo, sl0_landing, merged_drift_head, "SL-5"),
+        )
+        direct_rejected(
+            "merged-side-branch-SL-4-drift",
+            lambda: validate_sl4_boundary(
+                sl4_repo,
+                sl0_landing,
+                merged_drift_base,
+                merged_drift_head,
+                candidate=merged_drift_head,
+            ),
+        )
+
+        _run(["git", "checkout", "-qb", "overlapping-ownership", sl4_landing], sl4_repo)
+        plan_path.write_text(
+            "# HARDEN\n\n"
+            f"### SL-0 - tests\n- **Owned files**: `{sl0_path}`\n\n"
+            f"### SL-4 - supplemental tests\n- **Owned files**: `{sl4_path}`\n\n"
+            f"### SL-5 - production\n- **Owned files**: `{sl5_path}`, `{sl4_path}`\n",
+            encoding="utf-8",
+        )
+        _run(["git", "add", str(plan_path.relative_to(sl4_repo))], sl4_repo)
+        _run(["git", "commit", "-qm", "reclassify SL-4 test as production"], sl4_repo)
+        sl4_file.write_text("def test_sl4(): pass  # weakened\n", encoding="utf-8")
+        _run(["git", "add", sl4_path], sl4_repo)
+        _run(["git", "commit", "-qm", "weaken reclassified SL-4 test"], sl4_repo)
+        (sl4_repo / sl5_path).write_text("VALUE = 44\n", encoding="utf-8")
+        _run(["git", "add", sl5_path], sl4_repo)
+        _run(["git", "commit", "-qm", "production after reclassified test"], sl4_repo)
+        overlap_head = _run(["git", "rev-parse", "HEAD"], sl4_repo)
+        overlap_base, _ = candidate_contribution_paths(
+            sl4_repo,
+            sl0_landing,
+            overlap_head,
+            lane_owned_paths_since(sl4_repo, sl0_landing, overlap_head, "SL-5"),
+        )
+        direct_rejected(
+            "SL-4-path-reclassified-as-SL-5",
+            lambda: validate_sl4_boundary(
+                sl4_repo,
+                sl0_landing,
+                overlap_base,
+                overlap_head,
+                candidate=overlap_head,
+            ),
+        )
+
+        _run(["git", "checkout", "-qb", "reviewed-correction-main", sl4_landing], sl4_repo)
+        sl4_file.write_text("def test_sl4(): pass  # reviewed squash correction\n", encoding="utf-8")
+        _run(["git", "add", sl4_path], sl4_repo)
+        _run(["git", "commit", "-qm", "older reviewed SL-4 correction"], sl4_repo)
+        (sl4_repo / sl5_path).write_text("VALUE = 45\n", encoding="utf-8")
+        _run(["git", "add", sl5_path], sl4_repo)
+        _run(["git", "commit", "-qm", "older baseline SL-5 repair"], sl4_repo)
+        _run(["git", "checkout", "-qb", "reviewed-correction-source"], sl4_repo)
+        sl4_file.write_text("def test_sl4(): pass  # latest reviewed correction\n", encoding="utf-8")
+        _run(["git", "add", sl4_path], sl4_repo)
+        _run(["git", "commit", "-qm", "review latest full SL-4 correction"], sl4_repo)
+        _run(["git", "checkout", "-q", "reviewed-correction-main"], sl4_repo)
+        _run(
+            [
+                "git", "merge", "--no-ff", "-qm", "land latest reviewed SL-4 correction",
+                "reviewed-correction-source",
+            ],
+            sl4_repo,
+        )
+        correction_landing = _run(["git", "rev-parse", "HEAD"], sl4_repo)
+        _run(["git", "checkout", "-qb", "reviewed-correction-candidate"], sl4_repo)
+        (sl4_repo / sl5_path).write_text("VALUE = 46\n", encoding="utf-8")
+        _run(["git", "add", sl5_path], sl4_repo)
+        _run(["git", "commit", "-qm", "candidate after reviewed correction"], sl4_repo)
+        correction_candidate = _run(["git", "rev-parse", "HEAD"], sl4_repo)
+        correction_base, _ = candidate_contribution_paths(
+            sl4_repo,
+            sl0_landing,
+            correction_candidate,
+            lane_owned_paths_since(sl4_repo, sl0_landing, correction_candidate, "SL-5"),
+        )
+        if correction_base != correction_landing:
+            raise AssertionError("reviewed correction fixture has the wrong review base")
+        _run(["git", "checkout", "-q", "reviewed-correction-main"], sl4_repo)
+        _run(
+            [
+                "git", "merge", "--no-ff", "-qm", "merge candidate after correction",
+                "reviewed-correction-candidate",
+            ],
+            sl4_repo,
+        )
+        correction_main = _run(["git", "rev-parse", "HEAD"], sl4_repo)
+        validate_sl4_boundary(
+            sl4_repo,
+            sl0_landing,
+            correction_base,
+            correction_main,
+            candidate=correction_candidate,
+        )
+
+        _run(["git", "checkout", "-qb", "benign-update-main", sl4_landing], sl4_repo)
+        _run(["git", "checkout", "-qb", "benign-update-correction"], sl4_repo)
+        sl4_file.write_text("def test_sl4(): pass  # upstream correction\n", encoding="utf-8")
+        _run(["git", "add", sl4_path], sl4_repo)
+        _run(["git", "commit", "-qm", "review upstream SL-4 correction"], sl4_repo)
+        _run(["git", "checkout", "-q", "benign-update-main"], sl4_repo)
+        _run(
+            [
+                "git", "merge", "--no-ff", "-qm", "land upstream SL-4 correction",
+                "benign-update-correction",
+            ],
+            sl4_repo,
+        )
+        update_main_tip = _run(["git", "rev-parse", "HEAD"], sl4_repo)
+        _run(["git", "checkout", "-qb", "benign-update-candidate", sl4_landing], sl4_repo)
+        (sl4_repo / sl5_path).write_text("VALUE = 47\n", encoding="utf-8")
+        _run(["git", "add", sl5_path], sl4_repo)
+        _run(["git", "commit", "-qm", "candidate before upstream correction"], sl4_repo)
+        _run(
+            [
+                "git", "merge", "--no-ff", "-qm", "update candidate from canonical main",
+                "benign-update-main",
+            ],
+            sl4_repo,
+        )
+        (sl4_repo / sl5_path).write_text("VALUE = 48\n", encoding="utf-8")
+        _run(["git", "add", sl5_path], sl4_repo)
+        _run(["git", "commit", "-qm", "candidate suffix after update"], sl4_repo)
+        update_candidate = _run(["git", "rev-parse", "HEAD"], sl4_repo)
+        _run(["git", "checkout", "-q", "benign-update-main"], sl4_repo)
+        _run(
+            [
+                "git", "merge", "--no-ff", "-qm", "merge updated candidate",
+                "benign-update-candidate",
+            ],
+            sl4_repo,
+        )
+        update_canonical_main = _run(["git", "rev-parse", "HEAD"], sl4_repo)
+        update_fork, update_canonical_tip = canonical_candidate_fork(
+            sl4_repo, update_candidate, update_canonical_main
+        )
+        if update_fork != update_main_tip or update_canonical_tip != update_main_tip:
+            raise AssertionError("updated candidate did not retain canonical review base")
+        validate_sl4_boundary(
+            sl4_repo,
+            sl0_landing,
+            update_fork,
+            update_canonical_main,
+            candidate=update_candidate,
         )
 
         _run(["git", "checkout", "-q", "main"], sl4_repo)
@@ -7304,7 +7566,11 @@ def self_test() -> None:
         direct_rejected(
             "post-SL-4-test-drift",
             lambda: validate_sl4_boundary(
-                sl4_repo, sl0_landing, drift_base, drift_head
+                sl4_repo,
+                sl0_landing,
+                drift_base,
+                drift_head,
+                candidate=drift_head,
             ),
         )
 
