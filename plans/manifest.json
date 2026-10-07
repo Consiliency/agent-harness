@@ -4781,6 +4781,47 @@
             "scope": "Append-only authority for five named historical frozen-path transitions, carrying forward the reviewed baseline and dispositions; no retroactive review, test, or acceptance claim"
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-10-07T08:37:30Z",
+          "by": "codex",
+          "metadata": {
+            "historical_frozen_dispositions": {
+              "entries": [
+                {
+                  "merge_commit": "9f0a65bb534a1fb4b946c8749546b842880cde0e",
+                  "old_blob": "8d7feb916fd35c570250a9013493b2a0ba6feb8a",
+                  "new_blob": "eb55d2e520e5b3d84a1253f0ba23b262feaf6076",
+                  "path": "phase-loop-runtime/tests/test_advisor_board_backcompat.py",
+                  "source": "Consiliency/agent-harness#1292"
+                },
+                {
+                  "merge_commit": "9f0a65bb534a1fb4b946c8749546b842880cde0e",
+                  "old_blob": "fdba7c363df751b3fbb9602037c6f500beb2928b",
+                  "new_blob": "e77033321bf2c96771d88e9bc025b1aaad624565",
+                  "path": "phase-loop-runtime/tests/test_advisor_board_golden.py",
+                  "source": "Consiliency/agent-harness#1292"
+                },
+                {
+                  "merge_commit": "9f0a65bb534a1fb4b946c8749546b842880cde0e",
+                  "old_blob": "8cf72583422d4251d8ed634edf6d142236266dd0",
+                  "new_blob": "4fbbec97c1e1cd003c3d0087cc19b844ba1c6abc",
+                  "path": "phase-loop-runtime/tests/test_advisor_board_presets.py",
+                  "source": "Consiliency/agent-harness#1292"
+                }
+              ],
+              "schema": "historical_frozen_dispositions.v1"
+            },
+            "plan_current_authority": {
+              "plan_sha256": "93057f32d83a170976f24a02c5a819e6ae4c31059b73981a8a0a31c498865daf",
+              "predecessor_plan_sha256": "0b4dfd29adaf278f7859b4974734e48904c6fe47b306124ab88fd193c94deb71",
+              "roadmap_sha256": "59982ada79f91fa771e62010ebb4adad5e07c900f75ef4fec4ff1d6ce5a626ef",
+              "schema": "plan_current_authority.v1",
+              "source": "Consiliency/agent-harness#1292"
+            },
+            "scope": "Historical disposition for the three omitted frozen-path transitions in agent-harness#1292; preserves the spent repair authorization and its landed entry; no retroactive review, test, or acceptance claim"
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-phase",
