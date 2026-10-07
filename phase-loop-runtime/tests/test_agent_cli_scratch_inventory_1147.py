@@ -858,6 +858,10 @@ def test_a_bounded_leg_is_launched_with_a_private_tmp(tmp_path, monkeypatch):
 
     monkeypatch.setattr(panel_invoker, "launch_provider", _launch)
     monkeypatch.setattr(panel_invoker, "_filtered_holder_namespace", lambda: 1)
-    with pytest.raises(OSError):
-        panel_invoker._run_leg_with_liveness(["true"], cwd=tmp_path, env={}, deadline_s=5)
+    token = panel_invoker._EGRESS_LAUNCH_PREFIX.set(("nsenter", "-t", "1", "--net", "--"))
+    try:
+        with pytest.raises(OSError):
+            panel_invoker._run_leg_with_liveness(["true"], cwd=tmp_path, env={}, deadline_s=5)
+    finally:
+        panel_invoker._EGRESS_LAUNCH_PREFIX.reset(token)
     assert seen["decision"] == sandbox_policy.CHILD_SCRATCH_PRIVATE_TMP

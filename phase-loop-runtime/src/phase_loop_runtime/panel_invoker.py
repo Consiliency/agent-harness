@@ -233,8 +233,44 @@ def _gemini_credential_target(mount_args) -> str:
     return targets[0]
 
 
+def _trusted_host_path(path) -> str:
+    """``abspath(path)`` with each linked PARENT component that root or the operator owns
+    resolved, once, here. The last component is never followed, and a link anyone else owns
+    is left in place, so the no-follow walks that consume the result still refuse it."""
+    absolute = os.path.abspath(os.fspath(path))
+    pending = [part for part in absolute.split("/") if part]
+    if not pending:
+        return absolute
+    leaf = pending.pop()
+    resolved = "/"
+    hops = 0
+    while pending:
+        part = pending.pop(0)
+        if part == ".":
+            continue
+        if part == "..":
+            resolved = os.path.dirname(resolved)
+            continue
+        candidate = os.path.join(resolved, part)
+        try:
+            info = os.lstat(candidate)
+            if stat.S_ISLNK(info.st_mode):
+                hops += 1
+                if hops > 40 or info.st_uid not in {0, os.getuid()}:
+                    return absolute
+                target = os.readlink(candidate)
+                if target.startswith("/"):
+                    resolved = "/"
+                pending[0:0] = [item for item in target.split("/") if item]
+                continue
+        except OSError:
+            return absolute
+        resolved = candidate
+    return os.path.join(resolved, leaf)
+
+
 def _seat_bind_source(path, *, output=False) -> str:
-    path = os.path.abspath(os.fspath(path))
+    path = _trusted_host_path(path)
     directory = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
         parts = Path(path).parts[1:]
@@ -267,18 +303,22 @@ def _seat_filesystem_view(cwd, *, readonly_paths=(), outputs=(), profile_mounts=
         view += ["--ro-bind-try", entry, entry]
     view += ["--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp",
              "--tmpfs", os.path.abspath(cwd)]
+    # Each host path is bound at the path the seat's argv names; its checked source may
+    # differ only by a resolved parent link (``_trusted_host_path``).
     for source in readonly_paths:
         checked = _seat_bind_source(source)
-        view += ["--ro-bind", checked, checked]
+        view += ["--ro-bind", checked, os.path.abspath(source)]
     for output in outputs:
         checked = _seat_bind_source(output, output=True)
-        view += ["--bind", checked, checked]
+        view += ["--bind", checked, os.path.abspath(output)]
     if broker_socket is not None:
         checked = _seat_bind_source(broker_socket)
         if not stat.S_ISSOCK(os.lstat(checked).st_mode):
             raise _sandbox_egress.SeatIdentityUnverified("seat_broker_socket_unavailable")
-        view += ["--bind", checked, checked]
-    return [*view, *profile_mounts, "--remount-ro", "/"]
+        view += ["--bind", checked, os.path.abspath(broker_socket)]
+    # The seat starts in its cwd as the caller named it: bubblewrap would otherwise reuse
+    # the kernel's resolved cwd, which is not a path in this view when a parent is a link.
+    return [*view, *profile_mounts, "--remount-ro", "/", "--chdir", os.path.abspath(cwd)]
 
 
 def _seat_owner(view, *, filtered_network=False) -> list[str]:
@@ -479,6 +519,10 @@ def _validated_claude_journal(data):
                     return ""
             if message.get("role") == "assistant":
                 assistant_seen = True
+                if _claude_api_error_record(record, message):
+                    # A provider's journaled error is never an answer or a continuation;
+                    # the answer parser decides what it means for the turn (#1194).
+                    continue
                 if message.get("stop_reason") not in {None, "end_turn", "tool_use"}:
                     return ""
                 tools = [block for block in content or [] if block.get("type") == "tool_use"]
@@ -4568,6 +4612,11 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
 
         for relative in (".config", ".cache", ".local/share"):
             directory(private_home + "/" + relative)
+        # Recorded per-harness exception (plan §5c): Claude and Gemini seats get an
+        # access-token-only copy. The Codex and Grok CLIs do not run from an access-only
+        # file (a measured Codex trial exited 1), so their seat gets the CLI's auth file as
+        # stored, in the private home, and every secret value in it is redacted from the
+        # seat's output. Narrowing these two is a follow-up.
         if harness == "codex":
             credential(".codex/auth.json")
             data_file(".codex/config.toml", b'cli_auth_credentials_store = "file"\n')
@@ -4633,6 +4682,7 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
 
 def _precreate_seat_output(path):
     path = Path(os.path.abspath(path))
+    host = Path(_trusted_host_path(path))
     parent = _seat_bind_source(path.parent)
     descriptor = os.open(parent, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
     try:
@@ -4647,9 +4697,9 @@ def _precreate_seat_output(path):
         info = os.stat(path.name, dir_fd=descriptor, follow_symlinks=False)
         identities = dict(_SEAT_OUTPUT_IDENTITIES.get() or {})
         identity = (info.st_dev, info.st_ino)
-        if not created and path in identities and identities[path] != identity:
+        if not created and host in identities and identities[host] != identity:
             raise AgyCanaryEvidenceError("seat output identity changed")
-        identities[path] = identity
+        identities[host] = identity
         _SEAT_OUTPUT_IDENTITIES.set(identities)
         return path
     finally:
@@ -4671,7 +4721,8 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
     for name in ("review-bundle.md", "review-instructions.md", _review_stage.REVIEW_STAGE_TREE_DIRNAME):
         path = cwd / name
         if os.path.lexists(path):
-            readonly.append(_seat_bind_source(path))
+            _seat_bind_source(path)
+            readonly.append(path)
     for index, item in enumerate(command[:-1]):
         if item in {"--add-dir", "--cd", "--prompt-file", "--context-file", "--input-file",
                     "--output-schema", "--append-system-prompt-file", "--system-prompt-file",
@@ -4680,7 +4731,8 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
             if not path.is_absolute():
                 path = cwd / path
             if path != cwd and str(path) not in {"/dev/stdin", "/dev/null"}:
-                readonly.append(_seat_bind_source(path))
+                _seat_bind_source(path)
+                readonly.append(path)
         if item == "--output-last-message":
             path = Path(command[index + 1])
             outputs = (*outputs, path if path.is_absolute() else cwd / path)
@@ -7317,7 +7369,7 @@ def _cleanup_broker_claude_transcript(
     root = directory = None
     try:
         from .agy_canary_evidence import _seat_parent_descriptor
-        path = Path(os.path.abspath(path))
+        path = Path(_trusted_host_path(path))
         root = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         directory, name = _seat_parent_descriptor(root, str(path).lstrip("/"))
         metadata = os.stat(name, dir_fd=directory, follow_symlinks=False)
@@ -7362,7 +7414,7 @@ def _seat_output_metadata(path):
     try:
         from .agy_canary_evidence import _seat_parent_descriptor
         root = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
-        directory, name = _seat_parent_descriptor(root, os.path.abspath(path).lstrip("/"))
+        directory, name = _seat_parent_descriptor(root, _trusted_host_path(path).lstrip("/"))
         descriptor = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
                              dir_fd=directory)
         info = os.fstat(descriptor)
@@ -7393,7 +7445,7 @@ def _seat_transcripts(project, *, prefix="", since=0):
         from .agy_canary_evidence import _seat_parent_descriptor
         root = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
         directory, _ = _seat_parent_descriptor(
-            root, os.path.abspath(project).lstrip("/") + "/seat-directory",
+            root, _trusted_host_path(project).lstrip("/") + "/seat-directory",
         )
         result = []
         with os.scandir(directory) as entries:
@@ -7524,7 +7576,7 @@ def _read_seat_text(path: Path) -> str:
     try:
         directory = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
         return _redact_seat_credentials(read_seat_output(
-            directory, os.path.abspath(path).lstrip("/"), max_bytes=32 * 1024 * 1024,
+            directory, _trusted_host_path(path).lstrip("/"), max_bytes=32 * 1024 * 1024,
             expect_uid=os.getuid()).decode("utf-8", errors="replace"))
     except (AgyCanaryEvidenceError, _sandbox_egress.SeatIdentityUnverified) as exc:
         if isinstance(exc.__cause__, FileNotFoundError):
@@ -7538,7 +7590,7 @@ def _read_seat_text(path: Path) -> str:
 
 
 def _write_seat_text(path: Path, text: str):
-    path = Path(os.path.abspath(path))
+    path = Path(_trusted_host_path(path))
     descriptor = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
         identity = (_SEAT_OUTPUT_IDENTITIES.get() or {}).get(path)
@@ -7740,6 +7792,14 @@ def _run_leg_with_liveness(
         # so the seat lands in the namespace instead of beside it.
         if review_monitor is not None and review_monitor.cancel.is_set():
             raise _ReviewOperationCancelled("review_operation_cancelled")
+        if not _EGRESS_LAUNCH_PREFIX.get():
+            # An owned review launch runs only in the filtered namespace. A leg outside any
+            # board leg (the agy --help measurement) holds none: it holds one for this
+            # launch only, so trusted host work around it stays in the parent.
+            prefix = profile_stack.enter_context(
+                _sandbox_egress.isolated_network(timeout_s=None, required=True))
+            token = _EGRESS_LAUNCH_PREFIX.set(tuple(prefix))
+            profile_stack.callback(_EGRESS_LAUNCH_PREFIX.reset, token)
         owned_command, profile = profile_stack.enter_context(_seat_command_profile(
             cmd, env=env, cwd=cwd, gemini_profile=gemini_profile,
         ))
@@ -8165,6 +8225,7 @@ def _run_claude_tui_session(
     terminal_bytes = bytearray()
     journal = None
     journal_error = False
+    launch_errors = None
     prompt_sent = False
     next_transcript_check = start_monotonic + _CLAUDE_TUI_TRANSCRIPT_INTERVAL_S
     transcript_salvage = ""
@@ -8278,6 +8339,13 @@ def _run_claude_tui_session(
             return _claude_pending_tool_uses(None, data=_journal_data())
         return _claude_pending_tool_uses(session_transcript_path) if session_transcript_path else ()
 
+    def _owner_refusal(code: str) -> bool:
+        """Did the owner's final link refuse with ``code`` (its private stderr file)?"""
+        if launch_errors is None:
+            return False
+        launch_errors.seek(0)
+        return code.encode() in launch_errors.read(4096)
+
     def _journal_data():
         nonlocal journal_error
         try:
@@ -8350,6 +8418,7 @@ def _run_claude_tui_session(
         master_fd, slave_fd = pty.openpty()
         if seat_jail is None:
             profile = replace(profile, pass_fds=(*profile.pass_fds, slave_fd), terminal_fd=slave_fd)
+            launch_errors = profile_stack.enter_context(tempfile.TemporaryFile())
         # ah#196/#223 R1: pin a wide window so a long scratch-cwd path renders
         # un-wrapped (default ~80 cols would split the path token across lines).
         try:
@@ -8383,7 +8452,10 @@ def _run_claude_tui_session(
                     env=dict(env),
                     stdin=subprocess.DEVNULL,
                     stdout=subprocess.DEVNULL,
-                    stderr=slave_fd,
+                    # The owner's own refusals (before the seat's terminal is attached) go
+                    # to a private file, never the PTY: a host process holding the PTY would
+                    # hide the seat's EOF (#48).
+                    stderr=launch_errors,
                     text=False,
                     close_fds=True,
                     start_new_session=True,
@@ -8480,7 +8552,7 @@ def _run_claude_tui_session(
                             except subprocess.TimeoutExpired:
                                 pass
                         review_text = _current_output()
-                        if proc.poll() == 127 and "seat_keyring_unavailable" in _tui_screen_text(terminal_bytes):
+                        if proc.poll() == 127 and _owner_refusal("seat_keyring_unavailable"):
                             return _finish(127, "", "seat_keyring_unavailable")
                         if _canonical_complete(review_text):
                             return _finish(0, review_text, "claude_tui_file_output")

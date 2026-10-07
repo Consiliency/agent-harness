@@ -412,8 +412,11 @@ def test_tool_only_transcript_growth_keeps_active_tui_leg_alive(tmp_path, monkey
     transcript = tmp_path / "owned.jsonl"
     slug = pi.re.sub(r"[^A-Za-z0-9.-]", "-", str(tmp_path))
     journal = '"$CLAUDE_CONFIG_DIR/projects/' + slug + '/$1.jsonl"'
+    # Genuine progress is a NEW record version (agent-harness#1194): each tick journals one.
+    record = ('{"type":"assistant","uuid":"tool-step-%s","message":{"role":"assistant",'
+              '"content":[{"type":"tool_use","id":"tool-%s","name":"Read","input":{}}]}}')
     script = _FINITE_ANIMATION_SCRIPT.replace(
-        "sleep 0.1;", "printf '%s\\n' '{\"type\":\"progress\"}' >> " + journal + "; sleep 0.1;",
+        "sleep 0.1;", "printf '" + record + "\\n' \"$i\" \"$i\" >> " + journal + "; sleep 0.1;",
     )
     monkeypatch.setattr(pi, "_LEG_STALL_THRESHOLD_S", 0.3)
     monkeypatch.setattr(pi, "_CLAUDE_TUI_SUBMIT_DELAY_S", 999)
@@ -433,8 +436,9 @@ def test_tool_only_transcript_growth_keeps_active_tui_leg_alive(tmp_path, monkey
     )
 
     assert time.monotonic() - started >= 1.0
-    assert transcript.stat().st_size > 0
     assert status != "claude_tui_stalled"
+    # No verdict, so nothing is approved and no partial journal is kept on the host.
+    assert transcript.stat().st_size == 0
 
 
 def test_pending_tool_gets_one_bounded_stall_extension(tmp_path, monkeypatch):
@@ -453,8 +457,8 @@ def test_pending_tool_gets_one_bounded_stall_extension(tmp_path, monkeypatch):
     observed = []
     original = pi._claude_pending_tool_uses
 
-    def pending(path):
-        result = original(path)
+    def pending(path, **kwargs):
+        result = original(path, **kwargs)
         observed.append((time.monotonic(), result))
         return result
 

@@ -23,6 +23,16 @@ import pytest
 
 from phase_loop_runtime import panel_invoker as panel
 
+# Each fake provider below is a seat on the owned route (agent-harness#1222): it runs in the
+# filtered namespace and journals where Claude Code does, under its private config dir; the
+# host collects that exact journal (``_JOURNAL``).
+_JOURNAL = (
+    "import os, re\n"
+    "_sid = sys.argv[sys.argv.index('--session-id') + 1]\n"
+    "_journal = Path(os.environ['CLAUDE_CONFIG_DIR']) / 'projects' / "
+    "re.sub(r'[^A-Za-z0-9.-]', '-', os.getcwd()) / (_sid + '.jsonl')\n"
+)
+
 
 # --- transcript fixtures, shaped on the real hung-seat journal (Claude Code 2.1.28x) ---------
 
@@ -124,18 +134,19 @@ def _provider(transcript: Path, records: list[dict], release: Path) -> list[str]
     (cosmetic, never novel) until ``release`` exists -- alive, but no genuine progress."""
     body = "".join(json.dumps(r) + "\n" for r in records)
     script = (
-        "import sys, time\nfrom pathlib import Path\n"
+        "import sys, time\nfrom pathlib import Path\n" + _JOURNAL +
         "print('Claude Code fake provider ready for review', flush=True)\n"
         "time.sleep(.2)\n"
-        f"Path({str(transcript)!r}).write_text({body!r})\n"
+        f"_journal.write_text({body!r})\n"
         "i = 0\n"
         f"while not Path({str(release)!r}).exists():\n"
         "    sys.stdout.write('\\r* Thinking... (%ds . esc to interrupt)' % i); sys.stdout.flush()\n"
         "    i += 1; time.sleep(.05)\n"
     )
-    return [sys.executable, "-c", script]
+    return ["/usr/bin/python3", "-c", script]
 
 
+@pytest.mark.usefixtures("owned_review_network")
 @pytest.mark.parametrize("heartbeat_only", [True, False])
 def test_retry_exhausted_provider_ends_the_leg_degraded_at_once(tmp_path, monkeypatch, heartbeat_only):
     _fast_tui(monkeypatch)
@@ -166,6 +177,7 @@ def test_retry_exhausted_provider_ends_the_leg_degraded_at_once(tmp_path, monkey
         assert record["provider_terminal_state"] == "claude_seat_output_budget_exhausted"
 
 
+@pytest.mark.usefixtures("owned_review_network")
 def test_live_but_progressless_seat_is_surfaced_not_killed(tmp_path, monkeypatch, caplog):
     """The provider keeps its spinner (heartbeat) alive mid-retry and journals nothing new. The
     seat is NOT ended; its record carries a typed stalled notice and one warning is logged."""
@@ -325,6 +337,7 @@ def test_grok_a_completed_answer_before_an_error_is_not_a_give_up(tmp_path):
         assert panel._claude_transcript_provider_gave_up(path) is None
 
 
+@pytest.mark.usefixtures("owned_review_network")
 def test_grok_a_session_never_turns_a_completed_answer_into_a_degraded_give_up(tmp_path, monkeypatch):
     """The live loop on Grok's transcript: the leg is NOT ended as a give-up. (The existing
     fail-closed answer parser does not accept an answer an error record follows, so the bounded
@@ -350,6 +363,7 @@ def test_grok_a_session_never_turns_a_completed_answer_into_a_degraded_give_up(t
     assert (rc, log, text) == (0, "claude_tui_broker_final_assistant", "Review complete\nAGREE")
 
 
+@pytest.mark.usefixtures("owned_review_network")
 def test_an_accepted_review_file_wins_over_a_journaled_give_up(tmp_path, monkeypatch):
     """The ordering invariant: the review path is checked first."""
     _fast_tui(monkeypatch)
@@ -440,16 +454,17 @@ def _replaying_provider(transcript: Path, records: list[dict], release: Path) ->
     body = "".join(json.dumps(r) + "\n" for r in records)
     again = "".join(json.dumps(r) + "\n" for r in [*META, records[-1]])
     script = (
-        "import sys, time\nfrom pathlib import Path\n"
+        "import sys, time\nfrom pathlib import Path\n" + _JOURNAL +
         "print('Claude Code fake provider ready for review', flush=True)\n"
-        f"p = Path({str(transcript)!r}); p.write_text({body!r})\n"
+        f"p = _journal; p.write_text({body!r})\n"
         f"while not Path({str(release)!r}).exists():\n"
         f"    with p.open('a') as f: f.write({again!r})\n"
         "    sys.stdout.write('\\r* Thinking...'); sys.stdout.flush(); time.sleep(.05)\n"
     )
-    return [sys.executable, "-c", script]
+    return ["/usr/bin/python3", "-c", script]
 
 
+@pytest.mark.usefixtures("owned_review_network")
 def test_re_journaled_records_do_not_mask_a_stall(tmp_path, monkeypatch):
     _fast_tui(monkeypatch)
     transcript = tmp_path / "session.jsonl"
@@ -489,6 +504,7 @@ def test_api_error_flag_as_string_true_is_still_a_give_up(tmp_path):
     assert panel._claude_transcript_provider_gave_up(path) == "claude_seat_output_budget_exhausted"
 
 
+@pytest.mark.usefixtures("owned_review_network")
 def test_unbrokered_leg_never_reads_a_neighbouring_give_up(tmp_path, monkeypatch):
     """Claude r1 N4: only the exact brokered transcript may end a leg. An unbrokered session whose
     cwd project dir holds another session's give-up journal is not ended by it."""
@@ -622,6 +638,7 @@ def test_governed_record_carries_a_stalled_seat_as_a_warn(tmp_path):
     assert "claude" in stalled[0].reason and "3600s" in stalled[0].reason and "2 notice" in stalled[0].reason
 
 
+@pytest.mark.usefixtures("owned_review_network")
 def test_an_unchanged_transcript_is_parsed_once_not_every_tick(tmp_path, monkeypatch):
     _fast_tui(monkeypatch)
     transcript = tmp_path / "session.jsonl"
@@ -692,6 +709,7 @@ def test_r2_the_answer_parser_skips_a_stray_error_after_a_completed_review(tmp_p
     assert panel._claude_transcript_provider_gave_up(path) == "claude_seat_output_budget_exhausted"
 
 
+@pytest.mark.usefixtures("owned_review_network")
 @pytest.mark.parametrize("heartbeat_only", [True, False])
 def test_r2_session_returns_the_completed_review_not_the_stray_error(tmp_path, monkeypatch, heartbeat_only):
     """The seats' full-session repro. Before r2: bounded ended claude_tui_stalled with
@@ -716,6 +734,7 @@ def test_r2_session_returns_the_completed_review_not_the_stray_error(tmp_path, m
     assert (rc, log, text) == (0, "claude_tui_broker_final_assistant", "Review complete\nAGREE")
 
 
+@pytest.mark.usefixtures("owned_review_network")
 def test_r2_president_route_fails_closed_then_gives_up_instead_of_hanging(tmp_path, monkeypatch):
     """The president parser rejects any turn holding an error record (ah#1016/#1017), so no
     answer there can be accepted; the give-up must end that leg rather than leave it waiting."""
@@ -747,6 +766,7 @@ def test_r2_president_route_fails_closed_then_gives_up_instead_of_hanging(tmp_pa
 
 # --- round 2 (codex): the verbatim falsifiers ----------------------------------------------------
 
+@pytest.mark.usefixtures("owned_review_network")
 def test_codex_r2_f001_completed_review_survives_stray_error(tmp_path, monkeypatch):
     """codex r2 F001 falsifier, verbatim."""
     _fast_tui(monkeypatch)
@@ -820,6 +840,7 @@ def test_r3_grok_g3_1_unseen_open_version_then_error_ends_degraded(tmp_path, var
     assert panel._claude_transcript_provider_gave_up(path) == "claude_seat_provider_api_error"
 
 
+@pytest.mark.usefixtures("owned_review_network")
 def test_codex_r3_f001_unseen_open_replay_cannot_hold_a_give_up_open(tmp_path, monkeypatch):
     """codex r3 F001 falsifier, verbatim."""
     _fast_tui(monkeypatch)
@@ -864,6 +885,7 @@ def test_r3_president_error_then_ruling_is_rejected_not_pending(tmp_path):
     assert panel._claude_transcript_outcome(path).kind == "answer"  # the review route accepts it
 
 
+@pytest.mark.usefixtures("owned_review_network")
 def test_r3_a_completed_review_without_a_verdict_is_handed_back_not_left_waiting(tmp_path, monkeypatch):
     """Grok r3 N2: a completed answer the review route cannot accept as a verdict used to leave a
     heartbeat_only seat waiting forever. It is a terminal outcome: handed back as it is."""
@@ -1039,6 +1061,7 @@ def test_r3_a_replayed_streaming_version_cannot_reopen_a_ended_turn(tmp_path):
         assert panel._claude_transcript_outcome(path, require_terminal=True).kind == "rejected"
 
 
+@pytest.mark.usefixtures("owned_review_network")
 def test_r3_president_session_ends_rejected_instead_of_waiting(tmp_path, monkeypatch):
     _fast_tui(monkeypatch)
     transcript = tmp_path / "session.jsonl"
@@ -1065,6 +1088,7 @@ def test_r3_president_session_ends_rejected_instead_of_waiting(tmp_path, monkeyp
 
 # --- round 4 (codex F001): an API-error update is terminal evidence; "last" is append order -----
 
+@pytest.mark.usefixtures("owned_review_network")
 @pytest.mark.parametrize("mode", ["review", "president"])
 @pytest.mark.parametrize("heartbeat_only", [False, True])
 @pytest.mark.parametrize("shape", ["null-stop", "missing-stop", "interleaved"])
@@ -1159,6 +1183,7 @@ def test_r5_an_earlier_requests_record_never_masks_the_current_give_up(tmp_path,
     assert (outcome.kind, outcome.code) == ("gave_up", "claude_seat_rate_limited")
 
 
+@pytest.mark.usefixtures("owned_review_network")
 @pytest.mark.parametrize("heartbeat_only", [False, True])
 @pytest.mark.parametrize("mode", ["review", "president"])
 def test_r5_session_ends_on_the_give_up_behind_an_earlier_requests_record(
@@ -1303,6 +1328,7 @@ def test_r5_session_waits_for_the_text_flushed_after_its_thinking(tmp_path, monk
 
 # --- round 5 (codex F001): a request replay is a replay whatever its completion metadata -------
 
+@pytest.mark.usefixtures("owned_review_network")
 @pytest.mark.parametrize("mode", ["review", "president"])
 @pytest.mark.parametrize("heartbeat_only", [False, True])
 @pytest.mark.parametrize("null_first", [False, True])
@@ -1362,6 +1388,7 @@ def test_r5_the_walk_and_the_parser_agree_on_which_user_record_is_the_request(tm
 
 # --- round 6 (codex F001): the answer parser accepts only a member of the current request ------
 
+@pytest.mark.usefixtures("owned_review_network")
 @pytest.mark.parametrize("mode", ["review", "president"])
 @pytest.mark.parametrize("heartbeat_only", [False, True])
 @pytest.mark.parametrize("terminal_error", [False, True])

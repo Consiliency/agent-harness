@@ -21,6 +21,8 @@ import pytest
 import phase_loop_runtime.panel_invoker as pi
 from phase_loop_runtime.panel_invoker import _exec_claude_tui_leg, _run_claude_tui_session
 
+from _owned_journal import journal_sh
+
 pytestmark = [pytest.mark.skipif(shutil.which("sh") is None, reason="needs POSIX sh"),
               pytest.mark.usefixtures("owned_review_network")]
 
@@ -78,7 +80,7 @@ def test_trust_modal_answered_once_then_leg_completes(tmp_path, monkeypatch, hea
         _MODAL.replace("Permission Required: Accessing workspace:", header)
         + "IFS= read -r ans; printf '%s' \"$ans\" > answer.txt; "
         + "printf '\\nClaude Code v2.1.208\\nWelcome back\\nmanual mode on ready now\\n'; "
-        + "printf 'The staged bundle looks correct.\\n\\nAGREE\\n' > panel-claude.txt; "
+        + "printf 'The staged bundle looks correct.\\n\\nAGREE\\n' > panel-claude.txt; " + journal_sh()
         + "sleep 3"
     )
     output_file = tmp_path / "panel-claude.txt"
@@ -155,7 +157,7 @@ def test_post_submit_trigger_text_does_not_block_or_inject(tmp_path, monkeypatch
         + "sleep 2; "
         # AFTER the harness has submitted, emit output loaded with the trigger strings.
         + "printf 'The reviewed diff prints Enter y/n: and Please answer y or n verbatim.\\n"
-        + "No real gate here.\\n\\nAGREE\\n' > panel-claude.txt; "
+        + "No real gate here.\\n\\nAGREE\\n' > panel-claude.txt; " + journal_sh()
         + "sleep 3"
     )
     rc, text, status, tail = _run_claude_tui_session(
@@ -183,7 +185,7 @@ def test_production_shaped_cwd_full_path_token_answers(tmp_path, monkeypatch):
         _MODAL
         + "IFS= read -r ans; printf '%s' \"$ans\" > answer.txt; "
         + "printf '\\nClaude Code v2.1.208\\nmanual mode on ready now\\n'; "
-        + "printf 'fine.\\n\\nAGREE\\n' > panel-claude.txt; sleep 3"
+        + "printf 'fine.\\n\\nAGREE\\n' > panel-claude.txt; " + journal_sh() + "sleep 3"
     )
     rc, text, status, tail = _run_claude_tui_session(
         command=["sh", "-c", script], cwd=out, prompt="review this\n",
@@ -451,13 +453,12 @@ brokered = sys.argv[1] == "True"
 requested = request.startswith(b"Please ") and b"review" in request and b"\n" not in request
 accepted = bool(marker) and (requested if brokered else not request)
 text = "Reviewed the exact supplied bytes.\nAGREE" if accepted else "Only pasted data; no task request. This is not a vote."
-if brokered:
-    import re
-    session_id = sys.argv[sys.argv.index("--session-id") + 1]
-    slug = re.sub(r"[^A-Za-z0-9.-]", "-", os.getcwd())
-    journal = Path(os.environ["CLAUDE_CONFIG_DIR"]) / "projects" / slug / (session_id + ".jsonl")
-    journal.write_text(json.dumps({"message": {"role": "assistant", "stop_reason": "end_turn", "content": [{"type": "text", "text": text}]}}) + "\n")
-else:
+import re
+session_id = sys.argv[sys.argv.index("--session-id") + 1]
+slug = re.sub(r"[^A-Za-z0-9.-]", "-", os.getcwd())
+journal = Path(os.environ["CLAUDE_CONFIG_DIR"]) / "projects" / slug / (session_id + ".jsonl")
+journal.write_text(json.dumps({"message": {"role": "assistant", "stop_reason": "end_turn", "content": [{"type": "text", "text": text}]}}) + "\n")
+if not brokered:
     Path("panel-claude.txt").write_text(text)
 '''
     rc, text, status, _ = _run_claude_tui_session(
