@@ -2130,8 +2130,10 @@ def sl5_production_paths(repo: Path, revision: str) -> set[str]:
     """Derive the production suffix from SL-5, excluding every test lane."""
     if plan_has_lane(repo, revision, "SL-5"):
         return plan_owned_paths(repo, revision, "SL-5")
-    # The in-process verifier fixture predates the supplemental SL-4/SL-5
-    # split. Real retained evidence is bound to the current plan, which has it.
+    if plan_has_lane(repo, revision, "SL-4"):
+        fail("HARDEN plan lost the SL-5 lane")
+    # Legacy retained-input fixtures predate both supplemental lanes. Their
+    # production ownership is everything outside the original SL-0 test lane.
     return all_plan_owned_paths(repo, revision) - plan_owned_paths(
         repo, revision, "SL-0"
     )
@@ -3096,6 +3098,10 @@ def validate_sl4_boundary(
             matches.append(commit_id)
     if not matches:
         fail("reviewed SL-4 landing is missing")
+    for commit_id in history:
+        parent = commit_parents(repo, commit_id, "pre-review SL-5 history")[0]
+        if changed_paths(repo, parent, commit_id) & sl5_paths:
+            fail("SL-5 production changed before the derived review base")
     # A later tests-only correction restarts SL-4, so the latest exact landing
     # is the boundary that SL-5 must preserve.
     sl4_landing = matches[-1]
@@ -3535,21 +3541,21 @@ def retained_historical_review_sessions(
     return sessions
 
 
-def retained_role_operation_nonces(
+def _contains_schema(value: Any, schema: str) -> bool:
+    if isinstance(value, dict):
+        if value.get("schema") == schema:
+            return True
+        return any(_contains_schema(item, schema) for item in value.values())
+    if isinstance(value, list):
+        return any(_contains_schema(item, schema) for item in value)
+    return False
+
+
+def retained_role_attestations(
     store: ArtifactStore, retained: Any
-) -> set[str]:
-    """Return the three raw role operation nonces retained by the producer."""
-    roles: dict[str, str] = {}
-
-    def contains_role_attestation(value: Any) -> bool:
-        if isinstance(value, dict):
-            if value.get("schema") == "harden_role_attestation.v1":
-                return True
-            return any(contains_role_attestation(item) for item in value.values())
-        if isinstance(value, list):
-            return any(contains_role_attestation(item) for item in value)
-        return False
-
+) -> dict[str, dict[str, Any]]:
+    """Return the three top-level raw role attestations retained by the producer."""
+    roles: dict[str, dict[str, Any]] = {}
     for item in retained:
         ref = artifact_ref(item, "authority retained input")
         raw = store.read(ref, "authority retained input", distinct=False)
@@ -3557,7 +3563,7 @@ def retained_role_operation_nonces(
             continue
         value = parse_canonical_json(raw, "authority retained input")
         if not isinstance(value, dict) or value.get("schema") != "harden_role_attestation.v1":
-            if contains_role_attestation(value):
+            if _contains_schema(value, "harden_role_attestation.v1"):
                 fail("retained role operation nonce inventory is malformed")
             continue
         value = closed(
@@ -3568,17 +3574,117 @@ def retained_role_operation_nonces(
             },
             "retained role attestation",
         )
+        if any(
+            _contains_schema(item, "harden_role_attestation.v1")
+            for key, item in value.items()
+            if key != "schema"
+        ):
+            fail("retained role operation nonce inventory is malformed")
+        text(value["annotation"], "retained role annotation")
         role = text(value["role"], "retained role", pattern=IDENTITY)
         if role not in {"coordinator", "author", "reviewer"} or role in roles:
             fail("retained role operation nonce inventory is malformed")
-        roles[role] = text(
-            value["operation_nonce"],
-            "retained role operation nonce",
-            pattern=HEX64,
-        )
+        text(value["identity"], "retained role identity", pattern=IDENTITY)
+        text(value["vendor"], "retained role vendor", pattern=IDENTITY)
+        text(value["session_sha256"], "retained role session", pattern=HEX64)
+        text(value["evidence_id"], "retained role evidence ID", pattern=HEX64)
+        text(value["issued_at"], "retained role timestamp", pattern=IDENTITY)
+        text(value["operation_nonce"], "retained role operation nonce", pattern=HEX64)
+        roles[role] = value
     if set(roles) != {"coordinator", "author", "reviewer"}:
         fail("retained role operation nonce inventory is malformed")
-    return set(roles.values())
+    identities = [value["identity"] for value in roles.values()]
+    sessions = [value["session_sha256"] for value in roles.values()]
+    if len(set(identities)) != 3 or len(set(sessions)) != 3:
+        fail("retained role identity/session is reused")
+    return roles
+
+
+def retained_role_operation_nonces(
+    store: ArtifactStore, retained: Any
+) -> set[str]:
+    """Return the three raw role operation nonces retained by the producer."""
+    return {
+        value["operation_nonce"]
+        for value in retained_role_attestations(store, retained).values()
+    }
+
+
+def retained_plan_authority(
+    store: ArtifactStore, retained: Any
+) -> dict[str, Any]:
+    """Return the sole top-level retained HARDEN plan authority."""
+    authorities: list[dict[str, Any]] = []
+    for item in retained:
+        ref = artifact_ref(item, "authority retained input")
+        raw = store.read(ref, "authority retained input", distinct=False)
+        if raw.lstrip()[:1] not in {b"{", b"["}:
+            continue
+        value = parse_canonical_json(raw, "authority retained input")
+        if not isinstance(value, dict) or value.get("schema") != "harden_plan_authority.v1":
+            if _contains_schema(value, "harden_plan_authority.v1"):
+                fail("retained plan authority inventory is malformed")
+            continue
+        authorities.append(
+            closed(
+                value,
+                {
+                    "schema", "annotation", "evidence_id", "repository",
+                    "commits", "author_vendor",
+                },
+                "retained plan authority",
+            )
+        )
+    if len(authorities) != 1:
+        fail("retained plan authority inventory is malformed")
+    authority = authorities[0]
+    if any(
+        _contains_schema(item, "harden_plan_authority.v1")
+        for key, item in authority.items()
+        if key != "schema"
+    ):
+        fail("retained plan authority inventory is malformed")
+    text(authority["annotation"], "retained plan annotation")
+    text(authority["evidence_id"], "retained plan evidence ID", pattern=HEX64)
+    text(authority["repository"], "retained plan repository", pattern=IDENTITY)
+    text(authority["author_vendor"], "retained author vendor", pattern=IDENTITY)
+    if not isinstance(authority["commits"], dict):
+        fail("retained plan authority inventory is malformed")
+    return authority
+
+
+def retained_review_request_nonces(
+    store: ArtifactStore, retained: Any
+) -> set[str]:
+    """Return the two raw review-request nonces propagated into derived requests."""
+    rounds: dict[str, str] = {}
+    for item in retained:
+        ref = artifact_ref(item, "authority retained input")
+        raw = store.read(ref, "authority retained input", distinct=False)
+        if raw.lstrip()[:1] not in {b"{", b"["}:
+            continue
+        value = parse_canonical_json(raw, "authority retained input")
+        if not isinstance(value, dict) or value.get("schema") != "harden_review_request.v1":
+            if _contains_schema(value, "harden_review_request.v1"):
+                fail("retained review request inventory is malformed")
+            continue
+        if any(
+            _contains_schema(item, "harden_review_request.v1")
+            for key, item in value.items()
+            if key != "schema"
+        ):
+            fail("retained review request inventory is malformed")
+        round_name = text(value.get("round"), "retained review round", pattern=IDENTITY)
+        if round_name not in {"candidate", "canonical_main"} or round_name in rounds:
+            fail("retained review request inventory is malformed")
+        rounds[round_name] = text(
+            value.get("operation_nonce"),
+            "retained review request nonce",
+            pattern=HEX64,
+        )
+    if set(rounds) != {"candidate", "canonical_main"}:
+        fail("retained review request inventory is malformed")
+    return set(rounds.values())
 
 
 def reject_role_operation_nonce_reuse(
@@ -4399,7 +4505,7 @@ def verify_broker(value: Any, harness: str, requested: str, resolved: str, bundl
         fail("Grok broker evidence has unsafe prompt transport")
 
 
-def verify_review_round(store: ArtifactStore, repo: Path, value: Any, round_name: str, base_head: str, base_tree: str, head: str, tree: str, used_seat_ids: set[str], seat_sessions: set[str], operation_nonces: set[str]) -> None:
+def verify_review_round(store: ArtifactStore, repo: Path, value: Any, round_name: str, base_head: str, base_tree: str, head: str, tree: str, used_seat_ids: set[str], seat_sessions: set[str], operation_nonces: set[str]) -> str:
     round_data = closed(value, {"head", "tree", "request", "seats"}, "review " + round_name)
     if round_data["head"] != head or round_data["tree"] != tree:
         fail("review round head/tree mismatch")
@@ -4506,9 +4612,10 @@ def verify_review_round(store: ArtifactStore, repo: Path, value: Any, round_name
         verify_broker(seat["broker"], harness, requested, resolved, input_digests["bundle"], input_digests["instructions"], sealed_prompt, report)
     if seen_harnesses != set(REVIEW_LANES):
         fail("review round lacks a required route")
+    return request["request_nonce"]
 
 
-def verify_roles(store: ArtifactStore, value: Any, evidence_id: str, expected_coordinator_session: str, expected_author_session: str, expected_author_vendor: str, seat_sessions: set[str]) -> None:
+def verify_roles(store: ArtifactStore, value: Any, evidence_id: str, expected_coordinator_session: str, expected_author_session: str, expected_author_vendor: str, seat_sessions: set[str], retained_roles: dict[str, dict[str, Any]]) -> set[str]:
     roles = closed(value, {"coordinator", "author", "reviewer"}, "roles")
     identities: set[str] = set()
     sessions: set[str] = set()
@@ -4516,6 +4623,15 @@ def verify_roles(store: ArtifactStore, value: Any, evidence_id: str, expected_co
         record = closed(store.json(artifact_ref(roles[role], "role artifact"), "role artifact"), {"schema", "role", "identity", "vendor", "session_sha256", "evidence_id", "issued_at"}, "role artifact")
         if record["schema"] != "harden_role_attestation.v1" or record["role"] != role or record["evidence_id"] != evidence_id:
             fail("role artifact binding mismatch")
+        retained = retained_roles[role]
+        if record != {
+            key: retained[key]
+            for key in (
+                "schema", "role", "identity", "vendor", "session_sha256",
+                "evidence_id", "issued_at",
+            )
+        }:
+            fail("role artifact is detached from its retained attestation")
         identity = text(record["identity"], "role identity", pattern=IDENTITY)
         session = text(record["session_sha256"], "role session", pattern=HEX64)
         text(record["vendor"], "role vendor", pattern=IDENTITY)
@@ -4534,6 +4650,7 @@ def verify_roles(store: ArtifactStore, value: Any, evidence_id: str, expected_co
             derived = sha256("\0".join(sorted(seat_sessions)).encode())
             if session != derived or identity != "reviewer-" + derived[:32]:
                 fail("reviewer identity/session is not derived from all brokered seats")
+    return sessions
 
 
 @contextmanager
@@ -4859,22 +4976,32 @@ def verify(
     preproduction_run_specs = verified_run_contract(repo, reviewed)
     final_run_specs = verified_run_contract(repo, main)
     retained_authority = data["authority"]["retained_inputs"]
-    author_vendor = None
-    for item in retained_authority:
-        if not isinstance(item, dict) or not str(item.get("path", "")).endswith(".json"):
-            continue
-        retained_value = store.json(
-            artifact_ref(item, "authority retained input"),
-            "authority retained input",
-            distinct=False,
+    plan_authority = retained_plan_authority(store, retained_authority)
+    plan_commits = closed(
+        plan_authority["commits"],
+        {"sl0_base", "reviewed_sl0", "landing", "candidate", "canonical_main"},
+        "retained plan commits",
+    )
+    expected_plan_commits = {
+        name: commits[name][0]
+        for name in (
+            "sl0_base", "reviewed_sl0", "landing", "candidate",
+            "canonical_main",
         )
-        if isinstance(retained_value, dict) and retained_value.get("schema") == "harden_plan_authority.v1":
-            author_vendor = retained_value.get("author_vendor")
-            break
-    if not isinstance(author_vendor, str):
-        fail("retained plan authority lacks author vendor")
+    }
+    if (
+        plan_authority["evidence_id"] != evidence_id
+        or plan_authority["repository"] != data["repository"]
+        or plan_commits != expected_plan_commits
+    ):
+        fail("retained plan authority is detached from derived evidence")
+    author_vendor = plan_authority["author_vendor"]
     input_nonces = retained_input_nonces(store, retained_authority)
-    role_operation_nonces = retained_role_operation_nonces(
+    retained_roles = retained_role_attestations(store, retained_authority)
+    role_operation_nonces = {
+        value["operation_nonce"] for value in retained_roles.values()
+    }
+    review_request_nonces = retained_review_request_nonces(
         store, retained_authority
     )
     historical_review_sessions = retained_historical_review_sessions(
@@ -4924,13 +5051,21 @@ def verify(
     reviews = closed(data["reviews"], {"candidate", "canonical_main"}, "reviews")
     seat_ids: set[str] = set()
     seat_sessions: set[str] = set()
-    verify_review_round(store, repo, reviews["candidate"], "candidate", review_base, review_base_tree, candidate, candidate_tree, seat_ids, seat_sessions, nonces)
-    verify_review_round(store, repo, reviews["canonical_main"], "canonical_main", review_base, review_base_tree, main, main_tree, seat_ids, seat_sessions, nonces)
+    derived_review_request_nonces = {
+        verify_review_round(store, repo, reviews["candidate"], "candidate", review_base, review_base_tree, candidate, candidate_tree, seat_ids, seat_sessions, nonces),
+        verify_review_round(store, repo, reviews["canonical_main"], "canonical_main", review_base, review_base_tree, main, main_tree, seat_ids, seat_sessions, nonces),
+    }
+    if derived_review_request_nonces != review_request_nonces:
+        fail("review request nonce is detached from its retained input")
     reject_historical_session_reuse(nonces, historical_review_sessions)
     reject_role_operation_nonce_reuse(role_operation_nonces, nonces)
     if len(seat_sessions) != 8:
         fail("reviewer authority lacks eight unique seat sessions")
-    verify_roles(store, data["roles"], evidence_id, expected_coordinator_session, expected_author_session, author_vendor, seat_sessions)
+    role_sessions = verify_roles(store, data["roles"], evidence_id, expected_coordinator_session, expected_author_session, author_vendor, seat_sessions, retained_roles)
+    for session in sorted(role_sessions):
+        claim_nonce(session, nonces, "role session")
+    if (input_nonces & nonces) - review_request_nonces:
+        fail("retained input operation nonce reused by a derived operation")
     verify_historical_sl0(
         store, repo, data["sl0"], retained_authority,
         commits["sl0_base"][0], reviewed, reviewed_tree, landing, landing_tree,
@@ -5028,7 +5163,7 @@ def _self_git(
         "# HARDEN self-test plan\n\n"
         "### SL-0 — tests-first\n\n- **Owned files**: "
         + ", ".join(f"`{path}`" for path in FROZEN_SL0_PATHS)
-        + "\n\n### SL-1 — production\n\n- **Owned files**: "
+        + "\n\n### SL-5 — production\n\n- **Owned files**: "
         "`phase-loop-runtime/src/phase_loop_runtime/runner.py`, "
         "`phase-loop-runtime/src/phase_loop_runtime/capability_registry.py`\n\n"
         "## Verification commands\n\n```json\n"
@@ -6266,10 +6401,59 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
             },
         },
     )
+    retained_review_requests = [
+        put(
+            "retained-review-request-" + round_name + ".json",
+            {
+                "schema": "harden_review_request.v1",
+                "round": round_name,
+                "operation_nonce": nonce("request-" + round_name),
+            },
+        )
+        for round_name in ("candidate", "canonical_main")
+    ]
+    retained_broker_receipts = []
+    for round_name in ("candidate", "canonical_main"):
+        receipts = []
+        for item in reviews[round_name]["seats"]:
+            seat = parse_canonical_json(
+                (artifacts / item["artifact"]["path"]).read_bytes(),
+                "self-test review seat",
+            )
+            receipts.append(
+                {
+                    "harness": seat["harness"],
+                    "session_sha256": seat["session_sha256"],
+                    "operation_nonce": nonce(
+                        "broker-operation-" + round_name + "-" + seat["harness"]
+                    ),
+                }
+            )
+        retained_broker_receipts.append(
+            put(
+                "retained-broker-receipts-" + round_name + ".json",
+                {
+                    "schema": "harden_broker_receipts.v1",
+                    "round": round_name,
+                    "receipts": receipts,
+                },
+            )
+        )
     authority["retained_inputs"] = [put("retained-plan-authority.json", {
         "schema": "harden_plan_authority.v1",
+        "annotation": "self-test retained plan authority",
+        "evidence_id": evidence_id,
+        "repository": CANONICAL_CI_REPOSITORY,
+        "commits": {
+            name: refs[name][0]
+            for name in (
+                "sl0_base", "reviewed_sl0", "landing", "candidate",
+                "canonical_main",
+            )
+        },
         "author_vendor": "codex-gpt-5.6-terra",
     }), approval, production_start, historical_mutations, execution_runs,
+        *retained_review_requests, *retained_broker_receipts,
         *observations.values(), *final_observations.values(), *raw_role_inputs]
 
     evidence: dict[str, Any] = {
@@ -6499,6 +6683,21 @@ def self_test() -> None:
             ),
         )
 
+        _run(["git", "checkout", "-qb", "missing-sl5-lane", sl4_landing], sl4_repo)
+        plan_path.write_text(
+            "# HARDEN\n\n"
+            f"### SL-0 - tests\n- **Owned files**: `{sl0_path}`\n\n"
+            f"### SL-4 - supplemental tests\n- **Owned files**: `{sl4_path}`\n",
+            encoding="utf-8",
+        )
+        _run(["git", "add", str(plan_path.relative_to(sl4_repo))], sl4_repo)
+        _run(["git", "commit", "-qm", "delete the SL-5 lane"], sl4_repo)
+        missing_sl5_head = _run(["git", "rev-parse", "HEAD"], sl4_repo)
+        direct_rejected(
+            "missing-SL-5-lane",
+            lambda: sl5_production_paths(sl4_repo, missing_sl5_head),
+        )
+
         _run(["git", "checkout", "-qb", "upstream-main", sl4_landing], sl4_repo)
         (sl4_repo / "README.md").write_text("upstream\n", encoding="utf-8")
         _run(["git", "add", "README.md"], sl4_repo)
@@ -6522,6 +6721,66 @@ def self_test() -> None:
             "upstream-merge-hides-earlier-SL-5",
             lambda: validate_sl4_boundary(
                 sl4_repo, sl0_landing, upstream_merge_base, upstream_merge_head
+            ),
+        )
+
+        _run(["git", "checkout", "-qb", "production-before-sl4", sl0_landing], sl4_repo)
+        (sl4_repo / sl5_path).write_text("VALUE = 30\n", encoding="utf-8")
+        _run(["git", "add", sl5_path], sl4_repo)
+        _run(["git", "commit", "-qm", "production before SL-4"], sl4_repo)
+        _run(["git", "checkout", "-qb", "late-sl4-source", sl0_landing], sl4_repo)
+        sl4_file.write_text("def test_sl4(): pass\n", encoding="utf-8")
+        _run(["git", "add", sl4_path], sl4_repo)
+        _run(["git", "commit", "-qm", "reviewed late SL-4"], sl4_repo)
+        _run(["git", "checkout", "-q", "production-before-sl4"], sl4_repo)
+        _run(["git", "merge", "--no-ff", "-qm", "land late SL-4", "late-sl4-source"], sl4_repo)
+        (sl4_repo / sl5_path).write_text("VALUE = 31\n", encoding="utf-8")
+        _run(["git", "add", sl5_path], sl4_repo)
+        _run(["git", "commit", "-qm", "SL-5 follow-up"], sl4_repo)
+        production_before_sl4_head = _run(["git", "rev-parse", "HEAD"], sl4_repo)
+        production_before_sl4_base, _ = candidate_contribution_paths(
+            sl4_repo,
+            sl0_landing,
+            production_before_sl4_head,
+            sl5_production_paths(sl4_repo, production_before_sl4_head),
+        )
+        direct_rejected(
+            "SL-5-production-before-first-SL-4-landing",
+            lambda: validate_sl4_boundary(
+                sl4_repo,
+                sl0_landing,
+                production_before_sl4_base,
+                production_before_sl4_head,
+            ),
+        )
+
+        _run(["git", "checkout", "-qb", "production-between-sl4", sl4_landing], sl4_repo)
+        (sl4_repo / sl5_path).write_text("VALUE = 40\n", encoding="utf-8")
+        _run(["git", "add", sl5_path], sl4_repo)
+        _run(["git", "commit", "-qm", "production between SL-4 landings"], sl4_repo)
+        _run(["git", "checkout", "-qb", "sl4-correction-source"], sl4_repo)
+        sl4_file.write_text("def test_sl4(): assert True\n", encoding="utf-8")
+        _run(["git", "add", sl4_path], sl4_repo)
+        _run(["git", "commit", "-qm", "review SL-4 correction"], sl4_repo)
+        _run(["git", "checkout", "-q", "production-between-sl4"], sl4_repo)
+        (sl4_repo / "README.md").write_text("diverge\n", encoding="utf-8")
+        _run(["git", "add", "README.md"], sl4_repo)
+        _run(["git", "commit", "-qm", "diverge before SL-4 correction"], sl4_repo)
+        _run(["git", "merge", "--no-ff", "-qm", "land SL-4 correction", "sl4-correction-source"], sl4_repo)
+        (sl4_repo / sl5_path).write_text("VALUE = 41\n", encoding="utf-8")
+        _run(["git", "add", sl5_path], sl4_repo)
+        _run(["git", "commit", "-qm", "SL-5 after correction"], sl4_repo)
+        between_sl4_head = _run(["git", "rev-parse", "HEAD"], sl4_repo)
+        between_sl4_base, _ = candidate_contribution_paths(
+            sl4_repo,
+            sl0_landing,
+            between_sl4_head,
+            sl5_production_paths(sl4_repo, between_sl4_head),
+        )
+        direct_rejected(
+            "SL-5-production-between-SL-4-landings",
+            lambda: validate_sl4_boundary(
+                sl4_repo, sl0_landing, between_sl4_base, between_sl4_head
             ),
         )
 
@@ -6622,6 +6881,32 @@ def self_test() -> None:
             "nested-retained-role-attestation",
             lambda: retained_role_operation_nonces(
                 input_store, [*role_inputs, nested_role]
+            ),
+        )
+        nested_top_level_coordinator = retained_role(
+            "coordinator", "b" * 64
+        )
+        nested_top_level_coordinator["annotation"] = [
+            retained_role("coordinator", "a" * 64)
+        ]
+        nested_top_level_inputs = [
+            retained_input(
+                nested_top_level_coordinator,
+                "nested-top-level-coordinator",
+            ),
+            retained_input(
+                retained_role("author", "c" * 64),
+                "nested-top-level-author",
+            ),
+            retained_input(
+                retained_role("reviewer", "d" * 64),
+                "nested-top-level-reviewer",
+            ),
+        ]
+        direct_rejected(
+            "role-attestation-nested-inside-top-level-role",
+            lambda: retained_role_attestations(
+                input_store, nested_top_level_inputs
             ),
         )
 
@@ -8882,13 +9167,124 @@ def self_test() -> None:
             def mutate(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
                 mutate_json(model["roles"][role_name], artifact_root, change)
             return mutate
+
+        def retained_json(
+            model: dict[str, Any],
+            artifact_root: Path,
+            schema: str,
+            *,
+            predicate: Callable[[dict[str, Any]], bool] = lambda _value: True,
+        ) -> tuple[dict[str, str], dict[str, Any]]:
+            matches: list[tuple[dict[str, str], dict[str, Any]]] = []
+            for ref in model["authority"]["retained_inputs"]:
+                raw = (artifact_root / ref["path"]).read_bytes()
+                if raw.lstrip()[:1] != b"{":
+                    continue
+                value = parse_canonical_json(raw, "self-test retained input")
+                if (
+                    isinstance(value, dict)
+                    and value.get("schema") == schema
+                    and predicate(value)
+                ):
+                    matches.append((ref, value))
+            if len(matches) != 1:
+                raise AssertionError("self-test retained input lookup is ambiguous")
+            return matches[0]
+
         rejected("substituted-coordinator", role_mutation("coordinator", lambda role: role.__setitem__("session_sha256", "f" * 64)))
         rejected("substituted-author", role_mutation("author", lambda role: role.__setitem__("session_sha256", "e" * 64)))
         rejected("substituted-reviewer", role_mutation("reviewer", lambda role: role.__setitem__("identity", "unknown")))
+        rejected(
+            "derived-role-not-issued-by-retained-attestation",
+            role_mutation(
+                "coordinator",
+                lambda role: role.__setitem__(
+                    "identity", "never-attested-coordinator"
+                ),
+            ),
+        )
+        def raw_role_collapses_independence(
+            model: dict[str, Any], _root: Path, artifact_root: Path
+        ) -> None:
+            coordinator_ref, coordinator = retained_json(
+                model,
+                artifact_root,
+                "harden_role_attestation.v1",
+                predicate=lambda value: value.get("role") == "coordinator",
+            )
+            _author_ref, author = retained_json(
+                model,
+                artifact_root,
+                "harden_role_attestation.v1",
+                predicate=lambda value: value.get("role") == "author",
+            )
+            coordinator["identity"] = author["identity"]
+            coordinator["session_sha256"] = author["session_sha256"]
+            replace(coordinator_ref, artifact_root, canonical_bytes(coordinator))
+        rejected("raw-role-collapses-independence", raw_role_collapses_independence)
+        def role_nonce_reuses_derived_reviewer_session(
+            model: dict[str, Any], _root: Path, artifact_root: Path
+        ) -> None:
+            reviewer = parse_canonical_json(
+                (artifact_root / model["roles"]["reviewer"]["path"]).read_bytes(),
+                "self-test reviewer role",
+            )
+            coordinator_ref, coordinator = retained_json(
+                model,
+                artifact_root,
+                "harden_role_attestation.v1",
+                predicate=lambda value: value.get("role") == "coordinator",
+            )
+            coordinator["operation_nonce"] = reviewer["session_sha256"]
+            replace(coordinator_ref, artifact_root, canonical_bytes(coordinator))
+        rejected(
+            "role-nonce-reuses-derived-reviewer-session",
+            role_nonce_reuses_derived_reviewer_session,
+        )
+        def conflicting_plan_authority(
+            model: dict[str, Any], _root: Path, artifact_root: Path
+        ) -> None:
+            _plan_ref, plan_authority = retained_json(
+                model, artifact_root, "harden_plan_authority.v1"
+            )
+            plan_authority["author_vendor"] = "decoy-vendor"
+            plan_authority["annotation"] = "conflicting retained plan authority"
+            raw = canonical_bytes(plan_authority)
+            path = "raw/conflicting-plan-authority.json"
+            target = artifact_root / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(raw)
+            model["authority"]["retained_inputs"].insert(
+                0, {"path": path, "sha256": sha256(raw)}
+            )
+            mutate_json(
+                model["roles"]["author"],
+                artifact_root,
+                lambda role: role.__setitem__("vendor", "decoy-vendor"),
+            )
+        rejected("conflicting-retained-plan-authority", conflicting_plan_authority)
         def role_reuses_seat_session(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
             session = parse_canonical_json((artifact_root / model["reviews"]["candidate"]["seats"][0]["artifact"]["path"]).read_bytes(), "seat")["session_sha256"]
             mutate_json(model["roles"]["coordinator"], artifact_root, lambda role: role.__setitem__("session_sha256", session))
         rejected("role-reuses-seat-session", role_reuses_seat_session)
+        def broker_nonce_reuses_seat_session(
+            model: dict[str, Any], _root: Path, artifact_root: Path
+        ) -> None:
+            broker_ref, brokers = retained_json(
+                model,
+                artifact_root,
+                "harden_broker_receipts.v1",
+                predicate=lambda value: value.get("round") == "candidate",
+            )
+            victim = next(
+                item for item in brokers["receipts"] if item["harness"] == "codex"
+            )
+            other = next(
+                item for item in brokers["receipts"] if item["harness"] == "gemini"
+            )
+            victim["operation_nonce"] = other["session_sha256"]
+            replace(broker_ref, artifact_root, canonical_bytes(brokers))
+        rejected("broker-nonce-reuses-seat-session", broker_nonce_reuses_seat_session)
         def reused_evidence_id(model: dict[str, Any], local_root: Path, _artifacts: Path) -> None:
             registry = {"schema": "harden_evidence_registry.v1", "evidence_ids": [model["evidence_id"]], "operation_nonces": []}
             (local_root / "operator-reuse-registry.json").write_bytes(canonical_bytes(registry))
