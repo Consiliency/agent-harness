@@ -26,6 +26,23 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   the BAML worker or `baml_src`.
 - Nothing calls it yet: wiring it to a seat (an opt-in `--reply-format json`) waits for the unified
   seat-launch owner (agent-harness#1282).
+### Finished Claude Agent View sessions are stopped once their closeout is verified
+
+- A `claude --bg` session that reaches `done` is not stopped by Claude Code: its Remote Control
+  session stays open in the app's session panel until `claude stop <id>`, and only that clean
+  shutdown archives it. The Agent View launch route waited for `done` and read the final message
+  but never stopped the session, so every finished executor run stayed in the panel until it was
+  archived by hand. (Measured on Claude Code 2.1.289: the session reached `done` with no archive;
+  `claude stop` logged `Archive ... status=200` and kept the conversation.)
+- New `agent_view_cleanup` module, called once in the runner right after the closeout is parsed:
+  it stops the session only when the launch was an Agent View route that finished `done` AND the
+  closeout passed schema verification with the required data (the BAML parse plus the
+  `PhaseLoopCloseoutV1` validators, which the runner reports as `native_closeout_payload`). A
+  missing, malformed or not-evaluated closeout (including a BAML worker outage) leaves the session
+  running and visible for diagnosis. It uses `claude stop`, never `claude rm`, so the conversation
+  is kept (`claude attach <id>` and `--resume` still work), and it never raises: a failed stop is
+  logged and the run's outcome is unchanged. Set `PHASE_LOOP_KEEP_AGENT_VIEW_SESSIONS=1` to keep
+  finished sessions running while debugging a run in the app.
 
 ### Seat jail on Ubuntu 24.04+ / 26.04: a narrow AppArmor override (agent-harness#1276)
 
