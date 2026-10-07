@@ -166,6 +166,23 @@ def _strict_registry(path: Path) -> dict[str, Any]:
     }
 
 
+def _append_registry_claim(
+    path: Path, evidence_id: str, operation_nonces: list[str]
+) -> None:
+    before = path.read_bytes()
+    path.write_bytes(
+        before
+        + _canonical_bytes(
+            {
+                "schema": "harden_evidence_registry_claim.v1",
+                "previous_sha256": _sha256(before),
+                "evidence_id": evidence_id,
+                "operation_nonces": operation_nonces,
+            }
+        )
+    )
+
+
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -3944,6 +3961,17 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
 
     rejected("reused-evidence", reuse_id, "reused evidence_id")
 
+    def reuse_id_in_claim(context: dict[str, Any]) -> None:
+        _append_registry_claim(
+            context["registry"], context["expected"]["evidence_id"], []
+        )
+
+    rejected(
+        "reused-evidence-in-appended-claim",
+        reuse_id_in_claim,
+        "reused evidence_id",
+    )
+
     def reuse_nonce(index: int) -> Callable[[dict[str, Any]], None]:
         def mutate(context: dict[str, Any]) -> None:
             context["registry"].write_bytes(
@@ -3973,6 +4001,21 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
         rejected(
             f"reused-{kind}-nonce-{index}",
             reuse_nonce(index),
+            "reused operation nonce",
+        )
+
+        def reuse_nonce_in_claim(
+            context: dict[str, Any], index: int = index
+        ) -> None:
+            _append_registry_claim(
+                context["registry"],
+                _sha256(f"claim-seed-{index}".encode()),
+                [context["expected"]["operation_nonces"][index]],
+            )
+
+        rejected(
+            f"reused-{kind}-nonce-in-appended-claim-{index}",
+            reuse_nonce_in_claim,
             "reused operation nonce",
         )
 
@@ -4234,6 +4277,20 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
         "reused evidence_id",
     )
 
+    def registry_claim_evidence_collision(
+        context: dict[str, Any], canonical: Path, _request: dict[str, Any]
+    ) -> Path:
+        _append_registry_claim(
+            context["registry"], context["expected"]["evidence_id"], []
+        )
+        return canonical
+
+    seal_rejected(
+        "seal-registry-claim-evidence-collision",
+        registry_claim_evidence_collision,
+        "reused evidence_id",
+    )
+
     def registry_nonce_collision(
         index: int,
     ) -> Callable[[dict[str, Any], Path, dict[str, Any]], Path]:
@@ -4253,6 +4310,25 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
         seal_rejected(
             f"seal-registry-nonce-collision-{index}",
             registry_nonce_collision(index),
+            "reused operation nonce",
+        )
+
+        def registry_claim_nonce_collision(
+            context: dict[str, Any],
+            canonical: Path,
+            _request: dict[str, Any],
+            index: int = index,
+        ) -> Path:
+            _append_registry_claim(
+                context["registry"],
+                _sha256(f"seal-claim-seed-{index}".encode()),
+                [context["expected"]["operation_nonces"][index]],
+            )
+            return canonical
+
+        seal_rejected(
+            f"seal-registry-claim-nonce-collision-{index}",
+            registry_claim_nonce_collision,
             "reused operation nonce",
         )
 
