@@ -2155,7 +2155,7 @@ def lane_owned_paths_since(
     ):
         return sl5_production_paths(repo, revision)
     revisions = _git_lines(
-        repo, "rev-list", "--reverse", f"{landing}..{revision}", "--",
+        repo, "rev-list", "--full-history", "--reverse", f"{landing}..{revision}", "--",
         "plans/phase-plan-v10-HARDEN.md",
         label=f"HARDEN {lane} ownership history",
     )
@@ -3175,7 +3175,7 @@ def validate_sl4_boundary(
     if not matches:
         fail("reviewed SL-4 landing is missing")
     # A correction restarts SL-4 only when its first-parent line has not already
-    # carried SL-5 production; otherwise it could hide that production.
+    # changed owned tests or production; otherwise it could hide that drift.
     sl4_landing = matches[0]
     for correction in matches[1:]:
         first_parent = commit_parents(repo, correction, "HARDEN SL-4 correction")[0]
@@ -3189,7 +3189,7 @@ def validate_sl4_boundary(
                 repo,
                 commit_parents(repo, item, "HARDEN SL-4 correction history")[0],
                 item,
-            ) & sl5_paths
+            ) & (sl4_paths | sl5_paths)
             for item in intervening
         ):
             continue
@@ -6979,6 +6979,111 @@ def self_test() -> None:
             ),
         )
 
+        _run(
+            ["git", "checkout", "-qb", "ownership-simplification-base", sl0_landing],
+            sl4_repo,
+        )
+        plan_path.write_text(
+            "# HARDEN\n\n"
+            f"### SL-0 - tests\n- **Owned files**: `{sl0_path}`\n",
+            encoding="utf-8",
+        )
+        _run(["git", "add", str(plan_path.relative_to(sl4_repo))], sl4_repo)
+        _run(["git", "commit", "-qm", "history fixture landing"], sl4_repo)
+        history_landing = _run(["git", "rev-parse", "HEAD"], sl4_repo)
+        _run(
+            ["git", "checkout", "-qb", "ownership-simplification-side"],
+            sl4_repo,
+        )
+        plan_path.write_text(
+            "# HARDEN\n\n"
+            f"### SL-0 - tests\n- **Owned files**: `{sl0_path}`\n\n"
+            f"### SL-4 - supplemental tests\n- **Owned files**: `{sl4_path}`\n\n"
+            f"### SL-5 - production\n- **Owned files**: `{decoy_path}`\n",
+            encoding="utf-8",
+        )
+        _run(["git", "add", str(plan_path.relative_to(sl4_repo))], sl4_repo)
+        _run(["git", "commit", "-qm", "side ownership rewrite"], sl4_repo)
+        _run(["git", "checkout", "-q", "ownership-simplification-base"], sl4_repo)
+        plan_path.write_text(
+            "# HARDEN\n\n"
+            f"### SL-0 - tests\n- **Owned files**: `{sl0_path}`\n\n"
+            f"### SL-4 - supplemental tests\n- **Owned files**: `{sl4_path}`\n\n"
+            f"### SL-5 - production\n- **Owned files**: `{sl5_path}`\n",
+            encoding="utf-8",
+        )
+        _run(["git", "add", str(plan_path.relative_to(sl4_repo))], sl4_repo)
+        _run(["git", "commit", "-qm", "declare production ownership"], sl4_repo)
+        history_declaration = _run(["git", "rev-parse", "HEAD"], sl4_repo)
+        _run(["git", "checkout", "-qb", "ownership-simplification-sl4"], sl4_repo)
+        sl4_file.write_text("def test_sl4(): assert True\n", encoding="utf-8")
+        _run(["git", "add", sl4_path], sl4_repo)
+        _run(["git", "commit", "-qm", "review history fixture SL-4"], sl4_repo)
+        _run(["git", "checkout", "-q", "ownership-simplification-base"], sl4_repo)
+        _run(
+            [
+                "git", "merge", "--no-ff", "-qm", "land history fixture SL-4",
+                "ownership-simplification-sl4",
+            ],
+            sl4_repo,
+        )
+        (sl4_repo / sl5_path).write_text("VALUE = 15\n", encoding="utf-8")
+        _run(["git", "add", sl5_path], sl4_repo)
+        _run(["git", "commit", "-qm", "hidden production before rewrite"], sl4_repo)
+        merge_result = subprocess.run(
+            [
+                "git", "merge", "--no-ff", "--no-commit",
+                "ownership-simplification-side",
+            ],
+            cwd=sl4_repo,
+            capture_output=True,
+            text=True,
+        )
+        if merge_result.returncode == 0:
+            raise AssertionError("history simplification fixture did not conflict")
+        _run(
+            [
+                "git", "checkout", "ownership-simplification-side", "--",
+                str(plan_path.relative_to(sl4_repo)),
+            ],
+            sl4_repo,
+        )
+        _run(["git", "add", str(plan_path.relative_to(sl4_repo))], sl4_repo)
+        _run(["git", "commit", "-qm", "merge side ownership rewrite"], sl4_repo)
+        history_merge = _run(["git", "rev-parse", "HEAD"], sl4_repo)
+        decoy.write_text("VALUE = 2\n", encoding="utf-8")
+        _run(["git", "add", decoy_path], sl4_repo)
+        _run(["git", "commit", "-qm", "history fixture decoy suffix"], sl4_repo)
+        history_head = _run(["git", "rev-parse", "HEAD"], sl4_repo)
+        history_walk = _git_lines(
+            sl4_repo,
+            "rev-list",
+            "--full-history",
+            "--reverse",
+            f"{history_landing}..{history_head}",
+            "--",
+            str(plan_path.relative_to(sl4_repo)),
+            label="self-test full ownership history",
+        )
+        if history_declaration not in history_walk:
+            raise AssertionError("full ownership history pruned the mainline declaration")
+        history_sl5 = lane_owned_paths_since(
+            sl4_repo, history_landing, history_head, "SL-5"
+        )
+        if history_sl5 != {sl5_path, decoy_path}:
+            raise AssertionError("merged ownership history lost a declared path")
+        history_base, _ = candidate_contribution_paths(
+            sl4_repo, history_landing, history_head, history_sl5
+        )
+        if history_base != history_merge:
+            raise AssertionError("history simplification fixture has the wrong review base")
+        direct_rejected(
+            "merged-ownership-rewrite-hides-production",
+            lambda: validate_sl4_boundary(
+                sl4_repo, history_landing, history_base, history_head
+            ),
+        )
+
         _run(["git", "checkout", "-qb", "upstream-main", sl4_landing], sl4_repo)
         (sl4_repo / "README.md").write_text("upstream\n", encoding="utf-8")
         _run(["git", "add", "README.md"], sl4_repo)
@@ -7135,6 +7240,50 @@ def self_test() -> None:
             "candidate-local-SL-4-correction-hides-production",
             lambda: validate_sl4_boundary(
                 sl4_repo, sl0_landing, between_sl4_base, between_sl4_head
+            ),
+        )
+
+        _run(["git", "checkout", "-qb", "test-drift-before-correction", sl4_landing], sl4_repo)
+        sl4_file.write_text("def test_sl4(): pass  # weakened\n", encoding="utf-8")
+        _run(["git", "add", sl4_path], sl4_repo)
+        _run(["git", "commit", "-qm", "unreviewed test drift"], sl4_repo)
+        sl4_decoy_path = "phase-loop-runtime/tests/test_decoy_sl4.py"
+        plan_path.write_text(
+            "# HARDEN\n\n"
+            f"### SL-0 - tests\n- **Owned files**: `{sl0_path}`\n\n"
+            f"### SL-4 - supplemental tests\n- **Owned files**: `{sl4_decoy_path}`\n\n"
+            f"### SL-5 - production\n- **Owned files**: `{sl5_path}`\n",
+            encoding="utf-8",
+        )
+        _run(["git", "add", str(plan_path.relative_to(sl4_repo))], sl4_repo)
+        _run(["git", "commit", "-qm", "rewrite test ownership"], sl4_repo)
+        _run(["git", "checkout", "-qb", "test-drift-correction-source"], sl4_repo)
+        sl4_decoy = sl4_repo / sl4_decoy_path
+        sl4_decoy.write_text("def test_decoy_sl4(): pass\n", encoding="utf-8")
+        _run(["git", "add", sl4_decoy_path], sl4_repo)
+        _run(["git", "commit", "-qm", "review decoy SL-4"], sl4_repo)
+        _run(["git", "checkout", "-q", "test-drift-before-correction"], sl4_repo)
+        _run(
+            [
+                "git", "merge", "--no-ff", "-qm", "land decoy SL-4 correction",
+                "test-drift-correction-source",
+            ],
+            sl4_repo,
+        )
+        (sl4_repo / sl5_path).write_text("VALUE = 42\n", encoding="utf-8")
+        _run(["git", "add", sl5_path], sl4_repo)
+        _run(["git", "commit", "-qm", "production after test correction"], sl4_repo)
+        test_drift_head = _run(["git", "rev-parse", "HEAD"], sl4_repo)
+        test_drift_base, _ = candidate_contribution_paths(
+            sl4_repo,
+            sl0_landing,
+            test_drift_head,
+            lane_owned_paths_since(sl4_repo, sl0_landing, test_drift_head, "SL-5"),
+        )
+        direct_rejected(
+            "candidate-local-SL-4-correction-hides-test-drift",
+            lambda: validate_sl4_boundary(
+                sl4_repo, sl0_landing, test_drift_base, test_drift_head
             ),
         )
 
