@@ -2245,6 +2245,28 @@ def _manifest_entry_introduction(
     return matches[0]
 
 
+def _require_manifest_entry_at_revision(
+    repo: Path,
+    revision: str,
+    phase_alias: str,
+    entry: dict[str, Any],
+    label: str,
+) -> None:
+    """Require one exact repair entry in the manifest at a spending boundary."""
+    row = manifest_plan_row(repo, revision, phase_alias, required=False)
+    repairs = None if row is None else row.get("sl0_repairs")
+    wanted = canonical_bytes(entry)
+    if (
+        not isinstance(repairs, list)
+        or sum(
+            isinstance(item, dict) and canonical_bytes(item) == wanted
+            for item in repairs
+        )
+        != 1
+    ):
+        fail(label + " is absent at the repair merge boundary")
+
+
 def _historical_frozen_baseline(
     repo: Path,
     reviewed: str,
@@ -2892,11 +2914,29 @@ def accepted_frozen_blobs(
             repo, reviewed, verified, phase_alias, authorization
         )
         ancestor(repo, authorization_intro, merge_commit, "HARDEN repair authorization timing")
+        if phase_alias == "HARDEN":
+            for boundary in (landing_entry["merge_first_parent"], merge_commit):
+                _require_manifest_entry_at_revision(
+                    repo,
+                    boundary,
+                    phase_alias,
+                    authorization,
+                    "HARDEN repair authorization",
+                )
         for supplement in supplements.get(authorization_id, []):
             supplement_intro = _manifest_entry_introduction(
                 repo, reviewed, verified, phase_alias, supplement
             )
             ancestor(repo, supplement_intro, merge_commit, "HARDEN repair supplement timing")
+            if phase_alias == "HARDEN":
+                for boundary in (landing_entry["merge_first_parent"], merge_commit):
+                    _require_manifest_entry_at_revision(
+                        repo,
+                        boundary,
+                        phase_alias,
+                        supplement,
+                        "HARDEN repair supplement",
+                    )
         landed_files = {file["path"]: file for file in landing_entry["files"]}
         if set(landed_files) != set(by_path):
             fail("HARDEN repair landing misses an authorized path")
@@ -3098,13 +3138,21 @@ def validate_sl4_boundary(
             matches.append(commit_id)
     if not matches:
         fail("reviewed SL-4 landing is missing")
-    for commit_id in history:
-        parent = commit_parents(repo, commit_id, "pre-review SL-5 history")[0]
-        if changed_paths(repo, parent, commit_id) & sl5_paths:
-            fail("SL-5 production changed before the derived review base")
     # A later tests-only correction restarts SL-4, so the latest exact landing
     # is the boundary that SL-5 must preserve.
     sl4_landing = matches[-1]
+    reachable_after_boundary = _git_lines(
+        repo,
+        "rev-list",
+        f"{sl4_landing}..{revision}",
+        label="HARDEN post-SL-4 reachable history",
+    )
+    for commit_id in reachable_after_boundary:
+        if _is_ancestor(repo, sl4_landing, commit_id):
+            continue
+        parents = commit_parents(repo, commit_id, "post-SL-4 production source")
+        if parents and changed_paths(repo, parents[0], commit_id) & sl5_paths:
+            fail("SL-5 production source does not descend from the reviewed SL-4 landing")
     after_boundary = False
     for commit_id in history:
         if commit_id == sl4_landing:
@@ -3653,11 +3701,11 @@ def retained_plan_authority(
     return authority
 
 
-def retained_review_request_nonces(
+def retained_review_requests(
     store: ArtifactStore, retained: Any
-) -> set[str]:
-    """Return the two raw review-request nonces propagated into derived requests."""
-    rounds: dict[str, str] = {}
+) -> dict[str, dict[str, Any]]:
+    """Return each raw review request for exact derived-round comparison."""
+    rounds: dict[str, dict[str, Any]] = {}
     for item in retained:
         ref = artifact_ref(item, "authority retained input")
         raw = store.read(ref, "authority retained input", distinct=False)
@@ -3674,17 +3722,62 @@ def retained_review_request_nonces(
             if key != "schema"
         ):
             fail("retained review request inventory is malformed")
+        value = closed(
+            value,
+            {
+                "schema", "annotation", "round", "head", "tree", "routes",
+                "operation_nonce", "bundle", "instructions",
+            },
+            "retained review request",
+        )
+        text(value["annotation"], "retained review request annotation")
         round_name = text(value.get("round"), "retained review round", pattern=IDENTITY)
         if round_name not in {"candidate", "canonical_main"} or round_name in rounds:
             fail("retained review request inventory is malformed")
-        rounds[round_name] = text(
-            value.get("operation_nonce"),
-            "retained review request nonce",
-            pattern=HEX64,
-        )
+        routes = value["routes"]
+        if not isinstance(routes, list) or len(routes) != len(REVIEW_LANES):
+            fail("retained review request routes are malformed")
+        route_index: dict[str, tuple[str, str]] = {}
+        for route in routes:
+            route = closed(
+                route,
+                {"harness", "requested_model", "resolved_model"},
+                "retained review request route",
+            )
+            harness = text(route["harness"], "retained review request harness")
+            if harness not in REVIEW_LANES or harness in route_index:
+                fail("retained review request routes are malformed")
+            route_index[harness] = (
+                text(
+                    route["requested_model"],
+                    "retained review request model",
+                    pattern=MODEL_ID,
+                ),
+                text(
+                    route["resolved_model"],
+                    "retained review resolved model",
+                    pattern=MODEL_ID,
+                ),
+            )
+        if set(route_index) != set(REVIEW_LANES):
+            fail("retained review request routes are malformed")
+        rounds[round_name] = {
+            "head": text(value["head"], "retained review request head", pattern=HEX40),
+            "tree": text(value["tree"], "retained review request tree", pattern=HEX40),
+            "operation_nonce": text(
+                value["operation_nonce"],
+                "retained review request nonce",
+                pattern=HEX64,
+            ),
+            "bundle": artifact_ref(value["bundle"], "retained review request bundle"),
+            "instructions": artifact_ref(
+                value["instructions"], "retained review request instructions"
+            ),
+            "routes": route_index,
+        }
     if set(rounds) != {"candidate", "canonical_main"}:
         fail("retained review request inventory is malformed")
-    return set(rounds.values())
+    return rounds
 
 
 def reject_role_operation_nonce_reuse(
@@ -4505,7 +4598,7 @@ def verify_broker(value: Any, harness: str, requested: str, resolved: str, bundl
         fail("Grok broker evidence has unsafe prompt transport")
 
 
-def verify_review_round(store: ArtifactStore, repo: Path, value: Any, round_name: str, base_head: str, base_tree: str, head: str, tree: str, used_seat_ids: set[str], seat_sessions: set[str], operation_nonces: set[str]) -> str:
+def verify_review_round(store: ArtifactStore, repo: Path, value: Any, round_name: str, base_head: str, base_tree: str, head: str, tree: str, used_seat_ids: set[str], seat_sessions: set[str], operation_nonces: set[str]) -> dict[str, Any]:
     round_data = closed(value, {"head", "tree", "request", "seats"}, "review " + round_name)
     if round_data["head"] != head or round_data["tree"] != tree:
         fail("review round head/tree mismatch")
@@ -4513,10 +4606,12 @@ def verify_review_round(store: ArtifactStore, repo: Path, value: Any, round_name
     request = closed(store.json(request_ref, "review request"), {"schema", "round", "head", "tree", "bundle", "instructions", "request_nonce", "seats"}, "review request")
     if request["schema"] != "harden_review_request.v1" or request["round"] != round_name or request["head"] != head or request["tree"] != tree:
         fail("review request is stale or malformed")
+    input_refs: dict[str, dict[str, str]] = {}
     input_digests: dict[str, str] = {}
     input_contents: dict[str, str] = {}
     for kind in ("bundle", "instructions"):
         input_ref = artifact_ref(request[kind], "review request " + kind)
+        input_refs[kind] = input_ref
         input_record = closed(
             store.json(input_ref, "review request " + kind),
             {"schema", "kind", "head", "tree", "content"},
@@ -4551,6 +4646,7 @@ def verify_review_round(store: ArtifactStore, repo: Path, value: Any, round_name
     if not isinstance(seats, list) or len(seats) != 4:
         fail("review round must contain exactly four seats")
     seen_harnesses: set[str] = set()
+    resolved_routes: dict[str, tuple[str, str]] = {}
     for item in seats:
         item = closed(item, {"harness", "artifact"}, "review seat reference")
         harness = text(item["harness"], "seat harness")
@@ -4560,6 +4656,7 @@ def verify_review_round(store: ArtifactStore, repo: Path, value: Any, round_name
         seat = closed(store.json(artifact_ref(item["artifact"], "seat artifact"), "seat artifact"), {"schema", "round", "head", "tree", "request_sha256", "harness", "requested_model", "resolved_model", "seat_id", "session_sha256", "harness_provenance", "status", "result_kind", "report", "report_sha256", "report_bytes", "broker", "runtime_receipt"}, "seat artifact")
         requested = request_routes[harness]
         resolved = text(seat["resolved_model"], "seat resolved model", pattern=MODEL_ID)
+        resolved_routes[harness] = (requested, resolved)
         if (seat["schema"], seat["round"], seat["head"], seat["tree"], seat["request_sha256"], seat["harness"], seat["requested_model"], seat["resolved_model"]) != ("harden_review_seat.v1", round_name, head, tree, request_ref["sha256"], harness, requested, resolved):
             fail("seat route/head/request binding mismatch")
         if seat["harness_provenance"] != "brokered_subscription_cli" or seat["status"] != "usable" or seat["result_kind"] != "real_subscription_inference":
@@ -4612,7 +4709,14 @@ def verify_review_round(store: ArtifactStore, repo: Path, value: Any, round_name
         verify_broker(seat["broker"], harness, requested, resolved, input_digests["bundle"], input_digests["instructions"], sealed_prompt, report)
     if seen_harnesses != set(REVIEW_LANES):
         fail("review round lacks a required route")
-    return request["request_nonce"]
+    return {
+        "head": head,
+        "tree": tree,
+        "operation_nonce": request["request_nonce"],
+        "bundle": input_refs["bundle"],
+        "instructions": input_refs["instructions"],
+        "routes": resolved_routes,
+    }
 
 
 def verify_roles(store: ArtifactStore, value: Any, evidence_id: str, expected_coordinator_session: str, expected_author_session: str, expected_author_vendor: str, seat_sessions: set[str], retained_roles: dict[str, dict[str, Any]]) -> set[str]:
@@ -5001,7 +5105,7 @@ def verify(
     role_operation_nonces = {
         value["operation_nonce"] for value in retained_roles.values()
     }
-    review_request_nonces = retained_review_request_nonces(
+    retained_requests = retained_review_requests(
         store, retained_authority
     )
     historical_review_sessions = retained_historical_review_sessions(
@@ -5051,12 +5155,15 @@ def verify(
     reviews = closed(data["reviews"], {"candidate", "canonical_main"}, "reviews")
     seat_ids: set[str] = set()
     seat_sessions: set[str] = set()
-    derived_review_request_nonces = {
-        verify_review_round(store, repo, reviews["candidate"], "candidate", review_base, review_base_tree, candidate, candidate_tree, seat_ids, seat_sessions, nonces),
-        verify_review_round(store, repo, reviews["canonical_main"], "canonical_main", review_base, review_base_tree, main, main_tree, seat_ids, seat_sessions, nonces),
+    derived_review_requests = {
+        "candidate": verify_review_round(store, repo, reviews["candidate"], "candidate", review_base, review_base_tree, candidate, candidate_tree, seat_ids, seat_sessions, nonces),
+        "canonical_main": verify_review_round(store, repo, reviews["canonical_main"], "canonical_main", review_base, review_base_tree, main, main_tree, seat_ids, seat_sessions, nonces),
     }
-    if derived_review_request_nonces != review_request_nonces:
-        fail("review request nonce is detached from its retained input")
+    if derived_review_requests != retained_requests:
+        fail("review request is detached from its retained input")
+    review_request_nonces = {
+        value["operation_nonce"] for value in retained_requests.values()
+    }
     reject_historical_session_reuse(nonces, historical_review_sessions)
     reject_role_operation_nonce_reuse(role_operation_nonces, nonces)
     if len(seat_sessions) != 8:
@@ -5308,15 +5415,24 @@ def _self_repair_chain(
     repairs = [authorization]
     if mutation == "duplicate-authorization":
         repairs.append(copy.deepcopy(authorization))
-    if mutation != "supplement-after-spent":
+    if mutation not in {"supplement-after-spent", "authorization-restored-after-spend"}:
         repairs.append(supplement)
     write_repairs(repairs)
     _run(["git", "add", "plans/manifest.json"], repo)
     _run(["git", "commit", "-qm", "authorize frozen repair"], repo)
 
+    if mutation == "supplement-restored-after-spend":
+        write_repairs([authorization])
+        _run(["git", "add", "plans/manifest.json"], repo)
+        _run(["git", "commit", "-qm", "withdraw supplement before repair"], repo)
+    elif mutation == "authorization-restored-after-spend":
+        write_repairs([])
+        _run(["git", "add", "plans/manifest.json"], repo)
+        _run(["git", "commit", "-qm", "withdraw authorization before repair"], repo)
+
     _run(["git", "checkout", "-qb", "repair"], repo)
     (repo / first_path).write_text("repaired first frozen path\n")
-    if mutation != "conflicting-base-blob":
+    if mutation not in {"conflicting-base-blob", "authorization-restored-after-spend"}:
         (repo / second_path).write_text("repaired second frozen path\n")
     _run(["git", "add", first_path, second_path], repo)
     _run(["git", "commit", "-qm", "apply frozen repair"], repo)
@@ -5330,7 +5446,11 @@ def _self_repair_chain(
         "old_blob": first_blob,
         "new_blob": blob(repo, merge_commit, first_path)[0],
     }]
-    if mutation not in {"misses-supplement-path", "conflicting-base-blob"}:
+    if mutation not in {
+        "misses-supplement-path",
+        "conflicting-base-blob",
+        "authorization-restored-after-spend",
+    }:
         landed_files.append({
             "path": second_path,
             "nodes": ["SelfTest::second"],
@@ -5355,8 +5475,10 @@ def _self_repair_chain(
         for row in manifest()["plans"]
         if row.get("phase_alias") == phase_alias
     )
-    if mutation == "supplement-after-spent":
+    if mutation in {"supplement-after-spent", "supplement-restored-after-spend"}:
         current.append(supplement)
+    if mutation == "authorization-restored-after-spend":
+        current.append(authorization)
     current.append(landing_entry)
     if mutation == "duplicate-landing":
         current.append(copy.deepcopy(landing_entry))
@@ -6401,17 +6523,41 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
             },
         },
     )
-    retained_review_requests = [
-        put(
-            "retained-review-request-" + round_name + ".json",
-            {
-                "schema": "harden_review_request.v1",
-                "round": round_name,
-                "operation_nonce": nonce("request-" + round_name),
-            },
+    retained_review_requests = []
+    for round_name in ("candidate", "canonical_main"):
+        derived_request = parse_canonical_json(
+            (artifacts / reviews[round_name]["request"]["path"]).read_bytes(),
+            "self-test derived review request",
         )
-        for round_name in ("candidate", "canonical_main")
-    ]
+        routes = []
+        for item in reviews[round_name]["seats"]:
+            seat = parse_canonical_json(
+                (artifacts / item["artifact"]["path"]).read_bytes(),
+                "self-test review seat",
+            )
+            routes.append(
+                {
+                    "harness": seat["harness"],
+                    "requested_model": seat["requested_model"],
+                    "resolved_model": seat["resolved_model"],
+                }
+            )
+        retained_review_requests.append(
+            put(
+                "retained-review-request-" + round_name + ".json",
+                {
+                    "schema": "harden_review_request.v1",
+                    "annotation": "self-test retained review request",
+                    "round": round_name,
+                    "head": refs[round_name][0],
+                    "tree": refs[round_name][1],
+                    "routes": routes,
+                    "operation_nonce": derived_request["request_nonce"],
+                    "bundle": derived_request["bundle"],
+                    "instructions": derived_request["instructions"],
+                },
+            )
+        )
     retained_broker_receipts = []
     for round_name in ("candidate", "canonical_main"):
         receipts = []
@@ -6744,13 +6890,47 @@ def self_test() -> None:
             production_before_sl4_head,
             sl5_production_paths(sl4_repo, production_before_sl4_head),
         )
+        validate_sl4_boundary(
+            sl4_repo,
+            sl0_landing,
+            production_before_sl4_base,
+            production_before_sl4_head,
+        )
+
+        _run(
+            ["git", "checkout", "-qb", "pre-sl4-production-source", sl0_landing],
+            sl4_repo,
+        )
+        (sl4_repo / sl5_path).write_text("VALUE = 35\n", encoding="utf-8")
+        _run(["git", "add", sl5_path], sl4_repo)
+        _run(["git", "commit", "-qm", "pre-SL-4 production source"], sl4_repo)
+        _run(
+            ["git", "checkout", "-qb", "post-sl4-merge-target", sl4_landing],
+            sl4_repo,
+        )
+        _run(
+            [
+                "git", "merge", "--no-ff", "-qm", "merge pre-SL-4 production",
+                "pre-sl4-production-source",
+            ],
+            sl4_repo,
+        )
+        merged_pre_sl4_head = _run(["git", "rev-parse", "HEAD"], sl4_repo)
+        merged_pre_sl4_base, _ = candidate_contribution_paths(
+            sl4_repo,
+            sl0_landing,
+            merged_pre_sl4_head,
+            sl5_production_paths(sl4_repo, merged_pre_sl4_head),
+        )
+        if merged_pre_sl4_base != sl4_landing:
+            raise AssertionError("pre-SL-4 merge fixture has the wrong review base")
         direct_rejected(
-            "SL-5-production-before-first-SL-4-landing",
+            "pre-SL-4-production-merged-after-boundary",
             lambda: validate_sl4_boundary(
                 sl4_repo,
                 sl0_landing,
-                production_before_sl4_base,
-                production_before_sl4_head,
+                merged_pre_sl4_base,
+                merged_pre_sl4_head,
             ),
         )
 
@@ -6777,11 +6957,8 @@ def self_test() -> None:
             between_sl4_head,
             sl5_production_paths(sl4_repo, between_sl4_head),
         )
-        direct_rejected(
-            "SL-5-production-between-SL-4-landings",
-            lambda: validate_sl4_boundary(
-                sl4_repo, sl0_landing, between_sl4_base, between_sl4_head
-            ),
+        validate_sl4_boundary(
+            sl4_repo, sl0_landing, between_sl4_base, between_sl4_head
         )
 
         _run(["git", "checkout", "-q", "main"], sl4_repo)
@@ -7744,6 +7921,8 @@ def self_test() -> None:
         )
         for repair_mutation in (
             "supplement-after-spent",
+            "supplement-restored-after-spend",
+            "authorization-restored-after-spend",
             "unknown-supplement-id",
             "conflicting-base-blob",
             "misses-supplement-path",
@@ -8459,6 +8638,100 @@ def self_test() -> None:
             except EvidenceError:
                 return
             raise AssertionError(name + " was accepted")
+
+        def retained_review_request_refs(
+            model: dict[str, Any], artifact_root: Path
+        ) -> dict[str, dict[str, str]]:
+            result: dict[str, dict[str, str]] = {}
+            for ref in model["authority"]["retained_inputs"]:
+                value = parse_canonical_json(
+                    (artifact_root / ref["path"]).read_bytes(),
+                    "self-test retained review request",
+                )
+                if (
+                    isinstance(value, dict)
+                    and value.get("schema") == "harden_review_request.v1"
+                ):
+                    result[value["round"]] = ref
+            if set(result) != {"candidate", "canonical_main"}:
+                raise AssertionError("self-test retained review requests are incomplete")
+            return result
+
+        def swapped_retained_review_request_nonces(
+            model: dict[str, Any], _root: Path, artifact_root: Path
+        ) -> None:
+            refs = retained_review_request_refs(model, artifact_root)
+            values = {
+                name: parse_canonical_json(
+                    (artifact_root / ref["path"]).read_bytes(),
+                    "self-test retained review request",
+                )
+                for name, ref in refs.items()
+            }
+            values["candidate"]["operation_nonce"], values["canonical_main"][
+                "operation_nonce"
+            ] = (
+                values["canonical_main"]["operation_nonce"],
+                values["candidate"]["operation_nonce"],
+            )
+            for name, ref in refs.items():
+                replace(ref, artifact_root, canonical_bytes(values[name]))
+
+        rejected(
+            "swapped-retained-review-request-nonces",
+            swapped_retained_review_request_nonces,
+        )
+
+        def mutate_candidate_retained_request(
+            mutate: Callable[[dict[str, dict[str, Any]]], None],
+        ) -> Callable[[dict[str, Any], Path, Path], None]:
+            def attack(
+                model: dict[str, Any], _root: Path, artifact_root: Path
+            ) -> None:
+                refs = retained_review_request_refs(model, artifact_root)
+                values = {
+                    name: parse_canonical_json(
+                        (artifact_root / ref["path"]).read_bytes(),
+                        "self-test retained review request",
+                    )
+                    for name, ref in refs.items()
+                }
+                mutate(values)
+                ref = refs["candidate"]
+                replace(ref, artifact_root, canonical_bytes(values["candidate"]))
+
+            return attack
+
+        rejected(
+            "stale-retained-review-request-head",
+            mutate_candidate_retained_request(
+                lambda values: values["candidate"].__setitem__("head", "0" * 40)
+            ),
+        )
+        rejected(
+            "stale-retained-review-request-tree",
+            mutate_candidate_retained_request(
+                lambda values: values["candidate"].__setitem__("tree", "0" * 40)
+            ),
+        )
+        for kind in ("bundle", "instructions"):
+            rejected(
+                "detached-retained-review-request-" + kind,
+                mutate_candidate_retained_request(
+                    lambda values, kind=kind: values["candidate"].__setitem__(
+                        kind, values["canonical_main"][kind]
+                    )
+                ),
+            )
+        for model_field in ("requested_model", "resolved_model"):
+            rejected(
+                "off-route-retained-review-request-" + model_field,
+                mutate_candidate_retained_request(
+                    lambda values, model_field=model_field: values["candidate"][
+                        "routes"
+                    ][0].__setitem__(model_field, "detached-model")
+                ),
+            )
         rejected("unknown-field", lambda model, _root, _artifacts: model.__setitem__("unknown", True))
         rejected("path-escape", lambda model, _root, _artifacts: model["sl0"]["activated_red"]["raw"].__setitem__("path", "../escape"))
         def symlink_escape(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
