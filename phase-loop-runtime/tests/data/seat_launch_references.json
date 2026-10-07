@@ -1039,5 +1039,6 @@
   {"count": 1, "function": "teardown", "module": "seat_uid", "primitive": "io.stat", "role": "host-io"},
   {"count": 1, "function": "teardown_in_h", "module": "seat_uid", "primitive": "subprocess.run", "role": "host-helper"},
   {"count": 1, "function": "validate_reap_target", "module": "seat_uid", "primitive": "io.open", "role": "host-io"},
-  {"count": 1, "function": "validate_reap_target", "module": "seat_uid", "primitive": "io.read_text", "role": "host-io"}
+  {"count": 1, "function": "validate_reap_target", "module": "seat_uid", "primitive": "io.read_text", "role": "host-io"},
+  {"count": 1, "function": "_trusted_host_path", "module": "panel_invoker", "primitive": "io.lstat", "role": "host-io"}
 ]

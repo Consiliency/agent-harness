@@ -41,16 +41,30 @@ def test_transcript_listing_refuses_a_linked_project_root(tmp_path, monkeypatch)
         panel_invoker._latest_claude_transcript_text("fixture", since=0)
 
 
-@pytest.mark.parametrize("kind", ["parent-link", "hardlink", "oversized"])
-def test_transcript_cleanup_refuses_unsupported_files(tmp_path, kind):
+@pytest.mark.parametrize("kind", ["foreign-parent-link", "hardlink", "oversized"])
+def test_transcript_cleanup_refuses_unsupported_files(tmp_path, monkeypatch, kind):
     project = tmp_path / "project"
     project.mkdir()
     transcript = project / "session.jsonl"
     transcript.write_bytes(b"synthetic transcript")
-    if kind == "parent-link":
+    if kind == "foreign-parent-link":
+        # A parent link the operator owns is resolved (agent-harness#1222, see
+        # test_transcript_cleanup_follows_an_operator_owned_parent_link); one another
+        # account owns is not, and the no-follow walk refuses it.
         alias = tmp_path / "alias"
         alias.symlink_to(project, target_is_directory=True)
         path = alias / transcript.name
+        real_lstat = os.lstat
+
+        def foreign(target, *args, **kwargs):
+            info = real_lstat(target, *args, **kwargs)
+            if os.fspath(target) == str(alias):
+                fields = list(info)
+                fields[4] = os.getuid() + 1  # st_uid
+                return os.stat_result(fields)
+            return info
+
+        monkeypatch.setattr(panel_invoker.os, "lstat", foreign)
     elif kind == "hardlink":
         os.link(transcript, tmp_path / "second-name")
         path = transcript
@@ -62,6 +76,18 @@ def test_transcript_cleanup_refuses_unsupported_files(tmp_path, kind):
     assert panel_invoker._cleanup_broker_claude_transcript(path, evidence) is False
     assert evidence["claude_transcript_cleanup_verified"] is False
     assert transcript.exists()
+
+
+def test_transcript_cleanup_follows_an_operator_owned_parent_link(tmp_path):
+    project = tmp_path / "project"
+    project.mkdir()
+    transcript = project / "session.jsonl"
+    transcript.write_bytes(b"synthetic transcript")
+    alias = tmp_path / "alias"
+    alias.symlink_to(project, target_is_directory=True)
+    evidence = {}
+    assert panel_invoker._cleanup_broker_claude_transcript(alias / transcript.name, evidence) is True
+    assert evidence["claude_transcript_cleanup_verified"] is True and not transcript.exists()
 
 
 def test_transcript_cleanup_removes_only_the_regular_owned_file(tmp_path):

@@ -112,7 +112,30 @@ class TestTheCLILegLaunch:
         assert run.returncode == 0, run.stderr
         assert "provider-output" in run.stdout
 
-    def test_no_prefix_refuses_without_starting_a_provider(self, tmp_path, monkeypatch):
+    def test_no_namespace_refuses_without_starting_a_provider(self, tmp_path, monkeypatch):
+        """A leg outside any board leg opens its own filtered namespace (agent-harness#1222);
+        when none can be opened, nothing starts and the refusal is typed."""
+        def unavailable(**_kwargs):
+            raise sandbox_egress.EgressUnavailable("seat_filtered_egress_unavailable")
+
+        monkeypatch.setattr(sandbox_egress, "isolated_network", unavailable)
+        monkeypatch.setattr(panel_invoker, "launch_provider", lambda *a, **k: pytest.fail("provider started"))
+        with pytest.raises(sandbox_egress.EgressUnavailable, match="seat_filtered_egress_unavailable"):
+            panel_invoker._run_leg_with_liveness(
+                ["/bin/echo", "provider-output"], cwd=tmp_path,
+                env=dict(os.environ), deadline_s=60.0,
+            )
+
+
+    def test_a_degraded_namespace_refuses_without_starting_a_provider(self, tmp_path, monkeypatch):
+        """An empty prefix (a degraded namespace) is no namespace: the owner refuses."""
+        import contextlib
+
+        @contextlib.contextmanager
+        def degraded(**_kwargs):
+            yield ()
+
+        monkeypatch.setattr(sandbox_egress, "isolated_network", degraded)
         monkeypatch.setattr(panel_invoker, "launch_provider", lambda *a, **k: pytest.fail("provider started"))
         with pytest.raises(sandbox_egress.EgressUnavailable, match="seat_filtered_egress_unavailable"):
             panel_invoker._run_leg_with_liveness(
