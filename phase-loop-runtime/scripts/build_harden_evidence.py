@@ -320,7 +320,10 @@ def _annotation(value: Any, label: str) -> str:
 
 def _raw_json(source: Path, ref: Any, label: str) -> tuple[dict[str, str], Any]:
     parsed, data = _read(source, ref, label)
-    return parsed, _json(data, label)
+    try:
+        return parsed, V.parse_retained_json(data, label)
+    except Exception as exc:
+        raise BuildError(str(exc)) from exc
 
 
 def _raw_ref(source: Path, value: Any, label: str) -> dict[str, str]:
