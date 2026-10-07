@@ -447,7 +447,7 @@ class PresidentInvoke:
         # itself rather than before it.
         session_id = str(uuid.uuid4())
         cwd = out_dir.resolve()
-        transcript = panel_invoker._claude_project_dir_for_cwd(str(cwd)) / f"{session_id}.jsonl"
+        transcript = cwd / f"claude-{session_id}.jsonl"
         command = panel_invoker._broker_claude_tui_command(
             model=route_model, effort=None, session_id=session_id, env=self.base_env
         )

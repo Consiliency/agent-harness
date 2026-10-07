@@ -5483,6 +5483,42 @@
             }
           ],
           "note": "old_blob equals the authorization's base_blob and the path's blob at the merge's first parent; new_blob equals the path's blob at the merge. Appended once after the merge; never mutated."
+        },
+        {
+          "authorization_id": "agent-harness#1222:SEATOWNER:HARDEN",
+          "entry": "authorization",
+          "issue": "Consiliency/agent-harness#1222",
+          "decision": "team-lead 2026-10-07 (agent-harness#1222 takeover, relayed decision): edits to frozen HARDEN SL-0 files go through an sl0_repairs entry (agent-harness#1145 precedent); the seat-launch owner landing may change exactly these files as stated",
+          "frozen_by": "HARDEN SL-0 (verify_harden_evidence.FROZEN_SL0_PATHS)",
+          "reason": "the seat-launch owner (agent-harness#1222) starts every review provider through one owner and stages trees with the trusted host git; three frozen files follow it, and no frozen node's assertion is weakened",
+          "files": [
+            {
+              "path": "phase-loop-runtime/tests/harden_tdd_guard.py",
+              "base_blob": "8a2ad54fa38e7430ca8b692c9c49be1e5ffd30ef",
+              "nodes": [
+                "invoke_sanctioned_board_control"
+              ],
+              "change": "the sanctioned control's scratch projection is committed with the trusted host git before the candidate runs, because staging now reads the tree through host git (a fixture input, frozen before the candidate)"
+            },
+            {
+              "path": "phase-loop-runtime/tests/test_advisor_board_backing_homebrew.py",
+              "base_blob": "a01138d6b8a35363fc47e22c2eb9dd46a7b24b66",
+              "nodes": [
+                "EffortReachesEachCliTests::test_off_host_agent_view_leg_threads_effort"
+              ],
+              "change": "replaced by EffortReachesEachCliTests::test_off_host_agent_view_review_refuses_before_adapter_launch: the Agent View route cannot run a confined review, so it now refuses typed (claude_agent_view_review_unsupported) before the adapter launches, instead of threading effort into a launch (base re-pointed to the post-agent-harness#1292 blob on main, which first changed the file under agent-harness#1292:PANEL-EFFORT:HARDEN; this entry chains after it)"
+            },
+            {
+              "path": "phase-loop-runtime/tests/test_harden_evidence_verifier.py",
+              "base_blob": "404a3c6b1babbfc9d4ccd9749d89ea9774d72a4c",
+              "nodes": [
+                "test_a_sandboxed_broker_record_round_trips_and_backend_claims_do_not"
+              ],
+              "change": "additive: the sandboxed broker record now carries the trusted host git identity, and three malformed shapes of it are refused"
+            }
+          ],
+          "landed": null,
+          "landed_note": "appended as exactly one separate landed entry after the agent-harness#1222 successor merges, naming authorization_id agent-harness#1222:SEATOWNER:HARDEN"
         }
       ]
     },

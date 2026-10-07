@@ -281,6 +281,12 @@ CHRONOLOGY_NODE="{CHRONOLOGY_NODE}"
 PYTHONPATH=src:tests python -m pytest --collect-only -q \\
   "{CHRONOLOGY_NODE}" >/dev/null
 
+# The required owner cells fail on unavailable kernel support or an unowned start.
+PHASE_LOOP_REQUIRE_SEAT_OWNER=1 \
+PHASE_LOOP_LAUNCH_AUDIT_PATH=/junit/seat-launch-audit.jsonl \
+PYTHONPATH=src:tests python -m pytest -q tests/test_launch_audit_inventory.py \
+  tests/test_seat_*.py tests/test_the_real_launch_carries_the_prefix.py
+
 # `--max-worker-restart=0` is load-bearing and COUPLED to `--dist loadfile`: under
 # the loadfile/loadscope schedulers, xdist's default worker replacement leaves the
 # controller waiting with every worker idle -- a hang, not a failure (`--dist load`

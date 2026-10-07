@@ -8578,7 +8578,7 @@ def _run_legible_panel(
         # The configured president order (built-in < user < repo), refused -- never
         # silently replaced by the built-in order -- when malformed.
         try:
-            president_ladder = load_president_ladder(repo)
+            president_ladder = load_president_ladder(repo, review_base=True)
         except BoardConfigError as exc:
             raise PresidentPolicyError(PRESIDENT_LADDER_INVALID, str(exc)) from exc
         president_invoke = build_president_invoke(

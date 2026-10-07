@@ -1,16 +1,8 @@
-"""Process-group CPU sampling for the leg-liveness monitor.
+"""Linux CPU observations for a process group and its descendants.
 
-A panel leg is launched with ``start_new_session=True``, so its process-group id
-(pgid) equals the leader pid and every descendant it spawns inherits that pgid.
-``group_cpu_ticks(leader_pid)`` therefore sums CPU (utime+stime) across the whole
-leg — leader and all children — which is the heartbeat signal for a leg that is
-*thinking silently* (codex/grok in print mode emit no incremental stdout, then
-write their ``--output-last-message`` file at the end; a thinking process burns
-CPU, a wedged one does not).
-
-Linux-only via ``/proc``. On any other platform (or a missing ``/proc``) it
-returns 0, so the runner degrades to a stdout-only heartbeat — still correct: a
-streaming leg heartbeats on stdout, and a silent-AND-idle leg is genuinely dead.
+Owner wrappers can start a child in another session. Include that child tree
+when sampling the leg. Missing /proc data yields zero; CPU activity alone does
+not establish completion or grant heartbeat-only termination authority.
 """
 from __future__ import annotations
 
@@ -33,14 +25,8 @@ def _pgrp_and_ticks(pid: int) -> tuple[int, int]:
 
 
 def group_cpu_ticks(leader_pid: int) -> int:
-    """Sum CPU ticks (utime+stime) across every process in ``leader_pid``'s group.
-
-    Returns 0 when ``/proc`` is unavailable (non-Linux) or nothing matches — the
-    caller treats 0-delta as "no CPU heartbeat", which combined with the stdout
-    heartbeat still catches a genuinely wedged leg and never false-kills a
-    streaming one.
-    """
-    total = 0
+    """Sum observed ticks for the group and children, including new sessions."""
+    samples = {}
     try:
         entries = os.listdir("/proc")
     except OSError:
@@ -49,9 +35,23 @@ def group_cpu_ticks(leader_pid: int) -> int:
         if not entry.isdigit():
             continue
         try:
-            pgrp, ticks = _pgrp_and_ticks(int(entry))
+            with open(f"/proc/{entry}/stat", encoding="ascii", errors="replace") as fh:
+                data = fh.read()
+            fields = data[data.rfind(")") + 2 :].split()
+            samples[int(entry)] = (int(fields[1]), int(fields[2]),
+                                   int(fields[11]) + int(fields[12]))
         except (OSError, ValueError, IndexError):
             continue  # process exited mid-scan, or an unreadable/odd stat line
-        if pgrp == leader_pid:
-            total += ticks
-    return total
+    members = {pid for pid, (_, group, _) in samples.items() if group == leader_pid}
+    if leader_pid in samples:
+        members.add(leader_pid)
+    children = {}
+    for pid, (parent, _, _) in samples.items():
+        children.setdefault(parent, []).append(pid)
+    pending = list(members)
+    while pending:
+        for child in children.get(pending.pop(), ()):
+            if child not in members:
+                members.add(child)
+                pending.append(child)
+    return sum(samples[pid][2] for pid in members)

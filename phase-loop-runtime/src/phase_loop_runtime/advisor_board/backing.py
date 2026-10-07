@@ -483,12 +483,15 @@ class ParentUnixBroker:
         ):
             raise ValueError("broker canonical repository authority is not probeable")
         try:
-            listed = subprocess.check_output(
-                ["git", "-C", str(self.canonical_repo), "ls-files", "-z"],
+            from ..review_stage import host_git
+
+            listed = host_git(
+                self.canonical_repo, "ls-files", "-z", check=True,
                 text=True,
+                stdout=subprocess.PIPE,
                 stderr=subprocess.DEVNULL,
                 timeout=3,
-            ).split("\0")
+            ).stdout.split("\0")
             probe_file = next(
                 (
                     self.canonical_repo / relative
@@ -498,7 +501,7 @@ class ParentUnixBroker:
                 ),
                 None,
             )
-        except (OSError, subprocess.SubprocessError):
+        except (OSError, ValueError, subprocess.SubprocessError):
             probe_file = None
         if probe_file is None:
             raise ValueError("broker canonical repository authority is not probeable")
@@ -696,7 +699,7 @@ class ParentUnixBroker:
         runtime_binds: list[str] = ["--ro-bind", "/usr", "/usr"]
         for runtime in ("/lib", "/lib64"):
             if Path(runtime).exists(): runtime_binds.extend(("--ro-bind", runtime, runtime))
-        argv = [str(bwrap),"--unshare-all","--die-with-parent","--new-session","--clearenv",*runtime_binds,"--dir","/run","--ro-bind",str(self.root),"/run/phase-loop-broker","--ro-bind",str(self.staged_dir),"/run/phase-loop-review","--tmpfs","/tmp","--proc","/proc","--dev","/dev","--setenv","PATH","/usr/bin","--setenv","PYTHONNOUSERSITE","1","--setenv","PYTHONDONTWRITEBYTECODE","1",str(python),"-I","-S","-c",code]
+        argv = [str(bwrap),"--unshare-all","--die-with-parent","--new-session","--clearenv",*runtime_binds,"--dir","/run","--dir","/run/phase-loop-broker","--ro-bind",str(self.path),"/run/phase-loop-broker/intended-inference.sock","--ro-bind",str(self.staged_dir),"/run/phase-loop-review","--tmpfs","/tmp","--proc","/proc","--dev","/dev","--setenv","PATH","/usr/bin","--setenv","PYTHONNOUSERSITE","1","--setenv","PYTHONDONTWRITEBYTECODE","1",str(python),"-I","-S","-c",code]
         error: list[BaseException] = []
         child: list[tuple[subprocess.Popen[bytes], int]] = []
         def serve() -> None:
@@ -882,18 +885,18 @@ def _staged_tree_digest(canonical_repo_authority: Path | str | None) -> str | No
     authorization that permits NO staged tree rather than one asserting a digest
     it could not compute.
     """
-    from ..review_stage import review_tree_manifest_sha256
+    from ..review_stage import host_git, review_tree_manifest_sha256
 
     # Normalize to the SAME git toplevel `_canonical_review_repo_authority` resolves
     # at spawn. Digesting an unnormalized path would bind a different tree than the
     # one actually staged, and the mismatch would only surface as a refusal at launch.
     candidate = Path(canonical_repo_authority) if canonical_repo_authority is not None else Path.cwd()
     try:
-        root = subprocess.check_output(
-            ["git", "-C", str(candidate), "rev-parse", "--show-toplevel"],
-            text=True, stderr=subprocess.DEVNULL, timeout=3,
-        ).strip()
-    except (OSError, subprocess.SubprocessError):
+        root = host_git(
+            candidate, "rev-parse", "--show-toplevel", check=True,
+            text=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=3,
+        ).stdout.strip()
+    except (OSError, ValueError, subprocess.SubprocessError):
         return None
     if not root:
         return None
@@ -912,16 +915,18 @@ def _staged_tree_digest(canonical_repo_authority: Path | str | None) -> str | No
 
 
 def _canonical_repo_digest(canonical_repo_authority: Path | str | None) -> str:
+    from ..review_stage import host_git
+
     candidate = Path(canonical_repo_authority) if canonical_repo_authority is not None else Path.cwd()
     try:
-        root = subprocess.check_output(
-            ["git", "-C", str(candidate), "rev-parse", "--show-toplevel"],
+        root = host_git(
+            candidate, "rev-parse", "--show-toplevel", check=True,
             text=True,
+            stdout=subprocess.PIPE,
             stderr=subprocess.DEVNULL,
             timeout=3,
-            env={key: value for key, value in os.environ.items() if not key.startswith("GIT_")},
-        ).strip()
-    except (OSError, subprocess.SubprocessError):
+        ).stdout.strip()
+    except (OSError, ValueError, subprocess.SubprocessError):
         raise ValueError("HARDEN review has no canonical repository authority") from None
     if not root:
         raise ValueError("HARDEN review has no canonical repository authority")

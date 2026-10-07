@@ -53,16 +53,18 @@ claims. Measure the capability, not the mechanism.
 from __future__ import annotations
 
 import contextlib
+import ipaddress
+import json
 
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import tempfile
 import warnings
 import time
 
 from .sandbox_policy import EgressPolicy, egress_allowlist
+from .review_stage import trusted_host_executable
 
 __all__ = [
     "EgressUnavailable",
@@ -157,7 +159,35 @@ def egress_required() -> bool:
     ).strip() not in ("1", "true", "yes")
 
 
-def egress_rules(policy: EgressPolicy | None = None) -> list[str]:
+def host_addresses() -> tuple[str, ...]:
+    try:
+        result = subprocess.run([trusted_host_executable("ip"), "-j", "address", "show"],
+                                capture_output=True, text=True, check=True, timeout=10)
+        interfaces = json.loads(result.stdout)
+        addresses = []
+        for interface in interfaces:
+            for address in interface["addr_info"]:
+                if address["family"] in ("inet", "inet6"):
+                    value = str(ipaddress.ip_address(address["local"]))
+                    if value not in addresses:
+                        addresses.append(value)
+        if not addresses:
+            raise ValueError("empty address inventory")
+        return tuple(addresses)
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError) as exc:
+        raise EgressUnavailable("host_address_inventory_unavailable") from exc
+
+
+def ipv6_egress_rules(addresses=()) -> list[str]:
+    rules = [f"-A OUTPUT -d {address} -j REJECT" for address in addresses
+             if ipaddress.ip_address(address).version == 6]
+    for kind in ("135", "136"):
+        for destination in ("fe80::/10", "ff02::1:ff00:0/104"):
+            rules.append(f"-A OUTPUT -d {destination} -p ipv6-icmp --icmpv6-type {kind} -j ACCEPT")
+    return [*rules, "-P OUTPUT DROP"]
+
+
+def egress_rules(policy: EgressPolicy | None = None, *, host_addresses=()) -> list[str]:
     """The iptables rules, in the order they must be applied.
 
     Order IS the policy. The allowlisted endpoints come first, because they live inside
@@ -165,7 +195,9 @@ def egress_rules(policy: EgressPolicy | None = None) -> list[str]:
     subnet comes before the ``10/8`` deny for the same reason.
     """
     policy = policy or egress_allowlist()
-    rules = [f"-I OUTPUT 1 -d {SLIRP_UPLINK_CIDR} -j ACCEPT"]
+    rules = [f"-A OUTPUT -d {address} -j REJECT" for address in host_addresses
+             if ipaddress.ip_address(address).version == 4]
+    rules += [f"-A OUTPUT -d {SLIRP_UPLINK_CIDR} -j ACCEPT"]
     rules += [
         f"-A OUTPUT -d {host} -p tcp --dport {port} -j ACCEPT"
         for host, port in policy.allow
@@ -181,14 +213,15 @@ def egress_isolation_available() -> bool:
     or a container runtime can each remove unprivileged user namespaces without changing
     anything observable about the OS.
     """
-    if not (shutil.which("unshare") and shutil.which("slirp4netns") and shutil.which("iptables")):
-        return False
     try:
+        unshare = trusted_host_executable("unshare")
+        trusted_host_executable("slirp4netns")
+        trusted_host_executable("iptables")
         return subprocess.run(
-            ["unshare", "--net", "--map-root-user", "true"],
+            [unshare, "--net", "--map-root-user", trusted_host_executable("true")],
             capture_output=True, timeout=10,
         ).returncode == 0
-    except (OSError, subprocess.SubprocessError):
+    except (OSError, subprocess.SubprocessError, ValueError):
         return False
 
 
@@ -333,7 +366,17 @@ def isolated_network(
         )
         return
 
-    rules = "\n".join(f"iptables {rule}" for rule in egress_rules(policy))
+    try:
+        addresses = host_addresses()
+        helpers = {name: trusted_host_executable(name) for name in (
+            "unshare", "slirp4netns", "iptables", "ip6tables", "bash", "mount", "touch", "sleep",
+            "nsenter", "setpriv", "getent", "ip",
+        )}
+    except (EgressUnavailable, ValueError) as exc:
+        yield _degrade(str(exc))
+        return
+    rules = "\n".join([*(f"{helpers['iptables']} {rule}" for rule in egress_rules(policy, host_addresses=addresses)),
+                       *(f"{helpers['ip6tables']} {rule}" for rule in ipv6_egress_rules(addresses))])
     with tempfile.TemporaryDirectory(prefix="pl-egress-ns-") as work:
         ready = os.path.join(work, "ready")
         pidfile = os.path.join(work, "pid")
@@ -366,15 +409,15 @@ def isolated_network(
                 gate_read, gate_write = os.pipe()
                 owner_read, owner_write = os.pipe() if timeout_s is None else (None, None)
                 lifetime = (f"read -r _owner_lifetime <&{owner_read}" if timeout_s is None
-                            else f"sleep {timeout_s}")
+                            else f"{helpers['sleep']} {timeout_s}")
                 # Infrastructure, not a provider: through the one launch interface, never
                 # counted as a leg's provider spawn.
                 with _infrastructure_launch():
                     holder = launch_provider(
-                        ["unshare", "--user", "--net", "--mount", "bash", "-c",
+                        [helpers["unshare"], "--user", "--net", "--mount", helpers["bash"], "-c",
                          f'read -r _gate <&{gate_read} || exit 8; '
-                         f'mount --bind {resolv} /etc/resolv.conf || exit 9; '
-                         f'echo $$ > {pidfile}; touch {ready}; {lifetime}'],
+                         f'{helpers["mount"]} --bind {resolv} /etc/resolv.conf || exit 9; '
+                         f'echo $$ > {pidfile}; {helpers["touch"]} {ready}; {lifetime}'],
                         pass_fds=(gate_read,) if owner_read is None else (gate_read, owner_read),
                         close_fds=True,
                     )
@@ -398,16 +441,16 @@ def isolated_network(
                 # Infrastructure, not a provider: never counted as a leg's provider spawn.
                 with _infrastructure_launch():
                     holder = launch_provider(
-                        ["unshare", "--net", "--mount", "--map-root-user", "bash", "-c",
-                         f'mount --bind {resolv} /etc/resolv.conf || exit 9; '
-                         f'echo $$ > {pidfile}; touch {ready}; read -r _owner_lifetime'],
+                        [helpers["unshare"], "--net", "--mount", "--map-root-user", helpers["bash"], "-c",
+                         f'{helpers["mount"]} --bind {resolv} /etc/resolv.conf || exit 9; '
+                         f'echo $$ > {pidfile}; {helpers["touch"]} {ready}; read -r _owner_lifetime'],
                         stdin=owner_read, close_fds=True,
                     )
             else:
                 holder = subprocess.Popen(
-                    ["unshare", "--net", "--mount", "--map-root-user", "bash", "-c",
-                     f'mount --bind {resolv} /etc/resolv.conf || exit 9; '
-                     f'echo $$ > {pidfile}; touch {ready}; sleep {timeout_s}'],
+                    [helpers["unshare"], "--net", "--mount", "--map-root-user", helpers["bash"], "-c",
+                     f'{helpers["mount"]} --bind {resolv} /etc/resolv.conf || exit 9; '
+                     f'echo $$ > {pidfile}; {helpers["touch"]} {ready}; {helpers["sleep"]} {timeout_s}'],
                 )
             deadline = time.monotonic() + 15
             while not os.path.exists(ready) and time.monotonic() < deadline:
@@ -420,14 +463,15 @@ def isolated_network(
             if timeout_s is None:
                 with _infrastructure_launch():
                     slirp = launch_provider(
-                        ["slirp4netns", "--configure", "--mtu=65520",
-                         "--disable-host-loopback", f"--exit-fd={owner_read}", nspid, "tap0"],
+                        [helpers["slirp4netns"], "--configure", "--mtu=65520", "--enable-sandbox",
+                         "--enable-seccomp", "--disable-host-loopback", f"--exit-fd={owner_read}",
+                         nspid, "tap0"],
                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                         pass_fds=(owner_read,), close_fds=True,
                     )
             else:
                 slirp = subprocess.Popen(
-                    ["slirp4netns", "--configure", "--mtu=65520",
+                    [helpers["slirp4netns"], "--configure", "--mtu=65520", "--enable-sandbox", "--enable-seccomp",
                      "--disable-host-loopback", nspid, "tap0"],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 )
@@ -441,13 +485,13 @@ def isolated_network(
 
             # `--mount` as well as `--net`: the seat must see the resolv.conf bound above,
             # or it inherits the host's 127.0.0.53 and resolves nothing.
-            admin = ("nsenter", "--net", "--mount", "-t", nspid, "-U", "--preserve-credentials")
+            admin = (helpers["nsenter"], "--net", "--mount", "-t", nspid, "-U", "--preserve-credentials")
             # Apply the policy INSIDE the namespace, before anything else runs in it, and
             # CHECK it: a partially installed ruleset that still yielded a prefix would be
             # reported as applied filtering while leaving holes.
             installed = subprocess.run(
-                [*admin, "bash", "-c",
-                 "set -e\nip link set lo up 2>/dev/null || true\n" + rules],
+                [*admin, helpers["bash"], "-c",
+                 f"set -e\n{helpers['ip']} link set lo up 2>/dev/null || true\n" + rules],
                 capture_output=True, text=True, timeout=30,
             )
             if installed.returncode != 0:
@@ -465,7 +509,7 @@ def isolated_network(
             # one command. Rules a reviewer can withdraw are a suggestion, not a boundary.
             # Emptying the BOUNDING set (not merely the effective one) means the capability
             # cannot be regained by re-exec either.
-            prefix = (*admin, "setpriv", _EMPTY_BOUNDING_SET, "--inh-caps=-all", "--")
+            prefix = (*admin, helpers["setpriv"], _EMPTY_BOUNDING_SET, "--inh-caps=-all", "--")
 
             # MEASURE THE CAPABILITY, NOT THE STEPS. Board round 9, codex: the resolver
             # bind's failure was suppressed with `2>/dev/null` and slirp was started
@@ -488,7 +532,7 @@ def isolated_network(
             for _attempt in range(2):
                 try:
                     if subprocess.run(
-                        [*prefix, "getent", "hosts", "github.com"],
+                        [*prefix, helpers["getent"], "hosts", "github.com"],
                         capture_output=True, timeout=30,
                     ).returncode == 0:
                         resolved = True

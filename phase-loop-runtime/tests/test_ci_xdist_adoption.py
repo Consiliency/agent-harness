@@ -69,7 +69,7 @@ HOSTED_INSTALL_LINE = (
 # both through one `bash -c`, so it is on the suite's execution path.
 SANDBOX_EXEC_SHA256 = "8a6bcabbf6db690741c06bf94131b1132d62066300416d434d8d121dca74a353"
 HOSTED_SUITE_SHA256 = "89e14f69d867bcf5b49b6f98fb151b8c9017149a9d5f712b024e8061fce765d0"
-DAGGER_SUITE_SHA256 = "4f25fe45b21ebd14da522e338953e66fb14ca6ade0c633267f28571bb956fde7"
+DAGGER_SUITE_SHA256 = "df251a98e0a2dc14f4180e2cabfe80b1d1357efff9057a1d7c2e84e613c03c3a"
 
 # The container-env cap for `-n auto` on the offload host: exactly one site, in `_base`.
 AUTO_WORKERS_VAR = "PYTEST_XDIST_AUTO_NUM_WORKERS"

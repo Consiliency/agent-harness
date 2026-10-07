@@ -8,7 +8,6 @@ now overrides any subset per leg; unset legs use `DEFAULT_LEG_MODELS`.
 
 from __future__ import annotations
 
-import types
 from unittest.mock import patch
 
 import phase_loop_runtime.panel_invoker as pi
@@ -49,12 +48,7 @@ def test_exec_leg_codex_uses_model_override(tmp_path, monkeypatch):
     review_dir, out_dir = _stage(tmp_path)
     captured = {}
 
-    # The auth preflight still uses subprocess.run — keep it logged-in. The leg exec
-    # now goes through _run_leg_with_liveness (the codex verdict is the out_file).
-    monkeypatch.setattr(
-        pi.subprocess, "run",
-        lambda *a, **k: types.SimpleNamespace(returncode=0, stdout="logged in", stderr=""),
-    )
+    monkeypatch.setattr(pi, '_leg_auth_ok', lambda *_a, **_kw: (True, ''))
 
     def fake_liveness(cmd, **k):
         captured["cmd"] = list(cmd)

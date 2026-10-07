@@ -654,7 +654,8 @@ def test_unmapped_holder_waits_for_its_map_then_yields_a_working_prefix(monkeypa
     monkeypatch.setattr(seat_uid, "map_holder", _self_map)
     with sandbox_egress.isolated_network(timeout_s=timeout_s, required=True,
                                          seat_uid_map=True) as prefix:
-        assert prefix and prefix[0] == "nsenter"
+        # The holder's helpers are trusted absolute paths (agent-harness#1222 §5a).
+        assert prefix and Path(prefix[0]).name == "nsenter"
         done = subprocess.run([*prefix, "id", "-u"], capture_output=True, text=True, timeout=30)
         assert done.stdout.strip() == "0"  # the operator is H-root
         assert seat_uid.holder_pid_from_prefix(prefix) > 0
@@ -1086,4 +1087,4 @@ def test_the_seat_uid_namespace_is_built_through_the_launch_interface_uncounted(
                 pass
     finally:
         panel_invoker._EGRESS_LAUNCH_PREFIX.reset(token)
-    assert seen and seen[0] == ("unshare", True, ())
+    assert seen and (Path(seen[0][0]).name, *seen[0][1:]) == ("unshare", True, ())

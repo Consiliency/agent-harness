@@ -275,6 +275,7 @@ def _exec_executor(
     environment: dict[bytes, bytes],
     inherited_sigchld: object = signal.SIG_DFL,
     handoff_mask: set[int] | None = None,
+    pass_fds: tuple[int, ...] = (),
 ) -> None:
     """Forked-executor half: become a subreaping session leader, wait for go, then exec."""
 
@@ -295,7 +296,7 @@ def _exec_executor(
                 signal.signal(signum, signal.SIG_DFL)
             # The executor inherits exactly the SIGCHLD disposition we were given.
             signal.signal(signal.SIGCHLD, inherited_sigchld)
-            _close_descriptors_except(tuple(fd for fd in (0, 1, 2, lease_fd, status_fd, go_fd) if fd is not None))
+            _close_descriptors_except(tuple(fd for fd in (0, 1, 2, lease_fd, status_fd, go_fd, *pass_fds) if fd is not None))
             if status_fd is not None:
                 os.set_inheritable(status_fd, False)
             os.set_inheritable(go_fd, False)
@@ -323,7 +324,7 @@ def _exec_executor(
         os._exit(255)
 
 
-def supervise(lease_fd: int, status_fd: int, command: list[str]) -> None:
+def supervise(lease_fd: int, status_fd: int, command: list[str], pass_fds: tuple[int, ...] = ()) -> None:
     """Fork the executor, then retain the lease until its whole tree is gone."""
 
     # The mask the launcher handed us, recorded before the supervisor blocks
@@ -357,7 +358,7 @@ def supervise(lease_fd: int, status_fd: int, command: list[str]) -> None:
         # supervisor is already gone, and the GO read sees EOF.
         os.close(go_write)
         os.close(grouped_read)
-        _exec_executor(command, held_lease_fd, held_status_fd, go_read, grouped_write, environment, inherited_sigchld, handoff_mask)
+        _exec_executor(command, held_lease_fd, held_status_fd, go_read, grouped_write, environment, inherited_sigchld, handoff_mask, pass_fds)
 
     os.close(go_read)
     os.close(grouped_write)
@@ -429,10 +430,16 @@ def _exit_with(returncode: object) -> None:
 
 
 def main(argv: list[str]) -> None:
+    pass_fds = ()
+    if len(argv) > 6 and argv[4] == "--pass-fds":
+        pass_fds = tuple(int(value) for value in argv[5].split(",") if value)
+        if any(value < 3 for value in pass_fds):
+            os._exit(2)
+        argv = [*argv[:4], *argv[6:]]
     if len(argv) < 6 or argv[0] != "--lease-fd" or argv[2] != "--exec-status-fd" or argv[4] != "--":
         sys.stderr.write("usage: lease_supervisor.py --lease-fd N --exec-status-fd W -- COMMAND...\n")
         os._exit(2)
-    supervise(int(argv[1]), int(argv[3]), argv[5:])
+    supervise(int(argv[1]), int(argv[3]), argv[5:], pass_fds)
 
 
 if __name__ == "__main__":

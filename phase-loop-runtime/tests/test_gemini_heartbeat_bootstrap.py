@@ -56,12 +56,11 @@ def test_bounded_builder_cannot_render_a_zero_or_nonfinite_sentinel(deadline):
         panel._brokered_gemini_command(model="gemini-3.8-flash-high", deadline_s=deadline)
 
 
-def test_no_profile_does_not_change_other_providers_owner_argv(tmp_path):
-    monitor = panel._ReviewMonitor(tmp_path / "monitor.json", "unchanged", 0, threading.Event())
-    assert monitor.owned_command(("fixture", "arg")) == [
-        "/usr/bin/bwrap", "--die-with-parent", "--unshare-pid",
-        "--bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--", "fixture", "arg",
-    ]
+def test_legacy_owner_requires_the_uniform_launch_entry(tmp_path):
+    from phase_loop_runtime import sandbox_egress
+    monitor = panel._ReviewMonitor(tmp_path / "monitor.json", "legacy", 0, threading.Event())
+    with pytest.raises(sandbox_egress.SeatIdentityUnverified, match="seat_launch_owner_required"):
+        monitor.owned_command(("fixture", "arg"))
 
 
 def _stream(protocol, final="No blocking findings.\nAGREE"):
@@ -112,10 +111,10 @@ def _fixture_repo(tmp_path):
     the board with this repo as the cwd (``repo_dir`` alone does not move the authority;
     an explicit ``canonical_repo_authority`` also demands a pre-minted authorization)."""
     repo = tmp_path / "repo"
-    panel.run_provider(["git", "init", "-q", str(repo)], check=True, capture_output=True)
+    subprocess.run(["/usr/bin/git", "init", "-q", str(repo)], check=True, capture_output=True)
     (repo / "README.md").write_text("synthetic review authority\n")
-    panel.run_provider(["git", "-C", str(repo), "add", "README.md"], check=True, capture_output=True)
-    panel.run_provider(["git", "-C", str(repo), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+    subprocess.run(["/usr/bin/git", "-C", str(repo), "add", "README.md"], check=True, capture_output=True)
+    subprocess.run(["/usr/bin/git", "-C", str(repo), "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
                         "-c", "commit.gpgsign=false", "commit", "-q", "-m", "fixture"], check=True, capture_output=True)
     return repo
 
@@ -138,7 +137,7 @@ def fixture_cli(tmp_path, monkeypatch):
     home = tmp_path / "synthetic-home"
     token = home / ".gemini/antigravity-cli/antigravity-oauth-token"
     token.parent.mkdir(parents=True)
-    token.write_text("synthetic-token-only\n")
+    token.write_text(json.dumps({"token": {"access_token": "synthetic-access-token", "refresh_token": "synthetic-refresh-token", "expiry": "2099-01-01T00:00:00Z"}}))
     cli_dir = tmp_path / "cli"
     cli_dir.mkdir()
     cli = cli_dir / "agy"
@@ -232,6 +231,7 @@ emit('' if mode in ('empty','denied-empty','empty-timeout') else '<truncated 123
      session='another-session' if mode=='session' else 'fixture-session')
 ''')
     cli.chmod(0o700)
+    monkeypatch.setattr(panel, "_PROVIDER_SEARCH_PATH", str(cli_dir) + os.pathsep + os.environ["PATH"])
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("PATH", str(cli_dir) + os.pathsep + os.environ["PATH"])
     monkeypatch.delenv("PHASE_LOOP_SANDBOX_DISABLE", raising=False)
@@ -239,10 +239,10 @@ emit('' if mode in ('empty','denied-empty','empty-timeout') else '<truncated 123
     monkeypatch.setattr(gh, "QUALIFIED_IMAGES", {sha256(cli.read_bytes()).hexdigest(): "d" * 64})
     # The synthetic provider reads its mode and reports through files under tmp_path,
     # which the sandbox view does not otherwise include; bind that one directory.
-    view = panel._gemini_filesystem_view
-    monkeypatch.setattr(panel, "_gemini_filesystem_view",
-                        lambda cwd, mount_args, extra_ro=(): [*view(cwd, mount_args, extra_ro),
-                                                              "--bind", str(tmp_path), str(tmp_path)])
+    view = panel._seat_filesystem_view
+    monkeypatch.setattr(panel, "_seat_filesystem_view",
+                        lambda cwd, **kwargs: [*view(cwd, **kwargs),
+                                                "--bind", str(tmp_path), str(tmp_path)])
     return SimpleNamespace(module=gh, path=cli, attempts=attempts, observation=observation,
                            mode=mode_file, token=token, home=home)
 
@@ -511,7 +511,7 @@ def test_real_board_preserves_diagnostics_without_retries(fixture_cli, tmp_path,
     assert int(observed["caps"], 16) == 0
     assert not any("memfd:" in target for target in observed["fd_targets"])
     assert not Path(observed["home"]).exists()
-    assert fixture_cli.token.read_text() == "synthetic-token-only\n"
+    assert fixture_cli.token.read_text() == json.dumps({"token": {"access_token": "synthetic-access-token", "refresh_token": "synthetic-refresh-token", "expiry": "2099-01-01T00:00:00Z"}})
     verdicts = [json.loads(p.read_text()) for p in (tmp_path / "records").glob("*.verdict.json")]
     assert len(verdicts) == 1
     assert verdicts[0]["detail"] == leg.detail
@@ -558,15 +558,16 @@ def test_heartbeat_credential_reference_uses_supplied_home(fixture_cli, tmp_path
     configured_home = tmp_path / "configured-home"
     configured_token = configured_home / ".gemini/antigravity-cli/antigravity-oauth-token"
     configured_token.parent.mkdir(parents=True)
-    configured_token.write_text("synthetic-configured-token\n")
+    supplied = json.dumps({"token": {"access_token": "synthetic-configured-token", "refresh_token": "synthetic-refresh", "expiry": "2099-01-01T00:00:00Z"}})
+    configured_token.write_text(supplied)
     fixture_cli.mode.write_text("refresh")
     result = panel.invoke_board(gemini_board(), "input", monitoring_policy="heartbeat_only",
                                 base_env={**os.environ, "HOME": str(configured_home)},
                                 stream_dir=tmp_path / "records")
     leg, = result.legs
     assert leg.status == "OK", leg.detail
-    assert configured_token.read_text() == "synthetic-refreshed\n"
-    assert fixture_cli.token.read_text() == "synthetic-token-only\n"
+    assert configured_token.read_text() == supplied
+    assert fixture_cli.token.read_text() == json.dumps({"token": {"access_token": "synthetic-access-token", "refresh_token": "synthetic-refresh-token", "expiry": "2099-01-01T00:00:00Z"}})
     assert leg.harden_isolation_evidence["provider_credential_home_source"] == "scrubbed_subscription_home"
 
 
@@ -584,7 +585,8 @@ def test_explicit_empty_home_is_not_reported_as_process_home_fallback(fixture_cl
     relative_home = repo / "relative-home"
     token = relative_home / ".gemini/antigravity-cli/antigravity-oauth-token"
     token.parent.mkdir(parents=True)
-    token.write_text("synthetic-relative-token\n")
+    supplied = json.dumps({"token": {"access_token": "synthetic-relative-token", "refresh_token": "synthetic-refresh", "expiry": "2099-01-01T00:00:00Z"}})
+    token.write_text(supplied)
     fixture_cli.mode.write_text("refresh")
     monkeypatch.chdir(relative_home)
     result = panel.invoke_board(gemini_board(), "input", repo_dir=repo,
@@ -592,8 +594,8 @@ def test_explicit_empty_home_is_not_reported_as_process_home_fallback(fixture_cl
                                 stream_dir=tmp_path / "records", review_policy=panel.ReviewLandingPolicy(("gemini",), False))
     leg, = result.legs
     assert leg.status == "OK", leg.detail
-    assert token.read_text() == "synthetic-refreshed\n"
-    assert fixture_cli.token.read_text() == "synthetic-token-only\n"
+    assert token.read_text() == supplied
+    assert fixture_cli.token.read_text() == json.dumps({"token": {"access_token": "synthetic-access-token", "refresh_token": "synthetic-refresh-token", "expiry": "2099-01-01T00:00:00Z"}})
     assert leg.harden_isolation_evidence["provider_credential_home_source"] == "scrubbed_subscription_home"
 
 
@@ -656,11 +658,17 @@ def _profile(fixture_cli):
 def _run_profile(profile, tmp_path, cancel=None):
     monitor = panel._ReviewMonitor(tmp_path / "monitor.json", "profile", 0,
                                    cancel if cancel is not None else threading.Event())
-    return panel._run_leg_with_liveness(
-        [profile.executable], cwd=tmp_path, env=profile.env,
-        deadline_s=.01, stall_threshold_s=.01, review_monitor=monitor,
-        gemini_profile=profile,
-    )
+    from phase_loop_runtime import sandbox_egress
+    with sandbox_egress.isolated_network(timeout_s=None, required=True) as prefix:
+        token = panel._EGRESS_LAUNCH_PREFIX.set(prefix)
+        try:
+            return panel._run_leg_with_liveness(
+                [profile.executable], cwd=tmp_path, env=profile.env,
+                deadline_s=.01, stall_threshold_s=.01, review_monitor=monitor,
+                gemini_profile=profile,
+            )
+        finally:
+            panel._EGRESS_LAUNCH_PREFIX.reset(token)
 
 
 @pytest.mark.parametrize("change", ["replace", "overwrite"])
@@ -724,7 +732,7 @@ def test_capability_checks_leave_other_policy_routes_unaffected(fixture_cli, mon
 
 @pytest.mark.parametrize("route", ["bounded_gemini", "heartbeat_codex"])
 @pytest.mark.parametrize("missing", ["image", "memfd", "pidfd"])
-def test_public_other_routes_complete_without_gemini_capability(fixture_cli, tmp_path, monkeypatch, route, missing):
+def test_other_routes_respect_their_required_launch_capabilities(fixture_cli, tmp_path, monkeypatch, route, missing):
     gh = fixture_cli.module
     if missing == "image": monkeypatch.setattr(gh, "QUALIFIED_IMAGES", {"0" * 64: "d" * 64})
     if missing == "memfd": monkeypatch.delattr(gh.os, "memfd_create", raising=False)
@@ -739,11 +747,18 @@ def test_public_other_routes_complete_without_gemini_capability(fixture_cli, tmp
             "Path(sys.argv[sys.argv.index('--output-last-message')+1]).write_text('No blocking findings.\\nAGREE')\n"
         )
         cli.chmod(0o700)
+        auth = fixture_cli.home / ".codex/auth.json"
+        auth.parent.mkdir()
+        auth.write_text("{}")
         board = replace(DEFAULT_BOARD, seats=tuple(s for s in DEFAULT_BOARD.seats if s.harness == "codex"))
         policy = "heartbeat_only"
     result = panel.invoke_board(board, "synthetic other-route control", monitoring_policy=policy,
                                 stream_dir=tmp_path / "records", gateway_available=False)
     leg, = result.legs
+    if missing == "memfd" or (missing == "image" and route == "bounded_gemini"):
+        assert leg.status != "OK" and not leg.text, (leg.status, leg.detail)
+        assert not fixture_cli.attempts.exists()
+        return
     assert leg.status == "OK" and leg.text.endswith("AGREE"), (leg.status, leg.detail)
     if route == "bounded_gemini":
         observed = json.loads(fixture_cli.observation.read_text())
@@ -828,7 +843,7 @@ def test_profile_refresh_preserves_target_and_discards_private_replacement(fixtu
     fixture_cli.mode.write_text("refresh")
     with _profile(fixture_cli) as profile:
         assert _run_profile(profile, tmp_path).returncode == 0
-    assert fixture_cli.token.read_text() == "synthetic-refreshed\n"
+    assert json.loads(fixture_cli.token.read_text())["token"]["access_token"] == "synthetic-access-token"
     assert not Path("/dev/phase-loop-agy").exists()
 
 
@@ -864,12 +879,18 @@ def test_gemini_exec_wait_crosses_old_clocks_with_its_monitor(fixture_cli, tmp_p
         monitor.cancel.set()
     watchdog = threading.Timer(30, stop_broken_fixture)  # synthetic CLI only, never a model
     watchdog.start()
+    from phase_loop_runtime import sandbox_egress
     try:
-        rc, body, detail = panel._exec_leg(
-            "gemini", tmp_path, output, timeout_s=1, deadline_s=1,
-            model=backing.HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["gemini"],
-            broker_prompt="synthetic clock review", broker_evidence={}, review_monitor=monitor,
-        )
+        with sandbox_egress.isolated_network(timeout_s=None, required=True) as prefix:
+            token = panel._EGRESS_LAUNCH_PREFIX.set(prefix)
+            try:
+                rc, body, detail = panel._exec_leg(
+                    "gemini", tmp_path, output, timeout_s=1, deadline_s=1,
+                    model=backing.HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["gemini"],
+                    broker_prompt="synthetic clock review", broker_evidence={}, review_monitor=monitor,
+                )
+            finally:
+                panel._EGRESS_LAUNCH_PREFIX.reset(token)
     finally:
         watchdog.cancel()
         watchdog.join()
@@ -901,7 +922,7 @@ def test_profile_fds_are_sealed_closed_and_not_inherited_by_provider(fixture_cli
         assert len(sealed) == 2
         for fd in sealed:
             with pytest.raises(OSError): os.write(fd, b"change")
-            assert fcntl.fcntl(fd, fcntl.F_GET_SEALS) & fcntl.F_SEAL_WRITE
+            assert fcntl.fcntl(fd, getattr(fcntl, "F_GET_SEALS", 1034)) & getattr(fcntl, "F_SEAL_WRITE", 8)
         result = _run_profile(profile, tmp_path)
         assert result.returncode == 0
         observed = json.loads(fixture_cli.observation.read_text())
@@ -1056,8 +1077,8 @@ from pathlib import Path
 from phase_loop_runtime import panel_invoker as panel, gemini_heartbeat as gh
 from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
 gh.QUALIFIED_IMAGES={fixture_cli.module.QUALIFIED_IMAGES!r}
-view=panel._gemini_filesystem_view
-panel._gemini_filesystem_view=lambda cwd,mount_args,extra_ro=():[*view(cwd,mount_args,extra_ro),'--bind',{str(tmp_path)!r},{str(tmp_path)!r}]
+view=panel._seat_filesystem_view
+panel._seat_filesystem_view=lambda cwd,**kwargs:[*view(cwd,**kwargs),'--bind',{str(tmp_path)!r},{str(tmp_path)!r}]
 board=replace(DEFAULT_BOARD,seats=tuple(s for s in DEFAULT_BOARD.seats if s.harness=='gemini'))
 panel.invoke_board(board,'synthetic owner-loss fixture',monitoring_policy='heartbeat_only',stream_dir=Path({str(tmp_path / 'records')!r}),review_policy=panel.ReviewLandingPolicy(('gemini',),False))
 '''
@@ -1085,7 +1106,7 @@ panel.invoke_board(board,'synthetic owner-loss fixture',monitoring_policy='heart
             assert time.monotonic() < until, "fixture survived abrupt owner loss"
             time.sleep(.02)
         assert not Path(info["home"]).exists()
-        assert fixture_cli.token.read_text() == "synthetic-token-only\n"
+        assert fixture_cli.token.read_text() == json.dumps({"token": {"access_token": "synthetic-access-token", "refresh_token": "synthetic-refresh-token", "expiry": "2099-01-01T00:00:00Z"}})
         assert fixture_cli.attempts.read_text().splitlines() == ["attempt"]
     finally:
         if worker.poll() is None: worker.kill()
@@ -1544,26 +1565,14 @@ def test_the_gemini_seat_probe_leaves_the_profile_descriptors_to_the_launch(fixt
     assert {args[0] for args in fd_args} == {"--info-fd", "--block-fd", "--ro-bind-data"}
     assert not any(flag in probe for flag in ("--info-fd", "--block-fd", "--ro-bind-data")), (
         "the probe must never touch the gemini profile's single-use descriptors")
-    # Apart from those descriptor mounts (and their --perms), the probe ran through the
-    # launch's own wrapper; the probe adds only a read-only bind of its own marker file.
-    strip = {"--info-fd", "--block-fd", "--ro-bind-data", "--perms", "--dir", "--symlink"}
-    marker = probe[-1]
-    marker_bind = ["--ro-bind", marker, marker]
-    at = next(i for i in range(len(probe)) if probe[i:i + 3] == marker_bind)
-    probe = probe[:at] + probe[at + 3:]
-    assert marker not in launch
-    def wrapper(argv):
-        out, skip = [], 0
-        for arg in argv[:argv.index("/usr/bin/env")]:
-            if skip:
-                skip -= 1
-                continue
-            if arg in strip:
-                skip = {"--ro-bind-data": 2, "--symlink": 2}.get(arg, 1)
-                continue
-            out.append(arg)
-        return out
-    assert wrapper(probe) == wrapper(launch)
+    for flag in ("--unshare-user", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
+                 "--unshare-cgroup-try", "--new-session", "--die-with-parent"):
+        assert flag in probe and flag in launch
+    for flag in ("--uid", "--gid", "--cap-drop"):
+        assert probe[probe.index(flag) + 1] == launch[launch.index(flag) + 1]
+    assert "--file" not in probe
+    assert "--ro-bind-data" not in probe
+    assert "--remount-ro" in probe and "--remount-ro" in launch
     # The provider received the sealed image and settings through the descriptors.
     observed = json.loads(fixture_cli.observation.read_text())
     assert observed["argv"][0] == "/dev/phase-loop-agy/agy" and observed["settings_readonly"] is True

@@ -31,6 +31,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 import re
+import subprocess
 from typing import Any, Callable
 
 try:  # Python 3.11+
@@ -311,6 +312,7 @@ def load_president_ladder(
     *,
     env: Mapping[str, str] | None = None,
     path: Path | None = None,
+    review_base: bool = False,
 ) -> tuple[str, ...]:
     """The effective president fallback order, first rung first.
 
@@ -331,7 +333,22 @@ def load_president_ladder(
         ladder = _parse_president(user, str(user_path)) or ladder
     if repo_dir is not None:
         repo_path = repo_board_config_path(repo_dir)
-        repo = _load_toml(repo_path)
+        if review_base:
+            from ..review_stage import trusted_review_control
+
+            try:
+                content = trusted_review_control(Path(repo_dir), REPO_CONFIG_RELATIVE_PATH)
+                repo = tomllib.loads(content.decode("utf-8")) if content is not None else None
+            except ValueError as exc:
+                if str(exc) != "review_base_unavailable":
+                    raise BoardConfigError(f"{repo_path} has no readable base configuration") from exc
+                # No main commit to read it from: the candidate's own copy is never trusted,
+                # so the repository layer is not in force (the user and built-in ladders are).
+                repo = None
+            except (OSError, UnicodeError, subprocess.SubprocessError) as exc:
+                raise BoardConfigError(f"{repo_path} has no readable base configuration") from exc
+        else:
+            repo = _load_toml(repo_path)
         if repo is not None:
             _reject_unknown(repo.keys(), _KNOWN_REPO_TOP_KEYS, str(repo_path))
             ladder = _parse_president(repo, str(repo_path)) or ladder

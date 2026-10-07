@@ -46,6 +46,12 @@ def _post_switch_repo(repo: Path) -> None:
         + "\n",
         encoding="utf-8",
     )
+    from phase_loop_runtime.review_stage import host_git
+    host_git(repo, 'init', '-q', '--initial-branch=main', check=True, capture_output=True)
+    host_git(repo, 'add', '.', check=True, capture_output=True)
+    host_git(repo, '-c', 'user.name=Review fixture', '-c',
+             'user.email=fixture@example.invalid', '-c', 'commit.gpgsign=false',
+             'commit', '-qm', 'Frozen fixture controls', check=True, capture_output=True)
 
 
 def _weak_board() -> Board:

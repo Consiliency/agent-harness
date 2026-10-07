@@ -286,6 +286,7 @@ class TestItFailsClosed:
         """Failure two of three: the mechanism exists and the namespace does not appear."""
         monkeypatch.delenv("PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL", raising=False)
         monkeypatch.setattr(sandbox_egress, "egress_isolation_available", lambda: True)
+        monkeypatch.setattr(sandbox_egress, "host_addresses", lambda: ("203.0.113.10",))
         monkeypatch.setattr(sandbox_egress.os.path, "exists", lambda _p: False)
 
         class _Dead:
@@ -309,6 +310,7 @@ class TestItFailsClosed:
         import subprocess as sp
         monkeypatch.delenv("PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL", raising=False)
         monkeypatch.setattr(sandbox_egress, "egress_isolation_available", lambda: True)
+        monkeypatch.setattr(sandbox_egress, "host_addresses", lambda: ("203.0.113.10",))
 
         class _Holder:
             """Stands in for both the namespace holder and slirp4netns.
@@ -359,6 +361,7 @@ class TestItFailsClosed:
         import subprocess as sp
         monkeypatch.setenv("PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL", "1")
         monkeypatch.setattr(sandbox_egress, "egress_isolation_available", lambda: True)
+        monkeypatch.setattr(sandbox_egress, "host_addresses", lambda: ("203.0.113.10",))
 
         class _Holder:
             """Stands in for both the namespace holder and slirp4netns.

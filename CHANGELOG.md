@@ -6,6 +6,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Unified seat-launch owner: namespaces, private homes, allowlisted view, hardened host git and seat I/O
+
+Review seats, the president and executor review share a launch owner with private homes, allowlisted inputs and individual output files. Host Git uses trusted helpers and neutral settings. Ordinary executor planning, execution and repair retain their existing execution contract.
+
 ### Lower panel effort defaults and a larger configurable Claude output budget
 
 - Built-in advisor-board presets lower effort by one canonical level. Default and
