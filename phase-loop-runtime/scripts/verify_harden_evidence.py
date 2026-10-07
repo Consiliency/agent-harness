@@ -3574,7 +3574,12 @@ def verify_preproduction(store: ArtifactStore, sl0: dict[str, Any], reviewed: st
         fail("mutation cases do not cover every HARDEN anchor")
 
 
-def retained_input_nonces(store: ArtifactStore, retained: Any) -> set[str]:
+def retained_input_nonces(
+    store: ArtifactStore,
+    retained: Any,
+    *,
+    include_historical_sessions: bool = True,
+) -> set[str]:
     """Validate the raw nonce closure and return reusable input identities."""
     if not isinstance(retained, list) or not retained:
         fail("retained authority inputs are malformed")
@@ -3607,7 +3612,11 @@ def retained_input_nonces(store: ArtifactStore, retained: Any) -> set[str]:
         # Historical approval seats are the pre-production review operation
         # identities.  They are not output seats, so protect them from reuse
         # alongside the explicit raw operation nonces.
-        if isinstance(value, dict) and value.get("schema") == "harden_sl0_approval.v1":
+        if (
+            include_historical_sessions
+            and isinstance(value, dict)
+            and value.get("schema") == "harden_sl0_approval.v1"
+        ):
             seats = value.get("seats")
             if isinstance(seats, list):
                 for seat in seats:
@@ -3712,6 +3721,9 @@ def retained_role_attestations(
     sessions = [value["session_sha256"] for value in roles.values()]
     if len(set(identities)) != 3 or len(set(sessions)) != 3:
         fail("retained role identity/session is reused")
+    operation_nonces = {value["operation_nonce"] for value in roles.values()}
+    if operation_nonces & set(sessions):
+        fail("role operation nonce reused by a role session")
     return roles
 
 
@@ -5166,15 +5178,16 @@ def verify(
     ):
         fail("retained plan authority is detached from derived evidence")
     author_vendor = plan_authority["author_vendor"]
-    input_nonces = retained_input_nonces(store, retained_authority)
+    retained_input_nonces(
+        store,
+        retained_authority,
+        include_historical_sessions=False,
+    )
     retained_roles = retained_role_attestations(store, retained_authority)
     role_operation_nonces = {
         value["operation_nonce"] for value in retained_roles.values()
     }
     retained_requests = retained_review_requests(
-        store, retained_authority
-    )
-    historical_review_sessions = retained_historical_review_sessions(
         store, retained_authority
     )
     execution_runs = retained_execution_runs(store, retained_authority)
@@ -5230,19 +5243,23 @@ def verify(
     review_request_nonces = {
         value["operation_nonce"] for value in retained_requests.values()
     }
-    reject_historical_session_reuse(nonces, historical_review_sessions)
     reject_role_operation_nonce_reuse(role_operation_nonces, nonces)
     if len(seat_sessions) != 8:
         fail("reviewer authority lacks eight unique seat sessions")
     verify_roles(store, data["roles"], evidence_id, expected_coordinator_session, expected_author_session, author_vendor, seat_sessions, retained_roles)
-    if (input_nonces & nonces) - review_request_nonces:
-        fail("retained input operation nonce reused by a derived operation")
     verify_historical_sl0(
         store, repo, data["sl0"], retained_authority,
         commits["sl0_base"][0], reviewed, reviewed_tree, landing, landing_tree,
         expected_coordinator_session, expected_author_session,
         sha256("\0".join(sorted(seat_sessions)).encode()), seat_sessions,
     )
+    input_nonces = retained_input_nonces(store, retained_authority)
+    historical_review_sessions = retained_historical_review_sessions(
+        store, retained_authority
+    )
+    reject_historical_session_reuse(nonces, historical_review_sessions)
+    if (input_nonces & nonces) - review_request_nonces:
+        fail("retained input operation nonce reused by a derived operation")
     nonces.update(input_nonces)
     verify_reuse_registry(reuse_registry, evidence_root, evidence_id, nonces)
     verify_completion(store, data["completion"], normalized_precompletion_digest(data), main, main_tree, repo)
