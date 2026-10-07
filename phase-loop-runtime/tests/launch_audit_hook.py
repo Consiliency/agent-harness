@@ -145,6 +145,23 @@ class tolerate_unowned:
         return False
 
 
+_INSTALLED_ALLOWED = [0]
+
+
+class allow_installed_inference:
+    """Within this block the installed provider may run for inference. Only for the opt-in
+    live jailed-seat test (marked ``host_seat_credentials``), whose purpose is to run the real
+    CLI inside the host's jail (agent-harness#1282)."""
+
+    def __enter__(self):
+        _INSTALLED_ALLOWED[0] += 1
+        return self
+
+    def __exit__(self, *exc):
+        _INSTALLED_ALLOWED[0] -= 1
+        return False
+
+
 def install(path, *, fail=False, hashes=(), native_inference_hashes=()):
     """Record executable/caller metadata only, without arguments or environment."""
     hashes = set(hashes)
@@ -228,7 +245,8 @@ def install(path, *, fail=False, hashes=(), native_inference_hashes=()):
                 "function": frame.f_code.co_name if frame is not None else None,
             }
             os.write(descriptor, (json.dumps(record, sort_keys=True) + "\n").encode())
-            if event == 'subprocess.Popen' and installed_inference(args[1]):
+            if (event == 'subprocess.Popen' and not _INSTALLED_ALLOWED[0]
+                    and installed_inference(args[1])):
                 raise RuntimeError('test selected an installed provider for inference; use a fixture CLI')
             if fail and provider and not owned and not _tolerated():
                 raise RuntimeError("provider launch lacks the owned launch marker")

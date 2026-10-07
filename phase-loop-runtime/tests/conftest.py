@@ -191,6 +191,11 @@ def _isolate_claude_seat_host_state(request, monkeypatch, tmp_path):
     Only a test marked ``host_seat_credentials`` (the live jailed-seat check) sees the
     host's own state."""
     if request.node.get_closest_marker("host_seat_credentials") is not None:
+        # It also runs the installed Claude CLI on purpose (agent-harness#1282).
+        from launch_audit_hook import allow_installed_inference
+
+        with allow_installed_inference():
+            yield
         return
     from phase_loop_runtime import seat_jail
 
@@ -204,6 +209,7 @@ def _isolate_claude_seat_host_state(request, monkeypatch, tmp_path):
         seat_jail, "state_home",
         lambda: real_state_home() if os.environ.get("XDG_STATE_HOME") else state,
     )
+    yield
 
 
 @pytest.fixture(autouse=True)
