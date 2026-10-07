@@ -4574,10 +4574,29 @@ def _seat_provider_source(command, env):
     return harness, _seat_bind_source(source)
 
 
+_ISO_FRACTION = re.compile(r"(\.\d{1,6})\d*")
+
+
+def _parse_agy_expiry(text: str) -> datetime:
+    """agy's ``token.expiry``: RFC 3339 with up to nanosecond fractions. Python 3.10's
+    ``fromisoformat`` takes only three or six fractional digits and no ``Z``, so the
+    fraction is normalised to six digits (dropping what is below a microsecond) first."""
+    if not isinstance(text, str):
+        raise TypeError("expiry is not text")
+    # Exactly six digits: 3.10 also refuses a fraction of other than three or six digits.
+    normalised = _ISO_FRACTION.sub(lambda match: match.group(1).ljust(7, "0"), text.strip(), count=1)
+    if normalised.endswith(("Z", "z")):
+        normalised = normalised[:-1] + "+00:00"
+    parsed = datetime.fromisoformat(normalised)
+    if parsed.tzinfo is None:
+        raise ValueError("expiry has no time zone")
+    return parsed
+
+
 def _gemini_credential_fresh(home):
     try:
         value = json.loads(_seat_credential(home, ".gemini/antigravity-cli/antigravity-oauth-token"))
-        expiry = datetime.fromisoformat(value["token"]["expiry"].replace("Z", "+00:00"))
+        expiry = _parse_agy_expiry(value["token"]["expiry"])
         return (expiry - datetime.now(timezone.utc)).total_seconds() >= 600
     except (KeyError, TypeError, ValueError):
         return False
