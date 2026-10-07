@@ -618,15 +618,20 @@ def derive_live_facts(inputs: Path, *, evidence_root: Path, repo: Path) -> dict[
         frozen_authority = sorted(
             V.plan_owned_paths(repo, git["canonical_main"]["commit"], "SL-0")
         )
-        allowed_production = (
-            V.all_plan_owned_paths(repo, git["canonical_main"]["commit"])
-            - V.plan_owned_paths(repo, git["canonical_main"]["commit"], "SL-0")
+        allowed_production = V.sl5_production_paths(
+            repo, git["canonical_main"]["commit"]
         )
-        _candidate_base, candidate_changes = V.candidate_contribution_paths(
+        candidate_base, candidate_changes = V.candidate_contribution_paths(
             repo,
             git["landing"]["commit"],
             git["candidate"]["commit"],
             allowed_production,
+        )
+        V.validate_sl4_boundary(
+            repo,
+            git["landing"]["commit"],
+            candidate_base,
+            git["canonical_main"]["commit"],
         )
     except Exception as exc:
         raise BuildError(str(exc)) from exc
