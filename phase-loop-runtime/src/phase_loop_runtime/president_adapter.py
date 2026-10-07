@@ -449,7 +449,7 @@ class PresidentInvoke:
         cwd = out_dir.resolve()
         transcript = cwd / f"claude-{session_id}.jsonl"
         command = panel_invoker._broker_claude_tui_command(
-            model=route_model, effort=None, session_id=session_id
+            model=route_model, effort=None, session_id=session_id, env=self.base_env
         )
         timeout_s = panel_invoker._leg_timeout_for(out_dir)
         backstop_s = max(1, int(timeout_s), panel_invoker._MAX_LEG_TIMEOUT_S)

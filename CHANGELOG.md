@@ -10,6 +10,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 Review seats, the president and executor review share a launch owner with private homes, allowlisted inputs and individual output files. Host Git uses trusted helpers and neutral settings. Ordinary executor planning, execution and repair retain their existing execution contract.
 
+### Lower panel effort defaults and a larger configurable Claude output budget
+
+- Built-in advisor-board presets lower effort by one canonical level. Default and
+  code-review seats use `high` for Claude, Codex and Grok, and `medium` for Gemini;
+  explicit per-seat effort remains unchanged.
+- Claude panel TUI launches default to 128,000 output tokens, including brokered and
+  jailed routes. `CLAUDE_CODE_MAX_OUTPUT_TOKENS` overrides the default through isolated
+  launch settings without widening the child environment allowlist. Other harnesses
+  retain their CLI-managed output budgets.
+
 ### Strict, machine-consumable panel-seat replies (groundwork; not wired to any seat yet)
 
 - New `panel_reply` module: a closed, typed reply for advisor-board seats (`verdict`, `summary`,

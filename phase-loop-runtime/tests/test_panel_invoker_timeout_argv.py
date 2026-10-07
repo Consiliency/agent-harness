@@ -120,24 +120,13 @@ def test_grok_leg_argv_is_headless_plain_with_reasoning_effort(monkeypatch):
     captured = _capture_run(monkeypatch, stdout="AGREE")
     with tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as od:
         rdp = Path(rd)
-        pi._exec_leg("grok", rdp, Path(od))  # effort-absent → grok's max reasoning
+        pi._exec_leg("grok", rdp, Path(od))  # effort-absent → high reasoning
     cmd = captured["cmd"]
     assert cmd[0] == "grok"
     assert "-p" in cmd  # single-turn headless prompt
     # plain headless output (stdout IS the review; no --output-last-message file)
     assert cmd[cmd.index("--output-format") + 1] == "plain"
-    # runs the grok default model at grok's MAX reasoning. The effort-absent default
-    # renders through the SAME map as an explicit seat effort (ah#222): canonical ``max``
-    # CLAMPS to grok's ``xhigh`` ceiling (grok has no ``max``), so the token the CLI
-    # receives is a valid ``xhigh`` — NOT the literal ``max`` that the grok CLI rejects
-    # ("unknown effort level 'max'"), which used to ERROR the grok leg on every default run.
-    # The ceiling is a DATED PROBE, not a property: it was ``high`` when ah#222/ah#224 were
-    # written and is ``xhigh`` as of the 2026-09-22 re-probe (ah#973). Both halves of the
-    # effort assertion below are therefore deliberate: reading it off the clamp proves the
-    # argv travelled through the clamp, and the trailing literal makes the NEXT ceiling move
-    # fail here on purpose rather than silently following the clamp to a new value.
-    # (An earlier draft of this comment said to read it off the clamp INSTEAD of restating
-    # the token; that was the version that dropped the model pin -- gemini, round 2.)
+    # The default effort still renders through the shared CLI mapping.
     from phase_loop_runtime.launcher import _grok_cli_effort
     from phase_loop_runtime.panel_invoker import DEFAULT_LEG_MODELS
 
@@ -146,7 +135,7 @@ def test_grok_leg_argv_is_headless_plain_with_reasoning_effort(monkeypatch):
     # model that constant is. De-hardcoding to the constant alone silently lost the
     # second property, so a default bump would have slid through here unnoticed.
     assert cmd[cmd.index("-m") + 1] == DEFAULT_LEG_MODELS["grok"] == "grok-4.7"
-    assert cmd[cmd.index("--reasoning-effort") + 1] == _grok_cli_effort("max") == "xhigh"
+    assert cmd[cmd.index("--reasoning-effort") + 1] == _grok_cli_effort("high") == "high"
     # regression guard: the invalid literal must never reach the CLI on the default path.
     assert "max" not in cmd
     # HARD READ-ONLY (GROKEXEC, agent-harness#147): headless `grok -p` auto-approves

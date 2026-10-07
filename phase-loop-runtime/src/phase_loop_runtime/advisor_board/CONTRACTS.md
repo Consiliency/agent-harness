@@ -28,8 +28,8 @@ equivalence is proven by a test (not asserted in prose).
   the **agy/gemini leg where effort is embedded in the model-name string**
   (`render_gemini_model`, panel_invoker.py:1016). Built-3 lanes are concrete;
   breadth lanes raise `EffortMappingError` until ABDREG/ABDHOME/ABDOMNI.
-  Round-trip (proven): claude→`--effort max`, codex→
-  `-c model_reasoning_effort=xhigh`, Gemini Flash→`gemini-3.8-flash-high`;
+  Default round-trip (proven): claude→`--effort high`, codex→
+  `-c model_reasoning_effort=high`, Gemini Flash→`gemini-3.8-flash-medium`;
   explicit legacy Pro display names remain compatible.
 - **Seat identity for result re-keying** — `Seat.seat_key` is a stable LABEL over
   every distinguishing field (lane, model, effort, lens), so lens-only-different

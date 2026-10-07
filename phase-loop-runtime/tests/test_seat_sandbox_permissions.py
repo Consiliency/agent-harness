@@ -446,9 +446,9 @@ def test_the_falsifier_layout_identity_follows_execfind_staging(monkeypatch):
 
 def test_j9_sealed_claude_argv_is_golden():
     assert panel_invoker._broker_claude_tui_command(
-        model=None, effort=None, session_id="SESSION") == GOLDEN["claude"]
+        model=None, effort=None, session_id="SESSION", env={}) == GOLDEN["claude"]
     assert panel_invoker._broker_claude_tui_command(
-        model="claude-opus-5-5", effort="max", session_id="S2") == GOLDEN["claude_max"]
+        model="claude-opus-5-5", effort="max", session_id="S2", env={}) == GOLDEN["claude_max"]
 
 
 def test_j9_sealed_gemini_argv_settings_and_prompt_are_golden():
@@ -714,11 +714,11 @@ def test_j8_a_sealed_record_is_not_reported_unmet():
 
 def test_hang_investigation_sealed_claude_tui_session_is_golden_to_main(monkeypatch, tmp_path):
     """Board round 1 hang investigation (agent-harness#1166): on the sealed route this
-    runtime hands the Claude TUI session EXACTLY what main's runtime does -- argv, cwd shape,
+    runtime preserves the Claude TUI session surface -- argv, cwd shape,
     env keys, prompt and every liveness/monitoring kwarg. The golden was captured from
     main's runtime (origin/main b6a482fa) with the same inputs; its env keys were re-taken
     from origin/main 62a80506, whose scratch decision (agent-harness#1161) adds
-    ``PHASE_LOOP_SCRATCH_DECIDED``."""
+    ``PHASE_LOOP_SCRATCH_DECIDED``. The output budget now defaults to 128,000."""
     import uuid as _uuid
 
     golden = json.loads((Path(__file__).parent / "data"
