@@ -26,6 +26,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   the BAML worker or `baml_src`.
 - Nothing calls it yet: wiring it to a seat (an opt-in `--reply-format json`) waits for the unified
   seat-launch owner (agent-harness#1282).
+
 ### Finished Claude Agent View sessions are stopped once their closeout is verified
 
 - A `claude --bg` session that reaches `done` is not stopped by Claude Code: its Remote Control
