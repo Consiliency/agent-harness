@@ -4855,7 +4855,16 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
             if _SEAT_REDACTIONS.get():
                 retained = (*outputs, *((transcript,) if transcript_path is not None else ()))
                 for path in dict.fromkeys(retained):
-                    _write_seat_text(path, _read_seat_text(path))
+                    # Rewritten only to remove a copied secret: an unconditional rewrite is a
+                    # read-truncate-write that loses any write landing between the two. A
+                    # secret-bearing output is still read-redact-written, which would race a
+                    # concurrent writer to the same file. That is acceptable ONLY because each
+                    # seat's outputs are its own files, precreated per launch: this profile's
+                    # seat has exited, and no other seat or profile writes them.
+                    raw = _read_seat_raw_text(path)
+                    redacted = _redact_seat_credentials(raw)
+                    if redacted != raw:
+                        _write_seat_text(path, redacted)
 
 
 def _filtered_holder_namespace() -> int:
@@ -7634,12 +7643,18 @@ def _read_review_output(path: Path) -> str:
 
 
 def _read_seat_text(path: Path) -> str:
+    return _redact_seat_credentials(_read_seat_raw_text(path))
+
+
+def _read_seat_raw_text(path: Path) -> str:
+    """A seat output, read no-follow as a bounded regular file of this uid; "" if absent.
+    Not redacted: callers that hand it on use ``_read_seat_text``."""
     directory = None
     try:
         directory = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
-        return _redact_seat_credentials(read_seat_output(
+        return read_seat_output(
             directory, _trusted_host_path(path).lstrip("/"), max_bytes=32 * 1024 * 1024,
-            expect_uid=os.getuid()).decode("utf-8", errors="replace"))
+            expect_uid=os.getuid()).decode("utf-8", errors="replace")
     except (AgyCanaryEvidenceError, _sandbox_egress.SeatIdentityUnverified) as exc:
         if isinstance(exc.__cause__, FileNotFoundError):
             return ""
