@@ -309,6 +309,18 @@ SL-6 — Docs sweep, evidence reducer, canonical completion seal, and downstream
     refused: a supplement added after its id is spent; a supplement for an id with no
     authorization on the row; a conflicting `base_blob`; and a landed entry that misses a
     path in the id's union.
+    The later agent-harness#1292 merge changed three further frozen paths without
+    prospective authorization: `test_advisor_board_backcompat.py`,
+    `test_advisor_board_golden.py`, and `test_advisor_board_presets.py` (all under
+    `phase-loop-runtime/tests/`). A separate appended lifecycle event records their
+    exact first-parent old blobs and merged new blobs as
+    `historical_frozen_dispositions.v1`. SL-5 admits only those three transitions at
+    merge `9f0a65bb534a1fb4b946c8749546b842880cde0e`, after proving the Git objects,
+    ancestry, and continuity with the previously accepted blobs. This exception
+    does not expand or rewrite the spent agent-harness#1292 repair authorization:
+    `test_advisor_board_backing_homebrew.py` remains covered by its existing repair
+    chain. It grants no retroactive review or test claim; current focused/broad
+    candidate and canonical-main receipts must re-freeze the resulting bytes.
     Any other drift in a frozen path is refused.
   - impl: Resolve agent-harness#770 with a dependency-light command whose input manifest
     names real retained raw/JUnit/CI/review/broker/role artifacts. Copy exact bytes into a
