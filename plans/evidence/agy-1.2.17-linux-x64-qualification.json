@@ -15,67 +15,6 @@
         "network_unshared": true,
         "provider_adapter_quiescent": true,
         "provider_agy_home_cleanup_verified": true,
-        "provider_cancel_requested": false,
-        "provider_image_sha256": "c54ef90651a8646ae67334d39212c81f5946feec373ad6aa335f9ef401662bc5",
-        "provider_isolation_profile": "agy_memfd_home_deny_all_v1",
-        "provider_owned_fds_closed": true,
-        "sandbox_network_filtered": true
-      },
-      "help_sha256": "8fcf40227fe84704f7f8155b3b5ebcee79dfdc5208fde6e8b07569c24425f976",
-      "image_sha256": "c54ef90651a8646ae67334d39212c81f5946feec373ad6aa335f9ef401662bc5",
-      "monitoring": {
-        "effective_policy": "heartbeat_only",
-        "model_deadline_s": null,
-        "requested_policy": "heartbeat_only",
-        "silence_deadline_s": null,
-        "terminal_reason": "completed"
-      },
-      "observer": {
-        "credential_target_regular_after": true,
-        "credential_target_regular_before": true,
-        "home_removed": true,
-        "image_readonly": true,
-        "image_sha256": "c54ef90651a8646ae67334d39212c81f5946feec373ad6aa335f9ef401662bc5",
-        "init_exited": true,
-        "live_namespace_members": [],
-        "network_rules_verified": true,
-        "owned_fds_closed": true,
-        "sandbox_network_filtered": true
-      },
-      "operation": "completion",
-      "profile": {
-        "home": "/dev/phase-loop-agy",
-        "id": "agy_memfd_home_deny_all_v1",
-        "image_sha256": "c54ef90651a8646ae67334d39212c81f5946feec373ad6aa335f9ef401662bc5",
-        "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
-      },
-      "profile_sha256": "29cc07ad8b8b3b87ac4209c67ee2d1832a55cc2ce5750e9ba71b866199d14fb4",
-      "raw_receipt_sha256": "e9b24b05f863eca80903f8e8383b7e2cf4a28ed7e50b12567e58bee98e9478d2",
-      "record_sha256": {
-        "broker": "79a647db395610c7d9a628c5b1baf4389955618ed10465daf47818eb3e6de9a4",
-        "monitoring": "b9c4a5bed6dd198503eb1c6d17f09d185b81bb1945d77c88d9b1e9184c861f4f",
-        "observer": "41ed3b4d6e3ed700ad609c37f3d2b7d375fd89d9312c9fa953c776211cba9e58",
-        "result": "576e0751bf6410c90e7ec56278884c631b3cfd2b4b1f7233e093cd07c1c4391c"
-      },
-      "request_digests": {
-        "artifact_sha256": "125bbbd021794e015483823d7231c3e9fca0715222d0617278d134f8a065a3b5",
-        "instructions_sha256": "130181f86086870b9e626ce0e0ed609034e6d0ca1a7198783402ee859f628973",
-        "provider_input_sha256": "45cddbd5ac2a23e8deb80c93685528f8d7e02df2e00a0d855c9a88978896fce3",
-        "provider_transport_sha256": "d8583c9ebc040e1b27ea41fb1701d70592b5c81776b3a295208f5c697ea9e972"
-      },
-      "result": {
-        "detail": null,
-        "status": "OK"
-      }
-    },
-    {
-      "broker": {
-        "broker_thread_quiescent": true,
-        "child_quiescent": true,
-        "cleanup_root_removed": true,
-        "network_unshared": true,
-        "provider_adapter_quiescent": true,
-        "provider_agy_home_cleanup_verified": true,
         "provider_cancel_requested": true,
         "provider_image_sha256": "c54ef90651a8646ae67334d39212c81f5946feec373ad6aa335f9ef401662bc5",
         "provider_isolation_profile": "agy_memfd_home_deny_all_v1",
@@ -111,11 +50,11 @@
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
       "profile_sha256": "29cc07ad8b8b3b87ac4209c67ee2d1832a55cc2ce5750e9ba71b866199d14fb4",
-      "raw_receipt_sha256": "46794a5264c470572a98d78820ee74627cc44ee9927571ca358e073a5b4e4b0a",
+      "raw_receipt_sha256": "828f57f60f4d39e2847678ad102c9bdd19477128ca7cf89766f3c4e3701b9e4e",
       "record_sha256": {
-        "broker": "fefefdca35125c1cd4aaf05698438688836a3d01cee74efa097550988a30572f",
-        "monitoring": "7e25da45b357705d3e29c623c44eadcb7f5eab298c03c7f3dc52c9037fac1c62",
-        "observer": "750841b795b6b1c4c088a038d621d364a7b12c47e01fe6c28660c30d9b443d75",
+        "broker": "2594f433909e67d1364522035b1086a36c1f779183d481ee1440508304f12ba7",
+        "monitoring": "beeb2315f7567e822abea672abfe1ef18e732a1289196507b10de6ed024de86f",
+        "observer": "442405535586d9ffb0a0624aa44137770dd24f89302f8d1c351862cef7761f76",
         "result": "38ccc6031e6520bae3694528da32ba0af366bb3cc8843dd7354bd3d71431c448"
       },
       "request_digests": {
@@ -127,6 +66,67 @@
       "result": {
         "detail": "review_operation_cancelled",
         "status": "UNAVAILABLE"
+      }
+    },
+    {
+      "broker": {
+        "broker_thread_quiescent": true,
+        "child_quiescent": true,
+        "cleanup_root_removed": true,
+        "network_unshared": true,
+        "provider_adapter_quiescent": true,
+        "provider_agy_home_cleanup_verified": true,
+        "provider_cancel_requested": false,
+        "provider_image_sha256": "c54ef90651a8646ae67334d39212c81f5946feec373ad6aa335f9ef401662bc5",
+        "provider_isolation_profile": "agy_memfd_home_deny_all_v1",
+        "provider_owned_fds_closed": true,
+        "sandbox_network_filtered": true
+      },
+      "help_sha256": "8fcf40227fe84704f7f8155b3b5ebcee79dfdc5208fde6e8b07569c24425f976",
+      "image_sha256": "c54ef90651a8646ae67334d39212c81f5946feec373ad6aa335f9ef401662bc5",
+      "monitoring": {
+        "effective_policy": "heartbeat_only",
+        "model_deadline_s": null,
+        "requested_policy": "heartbeat_only",
+        "silence_deadline_s": null,
+        "terminal_reason": "completed"
+      },
+      "observer": {
+        "credential_target_regular_after": true,
+        "credential_target_regular_before": true,
+        "home_removed": true,
+        "image_readonly": true,
+        "image_sha256": "c54ef90651a8646ae67334d39212c81f5946feec373ad6aa335f9ef401662bc5",
+        "init_exited": true,
+        "live_namespace_members": [],
+        "network_rules_verified": true,
+        "owned_fds_closed": true,
+        "sandbox_network_filtered": true
+      },
+      "operation": "completion",
+      "profile": {
+        "home": "/dev/phase-loop-agy",
+        "id": "agy_memfd_home_deny_all_v1",
+        "image_sha256": "c54ef90651a8646ae67334d39212c81f5946feec373ad6aa335f9ef401662bc5",
+        "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
+      },
+      "profile_sha256": "29cc07ad8b8b3b87ac4209c67ee2d1832a55cc2ce5750e9ba71b866199d14fb4",
+      "raw_receipt_sha256": "087d57cbad55bc91a0dda367899ba01215e876406c9618bad253cdf7f5f10006",
+      "record_sha256": {
+        "broker": "29d74dae4eb147f5f0baa80185b300793b7bfda4e76efe0b9d5359be8822fac6",
+        "monitoring": "acff6768a1175440f023536c9bb8e2a802c19bc61e2d4a41edcc926da36f78fb",
+        "observer": "1dd4c79f264c2f1888583cbcc1d90af38c4ee9bb2aefdac014371b4251a6eaa9",
+        "result": "8f5f4ffdb91dc0d9c26234d3cc91a069a47ae5e1723c989c609ccd40d14a7cfb"
+      },
+      "request_digests": {
+        "artifact_sha256": "125bbbd021794e015483823d7231c3e9fca0715222d0617278d134f8a065a3b5",
+        "instructions_sha256": "130181f86086870b9e626ce0e0ed609034e6d0ca1a7198783402ee859f628973",
+        "provider_input_sha256": "45cddbd5ac2a23e8deb80c93685528f8d7e02df2e00a0d855c9a88978896fce3",
+        "provider_transport_sha256": "d8583c9ebc040e1b27ea41fb1701d70592b5c81776b3a295208f5c697ea9e972"
+      },
+      "result": {
+        "detail": null,
+        "status": "OK"
       }
     },
     {
@@ -172,11 +172,11 @@
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
       "profile_sha256": "29cc07ad8b8b3b87ac4209c67ee2d1832a55cc2ce5750e9ba71b866199d14fb4",
-      "raw_receipt_sha256": "66d9c97a1fe8dc47ead90784c2c024f85ed96d21908c6f6451a409fc0aebf94c",
+      "raw_receipt_sha256": "d18131931f92318eb3cc081f84703ba32e5131baa645630f686d7ec5bbb8e225",
       "record_sha256": {
         "broker": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
-        "monitoring": "e7c3719f18cea16a2bb8038b8a6901440da75c9355f8e1f6b1dbe7fe19c23e8e",
-        "observer": "c6ec397bd536175fa95880b93c30ff2a38b49b46e3b0a21ae3b91ee7e765b854",
+        "monitoring": "31f591ac67416bdf56a1abfe87ebd61f0bf275a073d850275644fb36a8176d4a",
+        "observer": "56da44f48f65efa17ec4f565e5c828175a24d43d623459d7b6fe14f1ccad9974",
         "result": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
       },
       "request_digests": {
@@ -194,9 +194,9 @@
   "release_version": "1.2.17",
   "role": "redacted qualification evidence; runtime admission remains the checked executable digest",
   "route": "brokered_subscription_heartbeat_only",
-  "schema": "agy_1217_redacted_qualification_summary.v1",
+  "schema": "agy_redacted_qualification_summary.v1",
   "source_sha256": {
-    "__init__.py": "6ac9b32dc6cd0c68029621cb6b4b94f593db9c435253d8ea7962deec8250ed0e",
+    "__init__.py": "b77e11ca2d972a049ee6cafe5382e0fb23585fe2eca11fcc593b8ed4f4f8063f",
     "_baml_worker.py": "682b0bdd0177aad2492b5818530ce45003d02f10198b89062f1650ecac115148",
     "_proc_cpu.py": "19af65a118fc58310924c3177c71a4df618dcd61d74c9587b47964f8d6378374",
     "adoption_bundle.py": "3e85adcad049c0a26f6937ade48a35c44a7756b060fc2f04b0c3e9e29367a02f",
@@ -204,14 +204,14 @@
     "advisor_board/advisory_contract.py": "ea8daa6c99d6d1f307bd2db91a7780e9f068a60adbb7c5e47f275334c807812a",
     "advisor_board/backing.py": "8256d76ce11d28c7a2e1c4837a2496fea473132ee84477512ff52bad2f2d7ec4",
     "advisor_board/backing_omnigent.py": "3adaf87a03e81d7ad88c437379caa5e75d3adaa9e153a87fd1e61a1460db4d05",
-    "advisor_board/composition.py": "fcc668fbffabab140e2bc57305783bfbb8fec637b29d5164b4497ea1d80b2c3c",
+    "advisor_board/composition.py": "71a4451f5ca4a62111e24e6b33022126d770d54940ca94cb8de4875d5ea951e4",
     "advisor_board/config.py": "7df72ad10cf062aea24256576073029dbf3ecf99c704f8d495c46c033ff97afd",
     "advisor_board/events.py": "182be774f807c97905d95b7269551682bd1e8d1832050f09a5969bf47e0ff73e",
-    "advisor_board/fixtures.py": "677a466cbf358183e52c37003216ef0d4ea237fe4b047c7d0e8ff95a6067868d",
+    "advisor_board/fixtures.py": "03de208ab6688dd096bac53f26f70d50e0f806b2e3e2d046d45263d0e5d363c4",
     "advisor_board/harness_mapping.py": "2ca9d5566004a99fc27c9b3e3b202529f63f5da60d89bb13a4b91e8b43fd5c36",
     "advisor_board/matrix.py": "719fc2e9c758a69463c20daf8aa073f0964ddd8710f1d3143321f04e515b3267",
     "advisor_board/observability.py": "4ea04b4a5736697e8344fe2d65e46600dad65a9011d7674cc211fb3a36436c85",
-    "advisor_board/presets.py": "586d742fb9f27e2bb4b8978c04fa004958e258cfdd2e81c02e3ddf0fdfca8bbd",
+    "advisor_board/presets.py": "e87a16af169ec9ee24e016fe16b054838fa6e2f522ce00af917e1c1bd891bf30",
     "advisor_board/registries.py": "3fa85a64a46f481c4765f67ec153223fb34d5d9cbf95a8186973ecb4ebef525c",
     "advisor_board/research.py": "a49a5ec1f4005b400479ddddd588f49b6363d129e11a5793cc3523b6cfbe62c6",
     "advisor_board/resolver.py": "d24bd471d44f1bf3c367c5648bd05fa7bd5282081015c33d98ebb762101863d8",
@@ -219,6 +219,7 @@
     "advisor_board/standin.py": "a7af017f47be12f8a4bf6e04b1792956ae25036e9285c554aaebda2213ee5490",
     "advisor_board/validation.py": "46130ba52ce261d970d096ead7f9d1daf7be95ffcbc539a64160fb787f1f1638",
     "agent_runtime_provider.py": "958e4f115369a1cc59dbc40585e03dece1be4476bd1fe03c323bf3b1fb9182a2",
+    "agent_view_cleanup.py": "d68d4c88dbbb018a4e56e1f0aa7f76003f25e4df86cc32f20f8fbb670d7b4262",
     "agy_canary_evidence.py": "7a679349765acb7f5791fe50f2b99056e8df2087b662f7b2da3c7a852caebc7e",
     "agy_provenance.py": "82aa037260125327de4b5fde80e6121484fbc11abf17482973f9a91a86cc2c6e",
     "agy_qualification.py": "8713cecd42dbb29f51ddad8afdc02902dfdedebfe3a3c90bc40bebf9bec3e4a5",
@@ -265,8 +266,8 @@
     "convergence/broker/admission.py": "4011bd9cc051af83a1aedb71117e2e30461e17375f235774682626c12060e10f",
     "convergence/broker/credsep.py": "f87b13733de2175a9609b7d812f7a0c37642582d8b006447feec7c6264e30753",
     "convergence/broker/evidence.py": "12afc8852544900cfd9efc92d4287f4ed72f0468dcc6d503d32cbb12a4be5284",
-    "convergence/broker/live.py": "186ae62289f344182fff543825ece35cd93b592f06fb6e84a03984097e45448a",
-    "convergence/broker/verbs.py": "35f1920bdac10a6fd3579203a0a872c855aaf5067bae0eede1b8d3b1d26f9e26",
+    "convergence/broker/live.py": "1d71c1d82e7d65019daad2435f1cd1f57041c7851f81d41e65e2f28651f68c51",
+    "convergence/broker/verbs.py": "53675c00b8fff623f299bddeb8dffcc6d1839438e46daf0c23cb76fb96d22ec3",
     "convergence/contracts.py": "0a08b445ae07566ff212bfeef3b83b44488228f694e73f84aa01c18f48e08a71",
     "convergence/dispatch.py": "44a9eb208b04a4888022e7a66073e569b15842790dd267110c9c1f34e08aef6e",
     "convergence/event_log.py": "a9153ed4893bbc852876f81ce0e4ecf15fdaf0b4faeccb33ae25b78f4b73ea6c",
@@ -324,12 +325,13 @@
     "launcher.py": "c62caae1b53774beb1be96a372bc2ac223dd79613f52115e54c0b080fb9b13a0",
     "lease_store.py": "49bd83b910cba984a38abab030d516070fb24cc6f74a308ad6e0ccad40e32666",
     "lease_supervisor.py": "8b4f2b27a36dd860463fc9cf3a2261c5734fb4aa7ee75f07518f214fe12f55b8",
-    "legible_evidence.py": "a9b10ab744a08f9540043b141da586ba2d341a5267dd2378247c992452bc45ef",
+    "legible_evidence.py": "30fee3483fdc76cd02d024828af90d9bdea0520e59111ab669a1d99d675ba4e4",
     "maintenance.py": "86e167acce13b558cbaa3b764edd8de30263af3ac960df48afd41693b48b9801",
     "migrate_handoffs.py": "92ca4121e4376a6452b1b259fdca8a4c4d6549641247c8e12a993c9cda99fcc9",
     "models.py": "f2e4d062c2e0cb0091f851a52701ed18a87e8fb78c4d7f1de2dcf54bba185b3b",
     "observability.py": "4d4663078be68781c3e2ab65d2c9b5f428e65b3ba224ab4c91d55fb1466605fa",
-    "panel_invoker.py": "43758bc123e14749b17536865308b1330f64a418a3c32d6f13d15c511b0967a8",
+    "panel_invoker.py": "6637b5056ae47848dae318b82b2d074a3d5a3d19f201a38aa6354c5a5aef515e",
+    "panel_reply.py": "5622dadfee0cc8c86b763fe8a0c5ee4765d6890d32820589feb425260b745593",
     "phase_loop_drift_audit.py": "c941ae484fe5133bc2fbfd4b6b4a1621146845e8b463737e5bcf6e4b008437f1",
     "phase_worktree_executor.py": "ccc4d4682bebee0086c75b4c1fc5196b793f081400b3da96a1e1f05643c1c96f",
     "pipeline_adapter/__init__.py": "a7a88428e2b814b7621bbd5421e1c564491ab0ab41dea59d3011906f26df8a6a",
@@ -343,14 +345,14 @@
     "plan_manifest.py": "877f72fee84b1ef9c6d8089fffad11a030dc9dbfc5e713763ff6bc403e33ec7a",
     "plan_pin_lint.py": "9c48c0d9d4c3677aba444962f522b6892fc90ae3206771aa1182bc78ca66f85b",
     "planner_validation.py": "55fdbf2fdd883bd5d84137c1343121cd2d36d8814b2c1824a0c642fe5978978c",
-    "president_adapter.py": "bccccd642d55b7941f22de44eaa20008409652172ca4dfabfd0022d8aa0b9b22",
+    "president_adapter.py": "a3dab9aa0a31ab9da10fc028302f04b7cd3d3d0fd0f9d2d13b413265951a6619",
     "president_operation.py": "b9a700e5144cb6b8f962b7f1c3c33727221595ebe641b07471b1002ce16c5ceb",
     "producer_manifest.py": "3457ae4c736904071e83e5adae1c8f99ecc2ffbb99e5de93c5b2ee56a85038e5",
     "profiles.py": "56b5165b9dd781366b6e7030eeee9d9f244538c0c54344b0a8f86566993b3fec",
     "prompts.py": "c2d34502b19bbdf7d295005693e7fc35c518a74ec75eaaeae0b3bf3dbcb5d600",
     "proof_stages.py": "54b47c233eefb48a714648ee37eb284f704d72ba3ea9499c6e3a881f74183e98",
     "provenance.py": "d5dc58cc88fdc44f020af1a3d876703120be7f01125290c03cd17fb172800b3c",
-    "publishing.py": "e5b101ec5705b5e2e325a1871b6f4048a5cdaaa928f13c0f69500a67826df1d7",
+    "publishing.py": "37d7594909d2de0a46ffb4bcdbad3b4e26a146f95576f14fe946e6b6483239f3",
     "qualify_gemini_heartbeat.py": "7b568a7a93f13ddf5220c63d6ba0dde65ae9d6ad658d276cc43a1951ac7ef6a5",
     "ratification_policy.py": "6aebf421f95cce61f9e102c3b94f78fb016775f3900de0f81a20c54ed0587265",
     "reconcile.py": "cfe614c5bda78a809e787e3026b259949a610d2593b40e6ed430ea3dbc040073",
@@ -362,7 +364,7 @@
     "review_stage.py": "49d6b973dcf206dde08f9b40c7214f001a958cebbd20ee4a46039e6da84da7fc",
     "review_summary.py": "b528407a467ed6a2a5767bbd6ee689126f76fbd9cb9da77959efd6faca25c4f0",
     "reviewtruth_native_fill_capability.py": "0702c411ef95bb680091e0593ba78a542780e46f89f41194895db7ffe8dab7d6",
-    "roadmap_assumptions.py": "092471c7913afab4fd8c77138560543d2c517c458389c5ddfe0e6d44e4aa6585",
+    "roadmap_assumptions.py": "a0c71758830b21b4232bde3cf6844099df91c493b06ccead73a0258a527e0ad5",
     "roadmap_authority.py": "fe721884c94026fc974693fa9faedb51e95b8cabd3d2d88d7f38ddb4841e5690",
     "roadmap_lint.py": "2d2f228cd2498c25a0c3889a6bcfc378adede07ab1b02eb9d2747f568c62b716",
     "roadmap_ownership.py": "1c4e45ce28bd433eea14eee773e699510c6fb9f5680c7aebd5c421880c498c52",
@@ -370,7 +372,7 @@
     "roadmap_reseal.py": "96a86a2e4eb293a505748b036938d2295d738b2d018f69201cf58a36e0d7508a",
     "route_log.py": "7e85afc23ffdb3a3849c030647c542a7e819cb85f758b42d1b952cfd16045116",
     "route_policy/__init__.py": "4d99e706077aff6c8242c0b7b35b8988ea215f3a843a92b22a7560e8f3312ab0",
-    "runner.py": "147f26c07da38a7b9b035836fc4274acbf59554cfda281e93f7971309632f4d8",
+    "runner.py": "88f73c6d26d33216af470599c0c3cf60b43bed8292224503df7a27e35dcc7818",
     "runtime_paths.py": "d44eee38190c8a28eb0e0967c475a1ee18062a968cd2656c5d7e1648b2911b72",
     "runtime_projection.py": "a01e299bb7c4713fee2a6f49ebb97fc745027b81206422f8efc8ad947f0150a3",
     "runtime_resources.py": "7e74aa86cb601a5a6fe58a2b0d21f10cb59add29101193fb7a1dec6a2b38f1a8",
@@ -380,8 +382,9 @@
     "sandbox_retention.py": "c127c71238755644052bb52d324508a917aebf630cbde8ad1a4b858f5e07defa",
     "schema_export.py": "64d86d86108b448b151d18382621327eeee21ae7a351e30e8429745680a0c4f8",
     "seat_credentials.py": "28a7ae40f6a88c584876adbabe6d6b27bad2e6cfe7fd55569d4ebb6205ebd9b8",
-    "seat_jail.py": "8d3f6b159643a0be7b1925ecb7598d3804182d5877fc52d355c7af09b9ff595d",
-    "seat_jail_autoqualify.py": "15d10facdf7d33f0736e831d20dd304c429c1e06f08924b1b2948a9f476b7d96",
+    "seat_jail.py": "bf3eb48f9d260c10094b9c37fe4c885b0a2d318e4a204661c916684c790d9225",
+    "seat_jail_apparmor.py": "374c525927a4a14a51d0e9ee89e07aff1f561141461fc9b4563fc7afc98b2d49",
+    "seat_jail_autoqualify.py": "740dea59631b94f474c41b7b1a061d75b7062c2738a1bc4968ae30b888ffb6a8",
     "seat_jail_qualification.py": "1ac2515a78fff2944da6ed3866050bb2a7ec56b4294eaa29a8f7636d001f3613",
     "seat_keyring_exec.py": "6f8a18c51c7ecd58a652ebd69260ae42c1f09e2d6eabf94100606afa5ed2240e",
     "seat_preflight.py": "efdae23f35e760a823ea5c4a4246f26e92959a22bcbdfc9346a2b3ea0c04fcf6",

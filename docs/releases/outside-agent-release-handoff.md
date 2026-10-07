@@ -69,7 +69,14 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
     (agent-harness#1279, agent-harness#1270, agent-harness#1294, agent-harness#1295), the
     0.7.24 published record (agent-harness#1268), and this release's v10 reseal, whose
     appended plan-authority rows cite agent-harness#1296.
-- The qualified agy image set is unchanged from `0.7.24`.
+- The qualified agy image set is unchanged from `0.7.24` (1.2.11, 1.2.12, 1.2.14, 1.2.15,
+  1.2.16, 1.2.17). Every source change above moves pinned files, so all six members were
+  requalified live on this release tree with the watch's own per-member steps: each image
+  re-fetched from its member's release and checked against the committed asset and image
+  digests, `--help` re-measured equal to the pin, and `completion`, `cancel` and `owner-loss`
+  run and validated (validated 3, `route_qualified` true for each). `--source-only` verifies all
+  234 source pins and `--route-core` passes. Upstream agy 1.3.1 is newer than the set; adding it
+  is the upstream watch's job and is not part of this release.
 - Python 3.12 cold import: in a fresh py3.12 venv, the prepared wheel imports `0.7.25`
   (including `PublicationRecoveryRequired`), `compileall` of the installed package succeeds
   under `-W error`, and `phase-loop --help` loads.
