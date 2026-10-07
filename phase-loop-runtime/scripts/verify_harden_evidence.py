@@ -2114,6 +2114,29 @@ def all_plan_owned_paths(repo: Path, revision: str) -> set[str]:
     return paths
 
 
+def plan_has_lane(repo: Path, revision: str, lane: str) -> bool:
+    """Return whether the Git-bound plan declares one lane heading."""
+    _, plan_bytes = blob(repo, revision, "plans/phase-plan-v10-HARDEN.md")
+    try:
+        plan_text = plan_bytes.decode("utf-8", "strict")
+    except UnicodeDecodeError:
+        fail("HARDEN plan is not UTF-8")
+    return re.search(
+        rf"^### {re.escape(lane)} [^\n]*$", plan_text, flags=re.MULTILINE
+    ) is not None
+
+
+def sl5_production_paths(repo: Path, revision: str) -> set[str]:
+    """Derive the production suffix from SL-5, excluding every test lane."""
+    if plan_has_lane(repo, revision, "SL-5"):
+        return plan_owned_paths(repo, revision, "SL-5")
+    # The in-process verifier fixture predates the supplemental SL-4/SL-5
+    # split. Real retained evidence is bound to the current plan, which has it.
+    return all_plan_owned_paths(repo, revision) - plan_owned_paths(
+        repo, revision, "SL-0"
+    )
+
+
 def manifest_plan_rows(repo: Path, revision: str) -> list[dict[str, Any]]:
     """Read the phase rows from the Git-bound canonical manifest."""
     _, manifest_bytes = blob(repo, revision, "plans/manifest.json")
@@ -3030,6 +3053,53 @@ def candidate_contribution_paths(
     return contribution_base, contribution_paths
 
 
+def validate_sl4_boundary(
+    repo: Path,
+    landing: str,
+    contribution_base: str,
+    revision: str,
+) -> None:
+    """Prove the reviewed SL-4 merge and its subsequent immutability."""
+    if not plan_has_lane(repo, revision, "SL-4"):
+        return
+    sl4_paths = plan_owned_paths(repo, revision, "SL-4")
+    history = _git_lines(
+        repo,
+        "rev-list",
+        "--first-parent",
+        "--reverse",
+        f"{landing}..{contribution_base}",
+        label="HARDEN SL-4 first-parent history",
+    )
+    matches: list[str] = []
+    for commit_id in history:
+        parents = commit_parents(repo, commit_id, "HARDEN SL-4 landing")
+        if len(parents) < 2:
+            continue
+        if changed_paths(repo, parents[0], commit_id) != sl4_paths:
+            continue
+        if all(
+            blob(repo, commit_id, path)[0] == blob(repo, parents[1], path)[0]
+            for path in sl4_paths
+        ):
+            matches.append(commit_id)
+    if not matches:
+        fail("reviewed SL-4 landing is missing")
+    # A later tests-only correction restarts SL-4, so the latest exact landing
+    # is the boundary that SL-5 must preserve.
+    sl4_landing = matches[-1]
+    after_boundary = False
+    for commit_id in history:
+        if commit_id == sl4_landing:
+            after_boundary = True
+            continue
+        if not after_boundary:
+            continue
+        parent = commit_parents(repo, commit_id, "post-SL-4 history")[0]
+        if changed_paths(repo, parent, commit_id) & sl4_paths:
+            fail("frozen SL-4 test changed after its reviewed landing")
+
+
 def verify_git_and_inventory(
     repo: Path,
     git_data: dict[str, Any],
@@ -3061,8 +3131,14 @@ def verify_git_and_inventory(
     ancestor(repo, candidate, main, "canonical main")
     if commits["candidate"][1] != commits["canonical_main"][1] or changed_paths(repo, candidate, main):
         fail("canonical main does not preserve the exact candidate tree")
-    allowed_production = all_plan_owned_paths(repo, main) - plan_owned_paths(repo, main, "SL-0")
-    candidate_contribution_paths(repo, landing, candidate, allowed_production)
+    contribution_base, _candidate_paths = candidate_contribution_paths(
+        repo, landing, candidate, sl5_production_paths(repo, main)
+    )
+    validate_sl4_boundary(repo, landing, contribution_base, main)
+    commits["review_base"] = (
+        contribution_base,
+        git_scalar(repo, "rev-parse", contribution_base + "^{tree}"),
+    )
     sl0 = closed(sl0, {"frozen_inventory", "activated_red", "pure_control", "mutations", "approval", "production_start"}, "sl0")
     inventory = sl0["frozen_inventory"]
     if not isinstance(inventory, list) or not inventory:
@@ -3411,6 +3487,45 @@ def retained_input_nonces(store: ArtifactStore, retained: Any) -> set[str]:
                         values.add(session)
                         reusable.add(session)
     return reusable
+
+
+def retained_historical_review_sessions(
+    store: ArtifactStore, retained: Any
+) -> set[str]:
+    """Return historical reviewer sessions that no derived operation may reuse."""
+    sessions: set[str] = set()
+    for item in retained:
+        ref = artifact_ref(item, "authority retained input")
+        raw = store.read(ref, "authority retained input", distinct=False)
+        if raw.lstrip()[:1] not in {b"{", b"["}:
+            continue
+        value = parse_canonical_json(raw, "authority retained input")
+        if not isinstance(value, dict) or value.get("schema") != "harden_sl0_approval.v1":
+            continue
+        seats = value.get("seats")
+        if not isinstance(seats, list):
+            fail("historical reviewer session inventory is malformed")
+        for seat in seats:
+            if not isinstance(seat, dict) or "session_sha256" not in seat:
+                fail("historical reviewer session inventory is malformed")
+            session = text(
+                seat["session_sha256"],
+                "historical reviewer operation nonce",
+                pattern=HEX64,
+            )
+            if session in sessions:
+                fail("duplicate input operation nonce")
+            sessions.add(session)
+    if len(sessions) != 4:
+        fail("historical reviewer session inventory is malformed")
+    return sessions
+
+
+def reject_historical_session_reuse(
+    operation_nonces: set[str], historical_sessions: set[str]
+) -> None:
+    if operation_nonces & historical_sessions:
+        fail("historical reviewer session reused as an operation nonce")
 
 
 def retained_execution_runs(
@@ -4669,6 +4784,7 @@ def verify(
     commits = verify_git_and_inventory(repo, data["git"], data["sl0"])
     reviewed, reviewed_tree = commits["reviewed_sl0"]
     landing, landing_tree = commits["landing"]
+    review_base, review_base_tree = commits["review_base"]
     candidate, candidate_tree = commits["candidate"]
     main, main_tree = commits["canonical_main"]
     verify_clean_canonical_main_context(repo, main)
@@ -4691,6 +4807,9 @@ def verify(
     if not isinstance(author_vendor, str):
         fail("retained plan authority lacks author vendor")
     input_nonces = retained_input_nonces(store, retained_authority)
+    historical_review_sessions = retained_historical_review_sessions(
+        store, retained_authority
+    )
     execution_runs = retained_execution_runs(store, retained_authority)
     nonces: set[str] = set()
     verify_preproduction(
@@ -4735,8 +4854,9 @@ def verify(
     reviews = closed(data["reviews"], {"candidate", "canonical_main"}, "reviews")
     seat_ids: set[str] = set()
     seat_sessions: set[str] = set()
-    verify_review_round(store, repo, reviews["candidate"], "candidate", landing, landing_tree, candidate, candidate_tree, seat_ids, seat_sessions, nonces)
-    verify_review_round(store, repo, reviews["canonical_main"], "canonical_main", landing, landing_tree, main, main_tree, seat_ids, seat_sessions, nonces)
+    verify_review_round(store, repo, reviews["candidate"], "candidate", review_base, review_base_tree, candidate, candidate_tree, seat_ids, seat_sessions, nonces)
+    verify_review_round(store, repo, reviews["canonical_main"], "canonical_main", review_base, review_base_tree, main, main_tree, seat_ids, seat_sessions, nonces)
+    reject_historical_session_reuse(nonces, historical_review_sessions)
     if len(seat_sessions) != 8:
         fail("reviewer authority lacks eight unique seat sessions")
     verify_roles(store, data["roles"], evidence_id, expected_coordinator_session, expected_author_session, author_vendor, seat_sessions)
@@ -6172,6 +6292,74 @@ def self_test() -> None:
         ) != integration_refs["landing"][0]:
             raise AssertionError("exact reviewed commit selected the wrong integration merge")
 
+        sl4_root = root / "sl4-boundary"
+        sl4_root.mkdir()
+        sl4_repo = sl4_root / "repo"
+        sl4_repo.mkdir()
+        _run(["git", "init", "-q", "--initial-branch=main"], sl4_repo)
+        _run(["git", "config", "user.email", "sl4@example.invalid"], sl4_repo)
+        _run(["git", "config", "user.name", "SL-4 self-test"], sl4_repo)
+        sl0_path = "phase-loop-runtime/tests/test_sl0.py"
+        sl4_path = "phase-loop-runtime/tests/test_sl4.py"
+        sl5_path = "phase-loop-runtime/scripts/build_harden_evidence.py"
+        plan_path = sl4_repo / "plans/phase-plan-v10-HARDEN.md"
+        plan_path.parent.mkdir(parents=True)
+        plan_path.write_text(
+            "# HARDEN\n\n"
+            f"### SL-0 - tests\n- **Owned files**: `{sl0_path}`\n\n"
+            f"### SL-4 - supplemental tests\n- **Owned files**: `{sl4_path}`\n\n"
+            f"### SL-5 - production\n- **Owned files**: `{sl5_path}`\n",
+            encoding="utf-8",
+        )
+        for path, contents in ((sl0_path, "def test_sl0(): pass\n"), (sl5_path, "VALUE = 0\n")):
+            target = sl4_repo / path
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(contents, encoding="utf-8")
+        _run(["git", "add", "."], sl4_repo)
+        _run(["git", "commit", "-qm", "baseline"], sl4_repo)
+        sl0_landing = _run(["git", "rev-parse", "HEAD"], sl4_repo)
+        _run(["git", "checkout", "-qb", "reviewed-sl4"], sl4_repo)
+        sl4_file = sl4_repo / sl4_path
+        sl4_file.parent.mkdir(parents=True, exist_ok=True)
+        sl4_file.write_text("def test_sl4(): pass\n", encoding="utf-8")
+        _run(["git", "add", sl4_path], sl4_repo)
+        _run(["git", "commit", "-qm", "reviewed SL-4"], sl4_repo)
+        _run(["git", "checkout", "-q", "main"], sl4_repo)
+        _run(["git", "merge", "--no-ff", "-qm", "land reviewed SL-4", "reviewed-sl4"], sl4_repo)
+        sl4_landing = _run(["git", "rev-parse", "HEAD"], sl4_repo)
+        (sl4_repo / sl5_path).write_text("VALUE = 1\n", encoding="utf-8")
+        _run(["git", "add", sl5_path], sl4_repo)
+        _run(["git", "commit", "-qm", "SL-5 production"], sl4_repo)
+        sl5_head = _run(["git", "rev-parse", "HEAD"], sl4_repo)
+        contribution_base, _ = candidate_contribution_paths(
+            sl4_repo,
+            sl0_landing,
+            sl5_head,
+            sl5_production_paths(sl4_repo, sl5_head),
+        )
+        if contribution_base != sl4_landing:
+            raise AssertionError("SL-5 contribution base missed reviewed SL-4")
+        validate_sl4_boundary(sl4_repo, sl0_landing, contribution_base, sl5_head)
+        sl4_file.write_text("def test_sl4(): assert False\n", encoding="utf-8")
+        _run(["git", "add", sl4_path], sl4_repo)
+        _run(["git", "commit", "-qm", "forbidden SL-4 drift"], sl4_repo)
+        (sl4_repo / sl5_path).write_text("VALUE = 2\n", encoding="utf-8")
+        _run(["git", "add", sl5_path], sl4_repo)
+        _run(["git", "commit", "-qm", "later SL-5 production"], sl4_repo)
+        drift_head = _run(["git", "rev-parse", "HEAD"], sl4_repo)
+        drift_base, _ = candidate_contribution_paths(
+            sl4_repo,
+            sl0_landing,
+            drift_head,
+            sl5_production_paths(sl4_repo, drift_head),
+        )
+        direct_rejected(
+            "post-SL-4-test-drift",
+            lambda: validate_sl4_boundary(
+                sl4_repo, sl0_landing, drift_base, drift_head
+            ),
+        )
+
         input_collision_root = root / "input-nonce-collision"
         input_collision_root.mkdir()
 
@@ -6204,6 +6392,12 @@ def self_test() -> None:
             "historical-session-before-process-reuse",
             lambda: retained_input_nonces(
                 input_store, [historical_input, process_input]
+            ),
+        )
+        direct_rejected(
+            "historical-session-as-derived-operation-nonce",
+            lambda: reject_historical_session_reuse(
+                {"3" * 64}, {"3" * 64, "4" * 64, "5" * 64, "6" * 64}
             ),
         )
 
