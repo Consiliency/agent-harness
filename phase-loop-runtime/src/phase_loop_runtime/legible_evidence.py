@@ -1817,7 +1817,7 @@ def _validate_operational_sections(
     except json.JSONDecodeError:
         return "artifacts: implementation panel is malformed"
     gemini_model = panel_invoker.DEFAULT_LEG_MODELS["gemini"]
-    gemini_aliases = {gemini_model, gemini_model.removesuffix("-high")}
+    gemini_aliases = {gemini_model, gemini_model.removesuffix("-medium")}
     required_models = {
         panel_invoker.DEFAULT_LEG_MODELS[leg]
         for leg in ("claude", "codex", "grok")

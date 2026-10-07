@@ -20,7 +20,7 @@ def test_default_leg_models_exposed():
     assert pi.DEFAULT_LEG_MODELS["claude"] == "claude-opus-5-5"
     assert pi.DEFAULT_LEG_MODELS["claude"] != pi.CLAUDE_IMPLEMENTER_MODEL
     assert pi.DEFAULT_LEG_MODELS["codex"] == "gpt-6-astra"
-    assert pi.DEFAULT_LEG_MODELS["gemini"] == "gemini-3.8-flash-high"
+    assert pi.DEFAULT_LEG_MODELS["gemini"] == "gemini-3.8-flash-medium"
     assert pi.DEFAULT_LEG_MODELS["grok"] == "grok-4.7"
 
 

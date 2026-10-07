@@ -12,6 +12,7 @@ Not part of the PRESROUTE SL-0 frozen corpus.
 from __future__ import annotations
 
 import contextlib
+import json
 import subprocess
 import sys
 import threading
@@ -215,6 +216,26 @@ def test_invoke_board_binds_its_operation_cancel_to_the_president_seam(tmp_path)
             )
     assert seen.get("cancel_event") is cancel
     assert real is president_adapter.build_president_invoke
+
+
+@pytest.mark.parametrize("budget", [None, "96000"])
+def test_claude_president_output_budget_survives_broker_env_filter(tmp_path, budget):
+    base_env = {} if budget is None else {"CLAUDE_CODE_MAX_OUTPUT_TOKENS": budget}
+    seen = {}
+
+    def spy_session(**kwargs):
+        seen.update(kwargs)
+        return 0, RULING, "", ""
+
+    seam = president_adapter.build_president_invoke(
+        DEFAULT_BOARD, repo_dir=str(tmp_path), base_env=base_env,
+    )
+    with patch.object(panel_invoker, "_run_claude_tui_session", spy_session):
+        seam._launch_claude("claude-opus-5-5", "F001: [x] y", tmp_path)
+    command = seen["command"]
+    settings = json.loads(command[command.index("--settings") + 1])
+    assert settings["env"]["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == (budget or "128000")
+    assert "CLAUDE_CODE_MAX_OUTPUT_TOKENS" not in seen["env"]
 
 
 def test_the_claude_rung_hands_the_broker_latch_to_the_tui_session(tmp_path):

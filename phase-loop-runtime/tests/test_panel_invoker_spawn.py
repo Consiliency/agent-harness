@@ -17,7 +17,7 @@ from phase_loop_runtime.governed_review import select_reviewer_pool
 
 
 class ClaudeTuiLegTest(unittest.TestCase):
-    def test_claude_leg_uses_tui_sonnet5_max_effort_and_canonical_output_file(self):
+    def test_claude_leg_uses_tui_default_effort_and_canonical_output_file(self):
         captured = {}
 
         # `**_kwargs`: the session also takes `redaction_paths` (agent-harness#1102), which
@@ -84,13 +84,13 @@ class ClaudeTuiLegTest(unittest.TestCase):
         # implementer claude-sonnet-5. Source of truth: DEFAULT_LEG_MODELS["claude"].
         self.assertEqual(command[command.index("--model") + 1], "claude-opus-5-5")
         self.assertIn("--effort", command)
-        self.assertEqual(command[command.index("--effort") + 1], "max")
+        self.assertEqual(command[command.index("--effort") + 1], "high")
         self.assertIn("--permission-mode", command)
         self.assertEqual(command[command.index("--permission-mode") + 1], "default")
         self.assertEqual(command[command.index("--setting-sources") + 1], "")
         self.assertEqual(
             json.loads(command[command.index("--settings") + 1]),
-            {"apiKeyHelper": ""},
+            {"apiKeyHelper": "", "env": {"CLAUDE_CODE_MAX_OUTPUT_TOKENS": "128000"}},
         )
         add_dirs = [command[index + 1] for index, value in enumerate(command) if value == "--add-dir"]
         self.assertIn(str(review_dir), add_dirs)
@@ -605,6 +605,49 @@ class ReviewerNeqAuthorTest(unittest.TestCase):
 
 def _completed(command, *, stdout="", stderr="", returncode=0):
     return subprocess.CompletedProcess(command, returncode, stdout=stdout, stderr=stderr)
+
+
+def test_claude_output_budget_reaches_each_command_route(monkeypatch):
+    from types import SimpleNamespace
+
+    monkeypatch.delenv("CLAUDE_CODE_MAX_OUTPUT_TOKENS", raising=False)
+    jail = SimpleNamespace(leg="claude", provider_argv0="/usr/bin/claude")
+    for env, expected in ((None, "128000"), ({"CLAUDE_CODE_MAX_OUTPUT_TOKENS": "96000"}, "96000")):
+        commands = (
+            pi._claude_tui_command(Path("/review"), Path("/repo"), effort="max", env=env),
+            pi._broker_claude_tui_command(model=None, effort="max", session_id="session", env=env),
+            pi._broker_claude_tui_command(model=None, effort="max", session_id="session",
+                                         sandboxed=jail, env=env),
+        )
+        for command in commands:
+            settings = json.loads(command[command.index("--settings") + 1])
+            assert settings == {
+                "apiKeyHelper": "", "env": {"CLAUDE_CODE_MAX_OUTPUT_TOKENS": expected},
+            }
+            assert command[command.index("--effort") + 1] == "max"
+
+
+def test_claude_output_budget_override_survives_broker_filter(monkeypatch, tmp_path):
+    monkeypatch.setattr(pi, "_claude_code_support_status", lambda: (True, "supported"))
+    monkeypatch.setattr(pi, "_claude_subscription_auth_ok", lambda _env: (True, ""))
+    monkeypatch.setattr(pi, "_under_claude_code", lambda _env: False)
+    captured = []
+
+    def session(**kwargs):
+        captured.append(kwargs)
+        return 0, "Review complete\nAGREE", "claude_tui_file_output", ""
+
+    monkeypatch.setattr(pi, "_run_claude_tui_session", session)
+    for broker_prompt in (None, "Framed review request"):
+        status, _ = pi._exec_claude_tui_leg(
+            tmp_path / "review", tmp_path, 30, "bundle", broker_prompt=broker_prompt,
+            env={"CLAUDE_CODE_MAX_OUTPUT_TOKENS": "96000", "ANTHROPIC_API_KEY": "secret"},
+        )
+        assert status == "OK"
+        command = captured[-1]["command"]
+        settings = json.loads(command[command.index("--settings") + 1])
+        assert settings["env"]["CLAUDE_CODE_MAX_OUTPUT_TOKENS"] == "96000"
+        assert "ANTHROPIC_API_KEY" not in captured[-1]["env"]
 
 
 if __name__ == "__main__":

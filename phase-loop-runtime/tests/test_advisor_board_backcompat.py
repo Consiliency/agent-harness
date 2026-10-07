@@ -63,9 +63,9 @@ class DefaultBoardReproducesTodayTests(unittest.TestCase):
         # Prove the golden effort tokens are the ones panel_invoker actually emits
         # today (they are hard-coded inline, not exported constants).
         src = Path(pi.__file__).read_text(encoding="utf-8")
-        self.assertIn("model_reasoning_effort=xhigh", src)  # codex :992
+        self.assertIn("model_reasoning_effort=high", src)  # codex :992
         self.assertIn('"--effort",', src)                    # claude --effort ...
-        self.assertIn('"gemini-3.8-flash-high"', src)       # canonical agy effort suffix
+        self.assertIn('"gemini-3.8-flash-medium"', src)       # canonical agy effort suffix
 
 
 class AuthScrubByteEquivalenceTests(unittest.TestCase):

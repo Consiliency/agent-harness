@@ -113,14 +113,14 @@ class GoldenPerLegLaunchTests(unittest.TestCase):
         self.assertEqual(legacy["env"], seam["env"])       # scrubbed env
         self.assertEqual(legacy["deadline_s"], seam["deadline_s"])  # hard-kill deadline
         # anchor: the codex effort literal really is in the argv both ways.
-        self.assertIn("model_reasoning_effort=xhigh", seam["cmd"])
+        self.assertIn("model_reasoning_effort=high", seam["cmd"])
 
     def test_gemini_default_board_and_legacy_panel_share_flash_invocation(self) -> None:
         legacy, seam = self._exec_leg_pair("gemini", stdout="AGREE")
         self.assertEqual(legacy["cmd"], seam["cmd"])
         self.assertEqual(legacy["env"], seam["env"])
         self.assertEqual(legacy["deadline_s"], seam["deadline_s"])
-        self.assertEqual(seam["cmd"][seam["cmd"].index("--model") + 1], "gemini-3.8-flash-high")
+        self.assertEqual(seam["cmd"][seam["cmd"].index("--model") + 1], "gemini-3.8-flash-medium")
 
     def test_claude_argv_and_env_equal_legacy(self) -> None:
         seat = _default_seat("claude")
@@ -224,10 +224,10 @@ class GoldenWholeBoardBehaviorTests(unittest.TestCase):
         self.assertEqual([r.seat_key for r in panel.legs], list(pi.PANEL_LEGS))
         self.assertEqual(
             [r.seat_key for r in board.legs],
-            ["codex:gpt-6-astra:max:red-team",
-             "gemini:gemini-3.8-flash:high:alternative-approach",
-             "claude:claude-opus-5-5:max:correctness",
-             "grok:grok-4.7:max:adversarial"],
+            ["codex:gpt-6-astra:high:red-team",
+             "gemini:gemini-3.8-flash:medium:alternative-approach",
+             "claude:claude-opus-5-5:high:correctness",
+             "grok:grok-4.7:high:adversarial"],
         )
         for p, b in zip(panel.legs, board.legs):
             self.assertEqual(p.leg, b.leg)             # bare vendor lane unchanged
