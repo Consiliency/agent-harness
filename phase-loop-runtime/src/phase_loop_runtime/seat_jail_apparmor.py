@@ -64,6 +64,11 @@ allow pix /usr/bin/setpriv -> &bwrap//&{PROFILE_NAME},
 {END_MARK}
 """
 
+# sed address forms of the markers (the slash is the address delimiter). Built outside the
+# f-strings below: a backslash inside an f-string expression is a syntax error before 3.12.
+_BEGIN_SED = BEGIN_MARK.replace("/", "\\/")
+_END_SED = END_MARK.replace("/", "\\/")
+
 _SCRIPT_HEAD = """\
 #!/bin/sh
 # agent-harness seat jail: AppArmor override for Ubuntu 24.04+/26.04 (agent-harness#1276).
@@ -107,7 +112,7 @@ def revert_script() -> str:
         _SCRIPT_HEAD
         + f"""\
 if [ -f "$AA_DIR/{LOCAL_FILE}" ]; then
-  sed -i '/{BEGIN_MARK.replace("/", "\\/")}/,/{END_MARK.replace("/", "\\/")}/d' "$AA_DIR/{LOCAL_FILE}"
+  sed -i '/{_BEGIN_SED}/,/{_END_SED}/d' "$AA_DIR/{LOCAL_FILE}"
   [ -s "$AA_DIR/{LOCAL_FILE}" ] || rm -f "$AA_DIR/{LOCAL_FILE}"
 fi
 "$PARSER" -r "$AA_DIR/bwrap-userns-restrict" || true
