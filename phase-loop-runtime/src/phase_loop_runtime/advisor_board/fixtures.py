@@ -27,23 +27,23 @@ DEFAULT_BOARD_VENDOR_ORDER: tuple[str, ...] = ("codex", "gemini", "claude", "gro
 # The default board's four seats — model-first, effort split out of the model
 # name. These reconstruct ``DEFAULT_LEG_MODELS`` under
 # ``harness_mapping.render_seat_invocation``:
-#   codex  gpt-6-astra           + effort max  -> ``-c model_reasoning_effort=xhigh``
-#   gemini gemini-3.8-flash   + effort high -> model ``gemini-3.8-flash-high``
-#   claude claude-opus-5-5   + effort max  -> ``--effort max``
-#   grok   grok-4.7           + effort max  -> ``--reasoning-effort xhigh``
+#   codex  gpt-6-astra           + effort high  -> ``-c model_reasoning_effort=high``
+#   gemini gemini-3.8-flash   + effort medium -> model ``gemini-3.8-flash-medium``
+#   claude claude-opus-5-5   + effort high  -> ``--effort high``
+#   grok   grok-4.7           + effort high  -> ``--reasoning-effort high``
 #
 # The claude seat runs Opus 5.5 (``claude-opus-5-5``), the maintainer's review default
 # "for now" (2026-09-23; Fable ``claude-fable-5-1`` before that), not the implementer
 # model ``claude-sonnet-5``. It keeps the review-policy seat NAME ``fable``. This is
 # byte-pinned to ``panel_invoker.DEFAULT_LEG_MODELS["claude"]`` by the golden proof.
 DEFAULT_SEATS: tuple[Seat, ...] = (
-    Seat(model="gpt-6-astra", effort="max", harness="codex", lens="red-team",
+    Seat(model="gpt-6-astra", effort="high", harness="codex", lens="red-team",
          auth=AUTH_SUBSCRIPTION, backing=BACKING_HOMEBREW),
-    Seat(model="gemini-3.8-flash", effort="high", harness="gemini", lens="alternative-approach",
+    Seat(model="gemini-3.8-flash", effort="medium", harness="gemini", lens="alternative-approach",
          auth=AUTH_SUBSCRIPTION, backing=BACKING_HOMEBREW),
-    Seat(model="claude-opus-5-5", effort="max", harness="claude", lens="correctness",
+    Seat(model="claude-opus-5-5", effort="high", harness="claude", lens="correctness",
          auth=AUTH_SUBSCRIPTION, backing=BACKING_HOMEBREW),
-    Seat(model="grok-4.7", effort="max", harness="grok", lens="adversarial",
+    Seat(model="grok-4.7", effort="high", harness="grok", lens="adversarial",
          auth=AUTH_SUBSCRIPTION, backing=BACKING_HOMEBREW),
 )
 
@@ -58,15 +58,15 @@ DEFAULT_BOARD: Board = Board(
 # back-compat test against the live ``panel_invoker`` constants).
 DEFAULT_SEAT_RENDERED_MODEL: dict[str, str] = {
     "codex": "gpt-6-astra",
-    "gemini": "gemini-3.8-flash-high",
+    "gemini": "gemini-3.8-flash-medium",
     "claude": "claude-opus-5-5",
     "grok": "grok-4.7",
 }
 DEFAULT_SEAT_EFFORT_ARGS: dict[str, tuple[str, ...]] = {
-    "codex": ("-c", "model_reasoning_effort=xhigh"),
+    "codex": ("-c", "model_reasoning_effort=high"),
     "gemini": (),
-    "claude": ("--effort", "max"),
-    "grok": ("--reasoning-effort", "xhigh"),
+    "claude": ("--effort", "high"),
+    "grok": ("--reasoning-effort", "high"),
 }
 
 # Canonical (model x harness) pairs ABDREG's matrix + ABDRESOLVE's validation test

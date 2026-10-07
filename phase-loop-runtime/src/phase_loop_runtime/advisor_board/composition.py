@@ -88,13 +88,13 @@ def _uses_production_composition_probe(
     )
 
 # Ideal per-vendor seat, in deterministic composition order. Each vendor runs at
-# its MAX thinking (gemini's ceiling is ``high``) with a distinct primary lens.
+# the panel default effort with a distinct primary lens.
 _VENDOR_ORDER: tuple[str, ...] = ("grok", "claude", "codex", "gemini")
 _VENDOR_SEAT: dict[str, dict[str, str]] = {
-    "grok": {"model": "grok-4.7", "harness": "grok", "effort": "max", "lens": "adversarial"},
-    "claude": {"model": "claude-opus-5-5", "harness": "claude", "effort": "max", "lens": "correctness"},
-    "codex": {"model": "gpt-6-astra", "harness": "codex", "effort": "max", "lens": "red-team"},
-    "gemini": {"model": "gemini-3.8-flash", "harness": "gemini", "effort": "high", "lens": "alternative-approach"},
+    "grok": {"model": "grok-4.7", "harness": "grok", "effort": "high", "lens": "adversarial"},
+    "claude": {"model": "claude-opus-5-5", "harness": "claude", "effort": "high", "lens": "correctness"},
+    "codex": {"model": "gpt-6-astra", "harness": "codex", "effort": "high", "lens": "red-team"},
+    "gemini": {"model": "gemini-3.8-flash", "harness": "gemini", "effort": "medium", "lens": "alternative-approach"},
 }
 
 # Distinct lenses the backfill cycles through (each vendor's primary lens is drawn

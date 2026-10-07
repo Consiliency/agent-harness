@@ -54,10 +54,10 @@ class PresetTests(unittest.TestCase):
         self.assertEqual(
             tuple((s.model, s.effort, s.harness) for s in PRESETS["default"].seats),
             (
-                ("gpt-6-astra", "max", "codex"),
-                ("gemini-3.8-flash", "high", "gemini"),
-                ("claude-opus-5-5", "max", "claude"),
-                ("grok-4.7", "max", "grok"),
+                ("gpt-6-astra", "high", "codex"),
+                ("gemini-3.8-flash", "medium", "gemini"),
+                ("claude-opus-5-5", "high", "claude"),
+                ("grok-4.7", "high", "grok"),
             ),
         )
         self.assertEqual(
@@ -70,19 +70,19 @@ class PresetTests(unittest.TestCase):
         for name in PRESET_NAMES:
             self.assertFalse(PRESETS[name].allow_api_key_fallback, name)
 
-    def test_code_review_is_the_four_vendor_max_thinking_board(self) -> None:
-        # review-class = the 4-vendor cross-vendor board, each vendor at MAX thinking
-        # (gemini's ceiling is high) with a DISTINCT lens. The claude seat is Fable,
+    def test_code_review_is_the_four_vendor_default_effort_board(self) -> None:
+        # review-class = the 4-vendor cross-vendor board, each vendor at default effort
+        # (Gemini uses medium) with a DISTINCT lens. The claude seat is Fable,
         # not the implementer sonnet. This is the all-vendors-up composition; the
         # availability-aware fallback is proven in test_advisor_board_composition.py.
         seats = get_preset("code-review").seats
         self.assertEqual(
             tuple((s.model, s.effort, s.harness, s.lens) for s in seats),
             (
-                ("grok-4.7", "max", "grok", "adversarial"),
-                ("claude-opus-5-5", "max", "claude", "correctness"),
-                ("gpt-6-astra", "max", "codex", "red-team"),
-                ("gemini-3.8-flash", "high", "gemini", "alternative-approach"),
+                ("grok-4.7", "high", "grok", "adversarial"),
+                ("claude-opus-5-5", "high", "claude", "correctness"),
+                ("gpt-6-astra", "high", "codex", "red-team"),
+                ("gemini-3.8-flash", "medium", "gemini", "alternative-approach"),
             ),
         )
 
@@ -94,19 +94,19 @@ class PresetTests(unittest.TestCase):
             for s in claude_seats:
                 self.assertEqual(s.model, "claude-opus-5-5", f"{name}: {s.model}")
 
-    def test_brainstorm_and_doc_edit_are_byte_neutral(self) -> None:
+    def test_brainstorm_and_doc_edit_use_lower_default_effort(self) -> None:
         # The divergent-thinking boards deliberately KEEP Sonnet; their Gemini and GPT
         # seats follow the fleet defaults (Consiliency/agent-harness#715, #777). Pin the full seat
         # tuples (model / effort / harness / lens) so any other drift trips.
         pinned = {
             "brainstorm": (
-                ("claude-sonnet-5", "high", "claude", "adversarial"),
-                ("gpt-6-astra", "high", "codex", "supportive"),
-                ("gemini-3.8-flash", "high", "gemini", "lateral"),
+                ("claude-sonnet-5", "medium", "claude", "adversarial"),
+                ("gpt-6-astra", "medium", "codex", "supportive"),
+                ("gemini-3.8-flash", "medium", "gemini", "lateral"),
             ),
             "doc-edit": (
-                ("claude-sonnet-5", "medium", "claude", "copyedit"),
-                ("gpt-6-astra", "medium", "codex", "structure"),
+                ("claude-sonnet-5", "low", "claude", "copyedit"),
+                ("gpt-6-astra", "low", "codex", "structure"),
             ),
         }
         for name, expected in pinned.items():
@@ -119,19 +119,19 @@ class PresetTests(unittest.TestCase):
     def test_legal_boards_present_and_shaped(self) -> None:
         legal = {
             "legal-review": (
-                ("gpt-6-astra", "max", "codex", "opposing-counsel"),
-                ("gemini-3.8-flash", "high", "gemini", "risk-liability"),
-                ("claude-opus-5-5", "max", "claude", "authority-verification"),
+                ("gpt-6-astra", "high", "codex", "opposing-counsel"),
+                ("gemini-3.8-flash", "medium", "gemini", "risk-liability"),
+                ("claude-opus-5-5", "high", "claude", "authority-verification"),
             ),
             "legal-strategy-review": (
-                ("gpt-6-astra", "max", "codex", "red-team"),
-                ("gemini-3.8-flash", "high", "gemini", "alternatives"),
-                ("claude-opus-5-5", "max", "claude", "downside-ethics"),
+                ("gpt-6-astra", "high", "codex", "red-team"),
+                ("gemini-3.8-flash", "medium", "gemini", "alternatives"),
+                ("claude-opus-5-5", "high", "claude", "downside-ethics"),
             ),
             "legal-brainstorm": (
-                ("claude-sonnet-5", "high", "claude", "aggressive"),
-                ("gpt-6-astra", "high", "codex", "conservative"),
-                ("gemini-3.8-flash", "high", "gemini", "creative"),
+                ("claude-sonnet-5", "medium", "claude", "aggressive"),
+                ("gpt-6-astra", "medium", "codex", "conservative"),
+                ("gemini-3.8-flash", "medium", "gemini", "creative"),
             ),
         }
         for name, expected in legal.items():

@@ -1280,7 +1280,7 @@ _LEG_CLI: dict[str, str] = {
 # drift back to Sonnet.
 DEFAULT_LEG_MODELS: dict[str, str] = {
     "codex": "gpt-6-astra",  # model-id-source: panel per-leg default (single source of truth)
-    "gemini": "gemini-3.8-flash-high",  # model-id-source: panel per-leg default
+    "gemini": "gemini-3.8-flash-medium",  # model-id-source: panel per-leg default
     "claude": "claude-opus-5-5",  # model-id-source: panel per-leg default (single source of truth)
     "grok": "grok-4.7",  # model-id-source: panel per-leg default (single source of truth)
 }
@@ -5508,12 +5508,23 @@ def _render_claude_tui_prompt(
     )
 
 
+def _claude_panel_settings(env: Mapping[str, str] | None = None) -> str:
+    source = os.environ if env is None else env
+    return json.dumps({
+        "apiKeyHelper": "",
+        "env": {"CLAUDE_CODE_MAX_OUTPUT_TOKENS": source.get(
+            "CLAUDE_CODE_MAX_OUTPUT_TOKENS", "128000",
+        )},
+    })
+
+
 def _claude_tui_command(
     review_dir: Path,
     repo_dir: Path,
     model: str | None = None,
     effort: str | None = None,
     research_seat: ResearchSeatConfig | None = None,
+    *, env: Mapping[str, str] | None = None,
 ) -> list[str]:
     add_dirs = [review_dir]
     # When a sandbox was staged, this leg is pointed at the CLONE instead of the live
@@ -5537,11 +5548,9 @@ def _claude_tui_command(
         add_dirs.append(sandbox)
     elif research_seat is None and repo_dir.resolve() != review_dir.resolve():
         add_dirs.append(repo_dir)
-    # ABDHOME: effort is plumbed per-seat. ``effort is None`` (legacy/default path)
-    # keeps today's hard-coded ``--effort max`` byte-for-byte; a board seat renders
-    # its canonical effort through the frozen ``render_seat_invocation`` mapping.
+    # Explicit seat effort wins over the panel default.
     effort_args = (
-        ("--effort", "max")
+        ("--effort", "high")
         if effort is None
         else render_seat_invocation(
             "claude", model or DEFAULT_LEG_MODELS["claude"], effort
@@ -5568,7 +5577,7 @@ def _claude_tui_command(
         "--setting-sources",
         "",
         "--settings",
-        json.dumps({"apiKeyHelper": ""}),
+        _claude_panel_settings(env),
         "--strict-mcp-config",
         "--mcp-config",
         mcp_config,
@@ -5597,6 +5606,7 @@ _BROKER_CLAUDE_DIRECT_REQUEST = (
 def _broker_claude_tui_command(
     *, model: str | None, effort: str | None, session_id: str,
     sandboxed: "_seat_jail.SeatJail | None" = None,
+    env: Mapping[str, str] | None = None,
 ) -> list[str]:
     """Claude subscription TUI command with no workspace and no model tools.
 
@@ -5616,7 +5626,7 @@ def _broker_claude_tui_command(
             "--disable-slash-commands",
             "--model", model or HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["claude"],
             "--session-id", session_id, *effort_args,
-            "--setting-sources", "", "--settings", json.dumps({"apiKeyHelper": ""}),
+            "--setting-sources", "", "--settings", _claude_panel_settings(env),
             "--strict-mcp-config", "--mcp-config", json.dumps({"mcpServers": {}}),
             "--agents", "{}", "--permission-mode", "bypassPermissions", "--tools", "default",
         ]
@@ -5626,7 +5636,7 @@ def _broker_claude_tui_command(
         "--session-id", session_id,
         # Plan mode requires ExitPlanMode, which cannot exist with the empty tool surface.
         *effort_args, "--setting-sources", "",
-        "--settings", json.dumps({"apiKeyHelper": ""}), "--strict-mcp-config",
+        "--settings", _claude_panel_settings(env), "--strict-mcp-config",
         "--mcp-config", json.dumps({"mcpServers": {}}), "--agents", "{}",
         "--tools", "", "--allowedTools", "", "--disallowedTools",
         "Bash,Read,Edit,Write,WebFetch,WebSearch,Task,NotebookEdit",
@@ -8533,8 +8543,8 @@ def _exec_claude_tui_leg(
     reaping on this host; the TUI route preserves Claude Max subscription billing
     and lets Claude write a deterministic scratch output file.
 
-    ABDHOME: ``effort`` / ``env`` default to today's behavior — ``effort is None``
-    keeps ``--effort max`` and ``env is None`` keeps ``_subscription_env()`` (scrub
+    ABDHOME: ``effort is None`` uses ``--effort high`` and ``env is None`` keeps
+    ``_subscription_env()`` (scrub
     every vendor key). A board seat passes its canonical effort + its
     ``resolve_seat_env`` result so per-seat effort + active env scrubbing reach the
     real launch.
@@ -8544,6 +8554,7 @@ def _exec_claude_tui_leg(
     brokered = broker_prompt is not None
     if brokered and not broker_prompt:
         return "UNAVAILABLE", "brokered route rejects empty prompt"
+    claude_settings_env = env
     env = _broker_leg_env(env, "claude") if brokered else _subscription_env(env)
     if brokered and (research_seat is not None or agy_capture is not None):
         return "UNAVAILABLE", "brokered route rejects capture and research transports"
@@ -8628,11 +8639,12 @@ def _exec_claude_tui_leg(
     command = (
         _broker_claude_tui_command(
             model=model, effort=effort, session_id=broker_session_id or "",
+            env=claude_settings_env,
         )
         if brokered else _claude_tui_command(
             child_review_dir,
             child_review_dir if agy_capture is not None else (repo_dir or Path.cwd()),
-            model, effort, research_seat,
+            model, effort, research_seat, env=claude_settings_env,
         )
     )
     if brokered:
@@ -8951,6 +8963,7 @@ def _exec_jailed_claude_leg(
     effort: str | None,
     prompt: str,
     broker_evidence: dict[str, object] | None,
+    env: Mapping[str, str] | None = None,
     failure_detail_sink: list[_LegFailure] | None = None,
     quiescence_latch: _ProviderQuiescenceLatch | None = None,
     review_monitor: _ReviewMonitor | None = None,
@@ -8967,7 +8980,7 @@ def _exec_jailed_claude_leg(
     jail = seat.jail
     session_id = str(uuid.uuid4())
     command = _broker_claude_tui_command(model=model, effort=effort, session_id=session_id,
-                                         sandboxed=jail)
+                                         sandboxed=jail, env=env)
     snapshots = Path(tempfile.mkdtemp(prefix="pl-seat-snapshot-"))  # 0700, parent-owned
     transcript_snapshot = snapshots / "transcript.jsonl"
     output_snapshot = snapshots / _seat_jail.CLAUDE_OUTPUT_NAME
@@ -9386,7 +9399,7 @@ def _exec_leg(
     stdout is a noisy transcript); agy's `-p` stdout is the clean response.
 
     ABDHOME: ``effort`` / ``env`` default to today's behavior. ``effort is None``
-    keeps codex's hard-coded ``model_reasoning_effort=xhigh`` and agy's
+    keeps codex's default ``model_reasoning_effort=high`` and agy's
     effort-in-the-model-name default byte-for-byte; a board seat's canonical effort
     renders through ``render_seat_invocation`` (incl. the agy leg, where effort is
     baked into the model string). ``env is None`` keeps ``_subscription_env()``.
@@ -9470,10 +9483,9 @@ def _exec_leg(
     provider_cwd = out_dir if brokered else review_dir
     if leg == "codex":
         out_file = out_dir / "panel-codex.txt"
-        # ABDHOME: effort-absent keeps ``-c model_reasoning_effort=xhigh`` verbatim;
-        # a seat renders its canonical effort (``max`` -> ``xhigh``) through the map.
+        # Explicit seat effort wins over the panel default.
         codex_effort_args = (
-            ("-c", "model_reasoning_effort=xhigh")
+            ("-c", "model_reasoning_effort=high")
             if effort is None
             else render_seat_invocation(
                 "codex", model or DEFAULT_LEG_MODELS["codex"], effort
@@ -9962,13 +9974,10 @@ def _exec_leg(
         # the four read/search built-ins remain; whatever `search_tool` covers, it is
         # read-only, so the `--disable-web-search` flag is not the read-only lever
         # here (the allow-list is) and is intentionally left off.
-        # effort-absent defaults to grok's MAX reasoning, rendered through the SAME map as an
-        # explicit seat effort (ah#222) — so the default path emits a token the grok CLI actually
-        # accepts (canonical ``max`` CLAMPS to grok's ``xhigh`` ceiling as measured by the
-        # 2026-09-22 probe -- it was ``high`` when ah#222 measured it; grok has no ``max``). A prior
-        # literal ``--reasoning-effort max`` was rejected by the CLI and ERRORed the grok leg every run.
+        # Explicit seat effort wins; the default is high. The shared mapping still
+        # renders canonical max as xhigh, the Grok CLI's supported ceiling.
         grok_effort_args = render_seat_invocation(
-            "grok", model or DEFAULT_LEG_MODELS["grok"], effort or "max"
+            "grok", model or DEFAULT_LEG_MODELS["grok"], effort or "high"
         ).effort_args
         grok_tools = "" if brokered else GROK_REVIEW_READONLY_TOOLS
         cmd = [
@@ -10709,6 +10718,7 @@ def _default_spawn(
                             claude_status, claude_text = _exec_jailed_claude_leg(
                                 seat, timeout_s=leg_timeout, backstop_s=int(leg_deadline),
                                 model=broker_model, effort=effort, prompt=sealed_prompt,
+                                env=env,
                                 broker_evidence=broker.evidence,
                                 failure_detail_sink=claude_sink,
                                 quiescence_latch=broker_latch, review_monitor=review_monitor,

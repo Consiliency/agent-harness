@@ -106,6 +106,22 @@ per harness by `render_seat_invocation`: `claude` → `--effort <level>`, `codex
 token (`gemini-3.8-flash-high`; legacy display names such as
 `"Gemini 3.1 Pro (High)"` remain accepted). Canonical effort levels: `low, medium, high, max`.
 
+Built-in presets use one lower canonical effort level than their previous defaults:
+`max` becomes `high`, `high` becomes `medium`, and `medium` becomes `low`.
+The default and availability-composed code-review boards use `high` for Claude,
+Codex and Grok, and `medium` for Gemini. Explicit per-seat `effort` remains authoritative;
+the invocation mappings still support the full effort scale.
+
+Claude panel launches default to 128,000 output tokens. Set
+`CLAUDE_CODE_MAX_OUTPUT_TOKENS` in the panel launch environment (or its explicit
+`base_env`) to override this default. Only that value is copied into run-specific
+`--settings`, so it reaches ordinary, brokered and jailed TUI launches while
+settings sources remain disabled and credentials remain filtered. Claude Code
+clamps the requested budget to the selected model's cap. Codex, Antigravity and
+Grok retain their CLI-managed output budgets: their current adapter interfaces
+do not expose a verified output-token override. These defaults apply to new
+launches; running seats are unaffected.
+
 **Auth is subscription-default, never-silent-key.** A subscription seat actively
 scrubs *every* vendor API-key var from the subprocess env / gateway payload; an
 api-key seat is reachable only behind `Board.allow_api_key_fallback` and injects

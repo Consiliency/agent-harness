@@ -184,10 +184,10 @@ class DefaultBoardByteEquivalenceTests(unittest.TestCase):
             _invoke_board_control(DEFAULT_BOARD, "artifact", base_env=base)
         by_leg = {c.args[0]: c.kwargs for c in ds.call_args_list}
         self.assertEqual(set(by_leg), set(DEFAULT_BOARD_VENDOR_ORDER))
-        self.assertEqual(by_leg["codex"]["effort"], "max")
-        self.assertEqual(by_leg["gemini"]["effort"], "high")
-        self.assertEqual(by_leg["claude"]["effort"], "max")
-        self.assertEqual(by_leg["grok"]["effort"], "max")
+        self.assertEqual(by_leg["codex"]["effort"], "high")
+        self.assertEqual(by_leg["gemini"]["effort"], "medium")
+        self.assertEqual(by_leg["claude"]["effort"], "high")
+        self.assertEqual(by_leg["grok"]["effort"], "high")
         for leg, kwargs in by_leg.items():
             for var in pi._API_KEY_VARS:
                 self.assertNotIn(var, kwargs["env"], f"{leg} env leaked {var}")
