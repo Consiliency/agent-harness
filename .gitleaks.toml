@@ -17,6 +17,6 @@ title = "agent-harness gitleaks"
 useDefault = true
 
 [allowlist]
-description = "Narrow entries only for confirmed non-secret false positives: the HARDEN verifier self-test literal (agent-harness#737) and the SHA256 of convergence/broker/credsep.py in the source-bound Gemini qualification record (agent-harness#1010), and the SHA256s of credential_redaction.py and seat_credentials.py in the agy qualification records (agent-harness#1236, agent-harness#1248, agent-harness#1263). None of these values is a credential."
+description = "Narrow entries only for confirmed non-secret false positives: the HARDEN verifier self-test literal (agent-harness#737) and the SHA256 of convergence/broker/credsep.py in the source-bound Gemini qualification record (agent-harness#1010), and the SHA256s of credential_redaction.py and seat_credentials.py in the agy qualification records (agent-harness#1236, agent-harness#1248, agent-harness#1263, agent-harness#1293). None of these values is a credential."
 paths = []
-regexes = ['''q7Rt9vXz2LmN4pQ8''', '''f87b13733de2175a9609b7d812f7a0c37642582d8b006447feec7c6264e30753''', '''5f513b1bb789c1eb527ca2f6bfe246d17d09affbab5e0869a0677c9476b7a1b9''', '''e6318a22bce414608210df056aeadd777de271a88f9d65e0b82149125fba8a4c''', '''28a7ae40f6a88c584876adbabe6d6b27bad2e6cfe7fd55569d4ebb6205ebd9b8''']
+regexes = ['''q7Rt9vXz2LmN4pQ8''', '''f87b13733de2175a9609b7d812f7a0c37642582d8b006447feec7c6264e30753''', '''5f513b1bb789c1eb527ca2f6bfe246d17d09affbab5e0869a0677c9476b7a1b9''', '''e6318a22bce414608210df056aeadd777de271a88f9d65e0b82149125fba8a4c''', '''28a7ae40f6a88c584876adbabe6d6b27bad2e6cfe7fd55569d4ebb6205ebd9b8''', '''0e2a683ab7ad7b27ec7bf277592c67a852d15ecbc5cfcaeabfda67573c4f3acf''']
