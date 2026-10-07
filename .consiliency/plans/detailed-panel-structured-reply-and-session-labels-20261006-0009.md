@@ -210,6 +210,14 @@ git fetch origin && git diff --stat origin/main...HEAD -- \
 2. **Plan E (large-bundle stalls) is blocked on agent-harness#1276.** The maintainer approved qualifying the jail; on dev0 it fails until that issue is fixed. Who takes it, and is a stopgap needed for the stalls meanwhile (for example `context_refs` by reference for large bundles)?
 3. **Which launches fill the app list.** Confirmed as a mix of completed and stalled. Completed background sessions are covered by C1; stalled seats are killed and stay visible by design (C2), which is what you asked for, so the remaining clutter from stalls is addressed by Plan E, not by archiving.
 
+## Revision 2026-10-07 (built; supersedes the BAML design in Plan A1)
+
+- **A1 is built as a strict Python verifier, not a BAML op** (agent-harness#1286). A spike of BAML v1 `.parse` (baml-bridge 0.20.1) showed it is lenient by design: it repaired a truncated reply into `AGREE` with its findings dropped, coerced `summary: 5` to `"5"` and `findings: "none"` to `[]`, and took the first of two JSON objects. A verifier must reject those, so verification is a strict extraction plus a strict pydantic model (`panel_reply`). This also removes the plan's changes to `_baml_worker.py`, `baml_modular.py`, `baml_src/` and the CI file count, and the risk that a bad bridge definition breaks closeout parsing (the worker defines every op at init). BAML stays out of the verification path.
+- **C1 is built and landable now** (agent-harness#1285): stop the finished `claude --bg` session once the closeout passed schema verification. The overlap check against agent-harness#1282 (the unified seat-launch owner, a 92-file draft) found one changed line in `runner.py` and nothing near the Agent View success path in `launcher.py`, so C1 does not need to wait for it.
+- **Still gated on agent-harness#1282:** A2 (the opt-in `--reply-format json` plumbing), the Claude command-builder call sites for B (`--name`), and C2 (verify before a PTY seat exits). Their edits land in `panel_invoker.py` regions that PR rewrites (+1243/-403).
+- **The agent-harness#1114 gate is dropped.** That issue has had no PR, assignee or reply for nine days; A2 does not wait for it, and the optional `reply` key is additive.
+- **Interactive (PTY) seats already archive themselves on a normal exit** (measured), so C2 is about keeping unverified seats visible, not about archiving verified ones.
+
 ## Execution Policy
 
 - execute (A1): effort=medium, reason=new modules and tests with a schema spike; no concurrency or security surface.
