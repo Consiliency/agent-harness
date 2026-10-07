@@ -151,7 +151,7 @@ def test_the_marker_names_the_decision():
 
 @pytest.mark.parametrize("site", [
     "executor", "availability_probe", "auth_preflight", "leg_auth", "claude_version",
-    "claude_auth", "claude_stop", "claude_timeout_cleanup",
+    "claude_auth", "agent_view_stop",
 ])
 def test_each_runtime_launch_of_a_named_agent_carries_the_marker(tmp_path, monkeypatch, site):
     """Every launch site that starts a NAMED agent CLI outside the provider interface is
@@ -207,13 +207,11 @@ def test_each_runtime_launch_of_a_named_agent_carries_the_marker(tmp_path, monke
         panel_invoker._claude_code_support_status(str(bin_dir / "claude"))
     elif site == "claude_auth":
         panel_invoker._claude_subscription_auth_ok(env)
-    elif site == "claude_stop":
-        panel_invoker._stop_claude_agent(adapter, "agent-1", str(tmp_path), env)
     else:
-        panel_invoker._cleanup_claude_launch_timeout(
-            adapter, cwd=str(tmp_path), env=env,
-            exc=subprocess.TimeoutExpired(["claude"], 1, output=b"", stderr=b""))
-    if site == "executor":
+        # agent-harness#1285's live stop: an executor the operator runs as itself (relocated).
+        # (agent-harness#1282 removed the uncalled panel-side timeout cleanup and stop pair.)
+        adapter.stop("agent-1", cwd=str(tmp_path))
+    if site in ("executor", "agent_view_stop"):
         assert seen.read_text(encoding="utf-8") == sandbox_policy.CHILD_SCRATCH_RELOCATE
         return
     assert started, f"{site}: the fixture CLI was never started"

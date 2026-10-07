@@ -265,10 +265,11 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
     # The seat-launch owner (agent-harness#1222): every refusal is typed and carries a fix.
     "seat_owner_unavailable": (
         "leg refused",
-        "the seat-launch owner needs a non-root operator, an unprivileged (non-setuid) "
-        "/usr/bin/bwrap and unprivileged user namespaces",
-        "run as a non-root user; install bubblewrap without the setuid bit; enable user "
-        "namespaces (kernel.unprivileged_userns_clone=1, or an AppArmor profile for bwrap)"),
+        "the seat-launch owner needs a Linux host, a non-root operator, an unprivileged "
+        "(non-setuid) /usr/bin/bwrap and unprivileged user namespaces",
+        "run the board on a Linux host as a non-root user, with bubblewrap installed at "
+        "/usr/bin/bwrap without the setuid bit and user namespaces enabled "
+        "(kernel.unprivileged_userns_clone=1, or an AppArmor profile for bwrap)"),
     "seat_bind_source_unavailable": (
         "leg refused",
         "a path the seat needs is missing, or reaches it through a link that is not "

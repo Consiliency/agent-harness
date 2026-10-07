@@ -255,13 +255,12 @@ def test_owned_launch_executes_the_prefix_in_front_of_the_payload(tmp_path):
     assert _marker_pid(marker) == str(proc.pid)
 
 
+# agent-harness#1282: the agent-view timeout cleanup and stop helpers had no caller and are
+# removed; the live Agent View stop runs as an executor (ClaudeAgentViewAdapter).
 @pytest.mark.parametrize("caller", ["_leg_auth_ok", "_claude_subscription_auth_ok",
-                                   "_claude_code_support_status", "_cleanup_claude_launch_timeout",
-                                   "_stop_claude_agent"])
+                                   "_claude_code_support_status"])
 def test_administrative_callers_execute_the_owner_prefix(tmp_path, monkeypatch, caller):
     import json
-    import subprocess
-    from types import SimpleNamespace
 
     marker = tmp_path / "ADMIN_PREFIX_RAN"
     responses = {
@@ -269,8 +268,6 @@ def test_administrative_callers_execute_the_owner_prefix(tmp_path, monkeypatch, 
         "_claude_subscription_auth_ok": json.dumps({"loggedIn": True, "authMethod": "claude.ai",
                                                      "apiProvider": "firstParty", "subscriptionType": "max"}),
         "_claude_code_support_status": "99.0.0",
-        "_cleanup_claude_launch_timeout": "[]",
-        "_stop_claude_agent": "Stopped",
     }
     original = panel_invoker._seat_command_profile
 
@@ -287,16 +284,8 @@ def test_administrative_callers_execute_the_owner_prefix(tmp_path, monkeypatch, 
             assert panel_invoker._leg_auth_ok("codex", {}) == (True, "")
         elif caller == "_claude_subscription_auth_ok":
             assert panel_invoker._claude_subscription_auth_ok({}) == (True, "")
-        elif caller == "_claude_code_support_status":
-            assert panel_invoker._claude_code_support_status()[0] is True
-        elif caller == "_cleanup_claude_launch_timeout":
-            adapter = SimpleNamespace(list_command=lambda: ["claude", "agents", "list"])
-            assert panel_invoker._cleanup_claude_launch_timeout(
-                adapter, cwd=str(tmp_path), env={}, exc=subprocess.TimeoutExpired("fixture", 1),
-            ) == "cleanup_none"
         else:
-            adapter = SimpleNamespace(stop_command=lambda _id: ["claude", "agents", "stop", "fixture"])
-            assert panel_invoker._stop_claude_agent(adapter, "fixture", str(tmp_path), {}) == "stopped"
+            assert panel_invoker._claude_code_support_status()[0] is True
     _assert_process_marker(marker, processes)
 
 
@@ -369,6 +358,5 @@ def test_every_launch_site_has_a_marker_proof_above():
     References().visit(tree)
     assert sites == {
         "launch_owned", "run_provider", "_refresh_gemini_credential", "_leg_auth_ok",
-        "_claude_subscription_auth_ok", "_claude_code_support_status",
-        "_cleanup_claude_launch_timeout", "_stop_claude_agent", "_popen",
+        "_claude_subscription_auth_ok", "_claude_code_support_status", "_popen",
     }, "add a real caller marker proof for every new launch site"

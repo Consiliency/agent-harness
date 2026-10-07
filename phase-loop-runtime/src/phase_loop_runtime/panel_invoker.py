@@ -321,7 +321,15 @@ def _seat_filesystem_view(cwd, *, readonly_paths=(), outputs=(), profile_mounts=
     return [*view, *profile_mounts, "--remount-ro", "/", "--chdir", os.path.abspath(cwd)]
 
 
+def _require_owner_platform() -> None:
+    """The seat-launch owner needs Linux and sealed memfds (its profile files, its filter).
+    Anywhere else every owned launch refuses here, typed, before anything is built."""
+    if not sys.platform.startswith("linux") or not hasattr(os, "memfd_create"):
+        raise _sandbox_egress.SeatIdentityUnverified("seat_owner_unavailable")
+
+
 def _seat_owner(view, *, filtered_network=False) -> list[str]:
+    _require_owner_platform()
     try:
         unavailable = os.getuid() == 0 or os.stat("/usr/bin/bwrap").st_mode & stat.S_ISUID
     except OSError as exc:
@@ -4190,9 +4198,8 @@ def _compose_launch_prefix(cwd, process_owner=(), retain_caps=()) -> list[str]:
     if isinstance(process_owner, _seat_jail.SeatJail):
         return _compose_seat_jail_prefix(process_owner, retain_caps)
     if process_owner and os.getuid() == 0:
-        raise _sandbox_egress.SeatIdentityUnverified(
-            "a seat owner requires a non-root operator; launch refused"
-        )
+        # A seat owner requires a non-root operator.
+        raise _sandbox_egress.SeatIdentityUnverified("seat_owner_unavailable")
     prefix = _provider_launch_prefix(cwd, retain_caps)
     if not process_owner:
         return prefix
@@ -4206,9 +4213,8 @@ def _compose_launch_prefix(cwd, process_owner=(), retain_caps=()) -> list[str]:
         # The codex supervisor route exists only inside the egress namespace. Without one
         # it would run the provider with the operator's full capabilities (a root operator
         # under the opt-out), and main refused it too. Refuse, typed.
-        raise _sandbox_egress.SeatIdentityUnverified(
-            "an owned codex seat needs the egress namespace; launch refused (agent-harness#1098)"
-        )
+        # (agent-harness#1098) an owned codex seat needs the egress namespace.
+        raise _sandbox_egress.SeatIdentityUnverified("seat_filtered_egress_unavailable")
     owner = list(process_owner)
     if owner[0] != "/usr/bin/bwrap":
         raise ValueError("unsupported owned provider")
@@ -4424,10 +4430,15 @@ def _require_seat_identity(prefix: "Sequence[str]", retain_caps=()) -> None:
             seen = ["TIMEOUT"]
     expected = _expected_seat_identity(prefix, retain_caps)
     if seen != expected:
+        # Typed (the closed detail vocabulary), the measurement logged: a probe that printed
+        # nothing never started a seat (the host cannot own one: user namespaces denied, an
+        # AppArmor-restricted bwrap, a container); anything else is a seat that started but is
+        # not the operator, locked down (agent-harness#1098).
+        logging.getLogger(__name__).warning(
+            "seat identity probe refused the launch (expected %s, saw %s)", expected, seen)
         raise _sandbox_egress.SeatIdentityUnverified(
-            f"the seat is not the operator, locked down (expected {expected}, saw {seen}); "
-            "launch refused (agent-harness#1098)"
-        )
+            "seat_owner_unavailable" if not seen or seen == ["TIMEOUT"]
+            else "seat_identity_unverified")
 
 
 class SeatLaunchRole(str, Enum):
@@ -4471,10 +4482,18 @@ def _seat_credential(home: Path, relative: str) -> bytes:
         os.close(root_fd)
 
 
+#: Credential key names (lower case, ``_`` removed) across the CLIs' stores: Claude, Codex
+#: and Gemini spell them ``*_token``; Grok holds its bearer as ``key``; OpenCode uses
+#: ``access`` / ``refresh`` / ``key``.
+_REFRESH_KEYS = frozenset({"refreshtoken", "refresh", "idtoken"})
+_SECRET_KEYS = frozenset({"token", "accesstoken", "refreshtoken", "idtoken", "apikey",
+                          "openaiapikey", "access", "refresh", "key", "bearer", "secret"})
+
+
 def _access_token_only(value):
     if isinstance(value, dict):
         return {key: _access_token_only(item) for key, item in value.items()
-                if key.lower().replace("_", "") not in {"refreshtoken", "idtoken"}}
+                if key.lower().replace("_", "") not in _REFRESH_KEYS}
     if isinstance(value, list):
         return [_access_token_only(item) for item in value]
     return value
@@ -4494,14 +4513,18 @@ def _blank_refresh_token(value):
 #: ``blank_refresh``: the refresh token's value emptied, its key kept -- the Codex CLI refuses
 #: an auth file without the key or without its id token (measured: 401, no bearer sent), and
 #: runs with an empty refresh token. The seat can never refresh either login.
-_SEAT_CREDENTIAL_SHAPE = {"codex": "blank_refresh", "grok": "access_only"}
+#: OpenCode: ``access_only`` drops ``refresh`` and keeps ``access``, ``expires``, ``type`` and
+#: the API-mode ``key`` (measured: a real ``opencode run`` completes with it).
+#: Codex's ``blank_refresh`` deliberately keeps the ``id_token`` (the CLI sends no bearer without
+#: it) and an ``OPENAI_API_KEY`` in API-key mode: neither can refresh the login, and both are
+#: redacted from the seat's output like every copied secret.
+_SEAT_CREDENTIAL_SHAPE = {"codex": "blank_refresh", "grok": "access_only", "opencode": "access_only"}
 
 
 def _seat_secret_values(value):
     if isinstance(value, dict):
         for key, item in value.items():
-            if isinstance(item, str) and len(item) >= 8 and key.lower().replace("_", "") in {
-                    "token", "accesstoken", "refreshtoken", "idtoken", "apikey", "openaiapikey"}:
+            if isinstance(item, str) and len(item) >= 8 and key.lower().replace("_", "") in _SECRET_KEYS:
                 yield item
             else:
                 yield from _seat_secret_values(item)
@@ -4587,6 +4610,7 @@ def _refresh_gemini_credential(home, image):
 def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=(),
                  broker_socket=None, gemini_profile=None, role=SeatLaunchRole.PROVIDER_REVIEW):
     """Copy declared subscription state into a per-launch private home."""
+    _require_owner_platform()
     home = Path(env.get("HOME", str(Path.home())))
     if gemini_profile is not None:
         home = Path(_gemini_credential_target(gemini_profile.mount_args)).parents[2]
@@ -4692,7 +4716,7 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
             if gemini_profile is None:
                 data_file(".gemini/antigravity-cli/settings.json", _broker_agy_settings_bytes())
         elif harness == "opencode":
-            credential(".local/share/opencode/auth.json")
+            credential(".local/share/opencode/auth.json", shape=_SEAT_CREDENTIAL_SHAPE["opencode"])
         elif harness is not None:
             raise _sandbox_egress.SeatIdentityUnverified("seat_profile_unavailable")
         destination = "/run/phase-loop-seat/provider"
@@ -4850,6 +4874,9 @@ def _filtered_holder_namespace() -> int:
 
 def launch_owned(argv, *, role, profile: SeatProfile, supervisor=None, **kwargs):
     role = SeatLaunchRole(role)
+    if role is not SeatLaunchRole.EXECUTOR_TRUSTED:
+        # A seat never reads the operator's terminal: stdin is closed unless given.
+        kwargs.setdefault("stdin", subprocess.DEVNULL)
     if kwargs.get("child_scratch", _sandbox_policy.CHILD_SCRATCH_RELOCATE) not in \
             _sandbox_policy.CHILD_SCRATCH_DECISIONS:
         raise ValueError(f"unknown child scratch decision {kwargs['child_scratch']!r}")
@@ -5082,6 +5109,9 @@ def run_provider(argv, *, child_scratch=_sandbox_policy.CHILD_SCRATCH_RELOCATE,
     # process's environment; nothing is decided or probed for it here.
     env = kwargs.get("env") if kwargs.get("env") is not None else dict(os.environ)
     cwd = kwargs.get("cwd") or os.getcwd()
+    if not executor:
+        # A seat never reads the operator's terminal: stdin is closed unless given.
+        kwargs.setdefault("stdin", subprocess.DEVNULL)
     with contextlib.ExitStack() as stack:
         if executor:
             process = stack.enter_context(launch_owned(
@@ -6508,8 +6538,10 @@ def _leg_auth_ok(
             stdin=subprocess.DEVNULL,
             env=_sandbox_policy.child_scratch_env(env, _sandbox_policy.CHILD_SCRATCH_RELOCATE),
         )
-    except (FileNotFoundError, subprocess.TimeoutExpired):
-        return True, ""  # probe unavailable/slow → don't block; the leg fail-closes
+    except (FileNotFoundError, subprocess.TimeoutExpired, _sandbox_egress.EgressUnavailable):
+        # Probe unavailable/slow, or the owner refused it (agent-harness#1222): inconclusive,
+        # so don't block; the leg's own launch fail-closes with its typed code.
+        return True, ""
     combined = (proc.stdout or "") + (proc.stderr or "")
     if proc.returncode != 0 or _AUTH_SIGNATURE.search(combined):
         return (
@@ -6736,53 +6768,6 @@ def _timeout_expired_text(exc: subprocess.TimeoutExpired) -> str:
         else:
             chunks.append(str(value))
     return "".join(chunks)
-
-
-def _cleanup_claude_launch_timeout(
-    adapter: ClaudeAgentViewAdapter,
-    *,
-    cwd: str,
-    env: Mapping[str, str],
-    exc: subprocess.TimeoutExpired,
-) -> str:
-    session_ids: list[str] = []
-    session_id = _claude_agent_session_id(_timeout_expired_text(exc))
-    if session_id:
-        session_ids.append(session_id)
-    try:
-        list_proc = run_provider(
-            adapter.list_command(),
-            cwd=cwd,
-            env=_sandbox_policy.child_scratch_env(env, _sandbox_policy.CHILD_SCRATCH_RELOCATE),
-            capture_output=True,
-            text=True,
-            timeout=30,
-            check=False,
-            stdin=subprocess.DEVNULL,
-        )
-    except subprocess.TimeoutExpired:
-        list_proc = None
-        cleanup_status = "cleanup_list_timeout"
-    except Exception:
-        list_proc = None
-        cleanup_status = "cleanup_list_error"
-    else:
-        cleanup_status = (
-            "cleanup_list_failed" if list_proc.returncode != 0 else "cleanup_none"
-        )
-    if list_proc is not None and list_proc.returncode == 0:
-        for agent_id in _claude_matching_agent_ids(
-            list_proc.stdout or "", name=_CLAUDE_AGENT_NAME, cwd=cwd
-        ):
-            if agent_id not in session_ids:
-                session_ids.append(agent_id)
-    if not session_ids:
-        return cleanup_status
-    stop_statuses = [
-        f"{agent_id}:{_stop_claude_agent(adapter, agent_id, cwd, env)}"
-        for agent_id in session_ids
-    ]
-    return "cleanup=" + ",".join(stop_statuses)
 
 
 def _claude_project_dir_for_cwd(cwd: str, config_dir: "Path | str | None" = None) -> Path:
@@ -8871,27 +8856,6 @@ def _run_claude_tui_session(
             profile_stack.close()
         if quiescence_latch is not None:
             quiescence_latch.raise_if_set()
-
-
-def _stop_claude_agent(
-    adapter: ClaudeAgentViewAdapter, session_id: str, cwd: str, env: Mapping[str, str]
-) -> str:
-    try:
-        proc = run_provider(
-            adapter.stop_command(session_id),
-            cwd=cwd,
-            env=_sandbox_policy.child_scratch_env(env, _sandbox_policy.CHILD_SCRATCH_RELOCATE),
-            capture_output=True,
-            text=True,
-            timeout=_CLAUDE_STOP_TIMEOUT_S,
-            check=False,
-            stdin=subprocess.DEVNULL,
-        )
-    except subprocess.TimeoutExpired:
-        return "stop_timeout"
-    except FileNotFoundError:
-        return "stop_unavailable"
-    return "stopped" if proc.returncode == 0 else "stop_failed"
 
 
 def _normalize_claude_agent_state(value: object) -> str:
