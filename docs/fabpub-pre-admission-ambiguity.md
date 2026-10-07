@@ -234,32 +234,36 @@ than in `attested_by`. The dispositions:
   absent. The key is **not** carried, so the successor publishes it afresh
   exactly once, after which ordinary idempotency holds.
 
-  A failed publication normally leaves its publish transaction
-  `TERMINAL_SEALED` (the broker seals on every terminal class, including
-  `outcome_ambiguous_blocked`). A retry of the same, unchanged head resumes that
-  sealed transaction, and the successor re-admits it as-is (agent-harness#1296):
-  same transaction, commit, ref, owned paths and plan/verification digests. It
-  does so only when the successor's authenticated receipt disposes the key
-  `attested_not_landed` **and** the sealed attestation's `transaction_id` (bound
-  from the predecessor's adapter-start owner) equals the transaction being
-  admitted. The checkpoint is never rewound or rewritten; the re-admission is
-  recorded once beside it as
-  `<transaction_id>.recovery.<generation>.json` (`PublishSealedHeadRecovery.v1`:
+  A failed publication leaves its publish transaction past
+  `COMMITTED_HEAD_RESOLVED`: `TERMINAL_SEALED` when the provider returned an
+  ambiguous terminal (for example `push-unconfirmed`), or `ADAPTER_STARTED` or
+  earlier after an adapter exception or crash. A retry of the same, unchanged
+  head resumes that transaction, and the successor re-admits it as-is
+  (agent-harness#1296): same transaction, commit, ref, owned paths and
+  plan/verification digests. It does so only when the successor's
+  authenticated receipt disposes the key `attested_not_landed` **and** the
+  sealed attestation's `transaction_id` (bound from the predecessor's
+  adapter-start owner) equals the transaction being admitted. The checkpoint is
+  never advanced, rewound or rewritten. Before any owner or admission is
+  written, the authorization is recorded once beside the checkpoint as
+  `<transaction_id>.recovery.<generation>.json` (`PublishTransactionRecovery.v1`:
   rotation, attestation and inventory digests, predecessor owner nonce,
-  ambiguity digest, commit, ref, paths and plan/proof digests). If that attempt
-  is ambiguous again, the successor blocks like any partition and needs its own
+  ambiguity digest, recovered state, commit, ref, paths and plan/proof digests);
+  the outcome lives in that generation's evidence. Because the checkpoint does
+  not move, single use is enforced under the admissions lock: the generation's
+  evidence must hold no record for the key. If the recovered attempt is
+  ambiguous again, the successor blocks like any partition and needs its own
   rotation. A later rotation for an unrelated key does not carry this
-  disposition, so a still-unpublished sealed transaction then needs a fresh
+  disposition, so a still-unpublished transaction then needs a fresh
   attestation.
 
-  Any other sealed current-head transaction is refused with
-  `SealedPublicationRecoveryRequired` before any owner, admission or evidence
-  write. The human route reports it as `sealed_publication_recovery_required`
-  with next step `adjudicate_sealed_publication_by_partition_rotation`.
-  Separately, the broker now checks the transaction-state precondition
-  **before** it writes the adapter-start owner, so a denied admission no
-  longer leaves an unsealed owner that the next attempt would promote to
-  permanent ambiguity.
+  Any other already-admitted current-head transaction is refused with
+  `PublicationRecoveryRequired` before any owner, admission or evidence write.
+  The human route reports it as `publication_recovery_required` with next step
+  `adjudicate_publication_by_partition_rotation`. Separately, the broker now
+  checks the transaction-state precondition **before** it writes the
+  adapter-start owner, so a denied admission no longer leaves an unsealed owner
+  that the next attempt would promote to permanent ambiguity.
 
 A blocked key the attestation leaves undisposed, a disposition it does not know,
 digests that do not match the predecessor's bytes, or a predecessor that is not

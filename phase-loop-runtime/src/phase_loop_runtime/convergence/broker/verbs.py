@@ -47,11 +47,22 @@ class BrokerExecutionResult:
     reason: str = ""
 
 
-class SealedPublicationRecoveryRequired(PermissionError):
-    """A sealed publish transaction for the current head has no supported recovery yet.
+class PublicationRecoveryRequired(PermissionError):
+    """An already-admitted publish transaction for the current head has no supported recovery.
 
     Raised before any owner, admission or evidence write (agent-harness#1296).
     """
+
+
+#: Transaction states past ``COMMITTED_HEAD_RESOLVED``: the transaction was
+#: admitted in some generation.  A failed provider outcome leaves it here
+#: (``TERMINAL_SEALED`` normally; earlier after an adapter exception or crash).
+_ADMITTED_TRANSACTION_STATES = (
+    "ADMISSION_DURABLE",
+    "BROKER_INTENT_DURABLE",
+    "ADAPTER_STARTED",
+    "TERMINAL_SEALED",
+)
 
 
 @dataclass(frozen=True)
@@ -477,7 +488,8 @@ class BrokerService:
         owner: AdapterStartOwnership,
         make_request,
         attempt_id: str,
-        expected_state: str = "COMMITTED_HEAD_RESOLVED",
+        *,
+        recovery_key: str | None = None,
     ) -> tuple[AdapterStartOwnership | None, AdapterStartOwnership | None, object]:
         """ah#789: durable owner and admission under ONE ``admissions.lock`` acquisition.
 
@@ -486,22 +498,24 @@ class BrokerService:
         re-read under the lock — an unsealed foreign owner is returned to the
         caller, who resolves it OUTSIDE the section through
         ``_block_unsealed_owner`` (which takes the same lock itself); (3) the
-        transaction must be in ``expected_state``; (4) the owner is written;
-        (5) the admission is allocated.  No writer of any runtime version can
+        transaction must be admissible; (4) the owner is written; (5) the
+        admission is allocated.  No writer of any runtime version can
         interleave between (4) and (5).
 
         (3) runs BEFORE the owner write (agent-harness#1296): a denied
         precondition used to leave a fresh unsealed owner behind, which the
-        next attempt promoted to permanent ambiguity.  ``admit_next`` keeps
-        the same predicate as its own guard.
+        next attempt promoted to permanent ambiguity.  A fresh publish needs
+        ``COMMITTED_HEAD_RESOLVED``.  A recovery (``recovery_key`` set) leaves
+        the checkpoint where it is, so its state cannot gate a second
+        admission; instead the generation's evidence must hold no record for
+        the key.  A concurrent retry that passed ``execute``'s replay check
+        before the first attempt's terminal therefore refuses here and makes
+        no second provider call.
 
         Returns ``(foreign_owner, recorded_owner, admission_record)``; exactly
         one of ``foreign_owner`` / ``recorded_owner`` is set.
         """
         import fcntl
-
-        def in_expected_state() -> bool:
-            return self._validated_envelope(request)[1].state == expected_state
 
         self.evidence_store._authorize()
         with self.admission_store.lock_path.open("a+", encoding="utf-8") as lock:
@@ -515,11 +529,21 @@ class BrokerService:
                 if current_owner is not None and not current_owner.sealed:
                     return current_owner, None, None
                 state = self._validated_envelope(request)[1].state
-                if state != expected_state:
+                if recovery_key is None and state != "COMMITTED_HEAD_RESOLVED":
                     raise PermissionError(
                         f"broker admission precondition denied: publish transaction is {state}, "
-                        f"admission requires {expected_state}; no owner or admission was written"
+                        "admission requires COMMITTED_HEAD_RESOLVED; no owner or admission was written"
                     )
+                if recovery_key is not None:
+                    if state not in _ADMITTED_TRANSACTION_STATES:
+                        raise PermissionError(
+                            f"broker admission precondition denied: recovered transaction is {state}"
+                        )
+                    if self.evidence_store.replay().get(recovery_key) is not None:
+                        raise PermissionError(
+                            "broker admission precondition denied: this generation already "
+                            "re-admitted the transaction; retry to replay its evidence"
+                        )
                 # Indirection through evidence_module keeps the durable write a crash seam.
                 # A sealed owner is a completed prior effect, not a lock on a new head.
                 recorded_owner = evidence_module.append_adapter_start_owner(
@@ -531,33 +555,32 @@ class BrokerService:
                 admission_record = self.admission_store.admit_next(
                     make_request,
                     attempt_id=attempt_id,
-                    precondition=in_expected_state,
+                    # Already decided above under this same lock acquisition.
+                    precondition=lambda: True,
                     lock_held=True,
                 )
                 return None, recorded_owner, admission_record
             finally:
                 fcntl.flock(lock, fcntl.LOCK_UN)
 
-    def _sealed_head_recovery(self, request: BrokerRequest, key: str, envelope, transaction) -> dict:
-        """Authorize re-admitting a SEALED current-head transaction, or refuse typed.
+    def _recovery_authority(self, request: BrokerRequest, key: str, envelope, transaction) -> dict:
+        """Authorize re-admitting an already-admitted transaction, or refuse typed.
 
         agent-harness#1296: the only supported recovery is a partition rotation
         whose attestation disposes this exact effect key ``attested_not_landed``
         and binds this exact transaction (the predecessor owner's
-        ``transaction_id``).  The ACTIVE generation's evidence holds no record
-        for the key (``execute`` replays any it has), so this is the first
-        attempt in the successor generation.  Nothing is written here.
+        ``transaction_id``).  Nothing is written here.
         """
-        from .live import LegacyCutoverConflict, attested_not_landed_recovery
+        from .live import attested_not_landed_recovery
 
         tid = envelope.transaction_id
 
-        def refuse(why: str) -> SealedPublicationRecoveryRequired:
-            return SealedPublicationRecoveryRequired(
-                f"publish transaction {tid} is TERMINAL_SEALED for the current head "
+        def refuse(why: str) -> PublicationRecoveryRequired:
+            return PublicationRecoveryRequired(
+                f"publish transaction {tid} is {transaction.state} for the current head "
                 f"{request.head_sha} (effect key {key!r}), but {why}. Fresh admission requires "
-                "COMMITTED_HEAD_RESOLVED, and a sealed transaction is re-admitted only after a "
-                "partition rotation disposes its effect attested_not_landed. Supported next step: "
+                "COMMITTED_HEAD_RESOLVED; an already-admitted transaction is re-admitted only after "
+                "a partition rotation disposes its effect attested_not_landed. Supported next step: "
                 "run the rotation preflight, then `phase-loop fabpub-rotate-partition` with a "
                 "PartitionRotationAttestation.v1 that disposes this key attested_not_landed and "
                 "carries this transaction_id from the adapter-start owner; restart the broker and "
@@ -566,8 +589,12 @@ class BrokerService:
 
         try:
             recovery = attested_not_landed_recovery(self.evidence_store.root, key)
-        except LegacyCutoverConflict as error:
-            raise refuse(f"the active rotation does not authenticate ({error})") from error
+        except (RuntimeError, PermissionError, OSError, ValueError) as error:
+            # LegacyCutoverConflict is a RuntimeError; routing/compatibility
+            # refusals are PermissionErrors.  All of them are the same answer.
+            raise refuse(
+                f"the active rotation does not authenticate ({type(error).__name__}: {error})"
+            ) from error
         if recovery is None:
             raise refuse("the active partition generation adjudicates no attested_not_landed disposition for it")
         if recovery["transaction_id"] is None:
@@ -582,6 +609,7 @@ class BrokerService:
             )
         return {
             **recovery,
+            "recovered_transaction_state": transaction.state,
             "expected_commit_oid": transaction.expected_commit_oid,
             "committed_head_sha": transaction.committed_head_sha,
             "final_commit_object_sha256": transaction.final_commit_object_sha256,
@@ -598,20 +626,6 @@ class BrokerService:
 
     def _fresh_publish(self, request: BrokerRequest, key: str) -> BrokerExecutionResult:
         envelope, transaction = self._validated_envelope(request)
-        # agent-harness#1296: a sealed current-head transaction is admitted only
-        # under an authenticated attested_not_landed rotation; refuse before any
-        # owner path runs otherwise.  Its checkpoint is never advanced or rewound.
-        recovery = (
-            self._sealed_head_recovery(request, key, envelope, transaction)
-            if transaction.state == "TERMINAL_SEALED"
-            else None
-        )
-        expected_state = "TERMINAL_SEALED" if recovery is not None else "COMMITTED_HEAD_RESOLVED"
-
-        def advance(state: str) -> None:
-            if recovery is None:
-                _advance_transaction(transaction, state)
-
         # ah#789 early probe: a runtime that cannot read the admission store or
         # the evidence journal refuses HERE, typed, before any owner path runs
         # (``_block_unsealed_owner`` appends evidence; it must never be reached
@@ -627,6 +641,22 @@ class BrokerService:
                 raise PermissionError("unsealed adapter-start owner blocks fresh provider effect")
         if self.evidence_store.epoch_blocked:
             raise PermissionError("epoch permanently blocked")
+        # agent-harness#1296: a transaction already admitted in some generation
+        # (a failed outcome leaves it there) is re-admitted only under an
+        # authenticated attested_not_landed rotation, and refused typed before
+        # any write otherwise.  This runs AFTER the unsealed-owner resolution
+        # above, so a crashed attempt still becomes the durable ambiguity a
+        # rotation adjudicates.  The checkpoint is never advanced or rewound.
+        recovery = (
+            self._recovery_authority(request, key, envelope, transaction)
+            if transaction.state in _ADMITTED_TRANSACTION_STATES
+            else None
+        )
+
+        def advance(state: str) -> None:
+            if recovery is None:
+                _advance_transaction(transaction, state)
+
         attempt_id = hashlib.sha256(
             b"FABPUB-PUBLISH-ATTEMPT-v1\0"
             + f"{request.repo}\0{request.branch}\0{request.head_sha}".encode()
@@ -644,6 +674,10 @@ class BrokerService:
         def make_request(epoch: int, supplied_attempt_id: str) -> AdmissionRequest:
             return self._final_admission(envelope, request, epoch, supplied_attempt_id)
 
+        if recovery is not None:
+            # Provenance first: a failed write leaves no owner behind.
+            transaction.record_recovery(recovery)
+
         # One critical section for owner + admission.  An unsealed foreign owner
         # observed INSIDE the section is resolved outside it exactly as before
         # (``_block_unsealed_owner``), then the section is entered once more; a
@@ -651,7 +685,11 @@ class BrokerService:
         for _entry in (1, 2):
             foreign_owner, recorded_owner, admission_record = (
                 self._owner_and_admission_under_one_lock(
-                    request, owner, make_request, attempt_id, expected_state=expected_state
+                    request,
+                    owner,
+                    make_request,
+                    attempt_id,
+                    recovery_key=key if recovery is not None else None,
                 )
             )
             if foreign_owner is None:
@@ -662,10 +700,6 @@ class BrokerService:
             # A retired owner was replaced by another live publisher between the
             # two entries: a retryable contention loss, not permanent ambiguity.
             raise PermissionError("unsealed adapter-start owner contended twice in one publish; retry")
-        if recovery is not None:
-            # The recovery's provenance takes the place of ADMISSION_DURABLE:
-            # durable after the admission, before the intent and provider entry.
-            transaction.record_sealed_head_recovery(recovery)
         advance("ADMISSION_DURABLE")
         self.evidence_store.record_intent(key)
         advance("BROKER_INTENT_DURABLE")

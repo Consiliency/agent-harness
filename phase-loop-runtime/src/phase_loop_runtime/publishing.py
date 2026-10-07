@@ -20,7 +20,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
-from .convergence.broker.verbs import BrokerClient, SealedPublicationRecoveryRequired
+from .convergence.broker.verbs import BrokerClient, PublicationRecoveryRequired
 from .convergence.contracts import AdmissionRequest, BrokerRequest, BrokerVerb, PreAdmissionEnvelope
 from .convergence.broker.live import canonical_repository_identity
 from .git_topology import collect_git_topology
@@ -380,6 +380,9 @@ class PublishTransactionStore:
     def tombstone_path(self, transaction_id: str) -> Path:
         return self.root / f"{transaction_id}.tombstone.json"
 
+    def recovery_path(self, transaction_id: str, generation: int) -> Path:
+        return self.root / f"{transaction_id}.recovery.{int(generation)}.json"
+
     def load_active(self) -> dict | None:
         if not self.active_pointer_path.exists():
             return None
@@ -482,20 +485,21 @@ class PublishTransaction:
     def clear_active_pointer(self) -> None:
         self.store.clear_active(self.transaction_id)
 
-    def record_sealed_head_recovery(self, record: dict) -> Path:
-        """Write-once provenance for re-admitting this SEALED transaction (agent-harness#1296).
+    def record_recovery(self, record: dict) -> Path:
+        """Write-once provenance for re-admitting this transaction (agent-harness#1296).
 
-        The checkpoint stays exactly as sealed: its state is never rewound and
-        its bytes never change.  The recovery is recorded beside it, one file
-        per successor generation, so the history reads: sealed with an
-        ambiguous outcome, adjudicated not-landed by rotation X, re-admitted
-        in generation N.  A second write for the same generation must carry
-        the same bytes.
+        The checkpoint stays exactly as it is: its state is never advanced or
+        rewound and its bytes never change.  The re-admission is recorded beside
+        it, one file per successor generation, BEFORE the broker writes an owner
+        or admission, so the history reads: admitted, outcome ambiguous,
+        adjudicated not-landed by rotation X, re-admission authorized in
+        generation N.  The outcome itself lives in that generation's evidence.
+        A second write for the same generation must carry the same bytes.
         """
-        if self.state != PublishTransactionState.TERMINAL_SEALED:
-            raise PublishTransactionConflict("only a sealed transaction is recovered")
-        path = self.store.root / f"{self.transaction_id}.recovery.{int(record['generation'])}.json"
-        payload = {"schema": "PublishSealedHeadRecovery.v1", **record}
+        if self.state not in PublishTransactionState.ORDERED[3:]:
+            raise PublishTransactionConflict("only an admitted transaction is recovered")
+        path = self.store.recovery_path(self.transaction_id, record["generation"])
+        payload = {"schema": "PublishTransactionRecovery.v1", **record}
         with self.store.exclusive():
             if path.exists():
                 if json.loads(path.read_text(encoding="utf-8")) != payload:
@@ -1200,7 +1204,7 @@ def _human_publication_handoff(
         repository_common_dir=str(snapshot.common_dir),
         resume="retry publish_human_invoked_from_worktree with the same plan and verification artifact",
     )
-    if next_step == "adjudicate_sealed_publication_by_partition_rotation":
+    if next_step == "adjudicate_publication_by_partition_rotation":
         handoff.update(
             recovery_procedure="docs/fabpub-partition-rotation-runbook.md",
             rotate_command=[
@@ -1215,7 +1219,7 @@ def _human_publication_handoff(
                 "--json",
             ],
             rotate_requires=(
-                "a reviewed PartitionRotationAttestation.v1 disposing the sealed effect "
+                "a reviewed PartitionRotationAttestation.v1 disposing the blocked effect "
                 "attested_not_landed with the predecessor owner's transaction_id, and a "
                 "read-only preflight verdict of ready; later remote absence is not proof "
                 "that the historical attempt had no effect"
@@ -1502,12 +1506,12 @@ def publish_human_invoked_from_worktree(
             )
             result["checkpoint_root"] = str(checkpoint_root)
         return result
-    except SealedPublicationRecoveryRequired as error:
-        # agent-harness#1296: the current head's transaction is sealed and no
-        # rotation has adjudicated its effect; nothing was written.
-        result = _blocked("sealed_publication_recovery_required", str(error))
+    except PublicationRecoveryRequired as error:
+        # agent-harness#1296: the current head's transaction was already
+        # admitted and no rotation adjudicated its effect; nothing was written.
+        result = _blocked("publication_recovery_required", str(error))
         result["handoff"] = _human_publication_handoff(
-            repo, next_step="adjudicate_sealed_publication_by_partition_rotation"
+            repo, next_step="adjudicate_publication_by_partition_rotation"
         )
         result["checkpoint_root"] = str(checkpoint_root)
         return result

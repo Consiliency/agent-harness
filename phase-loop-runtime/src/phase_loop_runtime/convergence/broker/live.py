@@ -1361,6 +1361,37 @@ def partition_is_ambiguity_blocked(store_root: Path) -> bool:
     return bool(receipt is not None and receipt.ambiguous)
 
 
+def _read_receipt_inventory(receipt) -> tuple[Path, dict | None]:
+    """Read a receipt's sealed inventory ONCE and require the receipt's digests of it.
+
+    Returns ``(path, inventory)``; ``inventory`` is ``None`` when the file is
+    absent (the caller decides whether absence is drift).  Bytes that are not
+    JSON, or that do not digest to the receipt's ``inventory_sha256`` and
+    ``partition_map_sha256``, refuse typed.
+    """
+    inventory_path = Path(receipt.global_journal_path).parent / f"{receipt.cutover_id}.inventory.json"
+    try:
+        raw = inventory_path.read_bytes()
+    except FileNotFoundError:
+        return inventory_path, None
+    try:
+        sealed = json.loads(raw)
+    except ValueError as error:
+        raise LegacyCutoverConflict(
+            f"the sealed inventory at {inventory_path} is not JSON: {error}"
+        ) from error
+    if (
+        not isinstance(sealed, dict)
+        or _inventory_digest(sealed) != receipt.inventory_sha256
+        or _partition_map_digest(sealed.get("partitions", {})) != receipt.partition_map_sha256
+    ):
+        raise LegacyCutoverConflict(
+            f"the sealed inventory at {inventory_path} is not the inventory the partition receipt "
+            "digests (inventory_sha256 / partition_map_sha256)"
+        )
+    return inventory_path, sealed
+
+
 def sealed_partition_effects(receipt: LegacyRepositoryPartitionReceipt) -> dict[str, dict]:
     """The authenticated legacy completed effects for a receipt's partition.
 
@@ -1372,13 +1403,8 @@ def sealed_partition_effects(receipt: LegacyRepositoryPartitionReceipt) -> dict[
     the carried map is a function of bytes the receipt digests, never of
     whatever the inventory file holds at read time (fable r11 P1).
     """
-    journal = Path(receipt.global_journal_path)
-    inventory_path = journal.parent / f"{receipt.cutover_id}.inventory.json"
-    try:
-        raw = inventory_path.read_bytes()
-    except FileNotFoundError:
-        raw = None
-    if raw is None:
+    inventory_path, sealed = _read_receipt_inventory(receipt)
+    if sealed is None:
         if receipt.legacy_completed_effect_keys:
             # The loader refused a missing inventory when it authenticated this
             # receipt; one missing NOW is post-load drift.  Name it, instead of
@@ -1390,21 +1416,6 @@ def sealed_partition_effects(receipt: LegacyRepositoryPartitionReceipt) -> dict[
             )
         effects: dict = {}
     else:
-        try:
-            sealed = json.loads(raw)
-        except ValueError as error:
-            raise LegacyCutoverConflict(
-                f"the sealed inventory at {inventory_path} is not JSON: {error}"
-            ) from error
-        if (
-            not isinstance(sealed, dict)
-            or _inventory_digest(sealed) != receipt.inventory_sha256
-            or _partition_map_digest(sealed.get("partitions", {})) != receipt.partition_map_sha256
-        ):
-            raise LegacyCutoverConflict(
-                f"the sealed inventory at {inventory_path} is not the inventory the partition receipt "
-                "digests (inventory_sha256 / partition_map_sha256)"
-            )
         partition = sealed.get("partitions", {}).get(receipt.canonical_repository_identity, {})
         effects = dict(partition.get("legacy_completed_effects", {}))
     for provenance in effects.values():
@@ -1421,12 +1432,14 @@ def sealed_partition_effects(receipt: LegacyRepositoryPartitionReceipt) -> dict[
 
 
 def attested_not_landed_recovery(store_root: Path, key: str) -> dict | None:
-    """The rotation adjudication that lets a SEALED publish transaction publish once.
+    """The rotation adjudication that lets an already-admitted publish transaction publish once.
 
     agent-harness#1296: a publication whose provider outcome was ambiguous
-    seals its transaction and blocks the partition.  When a rotation's
-    operator attestation disposes that effect ``attested_not_landed``, the
-    successor generation may admit the exact sealed transaction once.  This
+    leaves its transaction past ``COMMITTED_HEAD_RESOLVED`` (normally
+    ``TERMINAL_SEALED``; ``ADAPTER_STARTED`` or earlier after an adapter
+    exception or crash) and blocks the partition.  When a rotation's operator
+    attestation disposes that effect ``attested_not_landed``, the successor
+    generation may admit the exact transaction once.  This
     returns the authenticated facts that bind that admission, or ``None`` when
     the receipt governing ``store_root`` adjudicates no such disposition for
     ``key``.
@@ -1449,26 +1462,18 @@ def attested_not_landed_recovery(store_root: Path, key: str) -> dict | None:
     disposition = receipt.adjudicated_effect_dispositions.get(key)
     if not isinstance(disposition, dict) or disposition.get("disposition") != DISPOSITION_ATTESTED_NOT_LANDED:
         return None
-    inventory_path = Path(receipt.global_journal_path).parent / f"{receipt.cutover_id}.inventory.json"
-    try:
-        sealed = json.loads(inventory_path.read_bytes())
-    except FileNotFoundError:
-        raise LegacyCutoverConflict(f"the sealed rotation inventory at {inventory_path} is missing") from None
-    except ValueError as error:
-        raise LegacyCutoverConflict(
-            f"the sealed rotation inventory at {inventory_path} is not JSON: {error}"
-        ) from error
-    attestation = sealed.get("attestation") if isinstance(sealed, dict) else None
+    inventory_path, sealed = _read_receipt_inventory(receipt)
+    if sealed is None:
+        raise LegacyCutoverConflict(f"the sealed rotation inventory at {inventory_path} is missing")
+    attestation = sealed.get("attestation")
     if (
         not isinstance(attestation, dict)
-        or _inventory_digest(sealed) != receipt.inventory_sha256
-        or _partition_map_digest(sealed.get("partitions", {})) != receipt.partition_map_sha256
         or sealed.get("attestation_sha256") != receipt.attestation_sha256
         or hashlib.sha256(canonical_bytes(attestation)).hexdigest() != receipt.attestation_sha256
     ):
         raise LegacyCutoverConflict(
-            f"the sealed rotation inventory at {inventory_path} is not the inventory the partition "
-            "receipt digests"
+            f"the sealed rotation inventory at {inventory_path} does not carry the attestation the "
+            "partition receipt digests"
         )
     entry = attestation.get("effects", {}).get(key)
     if not isinstance(entry, dict) or entry.get("disposition") != DISPOSITION_ATTESTED_NOT_LANDED:

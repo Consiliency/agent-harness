@@ -138,7 +138,8 @@ def test_sealed_head_attested_not_landed_publishes_the_exact_candidate_once(tmp_
     assert added == [f"{p.transaction.transaction_id}.recovery.1.json"], added
     record = json.loads(after[added[0]])
     predecessor_owner = attestation["effects"][key]
-    assert record["schema"] == "PublishSealedHeadRecovery.v1"
+    assert record["schema"] == "PublishTransactionRecovery.v1"
+    assert record["recovered_transaction_state"] == "TERMINAL_SEALED"
     assert record["effect_key"] == key
     assert record["transaction_id"] == p.transaction.transaction_id
     assert record["predecessor_owner_nonce"] == predecessor_owner["owner_nonce"]
@@ -174,10 +175,10 @@ def test_sealed_head_observed_landed_replays_without_provider_or_owner(tmp_path,
     assert _checkpoint_bytes(p) == checkpoint
 
 
-@pytest.mark.parametrize("state", ["ADMISSION_DURABLE", "TERMINAL_SEALED"])
+@pytest.mark.parametrize("state", ["ADMISSION_DURABLE", "ADAPTER_STARTED", "TERMINAL_SEALED"])
 def test_unadjudicated_sealed_transaction_refuses_without_owner_or_admission(tmp_path, monkeypatch, state):
     """No rotation adjudicated the key: refuse typed, before ANY owner/admission write."""
-    from phase_loop_runtime.convergence.broker.verbs import SealedPublicationRecoveryRequired
+    from phase_loop_runtime.convergence.broker.verbs import PublicationRecoveryRequired
 
     fx = _bootstrap(tmp_path, monkeypatch)
     p = fx.alpha
@@ -193,13 +194,12 @@ def test_unadjudicated_sealed_transaction_refuses_without_owner_or_admission(tmp
     assert p.adapter.calls == []
     assert _broker_state(p.container) == before, "the refusal wrote broker state"
     assert _owner(p.container) is None
-    if state == "TERMINAL_SEALED":
-        assert isinstance(refused.value, SealedPublicationRecoveryRequired)
-        message = str(refused.value)
-        assert "TERMINAL_SEALED" in message
-        assert p.transaction.transaction_id in message
-        assert "fabpub-rotate-partition" in message
-        assert "attested_not_landed" in message
+    assert isinstance(refused.value, PublicationRecoveryRequired)
+    message = str(refused.value)
+    assert state in message
+    assert p.transaction.transaction_id in message
+    assert "fabpub-rotate-partition" in message
+    assert "attested_not_landed" in message
 
 
 def test_sealed_head_without_bound_transaction_refuses_after_rotation(tmp_path, monkeypatch):
@@ -208,7 +208,7 @@ def test_sealed_head_without_bound_transaction_refuses_after_rotation(tmp_path, 
     The block here has no adapter-start owner, so the attestation (correctly)
     carries no ``transaction_id``.  Recovery must not infer the binding.
     """
-    from phase_loop_runtime.convergence.broker.verbs import SealedPublicationRecoveryRequired
+    from phase_loop_runtime.convergence.broker.verbs import PublicationRecoveryRequired
     from phase_loop_runtime.publishing import PublishTransactionState as S
 
     fx = _bootstrap(tmp_path, monkeypatch)
@@ -221,7 +221,7 @@ def test_sealed_head_without_bound_transaction_refuses_after_rotation(tmp_path, 
     assert "transaction_id" not in attestation["effects"][key]
     outcome = _rotate(None, p, attestation=attestation)
     result, calls = _publish_on_successor(None, outcome, p, p.request)
-    assert isinstance(result, SealedPublicationRecoveryRequired), result
+    assert isinstance(result, PublicationRecoveryRequired), result
     assert "binds no transaction" in str(result)
     assert calls == []
     assert _owner(outcome.store_root) is None
@@ -293,10 +293,80 @@ def test_human_handoff_names_the_rotation_recovery(tmp_path, monkeypatch):
 
     fx = _bootstrap(tmp_path, monkeypatch)
     handoff = _human_publication_handoff(
-        fx.alpha.repo, next_step="adjudicate_sealed_publication_by_partition_rotation"
+        fx.alpha.repo, next_step="adjudicate_publication_by_partition_rotation"
     )
-    assert handoff["next_step"] == "adjudicate_sealed_publication_by_partition_rotation"
+    assert handoff["next_step"] == "adjudicate_publication_by_partition_rotation"
     assert handoff["rotate_command"][:2] == ["phase-loop", "fabpub-rotate-partition"]
     assert str(fx.alpha.repo.resolve()) in handoff["rotate_command"]
     assert "attested_not_landed" in handoff["rotate_requires"]
     assert "not proof" in handoff["rotate_requires"]
+
+
+def test_adapter_exception_leaves_an_admitted_transaction_that_rotation_recovers(tmp_path, monkeypatch):
+    """An adapter EXCEPTION leaves the transaction ADAPTER_STARTED, not sealed; same recovery."""
+    fx = _bootstrap(tmp_path, monkeypatch)
+    p = fx.alpha
+    p.service.adapter = _CountingAdapter(explode=True)
+    key = p.service._dedup_key(p.request)
+    failed = p.service.execute(p.request)
+    assert failed.accepted is False and failed.reason == "outcome_ambiguous"
+    assert _inspect(p).state == "ADAPTER_STARTED"
+    outcome = _rotate(None, p, attestation=_attestation(p, dispositions={key: ATTESTED_NOT_LANDED}))
+    checkpoint = _checkpoint_bytes(p)
+    adapter = _CountingAdapter()
+    first, calls = _publish_on_successor(None, outcome, p, p.request, adapter=adapter)
+    assert not isinstance(first, Exception), f"recovery refused: {first!r}"
+    assert first.accepted is True and len(calls) == 1
+    replay, calls = _publish_on_successor(None, outcome, p, p.request, adapter=adapter)
+    assert replay.accepted is True and len(calls) == 1
+    after = _checkpoint_bytes(p)
+    assert {name: after[name] for name in checkpoint} == checkpoint
+    assert _inspect(p).state == "ADAPTER_STARTED", "recovery must not project the checkpoint"
+    record = json.loads(after[f"{p.transaction.transaction_id}.recovery.1.json"])
+    assert record["recovered_transaction_state"] == "ADAPTER_STARTED"
+
+
+def test_concurrent_retry_after_a_recovered_publish_makes_no_second_provider_call(tmp_path, monkeypatch):
+    """A retry that passed ``execute``'s replay check before the first attempt's
+    terminal reaches ``_fresh_publish`` with a sealed successor owner.  The
+    checkpoint never moves under recovery, so the state cannot stop it; the
+    in-lock evidence check must."""
+    fx, p, key = _failed_sealed_publish(tmp_path, monkeypatch)
+    outcome = _rotate(None, p, attestation=_attestation(p, dispositions={key: ATTESTED_NOT_LANDED}))
+    adapter = _CountingAdapter()
+    routed = _routed_service(p, adapter)
+    try:
+        first = routed.service.execute(p.request)
+        assert first.accepted is True and len(adapter.calls) == 1
+        assert _owner(outcome.store_root)["sealed"] is True
+        admissions = (outcome.store_root / "admissions.jsonl").read_bytes()
+        with pytest.raises(PermissionError, match="already re-admitted"):
+            routed.service._fresh_publish(p.request, key)  # the late contender
+        assert len(adapter.calls) == 1
+        assert (outcome.store_root / "admissions.jsonl").read_bytes() == admissions
+        assert _owner(outcome.store_root)["sealed"] is True
+    finally:
+        _release_router(routed)
+
+
+def test_failed_recovery_provenance_write_leaves_no_owner(tmp_path, monkeypatch):
+    """The provenance is written before the owner: if it fails, nothing blocks the successor."""
+    from phase_loop_runtime.publishing import PublishTransaction, PublishTransactionConflict
+
+    fx, p, key = _failed_sealed_publish(tmp_path, monkeypatch)
+    outcome = _rotate(None, p, attestation=_attestation(p, dispositions={key: ATTESTED_NOT_LANDED}))
+
+    def refuse(self, record):
+        raise PublishTransactionConflict("injected provenance failure")
+
+    adapter = _CountingAdapter()
+    with monkeypatch.context() as patch:
+        patch.setattr(PublishTransaction, "record_recovery", refuse)
+        with pytest.raises(PublishTransactionConflict, match="injected"):
+            _publish_on_successor(None, outcome, p, p.request, adapter=adapter)
+    assert adapter.calls == []
+    assert _owner(outcome.store_root) is None
+    assert _jsonl(outcome.store_root / "admissions.jsonl") == []
+    assert _jsonl(outcome.store_root / "evidence.jsonl") == []
+    retry, calls = _publish_on_successor(None, outcome, p, p.request, adapter=adapter)
+    assert not isinstance(retry, Exception) and retry.accepted is True and len(calls) == 1
