@@ -3043,7 +3043,7 @@ def candidate_contribution_paths(
         if not parents:
             break
         delta = changed_paths(repo, parents[0], contribution_base)
-        if not delta or not delta <= allowed_production:
+        if delta and not delta <= allowed_production:
             break
         contribution_paths.update(delta)
         contribution_base = parents[0]
@@ -3060,9 +3060,6 @@ def validate_sl4_boundary(
     revision: str,
 ) -> None:
     """Prove the reviewed SL-4 merge and its subsequent immutability."""
-    if not plan_has_lane(repo, revision, "SL-4"):
-        return
-    sl4_paths = plan_owned_paths(repo, revision, "SL-4")
     history = _git_lines(
         repo,
         "rev-list",
@@ -3071,12 +3068,25 @@ def validate_sl4_boundary(
         f"{landing}..{contribution_base}",
         label="HARDEN SL-4 first-parent history",
     )
+    if not plan_has_lane(repo, revision, "SL-4"):
+        if any(plan_has_lane(repo, commit_id, "SL-4") for commit_id in [landing, *history]):
+            fail("HARDEN plan lost the SL-4 lane")
+        return
+    sl4_paths = plan_owned_paths(repo, revision, "SL-4")
     matches: list[str] = []
     for commit_id in history:
         parents = commit_parents(repo, commit_id, "HARDEN SL-4 landing")
         if len(parents) < 2:
             continue
         if changed_paths(repo, parents[0], commit_id) != sl4_paths:
+            continue
+        source_base = git_scalar(
+            repo,
+            "merge-base",
+            parents[0],
+            parents[1],
+        )
+        if changed_paths(repo, source_base, parents[1]) != sl4_paths:
             continue
         if all(
             blob(repo, commit_id, path)[0] == blob(repo, parents[1], path)[0]
@@ -3519,6 +3529,47 @@ def retained_historical_review_sessions(
     if len(sessions) != 4:
         fail("historical reviewer session inventory is malformed")
     return sessions
+
+
+def retained_role_operation_nonces(
+    store: ArtifactStore, retained: Any
+) -> set[str]:
+    """Return the three raw role operation nonces retained by the producer."""
+    roles: dict[str, str] = {}
+    for item in retained:
+        ref = artifact_ref(item, "authority retained input")
+        raw = store.read(ref, "authority retained input", distinct=False)
+        if raw.lstrip()[:1] not in {b"{", b"["}:
+            continue
+        value = parse_canonical_json(raw, "authority retained input")
+        if not isinstance(value, dict) or value.get("schema") != "harden_role_attestation.v1":
+            continue
+        value = closed(
+            value,
+            {
+                "schema", "annotation", "role", "identity", "vendor",
+                "session_sha256", "evidence_id", "issued_at", "operation_nonce",
+            },
+            "retained role attestation",
+        )
+        role = text(value["role"], "retained role", pattern=IDENTITY)
+        if role not in {"coordinator", "author", "reviewer"} or role in roles:
+            fail("retained role operation nonce inventory is malformed")
+        roles[role] = text(
+            value["operation_nonce"],
+            "retained role operation nonce",
+            pattern=HEX64,
+        )
+    if set(roles) != {"coordinator", "author", "reviewer"}:
+        fail("retained role operation nonce inventory is malformed")
+    return set(roles.values())
+
+
+def reject_role_operation_nonce_reuse(
+    role_operation_nonces: set[str], derived_operation_nonces: set[str]
+) -> None:
+    if role_operation_nonces & derived_operation_nonces:
+        fail("role operation nonce reused by a derived operation")
 
 
 def reject_historical_session_reuse(
@@ -4807,6 +4858,9 @@ def verify(
     if not isinstance(author_vendor, str):
         fail("retained plan authority lacks author vendor")
     input_nonces = retained_input_nonces(store, retained_authority)
+    role_operation_nonces = retained_role_operation_nonces(
+        store, retained_authority
+    )
     historical_review_sessions = retained_historical_review_sessions(
         store, retained_authority
     )
@@ -4857,6 +4911,7 @@ def verify(
     verify_review_round(store, repo, reviews["candidate"], "candidate", review_base, review_base_tree, candidate, candidate_tree, seat_ids, seat_sessions, nonces)
     verify_review_round(store, repo, reviews["canonical_main"], "canonical_main", review_base, review_base_tree, main, main_tree, seat_ids, seat_sessions, nonces)
     reject_historical_session_reuse(nonces, historical_review_sessions)
+    reject_role_operation_nonce_reuse(role_operation_nonces, nonces)
     if len(seat_sessions) != 8:
         fail("reviewer authority lacks eight unique seat sessions")
     verify_roles(store, data["roles"], evidence_id, expected_coordinator_session, expected_author_session, author_vendor, seat_sessions)
@@ -6057,8 +6112,15 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
     author_session = sha256(b"01a04424-61d9-7712-94a6-e058cbe1349e")
     reviewer_session = sha256("\0".join(sorted(review_sessions)).encode())
     roles = {}
+    raw_role_inputs = []
     for role, identity, vendor, session in (("coordinator", "coordinator-1", "coordinator", coordinator_session), ("author", "author-1", "codex-gpt-5.6-terra", author_session), ("reviewer", "reviewer-" + reviewer_session[:32], "reviewer", reviewer_session)):
-        roles[role] = put("role-" + role, {"schema": "harden_role_attestation.v1", "role": role, "identity": identity, "vendor": vendor, "session_sha256": session, "evidence_id": evidence_id, "issued_at": "2026-08-27T00:00:00Z"})
+        role_value = {"schema": "harden_role_attestation.v1", "role": role, "identity": identity, "vendor": vendor, "session_sha256": session, "evidence_id": evidence_id, "issued_at": "2026-08-27T00:00:00Z"}
+        roles[role] = put("role-" + role, role_value)
+        raw_role_inputs.append(put("raw-role-" + role, {
+            **role_value,
+            "annotation": "self-test retained raw role",
+            "operation_nonce": nonce("role-operation-" + role),
+        }))
     def ci_jobs(run_id: int) -> list[dict[str, Any]]:
         return [
             {
@@ -6192,7 +6254,7 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
         "schema": "harden_plan_authority.v1",
         "author_vendor": "codex-gpt-5.6-terra",
     }), approval, production_start, historical_mutations, execution_runs,
-        *observations.values(), *final_observations.values()]
+        *observations.values(), *final_observations.values(), *raw_role_inputs]
 
     evidence: dict[str, Any] = {
         "schema": SCHEMA, "evidence_id": evidence_id, "repository": CANONICAL_CI_REPOSITORY,
@@ -6340,6 +6402,88 @@ def self_test() -> None:
         if contribution_base != sl4_landing:
             raise AssertionError("SL-5 contribution base missed reviewed SL-4")
         validate_sl4_boundary(sl4_repo, sl0_landing, contribution_base, sl5_head)
+
+        _run(["git", "checkout", "-qb", "empty-suffix", sl4_landing], sl4_repo)
+        (sl4_repo / sl5_path).write_text("VALUE = 10\n", encoding="utf-8")
+        _run(["git", "add", sl5_path], sl4_repo)
+        _run(["git", "commit", "-qm", "first SL-5 production change"], sl4_repo)
+        _run(["git", "commit", "--allow-empty", "-qm", "empty splitter"], sl4_repo)
+        (sl4_repo / sl5_path).write_text("VALUE = 11\n", encoding="utf-8")
+        _run(["git", "add", sl5_path], sl4_repo)
+        _run(["git", "commit", "-qm", "second SL-5 production change"], sl4_repo)
+        empty_suffix_head = _run(["git", "rev-parse", "HEAD"], sl4_repo)
+        empty_suffix_base, _ = candidate_contribution_paths(
+            sl4_repo,
+            sl0_landing,
+            empty_suffix_head,
+            sl5_production_paths(sl4_repo, empty_suffix_head),
+        )
+        if empty_suffix_base != sl4_landing:
+            raise AssertionError("empty commit truncated the SL-5 review range")
+
+        _run(["git", "checkout", "-qb", "mixed-target", sl4_landing], sl4_repo)
+        _run(["git", "checkout", "-qb", "mixed-source"], sl4_repo)
+        sl4_file.write_text("def test_sl4(): assert True\n", encoding="utf-8")
+        (sl4_repo / sl5_path).write_text("VALUE = 99\n", encoding="utf-8")
+        _run(["git", "add", sl4_path, sl5_path], sl4_repo)
+        _run(["git", "commit", "-qm", "mixed SL-4 source"], sl4_repo)
+        _run(["git", "checkout", "-q", "mixed-target"], sl4_repo)
+        _run(["git", "merge", "--no-ff", "--no-commit", "mixed-source"], sl4_repo)
+        _run(
+            ["git", "restore", "--source=HEAD", "--staged", "--worktree", sl5_path],
+            sl4_repo,
+        )
+        _run(["git", "commit", "-qm", "merge only the SL-4 blob"], sl4_repo)
+        mixed_boundary = _run(["git", "rev-parse", "HEAD"], sl4_repo)
+        (sl4_repo / sl5_path).write_text("VALUE = 12\n", encoding="utf-8")
+        _run(["git", "add", sl5_path], sl4_repo)
+        _run(["git", "commit", "-qm", "SL-5 after mixed source"], sl4_repo)
+        mixed_head = _run(["git", "rev-parse", "HEAD"], sl4_repo)
+        mixed_base, _ = candidate_contribution_paths(
+            sl4_repo,
+            sl0_landing,
+            mixed_head,
+            sl5_production_paths(sl4_repo, mixed_head),
+        )
+        if mixed_base != mixed_boundary:
+            raise AssertionError("mixed-source fixture has the wrong contribution base")
+        direct_rejected(
+            "mixed-source-SL-4-landing",
+            lambda: validate_sl4_boundary(
+                sl4_repo, sl0_landing, mixed_base, mixed_head
+            ),
+        )
+
+        _run(["git", "checkout", "-qb", "missing-sl4-lane", sl4_landing], sl4_repo)
+        plan_path.write_text(
+            "# HARDEN\n\n"
+            f"### SL-0 - tests\n- **Owned files**: `{sl0_path}`\n\n"
+            f"### SL-5 - production\n- **Owned files**: `{sl5_path}`\n",
+            encoding="utf-8",
+        )
+        _run(["git", "add", str(plan_path.relative_to(sl4_repo))], sl4_repo)
+        _run(["git", "commit", "-qm", "delete the SL-4 lane"], sl4_repo)
+        sl4_file.write_text("def test_sl4(): assert False\n", encoding="utf-8")
+        _run(["git", "add", sl4_path], sl4_repo)
+        _run(["git", "commit", "-qm", "hidden SL-4 test drift"], sl4_repo)
+        (sl4_repo / sl5_path).write_text("VALUE = 13\n", encoding="utf-8")
+        _run(["git", "add", sl5_path], sl4_repo)
+        _run(["git", "commit", "-qm", "SL-5 after hidden drift"], sl4_repo)
+        missing_lane_head = _run(["git", "rev-parse", "HEAD"], sl4_repo)
+        missing_lane_base, _ = candidate_contribution_paths(
+            sl4_repo,
+            sl0_landing,
+            missing_lane_head,
+            sl5_production_paths(sl4_repo, missing_lane_head),
+        )
+        direct_rejected(
+            "missing-SL-4-lane",
+            lambda: validate_sl4_boundary(
+                sl4_repo, sl0_landing, missing_lane_base, missing_lane_head
+            ),
+        )
+
+        _run(["git", "checkout", "-q", "main"], sl4_repo)
         sl4_file.write_text("def test_sl4(): assert False\n", encoding="utf-8")
         _run(["git", "add", sl4_path], sl4_repo)
         _run(["git", "commit", "-qm", "forbidden SL-4 drift"], sl4_repo)
@@ -6399,6 +6543,10 @@ def self_test() -> None:
             lambda: reject_historical_session_reuse(
                 {"3" * 64}, {"3" * 64, "4" * 64, "5" * 64, "6" * 64}
             ),
+        )
+        direct_rejected(
+            "role-operation-nonce-as-final-review-session",
+            lambda: reject_role_operation_nonce_reuse({"7" * 64}, {"7" * 64}),
         )
 
         registry_schema = {
