@@ -1,5 +1,4 @@
 [
-  {"count": 3, "function": "_SeatClaudeJournal.read", "module": "panel_invoker", "primitive": "io.stat", "role": "host-io"},
   {"count": 1, "function": "_pgrp_and_ticks", "module": "_proc_cpu", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "group_cpu_ticks", "module": "_proc_cpu", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "_c4_document_refs", "module": "adoption_bundle", "primitive": "io.read_text", "role": "host-io"},
@@ -1038,5 +1037,6 @@
   {"count": 1, "function": "validate_reap_target", "module": "seat_uid", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "validate_reap_target", "module": "seat_uid", "primitive": "io.read_text", "role": "host-io"},
   {"count": 1, "function": "_trusted_host_path", "module": "panel_invoker", "primitive": "io.lstat", "role": "host-io"},
-  {"count": 1, "function": "_read_seat_raw_text", "module": "panel_invoker", "primitive": "io.open", "role": "host-io"}
+  {"count": 1, "function": "_read_seat_raw_text", "module": "panel_invoker", "primitive": "io.open", "role": "host-io"},
+  {"count": 3, "function": "_SeatClaudeJournal._read_journal", "module": "panel_invoker", "primitive": "io.stat", "role": "host-io"}
 ]

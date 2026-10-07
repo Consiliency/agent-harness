@@ -122,6 +122,34 @@ def test_missing_transcript_is_not_terminal(tmp_path):
 
 # --- the live TUI session: a fake provider that keeps its heartbeat alive ---------------------
 
+class _ProviderTimer:
+    """A test guard measured from the moment the provider exists (agent-harness#1282).
+
+    The owned launch runs its setup (the namespace identity probe, the seat profile) before
+    the provider starts; that setup is not part of the provider-time budget these guards
+    bound. The timer is armed when ``launch_owned`` returns, never earlier."""
+
+    def __init__(self, monkeypatch, seconds, action):
+        self._timer = threading.Timer(seconds, action)
+        self._cancelled = False
+        real = panel.launch_owned
+
+        def launch_then_arm(*args, **kwargs):
+            process = real(*args, **kwargs)
+            if not self._cancelled and not self._timer.is_alive():
+                self._timer.start()
+            return process
+
+        monkeypatch.setattr(panel, "launch_owned", launch_then_arm)
+
+    def start(self):
+        """Armed by the launch itself."""
+
+    def cancel(self):
+        self._cancelled = True
+        self._timer.cancel()
+
+
 def _fast_tui(monkeypatch):
     monkeypatch.setattr(panel, "_CLAUDE_TUI_READ_INTERVAL_S", .02)
     monkeypatch.setattr(panel, "_CLAUDE_TUI_TRANSCRIPT_INTERVAL_S", .05)
@@ -483,7 +511,7 @@ def test_re_journaled_records_do_not_mask_a_stall(tmp_path, monkeypatch):
 
     monkeypatch.setattr(monitor, "observe", capture)
     # Well inside the TUI's 8 s submit delay, so nothing but the replays is in play.
-    guard = threading.Timer(4, lambda: (release.touch(), monitor.cancel.set()))
+    guard = _ProviderTimer(monkeypatch, 4, lambda: (release.touch(), monitor.cancel.set()))
     guard.start()
     started = time.monotonic()
     try:
@@ -670,7 +698,7 @@ def test_an_unchanged_transcript_is_parsed_once_not_every_tick(tmp_path, monkeyp
         observe(*args, **kwargs)
 
     monkeypatch.setattr(monitor, "observe", capture)
-    guard = threading.Timer(2, monitor.cancel.set)
+    guard = _ProviderTimer(monkeypatch, 2, monitor.cancel.set)
     guard.start()
     try:
         panel._run_claude_tui_session(
@@ -779,7 +807,7 @@ def test_codex_r2_f001_completed_review_survives_stray_error(tmp_path, monkeypat
         tmp_path / "monitor.json", "review", 0, threading.Event(),
         stall_notice_s=3600,
     )
-    guard = threading.Timer(3, monitor.cancel.set)
+    guard = _ProviderTimer(monkeypatch, 3, monitor.cancel.set)
     guard.start()
     try:
         rc, text, log, _ = panel._run_claude_tui_session(
@@ -859,7 +887,7 @@ def test_codex_r3_f001_unseen_open_replay_cannot_hold_a_give_up_open(tmp_path, m
         tmp_path / "monitor.json", "review", 0, threading.Event(),
         stall_notice_s=3600,
     )
-    guard = threading.Timer(3, monitor.cancel.set)
+    guard = _ProviderTimer(monkeypatch, 3, monitor.cancel.set)
     guard.start()
     try:
         rc, text, log, _ = panel._run_claude_tui_session(
@@ -1122,7 +1150,7 @@ def test_codex_r4_f001_terminal_api_error_update_cannot_remain_pending(
         tmp_path / "monitor.json", "review", 0, threading.Event(),
         stall_notice_s=3600,
     )
-    guard = threading.Timer(2, monitor.cancel.set)
+    guard = _ProviderTimer(monkeypatch, 2, monitor.cancel.set)
     guard.start()
     try:
         rc, text, log, _ = panel._run_claude_tui_session(
@@ -1202,7 +1230,7 @@ def test_r5_session_ends_on_the_give_up_behind_an_earlier_requests_record(
     records = [REQUEST, ANSWER, REQ2, api_error("server_error"), LATE_EARLIER]
     monitor = panel._ReviewMonitor(
         tmp_path / "monitor.json", "review", 0, threading.Event(), stall_notice_s=3600)
-    guard = threading.Timer(3, monitor.cancel.set)
+    guard = _ProviderTimer(monkeypatch, 3, monitor.cancel.set)
     guard.start()
     try:
         rc, text, log, _ = panel._run_claude_tui_session(
@@ -1314,7 +1342,7 @@ def test_r5_session_waits_for_the_text_flushed_after_its_thinking(tmp_path, monk
     )
     monitor = panel._ReviewMonitor(
         tmp_path / "monitor.json", "review", 0, threading.Event(), stall_notice_s=3600)
-    guard = threading.Timer(6, monitor.cancel.set)
+    guard = _ProviderTimer(monkeypatch, 6, monitor.cancel.set)
     guard.start()
     try:
         rc, text, log, _ = panel._run_claude_tui_session(
@@ -1356,7 +1384,7 @@ def test_request_replay_cannot_hide_a_provider_give_up(
     release = tmp_path / "release"
     monitor = panel._ReviewMonitor(tmp_path / "monitor.json", "review", 0,
                                    threading.Event(), stall_notice_s=3600)
-    guard = threading.Timer(2, monitor.cancel.set)
+    guard = _ProviderTimer(monkeypatch, 2, monitor.cancel.set)
     guard.start()
     try:
         rc, text, log, _ = panel._run_claude_tui_session(
@@ -1413,7 +1441,7 @@ def test_an_earlier_sidechain_record_cannot_answer_the_current_request(
     release = tmp_path / "release"
     monitor = panel._ReviewMonitor(tmp_path / "monitor.json", "review", 0,
                                    threading.Event(), stall_notice_s=.2)
-    guard = threading.Timer(2, monitor.cancel.set)
+    guard = _ProviderTimer(monkeypatch, 2, monitor.cancel.set)
     guard.start()
     try:
         rc, text, log, _ = panel._run_claude_tui_session(

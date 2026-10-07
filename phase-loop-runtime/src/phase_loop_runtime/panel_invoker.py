@@ -450,24 +450,38 @@ class _SeatClaudeJournal:
             os.close(descriptor)
         self.handles.clear()
 
-    def read(self):
+    def handed_off(self) -> bool:
+        """Has the collector handed over the journal directory? It does so right before it
+        executes the provider, so this is the moment the provider starts."""
         if not self.handles:
-            try:
-                data, ancillary, flags, _ = self.reader.recvmsg(
-                    8192, socket.CMSG_SPACE(256 * 4), socket.MSG_CMSG_CLOEXEC,
-                )
-            except BlockingIOError:
-                return b""
-            for level, kind, payload in ancillary:
-                if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
-                    self.handles.extend(struct.unpack("i" * (len(payload) // 4), payload))
-            if flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC):
-                raise AgyCanaryEvidenceError("seat journal handoff incomplete")
-            self.parts, self.name = json.loads(data)
-            if (not self.parts or len(self.handles) != len(self.parts) + 2
-                    or any(not isinstance(part, str) or part in {"", ".", ".."} or "/" in part
-                           for part in [*self.parts, self.name])):
-                raise AgyCanaryEvidenceError("seat journal handoff invalid")
+            self._receive()
+        return bool(self.handles)
+
+    def read(self):
+        if not self.handles and not self._receive():
+            return b""
+        return self._read_journal()
+
+    def _receive(self) -> bool:
+        try:
+            data, ancillary, flags, _ = self.reader.recvmsg(
+                8192, socket.CMSG_SPACE(256 * 4), socket.MSG_CMSG_CLOEXEC,
+            )
+        except BlockingIOError:
+            return False
+        for level, kind, payload in ancillary:
+            if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                self.handles.extend(struct.unpack("i" * (len(payload) // 4), payload))
+        if flags & (socket.MSG_TRUNC | socket.MSG_CTRUNC):
+            raise AgyCanaryEvidenceError("seat journal handoff incomplete")
+        self.parts, self.name = json.loads(data)
+        if (not self.parts or len(self.handles) != len(self.parts) + 2
+                or any(not isinstance(part, str) or part in {"", ".", ".."} or "/" in part
+                       for part in [*self.parts, self.name])):
+            raise AgyCanaryEvidenceError("seat journal handoff invalid")
+        return True
+
+    def _read_journal(self):
         for index, part in enumerate(self.parts):
             current = os.stat(part, dir_fd=self.handles[index + 1], follow_symlinks=False)
             original = os.fstat(self.handles[index + 2])
@@ -1618,6 +1632,10 @@ _CLAUDE_STOP_TIMEOUT_S = 15
 _CLAUDE_TUI_SUBMIT_DELAY_S = 8.0
 _CLAUDE_TUI_READ_INTERVAL_S = 0.25
 _CLAUDE_TUI_TRANSCRIPT_INTERVAL_S = 2.0
+# The most an owned seat's own startup (the owner's links inside the seat, before the
+# collector hands the journal over and executes the provider) may take before its silence
+# counts against the stall window (agent-harness#1282).
+_SEAT_OWNER_STARTUP_S = 60.0
 # ah#196/#223: Claude Code shows an interactive workspace-trust modal for a fresh
 # scratch cwd BEFORE it accepts a prompt (verified via a real PTY capture on 2.1.208).
 # The leg must clear that gate, then submit ONLY when the editor is prompt-ready —
@@ -8303,6 +8321,8 @@ def _run_claude_tui_session(
     terminal_bytes = bytearray()
     journal = None
     journal_error = False
+    journal_started = False
+    launched_at: float | None = None
     launch_errors = None
     prompt_sent = False
     next_transcript_check = start_monotonic + _CLAUDE_TUI_TRANSCRIPT_INTERVAL_S
@@ -8558,6 +8578,12 @@ def _run_claude_tui_session(
                 _anchor_process_group(proc)
             else:
                 proc = quiescence_latch.launch(_popen)
+            # The seat's silence is measured from the moment its provider exists. The
+            # owned launch's setup (the namespace identity probe, the seat profile) comes
+            # first and is not the provider's silence (agent-harness#1282). The wall-clock
+            # deadline still runs from the session's start.
+            last_heartbeat = last_novel = launched_at = time.monotonic()
+            next_transcript_check = last_heartbeat + _CLAUDE_TUI_TRANSCRIPT_INTERVAL_S
         finally:
             os.close(slave_fd)
     except _sandbox_egress.EgressUnavailable:
@@ -8838,6 +8864,17 @@ def _run_claude_tui_session(
             # stall: no GENUINE progress for the threshold while still running. The
             # canonical verdict is the review FILE (checked above); nothing to nudge for a
             # wedged TUI, so fail closed (rc forced non-zero, like the #48/deadline paths).
+            if (journal is not None and launched_at is not None and not journal_started
+                    and now - launched_at < _SEAT_OWNER_STARTUP_S):
+                # The owned seat is still running the owner's own links (keyring and filter,
+                # descriptor closer, journal collector): not the provider's silence. The
+                # collector hands the journal over right before it executes the provider,
+                # and the provider's silence is measured from then (agent-harness#1282).
+                try:
+                    journal_started = journal.handed_off()
+                except AgyCanaryEvidenceError:
+                    journal_error = True
+                last_heartbeat = now
             if review_monitor is None and now - last_heartbeat >= stall_threshold_s:
                 review_text = _current_output()
                 if _canonical_complete(review_text):
