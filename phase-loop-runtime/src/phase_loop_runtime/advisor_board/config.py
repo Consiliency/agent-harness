@@ -339,7 +339,13 @@ def load_president_ladder(
             try:
                 content = trusted_review_control(Path(repo_dir), REPO_CONFIG_RELATIVE_PATH)
                 repo = tomllib.loads(content.decode("utf-8")) if content is not None else None
-            except (OSError, ValueError, UnicodeError, subprocess.SubprocessError) as exc:
+            except ValueError as exc:
+                if str(exc) != "review_base_unavailable":
+                    raise BoardConfigError(f"{repo_path} has no readable base configuration") from exc
+                # No main commit to read it from: the candidate's own copy is never trusted,
+                # so the repository layer is not in force (the user and built-in ladders are).
+                repo = None
+            except (OSError, UnicodeError, subprocess.SubprocessError) as exc:
                 raise BoardConfigError(f"{repo_path} has no readable base configuration") from exc
         else:
             repo = _load_toml(repo_path)

@@ -8,6 +8,7 @@ import sys
 
 import pytest
 
+from phase_loop_runtime import seat_jail
 from phase_loop_runtime import panel_invoker, gemini_heartbeat
 
 
@@ -31,9 +32,10 @@ def operator_home(tmp_path, monkeypatch):
     home.mkdir()
     for directory in (".codex", ".claude", ".grok", ".gemini/antigravity-cli"):
         (home / directory).mkdir(parents=True)
-    (home / ".codex/auth.json").write_text('{"OPENAI_API_KEY":"synthetic-codex-api-key","tokens":{"access_token":"synthetic-access-token","refresh_token":"synthetic-refresh-token"}}')
+    (home / ".codex/auth.json").write_text('{"OPENAI_API_KEY":"synthetic-codex-api-key","tokens":{"id_token":"synthetic-id-token","access_token":"synthetic-access-token","refresh_token":"synthetic-refresh-token"}}')
     (home / ".claude/.credentials.json").write_text('{"claudeAiOauth":{"accessToken":"synthetic-access-token","refreshToken":"synthetic-refresh-token","expiresAt":9999999999999}}')
-    (home / ".grok/auth.json").write_text('{"token":"synthetic-grok-token"}')
+    (home / ".claude/.credentials.json").chmod(0o600)  # as the CLI stores it (#1253 reads only that)
+    (home / ".grok/auth.json").write_text('{"https://auth.example::id":{"key":"synthetic-grok-token","refresh_token":"synthetic-refresh-token"}}')
     (home / ".grok/agent_id").write_text("synthetic-agent")
     (home / ".gemini/antigravity-cli/antigravity-oauth-token").write_text(json.dumps({
         "auth_method": "oauth", "token": {"access_token": "synthetic-access-token",
@@ -63,15 +65,30 @@ def test_profile_uses_copies_and_scrubs_ambient_state(operator_home, tmp_path, h
         assert files
         assert all(descriptor in profile.pass_fds for descriptor in
                    [int(profile.mount_args[i + 1]) for i, item in enumerate(profile.mount_args) if item == "--file"])
+        if harness in ("codex", "grok"):
+            # The narrowest credential each CLI runs with: never the refresh token.
+            copied = next(data for path, data in files.items() if path.endswith("auth.json"))
+            assert b"synthetic-refresh-token" not in copied
+            assert b"synthetic-access-token" in copied or b"synthetic-grok-token" in copied
+            if harness == "codex":
+                tokens = json.loads(copied)["tokens"]
+                assert tokens["refresh_token"] == "" and tokens["id_token"] == "synthetic-id-token"
         if harness == "codex":
             config = next(data for path, data in files.items() if path.endswith("config.toml"))
             assert b'cli_auth_credentials_store = "file"' in config
             assert not profile.env["HOME"].startswith(("/dev/", "/tmp/"))
-        if harness in ("claude", "gemini"):
+        if harness == "gemini":
             credential = next(data for path, data in files.items()
-                              if path.endswith((".credentials.json", "antigravity-oauth-token")))
+                              if path.endswith("antigravity-oauth-token"))
             assert b"synthetic-access-token" in credential
             assert b"synthetic-refresh-token" not in credential
+        if harness == "claude":
+            # agent-harness#1253's one decision, delivered through one drained pipe that the
+            # seat keeps: the access token only, never a credential file in its home.
+            assert not any(path.endswith(".credentials.json") for path in files)
+            descriptor = int(profile.env[seat_jail.CLAUDE_TOKEN_FD_ENV])
+            assert descriptor in profile.pass_fds and descriptor in profile.keep_fds
+            assert os.read(descriptor, 4096) == b"synthetic-access-token"
         descriptors = profile.pass_fds
     for descriptor in descriptors:
         with pytest.raises(OSError):
@@ -168,8 +185,7 @@ def test_tui_caller_redacts_the_returned_terminal_detail(operator_home, tmp_path
     executable = tmp_path / 'provider-entry'
     executable.write_text('''#!/usr/bin/python3
 import json,os,pathlib,sys
-state=json.loads((pathlib.Path(os.environ['CLAUDE_CONFIG_DIR'])/'.credentials.json').read_text())
-token=state['claudeAiOauth']['accessToken']
+token=os.read(int(os.environ['CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR']),4096).decode()
 print('Fixture terminal detail: '+token,flush=True)
 sys.exit(1)
 ''')
@@ -204,3 +220,47 @@ def test_standalone_codex_profile_mounts_only_executable(operator_home, tmp_path
         assert command == "/run/phase-loop-seat/provider"
         assert str(executable.parent.parent) not in profile.mount_args
         assert "/run/phase-loop-seat/codex-runtime" not in profile.mount_args
+
+
+def test_claude_profile_takes_the_single_credential_decision(operator_home, tmp_path, monkeypatch):
+    """agent-harness#1253 feeds the owned Claude seat too: the decision's token (here a bound
+    override) is what the seat receives; its refusal refuses a review seat, typed, and an
+    administrative probe runs without a credential."""
+    from phase_loop_runtime import seat_credentials
+
+    seen = []
+
+    def decide(margin_s, *, env=None, **_):
+        seen.append(env["HOME"])
+        return seat_credentials.SeatCredential(b"bound-override-token", seat_credentials.SOURCE_OVERRIDE)
+
+    monkeypatch.setattr(seat_credentials, "resolve_claude_seat_credential", decide)
+    env = {"HOME": str(operator_home), "PATH": "/usr/bin:/bin"}
+    with panel_invoker.seat_profile(harness="claude", executable="/usr/bin/true", env=env,
+                                   cwd=tmp_path) as (_command, profile):
+        descriptor = int(profile.env[seat_jail.CLAUDE_TOKEN_FD_ENV])
+        assert os.read(descriptor, 4096) == b"bound-override-token"
+    assert seen == [str(operator_home)]
+
+    def refuse(*_args, **_kwargs):
+        raise seat_jail.SeatSandboxRefused("claude_seat_token_missing")
+
+    monkeypatch.setattr(seat_credentials, "resolve_claude_seat_credential", refuse)
+    with pytest.raises(seat_jail.SeatSandboxRefused, match="claude_seat_token_missing"):
+        with panel_invoker.seat_profile(harness="claude", executable="/usr/bin/true", env=env,
+                                       cwd=tmp_path):
+            pass
+    with panel_invoker.seat_profile(harness="claude", executable="/usr/bin/true", env=env,
+                                   cwd=tmp_path, role=panel_invoker.SeatLaunchRole.PROVIDER_ADMIN
+                                   ) as (_command, profile):
+        assert seat_jail.CLAUDE_TOKEN_FD_ENV not in profile.env
+
+
+def test_the_decision_reads_the_launching_session_s_login(operator_home, monkeypatch):
+    from phase_loop_runtime import seat_credentials
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(operator_home / "state"))  # no stored override
+    credential = seat_credentials.resolve_claude_seat_credential(
+        60, env={"HOME": str(operator_home)})
+    assert (credential.token, credential.source) == (b"synthetic-access-token",
+                                                     seat_credentials.SOURCE_LOGIN)

@@ -847,12 +847,24 @@ def _govlean_authority_switched(repo_dir: Path | str | None) -> bool:
     root = Path.cwd() if repo_dir is None else Path(repo_dir)
     if _outside_any_git_work_tree(root):
         root = Path.cwd()
+        if _outside_any_git_work_tree(root):
+            # No repository at all, so no governance to read (as when the manifest is absent).
+            return False
     try:
         content = trusted_review_control(root, "plans/manifest.json")
         if content is None:
             return False
         payload = json.loads(content)
-    except (OSError, ValueError, subprocess.SubprocessError) as exc:
+    except ValueError as exc:
+        if str(exc) == "review_base_unavailable":
+            # No main commit to read governance from (a detached clone with no main ref):
+            # never trust the candidate's own copy -- take the stricter, post-switch rule,
+            # which needs an explicit landing tier or policy.
+            return True
+        raise PresidentPolicyError(
+            "review_authority_state_invalid", "plans/manifest.json cannot prove review authority"
+        ) from exc
+    except (OSError, subprocess.SubprocessError) as exc:
         raise PresidentPolicyError(
             "review_authority_state_invalid", "plans/manifest.json cannot prove review authority"
         ) from exc
@@ -2811,6 +2823,14 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "review_monitoring_unsupported_api_fallback",
     # agent-harness#896: placement refusals
     "sandbox_placement_required_unavailable", "sandbox_placement_driver_unavailable",
+    # agent-harness#1222: the seat-launch owner's refusals (typed notices in seat_jail.NOTICES)
+    "seat_owner_unavailable", "seat_bind_source_unavailable", "seat_broker_socket_unavailable",
+    "seat_launch_owner_required", "seat_output_path_unavailable", "seat_profile_unavailable",
+    "seat_provider_unavailable", "seat_filtered_egress_unavailable",
+    "executor_review_route_unsupported", "gemini_credential_near_expiry",
+    "gemini_credential_refresh_timeout", "seat_keyring_unavailable",
+    "claude_agent_view_review_unsupported", "claude_tui_journal_collection_refused",
+    "agy_image_unqualified",
     # gemini (the broker's fixed vocabulary, folded in)
     "gemini_heartbeat_broker_required", "gemini_heartbeat_capability_unavailable",
     "gemini_heartbeat_admission_handshake_failed", "gemini_broker_diagnostic_invalid",
@@ -4460,6 +4480,23 @@ def _access_token_only(value):
     return value
 
 
+def _blank_refresh_token(value):
+    if isinstance(value, dict):
+        return {key: ("" if key.lower().replace("_", "") == "refreshtoken" else
+                      _blank_refresh_token(item)) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_blank_refresh_token(item) for item in value]
+    return value
+
+
+#: How much of each harness's stored CLI credential its seat receives: the narrowest each CLI
+#: was measured to run with (agent-harness#1222). ``access_only``: no refresh or id token.
+#: ``blank_refresh``: the refresh token's value emptied, its key kept -- the Codex CLI refuses
+#: an auth file without the key or without its id token (measured: 401, no bearer sent), and
+#: runs with an empty refresh token. The seat can never refresh either login.
+_SEAT_CREDENTIAL_SHAPE = {"codex": "blank_refresh", "grok": "access_only"}
+
+
 def _seat_secret_values(value):
     if isinstance(value, dict):
         for key, item in value.items():
@@ -4563,6 +4600,7 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
     mounts = ["--tmpfs", private_home]
     directories = set()
     pass_fds = set()
+    keep_fds = set()
     redactions = []
     with contextlib.ExitStack() as stack:
         if (harness == "gemini" and SeatLaunchRole(role) is SeatLaunchRole.PROVIDER_REVIEW
@@ -4597,7 +4635,7 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
             pass_fds.add(descriptor)
             mounts.extend(("--perms", "0600", "--file", str(descriptor), destination))
 
-        def credential(relative, *, access_only=False):
+        def credential(relative, *, access_only=False, shape=None):
             try:
                 raw = _seat_credential(home, relative)
             except _sandbox_egress.SeatIdentityUnverified as exc:
@@ -4606,31 +4644,48 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
                     return
                 raise
             value = json.loads(raw)
-            if access_only:
+            if access_only or shape == "access_only":
                 value = _access_token_only(value)
+                raw = json.dumps(value, separators=(",", ":")).encode()
+            elif shape == "blank_refresh":
+                value = _blank_refresh_token(value)
                 raw = json.dumps(value, separators=(",", ":")).encode()
             redactions.extend(_seat_secret_values(value))
             data_file(relative, raw)
 
         for relative in (".config", ".cache", ".local/share"):
             directory(private_home + "/" + relative)
-        # Recorded per-harness exception (plan §5c): Claude and Gemini seats get an
-        # access-token-only copy. The Codex and Grok CLIs do not run from an access-only
-        # file (a measured Codex trial exited 1), so their seat gets the CLI's auth file as
-        # stored, in the private home, and every secret value in it is redacted from the
-        # seat's output. Narrowing these two is a follow-up.
+        # Each seat gets the narrowest credential its CLI runs with (_SEAT_CREDENTIAL_SHAPE);
+        # no seat receives a refresh token. Every secret value is redacted from its output.
         if harness == "codex":
-            credential(".codex/auth.json")
+            credential(".codex/auth.json", shape=_SEAT_CREDENTIAL_SHAPE["codex"])
             data_file(".codex/config.toml", b'cli_auth_credentials_store = "file"\n')
             profile_env["CODEX_HOME"] = private_home + "/.codex"
         elif harness == "claude":
-            credential(".claude/.credentials.json", access_only=True)
+            # The one Claude credential decision (agent-harness#1253): a stored override only
+            # when bound to this session's account and organization, else the login's access
+            # token with its margin left. Delivered as the jailed seat gets it: one drained
+            # pipe, never a file in the seat's home.
+            try:
+                seat_credential = _seat_credentials.resolve_claude_seat_credential(
+                    _seat_credentials.login_margin_s(env=env), env=env)
+            except _seat_jail.SeatSandboxRefused:
+                if SeatLaunchRole(role) is not SeatLaunchRole.PROVIDER_ADMIN:
+                    raise
+                seat_credential = None
+            if seat_credential is not None:
+                token_fd = _seat_jail.token_pipe(seat_credential.token)
+                stack.callback(os.close, token_fd)
+                pass_fds.add(token_fd)
+                keep_fds.add(token_fd)
+                profile_env[_seat_jail.CLAUDE_TOKEN_FD_ENV] = str(token_fd)
+                redactions.append(seat_credential.token.decode("ascii", errors="replace"))
             config = {"hasCompletedOnboarding": True, "bypassPermissionsModeAccepted": True,
                       "projects": {str(cwd): {"hasTrustDialogAccepted": True}}}
             data_file(".claude/.claude.json", json.dumps(config).encode())
             profile_env["CLAUDE_CONFIG_DIR"] = private_home + "/.claude"
         elif harness == "grok":
-            credential(".grok/auth.json")
+            credential(".grok/auth.json", shape=_SEAT_CREDENTIAL_SHAPE["grok"])
             data_file(".grok/agent_id", _seat_credential(home, ".grok/agent_id"))
         elif harness == "gemini":
             credential(".gemini/antigravity-cli/antigravity-oauth-token", access_only=True)
@@ -4678,7 +4733,8 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
         stack.callback(_SEAT_REDACTIONS.reset, token)
         yield destination, SeatProfile(
             env=profile_env, mount_args=tuple(mounts), readonly_paths=tuple(readonly_paths),
-            outputs=tuple(outputs), pass_fds=tuple(sorted(pass_fds)), broker_socket=broker_socket,
+            outputs=tuple(outputs), pass_fds=tuple(sorted(pass_fds)),
+            keep_fds=tuple(sorted(keep_fds)), broker_socket=broker_socket,
         )
 
 

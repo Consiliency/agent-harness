@@ -1329,6 +1329,36 @@ are recorded on agent-harness#1132.
   stage root, opened `O_NOFOLLOW|O_DIRECTORY` component by component, and owned by a
   subordinate uid.
 
+## SEATOWNER — The seat-launch owner (agent-harness#1222)
+
+Every review seat, the president and executor `review` start through one owner,
+`panel_invoker.launch_owned`. A jailed Claude seat (SEATJAIL) launches through its jail
+instead, and the jail is that launch's owner.
+
+- **Credentials, the narrowest each CLI runs with.** No seat receives a refresh token.
+  - **Claude:** the one SEATJAIL decision. That is the bound override, else the login's
+    access token. It is delivered through the drained pipe named by
+    `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`.
+  - **Gemini and Grok:** an access-token-only copy.
+  - **Codex:** the auth file with its refresh token's value emptied. The key and the id
+    token stay, because the CLI sends no bearer without them (measured).
+  - **Every copy:** it sits in the seat's private home, and its secret values are
+    redacted from the seat's output.
+- **Refusals.** Each owner refusal is a closed detail code and a `seat_jail.NOTICES`
+  entry, with what happened, why and a fix line (`seat_owner_unavailable`,
+  `seat_filtered_egress_unavailable`, `seat_keyring_unavailable`, ...).
+- **The Claude journal.** The host collects the exact session journal through retained
+  handles, after the provider has been cleaned up, and validates it before any approval.
+  - **Refused on both routes:** a new user turn, a max-token continuation, an unmatched
+    `tool_use`, partial JSONL, or a missing final answer.
+  - **A completed tool cycle is accepted:** every `tool_use` has its `tool_result`.
+  - **A journaled `isApiErrorMessage` record** is never an answer or a continuation. The
+    answer parser (agent-harness#1194) decides the turn.
+  - **The route's own answer rule:**
+    - the president requires a terminal turn;
+    - on the review route, a completed answer outlives a later stray error.
+  - **A refusal or cancellation keeps no partial journal on the host.**
+
 ## ABDFALSIFY — Executable review findings (IF-0-EXECFIND-1)
 
 An optional `falsifier` attachment names one `FindingFalsifier` with

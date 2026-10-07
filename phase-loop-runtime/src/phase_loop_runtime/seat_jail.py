@@ -262,6 +262,61 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "run where a jail is available"),
     "seat_identity_unverified": (
         "leg refused", "seat not provably the operator, locked down", "report a defect"),
+    # The seat-launch owner (agent-harness#1222): every refusal is typed and carries a fix.
+    "seat_owner_unavailable": (
+        "leg refused",
+        "the seat-launch owner needs a non-root operator, an unprivileged (non-setuid) "
+        "/usr/bin/bwrap and unprivileged user namespaces",
+        "run as a non-root user; install bubblewrap without the setuid bit; enable user "
+        "namespaces (kernel.unprivileged_userns_clone=1, or an AppArmor profile for bwrap)"),
+    "seat_bind_source_unavailable": (
+        "leg refused",
+        "a path the seat needs is missing, or reaches it through a link that is not "
+        "yours or root's",
+        "stage the review under a directory you own; replace a link owned by another account "
+        "with the real path"),
+    "seat_broker_socket_unavailable": (
+        "leg refused", "the broker socket is missing or not a socket", "re-run the board"),
+    "seat_launch_owner_required": (
+        "leg refused", "a provider launch did not go through the seat-launch owner",
+        "report a defect"),
+    "seat_output_path_unavailable": (
+        "leg refused", "a seat output file is missing, linked, or not yours",
+        "remove the stale output file and re-run"),
+    "seat_profile_unavailable": (
+        "leg refused",
+        "the harness's credential or settings could not be read into the seat's private home",
+        "log in to that CLI as yourself (its credential file must be a regular file you own), "
+        "then re-run"),
+    "seat_provider_unavailable": (
+        "leg refused", "the provider CLI was not found in a supported install layout",
+        "install the CLI on PATH (for codex, its vendored native binary), then re-run"),
+    "seat_filtered_egress_unavailable": (
+        "leg refused", "no filtered network namespace is available for the review seat",
+        "install unshare, slirp4netns and iptables and enable unprivileged user namespaces; "
+        "do not set PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL for review seats"),
+    "executor_review_route_unsupported": (
+        "leg refused", "this executor route cannot run a review through the seat-launch owner",
+        "run the review through the CLI executor route"),
+    "gemini_credential_near_expiry": (
+        "leg refused", "the agy login expires too soon and did not renew",
+        "run `agy` once interactively to renew the login, then re-run"),
+    "gemini_credential_refresh_timeout": (
+        "leg refused", "renewing the agy login timed out",
+        "check the network, run `agy` once interactively, then re-run"),
+    "seat_keyring_unavailable": (
+        "leg refused", "the seat could not join a fresh session keyring or seal its filter",
+        "allow keyctl and seccomp for unprivileged processes (container runtimes may deny "
+        "them), then re-run"),
+    "claude_agent_view_review_unsupported": (
+        "leg refused", "the Agent View route cannot run a confined review",
+        "use the Claude TUI route for review seats"),
+    "claude_tui_journal_collection_refused": (
+        "leg refused", "the seat's session journal was incomplete, changed, or not one turn",
+        "re-run the seat; if it repeats, report a defect with the leg log"),
+    "agy_image_unqualified": (
+        "leg refused", "the agy binary is not a qualified release",
+        "install a qualified agy release (see `phase-loop agy-qualification status`)"),
 }
 
 NOTICE_CODES: frozenset[str] = frozenset(NOTICES)
