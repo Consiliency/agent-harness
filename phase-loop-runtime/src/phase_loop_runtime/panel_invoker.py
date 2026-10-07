@@ -7794,6 +7794,10 @@ def _run_leg_with_liveness(
         # so the seat lands in the namespace instead of beside it.
         if review_monitor is not None and review_monitor.cancel.is_set():
             raise _ReviewOperationCancelled("review_operation_cancelled")
+        # The request's own refusals (an unavailable profile) come before the host's.
+        owned_command, profile = profile_stack.enter_context(_seat_command_profile(
+            cmd, env=env, cwd=cwd, gemini_profile=gemini_profile,
+        ))
         if not _EGRESS_LAUNCH_PREFIX.get():
             # An owned review launch runs only in the filtered namespace. A leg outside any
             # board leg (the agy --help measurement) holds none: it holds one for this
@@ -7802,9 +7806,6 @@ def _run_leg_with_liveness(
                 _sandbox_egress.isolated_network(timeout_s=None, required=True))
             token = _EGRESS_LAUNCH_PREFIX.set(tuple(prefix))
             profile_stack.callback(_EGRESS_LAUNCH_PREFIX.reset, token)
-        owned_command, profile = profile_stack.enter_context(_seat_command_profile(
-            cmd, env=env, cwd=cwd, gemini_profile=gemini_profile,
-        ))
         proc = launch_owned(
             owned_command, role=SeatLaunchRole.PROVIDER_REVIEW, profile=profile,
             retain_caps=retain_caps,
