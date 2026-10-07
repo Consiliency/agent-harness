@@ -1763,6 +1763,8 @@ def receipt(store: ArtifactStore, ref: dict[str, str], label: str, *, head: str,
             integer(summary[key], label + ".summary." + key)
         if any(integer(summary[key], label + ".summary." + key) != 0 for key in ("failed", "errors", "xfails", "xpasses")):
             fail(f"{label}: final receipt has failed outcomes")
+        if kind == "pure_control" and integer(summary["skipped"], label + ".summary.skipped") != 0:
+            fail(f"{label}: pure control has skipped cases")
         outcome_policy = final_spec.get("outcome_policy")
         if integer(summary["passed"], label + ".summary.passed", minimum=1) < 1:
             fail(f"{label}: final receipt has no passing controls")
@@ -3236,16 +3238,16 @@ def verify_preproduction(store: ArtifactStore, sl0: dict[str, Any], reviewed: st
         integer(summary[field], "activated RED summary." + field)
     if (summary["failed"], summary["passed"], summary["skipped"]) != (len(failures), len(passed), len(skipped)) or summary["errors"] or summary["xfails"] or summary["xpasses"] or any(case["status"] == "error" for case in cases):
         fail("activated RED receipt does not bind JUnit outcomes")
-    if {case["node"] for case in failures} != {
-        "::".join(pytest_junit_identity(nodeid, "activated RED"))
-        for nodeid in ACTIVATED_RED_NODEIDS
-    }:
-        fail("activated RED contains an unrelated failure")
     for nodeid in ACTIVATED_RED_NODEIDS:
         try:
             exact_case(cases, nodeid, "failure", "activated RED")
         except EvidenceError:
             fail("named RED test is missing or invalid")
+    if {case["node"] for case in failures} != {
+        "::".join(pytest_junit_identity(nodeid, "activated RED"))
+        for nodeid in ACTIVATED_RED_NODEIDS
+    }:
+        fail("activated RED contains an unrelated failure")
     for item in ANCHORS.values():
         case = exact_case(cases, item["nodeid"], "failure", "activated RED")
         if item["anchor"] not in case["detail"]:
@@ -5021,6 +5023,103 @@ def _self_repair_chain(
     return repo, reviewed, landing, verified, first_path
 
 
+def _self_shared_merge_repair_chain(
+    root: Path,
+    mutation: str | None = None,
+) -> tuple[Path, str, str, str, tuple[str, str]]:
+    """Construct two disjoint authorizations landed by one merge."""
+    repo, reviewed, landing, _verified, _expected = (
+        _self_historical_baseline_chain(root)
+    )
+    paths = FROZEN_SL0_PATHS[:2]
+    authorization_paths = (
+        (paths[0], paths[0]) if mutation == "overlapping-paths" else paths
+    )
+
+    def manifest() -> dict[str, Any]:
+        return strict_json_loads(
+            (repo / "plans/manifest.json").read_bytes(),
+            "self-test shared-merge manifest",
+        )
+
+    def write_manifest(value: dict[str, Any], subject: str) -> None:
+        (repo / "plans/manifest.json").write_bytes(canonical_bytes(value))
+        _run(["git", "add", "plans/manifest.json"], repo)
+        _run(["git", "commit", "-qm", subject], repo)
+
+    value = manifest()
+    row = next(row for row in value["plans"] if row.get("phase_alias") == "HARDEN")
+    authorization_ids = (
+        "agent-harness#self-test:shared:a",
+        "agent-harness#self-test:shared:b",
+    )
+    base_blobs = {path: blob(repo, "HEAD", path)[0] for path in authorization_paths}
+    row["sl0_repairs"] = [
+        {
+            "authorization_id": authorization_id,
+            "entry": "authorization",
+            "issue": "Consiliency/agent-harness#self-test",
+            "decision": "authorize the shared-merge fixture",
+            "frozen_by": "HARDEN verifier self-test",
+            "reason": "exercise disjoint authorizations sharing one merge",
+            "files": [{
+                "path": path,
+                "base_blob": base_blobs[path],
+                "nodes": [f"SharedMerge::{index}"],
+            }],
+            "landed": None,
+            "landed_note": "the shared merge landing follows",
+        }
+        for index, (authorization_id, path) in enumerate(
+            zip(authorization_ids, authorization_paths, strict=True)
+        )
+    ]
+    write_manifest(value, "authorize disjoint shared-merge repairs")
+
+    _run(["git", "checkout", "-qb", "shared-merge-repair"], repo)
+    changed_paths = set(paths if mutation != "overlapping-paths" else authorization_paths)
+    if mutation == "uncovered-path":
+        changed_paths.add(FROZEN_SL0_PATHS[2])
+    for index, path in enumerate(sorted(changed_paths)):
+        (repo / path).write_text(f"shared merge repair {index}\n")
+        _run(["git", "add", path], repo)
+    _run(["git", "commit", "-qm", "apply disjoint shared-merge repairs"], repo)
+    _run(["git", "checkout", "-q", "historical-baseline"], repo)
+    _run(
+        ["git", "merge", "--no-ff", "-qm", "land disjoint repairs", "shared-merge-repair"],
+        repo,
+    )
+    merge_commit = _run(["git", "rev-parse", "HEAD"], repo)
+    first_parent = commit_parents(repo, merge_commit, "self-test shared merge")[0]
+
+    value = manifest()
+    row = next(row for row in value["plans"] if row.get("phase_alias") == "HARDEN")
+    landed_records = [
+        {
+            "authorization_id": authorization_id,
+            "entry": "landed",
+            "issue": "Consiliency/agent-harness#self-test",
+            "merge_commit": merge_commit,
+            "merge_first_parent": first_parent,
+            "files": [{
+                "path": path,
+                "nodes": [f"SharedMerge::{index}"],
+                "old_blob": base_blobs[path],
+                "new_blob": blob(repo, merge_commit, path)[0],
+            }],
+            "note": "one record for this authorization's part of the shared merge",
+        }
+        for index, (authorization_id, path) in enumerate(
+            zip(authorization_ids, authorization_paths, strict=True)
+        )
+    ]
+    if mutation == "unlanded-sibling":
+        landed_records.pop()
+    row["sl0_repairs"].extend(landed_records)
+    write_manifest(value, "record shared-merge repair landings")
+    return repo, reviewed, landing, _run(["git", "rev-parse", "HEAD"], repo), paths
+
+
 def _self_historical_baseline_chain(
     root: Path,
     mutation: str | None = None,
@@ -6788,6 +6887,27 @@ def self_test() -> None:
             )
             return accepted, expected
 
+        def exercise_shared_merge_repair(
+            name: str,
+            mutation: str | None = None,
+        ) -> tuple[dict[str, str], Path, tuple[str, str]]:
+            shared_root = root / name
+            shared_root.mkdir()
+            repo, reviewed, landing, verified, paths = (
+                _self_shared_merge_repair_chain(shared_root, mutation)
+            )
+            return (
+                accepted_frozen_blobs(
+                    repo,
+                    reviewed,
+                    landing,
+                    verified,
+                    set(FROZEN_SL0_PATHS),
+                ),
+                repo,
+                paths,
+            )
+
         historical_accepted, historical_expected = exercise_historical_baseline(
             "valid-historical-baseline"
         )
@@ -6836,6 +6956,24 @@ def self_test() -> None:
             valid_repo, "HEAD", FROZEN_SL0_PATHS[0]
         )[0]:
             raise AssertionError("valid frozen repair chain did not advance the accepted blob")
+        shared_repair, shared_repo, shared_paths = exercise_shared_merge_repair(
+            "valid-shared-merge-repair-chain"
+        )
+        for path in shared_paths:
+            if shared_repair[path] != blob(shared_repo, "HEAD", path)[0]:
+                raise AssertionError("shared-merge repair did not advance its accepted blob")
+        for shared_mutation in (
+            "overlapping-paths",
+            "uncovered-path",
+            "unlanded-sibling",
+        ):
+            direct_rejected(
+                "shared-merge-repair-" + shared_mutation,
+                lambda shared_mutation=shared_mutation: exercise_shared_merge_repair(
+                    "shared-merge-repair-" + shared_mutation,
+                    shared_mutation,
+                ),
+            )
         exercise_repair_chain(
             "valid-cross-row-repair-chain",
             phase_alias="EXECFIND",
@@ -7726,6 +7864,67 @@ def self_test() -> None:
             red = model["sl0"]["activated_red"]; replace(red["junit"], artifact_root, b'<testsuite><testcase classname="pkg" name="x"><skipped/></testcase></testsuite>')
             mutate_json(red["receipt"], artifact_root, lambda receipt_value: receipt_value.__setitem__("junit_sha256", red["junit"]["sha256"]))
         rejected("skipped-junit", skipped_junit)
+        def skipped_final_pure_control(
+            model: dict[str, Any], local_root: Path, artifact_root: Path
+        ) -> None:
+            result = model["verification"]["candidate"]["pure_control"]
+            junit_tree = ET.fromstring(
+                (artifact_root / result["junit"]["path"]).read_bytes()
+            )
+            case = junit_tree.find("testcase")
+            if case is None:
+                raise AssertionError("self-test pure control has no testcase")
+            ET.SubElement(case, "skipped", message="required control skipped")
+            junit = ET.tostring(junit_tree)
+            replace(result["junit"], artifact_root, junit)
+
+            receipt_value = parse_canonical_json(
+                (artifact_root / result["receipt"]["path"]).read_bytes(),
+                "self-test pure-control receipt",
+            )
+            receipt_value["summary"]["passed"] -= 1
+            receipt_value["summary"]["skipped"] += 1
+            raw = (
+                f"{receipt_value['summary']['passed']} passed, 1 skipped, "
+                f"{receipt_value['summary']['subtests']} subtests passed\n"
+                "run=candidate-pure_control\n"
+            ).encode()
+            replace(result["raw"], artifact_root, raw)
+            receipt_value["raw_sha256"] = result["raw"]["sha256"]
+            receipt_value["junit_sha256"] = result["junit"]["sha256"]
+            cases = parse_junit(junit, "self-test skipped pure-control JUnit")
+            receipt_value["nodeids_sha256"] = sha256(
+                canonical_bytes(sorted(item["node"] for item in cases))
+            )
+            replace(result["receipt"], artifact_root, canonical_bytes(receipt_value))
+
+            retained = model["authority"]["retained_inputs"]
+            execution_ref = next(
+                item
+                for item in retained
+                if item["path"].endswith("retained-execution-runs.json")
+            )
+            execution = parse_canonical_json(
+                (artifact_root / execution_ref["path"]).read_bytes(),
+                "self-test retained execution runs",
+            )
+            observation_ref = execution["runs"]["candidate_pure_control"]
+            observation = parse_canonical_json(
+                (artifact_root / observation_ref["path"]).read_bytes(),
+                "self-test pure-control observation",
+            )
+            observation["raw"] = dict(result["raw"])
+            observation["junit"] = dict(result["junit"])
+            observation_bytes = canonical_bytes(observation)
+            replace(observation_ref, artifact_root, observation_bytes)
+            (local_root / "repo" / observation_ref["path"]).write_bytes(
+                observation_bytes
+            )
+            for retained_ref in retained:
+                if retained_ref["path"] == observation_ref["path"]:
+                    retained_ref["sha256"] = observation_ref["sha256"]
+            replace(execution_ref, artifact_root, canonical_bytes(execution))
+        rejected("skipped-final-pure-control", skipped_final_pure_control)
         def nonbiting(model: dict[str, Any], _root: Path, artifact_root: Path) -> None:
             mutation = model["sl0"]["mutations"][0]["mutation"]; replace(mutation["raw"], artifact_root, b"1 failed but no bite marker\n")
             mutate_json(mutation["receipt"], artifact_root, lambda receipt_value: receipt_value.__setitem__("raw_sha256", mutation["raw"]["sha256"]))
