@@ -197,14 +197,14 @@
     {
       "assumption": 2,
       "expected": {
-        "agreed_value": "0.7.24",
+        "agreed_value": "0.7.25",
         "must_agree": true
       },
       "id": "LEGIBLE-A2-LOCAL-VERSION",
       "kind": "repo_constant",
       "mutation_id": "change-either-surface-alone",
       "positive_control_id": "current-equal-pair",
-      "source_anchor": "we ship 0.7.24",
+      "source_anchor": "we ship 0.7.25",
       "subject": {
         "surfaces": [
           {
