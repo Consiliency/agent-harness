@@ -2805,8 +2805,17 @@ def _repair_file(
     value: Any,
     label: str,
     fields: set[str],
+    *,
+    optional_text_fields: set[str] | None = None,
 ) -> dict[str, Any]:
-    item = closed(value, fields, label)
+    optional = set() if optional_text_fields is None else optional_text_fields
+    if (
+        not isinstance(value, dict)
+        or not fields <= set(value)
+        or not set(value) - fields <= optional
+    ):
+        fail(f"{label}: unknown or missing field")
+    item = value
     path = text(item["path"], label + ".path")
     canonical_relative_parts(path, label + ".path")
     nodes = item["nodes"]
@@ -2819,6 +2828,8 @@ def _repair_file(
         fail(label + ": nodes are malformed")
     for key in fields - {"path", "nodes"}:
         text(item[key], label + "." + key, pattern=HEX40)
+    for key in optional & set(item):
+        text(item[key], label + "." + key)
     return item
 
 
@@ -2878,7 +2889,12 @@ def accepted_frozen_blobs(
             if not isinstance(files, list) or not files:
                 fail("HARDEN repair authorization files are malformed")
             parsed = [
-                _repair_file(file, "HARDEN repair authorization file", {"path", "base_blob", "nodes"})
+                _repair_file(
+                    file,
+                    "HARDEN repair authorization file",
+                    {"path", "base_blob", "nodes"},
+                    optional_text_fields={"change"},
+                )
                 for file in files
             ]
             if len({file["path"] for file in parsed}) != len(parsed):
@@ -2886,11 +2902,14 @@ def accepted_frozen_blobs(
             item["files"] = parsed
             authorizations[authorization_id] = item
         elif entry_type == "authorization_supplement":
-            item = closed(
-                raw,
-                {"authorization_id", "entry", "issue", "decision", "reason", "files", "rule"},
-                "HARDEN repair authorization supplement",
-            )
+            supplement_fields = {
+                "authorization_id", "entry", "issue", "decision", "reason", "files", "rule",
+            }
+            if "applied_by" in raw:
+                supplement_fields.add("applied_by")
+            item = closed(raw, supplement_fields, "HARDEN repair authorization supplement")
+            if "applied_by" in item:
+                text(item["applied_by"], "HARDEN repair authorization supplement.applied_by")
             files = item["files"]
             if not isinstance(files, list) or not files:
                 fail("HARDEN repair supplement files are malformed")
@@ -2899,9 +2918,15 @@ def accepted_frozen_blobs(
                 if not isinstance(file, dict):
                     fail("HARDEN repair supplement file is malformed")
                 fields = set(file)
-                if fields not in ({"path", "nodes"}, {"path", "base_blob", "nodes"}):
+                base_fields = fields - {"change"}
+                if base_fields not in ({"path", "nodes"}, {"path", "base_blob", "nodes"}):
                     fail("HARDEN repair supplement file fields mismatch")
-                parsed.append(_repair_file(file, "HARDEN repair supplement file", fields))
+                parsed.append(_repair_file(
+                    file,
+                    "HARDEN repair supplement file",
+                    base_fields,
+                    optional_text_fields={"change"},
+                ))
             item["files"] = parsed
             supplements.setdefault(authorization_id, []).append(item)
         elif entry_type == "landed":
@@ -2972,11 +2997,7 @@ def accepted_frozen_blobs(
         )
         ancestor(repo, authorization_intro, merge_commit, "HARDEN repair authorization timing")
         if phase_alias == "HARDEN":
-            boundaries = (
-                (merge_commit,)
-                if disposition_paths_by_merge.get(merge_commit)
-                else (landing_entry["merge_first_parent"], merge_commit)
-            )
+            boundaries = (merge_commit,)
             for boundary in boundaries:
                 _require_manifest_entry_at_revision(
                     repo,
@@ -5582,6 +5603,7 @@ def _self_repair_chain(
         (repo / "plans/manifest.json").write_bytes(canonical_bytes(value))
 
     authorization_id = "agent-harness#self-test:repair"
+    real_landing_shape = mutation == "side-branch-real-shape"
     first_blob = blob(repo, "HEAD", first_path)[0]
     second_blob = blob(repo, "HEAD", second_path)[0]
     authorization = {
@@ -5595,6 +5617,7 @@ def _self_repair_chain(
             "path": first_path,
             "base_blob": first_blob,
             "nodes": ["SelfTest::first"],
+            **({"change": "exercise descriptive repair metadata"} if real_landing_shape else {}),
         }],
         "landed": None,
         "landed_note": "self-test landing follows",
@@ -5609,8 +5632,10 @@ def _self_repair_chain(
             "path": second_path,
             "base_blob": second_blob,
             "nodes": ["SelfTest::second"],
+            **({"change": "exercise descriptive supplement metadata"} if real_landing_shape else {}),
         }],
         "rule": "self-test supplement rule",
+        **({"applied_by": "HARDEN self-test"} if real_landing_shape else {}),
     }
     if mutation == "conflicting-base-blob":
         supplement["files"] = [{
@@ -5620,11 +5645,19 @@ def _self_repair_chain(
         }]
     if mutation == "unknown-supplement-id":
         supplement["authorization_id"] = authorization_id + ":unknown"
+    if mutation == "authorization-change-not-text":
+        authorization["files"][0]["change"] = 1
+    if mutation == "supplement-change-not-text":
+        supplement["files"][0]["change"] = 1
+    if mutation == "supplement-applied-by-not-text":
+        supplement["applied_by"] = 1
     repairs = [authorization]
     if mutation == "duplicate-authorization":
         repairs.append(copy.deepcopy(authorization))
     if mutation not in {"supplement-after-spent", "authorization-restored-after-spend"}:
         repairs.append(supplement)
+    if real_landing_shape:
+        _run(["git", "checkout", "-qb", "repair"], repo)
     write_repairs(repairs)
     _run(["git", "add", "plans/manifest.json"], repo)
     _run(["git", "commit", "-qm", "authorize frozen repair"], repo)
@@ -5638,7 +5671,8 @@ def _self_repair_chain(
         _run(["git", "add", "plans/manifest.json"], repo)
         _run(["git", "commit", "-qm", "withdraw authorization before repair"], repo)
 
-    _run(["git", "checkout", "-qb", "repair"], repo)
+    if not real_landing_shape:
+        _run(["git", "checkout", "-qb", "repair"], repo)
     (repo / first_path).write_text("repaired first frozen path\n")
     if mutation not in {"conflicting-base-blob", "authorization-restored-after-spend"}:
         (repo / second_path).write_text("repaired second frozen path\n")
@@ -8942,6 +8976,15 @@ def self_test() -> None:
             valid_repo, "HEAD", FROZEN_SL0_PATHS[0]
         )[0]:
             raise AssertionError("valid frozen repair chain did not advance the accepted blob")
+        real_shape_repair = exercise_repair_chain(
+            "valid-side-branch-real-shape",
+            "side-branch-real-shape",
+        )
+        real_shape_repo = root / "valid-side-branch-real-shape" / "repo"
+        if real_shape_repair[FROZEN_SL0_PATHS[0]] != blob(
+            real_shape_repo, "HEAD", FROZEN_SL0_PATHS[0]
+        )[0]:
+            raise AssertionError("real landing-shape repair did not advance the accepted blob")
         shared_repair, shared_repo, shared_paths = exercise_shared_merge_repair(
             "valid-shared-merge-repair-chain"
         )
@@ -8997,6 +9040,9 @@ def self_test() -> None:
             "supplement-restored-after-spend",
             "authorization-restored-after-spend",
             "unknown-supplement-id",
+            "authorization-change-not-text",
+            "supplement-change-not-text",
+            "supplement-applied-by-not-text",
             "conflicting-base-blob",
             "misses-supplement-path",
             "duplicate-authorization",
