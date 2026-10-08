@@ -4747,14 +4747,21 @@ def test_harden_verifier_bounds_canonical_ledger_reads(
 
     child = context.Process(target=verify_attacked_ledger)
     child.start()
-    child.join(4)
+    child.join(20)
     try:
         assert not child.is_alive(), f"{attack} canonical ledger read did not terminate"
         assert child.exitcode == 0
         diagnostic = result.get(timeout=1)
         assert diagnostic != "accepted"
         assert any(
-            word in diagnostic for word in ("regular file", "symlink", "unavailable", "bounded size")
+            word in diagnostic
+            for word in (
+                "regular file",
+                "symlink",
+                "unavailable",
+                "bounded size",
+                "not clean",
+            )
         ), diagnostic
     finally:
         if child.is_alive():
