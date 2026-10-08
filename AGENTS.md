@@ -43,9 +43,9 @@ becomes unsatisfiable and every landing forces another amendment.
   restate or paraphrase. A paraphrase drifts and then two documents disagree about
   "done". Legacy phases without IDs remain supported.
 - **Keep plans short and let frozen artifacts carry the detail.** The execution
-  plan has a word budget of 2000 plus 500 per lane by default, configurable in
-  `.phase-loop/planning.toml` (`validate_plan_doc.py` check (S) warns above it);
-  the frozen artifacts it references have no cap. When a plan runs long, move the
+  plan has a word budget of 2000 plus 500 per lane by default, configurable per
+  repo and per phase (`docs/phase-loop/plan-budget.md`; `validate_plan_doc.py`
+  check (S) warns above it); the frozen artifacts it references have no cap. When a plan runs long, move the
   detail into an artifact rather than cutting it.
 - **Watch the ratio.** If plan amendments start outnumbering implementation, stop
   and diagnose rather than pushing through.
