@@ -86,11 +86,14 @@ def _atomic_json(path: Path, payload: dict, *, mode: int = 0o666) -> None:
 def _read_json_nofollow(path: Path) -> dict | None:
     """``None`` when ``path`` is absent; its JSON object when it is a regular file.
 
-    A symlink, a non-regular file, or bytes that are not a JSON object refuse
-    with ``PublishTransactionConflict`` (agent-harness#1296 recovery records).
+    A symlink, a non-regular file (a FIFO included, without blocking), or bytes
+    that are not a JSON object refuse with ``PublishTransactionConflict``
+    (agent-harness#1296 recovery records).
     """
     try:
-        descriptor = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW)
+        # O_NONBLOCK: a FIFO planted at ``path`` must not block the open (and the
+        # transaction lock with it); the type check below then refuses it.
+        descriptor = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except FileNotFoundError:
         return None
     except OSError as error:

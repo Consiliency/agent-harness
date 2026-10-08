@@ -480,7 +480,7 @@ def test_recovery_record_write_contract(tmp_path, monkeypatch):
     assert not [f for f in record_path.parent.iterdir() if f.name.endswith(".tmp")]
 
 
-@pytest.mark.parametrize("shape", ["symlink", "directory", "not_json"])
+@pytest.mark.parametrize("shape", ["symlink", "directory", "fifo", "not_json"])
 def test_existing_recovery_record_that_is_not_a_json_regular_file_refuses(tmp_path, monkeypatch, shape):
     """Board item 2: fail closed, typed, with no owner, admission or provider call."""
     from phase_loop_runtime.publishing import PublishTransactionConflict
@@ -492,11 +492,24 @@ def test_existing_recovery_record_that_is_not_a_json_regular_file_refuses(tmp_pa
         record_path.symlink_to(target)
     elif shape == "directory":
         record_path.mkdir()
+    elif shape == "fifo":
+        os.mkfifo(record_path)  # no writer: a blocking open would hang here
     else:
         record_path.write_text("not json\n")
     adapter = _CountingAdapter()
-    with pytest.raises(PublishTransactionConflict):
-        _publish_on_successor(None, outcome, p, p.request, adapter=adapter)
+    import signal
+
+    def _hung(*_):
+        raise AssertionError("opening the existing record blocked")
+
+    previous = signal.signal(signal.SIGALRM, _hung)
+    signal.alarm(20)
+    try:
+        with pytest.raises(PublishTransactionConflict):
+            _publish_on_successor(None, outcome, p, p.request, adapter=adapter)
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, previous)
     assert adapter.calls == []
     assert _owner(outcome.store_root) is None
     assert _jsonl(outcome.store_root / "admissions.jsonl") == []
