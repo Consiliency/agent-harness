@@ -4893,7 +4893,17 @@ def test_harden_verifier_bounds_canonical_ledger_reads(
 
     def verify_attacked_ledger() -> None:
         try:
-            verifier.verify(evidence_path, artifacts, repo, **verify_kwargs)
+            if attack == "parent-symlink":
+                verifier.verify_completion(
+                    verifier.ArtifactStore(artifacts),
+                    evidence["completion"],
+                    verifier.normalized_precompletion_digest(evidence),
+                    evidence["git"]["canonical_main"]["commit"],
+                    evidence["git"]["canonical_main"]["tree"],
+                    repo,
+                )
+            else:
+                verifier.verify(evidence_path, artifacts, repo, **verify_kwargs)
         except verifier.EvidenceError as exc:
             result.put(str(exc))
         else:
