@@ -72,7 +72,7 @@
       "quote": "Owned files MUST enumerate the COMPLETE set the executor will touch",
       "status": "unenforced",
       "unenforced_reason": "gap",
-      "tracking": "agent-harness#1304"
+      "tracking": "agent-harness#1355"
     },
     {
       "id": "plan-phase.skip-unneeded-reconnaissance",
