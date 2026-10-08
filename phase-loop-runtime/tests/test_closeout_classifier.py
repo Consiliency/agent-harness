@@ -6,6 +6,7 @@ patterns (secrets, lockfile, ci) win over broad SAFE rules; tests are UNSAFE;
 config_nonsource is a tight allowlist; unmatched is deny-by-default UNSAFE.
 """
 
+import re
 import unittest
 
 import phase_loop_runtime.models as m
@@ -528,7 +529,10 @@ class TestIgnoredOutputAudit(unittest.TestCase):
             buf = io.StringIO()
             with contextlib.redirect_stdout(buf):
                 code = main(argv)
-            return code, buf.getvalue().strip().splitlines()[-1]
+            lines = buf.getvalue().strip().splitlines()
+            # Exactly one action line per exit, and it is the last line.
+            self.assertEqual(sum(l.startswith("action: ") for l in lines), 1, lines)
+            return code, lines[-1]
 
         with TemporaryDirectory() as tmp:
             repo = self._repo(tmp)
@@ -547,12 +551,12 @@ class TestIgnoredOutputAudit(unittest.TestCase):
             code, line = last_line(["--repo", str(repo)])
             self.assertEqual(code, 1)
             self.assertTrue(line.startswith("action: exit 1 "), line)
-            self.assertIn("terminal_status=dirty_worktree_conflict", line)
+            self.assertIn("terminal_status=blocked and blocker_class=dirty_worktree_conflict", line)
 
             code, line = last_line(["--repo", str(Path(tmp) / "nope")])
             self.assertEqual(code, 2)
             self.assertTrue(line.startswith("action: exit 2 "), line)
-            self.assertIn("terminal_status=dirty_worktree_conflict", line)
+            self.assertIn("terminal_status=blocked and blocker_class=dirty_worktree_conflict", line)
             self.assertIn("never evidence of a clean tree", line)
 
             # The other exit-2 path: --record-outputs refusing a declaration.
@@ -569,4 +573,76 @@ class TestIgnoredOutputAudit(unittest.TestCase):
                 cc.generated_outputs.run_declared_producers = original
             self.assertEqual(code, 2)
             self.assertTrue(line.startswith("action: exit 2 "), line)
-            self.assertIn("terminal_status=dirty_worktree_conflict", line)
+            self.assertIn("terminal_status=blocked and blocker_class=dirty_worktree_conflict", line)
+
+    def test_every_closeout_action_names_valid_closeout_fields(self):
+        """agent-harness#1328: an action line that names a closeout field must name
+        a value the closeout validators accept, or an executor that follows it writes
+        a closeout that is rejected. The oracle is models.py, never the classifier.
+        """
+        import phase_loop_runtime.closeout_classifier as cc
+
+        actions = list(cc.CLOSEOUT_ACTIONS.values()) + [getattr(cc, "CRASH_ACTION", "")]
+        statuses = set(m.CLOSEOUT_SCHEMA["properties"]["terminal_status"]["enum"])
+        named_status = named_class = 0
+        for line in actions:
+            for value in re.findall(r"terminal_status=([a-z_]+)", line):
+                named_status += 1
+                self.assertIn(value, statuses, line)
+                self.assertIn(value, m.PIPELINE_CLOSEOUT_OUTCOMES, line)
+            for value in re.findall(r"blocker_class=([a-z_]+)", line):
+                named_class += 1
+                self.assertIn(value, m.BLOCKER_CLASSES, line)
+        self.assertGreaterEqual(named_status, 3)
+        self.assertGreaterEqual(named_class, 3)
+
+    def test_an_exception_exit_still_prints_one_blocking_action(self):
+        """agent-harness#1328: an exit the audit raises from (here a recording
+        failure, and a trailing --repo with no value) still ends with exactly one
+        blocking action line, through both the module and the console entrypoint.
+        The exception still propagates, so the process exits 1 with its traceback.
+        """
+        import contextlib
+        import io
+        import sys
+        import phase_loop_runtime.closeout_classifier as cc
+
+        def run(entry, argv):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                with self.assertRaises(Exception):
+                    if entry == "console":
+                        saved = sys.argv
+                        sys.argv = ["phase-loop-closeout-audit", *argv]
+                        try:
+                            cc.console_main()
+                        finally:
+                            sys.argv = saved
+                    else:
+                        cc.main(argv)
+            return buf.getvalue().strip().splitlines()
+
+        with TemporaryDirectory() as tmp:
+            import json
+            from phase_loop_test_utils import commit_fixture_paths, make_repo
+
+            repo = make_repo(Path(tmp))
+            declaration = repo / cc.generated_outputs.DECLARATION_PATH
+            declaration.write_text(json.dumps({
+                "schema": cc.generated_outputs.DECLARATION_SCHEMA,
+                "producers": [{"name": "build", "command": [sys.executable, "-c", "pass"],
+                               "outputs": ["dist/**"]}],
+            }))
+            commit_fixture_paths(repo, "declare producer", declaration)
+            # Recording fails on a filesystem error, not a typed refusal.
+            (repo / ".phase-loop").write_text("regular file, not a directory\n")
+            cases = [
+                ["--repo", str(repo), "--record-outputs", "--phase", "TEST"],
+                ["--repo"],
+            ]
+            for entry in ("module", "console"):
+                for argv in cases:
+                    lines = run(entry, argv)
+                    self.assertEqual(sum(l.startswith("action: ") for l in lines), 1, (entry, argv, lines))
+                    self.assertTrue(lines[-1].startswith("action: "), (entry, argv, lines))
+                    self.assertIn("terminal_status=blocked and blocker_class=dirty_worktree_conflict", lines[-1])

@@ -96,7 +96,7 @@ def test_golden_delta_is_only_final_schema_exclusion():
     # The fourth permitted delta (agent-harness#1303): the execute-phase closeout rule
     # text was restructured (broken sentences fixed, exit-code mapping as a list, one
     # name for the audit). Undo exactly that span, which the claude prompt embeds,
-    # before the #1139 pairs below run against the text they were written for.
+    # before the agent-harness#1139 pairs below run against the text they were written for.
     pre_1303 = json.loads((Path(__file__).parent / "data/launchspec_golden/pre_1303_closeout_rule.json").read_text())
     assert pre_1303["current"] in canonical
     canonical = canonical.replace(pre_1303["current"], pre_1303["pre_1303"])

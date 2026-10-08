@@ -27,9 +27,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Closeout audit states its own required action (agent-harness#1303)
 
-- `phase-loop-closeout-audit` now ends every exit path with an `action: exit N (...) -> ...`
-  line: exit 0 means ignored paths do not block (the dirty-path classification still
-  decides), exit 1 and exit 2 mean stop with `dirty_worktree_conflict`.
+- `phase-loop-closeout-audit` now ends every exit it returns or raises from with exactly one
+  `action:` line: exit 0 means ignored paths do not block (the dirty-path classification
+  still decides); exit 1, exit 2 and an exception (exit 1) mean stop with
+  `terminal_status=blocked` and `blocker_class=dirty_worktree_conflict`. A process killed by
+  a signal prints none, and the skills' exit-code list governs.
 - The execute-phase closeout rules (codex, gemini, claude) no longer contain the two broken
   clauses ("so the audit blocks and block only when ..."). The exit-code mapping is a
   condition-first list, kept as the fallback for a runtime without the action line. The

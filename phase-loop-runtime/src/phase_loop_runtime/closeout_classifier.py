@@ -395,11 +395,19 @@ CLOSEOUT_ACTIONS = {
     0: "action: exit 0 (no unknown ignored outputs) -> ignored paths do not block "
        "closeout; the dirty-path classification still decides the terminal status",
     1: "action: exit 1 (unknown ignored outputs) -> BLOCKS: stop with "
-       "terminal_status=dirty_worktree_conflict; never report complete",
+       "terminal_status=blocked and blocker_class=dirty_worktree_conflict; never "
+       "report complete",
     2: "action: exit 2 (probe failed) -> BLOCKS: stop with "
-       "terminal_status=dirty_worktree_conflict; inability to measure is never "
-       "evidence of a clean tree",
+       "terminal_status=blocked and blocker_class=dirty_worktree_conflict; inability "
+       "to measure is never evidence of a clean tree",
 }
+# Printed when the audit raises instead of returning. The exception still propagates,
+# so the process exits 1 with its traceback; this line names no exit number for that reason.
+CRASH_ACTION = (
+    "action: exit non-zero (the closeout audit failed to run) -> BLOCKS: stop with "
+    "terminal_status=blocked and blocker_class=dirty_worktree_conflict; inability to "
+    "measure is never evidence of a clean tree"
+)
 
 
 def _exit(code: int) -> int:
@@ -408,14 +416,29 @@ def _exit(code: int) -> int:
 
 
 def main(argv: list[str]) -> int:
+    """``python -m phase_loop_runtime.closeout_classifier --repo .``; see ``_main``.
+
+    An exception still ends with exactly one blocking action line, then propagates.
+    """
+
+    try:
+        return _main(argv)
+    except (Exception, KeyboardInterrupt):
+        print(CRASH_ACTION, flush=True)
+        raise
+
+
+def _main(argv: list[str]) -> int:
     """``python -m phase_loop_runtime.closeout_classifier --repo .``
 
     Exit 0 = no unknown ignored outputs, so ignored dirt is NOT a closeout
     blocker. Exit 1 = unknown ignored outputs present, which still blocks.
     Exit 2 = the probe itself failed (including an invalid committed
-    generated-outputs declaration). Every exit prints its ``CLOSEOUT_ACTIONS``
-    line last, so the executor reads the required terminal action from the
-    tool instead of re-deriving it from skill prose (agent-harness#1303).
+    generated-outputs declaration). Every exit the audit returns or raises from
+    prints exactly one action line last (``CLOSEOUT_ACTIONS``, or ``CRASH_ACTION``
+    for an exception), so the executor reads the required terminal action from the
+    tool instead of re-deriving it from skill prose (agent-harness#1303). A process
+    killed by a signal prints none, and the skills' exit-code list governs.
 
     ``--record-outputs`` (agent-harness#1139) first runs, one at a time and under
     observation, every producer the committed ``.phase-loop-generated-outputs.json``
