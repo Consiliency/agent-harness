@@ -56,7 +56,7 @@ A **qualified CLI version** is a key that passed every operation that applies to
 
 **The key is `(harness, platform, launcher_identity, help_digest, runtime_identity)`.**
 - `launcher_identity` is the sha256 of the resolved real-path content of the entry the seat actually executes. Resolution reuses `_seat_provider_source`.
-  - For a script launcher (an npm-shipped `codex.js` or claude entry), the key also includes the sha256 of the interpreter's real path. That is an open question: see Q2.
+  - For a script launcher (an npm-shipped `codex.js` or claude entry), the key also includes the sha256 of the interpreter's real path. Ruled (Q2, 2026-10-08): yes, the interpreter hash is part of the key.
 - `help_digest` is the sha256 of a per-adapter **option-surface probe**. That is the declared help argv(s) covering every flag the seat's launch builder uses, with stdout and stderr captured together, the way AQ:1071 does it.
 - `runtime_identity` is `__version__` plus the digests of the harness adapter's own route-core files. agy's tuple is unchanged.
 - The version string is a display label only and never part of the key.
@@ -137,10 +137,10 @@ The adapters hold no fleet paths or markers.
 
 The schema has `additionalProperties: false`, and every string is constrained to hex, semver, an enum or an ISO time. It carries **no** HMAC, machine-id, hostname, path, username, environment, credential or raw receipt. The exporter validates its own output against the schema and refuses to write a record that fails.
 
-**Submission.** The operator attaches the record to a draft PR or an issue. v1 does not push automatically: see Q4.
+**Submission.** The operator attaches the record to a draft PR or an issue. v1 does not push automatically (ruled, Q4).
 
 **Promotion is the only way the shipped list grows.** A promotion PR adds the member to the catalog (shape in PR6). CI and the release lane then **re-verify it independently**:
-1. Obtain the artifact through the adapter's `upstream_provenance`, then match `launcher_sha256` (and `interpreter_sha256` where it applies) and re-measure `help_sha256`. For agy this is `agy_provenance`. For npm-shipped CLIs it is the registry tarball's published integrity. For a harness with no verifiable upstream, promotion is refused: see Q3.
+1. Obtain the artifact through the adapter's `upstream_provenance`, then match `launcher_sha256` (and `interpreter_sha256` where it applies) and re-measure `help_sha256`. For agy this is `agy_provenance`. For npm-shipped CLIs it is the registry tarball's published integrity. For a harness with no verifiable upstream digest (grok, opencode), promotion is refused and the harness stays first-use only (ruled, Q3).
 2. Run the live operations on a release-lane host and commit a redacted record that the verifier checks against the binary hash, as agy members are recorded today.
 
 The host's candidate is a lead and is never evidence: the verifier never reads its `ops`.
@@ -241,7 +241,7 @@ Acceptance:
 
 Falsifier: point a candidate's hash at a different upstream asset, and the CI step must go red.
 
-**PR7: counting enforcement for non-agy legs. Gated on Q1.** This PR extends `counts_toward_landing` / `president_input_items` (AQ:1290-1330) to every harness's class. Until it lands, PR3 and PR4 record the class but do not change counting.
+**PR7: counting enforcement for non-agy legs (ruled, Q1).** This PR lands in the release *after* the one that ships PR3 and PR4. It extends `counts_toward_landing` / `president_input_items` (AQ:1290-1330) to every harness's class. Until it lands, PR3 and PR4 record the class but do not change counting.
 
 **Rollout and migration summary:**
 - Self-qualification is on by default per harness, with a user-config opt-out.
@@ -249,7 +249,8 @@ Falsifier: point a candidate's hash at a different upstream asset, and the CI st
 - agy v1 entries migrate by verified legacy read (PR5).
 - Shipped non-agy members start empty. Every host self-qualifies until PR6 promotions land.
 
-### (f) Open questions for the maintainer
+### (f) Questions put to the maintainer
+All five are ruled; see "Maintainer rulings" below. The question text is kept as history.
 - **Q1. Counting.** Should a non-agy leg without a `release_qualified` or `locally_qualified` class stop counting toward landing, as agy's does? *Recommend:* yes, as PR7, after PR3 and PR4 have been live for one release.
 - **Q2. Script launchers.** Does the interpreter (node) identity enter the key for npm-shipped CLIs? *Recommend:* yes. A node upgrade then triggers one cheap re-run per host.
 - **Q3. Promotion without verifiable upstream provenance.** For harnesses such as grok or opencode with no published integrity digest, choose between two options:
@@ -259,6 +260,14 @@ Falsifier: point a candidate's hash at a different upstream asset, and the CI st
 - **Q5. Requalifying non-agy members at release.** Decision 2 keeps full requalification for agy members. Choose between two options:
   - *Recommended:* re-run every listed member of every harness at each cut. This costs about 1 min of inference per member and pushes towards a short list.
   - Re-run only the newest member per harness, and age out older ones.
+
+### Maintainer rulings (2026-10-08)
+These rulings are append-only. All five follow the recommendation, and no maintainer decision is left open.
+- **Q1: yes.** A non-agy leg without a `release_qualified` or `locally_qualified` class stops counting toward landing. The first release that ships PR3 and PR4 only records the class. PR7 enforces it in the next release.
+- **Q2: yes.** For npm-shipped CLIs, the node interpreter's real-path sha256 is part of the qualification key.
+- **Q3: strict.** A harness with no verifiable upstream digest (today grok and opencode) is never promoted. It stays first-use only, and its shipped list stays empty.
+- **Q4: manual submission in v1.** The operator attaches the exported record to a PR or an issue. There is no watcher-driven promotion PR.
+- **Q5: requalify every listed member of every harness at each release cut.**
 
 ## Changes
 The PR sections in (e) list every file. The new entities are:
@@ -283,7 +292,7 @@ No existing notice code is renamed or removed.
 - PR2 → PR3 → PR4.
 - PR5 needs PR2 and a release cut.
 - PR6 needs PR2 and PR5, because the agy route must be on the contract before catalog v2.
-- PR7 needs PR3, PR4 and the Q1 ruling.
+- PR7 needs PR3 and PR4 to have shipped in one release that only records the class (ruled, Q1).
 - PR1's `agy_integrity` change and PR5 both touch agy admission. PR5 must keep PR1's local-admission cell green.
 
 ## Execution Policy
