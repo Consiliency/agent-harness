@@ -134,3 +134,18 @@ def test_cli_end_to_end_flag_and_exit_code(tmp_path: Path) -> None:
     assert "(S) WARN: execution plan is" in default.stderr, default.stderr[-2000:]
     raised = run("--word-budget", str(len(src.split()) * 2))
     assert "(S)" not in raised.stderr
+
+
+def test_cli_reads_phase_override_from_repo_config(tmp_path: Path) -> None:
+    # Wires frontmatter `phase:` -> [plan_budget.phases.<ALIAS>] through main().
+    src = _plan("phase-plan-v10-PANEL.md")
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    _write_config(tmp_path, f"[plan_budget.phases.panel]\nbase_words = {len(src.split()) * 2}\n")
+    plan = tmp_path / "plans" / "phase-plan-v10-PANEL.md"
+    plan.parent.mkdir()
+    plan.write_text(src, encoding="utf-8")
+    proc = subprocess.run(
+        [sys.executable, str(PLAN_VALIDATOR), str(plan)], capture_output=True, text=True
+    )
+    assert "Traceback" not in proc.stderr, proc.stderr[-2000:]
+    assert "(S)" not in proc.stderr

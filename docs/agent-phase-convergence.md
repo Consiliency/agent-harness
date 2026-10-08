@@ -110,8 +110,8 @@ validator warns above it (check (S) in `validate_plan_doc.py`). A flat cap would
 healthy seven-lane phase as hard as a bloated three-lane one. Referenced frozen artifacts carry
 no cap. When a plan
 trips the warning, move detail out into an artifact rather than deleting it.
-Portable analog: a CI step that runs `wc -w` on new plan files and warns above the
-threshold.
+Portable analog: a CI step that runs `wc -w` on new plan files and warns above a base
+allowance plus a per-work-unit allowance. Configuration for ours: `docs/phase-loop/plan-budget.md`.
 
 For a worked example of what a compliant plan contains at this length, see
 `plans/phase-plan-v10-GOVLEAN.md` in this repository.
