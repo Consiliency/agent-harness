@@ -5519,6 +5519,40 @@
           ],
           "landed": null,
           "landed_note": "appended as exactly one separate landed entry after the agent-harness#1222 successor merges, naming authorization_id agent-harness#1222:SEATOWNER:HARDEN"
+        },
+        {
+          "authorization_id": "agent-harness#1222:SEATOWNER:HARDEN",
+          "entry": "landed",
+          "issue": "Consiliency/agent-harness#1222",
+          "merge_commit": "3cbb260bc29c2f2702c095d3de453001745fb364",
+          "merge_first_parent": "1159a46bb72f2434607ebafe72a16bb252f6ca77",
+          "files": [
+            {
+              "path": "phase-loop-runtime/tests/harden_tdd_guard.py",
+              "nodes": [
+                "invoke_sanctioned_board_control"
+              ],
+              "old_blob": "8a2ad54fa38e7430ca8b692c9c49be1e5ffd30ef",
+              "new_blob": "cdd6770df5d905809e8fbe9c82835e920c2a3e39"
+            },
+            {
+              "path": "phase-loop-runtime/tests/test_advisor_board_backing_homebrew.py",
+              "nodes": [
+                "EffortReachesEachCliTests::test_off_host_agent_view_leg_threads_effort"
+              ],
+              "old_blob": "a01138d6b8a35363fc47e22c2eb9dd46a7b24b66",
+              "new_blob": "ec684eccaa978742a4b166c4d4743d35992821af"
+            },
+            {
+              "path": "phase-loop-runtime/tests/test_harden_evidence_verifier.py",
+              "nodes": [
+                "test_a_sandboxed_broker_record_round_trips_and_backend_claims_do_not"
+              ],
+              "old_blob": "404a3c6b1babbfc9d4ccd9749d89ea9774d72a4c",
+              "new_blob": "3c6ad21fc4d32ae1710735e94a388bec89341b0f"
+            }
+          ],
+          "note": "old_blob equals the authorization's base_blob and the path's blob at the merge's first parent; new_blob equals the path's blob at the agent-harness#1282 merge. Appended once after the merge; never mutated."
         }
       ]
     },
