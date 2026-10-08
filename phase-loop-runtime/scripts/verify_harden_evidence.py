@@ -2287,18 +2287,28 @@ def _require_manifest_entry_at_revision(
     label: str,
 ) -> None:
     """Require one exact repair entry in the manifest at a spending boundary."""
+    if not _manifest_contains_exact_entry(repo, revision, phase_alias, entry):
+        fail(label + " is absent at the repair merge boundary")
+
+
+def _manifest_contains_exact_entry(
+    repo: Path,
+    revision: str,
+    phase_alias: str,
+    entry: dict[str, Any],
+) -> bool:
+    """Return whether one exact repair entry exists at a revision."""
     row = manifest_plan_row(repo, revision, phase_alias, required=False)
     repairs = None if row is None else row.get("sl0_repairs")
     wanted = canonical_bytes(entry)
-    if (
-        not isinstance(repairs, list)
-        or sum(
+    return (
+        isinstance(repairs, list)
+        and sum(
             isinstance(item, dict) and canonical_bytes(item) == wanted
             for item in repairs
         )
-        != 1
-    ):
-        fail(label + " is absent at the repair merge boundary")
+        == 1
+    )
 
 
 def _historical_frozen_baseline(
@@ -2998,6 +3008,18 @@ def accepted_frozen_blobs(
         ancestor(repo, authorization_intro, merge_commit, "HARDEN repair authorization timing")
         if phase_alias == "HARDEN":
             boundaries = (merge_commit,)
+            merge_parents = commit_parents(
+                repo, merge_commit, "HARDEN repair authorization merge"
+            )
+            if not any(
+                _manifest_contains_exact_entry(
+                    repo, parent, phase_alias, authorization
+                )
+                for parent in merge_parents
+            ):
+                fail(
+                    "HARDEN repair authorization is absent from every repair merge parent"
+                )
             for boundary in boundaries:
                 _require_manifest_entry_at_revision(
                     repo,
@@ -3012,6 +3034,15 @@ def accepted_frozen_blobs(
             )
             ancestor(repo, supplement_intro, merge_commit, "HARDEN repair supplement timing")
             if phase_alias == "HARDEN":
+                if not any(
+                    _manifest_contains_exact_entry(
+                        repo, parent, phase_alias, supplement
+                    )
+                    for parent in merge_parents
+                ):
+                    fail(
+                        "HARDEN repair supplement is absent from every repair merge parent"
+                    )
                 for boundary in boundaries:
                     _require_manifest_entry_at_revision(
                         repo,
@@ -4995,6 +5026,7 @@ def _reuse_registry_descriptor(
     if nofollow is None or directory is None or not registry_path.name:
         fail("external reuse registry nofollow support is unavailable")
     close_on_exec = getattr(os, "O_CLOEXEC", 0)
+    nonblocking = getattr(os, "O_NONBLOCK", 0)
     absolute = _registry_absolute_path(registry_path)
     parent_fd = os.open(
         "/",
@@ -5012,7 +5044,10 @@ def _reuse_registry_descriptor(
             parent_fd = next_fd
         file_fd = os.open(
             absolute.name,
-            (os.O_RDWR if writable else os.O_RDONLY) | nofollow | close_on_exec,
+            (os.O_RDWR if writable else os.O_RDONLY)
+            | nofollow
+            | close_on_exec
+            | nonblocking,
             dir_fd=parent_fd,
         )
         yield parent_fd, file_fd
@@ -5651,22 +5686,41 @@ def _self_repair_chain(
         supplement["files"][0]["change"] = 1
     if mutation == "supplement-applied-by-not-text":
         supplement["applied_by"] = 1
-    repairs = [authorization]
+    merge_bound_authority = mutation in {
+        "authorization-at-spending-merge",
+        "supplement-at-spending-merge",
+        "authorization-restored-at-spending-merge",
+        "supplement-restored-at-spending-merge",
+    }
+    if mutation == "authorization-at-spending-merge":
+        repairs = []
+    else:
+        repairs = [authorization]
     if mutation == "duplicate-authorization":
         repairs.append(copy.deepcopy(authorization))
-    if mutation not in {"supplement-after-spent", "authorization-restored-after-spend"}:
+    if mutation not in {
+        "supplement-after-spent",
+        "authorization-restored-after-spend",
+        "supplement-at-spending-merge",
+    }:
         repairs.append(supplement)
     if real_landing_shape:
         _run(["git", "checkout", "-qb", "repair"], repo)
     write_repairs(repairs)
     _run(["git", "add", "plans/manifest.json"], repo)
-    _run(["git", "commit", "-qm", "authorize frozen repair"], repo)
+    _run(["git", "commit", "--allow-empty", "-qm", "authorize frozen repair"], repo)
 
-    if mutation == "supplement-restored-after-spend":
+    if mutation in {
+        "supplement-restored-after-spend",
+        "supplement-restored-at-spending-merge",
+    }:
         write_repairs([authorization])
         _run(["git", "add", "plans/manifest.json"], repo)
         _run(["git", "commit", "-qm", "withdraw supplement before repair"], repo)
-    elif mutation == "authorization-restored-after-spend":
+    elif mutation in {
+        "authorization-restored-after-spend",
+        "authorization-restored-at-spending-merge",
+    }:
         write_repairs([])
         _run(["git", "add", "plans/manifest.json"], repo)
         _run(["git", "commit", "-qm", "withdraw authorization before repair"], repo)
@@ -5679,7 +5733,13 @@ def _self_repair_chain(
     _run(["git", "add", first_path, second_path], repo)
     _run(["git", "commit", "-qm", "apply frozen repair"], repo)
     _run(["git", "checkout", "-q", "main"], repo)
-    _run(["git", "merge", "--no-ff", "-qm", "merge frozen repair", "repair"], repo)
+    if merge_bound_authority:
+        _run(["git", "merge", "--no-ff", "--no-commit", "repair"], repo)
+        write_repairs([authorization, supplement])
+        _run(["git", "add", "plans/manifest.json"], repo)
+        _run(["git", "commit", "-qm", "merge frozen repair"], repo)
+    else:
+        _run(["git", "merge", "--no-ff", "-qm", "merge frozen repair", "repair"], repo)
     merge_commit = _run(["git", "rev-parse", "HEAD"], repo)
     merge_first_parent = commit_parents(repo, merge_commit, "self-test repair merge")[0]
     landed_files = [{
@@ -8158,6 +8218,42 @@ def self_test() -> None:
             "evidence_ids": [],
             "operation_nonces": [],
         }
+        registry_fifo_root = root / "reuse-registry-fifo"
+        registry_fifo_root.mkdir()
+        registry_fifo_evidence = registry_fifo_root / "evidence"
+        registry_fifo_evidence.mkdir()
+        registry_fifo = registry_fifo_root / "registry.json"
+        os.mkfifo(registry_fifo)
+        fifo_probe = (
+            "import runpy, sys\n"
+            "from pathlib import Path\n"
+            "namespace = runpy.run_path(sys.argv[1])\n"
+            "try:\n"
+            "    namespace['verify_reuse_registry'](Path(sys.argv[2]), Path(sys.argv[3]), '0' * 64, set())\n"
+            "except namespace['EvidenceError']:\n"
+            "    raise SystemExit(0)\n"
+            "raise SystemExit(2)\n"
+        )
+        try:
+            fifo_result = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    fifo_probe,
+                    str(Path(__file__).resolve()),
+                    str(registry_fifo),
+                    str(registry_fifo_evidence),
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=2,
+                check=False,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise AssertionError("reuse-registry FIFO blocked verification") from exc
+        if fifo_result.returncode != 0:
+            raise AssertionError("reuse-registry FIFO was not rejected")
+        direct_rejections += 1
         registry_swap_root = root / "reuse-registry-swap"
         registry_swap_root.mkdir()
         swapped_registry = registry_swap_root / "registry.json"
@@ -9036,6 +9132,10 @@ def self_test() -> None:
             ),
         )
         for repair_mutation in (
+            "authorization-at-spending-merge",
+            "supplement-at-spending-merge",
+            "authorization-restored-at-spending-merge",
+            "supplement-restored-at-spending-merge",
             "supplement-after-spent",
             "supplement-restored-after-spend",
             "authorization-restored-after-spend",
