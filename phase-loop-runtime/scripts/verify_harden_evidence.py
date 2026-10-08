@@ -703,6 +703,15 @@ def read_regular_file_nofollow(
                 pass
 
 
+def read_path_regular_nofollow(path: Path, label: str, maximum: int) -> bytes:
+    """Read an absolute or relative path without following any symlink component."""
+    absolute = Path(os.path.abspath(os.fspath(path)))
+    parts = absolute.parts
+    if not absolute.is_absolute() or len(parts) < 2:
+        fail(f"{label}: artifact path is unavailable")
+    return read_regular_file_nofollow(Path(parts[0]), parts[1:], label, maximum)
+
+
 def run_owned_receipt(store: ArtifactStore, repo: Path, ref: dict[str, str], label: str, *, distinct: bool = True) -> dict[str, Any]:
     """Bind a copied evidence artifact to the original run-owned receipt."""
     relative = ref["path"]
@@ -5276,11 +5285,14 @@ def verify_completion(store: ArtifactStore, value: Any, evidence_digest: str, ma
     ledger = store.read(artifact_ref(completion["ledger"], "completion ledger"), "completion ledger")
     canonical_ledger = repo / ".phase-loop" / "events.jsonl"
     try:
-        ledger_stat = canonical_ledger.lstat()
-        canonical_bytes_on_disk = canonical_ledger.read_bytes()
-    except OSError:
+        canonical_bytes_on_disk = read_path_regular_nofollow(
+            canonical_ledger,
+            "canonical completion ledger",
+            MAX_ARTIFACT_BYTES,
+        )
+    except (EvidenceError, OSError):
         fail("canonical completion ledger is unavailable")
-    if stat.S_ISLNK(ledger_stat.st_mode) or not stat.S_ISREG(ledger_stat.st_mode) or canonical_bytes_on_disk != ledger:
+    if canonical_bytes_on_disk != ledger:
         fail("retained completion ledger is detached from canonical ledger")
     matches = 0
     for line in ledger.splitlines():
@@ -5316,7 +5328,11 @@ def verify(
     ci_query: Path = CANONICAL_GH,
     claim_reuse: bool = True,
 ) -> None:
-    evidence_bytes = evidence_path.read_bytes()
+    evidence_bytes = read_path_regular_nofollow(
+        evidence_path,
+        "verification evidence",
+        MAX_ARTIFACT_BYTES,
+    )
     evidence = parse_canonical_json(evidence_bytes, "verification evidence")
     reject_secret_payloads(evidence)
     data = closed(evidence, {"schema", "evidence_id", "repository", "git", "authority", "sl0", "verification", "ci", "reviews", "roles", "completion"}, "verification evidence")

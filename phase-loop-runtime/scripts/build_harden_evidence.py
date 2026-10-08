@@ -1182,16 +1182,9 @@ def prepare(inputs: Path, source_root: Path, evidence_root: Path, repo: Path, ou
 
 def _canonical_ledger_bytes(ledger: Path) -> bytes:
     """Read the canonical ledger without collapsing established symlinks into absence."""
-    for path in (ledger.parent, ledger):
-        try:
-            entry = path.lstat()
-        except OSError:
-            continue
-        if stat.S_ISLNK(entry.st_mode):
-            raise BuildError("canonical ledger symlink")
     try:
-        return V.read_regular_file_nofollow(
-            ledger.parent, (ledger.name,), "canonical ledger", V.MAX_ARTIFACT_BYTES,
+        return V.read_path_regular_nofollow(
+            ledger, "canonical ledger", V.MAX_ARTIFACT_BYTES,
         )
     except Exception as exc:
         raise BuildError(str(exc)) from exc
@@ -1262,17 +1255,13 @@ def _checked_completion_events(ledger_bytes: bytes, evidence: dict[str, Any], di
     return matches
 
 
-def _seal_stage(pre_completion_bytes: bytes, evidence_root: Path, repo: Path, ledger: Path, output: Path,
+def _seal_stage(pre_completion_bytes: bytes, ledger_bytes: bytes, evidence_root: Path, repo: Path, output: Path,
          reuse_registry: Path, expected_coordinator_session: str, expected_author_session: str) -> None:
     evidence = _json(
         pre_completion_bytes,
         "pre-completion evidence",
     )
     digest = V.normalized_precompletion_digest(evidence)
-    canonical = repo / ".phase-loop/events.jsonl"
-    if ledger != canonical:
-        raise BuildError("canonical ledger path is required")
-    ledger_bytes = _canonical_ledger_bytes(ledger)
     matches = _checked_completion_events(ledger_bytes, evidence, digest)
     if matches != 1:
         raise BuildError("missing HARDEN completion" if not matches else "duplicate HARDEN completion")
@@ -1280,6 +1269,26 @@ def _seal_stage(pre_completion_bytes: bytes, evidence_root: Path, repo: Path, le
     sealed = dict(evidence)
     sealed["completion"] = {"mode": "post_completion", "ledger": ledger_ref}
     output.write_bytes(_canonical(sealed))
+
+
+def _require_unchanged_seal_inputs(
+    pre_completion: Path,
+    expected_pre_completion: bytes,
+    ledger: Path,
+    expected_ledger: bytes,
+) -> None:
+    try:
+        current_pre_completion = V.read_path_regular_nofollow(
+            pre_completion,
+            "pre-completion evidence",
+            V.MAX_ARTIFACT_BYTES,
+        )
+    except Exception as exc:
+        raise BuildError(str(exc)) from exc
+    if current_pre_completion != expected_pre_completion:
+        raise BuildError("pre-completion evidence changed during seal")
+    if _canonical_ledger_bytes(ledger) != expected_ledger:
+        raise BuildError("canonical ledger changed during seal")
 
 
 def seal(pre_completion: Path, evidence_root: Path, repo: Path, ledger: Path, output: Path,
@@ -1300,15 +1309,16 @@ def seal(pre_completion: Path, evidence_root: Path, repo: Path, ledger: Path, ou
         ]
         if len({_target_key(target) for target in targets}) != len(targets):
             raise BuildError("publication targets must be distinct")
-        evidence = _json(
-            V.read_regular_file_nofollow(
-                pre_completion.parent, (pre_completion.name,),
-                "pre-completion evidence", V.MAX_ARTIFACT_BYTES,
-            ),
+        pre_completion_bytes = V.read_path_regular_nofollow(
+            pre_completion,
             "pre-completion evidence",
+            V.MAX_ARTIFACT_BYTES,
         )
+        evidence = _json(pre_completion_bytes, "pre-completion evidence")
         if not isinstance(evidence, dict) or evidence.get("completion") != {"mode": "pre_completion"}:
             raise BuildError("pre-completion evidence is not pre-completion")
+        if ledger != repo / ".phase-loop/events.jsonl":
+            raise BuildError("canonical ledger path is required")
         ledger_bytes = _canonical_ledger_bytes(ledger)
         expected_digest = V.normalized_precompletion_digest(evidence)
         V.verify(
@@ -1325,17 +1335,26 @@ def seal(pre_completion: Path, evidence_root: Path, repo: Path, ledger: Path, ou
         stage_root = stage_path / "evidence"
         stage_output = stage_path / "sealed.json"
         _copy_source(evidence_root, stage_root)
-        pre_completion_bytes = V.read_regular_file_nofollow(
-            pre_completion.parent, (pre_completion.name,), "pre-completion evidence", V.MAX_ARTIFACT_BYTES,
+        _require_unchanged_seal_inputs(
+            pre_completion,
+            pre_completion_bytes,
+            ledger,
+            ledger_bytes,
         )
         _seal_stage(
-            pre_completion_bytes, stage_root, repo, ledger, stage_output, reuse_registry,
+            pre_completion_bytes, ledger_bytes, stage_root, repo, stage_output, reuse_registry,
             expected_coordinator_session, expected_author_session,
         )
         V.verify(
             stage_output, stage_root, repo, reuse_registry=reuse_registry,
             expected_coordinator_session=expected_coordinator_session,
             expected_author_session=expected_author_session, claim_reuse=False,
+        )
+        _require_unchanged_seal_inputs(
+            pre_completion,
+            pre_completion_bytes,
+            ledger,
+            ledger_bytes,
         )
         staged_ledger = stage_root / "derived/completion-ledger.jsonl"
         ledger_parent_fd = os.open(
