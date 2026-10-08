@@ -4554,6 +4554,34 @@ def _seat_secret_values(value):
             yield from _seat_secret_values(item)
 
 
+_SHELL_WRAPPER_EXPORT = re.compile(r'export [A-Z_][A-Z0-9_]*=(?:[A-Za-z0-9._/:@+-]|"\$PATH")*')
+_SHELL_WRAPPER_EXEC = re.compile(r'exec (/[A-Za-z0-9._@+/-]+)(?: [A-Za-z0-9._=/-]+)* "\$@"')
+
+
+def _shell_wrapper_target(path: Path) -> Path | None:
+    """The absolute ``exec`` target of a trusted launcher wrapper, else ``None``.
+
+    Team-host tooling ships each CLI as ``#!/bin/sh`` + ``export`` lines + one
+    ``exec /abs/path [args] "$@"`` (agent-harness#1318). The seat binds only the provider
+    itself, so the wrapper's target would be missing from the view. Only a wrapper owned by
+    root or the operator, writable by no one else, and of exactly that shape is followed."""
+    try:
+        info = os.stat(path)
+        if info.st_uid not in {0, os.getuid()} or info.st_mode & 0o022 or info.st_size > 4096:
+            return None
+        with open(path, "rb") as handle:
+            text = handle.read(4097).decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if len(lines) < 2 or lines[0] != "#!/bin/sh":
+        return None
+    if not all(_SHELL_WRAPPER_EXPORT.fullmatch(line) for line in lines[1:-1]):
+        return None
+    match = _SHELL_WRAPPER_EXEC.fullmatch(lines[-1])
+    return Path(match.group(1)) if match else None
+
+
 def _seat_provider_source(command, env):
     name = Path(command).name.lower()
     harness = {"agy": "gemini", "gemini": "gemini", "codex.js": "codex",
@@ -4562,6 +4590,11 @@ def _seat_provider_source(command, env):
     if source is None:
         raise FileNotFoundError("seat_provider_unavailable")
     source = Path(source).resolve(strict=True)
+    for _hop in range(4):
+        target = _shell_wrapper_target(source)
+        if target is None:
+            break
+        source = target.resolve(strict=True)
     if harness == "codex" and source.suffix == ".js":
         package = source.parent.parent
         machine = os.uname().machine
@@ -4570,7 +4603,9 @@ def _seat_provider_source(command, env):
         if suffix is None:
             raise _sandbox_egress.SeatIdentityUnverified("seat_provider_unavailable")
         candidates = (package / "node_modules/@openai" / ("codex-linux-" + suffix) / "vendor" / triple / "bin/codex",
-                      package / "vendor" / triple / "bin/codex")
+                      package / "vendor" / triple / "bin/codex",
+                      # npm hoists the platform package beside @openai/codex.
+                      package.parent / ("codex-linux-" + suffix) / "vendor" / triple / "bin/codex")
         source = next((path for path in candidates if path.is_file()), None)
         if source is None:
             raise _sandbox_egress.SeatIdentityUnverified("seat_provider_unavailable")
