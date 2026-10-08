@@ -30,6 +30,10 @@ to merge). It is slow everywhere around the merge:
   record a later result; the plan validator rejects its own skill's template; skills cannot
   import the runtime from system `python3`.
 
+Execution is also pinned to one author vendor per phase, a v10 rule that kept both schedulers
+off, and the review gate excludes every author vendor from the reviewer pool, so routing work
+across vendors would leave no reviewer.
+
 v11 therefore does two things, in this order: make the loop fast and parallel, then finish v10's
 unfinished phases on that faster loop. Unfinished v10 phases are carried with their aliases and
 goal IDs unchanged.
@@ -125,6 +129,8 @@ is not amended as work moves; the ledger and the phase plans are the live record
   round number, cap, outcome (`converged | descoped | halted`).
 - **IF-0-PARSCHED-1** — readiness-driven dispatch: a phase is dispatchable when its `Depends on`
   set is complete and it shares no owned path with a running phase.
+- **IF-0-ROUTE-1** — the router interface: `route(work_unit) -> RouteDecision(executor, model, effort, fallbacks, reason)`, registered once and consulted by every dispatch path.
+- **IF-0-ROUTE-2** — president selection: primary is the frontier model of the vendor opposite the phase's top-level model; fallback order and the recorded fallback field on the ruling.
 - **IF-0-PANELSPLIT-1** — the `phase_loop_runtime.panel` package module map; every public and
   monkeypatched name stays importable from `phase_loop_runtime.panel_invoker`.
 - Carried: IF-0-REVIEWTRUTH-1, IF-0-REVIEWTRUTH-2, IF-0-REVIEWTRUTH-3, IF-0-PRESROUTE-1,
@@ -420,7 +426,53 @@ As in V10 for this phase.
 
 ---
 
-### Phase 8 — Panel Vendor Fallback and Lanes (PANEL)
+### Phase 8 — Flexible Routing and Author-Aware Review (ROUTE)
+
+**Objective**
+Let the executor route each job, lane and phase to any vendor, model and effort through a routing policy with fallbacks, and keep review independent of the author without blocking on it.
+
+**Exit criteria**
+- [ ] EC-ROUTE-0 — Content-bound TDD receipt for this phase's tests, recorded before production changes.
+- [ ] EC-ROUTE-1 — Each dispatched work unit (phase, lane or job) resolves its executor, model and effort through one routing call with an ordered fallback chain, and the decision is logged; falsified by a dispatch that picks a model outside the routing call or leaves no route record.
+- [ ] EC-ROUTE-2 — The routing call is a replaceable interface (IF-0-ROUTE-1): a test registers a custom router and every dispatch path uses it with no dispatch-code change; falsified by a path that bypasses the registered router.
+- [ ] EC-ROUTE-3 — Work units in one phase may run on different vendors, and no rule pins a phase to a single author vendor; falsified by a concurrent run refused or serialized because its lanes use different vendors.
+- [ ] EC-ROUTE-4 — Each lens seat prefers its listed vendor, skips a model that authored the reviewed diff when an alternative is available, and otherwise seats a fresh-context reviewer with the overlap recorded on the verdict; review never fails because every vendor authored some of the work; falsified by an author-overlap refusal, or an unrecorded author seat.
+- [ ] EC-ROUTE-5 — The president's primary rung is the frontier model of the vendor opposite the phase's top-level model (the phase-plan author; for a standalone PR, the authoring session's model), per IF-0-ROUTE-2; fallback goes to the other frontier model, then the existing ladder, and any fallback is recorded on the ruling; falsified by a same-vendor primary president or an unrecorded fallback.
+
+**Scope notes**
+- Decompose into 3 lanes: lane A routing interface and work-unit routing (EC-1, EC-2, EC-3), publishing IF-0-ROUTE-1 on day 1; lane B lens-seat author preference and removal of the author-vendor fail-closed rule (EC-4); lane C president selection (EC-5), publishing IF-0-ROUTE-2.
+- Builds on the existing model-routing code (`profiles.py`, `route_policy/`, `route_log.py`); it does not replace the routing tables.
+- EC-ROUTE-5 replaces the fixed built-in president order of EC-PRESROUTE-3 (V10) as the primary choice; that order becomes the fallback. The frozen ladder test changes through an `sl0_repairs` entry, which is why this phase depends on PRESROUTE.
+- ROUTE and PANEL both write `composition.py`, `governed_review.py` and `runner.py`, so they never run together. EC-ROUTE-4 extends whichever seat composition is on `main` when it lands: PANEL's lane seating if PANEL landed first, otherwise the current lens cycle, which PANEL then carries forward.
+- Until this phase lands, the coordinator keeps each phase's implementation to at most two vendors, because the current rule excludes every author vendor from the reviewer pool.
+
+**Non-goals**
+- A learned or cost-aware router. This phase provides the interface a later router plugs into.
+
+**Key files**
+- `phase-loop-runtime/src/phase_loop_runtime/profiles.py`
+- `phase-loop-runtime/src/phase_loop_runtime/route_policy/`
+- `phase-loop-runtime/src/phase_loop_runtime/route_log.py`
+- `phase-loop-runtime/src/phase_loop_runtime/president_adapter.py`
+- `phase-loop-runtime/src/phase_loop_runtime/governed_review.py`
+- `phase-loop-runtime/src/phase_loop_runtime/runner.py`
+- `phase-loop-runtime/src/phase_loop_runtime/advisor_board/composition.py`
+
+**Depends on**
+- PANELSPLIT
+- PRESROUTE
+
+**Produces**
+- IF-0-ROUTE-1
+- IF-0-ROUTE-2
+
+**Spec closeout policy**
+schema: `spec_delta_closeout.v1`; expected decision: `no_spec_delta`; target surfaces: none;
+`redaction_posture: metadata_only`; malformed evidence routes non-human `blocker_class=contract_bug`.
+
+---
+
+### Phase 9 — Panel Vendor Fallback and Lanes (PANEL)
 
 **Objective**
 Carried from V10 Phase 18 unchanged: panels are seated by lane from whatever vendors are available.
@@ -463,7 +515,7 @@ As in V10 for this phase.
 
 ---
 
-### Phase 9 — Scheduler and Worktree Reclamation (SCHED)
+### Phase 10 — Scheduler and Worktree Reclamation (SCHED)
 
 **Objective**
 Carried from V10 Phase 5: close the evidence and regression gaps left after its runtime landed.
@@ -497,7 +549,7 @@ As in V10 for this phase.
 
 ---
 
-### Phase 10 — Reflection Loop Applied (REFLOOP)
+### Phase 11 — Reflection Loop Applied (REFLOOP)
 
 **Objective**
 Run the repaired reflection loop end to end on the live backlog and keep it running.
@@ -536,7 +588,7 @@ schema: `spec_delta_closeout.v1`; expected decision: `no_spec_delta`; target sur
 
 ---
 
-### Phase 11 — Coordinator Integration and Fault Suite (INTEG)
+### Phase 12 — Coordinator Integration and Fault Suite (INTEG)
 
 **Objective**
 Carried from V10 Phase 11 unchanged.
@@ -572,7 +624,7 @@ As in V10 for this phase.
 
 ---
 
-### Phase 12 — Board Reports Its Own Degradation (REVIEWTRUTH)
+### Phase 13 — Board Reports Its Own Degradation (REVIEWTRUTH)
 
 **Objective**
 Carried from V10 Phase 7, on the split panel modules and the bounded review loop.
@@ -601,6 +653,7 @@ Carried from V10 Phase 7, on the split panel modules and the bounded review loop
 - EC-REVIEWTRUTH-14 is met (agent-harness#921) and not carried. EC-6 is met today but carried as a regression guard to re-check at closeout.
 - Publish IF-0-REVIEWTRUTH-1 (typed leg statuses) on day 1 so LEGLIFE's plan can start against it.
 - EC-REVIEWTRUTH-8 (the production `apply_fix` fix round) is the loop accelerator in this phase; schedule its lane first.
+- Depends on ROUTE so seat-composition and author rules are settled first; EC-REVIEWTRUTH-16 (required prover) is reconciled with ROUTE's president rule in this phase's plan.
 - Lanes own disjoint `phase_loop_runtime/panel/` modules (IF-0-PANELSPLIT-1): verdict and classification, leg execution, board orchestration.
 
 **Non-goals**
@@ -621,6 +674,7 @@ Carried from V10 Phase 7, on the split panel modules and the bounded review loop
 - PANELSPLIT
 - REVBOUND
 - PANEL
+- ROUTE
 
 **Produces**
 - IF-0-REVIEWTRUTH-1
@@ -632,7 +686,7 @@ As in V10 for this phase.
 
 ---
 
-### Phase 13 — Pilots and Governed Release (RELEASE)
+### Phase 14 — Pilots and Governed Release (RELEASE)
 
 **Objective**
 Carried from V10 Phase 12 unchanged.
@@ -669,7 +723,7 @@ As in V10 for this phase.
 
 ---
 
-### Phase 14 — Leg Lifecycle and Board Extensibility (LEGLIFE)
+### Phase 15 — Leg Lifecycle and Board Extensibility (LEGLIFE)
 
 **Objective**
 Carried from V10 Phase 8 unchanged.
@@ -707,7 +761,7 @@ As in V10 for this phase.
 
 ---
 
-### Phase 15 — Executable Findings (EXECFIND)
+### Phase 16 — Executable Findings (EXECFIND)
 
 **Objective**
 Carried from V10 Phase 15: restore the receipt and land the fix-round slice.
@@ -744,7 +798,7 @@ As in V10 for this phase.
 
 ---
 
-### Phase 16 — Broker, Train, and Channel Residuals (RESIDUAL)
+### Phase 17 — Broker, Train, and Channel Residuals (RESIDUAL)
 
 **Objective**
 Carried from V10 Phase 9 unchanged; its RED tests are already on `main`.
@@ -790,7 +844,7 @@ As in V10 for this phase.
 
 ---
 
-### Phase 17 — Ratification Tiers and Ruling Ledger (RATIFY)
+### Phase 18 — Ratification Tiers and Ruling Ledger (RATIFY)
 
 **Objective**
 Carried from V10 Phase 16 unchanged; its plan is in agent-harness#1203.
@@ -830,7 +884,7 @@ As in V10 for this phase.
 
 ---
 
-### Phase 18 — Governance Profile at Setup (GOVSETUP)
+### Phase 19 — Governance Profile at Setup (GOVSETUP)
 
 **Objective**
 Carried from V10 Phase 17 unchanged.
@@ -875,12 +929,13 @@ Wave 1 (roots, all parallel)
 
 Wave 2
   PRESROUTE ─▶ PANEL
+  PANELSPLIT, PRESROUTE ─▶ ROUTE
   HARDEN ────▶ SCHED
   LOOPFIX ───▶ REFLOOP
   RUNTIME ───▶ INTEG
 
 Wave 3
-  PANELSPLIT, REVBOUND, PANEL ─▶ REVIEWTRUTH
+  PANELSPLIT, REVBOUND, PANEL, ROUTE ─▶ REVIEWTRUTH
   INTEG ─▶ RELEASE
 
 Wave 4
@@ -897,6 +952,9 @@ Wave 6
 
 Edges:
 - PRESROUTE → PANEL
+- PANELSPLIT → ROUTE
+- PRESROUTE → ROUTE
+- ROUTE → REVIEWTRUTH
 - HARDEN → SCHED
 - LOOPFIX → REFLOOP
 - RUNTIME → INTEG
@@ -923,10 +981,14 @@ Wave 1 runs eight phases in parallel.
 - **Schedulers.** Until PARSCHED lands, the coordinator runs ready phases concurrently by hand in
   separate worktrees. After it lands, run with `--phase-scheduler concurrent`; the lane
   scheduler is also on.
-- **Executors and review.** The coordinator picks an executor per phase; author-vendor rotation
-  is not required. Review follows the delivered GOVLEAN tiered policy and the PRESROUTE
-  president route as on `main`, bounded by REVBOUND once it lands. V10's per-phase review
-  mandates and maximum-effort planning policy do not carry.
+- **Executors and review.** One model writes each phase plan; the plan is reviewed through the
+  four lens seats, each with a preferred vendor and fallbacks (PANEL). Execution is not tied to a
+  vendor: the executor routes each job, lane and phase to the model and effort it judges best,
+  through the routing policy (ROUTE). v10's author-vendor rotation does not carry. Review tiers
+  are as on `main` (full board plus president for plans and production code, one grounded
+  reviewer for tests-only and docs-only), with author-aware seats and an opposite-vendor
+  president once ROUTE lands. V10's rule that a 3-of-4 board never authorizes a landing stays in
+  force until REVIEWTRUTH enforces it at runtime.
 - **Planning.** Each phase gets `plans/phase-plan-v11-<ALIAS>.md`. A carried phase's plan
   references its V10 plan as a frozen input and covers only the remaining slices; it does not
   restate V10 goals. Carried plans name the specific `phase_loop_runtime/panel/` modules they
@@ -939,15 +1001,16 @@ Wave 1 runs eight phases in parallel.
   - TESTLOOP / RELEASE: `phase-loop-runtime/pyproject.toml`
   - LOOPFIX / PANEL, REVIEWTRUTH, RESIDUAL, GOVSETUP: `cli.py`
   - LOOPFIX / RATIFY: `plan_manifest.py`, `skills-src/ (plan-phase and execute-phase scripts)`
-  - PARSCHED / PANEL, REVIEWTRUTH, EXECFIND, RESIDUAL: `runner.py`
+  - PARSCHED / ROUTE, PANEL, REVIEWTRUTH, EXECFIND, RESIDUAL: `runner.py`
+  - ROUTE / PANEL: `advisor_board/composition.py`, `governed_review.py`, `runner.py`
   - PANEL / INTEG, RELEASE: `train_runner.py`
   - SCHED / REVIEWTRUTH, RESIDUAL: `launcher.py`
   - REFLOOP / RATIFY: `skills-src/`
+  - INTEG / RESIDUAL: `convergence/broker/verbs.py`, `train_runner.py`
+  - RELEASE / RESIDUAL: `train_runner.py`
   - LEGLIFE / EXECFIND, RESIDUAL, RATIFY: `panel/`
   - EXECFIND / RESIDUAL: `panel/`, `runner.py`
-  - RESIDUAL / INTEG: `convergence/broker/verbs.py`, `train_runner.py`
   - RESIDUAL / RATIFY: `panel/`
-  - RESIDUAL / RELEASE: `train_runner.py`
   - RESIDUAL / GOVSETUP: `cli.py`
 - **Single-writer files.** `plans/manifest.json`: every phase appends its own rows and none
   rewrites another phase's. `specs/phase-plans-v11.md`: changed only by amending `Depends on`
