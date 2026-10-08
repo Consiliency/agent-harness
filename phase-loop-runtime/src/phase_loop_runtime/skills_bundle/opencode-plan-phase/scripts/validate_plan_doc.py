@@ -46,6 +46,10 @@ every issue at once):
   (I) `Spec Closeout Plan` declares `spec_delta_closeout.v1`, a valid decision,
       target surfaces, evidence paths, and `metadata_only` redaction.
 
+  (R) WARN when a declared owned file has a tracked conventional companion
+      (test, snapshot, lockfile, `.env.example`, migration test) that no lane
+      owns, or pins a timestamped migration name the generator will choose.
+
 Design: zero external deps (stdlib only). Parses markdown by regex on
 stable headings produced by the claude-plan-phase template — not a full
 Markdown parser, which would be overkill.
@@ -54,10 +58,12 @@ Markdown parser, which would be overkill.
 from __future__ import annotations
 
 import hashlib
+import posixpath
 import re
 import subprocess
 import sys
 from dataclasses import dataclass, field
+from fnmatch import fnmatchcase
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
@@ -1165,6 +1171,182 @@ def _check_n_post_dispatch_reducer(
     return []
 
 
+# --- (R) owned-file companions (Pattern A, agent-harness#1304) ---------------------
+# The closeout's phase-owned-dirty check fails closed when the executor dirties a path
+# no lane owns. Commit 47c772b4 records what planners omitted: test files, snapshots,
+# generated migrations, env examples, lockfiles. Each rule below fires only on repo
+# evidence (a tracked companion), so a category irrelevant to the repo stays silent.
+_R_CODE_SUFFIXES = (".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs")
+_R_NOT_PRIMARY = {"__init__.py", "conftest.py"}
+_R_LOCKFILES = {
+    "package.json": ("pnpm-lock.yaml", "package-lock.json", "yarn.lock", "bun.lock", "bun.lockb"),
+    "pyproject.toml": ("uv.lock", "poetry.lock", "pdm.lock"),
+    "Cargo.toml": ("Cargo.lock",),
+    "go.mod": ("go.sum",),
+    "Gemfile": ("Gemfile.lock",),
+    "composer.json": ("composer.lock",),
+}
+_R_ENV_EXAMPLE_RE = re.compile(r"(?:^|/)\.env(?:\.[\w-]+)*\.(?:example|sample|template)$")
+_R_ENV_SIGNAL_RE = re.compile(
+    r"process\.env\.|os\.environ|os\.getenv|import\.meta\.env|\benv(?:ironment)?[ -]var",
+    re.IGNORECASE,
+)
+_R_TIMESTAMPED_MIGRATION_RE = re.compile(r"^(?P<dir>(?:.*/)?migrations)/\d{8,14}_(?P<rest>[^/]+)$")
+
+
+def _r_is_glob(entry: str) -> bool:
+    return any(ch in entry for ch in "*?[")
+
+
+def _r_owned(path: str, owned: List[str]) -> bool:
+    """Mirror the closeout's ownership semantics (`discovery._owned_pattern_matches`
+    plus exact paths): `*` crosses `/` under fnmatchcase, and `dir/` owns its subtree."""
+    for pattern in owned:
+        if path == pattern:
+            return True
+        if pattern.endswith("/") and path.startswith(pattern):
+            return True
+        if _r_is_glob(pattern) and fnmatchcase(path, pattern):
+            return True
+    return False
+
+
+def _r_is_test_path(path: str) -> bool:
+    name = posixpath.basename(path)
+    return (
+        name.startswith("test_")
+        or re.search(r"_test\.\w+$|\.(?:test|spec)\.\w+$", name) is not None
+        or "/__tests__/" in f"/{path}"
+    )
+
+
+def _r_stem(path: str) -> str:
+    name = posixpath.basename(path)
+    return name.split(".", 1)[0]
+
+
+def _r_test_names(stem: str) -> Set[str]:
+    names = {f"test_{stem}.py", f"{stem}_test.py", f"{stem}_test.go"}
+    for kind in ("test", "spec"):
+        for ext in ("ts", "tsx", "js", "jsx", "mjs", "cjs"):
+            names.add(f"{stem}.{kind}.{ext}")
+    return names
+
+
+def _r_closest(primary: str, candidates: List[str]) -> List[str]:
+    """Candidates sharing the longest leading directory run with `primary`, so a
+    common stem (`utils`) does not drag in every same-named test in a monorepo."""
+    if not candidates:
+        return []
+    parts = primary.split("/")[:-1]
+
+    def shared(path: str) -> int:
+        n = 0
+        for a, b in zip(parts, path.split("/")[:-1]):
+            if a != b:
+                break
+            n += 1
+        return n
+
+    best = max(shared(c) for c in candidates)
+    return sorted(c for c in candidates if shared(c) == best)
+
+
+def _check_r_owned_companions(
+    lane_sections_parsed: Dict[str, dict],
+    lane_sections_raw: Dict[str, str],
+    tracked: List[str],
+) -> Findings:
+    owned = [
+        g.strip().strip("`")
+        for parsed in lane_sections_parsed.values()
+        for g in parsed["owned_globs"]
+        if g.strip().strip("`")
+    ]
+    tracked_set = set(tracked)
+    tracked_by_name: Dict[str, List[str]] = {}
+    for path in tracked:
+        tracked_by_name.setdefault(posixpath.basename(path), []).append(path)
+    snapshots = [
+        p for p in tracked
+        if "/__snapshots__/" in f"/{p}" and p.endswith((".snap", ".ambr"))
+    ]
+    env_examples = [p for p in tracked if _R_ENV_EXAMPLE_RE.search(p)]
+    sql_tests = [p for p in tracked if p.endswith(".test.sql")]
+    out: Findings = []
+    warned: Set[str] = set()
+
+    def warn(sl_id: str, primary: str, companion: str, kind: str) -> None:
+        if companion in warned:
+            return
+        warned.add(companion)
+        subject = primary if primary.startswith("changes") else f"owns `{primary}`"
+        out.append(
+            f"(R) WARN: {sl_id} {subject} but no lane owns its {kind} `{companion}` "
+            "— add it to `Owned files` (the closeout fails closed on unowned dirty paths)"
+        )
+
+    for sl_id, parsed in lane_sections_parsed.items():
+        lane_owned = [g.strip().strip("`") for g in parsed["owned_globs"] if g.strip().strip("`")]
+        concrete = [p for p in lane_owned if not _r_is_glob(p) and not p.endswith("/")]
+        for primary in concrete:
+            name = posixpath.basename(primary)
+            stem = _r_stem(primary)
+            # Tests: a tracked conventional test for this module must be owned.
+            if name.endswith(_R_CODE_SUFFIXES) and name not in _R_NOT_PRIMARY and not _r_is_test_path(primary):
+                tests = [p for t in _r_test_names(stem) for p in tracked_by_name.get(t, [])]
+                closest = _r_closest(primary, tests)
+                if closest and not any(_r_owned(t, owned) for t in closest):
+                    warn(sl_id, primary, closest[0], "test file")
+            # Snapshots: snapshot files named for this module or test.
+            if name.endswith(_R_CODE_SUFFIXES):
+                snaps = _r_closest(primary, [s for s in snapshots if _r_stem(s) == stem])
+                for snap in snaps:
+                    if not _r_owned(snap, owned):
+                        warn(sl_id, primary, snap, "snapshot")
+            # Lockfiles: nearest tracked lockfile at or above the manifest's directory.
+            if name in _R_LOCKFILES:
+                directory = posixpath.dirname(primary)
+                while True:
+                    locks = [posixpath.join(directory, lock) for lock in _R_LOCKFILES[name]]
+                    present = [lock for lock in locks if lock in tracked_set]
+                    if present:
+                        for lock in present:
+                            if not _r_owned(lock, owned):
+                                warn(sl_id, primary, lock, "lockfile")
+                        break
+                    if not directory:
+                        break
+                    directory = posixpath.dirname(directory)
+            # Migrations: the generator picks the timestamp, so a pinned name will miss.
+            m = _R_TIMESTAMPED_MIGRATION_RE.match(primary)
+            if m and not _r_owned(primary, [g for g in owned if _r_is_glob(g) or g.endswith("/")]):
+                out.append(
+                    f"(R) WARN: {sl_id} owns timestamped migration `{primary}`; the generator "
+                    f"chooses the timestamp — own the glob `{m.group('dir')}/*_{m.group('rest')}` instead"
+                )
+        # Env examples: only when the lane changes env shape.
+        env_signal = any(
+            re.search(r"(?:^|/)\.env(?:\.[\w-]+)*$", p) and not _R_ENV_EXAMPLE_RE.search(p)
+            for p in lane_owned
+        ) or bool(_R_ENV_SIGNAL_RE.search(lane_sections_raw.get(sl_id, "")))
+        if env_signal:
+            for example in env_examples:
+                if not _r_owned(example, owned):
+                    warn(sl_id, "changes env shape", example, "env example")
+        # Migration tests: a lane that writes SQL migrations owns a SQL test when the repo has them.
+        writes_migrations = any(
+            "migrations/" in p and (p.endswith(".sql") or _r_is_glob(p)) for p in lane_owned
+        )
+        if writes_migrations and sql_tests and not any(_r_owned(t, owned) for t in sql_tests) \
+                and not any(p.endswith(".test.sql") for p in owned):
+            out.append(
+                f"(R) WARN: {sl_id} writes SQL migrations but no lane owns a `*.test.sql` "
+                f"(repo has e.g. `{sorted(sql_tests)[0]}`) — own the matching migration test"
+            )
+    return out
+
+
 _PROOFGATE_HARD_REASONS = {
     "missing_falsifier",
     "vacuous_falsifier",
@@ -1302,6 +1484,12 @@ def main(argv: List[str]) -> int:
     findings.extend(_check_l_ui_visual_verification(src))
     findings.extend(_check_m_release_docs_coverage(src, lanes, lane_sections_parsed))
     findings.extend(_check_n_post_dispatch_reducer(src, lanes, lane_sections_raw, lane_sections_parsed))
+    if repo_root is not None:
+        findings.extend(
+            _check_r_owned_companions(
+                lane_sections_parsed, lane_sections_raw, _git_ls_files(repo_root) or []
+            )
+        )
 
     # Partition findings into errors vs warnings.
     errors = [f for f in findings if "WARN" not in f]
