@@ -11,8 +11,11 @@ import copy
 import hashlib
 import importlib.util
 import json
+import multiprocessing
 import os
 from pathlib import Path, PurePosixPath
+import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -4562,3 +4565,200 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
         "--expected-author-session-sha256",
     ):
         assert option in seal_help.stdout
+
+
+def _fixture_completion_event(verifier: Any, evidence: dict[str, Any]) -> bytes:
+    main = evidence["git"]["canonical_main"]
+    return verifier.canonical_bytes(
+        {
+            "phase": "HARDEN",
+            "action": "phase_execute",
+            "status": "complete",
+            "metadata": {
+                "harden_completion": {
+                    "schema": "harden_completion.v1",
+                    "evidence_sha256": verifier.normalized_precompletion_digest(
+                        evidence
+                    ),
+                    "canonical_commit": main["commit"],
+                    "canonical_tree": main["tree"],
+                    "visual_render_declared": False,
+                }
+            },
+        }
+    )
+
+
+def test_harden_seal_rejects_precompletion_and_ledger_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    producer = _producer_module("seal")
+    verifier = producer.V
+    evidence_path, artifacts, repo, initial, registry, coordinator, author = (
+        verifier._fixture(tmp_path)
+    )
+    (artifacts / "derived").mkdir()
+    extra = b"harmless extra retained note\n"
+    extra_ref = {
+        "path": "extra-retained-note.txt",
+        "sha256": verifier.sha256(extra),
+    }
+    (artifacts / extra_ref["path"]).write_bytes(extra)
+    replacement = copy.deepcopy(initial)
+    replacement["authority"]["retained_inputs"].append(extra_ref)
+    verify_kwargs = {
+        "reuse_registry": registry,
+        "expected_coordinator_session": coordinator,
+        "expected_author_session": author,
+        "ci_query": tmp_path / "fake-gh",
+        "claim_reuse": False,
+    }
+    for evidence in (initial, replacement):
+        verifier._write_evidence(evidence_path, evidence)
+        verifier.verify(evidence_path, artifacts, repo, **verify_kwargs)
+
+    canonical = repo / ".phase-loop/events.jsonl"
+    verifier._write_evidence(evidence_path, initial)
+    canonical.write_bytes(_fixture_completion_event(verifier, initial))
+    original_copy = producer._copy_source
+
+    def replace_after_copy(source: Path, target: Path) -> None:
+        original_copy(source, target)
+        for name in ("fake-gh", "fake-gh-responses.json"):
+            shutil.copy2(tmp_path / name, target.parent / name)
+        verifier._write_evidence(evidence_path, replacement)
+        canonical.write_bytes(_fixture_completion_event(verifier, replacement))
+
+    monkeypatch.setattr(producer, "_copy_source", replace_after_copy)
+    original_verify = verifier.verify
+
+    def verify_with_fixture_ci(
+        path: Path, evidence_root: Path, git_repo: Path, **kwargs: Any
+    ) -> None:
+        original_verify(
+            path,
+            evidence_root,
+            git_repo,
+            ci_query=evidence_root.resolve().parent / "fake-gh",
+            **kwargs,
+        )
+
+    monkeypatch.setattr(verifier, "verify", verify_with_fixture_ci)
+    output = tmp_path / "sealed.json"
+    registry_before = registry.read_bytes()
+    with pytest.raises(producer.BuildError, match="changed during seal"):
+        producer.seal(
+            evidence_path,
+            artifacts,
+            repo,
+            canonical,
+            output,
+            registry,
+            coordinator,
+            author,
+        )
+    assert not output.exists()
+    assert registry.read_bytes() == registry_before
+
+
+def test_harden_verifier_rejects_symlink_evidence_input(tmp_path: Path) -> None:
+    producer = _producer_module("seal")
+    verifier = producer.V
+    evidence_path, artifacts, repo, _evidence, registry, coordinator, author = (
+        verifier._fixture(tmp_path)
+    )
+    linked = tmp_path / "linked-evidence.json"
+    linked.symlink_to(evidence_path)
+    with pytest.raises(verifier.EvidenceError, match="symlink|unavailable"):
+        verifier.verify(
+            linked,
+            artifacts,
+            repo,
+            reuse_registry=registry,
+            expected_coordinator_session=coordinator,
+            expected_author_session=author,
+            ci_query=tmp_path / "fake-gh",
+            claim_reuse=False,
+        )
+
+
+@pytest.mark.parametrize(
+    "attack",
+    ("fifo", "symlink-fifo", "socket", "device", "oversized", "parent-symlink"),
+)
+def test_harden_verifier_bounds_canonical_ledger_reads(
+    tmp_path: Path, attack: str
+) -> None:
+    producer = _producer_module("seal")
+    verifier = producer.V
+    evidence_path, artifacts, repo, evidence, registry, coordinator, author = (
+        verifier._fixture(tmp_path)
+    )
+    body = _fixture_completion_event(verifier, evidence)
+    retained = {
+        "path": "probe-completion-ledger.jsonl",
+        "sha256": verifier.sha256(body),
+    }
+    (artifacts / retained["path"]).write_bytes(body)
+    evidence["completion"] = {"mode": "post_completion", "ledger": retained}
+    verifier._write_evidence(evidence_path, evidence)
+    canonical = repo / ".phase-loop/events.jsonl"
+    canonical.write_bytes(body)
+    verify_kwargs = {
+        "reuse_registry": registry,
+        "expected_coordinator_session": coordinator,
+        "expected_author_session": author,
+        "ci_query": tmp_path / "fake-gh",
+        "claim_reuse": False,
+    }
+    verifier.verify(evidence_path, artifacts, repo, **verify_kwargs)
+
+    canonical.unlink()
+    held_socket = None
+    if attack == "fifo":
+        os.mkfifo(canonical)
+    elif attack == "symlink-fifo":
+        fifo = tmp_path / "ledger.fifo"
+        os.mkfifo(fifo)
+        canonical.symlink_to(fifo)
+    elif attack == "socket":
+        held_socket = socket.socket(socket.AF_UNIX)
+        held_socket.bind(str(canonical))
+    elif attack == "device":
+        canonical.symlink_to("/dev/zero")
+    elif attack == "oversized":
+        canonical.write_bytes(b"x" * (verifier.MAX_ARTIFACT_BYTES + 1))
+    else:
+        phase_loop = canonical.parent
+        target = tmp_path / "phase-loop-data"
+        phase_loop.replace(target)
+        phase_loop.symlink_to(target, target_is_directory=True)
+
+    context = multiprocessing.get_context("fork")
+    result = context.Queue()
+
+    def verify_attacked_ledger() -> None:
+        try:
+            verifier.verify(evidence_path, artifacts, repo, **verify_kwargs)
+        except verifier.EvidenceError as exc:
+            result.put(str(exc))
+        else:
+            result.put("accepted")
+
+    child = context.Process(target=verify_attacked_ledger)
+    child.start()
+    child.join(4)
+    try:
+        assert not child.is_alive(), f"{attack} canonical ledger read did not terminate"
+        assert child.exitcode == 0
+        diagnostic = result.get(timeout=1)
+        assert diagnostic != "accepted"
+        assert any(
+            word in diagnostic for word in ("regular file", "symlink", "unavailable", "bounded size")
+        ), diagnostic
+    finally:
+        if child.is_alive():
+            child.terminate()
+            child.join()
+        if held_socket is not None:
+            held_socket.close()
