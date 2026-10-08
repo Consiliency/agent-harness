@@ -8,6 +8,7 @@ import stat
 import shutil
 
 from . import gemini_heartbeat
+from .agy_canary_evidence import AgyCanaryEvidenceError
 
 _PROVIDER_SEARCH_PATH = os.environ.get("PATH", os.defpath)
 
@@ -48,8 +49,11 @@ def admit_for_seat(path, env):
     A release member is admitted offline by ``check``, before any config or store read.
     Otherwise the bytes of one fresh read go to ``agy_qualification.lookup``, which admits
     only a ``locally_qualified`` image; what runs is lookup's own sealed memfd of those
-    bytes, never the path. Every other outcome is the typed refusal. The executor and
-    canary callers keep ``check`` and stay release-only.
+    bytes, never the path. A miss, the opt-out, a failed record, an unsafe store, an
+    unreadable image or a memfd-seal failure is the typed refusal; a refusal that already
+    carries its own typed code (such as ``seat_filtered_egress_unavailable`` from the help
+    measurement) passes through unchanged. The executor and canary callers keep ``check``
+    and stay release-only.
     """
     try:
         return check(path)
@@ -62,8 +66,8 @@ def admit_for_seat(path, env):
     except gemini_heartbeat.AdmissionMiss as miss:
         miss.image.close()
         raise AgyImageUnqualified("agy_image_unqualified") from None
-    except (OSError, ValueError) as exc:
-        # Opt-out, a failed record, an unsafe store or an unreadable image.
+    except (OSError, ValueError, AgyCanaryEvidenceError) as exc:
+        # Opt-out, a failed record, an unsafe store, an unreadable image or a seal failure.
         raise AgyImageUnqualified("agy_image_unqualified") from exc
     return admission.image
 

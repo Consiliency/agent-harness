@@ -17,9 +17,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - New `agy_integrity.admit_for_seat(path, env)`, used only by the two owned review-seat
   sites in `seat_profile` (the credential refresh without a heartbeat profile, and the owned
   non-heartbeat seat). It admits a release member offline as before, then a
-  `locally_qualified` image through `agy_qualification.lookup`. Every other outcome
-  (absent, failed, tampered, opted out) is the typed `agy_image_unqualified` refusal, and a
-  lookup miss closes its image. `agy_integrity.check` is unchanged: the executor
+  `locally_qualified` image through `agy_qualification.lookup`. A miss, the opt-out, a
+  failed or tampered record, an unsafe store, an unreadable image or a memfd-seal failure is
+  the typed `agy_image_unqualified` refusal, and a miss closes its image. A refusal that
+  already carries its own typed code (such as `seat_filtered_egress_unavailable` from the
+  help measurement) passes through unchanged. The `agy_image_unqualified` fix line now names
+  `phase-loop agy-qualification run` and the `[agy] self_qualification` opt-out. `agy_integrity.check` is unchanged: the executor
   (`trusted_command`, `admitted_command`) and canary callers stay release-only.
 
 ## [0.7.25] - 2026-10-08

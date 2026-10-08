@@ -2,8 +2,9 @@
 
 The two owned review-seat sites in ``seat_profile`` (the credential refresh and the owned
 non-heartbeat seat) admit a release member offline first, then a ``locally_qualified``
-image through ``agy_qualification.lookup``. Every other refusal (absent, failed, tampered,
-opted out) is the typed ``agy_image_unqualified`` refusal. ``agy_integrity.check`` stays
+image through ``agy_qualification.lookup``. A miss, the opt-out, a failed or tampered record,
+an unsafe store, an unreadable image or a seal failure is the typed ``agy_image_unqualified``
+refusal; a refusal that already carries its own typed code passes through. ``agy_integrity.check`` stays
 release-only for its executor and canary callers; one cell per caller pins that.
 
 Nothing here reaches the network or a model: help measurement is a counting fake (except
@@ -181,6 +182,51 @@ def test_an_admission_miss_closes_the_carried_image(world, monkeypatch):
         agy_integrity.admit_for_seat(str(world.agy), world.env)
     assert len(misses) == 1 and misses[0].fd is None
     assert _open_fds() == before
+
+
+def test_a_memfd_seal_failure_in_lookup_is_the_typed_refusal(world, monkeypatch):
+    """Fault injection: lookup's ``VerifiedImage.from_bytes`` raises the seal error.
+
+    Mutation: dropping ``AgyCanaryEvidenceError`` from the mapped exceptions lets it escape.
+    """
+    from phase_loop_runtime.agy_canary_evidence import AgyCanaryEvidenceError
+
+    _seed(world)
+
+    def unsealable(**_kwargs):
+        raise AgyCanaryEvidenceError("synthetic memfd seal failure")
+
+    monkeypatch.setattr(gh, "_sealed_tree_fd", unsealable)
+    with pytest.raises(agy_integrity.AgyImageUnqualified, match="^agy_image_unqualified$") as caught:
+        agy_integrity.admit_for_seat(str(world.agy), world.env)
+    assert isinstance(caught.value.__cause__, AgyCanaryEvidenceError)
+
+
+@pytest.mark.parametrize("code", ["seat_filtered_egress_unavailable", "seat_profile_unavailable"])
+def test_a_refusal_with_its_own_typed_code_passes_through(world, monkeypatch, code):
+    """A typed seat refusal raised inside lookup (e.g. by the help measurement) keeps its code."""
+    from phase_loop_runtime import sandbox_egress
+
+    exc_type = (sandbox_egress.EgressUnavailable if code == "seat_filtered_egress_unavailable"
+                else sandbox_egress.SeatIdentityUnverified)
+
+    def refuse(*_args, **_kwargs):
+        raise exc_type(code)
+
+    monkeypatch.setattr(q, "lookup", refuse)
+    with pytest.raises(exc_type, match=code) as caught:
+        agy_integrity.admit_for_seat(str(world.agy), world.env)
+    assert pi._exception_failure(caught.value) == code
+
+
+def test_the_refusal_notice_names_the_real_remedies():
+    """agent-harness#1350 board: the fix is first use or the opt-out, never a downgrade."""
+    from phase_loop_runtime import seat_jail
+
+    notice = seat_jail.render_notice("agy_image_unqualified", "gemini:a")
+    assert "phase-loop agy-qualification run" in notice.fix
+    assert "[agy] self_qualification" in notice.fix
+    assert "install" not in notice.fix
 
 
 def test_a_missing_executable_is_the_typed_refusal(world):

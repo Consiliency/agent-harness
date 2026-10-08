@@ -158,7 +158,8 @@ def main():
     parser.add_argument("--archive", type=Path, help="verify a locally downloaded official asset")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--source-only", action="store_true", help="verify the record and source pins without network")
-    mode.add_argument("--upstream-only", action="store_true", help="verify the latest release without source pins")
+    mode.add_argument("--upstream-only", action="store_true", help="verify the newest shipped member's release asset without source pins; "
+                           "the newest upstream release is reported, and only warns if not a member")
     mode.add_argument("--route-core", action="store_true",
                       help="verify the record and the route-core source pins only, without network")
     args = parser.parse_args()
