@@ -318,7 +318,6 @@
   {"count": 1, "function": "rotate_blocked_partition", "module": "convergence/broker/live", "primitive": "io.open", "role": "host-io"},
   {"count": 2, "function": "run_legacy_broker_cutover", "module": "convergence/broker/live", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "run_legacy_broker_cutover", "module": "convergence/broker/live", "primitive": "io.read_text", "role": "host-io"},
-  {"count": 1, "function": "sealed_partition_effects", "module": "convergence/broker/live", "primitive": "io.read_bytes", "role": "host-io"},
   {"count": 1, "function": "BrokerService._block_unsealed_owner", "module": "convergence/broker/verbs", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "BrokerService._owner_and_admission_under_one_lock", "module": "convergence/broker/verbs", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "BrokerService._record_terminal_and_seal_owner", "module": "convergence/broker/verbs", "primitive": "io.open", "role": "host-io"},
@@ -1038,5 +1037,7 @@
   {"count": 1, "function": "validate_reap_target", "module": "seat_uid", "primitive": "io.read_text", "role": "host-io"},
   {"count": 1, "function": "_trusted_host_path", "module": "panel_invoker", "primitive": "io.lstat", "role": "host-io"},
   {"count": 1, "function": "_read_seat_raw_text", "module": "panel_invoker", "primitive": "io.open", "role": "host-io"},
-  {"count": 3, "function": "_SeatClaudeJournal._read_journal", "module": "panel_invoker", "primitive": "io.stat", "role": "host-io"}
+  {"count": 3, "function": "_SeatClaudeJournal._read_journal", "module": "panel_invoker", "primitive": "io.stat", "role": "host-io"},
+  {"count": 1, "function": "_read_receipt_inventory", "module": "convergence/broker/live", "primitive": "io.read_bytes", "role": "host-io"},
+  {"count": 1, "function": "PublishTransaction.record_recovery", "module": "publishing", "primitive": "io.read_text", "role": "host-io"}
 ]
