@@ -580,7 +580,6 @@
   {"count": 1, "function": "_seat_owner", "module": "panel_invoker", "primitive": "io.stat", "role": "host-io"},
   {"count": 1, "function": "_seat_transcripts", "module": "panel_invoker", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "_shell_wrapper_target", "module": "panel_invoker", "primitive": "io.open", "role": "host-io"},
-  {"count": 1, "function": "_shell_wrapper_target", "module": "panel_invoker", "primitive": "io.stat", "role": "host-io"},
   {"count": 1, "function": "_terminate_process_group", "module": "panel_invoker", "primitive": "subprocess.Popen", "role": "host-helper"},
   {"count": 1, "function": "_terminate_process_group_windows", "module": "panel_invoker", "primitive": "subprocess.Popen", "role": "host-helper"},
   {"count": 1, "function": "_wait_for_process_group_exit", "module": "panel_invoker", "primitive": "subprocess.Popen", "role": "host-helper"},

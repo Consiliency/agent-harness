@@ -4555,31 +4555,47 @@ def _seat_secret_values(value):
 
 
 _SHELL_WRAPPER_EXPORT = re.compile(r'export [A-Z_][A-Z0-9_]*=(?:[A-Za-z0-9._/:@+-]|"\$PATH")*')
-_SHELL_WRAPPER_EXEC = re.compile(r'exec (/[A-Za-z0-9._@+/-]+)(?: [A-Za-z0-9._=/-]+)* "\$@"')
+# Only `-c key=value` config pairs may sit between the target and "$@": an interpreter
+# line (`exec /usr/bin/env node cli.js "$@"`) or any other flag is not followed.
+_SHELL_WRAPPER_EXEC = re.compile(
+    r'exec (/[A-Za-z0-9._@+/-]+)(?: -c [A-Za-z0-9._-]+=[A-Za-z0-9._/:@+-]+)* "\$@"')
 
 
-def _shell_wrapper_target(path: Path) -> Path | None:
+def _shell_wrapper_target(path: Path, provider: str | None = None) -> Path | None:
     """The absolute ``exec`` target of a trusted launcher wrapper, else ``None``.
 
     Team-host tooling ships each CLI as ``#!/bin/sh`` + ``export`` lines + one
-    ``exec /abs/path [args] "$@"`` (agent-harness#1318). The seat binds only the provider
-    itself, so the wrapper's target would be missing from the view. Only a wrapper owned by
-    root or the operator, writable by no one else, and of exactly that shape is followed."""
+    ``exec /abs/path [-c k=v ...] "$@"`` (agent-harness#1318). The seat binds only the
+    provider itself, so the wrapper's target would be missing from the view. Only a regular
+    file owned by root or the operator, writable by no one else, read through one no-follow,
+    non-blocking descriptor, of exactly that shape, whose target is named ``provider``
+    (when given), is followed."""
     try:
-        info = os.stat(path)
-        if info.st_uid not in {0, os.getuid()} or info.st_mode & 0o022 or info.st_size > 4096:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError:
+        return None
+    try:
+        info = os.fstat(descriptor)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid not in {0, os.getuid()}
+                or info.st_mode & 0o022 or info.st_size > 4096):
             return None
-        with open(path, "rb") as handle:
-            text = handle.read(4097).decode("utf-8")
+        text = os.read(descriptor, 4097).decode("utf-8")
     except (OSError, UnicodeDecodeError):
         return None
+    finally:
+        os.close(descriptor)
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     if len(lines) < 2 or lines[0] != "#!/bin/sh":
         return None
     if not all(_SHELL_WRAPPER_EXPORT.fullmatch(line) for line in lines[1:-1]):
         return None
     match = _SHELL_WRAPPER_EXEC.fullmatch(lines[-1])
-    return Path(match.group(1)) if match else None
+    if not match:
+        return None
+    target = Path(match.group(1))
+    if provider is not None and target.name.lower() != provider:
+        return None
+    return target
 
 
 def _seat_provider_source(command, env):
@@ -4591,7 +4607,7 @@ def _seat_provider_source(command, env):
         raise FileNotFoundError("seat_provider_unavailable")
     source = Path(source).resolve(strict=True)
     for _hop in range(4):
-        target = _shell_wrapper_target(source)
+        target = _shell_wrapper_target(source, Path(command).name.lower())
         if target is None:
             break
         source = target.resolve(strict=True)

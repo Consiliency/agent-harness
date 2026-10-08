@@ -88,3 +88,35 @@ def test_a_wrapper_another_account_owns_is_not_followed(tmp_path, monkeypatch):
 def test_a_plain_binary_is_bound_as_before(tmp_path, monkeypatch):
     native = _exe(tmp_path / "bin/grok", "\x7fELF")
     assert _source(monkeypatch, tmp_path / "bin", "grok") == ("grok", str(native))
+
+
+# --- advisor-board stack review ------------------------------------------------------
+
+
+@pytest.mark.parametrize("line", [
+    'exec /usr/bin/env node /opt/x/cli.js "$@"',   # an interpreter with a script
+    'exec /opt/node/bin/node /opt/x/cli.js "$@"',  # a named interpreter
+    'exec /opt/x/grok --sandbox off "$@"',         # a flag that is not -c key=value
+])
+def test_an_interpreter_or_flagged_exec_line_is_not_followed(tmp_path, line):
+    assert pi._shell_wrapper_target(_exe(tmp_path / "bin/grok", f"#!/bin/sh\n{line}\n"), "grok") is None
+
+
+def test_a_target_not_named_for_the_provider_is_not_followed(tmp_path):
+    wrapper = _exe(tmp_path / "bin/grok", '#!/bin/sh\nexec /opt/node/bin/node "$@"\n')
+    assert pi._shell_wrapper_target(wrapper, "grok") is None
+    assert pi._shell_wrapper_target(wrapper) == Path("/opt/node/bin/node")
+
+
+def test_a_fifo_or_symlinked_wrapper_is_read_without_blocking_or_following(tmp_path):
+    fifo = tmp_path / "bin/grok"
+    fifo.parent.mkdir(parents=True)
+    os.mkfifo(fifo)
+    assert pi._shell_wrapper_target(fifo, "grok") is None
+    native = _exe(tmp_path / "native/grok", "\x7fELF")
+    real = _wrapper(tmp_path / "real", "grok", native)
+    link = tmp_path / "linked/grok"
+    link.parent.mkdir()
+    link.symlink_to(real)
+    assert pi._shell_wrapper_target(link, "grok") is None
+    assert pi._shell_wrapper_target(real, "grok") == native
