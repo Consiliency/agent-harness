@@ -1157,6 +1157,7 @@ def prepare(inputs: Path, source_root: Path, evidence_root: Path, repo: Path, ou
             stage_output, stage_root, repo, reuse_registry=reuse_registry,
             expected_coordinator_session=expected_coordinator_session,
             expected_author_session=expected_author_session,
+            claim_reuse=False,
         )
         published.append(_publish_noreplace(stage_fd, "evidence", targets[0], "evidence root"))
         published.append(_publish_noreplace(stage_fd, "evidence.json", targets[1], "output"))
@@ -1306,12 +1307,15 @@ def seal(pre_completion: Path, evidence_root: Path, repo: Path, ledger: Path, ou
             ),
             "pre-completion evidence",
         )
+        if not isinstance(evidence, dict) or evidence.get("completion") != {"mode": "pre_completion"}:
+            raise BuildError("pre-completion evidence is not pre-completion")
         ledger_bytes = _canonical_ledger_bytes(ledger)
         expected_digest = V.normalized_precompletion_digest(evidence)
         V.verify(
             pre_completion, evidence_root, repo, reuse_registry=reuse_registry,
             expected_coordinator_session=expected_coordinator_session,
             expected_author_session=expected_author_session,
+            claim_reuse=False,
         )
         matches = _checked_completion_events(ledger_bytes, evidence, expected_digest)
         if matches != 1:
