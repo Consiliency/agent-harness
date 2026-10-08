@@ -130,8 +130,10 @@ is not amended as work moves; the ledger and the phase plans are the live record
 - **IF-0-REVBOUND-2** — the per-PR review-round ledger record (`review_round.v1`): PR, head,
   round number, cap, outcome (`converged | descoped | halted`).
 - **IF-0-PARSCHED-1** — readiness-driven dispatch: a phase is dispatchable when its `Depends on`
-  set is complete and it shares no owned path with a running phase.
-- **IF-0-ROUTE-1** — the router interface: `route(work_unit) -> RouteDecision(executor, model, effort, fallbacks, reason)`, registered once and consulted by every dispatch path. `work_unit` carries an optional spec scope `{level, kind, name}` from Consiliency/spec's desired-state graph.
+  set is complete and it shares no owned path with a running phase. The overlap predicate is
+  compatible with greenfield's `parallel_lane_graph.v0.1`; greenfield's `safe_waves` are not the
+  dispatch unit.
+- **IF-0-ROUTE-1** — the router interface: `route(work_unit) -> RouteDecision(executor, model, effort, fallbacks, reason)`, registered once and consulted by every dispatch path. `work_unit` carries an optional spec scope `{level, kind, name}` from Consiliency/spec's desired-state graph and an optional greenfield unit reference `{unit_id, unit_digest}` (provenance only, never a routing key).
 - **IF-0-ROUTE-2** — president selection: primary is the frontier model of the vendor opposite the phase's top-level model; fallback order and the recorded fallback field on the ruling.
 - **IF-0-PANELSPLIT-1** — the `phase_loop_runtime.panel` package module map; every public and
   monkeypatched name stays importable from `phase_loop_runtime.panel_invoker`.
@@ -193,7 +195,7 @@ Remove the four closeout and planning failures agents hit most often, by mechani
 - [ ] EC-LOOPFIX-1 — The closeout audit ignores ignored-output paths that existed unchanged before the phase started; falsified by a worktree with a pre-existing ignored directory failing closeout.
 - [ ] EC-LOOPFIX-2 — A `failed` plan can be succeeded by a new plan through IF-0-LOOPFIX-2 without fabricating a transition; falsified by a resumed run unable to record its result.
 - [ ] EC-LOOPFIX-3 — `phase-loop validate-plan` exists (IF-0-LOOPFIX-1) and every skill calls it instead of `python3 -m phase_loop_runtime…`; falsified by a skill instruction that imports the runtime from system `python3`.
-- [ ] EC-LOOPFIX-4 — The plan-phase template in `skills-src/` passes `phase-loop validate-plan`, and the validator accepts every lane grammar the runtime parser accepts (the parser is not narrowed); a regression corpus includes downstream repos' committed plans (Consiliency/spec) and legacy roadmaps without goal IDs; falsified by the shipped template or a corpus plan producing a structural error the parser does not.
+- [ ] EC-LOOPFIX-4 — The plan-phase template in `skills-src/` passes `phase-loop validate-plan`, and the validator accepts every lane grammar the runtime parser accepts (the parser is not narrowed); a regression corpus includes downstream repos' committed plans (Consiliency/spec, ViperJuice/greenfield) and legacy roadmaps without goal IDs; falsified by the shipped template or a corpus plan producing a structural error the parser does not.
 - [ ] EC-LOOPFIX-5 — The worktree sweep keeps a recently active worktree, branch deletion checks the merged head, and lane cleanup has `--dry-run` (agent-harness#1354); falsified by a negative-control test that reaches each removal path.
 
 **Scope notes**
@@ -271,6 +273,7 @@ Let phase-loop run every ready phase at once, excluding only pairs that share fi
 - [ ] EC-PARSCHED-1 — With `--phase-scheduler concurrent`, a phase starts within one scheduler tick after its last dependency completes, without waiting for the rest of its wave; falsified by a ready phase idle behind an unrelated running phase.
 - [ ] EC-PARSCHED-2 — An ownership overlap excludes only the overlapping pair; falsified by one overlap serializing an otherwise independent wave.
 - [ ] EC-PARSCHED-3 — The roadmap lint reports an error when two phases with no DAG path between them share a Key file and no exclusion is declared; falsified by this roadmap's own overlaps going unreported.
+- [ ] EC-PARSCHED-5 — The pairwise ownership-overlap predicate (exact path, glob, read-only neighbour) agrees with greenfield's `parallel_lane_graph.v0.1` overlap rules on its published fixtures; falsified by a fixture pair the two classify differently.
 - [ ] EC-PARSCHED-4 — Concurrent dispatch works with `manual` closeout; falsified by the concurrent scheduler refusing to start under manual closeout.
 
 **Scope notes**
@@ -440,6 +443,7 @@ Let the executor route each job, lane and phase to any vendor, model and effort 
 - [ ] EC-ROUTE-3 — Work units in one phase may run on different vendors, and no rule pins a phase to a single author vendor; falsified by a concurrent run refused or serialized because its lanes use different vendors.
 - [ ] EC-ROUTE-4 — Each lens seat prefers its listed vendor, skips a model that authored the reviewed diff when an alternative is available, and otherwise seats a fresh-context reviewer with the overlap recorded on the verdict; review never fails because every vendor authored some of the work; falsified by an author-overlap refusal, or an unrecorded author seat.
 - [ ] EC-ROUTE-6 — A work unit may carry an optional spec scope (spec-graph `level`, node `kind`, and node or frontier `name`), and the router receives it; routing never keys on chunker boundary ids; falsified by a scoped work unit whose scope does not reach the router, or a route keyed on a chunker id.
+- [ ] EC-ROUTE-7 — A greenfield `parallel_work_unit.v0.1` can be the source of a work unit: its `preferred_harness_policy` and `fallback_policy` reach the router as hints, the router may override them and records why, and its chunker-derived boundary ids are not used as routing keys; falsified by a dropped hint, an unrecorded override, or a route keyed on a greenfield boundary id.
 - [ ] EC-ROUTE-5 — The president's primary rung is the frontier model of the vendor opposite the phase's top-level model (the phase-plan author; for a standalone PR, the authoring session's model), per IF-0-ROUTE-2; fallback goes to the other frontier model, then the existing ladder, and any fallback is recorded on the ruling; falsified by a same-vendor primary president or an unrecorded fallback.
 
 **Scope notes**
