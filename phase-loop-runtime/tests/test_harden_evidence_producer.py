@@ -4682,6 +4682,60 @@ def test_harden_verifier_rejects_symlink_evidence_input(tmp_path: Path) -> None:
         )
 
 
+def test_harden_verifier_requires_broker_receipts_for_nonce_reuse(
+    tmp_path: Path,
+) -> None:
+    producer = _producer_module("seal")
+    verifier = producer.V
+    evidence_path, artifacts, repo, _evidence, registry, coordinator, author = (
+        verifier._fixture(tmp_path)
+    )
+    model = verifier.parse_canonical_json(
+        evidence_path.read_bytes(), "broker receipt omission evidence"
+    )
+    retained = model["authority"]["retained_inputs"]
+
+    def retained_value(ref: dict[str, str]) -> Any:
+        return verifier.parse_retained_json(
+            (artifacts / ref["path"]).read_bytes(), "retained broker input"
+        )
+
+    broker_ref = next(
+        ref
+        for ref in retained
+        if isinstance(retained_value(ref), dict)
+        and retained_value(ref).get("schema") == "harden_broker_receipts.v1"
+        and retained_value(ref).get("round") == "candidate"
+    )
+    claimed_nonce = retained_value(broker_ref)["receipts"][0]["operation_nonce"]
+    registry.write_bytes(
+        verifier.canonical_bytes(
+            {
+                "schema": "harden_evidence_registry.v1",
+                "evidence_ids": [],
+                "operation_nonces": [claimed_nonce],
+            }
+        )
+    )
+    verify_kwargs = {
+        "reuse_registry": registry,
+        "expected_coordinator_session": coordinator,
+        "expected_author_session": author,
+        "ci_query": tmp_path / "fake-gh",
+        "claim_reuse": False,
+    }
+    with pytest.raises(verifier.EvidenceError, match="reused operation nonce"):
+        verifier.verify(evidence_path, artifacts, repo, **verify_kwargs)
+
+    omitted = copy.deepcopy(model)
+    omitted["authority"]["retained_inputs"] = [
+        ref for ref in retained if ref != broker_ref
+    ]
+    verifier._write_evidence(evidence_path, omitted)
+    with pytest.raises(verifier.EvidenceError, match="broker receipt"):
+        verifier.verify(evidence_path, artifacts, repo, **verify_kwargs)
+
+
 @pytest.mark.parametrize(
     "attack",
     ("fifo", "symlink-fifo", "socket", "device", "oversized", "parent-symlink"),
