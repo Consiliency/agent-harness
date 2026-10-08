@@ -4882,6 +4882,7 @@ def test_harden_verifier_bounds_canonical_ledger_reads(
     elif attack == "oversized":
         canonical.write_bytes(b"x" * (verifier.MAX_ARTIFACT_BYTES + 1))
     else:
+        canonical.write_bytes(body)
         phase_loop = canonical.parent
         target = tmp_path / "phase-loop-data"
         phase_loop.replace(target)
