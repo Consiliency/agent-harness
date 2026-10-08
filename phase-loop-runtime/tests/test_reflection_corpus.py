@@ -115,6 +115,54 @@ def test_boilerplate_is_stripped_before_the_repo_agnostic_gate(tmp_path):
     assert reasons["b8"] == "no_friction_or_proposal"
 
 
+def test_identical_reports_from_independent_runs_both_count(tmp_path):
+    root = tmp_path / "skills"
+    same = reflection(didnt="The validator rejected the template lane index.")
+    put(root, "codex-plan-phase", "repoA", "b", "r1", same)
+    put(root, "codex-plan-phase", "repoB", "b", "r1", same)
+
+    corpus, _ = rc.collect([root])
+
+    assert len(corpus.admitted) == 2 and corpus.ready_skills() == ["plan-phase"]
+
+
+def test_a_line_repeated_across_repos_is_evidence_not_boilerplate(tmp_path):
+    root = tmp_path / "skills"
+    friction = "Closeout audit blocked on ignored outputs this run did not create."
+    for repo in ("r1", "r2", "r3"):
+        put(root, "codex-execute-phase", repo, "b", "x", reflection(didnt=f"{friction}\nOther detail from {repo}."))
+
+    corpus, boilerplate = rc.collect([root])
+
+    assert boilerplate == []
+    assert rc.render_bundle(corpus).count(friction) == 3
+
+
+def test_under_threshold_skills_are_not_consumed(tmp_path):
+    root = tmp_path / "skills"
+    put(root, "codex-plan-phase", "h", "b1", "r", reflection(didnt="Ready one."))
+    put(root, "codex-plan-phase", "h", "b2", "r", reflection(didnt="Ready two."))
+    lone = put(root, "codex-execute-detailed", "h", "b1", "r", reflection(didnt="Only one so far."))
+    junk = put(root, "codex-execute-detailed", "h", "b2", "r", reflection(didnt="Copied.", improvements="Fix other-repo#3."))
+
+    corpus, boilerplate = rc.collect([root])
+    consumed = rc.manifest(corpus, boilerplate)["reflections_consumed"]
+
+    assert str(lone) not in consumed
+    assert str(junk) in consumed
+    assert len(consumed) == 3
+
+
+def test_skill_bundle_override_root_is_scanned(tmp_path, home, monkeypatch):
+    custom = tmp_path / "custom-bundle"
+    put(custom, "codex-plan-phase", "h", "b1", "r", reflection())
+    monkeypatch.setenv("PHASE_LOOP_SKILL_BUNDLE", str(custom))
+
+    corpus, _ = rc.collect()
+
+    assert custom in corpus.roots and len(corpus.scanned) == 1
+
+
 def test_improvements_classification():
     assert rc.classify_improvements("None.") == "none"
     assert rc.classify_improvements("No skill edits are proposed.") == "none"

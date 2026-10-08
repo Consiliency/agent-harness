@@ -19,15 +19,15 @@ CLI::
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
+import os
 import re
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Sequence
 
-from .skill_paths import HARNESS_DEFAULT_SKILL_ROOTS
+from .skill_paths import HARNESS_DEFAULT_SKILL_ROOTS, resolve_skill_bundle_root
 
 HARNESS_PREFIXES = tuple(HARNESS_DEFAULT_SKILL_ROOTS)
 
@@ -129,8 +129,17 @@ class Corpus:
 
 
 def default_roots() -> list[Path]:
-    """Every harness's installed skill root; reflections land in more than one."""
-    return [root.expanduser() for root in HARNESS_DEFAULT_SKILL_ROOTS.values()]
+    """Every harness's installed skill root; reflections land in more than one.
+
+    A ``PHASE_LOOP_SKILL_BUNDLE`` override is where writers put reflections, so it
+    is scanned too.
+    """
+    roots = [root.expanduser() for root in HARNESS_DEFAULT_SKILL_ROOTS.values()]
+    if os.environ.get("PHASE_LOOP_SKILL_BUNDLE"):
+        override = resolve_skill_bundle_root()
+        if override not in roots:
+            roots.append(override)
+    return roots
 
 
 def split_skill(skill: str) -> tuple[str, str] | None:
@@ -243,19 +252,16 @@ def _content_lines(reflection: Reflection) -> set[str]:
 
 
 def _mark_duplicates(reflections: list[Reflection]) -> None:
-    """Collapse exact copies corpus-wide and near-copies within one repo/branch.
+    """Collapse exact and near copies within one skill/repo/branch.
 
     A near-copy is a re-emitted reflection (same run re-closed) whose content lines
-    are at least ``NEAR_DUPLICATE_OVERLAP`` contained in an earlier kept one.
+    are at least ``NEAR_DUPLICATE_OVERLAP`` contained in an earlier kept one. Copies
+    are never collapsed across repos or branches: identical reports from independent
+    runs are recurring evidence, not duplicates.
     """
-    exact: dict[str, str] = {}
     kept_by_group: dict[tuple[str, str, str], list[tuple[str, set[str]]]] = defaultdict(list)
     for reflection in reflections:
         lines = _content_lines(reflection)
-        key = hashlib.sha256("\n".join(sorted(lines)).encode()).hexdigest()
-        if key in exact:
-            reflection.excluded = f"duplicate_of:{exact[key]}"
-            continue
         for kept_id, kept_lines in kept_by_group[reflection.group]:
             smaller = min(len(lines), len(kept_lines))
             if smaller and len(lines & kept_lines) / smaller >= NEAR_DUPLICATE_OVERLAP:
@@ -263,7 +269,6 @@ def _mark_duplicates(reflections: list[Reflection]) -> None:
                 break
         if reflection.excluded:
             continue
-        exact[key] = reflection.id
         kept_by_group[reflection.group].append((reflection.id, lines))
 
 
@@ -283,11 +288,19 @@ def apply_quality_filter(
     """
     _mark_duplicates(reflections)
 
+    # Boilerplate is a line one repo's runs keep re-emitting (a copied ledger or
+    # template line). The same line from several repos is recurring evidence and stays.
     line_counts: Counter[str] = Counter()
+    line_repos: dict[str, set[str]] = defaultdict(set)
     for reflection in reflections:
         if not reflection.excluded:
-            line_counts.update(line for line in _content_lines(reflection) if len(line) >= BOILERPLATE_MIN_CHARS)
-    boilerplate = {line for line, count in line_counts.items() if count >= boilerplate_min}
+            for line in _content_lines(reflection):
+                if len(line) >= BOILERPLATE_MIN_CHARS:
+                    line_counts[line] += 1
+                    line_repos[line].add(reflection.repo_hash)
+    boilerplate = {
+        line for line, count in line_counts.items() if count >= boilerplate_min and len(line_repos[line]) == 1
+    }
 
     for reflection in reflections:
         if reflection.excluded:
@@ -384,13 +397,28 @@ def render_bundle(corpus: Corpus) -> str:
     return "\n".join(lines).rstrip() + "\n"
 
 
+PERMANENT_EXCLUSIONS = ("duplicate_of", "improvements_repo_specific", "no_friction_or_proposal")
+
+
+def consumed(corpus: Corpus) -> list[Reflection]:
+    """Reflections this pass uses up, so the editor may archive them.
+
+    Everything for a ready skill feeds the plan. For a skill still below the
+    threshold, only permanently excluded reflections are consumed; its admitted and
+    capped ones stay so evidence can accumulate until the skill is ready.
+    """
+    ready = set(corpus.ready_skills())
+    return [
+        r for r in corpus.scanned
+        if r.bare_skill in ready or (r.excluded or "").split(":")[0] in PERMANENT_EXCLUSIONS
+    ]
+
+
 def manifest(corpus: Corpus, boilerplate: list[str]) -> dict[str, object]:
     return {
         "inventory": inventory(corpus),
         "boilerplate_lines_stripped": boilerplate,
-        # Every scanned reflection is consumed: admitted ones feed the plan, excluded
-        # ones would be excluded again next pass, so leaving them would never drain.
-        "reflections_consumed": [str(r.path) for r in corpus.scanned],
+        "reflections_consumed": [str(r.path) for r in consumed(corpus)],
         "reflections": [
             {
                 "id": r.id,
