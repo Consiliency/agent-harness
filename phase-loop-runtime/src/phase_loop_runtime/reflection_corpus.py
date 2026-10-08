@@ -63,6 +63,8 @@ DEFAULT_PER_BRANCH_CAP = 3
 DEFAULT_BOILERPLATE_MIN = 3
 BOILERPLATE_MIN_CHARS = 40
 
+# Deliberately broad: bare `repo#N` refs are how this fleet names issues, so an
+# occasional false hit (`step#3`) is the cheaper error than leaking a real ref.
 _ORG_REF = re.compile(r"\b[\w.-]+/[\w.-]+#\d+\b|\b[a-z][\w.-]*#\d+\b")
 _ABS_PATH = re.compile(r"(?<![\w.])(?:~|/(?:home|mnt|tmp|Users|var|opt|srv|workspace))/[^\s,;)\]`'\"<]+(?![^\s]*<)")
 _URL = re.compile(r"https?://\S+")
