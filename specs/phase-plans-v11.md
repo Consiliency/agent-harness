@@ -70,6 +70,7 @@ Pinned inputs this roadmap consumes. Never pin this roadmap's own outputs.
   initiative with its own roadmap if it proceeds.
 - Adopting the PStack programme wholesale. REFLOOP admits individual items through its gates.
 - New cross-repo convergence features beyond what INTEG and RELEASE carry.
+- Binding phases, lanes or jobs to Consiliency/spec frontier subtrees (spec diff plus frontier-scoped parity as the unit of work). That needs spec-side primitives that do not exist yet (subgraph endpoints, authoring tools) and is a joint follow-on roadmap; ROUTE's spec scope is the hook it will use.
 - Restating or re-numbering any carried goal. A carried goal changes only by an explicit
   retirement-and-replacement recorded in its phase, never by paraphrase.
 
@@ -94,7 +95,8 @@ Pinned inputs this roadmap consumes. Never pin this roadmap's own outputs.
 7. **Bounded review.** From REVBOUND's landing on, a finding blocks only if it cites a goal ID,
    a contract, or a failing test, and a review that reaches its round cap descopes instead of
    halting.
-8. **Size.** Keep each phase section short; long contracts go in referenced artifacts. A phase
+8. **Spec-protocol compatibility.** Contracts that other repos copy or consume (`spec_delta_closeout`, phase and plan formats) change only by a new version, never in place. Anything keyed to code entities uses Consiliency/spec's node `name` or idmodel `logical_id`, never treesitter-chunker ids.
+9. **Size.** Keep each phase section short; long contracts go in referenced artifacts. A phase
    plan that grows past the plan-size rule (agent-harness#1302) splits rather than amends.
 
 ## Absorbed work
@@ -129,7 +131,7 @@ is not amended as work moves; the ledger and the phase plans are the live record
   round number, cap, outcome (`converged | descoped | halted`).
 - **IF-0-PARSCHED-1** — readiness-driven dispatch: a phase is dispatchable when its `Depends on`
   set is complete and it shares no owned path with a running phase.
-- **IF-0-ROUTE-1** — the router interface: `route(work_unit) -> RouteDecision(executor, model, effort, fallbacks, reason)`, registered once and consulted by every dispatch path.
+- **IF-0-ROUTE-1** — the router interface: `route(work_unit) -> RouteDecision(executor, model, effort, fallbacks, reason)`, registered once and consulted by every dispatch path. `work_unit` carries an optional spec scope `{level, kind, name}` from Consiliency/spec's desired-state graph.
 - **IF-0-ROUTE-2** — president selection: primary is the frontier model of the vendor opposite the phase's top-level model; fallback order and the recorded fallback field on the ruling.
 - **IF-0-PANELSPLIT-1** — the `phase_loop_runtime.panel` package module map; every public and
   monkeypatched name stays importable from `phase_loop_runtime.panel_invoker`.
@@ -191,7 +193,7 @@ Remove the four closeout and planning failures agents hit most often, by mechani
 - [ ] EC-LOOPFIX-1 — The closeout audit ignores ignored-output paths that existed unchanged before the phase started; falsified by a worktree with a pre-existing ignored directory failing closeout.
 - [ ] EC-LOOPFIX-2 — A `failed` plan can be succeeded by a new plan through IF-0-LOOPFIX-2 without fabricating a transition; falsified by a resumed run unable to record its result.
 - [ ] EC-LOOPFIX-3 — `phase-loop validate-plan` exists (IF-0-LOOPFIX-1) and every skill calls it instead of `python3 -m phase_loop_runtime…`; falsified by a skill instruction that imports the runtime from system `python3`.
-- [ ] EC-LOOPFIX-4 — The plan-phase template in `skills-src/` passes `phase-loop validate-plan`, and the validator accepts the lane grammar the runtime parser accepts; falsified by the shipped template producing a structural error.
+- [ ] EC-LOOPFIX-4 — The plan-phase template in `skills-src/` passes `phase-loop validate-plan`, and the validator accepts every lane grammar the runtime parser accepts (the parser is not narrowed); a regression corpus includes downstream repos' committed plans (Consiliency/spec) and legacy roadmaps without goal IDs; falsified by the shipped template or a corpus plan producing a structural error the parser does not.
 - [ ] EC-LOOPFIX-5 — The worktree sweep keeps a recently active worktree, branch deletion checks the merged head, and lane cleanup has `--dry-run` (agent-harness#1354); falsified by a negative-control test that reaches each removal path.
 
 **Scope notes**
@@ -437,10 +439,12 @@ Let the executor route each job, lane and phase to any vendor, model and effort 
 - [ ] EC-ROUTE-2 — The routing call is a replaceable interface (IF-0-ROUTE-1): a test registers a custom router and every dispatch path uses it with no dispatch-code change; falsified by a path that bypasses the registered router.
 - [ ] EC-ROUTE-3 — Work units in one phase may run on different vendors, and no rule pins a phase to a single author vendor; falsified by a concurrent run refused or serialized because its lanes use different vendors.
 - [ ] EC-ROUTE-4 — Each lens seat prefers its listed vendor, skips a model that authored the reviewed diff when an alternative is available, and otherwise seats a fresh-context reviewer with the overlap recorded on the verdict; review never fails because every vendor authored some of the work; falsified by an author-overlap refusal, or an unrecorded author seat.
+- [ ] EC-ROUTE-6 — A work unit may carry an optional spec scope (spec-graph `level`, node `kind`, and node or frontier `name`), and the router receives it; routing never keys on chunker boundary ids; falsified by a scoped work unit whose scope does not reach the router, or a route keyed on a chunker id.
 - [ ] EC-ROUTE-5 — The president's primary rung is the frontier model of the vendor opposite the phase's top-level model (the phase-plan author; for a standalone PR, the authoring session's model), per IF-0-ROUTE-2; fallback goes to the other frontier model, then the existing ladder, and any fallback is recorded on the ruling; falsified by a same-vendor primary president or an unrecorded fallback.
 
 **Scope notes**
 - Decompose into 3 lanes: lane A routing interface and work-unit routing (EC-1, EC-2, EC-3), publishing IF-0-ROUTE-1 on day 1; lane B lens-seat author preference and removal of the author-vendor fail-closed rule (EC-4); lane C president selection (EC-5), publishing IF-0-ROUTE-2.
+- The spec scope lets routing follow the spec hierarchy later (for example, one model for `architecture`-level intent, another for `detailed` components, another for `operation` nodes). Routing data stays outside the spec graph, keyed by node `name` or `logical_id`.
 - Builds on the existing model-routing code (`profiles.py`, `route_policy/`, `route_log.py`); it does not replace the routing tables.
 - EC-ROUTE-5 replaces the fixed built-in president order of EC-PRESROUTE-3 (V10) as the primary choice; that order becomes the fallback. The frozen ladder test changes through an `sl0_repairs` entry, which is why this phase depends on PRESROUTE.
 - ROUTE and PANEL both write `composition.py`, `governed_review.py` and `runner.py`, so they never run together. EC-ROUTE-4 extends whichever seat composition is on `main` when it lands: PANEL's lane seating if PANEL landed first, otherwise the current lens cycle, which PANEL then carries forward.
