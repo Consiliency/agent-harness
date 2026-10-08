@@ -38,7 +38,7 @@ POLICY_MARKERS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
     (
         "plan-size-budget",
-        ("capped at 3000 words", "frozen artifacts", "no cap"),
+        ("2000 words plus 500 per lane", "planning.toml", "frozen artifacts", "no cap"),
     ),
     (
         "sol-cross-vendor-ablation",

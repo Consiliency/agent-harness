@@ -2,16 +2,19 @@
 
 The plan-size rule used to contradict itself: the skills set a 3000-word budget while
 AGENTS.md and the convergence doc said there was no fixed cap. The owner chose a split:
-the execution plan is capped, the frozen artifacts it references are not. Check (S) is
-the enforcer. It is a WARN, consistent with the validator's other advisory checks.
+the execution plan is budgeted, the frozen artifacts it references are not. The budget
+scales with lane count (2000 + 500 per lane by default) and is configurable per repo and
+per phase in `.phase-loop/planning.toml`. Check (S) is the enforcer; WARN by default.
 
-The negative control is `plans/phase-plan-v10-PANEL.md`, a post-rule plan that landed at
-roughly five times the budget. (S) must fire on it and stay silent on a short plan.
+The negative control is `plans/phase-plan-v10-PANEL.md`, a post-rule plan at 15,241
+words against a 4-lane budget of 4,000. (S) must fire on it and stay silent on
+`phase-plan-v10-HARDEN.md`, a healthy 7-lane plan that a flat 3000 cap would flag.
 """
 
 from __future__ import annotations
 
 import importlib.util
+import subprocess
 import sys
 from pathlib import Path
 
@@ -20,7 +23,7 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 BUNDLE = REPO / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "skills_bundle"
 PLAN_VALIDATOR = BUNDLE / "claude-plan-phase" / "scripts" / "validate_plan_doc.py"
-PANEL_PLAN = REPO / "plans" / "phase-plan-v10-PANEL.md"
+PLANS = REPO / "plans"
 
 
 def _load():
@@ -35,29 +38,99 @@ def _load():
 V = _load()
 
 
-def test_over_budget_post_rule_plan_warns() -> None:
-    if not PANEL_PLAN.is_file():
+def _words(n: int) -> str:
+    return " ".join(["w"] * n)
+
+
+def _plan(name: str) -> str:
+    path = PLANS / name
+    if not path.is_file():
         pytest.skip("plans/ absent (from-wheel layout)")
-    findings = V._check_s_plan_word_budget(PANEL_PLAN.read_text(encoding="utf-8"))
+    return path.read_text(encoding="utf-8")
+
+
+def _lanes(src: str) -> int:
+    return len(V._parse_lane_index(V._extract_section(src, "Lane Index & Dependencies")))
+
+
+def test_over_budget_post_rule_plan_warns() -> None:
+    src = _plan("phase-plan-v10-PANEL.md")
+    findings = V._check_s_plan_word_budget(src, _lanes(src))
     assert len(findings) == 1
     assert findings[0].startswith("(S) WARN:")
-    words = int(findings[0].split(" is ", 1)[1].split(" words", 1)[0])
-    assert words > V.PLAN_WORD_BUDGET
+    assert "4000-word budget" in findings[0]
 
 
-def test_short_plan_is_silent() -> None:
-    assert V._check_s_plan_word_budget("# Plan\n\n## Context\n\nShort.\n") == []
+def test_healthy_many_lane_plan_is_silent() -> None:
+    # 3,672 words over 7 lanes: a flat 3000 cap flagged it; the lane-scaled one must not.
+    src = _plan("phase-plan-v10-HARDEN.md")
+    assert _lanes(src) == 7
+    assert V._check_s_plan_word_budget(src, _lanes(src)) == []
+    assert V._check_s_plan_word_budget(src, _lanes(src), V.PlanBudget(3000, 0))
 
 
-def test_budget_boundary_and_frontmatter_excluded() -> None:
-    at_budget = " ".join(["w"] * V.PLAN_WORD_BUDGET)
-    assert V._check_s_plan_word_budget(at_budget) == []
-    assert V._check_s_plan_word_budget(at_budget + " over")
+def test_budget_scales_with_lanes_and_excludes_frontmatter() -> None:
+    limit = V.PLAN_BUDGET_BASE_WORDS + 3 * V.PLAN_BUDGET_PER_LANE_WORDS
+    assert V._check_s_plan_word_budget(_words(limit), 3) == []
+    assert V._check_s_plan_word_budget(_words(limit + 1), 3)
+    assert V._check_s_plan_word_budget(_words(limit + 1), 4) == []
     frontmatter = "---\n" + "\n".join(f"k{i}: v" for i in range(50)) + "\n---\n"
-    assert V._check_s_plan_word_budget(frontmatter + at_budget) == []
+    assert V._check_s_plan_word_budget(frontmatter + _words(limit), 3) == []
 
 
-def test_warning_is_non_fatal() -> None:
-    # main() partitions on the "WARN" substring; (S) must never become an error.
-    finding = V._check_s_plan_word_budget(" ".join(["w"] * (V.PLAN_WORD_BUDGET + 1)))[0]
-    assert "WARN" in finding
+def test_modes() -> None:
+    over = _words(V.PLAN_BUDGET_BASE_WORDS + 1)
+    assert "WARN" in V._check_s_plan_word_budget(over, 0, V.PlanBudget(mode="warn"))[0]
+    assert "WARN" not in V._check_s_plan_word_budget(over, 0, V.PlanBudget(mode="error"))[0]
+    assert V._check_s_plan_word_budget(over, 0, V.PlanBudget(mode="off")) == []
+
+
+def _write_config(tmp_path: Path, text: str) -> Path:
+    (tmp_path / ".phase-loop").mkdir()
+    (tmp_path / ".phase-loop" / "planning.toml").write_text(text, encoding="utf-8")
+    return tmp_path
+
+
+def test_config_repo_default_and_phase_override(tmp_path: Path) -> None:
+    repo = _write_config(tmp_path, (
+        "[plan_budget]\nbase_words = 1000\nper_lane_words = 100\nmode = \"error\"\n\n"
+        "[plan_budget.phases.conform]\nbase_words = 8000\n"
+    ))
+    budget, findings = V._resolve_plan_budget(repo, "PANEL", None)
+    assert findings == []
+    assert (budget.base_words, budget.per_lane_words, budget.mode) == (1000, 100, "error")
+    budget, _ = V._resolve_plan_budget(repo, "CONFORM", None)  # alias match is case-insensitive
+    assert (budget.base_words, budget.per_lane_words, budget.mode) == (8000, 100, "error")
+    assert budget.source == "plan_budget.phases.conform"
+
+
+def test_flag_overrides_config(tmp_path: Path) -> None:
+    repo = _write_config(tmp_path, "[plan_budget]\nbase_words = 1000\nmode = \"off\"\n")
+    budget, _ = V._resolve_plan_budget(repo, "X", 6000)
+    assert (budget.limit(5), budget.mode, budget.source) == (6000, "warn", "--word-budget")
+
+
+@pytest.mark.parametrize("text", [
+    "[plan_budget]\nbase_word = 1000\n",          # typo'd key
+    "[plan_budget]\nmode = \"loud\"\n",           # unknown mode
+    "[plan_budget]\nbase_words = -1\n",           # negative
+    "[plan_budget]\nbase_words = true\n",         # bool is not a word count
+    "[plan_budget\n",                              # not TOML
+])
+def test_malformed_config_is_a_visible_error(tmp_path: Path, text: str) -> None:
+    budget, findings = V._resolve_plan_budget(_write_config(tmp_path, text), "X", None)
+    assert budget == V.PlanBudget()
+    assert len(findings) == 1 and findings[0].startswith("(S) invalid")
+    assert "WARN" not in findings[0]
+
+
+def test_cli_end_to_end_flag_and_exit_code(tmp_path: Path) -> None:
+    src = _plan("phase-plan-v10-PANEL.md")
+    run = lambda *extra: subprocess.run(  # noqa: E731
+        [sys.executable, str(PLAN_VALIDATOR), str(PLANS / "phase-plan-v10-PANEL.md"), *extra],
+        capture_output=True, text=True, cwd=REPO,
+    )
+    default = run()
+    assert "(S) WARN: execution plan is" in default.stderr, default.stderr[-2000:]
+    raised = run("--word-budget", str(len(src.split()) * 2))
+    assert "(S)" not in raised.stderr

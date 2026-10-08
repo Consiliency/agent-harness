@@ -476,6 +476,6 @@ Before final response, write a reflection for every non-trivial run. Write it to
 
 - **Content & Behavior Falsifiers**: Runtime evidence primitives evaluate content and behavior bound properties; never commit topology or future-history pins to plan specifications.
 - **External-Only Pins**: Pinned inputs are restricted strictly to declared external inputs in a dedicated section.
-- **Plan Budget**: The execution plan document is capped at 3000 words; `validate_plan_doc.py` check (S) warns above it. Frozen artifacts the plan references (contracts, schemas, freeze-gate payloads) have no cap: move long detail there and point at it rather than inlining it.
+- **Plan Budget**: The execution plan document has a word budget that scales with lane count: 2000 words plus 500 per lane by default, configurable per repo or per phase in `.phase-loop/planning.toml`. `validate_plan_doc.py` check (S) warns above it. Frozen artifacts the plan references (contracts, schemas, freeze-gate payloads) have no cap: move long detail there and point at it rather than inlining it.
 - **Review Policy**: Ratified review requires cross-vendor ablation evidence for all Sol-authored plans.
 - **Proof-Cost Findings**: Flag proof-cost findings when evaluation is constrained to a single node over roughly five minutes or when a test run is unable to report multiple failures.

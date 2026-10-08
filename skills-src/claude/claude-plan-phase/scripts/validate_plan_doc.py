@@ -50,8 +50,10 @@ every issue at once):
       (test, snapshot, lockfile, `.env.example`, migration test) that no lane
       owns, or pins a timestamped migration name the generator will choose.
 
-  (S) WARN when the execution plan exceeds PLAN_WORD_BUDGET words (frontmatter
-      excluded). Referenced frozen artifacts are uncapped; move detail there.
+  (S) WARN when the execution plan exceeds its word budget (frontmatter
+      excluded): base + per-lane words, 2000 + 500/lane by default. Set per
+      repo or per phase in `.phase-loop/planning.toml`; `--word-budget N`
+      overrides. Referenced frozen artifacts are uncapped; move detail there.
 
 Design: zero external deps (stdlib only). Parses markdown by regex on
 stable headings produced by the claude-plan-phase template — not a full
@@ -834,8 +836,94 @@ def _check_l_ui_visual_verification(src: str) -> Findings:
 
 
 # --- (S) execution-plan word budget -------------------------------------------------------
+# agent-harness#1302: the execution plan is capped; the frozen artifacts it references are
+# not. The budget scales with lane count because a flat cap penalises a healthy 7-lane
+# phase as hard as a bloated 3-lane one. Repo config lives in `.phase-loop/planning.toml`:
+#
+#   [plan_budget]
+#   base_words = 2000
+#   per_lane_words = 500
+#   mode = "warn"            # warn | error | off
+#
+#   [plan_budget.phases.CONFORM]   # owner-approved per-phase exception
+#   base_words = 8000
+#
+# Precedence: --word-budget flag > phase entry > repo default > built-in default. The
+# budget is deliberately not read from plan frontmatter: the author would grant
+# themselves the exception.
 
-PLAN_WORD_BUDGET = 3000
+PLAN_BUDGET_BASE_WORDS = 2000
+PLAN_BUDGET_PER_LANE_WORDS = 500
+PLAN_BUDGET_MODES = ("warn", "error", "off")
+PLANNING_CONFIG = Path(".phase-loop") / "planning.toml"
+
+
+@dataclass(frozen=True)
+class PlanBudget:
+    base_words: int = PLAN_BUDGET_BASE_WORDS
+    per_lane_words: int = PLAN_BUDGET_PER_LANE_WORDS
+    mode: str = "warn"
+    source: str = "default"
+
+    def limit(self, lane_count: int) -> int:
+        return self.base_words + self.per_lane_words * max(lane_count, 0)
+
+
+def _load_toml(path: Path) -> dict:
+    try:
+        import tomllib as toml  # Python 3.11+
+    except ModuleNotFoundError:  # pragma: no cover - 3.10 floor
+        try:
+            import tomli as toml  # type: ignore[no-redef]
+        except ModuleNotFoundError:
+            raise RuntimeError("no TOML parser (Python 3.10 needs `tomli`)") from None
+    with path.open("rb") as fh:
+        return toml.load(fh)
+
+
+def _apply_budget_table(budget: PlanBudget, table: object, where: str) -> PlanBudget:
+    if not isinstance(table, dict):
+        raise ValueError(f"{where} must be a table")
+    fields = {"base_words": budget.base_words, "per_lane_words": budget.per_lane_words,
+              "mode": budget.mode}
+    for key, value in table.items():
+        if key == "phases":
+            continue
+        if key not in fields:
+            raise ValueError(f"{where}.{key} is not a known setting")
+        if key == "mode":
+            if value not in PLAN_BUDGET_MODES:
+                raise ValueError(f"{where}.mode must be one of {', '.join(PLAN_BUDGET_MODES)}")
+        elif isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"{where}.{key} must be a non-negative integer")
+        fields[key] = value
+    return PlanBudget(source=where, **fields)
+
+
+def _resolve_plan_budget(
+    repo_root: Optional[Path], phase: str, override_words: Optional[int]
+) -> "tuple[PlanBudget, Findings]":
+    budget = PlanBudget()
+    findings: Findings = []
+    config = repo_root / PLANNING_CONFIG if repo_root is not None else None
+    if config is not None and config.is_file():
+        try:
+            table = _load_toml(config).get("plan_budget", {})
+            budget = _apply_budget_table(budget, table, "plan_budget")
+            phases = table.get("phases", {})
+            if not isinstance(phases, dict):
+                raise ValueError("plan_budget.phases must be a table")
+            for alias, entry in phases.items():
+                if alias.strip().upper() == phase.strip().upper() and phase:
+                    budget = _apply_budget_table(budget, entry, f"plan_budget.phases.{alias}")
+        except Exception as exc:  # malformed config must be visible, never silently ignored
+            findings.append(f"(S) invalid {PLANNING_CONFIG}: {exc}")
+            return PlanBudget(), findings
+    if override_words is not None:
+        # An explicit flag asks for the check, so it re-enables a repo-level `off`.
+        mode = "warn" if budget.mode == "off" else budget.mode
+        budget = PlanBudget(override_words, 0, mode, "--word-budget")
+    return budget, findings
 
 
 def _plan_body(src: str) -> str:
@@ -848,16 +936,23 @@ def _plan_body(src: str) -> str:
     return src
 
 
-def _check_s_plan_word_budget(src: str) -> Findings:
-    """agent-harness#1302: the execution plan is capped; frozen artifacts it references
-    are not. Counts whitespace-separated words like `wc -w`. Autonomy-first WARN."""
-    words = len(_plan_body(src).split())
-    if words <= PLAN_WORD_BUDGET:
+def _check_s_plan_word_budget(
+    src: str, lane_count: int, budget: PlanBudget = PlanBudget()
+) -> Findings:
+    """Counts whitespace-separated words like `wc -w`. WARN by default; `mode = "error"`
+    makes it fatal and `mode = "off"` disables it."""
+    if budget.mode == "off":
         return []
+    words = len(_plan_body(src).split())
+    limit = budget.limit(lane_count)
+    if words <= limit:
+        return []
+    level = "WARN: " if budget.mode == "warn" else ""
     return [
-        f"(S) WARN: execution plan is {words} words, over the {PLAN_WORD_BUDGET}-word "
-        "budget. Move frozen detail (contracts, schemas, freeze-gate payloads) into a "
-        "referenced artifact, which carries no cap, and point at it from the plan."
+        f"(S) {level}execution plan is {words} words, over its {limit}-word budget "
+        f"({budget.base_words} + {budget.per_lane_words} x {lane_count} lanes, "
+        f"from {budget.source}). Move frozen detail (contracts, schemas, freeze-gate "
+        "payloads) into a referenced artifact, which carries no cap, and point at it."
     ]
 
 
@@ -1524,6 +1619,8 @@ def main(argv: List[str]) -> int:
     parser.add_argument("--grammar-successor-commit", default=None, help="Successor commit OID")
     parser.add_argument("--server-attested-pre-grammar-date", default=None, help="Server attested date")
     parser.add_argument("--grandfather-source-path", default=None, help="Grandfather source path")
+    parser.add_argument("--word-budget", type=int, default=None,
+                        help="Flat word budget for check (S); overrides .phase-loop/planning.toml")
 
     args = parser.parse_args(argv[1:])
     path = args.plan_path
@@ -1591,7 +1688,11 @@ def main(argv: List[str]) -> int:
     findings.extend(_check_j_docs_lane(src))
     findings.extend(_check_k_acceptance_testable(src))
     findings.extend(_check_l_ui_visual_verification(src))
-    findings.extend(_check_s_plan_word_budget(src))
+    budget, budget_findings = _resolve_plan_budget(
+        repo_root, _parse_frontmatter(src).get("phase", ""), args.word_budget
+    )
+    findings.extend(budget_findings)
+    findings.extend(_check_s_plan_word_budget(src, len(lanes), budget))
     findings.extend(_check_m_release_docs_coverage(src, lanes, lane_sections_parsed))
     findings.extend(_check_n_post_dispatch_reducer(src, lanes, lane_sections_raw, lane_sections_parsed))
     if repo_root is not None:
