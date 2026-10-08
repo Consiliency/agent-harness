@@ -187,7 +187,10 @@ def test_an_admission_miss_closes_the_carried_image(world, monkeypatch):
 def test_a_memfd_seal_failure_in_lookup_is_the_typed_refusal(world, monkeypatch):
     """Fault injection: lookup's ``VerifiedImage.from_bytes`` raises the seal error.
 
-    Mutation: dropping ``AgyCanaryEvidenceError`` from the mapped exceptions lets it escape.
+    The broad ``RuntimeError`` mapping in ``_locally_qualified`` covers it, after the typed
+    re-raises. Mutation: re-raising ``AgyCanaryEvidenceError`` (the base of
+    ``ProviderProcessGroupQuiescenceError``), or catching it before the mapping, lets a seal
+    failure escape untyped.
     """
     from phase_loop_runtime.agy_canary_evidence import AgyCanaryEvidenceError
 

@@ -27,15 +27,21 @@ def _locally_qualified(data, source, env):
     Same lookup as ``gemini_heartbeat.admit`` step 2: opt-out, failed entry, provenance,
     then the qualified entry for this host and runtime. Lookup only; it never qualifies."""
     from . import agy_qualification
+    from .panel_invoker import ProviderProcessGroupQuiescenceError
     from .sandbox_egress import EgressUnavailable
+    from .seat_jail import SeatSandboxRefused
     try:
         return agy_qualification.lookup(dict(env), data, str(source)).image
     except gemini_heartbeat.AdmissionMiss as miss:
         miss.image.close()
         raise AgyImageUnqualified("agy_image_unqualified") from None
-    except EgressUnavailable:
-        # A seat refusal that already carries its own typed code (e.g. the help
-        # measurement's seat_filtered_egress_unavailable) keeps it (agent-harness#1333 PR1).
+    except (EgressUnavailable, gemini_heartbeat.GeminiQuiescenceError,
+            ProviderProcessGroupQuiescenceError, SeatSandboxRefused):
+        # The help measurement's own typed outcomes keep their type, so each reaches its
+        # handler: a seat refusal its code (agent-harness#1333 PR1), a quiescence failure the
+        # leg's quiescence path, a jail refusal its notice (agent-harness#1350 president).
+        # This precedes the broad mapping below, so the AgyCanaryEvidenceError BASE (a real
+        # memfd seal failure) is still the typed refusal.
         raise
     except (OSError, ValueError, RuntimeError) as exc:
         # Opt-out, a failed record, an unsafe store, an unreadable image or a seal failure.
@@ -83,9 +89,11 @@ def admit_for_seat(path, env):
     before any config or store read, otherwise a ``locally_qualified`` image through
     ``agy_qualification.lookup`` (agent-harness#1331); what runs is the sealed memfd of
     those bytes, never the path. A miss, the opt-out, a failed record, an unsafe store, an
-    unreadable image or a memfd-seal failure is the typed refusal; a refusal that already
-    carries its own typed code (such as ``seat_filtered_egress_unavailable`` from the help
-    measurement) passes through unchanged. The executor and canary callers call ``check``
+    unreadable image or a memfd-seal failure is the typed refusal. What the help measurement
+    raises with its own type passes through unchanged: a typed seat refusal
+    (``EgressUnavailable`` and its subclasses, e.g. ``seat_filtered_egress_unavailable``), a
+    quiescence failure (``GeminiQuiescenceError``, ``ProviderProcessGroupQuiescenceError``)
+    and a jail refusal (``SeatSandboxRefused``). The executor and canary callers call ``check``
     without an env and stay release-only.
     """
     return check(path, env)

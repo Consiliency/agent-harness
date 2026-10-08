@@ -19,11 +19,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   non-heartbeat seat). It admits a release member offline as before, then a
   `locally_qualified` image through `agy_qualification.lookup`. A miss, the opt-out, a
   failed or tampered record, an unsafe store, an unreadable image or a memfd-seal failure is
-  the typed `agy_image_unqualified` refusal, and a miss closes its image. A refusal that
-  already carries its own typed code (such as `seat_filtered_egress_unavailable` from the
-  help measurement) passes through unchanged. The `agy_image_unqualified` fix line now names
-  `phase-loop agy-qualification run` and the `[agy] self_qualification` opt-out. `agy_integrity.check` is unchanged: the executor
-  (`trusted_command`, `admitted_command`) and canary callers stay release-only.
+  the typed `agy_image_unqualified` refusal, and a miss closes its image. What the help
+  measurement raises with its own type passes through unchanged:
+  - a typed seat refusal (`EgressUnavailable` and its subclasses, such as
+    `seat_filtered_egress_unavailable`);
+  - a quiescence failure (`GeminiQuiescenceError`, `ProviderProcessGroupQuiescenceError`),
+    which then reaches the leg's quiescence handler;
+  - a jail refusal (`SeatSandboxRefused`).
+
+  The president follow-up to agent-harness#1350 added the last two. The
+  `agy_image_unqualified` fix line now names `phase-loop agy-qualification run` and the
+  `[agy] self_qualification` opt-out. `agy_integrity.check` without an env is unchanged: the
+  executor (`trusted_command`, `admitted_command`) and canary callers stay release-only.
 
 ## [0.7.25] - 2026-10-08
 
