@@ -315,6 +315,12 @@ def _producer_module(case: str) -> Any:
     return module
 
 
+def _restarted_producer_module(case: str) -> Any:
+    if not (_repo_root() / PRODUCER_PATH).is_file():
+        pytest.skip(SKIP_REASON)
+    return _producer_module(case)
+
+
 def _producer_command(*args: str) -> subprocess.CompletedProcess[str]:
     # Keep CI substitution in the test process, not in a production CLI flag or
     # environment switch. Only the canonical provider query is replaced; the
@@ -4592,7 +4598,7 @@ def _fixture_completion_event(verifier: Any, evidence: dict[str, Any]) -> bytes:
 def test_harden_seal_rejects_precompletion_and_ledger_drift(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    producer = _producer_module("seal")
+    producer = _restarted_producer_module("seal")
     verifier = producer.V
     evidence_path, artifacts, repo, initial, registry, coordinator, author = (
         verifier._fixture(tmp_path)
@@ -4662,7 +4668,7 @@ def test_harden_seal_rejects_precompletion_and_ledger_drift(
 
 
 def test_harden_verifier_rejects_symlink_evidence_input(tmp_path: Path) -> None:
-    producer = _producer_module("seal")
+    producer = _restarted_producer_module("seal")
     verifier = producer.V
     evidence_path, artifacts, repo, _evidence, registry, coordinator, author = (
         verifier._fixture(tmp_path)
@@ -4685,7 +4691,7 @@ def test_harden_verifier_rejects_symlink_evidence_input(tmp_path: Path) -> None:
 def test_harden_verifier_requires_broker_receipts_for_nonce_reuse(
     tmp_path: Path,
 ) -> None:
-    producer = _producer_module("seal")
+    producer = _restarted_producer_module("seal")
     verifier = producer.V
     evidence_path, artifacts, repo, _evidence, registry, coordinator, author = (
         verifier._fixture(tmp_path)
@@ -4736,6 +4742,99 @@ def test_harden_verifier_requires_broker_receipts_for_nonce_reuse(
         verifier.verify(evidence_path, artifacts, repo, **verify_kwargs)
 
 
+def test_harden_verifier_binds_full_broker_receipt_semantics(
+    tmp_path: Path,
+) -> None:
+    producer = _restarted_producer_module("seal")
+    verifier = producer.V
+    evidence_path, artifacts, repo, _evidence, registry, coordinator, author = (
+        verifier._fixture(tmp_path)
+    )
+    model = verifier.parse_canonical_json(
+        evidence_path.read_bytes(), "broker receipt semantic evidence"
+    )
+    retained = model["authority"]["retained_inputs"]
+
+    def retained_value(ref: dict[str, str]) -> Any:
+        return verifier.parse_retained_json(
+            (artifacts / ref["path"]).read_bytes(), "retained broker input"
+        )
+
+    broker_ref = next(
+        ref
+        for ref in retained
+        if isinstance(retained_value(ref), dict)
+        and retained_value(ref).get("schema") == "harden_broker_receipts.v1"
+        and retained_value(ref).get("round") == "candidate"
+    )
+    broker = retained_value(broker_ref)
+    receipt = broker["receipts"][0]
+    receipt.update(
+        requested_model="fabricated-model",
+        resolved_model="fabricated-model",
+        result_kind="self_test",
+        terminal_verdict="DISAGREE",
+        head="0" * 40,
+        tree="f" * 40,
+        seat_id="fabricated-seat",
+        harness_provenance="direct_provider",
+        report="fabricated review\nDISAGREE\n",
+        broker={"fabricated": True},
+        runtime_receipt={"path": "fabricated.json", "sha256": "e" * 64},
+    )
+    receipt["report_sha256"] = verifier.sha256(receipt["report"].encode())
+    receipt["report_bytes"] = len(receipt["report"].encode())
+    broker_bytes = verifier.canonical_bytes(broker)
+    (artifacts / broker_ref["path"]).write_bytes(broker_bytes)
+    broker_ref["sha256"] = verifier.sha256(broker_bytes)
+    verifier._write_evidence(evidence_path, model)
+
+    with pytest.raises(
+        verifier.EvidenceError,
+        match="broker receipt|verified seat|retained input",
+    ):
+        verifier.verify(
+            evidence_path,
+            artifacts,
+            repo,
+            reuse_registry=registry,
+            expected_coordinator_session=coordinator,
+            expected_author_session=author,
+            ci_query=tmp_path / "fake-gh",
+            claim_reuse=False,
+        )
+
+
+@pytest.mark.parametrize(
+    "reader",
+    ("producer-read", "producer-copy", "verifier-read"),
+)
+def test_harden_retained_roots_reject_symlink_ancestors(
+    tmp_path: Path, reader: str
+) -> None:
+    producer = _restarted_producer_module("seal")
+    verifier = producer.V
+    real_parent = tmp_path / "real"
+    root = real_parent / "retained"
+    root.mkdir(parents=True)
+    body = b"retained evidence\n"
+    (root / "artifact.txt").write_bytes(body)
+    linked_parent = tmp_path / "linked"
+    linked_parent.symlink_to(real_parent, target_is_directory=True)
+    linked_root = linked_parent / "retained"
+    ref = {"path": "artifact.txt", "sha256": verifier.sha256(body)}
+
+    if reader == "producer-read":
+        with pytest.raises(producer.BuildError, match="symlink|unavailable"):
+            producer._regular_bytes(linked_root, ref, "retained root")
+    elif reader == "producer-copy":
+        with pytest.raises(producer.BuildError, match="symlink|unavailable"):
+            producer._copy_source(linked_root, tmp_path / "copy")
+    else:
+        with pytest.raises(verifier.EvidenceError, match="symlink|unavailable"):
+            verifier.ArtifactStore(linked_root).read(ref, "retained root")
+
+
 @pytest.mark.parametrize(
     "attack",
     ("fifo", "symlink-fifo", "socket", "device", "oversized", "parent-symlink"),
@@ -4743,7 +4842,7 @@ def test_harden_verifier_requires_broker_receipts_for_nonce_reuse(
 def test_harden_verifier_bounds_canonical_ledger_reads(
     tmp_path: Path, attack: str
 ) -> None:
-    producer = _producer_module("seal")
+    producer = _restarted_producer_module("seal")
     verifier = producer.V
     evidence_path, artifacts, repo, evidence, registry, coordinator, author = (
         verifier._fixture(tmp_path)
