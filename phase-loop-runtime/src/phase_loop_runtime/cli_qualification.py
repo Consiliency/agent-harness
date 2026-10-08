@@ -15,8 +15,7 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
-from dataclasses import dataclass, field
-import fcntl
+from dataclasses import dataclass
 from hashlib import sha256
 import hmac
 import json
@@ -65,6 +64,16 @@ _HEX64 = re.compile(r"[0-9a-f]{64}")
 
 class QualificationError(ValueError):
     """A typed refusal; ``str(exc)`` is one of ``CODES`` (or ``CANCELLED``)."""
+
+
+class LockTimeout(Exception):
+    """The bounded lock wait expired (a busy peer). Internal: never a refusal code;
+    ``ensure_admitted`` turns it into a ``transient`` outcome that writes nothing."""
+
+
+class StoreCorrupt(Exception):
+    """A store entry exists but cannot be verified. Internal: ``lookup`` reports
+    ``store_unsafe``, so an invalid entry is never read as a missing one."""
 
 
 class QualificationReentered(RuntimeError):
@@ -155,33 +164,48 @@ def tree_digest(closure: Mapping[str, os.PathLike | str]):
 
     ``closure`` maps a stable label (``package``, or a platform-dependency name) to a root
     directory. The digest is over the sorted ``(label/relative path, type, mode, sha256 or
-    link text)`` of every entry. Symlinks are recorded by their link text and never
-    followed; a symlinked root or any special file refuses.
+    link text)`` of every entry. A symlink is recorded by its link text and its target is
+    never read; it must resolve inside its own label root (absolute text, or a resolved path
+    outside the root, refuses). Any traversal error, a symlinked root or a special file refuses.
     """
+    def unlistable(error):
+        raise QualificationError(UNAVAILABLE) from error
+
     entries = []
     for label in sorted(closure):
         root = Path(closure[label])
         try:
             info = os.lstat(root)
+            real_root = os.path.realpath(root)
         except OSError as exc:
             raise QualificationError(UNAVAILABLE) from exc
         if not stat.S_ISDIR(info.st_mode):
             raise QualificationError(UNAVAILABLE)
-        for directory, dirnames, filenames in os.walk(root, followlinks=False):
+        for directory, dirnames, filenames in os.walk(root, followlinks=False, onerror=unlistable):
             dirnames.sort()
             for name in sorted(dirnames + filenames):
                 path = Path(directory) / name
                 relative = f"{label}/{path.relative_to(root).as_posix()}"
-                info = os.lstat(path)
-                mode = stat.S_IMODE(info.st_mode)
-                if stat.S_ISLNK(info.st_mode):
-                    entries.append([relative, "link", 0, os.readlink(path)])
-                elif stat.S_ISDIR(info.st_mode):
-                    entries.append([relative, "dir", mode, ""])
-                elif stat.S_ISREG(info.st_mode):
-                    entries.append([relative, "file", mode, _read_regular(path)[0]])
-                else:
-                    raise QualificationError(UNAVAILABLE)
+                try:
+                    info = os.lstat(path)
+                    mode = stat.S_IMODE(info.st_mode)
+                    if stat.S_ISLNK(info.st_mode):
+                        text = os.readlink(path)
+                        # Contained by its RESOLVED path, never lexically: a link through an
+                        # inner alias can read outside while its text looks inside. This
+                        # resolves the path; it never reads or hashes the target.
+                        resolved = os.path.realpath(path)
+                        if os.path.isabs(text) or not resolved.startswith(real_root + os.sep):
+                            raise QualificationError(UNAVAILABLE)
+                        entries.append([relative, "link", 0, text])
+                    elif stat.S_ISDIR(info.st_mode):
+                        entries.append([relative, "dir", mode, ""])
+                    elif stat.S_ISREG(info.st_mode):
+                        entries.append([relative, "file", mode, _read_regular(path)[0]])
+                    else:
+                        raise QualificationError(UNAVAILABLE)
+                except OSError as exc:
+                    raise QualificationError(UNAVAILABLE) from exc
     return sha256(_canonical(sorted(entries))).hexdigest()
 
 
@@ -396,7 +420,13 @@ class Store:
         try:
             self._key()
         except FileNotFoundError:
-            return "absent"
+            # A missing key voids every entry's MAC: with entries present that is damage, not
+            # a fresh store, so it is unsafe rather than silently re-keyed.
+            try:
+                entries = any(path.suffix == ".json" for path in self.host_dir.iterdir())
+            except OSError:
+                return "unsafe"
+            return "unsafe" if entries else "absent"
         except (OSError, ValueError):
             return "unsafe"
         return "ok"
@@ -479,21 +509,28 @@ class Store:
                     _canonical({"schema": _ENTRY_SCHEMA, "type": entry_type, "payload": payload, "mac": mac}))
 
     def get(self, entry_type, context):
-        """The entry's payload iff its MAC verifies against the LIVE context; else None."""
+        """The entry's payload iff its MAC verifies against the LIVE context; ``None`` only
+        when no such entry exists. A present entry that is not a 0600 euid-owned regular file,
+        is a symlink, or fails its schema, type or MAC raises ``StoreCorrupt``."""
         if self.status() != "ok":
-            return None
+            raise StoreCorrupt(entry_type)
         try:
             raw = json.loads(self._read(self._path(entry_type, context)))
+        except FileNotFoundError:
+            return None
+        except (OSError, ValueError) as exc:
+            raise StoreCorrupt(entry_type) from exc
+        try:
             if raw.get("schema") != _ENTRY_SCHEMA or raw.get("type") != entry_type:
-                return None
+                raise StoreCorrupt(entry_type)
             payload, mac = raw["payload"], raw["mac"]
             if not isinstance(payload, dict) or not isinstance(mac, str):
-                return None
+                raise StoreCorrupt(entry_type)
             if not hmac.compare_digest(mac, self._mac(self._key(), entry_type, context, payload)):
-                return None
-            return payload
-        except (OSError, ValueError, KeyError, TypeError, AttributeError):
-            return None
+                raise StoreCorrupt(entry_type)
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+            raise StoreCorrupt(entry_type) from exc
+        return payload
 
     def remove(self, entry_types):
         removed = 0
@@ -514,7 +551,9 @@ class Store:
     @contextlib.contextmanager
     def lock(self, cancel_event=None, heartbeat=None, *, timeout_s=LOCK_WAIT_S, poll_s=0.1):
         """One ``flock`` per user, host and harness. The wait is bounded: a waiter that cannot
-        acquire it within ``timeout_s`` refuses with the typed code instead of hanging."""
+        acquire it within ``timeout_s`` raises ``LockTimeout`` instead of hanging."""
+        import fcntl  # POSIX only, and only when the lock is taken: the module imports anywhere
+
         fd = os.open(self.host_dir / "lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
         try:
             info = os.fstat(fd)
@@ -529,7 +568,7 @@ class Store:
                     break
                 except BlockingIOError:
                     if time.monotonic() >= deadline:
-                        raise QualificationError(UNAVAILABLE) from None
+                        raise LockTimeout("cli_qualification_lock_timeout") from None
                     if heartbeat is not None:
                         heartbeat("cli_qualification_lock_wait")
                     time.sleep(poll_s)
@@ -543,8 +582,8 @@ class Store:
 
     def get_qualified(self, key):
         payload = self.get("qualified", key.context())
-        if payload is None or payload.get("operations") != {op: "passed" for op in OPERATIONS}:
-            return None
+        if payload is not None and payload.get("operations") != {op: "passed" for op in OPERATIONS}:
+            raise StoreCorrupt("qualified")
         return payload
 
     # A failure is keyed WITHOUT the help digest (it rides as MAC-bound payload), so an
@@ -560,7 +599,10 @@ class Store:
 
     def note_transient(self, key, *, now):
         context = key.context(with_help=False)
-        payload = self.get("transient", context) or {}
+        try:
+            payload = self.get("transient", context) or {}
+        except StoreCorrupt as exc:
+            raise QualificationError(STORE_UNSAFE) from exc
         count = payload.get("count") if isinstance(payload.get("count"), int) else 0
         self.put("transient", context, {"count": count + 1, "at": now})
         return count + 1
@@ -591,6 +633,13 @@ def lookup(key, *, store=None, now=None):
     if state == "absent":
         return Lookup("absent")
     now = time.time() if now is None else now
+    try:
+        return _lookup_store(key, store, now)
+    except StoreCorrupt:
+        return Lookup("store_unsafe")
+
+
+def _lookup_store(key, store, now):
     failed = store.get_failed(key)
     if failed is not None:
         if failed.get("kind") != "transient":
@@ -648,7 +697,12 @@ def ensure_admitted(key, operations, *, store=None, cancel_event=None, heartbeat
         raise QualificationError(UNAVAILABLE)
     if store.status() == "absent":
         store.create()
-    with store.lock(cancel_event, heartbeat, timeout_s=lock_timeout_s):
+    with contextlib.ExitStack() as held:
+        try:
+            held.enter_context(store.lock(cancel_event, heartbeat, timeout_s=lock_timeout_s))
+        except LockTimeout:
+            # A busy peer: nothing ran, so nothing is recorded and nothing refuses.
+            return Lookup("transient")
         again = lookup(key, store=store, now=now)
         if again.outcome != "absent":
             return again

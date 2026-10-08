@@ -1373,11 +1373,13 @@ jail and agy's first-use self-qualification (above) keep their own admission.
   - **Payload.** A native binary is the sha256 of that file, never of a link to it.
   - **Tree.** A script package is a tree digest over its adapter-declared closure:
     labelled roots, every entry's relative path, type and mode, plus file sha256 or
-    symlink text. A symlink is recorded and never followed; a special file or a symlinked
-    root refuses.
+    symlink text. A symlink is recorded by its text and its target is never read; it must
+    resolve inside its own label root, judged on the resolved path. Absolute link text, a
+    link resolving outside the root, any traversal error, a special file or a symlinked
+    root refuses `seat_cli_qualification_unavailable`.
   - **Interpreter.** The interpreter digest is in the local key only.
-- **Help.** `help_sha256` hashes the adapter's probe argv(s), stdout and stderr together,
-  in a pinned environment: `LC_ALL=C.UTF-8`, `COLUMNS=200`, `TERM=dumb`, `NO_COLOR=1`,
+- **Help.** `help_sha256` hashes, for each of the adapter's probe argvs, its stdout and
+  stderr together, in a pinned environment: `LC_ALL=C.UTF-8`, `COLUMNS=200`, `TERM=dumb`, `NO_COLOR=1`,
   `PATH=/usr/bin:/bin`, a private `HOME`, plus the adapter's suppressors. A suppressor
   cannot override a pinned name. The user's environment never reaches the probe, and the
   argv (an install path) is not part of the bytes.
@@ -1390,7 +1392,9 @@ jail and agy's first-use self-qualification (above) keep their own admission.
   - **Candidate token.** Under the token, lookup returns `qualification_candidate` for the
     token's own key without reading config or the store, and refuses
     `seat_cli_unqualified` for any other key.
-  - **Order otherwise:** the user opt-out, then the store.
+  - **Order otherwise:** the user opt-out, then the store. A config error opts the
+    harness out, and because the opt-out is read before the store, an opted-out harness
+    also skips a sticky failure or an unsafe store (it launches with class `none`).
   - **Refuse versus record.** Only an identity failure (`seat_cli_qualification_failed`)
     and an unsafe store (`seat_cli_qualification_store_unsafe`) refuse. Absent, opted out,
     a transient first use and a transient-derived failure launch with class `none`.
@@ -1398,9 +1402,9 @@ jail and agy's first-use self-qualification (above) keep their own admission.
     reinterpretation.
 - **First use (`ensure_admitted`)** runs only from the board preflight and
   `phase-loop cli-qualification run`, both from PR3, never from a spawn.
-  - **Lock.** It takes the per-user, per-host, per-harness lock with a bounded wait (a
-    timeout refuses `seat_cli_qualification_unavailable`), then looks up again before
-    running anything.
+  - **Lock.** It takes the per-user, per-host, per-harness lock with a bounded wait, then
+    looks up again before running anything. A wait that expires (a busy peer) is not a
+    refusal: the outcome is `transient`, class `none`, and nothing is written.
   - **Operations.** It runs `identity`, `completion`, `cancel` and `owner_loss` under a
     candidate token bound to the key. `bind_candidate` carries the token across a thread
     hop.
@@ -1416,8 +1420,10 @@ jail and agy's first-use self-qualification (above) keep their own admission.
 - **Store.** It lives at
   `$XDG_STATE_HOME/phase-loop/cli-qualification/hosts/<machine>/<harness>/`. Directories
   are 0700 and files 0600, euid-owned, opened `O_NOFOLLOW`. Each entry has an HMAC over
-  the entry type, euid, machine-id, harness and the live key context. The store is
-  orthogonal to `seat-jail-passes/`: a jailed claude seat needs both.
+  the entry type, euid, machine-id, harness and the live key context. An invalid entry is
+  not a missing one: a present entry with the wrong mode, owner, schema, type or MAC, or a
+  symlink, makes the store `store_unsafe`, and so does a missing key while entries remain.
+  The store is orthogonal to `seat-jail-passes/`: a jailed claude seat needs both.
 - **Opt-out.** In the user config only:
   - `[qualification.<harness>] self_qualification = false`.
   - `[agy] self_qualification = false` also opts `gemini` out.

@@ -16,7 +16,6 @@ from hashlib import sha256
 import json
 import os
 from pathlib import Path
-import subprocess
 import sys
 import threading
 import time
@@ -204,11 +203,58 @@ def test_an_unsafe_store_refuses(how):
     if how == "foreign_euid":
         result = cq.lookup(key, store=cq.Store("codex", euid=os.geteuid() + 1), now=NOW)
         assert result.outcome == "store_unsafe" and result.refuses
-    elif how == "symlinked_entry":
-        assert cq.lookup(key, now=NOW).outcome != "locally_qualified"
     else:
         result = cq.lookup(key, now=NOW)
         assert result.outcome == "store_unsafe" and result.code == cq.STORE_UNSAFE
+
+
+@pytest.mark.parametrize("damage", ["permissions", "symlink", "mac"])
+def test_unsafe_failure_record_cannot_restore_a_cached_pass(damage):
+    """An invalid entry is not a missing one: a damaged sticky failure never lifts it.
+
+    Mutation: ``Store.get`` returning ``None`` for any unreadable entry (not only a missing file).
+    """
+    import dataclasses
+
+    key = _key()
+    _seed_qualified(key)
+    changed = dataclasses.replace(key, help_sha256="3" * 64)
+    assert _qualify(changed, fail="identity")[0].outcome == "failed_identity"
+    assert cq.lookup(key, now=NOW).outcome == "failed_identity"
+    store = cq.Store("codex")
+    path = store._path("failed", key.context(with_help=False))
+    if damage == "permissions":
+        path.chmod(0o644)
+    elif damage == "symlink":
+        target = path.with_name("saved-failure")
+        path.rename(target)
+        path.symlink_to(target)
+    else:
+        record = json.loads(path.read_text())
+        record["mac"] = "0" * 64 if record["mac"] != "0" * 64 else "1" * 64
+        path.write_text(json.dumps(record))
+    result = cq.lookup(key, now=NOW)
+    assert result.outcome == "store_unsafe" and result.refuses
+    rerun, calls = _qualify(changed)
+    assert rerun.outcome == "store_unsafe" and calls == []
+
+
+def test_a_missing_key_with_entries_present_is_unsafe():
+    """Mutation: ``status`` reporting ``absent`` for a missing key whatever the directory holds."""
+    key = _key()
+    store = _seed_qualified(key)
+    (store.host_dir / "key").unlink()
+    assert store.status() == "unsafe"
+    result, calls = _qualify(key)
+    assert result.outcome == "store_unsafe" and calls == []
+    assert not (store.host_dir / "key").exists()
+
+
+def test_a_missing_key_with_no_entries_is_absent():
+    store = cq.Store("codex")
+    store.create()
+    (store.host_dir / "key").unlink()
+    assert store.status() == "absent"
 
 
 def test_first_use_never_qualifies_into_an_unsafe_store():
@@ -223,7 +269,10 @@ def test_first_use_never_qualifies_into_an_unsafe_store():
 @pytest.mark.parametrize("how", ["flipped_mac", "added_payload_field", "copied_from_other_harness",
                                  "copied_from_other_host"])
 def test_a_tampered_entry_never_admits(how, monkeypatch):
-    """Mutation: removing the HMAC comparison admits the tampered entry."""
+    """A present entry that fails its MAC makes the store unsafe (it is never read as absent).
+
+    Mutation: removing the HMAC comparison admits the tampered entry.
+    """
     key = _key()
     store = _seed_qualified(key)
     (entry,) = store.host_dir.glob("qualified-*.json")
@@ -244,7 +293,7 @@ def test_a_tampered_entry_never_admits(how, monkeypatch):
         target = other_store._path("qualified", other_store._name_context(other, with_help=True))
         target.write_bytes(entry.read_bytes())
         target.chmod(0o600)
-        assert cq.lookup(other, now=NOW).outcome == "absent"
+        assert cq.lookup(other, now=NOW).outcome == "store_unsafe"
         return
     else:
         monkeypatch.setattr(cq, "read_machine_id", lambda path="/etc/machine-id": "b" * 32)
@@ -254,7 +303,7 @@ def test_a_tampered_entry_never_admits(how, monkeypatch):
         target = other._path("qualified", other._name_context(key, with_help=True))
         target.write_bytes(entry.read_bytes())
         target.chmod(0o600)
-    assert cq.lookup(key, now=NOW).outcome == "absent"
+    assert cq.lookup(key, now=NOW).outcome == "store_unsafe"
 
 
 # ---------------------------------------------------------------------- failure rules
@@ -385,18 +434,119 @@ def test_a_mode_change_changes_the_key(tmp_path):
     assert cq.tree_digest(closure) != before
 
 
-def test_a_symlink_in_the_tree_is_recorded_by_its_text_and_never_followed(tmp_path):
+def test_an_in_closure_link_is_recorded_by_its_text(tmp_path):
+    """Rewritten (agent-harness#1360 board): a link inside its own root is recorded by its
+    text; a link that leaves the root now refuses (next cells)."""
     closure, _shim = _closure(tmp_path)
-    outside = tmp_path / "outside.js"
-    outside.write_text("a\n")
     link = closure["package"] / "lib" / "linked.js"
-    link.symlink_to(outside)
+    link.symlink_to("core.js")
     before = cq.tree_digest(closure)
-    outside.write_text("b\n")
-    assert cq.tree_digest(closure) == before  # the target's bytes are not part of the tree
     link.unlink()
-    link.symlink_to(tmp_path / "elsewhere.js")
-    assert cq.tree_digest(closure) != before  # the link text is
+    link.symlink_to("../cli.js")
+    assert cq.tree_digest(closure) != before
+
+
+def test_tree_digest_in_closure_relative_link_tracks_its_target(tmp_path):
+    closure, _shim = _closure(tmp_path)
+    (closure["package"] / "bin").mkdir()
+    (closure["package"] / "bin" / "cli").symlink_to("../cli.js")
+    before = cq.tree_digest(closure)
+    (closure["package"] / "cli.js").write_text("require('./lib/core.js') // changed\n")
+    assert cq.tree_digest(closure) != before
+
+
+@pytest.mark.parametrize("shape", ["absolute", "dotdot", "via_inner_alias", "cross_label"])
+def test_tree_digest_refuses_a_link_out_of_its_closure(tmp_path, shape):
+    """A link must resolve inside its own label root; containment is judged on the resolved
+    path, never lexically, and the target is never read.
+
+    Mutation: a lexical (``normpath``) containment check passes ``via_inner_alias``.
+    """
+    closure, _shim = _closure(tmp_path)
+    package = closure["package"]
+    outside = tmp_path / "out.js"
+    outside.write_text("outside\n")
+    if shape == "absolute":
+        (package / "lib" / "escape.js").symlink_to(outside)
+    elif shape == "dotdot":
+        (package / "lib" / "escape.js").symlink_to("../../../../out.js")
+        assert (package / "lib" / "escape.js").resolve() == outside.resolve()
+    elif shape == "via_inner_alias":
+        (package / "a").mkdir()
+        (package / "sub").mkdir()
+        (package / "a" / "p").symlink_to("../sub")
+        (package / "a" / "q").symlink_to("p/../../out.js")
+        assert os.path.normpath(package / "a" / "p/../../out.js").startswith(str(package))
+    else:
+        (package / "lib" / "native").symlink_to("../../cli-linux-x64/bin/cli")
+        assert (package / "lib" / "native").resolve() == (closure["@vendor/cli-linux-x64"] / "bin" / "cli").resolve()
+    with pytest.raises(cq.QualificationError, match=cq.UNAVAILABLE):
+        cq.tree_digest(closure)
+
+
+def test_the_inner_alias_on_its_own_stays_in_the_closure(tmp_path):
+    closure, _shim = _closure(tmp_path)
+    (closure["package"] / "a").mkdir()
+    (closure["package"] / "sub").mkdir()
+    (closure["package"] / "a" / "p").symlink_to("../sub")
+    cq.tree_digest(closure)
+
+
+_needs_non_root = pytest.mark.skipif(os.geteuid() == 0, reason="root can list a directory without read permission")
+
+
+@_needs_non_root
+def test_tree_digest_refuses_an_unlistable_root(tmp_path):
+    """Mutation: ``os.walk`` without ``onerror`` digests an unlistable root as an empty tree."""
+    closure, _shim = _closure(tmp_path)
+    closure["package"].chmod(0o300)
+    try:
+        with pytest.raises(cq.QualificationError, match=cq.UNAVAILABLE):
+            cq.tree_digest(closure)
+    finally:
+        closure["package"].chmod(0o700)
+
+
+@_needs_non_root
+@pytest.mark.parametrize("mode", [0o000, 0o311])
+def test_tree_digest_refuses_an_unlistable_subdirectory(tmp_path, mode):
+    closure, _shim = _closure(tmp_path)
+    lib = closure["package"] / "lib"
+    lib.chmod(mode)
+    try:
+        with pytest.raises(cq.QualificationError, match=cq.UNAVAILABLE):
+            cq.tree_digest(closure)
+    finally:
+        lib.chmod(0o700)
+
+
+@_needs_non_root
+def test_tree_digest_refuses_an_unreadable_payload_subtree(tmp_path):
+    package = tmp_path / "package"
+    module_dir = package / "lib"
+    module_dir.mkdir(parents=True)
+    (package / "cli.js").write_text("require('./lib/core.js')\n")
+    (module_dir / "core.js").write_text("module.exports = 1\n")
+    module_dir.chmod(0)
+    try:
+        with pytest.raises(cq.QualificationError, match=cq.UNAVAILABLE):
+            cq.tree_digest({"package": package})
+    finally:
+        module_dir.chmod(0o700)
+
+
+def test_tree_digest_maps_an_entry_that_vanishes_mid_walk_to_unavailable(tmp_path, monkeypatch):
+    closure, _shim = _closure(tmp_path)
+    real_lstat = os.lstat
+
+    def vanishing(path, *args, **kwargs):
+        if str(path).endswith("core.js"):
+            raise FileNotFoundError(path)
+        return real_lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(cq.os, "lstat", vanishing)
+    with pytest.raises(cq.QualificationError, match=cq.UNAVAILABLE):
+        cq.tree_digest(closure)
 
 
 def test_the_digest_is_independent_of_the_closure_location(tmp_path):
@@ -543,15 +693,39 @@ def test_the_token_crosses_a_thread_pool_only_when_bound():
 # --------------------------------------------------------------------------- the lock
 
 def test_the_lock_wait_is_bounded():
-    """r3 deferred item: a waiter gives up with the typed code instead of hanging."""
+    """Rewritten (agent-harness#1360 board): a waiter gives up after ``timeout_s`` with the
+    internal ``LockTimeout`` (not a refusal code); ``ensure_admitted`` maps it below.
+
+    Mutation: an unbounded wait hangs here.
+    """
     store = cq.Store("codex")
     store.create()
     with store.lock():
         started = time.monotonic()
-        with pytest.raises(cq.QualificationError, match=cq.UNAVAILABLE):
+        with pytest.raises(cq.LockTimeout):
             with store.lock(timeout_s=0.3, poll_s=0.05):
                 pytest.fail("acquired a held lock")
         assert time.monotonic() - started < 5
+    assert not issubclass(cq.LockTimeout, cq.QualificationError)
+
+
+def test_a_lock_timeout_launches_transient_and_records_nothing():
+    """A busy peer is not a refusal: class ``none``, nothing written, nothing run.
+
+    Mutation: mapping the timeout to ``seat_cli_qualification_unavailable`` (or noting a transient).
+    """
+    key = _key()
+    store = cq.Store("codex")
+    store.create()
+    calls = []
+    with store.lock():  # the peer (this creates the lock file)
+        before = sorted(path.name for path in store.host_dir.iterdir())
+        started = time.monotonic()
+        result = cq.ensure_admitted(key, _ops(calls), lock_timeout_s=0.5, now=NOW)
+        elapsed = time.monotonic() - started
+    assert result.outcome == "transient" and not result.refuses and result.admission_class == "none"
+    assert calls == [] and elapsed < 5
+    assert sorted(path.name for path in store.host_dir.iterdir()) == before
 
 
 def test_the_lock_is_per_harness():
@@ -812,6 +986,29 @@ def test_the_cli_refuses_an_unknown_harness_and_has_no_run_yet():
         _cli("status", "--harness", "not-a-harness")
     with pytest.raises(SystemExit):
         _cli("run", "--harness", "codex")
+
+
+def test_seat_preflight_still_imports_when_fcntl_is_unavailable():
+    """The contract module (and so ``seat_preflight`` and ``panel_invoker``) imports on a
+    platform without ``fcntl``; the lock imports it only when taken."""
+    import subprocess
+
+    script = """
+import builtins
+original = builtins.__import__
+def without_fcntl(name, *args, **kwargs):
+    if name == 'fcntl':
+        raise ImportError('fcntl unavailable')
+    return original(name, *args, **kwargs)
+builtins.__import__ = without_fcntl
+import phase_loop_runtime.seat_preflight
+import phase_loop_runtime.cli_qualification
+"""
+    env = dict(os.environ)
+    env["PYTHONPATH"] = str(Path(seat_preflight.__file__).resolve().parents[1])
+    result = subprocess.run([sys.executable, "-c", script], env=env,
+                            capture_output=True, text=True, check=False)
+    assert result.returncode == 0, result.stderr
 
 
 def test_no_adapter_exists_and_the_contract_is_inert():
