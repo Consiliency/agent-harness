@@ -269,9 +269,8 @@ def _summary_from_raw(junit: bytes, raw: bytes) -> tuple[dict[str, int], str]:
 
 def _input_manifest(path: Path, source: Path) -> dict[str, Any]:
     try:
-        manifest_bytes = V.read_regular_file_nofollow(
-            path.parent,
-            (path.name,),
+        manifest_bytes = V.read_path_regular_nofollow(
+            path,
             "input manifest",
             V.MAX_ARTIFACT_BYTES,
         )
