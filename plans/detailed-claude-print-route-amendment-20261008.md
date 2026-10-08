@@ -109,7 +109,11 @@ plan records that deferral.
    not in this plan.
 3. The tool posture does not widen. Brokered seats keep zero tools. Direct seats go from
    Read,Write to Read only. The amendment states this, so it doubles as the EC-REVIEWTRUTH-15
-   ratification record ("posture unchanged or narrowed; no execution capability added").
+   ratification record ("posture unchanged or narrowed; no execution capability added"). The
+   ratification itself is the **maintainer merging this PR**, not this plan document.
+4. Smoke evidence (2026-10-08, Claude Code 2.1.293): the planned 1b brokered argv (prompt on
+   stdin, `--tools ""`, `--permission-prompts none`, empty MCP/agents/setting-sources) reached
+   `system/init` with `apiKeySource: "none"`, `tools: []`, and returned `result: "AGREE"`.
 
 ## Verification
 ```bash
@@ -117,7 +121,8 @@ cd phase-loop-runtime
 uv run pytest -q tests/test_panel_doc_contract.py tests/test_legible_roadmap_contract.py tests/test_skills_bundle_drift.py
 uv run pytest -q -k "roadmap_assumptions"   # EC-REVIEWTRUTH-14 atom unchanged
 git grep -n "never.*claude -p\|TUI-only\|No direct .claude -p." -- specs plans docs phase-loop-skills skills-src \
-  | grep -v "amend\|supersed"   # expect no unannotated hits
+  | grep -v "amend\|supersed"   # expect no unannotated hits — annotations MUST be inline on the
+                                # same line as the original statement, or this check passes vacuously
 ```
 
 ## Acceptance criteria
