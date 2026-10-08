@@ -6,6 +6,27 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### CLI qualification contract for every seat harness, inert (agent-harness#1333 PR2)
+
+- New `phase_loop_runtime.cli_qualification`. It is the harness-agnostic per-host CLI
+  qualification contract and holds:
+  - the qualification key;
+  - binary and tree payload digests (symlinks recorded, never followed);
+  - the pinned help-probe environment;
+  - the admission classes and the operations runner with its candidate token;
+  - read-only `lookup` and first-use `ensure_admitted`, which uses a bounded lock wait and
+    looks up again after acquiring the lock;
+  - a per-user, per-host, per-harness HMAC store, with sticky identity failures and
+    transient-derived failures that expire after 24 h or on a key change;
+  - the closed `cli_qualification_candidate.v1` schema.
+- It is inert: no adapter exists and no seat path calls it yet.
+- `phase-loop cli-qualification status|clear --harness <h>`.
+- Six additive notice codes (`seat_cli_*`), each a terminal degraded refusal with a fix line
+  and never a sealed fallback. No existing code is renamed.
+- `SeatMode.cli_admission_class`, additive to `seat_modes.v1`.
+- User config `[qualification.<harness>] self_qualification = false` opts a harness out. A
+  repository config cannot carry it.
+
 ### agy: a newer upstream release only warns; seats admit self-qualified images (agent-harness#1333 PR1)
 
 - `verify_qualified_agy_image.py --upstream-only` no longer fails when the newest upstream

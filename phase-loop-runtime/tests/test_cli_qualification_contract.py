@@ -758,5 +758,7 @@ def test_no_adapter_exists_and_the_contract_is_inert():
     """PR2 is inert: no adapter, no seat call site. PR3 adds the first adapters."""
     assert cq.ADAPTERS == {}
     assert cq.PENDING_ADAPTERS == frozenset({"claude", "gemini"})
+    import re
+
     source = Path(pi.__file__).read_text()
-    assert "cli_qualification" not in source
+    assert not re.search(r"\bcli_qualification\b", source)  # the seat_cli_* codes are literals only

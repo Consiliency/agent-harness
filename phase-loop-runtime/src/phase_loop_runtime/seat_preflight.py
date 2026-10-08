@@ -24,6 +24,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 
+from .cli_qualification import CLASSES as CLI_ADMISSION_CLASSES
+
 POINTER_BRIEF_UNREADABLE = "seat_pointer_brief_unreadable"
 
 #: The notice's rendered text: (what happens, why, how to fix it). Literals only.
@@ -203,16 +205,21 @@ class SeatMode:
     #: Notice codes beside ``code`` that the operator must also see (plan amendment A4: an
     #: ignored seat-token override, whatever the login's own state).
     also: tuple[str, ...] = ()
+    #: agent-harness#1333: the CLI admission class the seat launches with (one of
+    #: ``cli_qualification.CLASSES``), or ``None`` where no CLI qualification applies yet.
+    cli_admission_class: str | None = None
 
     def __post_init__(self) -> None:
         if self.mode not in SEAT_MODES:
             raise ValueError(f"unknown seat mode {self.mode!r}")
+        if self.cli_admission_class is not None and self.cli_admission_class not in CLI_ADMISSION_CLASSES:
+            raise ValueError(f"unknown CLI admission class {self.cli_admission_class!r}")
 
     def as_json(self) -> dict[str, object]:
         return {"seat_key": self.seat_key, "leg": self.leg, "mode": self.mode,
                 "code": self.code, "why": self.why, "fix": self.fix,
                 "credential": self.credential, "qualified_now": self.qualified_now,
-                "also": list(self.also)}
+                "also": list(self.also), "cli_admission_class": self.cli_admission_class}
 
     def render(self) -> str:
         code = f" [{self.code}]" if self.code else ""

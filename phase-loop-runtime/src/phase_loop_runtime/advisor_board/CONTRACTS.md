@@ -1361,6 +1361,79 @@ instead, and the jail is that launch's owner.
     - on the review route, a completed answer outlives a later stray error.
   - **A refusal or cancellation keeps no partial journal on the host.**
 
+## CLI qualification (all harnesses) · `cli_qualification.py` (agent-harness#1333)
+
+The plan is `.consiliency/plans/detailed-cli-qualification-parity-20261008-0615.md`. This
+section is the contract that PR2 lands inert. No adapter and no seat call site uses it
+yet: PR3 wires codex and grok, PR4 claude, and PR5 moves agy onto it. Until then the claude
+jail and agy's first-use self-qualification (above) keep their own admission.
+
+- **Key.** `(harness, platform, payload_sha256, payload_kind, interpreter_sha256?,
+  help_sha256, runtime)`.
+  - **Payload.** A native binary is the sha256 of that file, never of a link to it.
+  - **Tree.** A script package is a tree digest over its adapter-declared closure:
+    labelled roots, every entry's relative path, type and mode, plus file sha256 or
+    symlink text. A symlink is recorded and never followed; a special file or a symlinked
+    root refuses.
+  - **Interpreter.** The interpreter digest is in the local key only.
+- **Help.** `help_sha256` hashes the adapter's probe argv(s), stdout and stderr together,
+  in a pinned environment: `LC_ALL=C.UTF-8`, `COLUMNS=200`, `TERM=dumb`, `NO_COLOR=1`,
+  `PATH=/usr/bin:/bin`, a private `HOME`, plus the adapter's suppressors. A suppressor
+  cannot override a pinned name. The user's environment never reaches the probe, and the
+  argv (an install path) is not part of the bytes.
+- **Runtime identity.** `__version__` plus the digests of `cli_qualification.py` and the
+  adapter's own module.
+- **Classes.** `release_qualified`, `locally_qualified`, `qualification_candidate` and
+  `none` (launched without a class during the recording-only release).
+  `SeatMode.cli_admission_class` carries one, additively to `seat_modes.v1`.
+- **Lookup is read-only** and never executes an operation.
+  - **Candidate token.** Under the token, lookup returns `qualification_candidate` for the
+    token's own key without reading config or the store, and refuses
+    `seat_cli_unqualified` for any other key.
+  - **Order otherwise:** the user opt-out, then the store.
+  - **Refuse versus record.** Only an identity failure (`seat_cli_qualification_failed`)
+    and an unsafe store (`seat_cli_qualification_store_unsafe`) refuse. Absent, opted out,
+    a transient first use and a transient-derived failure launch with class `none`.
+  - **Typed result.** `Lookup.outcome` encodes that table, so a gate maps it without
+    reinterpretation.
+- **First use (`ensure_admitted`)** runs only from the board preflight and
+  `phase-loop cli-qualification run`, both from PR3, never from a spawn.
+  - **Lock.** It takes the per-user, per-host, per-harness lock with a bounded wait (a
+    timeout refuses `seat_cli_qualification_unavailable`), then looks up again before
+    running anything.
+  - **Operations.** It runs `identity`, `completion`, `cancel` and `owner_loss` under a
+    candidate token bound to the key. `bind_candidate` carries the token across a thread
+    hop.
+  - **Re-entry.** A nested `ensure_admitted` under the token raises
+    `QualificationReentered`.
+- **Failures.**
+  - An identity or isolation failure is sticky until
+    `phase-loop cli-qualification clear --harness <h>`.
+  - The third consecutive transient records a transient-derived failure. It expires after
+    24 h or when the key changes; the help digest is checked against the entry's payload.
+  - An unexplained operation error is transient, never a pass.
+  - Cancellation writes nothing.
+- **Store.** It lives at
+  `$XDG_STATE_HOME/phase-loop/cli-qualification/hosts/<machine>/<harness>/`. Directories
+  are 0700 and files 0600, euid-owned, opened `O_NOFOLLOW`. Each entry has an HMAC over
+  the entry type, euid, machine-id, harness and the live key context. The store is
+  orthogonal to `seat-jail-passes/`: a jailed claude seat needs both.
+- **Opt-out.** In the user config only:
+  - `[qualification.<harness>] self_qualification = false`.
+  - `[agy] self_qualification = false` also opts `gemini` out.
+  - A repository file cannot carry the table, and a malformed value opts out.
+- **Notices.** There are six new codes, each a `seat_jail.NOTICES` entry and a closed
+  `_HARNESS_DETAIL_CODES` literal: `seat_cli_unqualified`, `seat_cli_qualification_failed`,
+  `seat_cli_qualification_unavailable`, `seat_cli_qualification_store_unsafe`,
+  `seat_cli_adapter_missing` and `seat_cli_platform_unsupported`.
+  - Every one is a terminal degraded refusal with its fix line. None is in
+    `SEALED_FALLBACK_CODES` or `JAIL_NOT_RUN_CODES`.
+  - The fix lines name `phase-loop cli-qualification status|run|clear --harness <harness>`.
+    `run` lands with the first adapters in PR3, before any code can be emitted.
+- **Export schema.** `cli_qualification_candidate.v1` is closed at every level. It carries
+  no interpreter hash, HMAC, machine-id, hostname, path, username, environment, credential
+  or receipt. PR6 adds the exporter and narrows `harness` to the adapters.
+
 ## ABDFALSIFY — Executable review findings (IF-0-EXECFIND-1)
 
 An optional `falsifier` attachment names one `FindingFalsifier` with

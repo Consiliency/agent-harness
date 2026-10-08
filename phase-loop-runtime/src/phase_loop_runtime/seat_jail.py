@@ -315,6 +315,31 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
     "claude_tui_journal_collection_refused": (
         "leg refused", "the seat's session journal was incomplete, changed, or not one turn",
         "re-run the seat; if it repeats, report a defect with the leg log"),
+    # agent-harness#1333: per-host CLI qualification (all harnesses). Each is a terminal
+    # degraded refusal with its fix line, never a sealed or inline fallback.
+    "seat_cli_unqualified": (
+        "leg refused", "the provider CLI is not the bytes that were admitted for this seat",
+        "re-run the board so its preflight admits the installed CLI; see "
+        "`phase-loop cli-qualification status --harness <harness>`"),
+    "seat_cli_qualification_failed": (
+        "leg refused", "this CLI version failed its qualification on this host",
+        "see `phase-loop cli-qualification status --harness <harness>`; after updating or "
+        "repairing the CLI, run `phase-loop cli-qualification clear --harness <harness>` and "
+        "`phase-loop cli-qualification run --harness <harness>`"),
+    "seat_cli_qualification_unavailable": (
+        "leg refused", "the CLI's launcher is a wrapper or shim whose real payload is not recognised",
+        "install the CLI so its launcher resolves to the vendor binary or package, then run "
+        "`phase-loop cli-qualification run --harness <harness>`"),
+    "seat_cli_qualification_store_unsafe": (
+        "leg refused", "the per-user CLI qualification store is not owner-only",
+        "make the store directory `phase-loop cli-qualification status --harness <harness>` "
+        "names owner-only (0700 directories, 0600 files, no symlinks), or remove it"),
+    "seat_cli_adapter_missing": (
+        "leg refused", "this runtime has no CLI qualification adapter for the seat's harness",
+        "upgrade phase-loop-runtime; if the harness is still missing, report a defect naming it"),
+    "seat_cli_platform_unsupported": (
+        "leg refused", "CLI qualification does not support this platform yet",
+        "run seats on Linux x64 or arm64; see `phase-loop cli-qualification status --harness <harness>`"),
     "agy_image_unqualified": (
         "leg refused", "the agy binary is neither a shipped release member nor qualified on this host",
         "run `phase-loop agy-qualification run` to qualify it on this host, or re-enable "
