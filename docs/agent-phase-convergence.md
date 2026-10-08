@@ -107,6 +107,8 @@ plan references; the execution plan itself stays short and points at them. So th
 to the execution plan only. Here it is 3000 words, and the plan validator warns above it
 (check (S) in `validate_plan_doc.py`). Referenced frozen artifacts carry no cap. When a plan
 trips the warning, move detail out into an artifact rather than deleting it.
+Portable analog: a CI step that runs `wc -w` on new plan files and warns above the
+threshold.
 
 For a worked example of what a compliant plan contains at this length, see
 `plans/phase-plan-v10-GOVLEAN.md` in this repository.
