@@ -1301,6 +1301,38 @@ def reduce_proofgate_mutation_results(records: Sequence[Mapping[str, Any]]) -> d
     return {"coverage_ok": True, "killed_count": 9}
 
 
+def _writable_dir(path: Path) -> bool:
+    return path.is_dir() and os.access(path, os.W_OK | os.X_OK)
+
+
+def _mutation_worktree_parent(
+    repo_root: Path,
+    *,
+    environ: Mapping[str, str] | None = None,
+    team_host_marker: Path = Path("/etc/consiliency/team-host"),
+    home: Path | None = None,
+    shared_parent: Path = Path("/mnt/workspace/worktrees"),
+) -> Path:
+    """Pick a writable parent for a transient proofgate mutation worktree.
+
+    Order: ``$WORKTREE_ROOT``; ``~/workspace/worktrees`` on a team host; the shared
+    ``/mnt/workspace/worktrees`` volume; else the repo's parent. A candidate is used only
+    if it is an existing writable directory -- on a team host the shared volume exists
+    but is root-owned and not user-writable.
+    """
+    env = os.environ if environ is None else environ
+    candidates: list[Path] = []
+    if env.get("WORKTREE_ROOT"):
+        candidates.append(Path(env["WORKTREE_ROOT"]))
+    if team_host_marker.exists():
+        candidates.append((Path.home() if home is None else home) / "workspace" / "worktrees")
+    candidates.append(shared_parent)
+    for candidate in candidates:
+        if _writable_dir(candidate):
+            return candidate
+    return repo_root.parent
+
+
 def execute_proofgate_mutation_manifest(
     manifest_path: str | Path,
     candidate_oid: str,
@@ -1351,9 +1383,7 @@ def execute_proofgate_mutation_manifest(
         except (OSError, subprocess.CalledProcessError) as exc:
             return {"status": "harness_error", "reason": "candidate_resolution_failed", "detail": str(exc)}
 
-        worktree_parent = Path("/mnt/workspace/worktrees")
-        if not worktree_parent.is_dir():
-            worktree_parent = repo_root.parent
+        worktree_parent = _mutation_worktree_parent(repo_root)
         worktree = Path(tempfile.mkdtemp(prefix="proofgate-mutation-", dir=worktree_parent))
         shutil.rmtree(worktree)
 

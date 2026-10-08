@@ -148,3 +148,68 @@ def test_trusted_image_execution_keeps_admitted_bytes(tmp_path, monkeypatch):
     for descriptor in descriptors:
         with pytest.raises(OSError):
             os.fstat(descriptor)
+
+
+# --- agent-harness#1331: with an env, the seat route also admits a local self-qualification ---
+
+class _Image:
+    def __init__(self):
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
+def _unlisted(tmp_path):
+    image = tmp_path / "agy"
+    image.write_bytes(b"synthetic-unlisted-image")
+    return image
+
+
+def test_a_locally_qualified_image_is_admitted_when_the_caller_passes_env(tmp_path, monkeypatch):
+    from phase_loop_runtime import agy_integrity, agy_qualification
+
+    admitted, seen = _Image(), {}
+
+    def lookup(env, data, path):
+        seen.update(env=env, data=data, path=path)
+        return gemini_heartbeat.Admission(admitted, "synthetic-help-digest", "locally_qualified")
+
+    monkeypatch.setattr(agy_qualification, "lookup", lookup)
+    image = _unlisted(tmp_path)
+    assert agy_integrity.check(image, {"HOME": "/h"}) is admitted
+    assert seen == {"env": {"HOME": "/h"}, "data": b"synthetic-unlisted-image", "path": str(image.resolve())}
+
+
+def test_without_env_an_unlisted_image_is_still_refused_without_a_lookup(tmp_path, monkeypatch):
+    from phase_loop_runtime import agy_integrity, agy_qualification
+
+    monkeypatch.setattr(agy_qualification, "lookup", lambda *a, **k: pytest.fail("canary path consulted the store"))
+    with pytest.raises(agy_integrity.AgyImageUnqualified, match="agy_image_unqualified"):
+        agy_integrity.check(_unlisted(tmp_path))
+
+
+def test_a_lookup_miss_is_refused_and_closes_the_missed_image(tmp_path, monkeypatch):
+    from phase_loop_runtime import agy_integrity, agy_qualification
+
+    missed = _Image()
+
+    def lookup(env, data, path):
+        raise gemini_heartbeat.AdmissionMiss(missed, path)
+
+    monkeypatch.setattr(agy_qualification, "lookup", lookup)
+    with pytest.raises(agy_integrity.AgyImageUnqualified, match="agy_image_unqualified"):
+        agy_integrity.check(_unlisted(tmp_path), {})
+    assert missed.closed
+
+
+@pytest.mark.parametrize("refusal", [ValueError("gemini_heartbeat_capability_unavailable"), OSError("store")])
+def test_an_opt_out_failed_entry_or_store_error_is_refused(tmp_path, monkeypatch, refusal):
+    from phase_loop_runtime import agy_integrity, agy_qualification
+
+    def lookup(env, data, path):
+        raise refusal
+
+    monkeypatch.setattr(agy_qualification, "lookup", lookup)
+    with pytest.raises(agy_integrity.AgyImageUnqualified, match="agy_image_unqualified"):
+        agy_integrity.check(_unlisted(tmp_path), {})

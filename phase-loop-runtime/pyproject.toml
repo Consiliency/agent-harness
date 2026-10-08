@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "phase-loop-runtime"  # PyPI dist name; NOT "agent-harness" (an unrelated third-party PyPI project)
-version = "0.7.24"
+version = "0.7.25"
 description = "Harness-neutral phase-loop orchestration runtime and CLI"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -133,6 +133,7 @@ where = ["src"]
 [tool.setuptools.package-data]
 phase_loop_runtime = [
     "py.typed",
+    "rule_enforcement.json",
     "baml_src/*.baml",
     "route_policy/fixtures/*.json",
     "schemas/*.json",

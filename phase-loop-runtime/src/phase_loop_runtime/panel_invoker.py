@@ -271,12 +271,15 @@ def _trusted_host_path(path) -> str:
 
 def _seat_bind_source(path, *, output=False) -> str:
     path = _trusted_host_path(path)
-    directory = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    # O_PATH needs only search permission, so a bind source below a search-only
+    # ancestor (a team host's root-owned 0711 workspace dirs) is reachable; with
+    # O_DIRECTORY, O_NOFOLLOW still refuses a link component (agent-harness#1317).
+    walk = getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY | os.O_NOFOLLOW
+    directory = os.open("/", walk)
     try:
         parts = Path(path).parts[1:]
         for part in parts[:-1]:
-            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                            dir_fd=directory)
+            child = os.open(part, walk, dir_fd=directory)
             os.close(directory)
             directory = child
         info = os.stat(parts[-1], dir_fd=directory, follow_symlinks=False)
@@ -4551,6 +4554,50 @@ def _seat_secret_values(value):
             yield from _seat_secret_values(item)
 
 
+_SHELL_WRAPPER_EXPORT = re.compile(r'export [A-Z_][A-Z0-9_]*=(?:[A-Za-z0-9._/:@+-]|"\$PATH")*')
+# Only `-c key=value` config pairs may sit between the target and "$@": an interpreter
+# line (`exec /usr/bin/env node cli.js "$@"`) or any other flag is not followed.
+_SHELL_WRAPPER_EXEC = re.compile(
+    r'exec (/[A-Za-z0-9._@+/-]+)(?: -c [A-Za-z0-9._-]+=[A-Za-z0-9._/:@+-]+)* "\$@"')
+
+
+def _shell_wrapper_target(path: Path, provider: str | None = None) -> Path | None:
+    """The absolute ``exec`` target of a trusted launcher wrapper, else ``None``.
+
+    Team-host tooling ships each CLI as ``#!/bin/sh`` + ``export`` lines + one
+    ``exec /abs/path [-c k=v ...] "$@"`` (agent-harness#1318). The seat binds only the
+    provider itself, so the wrapper's target would be missing from the view. Only a regular
+    file owned by root or the operator, writable by no one else, read through one no-follow,
+    non-blocking descriptor, of exactly that shape, whose target is named ``provider``
+    (when given), is followed."""
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+    except OSError:
+        return None
+    try:
+        info = os.fstat(descriptor)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid not in {0, os.getuid()}
+                or info.st_mode & 0o022 or info.st_size > 4096):
+            return None
+        text = os.read(descriptor, 4097).decode("utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+    finally:
+        os.close(descriptor)
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if len(lines) < 2 or lines[0] != "#!/bin/sh":
+        return None
+    if not all(_SHELL_WRAPPER_EXPORT.fullmatch(line) for line in lines[1:-1]):
+        return None
+    match = _SHELL_WRAPPER_EXEC.fullmatch(lines[-1])
+    if not match:
+        return None
+    target = Path(match.group(1))
+    if provider is not None and target.name.lower() != provider:
+        return None
+    return target
+
+
 def _seat_provider_source(command, env):
     name = Path(command).name.lower()
     harness = {"agy": "gemini", "gemini": "gemini", "codex.js": "codex",
@@ -4559,6 +4606,11 @@ def _seat_provider_source(command, env):
     if source is None:
         raise FileNotFoundError("seat_provider_unavailable")
     source = Path(source).resolve(strict=True)
+    for _hop in range(4):
+        target = _shell_wrapper_target(source, Path(command).name.lower())
+        if target is None:
+            break
+        source = target.resolve(strict=True)
     if harness == "codex" and source.suffix == ".js":
         package = source.parent.parent
         machine = os.uname().machine
@@ -4567,7 +4619,9 @@ def _seat_provider_source(command, env):
         if suffix is None:
             raise _sandbox_egress.SeatIdentityUnverified("seat_provider_unavailable")
         candidates = (package / "node_modules/@openai" / ("codex-linux-" + suffix) / "vendor" / triple / "bin/codex",
-                      package / "vendor" / triple / "bin/codex")
+                      package / "vendor" / triple / "bin/codex",
+                      # npm hoists the platform package beside @openai/codex.
+                      package.parent / ("codex-linux-" + suffix) / "vendor" / triple / "bin/codex")
         source = next((path for path in candidates if path.is_file()), None)
         if source is None:
             raise _sandbox_egress.SeatIdentityUnverified("seat_provider_unavailable")
@@ -4676,7 +4730,7 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
                 stack.callback(refresh_image.close)
             else:
                 from . import agy_integrity
-                refresh_image = agy_integrity.check(executable)
+                refresh_image = agy_integrity.check(executable, env)
                 stack.callback(refresh_image.close)
             _refresh_gemini_credential(home, refresh_image)
         def directory(path):
@@ -4771,7 +4825,7 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
             gemini_profile.evidence["provider_agy_subscription_reference"] = "private_access_token_copy"
         elif harness == "gemini":
             from . import agy_integrity
-            image = agy_integrity.check(executable)
+            image = agy_integrity.check(executable, env)
             stack.callback(image.close)
             descriptor = image.reopen()
             stack.callback(os.close, descriptor)

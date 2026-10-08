@@ -37,6 +37,12 @@ QUALIFIED_IMAGES = {
     # agy 1.2.17
     "c54ef90651a8646ae67334d39212c81f5946feec373ad6aa335f9ef401662bc5":
         "8fcf40227fe84704f7f8155b3b5ebcee79dfdc5208fde6e8b07569c24425f976",
+    # agy 1.3.0
+    "19be6af38f7beeaa0db415df9297e314ab3d33fdd6f853434d49f88819bc68e4":
+        "8fcf40227fe84704f7f8155b3b5ebcee79dfdc5208fde6e8b07569c24425f976",
+    # agy 1.3.1
+    "ce1bdaed3201bb84f35d69d2773caec4f18af52af00e8c25f6cace07e4359615":
+        "8fcf40227fe84704f7f8155b3b5ebcee79dfdc5208fde6e8b07569c24425f976",
 }
 PROFILE_ID = "agy_memfd_home_deny_all_v1"
 PRIVATE_HOME = "/dev/phase-loop-agy"
