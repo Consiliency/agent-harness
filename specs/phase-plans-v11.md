@@ -337,7 +337,7 @@ Carried from V10 Phase 6: finish the SL-5 evidence repair and the SL-6 completio
 
 **Scope notes**
 - EC-HARDEN-1 to -4 are met (agent-harness#737) and not carried.
-- EC-HARDEN-5 is retired as written: the per-seat jail (agent-harness#1133, agent-harness#1282) gives seats their own credential and tools by design, so "no credentialed capability" cannot be met. EC-HARDEN-6 is the replacement and needs maintainer ratification before this phase closes.
+- EC-HARDEN-5 is retired as written: the per-seat jail (agent-harness#1133, agent-harness#1282) gives seats their own credential and tools by design, so "no credentialed capability" cannot be met. EC-HARDEN-6 is the replacement, ratified by the maintainer on 2026-10-08.
 - Single lane: SL-5 (agent-harness#1264, agent-harness#1351) then SL-6; both own only `scripts/` and `plans/`.
 
 **Non-goals**
