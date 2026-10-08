@@ -6,14 +6,52 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
-### CI: the Gate A clean-room job gets a 150-minute cap as a stopgap (agent-harness#1297)
+## [0.7.25] - 2026-10-08
+
+### Qualified agy set adds 1.3.0 and 1.3.1 (agent-harness#1293)
+
+- `gemini_heartbeat.QUALIFIED_IMAGES` and `plans/evidence/qualified-provider-images.json`
+  now admit agy 1.3.0 (Linux x64 image SHA256
+  `19be6af38f7beeaa0db415df9297e314ab3d33fdd6f853434d49f88819bc68e4`, upstream asset
+  `54731cc8…`) and 1.3.1 (image
+  `ce1bdaed3201bb84f35d69d2773caec4f18af52af00e8c25f6cace07e4359615`, upstream asset
+  `0e313b30…`). Both help digests equal 1.2.15–1.2.17's (`8fcf4022…`). The set is now
+  1.2.11, 1.2.12, 1.2.14, 1.2.15, 1.2.16, 1.2.17, 1.3.0 and 1.3.1.
+- All eight members were requalified on the release tree (completion, cancel and owner-loss
+  each, then `--validate`), because agent-harness#1282, agent-harness#1292,
+  agent-harness#1298, agent-harness#1308, agent-harness#1277, agent-harness#1281,
+  agent-harness#1285 and agent-harness#1286 changed `phase_loop_runtime/**/*.py`. Each member has its own regenerated record.
+
+### Unified seat-launch owner for review seats, the president and executor review (PR agent-harness#1282; supersedes agent-harness#1222)
+
+Review seats, the president and executor review share a launch owner with private homes, allowlisted inputs and individual output files. Host Git uses trusted helpers and neutral settings. Ordinary executor planning, execution and repair retain their existing execution contract.
+
+- **Each host's jail approval resets once.** The jail's recorded pass binds the
+  EC-EXECFIND-2 falsifier-run layout, and that layout's identity is now
+  `execfind-falsifier-layout.v1:805042ce…`, so every host's existing pass no longer
+  matches. The first jailed seat requalifies the jail automatically (plan amendment A2),
+  and its mode line shows `jailed (qualified now)`. To requalify ahead of time, run
+  `phase-loop seat-sandbox qualify`.
+- **Ubuntu 24.04+/26.04 hosts** also need the narrow AppArmor override from
+  agent-harness#1281 (entry below) before the jail can qualify.
+- **Seat credentials are narrower.** Each CLI runs with the narrowest credential it needs,
+  and no seat receives a refresh token (`advisor_board/CONTRACTS.md`, "Credentials").
+- **agy requalification:** this release requalifies agy (see the agy entry above).
+
+### agy login expiry parsed correctly on Python 3.10 (PR agent-harness#1308)
+
+- The Gemini seat now reads agy's login-token expiry, which carries nanosecond precision, on
+  Python 3.10 as well. Before, such an expiry did not parse there, so the brokered Gemini seat
+  was refused as near expiry (`gemini_credential_near_expiry`) and did not start.
+
+### CI: the Gate A clean-room job gets a 150-minute cap as a stopgap (agent-harness#1297; PR agent-harness#1326)
 
 - The `clean-room (standalone-from-wheel, Gate A)` job's `timeout-minutes` goes from 100
   to 150. Since agent-harness#1282, a per-test seat namespace fixture has stretched the job
   to 85 to 100+ minutes, so it was cancelled at the cap on main. No other job changes.
   The cap goes back to 100 once agent-harness#1297 makes the fixture shared or cheaper.
 
-### FABPUB: a failed current-head publication can be recovered by rotation (agent-harness#1296)
+### FABPUB: a failed current-head publication can be recovered once after an attested-not-landed partition rotation (agent-harness#1296; PR agent-harness#1298)
 
 - After a publication fails with an ambiguous outcome, its transaction is past
   `COMMITTED_HEAD_RESOLVED` (`TERMINAL_SEALED` normally, `ADAPTER_STARTED` after an adapter
@@ -42,11 +80,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - `observed_landed` recovery is unchanged and stays provider-free. The procedure is in
   `docs/fabpub-partition-rotation-runbook.md` §8a.
 
-### Unified seat-launch owner: namespaces, private homes, allowlisted view, hardened host git and seat I/O
+### Worktree cleanup scripts require a clean tree before removing a worktree (PR agent-harness#1309)
 
-Review seats, the president and executor review share a launch owner with private homes, allowlisted inputs and individual output files. Host Git uses trusted helpers and neutral settings. Ordinary executor planning, execution and repair retain their existing execution contract.
+- The bundled `sweep_stale_worktrees.sh` and `cleanup_lane_worktrees.sh` execute-phase scripts
+  now remove a worktree only when its tree is clean. A worktree with uncommitted or untracked
+  changes is kept and reported.
 
-### Lower panel effort defaults and a larger configurable Claude output budget
+### Lower panel effort defaults and a larger configurable Claude output budget (PR agent-harness#1292)
 
 - Built-in advisor-board presets lower effort by one canonical level. Default and
   code-review seats use `high` for Claude, Codex and Grok, and `medium` for Gemini;
@@ -56,7 +96,7 @@ Review seats, the president and executor review share a launch owner with privat
   launch settings without widening the child environment allowlist. Other harnesses
   retain their CLI-managed output budgets.
 
-### Strict, machine-consumable panel-seat replies (groundwork; not wired to any seat yet)
+### Strict, machine-consumable panel-seat replies (groundwork; not wired to any seat yet; PR agent-harness#1286)
 
 - New `panel_reply` module: a closed, typed reply for advisor-board seats (`verdict`, `summary`,
   `findings[]` with `severity`, `title`, `body`, optional `location`; an advisory mode with no
@@ -77,7 +117,7 @@ Review seats, the president and executor review share a launch owner with privat
 - Nothing calls it yet: wiring it to a seat (an opt-in `--reply-format json`) waits for the unified
   seat-launch owner (agent-harness#1282).
 
-### Finished Claude Agent View sessions are stopped once their closeout is verified
+### Finished Claude Agent View sessions are stopped once their closeout is verified (PR agent-harness#1285)
 
 - A `claude --bg` session that reaches `done` is not stopped by Claude Code: its Remote Control
   session stays open in the app's session panel until `claude stop <id>`, and only that clean
@@ -95,7 +135,7 @@ Review seats, the president and executor review share a launch owner with privat
   logged and the run's outcome is unchanged. Set `PHASE_LOOP_KEEP_AGENT_VIEW_SESSIONS=1` to keep
   finished sessions running while debugging a run in the app.
 
-### Seat jail on Ubuntu 24.04+ / 26.04: a narrow AppArmor override (agent-harness#1276)
+### Seat jail on Ubuntu 24.04+ / 26.04: a narrow AppArmor override (agent-harness#1276; PR agent-harness#1281)
 
 - New `seat_jail_apparmor` module. Ubuntu's `bwrap-userns-restrict` profile runs bwrap's children
   as `bwrap//&unpriv_bwrap`, which denies every capability, so the jail's `setpriv` uid switch
@@ -109,7 +149,7 @@ Review seats, the president and executor review share a launch owner with privat
   bwrap children are unchanged, and `phase-loop seat-sandbox qualify` records a pass.
   `uid_switch_denied` now names this command.
 
-### Seat jail: Python 3.10 to 3.13 support, and a typed reason when the host denies the uid switch (agent-harness#1276)
+### Seat jail: Python 3.10 to 3.13 support, and a typed reason when the host denies the uid switch (agent-harness#1276; PR agent-harness#1277)
 
 - `seat_jail.memfd_with` no longer needs `fcntl.F_ADD_SEALS`, which not every CPython build
   exports (distribution builds do; the python-build-standalone builds that `uv` installs, 3.11
@@ -123,6 +163,18 @@ Review seats, the president and executor review share a launch owner with privat
   `unpriv_bwrap`, which denies capability setuid and setgid. The jail itself is unchanged; a
   host administrator has to permit those capabilities for it. The seat stays degraded and does
   not run until then (plan amendment A3b).
+
+### Release records, plans and CI (PRs agent-harness#1268, agent-harness#1270, agent-harness#1279, agent-harness#1294, agent-harness#1295, agent-harness#1307)
+
+- The 0.7.24 handoff record is marked published, and the capabilities card's Gemini egress
+  note is a neutral pointer to agent-harness#1170 (agent-harness#1268).
+- HARDEN plan bookkeeping, with no runtime change:
+  - pre-authority frozen transitions are bound (agent-harness#1270, agent-harness#1264);
+  - the reuse registry is accepted as append-only (agent-harness#1279);
+  - the landing and test-path dispositions for the panel default changes are recorded
+    (agent-harness#1294, agent-harness#1295).
+- The gitleaks allowlist covers the new `seat_credentials.py` digest that the agy
+  qualification records pin (agent-harness#1307).
 
 ## [0.7.24] - 2026-10-06
 
