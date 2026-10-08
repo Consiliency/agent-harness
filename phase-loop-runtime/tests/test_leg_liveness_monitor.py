@@ -31,20 +31,7 @@ from phase_loop_runtime import panel_invoker as pi
 # Availability is therefore a plain /proc (linux) check, not a self-pid probe.
 _CPU_AVAILABLE = sys.platform.startswith("linux") and os.path.isdir("/proc")
 
-
-@pytest.fixture(autouse=True)
-def _owned_review_network():
-    from phase_loop_runtime import sandbox_egress
-    if not sandbox_egress.egress_isolation_available():
-        if os.environ.get("PHASE_LOOP_REQUIRE_SEAT_OWNER") == "1":
-            pytest.fail("required seat-owner lane lacks filtered egress")
-        pytest.skip("filtered review egress unavailable")
-    with sandbox_egress.isolated_network(timeout_s=None, required=True) as prefix:
-        token = pi._EGRESS_LAUNCH_PREFIX.set(prefix)
-        try:
-            yield
-        finally:
-            pi._EGRESS_LAUNCH_PREFIX.reset(token)
+pytestmark = pytest.mark.usefixtures("owned_review_network")
 
 
 def _run(cmd, *, deadline_s, stall_threshold_s, input_text=None):

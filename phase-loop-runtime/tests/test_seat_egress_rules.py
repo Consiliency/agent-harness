@@ -84,7 +84,7 @@ def test_qualification_observer_uses_a_trusted_child_path(tmp_path, monkeypatch)
     assert report['network_rules_verified'] and not marker.exists()
 
 
-def test_owned_provider_view_keeps_dns_tls_and_ipv6_policy(tmp_path, owned_review_network):
+def test_owned_provider_view_keeps_dns_tls_and_ipv6_policy(tmp_path, fresh_owned_review_network):
     import os
     from pathlib import Path
     from phase_loop_runtime import panel_invoker
