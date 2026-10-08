@@ -156,9 +156,14 @@ def _fast_tui(monkeypatch):
     monkeypatch.setattr(panel, "_LEG_LIVENESS_READ_INTERVAL_S", .05)
 
 
-def _provider(transcript: Path, records: list[dict], release: Path) -> list[str]:
+def _provider(transcript: Path, records: list[dict], release: Path,
+              lifetime_s: float | None = None) -> list[str]:
     """A fake Claude TUI: prints a banner, journals ``records``, then repaints its spinner
-    (cosmetic, never novel) until ``release`` exists -- alive, but no genuine progress."""
+    (cosmetic, never novel) until ``release`` exists -- alive, but no genuine progress.
+
+    The owned seat sees its cwd and ``/tmp`` as private tmpfs, so a ``release`` the host
+    touches under ``tmp_path`` never reaches it; only a cell that ends the leg some other way
+    can rely on it. ``lifetime_s`` makes the provider exit by itself after that long."""
     body = "".join(json.dumps(r) + "\n" for r in records)
     script = (
         "import sys, time\nfrom pathlib import Path\n" + _JOURNAL +
@@ -166,7 +171,8 @@ def _provider(transcript: Path, records: list[dict], release: Path) -> list[str]
         "time.sleep(.2)\n"
         f"_journal.write_text({body!r})\n"
         "i = 0\n"
-        f"while not Path({str(release)!r}).exists():\n"
+        f"_end = None if {lifetime_s!r} is None else time.monotonic() + {lifetime_s!r}\n"
+        f"while not Path({str(release)!r}).exists() and (_end is None or time.monotonic() < _end):\n"
         "    sys.stdout.write('\\r* Thinking... (%ds . esc to interrupt)' % i); sys.stdout.flush()\n"
         "    i += 1; time.sleep(.05)\n"
     )
@@ -544,20 +550,20 @@ def test_unbrokered_leg_never_reads_a_neighbouring_give_up(tmp_path, monkeypatch
     project.mkdir()
     write(project / "neighbour.jsonl", retries_exhausted())
     monkeypatch.setattr(panel, "_claude_project_dir_for_cwd", lambda cwd: project)
-    release = tmp_path / "release"
-    timer = threading.Timer(1.5, release.touch)
-    timer.start()
-    try:
-        _rc, _text, log, _tail = panel._run_claude_tui_session(
-            command=_provider(tmp_path / "unused.jsonl", [], release), cwd=tmp_path,
-            prompt="input", output_file=tmp_path / "absent", timeout_s=600, backstop_s=600,
-            stall_threshold_s=600, env=os.environ,
-        )
-    finally:
-        timer.cancel()
-        release.touch()
+    # The provider ends itself after 1.5 s: a host-side release under tmp_path is not
+    # visible inside the owned seat, and waiting on one ran this cell to its 600 s deadline
+    # (agent-harness#1297).
+    started = time.monotonic()
+    _rc, _text, log, _tail = panel._run_claude_tui_session(
+        command=_provider(tmp_path / "unused.jsonl", [], tmp_path / "release", lifetime_s=1.5),
+        cwd=tmp_path, prompt="input", output_file=tmp_path / "absent", timeout_s=600,
+        backstop_s=600, stall_threshold_s=600, env=os.environ,
+    )
     assert log not in ("claude_seat_output_budget_exhausted", "claude_seat_rate_limited",
                        "claude_seat_provider_api_error"), log
+    # Ended by the provider's own exit, whichever of the two exit paths saw it first.
+    assert log in ("claude_tui_pty_eof_no_output", "claude_tui_missing_canonical_output"), log
+    assert time.monotonic() - started < 60
 
 
 # --- round 1: the notice reaches the board (codex F002, Gemini seat) ---------------------------

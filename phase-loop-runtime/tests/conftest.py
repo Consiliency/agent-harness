@@ -1,6 +1,7 @@
 """Shared pytest fixtures for the phase-loop-runtime test suite."""
 from __future__ import annotations
 
+import contextlib
 import functools
 import hashlib
 import os
@@ -225,14 +226,90 @@ def _isolate_implicit_review_authority(monkeypatch):
     )
 
 
-@pytest.fixture
-def owned_review_network():
-    from phase_loop_runtime import panel_invoker, sandbox_egress
+def _require_review_egress():
+    from phase_loop_runtime import sandbox_egress
 
     if not sandbox_egress.egress_isolation_available():
         if os.environ.get("PHASE_LOOP_REQUIRE_SEAT_OWNER") == "1":
             pytest.fail("required seat-owner lane lacks filtered egress")
         pytest.skip("filtered review egress unavailable")
+
+
+class _SharedReviewNetwork:
+    """One filtered namespace per test process, built on first use (agent-harness#1297).
+
+    Building one costs seconds (holder, slirp4netns uplink, rules, a resolved name), and a
+    fresh one per test made files of owned-seat cells minutes slower. Tests that only launch
+    a seat into it share this one; a test that changes or inspects the namespace itself uses
+    ``fresh_owned_review_network``. It is built lazily from a function-scoped fixture, so the
+    build runs after the per-test host isolation, as it always did. A holder that has died
+    is replaced, never reused."""
+
+    def __init__(self):
+        self._stack = None
+        self._prefix = None
+        self._namespace = None
+
+    def prefix(self):
+        from phase_loop_runtime import panel_invoker, sandbox_egress
+
+        if self._prefix is not None:
+            token = panel_invoker._EGRESS_LAUNCH_PREFIX.set(self._prefix)
+            try:
+                if panel_invoker._filtered_holder_namespace() == self._namespace:
+                    return self._prefix
+            except sandbox_egress.EgressUnavailable:
+                pass
+            finally:
+                panel_invoker._EGRESS_LAUNCH_PREFIX.reset(token)
+            self.close()
+        stack = contextlib.ExitStack()
+        try:
+            prefix = stack.enter_context(
+                sandbox_egress.isolated_network(timeout_s=None, required=True))
+            token = panel_invoker._EGRESS_LAUNCH_PREFIX.set(prefix)
+            try:
+                namespace = panel_invoker._filtered_holder_namespace()
+            finally:
+                panel_invoker._EGRESS_LAUNCH_PREFIX.reset(token)
+        except BaseException:
+            stack.close()
+            raise
+        self._stack, self._prefix, self._namespace = stack, prefix, namespace
+        return prefix
+
+    def close(self):
+        stack, self._stack, self._prefix, self._namespace = self._stack, None, None, None
+        if stack is not None:
+            stack.close()
+
+
+@pytest.fixture(scope="session")
+def _shared_review_network():
+    shared = _SharedReviewNetwork()
+    yield shared
+    shared.close()
+
+
+@pytest.fixture
+def owned_review_network(_shared_review_network):
+    """The owned review route's filtered namespace, shared across tests (agent-harness#1297)."""
+    from phase_loop_runtime import panel_invoker
+
+    _require_review_egress()
+    token = panel_invoker._EGRESS_LAUNCH_PREFIX.set(_shared_review_network.prefix())
+    try:
+        yield
+    finally:
+        panel_invoker._EGRESS_LAUNCH_PREFIX.reset(token)
+
+
+@pytest.fixture
+def fresh_owned_review_network():
+    """A namespace of this test's own, for a test that changes or inspects the namespace."""
+    from phase_loop_runtime import panel_invoker, sandbox_egress
+
+    _require_review_egress()
     with sandbox_egress.isolated_network(timeout_s=None, required=True) as prefix:
         token = panel_invoker._EGRESS_LAUNCH_PREFIX.set(prefix)
         try:
