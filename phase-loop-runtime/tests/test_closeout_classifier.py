@@ -512,3 +512,45 @@ class TestIgnoredOutputAudit(unittest.TestCase):
             (repo / "scratch" / "dump.csv").write_text("x")
             self.assertEqual(main(["--repo", str(repo)]), 1)
             self.assertEqual(main(["--repo", str(Path(tmp) / "nope")]), 2)
+
+    def test_every_exit_prints_its_required_closeout_action_last(self):
+        """agent-harness#1303: the exit-code meaning lived only in a 2.3KB skill
+        sentence the executor had to parse to pick its terminal status. The tool
+        now states the action itself, condition first, on its last line.
+
+        Mutation that must kill this: drop the action line from any exit path,
+        or let exit 1/2 omit the terminal status they force.
+        """
+        import contextlib
+        import io
+
+        def last_line(argv):
+            buf = io.StringIO()
+            with contextlib.redirect_stdout(buf):
+                code = main(argv)
+            return code, buf.getvalue().strip().splitlines()[-1]
+
+        with TemporaryDirectory() as tmp:
+            repo = self._repo(tmp)
+            (repo / ".ruff_cache").mkdir()
+            (repo / ".ruff_cache" / "c").write_text("x")
+            code, line = last_line(["--repo", str(repo)])
+            self.assertEqual(code, 0)
+            self.assertTrue(line.startswith("action: exit 0 "), line)
+            self.assertIn("do not block", line)
+            # Exit 0 clears ignored paths only; it must not read as "complete".
+            self.assertIn("classification still decides", line)
+            self.assertNotIn("dirty_worktree_conflict", line)
+
+            (repo / "scratch").mkdir()
+            (repo / "scratch" / "dump.csv").write_text("x")
+            code, line = last_line(["--repo", str(repo)])
+            self.assertEqual(code, 1)
+            self.assertTrue(line.startswith("action: exit 1 "), line)
+            self.assertIn("terminal_status=dirty_worktree_conflict", line)
+
+            code, line = last_line(["--repo", str(Path(tmp) / "nope")])
+            self.assertEqual(code, 2)
+            self.assertTrue(line.startswith("action: exit 2 "), line)
+            self.assertIn("terminal_status=dirty_worktree_conflict", line)
+            self.assertIn("never evidence of a clean tree", line)
