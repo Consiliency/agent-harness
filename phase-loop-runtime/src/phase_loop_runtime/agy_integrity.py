@@ -16,7 +16,26 @@ class AgyImageUnqualified(RuntimeError):
     pass
 
 
-def check(path):
+def _locally_qualified(data, source, env):
+    """The image's local self-qualification admission (agent-harness#1076), else refuse.
+
+    Same lookup as ``gemini_heartbeat.admit`` step 2: opt-out, failed entry, provenance,
+    then the qualified entry for this host and runtime. Lookup only; it never qualifies."""
+    from . import agy_qualification
+    try:
+        return agy_qualification.lookup(dict(env), data, str(source)).image
+    except gemini_heartbeat.AdmissionMiss as miss:
+        miss.image.close()
+    except (OSError, ValueError, RuntimeError):
+        pass
+    raise AgyImageUnqualified("agy_image_unqualified")
+
+
+def check(path, env=None):
+    """Admit a release-qualified agy image. With ``env``, also admit a locally
+    self-qualified one, so the seat probe and launch honour the same admission as the
+    heartbeat route (agent-harness#1331). Without ``env`` (canary evidence) only
+    release-qualified images are admitted."""
     descriptor = None
     try:
         source = Path(path).resolve(strict=True)
@@ -32,8 +51,12 @@ def check(path):
             size += len(chunk)
             chunks.append(chunk)
         data = b"".join(chunks)
-        if size > 300_000_000 or sha256(data).hexdigest() not in gemini_heartbeat.QUALIFIED_IMAGES:
+        if size > 300_000_000:
             raise AgyImageUnqualified("agy_image_unqualified")
+        if sha256(data).hexdigest() not in gemini_heartbeat.QUALIFIED_IMAGES:
+            if env is None:
+                raise AgyImageUnqualified("agy_image_unqualified")
+            return _locally_qualified(data, source, env)
         return gemini_heartbeat.VerifiedImage.from_bytes(data, source)
     except (OSError, ValueError) as exc:
         raise AgyImageUnqualified("agy_image_unqualified") from exc
