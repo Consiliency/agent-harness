@@ -145,6 +145,14 @@ def test_python_layout_and_closest_test_wins():
     ) == []
 
 
+def test_new_module_with_no_owned_test_path_warns_once():
+    tracked = ["src/old.py", "tests/test_old.py"]
+    findings = _check(["src/new.py", "src/other.py"], tracked=tracked, body="")
+    assert len(findings) == 1, findings
+    assert "owns code (`src/new.py`) but no lane owns any test path" in findings[0]
+    assert _check(["src/new.py", "tests/test_new.py"], tracked=tracked, body="") == []
+
+
 def test_validator_cli_emits_r_as_warnings_only(tmp_path):
     repo = make_repo(tmp_path)
     for rel in TRACKED:

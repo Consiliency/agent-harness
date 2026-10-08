@@ -1344,6 +1344,27 @@ def _check_r_owned_companions(
                 f"(R) WARN: {sl_id} writes SQL migrations but no lane owns a `*.test.sql` "
                 f"(repo has e.g. `{sorted(sql_tests)[0]}`) — own the matching migration test"
             )
+    # New modules: (E) demands a test per impl, so the executor writes a test file even
+    # when none is tracked yet. Warn once when the plan owns code but no test path at all.
+    tracked_tests = [p for p in tracked if _r_is_test_path(p)]
+    owns_a_test = any(
+        _r_is_test_path(p) or re.search(r"(?:^|/)(?:tests?|__tests__)/", p) for p in owned
+    ) or any(_r_owned(t, owned) for t in tracked_tests)
+    if tracked_tests and not owns_a_test and not any(" its test file " in f for f in out):
+        for sl_id, parsed in lane_sections_parsed.items():
+            code = [
+                p for p in (g.strip().strip("`") for g in parsed["owned_globs"])
+                if p.endswith(_R_CODE_SUFFIXES) and not _r_is_glob(p)
+                and posixpath.basename(p) not in _R_NOT_PRIMARY
+            ]
+            if code:
+                stem = _r_stem(code[0])
+                example = f"test_{stem}.py" if code[0].endswith(".py") else f"{stem}.test{posixpath.splitext(code[0])[1]}"
+                out.append(
+                    f"(R) WARN: {sl_id} owns code (`{code[0]}`) but no lane owns any test path — "
+                    f"(E) requires a test per impl, so own the file it will create (e.g. `{example}`)"
+                )
+                break
     return out
 
 
