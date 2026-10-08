@@ -4092,9 +4092,10 @@ def retained_broker_receipts(
             continue
         value = closed(
             value,
-            {"schema", "round", "receipts"},
+            {"schema", "annotation", "round", "receipts"},
             "retained broker receipts",
         )
+        text(value["annotation"], "retained broker receipt annotation")
         round_name = text(value["round"], "retained broker receipt round")
         if round_name not in {"candidate", "canonical_main"} or round_name in rounds:
             fail("retained broker receipt inventory is malformed")
@@ -4105,7 +4106,13 @@ def retained_broker_receipts(
         for receipt in receipts:
             receipt = closed(
                 receipt,
-                {"harness", "session_sha256", "operation_nonce"},
+                {
+                    "harness", "requested_model", "resolved_model", "result_kind",
+                    "terminal_verdict", "head", "tree", "seat_id",
+                    "session_sha256", "harness_provenance", "report",
+                    "operation_nonce", "report_sha256", "report_bytes", "broker",
+                    "runtime_receipt",
+                },
                 "retained broker receipt",
             )
             harness = text(receipt["harness"], "retained broker receipt harness")
@@ -7098,10 +7105,23 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
             receipts.append(
                 {
                     "harness": seat["harness"],
+                    "requested_model": seat["requested_model"],
+                    "resolved_model": seat["resolved_model"],
+                    "result_kind": "live",
+                    "terminal_verdict": "AGREE",
+                    "head": seat["head"],
+                    "tree": seat["tree"],
+                    "seat_id": seat["seat_id"],
                     "session_sha256": seat["session_sha256"],
+                    "harness_provenance": seat["harness_provenance"],
+                    "report": seat["report"],
                     "operation_nonce": nonce(
                         "broker-operation-" + round_name + "-" + seat["harness"]
                     ),
+                    "report_sha256": seat["report_sha256"],
+                    "report_bytes": seat["report_bytes"],
+                    "broker": seat["broker"],
+                    "runtime_receipt": seat["runtime_receipt"],
                 }
             )
         retained_broker_receipts.append(
@@ -7109,6 +7129,7 @@ def _fixture(root: Path) -> tuple[Path, Path, Path, dict[str, Any]]:
                 "retained-broker-receipts-" + round_name + ".json",
                 {
                     "schema": "harden_broker_receipts.v1",
+                    "annotation": "self-test retained broker receipts",
                     "round": round_name,
                     "receipts": receipts,
                 },
