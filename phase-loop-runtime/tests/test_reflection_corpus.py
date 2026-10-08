@@ -71,6 +71,16 @@ def test_what_didnt_reaches_the_bundle_including_did_not_variant(tmp_path):
     assert bundle.count("**What didn't**") == 2
 
 
+def test_unstructured_headings_cannot_open_bundle_sections(tmp_path):
+    root = tmp_path / "skills"
+    put(root, "codex-execute-phase", "h", "b", "r1", "# Title\n\n## Remaining work\nLoose notes about friction.\n")
+
+    bundle = rc.render_bundle(rc.collect([root])[0])
+
+    assert [line for line in bundle.splitlines() if line.startswith("## ")] == ["## execute-phase (1 reflections)"]
+    assert "**Remaining work**" in bundle and "Loose notes about friction." in bundle
+
+
 def test_exact_and_near_duplicates_collapse(tmp_path):
     root = tmp_path / "skills"
     body = reflection(didnt="Line one of friction.\nLine two of friction.\nLine three of friction.\nLine four.")

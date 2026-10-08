@@ -377,7 +377,9 @@ def render_bundle(corpus: Corpus) -> str:
                     if body:
                         lines += [f"**{label}**", body, ""]
             else:
-                lines += ["**unstructured**", redact(reflection.raw), ""]
+                # Demote the raw body's own headings so they cannot open a bundle section.
+                body = re.sub(r"^#+\s+(.*)$", r"**\1**", redact(reflection.raw), flags=re.MULTILINE)
+                lines += ["**unstructured**", body, ""]
     return "\n".join(lines).rstrip() + "\n"
 
 
