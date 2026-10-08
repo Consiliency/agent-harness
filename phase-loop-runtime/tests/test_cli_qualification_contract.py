@@ -220,20 +220,21 @@ def test_first_use_never_qualifies_into_an_unsafe_store():
     assert result.outcome == "store_unsafe" and calls == []
 
 
-@pytest.mark.parametrize("how", ["flipped_byte", "swapped_payload", "copied_from_other_harness",
+@pytest.mark.parametrize("how", ["flipped_mac", "added_payload_field", "copied_from_other_harness",
                                  "copied_from_other_host"])
 def test_a_tampered_entry_never_admits(how, monkeypatch):
     """Mutation: removing the HMAC comparison admits the tampered entry."""
     key = _key()
     store = _seed_qualified(key)
     (entry,) = store.host_dir.glob("qualified-*.json")
-    if how == "flipped_byte":
-        raw = bytearray(entry.read_bytes())
-        raw[-5] ^= 1
-        entry.write_bytes(bytes(raw))
-    elif how == "swapped_payload":
+    # Each tamper keeps the entry well-formed, so only the MAC can refuse it.
+    if how == "flipped_mac":
         record = json.loads(entry.read_text())
-        record["payload"]["operations"]["identity"] = "passed-by-hand"
+        record["mac"] = ("0" if record["mac"][0] != "0" else "1") + record["mac"][1:]
+        entry.write_text(json.dumps(record))
+    elif how == "added_payload_field":
+        record = json.loads(entry.read_text())
+        record["payload"]["note"] = "edited by hand"
         entry.write_text(json.dumps(record))
     elif how == "copied_from_other_harness":
         other = _key("grok")
