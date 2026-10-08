@@ -106,6 +106,21 @@
           "enum": ["ok", "warn"]
         }
       }
+    },
+    "seat_jail_prerequisites": {
+      "type": "array",
+      "description": "agent-harness#1357: prerequisites of the seat jail's qualification that live in the runtime's environment (pytest). Status only; `fix` is the literal command and appears only when the prerequisite is missing. Metadata-only: NO absolute paths. Additive: not in `required`, so v0.7.25 payloads still validate.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "status", "unlocks"],
+        "properties": {
+          "name": { "type": "string" },
+          "status": { "type": "string", "enum": ["present", "missing", "unknown"] },
+          "unlocks": { "type": "string" },
+          "fix": { "type": "string" }
+        }
+      }
     }
   }
 }

@@ -2690,6 +2690,10 @@ def _seat_sandbox_command(args: argparse.Namespace) -> int:
                 return seat_jail_qualification.main([])
         except seat_jail_qualification.QualificationError as exc:
             print(f"seat-sandbox qualify: cannot run: {exc}", file=sys.stderr)
+            if seat_jail_autoqualify.classify_failure(exc) == "prerequisite_missing":
+                # agent-harness#1357: a missing prerequisite names the literal fix.
+                print("seat-sandbox qualify: fix: "
+                      f"{seat_jail_autoqualify.fix_for('prerequisite_missing')}", file=sys.stderr)
             return 1
         except TimeoutError:
             print("seat-sandbox qualify: cannot run: another qualification holds the lock",

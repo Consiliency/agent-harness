@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from . import repo_validation
+from . import seat_jail_prerequisites
 from .install_status import _assert_redacted, build_install_status
 
 SCHEMA_ID = "phase-loop-doctor.v1"
@@ -501,6 +502,9 @@ def build_doctor_report(
         "bom": bom,
         # PUSHFLOW: ahead-of-origin divergence aggregate (counts only, no paths).
         "worktree_divergence": build_worktree_divergence(root),
+        # agent-harness#1357: what the seat jail's qualification needs from the runtime's own
+        # environment (today: pytest). Status only, with the literal fix when missing.
+        "seat_jail_prerequisites": seat_jail_prerequisites.check(),
     }
     # Metadata-only guarantee: no absolute paths, no secrets. Reuses the same
     # redaction contract as phase-loop-install-status.v1.
@@ -551,6 +555,14 @@ def _print_doctor(report: dict[str, Any]) -> None:
             f"  [{entry['verdict']:<7}] {entry['target']:<32} "
             f"pinned={entry['pinned']} latest={entry['latest']} ({entry['ecosystem']}, {gate})"
         )
+    prerequisites = report.get("seat_jail_prerequisites")
+    if prerequisites:
+        print("")
+        print("Seat jail prerequisites (needed to qualify jailed review seats):")
+        for item in prerequisites:
+            print(f"  {item['name']:<10} {item['status']}   → {item['unlocks']}")
+            if item.get("fix"):
+                print(f"    fix: {item['fix']}")
     div = report.get("worktree_divergence")
     if div:
         print("")

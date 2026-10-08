@@ -587,6 +587,12 @@ same modes are written to `seat-modes.json` in the stream directory.
 conventional). The runtime never runs these. Without them the seat stays sealed with
 `seat_sandbox_unavailable_seat_uid`. The host must also have `dev.tty.legacy_tiocsti = 0`.
 
+The runtime's own environment must also contain `pytest`: qualification runs a real falsifier run
+whose wrapper imports it (agent-harness#1357). Releases after 0.7.25 depend on it, so a normal
+install has it. Without it, qualification fails with the typed reason `prerequisite_missing` and
+the exact install command, and `phase-loop doctor` shows `seat_jail_prerequisites[]` with
+`status: missing` and the same command in `fix`.
+
 **Ubuntu 24.04+ and 26.04: the AppArmor override (agent-harness#1276).** Ubuntu's
 `bwrap-userns-restrict` profile runs every child of `/usr/bin/bwrap` as
 `bwrap//&unpriv_bwrap`, whose `audit deny capability` rule denies every capability. The

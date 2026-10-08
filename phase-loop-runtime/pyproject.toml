@@ -46,6 +46,12 @@ dependencies = [
     # guarantees the contract-owned vocabulary (incl. governance_contracts) is live.
     "consiliency-contract>=0.6.5,<0.7",
     "jsonschema>=4,<5",
+    # agent-harness#1357 (maintainer ruling): the seat jail's qualification runs a real falsifier
+    # run whose wrapper imports pytest, and the run copies its dependencies from the runtime's own
+    # environment. A host installed from the published package had no pytest anywhere, so the
+    # jail could not qualify. >=8 is the line the suite and Gate A are tested on; <9 keeps the
+    # hookwrapper API the wrapper uses inside the tested range -- widen it with a test run.
+    "pytest>=8,<9",
     # `phase-loop doctor` (IF-0-AHADOPT-2) compares consumer pins to registry
     # latest with PEP 440 version ordering. Declared so the BOM produces real
     # stale|current verdicts on the isolated `uv tool install` path (where pip —
@@ -76,7 +82,8 @@ visual = ["Pillow>=10,<13"]
 [dependency-groups]
 # Keep build aligned with hosted pytest and Dagger _base. Gate A's inner
 # test environment intentionally installs unpinned tools.
-test = ["pytest>=8,<9", "build==1.6.1", "setuptools>=70.1", "pip"]
+# pytest is a runtime dependency now (see [project].dependencies), so it is not repeated here.
+test = ["build==1.6.1", "setuptools>=70.1", "pip"]
 
 [project.urls]
 Homepage = "https://github.com/Consiliency/agent-harness"

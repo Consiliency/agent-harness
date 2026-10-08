@@ -20,6 +20,7 @@ from __future__ import annotations
 import contextlib
 import json
 import os
+import re
 import stat
 import threading
 import time
@@ -56,6 +57,10 @@ REASON_FIXES: Mapping[str, str] = {
                "`phase-loop seat-sandbox qualify`",
     "error": "run `phase-loop seat-sandbox qualify` to see the error",
 }
+
+#: The sentinel run's own error text when its wrapper cannot import `pytest`. The text is a
+#: bytes repr inside a dict repr, so the quotes may be backslash-escaped.
+_PYTEST_IMPORT_ERROR = re.compile(r"No module named\s+\\*['\"]?pytest\b")
 
 RETRY_ENV = "PHASE_LOOP_SEAT_JAIL_QUALIFY_RETRY_S"
 DEFAULT_RETRY_S = 3600.0
@@ -195,6 +200,24 @@ def _acquire_lock(wait_s: float) -> int:
             time.sleep(0.2)
 
 
+def fix_for(reason: str) -> str:
+    """The literal fix for a typed ``reason``. For ``prerequisite_missing`` it names what is
+    missing NOW (a cached reason can be stale once the operator has fixed it), so the pytest
+    case gets its own command instead of the generic host-prerequisite text."""
+    fix = REASON_FIXES[reason]
+    if reason != "prerequisite_missing":
+        return fix
+    from . import sandbox_egress, seat_jail_prerequisites, seat_uid
+
+    if not seat_jail_prerequisites.missing():
+        return fix
+    try:
+        host_ready = seat_uid.seat_uid_available() and sandbox_egress.egress_isolation_available()
+    except Exception:  # noqa: BLE001 - advice must never raise
+        host_ready = False
+    return seat_jail_prerequisites.PYTEST_FIX if host_ready else f"{seat_jail_prerequisites.PYTEST_FIX}. Also: {fix}"
+
+
 def classify_failure(exc: BaseException) -> str:
     """A qualification exception's typed reason (the message itself is never shown)."""
     from . import seat_jail_qualification, seat_uid
@@ -204,7 +227,9 @@ def classify_failure(exc: BaseException) -> str:
     if isinstance(exc, seat_jail_qualification.QualificationError):
         text = str(exc)
         if (text == seat_uid.PREREQUISITE or text == "egress isolation unavailable"
-                or text.startswith("no /etc/machine-id")):
+                or text.startswith("no /etc/machine-id")
+                or text == seat_jail_qualification.PYTEST_MISSING
+                or _PYTEST_IMPORT_ERROR.search(text)):
             return "prerequisite_missing"
         if "no pass recorded" in text:
             return "store_unsafe"

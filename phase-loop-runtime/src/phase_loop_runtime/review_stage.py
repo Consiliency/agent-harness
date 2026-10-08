@@ -406,6 +406,45 @@ def _snapshot_falsifier_dependencies(stage: Path, destination: Path) -> None:
             shutil.copyfile(source, target)
 
 
+def falsifier_distribution_available(name: str) -> bool:
+    """Whether the falsifier's dependency snapshot can find an installed distribution ``name``.
+
+    True only if the distribution is installed in the runtime's own environment or in the
+    system interpreter's site-packages, which are exactly the places
+    ``_snapshot_falsifier_dependencies`` reads. Raises ``OSError``, ``subprocess.SubprocessError``
+    or ``ValueError`` when the inventory itself cannot run (no ``/usr/bin/python3``): that is
+    "cannot tell", not "missing".
+
+    This deliberately repeats the snapshot's path discovery instead of sharing it: the falsifier
+    layout identity (``seat_jail.falsifier_layout_identity``) hashes the snapshot's source, so
+    touching that function would invalidate every host's recorded jail pass. A test
+    (``test_seat_jail_prerequisites_1357``) pins the two to the same answer."""
+    inventory = subprocess.run(
+        ["/usr/bin/python3", "-S", "-c",
+         "import json,site; print(json.dumps({'paths':site.getsitepackages()+"
+         "[site.getusersitepackages()]}))"],
+        capture_output=True, text=True, check=True, timeout=3,
+        cwd="/",
+        env={"HOME": str(Path.home()), "PATH": "/usr/bin:/bin"},
+    )
+    system_paths = [path for path in json.loads(inventory.stdout)["paths"]
+                    if isinstance(path, str) and path.startswith("/")]
+    prefixes = (Path(sys.prefix), Path(sys.base_prefix))
+    paths = list(dict.fromkeys([
+        *(path for path in sys.path
+          if path.startswith("/")
+          and any(part in ("site-packages", "dist-packages") for part in Path(path).parts)
+          and any(Path(path).is_relative_to(prefix) for prefix in prefixes)),
+        *system_paths,
+    ]))
+    wanted = re.sub(r"[-_.]+", "-", name).lower()
+    for distribution in importlib.metadata.distributions(path=paths):
+        declared_name = distribution.metadata.get("Name")
+        if declared_name and re.sub(r"[-_.]+", "-", declared_name).lower() == wanted:
+            return True
+    return False
+
+
 def _falsifier_top_level_files(
     distribution: importlib.metadata.Distribution, root: Path,
 ) -> list[PurePosixPath]:
