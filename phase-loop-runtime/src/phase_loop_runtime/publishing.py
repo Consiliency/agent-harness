@@ -20,7 +20,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Sequence
 
-from .convergence.broker.verbs import BrokerClient
+from .convergence.broker.verbs import BrokerClient, PublicationRecoveryRequired
 from .convergence.contracts import AdmissionRequest, BrokerRequest, BrokerVerb, PreAdmissionEnvelope
 from .convergence.broker.live import canonical_repository_identity
 from .git_topology import collect_git_topology
@@ -55,20 +55,63 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _atomic_json(path: Path, payload: dict) -> None:
+def _atomic_json(path: Path, payload: dict, *, mode: int = 0o666) -> None:
+    """Replace ``path`` atomically.  The temporary file is created exclusively and
+    no-follow under a unique name, so neither a stale nor a planted temporary is
+    ever written through.  ``mode`` passes through the umask; the default keeps
+    the historical permissions of every existing writer."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.parent / f".{path.name}.{os.getpid()}.tmp"
+    temporary = path.parent / f".{path.name}.{os.getpid()}.{os.urandom(8).hex()}.tmp"
     body = json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
-    with temporary.open("w", encoding="utf-8") as stream:
-        stream.write(body)
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(temporary, path)
+    descriptor = os.open(
+        str(temporary), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(body)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        with contextlib.suppress(FileNotFoundError):
+            temporary.unlink()
+        raise
     descriptor = os.open(str(path.parent), os.O_RDONLY)
     try:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def _read_json_nofollow(path: Path) -> dict | None:
+    """``None`` when ``path`` is absent; its JSON object when it is a regular file.
+
+    A symlink, a non-regular file (a FIFO included, without blocking), or bytes
+    that are not a JSON object refuse with ``PublishTransactionConflict``
+    (agent-harness#1296 recovery records).
+    """
+    try:
+        # O_NONBLOCK: a FIFO planted at ``path`` must not block the open (and the
+        # transaction lock with it); the type check below then refuses it.
+        descriptor = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise PublishTransactionConflict(f"{path} is not a regular file: {error}") from error
+    import stat
+
+    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        os.close(descriptor)
+        raise PublishTransactionConflict(f"{path} is not a regular file")
+    with os.fdopen(descriptor, "rb") as stream:
+        raw = stream.read()
+    try:
+        value = json.loads(raw)
+    except ValueError as error:
+        raise PublishTransactionConflict(f"{path} is not JSON: {error}") from error
+    if not isinstance(value, dict):
+        raise PublishTransactionConflict(f"{path} is not a JSON object")
+    return value
 
 
 def _git(repo: Path, *args: str, input: bytes | None = None, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
@@ -380,6 +423,9 @@ class PublishTransactionStore:
     def tombstone_path(self, transaction_id: str) -> Path:
         return self.root / f"{transaction_id}.tombstone.json"
 
+    def recovery_path(self, transaction_id: str, generation: int) -> Path:
+        return self.root / f"{transaction_id}.recovery.{int(generation)}.json"
+
     def load_active(self) -> dict | None:
         if not self.active_pointer_path.exists():
             return None
@@ -481,6 +527,38 @@ class PublishTransaction:
 
     def clear_active_pointer(self) -> None:
         self.store.clear_active(self.transaction_id)
+
+    def record_recovery(self, record: dict) -> Path:
+        """Write-once provenance for re-admitting this transaction (agent-harness#1296).
+
+        The broker never moves the checkpoint during a recovery; the SDK
+        closeout (``publish_from_worktree``) seals it after the observed
+        terminal, which releases the active pointer.  The state the transaction
+        was recovered FROM is kept here, beside it, one file per successor
+        generation, written BEFORE the broker writes an owner or admission, so
+        the history reads: admitted, outcome ambiguous, adjudicated not-landed
+        by rotation X, re-admission authorized in generation N.  The outcome
+        itself lives in that generation's evidence.
+
+        The record is owner-only (0600), written atomically through an
+        exclusive no-follow temporary file, and read back no-follow.  A second
+        write for the same generation must carry the same bytes; an existing
+        record that is not a regular file, or not JSON, refuses typed.
+        """
+        if self.state not in PublishTransactionState.ORDERED[3:]:
+            raise PublishTransactionConflict("only an admitted transaction is recovered")
+        path = self.store.recovery_path(self.transaction_id, record["generation"])
+        payload = {"schema": "PublishTransactionRecovery.v1", **record}
+        with self.store.exclusive():
+            existing = _read_json_nofollow(path)
+            if existing is not None:
+                if existing != payload:
+                    raise PublishTransactionConflict(
+                        f"a different recovery is already recorded at {path}"
+                    )
+                return path
+            _atomic_json(path, payload, mode=0o600)
+        return path
 
     def abandon(self) -> None:
         # Tombstone first, THEN clear the pointer, all under one lock hold, so a
@@ -1176,6 +1254,32 @@ def _human_publication_handoff(
         repository_common_dir=str(snapshot.common_dir),
         resume="retry publish_human_invoked_from_worktree with the same plan and verification artifact",
     )
+    if next_step == "resolve_publication_recovery_refusal":
+        handoff.update(
+            recovery_procedure="docs/fabpub-partition-rotation-runbook.md section 8a",
+            next_step_source=(
+                "the refusal detail: it names what did not bind and the next step for that case; "
+                "a rotation applies only while the key is blocked in the active generation"
+            ),
+            rotate_command_when_key_blocked=[
+                "phase-loop",
+                "fabpub-rotate-partition",
+                "--worktree",
+                str(snapshot.worktree),
+                "--attestation",
+                "<operator attestation outside the ceremony directory>",
+                "--cutover-id",
+                "<new rotation id>",
+                "--json",
+            ],
+            rotate_requires=(
+                "a reviewed PartitionRotationAttestation.v1 disposing the blocked effect "
+                "attested_not_landed with the predecessor owner's transaction_id, and a "
+                "read-only preflight verdict of ready; later remote absence is not proof "
+                "that the historical attempt had no effect"
+            ),
+            after_rotation="restart any broker process, then retry with the same plan and verification artifact",
+        )
     if next_step == "probe_and_confirm_fabpub_authority":
         inventory = (
             snapshot.common_dir
@@ -1456,6 +1560,15 @@ def publish_human_invoked_from_worktree(
             )
             result["checkpoint_root"] = str(checkpoint_root)
         return result
+    except PublicationRecoveryRequired as error:
+        # agent-harness#1296: the current head's transaction was already
+        # admitted and no rotation adjudicated its effect; nothing was written.
+        result = _blocked("publication_recovery_required", str(error))
+        result["handoff"] = _human_publication_handoff(
+            repo, next_step="resolve_publication_recovery_refusal"
+        )
+        result["checkpoint_root"] = str(checkpoint_root)
+        return result
     except PublishTransactionConflict as error:
         result = _blocked("publication_transaction_conflicted", str(error))
         result["handoff"] = _human_publication_handoff(
@@ -1553,7 +1666,9 @@ def publish_from_worktree(
     )
     # agent-harness#906: a sealed transaction for an OLD head (the workspace advanced past
     # it) is a completed prior publication -- never resumed, a fresh one is prepared. A
-    # sealed transaction for the CURRENT head is the crash-after-seal replay and resumes.
+    # sealed transaction for the CURRENT head is the crash-after-seal replay and resumes;
+    # the broker replays its terminal, or (agent-harness#1296) re-admits it once under an
+    # authenticated attested_not_landed rotation, or refuses typed with no write.
     sealed_prior = (
         candidate.transaction is not None
         and candidate.state == PublishTransactionState.TERMINAL_SEALED
@@ -1621,6 +1736,10 @@ def publish_from_worktree(
             if candidate.transaction is None or candidate.state == PublishTransactionState.CONFLICTED:
                 raise RuntimeError("broker accepted publish without a recoverable transaction")
             transaction = candidate.transaction
+            # The SDK closeout seals the checkpoint after an observed terminal; the
+            # seal releases the active pointer for the next head.  A recovered
+            # transaction is sealed here too (agent-harness#1296): its recovered
+            # state is kept by the write-once recovery record, not the checkpoint.
             while transaction.state != PublishTransactionState.TERMINAL_SEALED:
                 transaction.project(PublishTransactionState.ORDERED[PublishTransactionState.ORDERED.index(transaction.state) + 1])
     if not execution.accepted or execution.publish_result is None:

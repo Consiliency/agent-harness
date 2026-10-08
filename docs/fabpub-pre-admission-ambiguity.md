@@ -234,6 +234,49 @@ than in `attested_by`. The dispositions:
   absent. The key is **not** carried, so the successor publishes it afresh
   exactly once, after which ordinary idempotency holds.
 
+  A failed publication leaves its publish transaction past
+  `COMMITTED_HEAD_RESOLVED`: `TERMINAL_SEALED` when the provider returned an
+  ambiguous terminal (for example `push-unconfirmed`), or `ADAPTER_STARTED` or
+  earlier after an adapter exception or crash. A retry of the same, unchanged
+  head resumes that transaction, and the successor re-admits it as-is
+  (agent-harness#1296): same transaction, commit, ref, owned paths and
+  plan/verification digests. It does so only when the successor's
+  authenticated receipt disposes the key `attested_not_landed` **and** the
+  sealed attestation's `transaction_id` (bound from the predecessor's
+  adapter-start owner) equals the transaction being admitted. The retry's `base`,
+  `draft` and PR body must also equal the transaction's frozen values, because the
+  provider request is built from them. The broker never moves the checkpoint during
+  a recovery; the SDK closeout in `publish_from_worktree` seals it after the observed
+  terminal, which releases the active pointer for the next head. Before any owner or
+  admission is written, the authorization is recorded once beside the checkpoint as
+  `<transaction_id>.recovery.<generation>.json` (`PublishTransactionRecovery.v1`:
+  rotation, attestation and inventory digests, predecessor owner nonce, ambiguity
+  digest, the state the transaction was recovered from, commit, ref, paths,
+  plan/proof digests, and the frozen base, draft and PR-body digest). The record is
+  owner-only (0600), written atomically through an exclusive no-follow temporary file,
+  and read back no-follow; an existing record that is not a regular JSON file refuses
+  typed. The outcome lives in that generation's evidence. Because the broker leaves the
+  checkpoint where it is, single use is enforced under the admissions lock: the
+  generation's evidence must hold no record for the key. If the recovered attempt is
+  ambiguous again, the successor blocks like any partition.
+
+  Any other already-admitted current-head transaction is refused with
+  `PublicationRecoveryRequired` before any owner, admission or evidence write. The
+  message names what did not bind and the next step for that case. In particular, when
+  the active generation holds neither a disposition nor evidence for the key, **no
+  rotation can help**: an attestation disposes only keys that are blocked in the
+  active generation. That happens when a later rotation (for any key) superseded the
+  generation that disposed this one. It is tracked as agent-harness#1310 and needs the
+  maintainer. Retry the publication straight after the disposing rotation, before any
+  other rotation or publication on that repository. The human route reports these
+  refusals as `publication_recovery_required` with next step
+  `resolve_publication_recovery_refusal`.
+
+  Separately, the broker now checks the transaction-state precondition **before** it
+  writes the adapter-start owner, so a refusal of that precondition no longer leaves
+  an unsealed owner that the next attempt would promote to permanent ambiguity. Other
+  refusals inside admission still run after the owner write (agent-harness#1314).
+
 A blocked key the attestation leaves undisposed, a disposition it does not know,
 digests that do not match the predecessor's bytes, or a predecessor that is not
 `epoch_blocked` are all typed `PartitionRotationRefused` refusals before any

@@ -6,6 +6,35 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### FABPUB: a failed current-head publication can be recovered by rotation (agent-harness#1296)
+
+- After a publication fails with an ambiguous outcome, its transaction is past
+  `COMMITTED_HEAD_RESOLVED` (`TERMINAL_SEALED` normally, `ADAPTER_STARTED` after an adapter
+  exception). The documented recovery, a partition rotation that disposes the effect
+  `attested_not_landed`, then refused the retry of that exact transaction (`broker admission
+  precondition denied`), because fresh admission required `COMMITTED_HEAD_RESOLVED`. The refusal
+  also left a new unsealed adapter-start owner in the successor generation, so the next attempt
+  blocked it again. This blocked treesitter-chunker#480.
+- The successor generation now re-admits the transaction unchanged, once. This requires its
+  authenticated receipt to dispose the key `attested_not_landed` and the sealed attestation's
+  `transaction_id` (bound from the predecessor's owner) to equal the transaction, and the retry's
+  `base`, `draft` and PR body to equal the transaction's frozen values. The broker never moves
+  the checkpoint (the SDK closeout seals it after the terminal); a write-once `<transaction_id>.recovery.<generation>.json` records
+  the rotation, digests, predecessor owner, recovered state and plan/proof bindings before any
+  owner is written (owner-only, atomic, no-follow, fail-closed).
+  Single use is enforced under the admissions lock (no evidence for the key in the generation),
+  so a concurrent retry makes no second provider call. A replay makes no provider call, and the
+  predecessor generation's bytes are unchanged.
+- Any other already-admitted current-head transaction is refused with
+  `PublicationRecoveryRequired` before any write. The human route returns
+  `publication_recovery_required` with the rotation as its next step. The broker now checks the
+  transaction-state precondition before it writes the adapter-start owner, so a refusal of that
+  precondition leaves no owner behind. When no rotation can dispose the key (a later rotation
+  superseded the disposing one, agent-harness#1310), the refusal says so instead of suggesting
+  another rotation.
+- `observed_landed` recovery is unchanged and stays provider-free. The procedure is in
+  `docs/fabpub-partition-rotation-runbook.md` §8a.
+
 ### Unified seat-launch owner: namespaces, private homes, allowlisted view, hardened host git and seat I/O
 
 Review seats, the president and executor review share a launch owner with private homes, allowlisted inputs and individual output files. Host Git uses trusted helpers and neutral settings. Ordinary executor planning, execution and repair retain their existing execution contract.

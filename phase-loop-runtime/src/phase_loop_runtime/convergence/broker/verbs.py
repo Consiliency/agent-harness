@@ -47,6 +47,24 @@ class BrokerExecutionResult:
     reason: str = ""
 
 
+class PublicationRecoveryRequired(PermissionError):
+    """An already-admitted publish transaction for the current head has no supported recovery.
+
+    Raised before any owner, admission or evidence write (agent-harness#1296).
+    """
+
+
+#: Transaction states past ``COMMITTED_HEAD_RESOLVED``: the transaction was
+#: admitted in some generation.  A failed provider outcome leaves it here
+#: (``TERMINAL_SEALED`` normally; earlier after an adapter exception or crash).
+_ADMITTED_TRANSACTION_STATES = (
+    "ADMISSION_DURABLE",
+    "BROKER_INTENT_DURABLE",
+    "ADAPTER_STARTED",
+    "TERMINAL_SEALED",
+)
+
+
 @dataclass(frozen=True)
 class AdapterStartOwnership:
     """Repository-visible, pre-effect ownership of one provider entry."""
@@ -470,6 +488,8 @@ class BrokerService:
         owner: AdapterStartOwnership,
         make_request,
         attempt_id: str,
+        *,
+        recovery_key: str | None = None,
     ) -> tuple[AdapterStartOwnership | None, AdapterStartOwnership | None, object]:
         """ah#789: durable owner and admission under ONE ``admissions.lock`` acquisition.
 
@@ -478,8 +498,19 @@ class BrokerService:
         re-read under the lock — an unsealed foreign owner is returned to the
         caller, who resolves it OUTSIDE the section through
         ``_block_unsealed_owner`` (which takes the same lock itself); (3) the
-        owner is written; (4) the admission is allocated.  No writer of any
-        runtime version can interleave between (3) and (4).
+        transaction must be admissible; (4) the owner is written; (5) the
+        admission is allocated.  No writer of any runtime version can
+        interleave between (4) and (5).
+
+        (3) runs BEFORE the owner write (agent-harness#1296): a denied
+        precondition used to leave a fresh unsealed owner behind, which the
+        next attempt promoted to permanent ambiguity.  A fresh publish needs
+        ``COMMITTED_HEAD_RESOLVED``.  A recovery (``recovery_key`` set) leaves
+        the checkpoint where it is, so its state cannot gate a second
+        admission; instead the generation's evidence must hold no record for
+        the key.  A concurrent retry that passed ``execute``'s replay check
+        before the first attempt's terminal therefore refuses here and makes
+        no second provider call.
 
         Returns ``(foreign_owner, recorded_owner, admission_record)``; exactly
         one of ``foreign_owner`` / ``recorded_owner`` is set.
@@ -497,6 +528,22 @@ class BrokerService:
                 )
                 if current_owner is not None and not current_owner.sealed:
                     return current_owner, None, None
+                state = self._validated_envelope(request)[1].state
+                if recovery_key is None and state != "COMMITTED_HEAD_RESOLVED":
+                    raise PermissionError(
+                        f"broker admission precondition denied: publish transaction is {state}, "
+                        "admission requires COMMITTED_HEAD_RESOLVED; no owner or admission was written"
+                    )
+                if recovery_key is not None:
+                    if state not in _ADMITTED_TRANSACTION_STATES:
+                        raise PermissionError(
+                            f"broker admission precondition denied: recovered transaction is {state}"
+                        )
+                    if self.evidence_store.replay().get(recovery_key) is not None:
+                        raise PermissionError(
+                            "broker admission precondition denied: this generation already "
+                            "re-admitted the transaction; retry to replay its evidence"
+                        )
                 # Indirection through evidence_module keeps the durable write a crash seam.
                 # A sealed owner is a completed prior effect, not a lock on a new head.
                 recorded_owner = evidence_module.append_adapter_start_owner(
@@ -508,12 +555,101 @@ class BrokerService:
                 admission_record = self.admission_store.admit_next(
                     make_request,
                     attempt_id=attempt_id,
-                    precondition=lambda: self._validated_envelope(request)[1].state == "COMMITTED_HEAD_RESOLVED",
+                    # Already decided above under this same lock acquisition.
+                    precondition=lambda: True,
                     lock_held=True,
                 )
                 return None, recorded_owner, admission_record
             finally:
                 fcntl.flock(lock, fcntl.LOCK_UN)
+
+    def _recovery_authority(self, request: BrokerRequest, key: str, envelope, transaction) -> dict:
+        """Authorize re-admitting an already-admitted transaction, or refuse typed.
+
+        agent-harness#1296: the only supported recovery is a partition rotation
+        whose attestation disposes this exact effect key ``attested_not_landed``
+        and binds this exact transaction (the predecessor owner's
+        ``transaction_id``).  Nothing is written here.
+        """
+        from .live import attested_not_landed_recovery
+
+        tid = envelope.transaction_id
+
+        def refuse(why: str, next_step: str) -> PublicationRecoveryRequired:
+            return PublicationRecoveryRequired(
+                f"publish transaction {tid} is {transaction.state} for the current head "
+                f"{request.head_sha} (effect key {key!r}), but {why}. Fresh admission requires "
+                "COMMITTED_HEAD_RESOLVED; an already-admitted transaction is re-admitted only "
+                "under an authenticated attested_not_landed rotation that binds it. "
+                f"Next step: {next_step}. No owner, admission or provider call was made."
+            )
+
+        try:
+            recovery = attested_not_landed_recovery(self.evidence_store.root, key)
+        except (RuntimeError, PermissionError, OSError, ValueError) as error:
+            # LegacyCutoverConflict is a RuntimeError; routing/compatibility
+            # refusals are PermissionErrors.  All of them are the same answer.
+            raise refuse(
+                f"the active rotation does not authenticate ({type(error).__name__}: {error})",
+                "restore the rotation's receipt, journal and sealed inventory bytes; do not "
+                "rotate again over a generation that does not authenticate",
+            ) from error
+        if recovery is None:
+            # ``execute`` replays any record the active generation holds for the
+            # key, so reaching here means it holds none: the key is not blocked
+            # in the active generation and no rotation can dispose it now.
+            raise refuse(
+                "the active partition generation adjudicates no attested_not_landed disposition "
+                "for it, and holds no evidence for the key",
+                "a rotation cannot help here, because an attestation only disposes keys that are "
+                "blocked in the active generation. If an earlier rotation disposed this key and a "
+                "later rotation superseded it, that is agent-harness#1310; otherwise inspect the "
+                "publish checkpoint and the broker evidence with the maintainer",
+            )
+        if recovery["transaction_id"] is None:
+            raise refuse(
+                f"rotation {recovery['cutover_id']!r} disposes the key attested_not_landed but binds no "
+                "transaction id (its predecessor had no adapter-start owner for the key)",
+                "escalate to the maintainer; the disposition cannot be bound to this transaction "
+                "and must not be inferred",
+            )
+        if recovery["transaction_id"] != tid:
+            raise refuse(
+                f"rotation {recovery['cutover_id']!r} adjudicated transaction "
+                f"{recovery['transaction_id']}, not this one",
+                f"retry with the publication context of transaction {recovery['transaction_id']}",
+            )
+        # The provider request is built from THIS call's base/draft/pr_body; the
+        # attestation adjudicated the transaction as frozen, so they must be its own.
+        frozen = {"base": request.base, "draft": request.draft, "pr_body": request.pr_body}
+        differing = sorted(
+            name for name, value in frozen.items() if getattr(transaction, name, None) != value
+        )
+        if differing:
+            raise refuse(
+                f"this request's {', '.join(differing)} differ from the transaction's frozen values; "
+                "a recovery re-publishes exactly what was admitted",
+                f"retry with the transaction's own {', '.join(differing)}",
+            )
+        return {
+            **recovery,
+            "recovered_transaction_state": transaction.state,
+            "expected_commit_oid": transaction.expected_commit_oid,
+            "committed_head_sha": transaction.committed_head_sha,
+            "final_commit_object_sha256": transaction.final_commit_object_sha256,
+            "exact_ref": transaction.exact_ref,
+            "branch": transaction.branch,
+            "owned_paths": list(transaction.owned_paths),
+            "canonical_repository_identity": transaction.canonical_repository_identity,
+            "roadmap_digest": envelope.roadmap_digest,
+            "effective_code_digest": envelope.effective_code_digest,
+            "dependency_digest": envelope.dependency_digest,
+            "verification_plan_digest": envelope.verification_plan_digest,
+            "operation_identity": envelope.operation_identity,
+            "base": transaction.base,
+            "draft": transaction.draft,
+            "pr_body_sha256": hashlib.sha256(transaction.pr_body.encode("utf-8")).hexdigest(),
+        }
 
     def _fresh_publish(self, request: BrokerRequest, key: str) -> BrokerExecutionResult:
         envelope, transaction = self._validated_envelope(request)
@@ -532,6 +668,24 @@ class BrokerService:
                 raise PermissionError("unsealed adapter-start owner blocks fresh provider effect")
         if self.evidence_store.epoch_blocked:
             raise PermissionError("epoch permanently blocked")
+        # agent-harness#1296: a transaction already admitted in some generation
+        # (a failed outcome leaves it there) is re-admitted only under an
+        # authenticated attested_not_landed rotation, and refused typed before
+        # any write otherwise.  This runs AFTER the unsealed-owner resolution
+        # above, so a crashed attempt still becomes the durable ambiguity a
+        # rotation adjudicates.  The broker never moves the checkpoint; the SDK
+        # closeout seals it after the terminal, and the recovery record keeps the
+        # state it was recovered from.
+        recovery = (
+            self._recovery_authority(request, key, envelope, transaction)
+            if transaction.state in _ADMITTED_TRANSACTION_STATES
+            else None
+        )
+
+        def advance(state: str) -> None:
+            if recovery is None:
+                _advance_transaction(transaction, state)
+
         attempt_id = hashlib.sha256(
             b"FABPUB-PUBLISH-ATTEMPT-v1\0"
             + f"{request.repo}\0{request.branch}\0{request.head_sha}".encode()
@@ -549,13 +703,23 @@ class BrokerService:
         def make_request(epoch: int, supplied_attempt_id: str) -> AdmissionRequest:
             return self._final_admission(envelope, request, epoch, supplied_attempt_id)
 
+        if recovery is not None:
+            # Provenance first: a failed write leaves no owner behind.
+            transaction.record_recovery(recovery)
+
         # One critical section for owner + admission.  An unsealed foreign owner
         # observed INSIDE the section is resolved outside it exactly as before
         # (``_block_unsealed_owner``), then the section is entered once more; a
         # second foreign owner is a live contender and refuses fail-closed.
         for _entry in (1, 2):
             foreign_owner, recorded_owner, admission_record = (
-                self._owner_and_admission_under_one_lock(request, owner, make_request, attempt_id)
+                self._owner_and_admission_under_one_lock(
+                    request,
+                    owner,
+                    make_request,
+                    attempt_id,
+                    recovery_key=key if recovery is not None else None,
+                )
             )
             if foreign_owner is None:
                 break
@@ -565,9 +729,9 @@ class BrokerService:
             # A retired owner was replaced by another live publisher between the
             # two entries: a retryable contention loss, not permanent ambiguity.
             raise PermissionError("unsealed adapter-start owner contended twice in one publish; retry")
-        _advance_transaction(transaction, "ADMISSION_DURABLE")
+        advance("ADMISSION_DURABLE")
         self.evidence_store.record_intent(key)
-        _advance_transaction(transaction, "BROKER_INTENT_DURABLE")
+        advance("BROKER_INTENT_DURABLE")
         from phase_loop_runtime.publishing import _crash_at
 
         _crash_at("after_broker_intent_before_adapter_started")
@@ -576,7 +740,7 @@ class BrokerService:
             recorded_owner,
             authorize=self.evidence_store._authorize,
         )
-        _advance_transaction(transaction, "ADAPTER_STARTED")
+        advance("ADAPTER_STARTED")
         allocated_epoch = getattr(admission_record, "epoch", None)
         if allocated_epoch is None:
             allocated_epoch = admission_record.lease_epoch
@@ -602,7 +766,7 @@ class BrokerService:
             terminal = self._record_terminal_and_seal_owner(
                 recorded_owner, EvidenceRecord(key, state, reference)
             )
-            _advance_transaction(transaction, "TERMINAL_SEALED")
+            advance("TERMINAL_SEALED")
             return BrokerExecutionResult(state is TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED, BrokerTerminalEvidence(key, terminal.state.value, terminal.evidence_reference), result)
         except Exception as error:
             from phase_loop_runtime.publishing import PublishCrashInjected
