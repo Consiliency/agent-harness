@@ -12642,6 +12642,42 @@
       "task_summary": "Per-host CLI qualification parity for every seat harness, agy upstream relaxation, re-verifiable promotion path (agent-harness#1333)",
       "type": "detailed",
       "updated_at": "2026-10-08T06:30:00Z"
+    },
+    {
+      "acceptance_criteria_count": 4,
+      "created_at": "2026-10-08T17:07:53Z",
+      "file": "plans/detailed-claude-print-route-amendment-20261008.md",
+      "handoff_ref": ".dev-skills/handoffs/claude-plan-detailed/latest.md",
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [],
+      "owner_skill": "claude-plan-detailed",
+      "phase_alias": null,
+      "reflection_ref": null,
+      "roadmap_ref": null,
+      "slug": "claude-print-route-amendment",
+      "status": "committed",
+      "task_summary": "Stage 1a: amend frozen never-claude-p premise for Claude panel seats",
+      "type": "detailed",
+      "updated_at": "2026-10-08T17:07:53Z"
+    },
+    {
+      "acceptance_criteria_count": 4,
+      "created_at": "2026-10-08T17:07:53Z",
+      "file": "plans/detailed-claude-print-panel-route-20261008.md",
+      "handoff_ref": ".dev-skills/handoffs/claude-plan-detailed/latest.md",
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [],
+      "owner_skill": "claude-plan-detailed",
+      "phase_alias": null,
+      "reflection_ref": null,
+      "roadmap_ref": null,
+      "slug": "claude-print-panel-route",
+      "status": "committed",
+      "task_summary": "Stage 1b: headless claude -p default route for Claude panel/president seats with subscription drift guard",
+      "type": "detailed",
+      "updated_at": "2026-10-08T17:07:53Z"
     }
   ],
   "schema_version": 1
