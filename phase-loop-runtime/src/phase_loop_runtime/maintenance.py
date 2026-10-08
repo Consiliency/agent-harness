@@ -16,6 +16,7 @@ from .observability import operator_halt_metadata, run_artifacts, stop_requested
 from .profiles import resolve_profile
 from .prompts import build_skill_maintenance_prompt
 from .provenance import roadmap_sha256, snapshot_provenance
+from . import reflection_corpus
 from .reconcile import reconcile
 from .runtime_paths import ensure_phase_loop_excluded, phase_loop_dir
 from .skill_inventory import (
@@ -41,23 +42,28 @@ class SyncSkillsOptions:
     apply: bool = False
 
 
-def collect_reflection_inventory(repo: Path) -> dict[str, object]:
-    roots = (
-        Path.home() / ".codex" / "skills",
-        repo / "codex-config" / "skills",
-    )
-    by_root: list[dict[str, object]] = []
-    total = 0
-    for root in roots:
-        count = 0
-        if root.exists():
-            for reflections in root.glob("codex-*/reflections"):
-                for path in reflections.rglob("*"):
-                    if path.is_file() and "archive" not in path.parts:
-                        count += 1
-        total += count
-        by_root.append({"root": str(root), "count": count})
-    return {"total": total, "roots": by_root}
+def collect_reflection_inventory(repo: Path, min_reflections: int = 2) -> dict[str, object]:
+    """Per-skill reflection counts across every harness root, gated on ``min_reflections``.
+
+    ``due`` is the threshold trigger: ``maintain-skills`` launches the planner only
+    when at least one skill has ``min_reflections`` admitted reflections.
+    """
+    corpus, _ = reflection_corpus.collect(min_reflections=min_reflections)
+    return reflection_corpus.inventory(corpus)
+
+
+def prepare_reflection_corpus(repo: Path, min_reflections: int) -> tuple[dict[str, object], Path | None]:
+    """Collect, filter and write the planner's input under ``.phase-loop/``."""
+    corpus, boilerplate = reflection_corpus.collect(min_reflections=min_reflections)
+    inventory = reflection_corpus.inventory(corpus)
+    if not corpus.due:
+        return inventory, None
+    ensure_phase_loop_excluded(repo)
+    stamp = utc_now().replace(":", "").replace("-", "")
+    out_dir = phase_loop_dir(repo) / "skill-maintenance" / f"corpus-{stamp}"
+    reflection_corpus.write_corpus(corpus, boilerplate, out_dir)
+    inventory["corpus_dir"] = str(out_dir)
+    return inventory, out_dir
 
 
 def validate_maintenance_options(options: MaintenanceOptions) -> Blocker | None:
@@ -171,8 +177,12 @@ def run_maintenance(
 ) -> tuple[StateSnapshot, list[LaunchResult]]:
     phases = reconcile(repo, roadmap).phases
     selection = resolve_profile(model_profile or "skill-maintenance", model=model, effort=effort)
-    inventory = collect_reflection_inventory(repo)
     blocker = validate_maintenance_options(options) or active_loop_blocker(repo, desired_mode="skill-maintenance")
+    corpus_dir: Path | None = None
+    if blocker or options.apply_skill_edits:
+        inventory = collect_reflection_inventory(repo, options.min_reflections)
+    else:
+        inventory, corpus_dir = prepare_reflection_corpus(repo, options.min_reflections)
     if blocker:
         snapshot = StateSnapshot(
             timestamp=utc_now(),
@@ -195,7 +205,26 @@ def run_maintenance(
         append_event(repo, _maintenance_event(repo, roadmap, "blocked", selection, inventory, blocker=blocker))
         return snapshot, []
 
-    prompt = build_skill_maintenance_prompt(options)
+    if not options.apply_skill_edits and corpus_dir is None:
+        # Threshold not met: launching the planner would aggregate noise (or nothing).
+        snapshot = StateSnapshot(
+            timestamp=utc_now(),
+            repo=str(repo),
+            roadmap=str(roadmap),
+            phases=phases,
+            current_phase=next((phase for phase, status in phases.items() if status != "complete"), None),
+            last_action="maintain-skills",
+            model=selection.model,
+            reasoning_effort=selection.effort,
+            source=selection.source,
+            override_reason=selection.override_reason,
+            **snapshot_provenance(roadmap),
+        )
+        _write_state_and_handoff(repo, roadmap, snapshot, results=[])
+        append_event(repo, _maintenance_event(repo, roadmap, "plan_skipped", selection, inventory))
+        return snapshot, []
+
+    prompt = build_skill_maintenance_prompt(options, corpus_dir=corpus_dir)
     command = build_codex_command(repo, selection, prompt, json_output=json_output, bypass_approvals=bypass_approvals)
     if stop_requested(repo):
         metadata = operator_halt_metadata(repo)

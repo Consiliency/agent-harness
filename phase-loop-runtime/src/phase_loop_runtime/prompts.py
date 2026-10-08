@@ -225,9 +225,10 @@ def _build_prompt_route(
     )
 
 
-def build_skill_maintenance_prompt(options) -> str:
+def build_skill_maintenance_prompt(options, corpus_dir: Path | None = None) -> str:
     if not options.apply_skill_edits:
-        return f"codex-skill-improvement-planner --min-reflections {options.min_reflections}"
+        prompt = f"codex-skill-improvement-planner --min-reflections {options.min_reflections}"
+        return f"{prompt} --corpus {corpus_dir}" if corpus_dir is not None else prompt
     parts = ["codex-skill-editor", "--improvement-plan", str(options.improvement_plan)]
     for skill in options.allow_skills:
         parts.extend(["--allow-skill", skill])
