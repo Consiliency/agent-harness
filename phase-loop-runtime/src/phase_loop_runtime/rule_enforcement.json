@@ -1,0 +1,88 @@
+{
+  "schema": "rule_enforcement.v1",
+  "rules": [
+    {
+      "id": "plan-phase.owned-files-disjoint",
+      "skill": "plan-phase",
+      "quote": "File ownership must be disjoint across lanes.",
+      "harness_quotes": {
+        "claude": "**Disjoint file ownership** — no two lanes' `Owned files` globs intersect."
+      },
+      "status": "enforced",
+      "enforcers": [
+        {"kind": "module", "module": "phase_loop_runtime.plan_ir", "symbol": "_ownership_diagnostics"},
+        {"kind": "skill_script", "path": "scripts/validate_plan_doc.py", "symbol": "_check_d_owned_files_disjoint"}
+      ],
+      "negative_control": "tests/test_phase_loop_lane_scheduler.py::PhaseLoopLaneSchedulerTest::test_overlap_validation_fails_closed"
+    },
+    {
+      "id": "plan-phase.lane-dag-acyclic",
+      "skill": "plan-phase",
+      "quote": "The lane DAG is acyclic.",
+      "harness_quotes": {
+        "claude": "**DAG has no cycles** — a topological sort of `Depends on:` succeeds."
+      },
+      "status": "enforced",
+      "enforcers": [
+        {"kind": "module", "module": "phase_loop_runtime.plan_ir", "symbol": "_cycle_diagnostics"},
+        {"kind": "skill_script", "path": "scripts/validate_plan_doc.py", "symbol": "_check_c_dag_acyclic"}
+      ],
+      "negative_control": "tests/test_phase_loop_lane_ir.py::PhaseLoopLaneIRTest::test_parser_reports_malformed_contract_diagnostics"
+    },
+    {
+      "id": "plan-phase.reducer-lists-producers",
+      "skill": "plan-phase",
+      "quote": "must list every producer lane under `Depends on`",
+      "harness_quotes": {
+        "claude": "lists every producer lane under `Depends on`"
+      },
+      "status": "enforced",
+      "enforcers": [
+        {"kind": "module", "module": "phase_loop_runtime.plan_ir", "symbol": "_producer_dependency_diagnostics"},
+        {"kind": "skill_script", "path": "scripts/validate_plan_doc.py", "symbol": "_check_o_producer_dependency"}
+      ],
+      "negative_control": "tests/test_validate_plan_doc_producer_dependency.py::ProducerDependencyParityTest::test_flags_missing_direct_producer_edge_matching_runtime"
+    },
+    {
+      "id": "plan-phase.spec-closeout-plan-valid",
+      "skill": "plan-phase",
+      "quote": "Validate that the decision literal is in vocabulary",
+      "status": "enforced",
+      "enforcers": [
+        {"kind": "skill_script", "path": "scripts/validate_plan_doc.py", "symbol": "_check_i_spec_closeout_plan"}
+      ],
+      "negative_control": "tests/test_validate_plan_doc_spec_closeout.py::SpecCloseoutCheckTest::test_refuses_out_of_vocabulary_decision"
+    },
+    {
+      "id": "phase-roadmap-builder.phase-dag-acyclic",
+      "skill": "phase-roadmap-builder",
+      "quote": "an acyclic DAG are enforced too",
+      "harness_quotes": {
+        "claude": "The validator enforces: required headings, phase-heading aliases, alias uniqueness, DAG acyclicity"
+      },
+      "status": "enforced",
+      "enforcers": [
+        {"kind": "module", "module": "phase_loop_runtime.roadmap_lint", "symbol": "check_dag_acyclic"}
+      ],
+      "negative_control": "tests/test_phase_loop_roadmap_validate.py::RoadmapLintModuleTest::test_lint_detects_dependency_cycle"
+    },
+    {
+      "id": "plan-phase.owned-files-complete",
+      "skill": "plan-phase",
+      "quote": "Owned files MUST enumerate the COMPLETE set the executor will touch",
+      "status": "unenforced",
+      "unenforced_reason": "gap",
+      "tracking": "agent-harness#1355"
+    },
+    {
+      "id": "plan-phase.skip-unneeded-reconnaissance",
+      "skill": "plan-phase",
+      "quote": "Skip reconnaissance you do not need",
+      "harness_quotes": {
+        "claude": "Skip this reconnaissance when the context is already in session."
+      },
+      "status": "unenforced",
+      "unenforced_reason": "judgment"
+    }
+  ]
+}

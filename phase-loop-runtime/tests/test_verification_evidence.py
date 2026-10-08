@@ -1545,9 +1545,9 @@ class VerificationEvidenceHardening243Test(unittest.TestCase):
         # Non-secret command strings must survive redaction untouched.
         from phase_loop_runtime.redaction import apply_diagnostics_redaction
 
-        payload = {"ok": True, "code": "ok", "suite_command": [sys.executable, "-m", "pytest", "-q"]}
+        payload = {"ok": True, "code": "ok", "suite_command": ["/usr/bin/python3", "-m", "pytest", "-q"]}
         out = apply_diagnostics_redaction(payload)
-        self.assertEqual(out["suite_command"], [sys.executable, "-m", "pytest", "-q"])
+        self.assertEqual(out["suite_command"], ["/usr/bin/python3", "-m", "pytest", "-q"])
 
     def test_apply_diagnostics_redaction_does_not_clobber_pytest_dash_k_selector(self):
         # agent-harness#269 regression guard: the command-context flag-aware matcher's
@@ -1567,10 +1567,10 @@ class VerificationEvidenceHardening243Test(unittest.TestCase):
 
         list_payload = {
             "ok": True, "code": "ok",
-            "suite_command": [sys.executable, "-m", "pytest", "-k", keyword_expr],
+            "suite_command": ["/usr/bin/python3", "-m", "pytest", "-k", keyword_expr],
         }
         out = apply_diagnostics_redaction(dict(list_payload))
-        self.assertEqual(out["suite_command"], [sys.executable, "-m", "pytest", "-k", keyword_expr])
+        self.assertEqual(out["suite_command"], ["/usr/bin/python3", "-m", "pytest", "-k", keyword_expr])
 
     def test_apply_diagnostics_redaction_scrubs_nested_suite_command_at_any_depth(self):
         # The whole-summary walk must find a command-shaped sibling field even when it is
@@ -2115,7 +2115,7 @@ class VerificationEvidenceHardening243Test(unittest.TestCase):
 
         diagnostics = [
             {
-                "role": "command", "index": 0, "argv": [sys.executable, "-c", "x"],
+                "role": "command", "index": 0, "argv": ["/usr/bin/python3", "-c", "x"],
                 "exit_code": 1, "failure_kind": "nonzero_exit",
                 "raw_tail": "failed while validating token configuration; see docs\n",
                 "truncated": False, "diagnostic_status": "present",
@@ -2978,7 +2978,7 @@ class VerificationEvidenceHardening243Test(unittest.TestCase):
         self.assertEqual(
             _command_field_forbidden_kind(["tool", "--token", "AKIAIOSFODNN7EXAMPLEKEY"]), "secret_like_value"
         )
-        self.assertIsNone(_command_field_forbidden_kind([sys.executable, "-m", "pytest", "-q"]))
+        self.assertIsNone(_command_field_forbidden_kind(["/usr/bin/python3", "-m", "pytest", "-q"]))
 
     def test_prose_fields_stay_unredacted_by_command_context_flag_matcher_regression_guard(self):
         # agent-harness#269: the CRITICAL invariant this whole follow-up depends on -- the

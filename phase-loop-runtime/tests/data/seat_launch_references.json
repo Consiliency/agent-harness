@@ -577,6 +577,7 @@
   {"count": 2, "function": "_seat_output_metadata", "module": "panel_invoker", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "_seat_owner", "module": "panel_invoker", "primitive": "io.stat", "role": "host-io"},
   {"count": 1, "function": "_seat_transcripts", "module": "panel_invoker", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "_shell_wrapper_target", "module": "panel_invoker", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "_terminate_process_group", "module": "panel_invoker", "primitive": "subprocess.Popen", "role": "host-helper"},
   {"count": 1, "function": "_terminate_process_group_windows", "module": "panel_invoker", "primitive": "subprocess.Popen", "role": "host-helper"},
   {"count": 1, "function": "_wait_for_process_group_exit", "module": "panel_invoker", "primitive": "subprocess.Popen", "role": "host-helper"},
@@ -1041,5 +1042,9 @@
   {"count": 1, "function": "_read_seat_raw_text", "module": "panel_invoker", "primitive": "io.open", "role": "host-io"},
   {"count": 3, "function": "_SeatClaudeJournal._read_journal", "module": "panel_invoker", "primitive": "io.stat", "role": "host-io"},
   {"count": 1, "function": "_read_receipt_inventory", "module": "convergence/broker/live", "primitive": "io.read_bytes", "role": "host-io"},
-  {"count": 1, "function": "_read_json_nofollow", "module": "publishing", "primitive": "io.open", "role": "host-io"}
+  {"count": 1, "function": "_read_json_nofollow", "module": "publishing", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "_check_node_id", "module": "rule_enforcement", "primitive": "io.read_text", "role": "host-io"},
+  {"count": 1, "function": "_top_level_names", "module": "rule_enforcement", "primitive": "io.read_text", "role": "host-io"},
+  {"count": 1, "function": "check_registry", "module": "rule_enforcement", "primitive": "io.read_text", "role": "host-io"},
+  {"count": 1, "function": "load_registry", "module": "rule_enforcement", "primitive": "io.read_text", "role": "host-io"}
 ]

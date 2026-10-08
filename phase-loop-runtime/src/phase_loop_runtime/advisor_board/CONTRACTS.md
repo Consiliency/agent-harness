@@ -899,8 +899,10 @@ set `gemini_heartbeat.QUALIFIED_IMAGES`: 1.2.11 SHA256
 `ce6fdd9e7621ee9ac6eedaa337731ca1f235e412ff57cf9eabcd2aa23b3576ca`, 1.2.14 SHA256
 `0d0d3eba22daf29504dd290151c7ed9a4d33b0c6aa0acfc5da27bc3b01d2f029`, 1.2.15 SHA256
 `5f9c16b286895f8f7fdecd423883ca256a85077b8acf9a6bc1111761d34df164`, 1.2.16 SHA256
-`a759ce7c7a235d9b6c281a25ead97cbbf2e92314a3ffd224e2f9144f3fae7a86` or 1.2.17 SHA256
-`c54ef90651a8646ae67334d39212c81f5946feec373ad6aa335f9ef401662bc5`. Each member
+`a759ce7c7a235d9b6c281a25ead97cbbf2e92314a3ffd224e2f9144f3fae7a86`, 1.2.17 SHA256
+`c54ef90651a8646ae67334d39212c81f5946feec373ad6aa335f9ef401662bc5`, 1.3.0 SHA256
+`19be6af38f7beeaa0db415df9297e314ab3d33fdd6f853434d49f88819bc68e4` or 1.3.1 SHA256
+`ce1bdaed3201bb84f35d69d2773caec4f18af52af00e8c25f6cace07e4359615`. Each member
 carries its measured help digest and has its own qualification record; the
 evidence catalog and the runtime set must name exactly the same members.
 The running Python/kernel must support sealed memfds, pidfds and pidfd signaling;

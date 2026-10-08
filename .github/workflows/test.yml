@@ -596,7 +596,7 @@ jobs:
     # run the `wheel-smoke` job below instead.
     if: needs.elig.outputs.eligible != 'true' && github.event_name != 'pull_request'
     runs-on: ubuntu-latest
-    timeout-minutes: 100
+    timeout-minutes: 150  # agent-harness#1297: stopgap until the per-test seat fixture is shared; restore to 100 after
     steps:
       - uses: actions/checkout@v4
         with:

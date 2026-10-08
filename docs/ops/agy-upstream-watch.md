@@ -4,7 +4,12 @@ The watch proposes the newest stable upstream agy release as a release-qualified
 It runs `phase-loop agy-qualification watch` from a **host timer on a subscribed host**,
 because a qualification needs a real Gemini subscription. It does not run on a
 GitHub-hosted runner (which has no subscription), and it needs no self-hosted runner
-registration. The hosted nightly `qualified-agy-image` provenance check is unchanged.
+registration. The hosted nightly `qualified-agy-image` provenance check still runs, and
+since agent-harness#1333 (PR1) upstream membership is advisory there: a newest upstream
+release that is not yet a shipped member only prints a `::warning::`, because each host
+self-qualifies it on first use. The newest shipped member's vendor asset digest, URL and
+archive are still checked and still fail the job. The watch is how a new release becomes
+a shipped member.
 
 Nothing in this repository installs the timer. An operator installs it on one
 subscribed host, once.

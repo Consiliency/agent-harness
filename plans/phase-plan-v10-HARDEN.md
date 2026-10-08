@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: HARDEN
 roadmap: specs/phase-plans-v10.md
-roadmap_sha256: 59982ada79f91fa771e62010ebb4adad5e07c900f75ef4fec4ff1d6ce5a626ef
+roadmap_sha256: c30d1f73fe4645d534dff597fcdead0697e269ee460077ab9ad8ab46b16a34ed
 automation:
   suite_command:
     - bash
@@ -315,7 +315,7 @@ SL-6 — Docs sweep, evidence reducer, canonical completion seal, and downstream
     `phase-loop-runtime/tests/`). A separate appended lifecycle event records their
     exact first-parent old blobs and merged new blobs as
     `historical_frozen_dispositions.v1`. SL-5 admits only those three transitions at
-    merge `9f0a65bb534a1fb4b946c8749546b842880cde0e`, after proving the Git objects,
+    the agent-harness#1292 historical integration recorded there, after proving the Git objects,
     ancestry, and continuity with the previously accepted blobs. This exception
     does not expand or rewrite the spent agent-harness#1292 repair authorization:
     `test_advisor_board_backing_homebrew.py` remains covered by its existing repair

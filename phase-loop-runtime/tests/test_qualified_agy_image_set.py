@@ -28,6 +28,8 @@ AGY_1215 = "5f9c16b286895f8f7fdecd423883ca256a85077b8acf9a6bc1111761d34df164"
 HELP_1215 = "8fcf40227fe84704f7f8155b3b5ebcee79dfdc5208fde6e8b07569c24425f976"
 AGY_1216 = "a759ce7c7a235d9b6c281a25ead97cbbf2e92314a3ffd224e2f9144f3fae7a86"
 AGY_1217 = "c54ef90651a8646ae67334d39212c81f5946feec373ad6aa335f9ef401662bc5"
+AGY_130 = "19be6af38f7beeaa0db415df9297e314ab3d33fdd6f853434d49f88819bc68e4"
+AGY_131 = "ce1bdaed3201bb84f35d69d2773caec4f18af52af00e8c25f6cace07e4359615"
 
 needs_repo = pytest.mark.skipif(
     not SCRIPT.is_file() or not CATALOG.is_file(),
@@ -39,7 +41,8 @@ def test_the_qualified_image_set_is_exactly_the_reviewed_members():
     """Golden: widening or narrowing the admitted set is a reviewed change to this test."""
     assert gh.QUALIFIED_IMAGES == {AGY_1211: HELP_1211_1212, AGY_1212: HELP_1211_1212,
                                     AGY_1214: HELP_1211_1212, AGY_1215: HELP_1215,
-                                    AGY_1216: HELP_1215, AGY_1217: HELP_1215}
+                                    AGY_1216: HELP_1215, AGY_1217: HELP_1215,
+                                    AGY_130: HELP_1215, AGY_131: HELP_1215}
 
 
 @pytest.fixture
@@ -54,7 +57,7 @@ def verifier():
 def test_every_runtime_member_has_its_own_catalogued_record(verifier):
     records = verifier.validate_records(verify_sources=False)
     assert {(r["image_sha256"], r["help_sha256"]) for r in records} == set(gh.QUALIFIED_IMAGES.items())
-    assert sorted(r["release_version"] for r in records) == ["1.2.11", "1.2.12", "1.2.14", "1.2.15", "1.2.16", "1.2.17"]
+    assert sorted(r["release_version"] for r in records) == ["1.2.11", "1.2.12", "1.2.14", "1.2.15", "1.2.16", "1.2.17", "1.3.0", "1.3.1"]
 
 
 @needs_repo
