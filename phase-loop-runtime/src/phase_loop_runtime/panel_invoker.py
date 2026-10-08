@@ -271,12 +271,15 @@ def _trusted_host_path(path) -> str:
 
 def _seat_bind_source(path, *, output=False) -> str:
     path = _trusted_host_path(path)
-    directory = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    # O_PATH needs only search permission, so a bind source below a search-only
+    # ancestor (a team host's root-owned 0711 workspace dirs) is reachable; with
+    # O_DIRECTORY, O_NOFOLLOW still refuses a link component (agent-harness#1317).
+    walk = getattr(os, "O_PATH", os.O_RDONLY) | os.O_DIRECTORY | os.O_NOFOLLOW
+    directory = os.open("/", walk)
     try:
         parts = Path(path).parts[1:]
         for part in parts[:-1]:
-            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW,
-                            dir_fd=directory)
+            child = os.open(part, walk, dir_fd=directory)
             os.close(directory)
             directory = child
         info = os.stat(parts[-1], dir_fd=directory, follow_symlinks=False)

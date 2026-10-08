@@ -49,6 +49,27 @@ def test_the_last_component_is_never_followed(tmp_path):
         pi._seat_bind_source(link / "work" / "leaf.txt", output=True)
 
 
+@pytest.mark.skipif(os.getuid() == 0, reason="root reads a search-only directory anyway")
+def test_a_search_only_ancestor_does_not_refuse_the_bind_source(tmp_path, monkeypatch):
+    # Team hosts make /mnt/workspace/{users,worktrees} root-owned 0711 (agent-harness#1317).
+    gate = tmp_path / "gate"
+    work = gate / "user" / "work"
+    work.mkdir(parents=True)
+    out = work / "out.txt"
+    out.write_text("x")
+    (work / "link").symlink_to(gate / "user", target_is_directory=True)
+    gate.chmod(0o111)
+    try:
+        assert pi._seat_bind_source(work) == str(work)
+        assert pi._seat_bind_source(out, output=True) == str(out)
+        # The walk itself still never follows a link component it meets.
+        monkeypatch.setattr(pi, "_trusted_host_path", lambda p: os.path.abspath(os.fspath(p)))
+        with pytest.raises(sandbox_egress.SeatIdentityUnverified, match="seat_bind_source_unavailable"):
+            pi._seat_bind_source(work / "link" / "work")
+    finally:
+        gate.chmod(0o755)
+
+
 def test_a_parent_link_another_account_owns_is_still_refused(tmp_path, monkeypatch):
     _real, link = _linked_workspace(tmp_path)
     operator = os.getuid()
@@ -79,3 +100,28 @@ def test_an_owned_seat_runs_below_a_linked_workspace(tmp_path):
             pi._terminate_process_group(process)
     assert process.returncode == 0, err
     assert pi._read_seat_text(output) == "BUNDLE-CONTENT\n"
+
+
+@pytest.mark.skipif(os.getuid() == 0, reason="root reads a search-only directory anyway")
+def test_the_seat_io_parent_is_readable_below_a_search_only_ancestor(tmp_path):
+    # Intermediate hops are O_PATH; the parent handed back must stay O_RDONLY because
+    # `_seat_transcripts` scandirs it (agent-harness#1317, advisor-board stack review).
+    from phase_loop_runtime.agy_canary_evidence import _seat_parent_descriptor
+
+    gate = tmp_path / "gate"
+    work = gate / "user" / "work"
+    work.mkdir(parents=True)
+    (work / "a.txt").write_text("x")
+    gate.chmod(0o111)
+    root = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        directory, name = _seat_parent_descriptor(root, str(work / "a.txt").lstrip("/"))
+        try:
+            assert name == "a.txt"
+            with os.scandir(directory) as entries:
+                assert [entry.name for entry in entries] == ["a.txt"]
+        finally:
+            os.close(directory)
+    finally:
+        os.close(root)
+        gate.chmod(0o755)
