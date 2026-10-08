@@ -219,6 +219,64 @@ def test_a_refusal_with_its_own_typed_code_passes_through(world, monkeypatch, co
     assert pi._exception_failure(caught.value) == code
 
 
+def _quiescence_or_sandbox_refusal(kind):
+    from phase_loop_runtime import seat_jail
+
+    if kind == "gemini_quiescence":
+        return gh.GeminiQuiescenceError("synthetic: agy process tree still alive")
+    if kind == "provider_group_quiescence":
+        return pi.ProviderProcessGroupQuiescenceError("synthetic: provider group not proven absent")
+    return seat_jail.SeatSandboxRefused(seat_jail.refused("namespace"), "synthetic jail refusal")
+
+
+@pytest.mark.parametrize("kind", ["gemini_quiescence", "provider_group_quiescence", "seat_sandbox_refused"])
+def test_a_quiescence_or_sandbox_refusal_in_lookup_keeps_its_type(world, monkeypatch, kind):
+    """agent-harness#1350 president follow-up. The help measurement can end in a quiescence
+    failure or a jail refusal; each must reach its own handler (the leg's quiescence path,
+    the sandbox notice), never be relabelled ``agy_image_unqualified``. Nothing is admitted
+    and no descriptor leaks.
+
+    Mutation: dropping the class from the re-raise in ``_locally_qualified``.
+    """
+    _seed(world)
+    raised = _quiescence_or_sandbox_refusal(kind)
+    real_lookup = q.lookup
+
+    def refuse(env, data, path, **kwargs):
+        image = gh.VerifiedImage.from_bytes(data, path)
+        image.close()  # lookup's own cleanup before it propagates
+        raise raised
+
+    monkeypatch.setattr(q, "lookup", refuse)
+    before = _open_fds()
+    with pytest.raises(type(raised)) as caught:
+        agy_integrity.admit_for_seat(str(world.agy), world.env)
+    assert caught.value is raised and type(caught.value) is type(raised)
+    assert not isinstance(caught.value, agy_integrity.AgyImageUnqualified)
+    assert _open_fds() == before
+    monkeypatch.setattr(q, "lookup", real_lookup)
+    _admits(world)  # the seeded record still admits once the fault is gone
+
+
+def test_the_quiescence_subclass_does_not_shield_a_seal_failure(world, monkeypatch):
+    """``ProviderProcessGroupQuiescenceError`` subclasses ``AgyCanaryEvidenceError``; the base
+    class (a real memfd seal failure) is still the typed refusal.
+
+    Mutation: re-raising ``AgyCanaryEvidenceError`` instead of only the subclass.
+    """
+    from phase_loop_runtime.agy_canary_evidence import AgyCanaryEvidenceError
+
+    assert issubclass(pi.ProviderProcessGroupQuiescenceError, AgyCanaryEvidenceError)
+
+    def refuse(*_args, **_kwargs):
+        raise AgyCanaryEvidenceError("synthetic memfd seal failure")
+
+    monkeypatch.setattr(q, "lookup", refuse)
+    with pytest.raises(agy_integrity.AgyImageUnqualified, match="^agy_image_unqualified$") as caught:
+        agy_integrity.admit_for_seat(str(world.agy), world.env)
+    assert type(caught.value.__cause__) is AgyCanaryEvidenceError
+
+
 def test_the_refusal_notice_names_the_real_remedies():
     """agent-harness#1350 board: the fix is first use or the opt-out, never a downgrade."""
     from phase_loop_runtime import seat_jail
