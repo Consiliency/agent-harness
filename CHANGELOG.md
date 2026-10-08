@@ -44,6 +44,13 @@ Review seats, the president and executor review share a launch owner with privat
   Python 3.10 as well. Before, such an expiry did not parse there, so the brokered Gemini seat
   was refused as near expiry (`gemini_credential_near_expiry`) and did not start.
 
+### CI: the Gate A clean-room job gets a 150-minute cap as a stopgap (agent-harness#1297; PR agent-harness#1326)
+
+- The `clean-room (standalone-from-wheel, Gate A)` job's `timeout-minutes` goes from 100
+  to 150. Since agent-harness#1282, a per-test seat namespace fixture has stretched the job
+  to 85 to 100+ minutes, so it was cancelled at the cap on main. No other job changes.
+  The cap goes back to 100 once agent-harness#1297 makes the fixture shared or cheaper.
+
 ### FABPUB: a failed current-head publication can be recovered once after an attested-not-landed partition rotation (agent-harness#1296; PR agent-harness#1298)
 
 - After a publication fails with an ambiguous outcome, its transaction is past
