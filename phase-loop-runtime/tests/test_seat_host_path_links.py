@@ -100,3 +100,28 @@ def test_an_owned_seat_runs_below_a_linked_workspace(tmp_path):
             pi._terminate_process_group(process)
     assert process.returncode == 0, err
     assert pi._read_seat_text(output) == "BUNDLE-CONTENT\n"
+
+
+@pytest.mark.skipif(os.getuid() == 0, reason="root reads a search-only directory anyway")
+def test_the_seat_io_parent_is_readable_below_a_search_only_ancestor(tmp_path):
+    # Intermediate hops are O_PATH; the parent handed back must stay O_RDONLY because
+    # `_seat_transcripts` scandirs it (agent-harness#1317, advisor-board stack review).
+    from phase_loop_runtime.agy_canary_evidence import _seat_parent_descriptor
+
+    gate = tmp_path / "gate"
+    work = gate / "user" / "work"
+    work.mkdir(parents=True)
+    (work / "a.txt").write_text("x")
+    gate.chmod(0o111)
+    root = os.open("/", os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        directory, name = _seat_parent_descriptor(root, str(work / "a.txt").lstrip("/"))
+        try:
+            assert name == "a.txt"
+            with os.scandir(directory) as entries:
+                assert [entry.name for entry in entries] == ["a.txt"]
+        finally:
+            os.close(directory)
+    finally:
+        os.close(root)
+        gate.chmod(0o755)
