@@ -683,6 +683,7 @@
   {"count": 1, "function": "_snapshot_falsifier_dependencies", "module": "review_stage", "primitive": "io.stat", "role": "host-io"},
   {"count": 1, "function": "_snapshot_falsifier_dependencies", "module": "review_stage", "primitive": "subprocess.run", "role": "host-helper"},
   {"count": 1, "function": "_trusted_helper_path", "module": "review_stage", "primitive": "io.stat", "role": "host-io"},
+  {"count": 1, "function": "falsifier_distribution_available", "module": "review_stage", "primitive": "subprocess.run", "role": "host-helper"},
   {"count": 3, "function": "host_git", "module": "review_stage", "primitive": "subprocess.run", "role": "host-helper"},
   {"count": 1, "function": "remove_review_stage", "module": "review_stage", "primitive": "io.lstat", "role": "host-io"},
   {"count": 4, "function": "remove_review_stage", "module": "review_stage", "primitive": "io.open", "role": "host-io"},
