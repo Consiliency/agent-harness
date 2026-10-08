@@ -16,6 +16,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from .phase_loop_test_utils import make_repo
 
 BUNDLE = Path(__file__).resolve().parents[1] / "src" / "phase_loop_runtime" / "skills_bundle"
@@ -194,9 +196,9 @@ def test_board_f001_two_lanes_writing_migrations_get_one_consolidation_warning()
     findings = V._check_r_owned_companions(lanes, {}, ["supabase/migrations/20260501000000_init.sql"])
     assert not any("own the glob" in f for f in findings), findings
     assert findings == [
-        "(R) WARN: SL-1, SL-2 each write new migrations under `supabase/migrations/`; the generator "
-        "picks the timestamps and per-lane globs there overlap under the lane IR — move migration "
-        "authoring into one lane (or a preamble lane) that owns `supabase/migrations/*_*.sql`"
+        "(R) WARN: SL-1, SL-2 each write migrations under `supabase/migrations/`; the generator "
+        "picks new timestamps and per-lane globs there overlap under the lane IR — move migration "
+        "work (new and edited) into one lane (or a preamble lane) that owns `supabase/migrations/*_*.sql`"
     ]
     assert not _patterns_overlap_any(("supabase/migrations/*_*.sql",), ())
 
@@ -230,3 +232,26 @@ def test_board_f005_a_bracketed_route_is_a_concrete_path():
     findings = _check(["app/[id]/page.tsx"], tracked=tracked, body="")
     assert len(findings) == 1 and "test file `app/[id]/page.test.tsx`" in findings[0], findings
     assert _check(["app/[id]/page.tsx", "app/[id]/page.test.tsx"], tracked=tracked, body="") == []
+
+
+# --- board round 2 (agent-harness#1322) ---------------------------------------------
+
+
+@pytest.mark.parametrize("module, test", [
+    ("src/pkg/billing.py", "tests/test_billing.py"),
+    ("lib/foo.js", "test/foo.test.js"),
+])
+def test_board_f007_src_layout_module_still_warns_on_its_top_level_test(module, test):
+    tracked = [module, test, "tests/test_other.py"]
+    findings = _check([module, "tests/test_other.py"], tracked=tracked, body="")
+    assert [f for f in findings if f"test file `{test}`" in f], findings
+    assert _check([module, test, "tests/test_other.py"], tracked=tracked, body="") == []
+
+
+def test_board_r2_a_lane_editing_a_tracked_migration_joins_the_consolidation():
+    lanes = {
+        "SL-1": {"owned_globs": ["supabase/migrations/20260601000000_add_a.sql"]},
+        "SL-2": {"owned_globs": ["supabase/migrations/20260501000000_init.sql"]},
+    }
+    findings = V._check_r_owned_companions(lanes, {}, ["supabase/migrations/20260501000000_init.sql"])
+    assert len(findings) == 1 and findings[0].startswith("(R) WARN: SL-1, SL-2 each write migrations"), findings

@@ -1258,13 +1258,13 @@ def _r_test_names(stem: str) -> Set[str]:
 
 def _r_closest(primary: str, candidates: List[str]) -> List[str]:
     """Candidates sharing the longest leading directory run with `primary`, so a
-    common stem (`utils`) does not drag in every same-named test in a monorepo. A
-    candidate sharing no directory counts only for a repo-root primary, and only from
-    the root or a top-level test dir."""
+    common stem (`utils`) does not drag in every same-named test in a monorepo. When
+    none shares a directory, only candidates in a top-level test dir count (the
+    `src/pkg/m.py` -> `tests/test_m.py` layout), plus root-level ones for a root module."""
     parts = primary.split("/")[:-1]
+    top_level = {"test", "tests", "__tests__"}
     if not parts:
-        candidates = [c for c in candidates
-                      if "/" not in c or c.split("/", 1)[0] in {"test", "tests", "__tests__"}]
+        candidates = [c for c in candidates if "/" not in c or c.split("/", 1)[0] in top_level]
     if not candidates:
         return []
 
@@ -1278,7 +1278,7 @@ def _r_closest(primary: str, candidates: List[str]) -> List[str]:
 
     best = max(shared(c) for c in candidates)
     if parts and best == 0:
-        return []
+        return sorted(c for c in candidates if c.split("/", 1)[0] in top_level)
     return sorted(c for c in candidates if shared(c) == best)
 
 
@@ -1307,21 +1307,27 @@ def _check_r_owned_companions(
     warned: Set[str] = set()
     # Lanes writing NEW migrations per migrations dir. Per-lane globs there share a
     # literal prefix, which the lane IR refuses as overlapping_write_ownership.
+    # A lane editing an already-tracked migration there would overlap that glob too.
     migration_writers: Dict[str, List[str]] = {}
+    migration_editors: Dict[str, List[str]] = {}
     for sl_id, parsed in lane_sections_parsed.items():
         for g in parsed["owned_globs"]:
             entry = g.strip().strip("`")
             md = re.match(r"^((?:.*/)?migrations)/", entry)
-            if md and entry not in tracked_set and (entry.endswith(".sql") or _r_is_glob(entry)):
-                lanes = migration_writers.setdefault(md.group(1), [])
-                if sl_id not in lanes:
-                    lanes.append(sl_id)
-    for directory, lanes in sorted(migration_writers.items()):
+            if not md or not (entry.endswith(".sql") or _r_is_glob(entry)):
+                continue
+            bucket = migration_editors if entry in tracked_set else migration_writers
+            lanes = bucket.setdefault(md.group(1), [])
+            if sl_id not in lanes:
+                lanes.append(sl_id)
+    for directory, writers in sorted(migration_writers.items()):
+        lanes = writers + [e for e in migration_editors.get(directory, []) if e not in writers]
+        migration_writers[directory] = lanes
         if len(lanes) > 1:
             out.append(
-                f"(R) WARN: {', '.join(lanes)} each write new migrations under `{directory}/`; the "
-                "generator picks the timestamps and per-lane globs there overlap under the lane IR "
-                f"— move migration authoring into one lane (or a preamble lane) that owns `{directory}/*_*.sql`"
+                f"(R) WARN: {', '.join(lanes)} each write migrations under `{directory}/`; the "
+                "generator picks new timestamps and per-lane globs there overlap under the lane IR "
+                f"— move migration work (new and edited) into one lane (or a preamble lane) that owns `{directory}/*_*.sql`"
             )
 
     def warn(sl_id: str, primary: str, companion: str, kind: str) -> None:
