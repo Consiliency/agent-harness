@@ -1449,7 +1449,7 @@ def git_bound_review_input(
             "--no-textconv",
             "--no-renames",
             "--ignore-submodules=none",
-            "--diff-algorithm=myers",
+            "--diff-algorithm=minimal",
             "--no-indent-heuristic",
             "-O/dev/null",
             base_tree,
@@ -1466,7 +1466,7 @@ def git_bound_review_input(
             "--no-relative",
             "--no-renames",
             "--ignore-submodules=none",
-            "--diff-algorithm=myers",
+            "--diff-algorithm=minimal",
             "--no-indent-heuristic",
             "-O/dev/null",
             base_tree,
@@ -1483,7 +1483,7 @@ def git_bound_review_input(
             "--no-relative",
             "--no-renames",
             "--ignore-submodules=none",
-            "--diff-algorithm=myers",
+            "--diff-algorithm=minimal",
             "--no-indent-heuristic",
             "--unified=3",
             "--src-prefix=a/",
@@ -2307,17 +2307,21 @@ def _historical_frozen_baseline(
     landing: str,
     verified: str,
     frozen_paths: set[str],
-) -> tuple[dict[str, str], str | None]:
+) -> tuple[dict[str, str], str | None, dict[str, set[str]]]:
     """Apply the plan's bounded pre-chain historical dispositions in Git order."""
     row = manifest_plan_row(repo, verified, "HARDEN", required=False)
     if row is None:
-        return {path: blob(repo, reviewed, path)[0] for path in frozen_paths}, None
+        return (
+            {path: blob(repo, reviewed, path)[0] for path in frozen_paths},
+            None,
+            {},
+        )
     lifecycle = row.get("lifecycle", [])
     accepted = {path: blob(repo, reviewed, path)[0] for path in frozen_paths}
     if not isinstance(lifecycle, list):
         fail("HARDEN lifecycle is malformed")
     if not lifecycle:
-        return accepted, None
+        return accepted, None, {}
 
     _, plan_bytes = blob(repo, verified, "plans/phase-plan-v10-HARDEN.md")
     _, roadmap_bytes = blob(repo, verified, "specs/phase-plans-v10.md")
@@ -2337,7 +2341,7 @@ def _historical_frozen_baseline(
         ):
             matching_metadata.append(metadata)
     if not matching_metadata:
-        return accepted, None
+        return accepted, None, {}
     if len(matching_metadata) != 1:
         fail("HARDEN current historical authority is ambiguous")
     metadata = matching_metadata[0]
@@ -2666,7 +2670,7 @@ def _historical_frozen_baseline(
     if not isinstance(raw_repairs, list):
         fail("HARDEN sl0_repairs is malformed")
     assert last_merge is not None
-    repair_merges: list[str] = []
+    repair_paths_by_merge: dict[str, set[str]] = {}
     for entry in raw_repairs:
         if not isinstance(entry, dict) or entry.get("entry") != "landed":
             continue
@@ -2676,8 +2680,18 @@ def _historical_frozen_baseline(
         if repair_merge not in first_parent_order:
             fail("HARDEN repair merge is outside first-parent history")
         ancestor(repo, last_merge, repair_merge, "HARDEN repair merge order")
-        repair_merges.append(repair_merge)
-    repair_merge_set = set(repair_merges)
+        files = entry.get("files")
+        if not isinstance(files, list) or not files:
+            fail("HARDEN prospective repair files are malformed")
+        repair_paths = repair_paths_by_merge.setdefault(repair_merge, set())
+        for file in files:
+            if not isinstance(file, dict):
+                fail("HARDEN prospective repair file is malformed")
+            path = text(file.get("path"), "HARDEN prospective repair path")
+            canonical_relative_parts(path, "HARDEN prospective repair path")
+            if path not in frozen_paths or path in repair_paths:
+                fail("HARDEN prospective repair path inventory is invalid")
+            repair_paths.add(path)
     disposition_first_parent = _git_lines(
         repo,
         "rev-list",
@@ -2689,15 +2703,18 @@ def _historical_frozen_baseline(
     changed_disposition_merges = [
         commit_id
         for commit_id in disposition_first_parent
-        if commit_id not in repair_merge_set
-        if changed_paths(
-            repo,
-            commit_parents(repo, commit_id, "HARDEN frozen disposition merge")[0],
-            commit_id,
-        ) & frozen_paths
+        if (
+            changed_paths(
+                repo,
+                commit_parents(repo, commit_id, "HARDEN frozen disposition merge")[0],
+                commit_id,
+            )
+            & frozen_paths
+        ) - repair_paths_by_merge.get(commit_id, set())
     ]
 
     disposition_record = metadata.get("historical_frozen_dispositions")
+    disposition_paths_by_merge: dict[str, set[str]] = {}
     if disposition_record is not None:
         record = closed(
             disposition_record,
@@ -2762,8 +2779,14 @@ def _historical_frozen_baseline(
             by_path = {entry["path"]: entry for entry in merge_entries}
             if len(by_path) != len(merge_entries):
                 fail("HARDEN frozen disposition repeats a merge path")
-            if changed_paths(repo, parents[0], merge_commit) & frozen_paths != set(by_path):
+            frozen_delta = changed_paths(repo, parents[0], merge_commit) & frozen_paths
+            repair_paths = repair_paths_by_merge.get(merge_commit, set())
+            if not repair_paths <= frozen_delta:
+                fail("HARDEN repair paths escape the frozen merge delta")
+            disposition_paths = set(by_path)
+            if disposition_paths != frozen_delta - repair_paths:
                 fail("HARDEN frozen disposition path-set mismatch")
+            disposition_paths_by_merge[merge_commit] = disposition_paths
             for path, entry in by_path.items():
                 if accepted[path] != entry["old_blob"]:
                     fail("HARDEN frozen disposition chain is discontinuous")
@@ -2775,7 +2798,7 @@ def _historical_frozen_baseline(
             last_merge = merge_commit
     elif changed_disposition_merges:
         fail("HARDEN frozen disposition record is missing")
-    return accepted, last_merge
+    return accepted, last_merge, disposition_paths_by_merge
 
 
 def _repair_file(
@@ -2812,11 +2835,11 @@ def accepted_frozen_blobs(
 ) -> dict[str, str]:
     """Resolve historical dispositions and append-only SL-0 repair chains."""
     if phase_alias == "HARDEN":
-        accepted, historical_tail = _historical_frozen_baseline(
+        accepted, historical_tail, disposition_paths_by_merge = _historical_frozen_baseline(
             repo, reviewed, landing, verified, frozen_paths
         )
     else:
-        accepted, historical_tail = {}, None
+        accepted, historical_tail, disposition_paths_by_merge = {}, None, {}
     row = manifest_plan_row(repo, verified, phase_alias, required=False)
     repairs = [] if row is None else row.get("sl0_repairs", [])
     if not isinstance(repairs, list):
@@ -2949,7 +2972,12 @@ def accepted_frozen_blobs(
         )
         ancestor(repo, authorization_intro, merge_commit, "HARDEN repair authorization timing")
         if phase_alias == "HARDEN":
-            for boundary in (landing_entry["merge_first_parent"], merge_commit):
+            boundaries = (
+                (merge_commit,)
+                if disposition_paths_by_merge.get(merge_commit)
+                else (landing_entry["merge_first_parent"], merge_commit)
+            )
+            for boundary in boundaries:
                 _require_manifest_entry_at_revision(
                     repo,
                     boundary,
@@ -2963,7 +2991,7 @@ def accepted_frozen_blobs(
             )
             ancestor(repo, supplement_intro, merge_commit, "HARDEN repair supplement timing")
             if phase_alias == "HARDEN":
-                for boundary in (landing_entry["merge_first_parent"], merge_commit):
+                for boundary in boundaries:
                     _require_manifest_entry_at_revision(
                         repo,
                         boundary,
@@ -3038,7 +3066,11 @@ def accepted_frozen_blobs(
             if merged_paths & item_paths:
                 fail("HARDEN repair landings on one merge overlap paths")
             merged_paths.update(item_paths)
-        if changed_paths(repo, first_parent, merge_commit) & frozen_paths != merged_paths:
+        frozen_delta = changed_paths(repo, first_parent, merge_commit) & frozen_paths
+        disposition_paths = disposition_paths_by_merge.get(merge_commit, set())
+        if disposition_paths & merged_paths:
+            fail("HARDEN repair and disposition paths overlap")
+        if frozen_delta != disposition_paths | merged_paths:
             fail("HARDEN repair landing frozen path-set mismatch")
         for _authorization_id, item in merge_items:
             for path, file in item["files"].items():
@@ -5762,6 +5794,124 @@ def _self_shared_merge_repair_chain(
     return repo, reviewed, landing, _run(["git", "rev-parse", "HEAD"], repo), paths
 
 
+def _self_mixed_disposition_repair_chain(
+    root: Path,
+    mutation: str | None = None,
+) -> tuple[Path, str, str, str, tuple[str, ...]]:
+    """Construct one merge partitioned between dispositions and a repair."""
+    repo, reviewed, landing, _verified, _expected = (
+        _self_historical_baseline_chain(root)
+    )
+    repair_path = FROZEN_SL0_PATHS[0]
+    disposition_paths = FROZEN_SL0_PATHS[1:]
+    authorization_id = "agent-harness#self-test:mixed-disposition-repair"
+
+    def manifest() -> dict[str, Any]:
+        return strict_json_loads(
+            (repo / "plans/manifest.json").read_bytes(),
+            "self-test mixed disposition-repair manifest",
+        )
+
+    def write_manifest(value: dict[str, Any], subject: str) -> None:
+        (repo / "plans/manifest.json").write_bytes(canonical_bytes(value))
+        _run(["git", "add", "plans/manifest.json"], repo)
+        _run(["git", "commit", "-qm", subject], repo)
+
+    base_blobs = {
+        path: blob(repo, "HEAD", path)[0]
+        for path in FROZEN_SL0_PATHS
+    }
+    _run(["git", "checkout", "-qb", "mixed-disposition-repair"], repo)
+    for index, path in enumerate(FROZEN_SL0_PATHS):
+        (repo / path).write_text(f"mixed disposition-repair {index}\n")
+    _run(["git", "add", *FROZEN_SL0_PATHS], repo)
+    _run(["git", "commit", "-qm", "apply mixed dispositions and repair"], repo)
+    source_commit = _run(["git", "rev-parse", "HEAD"], repo)
+    value = manifest()
+    row = next(row for row in value["plans"] if row.get("phase_alias") == "HARDEN")
+    row["sl0_repairs"].append({
+        "authorization_id": authorization_id,
+        "entry": "authorization",
+        "issue": "Consiliency/agent-harness#self-test",
+        "decision": "authorize the repair partition of a mixed merge",
+        "frozen_by": "HARDEN verifier self-test",
+        "reason": "exercise one merge carrying dispositions and a repair",
+        "files": [{
+            "path": repair_path,
+            "base_blob": base_blobs[repair_path],
+            "nodes": ["MixedMerge::repair"],
+        }],
+        "landed": None,
+        "landed_note": "the mixed disposition-repair merge follows",
+    })
+    write_manifest(value, "authorize mixed disposition-repair merge")
+    _run(["git", "checkout", "-q", "historical-baseline"], repo)
+    _run(
+        [
+            "git", "merge", "--no-ff", "-qm",
+            "land mixed dispositions and repair",
+            "mixed-disposition-repair",
+        ],
+        repo,
+    )
+    merge_commit = _run(["git", "rev-parse", "HEAD"], repo)
+
+    value = manifest()
+    row = next(row for row in value["plans"] if row.get("phase_alias") == "HARDEN")
+    metadata = row["lifecycle"][0]["metadata"]
+    new_dispositions = [
+        {
+            "source": "Consiliency/agent-harness#9999",
+            "merge_commit": merge_commit,
+            "path": path,
+            "old_blob": base_blobs[path],
+            "new_blob": blob(repo, merge_commit, path)[0],
+        }
+        for path in disposition_paths
+    ]
+    if mutation == "overlapping-paths":
+        new_dispositions.append({
+            "source": "Consiliency/agent-harness#9999",
+            "merge_commit": merge_commit,
+            "path": repair_path,
+            "old_blob": base_blobs[repair_path],
+            "new_blob": blob(repo, merge_commit, repair_path)[0],
+        })
+    elif mutation == "uncovered-path":
+        new_dispositions.pop()
+    metadata["historical_frozen_dispositions"]["entries"].extend(
+        new_dispositions
+    )
+    landing_merge = source_commit if mutation == "wrong-merge" else merge_commit
+    landing_parent = commit_parents(
+        repo,
+        landing_merge,
+        "self-test mixed disposition-repair landing",
+    )[0]
+    row["sl0_repairs"].append({
+        "authorization_id": authorization_id,
+        "entry": "landed",
+        "issue": "Consiliency/agent-harness#self-test",
+        "merge_commit": landing_merge,
+        "merge_first_parent": landing_parent,
+        "files": [{
+            "path": repair_path,
+            "nodes": ["MixedMerge::repair"],
+            "old_blob": base_blobs[repair_path],
+            "new_blob": blob(repo, merge_commit, repair_path)[0],
+        }],
+        "note": "record the repair partition of the mixed merge",
+    })
+    write_manifest(value, "record mixed disposition-repair landing")
+    return (
+        repo,
+        reviewed,
+        landing,
+        _run(["git", "rev-parse", "HEAD"], repo),
+        tuple(FROZEN_SL0_PATHS),
+    )
+
+
 def _self_historical_baseline_chain(
     root: Path,
     mutation: str | None = None,
@@ -6929,6 +7079,36 @@ def self_test() -> None:
             integration_root,
             intervening_first_parent=True,
         )
+        recorded_review_diffs: list[tuple[str, ...]] = []
+        original_git_authority_bytes = git_authority_bytes
+
+        def record_review_diff(
+            git_dir: Path,
+            *args: str,
+        ) -> bytes:
+            if args and args[0] in {"diff", "diff-tree"}:
+                recorded_review_diffs.append(args)
+            return original_git_authority_bytes(git_dir, *args)
+
+        globals()["git_authority_bytes"] = record_review_diff
+        try:
+            git_bound_review_input(
+                integration_repo,
+                integration_refs["sl0_base"][0],
+                integration_refs["sl0_base"][1],
+                integration_refs["candidate"][0],
+                integration_refs["candidate"][1],
+                "bundle",
+            )
+        finally:
+            globals()["git_authority_bytes"] = original_git_authority_bytes
+        if len(recorded_review_diffs) != 3 or any(
+            "--diff-algorithm=minimal" not in args
+            for args in recorded_review_diffs
+        ):
+            raise AssertionError(
+                "bound review input did not pin the compact deterministic diff algorithm"
+            )
         first_parent_commits = _git_lines(
             integration_repo,
             "rev-list",
@@ -7030,31 +7210,26 @@ def self_test() -> None:
             sl4_repo,
         )
         _run(["git", "commit", "-qm", "merge only the SL-4 blob"], sl4_repo)
-        mixed_boundary = _run(["git", "rev-parse", "HEAD"], sl4_repo)
         (sl4_repo / sl5_path).write_text("VALUE = 12\n", encoding="utf-8")
         _run(["git", "add", sl5_path], sl4_repo)
         _run(["git", "commit", "-qm", "SL-5 after mixed source"], sl4_repo)
         mixed_head = _run(["git", "rev-parse", "HEAD"], sl4_repo)
-        mixed_base, _ = candidate_contribution_paths(
-            sl4_repo,
-            sl0_landing,
-            mixed_head,
-            sl5_production_paths(sl4_repo, mixed_head),
+        mixed_revision = integrated_candidate_revision(
+            sl4_repo, sl4_landing, mixed_head, "mixed-source-SL-4-landing"
         )
-        if mixed_base != mixed_boundary:
-            raise AssertionError("mixed-source fixture has the wrong contribution base")
+        mixed_review_base, _ = canonical_candidate_fork(
+            sl4_repo, mixed_head, mixed_revision
+        )
         direct_rejected(
             "mixed-source-SL-4-landing",
             lambda: validate_sl4_boundary(
                 sl4_repo,
                 sl0_landing,
-                mixed_base,
-                integrated_candidate_revision(
-                    sl4_repo, sl4_landing, mixed_head, "mixed-source-SL-4-landing"
-                ),
+                mixed_review_base,
+                mixed_revision,
                 candidate=mixed_head,
             ),
-            "derived review base differs from the canonical candidate fork",
+            "frozen SL-4 test changed after its reviewed landing",
         )
 
         _run(["git", "checkout", "-qb", "missing-sl4-lane", sl4_landing], sl4_repo)
@@ -7125,27 +7300,25 @@ def self_test() -> None:
         _run(["git", "add", decoy_path], sl4_repo)
         _run(["git", "commit", "-qm", "decoy review suffix"], sl4_repo)
         ownership_head = _run(["git", "rev-parse", "HEAD"], sl4_repo)
-        ownership_base, _ = candidate_contribution_paths(
+        ownership_revision = integrated_candidate_revision(
             sl4_repo,
-            sl0_landing,
+            sl4_landing,
             ownership_head,
-            lane_owned_paths_since(sl4_repo, sl0_landing, ownership_head, "SL-5"),
+            "SL-5-ownership-rewrite-hides-production",
+        )
+        ownership_review_base, _ = canonical_candidate_fork(
+            sl4_repo, ownership_head, ownership_revision
         )
         direct_rejected(
             "SL-5-ownership-rewrite-hides-production",
             lambda: validate_sl4_boundary(
                 sl4_repo,
                 sl0_landing,
-                ownership_base,
-                integrated_candidate_revision(
-                    sl4_repo,
-                    sl4_landing,
-                    ownership_head,
-                    "SL-5-ownership-rewrite-hides-production",
-                ),
+                ownership_review_base,
+                ownership_revision,
                 candidate=ownership_head,
             ),
-            "derived review base differs from the canonical candidate fork",
+            "candidate changed paths escape HARDEN SL-5 ownership",
         )
 
         _run(
@@ -7219,7 +7392,6 @@ def self_test() -> None:
         )
         _run(["git", "add", str(plan_path.relative_to(sl4_repo))], sl4_repo)
         _run(["git", "commit", "-qm", "merge side ownership rewrite"], sl4_repo)
-        history_merge = _run(["git", "rev-parse", "HEAD"], sl4_repo)
         decoy.write_text("VALUE = 2\n", encoding="utf-8")
         _run(["git", "add", decoy_path], sl4_repo)
         _run(["git", "commit", "-qm", "history fixture decoy suffix"], sl4_repo)
@@ -7241,26 +7413,25 @@ def self_test() -> None:
         )
         if history_sl5 != {sl5_path, decoy_path}:
             raise AssertionError("merged ownership history lost a declared path")
-        history_base, _ = candidate_contribution_paths(
-            sl4_repo, history_landing, history_head, history_sl5
+        history_revision = integrated_candidate_revision(
+            sl4_repo,
+            history_landing,
+            history_head,
+            "merged-ownership-rewrite-hides-production",
         )
-        if history_base != history_merge:
-            raise AssertionError("history simplification fixture has the wrong review base")
+        history_review_base, _ = canonical_candidate_fork(
+            sl4_repo, history_head, history_revision
+        )
         direct_rejected(
             "merged-ownership-rewrite-hides-production",
             lambda: validate_sl4_boundary(
                 sl4_repo,
                 history_landing,
-                history_base,
-                integrated_candidate_revision(
-                    sl4_repo,
-                    history_landing,
-                    history_head,
-                    "merged-ownership-rewrite-hides-production",
-                ),
+                history_review_base,
+                history_revision,
                 candidate=history_head,
             ),
-            "derived review base differs from the canonical candidate fork",
+            "reviewed SL-4 landing is missing",
         )
 
         _run(["git", "checkout", "-qb", "upstream-main", sl4_landing], sl4_repo)
@@ -7276,27 +7447,25 @@ def self_test() -> None:
         _run(["git", "add", sl5_path], sl4_repo)
         _run(["git", "commit", "-qm", "second SL-5 change"], sl4_repo)
         upstream_merge_head = _run(["git", "rev-parse", "HEAD"], sl4_repo)
-        upstream_merge_base, _ = candidate_contribution_paths(
+        upstream_revision = integrated_candidate_revision(
             sl4_repo,
-            sl0_landing,
+            sl4_landing,
             upstream_merge_head,
-            sl5_production_paths(sl4_repo, upstream_merge_head),
+            "upstream-merge-hides-earlier-SL-5",
+        )
+        upstream_review_base, _ = canonical_candidate_fork(
+            sl4_repo, upstream_merge_head, upstream_revision
         )
         direct_rejected(
             "upstream-merge-hides-earlier-SL-5",
             lambda: validate_sl4_boundary(
                 sl4_repo,
                 sl0_landing,
-                upstream_merge_base,
-                integrated_candidate_revision(
-                    sl4_repo,
-                    sl4_landing,
-                    upstream_merge_head,
-                    "upstream-merge-hides-earlier-SL-5",
-                ),
+                upstream_review_base,
+                upstream_revision,
                 candidate=upstream_merge_head,
             ),
-            "derived review base differs from the canonical candidate fork",
+            "candidate changed paths escape HARDEN SL-5 ownership",
         )
 
         _run(["git", "checkout", "-qb", "production-before-sl4", sl0_landing], sl4_repo)
@@ -7434,27 +7603,25 @@ def self_test() -> None:
         _run(["git", "add", sl5_path], sl4_repo)
         _run(["git", "commit", "-qm", "SL-5 after correction"], sl4_repo)
         between_sl4_head = _run(["git", "rev-parse", "HEAD"], sl4_repo)
-        between_sl4_base, _ = candidate_contribution_paths(
+        between_sl4_revision = integrated_candidate_revision(
             sl4_repo,
-            sl0_landing,
+            sl4_landing,
             between_sl4_head,
-            sl5_production_paths(sl4_repo, between_sl4_head),
+            "candidate-local-SL-4-correction-hides-production",
+        )
+        between_sl4_review_base, _ = canonical_candidate_fork(
+            sl4_repo, between_sl4_head, between_sl4_revision
         )
         direct_rejected(
             "candidate-local-SL-4-correction-hides-production",
             lambda: validate_sl4_boundary(
                 sl4_repo,
                 sl0_landing,
-                between_sl4_base,
-                integrated_candidate_revision(
-                    sl4_repo,
-                    sl4_landing,
-                    between_sl4_head,
-                    "candidate-local-SL-4-correction-hides-production",
-                ),
+                between_sl4_review_base,
+                between_sl4_revision,
                 candidate=between_sl4_head,
             ),
-            "derived review base differs from the canonical candidate fork",
+            "frozen SL-4 test changed after its reviewed landing",
         )
 
         _run(["git", "checkout", "-qb", "test-drift-before-correction", sl4_landing], sl4_repo)
@@ -7488,27 +7655,25 @@ def self_test() -> None:
         _run(["git", "add", sl5_path], sl4_repo)
         _run(["git", "commit", "-qm", "production after test correction"], sl4_repo)
         test_drift_head = _run(["git", "rev-parse", "HEAD"], sl4_repo)
-        test_drift_base, _ = candidate_contribution_paths(
+        test_drift_revision = integrated_candidate_revision(
             sl4_repo,
-            sl0_landing,
+            sl4_landing,
             test_drift_head,
-            lane_owned_paths_since(sl4_repo, sl0_landing, test_drift_head, "SL-5"),
+            "candidate-local-SL-4-correction-hides-test-drift",
+        )
+        test_drift_review_base, _ = canonical_candidate_fork(
+            sl4_repo, test_drift_head, test_drift_revision
         )
         direct_rejected(
             "candidate-local-SL-4-correction-hides-test-drift",
             lambda: validate_sl4_boundary(
                 sl4_repo,
                 sl0_landing,
-                test_drift_base,
-                integrated_candidate_revision(
-                    sl4_repo,
-                    sl4_landing,
-                    test_drift_head,
-                    "candidate-local-SL-4-correction-hides-test-drift",
-                ),
+                test_drift_review_base,
+                test_drift_revision,
                 candidate=test_drift_head,
             ),
-            "derived review base differs from the canonical candidate fork",
+            "reviewed SL-4 landing is missing",
         )
 
         _run(["git", "checkout", "-qb", "merged-test-drift", sl4_landing], sl4_repo)
@@ -7634,27 +7799,25 @@ def self_test() -> None:
         _run(["git", "add", sl5_path], sl4_repo)
         _run(["git", "commit", "-qm", "production after reclassified test"], sl4_repo)
         overlap_head = _run(["git", "rev-parse", "HEAD"], sl4_repo)
-        overlap_base, _ = candidate_contribution_paths(
+        overlap_revision = integrated_candidate_revision(
             sl4_repo,
-            sl0_landing,
+            sl4_landing,
             overlap_head,
-            lane_owned_paths_since(sl4_repo, sl0_landing, overlap_head, "SL-5"),
+            "SL-4-path-reclassified-as-SL-5",
+        )
+        overlap_review_base, _ = canonical_candidate_fork(
+            sl4_repo, overlap_head, overlap_revision
         )
         direct_rejected(
             "SL-4-path-reclassified-as-SL-5",
             lambda: validate_sl4_boundary(
                 sl4_repo,
                 sl0_landing,
-                overlap_base,
-                integrated_candidate_revision(
-                    sl4_repo,
-                    sl4_landing,
-                    overlap_head,
-                    "SL-4-path-reclassified-as-SL-5",
-                ),
+                overlap_review_base,
+                overlap_revision,
                 candidate=overlap_head,
             ),
-            "derived review base differs from the canonical candidate fork",
+            "HARDEN SL-4 and SL-5 ownership overlaps",
         )
 
         _run(["git", "checkout", "-qb", "reviewed-correction-main", sl4_landing], sl4_repo)
@@ -7766,24 +7929,89 @@ def self_test() -> None:
         _run(["git", "add", sl5_path], sl4_repo)
         _run(["git", "commit", "-qm", "later SL-5 production"], sl4_repo)
         drift_head = _run(["git", "rev-parse", "HEAD"], sl4_repo)
-        drift_base, _ = candidate_contribution_paths(
-            sl4_repo,
-            sl0_landing,
-            drift_head,
-            sl5_production_paths(sl4_repo, drift_head),
+        drift_revision = integrated_candidate_revision(
+            sl4_repo, sl4_landing, drift_head, "post-SL-4-test-drift"
+        )
+        drift_review_base, _ = canonical_candidate_fork(
+            sl4_repo, drift_head, drift_revision
         )
         direct_rejected(
             "post-SL-4-test-drift",
             lambda: validate_sl4_boundary(
                 sl4_repo,
                 sl0_landing,
-                drift_base,
-                integrated_candidate_revision(
-                    sl4_repo, sl4_landing, drift_head, "post-SL-4-test-drift"
-                ),
+                drift_review_base,
+                drift_revision,
                 candidate=drift_head,
             ),
-            "derived review base differs from the canonical candidate fork",
+            "frozen SL-4 test changed after its reviewed landing",
+        )
+
+        _run(["git", "checkout", "-qb", "candidate-history-escape", sl4_landing], sl4_repo)
+        history_escape_path = sl4_repo / "candidate-history-escape.txt"
+        history_escape_path.write_text("temporary candidate drift\n", encoding="utf-8")
+        _run(["git", "add", history_escape_path.name], sl4_repo)
+        _run(["git", "commit", "-qm", "add candidate-local unrelated path"], sl4_repo)
+        _run(["git", "rm", "-q", history_escape_path.name], sl4_repo)
+        _run(["git", "commit", "-qm", "restore candidate-local unrelated path"], sl4_repo)
+        (sl4_repo / sl5_path).write_text("VALUE = 49\n", encoding="utf-8")
+        _run(["git", "add", sl5_path], sl4_repo)
+        _run(["git", "commit", "-qm", "production after restored candidate drift"], sl4_repo)
+        history_escape_candidate = _run(["git", "rev-parse", "HEAD"], sl4_repo)
+        history_escape_revision = integrated_candidate_revision(
+            sl4_repo,
+            sl4_landing,
+            history_escape_candidate,
+            "candidate-history-escape",
+        )
+        history_escape_base, _ = canonical_candidate_fork(
+            sl4_repo, history_escape_candidate, history_escape_revision
+        )
+        direct_rejected(
+            "candidate-history-escape",
+            lambda: validate_sl4_boundary(
+                sl4_repo,
+                sl0_landing,
+                history_escape_base,
+                history_escape_revision,
+                candidate=history_escape_candidate,
+            ),
+            "candidate history changes paths outside HARDEN SL-5 ownership",
+        )
+
+        _run(["git", "checkout", "-qb", "old-production-source", sl0_landing], sl4_repo)
+        (sl4_repo / sl5_path).write_text("VALUE = 50\n", encoding="utf-8")
+        _run(["git", "add", sl5_path], sl4_repo)
+        _run(["git", "commit", "-qm", "production source before SL-4"], sl4_repo)
+        _run(["git", "checkout", "-qb", "old-production-candidate", sl4_landing], sl4_repo)
+        _run(
+            [
+                "git", "merge", "--no-ff", "-qm",
+                "merge production source that predates SL-4",
+                "old-production-source",
+            ],
+            sl4_repo,
+        )
+        old_production_candidate = _run(["git", "rev-parse", "HEAD"], sl4_repo)
+        old_production_revision = integrated_candidate_revision(
+            sl4_repo,
+            sl4_landing,
+            old_production_candidate,
+            "old-production-source",
+        )
+        old_production_base, _ = canonical_candidate_fork(
+            sl4_repo, old_production_candidate, old_production_revision
+        )
+        direct_rejected(
+            "SL-5-source-predates-reviewed-SL-4",
+            lambda: validate_sl4_boundary(
+                sl4_repo,
+                sl0_landing,
+                old_production_base,
+                old_production_revision,
+                candidate=old_production_candidate,
+            ),
+            "SL-5 production source does not descend from the reviewed SL-4 landing",
         )
 
         input_collision_root = root / "input-nonce-collision"
@@ -8645,6 +8873,27 @@ def self_test() -> None:
                 paths,
             )
 
+        def exercise_mixed_disposition_repair(
+            name: str,
+            mutation: str | None = None,
+        ) -> tuple[dict[str, str], Path, tuple[str, ...]]:
+            mixed_root = root / name
+            mixed_root.mkdir()
+            repo, reviewed, landing, verified, paths = (
+                _self_mixed_disposition_repair_chain(mixed_root, mutation)
+            )
+            return (
+                accepted_frozen_blobs(
+                    repo,
+                    reviewed,
+                    landing,
+                    verified,
+                    set(FROZEN_SL0_PATHS),
+                ),
+                repo,
+                paths,
+            )
+
         historical_accepted, historical_expected = exercise_historical_baseline(
             "valid-historical-baseline"
         )
@@ -8709,6 +8958,26 @@ def self_test() -> None:
                 lambda shared_mutation=shared_mutation: exercise_shared_merge_repair(
                     "shared-merge-repair-" + shared_mutation,
                     shared_mutation,
+                ),
+            )
+        mixed_repair, mixed_repo, mixed_paths = exercise_mixed_disposition_repair(
+            "valid-mixed-disposition-repair-chain"
+        )
+        for path in mixed_paths:
+            if mixed_repair[path] != blob(mixed_repo, "HEAD", path)[0]:
+                raise AssertionError(
+                    "mixed disposition-repair chain did not reach verified Git"
+                )
+        for mixed_mutation in (
+            "overlapping-paths",
+            "uncovered-path",
+            "wrong-merge",
+        ):
+            direct_rejected(
+                "mixed-disposition-repair-" + mixed_mutation,
+                lambda mixed_mutation=mixed_mutation: exercise_mixed_disposition_repair(
+                    "mixed-disposition-repair-" + mixed_mutation,
+                    mixed_mutation,
                 ),
             )
         exercise_repair_chain(
