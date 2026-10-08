@@ -485,6 +485,12 @@ class PublishTransaction:
     def clear_active_pointer(self) -> None:
         self.store.clear_active(self.transaction_id)
 
+    def recovery_records(self) -> tuple[Path, ...]:
+        """Every recovery provenance file recorded for this transaction."""
+        if not self.store.root.exists():
+            return ()
+        return tuple(sorted(self.store.root.glob(f"{self.transaction_id}.recovery.*.json")))
+
     def record_recovery(self, record: dict) -> Path:
         """Write-once provenance for re-admitting this transaction (agent-harness#1296).
 
@@ -1682,7 +1688,12 @@ def publish_from_worktree(
             if candidate.transaction is None or candidate.state == PublishTransactionState.CONFLICTED:
                 raise RuntimeError("broker accepted publish without a recoverable transaction")
             transaction = candidate.transaction
-            while transaction.state != PublishTransactionState.TERMINAL_SEALED:
+            # agent-harness#1296: a recovered transaction keeps its checkpoint exactly as
+            # admitted; its outcome lives in the successor generation's evidence.
+            while (
+                transaction.state != PublishTransactionState.TERMINAL_SEALED
+                and not transaction.recovery_records()
+            ):
                 transaction.project(PublishTransactionState.ORDERED[PublishTransactionState.ORDERED.index(transaction.state) + 1])
     if not execution.accepted or execution.publish_result is None:
         return _blocked(execution.reason or execution.evidence.terminal_state, execution.evidence.evidence_reference)

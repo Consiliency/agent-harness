@@ -370,3 +370,67 @@ def test_failed_recovery_provenance_write_leaves_no_owner(tmp_path, monkeypatch)
     assert _jsonl(outcome.store_root / "evidence.jsonl") == []
     retry, calls = _publish_on_successor(None, outcome, p, p.request, adapter=adapter)
     assert not isinstance(retry, Exception) and retry.accepted is True and len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "change", [{"pr_body": "a different body"}, {"draft": False}, {"base": "develop"}]
+)
+def test_recovery_refuses_a_request_that_differs_from_the_frozen_transaction(tmp_path, monkeypatch, change):
+    """The attestation adjudicated the transaction as admitted; the provider request is
+    built from the retry's base/draft/pr_body, so they must equal the frozen values."""
+    import dataclasses
+
+    from phase_loop_runtime.convergence.broker.verbs import PublicationRecoveryRequired
+
+    fx, p, key = _failed_sealed_publish(tmp_path, monkeypatch)
+    outcome = _rotate(None, p, attestation=_attestation(p, dispositions={key: ATTESTED_NOT_LANDED}))
+    checkpoint = _checkpoint_bytes(p)
+    altered = dataclasses.replace(p.request, **change)
+    result, calls = _publish_on_successor(None, outcome, p, altered)
+    assert isinstance(result, PublicationRecoveryRequired), result
+    assert next(iter(change)) in str(result)
+    assert calls == []
+    assert _owner(outcome.store_root) is None
+    assert _jsonl(outcome.store_root / "admissions.jsonl") == []
+    assert _checkpoint_bytes(p) == checkpoint, "a refused recovery wrote provenance"
+
+
+def test_sdk_recovery_after_an_adapter_exception_keeps_the_checkpoint(tmp_path, monkeypatch):
+    """publish_from_worktree's post-accept projection must not seal a recovered checkpoint."""
+    from phase_loop_runtime.publishing import PublishAuthorityPreimages, publish_from_worktree
+    from test_fabpub_shared_epoch import _authority_preimage
+
+    fx = _bootstrap(tmp_path, monkeypatch)
+    p = fx.alpha
+    _git(p.repo, "checkout", "-q", "-b", "feat/sdk-exc")
+    _stage(p.repo, "sdkexc.py", "def sdkexc():\n    return 1\n")
+    root = tmp_path / "coordinator" / "sdk-exc"
+    authority = PublishAuthorityPreimages(root, _authority_preimage(p.identity, "feat/sdk-exc"))
+
+    def publish(adapter):
+        routed = _routed_service(p, adapter)
+        try:
+            return publish_from_worktree(
+                p.repo, ("sdkexc.py",), broker_client=routed.service,
+                publish_authority=authority, checkpoint_root=root,
+            )
+        finally:
+            _release_router(routed)
+
+    _release_all(p)
+    failed = publish(_CountingAdapter(explode=True))
+    assert failed["status"] == "publication_blocked", failed
+    store = next((root / "publish-transactions").iterdir())
+    [checkpoint_path] = [f for f in store.iterdir() if f.name.endswith(".json") and ".recovery." not in f.name and f.name != "active.json"]
+    assert json.loads(checkpoint_path.read_text())["state"] == "ADAPTER_STARTED"
+    before = checkpoint_path.read_bytes()
+    key = _jsonl(p.container / "evidence.jsonl")[-1]["idempotency_key"]
+    _rotate(None, p, attestation=_attestation(p, dispositions={key: ATTESTED_NOT_LANDED}))
+    adapter = _CountingAdapter()
+    published = publish(adapter)
+    assert published["status"] == "published", published
+    assert len(adapter.calls) == 1
+    assert checkpoint_path.read_bytes() == before, "the SDK wrapper projected the recovered checkpoint"
+    again = publish(adapter)
+    assert again["status"] == "published" and len(adapter.calls) == 1
+    assert checkpoint_path.read_bytes() == before

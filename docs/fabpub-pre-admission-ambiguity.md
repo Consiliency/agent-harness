@@ -243,8 +243,10 @@ than in `attested_by`. The dispositions:
   plan/verification digests. It does so only when the successor's
   authenticated receipt disposes the key `attested_not_landed` **and** the
   sealed attestation's `transaction_id` (bound from the predecessor's
-  adapter-start owner) equals the transaction being admitted. The checkpoint is
-  never advanced, rewound or rewritten. Before any owner or admission is
+  adapter-start owner) equals the transaction being admitted. The retry's `base`,
+  `draft` and PR body must also equal the transaction's frozen values, because the
+  provider request is built from them. The checkpoint is never advanced, rewound or
+  rewritten, by the broker or by `publish_from_worktree`'s post-accept path. Before any owner or admission is
   written, the authorization is recorded once beside the checkpoint as
   `<transaction_id>.recovery.<generation>.json` (`PublishTransactionRecovery.v1`:
   rotation, attestation and inventory digests, predecessor owner nonce,

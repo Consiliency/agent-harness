@@ -17,8 +17,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   blocked it again. This blocked treesitter-chunker#480.
 - The successor generation now re-admits the transaction unchanged, once. This requires its
   authenticated receipt to dispose the key `attested_not_landed` and the sealed attestation's
-  `transaction_id` (bound from the predecessor's owner) to equal the transaction. The checkpoint
-  is not advanced or rewound; a write-once `<transaction_id>.recovery.<generation>.json` records
+  `transaction_id` (bound from the predecessor's owner) to equal the transaction, and the retry's
+  `base`, `draft` and PR body to equal the transaction's frozen values. The checkpoint is not
+  advanced or rewound, including by `publish_from_worktree`'s post-accept path; a write-once `<transaction_id>.recovery.<generation>.json` records
   the rotation, digests, predecessor owner and plan/proof bindings before any owner is written.
   Single use is enforced under the admissions lock (no evidence for the key in the generation),
   so a concurrent retry makes no second provider call. A replay makes no provider call, and the

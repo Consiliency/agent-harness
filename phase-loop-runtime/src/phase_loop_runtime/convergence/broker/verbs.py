@@ -607,6 +607,17 @@ class BrokerService:
                 f"rotation {recovery['cutover_id']!r} adjudicated transaction "
                 f"{recovery['transaction_id']}, not this one"
             )
+        # The provider request is built from THIS call's base/draft/pr_body; the
+        # attestation adjudicated the transaction as frozen, so they must be its own.
+        frozen = {"base": request.base, "draft": request.draft, "pr_body": request.pr_body}
+        differing = sorted(
+            name for name, value in frozen.items() if getattr(transaction, name, None) != value
+        )
+        if differing:
+            raise refuse(
+                f"this request's {', '.join(differing)} differ from the transaction's frozen values; "
+                "a recovery re-publishes exactly what was admitted"
+            )
         return {
             **recovery,
             "recovered_transaction_state": transaction.state,
@@ -622,6 +633,9 @@ class BrokerService:
             "dependency_digest": envelope.dependency_digest,
             "verification_plan_digest": envelope.verification_plan_digest,
             "operation_identity": envelope.operation_identity,
+            "base": transaction.base,
+            "draft": transaction.draft,
+            "pr_body_sha256": hashlib.sha256(transaction.pr_body.encode("utf-8")).hexdigest(),
         }
 
     def _fresh_publish(self, request: BrokerRequest, key: str) -> BrokerExecutionResult:
