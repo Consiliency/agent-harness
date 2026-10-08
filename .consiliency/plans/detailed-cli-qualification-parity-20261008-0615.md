@@ -1,4 +1,4 @@
-# Detailed plan: per-host CLI qualification parity for every seat harness (r2)
+# Detailed plan: per-host CLI qualification parity for every seat harness (r3)
 
 ## Task
 Implement the three maintainer decisions of 2026-10-08:
@@ -9,9 +9,14 @@ Implement the three maintainer decisions of 2026-10-08:
 
 Out of scope:
 - **The seat sandbox/jail design itself.**
-- **The existing sandbox refusals that choose `sealed` today** (`SEALED_FALLBACK_CODES`). Removing that path is agent-harness#1244 PR-A1's job (the resolver plus the argv-level sealed guard), and this plan does not redo it. This plan only guarantees that **its own** refusals never reach `sealed`, on every path; see (a), "Never toolless".
+- **The existing sandbox refusals that choose `sealed` today** (`SEALED_FALLBACK_CODES`).
+  - **Open dependency: agent-harness#1288.** Removing that path is owned by agent-harness#1288, through agent-harness#1244 PR-A1 (the resolver plus the argv-level sealed guard), and this plan does not redo it.
+  - This plan only guarantees that **its own** refusals never reach `sealed`, on every path; see (a), "Never toolless".
+  - **Necessary, not sufficient.** A passing CLI admission is necessary for a tooled seat but not sufficient: the seat still needs a tooled route. So completing this plan closes neither agent-harness#1288 nor the standing never-sealed rule.
+  - No PR in this plan extends `SEALED_FALLBACK_CODES` or any sealed-producing branch, and a PR3 cell pins that.
 - **The president ladder.**
 - **Executor (non-seat) launches.** `launcher.py`'s `trusted_command` (around l.2696) and the `EXECUTOR_TRUSTED` role (`admitted_command`, PI:4939) are not seats. They keep release-only admission and are not CLI-qualified.
+- **Non-brokered launches** (an injected review-execution seam or no review authorization; the `not brokered` branch at PI:1987-1991) are outside CLI qualification, as executor launches are.
 
 **Size.** This plan exceeds the skill's bounded-plan threshold. It is one umbrella document with seven PRs, each with its own acceptance criteria and falsifier, because the PRs share one contract and one trust model.
 
@@ -73,7 +78,11 @@ A **qualified CLI version** is a key that passed every operation that applies, o
   - **Anything the resolver does not recognise** (a shell or pyenv wrapper, or an unknown shim) is refused with `seat_cli_qualification_unavailable` (degraded). A wrapper is never hashed in place of its payload.
 - **The launch runs the verified bytes.** The admitted bytes are what runs, as agy does today:
   - A single binary runs from a sealed memfd (`VerifiedImage`), bound with `--ro-bind-data` or executed from the fd.
-  - A script package runs from a private, read-only snapshot of the verified tree in the seat's stage. The snapshot is re-hashed after the copy, together with the verified interpreter image.
+  - A script package runs from a private, read-only snapshot of the verified tree in the seat's stage. The snapshot is re-hashed after the copy.
+  - **The interpreter never runs by path.** The adapter opens node once (`O_NOFOLLOW`) and hashes the opened fd's bytes into a sealed memfd. The launch executes that memfd, or binds it read-only at the interpreter path inside the owner or jail with `--ro-bind-data`, as the agy image is bound.
+    - The interpreter closure also includes any non-libc shared object the adapter resolves for it, such as a distro `libnode.so`. Each one is bound from its own verified memfd.
+    - The system loader and libc are outside the key, as they are for every native binary.
+    - So there is no time-of-check/time-of-use gap on node.
   - A self-update between admission and launch therefore cannot substitute bytes. A mismatch refuses with `seat_cli_unqualified`.
 - **`interpreter_identity`** (Q2) is the sha256 of the interpreter that the **launch** uses. That is the one resolved inside the owner's launch environment, which is not necessarily the qualifying shell's `PATH`. It is part of the **local** key only (see the r2 application note under the rulings).
 - **`help_digest`** is the sha256 of the adapter's option-surface probe. The probe's argv(s) cover every flag the seat's launch builder uses. Stdout and stderr are captured together.
@@ -109,11 +118,16 @@ A **qualified CLI version** is a key that passed every operation that applies, o
   - the board preflight, which is `_seat_launch_modes` and, after agent-harness#1244, the resolver **walk**;
   - `phase-loop cli-qualification run`.
 - **Spawn** (`_default_spawn`), `_seat_jailed_at_launch` and the agent-harness#1244 **derive** call `cli_qualification.lookup` only. Lookup is read-only and never executes operations.
+  - The spawn gate's eligibility is the **same predicate** as `_seat_route_for_spawn`'s at PI:11283-11290: `mode == "review"`, a review authorization, no injected seam, not a native claude under Claude Code, no `agy_capture` and no `research_seat`.
+  - In the preflight the gate sits after the native-fill (PI:1984) and non-brokered (PI:1987-1991) branches, and before the `route is None` branch.
 - **Qualification's own launches** carry a typed `qualification_candidate` token, bound to the key being qualified. The token lives in a context variable set only by the operations runner. Lookup returns it without consulting the store, and a nested `ensure_admitted` under the token raises.
+  - **The token crosses every thread hop.** The runner either launches on the calling thread or binds the token explicitly at each hop: `contextvars.copy_context().run(...)`, as the broker serve thread does (the `_SpawnCounter` note around PI:4068-4075), or an explicit argument.
+  - The hop that needs this is `invoke_panel`'s `ThreadPoolExecutor.submit` (PI:12177-12179), which does not copy the context. A lost token would make a candidate launch look like an ordinary spawn, which is a stale-pass shape.
+- **Lookup's own help probe** launches directly from the verified bytes inside the owned profile, **outside** `_default_spawn`, as agy's `_run_help` does. So a spawn performs exactly one lookup and the probe never re-enters the spawn gate.
 - **Seat deadlines.** First use happens in the preflight, before any seat deadline starts, so it never counts against the triggering board's seat deadlines. Different harnesses' first uses may run concurrently. Their locks are independent.
 
 **Refuse versus record.** In the recording-only release (Q1), only these outcomes **refuse**:
-- `failed` (an identity or isolation violation);
+- `failed` caused by an identity or isolation violation;
 - `store_unsafe`;
 - verified-bytes mismatch at launch;
 - `seat_cli_qualification_unavailable` (an unrecognised wrapper: there is no payload to vouch for);
@@ -121,7 +135,11 @@ A **qualified CLI version** is a key that passed every operation that applies, o
 
 Everything else launches and records its class:
 - `locally_qualified` / `release_qualified`;
-- `none`, for opt-out, a first use that ended transient, or an absent key on a path with no preflight.
+- `none`, for:
+  - opt-out;
+  - a first use that ended transient;
+  - a **transient-derived `failed`** (it launches with class `none` until it expires);
+  - an absent key on a path with no preflight.
 
 PR7 changes **counting** only. It never adds refusals.
 
@@ -298,6 +316,10 @@ Acceptance:
 - [ ] **No first use at spawn:** a spawn with no preflight record performs **no** operation and launches with class `none`.
 - [ ] **Never sealed:** for codex and grok, a seeded `failed`, `store_unsafe`, wrapper-unavailable or platform-unsupported outcome gives a preflight `MODE_DEGRADED` and a spawn DEGRADED result with a fix line. This holds with the host sandbox available and also when it is unavailable, so the existing sandbox refusal is in play. The result is never `MODE_SEALED`.
 - [ ] **Re-entrancy:** a qualification operation's launch never calls `ensure_admitted`.
+- [ ] **Candidate token across threads:** an operation launched through the real leg path (`invoke_panel` → its `ThreadPoolExecutor` → `_default_spawn`) reports `cli_admission_class=qualification_candidate` and runs the candidate's verified bytes.
+- [ ] **One lookup per spawn:** a spy on `cli_qualification.lookup` records exactly one call per spawn, and lookup's help probe never enters `_default_spawn`.
+- [ ] **Eligibility parity:** the spawn gate's eligibility equals `_seat_route_for_spawn`'s predicate (PI:11283-11290). A non-brokered launch is not gated.
+- [ ] **No sealed extension (M1):** `SEALED_FALLBACK_CODES` equals main's set, no `seat_cli_*` code is in it, and the sealed-producing branches of `_seat_launch_modes` are unchanged in number and condition. The cell compares against a frozen snapshot taken at PR3.
 - [ ] **Self-update:** swapping the binary after admission refuses `seat_cli_unqualified` at launch.
 - [ ] **Completeness:** the completeness test passes with claude and gemini pending.
 - [ ] **Omnigent guard:** `_route_omnigent_seat` stays unreachable from governed review.
@@ -305,6 +327,7 @@ Acceptance:
 Falsifiers:
 - Moving the gate after the `route is None` branch reddens the sealed cell.
 - Calling `ensure_admitted` from `_default_spawn` reddens the no-first-use cell.
+- Submitting the operation without `copy_context` reddens the candidate-token cell.
 
 **PR4: claude adapter.** Files:
 - `cli_qualification.py` (the claude adapter for the native binary and the npm tree; removed from pending)
@@ -400,6 +423,8 @@ These rulings are append-only. All five follow the recommendation, and no mainta
 - **Q2 applies to the local key.** The interpreter hash is in every host's local key. Shipped npm members do not bind it, because no publisher digest exists for a host's node build. On a consuming host the local pinned help probe, run under the launch interpreter, guards it.
 - **Q3 leaves npm members promotable.** It counts npm `dist.integrity` of the payload-bearing package as a verifiable upstream digest.
 
+**Ratified (2026-10-08).** The MAINTAINER RATIFIED the r2 Q2 application: the node hash is in the LOCAL key only, shipped npm members do not bind a node build, and a consuming host re-checks the help output under its own node.
+
 ## Changes
 The PR sections in (e) list every file. The new entities are:
 - `cli_qualification.py`: `QualificationKey`, `Adapter`, `ADAPTERS`, `PENDING_ADAPTERS`, `lookup`, `ensure_admitted`, `Store`, `export`, `release_record`
@@ -423,7 +448,9 @@ The PR sections in (e) list every file. The new entities are:
   - in PR5, an **amendment** to agy's "First-use self-qualification (agent-harness#1076)" section. Its "`failed` … until `agy-qualification clear`" rule becomes "identity/isolation `failed` until clear; a transient-derived `failed` expires after 24 h or on a key change", and the section points to the generic contract.
 - `docs/releases/outside-agent-release-handoff.md`: drop the upstream-pass criterion (PR1).
 - `docs/ops/agy-upstream-watch.md`: upstream membership is advisory (PR1).
-- `docs/ops/cli-qualification-promotion.md`: new runbook, covering release-record, pruning and which CLIs are worth promoting (PR6).
+- `docs/ops/cli-qualification-promotion.md`: a new runbook (PR6). It covers release-record, pruning and which CLIs are worth promoting. It also states what the shipped-npm interpreter guard proves:
+  - It **proves** that the help probe passes under this host's node.
+  - It does **not** prove that this is the exact node build the release lane used.
 - `CHANGELOG.md`: one entry per PR.
 
 ## Dependencies & order
@@ -433,7 +460,8 @@ The PR sections in (e) list every file. The new entities are:
 - PR6 needs PR5.
 - PR7 needs PR3 and PR4 to have shipped in one release that only records the class (ruled, Q1).
 - **No PR enables a refusal before its prerequisites exist.** The CLI with status and clear lands in PR2, before any notice names it. `run` lands with the first adapters in PR3. Pending harnesses keep their existing admission until their own PR.
-- **agent-harness#1244 PR-A1.** If PR-A1 lands first, PR3 wires CLI admission as a resolver input. If PR3 lands first, PR-A1 must carry the gate into `resolve_seat_route`. In both cases PR3's never-sealed cells are the shared acceptance.
+- **agent-harness#1288 is an open dependency, not a prerequisite.** It removes the pre-existing sealed routes through agent-harness#1244 PR-A1. CLI admission is necessary, not sufficient, for a tooled seat, so this plan's completion closes neither agent-harness#1288 nor the never-sealed rule.
+- **agent-harness#1244 PR-A1.** If PR-A1 lands first, PR3 wires CLI admission as a resolver input. If PR3 lands first, PR-A1 must carry the gate into `resolve_seat_route`. In both cases PR3's never-sealed cells and the no-sealed-extension cell are the shared acceptance.
 
 ## Execution Policy
 - execute: effort=high, reason=process ownership, verified-bytes launch, store integrity and a promotion trust boundary. PR1 alone: effort=medium.
@@ -477,3 +505,17 @@ automation.suite_command: `cd phase-loop-runtime && PYTHONPATH=src python3 -m py
   10. **Omnigent reach:** coverage now matches the hook, plus a guard test. See (b).
 
   Non-blockers folded in: the platform table, first use outside seat deadlines, transient expiry, the per-user lock, `fetch_member` and pruning, the release-lane owner, `cli_admission_class`, the closed schema, PR4's cells, executor launches out of scope, and the agent-harness#1244 join.
+- **r3** (president ruling at `cecc438b`: AGREE WITH CONDITIONS; codex F001 deferred to agent-harness#1288). This revision applies must-fixes M1-M6:
+  - M1: agent-harness#1288 dependency, "necessary not sufficient", and the no-sealed-extension cell;
+  - M2: the token crosses thread hops, plus the real-leg and one-lookup cells;
+  - M3: non-brokered launches out of scope, and eligibility parity;
+  - M4: a transient-derived `failed` launches with class `none`;
+  - M5: the Q2 ratification line and the runbook guard statement;
+  - M6: the interpreter runs from a verified memfd.
+
+  Deferred to the named PR bodies, as ruled:
+  - PR1: map the opt-out and failed ValueErrors to `AgyImageUnqualified`, and record the seat-time help cost.
+  - PR2: bound the flock wait and re-run lookup after acquiring the lock.
+  - PR4: measure the per-spawn snapshot cost.
+  - PR6 runbook: list the release-lane subscription prerequisites.
+  - agent-harness#1288: codex's sandbox-refusal falsifier.
