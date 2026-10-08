@@ -1039,5 +1039,9 @@
   {"count": 1, "function": "_read_seat_raw_text", "module": "panel_invoker", "primitive": "io.open", "role": "host-io"},
   {"count": 3, "function": "_SeatClaudeJournal._read_journal", "module": "panel_invoker", "primitive": "io.stat", "role": "host-io"},
   {"count": 1, "function": "_read_receipt_inventory", "module": "convergence/broker/live", "primitive": "io.read_bytes", "role": "host-io"},
-  {"count": 1, "function": "_read_json_nofollow", "module": "publishing", "primitive": "io.open", "role": "host-io"}
+  {"count": 1, "function": "_read_json_nofollow", "module": "publishing", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "_check_node_id", "module": "rule_enforcement", "primitive": "io.read_text", "role": "host-io"},
+  {"count": 1, "function": "_top_level_names", "module": "rule_enforcement", "primitive": "io.read_text", "role": "host-io"},
+  {"count": 1, "function": "check_registry", "module": "rule_enforcement", "primitive": "io.read_text", "role": "host-io"},
+  {"count": 1, "function": "load_registry", "module": "rule_enforcement", "primitive": "io.read_text", "role": "host-io"}
 ]
