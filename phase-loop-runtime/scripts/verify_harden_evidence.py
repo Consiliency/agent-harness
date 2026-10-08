@@ -724,11 +724,11 @@ def _read_regular_file_from_descriptor(
 
 def read_path_regular_nofollow(path: Path, label: str, maximum: int) -> bytes:
     """Read an absolute or relative path without following any symlink component."""
-    absolute = Path(os.path.abspath(os.fspath(path)))
-    parts = absolute.parts
-    if not absolute.is_absolute() or len(parts) < 2:
+    supplied = Path(path)
+    parts = supplied.parts
+    if not parts:
         fail(f"{label}: artifact path is unavailable")
-    if len(parts) >= 6 and parts[1:4] == ("proc", "self", "fd"):
+    if supplied.is_absolute() and len(parts) >= 6 and parts[1:4] == ("proc", "self", "fd"):
         try:
             root_fd = os.dup(int(parts[4]))
         except (OSError, ValueError):
@@ -739,7 +739,11 @@ def read_path_regular_nofollow(path: Path, label: str, maximum: int) -> bytes:
             label,
             maximum,
         )
-    return read_regular_file_nofollow(Path(parts[0]), parts[1:], label, maximum)
+    root = Path(parts[0]) if supplied.is_absolute() else Path.cwd()
+    descendants = parts[1:] if supplied.is_absolute() else parts
+    if not descendants:
+        fail(f"{label}: artifact path is unavailable")
+    return read_regular_file_nofollow(root, descendants, label, maximum)
 
 
 def run_owned_receipt(store: ArtifactStore, repo: Path, ref: dict[str, str], label: str, *, distinct: bool = True) -> dict[str, Any]:
