@@ -70,7 +70,16 @@ Pinned inputs this roadmap consumes. Never pin this roadmap's own outputs.
   initiative with its own roadmap if it proceeds.
 - Adopting the PStack programme wholesale. REFLOOP admits individual items through its gates.
 - New cross-repo convergence features beyond what INTEG and RELEASE carry.
-- Binding phases, lanes or jobs to Consiliency/spec frontier subtrees (spec diff plus frontier-scoped parity as the unit of work). That needs spec-side primitives that do not exist yet (subgraph endpoints, authoring tools) and is a joint follow-on roadmap; ROUTE's spec scope is the hook it will use.
+- The spec adapter and seam consumption. These belong to a joint follow-on roadmap across
+  agent-harness, Consiliency/spec and greenfield, not to v11. That roadmap covers:
+  - a harness-maintained spec of each client repo, built during the loop and written back to the
+    client's specs at completion (client repos are never required to comply);
+  - binding phases, lanes and jobs to spec frontier subtrees;
+  - dispatching from greenfield lane graphs and cage manifests.
+
+  It depends on spec-side primitives that do not exist yet and on greenfield addressing seams by
+  a logical key. v11 freezes only the hooks: ROUTE's spec scope and greenfield reference,
+  PARSCHED's overlap predicate, and versioned shared contracts.
 - Restating or re-numbering any carried goal. A carried goal changes only by an explicit
   retirement-and-replacement recorded in its phase, never by paraphrase.
 
