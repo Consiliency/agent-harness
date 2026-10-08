@@ -6,6 +6,15 @@ file with no producer is `unknown_ignored` and blocks closeout (exit 1). This is
 deliberate: git ignoring a path is never evidence that it is harmless
 (agent-harness#186).
 
+Every exit the audit returns or raises from ends with exactly one `action:` line that
+names the required closeout action, so an executor does not re-derive it from skill prose
+(agent-harness#1303): exit 0 means ignored paths do not block and the dirty-path
+classification still decides; exit 1 and exit 2 mean stop with `terminal_status=blocked`
+and `blocker_class=dirty_worktree_conflict`, and so does an exception (exit 1, after an
+`action: exit non-zero (...)` line). A process killed by a signal prints no action line,
+and the skills' exit-code list governs. Failing to run the audit at all blocks the same
+way.
+
 The audit recognises four producers:
 
 | Bucket | What earns it |
