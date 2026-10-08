@@ -316,8 +316,10 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "leg refused", "the seat's session journal was incomplete, changed, or not one turn",
         "re-run the seat; if it repeats, report a defect with the leg log"),
     "agy_image_unqualified": (
-        "leg refused", "the agy binary is not a qualified release",
-        "install a qualified agy release (see `phase-loop agy-qualification status`)"),
+        "leg refused", "the agy binary is neither a shipped release member nor qualified on this host",
+        "run `phase-loop agy-qualification run` to qualify it on this host, or re-enable "
+        "`[agy] self_qualification` in your user board config if you opted out "
+        "(see `phase-loop agy-qualification status`)"),
 }
 
 NOTICE_CODES: frozenset[str] = frozenset(NOTICES)

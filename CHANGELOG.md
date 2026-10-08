@@ -6,6 +6,25 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### agy: a newer upstream release only warns; seats admit self-qualified images (agent-harness#1333 PR1)
+
+- `verify_qualified_agy_image.py --upstream-only` no longer fails when the newest upstream
+  agy is not a shipped member. It prints `::warning::newest upstream agy <v> is not a shipped
+  member; hosts self-qualify it on first use` and reports `latest_is_member: false`. It then
+  fetches the newest shipped member by tag and still requires its vendor asset digest, URL
+  and archive, so the scheduled `upstream` job fails on member integrity, never on
+  membership. The release recipe drops "newest upstream is a member" as a cut criterion.
+- New `agy_integrity.admit_for_seat(path, env)`, used only by the two owned review-seat
+  sites in `seat_profile` (the credential refresh without a heartbeat profile, and the owned
+  non-heartbeat seat). It admits a release member offline as before, then a
+  `locally_qualified` image through `agy_qualification.lookup`. A miss, the opt-out, a
+  failed or tampered record, an unsafe store, an unreadable image or a memfd-seal failure is
+  the typed `agy_image_unqualified` refusal, and a miss closes its image. A refusal that
+  already carries its own typed code (such as `seat_filtered_egress_unavailable` from the
+  help measurement) passes through unchanged. The `agy_image_unqualified` fix line now names
+  `phase-loop agy-qualification run` and the `[agy] self_qualification` opt-out. `agy_integrity.check` is unchanged: the executor
+  (`trusted_command`, `admitted_command`) and canary callers stay release-only.
+
 ## [0.7.25] - 2026-10-08
 
 ### Qualified agy set adds 1.3.0 and 1.3.1 (agent-harness#1293)
