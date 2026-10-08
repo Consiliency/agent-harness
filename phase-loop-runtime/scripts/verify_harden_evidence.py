@@ -653,13 +653,30 @@ def read_regular_file_nofollow(
         | getattr(os, "O_CLOEXEC", 0)
         | getattr(os, "O_NONBLOCK", 0)
     )
-    descriptors: list[int] = []
     try:
-        try:
-            current = os.open(str(root), base_flags | directory)
-        except OSError:
-            fail(f"{label}: artifact root is unavailable")
-        descriptors.append(current)
+        root_fd = os.open(str(root), base_flags | directory)
+    except OSError:
+        fail(f"{label}: artifact root is unavailable")
+    return _read_regular_file_from_descriptor(root_fd, parts, label, maximum)
+
+
+def _read_regular_file_from_descriptor(
+    root_fd: int,
+    parts: tuple[str, ...],
+    label: str,
+    maximum: int,
+) -> bytes:
+    """Read a descendant from an owned directory descriptor and close every FD."""
+    base_flags = (
+        os.O_RDONLY
+        | getattr(os, "O_NOFOLLOW", 0)
+        | getattr(os, "O_CLOEXEC", 0)
+        | getattr(os, "O_NONBLOCK", 0)
+    )
+    directory = getattr(os, "O_DIRECTORY", 0)
+    descriptors = [root_fd]
+    current = root_fd
+    try:
         for part in parts[:-1]:
             try:
                 next_fd = os.open(part, base_flags | directory, dir_fd=current)
@@ -709,6 +726,17 @@ def read_path_regular_nofollow(path: Path, label: str, maximum: int) -> bytes:
     parts = absolute.parts
     if not absolute.is_absolute() or len(parts) < 2:
         fail(f"{label}: artifact path is unavailable")
+    if len(parts) >= 6 and parts[1:4] == ("proc", "self", "fd"):
+        try:
+            root_fd = os.dup(int(parts[4]))
+        except (OSError, ValueError):
+            fail(f"{label}: artifact root is unavailable")
+        return _read_regular_file_from_descriptor(
+            root_fd,
+            parts[5:],
+            label,
+            maximum,
+        )
     return read_regular_file_nofollow(Path(parts[0]), parts[1:], label, maximum)
 
 
