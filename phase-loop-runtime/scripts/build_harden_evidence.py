@@ -1182,6 +1182,13 @@ def prepare(inputs: Path, source_root: Path, evidence_root: Path, repo: Path, ou
 
 def _canonical_ledger_bytes(ledger: Path) -> bytes:
     """Read the canonical ledger without collapsing established symlinks into absence."""
+    for path in (ledger.parent, ledger):
+        try:
+            entry = path.lstat()
+        except OSError:
+            continue
+        if stat.S_ISLNK(entry.st_mode):
+            raise BuildError("canonical ledger symlink")
     try:
         return V.read_path_regular_nofollow(
             ledger, "canonical ledger", V.MAX_ARTIFACT_BYTES,
