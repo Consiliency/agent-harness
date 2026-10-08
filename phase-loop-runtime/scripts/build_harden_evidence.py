@@ -915,7 +915,7 @@ def _prepare_stage(inputs: Path, source_root: Path, evidence_root: Path, repo: P
     request = {"schema": "harden_completion_request.v1", "phase": "HARDEN", "evidence_sha256": V.normalized_precompletion_digest(evidence),
                "canonical_commit": git["canonical_main"]["commit"], "canonical_tree": git["canonical_main"]["tree"],
                "visual_render_declared": False,
-               "input_manifest_sha256": _sha(V.read_regular_file_nofollow(inputs.parent, (inputs.name,), "input manifest", V.MAX_ARTIFACT_BYTES)),
+               "input_manifest_sha256": _sha(V.read_path_regular_nofollow(inputs, "input manifest", V.MAX_ARTIFACT_BYTES)),
                "copied_artifacts": [{"source": {"path": path, "sha256": digest}, "retained": ref} for (path, digest), ref in sorted(copies.items())]}
     completion_request.write_bytes(_canonical(request))
 
