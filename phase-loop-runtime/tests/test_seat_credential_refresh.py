@@ -73,7 +73,7 @@ def test_administrative_profile_does_not_request_a_refresh(tmp_path, monkeypatch
         def close(self):
             pass
 
-    monkeypatch.setattr(agy_integrity, 'check', lambda executable: Image())
+    monkeypatch.setattr(agy_integrity, 'check', lambda executable, env=None: Image())
     monkeypatch.setattr(panel_invoker, '_refresh_gemini_credential',
                         lambda *a, **k: pytest.fail('administrative probe requested a refresh'))
     with panel_invoker.seat_profile(
@@ -155,7 +155,7 @@ def test_sibling_profiles_share_one_operator_refresh_and_private_copies(tmp_path
         except BaseException as exc:
             errors.append(exc)
 
-    monkeypatch.setattr(agy_integrity, 'check', lambda _path: Image())
+    monkeypatch.setattr(agy_integrity, 'check', lambda _path, env=None: Image())
     monkeypatch.setattr(panel_invoker, 'launch_provider', launch)
     token = panel_invoker._EGRESS_LAUNCH_PREFIX.set(('synthetic sibling context',))
     try:
