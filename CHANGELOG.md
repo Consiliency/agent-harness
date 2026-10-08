@@ -6,6 +6,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### CI: the Gate A clean-room job gets a 150-minute cap as a stopgap (agent-harness#1297)
+
+- The `clean-room (standalone-from-wheel, Gate A)` job's `timeout-minutes` goes from 100
+  to 150. Since agent-harness#1282, a per-test seat namespace fixture has stretched the job
+  to 85 to 100+ minutes, so it was cancelled at the cap on main. No other job changes.
+  The cap goes back to 100 once agent-harness#1297 makes the fixture shared or cheaper.
+
 ### FABPUB: a failed current-head publication can be recovered by rotation (agent-harness#1296)
 
 - After a publication fails with an ambiguous outcome, its transaction is past
