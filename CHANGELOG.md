@@ -20,11 +20,15 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - All eight members were requalified on the release tree (completion, cancel and owner-loss
   each, then `--validate`), because agent-harness#1282, agent-harness#1292,
   agent-harness#1298, agent-harness#1308, agent-harness#1277, agent-harness#1281,
-  agent-harness#1285 and agent-harness#1286 changed `phase_loop_runtime/**/*.py`. Each member has its own regenerated record.
+  agent-harness#1285 and agent-harness#1286 changed `phase_loop_runtime/**/*.py`. Each
+  member has its own regenerated record.
 
 ### Unified seat-launch owner for review seats, the president and executor review (PR agent-harness#1282; supersedes agent-harness#1222)
 
-Review seats, the president and executor review share a launch owner with private homes, allowlisted inputs and individual output files. Host Git uses trusted helpers and neutral settings. Ordinary executor planning, execution and repair retain their existing execution contract.
+Review seats, the president and executor review share a launch owner with private homes,
+allowlisted inputs and individual output files. Host Git uses trusted helpers and neutral
+settings. Ordinary executor planning, execution and repair retain their existing execution
+contract.
 
 - **Each host's jail approval resets once.** The jail's recorded pass binds the
   EC-EXECFIND-2 falsifier-run layout, and that layout's identity is now
@@ -33,7 +37,9 @@ Review seats, the president and executor review share a launch owner with privat
   and its mode line shows `jailed (qualified now)`. To requalify ahead of time, run
   `phase-loop seat-sandbox qualify`.
 - **Ubuntu 24.04+/26.04 hosts** also need the narrow AppArmor override from
-  agent-harness#1281 (entry below) before the jail can qualify.
+  agent-harness#1281 (entry below) before the jail can qualify. Install it before upgrading
+  to 0.7.25: without it, the automatic jail requalification fails with `uid_switch_denied`,
+  and the jailed seats stay degraded until the override is installed.
 - **Seat credentials are narrower.** Each CLI runs with the narrowest credential it needs,
   and no seat receives a refresh token (`advisor_board/CONTRACTS.md`, "Credentials").
 - **agy requalification:** this release requalifies agy (see the agy entry above).
@@ -41,8 +47,8 @@ Review seats, the president and executor review share a launch owner with privat
 ### agy login expiry parsed correctly on Python 3.10 (PR agent-harness#1308)
 
 - The Gemini seat now reads agy's login-token expiry, which carries nanosecond precision, on
-  Python 3.10 as well. Before, such an expiry did not parse there, so the brokered Gemini seat
-  was refused as near expiry (`gemini_credential_near_expiry`) and did not start.
+  Python 3.10 as well. Before, such an expiry did not parse there, so the brokered Gemini
+  seat was refused as near expiry (`gemini_credential_near_expiry`) and did not start.
 
 ### CI: the Gate A clean-room job gets a 150-minute cap as a stopgap (agent-harness#1297; PR agent-harness#1326)
 
@@ -57,34 +63,39 @@ Review seats, the president and executor review share a launch owner with privat
   `COMMITTED_HEAD_RESOLVED` (`TERMINAL_SEALED` normally, `ADAPTER_STARTED` after an adapter
   exception). The documented recovery, a partition rotation that disposes the effect
   `attested_not_landed`, then refused the retry of that exact transaction (`broker admission
-  precondition denied`), because fresh admission required `COMMITTED_HEAD_RESOLVED`. The refusal
-  also left a new unsealed adapter-start owner in the successor generation, so the next attempt
-  blocked it again. This blocked treesitter-chunker#480.
+  precondition denied`), because fresh admission required `COMMITTED_HEAD_RESOLVED`. The
+  refusal also left a new unsealed adapter-start owner in the successor generation, so the
+  next attempt blocked it again. This blocked treesitter-chunker#480.
 - The successor generation now re-admits the transaction unchanged, once. This requires its
-  authenticated receipt to dispose the key `attested_not_landed` and the sealed attestation's
-  `transaction_id` (bound from the predecessor's owner) to equal the transaction, and the retry's
-  `base`, `draft` and PR body to equal the transaction's frozen values. The broker never moves
-  the checkpoint (the SDK closeout seals it after the terminal); a write-once `<transaction_id>.recovery.<generation>.json` records
-  the rotation, digests, predecessor owner, recovered state and plan/proof bindings before any
-  owner is written (owner-only, atomic, no-follow, fail-closed).
-  Single use is enforced under the admissions lock (no evidence for the key in the generation),
-  so a concurrent retry makes no second provider call. A replay makes no provider call, and the
-  predecessor generation's bytes are unchanged.
+  authenticated receipt to dispose the key `attested_not_landed` and the sealed
+  attestation's `transaction_id` (bound from the predecessor's owner) to equal the
+  transaction, and the retry's `base`, `draft` and PR body to equal the transaction's frozen
+  values. The broker never moves the checkpoint (the SDK closeout seals it after the
+  terminal); a write-once `<transaction_id>.recovery.<generation>.json` records the
+  rotation, digests, predecessor owner, recovered state and plan/proof bindings before any
+  owner is written (owner-only, atomic, no-follow, fail-closed). Single use is enforced
+  under the admissions lock (no evidence for the key in the generation), so a concurrent
+  retry makes no second provider call. A replay makes no provider call, and the predecessor
+  generation's bytes are unchanged.
 - Any other already-admitted current-head transaction is refused with
   `PublicationRecoveryRequired` before any write. The human route returns
-  `publication_recovery_required` with the rotation as its next step. The broker now checks the
-  transaction-state precondition before it writes the adapter-start owner, so a refusal of that
-  precondition leaves no owner behind. When no rotation can dispose the key (a later rotation
-  superseded the disposing one, agent-harness#1310), the refusal says so instead of suggesting
-  another rotation.
+  `publication_recovery_required` with the rotation as its next step. The broker now checks
+  the transaction-state precondition before it writes the adapter-start owner, so a refusal
+  of that precondition leaves no owner behind. When no rotation can dispose the key (a later
+  rotation superseded the disposing one, agent-harness#1310), the refusal says so instead of
+  suggesting another rotation.
 - `observed_landed` recovery is unchanged and stays provider-free. The procedure is in
   `docs/fabpub-partition-rotation-runbook.md` §8a.
+- **Upgrade order:** upgrade to 0.7.25 before rotating the partition. 0.7.24 and earlier
+  refuse the retry and leave a new unsealed owner in the successor generation. Then retry
+  straight after that rotation, before any later rotation supersedes it (agent-harness#1310;
+  runbook §8a).
 
 ### Worktree cleanup scripts require a clean tree before removing a worktree (PR agent-harness#1309)
 
-- The bundled `sweep_stale_worktrees.sh` and `cleanup_lane_worktrees.sh` execute-phase scripts
-  now remove a worktree only when its tree is clean. A worktree with uncommitted or untracked
-  changes is kept and reported.
+- The bundled `sweep_stale_worktrees.sh` and `cleanup_lane_worktrees.sh` execute-phase
+  scripts now remove a worktree only when its tree is clean. A worktree with uncommitted or
+  untracked changes is kept and reported.
 
 ### Lower panel effort defaults and a larger configurable Claude output budget (PR agent-harness#1292)
 
@@ -98,71 +109,75 @@ Review seats, the president and executor review share a launch owner with privat
 
 ### Strict, machine-consumable panel-seat replies (groundwork; not wired to any seat yet; PR agent-harness#1286)
 
-- New `panel_reply` module: a closed, typed reply for advisor-board seats (`verdict`, `summary`,
-  `findings[]` with `severity`, `title`, `body`, optional `location`; an advisory mode with no
-  verdict) and `extract_reply`, the verifier. A reply verifies only if it contains exactly one
-  JSON object that matches the schema with no coercion and no extra fields, and carries the data
-  its mode requires (review mode needs a verdict; `DISAGREE` needs a blocking finding, `AGREE`
-  allows none, `PARTIALLY AGREE` needs a finding; advisory mode forbids a verdict). It never raises
-  on seat content: it returns the reply or a typed failure (`empty`, `too_large`, `no_json`,
-  `ambiguous_reply`, `schema_mismatch`, `verdict_missing`, `verdict_forbidden`,
-  `verdict_inconsistent`), and the failure detail names fields, never reply text.
-  `render_reply_instructions` renders the prompt text from the same model, so the schema a seat is
-  shown cannot drift from the one it is checked against.
-- **Why not the BAML parser:** a spike against baml-bridge 0.20.1 showed its `.parse` is lenient by
-  design. It repaired a truncated reply into `AGREE` with its findings dropped, turned `findings:
-  "none"` into an empty list, and took the first of two JSON objects. A verifier must reject those,
-  so verification is a strict Python extraction plus a strict pydantic model; nothing here touches
-  the BAML worker or `baml_src`.
-- Nothing calls it yet: wiring it to a seat (an opt-in `--reply-format json`) waits for the unified
-  seat-launch owner (agent-harness#1282).
+- New `panel_reply` module: a closed, typed reply for advisor-board seats (`verdict`,
+  `summary`, `findings[]` with `severity`, `title`, `body`, optional `location`; an advisory
+  mode with no verdict) and `extract_reply`, the verifier. A reply verifies only if it
+  contains exactly one JSON object that matches the schema with no coercion and no extra
+  fields, and carries the data its mode requires (review mode needs a verdict; `DISAGREE`
+  needs a blocking finding, `AGREE` allows none, `PARTIALLY AGREE` needs a finding; advisory
+  mode forbids a verdict). It never raises on seat content: it returns the reply or a typed
+  failure (`empty`, `too_large`, `no_json`, `ambiguous_reply`, `schema_mismatch`,
+  `verdict_missing`, `verdict_forbidden`, `verdict_inconsistent`), and the failure detail
+  names fields, never reply text. `render_reply_instructions` renders the prompt text from
+  the same model, so the schema a seat is shown cannot drift from the one it is checked
+  against.
+- **Why not the BAML parser:** a spike against baml-bridge 0.20.1 showed its `.parse` is
+  lenient by design. It repaired a truncated reply into `AGREE` with its findings dropped,
+  turned `findings: "none"` into an empty list, and took the first of two JSON objects. A
+  verifier must reject those, so verification is a strict Python extraction plus a strict
+  pydantic model; nothing here touches the BAML worker or `baml_src`.
+- Nothing calls it yet: wiring it to a seat (an opt-in `--reply-format json`) waits for the
+  unified seat-launch owner (agent-harness#1282).
 
 ### Finished Claude Agent View sessions are stopped once their closeout is verified (PR agent-harness#1285)
 
-- A `claude --bg` session that reaches `done` is not stopped by Claude Code: its Remote Control
-  session stays open in the app's session panel until `claude stop <id>`, and only that clean
-  shutdown archives it. The Agent View launch route waited for `done` and read the final message
-  but never stopped the session, so every finished executor run stayed in the panel until it was
-  archived by hand. (Measured on Claude Code 2.1.289: the session reached `done` with no archive;
-  `claude stop` logged `Archive ... status=200` and kept the conversation.)
-- New `agent_view_cleanup` module, called once in the runner right after the closeout is parsed:
-  it stops the session only when the launch was an Agent View route that finished `done` AND the
-  closeout passed schema verification with the required data (the BAML parse plus the
-  `PhaseLoopCloseoutV1` validators, which the runner reports as `native_closeout_payload`). A
-  missing, malformed or not-evaluated closeout (including a BAML worker outage) leaves the session
-  running and visible for diagnosis. It uses `claude stop`, never `claude rm`, so the conversation
-  is kept (`claude attach <id>` and `--resume` still work), and it never raises: a failed stop is
-  logged and the run's outcome is unchanged. Set `PHASE_LOOP_KEEP_AGENT_VIEW_SESSIONS=1` to keep
-  finished sessions running while debugging a run in the app.
+- A `claude --bg` session that reaches `done` is not stopped by Claude Code: its Remote
+  Control session stays open in the app's session panel until `claude stop <id>`, and only
+  that clean shutdown archives it. The Agent View launch route waited for `done` and read
+  the final message but never stopped the session, so every finished executor run stayed in
+  the panel until it was archived by hand. (Measured on Claude Code 2.1.289: the session
+  reached `done` with no archive; `claude stop` logged `Archive ... status=200` and kept the
+  conversation.)
+- New `agent_view_cleanup` module, called once in the runner right after the closeout is
+  parsed: it stops the session only when the launch was an Agent View route that finished
+  `done` AND the closeout passed schema verification with the required data (the BAML parse
+  plus the `PhaseLoopCloseoutV1` validators, which the runner reports as
+  `native_closeout_payload`). A missing, malformed or not-evaluated closeout (including a
+  BAML worker outage) leaves the session running and visible for diagnosis. It uses `claude
+  stop`, never `claude rm`, so the conversation is kept (`claude attach <id>` and `--resume`
+  still work), and it never raises: a failed stop is logged and the run's outcome is
+  unchanged. Set `PHASE_LOOP_KEEP_AGENT_VIEW_SESSIONS=1` to keep finished sessions running
+  while debugging a run in the app.
 
 ### Seat jail on Ubuntu 24.04+ / 26.04: a narrow AppArmor override (agent-harness#1276; PR agent-harness#1281)
 
-- New `seat_jail_apparmor` module. Ubuntu's `bwrap-userns-restrict` profile runs bwrap's children
-  as `bwrap//&unpriv_bwrap`, which denies every capability, so the jail's `setpriv` uid switch
-  fails and the jail cannot qualify. `python3 -m phase_loop_runtime.seat_jail_apparmor` prints a
-  root script that installs a small named profile used only for that `setpriv` step (setuid,
-  setgid and setpcap, stacked with `bwrap`, handing the seat back to `bwrap//&unpriv_bwrap`),
-  through the local include the shipped profile already provides. It never overwrites an
-  existing local file and `--revert` removes it. The runtime does not run it: it needs root and
-  changes host security policy. Measured on Ubuntu 26.04 (bubblewrap 0.11.1): after the drop the
-  seat has empty permitted, effective and bounding sets and cannot switch uid again, other
-  bwrap children are unchanged, and `phase-loop seat-sandbox qualify` records a pass.
+- New `seat_jail_apparmor` module. Ubuntu's `bwrap-userns-restrict` profile runs bwrap's
+  children as `bwrap//&unpriv_bwrap`, which denies every capability, so the jail's `setpriv`
+  uid switch fails and the jail cannot qualify. `python3 -m
+  phase_loop_runtime.seat_jail_apparmor` prints a root script that installs a small named
+  profile used only for that `setpriv` step (setuid, setgid and setpcap, stacked with
+  `bwrap`, handing the seat back to `bwrap//&unpriv_bwrap`), through the local include the
+  shipped profile already provides. It never overwrites an existing local file and
+  `--revert` removes it. The runtime does not run it: it needs root and changes host
+  security policy. Measured on Ubuntu 26.04 (bubblewrap 0.11.1): after the drop the seat has
+  empty permitted, effective and bounding sets and cannot switch uid again, other bwrap
+  children are unchanged, and `phase-loop seat-sandbox qualify` records a pass.
   `uid_switch_denied` now names this command.
 
 ### Seat jail: Python 3.10 to 3.13 support, and a typed reason when the host denies the uid switch (agent-harness#1276; PR agent-harness#1277)
 
 - `seat_jail.memfd_with` no longer needs `fcntl.F_ADD_SEALS`, which not every CPython build
-  exports (distribution builds do; the python-build-standalone builds that `uv` installs, 3.11
-  to 3.13, do not). It falls back to the kernel ABI values, so the jailed launch and the host
-  qualification work on every interpreter. Before this, the first jailed launch on such an
-  interpreter raised `AttributeError`.
+  exports (distribution builds do; the python-build-standalone builds that `uv` installs,
+  3.11 to 3.13, do not). It falls back to the kernel ABI values, so the jailed launch and
+  the host qualification work on every interpreter. Before this, the first jailed launch on
+  such an interpreter raised `AttributeError`.
 - A qualification whose probe cannot switch to the seat uid (`setpriv: setresuid failed`,
-  `setresgid failed`) now fails with the typed reason `uid_switch_denied` and a literal fix, not
-  `falsifiers_failed` ("report a defect"). The usual cause is a host security policy, not a
-  defect: Ubuntu 24.04 and later confine bwrap's children with the AppArmor profile
+  `setresgid failed`) now fails with the typed reason `uid_switch_denied` and a literal fix,
+  not `falsifiers_failed` ("report a defect"). The usual cause is a host security policy,
+  not a defect: Ubuntu 24.04 and later confine bwrap's children with the AppArmor profile
   `unpriv_bwrap`, which denies capability setuid and setgid. The jail itself is unchanged; a
-  host administrator has to permit those capabilities for it. The seat stays degraded and does
-  not run until then (plan amendment A3b).
+  host administrator has to permit those capabilities for it. The seat stays degraded and
+  does not run until then (plan amendment A3b).
 
 ### Release records, plans and CI (PRs agent-harness#1268, agent-harness#1270, agent-harness#1279, agent-harness#1294, agent-harness#1295, agent-harness#1307)
 
