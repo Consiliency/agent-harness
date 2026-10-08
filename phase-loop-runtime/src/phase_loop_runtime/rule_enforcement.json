@@ -58,7 +58,7 @@
       "skill": "phase-roadmap-builder",
       "quote": "an acyclic DAG are enforced too",
       "harness_quotes": {
-        "claude": "DAG acyclicity"
+        "claude": "The validator enforces: required headings, phase-heading aliases, alias uniqueness, DAG acyclicity"
       },
       "status": "enforced",
       "enforcers": [
