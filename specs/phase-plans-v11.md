@@ -39,7 +39,7 @@ goal IDs unchanged.
 1. The six v10 phases recorded `completed` in the ledger are delivered; v11 does not re-verify
    them. If a regression is found, it is filed as an issue against the owning v11 phase, not
    reopened as a v10 phase.
-2. Every in-flight v10 branch is listed under `## Absorbed work` and has a copy on `origin`.
+2. Every in-flight v10 branch is listed in `spikes/v11-transition/inventory-2026-10-08.md` and has a copy on `origin`.
    Work found later that is not listed is routed through an issue, not a new phase.
 3. `skills-src/` is the canonical skill source and the generated bundles follow it
    (`docs/phase-loop/skills-canonical-source.md`).
@@ -105,27 +105,9 @@ ledger.
 | HARDEN, SCHED, RUNTIME, EXECFIND, REVIEWTRUTH, PANEL | Carried, partly delivered. Open goals listed per phase. |
 | LEGLIFE, RESIDUAL, INTEG, RELEASE, RATIFY, GOVSETUP | Carried, not started (RESIDUAL has its RED tests on main). |
 
-**In-flight pull requests and branches** (inventory of dev0 and claw, 2026-10-08):
-
-| Work | v11 home |
-|---|---|
-| agent-harness#1264, agent-harness#1351; branches `codex/v10-harden-sl5-*`, `codex/v10-harden-first-parent-repair-20261006`, `backup/claw-harden-r18-sol-bd530210` | HARDEN |
-| Branch `claude/1078-panel-sl1` (38 commits), agent-harness#1168, agent-harness#1199 | PANEL |
-| Branch `codex/v10-execfind-sl4-20260925` | EXECFIND |
-| agent-harness#1203, agent-harness#1208 | RATIFY |
-| agent-harness#1000 | RUNTIME |
-| agent-harness#986, agent-harness#1284, agent-harness#851 | REVIEWTRUTH |
-| agent-harness#383 | RESIDUAL |
-| Branch `claude/claude-print-route-plan` (dev0, unpublished) | Lands before PANELSPLIT or rebases onto it |
-| agent-harness#1323, agent-harness#1325, agent-harness#1328, agent-harness#1350 | Land before this roadmap is frozen |
-
-**Open issues routed to phases:** agent-harness#766, agent-harness#1335, agent-harness#854,
-agent-harness#428, agent-harness#1344, agent-harness#1345 → TESTLOOP. agent-harness#831,
-agent-harness#1305, agent-harness#1346, agent-harness#1354 → LOOPFIX. agent-harness#1003 →
-HARDEN. agent-harness#730, agent-harness#734, agent-harness#926, agent-harness#857,
-agent-harness#856 → LEGLIFE. agent-harness#934 → PANEL. agent-harness#789, agent-harness#820,
-agent-harness#833, agent-harness#979 → RESIDUAL. agent-harness#808 → HARDEN. agent-harness#1304
-→ REFLOOP.
+**In-flight work and open issues.** Which pull request, branch and issue belongs to which v11
+phase is recorded in `spikes/v11-transition/inventory-2026-10-08.md`. That file is a snapshot and
+is not amended as work moves; the ledger and the phase plans are the live record.
 
 ## Top Interface-Freeze Gates
 
@@ -149,6 +131,7 @@ agent-harness#833, agent-harness#979 → RESIDUAL. agent-harness#808 → HARDEN.
   IF-0-EXECFIND-1, IF-0-RATIFY-1, IF-0-GOVSETUP-1, IF-0-PANEL-1 — as defined in V10.
 
 ## Phases
+
 
 ### Phase 0 — Trustworthy, Fast Test Signal (TESTLOOP)
 
@@ -315,7 +298,7 @@ schema: `spec_delta_closeout.v1`; expected decision: `no_spec_delta`; target sur
 Turn `panel_invoker.py` into a package of modules with separate owners, so panel-related phases stop serializing on one file.
 
 **Exit criteria**
-- [ ] EC-PANELSPLIT-0 — The existing test suite, unchanged, is the receipt: it passes before and after with no test file edited.
+- [ ] EC-PANELSPLIT-0 — The existing test suite, unchanged, is the receipt: it passes before and after with no test file edited. (A behaviour-preserving move has no new tests to freeze, so this replaces the content-bound receipt of principle 6.)
 - [ ] EC-PANELSPLIT-1 — `panel_invoker.py` is a facade of at most 1,500 lines; falsified by a line count above it.
 - [ ] EC-PANELSPLIT-2 — Every name tests monkeypatch on `panel_invoker` still takes effect (late binding through the facade); falsified by a patched seam that the moved code no longer calls.
 - [ ] EC-PANELSPLIT-3 — Each carried phase that named `panel_invoker.py` names the specific modules it owns in its v11 phase plan, and no two independent phases claim the same module; falsified by the PARSCHED lint.
@@ -343,43 +326,7 @@ schema: `spec_delta_closeout.v1`; expected decision: `no_spec_delta`; target sur
 
 ---
 
-### Phase 5 — Panel Vendor Fallback and Lanes (PANEL)
-
-**Objective**
-Carried from V10 Phase 18 unchanged: panels are seated by lane from whatever vendors are available.
-
-**Exit criteria**
-- [ ] EC-PANEL-1 — Carried; as defined in V10.
-- [ ] EC-PANEL-2 — Carried; as defined in V10.
-- [ ] EC-PANEL-3 — Carried; as defined in V10.
-- [ ] EC-PANEL-4 — Carried; as defined in V10.
-- [ ] EC-PANEL-5 — Carried; as defined in V10.
-- [ ] EC-PANEL-6 — Carried; as defined in V10.
-- [ ] EC-PANEL-7 — Carried; as defined in V10.
-
-**Scope notes**
-- EC-PANEL-0 is met (agent-harness#1092) and not carried. Remaining slices are SL-1, SL-1b, SL-2, SL-3 of the V10 plan; SL-1 work is on branch `claude/1078-panel-sl1`.
-- Lanes follow the V10 plan's slices; SL-1 owns `config.py`, `composition.py`, `presets.py`.
-- Overlaps PARSCHED on `runner.py` and LOOPFIX on `cli.py`; see Execution Notes.
-
-**Non-goals**
-- As in V10.
-
-**Key files**
-- `phase-loop-runtime/src/phase_loop_runtime/advisor_board/config.py`
-- `phase-loop-runtime/src/phase_loop_runtime/advisor_board/composition.py`
-- `phase-loop-runtime/src/phase_loop_runtime/advisor_board/presets.py`
-- `phase-loop-runtime/src/phase_loop_runtime/governed_review.py`
-
-**Depends on**
-- (none)
-
-**Produces**
-- IF-0-PANEL-1
-
----
-
-### Phase 6 — Isolation and Verification Hardening (HARDEN)
+### Phase 5 — Isolation and Verification Hardening (HARDEN)
 
 **Objective**
 Carried from V10 Phase 6: finish the SL-5 evidence repair and the SL-6 completion seal.
@@ -406,9 +353,12 @@ Carried from V10 Phase 6: finish the SL-5 evidence repair and the SL-6 completio
 **Produces**
 - (none)
 
+**Spec closeout policy**
+As in V10 for this phase.
+
 ---
 
-### Phase 7 — Runtime Substrate (RUNTIME)
+### Phase 6 — Runtime Substrate (RUNTIME)
 
 **Objective**
 Carried from V10 Phase 10: replace the lost tests-first evidence and finish live reconciliation.
@@ -426,7 +376,9 @@ Carried from V10 Phase 10: replace the lost tests-first evidence and finish live
 
 **Key files**
 - `phase-loop-runtime/src/phase_loop_runtime/reconcile.py`
-- `phase-loop-runtime/src/phase_loop_runtime/convergence/`
+- `phase-loop-runtime/src/phase_loop_runtime/convergence/reconcile.py`
+- `phase-loop-runtime/src/phase_loop_runtime/convergence/status.py`
+- `phase-loop-runtime/src/phase_loop_runtime/convergence/event_log.py`
 
 **Depends on**
 - (none)
@@ -434,9 +386,12 @@ Carried from V10 Phase 10: replace the lost tests-first evidence and finish live
 **Produces**
 - (none)
 
+**Spec closeout policy**
+As in V10 for this phase.
+
 ---
 
-### Phase 8 — President Execution Route (PRESROUTE)
+### Phase 7 — President Execution Route (PRESROUTE)
 
 **Objective**
 Carried from V10 Phase 14 for closeout only: every goal but the receipt is met.
@@ -452,13 +407,59 @@ Carried from V10 Phase 14 for closeout only: every goal but the receipt is met.
 - agent-harness#1006, agent-harness#1206 (follow-ups, not goals).
 
 **Key files**
-- `plans/manifest.json`
+- `.phase-loop/evidence/PRESROUTE/`
 
 **Depends on**
 - (none)
 
 **Produces**
 - IF-0-PRESROUTE-1
+
+**Spec closeout policy**
+As in V10 for this phase.
+
+---
+
+### Phase 8 — Panel Vendor Fallback and Lanes (PANEL)
+
+**Objective**
+Carried from V10 Phase 18 unchanged: panels are seated by lane from whatever vendors are available.
+
+**Exit criteria**
+- [ ] EC-PANEL-1 — Carried; as defined in V10.
+- [ ] EC-PANEL-2 — Carried; as defined in V10.
+- [ ] EC-PANEL-3 — Carried; as defined in V10.
+- [ ] EC-PANEL-4 — Carried; as defined in V10.
+- [ ] EC-PANEL-5 — Carried; as defined in V10.
+- [ ] EC-PANEL-6 — Carried; as defined in V10.
+- [ ] EC-PANEL-7 — Carried; as defined in V10.
+
+**Scope notes**
+- EC-PANEL-0 is met (agent-harness#1092) and not carried. Remaining slices are SL-1, SL-1b, SL-2, SL-3 of the V10 plan; SL-1 work is on branch `claude/1078-panel-sl1`.
+- Lanes follow the V10 plan's slices; SL-1 owns `config.py`, `composition.py`, `presets.py`.
+- Depends on PRESROUTE because SL-1's frozen-test authorization (`agent-harness#1078:PANEL-SL1:PRESROUTE`) can land only after PRESROUTE records the `da9502b3` repair.
+- Overlaps with independent phases are listed under Execution Notes.
+
+**Non-goals**
+- As in V10.
+
+**Key files**
+- `phase-loop-runtime/src/phase_loop_runtime/advisor_board/config.py`
+- `phase-loop-runtime/src/phase_loop_runtime/advisor_board/composition.py`
+- `phase-loop-runtime/src/phase_loop_runtime/advisor_board/presets.py`
+- `phase-loop-runtime/src/phase_loop_runtime/governed_review.py`
+- `phase-loop-runtime/src/phase_loop_runtime/cli.py`
+- `phase-loop-runtime/src/phase_loop_runtime/runner.py`
+- `phase-loop-runtime/src/phase_loop_runtime/train_runner.py`
+
+**Depends on**
+- PRESROUTE
+
+**Produces**
+- IF-0-PANEL-1
+
+**Spec closeout policy**
+As in V10 for this phase.
 
 ---
 
@@ -483,6 +484,7 @@ Carried from V10 Phase 5: close the evidence and regression gaps left after its 
 **Key files**
 - `phase-loop-runtime/src/phase_loop_runtime/phase_worktree_executor.py`
 - `phase-loop-runtime/src/phase_loop_runtime/launcher.py`
+- `phase-loop-runtime/tests/test_phase_loop_launcher.py`
 
 **Depends on**
 - HARDEN
@@ -490,61 +492,12 @@ Carried from V10 Phase 5: close the evidence and regression gaps left after its 
 **Produces**
 - (none)
 
----
-
-### Phase 10 — Board Reports Its Own Degradation (REVIEWTRUTH)
-
-**Objective**
-Carried from V10 Phase 7, on the split panel modules and the bounded review loop.
-
-**Exit criteria**
-- [ ] EC-REVIEWTRUTH-0 — Carried; as defined in V10.
-- [ ] EC-REVIEWTRUTH-1 — Carried; as defined in V10.
-- [ ] EC-REVIEWTRUTH-2 — Carried; as defined in V10.
-- [ ] EC-REVIEWTRUTH-3 — Carried; as defined in V10.
-- [ ] EC-REVIEWTRUTH-4 — Carried; as defined in V10.
-- [ ] EC-REVIEWTRUTH-5 — Carried; as defined in V10.
-- [ ] EC-REVIEWTRUTH-6 — Carried; as defined in V10.
-- [ ] EC-REVIEWTRUTH-7 — Carried; as defined in V10.
-- [ ] EC-REVIEWTRUTH-8 — Carried; as defined in V10.
-- [ ] EC-REVIEWTRUTH-9 — Carried; as defined in V10. Its skill reference resolves to `skills-src/*/*-advisor-board/SKILL.md`.
-- [ ] EC-REVIEWTRUTH-10 — Carried; as defined in V10.
-- [ ] EC-REVIEWTRUTH-11 — Carried; as defined in V10.
-- [ ] EC-REVIEWTRUTH-12 — Carried; as defined in V10.
-- [ ] EC-REVIEWTRUTH-13 — Carried; as defined in V10.
-- [ ] EC-REVIEWTRUTH-15 — Carried; as defined in V10.
-- [ ] EC-REVIEWTRUTH-16 — Carried; as defined in V10.
-- [ ] EC-REVIEWTRUTH-17 — Carried; as defined in V10.
-- [ ] EC-REVIEWTRUTH-18 — Carried; as defined in V10.
-
-**Scope notes**
-- EC-REVIEWTRUTH-14 is met (agent-harness#921) and not carried. EC-6 is met today but carried as a regression guard to re-check at closeout.
-- Publish IF-0-REVIEWTRUTH-1 (typed leg statuses) on day 1 so LEGLIFE's plan can start against it.
-- EC-REVIEWTRUTH-8 (the production `apply_fix` fix round) is the loop accelerator in this phase; schedule its lane first.
-- Lanes own disjoint `phase_loop_runtime/panel/` modules (IF-0-PANELSPLIT-1): verdict and classification, leg execution, board orchestration.
-
-**Non-goals**
-- As in V10.
-
-**Key files**
-- `phase-loop-runtime/src/phase_loop_runtime/panel/`
-- `phase-loop-runtime/src/phase_loop_runtime/ratification_policy.py`
-- `phase-loop-runtime/src/phase_loop_runtime/gate_posture.py`
-- `phase-loop-runtime/src/phase_loop_runtime/review_summary.py`
-
-**Depends on**
-- PANELSPLIT
-- REVBOUND
-- PANEL
-
-**Produces**
-- IF-0-REVIEWTRUTH-1
-- IF-0-REVIEWTRUTH-2
-- IF-0-REVIEWTRUTH-3
+**Spec closeout policy**
+As in V10 for this phase.
 
 ---
 
-### Phase 11 — Reflection Loop Applied (REFLOOP)
+### Phase 10 — Reflection Loop Applied (REFLOOP)
 
 **Objective**
 Run the repaired reflection loop end to end on the live backlog and keep it running.
@@ -583,106 +536,7 @@ schema: `spec_delta_closeout.v1`; expected decision: `no_spec_delta`; target sur
 
 ---
 
-### Phase 12 — Leg Lifecycle and Board Extensibility (LEGLIFE)
-
-**Objective**
-Carried from V10 Phase 8 unchanged.
-
-**Exit criteria**
-- [ ] EC-LEGLIFE-0 — Carried; as defined in V10.
-- [ ] EC-LEGLIFE-1 — Carried; as defined in V10.
-- [ ] EC-LEGLIFE-2 — Carried; as defined in V10.
-- [ ] EC-LEGLIFE-3 — Carried; as defined in V10.
-- [ ] EC-LEGLIFE-4 — Carried; as defined in V10.
-- [ ] EC-LEGLIFE-5 — Carried; as defined in V10.
-- [ ] EC-LEGLIFE-6 — Carried; as defined in V10.
-- [ ] EC-LEGLIFE-7 — Carried; as defined in V10.
-
-**Scope notes**
-- Depends on REVIEWTRUTH for IF-0-REVIEWTRUTH-1 only.
-- Lanes own the leg-execution, spawn and Claude TUI session modules of `phase_loop_runtime/panel/`, disjoint from REVIEWTRUTH's.
-
-**Non-goals**
-- As in V10.
-
-**Key files**
-- `phase-loop-runtime/src/phase_loop_runtime/panel/`
-- `phase-loop-runtime/src/phase_loop_runtime/advisor_board/backing_omnigent.py`
-
-**Depends on**
-- REVIEWTRUTH
-
-**Produces**
-- (none)
-
----
-
-### Phase 13 — Executable Findings (EXECFIND)
-
-**Objective**
-Carried from V10 Phase 15: restore the receipt and land the fix-round slice.
-
-**Exit criteria**
-- [ ] EC-EXECFIND-0 — Carried; as defined in V10, with an `sl0_repairs` entry for the agent-harness#1292 edit.
-- [ ] EC-EXECFIND-2 — Carried; as defined in V10 as amended by its 2026-09-25 advisory ruling.
-- [ ] EC-EXECFIND-6 — Carried; as defined in V10 as amended by its 2026-09-25 advisory ruling.
-
-**Scope notes**
-- EC-EXECFIND-1, -3, -4, -5 are met (agent-harness#1163, agent-harness#1164) and not carried.
-- EC-6 needs EC-REVIEWTRUTH-8's production `apply_fix`; that is why this phase depends on REVIEWTRUTH.
-- Decompose into 2 lanes: lane A receipt repair (EC-0, EC-2); lane B SL-3 fix round and SL-4 (branch `codex/v10-execfind-sl4-20260925`).
-
-**Non-goals**
-- As in V10.
-
-**Key files**
-- `phase-loop-runtime/src/phase_loop_runtime/falsifier.py`
-- `phase-loop-runtime/src/phase_loop_runtime/review_stage.py`
-
-**Depends on**
-- REVIEWTRUTH
-
-**Produces**
-- IF-0-EXECFIND-1
-
----
-
-### Phase 14 — Broker, Train, and Channel Residuals (RESIDUAL)
-
-**Objective**
-Carried from V10 Phase 9 unchanged; its RED tests are already on `main`.
-
-**Exit criteria**
-- [ ] EC-RESIDUAL-0 — Carried; as defined in V10.
-- [ ] EC-RESIDUAL-1 — Carried; as defined in V10.
-- [ ] EC-RESIDUAL-2 — Carried; as defined in V10.
-- [ ] EC-RESIDUAL-3 — Carried; as defined in V10.
-- [ ] EC-RESIDUAL-4 — Carried; as defined in V10.
-- [ ] EC-RESIDUAL-5 — Carried; as defined in V10.
-- [ ] EC-RESIDUAL-6 — Carried; as defined in V10.
-- [ ] EC-RESIDUAL-7 — Carried; as defined in V10. The F841 inventory is re-derived at planning time.
-
-**Scope notes**
-- Lanes follow the V10 plan's SL-1 to SL-5; SL-3's panel edits target the split modules.
-
-**Non-goals**
-- As in V10.
-
-**Key files**
-- `phase-loop-runtime/src/phase_loop_runtime/train_runner.py`
-- `phase-loop-runtime/src/phase_loop_runtime/convergence/broker/verbs.py`
-- `phase-loop-runtime/src/phase_loop_runtime/claude_channel_sidecar.py`
-
-**Depends on**
-- HARDEN
-- PANELSPLIT
-
-**Produces**
-- (none)
-
----
-
-### Phase 15 — Coordinator Integration and Fault Suite (INTEG)
+### Phase 11 — Coordinator Integration and Fault Suite (INTEG)
 
 **Objective**
 Carried from V10 Phase 11 unchanged.
@@ -713,41 +567,72 @@ Carried from V10 Phase 11 unchanged.
 **Produces**
 - (none)
 
+**Spec closeout policy**
+As in V10 for this phase.
+
 ---
 
-### Phase 16 — Ratification Tiers and Ruling Ledger (RATIFY)
+### Phase 12 — Board Reports Its Own Degradation (REVIEWTRUTH)
 
 **Objective**
-Carried from V10 Phase 16 unchanged; its plan is in agent-harness#1203.
+Carried from V10 Phase 7, on the split panel modules and the bounded review loop.
 
 **Exit criteria**
-- [ ] EC-RATIFY-0 — Carried; as defined in V10.
-- [ ] EC-RATIFY-1 — Carried; as defined in V10.
-- [ ] EC-RATIFY-2 — Carried; as defined in V10.
-- [ ] EC-RATIFY-3 — Carried; as defined in V10.
-- [ ] EC-RATIFY-4 — Carried; as defined in V10.
-- [ ] EC-RATIFY-5 — Carried; as defined in V10.
+- [ ] EC-REVIEWTRUTH-0 — Carried; as defined in V10.
+- [ ] EC-REVIEWTRUTH-1 — Carried; as defined in V10.
+- [ ] EC-REVIEWTRUTH-2 — Carried; as defined in V10.
+- [ ] EC-REVIEWTRUTH-3 — Carried; as defined in V10.
+- [ ] EC-REVIEWTRUTH-4 — Carried; as defined in V10.
+- [ ] EC-REVIEWTRUTH-5 — Carried; as defined in V10.
+- [ ] EC-REVIEWTRUTH-6 — Carried; as defined in V10.
+- [ ] EC-REVIEWTRUTH-7 — Carried; as defined in V10.
+- [ ] EC-REVIEWTRUTH-8 — Carried; as defined in V10.
+- [ ] EC-REVIEWTRUTH-9 — Carried; as defined in V10. Its skill reference resolves to `skills-src/*/*-advisor-board/SKILL.md`.
+- [ ] EC-REVIEWTRUTH-10 — Carried; as defined in V10.
+- [ ] EC-REVIEWTRUTH-11 — Carried; as defined in V10.
+- [ ] EC-REVIEWTRUTH-12 — Carried; as defined in V10.
+- [ ] EC-REVIEWTRUTH-13 — Carried; as defined in V10.
+- [ ] EC-REVIEWTRUTH-15 — Carried; as defined in V10.
+- [ ] EC-REVIEWTRUTH-16 — Carried; as defined in V10.
+- [ ] EC-REVIEWTRUTH-17 — Carried; as defined in V10.
+- [ ] EC-REVIEWTRUTH-18 — Carried; as defined in V10.
 
 **Scope notes**
-- Decompose into 2 lanes as V10 does: lane A prompt partition, ruling classes and gate posture; lane B the ruling ledger. Plan in agent-harness#1203; SL-0 is agent-harness#1208.
+- EC-REVIEWTRUTH-14 is met (agent-harness#921) and not carried. EC-6 is met today but carried as a regression guard to re-check at closeout.
+- Publish IF-0-REVIEWTRUTH-1 (typed leg statuses) on day 1 so LEGLIFE's plan can start against it.
+- EC-REVIEWTRUTH-8 (the production `apply_fix` fix round) is the loop accelerator in this phase; schedule its lane first.
+- Lanes own disjoint `phase_loop_runtime/panel/` modules (IF-0-PANELSPLIT-1): verdict and classification, leg execution, board orchestration.
 
 **Non-goals**
 - As in V10.
 
 **Key files**
-- `phase-loop-runtime/src/phase_loop_runtime/ruling_ledger.py`
-- `plans/rulings.jsonl`
+- `phase-loop-runtime/src/phase_loop_runtime/panel/`
+- `phase-loop-runtime/src/phase_loop_runtime/governed_premerge.py`
+- `phase-loop-runtime/src/phase_loop_runtime/governed_bundle.py`
+- `phase-loop-runtime/src/phase_loop_runtime/cli.py`
+- `phase-loop-runtime/src/phase_loop_runtime/runner.py`
+- `phase-loop-runtime/src/phase_loop_runtime/launcher.py`
+- `phase-loop-runtime/src/phase_loop_runtime/ratification_policy.py`
+- `phase-loop-runtime/src/phase_loop_runtime/gate_posture.py`
+- `phase-loop-runtime/src/phase_loop_runtime/review_summary.py`
 
 **Depends on**
-- EXECFIND
-- PRESROUTE
+- PANELSPLIT
+- REVBOUND
+- PANEL
 
 **Produces**
-- IF-0-RATIFY-1
+- IF-0-REVIEWTRUTH-1
+- IF-0-REVIEWTRUTH-2
+- IF-0-REVIEWTRUTH-3
+
+**Spec closeout policy**
+As in V10 for this phase.
 
 ---
 
-### Phase 17 — Pilots and Governed Release (RELEASE)
+### Phase 13 — Pilots and Governed Release (RELEASE)
 
 **Objective**
 Carried from V10 Phase 12 unchanged.
@@ -768,6 +653,8 @@ Carried from V10 Phase 12 unchanged.
 - As in V10.
 
 **Key files**
+- `phase-loop-runtime/src/phase_loop_runtime/train_runner.py`
+- `phase-loop-runtime/pyproject.toml`
 - `CHANGELOG.md`
 - `docs/releases/`
 
@@ -776,6 +663,170 @@ Carried from V10 Phase 12 unchanged.
 
 **Produces**
 - (none)
+
+**Spec closeout policy**
+As in V10 for this phase.
+
+---
+
+### Phase 14 — Leg Lifecycle and Board Extensibility (LEGLIFE)
+
+**Objective**
+Carried from V10 Phase 8 unchanged.
+
+**Exit criteria**
+- [ ] EC-LEGLIFE-0 — Carried; as defined in V10.
+- [ ] EC-LEGLIFE-1 — Carried; as defined in V10.
+- [ ] EC-LEGLIFE-2 — Carried; as defined in V10.
+- [ ] EC-LEGLIFE-3 — Carried; as defined in V10.
+- [ ] EC-LEGLIFE-4 — Carried; as defined in V10.
+- [ ] EC-LEGLIFE-5 — Carried; as defined in V10.
+- [ ] EC-LEGLIFE-6 — Carried; as defined in V10.
+- [ ] EC-LEGLIFE-7 — Carried; as defined in V10.
+
+**Scope notes**
+- Depends on REVIEWTRUTH for IF-0-REVIEWTRUTH-1 only.
+- Lanes own the leg-execution, spawn and Claude TUI session modules of `phase_loop_runtime/panel/`, disjoint from REVIEWTRUTH's.
+
+**Non-goals**
+- As in V10.
+
+**Key files**
+- `phase-loop-runtime/src/phase_loop_runtime/panel/`
+- `phase-loop-runtime/src/phase_loop_runtime/advisor_board/composition.py`
+- `phase-loop-runtime/src/phase_loop_runtime/advisor_board/backing_omnigent.py`
+
+**Depends on**
+- REVIEWTRUTH
+
+**Produces**
+- (none)
+
+**Spec closeout policy**
+As in V10 for this phase.
+
+---
+
+### Phase 15 — Executable Findings (EXECFIND)
+
+**Objective**
+Carried from V10 Phase 15: restore the receipt and land the fix-round slice.
+
+**Exit criteria**
+- [ ] EC-EXECFIND-0 — Carried; as defined in V10, with an `sl0_repairs` entry for the agent-harness#1292 edit.
+- [ ] EC-EXECFIND-2 — Carried; as defined in V10 as amended by its 2026-09-25 advisory ruling.
+- [ ] EC-EXECFIND-6 — Carried; as defined in V10 as amended by its 2026-09-25 advisory ruling.
+
+**Scope notes**
+- EC-EXECFIND-1, -3, -4, -5 are met (agent-harness#1163, agent-harness#1164) and not carried.
+- EC-6 needs EC-REVIEWTRUTH-8's production `apply_fix`; that is why this phase depends on REVIEWTRUTH.
+- Decompose into 2 lanes: lane A receipt repair (EC-0, EC-2); lane B SL-3 fix round and SL-4 (branch `codex/v10-execfind-sl4-20260925`).
+
+**Non-goals**
+- As in V10.
+
+**Key files**
+- `phase-loop-runtime/src/phase_loop_runtime/falsifier.py`
+- `phase-loop-runtime/src/phase_loop_runtime/review_stage.py`
+- `phase-loop-runtime/src/phase_loop_runtime/runner.py`
+- `phase-loop-runtime/src/phase_loop_runtime/governed_review.py`
+- `phase-loop-runtime/src/phase_loop_runtime/advisor_board/backing.py`
+- `phase-loop-runtime/src/phase_loop_runtime/panel/`
+
+**Depends on**
+- REVIEWTRUTH
+
+**Produces**
+- IF-0-EXECFIND-1
+
+**Spec closeout policy**
+As in V10 for this phase.
+
+---
+
+### Phase 16 — Broker, Train, and Channel Residuals (RESIDUAL)
+
+**Objective**
+Carried from V10 Phase 9 unchanged; its RED tests are already on `main`.
+
+**Exit criteria**
+- [ ] EC-RESIDUAL-0 — Carried; as defined in V10.
+- [ ] EC-RESIDUAL-1 — Carried; as defined in V10.
+- [ ] EC-RESIDUAL-2 — Carried; as defined in V10.
+- [ ] EC-RESIDUAL-3 — Carried; as defined in V10.
+- [ ] EC-RESIDUAL-4 — Carried; as defined in V10.
+- [ ] EC-RESIDUAL-5 — Carried; as defined in V10.
+- [ ] EC-RESIDUAL-6 — Carried; as defined in V10.
+- [ ] EC-RESIDUAL-7 — Carried; as defined in V10. The F841 inventory is re-derived at planning time.
+
+**Scope notes**
+- Lanes follow the V10 plan's SL-1 to SL-5; SL-3's panel edits target the split modules.
+- Depends on REVIEWTRUTH because both write `runner.py`, `cli.py`, `launcher.py` and the panel modules; as debt work it goes second.
+
+**Non-goals**
+- As in V10.
+
+**Key files**
+- `phase-loop-runtime/src/phase_loop_runtime/train_runner.py`
+- `phase-loop-runtime/src/phase_loop_runtime/convergence/broker/verbs.py`
+- `phase-loop-runtime/src/phase_loop_runtime/cli.py`
+- `phase-loop-runtime/src/phase_loop_runtime/launcher.py`
+- `phase-loop-runtime/src/phase_loop_runtime/runner.py`
+- `phase-loop-runtime/src/phase_loop_runtime/claude_channel_sidecar.py`
+- `phase-loop-runtime/src/phase_loop_runtime/legible_evidence.py`
+- `phase-loop-runtime/src/phase_loop_runtime/panel/`
+- `ruff.toml`
+
+**Depends on**
+- HARDEN
+- PANELSPLIT
+- REVIEWTRUTH
+
+**Produces**
+- (none)
+
+**Spec closeout policy**
+As in V10 for this phase.
+
+---
+
+### Phase 17 — Ratification Tiers and Ruling Ledger (RATIFY)
+
+**Objective**
+Carried from V10 Phase 16 unchanged; its plan is in agent-harness#1203.
+
+**Exit criteria**
+- [ ] EC-RATIFY-0 — Carried; as defined in V10.
+- [ ] EC-RATIFY-1 — Carried; as defined in V10.
+- [ ] EC-RATIFY-2 — Carried; as defined in V10.
+- [ ] EC-RATIFY-3 — Carried; as defined in V10.
+- [ ] EC-RATIFY-4 — Carried; as defined in V10.
+- [ ] EC-RATIFY-5 — Carried; as defined in V10.
+
+**Scope notes**
+- Decompose into 2 lanes as V10 does: lane A prompt partition, ruling classes and gate posture; lane B the ruling ledger. Plan in agent-harness#1203; SL-0 is agent-harness#1208.
+
+**Non-goals**
+- As in V10.
+
+**Key files**
+- `phase-loop-runtime/src/phase_loop_runtime/ratification_policy.py`
+- `phase-loop-runtime/src/phase_loop_runtime/gate_posture.py`
+- `phase-loop-runtime/src/phase_loop_runtime/plan_manifest.py`
+- `phase-loop-runtime/src/phase_loop_runtime/ruling_ledger.py`
+- `phase-loop-runtime/src/phase_loop_runtime/panel/`
+- `plans/rulings.jsonl`
+- `skills-src/`
+
+**Depends on**
+- EXECFIND
+- PRESROUTE
+
+**Produces**
+- IF-0-RATIFY-1
+
+**Spec closeout policy**
+As in V10 for this phase.
 
 ---
 
@@ -801,6 +852,9 @@ Carried from V10 Phase 17 unchanged.
 
 **Key files**
 - `phase-loop-runtime/src/phase_loop_runtime/governance_profile.py`
+- `phase-loop-runtime/src/phase_loop_runtime/governed_review.py`
+- `phase-loop-runtime/src/phase_loop_runtime/cli.py`
+- `phase-loop-runtime/src/phase_loop_runtime/advisor_board/config.py`
 - `docs/TEAM-ONBOARDING.md`
 
 **Depends on**
@@ -810,70 +864,96 @@ Carried from V10 Phase 17 unchanged.
 **Produces**
 - IF-0-GOVSETUP-1
 
+**Spec closeout policy**
+As in V10 for this phase.
+
 ## Phase Dependency DAG
 
 ```
 Wave 1 (roots, all parallel)
-  TESTLOOP   LOOPFIX   REVBOUND   PARSCHED   PANELSPLIT   PANEL   HARDEN   RUNTIME   PRESROUTE
+  TESTLOOP  LOOPFIX  REVBOUND  PARSCHED  PANELSPLIT  HARDEN  RUNTIME  PRESROUTE
 
 Wave 2
-  HARDEN ──────────────────────────────▶ SCHED
-  PANELSPLIT, REVBOUND, PANEL ────────▶ REVIEWTRUTH
-  LOOPFIX ─────────────────────────────▶ REFLOOP
-  HARDEN, PANELSPLIT ──────────────────▶ RESIDUAL
-
-Wave 2 (continued)
-  RUNTIME ─▶ INTEG
+  PRESROUTE ─▶ PANEL
+  HARDEN ────▶ SCHED
+  LOOPFIX ───▶ REFLOOP
+  RUNTIME ───▶ INTEG
 
 Wave 3
-  REVIEWTRUTH ─▶ LEGLIFE
-  REVIEWTRUTH ─▶ EXECFIND
-
-Wave 4
-  EXECFIND, PRESROUTE ─▶ RATIFY
+  PANELSPLIT, REVBOUND, PANEL ─▶ REVIEWTRUTH
   INTEG ─▶ RELEASE
 
+Wave 4
+  REVIEWTRUTH ─▶ LEGLIFE
+  REVIEWTRUTH ─▶ EXECFIND
+  REVIEWTRUTH, HARDEN, PANELSPLIT ─▶ RESIDUAL
+
 Wave 5
+  EXECFIND, PRESROUTE ─▶ RATIFY
+
+Wave 6
   RATIFY, PANEL ─▶ GOVSETUP
 ```
 
 Edges:
+- PRESROUTE → PANEL
 - HARDEN → SCHED
+- LOOPFIX → REFLOOP
+- RUNTIME → INTEG
 - PANELSPLIT → REVIEWTRUTH
 - REVBOUND → REVIEWTRUTH
 - PANEL → REVIEWTRUTH
-- LOOPFIX → REFLOOP
-- HARDEN → RESIDUAL
-- PANELSPLIT → RESIDUAL
+- INTEG → RELEASE
 - REVIEWTRUTH → LEGLIFE
 - REVIEWTRUTH → EXECFIND
-- RUNTIME → INTEG
+- REVIEWTRUTH → RESIDUAL
+- HARDEN → RESIDUAL
+- PANELSPLIT → RESIDUAL
 - EXECFIND → RATIFY
 - PRESROUTE → RATIFY
-- INTEG → RELEASE
 - RATIFY → GOVSETUP
 - PANEL → GOVSETUP
 
-Critical path: PANELSPLIT → REVIEWTRUTH → EXECFIND → RATIFY → GOVSETUP (5 phases; v10's was 10).
-Wave 1 runs nine phases in parallel.
-
-## Execution Policy
-
-- phase scheduler: `concurrent` from PARSCHED's landing; before it, the coordinator runs wave-1 phases by hand in separate worktrees.
-- lane scheduler: on.
-- review: the delivered GOVLEAN tiered policy and PRESROUTE president route as on `main`, bounded by REVBOUND once it lands. V10's per-phase review mandates in its `## Execution Notes` are not carried.
+Critical path: PRESROUTE → PANEL → REVIEWTRUTH → EXECFIND → RATIFY → GOVSETUP (six phases;
+v10's was ten). PRESROUTE is a single ledger change, so in practice the path starts at PANEL.
+Wave 1 runs eight phases in parallel.
 
 ## Execution Notes
 
-- **Planning.** Each phase gets `plans/phase-plan-v11-<ALIAS>.md`. A carried phase's plan references its V10 plan as a frozen input and covers only the remaining slices; it does not restate V10 goals.
-- **Concurrent planning.** All nine wave-1 phases can be planned at once; so can SCHED, REFLOOP and RESIDUAL as soon as their dependencies land.
-- **Declared overlaps between independent phases** (excluded pairwise, not serialized):
-  PANEL and PARSCHED on `runner.py`; PANEL and LOOPFIX on `cli.py`; REVIEWTRUTH and PARSCHED
-  on `runner.py` (REVIEWTRUTH-8's seam); RESIDUAL and INTEG on `train_runner.py` and
-  `convergence/broker/verbs.py`. Any other overlap found at planning time is added here before the
-  plan is approved.
-- **Single-writer files.** `plans/manifest.json`: every phase appends, and none rewrites another phase's rows. `specs/phase-plans-v11.md`: amended only through `Depends on` or goal retirement.
-- **Abort threshold.** If any phase lands three plan-amendment PRs before its first implementation PR, stop that phase and diagnose (`docs/agent-phase-convergence.md`).
+- **Schedulers.** Until PARSCHED lands, the coordinator runs ready phases concurrently by hand in
+  separate worktrees. After it lands, run with `--phase-scheduler concurrent`; the lane
+  scheduler is also on.
+- **Executors and review.** The coordinator picks an executor per phase; author-vendor rotation
+  is not required. Review follows the delivered GOVLEAN tiered policy and the PRESROUTE
+  president route as on `main`, bounded by REVBOUND once it lands. V10's per-phase review
+  mandates and maximum-effort planning policy do not carry.
+- **Planning.** Each phase gets `plans/phase-plan-v11-<ALIAS>.md`. A carried phase's plan
+  references its V10 plan as a frozen input and covers only the remaining slices; it does not
+  restate V10 goals. Carried plans name the specific `phase_loop_runtime/panel/` modules they
+  own (EC-PANELSPLIT-3), which removes most `panel/` overlaps below.
+- **Overlaps between independent phases.** Each pair below shares a Key file but has no
+  dependency path between them. The pair must not run concurrently; neither waits for the other
+  to finish. Paths are relative to `phase-loop-runtime/src/phase_loop_runtime/` unless they start
+  at the repo root. The list is derived from this roadmap's Key files; EC-PARSCHED-3 makes the
+  check mechanical.
+  - TESTLOOP / RELEASE: `phase-loop-runtime/pyproject.toml`
+  - LOOPFIX / PANEL, REVIEWTRUTH, RESIDUAL, GOVSETUP: `cli.py`
+  - LOOPFIX / RATIFY: `plan_manifest.py`, `skills-src/ (plan-phase and execute-phase scripts)`
+  - PARSCHED / PANEL, REVIEWTRUTH, EXECFIND, RESIDUAL: `runner.py`
+  - PANEL / INTEG, RELEASE: `train_runner.py`
+  - SCHED / REVIEWTRUTH, RESIDUAL: `launcher.py`
+  - REFLOOP / RATIFY: `skills-src/`
+  - LEGLIFE / EXECFIND, RESIDUAL, RATIFY: `panel/`
+  - EXECFIND / RESIDUAL: `panel/`, `runner.py`
+  - RESIDUAL / INTEG: `convergence/broker/verbs.py`, `train_runner.py`
+  - RESIDUAL / RATIFY: `panel/`
+  - RESIDUAL / RELEASE: `train_runner.py`
+  - RESIDUAL / GOVSETUP: `cli.py`
+- **Single-writer files.** `plans/manifest.json`: every phase appends its own rows and none
+  rewrites another phase's. `specs/phase-plans-v11.md`: changed only by amending `Depends on`
+  or by an explicit goal retirement.
+- **Abort threshold.** If a phase lands three plan-amendment PRs before its first
+  implementation PR, stop that phase and diagnose (`docs/agent-phase-convergence.md`).
 
 ## Verification
 
