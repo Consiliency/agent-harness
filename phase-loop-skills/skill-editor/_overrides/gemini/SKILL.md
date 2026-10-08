@@ -11,8 +11,8 @@ Applies a structured improvement plan to Harness skill files. It is deliberately
 
 Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, handoff roots, helper roots, and reflection roots.
 
-- Harness meta-skill source changes move through three tiers: canonical source at `<harness>-config/skills/<harness>-<skill>/SKILL.md`, harness-neutral bundle at `vendor/phase-loop-skills/<bare-skill>/SKILL.md`, and installed runtime roots at `~/.claude/skills/`, `~/.codex/skills/`, `~/.gemini/skills/`, and `~/.opencode/skills/`.
-- The harness-neutral bundle is currently bundle-derived-from-codex. Leave `vendor/phase-loop-skills/` and installed runtime roots stale until the end-of-v36 cutover; after edits, report bundle regeneration from the codex-derived source path plus `./bootstrap.sh` as the required follow-up. `./bootstrap.sh` installs the bundle with `python3 -m phase_loop_runtime.cli install --source vendor/phase-loop-skills --symlink --apply`.
+- Canonical source for every `<harness>-*` workflow skill is `skills-src/gemini/<harness>-<skill>/SKILL.md` in the agent-harness checkout (IF-0-CANON-1, `docs/phase-loop/skills-canonical-source.md`). Edit only there; `phase-loop-skills/` and the packaged `skills_bundle/` are generated, and a hand edit to them fails the parity gate.
+- After edits, run `python3 phase-loop-runtime/scripts/regenerate_skills_bundle.py` then `python3 phase-loop-runtime/scripts/sync_skills_bundle.py`; one source edit fans out to every generated copy.
 - Read the improvement plan and target `SKILL.md` before editing.
 - Use the active session's file-editing tool for manual edits.
 - Edit only skills named by the plan.
@@ -23,27 +23,26 @@ Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, h
 
 ## Pipeline
 
-The three-tier pipeline is canonical source -> harness-neutral bundle -> installed runtime roots. Edit only `<harness>-config/skills/<harness>-<skill>/SKILL.md` during this skill-editor workflow; bundle regeneration plus `./bootstrap.sh` is the explicit cutover trigger after approved canonical edits.
+`skills-src/gemini/<harness>-<skill>/` → `regenerate_skills_bundle.py` (→ `phase-loop-skills/`) → `sync_skills_bundle.py` (→ packaged `skills_bundle/`) → installed runtime roots. Edit only the first tier during this skill-editor workflow.
 
 ## Inputs
 
 - Plan path: explicit path, or latest `resolve_skill_bundle_root("gemini")/<harness>-skill-improvement-planner/plans/plan-v*.md`.
 - `--dry-run`: parse and report intended edits without changing files.
 
-If no plan path is explicit, first check the current repo and branch handoff from `<harness>-skill-improvement-planner` using `<harness>-config/shared/runtime-state.md`: read the repo-local handoff resolver target `.dev-skills/handoffs/<harness>-skill-improvement-planner/latest.md`, validate `from`, `repo`, `repo_root`, `branch`, `branch_slug`, `commit`, and `artifact`, then use the artifact only if it exists under the current repo root. Ignore missing or mismatched handoffs unless the user explicitly asks to reuse cross-branch state.
+If no plan path is explicit, first check the current repo and branch handoff from `<harness>-skill-improvement-planner` using the repo/branch/run-isolated layout from `phase_loop_runtime.skill_paths`: read the repo-local handoff resolver target `.dev-skills/handoffs/<harness>-skill-improvement-planner/latest.md`, validate `from`, `repo`, `repo_root`, `branch`, `branch_slug`, `commit`, and `artifact`, then use the artifact only if it exists under the current repo root. Ignore missing or mismatched handoffs unless the user explicitly asks to reuse cross-branch state.
 
 ## Workflow
 
 1. Resolve and read the plan.
 2. Parse:
-   - `reflections_consumed`;
+   - `corpus_manifest` and `reflections_consumed`;
    - recommendations by skill;
    - cross-cutting recommendations;
    - contradictions.
 3. If contradictions exist, stop and ask the user how to resolve them unless the plan already contains a resolution.
 4. Validate target skills:
-   - source path under `<harness>-config/skills/<harness>-<skill>/SKILL.md` when working in this dotfiles repo;
-   - symlink/runtime path under `resolve_skill_bundle_root("gemini")/<skill>/SKILL.md` only when no source path exists.
+   - source path `skills-src/gemini/<harness>-<skill>/SKILL.md` under the agent-harness checkout must exist; when it does not, mark the recommendation failed (never edit an installed or generated copy instead);
 5. For `--dry-run`, report the target files and recommendation summaries, then stop.
 6. Apply recommendations:
    - group changes per target skill to avoid conflicting edits;
@@ -54,10 +53,11 @@ If no plan path is explicit, first check the current repo and branch handoff fro
    - YAML frontmatter parses;
    - `name` matches the skill directory intent;
    - `description` clearly states trigger scope and non-scope;
-   - referenced files exist.
+   - referenced files exist;
+   - `phase-loop-runtime/tests/test_skills_canon_parity.py` and `test_skills_bundle_drift.py` pass after regeneration.
 8. Archive reflections:
-   - move successfully consumed reflection files to an `archive/` directory under the same repo and branch subtree;
-   - leave reflections in place for failed recommendations.
+   - run `python3 -m phase_loop_runtime.reflection_corpus archive --manifest <corpus_manifest>`, adding `--exclude <path>` for every reflection supporting a failed recommendation; it moves each consumed file to `archive/` under the same repo and branch subtree;
+   - reflections the plan excluded (duplicates, repo-specific, capped) are consumed too and archive with the rest.
 
 ## Failure Policy
 
@@ -78,7 +78,7 @@ Report:
 - reflections archived;
 - validation commands run.
 
-If writing self-improvement state, resolve handoff writes through `shared/phase-loop/handoff_path.py` and the repo-local handoff resolver; legacy harness handoff roots are read only for migration. Follow `<harness>-config/shared/runtime-state.md` and use Harness paths only:
+If writing self-improvement state, resolve handoff writes through `shared/phase-loop/handoff_path.py` and the repo-local handoff resolver; legacy harness handoff roots are read only for migration. Follow the repo/branch/run-isolated layout from `phase_loop_runtime.skill_paths` and use Harness paths only:
 
 - Reflection: `resolve_skill_bundle_root("gemini")/<harness>-skill-editor/reflections/<repo_hash>/<branch_slug>/<run_id>.md`
 - Handoff: `<repo>/.dev-skills/handoffs/<harness>-skill-editor/<run_id>.md`

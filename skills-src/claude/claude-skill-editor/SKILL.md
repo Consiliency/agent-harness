@@ -7,19 +7,17 @@ description: "Claude Code skill editor. Applies plans from claude-skill-improvem
 
 ## Runtime State
 
-For reflections, handoffs, and latest handoff pointers, follow `claude-config/shared/runtime-state.md`. This repo/branch/run-isolated contract supersedes any older flat closeout examples retained for historical context in this skill.
+For reflections, handoffs, and latest handoff pointers, follow the repo/branch/run-isolated layout from `phase_loop_runtime.skill_paths`. That contract supersedes any older flat closeout examples retained for historical context in this skill.
 
-Applies the plan produced by `claude-skill-improvement-planner` to the target SKILL.md files. Interprets each recommendation, edits the file, mirrors across repos if the skill is dual-homed, and archives the reflections the plan consumed so they won't drive another pass.
+Applies the plan produced by `claude-skill-improvement-planner` to the target SKILL.md files. Interprets each recommendation, edits the canonical source, regenerates the bundle, and archives the reflections the plan consumed so they won't drive another pass.
 
 ## Pipeline
 
-Claude meta-skill source changes move through three tiers:
+Canonical source for every `claude-*` workflow skill is `skills-src/claude/claude-<skill>/SKILL.md` in the agent-harness checkout (IF-0-CANON-1, `docs/phase-loop/skills-canonical-source.md`):
 
-1. Canonical source: `claude-config/claude-skills/claude-<skill>/SKILL.md`.
-2. Harness-neutral bundle: `vendor/phase-loop-skills/<bare-skill>/SKILL.md`, currently bundle-derived-from-codex.
-3. Installed runtime roots: `~/.claude/skills/`, `~/.codex/skills/`, `~/.gemini/skills/`, and `~/.opencode/skills/`.
-
-Edit only the canonical source tier during skill-editor runs. Leave the neutral bundle and installed runtime roots stale until the end-of-v36 cutover. After successful edits, report that the required follow-up is bundle regeneration from the codex-derived source path plus `./bootstrap.sh`, which installs the bundle with `python3 -m phase_loop_runtime.cli install --source vendor/phase-loop-skills --symlink --apply`.
+1. Canonical source: `skills-src/claude/claude-<skill>/` (edit here, nowhere else).
+2. Generated bundle: `python3 phase-loop-runtime/scripts/regenerate_skills_bundle.py` → `phase-loop-skills/`, then `python3 phase-loop-runtime/scripts/sync_skills_bundle.py` → packaged `skills_bundle/`. A hand edit to a generated copy fails the parity gate.
+3. Installed runtime roots: `~/.claude/skills/`, `~/.codex/skills/`, `~/.gemini/skills/`, and `~/.config/opencode/skills/`.
 
 ## When to use
 
@@ -37,8 +35,7 @@ Edit only the canonical source tier during skill-editor runs. Leave the neutral 
 |---|---|---|
 | `<plan-path>` | no | Absolute path to a plan produced by `claude-skill-improvement-planner`. Default: read `resolve_skill_bundle_root("claude")/claude-skill-improvement-planner/latest.md`'s `artifact:` field. |
 | `--dry-run` | no | Parse the plan and print what WOULD change without editing any files. |
-| `--no-push` | no | Commit but skip `git push`. Default: push. |
-| `--no-mirror` | no | Edit dotfiles only; skip team-repo mirror. |
+| `--no-push` | no | Commit but skip `git push`. Default: push the feature branch. |
 
 ## Workflow
 
@@ -62,8 +59,9 @@ Read the plan file. Extract:
   - `from: claude-skill-improvement-planner` (validate)
   - `timestamp:`
   - `min_reflections:`
+  - `corpus_manifest:` — the collector manifest the archive step reads
   - `reflections_consumed:` — list of absolute paths (this is the archival worklist)
-- **Recommendations per skill** — `### <skill-name>` subheadings under `## Recommendations by skill`. For each subheading, collect every `**Change**:` bullet with its `**Rationale**:` and `**Supporting reflections**:` lines.
+- **Recommendations per skill** — `### <skill-name>` subheadings under `## Recommendations by skill`. For each subheading, collect every `**Change**:` bullet with its `**Rationale**:`, `**Target**:` and `**Supporting reflections**:` lines.
 - **Cross-cutting recommendations** — same structure under `## Cross-cutting recommendations`; these name multiple skills each.
 - **Speculative / low-confidence notes** — record but do not act on.
 - **Contradictions surfaced** — record and print to user; do not auto-resolve. If contradictions exist, surface before applying and offer to skip affected recommendations.
@@ -73,7 +71,7 @@ Build a per-skill work list. Each entry: `(skill_name, change_text, rationale, s
 ### Step 2 — Validate
 
 - Every `reflections_consumed` path exists on disk. If any are missing → warn the user; skip them for archival but continue with edits.
-- Every target skill named in recommendations has a canonical SKILL.md at `claude-config/claude-skills/claude-<skill>/SKILL.md` when working in this dotfiles repo; use `resolve_skill_bundle_root("claude")/<skill>/SKILL.md` only as a runtime fallback when no canonical source path exists. If missing → fail that recommendation, note in the outcome report.
+- Every target skill named in recommendations has a canonical SKILL.md at `skills-src/claude/claude-<skill>/SKILL.md` under the agent-harness checkout. If missing → fail that recommendation and note it in the outcome report; never edit an installed or generated copy instead.
 - Detect double-application: if the plan's timestamp is already recorded in `resolve_skill_bundle_root("claude")/claude-skill-editor/applied-plans.log`, ask via `AskUserQuestion` with `[apply again, abort]` — applying twice is usually wrong.
 
 On `--dry-run`, skip to Step 7 (print the worklist and exit).
@@ -101,54 +99,50 @@ Track per-recommendation outcomes. Don't stop on individual failures — collect
 
 Dispatch in parallel where safe: multiple recommendations targeting different skills can run concurrently. Multiple recommendations targeting the **same** skill must serialize (sequential Edit calls to the same file can conflict).
 
-### Step 4 — Mirror to team repo (if `--no-mirror` not set)
+### Step 4 — Regenerate and gate
 
-For each successfully edited dotfiles SKILL.md at `~/code/dotfiles/claude-config/skills/<skill>/`, check whether a counterpart exists in `~/code/claude-code-skills/` (under `planning-chain/`, `efficiency-kit/`, or `meta/`).
+From the agent-harness checkout root:
 
-- If counterpart exists → `cp` the edited SKILL.md over.
-- If absent → note in the outcome report; the skill either isn't shipped to the team repo, or is at a non-standard path the mirror didn't find.
+```bash
+python3 phase-loop-runtime/scripts/regenerate_skills_bundle.py
+python3 phase-loop-runtime/scripts/sync_skills_bundle.py
+uv run --quiet --with pytest --with-editable ./phase-loop-runtime python -m pytest \
+  phase-loop-runtime/tests/test_skills_canon_parity.py phase-loop-runtime/tests/test_skills_bundle_drift.py -q
+```
 
-Skip mirror for scripts in `_shared/` (they map to `tools/` in the team repo); mirror those only if explicitly edited — same pattern via cp.
+If either gate fails, treat every recommendation applied this run as failed for archival purposes.
 
 ### Step 5 — Archive consumed reflections
 
-Per the plan's archival directive. For each reflection in `reflections_consumed`:
+Per the plan's archival directive:
 
-1. Collect every recommendation that cited this reflection (via `**Supporting reflections**`).
-2. If ALL citing recommendations succeeded → archive the reflection:
+1. Collect the reflections cited (via `**Supporting reflections**`) by any recommendation that failed.
+2. Archive everything else the manifest consumed:
    ```bash
-   mkdir -p <reflection-parent>/archive
-   mv <reflection> <reflection-parent>/archive/<basename>
+   python3 -m phase_loop_runtime.reflection_corpus archive --manifest <corpus_manifest> \
+     --exclude <path-cited-by-a-failed-recommendation> ...
    ```
-3. If ANY citing recommendation failed → leave the reflection in place so next cycle can reconsider.
+   Run it with `--dry-run` first and check the count.
+3. Excluded paths stay in place so the next cycle can reconsider them.
 
-A reflection cited by zero surviving recommendations (e.g., its theme was rejected as repo-specific) is still archived — it's been considered.
+A reflection cited by zero surviving recommendations (e.g., its theme was rejected as repo-specific, or the collector filtered it) is still archived — it's been considered.
 
 ### Step 6 — Commit + push
 
-Dotfiles:
+Commit in the agent-harness checkout on a feature branch, never on `main`:
 
 ```bash
-cd ~/code/dotfiles
-git add -A claude-config/skills/
+git add skills-src/ phase-loop-skills/ phase-loop-runtime/src/phase_loop_runtime/skills_bundle/
 git commit -m "chore(skills): apply improvement plan <plan-timestamp>
 
-Applied N of M recommendations from <plan-path>. See the plan file for
-per-skill details. Reflections consumed this run moved to each skill's
-reflections/<repo_hash>/<branch_slug>/archive/ subdirectory.
+Applied N of M recommendations from <plan-path>. skills-src/ is the edit;
+phase-loop-skills/ and skills_bundle/ are regenerated output. Consumed
+reflections moved to each skill's reflections/<repo_hash>/<branch_slug>/archive/.
 
 Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 ```
 
-Team repo (if edits landed there):
-
-```bash
-cd ~/code/claude-code-skills
-git add -A
-git commit -m "chore: mirror skill edits from dotfiles improvement plan <plan-timestamp>"
-```
-
-`git push` in both unless `--no-push`.
+`git push` the feature branch unless `--no-push`. Opening and merging the PR follow the repo's own review rules.
 
 Append the plan's timestamp + path to `resolve_skill_bundle_root("claude")/claude-skill-editor/applied-plans.log` so Step 2's double-apply check has state to read.
 
@@ -180,8 +174,11 @@ Agent(
       ## What worked
       - <bullet about the SKILL's instructions>
 
+      ## What didn't
+      - <friction the SKILL's instructions caused or failed to prevent>
+
       ## Improvements to SKILL.md
-      - <specific, actionable change>
+      - <specific, actionable change, or "None.">
 
       Do NOT reference this project or the specific plan applied.
 
@@ -219,7 +216,7 @@ Exit message to user:
 > `<K>` reflections archived.
 > Reflection saved to `<REFLECTION_PATH>`.
 > Handoff written to `<REPO_LOCAL_HANDOFF>`.
-> Required cutover follow-up: regenerate the bundle from the codex-derived source path and run `./bootstrap.sh`.
+> Bundle regenerated; parity and drift gates `<pass|fail>`.
 >
 > Recommended next step: run `/clear`. The improved skill instructions take effect on the next pipeline invocation.
 

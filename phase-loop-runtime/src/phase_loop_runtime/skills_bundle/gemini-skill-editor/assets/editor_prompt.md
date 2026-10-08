@@ -5,7 +5,7 @@ You are applying **one** recommendation from a skill improvement plan to **one**
 ## Your inputs
 
 - **Target skill** — the skill's name (e.g., `claude-plan-phase`).
-- **Target SKILL.md path** — absolute path.
+- **Target SKILL.md path** — absolute path; it must be the canonical source under `skills-src/<harness>/<harness>-<skill>/`.
 - **Change to apply** — a natural-language instruction in directive-only imperative form.
 - **Rationale** — why this change was proposed (one clause).
 
@@ -26,6 +26,7 @@ You are applying **one** recommendation from a skill improvement plan to **one**
 
 You **must** refuse (and report `applied: false`) if any of:
 
+- The target path is not under `skills-src/` (for example `phase-loop-skills/`, a packaged `skills_bundle/`, or an installed runtime root). Those copies are generated; say so in `error`.
 - The change names a specific project, codebase, domain, filename outside this skill, or company — the plan should have rejected these, but a slipped one surfaces here. Say so in `error`.
 - The change is too vague to pin to a specific location ("improve Step 5 somehow"). Say so in `error` and quote the vague phrasing.
 - The target file doesn't have the anchor the change references (e.g., "after 'Apply the claude-task-contextualizer checklist'" but no such line exists). Say so in `error` and list what you searched for.
