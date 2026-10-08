@@ -99,14 +99,14 @@ somewhere to refuse. A portable analog is given for each.
 
 ### 1. Watch plan size (portable)
 
-Our stalled plan was 20,839 words; its replacement was 2,173. We do not, however, enforce a
-fixed number: this repository's own planning skill says *"Be as short as possible while citing
-every load-bearing file:line. No fixed word cap."* Treat size as a signal to investigate, not
-a limit to satisfy.
+Our stalled plan was 20,839 words; its replacement was 2,173.
 
 A cap applied naively pushes people to under-specify, which fails just as expensively. The
 useful discipline is *where* the length lives: long frozen contracts belong in artifacts the
-plan references; the execution plan itself stays short and points at them.
+plan references; the execution plan itself stays short and points at them. So the cap applies
+to the execution plan only. Here it is 3000 words, and the plan validator warns above it
+(check (S) in `validate_plan_doc.py`). Referenced frozen artifacts carry no cap. When a plan
+trips the warning, move detail out into an artifact rather than deleting it.
 
 For a worked example of what a compliant plan contains at this length, see
 `plans/phase-plan-v10-GOVLEAN.md` in this repository.

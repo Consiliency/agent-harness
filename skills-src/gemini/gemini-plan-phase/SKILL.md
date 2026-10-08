@@ -221,6 +221,6 @@ Handoff frontmatter must include `from: gemini-plan-phase`, `timestamp:`, `repo:
 
 - **Content & Behavior Falsifiers**: Runtime evidence primitives evaluate content and behavior bound properties; never commit topology or future-history pins to plan specifications.
 - **External-Only Pins**: Pinned inputs are restricted strictly to declared external inputs in a dedicated section.
-- **Plan Budget**: Plan size is governed by a 3000-word budget with explicit justification required above it when exceeded.
+- **Plan Budget**: The execution plan document is capped at 3000 words; `validate_plan_doc.py` check (S) warns above it. Frozen artifacts the plan references (contracts, schemas, freeze-gate payloads) have no cap: move long detail there and point at it rather than inlining it.
 - **Review Policy**: Ratified review requires cross-vendor ablation evidence for all Sol-authored plans.
 - **Proof-Cost Findings**: Flag proof-cost findings when evaluation is constrained to a single node over roughly five minutes or when a test run is unable to report multiple failures.

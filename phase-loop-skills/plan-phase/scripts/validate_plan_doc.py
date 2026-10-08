@@ -50,6 +50,9 @@ every issue at once):
       (test, snapshot, lockfile, `.env.example`, migration test) that no lane
       owns, or pins a timestamped migration name the generator will choose.
 
+  (S) WARN when the execution plan exceeds PLAN_WORD_BUDGET words (frontmatter
+      excluded). Referenced frozen artifacts are uncapped; move detail there.
+
 Design: zero external deps (stdlib only). Parses markdown by regex on
 stable headings produced by the claude-plan-phase template — not a full
 Markdown parser, which would be overkill.
@@ -830,6 +833,34 @@ def _check_l_ui_visual_verification(src: str) -> Findings:
     ]
 
 
+# --- (S) execution-plan word budget -------------------------------------------------------
+
+PLAN_WORD_BUDGET = 3000
+
+
+def _plan_body(src: str) -> str:
+    """Plan text with any leading YAML frontmatter removed."""
+    lines = src.splitlines()
+    if lines and lines[0].strip() == "---":
+        for i, line in enumerate(lines[1:], start=1):
+            if line.strip() == "---":
+                return "\n".join(lines[i + 1:])
+    return src
+
+
+def _check_s_plan_word_budget(src: str) -> Findings:
+    """agent-harness#1302: the execution plan is capped; frozen artifacts it references
+    are not. Counts whitespace-separated words like `wc -w`. Autonomy-first WARN."""
+    words = len(_plan_body(src).split())
+    if words <= PLAN_WORD_BUDGET:
+        return []
+    return [
+        f"(S) WARN: execution plan is {words} words, over the {PLAN_WORD_BUDGET}-word "
+        "budget. Move frozen detail (contracts, schemas, freeze-gate payloads) into a "
+        "referenced artifact, which carries no cap, and point at it from the plan."
+    ]
+
+
 # --- (P) goal-ID coverage: acceptance references the roadmap's EC-<ALIAS>-<N> goals -----
 # check (P) uses ONLY the AUTHORITATIVE Increment-1 runtime parse (goal_coverage +
 # roadmap_lint), the exact functions the goal-coverage gate calls — so the validator and
@@ -1560,6 +1591,7 @@ def main(argv: List[str]) -> int:
     findings.extend(_check_j_docs_lane(src))
     findings.extend(_check_k_acceptance_testable(src))
     findings.extend(_check_l_ui_visual_verification(src))
+    findings.extend(_check_s_plan_word_budget(src))
     findings.extend(_check_m_release_docs_coverage(src, lanes, lane_sections_parsed))
     findings.extend(_check_n_post_dispatch_reducer(src, lanes, lane_sections_raw, lane_sections_parsed))
     if repo_root is not None:

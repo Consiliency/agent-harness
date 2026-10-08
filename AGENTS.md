@@ -42,8 +42,10 @@ becomes unsatisfiable and every landing forces another amendment.
 - **Where the roadmap declares goal IDs** (`EC-<ALIAS>-<N>`), reference them; never
   restate or paraphrase. A paraphrase drifts and then two documents disagree about
   "done". Legacy phases without IDs remain supported.
-- **Keep plans short and let frozen artifacts carry the detail.** There is no
-  fixed word cap; treat length as a signal to investigate.
+- **Keep plans short and let frozen artifacts carry the detail.** The execution
+  plan is capped at 3000 words (`validate_plan_doc.py` check (S) warns above it);
+  the frozen artifacts it references have no cap. When a plan runs long, move the
+  detail into an artifact rather than cutting it.
 - **Watch the ratio.** If plan amendments start outnumbering implementation, stop
   and diagnose rather than pushing through.
 
