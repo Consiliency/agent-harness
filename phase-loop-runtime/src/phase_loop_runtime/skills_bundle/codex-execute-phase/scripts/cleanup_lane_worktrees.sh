@@ -14,14 +14,20 @@
 #   - Skips the orchestrator's own worktree (identified by matching the
 #     `git rev-parse --show-toplevel` of the current cwd).
 #   - For each remaining worktree whose branch matches <branch-pattern>:
-#       * `git worktree remove --force <path>`
+#       * Skips it when the tree is DIRTY (`git -C <path> status --porcelain`
+#         non-empty, untracked files included). A lane worktree with uncommitted
+#         work has not been fully merged; removing it destroys that work
+#         irrecoverably (agent-harness#1300).
+#       * otherwise `git worktree remove --force <path>`
 #       * If the branch also matches 'worktree-*' or 'phase/*/sl-*',
 #         `git branch -D <branch>` (salvage footgun: -D, not -d).
 #   - Never blocks the phase: exit 0 even on individual cleanup failures;
 #     each failure is logged to stderr.
 #
 # Rationale: Step 7 post-merge cleanup. Keeps human-named branches intact
-# (skills/*, feature/*, fix/*) even when accidentally matched by glob.
+# (skills/*, feature/*, fix/*) even when accidentally matched by glob, and keeps
+# any worktree holding uncommitted work regardless of branch name. Matching the
+# pattern authorizes removal of a *finished* lane, never of unsaved work.
 
 set -uo pipefail
 
@@ -81,6 +87,19 @@ while IFS= read -r path; do
     # Apply the branch pattern.
     # shellcheck disable=SC2053
     if [[ "$branch" != $pattern ]]; then
+        skipped=$((skipped + 1))
+        continue
+    fi
+    # Refuse to remove a worktree with uncommitted work. `status --porcelain`
+    # includes untracked files on purpose: an untracked artifact may be the only
+    # copy, and `--force` would discard it with no recovery path.
+    if ! wt_status="$(git -C "$path" status --porcelain 2>/dev/null)"; then
+        echo "cleanup_lane_worktrees: could not read status for $path (branch=$branch), skipping" >&2
+        skipped=$((skipped + 1))
+        continue
+    fi
+    if [[ -n "$wt_status" ]]; then
+        echo "cleanup_lane_worktrees: KEEP $path (branch=$branch) — dirty tree, $(printf '%s\n' "$wt_status" | grep -c .) uncommitted path(s)" >&2
         skipped=$((skipped + 1))
         continue
     fi
