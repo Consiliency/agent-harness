@@ -575,16 +575,13 @@ class BrokerService:
 
         tid = envelope.transaction_id
 
-        def refuse(why: str) -> PublicationRecoveryRequired:
+        def refuse(why: str, next_step: str) -> PublicationRecoveryRequired:
             return PublicationRecoveryRequired(
                 f"publish transaction {tid} is {transaction.state} for the current head "
                 f"{request.head_sha} (effect key {key!r}), but {why}. Fresh admission requires "
-                "COMMITTED_HEAD_RESOLVED; an already-admitted transaction is re-admitted only after "
-                "a partition rotation disposes its effect attested_not_landed. Supported next step: "
-                "run the rotation preflight, then `phase-loop fabpub-rotate-partition` with a "
-                "PartitionRotationAttestation.v1 that disposes this key attested_not_landed and "
-                "carries this transaction_id from the adapter-start owner; restart the broker and "
-                "retry the same publication. No owner, admission or provider call was made."
+                "COMMITTED_HEAD_RESOLVED; an already-admitted transaction is re-admitted only "
+                "under an authenticated attested_not_landed rotation that binds it. "
+                f"Next step: {next_step}. No owner, admission or provider call was made."
             )
 
         try:
@@ -593,19 +590,34 @@ class BrokerService:
             # LegacyCutoverConflict is a RuntimeError; routing/compatibility
             # refusals are PermissionErrors.  All of them are the same answer.
             raise refuse(
-                f"the active rotation does not authenticate ({type(error).__name__}: {error})"
+                f"the active rotation does not authenticate ({type(error).__name__}: {error})",
+                "restore the rotation's receipt, journal and sealed inventory bytes; do not "
+                "rotate again over a generation that does not authenticate",
             ) from error
         if recovery is None:
-            raise refuse("the active partition generation adjudicates no attested_not_landed disposition for it")
+            # ``execute`` replays any record the active generation holds for the
+            # key, so reaching here means it holds none: the key is not blocked
+            # in the active generation and no rotation can dispose it now.
+            raise refuse(
+                "the active partition generation adjudicates no attested_not_landed disposition "
+                "for it, and holds no evidence for the key",
+                "a rotation cannot help here, because an attestation only disposes keys that are "
+                "blocked in the active generation. If an earlier rotation disposed this key and a "
+                "later rotation superseded it, that is agent-harness#1310; otherwise inspect the "
+                "publish checkpoint and the broker evidence with the maintainer",
+            )
         if recovery["transaction_id"] is None:
             raise refuse(
                 f"rotation {recovery['cutover_id']!r} disposes the key attested_not_landed but binds no "
-                "transaction id (its predecessor had no adapter-start owner for the key)"
+                "transaction id (its predecessor had no adapter-start owner for the key)",
+                "escalate to the maintainer; the disposition cannot be bound to this transaction "
+                "and must not be inferred",
             )
         if recovery["transaction_id"] != tid:
             raise refuse(
                 f"rotation {recovery['cutover_id']!r} adjudicated transaction "
-                f"{recovery['transaction_id']}, not this one"
+                f"{recovery['transaction_id']}, not this one",
+                f"retry with the publication context of transaction {recovery['transaction_id']}",
             )
         # The provider request is built from THIS call's base/draft/pr_body; the
         # attestation adjudicated the transaction as frozen, so they must be its own.
@@ -616,7 +628,8 @@ class BrokerService:
         if differing:
             raise refuse(
                 f"this request's {', '.join(differing)} differ from the transaction's frozen values; "
-                "a recovery re-publishes exactly what was admitted"
+                "a recovery re-publishes exactly what was admitted",
+                f"retry with the transaction's own {', '.join(differing)}",
             )
         return {
             **recovery,
@@ -660,7 +673,9 @@ class BrokerService:
         # authenticated attested_not_landed rotation, and refused typed before
         # any write otherwise.  This runs AFTER the unsealed-owner resolution
         # above, so a crashed attempt still becomes the durable ambiguity a
-        # rotation adjudicates.  The checkpoint is never advanced or rewound.
+        # rotation adjudicates.  The broker never moves the checkpoint; the SDK
+        # closeout seals it after the terminal, and the recovery record keeps the
+        # state it was recovered from.
         recovery = (
             self._recovery_authority(request, key, envelope, transaction)
             if transaction.state in _ADMITTED_TRANSACTION_STATES

@@ -55,20 +55,60 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _atomic_json(path: Path, payload: dict) -> None:
+def _atomic_json(path: Path, payload: dict, *, mode: int = 0o666) -> None:
+    """Replace ``path`` atomically.  The temporary file is created exclusively and
+    no-follow under a unique name, so neither a stale nor a planted temporary is
+    ever written through.  ``mode`` passes through the umask; the default keeps
+    the historical permissions of every existing writer."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.parent / f".{path.name}.{os.getpid()}.tmp"
+    temporary = path.parent / f".{path.name}.{os.getpid()}.{os.urandom(8).hex()}.tmp"
     body = json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n"
-    with temporary.open("w", encoding="utf-8") as stream:
-        stream.write(body)
-        stream.flush()
-        os.fsync(stream.fileno())
-    os.replace(temporary, path)
+    descriptor = os.open(
+        str(temporary), os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, mode
+    )
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(body)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        with contextlib.suppress(FileNotFoundError):
+            temporary.unlink()
+        raise
     descriptor = os.open(str(path.parent), os.O_RDONLY)
     try:
         os.fsync(descriptor)
     finally:
         os.close(descriptor)
+
+
+def _read_json_nofollow(path: Path) -> dict | None:
+    """``None`` when ``path`` is absent; its JSON object when it is a regular file.
+
+    A symlink, a non-regular file, or bytes that are not a JSON object refuse
+    with ``PublishTransactionConflict`` (agent-harness#1296 recovery records).
+    """
+    try:
+        descriptor = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW)
+    except FileNotFoundError:
+        return None
+    except OSError as error:
+        raise PublishTransactionConflict(f"{path} is not a regular file: {error}") from error
+    import stat
+
+    if not stat.S_ISREG(os.fstat(descriptor).st_mode):
+        os.close(descriptor)
+        raise PublishTransactionConflict(f"{path} is not a regular file")
+    with os.fdopen(descriptor, "rb") as stream:
+        raw = stream.read()
+    try:
+        value = json.loads(raw)
+    except ValueError as error:
+        raise PublishTransactionConflict(f"{path} is not JSON: {error}") from error
+    if not isinstance(value, dict):
+        raise PublishTransactionConflict(f"{path} is not a JSON object")
+    return value
 
 
 def _git(repo: Path, *args: str, input: bytes | None = None, env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
@@ -485,35 +525,36 @@ class PublishTransaction:
     def clear_active_pointer(self) -> None:
         self.store.clear_active(self.transaction_id)
 
-    def recovery_records(self) -> tuple[Path, ...]:
-        """Every recovery provenance file recorded for this transaction."""
-        if not self.store.root.exists():
-            return ()
-        return tuple(sorted(self.store.root.glob(f"{self.transaction_id}.recovery.*.json")))
-
     def record_recovery(self, record: dict) -> Path:
         """Write-once provenance for re-admitting this transaction (agent-harness#1296).
 
-        The checkpoint stays exactly as it is: its state is never advanced or
-        rewound and its bytes never change.  The re-admission is recorded beside
-        it, one file per successor generation, BEFORE the broker writes an owner
-        or admission, so the history reads: admitted, outcome ambiguous,
-        adjudicated not-landed by rotation X, re-admission authorized in
-        generation N.  The outcome itself lives in that generation's evidence.
-        A second write for the same generation must carry the same bytes.
+        The broker never moves the checkpoint during a recovery; the SDK
+        closeout (``publish_from_worktree``) seals it after the observed
+        terminal, which releases the active pointer.  The state the transaction
+        was recovered FROM is kept here, beside it, one file per successor
+        generation, written BEFORE the broker writes an owner or admission, so
+        the history reads: admitted, outcome ambiguous, adjudicated not-landed
+        by rotation X, re-admission authorized in generation N.  The outcome
+        itself lives in that generation's evidence.
+
+        The record is owner-only (0600), written atomically through an
+        exclusive no-follow temporary file, and read back no-follow.  A second
+        write for the same generation must carry the same bytes; an existing
+        record that is not a regular file, or not JSON, refuses typed.
         """
         if self.state not in PublishTransactionState.ORDERED[3:]:
             raise PublishTransactionConflict("only an admitted transaction is recovered")
         path = self.store.recovery_path(self.transaction_id, record["generation"])
         payload = {"schema": "PublishTransactionRecovery.v1", **record}
         with self.store.exclusive():
-            if path.exists():
-                if json.loads(path.read_text(encoding="utf-8")) != payload:
+            existing = _read_json_nofollow(path)
+            if existing is not None:
+                if existing != payload:
                     raise PublishTransactionConflict(
                         f"a different recovery is already recorded at {path}"
                     )
                 return path
-            _atomic_json(path, payload)
+            _atomic_json(path, payload, mode=0o600)
         return path
 
     def abandon(self) -> None:
@@ -1210,10 +1251,14 @@ def _human_publication_handoff(
         repository_common_dir=str(snapshot.common_dir),
         resume="retry publish_human_invoked_from_worktree with the same plan and verification artifact",
     )
-    if next_step == "adjudicate_publication_by_partition_rotation":
+    if next_step == "resolve_publication_recovery_refusal":
         handoff.update(
-            recovery_procedure="docs/fabpub-partition-rotation-runbook.md",
-            rotate_command=[
+            recovery_procedure="docs/fabpub-partition-rotation-runbook.md section 8a",
+            next_step_source=(
+                "the refusal detail: it names what did not bind and the next step for that case; "
+                "a rotation applies only while the key is blocked in the active generation"
+            ),
+            rotate_command_when_key_blocked=[
                 "phase-loop",
                 "fabpub-rotate-partition",
                 "--worktree",
@@ -1517,7 +1562,7 @@ def publish_human_invoked_from_worktree(
         # admitted and no rotation adjudicated its effect; nothing was written.
         result = _blocked("publication_recovery_required", str(error))
         result["handoff"] = _human_publication_handoff(
-            repo, next_step="adjudicate_publication_by_partition_rotation"
+            repo, next_step="resolve_publication_recovery_refusal"
         )
         result["checkpoint_root"] = str(checkpoint_root)
         return result
@@ -1688,12 +1733,11 @@ def publish_from_worktree(
             if candidate.transaction is None or candidate.state == PublishTransactionState.CONFLICTED:
                 raise RuntimeError("broker accepted publish without a recoverable transaction")
             transaction = candidate.transaction
-            # agent-harness#1296: a recovered transaction keeps its checkpoint exactly as
-            # admitted; its outcome lives in the successor generation's evidence.
-            while (
-                transaction.state != PublishTransactionState.TERMINAL_SEALED
-                and not transaction.recovery_records()
-            ):
+            # The SDK closeout seals the checkpoint after an observed terminal; the
+            # seal releases the active pointer for the next head.  A recovered
+            # transaction is sealed here too (agent-harness#1296): its recovered
+            # state is kept by the write-once recovery record, not the checkpoint.
+            while transaction.state != PublishTransactionState.TERMINAL_SEALED:
                 transaction.project(PublishTransactionState.ORDERED[PublishTransactionState.ORDERED.index(transaction.state) + 1])
     if not execution.accepted or execution.publish_result is None:
         return _blocked(execution.reason or execution.evidence.terminal_state, execution.evidence.evidence_reference)

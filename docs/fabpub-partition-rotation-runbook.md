@@ -402,13 +402,22 @@ before rotating.
    verification artifact, `prebuilt` flag and PR body. Expected: one provider call for the exact sealed commit,
    `status: published`, and a new
    `publish-transactions/<node>/<transaction_id>.recovery.<generation>.json`
-   beside the unchanged checkpoint. A second retry is answered from evidence
+   beside the checkpoint, which the SDK closeout then seals. A second retry is answered from evidence
    with no provider call.
+
+**Retry straight after the rotation.** Run step 5 before any other rotation or
+publication on that repository. A later rotation (for any key) supersedes the
+generation that disposed this key, and the retry is then refused with no rotation
+able to fix it (agent-harness#1310).
+
+**After an ambiguous recovery attempt**, generation N+1 is blocked again. Do not
+attest `attested_not_landed` a second time without new evidence that this attempt
+did not land either. Two ambiguous pushes are not evidence of no effect.
 
 Do not retry on a runtime without agent-harness#1296 after the rotation: it
 refuses at admission and leaves an unsealed owner that blocks the new
 generation. If the retry is refused with `publication_recovery_required`, the
-message names what did not bind (no disposition, no transaction id, a different
+message names what did not bind and the next step for that case (no disposition, no transaction id, a different
 transaction, or an inventory that does not authenticate). Nothing was written;
 fix the input and retry.
 

@@ -19,6 +19,7 @@ as production seals it.
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -198,8 +199,9 @@ def test_unadjudicated_sealed_transaction_refuses_without_owner_or_admission(tmp
     message = str(refused.value)
     assert state in message
     assert p.transaction.transaction_id in message
-    assert "fabpub-rotate-partition" in message
     assert "attested_not_landed" in message
+    # No disposition and no evidence for the key: a rotation cannot dispose it (board item 4).
+    assert "a rotation cannot help here" in message and "agent-harness#1310" in message
 
 
 def test_sealed_head_without_bound_transaction_refuses_after_rotation(tmp_path, monkeypatch):
@@ -293,11 +295,12 @@ def test_human_handoff_names_the_rotation_recovery(tmp_path, monkeypatch):
 
     fx = _bootstrap(tmp_path, monkeypatch)
     handoff = _human_publication_handoff(
-        fx.alpha.repo, next_step="adjudicate_publication_by_partition_rotation"
+        fx.alpha.repo, next_step="resolve_publication_recovery_refusal"
     )
-    assert handoff["next_step"] == "adjudicate_publication_by_partition_rotation"
-    assert handoff["rotate_command"][:2] == ["phase-loop", "fabpub-rotate-partition"]
-    assert str(fx.alpha.repo.resolve()) in handoff["rotate_command"]
+    assert handoff["next_step"] == "resolve_publication_recovery_refusal"
+    assert "only while the key is blocked" in handoff["next_step_source"]
+    assert handoff["rotate_command_when_key_blocked"][:2] == ["phase-loop", "fabpub-rotate-partition"]
+    assert str(fx.alpha.repo.resolve()) in handoff["rotate_command_when_key_blocked"]
     assert "attested_not_landed" in handoff["rotate_requires"]
     assert "not proof" in handoff["rotate_requires"]
 
@@ -321,7 +324,9 @@ def test_adapter_exception_leaves_an_admitted_transaction_that_rotation_recovers
     assert replay.accepted is True and len(calls) == 1
     after = _checkpoint_bytes(p)
     assert {name: after[name] for name in checkpoint} == checkpoint
-    assert _inspect(p).state == "ADAPTER_STARTED", "recovery must not project the checkpoint"
+    # Broker layer only: the broker never moves the checkpoint.  The SDK closeout
+    # seals it afterwards (test_sdk_recovery_after_an_adapter_exception_seals_...).
+    assert _inspect(p).state == "ADAPTER_STARTED", "the broker layer projected the checkpoint"
     record = json.loads(after[f"{p.transaction.transaction_id}.recovery.1.json"])
     assert record["recovered_transaction_state"] == "ADAPTER_STARTED"
 
@@ -329,8 +334,8 @@ def test_adapter_exception_leaves_an_admitted_transaction_that_rotation_recovers
 def test_concurrent_retry_after_a_recovered_publish_makes_no_second_provider_call(tmp_path, monkeypatch):
     """A retry that passed ``execute``'s replay check before the first attempt's
     terminal reaches ``_fresh_publish`` with a sealed successor owner.  The
-    checkpoint never moves under recovery, so the state cannot stop it; the
-    in-lock evidence check must."""
+    broker never moves the checkpoint under recovery, so the state cannot stop
+    it; the in-lock evidence check must."""
     fx, p, key = _failed_sealed_publish(tmp_path, monkeypatch)
     outcome = _rotate(None, p, attestation=_attestation(p, dispositions={key: ATTESTED_NOT_LANDED}))
     adapter = _CountingAdapter()
@@ -395,8 +400,10 @@ def test_recovery_refuses_a_request_that_differs_from_the_frozen_transaction(tmp
     assert _checkpoint_bytes(p) == checkpoint, "a refused recovery wrote provenance"
 
 
-def test_sdk_recovery_after_an_adapter_exception_keeps_the_checkpoint(tmp_path, monkeypatch):
-    """publish_from_worktree's post-accept projection must not seal a recovered checkpoint."""
+def test_sdk_recovery_after_an_adapter_exception_seals_and_frees_the_branch(tmp_path, monkeypatch):
+    """SDK route (board item 1): the broker leaves the checkpoint alone, the SDK closeout
+    seals it after the observed terminal, the recovery record keeps the recovered
+    state, and the sealed checkpoint does not block the next head on the branch."""
     from phase_loop_runtime.publishing import PublishAuthorityPreimages, publish_from_worktree
     from test_fabpub_shared_epoch import _authority_preimage
 
@@ -407,12 +414,12 @@ def test_sdk_recovery_after_an_adapter_exception_keeps_the_checkpoint(tmp_path, 
     root = tmp_path / "coordinator" / "sdk-exc"
     authority = PublishAuthorityPreimages(root, _authority_preimage(p.identity, "feat/sdk-exc"))
 
-    def publish(adapter):
+    def publish(adapter, paths=("sdkexc.py",), prebuilt=False):
         routed = _routed_service(p, adapter)
         try:
             return publish_from_worktree(
-                p.repo, ("sdkexc.py",), broker_client=routed.service,
-                publish_authority=authority, checkpoint_root=root,
+                p.repo, paths, broker_client=routed.service,
+                publish_authority=authority, checkpoint_root=root, prebuilt=prebuilt,
             )
         finally:
             _release_router(routed)
@@ -421,16 +428,151 @@ def test_sdk_recovery_after_an_adapter_exception_keeps_the_checkpoint(tmp_path, 
     failed = publish(_CountingAdapter(explode=True))
     assert failed["status"] == "publication_blocked", failed
     store = next((root / "publish-transactions").iterdir())
-    [checkpoint_path] = [f for f in store.iterdir() if f.name.endswith(".json") and ".recovery." not in f.name and f.name != "active.json"]
+    [checkpoint_path] = [
+        f for f in store.iterdir()
+        if f.suffix == ".json" and ".recovery." not in f.name and f.name != "active.json"
+    ]
+    tid = checkpoint_path.stem
     assert json.loads(checkpoint_path.read_text())["state"] == "ADAPTER_STARTED"
-    before = checkpoint_path.read_bytes()
     key = _jsonl(p.container / "evidence.jsonl")[-1]["idempotency_key"]
     _rotate(None, p, attestation=_attestation(p, dispositions={key: ATTESTED_NOT_LANDED}))
     adapter = _CountingAdapter()
     published = publish(adapter)
     assert published["status"] == "published", published
     assert len(adapter.calls) == 1
-    assert checkpoint_path.read_bytes() == before, "the SDK wrapper projected the recovered checkpoint"
+    assert json.loads(checkpoint_path.read_text())["state"] == "TERMINAL_SEALED"
+    record = json.loads((store / f"{tid}.recovery.1.json").read_text())
+    assert record["recovered_transaction_state"] == "ADAPTER_STARTED"
     again = publish(adapter)
     assert again["status"] == "published" and len(adapter.calls) == 1
-    assert checkpoint_path.read_bytes() == before
+
+    # The sealed checkpoint released the active pointer: a new head prepares and publishes.
+    _stage(p.repo, "sdknext.py", "def sdknext():\n    return 2\n")
+    _git(p.repo, "commit", "-q", "-m", "next head")
+    nxt = publish(adapter, paths=("sdknext.py",), prebuilt=True)
+    assert nxt["status"] == "published", nxt
+    assert len(adapter.calls) == 2
+    assert nxt["head_sha"] != published["head_sha"]
+
+
+def _record_fixture(tmp_path, monkeypatch):
+    fx, p, key = _failed_sealed_publish(tmp_path, monkeypatch)
+    outcome = _rotate(None, p, attestation=_attestation(p, dispositions={key: ATTESTED_NOT_LANDED}))
+    return p, outcome, p.transaction.store.recovery_path(p.transaction.transaction_id, outcome.generation)
+
+
+def test_recovery_record_write_contract(tmp_path, monkeypatch):
+    """Board item 2: an owner-only regular file beside unchanged checkpoint bytes."""
+    import stat
+
+    p, outcome, record_path = _record_fixture(tmp_path, monkeypatch)
+    checkpoint = p.transaction.checkpoint_path.read_bytes()
+    previous = os.umask(0o022)  # a permissive umask must not widen the record
+    try:
+        result, calls = _publish_on_successor(None, outcome, p, p.request)
+    finally:
+        os.umask(previous)
+    assert result.accepted is True and len(calls) == 1
+    assert p.transaction.checkpoint_path.read_bytes() == checkpoint
+    info = os.lstat(record_path)
+    assert stat.S_ISREG(info.st_mode)
+    assert stat.S_IMODE(info.st_mode) == 0o600
+    assert not [f for f in record_path.parent.iterdir() if f.name.endswith(".tmp")]
+
+
+@pytest.mark.parametrize("shape", ["symlink", "directory", "not_json"])
+def test_existing_recovery_record_that_is_not_a_json_regular_file_refuses(tmp_path, monkeypatch, shape):
+    """Board item 2: fail closed, typed, with no owner, admission or provider call."""
+    from phase_loop_runtime.publishing import PublishTransactionConflict
+
+    p, outcome, record_path = _record_fixture(tmp_path, monkeypatch)
+    if shape == "symlink":
+        target = tmp_path / "elsewhere.json"
+        target.write_text("{}\n")
+        record_path.symlink_to(target)
+    elif shape == "directory":
+        record_path.mkdir()
+    else:
+        record_path.write_text("not json\n")
+    adapter = _CountingAdapter()
+    with pytest.raises(PublishTransactionConflict):
+        _publish_on_successor(None, outcome, p, p.request, adapter=adapter)
+    assert adapter.calls == []
+    assert _owner(outcome.store_root) is None
+    assert _jsonl(outcome.store_root / "admissions.jsonl") == []
+    if shape == "symlink":
+        assert target.read_text() == "{}\n", "the refusal wrote through the symlink"
+
+
+def test_rotation_bound_to_one_transaction_refuses_another_with_the_same_key(tmp_path, monkeypatch):
+    """Board item 3: the rotation binds T1; an admitted T2 for the same effect key is refused."""
+    import dataclasses
+
+    from phase_loop_runtime.convergence.broker.verbs import PublicationRecoveryRequired
+    from phase_loop_runtime.publishing import PublishTransactionState as S
+    from phase_loop_runtime.publishing import prepare_prebuilt_transaction
+    from test_fabpub_shared_epoch import _authority_preimage, _publish_transaction_request
+
+    fx = _bootstrap(tmp_path, monkeypatch)
+    p = fx.alpha
+    branch = "feat/same-key"
+    _git(p.repo, "checkout", "-q", "-b", branch)
+    _stage(p.repo, "samekey.py", "def samekey():\n    return 1\n")
+    _git(p.repo, "commit", "-q", "-m", "plain commit")
+
+    def prebuilt(label, authority):
+        txn = prepare_prebuilt_transaction(
+            p.repo, owned_paths=("samekey.py",), checkpoint_root=tmp_path / "coordinator" / label,
+            branch=branch, envelope_authority_preimage=authority,
+        )
+        txn.resume()
+        request = _publish_transaction_request(p.identity, branch, txn, p.repo)
+        envelope = dataclasses.replace(request.admission, roadmap_digest=authority["roadmap_digest"])
+        return txn, dataclasses.replace(request, admission=envelope)
+
+    first_authority = _authority_preimage(p.identity, branch)
+    t1, request1 = prebuilt("t1", first_authority)
+    p.service.adapter = _CountingAdapter(terminal_state=AMBIGUOUS)
+    key = p.service._dedup_key(request1)
+    assert p.service.execute(request1).accepted is False
+    outcome = _rotate(None, p, attestation=_attestation(p, dispositions={key: ATTESTED_NOT_LANDED}))
+
+    second_authority = {**first_authority, "roadmap_digest": "7" * 64}
+    t2, request2 = prebuilt("t2", second_authority)
+    assert t2.transaction_id != t1.transaction_id
+    assert p.service._dedup_key(request2) == key
+    while t2.state != S.TERMINAL_SEALED:
+        t2.project(S.ORDERED[S.ORDERED.index(t2.state) + 1])
+    result, calls = _publish_on_successor(None, outcome, p, request2)
+    assert isinstance(result, PublicationRecoveryRequired), result
+    assert t1.transaction_id in str(result) and "not this one" in str(result)
+    assert calls == []
+    assert _owner(outcome.store_root) is None
+    assert _jsonl(outcome.store_root / "admissions.jsonl") == []
+
+
+def test_intervening_rotation_refuses_without_promising_a_rotation_fix(tmp_path, monkeypatch):
+    """Board item 4: a rotation after the disposing one supersedes it; the refusal is
+    typed, writes nothing, and does not claim another rotation would resolve it."""
+    from types import SimpleNamespace
+
+    from phase_loop_runtime.convergence.broker.verbs import PublicationRecoveryRequired
+    from test_fabpub_partition_rotation_789d import ROTATION_ID_2
+
+    fx, p, key = _failed_sealed_publish(tmp_path, monkeypatch)
+    first = _rotate(None, p, attestation=_attestation(p, dispositions={key: ATTESTED_NOT_LANDED}))
+    routed = _routed_service(p)
+    try:
+        _block_key(SimpleNamespace(service=routed.service), "publish_committed_branch\x00ah1296-unrelated")
+    finally:
+        _release_router(routed)
+    second = _rotate(None, p, cutover_id=ROTATION_ID_2)
+    assert (first.generation, second.generation) == (1, 2)
+    result, calls = _publish_on_successor(None, second, p, p.request)
+    assert isinstance(result, PublicationRecoveryRequired), result
+    message = str(result)
+    assert "agent-harness#1310" in message
+    assert "a rotation cannot help here" in message
+    assert calls == []
+    assert _owner(second.store_root) is None
+    assert _jsonl(second.store_root / "admissions.jsonl") == []
