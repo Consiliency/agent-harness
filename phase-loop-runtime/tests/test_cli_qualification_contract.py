@@ -631,15 +631,74 @@ def test_the_new_table_keeps_the_agy_opt_out_loading(tmp_path):
     assert config.load_agy_self_qualification(path=path) is True
 
 
-def test_a_repository_config_cannot_opt_out(tmp_path):
-    from phase_loop_runtime.advisor_board import config
-
+def _repo_opting_out(tmp_path):
     repo = tmp_path / "repo"
     (repo / ".agent-harness").mkdir(parents=True)
     (repo / ".agent-harness" / "advisor-boards.toml").write_text(
-        "[qualification.codex]\nself_qualification = false\n")
-    with pytest.raises(config.BoardConfigError, match="unknown config key"):
+        "[qualification.codex]\nself_qualification = false\n"
+        "[qualification.gemini]\nself_qualification = false\n")
+    return repo
+
+
+def test_a_repository_config_carrying_the_table_is_refused_by_name(tmp_path):
+    """A repository can never switch off its own seats' qualification: the repo layer
+    refuses the table with a typed config error naming it and the file."""
+    from phase_loop_runtime.advisor_board import config
+
+    repo = _repo_opting_out(tmp_path)
+    with pytest.raises(config.BoardConfigError) as caught:
         config.load_president_ladder(repo_dir=repo, env={})
+    message = str(caught.value)
+    assert "unknown config key(s) ['qualification']" in message
+    assert str(repo / ".agent-harness" / "advisor-boards.toml") in message
+    assert "qualification" not in config._KNOWN_REPO_TOP_KEYS
+
+
+@pytest.mark.parametrize("user_file", [None, "[agy]\nself_qualification = true\n"])
+def test_the_opt_out_never_reads_the_repository_config(tmp_path, monkeypatch, user_file):
+    """Run from inside a repository whose config opts out: qualification still runs, with
+    or without a user file.
+
+    Mutation: resolving the opt-out from the repository layer (or the working directory)
+    opts the seat out and runs nothing.
+    """
+    if user_file is not None:
+        _user_config(tmp_path, user_file)
+    repo = _repo_opting_out(tmp_path)
+    monkeypatch.chdir(repo)
+    assert cq.self_qualification_enabled("codex") is True
+    assert cq.self_qualification_enabled("gemini") is True
+    result, calls = _qualify(_key())
+    assert result.outcome == "locally_qualified" and len(calls) == len(cq.OPERATIONS)
+
+
+@pytest.mark.parametrize("text, expected", [
+    ("", True),
+    ("[agy]\nself_qualification = false\n", False),
+    ("[agy]\nself_qualification = true\n", True),
+    ("[qualification.codex]\nself_qualification = false\n", True),
+    ("[qualification.gemini]\nself_qualification = false\n[agy]\nself_qualification = false\n", False),
+    ("[qualification.codex]\nself_qualification = false\n[agy]\nself_qualification = false\n", False),
+])
+def test_the_agy_opt_out_load_is_unchanged_beside_the_new_table(tmp_path, text, expected):
+    """Regression: the existing ``[agy] self_qualification`` load keeps its meaning whether or
+    not the user file also carries ``[qualification.*]`` (an unknown table used to raise)."""
+    from phase_loop_runtime import agy_qualification
+    from phase_loop_runtime.advisor_board import config
+
+    path = _user_config(tmp_path, text)
+    assert config.load_agy_self_qualification(path=path) is expected
+    assert agy_qualification.self_qualification_enabled() is expected
+
+
+def test_a_user_file_with_the_table_still_loads_its_boards(tmp_path):
+    from phase_loop_runtime.advisor_board import config
+
+    path = _user_config(tmp_path, "[qualification.codex]\nself_qualification = false\n")
+    assert config.load_boards(path).names()
+    bad = _user_config(tmp_path, "[qualification.codex]\nself_qualification = 0\n")
+    with pytest.raises(config.BoardConfigError):
+        config.load_boards(bad)
 
 
 # ------------------------------------------------------------------- candidate schema
