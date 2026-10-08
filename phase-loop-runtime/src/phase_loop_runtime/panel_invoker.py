@@ -4679,7 +4679,7 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
                 stack.callback(refresh_image.close)
             else:
                 from . import agy_integrity
-                refresh_image = agy_integrity.check(executable)
+                refresh_image = agy_integrity.admit_for_seat(executable, env)
                 stack.callback(refresh_image.close)
             _refresh_gemini_credential(home, refresh_image)
         def directory(path):
@@ -4774,7 +4774,7 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
             gemini_profile.evidence["provider_agy_subscription_reference"] = "private_access_token_copy"
         elif harness == "gemini":
             from . import agy_integrity
-            image = agy_integrity.check(executable)
+            image = agy_integrity.admit_for_seat(executable, env)
             stack.callback(image.close)
             descriptor = image.reopen()
             stack.callback(os.close, descriptor)

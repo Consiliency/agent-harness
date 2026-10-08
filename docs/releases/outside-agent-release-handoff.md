@@ -907,6 +907,20 @@ merge verdict.
   runs `git -C ~/.local/share/agent-harness fetch + checkout $REF`). The check is
   advisory (WARN, never gating).
 
+## Release Step — the qualified agy image set
+
+- Upstream membership is not a cut criterion (agent-harness#1333 PR1). A release no
+  longer needs the newest upstream agy to be a shipped member, so
+  `verify_qualified_agy_image.py --upstream-only` passing on membership is not required.
+  A newer non-member release only warns, and each host self-qualifies it on first use as
+  `locally_qualified`.
+- What the cut still requires: `--source-only` on the cut tree (also enforced by
+  `publish-pypi.yml`), `--route-core`, live requalification of every listed member, and
+  `QUALIFIED_IMAGES` equal to the catalog. `--upstream-only` still fails on a shipped
+  member's vendor asset digest, URL or archive mismatch.
+- The per-release caveats above that say `--upstream-only` and the nightly upstream job
+  fail until a newer agy is qualified describe the behaviour before this change.
+
 ## Maintainer Dispatch Boundary
 
 - For `0.7.21`: the package was not published from this handoff; trusted workflow

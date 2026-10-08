@@ -42,6 +42,32 @@ def check(path):
             os.close(descriptor)
 
 
+def admit_for_seat(path, env):
+    """Admission for the two owned review-seat sites only (agent-harness#1333 PR1).
+
+    A release member is admitted offline by ``check``, before any config or store read.
+    Otherwise the bytes of one fresh read go to ``agy_qualification.lookup``, which admits
+    only a ``locally_qualified`` image; what runs is lookup's own sealed memfd of those
+    bytes, never the path. Every other outcome is the typed refusal. The executor and
+    canary callers keep ``check`` and stay release-only.
+    """
+    try:
+        return check(path)
+    except AgyImageUnqualified:
+        pass
+    from . import agy_qualification
+    try:
+        source = str(Path(path).resolve(strict=True))
+        admission = agy_qualification.lookup(env, gemini_heartbeat._read_image(source), source)
+    except gemini_heartbeat.AdmissionMiss as miss:
+        miss.image.close()
+        raise AgyImageUnqualified("agy_image_unqualified") from None
+    except (OSError, ValueError) as exc:
+        # Opt-out, a failed record, an unsafe store or an unreadable image.
+        raise AgyImageUnqualified("agy_image_unqualified") from exc
+    return admission.image
+
+
 def trusted_command(argv, env):
     if not argv or Path(argv[0]).name not in {"agy", "gemini"}:
         return argv
