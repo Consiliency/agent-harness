@@ -1,4 +1,9 @@
-"""Static, read-only admission of qualified provider entry images."""
+"""Admission of qualified provider entry images.
+
+Release-qualified images are admitted statically, by digest. With the caller's env,
+``check`` also admits a locally self-qualified image through
+``agy_qualification.lookup``, which may run ``agy --help`` from a sealed memfd to
+measure the help digest (agent-harness#1331). It never qualifies an image."""
 
 from hashlib import sha256
 from contextlib import contextmanager
