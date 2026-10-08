@@ -23,7 +23,7 @@ Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, h
   - use OpenCode implementation agents only for bounded tasks, not this planning synthesis;
   - brief every agent with `<harness>-task-contextualizer`.
 - File ownership must be disjoint across lanes. Shared index/config/init files belong in a preamble lane. **Before emitting the plan, scan every lane's owned files for overlap with every other lane in the same wave. If overlap is found, either (a) move the shared file into a preamble lane that all dependents consume, or (b) collapse the overlapping lanes into a single lane. Overlap surviving into the final plan triggers `overlapping_write_ownership` lane-IR diagnostic and refuses execution (Pattern B from 2026-05-25 runner failure analysis).**
-- Owned files MUST enumerate the COMPLETE set the executor will touch, not just headline sources; under-enumeration fails the closeout's `phase_owned_dirty` check (Pattern A, commit `47c772b4`: ~70% of phases in the 2026-05-25 drive). `validate_plan_doc.py` check (R) names each tracked companion (test, snapshot, lockfile, `.env.example`, migration test or glob) that no lane owns; own it or state why it stays untouched.
+- Owned files MUST enumerate the COMPLETE set the executor will touch, not just headline sources; under-enumeration fails the closeout's `phase_owned_dirty` check (Pattern A, commit `47c772b4`: ~70% of phases in the 2026-05-25 drive). `validate_plan_doc.py` check (R) names each tracked companion (test, snapshot, lockfile, `.env.example`, migration test or glob) that no lane owns; own it or state why it stays untouched. (R) does not check generated artifacts: own those too.
 
 ## Inputs
 

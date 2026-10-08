@@ -177,3 +177,56 @@ def test_validator_cli_emits_r_as_warnings_only(tmp_path):
     r_lines = [line for line in result.stderr.splitlines() if line.startswith("(R)")]
     assert len(r_lines) == 7, result.stderr
     assert all("WARN" in line for line in r_lines)
+
+
+# --- board round 1 (agent-harness#1322) ---------------------------------------------
+
+
+def test_board_f001_two_lanes_writing_migrations_get_one_consolidation_warning():
+    # Per-lane globs in one migrations dir share a literal prefix, which the lane IR
+    # refuses as overlapping_write_ownership. (R) must not advise that.
+    from phase_loop_runtime.plan_ir import _patterns_overlap_any
+
+    lanes = {
+        "SL-1": {"owned_globs": ["supabase/migrations/20260601000000_add_a.sql"]},
+        "SL-2": {"owned_globs": ["supabase/migrations/20260601000001_add_b.sql"]},
+    }
+    findings = V._check_r_owned_companions(lanes, {}, ["supabase/migrations/20260501000000_init.sql"])
+    assert not any("own the glob" in f for f in findings), findings
+    assert findings == [
+        "(R) WARN: SL-1, SL-2 each write new migrations under `supabase/migrations/`; the generator "
+        "picks the timestamps and per-lane globs there overlap under the lane IR — move migration "
+        "authoring into one lane (or a preamble lane) that owns `supabase/migrations/*_*.sql`"
+    ]
+    assert not _patterns_overlap_any(("supabase/migrations/*_*.sql",), ())
+
+
+def test_board_f002_closeout_sibling_expansion_counts_as_owned():
+    tracked = [
+        "src/lib/billing.ts",
+        "src/lib/__tests__/billing.test.ts",
+        "src/lib/__fixtures__/billing.json",
+        "vendor/mod/src/mod/core.py",
+        "vendor/mod/tests/test_core.py",
+    ]
+    assert _check(["src/lib/billing.ts", "vendor/mod/src/mod/core.py"], tracked=tracked, body="") == []
+
+
+def test_board_f003_a_same_named_test_sharing_no_directory_is_ignored():
+    tracked = ["scripts/index.ts", "packages/x/src/index.test.ts", "packages/x/src/x.test.ts"]
+    assert _check(["scripts/index.ts", "packages/x/src/x.test.ts"], tracked=tracked, body="") == []
+    # A repo-root module still finds its top-level tests dir.
+    findings = _check(["setup.py", "tests/test_other.py"], tracked=["setup.py", "tests/test_setup.py"], body="")
+    assert [f for f in findings if "tests/test_setup.py" in f], findings
+
+
+def test_board_f004_editing_a_tracked_migration_is_not_a_generator_warning():
+    tracked = ["supabase/migrations/20260501000000_init.sql"]
+    assert _check(["supabase/migrations/20260501000000_init.sql"], tracked=tracked, body="") == []
+
+
+def test_board_f005_a_bracketed_route_is_a_concrete_path():
+    tracked = ["app/[id]/page.tsx", "app/[id]/page.test.tsx"]
+    findings = _check(["app/[id]/page.tsx"], tracked=tracked, body="")
+    assert len(findings) == 1 and "test file `app/[id]/page.test.tsx`" in findings[0], findings
+    assert _check(["app/[id]/page.tsx", "app/[id]/page.test.tsx"], tracked=tracked, body="") == []

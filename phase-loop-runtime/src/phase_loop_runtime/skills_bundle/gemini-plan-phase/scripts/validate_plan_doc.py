@@ -64,7 +64,7 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from fnmatch import fnmatchcase
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Dict, List, Optional, Set
 
 
@@ -1195,18 +1195,41 @@ _R_TIMESTAMPED_MIGRATION_RE = re.compile(r"^(?P<dir>(?:.*/)?migrations)/\d{8,14}
 
 
 def _r_is_glob(entry: str) -> bool:
-    return any(ch in entry for ch in "*?[")
+    # Only `*` and `?` make an owned entry a glob for the closeout, so a path such as
+    # `app/[id]/page.tsx` is concrete (`discovery._owned_pattern_matches`).
+    return "*" in entry or "?" in entry
+
+
+def _r_sibling_owned(path: str, pattern: str) -> bool:
+    """The closeout's dirty-output expansion (`discovery._dirty_output_matches_owned_pattern`):
+    an owned file also owns its `__tests__/<stem>.test|spec<ext>` and `__fixtures__/<stem>.*`
+    siblings, and `vendor/<m>/src/...` owns `vendor/<m>/tests/test_*.py`."""
+    owned, target = PurePosixPath(pattern), PurePosixPath(path)
+    if not pattern.endswith("/") and not any(t in pattern for t in "*?[") \
+            and owned.suffix and target.parent.parent == owned.parent:
+        if target.parent.name == "__tests__":
+            return target.name in {f"{owned.stem}.test{owned.suffix}", f"{owned.stem}.spec{owned.suffix}"}
+        if target.parent.name == "__fixtures__":
+            return target.name.startswith(f"{owned.stem}.")
+    return (
+        len(owned.parts) >= 3 and owned.parts[0] == "vendor" and owned.parts[2] == "src"
+        and len(target.parts) == 4 and target.parts[0] == "vendor" and target.parts[1] == owned.parts[1]
+        and target.parts[2] == "tests" and target.parts[3].startswith("test_") and target.suffix == ".py"
+    )
 
 
 def _r_owned(path: str, owned: List[str]) -> bool:
-    """Mirror the closeout's ownership semantics (`discovery._owned_pattern_matches`
-    plus exact paths): `*` crosses `/` under fnmatchcase, and `dir/` owns its subtree."""
+    """Mirror the closeout's ownership semantics (`PlanOwnership.matches_dirty_output`):
+    exact paths, `dir/` owns its subtree, `*` crosses `/` under fnmatchcase, plus the
+    test/fixture sibling expansion."""
     for pattern in owned:
         if path == pattern:
             return True
         if pattern.endswith("/") and path.startswith(pattern):
             return True
         if _r_is_glob(pattern) and fnmatchcase(path, pattern):
+            return True
+        if _r_sibling_owned(path, pattern):
             return True
     return False
 
@@ -1235,10 +1258,15 @@ def _r_test_names(stem: str) -> Set[str]:
 
 def _r_closest(primary: str, candidates: List[str]) -> List[str]:
     """Candidates sharing the longest leading directory run with `primary`, so a
-    common stem (`utils`) does not drag in every same-named test in a monorepo."""
+    common stem (`utils`) does not drag in every same-named test in a monorepo. A
+    candidate sharing no directory counts only for a repo-root primary, and only from
+    the root or a top-level test dir."""
+    parts = primary.split("/")[:-1]
+    if not parts:
+        candidates = [c for c in candidates
+                      if "/" not in c or c.split("/", 1)[0] in {"test", "tests", "__tests__"}]
     if not candidates:
         return []
-    parts = primary.split("/")[:-1]
 
     def shared(path: str) -> int:
         n = 0
@@ -1249,6 +1277,8 @@ def _r_closest(primary: str, candidates: List[str]) -> List[str]:
         return n
 
     best = max(shared(c) for c in candidates)
+    if parts and best == 0:
+        return []
     return sorted(c for c in candidates if shared(c) == best)
 
 
@@ -1275,6 +1305,24 @@ def _check_r_owned_companions(
     sql_tests = [p for p in tracked if p.endswith(".test.sql")]
     out: Findings = []
     warned: Set[str] = set()
+    # Lanes writing NEW migrations per migrations dir. Per-lane globs there share a
+    # literal prefix, which the lane IR refuses as overlapping_write_ownership.
+    migration_writers: Dict[str, List[str]] = {}
+    for sl_id, parsed in lane_sections_parsed.items():
+        for g in parsed["owned_globs"]:
+            entry = g.strip().strip("`")
+            md = re.match(r"^((?:.*/)?migrations)/", entry)
+            if md and entry not in tracked_set and (entry.endswith(".sql") or _r_is_glob(entry)):
+                lanes = migration_writers.setdefault(md.group(1), [])
+                if sl_id not in lanes:
+                    lanes.append(sl_id)
+    for directory, lanes in sorted(migration_writers.items()):
+        if len(lanes) > 1:
+            out.append(
+                f"(R) WARN: {', '.join(lanes)} each write new migrations under `{directory}/`; the "
+                "generator picks the timestamps and per-lane globs there overlap under the lane IR "
+                f"— move migration authoring into one lane (or a preamble lane) that owns `{directory}/*_*.sql`"
+            )
 
     def warn(sl_id: str, primary: str, companion: str, kind: str) -> None:
         if companion in warned:
@@ -1318,12 +1366,15 @@ def _check_r_owned_companions(
                     if not directory:
                         break
                     directory = posixpath.dirname(directory)
-            # Migrations: the generator picks the timestamp, so a pinned name will miss.
+            # Migrations: the generator picks a NEW migration's timestamp, so a pinned
+            # name will miss. Editing an already-tracked migration involves no generator.
             m = _R_TIMESTAMPED_MIGRATION_RE.match(primary)
-            if m and not _r_owned(primary, [g for g in owned if _r_is_glob(g) or g.endswith("/")]):
+            if m and primary not in tracked_set and len(migration_writers.get(m.group("dir"), ())) < 2 \
+                    and not _r_owned(primary, [g for g in owned if _r_is_glob(g) or g.endswith("/")]):
                 out.append(
                     f"(R) WARN: {sl_id} owns timestamped migration `{primary}`; the generator "
-                    f"chooses the timestamp — own the glob `{m.group('dir')}/*_{m.group('rest')}` instead"
+                    f"chooses the timestamp — own the glob `{m.group('dir')}/*_{m.group('rest')}` "
+                    "instead (keep it disjoint from every other lane's globs)"
                 )
         # Env examples: only when the lane changes env shape.
         env_signal = any(
