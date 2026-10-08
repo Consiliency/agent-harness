@@ -554,3 +554,19 @@ class TestIgnoredOutputAudit(unittest.TestCase):
             self.assertTrue(line.startswith("action: exit 2 "), line)
             self.assertIn("terminal_status=dirty_worktree_conflict", line)
             self.assertIn("never evidence of a clean tree", line)
+
+            # The other exit-2 path: --record-outputs refusing a declaration.
+            import phase_loop_runtime.closeout_classifier as cc
+
+            def refuse(*a, **k):
+                raise cc.generated_outputs.DeclarationError("invalid declaration")
+
+            original = cc.generated_outputs.run_declared_producers
+            cc.generated_outputs.run_declared_producers = refuse
+            try:
+                code, line = last_line(["--repo", str(repo), "--record-outputs"])
+            finally:
+                cc.generated_outputs.run_declared_producers = original
+            self.assertEqual(code, 2)
+            self.assertTrue(line.startswith("action: exit 2 "), line)
+            self.assertIn("terminal_status=dirty_worktree_conflict", line)

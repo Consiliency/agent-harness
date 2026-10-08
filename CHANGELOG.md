@@ -6,6 +6,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Closeout audit states its own required action (agent-harness#1303)
+
+- `phase-loop-closeout-audit` now ends every exit path with an `action: exit N (...) -> ...`
+  line: exit 0 means ignored paths do not block (the dirty-path classification still
+  decides), exit 1 and exit 2 mean stop with `dirty_worktree_conflict`.
+- The execute-phase closeout rules (codex, gemini, claude) no longer contain the two broken
+  clauses ("so the audit blocks and block only when ..."). The exit-code mapping is a
+  condition-first list, kept as the fallback for a runtime without the action line. The
+  tool is "the closeout audit" throughout; the whole-tree `git status --short` pass is the
+  "dirty-path classification".
+
 ### FABPUB: a failed current-head publication can be recovered by rotation (agent-harness#1296)
 
 - After a publication fails with an ambiguous outcome, its transaction is past
