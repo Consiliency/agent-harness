@@ -4075,6 +4075,62 @@ def retained_review_requests(
     return rounds
 
 
+def retained_broker_receipts(
+    store: ArtifactStore, retained: Any
+) -> dict[str, dict[str, dict[str, str]]]:
+    """Return the complete broker-receipt inventory for both review rounds."""
+    rounds: dict[str, dict[str, dict[str, str]]] = {}
+    for item in retained:
+        ref = artifact_ref(item, "authority retained input")
+        raw = store.read(ref, "authority retained input", distinct=False)
+        if raw.lstrip()[:1] not in {b"{", b"["}:
+            continue
+        value = parse_retained_json(raw, "authority retained input")
+        if not isinstance(value, dict) or value.get("schema") != "harden_broker_receipts.v1":
+            if _contains_schema(value, "harden_broker_receipts.v1"):
+                fail("retained broker receipt inventory is malformed")
+            continue
+        value = closed(
+            value,
+            {"schema", "round", "receipts"},
+            "retained broker receipts",
+        )
+        round_name = text(value["round"], "retained broker receipt round")
+        if round_name not in {"candidate", "canonical_main"} or round_name in rounds:
+            fail("retained broker receipt inventory is malformed")
+        receipts = value["receipts"]
+        if not isinstance(receipts, list) or len(receipts) != len(REVIEW_LANES):
+            fail("retained broker receipt inventory is malformed")
+        indexed: dict[str, dict[str, str]] = {}
+        for receipt in receipts:
+            receipt = closed(
+                receipt,
+                {"harness", "session_sha256", "operation_nonce"},
+                "retained broker receipt",
+            )
+            harness = text(receipt["harness"], "retained broker receipt harness")
+            if harness not in REVIEW_LANES or harness in indexed:
+                fail("retained broker receipt inventory is malformed")
+            indexed[harness] = {
+                "session_sha256": text(
+                    receipt["session_sha256"],
+                    "retained broker receipt session",
+                    pattern=HEX64,
+                ),
+                "operation_nonce": text(
+                    receipt["operation_nonce"],
+                    "retained broker receipt nonce",
+                    pattern=HEX64,
+                ),
+            }
+        if set(indexed) != set(REVIEW_LANES):
+            fail("retained broker receipt inventory is malformed")
+        rounds[round_name] = indexed
+    if set(rounds) != {"candidate", "canonical_main"}:
+        fail("retained broker receipt inventory is malformed")
+    return rounds
+
+
 def reject_role_operation_nonce_reuse(
     role_operation_nonces: set[str], derived_operation_nonces: set[str]
 ) -> None:
@@ -4892,7 +4948,7 @@ def verify_broker(value: Any, harness: str, requested: str, resolved: str, bundl
         fail("Grok broker evidence has unsafe prompt transport")
 
 
-def verify_review_round(store: ArtifactStore, repo: Path, value: Any, round_name: str, base_head: str, base_tree: str, head: str, tree: str, used_seat_ids: set[str], seat_sessions: set[str], operation_nonces: set[str]) -> dict[str, Any]:
+def verify_review_round(store: ArtifactStore, repo: Path, value: Any, round_name: str, base_head: str, base_tree: str, head: str, tree: str, used_seat_ids: set[str], seat_sessions: set[str], operation_nonces: set[str], round_sessions: dict[str, str]) -> dict[str, Any]:
     round_data = closed(value, {"head", "tree", "request", "seats"}, "review " + round_name)
     if round_data["head"] != head or round_data["tree"] != tree:
         fail("review round head/tree mismatch")
@@ -4991,6 +5047,7 @@ def verify_review_round(store: ArtifactStore, repo: Path, value: Any, round_name
             fail("reused review seat/session identity")
         used_seat_ids.add(seat_id)
         seat_sessions.add(session)
+        round_sessions[harness] = session
         claim_nonce(session, operation_nonces, "review seat")
         report = text(seat["report"], "seat report")
         if (
@@ -5417,6 +5474,7 @@ def verify(
     retained_requests = retained_review_requests(
         store, retained_authority
     )
+    retained_brokers = retained_broker_receipts(store, retained_authority)
     execution_runs = retained_execution_runs(store, retained_authority)
     nonces: set[str] = set()
     verify_preproduction(
@@ -5461,12 +5519,19 @@ def verify(
     reviews = closed(data["reviews"], {"candidate", "canonical_main"}, "reviews")
     seat_ids: set[str] = set()
     seat_sessions: set[str] = set()
+    derived_broker_sessions = {"candidate": {}, "canonical_main": {}}
     derived_review_requests = {
-        "candidate": verify_review_round(store, repo, reviews["candidate"], "candidate", review_base, review_base_tree, candidate, candidate_tree, seat_ids, seat_sessions, nonces),
-        "canonical_main": verify_review_round(store, repo, reviews["canonical_main"], "canonical_main", review_base, review_base_tree, main, main_tree, seat_ids, seat_sessions, nonces),
+        "candidate": verify_review_round(store, repo, reviews["candidate"], "candidate", review_base, review_base_tree, candidate, candidate_tree, seat_ids, seat_sessions, nonces, derived_broker_sessions["candidate"]),
+        "canonical_main": verify_review_round(store, repo, reviews["canonical_main"], "canonical_main", review_base, review_base_tree, main, main_tree, seat_ids, seat_sessions, nonces, derived_broker_sessions["canonical_main"]),
     }
     if derived_review_requests != retained_requests:
         fail("review request is detached from its retained input")
+    for round_name, receipts in retained_brokers.items():
+        if {
+            harness: receipt["session_sha256"]
+            for harness, receipt in receipts.items()
+        } != derived_broker_sessions[round_name]:
+            fail("retained broker receipt is detached from its verified seat")
     review_request_nonces = {
         value["operation_nonce"] for value in retained_requests.values()
     }
