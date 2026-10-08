@@ -49,6 +49,27 @@ def test_the_last_component_is_never_followed(tmp_path):
         pi._seat_bind_source(link / "work" / "leaf.txt", output=True)
 
 
+@pytest.mark.skipif(os.getuid() == 0, reason="root reads a search-only directory anyway")
+def test_a_search_only_ancestor_does_not_refuse_the_bind_source(tmp_path, monkeypatch):
+    # Team hosts make /mnt/workspace/{users,worktrees} root-owned 0711 (agent-harness#1317).
+    gate = tmp_path / "gate"
+    work = gate / "user" / "work"
+    work.mkdir(parents=True)
+    out = work / "out.txt"
+    out.write_text("x")
+    (work / "link").symlink_to(gate / "user", target_is_directory=True)
+    gate.chmod(0o111)
+    try:
+        assert pi._seat_bind_source(work) == str(work)
+        assert pi._seat_bind_source(out, output=True) == str(out)
+        # The walk itself still never follows a link component it meets.
+        monkeypatch.setattr(pi, "_trusted_host_path", lambda p: os.path.abspath(os.fspath(p)))
+        with pytest.raises(sandbox_egress.SeatIdentityUnverified, match="seat_bind_source_unavailable"):
+            pi._seat_bind_source(work / "link" / "work")
+    finally:
+        gate.chmod(0o755)
+
+
 def test_a_parent_link_another_account_owns_is_still_refused(tmp_path, monkeypatch):
     _real, link = _linked_workspace(tmp_path)
     operator = os.getuid()

@@ -134,9 +134,14 @@ def _seat_parent_descriptor(root_fd: int, relative: str) -> tuple[int, str]:
     if not parts or any(part in ("", ".", "..") for part in parts):
         raise AgyCanaryEvidenceError("seat path is not relative and normalized")
     directory = os.dup(root_fd)
+    # Intermediate hops are O_PATH (search permission only), so a search-only ancestor
+    # such as a team host's 0711 workspace dir does not refuse the walk; the parent
+    # handed back stays O_RDONLY for callers that read it (agent-harness#1317).
+    hop = getattr(os, "O_PATH", os.O_RDONLY)
     try:
-        for part in parts[:-1]:
-            child = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+        for index, part in enumerate(parts[:-1]):
+            access = os.O_RDONLY if index == len(parts) - 2 else hop
+            child = os.open(part, access | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
                             dir_fd=directory)
             os.close(directory)
             directory = child
