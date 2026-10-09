@@ -14,11 +14,23 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `pytest>=8,<9`, `exceptiongroup>=1`, `tomli>=2,<3` and `typing-extensions>=4.6`
   (agent-harness#1361, agent-harness#1357). `tomli` was already required below Python 3.11;
   it is now required on every Python, because the jail's falsifier run may use an older
-  system interpreter than the runtime.
-- **Hash-locked deployments** (Consiliency/dotfiles#77) must regenerate their lock with hashes
-  for all four of those dependencies.
-- **No jail pass reset.** The seat jail's falsifier-run layout identity is unchanged
-  (`execfind-falsifier-layout.v1:805042ce…`), so a host's recorded jail pass stays valid.
+  system interpreter than the runtime. Install the runtime into an isolated tool environment
+  (`uv tool install` or pipx): in a shared environment that already has pytest 9, `<9`
+  downgrades pytest or fails to resolve.
+- **Hash-locked deployments** (Consiliency/dotfiles#77) must regenerate their lock (for example
+  with `pip-compile --generate-hashes`) so that pytest and its transitive dependencies are
+  hashed. Measured on an upgrade from 0.7.25, the new distributions are pytest,
+  exceptiongroup, iniconfig, pluggy and pygments, plus tomli on Python 3.11 and later; hashing
+  only the declared dependencies is not enough.
+- **No jail pass reset from 0.7.25.** The seat jail's falsifier-run layout identity is
+  unchanged (`execfind-falsifier-layout.v1:805042ce…`). A host upgrading from 0.7.24 or earlier
+  (layout `c1e0b88a…`) still takes the one-time 0.7.25 reset (see `[0.7.25]`), and its jail
+  requalifies on first use, which the new pytest dependency now makes possible.
+- **Known issue (agent-harness#1407; not a regression).** The brokered Gemini seat is refused as
+  `gemini_credential_near_expiry` for about the last 10 minutes of each agy token hour: the
+  runtime asks for at least 10 minutes of token life, and agy refreshes its token only at real
+  expiry. A retry after the token expires succeeds. This predates 0.7.26; agent-harness#1308
+  fixed a different cause of the same refusal code.
 
 ### Qualified agy set requalified (agent-harness#1402)
 

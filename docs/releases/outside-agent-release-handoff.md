@@ -56,10 +56,15 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
   - pytest becomes a runtime dependency, with its backports declared without markers:
     `pytest>=8,<9`, `exceptiongroup>=1`, `typing-extensions>=4.6`, and `tomli>=2,<3`, which
     was previously required only below Python 3.11 (agent-harness#1361, agent-harness#1357).
-    Hash-locked deployments (Consiliency/dotfiles#77) must regenerate their lock with hashes
-    for these;
-  - the seat jail's falsifier-run layout identity is unchanged
-    (`execfind-falsifier-layout.v1:805042ce…`), so recorded jail passes stay valid;
+    Hash-locked deployments (Consiliency/dotfiles#77) must regenerate their lock (for example
+    with `pip-compile --generate-hashes`) so that pytest and its transitive dependencies are
+    hashed;
+  - no seat-jail pass reset from 0.7.25: the falsifier-run layout identity is unchanged
+    (`execfind-falsifier-layout.v1:805042ce…`). A host upgrading from 0.7.24 or earlier
+    (layout `c1e0b88a…`) still takes the one-time 0.7.25 reset and requalifies on first use;
+  - known issue, not a regression: the brokered Gemini seat is refused as
+    `gemini_credential_near_expiry` for about the last 10 minutes of each agy token hour, and a
+    retry after the token expires succeeds (agent-harness#1407);
   - agy: a newer upstream release only warns, and seats admit self-qualified images
     (agent-harness#1350, agent-harness#1366, agent-harness#1333);
   - seats on team hosts: traverse-only bind-source ancestors, launcher wrappers, and
@@ -81,12 +86,16 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
     copy of its member's official release archive member, never from the `agy` on `PATH`,
     and every receipt names the intended image.
 - Packaged content: a scan of every wheel and sdist member for user- or host-specific strings
-  finds three new matches relative to the published `0.7.25` archives, all `/mnt/workspace`
-  in sdist-only tests that describe the team-host layout or exercise redaction. No packaged
-  evidence or pass-store file. The existing items are tracked in agent-harness#1260.
-- Python 3.12 cold import: in a fresh py3.12 venv, the prepared wheel installs the four
-  dependencies above and imports `0.7.26`, and `compileall` of the installed package succeeds
-  under `-W error`.
+  finds, relative to the published `0.7.25` archives, the workspace-volume path in three new
+  sdist-only test files (team-host layout docstrings and a redaction fixture), and one more
+  occurrence of it in the wheel module `verification_evidence.py`, the team-host shared
+  worktree parent default from agent-harness#1327. That module already matched at `0.7.25`
+  and is covered by agent-harness#1260. No packaged evidence or pass-store file.
+- Python 3.12 cold import: in a fresh py3.12 venv, the prepared wheel imports `0.7.26`, and
+  `compileall` of the installed package succeeds under `-W error`. Measured against a fresh
+  `0.7.25` install, the new distributions are pytest, exceptiongroup, iniconfig, pluggy,
+  pygments and tomli on Python 3.12, and the same without tomli on Python 3.10;
+  typing-extensions was already present through pydantic, among others.
 - Release tracking: agent-harness#1402; the appended plan-authority rows cite it.
 - Tag: not yet created. The signed `v0.7.26` tag push, which publishes to PyPI, is
   maintainer-gated.
