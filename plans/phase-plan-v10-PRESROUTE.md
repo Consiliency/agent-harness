@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: PRESROUTE
 roadmap: specs/phase-plans-v10.md
-roadmap_sha256: 50f5c5d48bbbb92a5347c718a6cea627318307368907c22e239b31d84905fad8
+roadmap_sha256: e60bc53793b6dcf4076e6bea05aa8899e76dad630613a8c688d0c1c263b28e53
 automation:
   suite_command:
     - bash
@@ -122,7 +122,7 @@ SL-3 — Documentation and phase reducer
 - **Parallel-safe**: no (consumes SL-1's frozen operation; serializes after HARDEN/REVIEWTRUTH/RESIDUAL shared-file landings per the concurrency ruling).
 - **Tasks**:
   - impl: In `panel_invoker.py`, at the named ladder-tuple and alias sites only, set `PRESIDENT_LADDER` to the seat-alias tuple EC-PRESROUTE-3 fixes, each alias resolving to its vendor's frozen registry PIN with the `model-id-source:` marker; route each non-native rung to its vendor CLI via `launch_provider` and nowhere else per EC-PRESROUTE-2; add the native Fable seam (deferred fill with a durable resume/join point, refused under `heartbeat_only` as a native leg fill is); add the additive guard that refuses a `plan`/`production_code` landing carrying `requires_president=False` with a typed reason; write `PanelResult.president` and the per-finding rulings to the review stream as `president.ruling.json` in the frozen IF-0-PRESROUTE-1 shape.
-  - impl: In `cli.py`, add the native-president flag that fills the Fable rung natively when the driving harness is Claude Code and through the self-PTY adapter elsewhere, mirroring the existing native-leg flags.
+  - impl: In `cli.py`, add the native-president flag that fills the Fable rung natively when the driving harness is Claude Code and through the self-PTY adapter elsewhere, mirroring the existing native-leg flags. (Superseded 2026-10-09, agent-harness#1391, per the EC-REVIEWTRUTH-16 amendment note (2026-10-08) in `specs/phase-plans-v10.md`: off Claude Code the Fable rung defaults to the brokered headless `claude -p` print session; `PHASE_LOOP_PANEL_CLAUDE_ROUTE=tui` selects the self-PTY session.)
   - impl: In the decision note, append the final `EXPIRED by Consiliency/agent-harness#<its number>` row and mark the note closed; do not rewrite earlier rows.
 
 ### SL-3 — Documentation and phase reducer
