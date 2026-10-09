@@ -264,6 +264,11 @@ ARGV_CLAUDE_EFFORT = re.compile(r"^(low|medium|high|max)$")
 ARGV_GROK_EFFORT = re.compile(r"^(low|medium|high|xhigh)$")
 ARGV_AGY_DEADLINE = re.compile(r"^[1-9][0-9]*s$")
 STDIN_PROMPT_MARKER = "<STDIN_SEALED_INLINE_PROMPT>"
+# The print route's run-isolated settings (the runtime's ``_claude_panel_settings``): no
+# API-key helper, and only the output-token budget, as a positive integer.
+ARGV_CLAUDE_PRINT_SETTINGS = re.compile(
+    r'^\{"apiKeyHelper": "", "env": \{"CLAUDE_CODE_MAX_OUTPUT_TOKENS": "[1-9][0-9]{0,6}"\}\}$'
+)
 
 
 def broker_argv_grammar(
@@ -277,9 +282,11 @@ def broker_argv_grammar(
     if harness == "claude" and claude_route == CLAUDE_ROUTE_PRINT:
         return [
             "claude", "-p", "--verbose", "--output-format", "stream-json",
-            "--input-format", "text", "--model", model, "--effort", ARGV_CLAUDE_EFFORT,
+            "--input-format", "text", "--safe-mode", "--model", model,
+            "--effort", ARGV_CLAUDE_EFFORT,
             "--permission-mode", "dontAsk", "--permission-prompts", "none",
-            "--setting-sources", "", "--strict-mcp-config",
+            "--setting-sources", "", "--settings", ARGV_CLAUDE_PRINT_SETTINGS,
+            "--strict-mcp-config",
             "--mcp-config", "{\"mcpServers\": {}}", "--agents", "{}",
             "--no-chrome", "--disable-slash-commands", "--no-session-persistence",
             "--session-id", "<CLAUDE_SESSION_ID>",

@@ -24,6 +24,7 @@ from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
 
 _ROUTE_ENV = "PHASE_LOOP_PANEL_CLAUDE_ROUTE"
 _BROKER_DENY = "Bash,Read,Edit,Write,WebFetch,WebSearch,Task,NotebookEdit"
+_SETTINGS_128K = '{"apiKeyHelper": "", "env": {"CLAUDE_CODE_MAX_OUTPUT_TOKENS": "128000"}}'
 
 
 def _event(**fields) -> str:
@@ -75,12 +76,12 @@ def _without_session(command: list[str]) -> list[str]:
 
 
 def test_brokered_print_argv_golden():
-    command = pi._claude_print_seat_command("claude-opus-5-5", None, brokered=True)
+    command = pi._claude_print_seat_command("claude-opus-5-5", None, brokered=True, env={})
     assert _without_session(command) == [
         "claude", "-p", "--verbose", "--output-format", "stream-json", "--input-format", "text",
-        "--model", "claude-opus-5-5", "--effort", "high",
+        "--safe-mode", "--model", "claude-opus-5-5", "--effort", "high",
         "--permission-mode", "dontAsk", "--permission-prompts", "none",
-        "--setting-sources", "", "--strict-mcp-config",
+        "--setting-sources", "", "--settings", _SETTINGS_128K, "--strict-mcp-config",
         "--mcp-config", '{"mcpServers": {}}', "--agents", "{}",
         "--no-chrome", "--disable-slash-commands", "--no-session-persistence",
         "--session-id", "<SESSION>",
@@ -91,13 +92,13 @@ def test_brokered_print_argv_golden():
 def test_direct_print_argv_golden(tmp_path):
     review_dir = tmp_path / "review"
     command = pi._claude_print_seat_command(
-        None, None, brokered=False, add_dirs=[review_dir],
+        None, None, brokered=False, add_dirs=[review_dir], env={},
     )
     assert _without_session(command) == [
         "claude", "-p", "--verbose", "--output-format", "stream-json", "--input-format", "text",
-        "--model", pi.DEFAULT_LEG_MODELS["claude"], "--effort", "high",
+        "--safe-mode", "--model", pi.DEFAULT_LEG_MODELS["claude"], "--effort", "high",
         "--permission-mode", "dontAsk", "--permission-prompts", "none",
-        "--setting-sources", "", "--strict-mcp-config",
+        "--setting-sources", "", "--settings", _SETTINGS_128K, "--strict-mcp-config",
         "--mcp-config", '{"mcpServers": {}}', "--agents", "{}",
         "--no-chrome", "--disable-slash-commands", "--no-session-persistence",
         "--session-id", "<SESSION>",
@@ -448,3 +449,130 @@ def test_president_print_gates_fail_before_launching(tmp_path, monkeypatch, read
     assert launched == []
     if gate == "_claude_code_support_status":
         assert seen == [{"min_version": pi._CLAUDE_PRINT_MIN_VERSION}]
+
+
+# --- the pre-launch gates, driven through the real probe seam (advisor board F001) ------
+#
+# `claude auth status --json` runs inside the owned seat profile, which delivers the login's
+# access token on CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR under a private config dir. There
+# Claude Code reports this shape (observed on Claude Code 2.1.295), not the host's
+# `claude.ai` one. These tests drive `run_provider` with it rather than stubbing the gates.
+_IN_SEAT_STATUS = {"loggedIn": True, "authMethod": "oauth_token", "apiProvider": "firstParty"}
+
+
+def _seat_probes(monkeypatch, status: dict | str = _IN_SEAT_STATUS) -> list:
+    seen: list = []
+
+    def run_provider(argv, **kwargs):
+        argv = list(argv)
+        seen.append((argv, kwargs.get("env")))
+        if argv == ["claude", "--version"]:
+            return types.SimpleNamespace(returncode=0, stdout="2.1.295 (Claude Code)", stderr="")
+        if argv == ["claude", "auth", "status", "--json"]:
+            raw = status if isinstance(status, str) else json.dumps(status)
+            return types.SimpleNamespace(returncode=0, stdout=raw, stderr="")
+        raise AssertionError(f"unexpected provider probe {argv}")
+
+    monkeypatch.setattr(pi, "run_provider", run_provider)
+    return seen
+
+
+def test_president_print_route_launches_on_the_seat_profile_credential(tmp_path, monkeypatch):
+    monkeypatch.delenv(_ROUTE_ENV, raising=False)
+    monkeypatch.setattr(pi, "_under_claude_code", lambda env=None: False)
+    probes = _seat_probes(monkeypatch)
+    calls: list = []
+
+    def spy_print(command, prompt, **kwargs):
+        calls.append(list(command))
+        raise _Reached()
+
+    with patch.object(pi, "_run_claude_print_session", spy_print):
+        seam = president_adapter.build_president_invoke(
+            DEFAULT_BOARD, repo_dir=str(tmp_path), base_env={}
+        )
+        response = seam("fable", "F001: [fable] the dispatch lock is never released")
+    assert calls, response
+    assert [argv for argv, _env in probes] == [
+        ["claude", "--version"], ["claude", "auth", "status", "--json"],
+    ]
+
+
+def test_panel_print_leg_launches_on_the_seat_profile_credential(tmp_path, monkeypatch):
+    review_dir, out_dir = _stage(tmp_path)
+    monkeypatch.delenv(_ROUTE_ENV, raising=False)
+    monkeypatch.setattr(pi, "_under_claude_code", lambda env=None: False)
+    _seat_probes(monkeypatch)
+    monkeypatch.setattr(
+        pi, "_run_claude_print_session",
+        lambda *a, **k: (0, "Sound.\nAGREE", pi._HarnessCode("claude_print_result"), ""),
+    )
+    for broker_prompt in (None, "SEALED"):
+        assert pi._exec_claude_tui_leg(
+            review_dir, out_dir, 60, "bundle", env={}, broker_prompt=broker_prompt,
+        ) == ("OK", "Sound.\nAGREE")
+
+
+@pytest.mark.parametrize("status", [
+    {"loggedIn": True, "authMethod": "apiKey", "apiProvider": "firstParty"},
+    {"loggedIn": True, "authMethod": "console", "apiProvider": "firstParty"},
+    {"authMethod": "oauth_token", "apiProvider": "firstParty"},
+    {"loggedIn": False, "authMethod": "oauth_token", "apiProvider": "firstParty"},
+    {"loggedIn": True, "authMethod": "oauth_token", "apiProvider": "bedrock"},
+    {"loggedIn": True, "authMethod": "oauth_token", "apiProvider": "vertex"},
+    {"loggedIn": True, "authMethod": "oauth_token"},
+    {"loggedIn": True, "authMethod": "claude.ai", "apiProvider": "firstParty"},
+], ids=["api-key", "console", "no-loggedIn", "logged-out", "bedrock", "vertex",
+        "no-provider", "claude.ai-without-subscription"])
+def test_unproven_seat_status_shapes_are_refused(monkeypatch, status):
+    _seat_probes(monkeypatch, status)
+    assert pi._claude_subscription_auth_ok({}) == (False, "subscription_auth_unproven")
+
+
+@pytest.mark.parametrize("key", [
+    "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
+    "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY",
+])
+def test_a_caller_supplied_token_voids_the_in_seat_shape(monkeypatch, key):
+    _seat_probes(monkeypatch)
+    assert pi._claude_subscription_auth_ok({key: "caller-value"}) == (
+        False, "subscription_auth_unproven",
+    )
+    # The host's own subscription shape is unaffected by the caller's env, as before.
+    _seat_probes(monkeypatch, {**_IN_SEAT_STATUS, "authMethod": "claude.ai", "subscriptionType": "max"})
+    assert pi._claude_subscription_auth_ok({key: "caller-value"}) == (True, "")
+
+
+def test_a_caller_token_refuses_the_panel_print_leg_before_launch(tmp_path, monkeypatch):
+    review_dir, out_dir = _stage(tmp_path)
+    monkeypatch.delenv(_ROUTE_ENV, raising=False)
+    monkeypatch.setattr(pi, "_under_claude_code", lambda env=None: False)
+    _seat_probes(monkeypatch)
+    launched = _forbid_launches(monkeypatch)
+    # `scrub_subscription_env` keeps CLAUDE_CODE_OAUTH_TOKEN, so the gate refuses it itself.
+    assert pi._exec_claude_tui_leg(
+        review_dir, out_dir, 60, "bundle", env={"CLAUDE_CODE_OAUTH_TOKEN": "caller"},
+    ) == ("UNAVAILABLE", "subscription_auth_unproven")
+    assert launched == []
+
+
+def test_the_seat_settings_carry_the_caller_output_budget(tmp_path, monkeypatch, ready_host):
+    review_dir, out_dir = _stage(tmp_path)
+    commands: list = []
+    monkeypatch.setattr(
+        pi, "_run_claude_print_session",
+        lambda command, prompt, **k: commands.append(list(command))
+        or (0, "AGREE", pi._HarnessCode("claude_print_result"), ""),
+    )
+    pi._exec_claude_tui_leg(review_dir, out_dir, 60, "bundle", broker_prompt="SEALED",
+                            env={"CLAUDE_CODE_MAX_OUTPUT_TOKENS": "96000"})
+    settings = json.loads(commands[0][commands[0].index("--settings") + 1])
+    assert settings == {"apiKeyHelper": "", "env": {"CLAUDE_CODE_MAX_OUTPUT_TOKENS": "96000"}}
+    assert "--safe-mode" in commands[0]
+
+
+def test_no_result_event_is_never_ok(tmp_path, owned_session):
+    assistant = _event(type="assistant", message={"content": [{"type": "text", "text": "Mid-turn.\nAGREE"}]})
+    (rc, text, log, _tail), _observed = _session(_script(_INIT_OAUTH, assistant), tmp_path)
+    assert (rc, text) == (0, "")
+    assert pi._classify_leg(rc, text, log) != "OK"
