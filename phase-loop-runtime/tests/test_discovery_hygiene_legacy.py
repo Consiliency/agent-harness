@@ -15,7 +15,7 @@ Pins the four reachable discovery-hygiene fixes that ship as a UNIT:
 - Genuine resumption is protected by the state-file ladder
   (``active_state_roadmap``), which precedes the manifest and glob branches.
 - A coherent roadmap-status registry selects its declared active roadmap before
-  the manifest fallback can surface a deliberately retained superseded entry.
+  the manifest fallback, which also filters out non-active registry entries.
 """
 from __future__ import annotations
 
@@ -157,7 +157,7 @@ class CompletedSkipTest(unittest.TestCase):
                 check=True,
             )
 
-            self.assertEqual(manifest_backed_roadmap(repo), superseded.resolve())
+            self.assertIsNone(manifest_backed_roadmap(repo))
             self.assertEqual(select_roadmap(repo, None), active.resolve())
 
 
