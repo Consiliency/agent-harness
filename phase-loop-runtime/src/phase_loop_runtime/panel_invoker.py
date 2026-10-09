@@ -5376,6 +5376,12 @@ _EGRESS_LAUNCH_PREFIX: ContextVar[tuple[str, ...]] = ContextVar(
 # wait inside the seat (the login wait) honours it even where no monitor carries it (the
 # bounded policy). ``None`` outside a board.
 _BOARD_CANCEL: ContextVar["threading.Event | None"] = ContextVar("_BOARD_CANCEL", default=None)
+#: The seat key of the board seat whose provider spawn is running on this thread
+#: (``seat_session_label``). ``_default_spawn`` is called with a frozen signature that carries no
+#: seat key outside agy capture (the CS-0.8 same-signature guard and the placement round id are
+#: pinned to it), so the seat identity that names a Claude seat travels here instead. It is set
+#: inside the worker that runs the spawn: ``_run_legs`` uses a thread pool without copy_context.
+_SEAT_SESSION_SEAT: ContextVar[str | None] = ContextVar("_SEAT_SESSION_SEAT", default=None)
 
 
 def _sandbox_in(review_dir: Path | str | None) -> Path | None:
@@ -11252,8 +11258,11 @@ def _has_injected_review_execution_seam(
 
 def _seat_session_name(repo_dir: object, mode: str, seat_key: str | None, leg: str) -> str | None:
     """The name a Claude seat's session gets in the app's session list, or ``None`` (naming off).
-    Derived by the runtime from the repo, the mode and the seat (``seat_session_label``)."""
-    return _seat_session_label.build_label(repo=repo_dir, mode=mode, seat=seat_key or leg)
+    Derived by the runtime from the repo, the mode and the seat (``seat_session_label``). The seat
+    is the one the caller named, else the board seat this thread is running (``_SEAT_SESSION_SEAT``),
+    else the leg."""
+    return _seat_session_label.build_label(
+        repo=repo_dir, mode=mode, seat=seat_key or _SEAT_SESSION_SEAT.get() or leg)
 
 
 def _default_spawn(
@@ -11355,6 +11364,12 @@ def _default_spawn(
             out_dir.mkdir()
     except Exception:
         raise
+    # The Claude seat's session name (seat_session_label), computed once here, on the thread that
+    # holds `_SEAT_SESSION_SEAT`: the jailed leg below runs in a closure the broker may call from
+    # another thread, which starts with an empty context. Only a Claude seat uses it.
+    claude_session_name = (
+        _seat_session_name(resolved_repo_dir, mode, seat_key, leg) if leg == "claude" else None
+    )
     provider_output_dir: Path | None = out_dir if provider_authority is not None else None
     # agent-harness#1132, J7 steps 0-4: decided once, after the public-entry authorization
     # (validated above) and BEFORE staging. `None` for a leg this plan does not jail, and
@@ -11743,7 +11758,7 @@ def _default_spawn(
                                 broker_evidence=broker.evidence,
                                 failure_detail_sink=claude_sink,
                                 quiescence_latch=broker_latch, review_monitor=review_monitor,
-                                session_name=_seat_session_name(resolved_repo_dir, mode, seat_key, leg),
+                                session_name=claude_session_name,
                             )
                         except _seat_jail.SeatSandboxRefused as exc:
                             claude_sink.append(_LegFailure(template=exc.code))
@@ -11858,7 +11873,7 @@ def _default_spawn(
                 model=model,
                 backstop_s=leg_deadline,
                 failure_detail_sink=claude_sink,
-                session_name=_seat_session_name(resolved_repo_dir, mode, seat_key, leg),
+                session_name=claude_session_name,
                 **extra,
             )
             if quiescence_latch is not None:
@@ -12058,6 +12073,9 @@ def _default_spawn_via_provider(
     def _spawn_2tuple(request, register_process=None):
         if quiescence_latch is not None:
             quiescence_latch.raise_if_set()
+        seat_token = (
+            _SEAT_SESSION_SEAT.set(seat_key) if seat_key and agy_capture is None else None
+        )
         try:
             spawned = _default_spawn(
                 leg, artifact, repo_dir=repo_dir, mode=mode, model=model, **extra
@@ -12072,6 +12090,9 @@ def _default_spawn_via_provider(
                 else exc
             )
             raise
+        finally:
+            if seat_token is not None:
+                _SEAT_SESSION_SEAT.reset(seat_token)
         _placement_evidence[0] = getattr(spawned, "sandbox_placement_evidence", None)
         if isinstance(spawned, tuple) and len(spawned) == 3:
             status_, text_, _diagnostic[0] = spawned
@@ -13714,18 +13735,26 @@ def invoke_board(
                         research_extra["capture_scratch"] = scratch
                         research_extra["quiescence_latch"] = capture_quiescence
                     capture_quiescence.raise_if_set()
-                    spawned = _default_spawn_via_provider(
-                        leg,
-                        artifact,
-                        repo_dir=repo_dir,
-                        mode=mode,
-                        model=seat.model,
-                        effort=seat.effort,
-                        env=seat_env,
-                        brief_ref=brief_ref,
-                        timeout_s=leg_timeouts.get(leg),
-                        **research_extra,
-                    )
+                    # The seat's identity names its Claude session (seat_session_label). It is set
+                    # here, inside the worker: `_run_legs` submits to a thread pool without
+                    # copy_context, and the provider seam runs `_default_spawn` synchronously in
+                    # this thread. `_default_spawn`'s own kwargs stay as they were (CS-0.8).
+                    seat_token = _SEAT_SESSION_SEAT.set(str(seat.seat_key))
+                    try:
+                        spawned = _default_spawn_via_provider(
+                            leg,
+                            artifact,
+                            repo_dir=repo_dir,
+                            mode=mode,
+                            model=seat.model,
+                            effort=seat.effort,
+                            env=seat_env,
+                            brief_ref=brief_ref,
+                            timeout_s=leg_timeouts.get(leg),
+                            **research_extra,
+                        )
+                    finally:
+                        _SEAT_SESSION_SEAT.reset(seat_token)
                 capture_quiescence.raise_if_set()
                 # 2-or-3 tuple, same contract as `_run_leg`: a 3-tuple carries a failure
                 # DIAGNOSTIC bound for `detail`, never `text` (a diagnostic in text is read

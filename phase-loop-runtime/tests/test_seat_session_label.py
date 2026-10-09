@@ -71,13 +71,15 @@ def test_naming_is_on_by_default_and_for_any_other_value(value):
     assert _build(environ={label.ENV_SWITCH: value}) is not None
 
 
-def test_the_label_is_bounded_and_the_topic_shrinks_first():
-    long_topic = "x" * 500
-    text = _build(repo=Path("/w/" + "r" * 60), environ={label.ENV_TOPIC: long_topic})
-    assert text is not None and len(text) <= label.MAX_LABEL
-    assert text.endswith(f"claude · {STAMP}") or STAMP in text      # the time is not what gets cut
-    short = _build(environ={label.ENV_TOPIC: "x" * 500})
-    assert len(short) <= label.MAX_LABEL and short.count("x") <= 40
+def test_the_label_is_bounded_and_the_topic_is_what_gives_way_first():
+    seat = "claude:claude-opus-5-5:high:correctness"
+    plain = _build(seat=seat)
+    topical = _build(seat=seat, environ={label.ENV_TOPIC: "x" * 500})
+    for text in (plain, topical):
+        assert len(text) <= label.MAX_LABEL and text.endswith(STAMP)
+    # Only the topic is shortened; the repo, the mode and the whole seat part survive it.
+    assert topical.startswith("agent-harness · review · ") and "claude-opus-5-5:high:correctness" in topical
+    assert topical.count("x") < 40 and plain.count("x") == 0
 
 
 @pytest.mark.parametrize("hostile, expected_start", [
@@ -109,6 +111,8 @@ def test_the_helper_derives_the_name_from_the_repo_the_mode_and_the_seat():
     named = pi._seat_session_name(Path("/work/agent-harness"), "review", "anthropic", "claude")
     assert named.startswith("agent-harness · review · anthropic · ")
     assert pi._seat_session_name(Path("/work/r"), "review", None, "claude").startswith("r · review · claude · ")
+    keyed = pi._seat_session_name(Path("/work/r"), "review", "claude:claude-opus-5-5:high:correctness", "claude")
+    assert keyed.startswith("r · review · claude-opus-5-5:high:correctness · ")
 
 
 # --- where it is applied --------------------------------------------------------------------
@@ -230,3 +234,233 @@ def test_the_non_brokered_route_through_the_spawn_passes_the_name(monkeypatch, t
     pi._default_spawn("claude", "ARTIFACT", mode="advisory", repo_dir=repo, seat_key="anthropic")
     name = captured["session_name"]
     assert name.startswith("client-repo · advisory · ratify the plan · anthropic · ")
+
+
+# --- the seat part, and the length budget (president ruling on agent-harness#1404) ---------------
+
+SEAT_A = "claude:claude-opus-5-5:high:correctness"
+SEAT_B = "claude:claude-opus-5-5:high:adversarial"
+
+
+def test_the_seat_part_drops_the_leading_harness_segment():
+    assert _build(seat=SEAT_A) == f"agent-harness · review · claude-opus-5-5:high:correctness · {STAMP}"
+    assert _build(seat="@openai:gpt-6-astra:max") == f"agent-harness · review · gpt-6-astra:max · {STAMP}"
+    assert _build(seat="claude") == f"agent-harness · review · claude · {STAMP}"          # no segment to drop
+    assert _build(seat="claude:") == f"agent-harness · review · claude · {STAMP}"         # nothing left: keep it
+
+
+def test_provider_seam_preserves_distinct_claude_seat_names(monkeypatch):
+    """Codex's F007 falsifier, ported: two Claude seats launched through the provider seam in the
+    same minute must not get the same name. Red before the seat identity reached the spawn."""
+    names = []
+    build = label.build_label
+    monkeypatch.setattr(label, "build_label", lambda **kwargs: build(**kwargs, environ={}, now=NOW))
+
+    def spawn(leg, artifact, **kwargs):
+        names.append(pi._seat_session_name(kwargs["repo_dir"], kwargs["mode"], kwargs.get("seat_key"), leg))
+        return "OK", "AGREE"
+
+    monkeypatch.setattr(pi, "_default_spawn", spawn)
+    direct = [pi._seat_session_name(Path("/work/r"), "review", key, "claude") for key in (SEAT_A, SEAT_B)]
+    assert direct[0] != direct[1]
+    for key in (SEAT_B, SEAT_A):
+        result = pi._default_spawn_via_provider(
+            "claude", "ARTIFACT", repo_dir=Path("/work/r"), mode="review",
+            model="claude-opus-5-5", effort="high", seat_key=key,
+        )
+        assert result == ("OK", "AGREE")
+    assert len(names) == 2
+    assert names[0] != names[1], names
+
+
+def _run_board_of_two_claude_seats(monkeypatch, spawn):
+    """invoke_board over two Claude seats that differ only in lens, through the sanctioned seam,
+    with `_default_spawn` replaced by ``spawn`` (so the real provider wrapper and worker run)."""
+    import tempfile
+    from unittest.mock import patch
+
+    from harden_tdd_guard import invoke_sanctioned_board_control
+    from phase_loop_runtime.advisor_board import matrix as matrix_module
+    from phase_loop_runtime.advisor_board.schema import Board, Seat
+
+    build = label.build_label
+    monkeypatch.setattr(label, "build_label", lambda **kwargs: build(**kwargs, environ={}, now=NOW))
+    board = Board(name="two-claude", purpose="brainstorm", seats=tuple(
+        Seat(model="claude-opus-5-5", effort="high", harness="claude", lens=lens)
+        for lens in ("correctness", "adversarial")))
+    assert {seat.seat_key for seat in board.seats} == {SEAT_A, SEAT_B}
+    with (
+        tempfile.TemporaryDirectory(prefix="seat-name-repo-") as td,
+        patch.object(matrix_module.DEFAULT_HARNESS_REGISTRY, "is_available", return_value=True),
+        patch.object(pi, "_default_spawn", side_effect=spawn),
+    ):
+        invoke_sanctioned_board_control(board, "ARTIFACT", repo_dir=Path(td), require_live_matrix_probe=True)
+
+
+def test_a_board_of_two_claude_seats_that_differ_only_in_lens_gets_two_names(monkeypatch):
+    """The production path: invoke_board -> its per-seat worker -> the provider seam -> _default_spawn.
+    `_default_spawn` must not be handed a seat_key (the CS-0.8 same-signature guard and the placement
+    round id are pinned to that call), so the seat identity has to travel another way."""
+    calls: list[tuple[dict, str | None]] = []
+
+    def spawn(leg, artifact, **kwargs):
+        calls.append((dict(kwargs), pi._seat_session_name(kwargs["repo_dir"], kwargs["mode"],
+                                                          kwargs.get("seat_key"), leg)))
+        return "OK", "Concrete advice for the question."
+
+    _run_board_of_two_claude_seats(monkeypatch, spawn)
+    names = [name for _kwargs, name in calls]
+    assert len(names) == 2, names
+    assert names[0] != names[1], names
+    assert all(name.endswith(STAMP) for name in names)
+    assert any(name.endswith(f"claude-opus-5-5:high:correctness · {STAMP}") for name in names)
+    assert any(name.endswith(f"claude-opus-5-5:high:adversarial · {STAMP}") for name in names)
+    assert all("seat_key" not in kwargs for kwargs, _name in calls)       # the call shape is unchanged
+
+
+class _CountingVar:
+    """The seat variable with its sets and resets counted, so a leak shows."""
+
+    def __init__(self, inner):
+        self.inner, self.sets, self.resets = inner, 0, 0
+
+    def get(self, *default):
+        return self.inner.get(*default)
+
+    def set(self, value):
+        self.sets += 1
+        return self.inner.set(value)
+
+    def reset(self, token):
+        self.resets += 1
+        return self.inner.reset(token)
+
+
+def test_every_set_of_the_seat_variable_is_matched_by_a_reset_through_a_board(monkeypatch):
+    """A pool thread keeps its context across tasks, so a value left behind by one seat would be read
+    by the next. Counts every set and reset on the real board path, success and failure."""
+    counting = _CountingVar(pi._SEAT_SESSION_SEAT)
+    monkeypatch.setattr(pi, "_SEAT_SESSION_SEAT", counting)
+    outcomes = iter(["ok", "boom"])
+
+    def spawn(leg, artifact, **kwargs):
+        if next(outcomes) == "boom":
+            raise RuntimeError("seat failed")
+        return "OK", "Concrete advice for the question."
+
+    _run_board_of_two_claude_seats(monkeypatch, spawn)
+    assert counting.sets == 2 and counting.resets == counting.sets, (counting.sets, counting.resets)
+    assert counting.inner.get() is None
+
+
+def test_the_seat_variable_never_outlives_the_spawn_that_set_it(monkeypatch):
+    seen = []
+
+    def spawn(leg, artifact, **kwargs):
+        seen.append(pi._SEAT_SESSION_SEAT.get())
+        if kwargs.get("model") == "boom":
+            raise RuntimeError("seat failed")
+        return "OK", "x"
+
+    monkeypatch.setattr(pi, "_default_spawn", spawn)
+    assert pi._SEAT_SESSION_SEAT.get() is None
+    pi._default_spawn_via_provider("claude", "A", repo_dir=Path("/w/r"), mode="review", seat_key=SEAT_A)
+    assert seen == [SEAT_A] and pi._SEAT_SESSION_SEAT.get() is None
+    try:
+        pi._default_spawn_via_provider("claude", "A", repo_dir=Path("/w/r"), mode="review",
+                                       model="boom", seat_key=SEAT_B)
+    except Exception:
+        pass
+    assert pi._SEAT_SESSION_SEAT.get() is None                              # reset on the failure path too
+
+
+def test_no_seat_key_means_the_variable_stays_unset(monkeypatch):
+    seen = []
+    monkeypatch.setattr(pi, "_default_spawn",
+                        lambda leg, artifact, **kw: (seen.append(pi._SEAT_SESSION_SEAT.get()), ("OK", "x"))[1])
+    pi._default_spawn_via_provider("claude", "A", repo_dir=Path("/w/r"), mode="review")
+    assert seen == [None]
+
+
+def test_the_spawn_call_keeps_its_exact_signature_on_the_non_capture_path():
+    """Nothing but the variable carries the seat: `_default_spawn` is called exactly as before."""
+    from unittest.mock import patch
+
+    with patch.object(pi, "_default_spawn", return_value=("OK", "AGREE")) as spawn:
+        pi._default_spawn_via_provider("claude", "bundle", repo_dir="/tmp/repo", mode="review",
+                                       model="m1", seat_key=SEAT_A)
+    spawn.assert_called_once_with("claude", "bundle", repo_dir="/tmp/repo", mode="review", model="m1")
+
+
+# (c) the budget: the label is at most 80 characters and always ends with the stamp.
+
+def test_a_long_repo_and_a_long_seat_still_end_with_the_stamp():
+    repo = Path("/w/agent-harness-claude-seat-session-names-1404")
+    assert len(repo.name) == 44
+    text = _build(repo=repo, mode="advisory", seat="claude:claude-opus-5-5:high:authority-verification")
+    assert len(text) <= label.MAX_LABEL and text.endswith(STAMP)
+    # The seat part is what is kept: the repo gives way before it does.
+    assert "claude-opus-5-5:high:authority-verification" in text and " · advisory · " in text
+
+
+def test_a_forty_character_repo_and_a_forty_character_seat_fit():
+    text = _build(repo=Path("/w/" + "r" * 40), mode="review", seat="s" * 40)
+    assert len(text) <= label.MAX_LABEL and text.endswith(STAMP) and "s" * 40 in text
+
+
+@pytest.mark.parametrize("repo_len", [0, 1, 8, 20, 44, 90])
+@pytest.mark.parametrize("seat_len", [0, 6, 33, 43, 90])
+@pytest.mark.parametrize("topic_len", [0, 12, 200])
+@pytest.mark.parametrize("mode", ["review", "advisory"])
+def test_the_label_is_always_within_budget_and_ends_with_the_stamp(repo_len, seat_len, topic_len, mode):
+    text = _build(
+        repo=Path("/w/" + ("r" * repo_len)) if repo_len else Path("/"),
+        mode=mode, seat=("claude:" + "s" * seat_len) if seat_len else "",
+        environ={label.ENV_TOPIC: "t" * topic_len} if topic_len else {})
+    assert text is not None and len(text) <= label.MAX_LABEL
+    assert text.endswith(f" · {STAMP}") and text[0].isalnum() and text.isprintable()
+    assert mode in text.split(" · ")                                        # the mode is reserved
+
+
+def test_the_order_in_which_the_label_gives_way_is_topic_then_repo_then_seat():
+    seat = "claude:" + "s" * 26
+    base = dict(repo=Path("/w/" + "r" * 20), mode="review", seat=seat)
+    no_topic = _build(**base)                                                # 73 characters: it all fits
+    assert "r" * 20 in no_topic and "s" * 26 in no_topic and len(no_topic) < label.MAX_LABEL
+    topical = _build(**base, environ={label.ENV_TOPIC: "t" * 40})            # 116 untrimmed
+    assert len(topical) <= label.MAX_LABEL and topical.endswith(STAMP)
+    assert "r" * 20 in topical and "s" * 26 in topical and 0 < topical.count("t") < 40   # the topic gave way alone
+    tight = _build(repo=Path("/w/" + "r" * 44), mode="advisory", seat="claude:" + "s" * 43)
+    assert "s" * 43 in tight and 0 < tight.count("r") < 44                   # the repo was cut, the seat was not
+    over = _build(repo=Path("/w/" + "r" * 44), mode="advisory", seat="claude:" + "s" * 64)
+    assert len(over) <= label.MAX_LABEL and over.endswith(STAMP)
+    parts = over.split(" · ")
+    assert parts[0] == "advisory" and parts[-1] == STAMP and len(parts) == 3   # the repo went altogether
+    assert 0 < parts[1].count("s") < 64                                      # and the seat was cut last, from its front
+
+
+def test_seats_that_differ_only_in_their_lens_keep_distinct_names_when_the_seat_must_be_cut():
+    common = "claude-opus-5-5-with-a-very-long-descriptive-model-name-that-forces-a-cut:high:"
+    a = _build(repo=Path("/w/" + "r" * 44), mode="advisory", seat=f"claude:{common}correctness")
+    b = _build(repo=Path("/w/" + "r" * 44), mode="advisory", seat=f"claude:{common}adversarial")
+    assert a != b and len(a) <= label.MAX_LABEL and len(b) <= label.MAX_LABEL
+    assert a.endswith(STAMP) and b.endswith(STAMP)
+
+
+def test_each_part_has_its_own_ceiling_even_when_there_is_room():
+    """Without the per-part ceilings the budget would hand all the room to whichever part is long."""
+    long = "x" * 100
+    topical = _build(repo=Path("/w/r"), mode="review", seat="", environ={label.ENV_TOPIC: long})
+    assert topical.split(" · ")[2] == "x" * 40                                   # the topic, capped at 40
+    wide_repo = _build(repo=Path("/w/" + "r" * 100), mode="review", seat="")
+    assert wide_repo.split(" · ")[0] == "r" * 40                                 # the repo, capped at 40
+    wide_mode = _build(repo=Path("/w/r"), mode="m" * 50, seat="")
+    assert wide_mode.split(" · ")[1] == "m" * 12                                 # the mode, capped at 12
+    wide_seat = _build(repo=None, mode="review", seat="claude:" + "s" * 200)
+    assert len(wide_seat.split(" · ")[1]) <= 120 and wide_seat.endswith(STAMP)   # the seat, capped before the budget
+
+
+def test_the_reserved_parts_alone_always_fit():
+    """The mode and the stamp are never trimmed, so they must fit with room to spare."""
+    text = _build(repo=None, mode="m" * 200, seat="")
+    assert text == f"{'m' * 12} · {STAMP}" and len(text) < label.MAX_LABEL

@@ -519,7 +519,11 @@ egress remains a DEGRADED leg with the exception detail, never an isolation clai
 ## Session names for Claude seats
 
 A Claude panel seat appears in the Claude app's session list as `<repo> · <mode> · [<topic> ·]
-<seat> · <UTC date time>`, for example `agent-harness · review · claude · 10-09 10:42Z`. Without a
+<seat> · <UTC date time>`, for example
+`agent-harness · review · claude-opus-5-5:high:correctness · 10-09 10:42Z`. The seat part is the
+board's seat key without its leading harness segment, so two Claude seats that differ only in
+their lens get different names. The label is at most 80 characters and always ends with the time;
+when it does not fit, the topic gives way first, then the repo, then the seat part. Without a
 name, Claude titles a seat by summarising its first message, which is the whole review prompt.
 - **Where:** the jailed seat and the non-brokered seat. The sealed seat (and so the president) is
   not renamed: the HARDEN evidence verifier holds its argv token-for-token.

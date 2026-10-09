@@ -17,9 +17,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - **New `seat_session_label` module and `--name <label>` on the Claude seat.** The runtime builds
   the label itself, so it works in a client repo with no help from the driving agent:
   `<repo> · <mode> · [<topic> ·] <seat> · <UTC date time>`, for example
-  `agent-harness · review · claude · 10-09 10:42Z`. The repo is the directory name, so a worktree
-  is told apart. Printable text only, one line, at most 80 characters, and it can never start with
-  a character that reads as an option.
+  `agent-harness · review · claude-opus-5-5:high:correctness · 10-09 10:42Z`. The repo is the
+  directory name, so a worktree is told apart. The seat part is the board's seat key without its
+  leading harness segment, so two Claude seats that differ only in their lens get different names;
+  the seat identity reaches the spawn through a per-thread variable set in the board's per-seat
+  worker, because `_default_spawn`'s own call (pinned by the CS-0.8 signature guard and the
+  placement round id) carries no seat key. Printable text only, one line, and it can never start
+  with a character that reads as an option.
+- **The label is at most 80 characters and always ends with the time.** The mode and the time are
+  reserved; when the parts do not fit, the topic gives way first, then the repo, then the seat
+  part (from its front, so the lens is the last thing to go).
 - **Where it applies.** The jailed seat and the non-brokered (homebrew) seat. **The sealed seat is
   not renamed:** its argv is held token-for-token by the HARDEN evidence verifier's frozen grammar
   (`scripts/verify_harden_evidence.py`), so naming it needs a coordinated verifier change. The
@@ -32,9 +39,6 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   which any local user can read on a shared host, and an advisory board's material can be
   sensitive. A topic appears only when the operator sets `PHASE_LOOP_SEAT_TOPIC`. Set
   `PHASE_LOOP_SEAT_SESSION_NAMES=0` to turn naming off.
-- **Not verified:** that the app shows the label verbatim. The CLI documents `--name` as the
-  session's display name and the log shows the automatic title is no longer generated, but the
-  label is not written to the debug log and the app's list needs a login to read.
 
 ## [0.7.26] - 2026-10-09
 
