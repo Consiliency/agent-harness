@@ -178,3 +178,89 @@ def test_refuses_wrong_schema(tmp_path):
     path.write_text(json.dumps({"schema": "rule_enforcement.v0", "rules": []}), encoding="utf-8")
     with pytest.raises(ValueError, match="rule_enforcement.v1"):
         load_registry(path)
+
+
+# Negative controls for the run-and-pass gate itself, against synthetic control files.
+
+
+def _gate_against(tmp_path, monkeypatch, files, node_ids):
+    tests = tmp_path / "tests"
+    tests.mkdir()
+    for name, source in files.items():
+        (tests / name).write_text(source, encoding="utf-8")
+    template = load_registry()[0]
+    rows = [dataclasses.replace(template, id=f"demo.c{i}", negative_control=n) for i, n in enumerate(node_ids)]
+    monkeypatch.setattr(sys.modules[__name__], "RUNTIME_ROOT", tmp_path)
+    monkeypatch.setattr(sys.modules[__name__], "load_registry", lambda: rows)
+    report_dir = tmp_path / "report"
+    report_dir.mkdir()
+    return lambda: test_every_negative_control_runs_and_passes(report_dir)
+
+
+_PASSING = "import unittest\nclass ControlTest(unittest.TestCase):\n    def test_refuses(self):\n        pass\n"
+_BORROWED = ["tests/test_first.py::ControlTest::test_refuses", "tests/test_second.py::ControlTest::test_refuses"]
+
+
+def test_a_skipped_control_cannot_borrow_a_same_named_pass_from_another_module(tmp_path, monkeypatch):
+    skipping = _PASSING.replace("pass", "self.skipTest('never shows its enforcer refuse')")
+    gate = _gate_against(tmp_path, monkeypatch, {"test_first.py": _PASSING, "test_second.py": skipping}, _BORROWED)
+    with pytest.raises(AssertionError, match="test_second.py::ControlTest::test_refuses did not run and pass"):
+        gate()
+
+
+def test_a_deselected_control_cannot_borrow_a_same_named_pass_from_another_module(tmp_path, monkeypatch):
+    gate = _gate_against(tmp_path, monkeypatch, {"test_first.py": _PASSING, "test_second.py": _PASSING}, _BORROWED)
+    (tmp_path / "pytest.ini").write_text(f"[pytest]\naddopts = --deselect={_BORROWED[1]}\n", encoding="utf-8")
+    with pytest.raises(AssertionError, match="test_second.py::ControlTest::test_refuses did not run and pass"):
+        gate()
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "import unittest\nclass ControlTest(unittest.TestCase):\n    def test_refuses(self):\n        self.skipTest('x')\n",
+        "import unittest\nclass ControlTest(unittest.TestCase):\n    @unittest.skipIf(True, 'x')\n    def test_refuses(self):\n        pass\n",
+        "import unittest\nclass ControlTest(unittest.TestCase):\n    @unittest.expectedFailure\n    def test_refuses(self):\n        assert False\n",
+        "import unittest\nclass ControlTest(unittest.TestCase):\n    def test_refuses(self):\n        with self.subTest(case=1):\n            self.skipTest('x')\n",
+        "import pytest\nclass TestControl:\n    @pytest.mark.xfail(reason='x')\n    def test_refuses(self):\n        assert False\n",
+        "import pytest\nclass TestControl:\n    @pytest.mark.parametrize('x', [])\n    def test_refuses(self, x):\n        pass\n",
+        "class Helper:\n    def test_refuses(self):\n        pass\n",
+    ],
+    ids=["skipTest", "skipIf", "expectedFailure", "subTest-skip", "xfail", "empty-parametrize", "not-collected"],
+)
+def test_a_control_that_does_not_run_and_pass_fails_the_gate(tmp_path, monkeypatch, body):
+    cls = "TestControl" if "class TestControl" in body else ("Helper" if "Helper" in body else "ControlTest")
+    gate = _gate_against(tmp_path, monkeypatch, {"test_c.py": body}, [f"tests/test_c.py::{cls}::test_refuses"])
+    with pytest.raises(AssertionError):
+        gate()
+
+
+def test_a_module_level_control_function_is_matched_by_its_node_id(tmp_path, monkeypatch):
+    gate = _gate_against(
+        tmp_path, monkeypatch, {"test_fn.py": "def test_refuses():\n    pass\n"}, ["tests/test_fn.py::test_refuses"]
+    )
+    gate()
+
+
+def test_an_empty_registry_refuses_instead_of_running_the_whole_suite(tmp_path, monkeypatch):
+    gate = _gate_against(tmp_path, monkeypatch, {}, [])
+    with pytest.raises(AssertionError, match="no negative control"):
+        gate()
+
+
+@pytest.mark.parametrize("via", ["PYTEST_ADDOPTS", "ini addopts"])
+def test_a_control_whose_body_never_ran_is_not_execution_proof(tmp_path, monkeypatch, via):
+    body = (
+        "import unittest\nfrom pathlib import Path\nclass ControlTest(unittest.TestCase):\n"
+        "    def test_refuses(self):\n        Path(__file__).with_name('called').touch()\n"
+    )
+    gate = _gate_against(tmp_path, monkeypatch, {"test_c.py": body}, ["tests/test_c.py::ControlTest::test_refuses"])
+    if via == "PYTEST_ADDOPTS":
+        monkeypatch.setenv("PYTEST_ADDOPTS", "--setup-only")
+    else:
+        (tmp_path / "pytest.ini").write_text("[pytest]\naddopts = --setup-only\n", encoding="utf-8")
+    try:
+        gate()
+    except AssertionError:
+        return
+    assert (tmp_path / "tests" / "called").is_file(), "the gate accepted a control whose body never ran"
