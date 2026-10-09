@@ -108,6 +108,13 @@ INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
         EXCEPTION, "agy capture/qualification jail, frozen env (agent-harness#1179)"),
     ("agy_canary_evidence.py", "_bootstrap_attest_opened"): (
         EXCEPTION, "agy capture/qualification jail, frozen env (agent-harness#1179)"),
+    # agent-harness#1333 PR2: the CLI qualification help probe. Like the agy qualification
+    # probes above, its env is frozen on purpose: the whole env is `probe_env` (pinned
+    # locale, width, terminal, PATH and a private HOME), never relocated, so the measured
+    # help digest is the same on every host. Its `run` default is an injectable runner;
+    # PR3's adapter replaces it with the owned-profile launch of the verified bytes.
+    ("cli_qualification.py", "measure_help"): (
+        EXCEPTION, "CLI qualification help probe, pinned env (agent-harness#1333)"),
     # -- programs that are not agent CLIs (the AST cannot see the program) --------------
     # agent-harness#1222 §5/§5a: trusted host helpers resolved to absolute paths.
     ("review_stage.py", "host_git"): (NOT_AGENT, "git, the hardened host invocation"),

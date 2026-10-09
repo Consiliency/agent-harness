@@ -53,7 +53,8 @@ from .schema import (
 )
 
 # Recognised keys — anything else is a hard error (no silent drop).
-_KNOWN_TOP_KEYS: frozenset[str] = frozenset({"default_board", "boards", "president", "agy", "sandbox"})
+_KNOWN_TOP_KEYS: frozenset[str] = frozenset({"default_board", "boards", "president", "agy", "sandbox",
+                                             "qualification"})
 # A repository file configures the president ladder only: repo-level boards are not a
 # feature, so a ``[[boards]]`` there is refused rather than silently ignored.
 _KNOWN_REPO_TOP_KEYS: frozenset[str] = frozenset({"president"})
@@ -64,6 +65,9 @@ _KNOWN_AGY_KEYS: frozenset[str] = frozenset({"self_qualification"})
 # agent-harness#896: the USER file's ``[sandbox]`` names one root per remote placement
 # backend and the order to try them in. A repository file cannot carry it: roots name hosts.
 _KNOWN_SANDBOX_KEYS: frozenset[str] = frozenset({"roots", "order"})
+# agent-harness#1333 PR2: the USER file's ``[qualification.<harness>] self_qualification``
+# opts that harness out of first-use CLI qualification. A repository file cannot carry it.
+_KNOWN_QUALIFICATION_KEYS: frozenset[str] = frozenset({"self_qualification"})
 DEFAULT_SANDBOX_BACKEND_ORDER: tuple[str, ...] = ("self-hosted", "e2b")
 _SANDBOX_BACKEND_NAME = re.compile(r"[a-z0-9][a-z0-9-]{0,62}")
 # Repository-level config, relative to the repository root.
@@ -233,6 +237,25 @@ def _parse_agy(data: Mapping[str, Any], where: str) -> bool:
     return _require_bool(raw, "self_qualification", True, f"{where} [agy]")
 
 
+def _parse_qualification(data: Mapping[str, Any], where: str) -> dict[str, bool]:
+    """The user file's ``[qualification.<harness>] self_qualification`` (default ``True``)."""
+    from ..cli_qualification import HARNESSES
+
+    raw = data.get("qualification")
+    if raw is None:
+        return {}
+    if not isinstance(raw, Mapping):
+        raise BoardConfigError(f"{where}: 'qualification' must be a table")
+    _reject_unknown(raw.keys(), frozenset(HARNESSES), f"{where} [qualification]")
+    enabled = {}
+    for harness, table in raw.items():
+        if not isinstance(table, Mapping):
+            raise BoardConfigError(f"{where}: 'qualification.{harness}' must be a table")
+        _reject_unknown(table.keys(), _KNOWN_QUALIFICATION_KEYS, f"{where} [qualification.{harness}]")
+        enabled[harness] = _require_bool(table, "self_qualification", True, f"{where} [qualification.{harness}]")
+    return enabled
+
+
 def _parse_sandbox(data: Mapping[str, Any], where: str) -> tuple[tuple[str, str], ...]:
     """The user file's ``[sandbox]``, validated: ``(name, root)`` in the order to try them."""
     raw = data.get("sandbox")
@@ -285,6 +308,20 @@ def load_agy_self_qualification(*, path: Path | None = None) -> bool:
         return True
     _reject_unknown(user.keys(), _KNOWN_TOP_KEYS, str(user_path))
     return _parse_agy(user, str(user_path))
+
+
+def load_cli_self_qualification(harness: str, *, path: Path | None = None) -> bool:
+    """agent-harness#1333: whether first-use CLI qualification is enabled for ``harness``.
+
+    Reads the user file only. A malformed file raises; the caller treats any error as
+    opted out.
+    """
+    user_path = path if path is not None else board_config_path(None)
+    user = _load_toml(user_path)
+    if user is None:
+        return True
+    _reject_unknown(user.keys(), _KNOWN_TOP_KEYS, str(user_path))
+    return _parse_qualification(user, str(user_path)).get(harness, True)
 
 
 def _user_config_path(env: Mapping[str, str] | None) -> Path | None:
@@ -436,6 +473,7 @@ def load_boards(
         _parse_president(data, str(cfg_path))  # a bad [president] fails at load too
         _parse_agy(data, str(cfg_path))  # and a bad [agy] (agent-harness#1076)
         _parse_sandbox(data, str(cfg_path))  # and a bad [sandbox] (agent-harness#896)
+        _parse_qualification(data, str(cfg_path))  # and a bad [qualification] (agent-harness#1333)
         raw_boards = data.get("boards", [])
         if not isinstance(raw_boards, list):
             raise BoardConfigError(f"{cfg_path}: 'boards' must be an array of tables")
