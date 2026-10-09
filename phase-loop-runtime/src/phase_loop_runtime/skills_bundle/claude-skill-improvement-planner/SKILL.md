@@ -7,19 +7,19 @@ description: "Claude Code skill feedback aggregator. Reads workflow skill reflec
 
 ## Runtime State
 
-For reflections, handoffs, and latest handoff pointers, follow `<harness>-config/shared/runtime-state.md`. This repo/branch/run-isolated contract supersedes any older flat closeout examples retained for historical context in this skill.
+For reflections, handoffs, and latest handoff pointers, follow the repo/branch/run-isolated layout from `phase_loop_runtime.skill_paths`. That contract supersedes any older flat closeout examples retained for historical context in this skill.
 
-Reads reflection files produced by the planning-chain skills' close-out steps — plus reflections emitted by the meta-skills (`<harness>-skill-improvement-planner`, `<harness>-skill-editor`) themselves — aggregates recurring themes across runs, and writes an improvement plan. Does not edit skills. A separate `<harness>-skill-editor` skill ingests the plan and performs the edits. Including the meta-skills' own reflections closes the self-improvement loop so this planner and the editor can be iterated on with the same pipeline they drive.
+Reads reflection files produced by every workflow skill's close-out step — plus reflections emitted by the meta-skills (`<harness>-skill-improvement-planner`, `<harness>-skill-editor`) themselves — aggregates recurring themes across runs, and writes an improvement plan. Does not edit skills. A separate `<harness>-skill-editor` skill ingests the plan and performs the edits. Including the meta-skills' own reflections closes the self-improvement loop so this planner and the editor can be iterated on with the same pipeline they drive.
 
 ## Pipeline
 
-Harness meta-skill source changes move through three tiers:
+Canonical source for every `<harness>-*` workflow skill is `skills-src/claude/<harness>-<skill>/SKILL.md` in the agent-harness checkout (IF-0-CANON-1, `docs/phase-loop/skills-canonical-source.md`):
 
-1. Canonical source: `<harness>-config/<harness>-skills/<harness>-<skill>/SKILL.md`.
-2. Harness-neutral bundle: `vendor/phase-loop-skills/<bare-skill>/SKILL.md`, currently bundle-derived-from-codex.
-3. Installed runtime roots: `~/.claude/skills/`, `~/.codex/skills/`, `~/.gemini/skills/`, and `~/.opencode/skills/`.
+1. Canonical source: `skills-src/claude/<harness>-<skill>/` (edit here).
+2. Generated bundle: `python3 phase-loop-runtime/scripts/regenerate_skills_bundle.py` → `phase-loop-skills/`, then `python3 phase-loop-runtime/scripts/sync_skills_bundle.py` → packaged `skills_bundle/`.
+3. Installed runtime roots: `~/.claude/skills/`, `~/.codex/skills/`, `~/.gemini/skills/`, and `~/.config/opencode/skills/`.
 
-SP-DOC edits only the canonical source tier. Leave the neutral bundle and installed runtime roots stale until the end-of-v36 cutover. The cutover regenerates the bundle from the codex-derived source path and runs `./bootstrap.sh`, which installs the bundle with `python3 -m phase_loop_runtime.cli install --source vendor/phase-loop-skills --symlink --apply`.
+Name target files under `skills-src/` only; generated and installed copies are never the source of truth.
 
 ## When to use
 
@@ -36,43 +36,49 @@ SP-DOC edits only the canonical source tier. Leave the neutral bundle and instal
 
 | Arg | Required | Meaning |
 |---|---|---|
-| `--target <skill-name>` | no | Plan only for one skill; skip the rest. Default: all five skills (the three pipeline skills plus the two meta-skills). |
+| `--target <skill-name>` | no | Plan only for one skill; skip the rest. Default: every in-scope skill (Step 1). |
+| `--corpus <dir>` | no | A collector output directory (`bundle.md` + `manifest.json`). Default: run the collector in Step 1. |
 | `--min-reflections <N>` | no | Default 2. Skip skills with fewer new (un-archived) reflections to avoid acting on noise. |
 | `--output <path>` | no | Override the generated plan path. |
 
 ## Workflow
 
-### Step 1 — Enumerate reflections
+### Step 1 — Collect the corpus
 
-Glob these paths, excluding any `archive/` subdirectory. For each skill, scan both the Harness runtime reflection root and the codex-derived source-controlled reflection root:
+Do not hand-glob. Run the collector, which scans every harness skill root (reflections from all harnesses land under `~/.codex/skills/` and `~/.claude/skills/`), excludes `archive/`, and applies the capture quality filter:
 
-- `resolve_skill_bundle_root("claude")/<harness>-phase-roadmap-builder/reflections/**`
-- `resolve_skill_bundle_root("codex")/<harness>-phase-roadmap-builder/reflections/**`
-- `resolve_skill_bundle_root("claude")/<harness>-plan-phase/reflections/**`
-- `resolve_skill_bundle_root("codex")/<harness>-plan-phase/reflections/**`
-- `resolve_skill_bundle_root("claude")/<harness>-execute-phase/reflections/**`
-- `resolve_skill_bundle_root("codex")/<harness>-execute-phase/reflections/**`
-- `resolve_skill_bundle_root("claude")/<harness>-skill-improvement-planner/reflections/**`
-- `resolve_skill_bundle_root("codex")/<harness>-skill-improvement-planner/reflections/**`
-- `resolve_skill_bundle_root("claude")/<harness>-skill-editor/reflections/**`
-- `resolve_skill_bundle_root("codex")/<harness>-skill-editor/reflections/**`
+```bash
+python3 -m phase_loop_runtime.reflection_corpus collect --out-dir <dir> --min-reflections <N>
+```
 
-The last two close the self-improvement loop: this planner and the editor write reflections on their own runs, and those reflections must be aggregated here or the meta-skills can never be improved by their own pipeline. A missing `reflections/` directory for either meta-skill is not an error — they materialize lazily on first close-out.
+It writes `<dir>/bundle.md` (the aggregator input, grouped by bare skill) and `<dir>/manifest.json` (`reflections_consumed`, per-reflection exclusions, `ready_skills`). In scope, for every harness prefix:
 
-If `--target <skill>` is set, limit to that one skill.
+- `<harness>-phase-roadmap-builder`
+- `<harness>-plan-phase`
+- `<harness>-execute-phase`
+- `<harness>-plan-detailed`
+- `<harness>-execute-detailed`
+- `<harness>-task-contextualizer`
+- `<harness>-skill-improvement-planner`
+- `<harness>-skill-editor`
+- `<harness>-advisor-board`
+- `<harness>-phase-loop`
+- `<harness>-run-train`
 
-### Step 2 — Parse each reflection
+`advisor-panel` reflections count as `advisor-board`. The meta-skills close the self-improvement loop: this planner and the editor write reflections on their own runs, and those must be aggregated here or the meta-skills can never be improved by their own pipeline.
 
-For each file:
+The quality filter drops exact and near-duplicate reflections, strips lines repeated across reflections (boilerplate), redacts closeout-ledger detail (paths, URLs, SHAs, issue refs), rejects reflections whose `Improvements` are repo-specific, drops reflections with neither friction nor a proposal, and caps reflections per repo/branch. Every exclusion and its reason is in the manifest.
 
-- **Skill name**: parent directory's parent name.
-- **Version**: extract from filename (`<skill>-reflection-v(\d+)\.md`); fall back to mtime for non-standard filenames.
-- **Body**: read; extract the `## What worked` and `## Improvements to SKILL.md` sections. If those headings are absent (older or hand-named reflection), keep the raw body and tag as `unstructured`.
+If `--target <skill>` is set, limit aggregation to that skill.
+
+### Step 2 — Read the parse
+
+Each bundle entry carries its manifest id (`R0001`), skill and timestamp, and the sections `What worked`, `What didn't` (also headed `What did not`), and `Improvements to SKILL.md`. Entries without those headings are tagged `unstructured`. `What didn't` is the primary friction evidence; a recommendation may rest on it alone.
 
 ### Step 3 — Gate on minimum
 
-- Total reflections = 0 → print "No reflections to aggregate. Reflections not yet written at `resolve_skill_bundle_root("claude")/<skill>/reflections/`, or all are archived." Exit 0.
-- Per skill: new reflections < `--min-reflections` → skip that skill; note in the plan summary.
+- Admitted reflections = 0 → print "No reflections to aggregate: none written, all archived, or all filtered (see manifest exclusions)." Exit 0.
+- Skills absent from manifest `ready_skills` → skip; note in the plan summary.
 
 ### Step 4 — Aggregate via frontier-tier Agent
 
@@ -84,9 +90,11 @@ Agent(
   model: "<frontier-model-id>",
   name: "skill-improvement-aggregator",
   prompt: <contents of assets/aggregator_prompt.md>
-        + "\n\n# Reflections to aggregate\n\n" + <concatenated reflection bodies, grouped by skill, with version tags>
+        + "\n\n" + <contents of <dir>/bundle.md>
 )
 ```
+
+When the bundle exceeds one context, spawn one aggregator per skill section, then one cross-cutting pass over their outputs.
 
 The aggregator prompt (in `assets/aggregator_prompt.md`) instructs the Agent to:
 
@@ -95,7 +103,8 @@ The aggregator prompt (in `assets/aggregator_prompt.md`) instructs the Agent to:
 - Flag contradictions.
 - Propose concrete SKILL.md edits in directive-only style.
 - Enforce repo-agnostic output — reject or rewrite any recommendation that names a specific project, codebase, domain, or filename.
-- Cite supporting reflection versions per theme.
+- Apply the already-covered, decision-changing and structural-mechanism admission gates.
+- Cite supporting manifest ids per theme.
 
 ### Step 5 — Write the plan file
 
@@ -106,7 +115,7 @@ N=$(ls resolve_skill_bundle_root("claude")/<harness>-skill-improvement-planner/p
 PLAN_PATH=resolve_skill_bundle_root("claude")/<harness>-skill-improvement-planner/plans/plan-v$((N+1))-$(date -u +%Y%m%dT%H%M%SZ).md
 ```
 
-Write the plan using the template in `## Plan file format` below. The frontmatter's `reflections_consumed` field must list absolute paths to every reflection that was read — this is how the downstream <harness>-skill-editor knows what to archive.
+Write the plan using the template in `## Plan file format` below. Copy the manifest's `reflections_consumed` into the frontmatter and record `corpus_manifest:` — this is how the downstream <harness>-skill-editor knows what to archive.
 
 ### Step 6 — Close-out (standard artifact-producing pattern)
 
@@ -138,8 +147,11 @@ Agent(
       ## What worked
       - <bullet about the SKILL's instructions>
 
+      ## What didn't
+      - <friction the SKILL's instructions caused or failed to prevent>
+
       ## Improvements to SKILL.md
-      - <specific, actionable change>
+      - <specific, actionable change, or "None.">
 
       Do NOT reference this project or the specific reflections aggregated
       this run.
@@ -186,6 +198,7 @@ Exit message to user:
 from: <harness>-skill-improvement-planner
 timestamp: <ISO>
 min_reflections: <N>
+corpus_manifest: /absolute/path/to/manifest.json
 reflections_consumed:
   - /absolute/path/to/reflection1.md
   - /absolute/path/to/reflection2.md
@@ -202,13 +215,17 @@ reflections_consumed:
 ### <skill-name>
 - **Change**: <specific SKILL.md edit, directive-only imperative form>
   - **Rationale**: <recurring theme this addresses>
-  - **Supporting reflections**: v3, v5, v7
+  - **Target**: `skills-src/claude/<harness>-<skill>/SKILL.md`
+  - **Supporting reflections**: R0012, R0040, R0101
 - …
 
 (Repeat per skill. If a skill had no actionable themes, write: "No recurring themes above the `--min-reflections` threshold.")
 
 ## Cross-cutting recommendations
 <themes that affect multiple skills at once>
+
+## Mechanism candidates
+<themes better enforced by a check than by prose; route each to a filed issue, not a SKILL.md edit>
 
 ## Speculative / low-confidence notes
 <one-off feedback worth recording but not acting on yet>
@@ -218,7 +235,7 @@ reflections_consumed:
 
 ## Archival directive for <harness>-skill-editor
 
-After successfully applying each recommendation above, move every file listed under `reflections_consumed` (frontmatter) to `<reflections-dir>/archive/<original-filename>`. Create the `archive/` subdirectory if absent. This prevents re-aggregating the same feedback next cycle. If a specific recommendation fails to apply, leave its supporting reflections in place so the next planning pass can reconsider them.
+After applying the recommendations above, run `python3 -m phase_loop_runtime.reflection_corpus archive --manifest <corpus_manifest>`, adding `--exclude <path>` for each reflection that supports a failed recommendation. It moves each file listed under `reflections_consumed` to `<reflections-dir>/archive/<original-filename>`. This prevents re-aggregating the same feedback next cycle. If a specific recommendation fails to apply, leave its supporting reflections in place so the next planning pass can reconsider them.
 ```
 
 ## Archive convention
@@ -227,8 +244,8 @@ New convention introduced by this skill (the downstream editor performs the move
 
 - Path: `resolve_skill_bundle_root("claude")/<skill>/reflections/<repo_hash>/<branch_slug>/archive/<original-filename>`
 - Directory created lazily on first archive.
-- This planner excludes `archive/` when globbing.
-- Already gitignored — `<harness>-config/skills/*/reflections/` in dotfiles covers `archive/` as a subpath.
+- The collector excludes `archive/` when scanning.
+- Reflections live only in installed runtime roots, never in `skills-src/`.
 
 ## Best practices followed
 

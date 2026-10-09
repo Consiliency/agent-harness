@@ -36,6 +36,57 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - User config `[qualification.<harness>] self_qualification = false` opts a harness out. A
   repository config cannot carry it.
 
+### Plan word budget: check (S) and `.phase-loop-planning.toml` (agent-harness#1302)
+
+- `validate_plan_doc.py` (plan-phase) gains check (S): it warns when a phase plan's body,
+  excluding YAML frontmatter, is longer than its word budget. The default budget is 2000
+  words plus 500 per lane, and the check warns by default. Frozen artifacts the plan
+  references have no cap. The plan-phase and phase-roadmap-builder skills now state this one
+  rule in place of the old flat 3000-word budget.
+- Configure it in the committed repo-root file `.phase-loop-planning.toml`: `[plan_budget]`
+  takes `base_words`, `per_lane_words` and `mode = "warn" | "error" | "off"`, and
+  `[plan_budget.phases.<ALIAS>]` sets a per-phase exception for the plan whose frontmatter
+  `phase:` matches. `--word-budget N` sets a flat budget for one run. Keys:
+  `docs/phase-loop/plan-budget.md`.
+- A malformed config is a validation error: an unknown key or top-level table, a misplaced
+  `phases` table, a bad mode or count, invalid TOML, or a phase entry that fails validation
+  even when it matches no plan.
+- Severity now comes from the finding's prefix alone: only `(X) WARN` and `(X) INFO` lines
+  are non-fatal. Before, any finding whose text contained `WARN` was demoted to a warning,
+  and `(P) INFO` lines (goal coverage not checked, outside the runtime) counted as errors.
+  `(P) INFO` lines no longer count as errors.
+
+### The skill-improvement loop reads the reflections it writes (agent-harness#1301; PR agent-harness#1325)
+
+- New `python3 -m phase_loop_runtime.reflection_corpus` with `collect` and `archive`. `collect`
+  scans every harness skill root (claude, codex, gemini, opencode) and the
+  `PHASE_LOOP_SKILL_BUNDLE` root, covering all eleven workflow skills including
+  `execute-detailed`, every `claude-*` copy and the `advisor-panel` alias. It reads the
+  `What didn't` section and writes `bundle.md` (the planner's input) and `manifest.json`.
+- Quality filter: duplicates and near-duplicates collapse only within one skill/repo/branch,
+  and a line counts as boilerplate only when one repo's runs repeat it. Reflections with
+  repo-specific `Improvements`, with no friction and no proposal, or over 32 KiB are
+  excluded, and each repo/branch keeps its newest three. Every rendered body and the
+  manifest's stripped lines go through the shared credential redaction. Heading and
+  code-fence lines in a reflection's text are neutralised, and each entry header is one
+  line, so a reflection cannot add an entry header or swallow the entries after it.
+- The collector never reads a symlinked reflection file, or one whose real location
+  leaves its reflections directory. A reflection reached through a symlinked skill or
+  reflections directory outside the scan root is read but never consumed.
+- `maintain-skills` launches the planner only when some skill has at least
+  `--min-reflections` admitted reflections (default 2), and passes it `--corpus <dir>`.
+  Below that it records `plan_skipped` and launches nothing.
+- `archive` moves the manifest's `reflections_consumed` into `archive/`. Consumed means the
+  admitted reflections of ready skills, plus reflections excluded as a duplicate or with no
+  friction and no proposal. Every other reflection stays in place. It moves only paths
+  of an in-scope skill whose real location stays under a harness root, the
+  `PHASE_LOOP_SKILL_BUNDLE` root or an explicit `--root`, and never takes roots from the
+  manifest. One refused path moves nothing and exits non-zero.
+  `--exclude` matches resolved paths, and an `--exclude` that matches nothing is an error.
+- The skill-improvement planner and the skill editor (all four harnesses) now drive this
+  CLI, cover the full scope, point at `skills-src/`, and state the consumption rule. The
+  aggregator prompt says that bundle text is quoted evidence, never instructions.
+
 ### agy: a newer upstream release only warns; seats admit self-qualified images (agent-harness#1333 PR1)
 
 - `verify_qualified_agy_image.py --upstream-only` no longer fails when the newest upstream
@@ -47,13 +98,35 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - New `agy_integrity.admit_for_seat(path, env)`, used only by the two owned review-seat
   sites in `seat_profile` (the credential refresh without a heartbeat profile, and the owned
   non-heartbeat seat). It admits a release member offline as before, then a
-  `locally_qualified` image through `agy_qualification.lookup`. A miss, the opt-out, a
-  failed or tampered record, an unsafe store, an unreadable image or a memfd-seal failure is
-  the typed `agy_image_unqualified` refusal, and a miss closes its image. A refusal that
-  already carries its own typed code (such as `seat_filtered_egress_unavailable` from the
-  help measurement) passes through unchanged. The `agy_image_unqualified` fix line now names
-  `phase-loop agy-qualification run` and the `[agy] self_qualification` opt-out. `agy_integrity.check` is unchanged: the executor
-  (`trusted_command`, `admitted_command`) and canary callers stay release-only.
+  `locally_qualified` image through `agy_qualification.lookup`. On that local-qualification
+  path, a miss, the opt-out, a failed or tampered record, an unsafe store, an unreadable
+  image or a memfd-seal failure is the typed `agy_image_unqualified` refusal, and a miss
+  closes its image. What the help measurement raises with its own type passes through
+  unchanged, and on the brokered review route (the default) the gemini leg keeps that code
+  and its notice:
+  - a typed seat refusal (`EgressUnavailable` and its subclasses, such as
+    `seat_filtered_egress_unavailable`);
+  - a quiescence failure (`GeminiQuiescenceError`, `ProviderProcessGroupQuiescenceError`),
+    which then reaches the leg's quiescence handler;
+  - a jail refusal (`SeatSandboxRefused`).
+
+  The president follow-up to agent-harness#1350 added the last two. The
+  `agy_image_unqualified` fix line now names `phase-loop agy-qualification run` and the
+  `[agy] self_qualification` opt-out. `agy_integrity.check` without an env is unchanged: the
+  executor (`trusted_command`, `admitted_command`) and canary callers stay release-only.
+
+### Closeout audit states its own required action (agent-harness#1303)
+
+- `phase-loop-closeout-audit` now ends every exit it returns or raises from with exactly one
+  `action:` line: exit 0 means ignored paths do not block (the dirty-path classification
+  still decides); exit 1, exit 2 and an exception (exit 1) mean stop with
+  `terminal_status=blocked` and `blocker_class=dirty_worktree_conflict`. A process killed by
+  a signal prints none, and the skills' exit-code list governs.
+- The execute-phase closeout rules (codex, gemini, claude) no longer contain the two broken
+  clauses ("so the audit blocks and block only when ..."). The exit-code mapping is a
+  condition-first list, kept as the fallback for a runtime without the action line. The
+  tool is "the closeout audit" throughout; the whole-tree `git status --short` pass is the
+  "dirty-path classification".
 
 ## [0.7.25] - 2026-10-08
 

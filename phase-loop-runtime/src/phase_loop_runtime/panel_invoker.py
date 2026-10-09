@@ -11752,8 +11752,15 @@ def _default_spawn(
                     except Exception as exc:
                         if leg != "gemini":
                             raise
+                        # A typed seat refusal (admission, jail, egress) keeps its code and
+                        # notice here exactly as off the broker (the outer handler below).
+                        failure = _exception_failure(exc)
+                        typed = isinstance(failure, str) and failure in _seat_jail.NOTICE_CODES
+                        if typed:
+                            seat_notices.append(failure)
                         gemini_detail = (
                             "review_monitoring_write_failed" if review_monitor is not None and review_monitor.write_failed
+                            else failure if typed
                             else str(exc) if str(exc) in _GEMINI_BROKER_DETAILS
                             else "Gemini broker local provider failure"
                         )

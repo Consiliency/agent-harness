@@ -388,13 +388,57 @@ def audit_ignored_outputs(repo: Path, phase: str | None = None) -> dict:
     return buckets
 
 
+# The required closeout action for each exit, printed by `main` as its last line.
+# The execute-phase skills carry the same mapping only as a fallback for a pinned
+# runtime that predates this line (agent-harness#1303).
+CLOSEOUT_ACTIONS = {
+    0: "action: exit 0 (no unknown ignored outputs) -> ignored paths do not block "
+       "closeout; the dirty-path classification still decides the terminal status",
+    1: "action: exit 1 (unknown ignored outputs) -> BLOCKS: stop with "
+       "terminal_status=blocked and blocker_class=dirty_worktree_conflict; never "
+       "report complete",
+    2: "action: exit 2 (probe failed) -> BLOCKS: stop with "
+       "terminal_status=blocked and blocker_class=dirty_worktree_conflict; inability "
+       "to measure is never evidence of a clean tree",
+}
+# Printed when the audit raises instead of returning. The exception still propagates,
+# so the process exits 1 with its traceback; this line names no exit number for that reason.
+CRASH_ACTION = (
+    "action: exit non-zero (the closeout audit failed to run) -> BLOCKS: stop with "
+    "terminal_status=blocked and blocker_class=dirty_worktree_conflict; inability to "
+    "measure is never evidence of a clean tree"
+)
+
+
+def _exit(code: int) -> int:
+    print(CLOSEOUT_ACTIONS[code])
+    return code
+
+
 def main(argv: list[str]) -> int:
+    """``python -m phase_loop_runtime.closeout_classifier --repo .``; see ``_main``.
+
+    An exception still ends with exactly one blocking action line, then propagates.
+    """
+
+    try:
+        return _main(argv)
+    except (Exception, KeyboardInterrupt):
+        print(CRASH_ACTION, flush=True)
+        raise
+
+
+def _main(argv: list[str]) -> int:
     """``python -m phase_loop_runtime.closeout_classifier --repo .``
 
     Exit 0 = no unknown ignored outputs, so ignored dirt is NOT a closeout
     blocker. Exit 1 = unknown ignored outputs present, which still blocks.
     Exit 2 = the probe itself failed (including an invalid committed
-    generated-outputs declaration).
+    generated-outputs declaration). Every exit the audit returns or raises from
+    prints exactly one action line last (``CLOSEOUT_ACTIONS``, or ``CRASH_ACTION``
+    for an exception), so the executor reads the required terminal action from the
+    tool instead of re-deriving it from skill prose (agent-harness#1303). A process
+    killed by a signal prints none, and the skills' exit-code list governs.
 
     ``--record-outputs`` (agent-harness#1139) first runs, one at a time and under
     observation, every producer the committed ``.phase-loop-generated-outputs.json``
@@ -415,11 +459,11 @@ def main(argv: list[str]) -> int:
             generated_outputs.run_declared_producers(repo, phase=phase)
         except (generated_outputs.DeclarationError, generated_outputs.PhaseIdentityError) as exc:
             print(f"closeout-ignored-audit: CANNOT RECORD — {exc}")
-            return 2
+            return _exit(2)
     result = audit_ignored_outputs(repo, phase)
     if result["probe_failed"]:
         print(f"closeout-ignored-audit: CANNOT EVALUATE — {result['reason']}")
-        return 2
+        return _exit(2)
     reasons = result.get("unknown_reasons", {})
     for bucket in _BUCKETS:
         paths = result[bucket]
@@ -429,7 +473,7 @@ def main(argv: list[str]) -> int:
                 suffix = f"  -- {reasons[p]}" if p in reasons else ""
                 print(f"    {p}{suffix}")
     print(f"\nverdict: {result['reason']}")
-    return 1 if result["blocks"] else 0
+    return _exit(1 if result["blocks"] else 0)
 
 
 def console_main() -> int:
