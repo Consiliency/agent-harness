@@ -17,18 +17,21 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   and a line counts as boilerplate only when one repo's runs repeat it. Reflections with
   repo-specific `Improvements`, with no friction and no proposal, or over 32 KiB are
   excluded, and each repo/branch keeps its newest three. Every rendered body and the
-  manifest's stripped lines go through the shared credential redaction. Headings and code
-  fences inside a reflection cannot open bundle structure.
-- The collector reads only regular files inside their reflections directory and never
-  follows a symlink.
+  manifest's stripped lines go through the shared credential redaction. Heading and
+  code-fence lines in a reflection's text are neutralised, and each entry header is one
+  line, so a reflection cannot add an entry header or swallow the entries after it.
+- The collector never reads a symlinked reflection file, or one whose real location
+  leaves its reflections directory. A reflection reached through a symlinked skill or
+  reflections directory outside the scan root is read but never consumed.
 - `maintain-skills` launches the planner only when some skill has at least
   `--min-reflections` admitted reflections (default 2), and passes it `--corpus <dir>`.
   Below that it records `plan_skipped` and launches nothing.
 - `archive` moves the manifest's `reflections_consumed` into `archive/`. Consumed means the
   admitted reflections of ready skills, plus reflections excluded as a duplicate or with no
   friction and no proposal. Every other reflection stays in place. It moves only paths
-  under a harness root, the `PHASE_LOOP_SKILL_BUNDLE` root or an explicit `--root`, and
-  never takes roots from the manifest. One refused path moves nothing and exits non-zero.
+  of an in-scope skill whose real location stays under a harness root, the
+  `PHASE_LOOP_SKILL_BUNDLE` root or an explicit `--root`, and never takes roots from the
+  manifest. One refused path moves nothing and exits non-zero.
   `--exclude` matches resolved paths, and an `--exclude` that matches nothing is an error.
 - The skill-improvement planner and the skill editor (all four harnesses) now drive this
   CLI, cover the full scope, point at `skills-src/`, and state the consumption rule. The

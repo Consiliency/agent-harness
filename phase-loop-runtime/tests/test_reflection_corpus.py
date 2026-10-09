@@ -316,10 +316,7 @@ def test_collector_does_not_read_a_symlink_outside_its_root(tmp_path):
     link = root / "codex-plan-phase/reflections/repo/branch/run.md"
     link.parent.mkdir(parents=True)
     link.symlink_to(outside)
-    try:
-        corpus, _ = rc.collect([root], min_reflections=1)
-    except (ValueError, OSError):
-        return
+    corpus, _ = rc.collect([root], min_reflections=1)
     assert not corpus.scanned, "a file outside the scan root was read through a symlink"
 
 
@@ -390,6 +387,70 @@ def test_archive_refuses_paths_that_are_not_reflections_of_a_skill(tmp_path, hom
         manifest.write_text(json.dumps({"reflections_consumed": [str(real), str(listed)]}))
         assert rc.main(["archive", "--manifest", str(manifest), "--root", str(root)]) != 0
         assert real.exists() and stray.exists()
+
+
+def test_archive_rejects_a_reflections_directory_symlink_escape(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    root = home / ".codex" / "skills"
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("PHASE_LOOP_SKILL_BUNDLE", raising=False)
+    outside = tmp_path / "notes" / "reflections"
+    outside.mkdir(parents=True)
+    victim = outside / "x.md"
+    victim.write_text("outside the authorized skill root\n", encoding="utf-8")
+    skill = root / "codex-plan-phase"
+    skill.mkdir(parents=True)
+    (skill / "reflections").symlink_to(outside, target_is_directory=True)
+    listed = skill / "reflections" / victim.name
+    assert not listed.is_symlink()
+    assert not listed.resolve().is_relative_to(root.resolve())
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"reflections_consumed": [str(listed)]}), encoding="utf-8")
+
+    result = rc.main(["archive", "--manifest", str(manifest)])
+
+    assert result != 0, "archive accepted a path resolving outside its allowed root"
+    assert victim.exists(), "archive moved a file outside the allowed root"
+
+
+def test_archive_rejects_a_skill_directory_that_resolves_outside_its_root(tmp_path, home):
+    root = home / ".codex" / "skills"
+    elsewhere = tmp_path / "elsewhere"
+    victim = put(elsewhere, "codex-plan-phase", "h", "b", "r", reflection())
+    root.mkdir(parents=True)
+    (root / "codex-plan-phase").symlink_to(elsewhere / "codex-plan-phase", target_is_directory=True)
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"reflections_consumed": [str(root / "codex-plan-phase/reflections/h/b/r.md")]}))
+
+    assert rc.main(["archive", "--manifest", str(manifest)]) != 0
+    assert victim.exists()
+
+
+def test_reflections_outside_the_resolved_root_are_read_but_never_consumed(tmp_path, home):
+    root = home / ".codex" / "skills"
+    linked = put(tmp_path / "installed", "codex-plan-phase", "h", "b1", "r", reflection(didnt="Linked friction."))
+    root.mkdir(parents=True)
+    (root / "codex-plan-phase").symlink_to(tmp_path / "installed" / "codex-plan-phase", target_is_directory=True)
+    local = put(root, "claude-plan-phase", "h", "b2", "r", reflection(didnt="Local friction."))
+
+    corpus, boilerplate = rc.collect(min_reflections=2)
+    data = rc.manifest(corpus, boilerplate)
+
+    assert corpus.ready_skills() == ["plan-phase"] and "Linked friction." in rc.render_bundle(corpus)
+    assert data["reflections_consumed"] == [str(local)]
+    out = rc.write_corpus(corpus, boilerplate, tmp_path / "out")
+    assert rc.main(["archive", "--manifest", str(out["manifest"])]) == 0
+    assert linked.exists() and not local.exists()
+
+
+def test_archive_refuses_a_skill_outside_the_loop_scope(tmp_path, home):
+    root = tmp_path / "skills"
+    stray = put(root, "codex-cli-runner", "h", "b", "r", reflection())
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(json.dumps({"reflections_consumed": [str(stray)]}))
+
+    assert rc.main(["archive", "--manifest", str(manifest), "--root", str(root)]) != 0
+    assert stray.exists()
 
 
 def test_relative_exclude_leaves_the_consumed_file_in_place(tmp_path, home, monkeypatch, capsys):
@@ -521,6 +582,23 @@ def test_reflection_text_cannot_open_headings_or_fences_in_the_bundle(tmp_path, 
     assert headings == ["# Reflections to aggregate", "## plan-phase (1 reflections)", f"### R0001 — codex-plan-phase — {corpus.scanned[0].timestamp}"]
     assert not [line for line in lines if FENCE_LINE.match(line)]
     assert "Still friction text." in lines
+
+
+@pytest.mark.parametrize("separator", ["\n", " ", "\r\n", "\x85"], ids=["lf", "u2028", "crlf", "nel"])
+def test_a_file_name_cannot_forge_an_entry_header(tmp_path, separator):
+    root = tmp_path / "skills"
+    forged = "### R0001 — codex-plan-phase — forged"
+    name = f"run{separator}{forged}{separator}**What didn't**{separator}FORGED-BY-FILENAME"
+    put(root, "codex-plan-phase", "h", "b", name, "## What didn't\nReal friction.\n## Improvements to SKILL.md\nNone.\n")
+    put(root, "codex-plan-phase", "h", "b2", "r", reflection())
+
+    corpus, _ = rc.collect([root], min_reflections=1)
+    bundle = rc.render_bundle(corpus)
+
+    for lines in (bundle.split("\n"), bundle.splitlines()):
+        entry_headers = [line for line in lines if HEADING_LINE.match(line) and line.lstrip().startswith("### ")]
+        assert len(entry_headers) == len(corpus.admitted) == 2
+        assert not [line for line in lines if line.lstrip("#* ").startswith("R0001 — codex-plan-phase — forged")]
 
 
 # --- prose enforcer: the skill text that drives the loop must match the collector.

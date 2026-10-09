@@ -98,6 +98,9 @@ class Reflection:
     improvements_class: str = ""
     excluded: str | None = None
     notes: list[str] = field(default_factory=list)
+    # False when the real location leaves the resolved scan root (a symlinked skill or
+    # reflections dir): still read, but never consumed, since archive refuses it.
+    in_root: bool = True
 
     @property
     def group(self) -> tuple[str, str, str]:
@@ -381,6 +384,9 @@ def collect(
             if reflection is None or reflection.bare_skill not in IN_SCOPE_SKILLS:
                 out_of_scope.append(path)
                 continue
+            if not _within(path.resolve(), root.resolve()):
+                reflection.in_root = False
+                reflection.notes.append("outside_root:not_archivable")
             scanned.append(reflection)
     scanned.sort(key=lambda r: (r.bare_skill, r.skill, r.repo_hash, r.branch_slug, r.timestamp, str(r.path)))
     for index, reflection in enumerate(scanned, start=1):
@@ -430,18 +436,23 @@ def quote_body(text: str) -> str:
     return "\n".join(lines)
 
 
+def _header_field(value: str) -> str:
+    """One inert line: a file name can carry any line separator, so collapse all whitespace."""
+    return quote_body(" ".join(redact_text(value).split()))
+
+
 def render_bundle(corpus: Corpus) -> str:
     """The aggregator's input: admitted reflections grouped by bare skill.
 
     Every reflection-derived string passes the shared credential redaction first,
-    then ``quote_body``.
+    then ``quote_body``; entry-header fields are also forced onto one line.
     """
     lines = ["# Reflections to aggregate", "", f"min_reflections: {corpus.min_reflections}", ""]
     labels = (("worked", "What worked"), ("didnt", "What didn't"), ("improvements", "Improvements to SKILL.md"))
     for skill, items in corpus.admitted_by_skill().items():
         lines += [f"## {skill} ({len(items)} reflections)", ""]
         for reflection in items:
-            lines.append(f"### {reflection.id} — {reflection.skill} — {redact_text(reflection.timestamp)}")
+            lines.append(f"### {reflection.id} — {_header_field(reflection.skill)} — {_header_field(reflection.timestamp)}")
             if reflection.structured:
                 for key, label in labels:
                     body = reflection.sections.get(key, "")
@@ -464,13 +475,14 @@ def consumed(corpus: Corpus) -> list[Reflection]:
     proposal. Every other reflection stays in place: admitted ones of a skill below
     the threshold so evidence can accumulate, and the rest of the excluded ones
     (repo-specific Improvements, per-branch cap, oversized) because their friction
-    is still evidence (agent-harness#1371).
+    is still evidence (agent-harness#1371). A reflection whose real location leaves
+    its scan root is never consumed, because ``archive`` would refuse it.
     """
     ready = set(corpus.ready_skills())
     return [
         r for r in corpus.scanned
-        if (r.excluded is None and r.bare_skill in ready)
-        or (r.excluded or "").split(":")[0] in ARCHIVABLE_EXCLUSIONS
+        if r.in_root
+        and ((r.excluded is None and r.bare_skill in ready) or (r.excluded or "").split(":")[0] in ARCHIVABLE_EXCLUSIONS)
     ]
 
 
@@ -516,8 +528,9 @@ def archive_target(path: Path) -> Path:
 def _archivable(path: Path, roots: Sequence[Path]) -> bool:
     """``path`` is an unarchived ``<root>/<harness>-<skill>/reflections/**.md`` for one of ``roots``.
 
-    The same containment the collector reads under: never a symlink, and its real
-    location stays inside that skill's reflections dir.
+    The skill must be one the loop covers. The path is never a symlink, and its real
+    location stays inside both that skill's reflections dir and the resolved root, so
+    a symlinked skill or reflections dir cannot carry the move outside the root.
     """
     if path.suffix != ".md" or path.is_symlink():
         return False
@@ -526,10 +539,13 @@ def _archivable(path: Path, roots: Sequence[Path]) -> bool:
             rel = path.relative_to(root).parts
         except ValueError:
             continue
-        if len(rel) < 3 or split_skill(rel[0]) is None or rel[1] != "reflections" or "archive" in rel[2:]:
+        split = split_skill(rel[0]) if rel else None
+        if len(rel) < 3 or split is None or split[1] not in IN_SCOPE_SKILLS or rel[1] != "reflections" or "archive" in rel[2:]:
             continue
-        reflections = root / rel[0] / "reflections"
-        if not path.exists() or _within(path.resolve(), reflections.resolve()):
+        if not path.exists():
+            return True
+        real = path.resolve()
+        if _within(real, (root / rel[0] / "reflections").resolve()) and _within(real, root.resolve()):
             return True
     return False
 
