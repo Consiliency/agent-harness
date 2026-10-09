@@ -595,7 +595,7 @@ class ArtifactStore:
             fail("evidence root is unavailable")
         if stat.S_ISLNK(root_stat.st_mode) or not stat.S_ISDIR(root_stat.st_mode):
             fail("evidence root must be a real directory")
-        self.root = Path(os.path.abspath(os.fspath(root)))
+        self.root = root
         self._paths: set[str] = set()
         self._digests: set[str] = set()
 
@@ -709,6 +709,7 @@ def _read_regular_file_from_descriptor(
             or before.st_ino != after.st_ino
             or before.st_size != after.st_size
             or before.st_mtime_ns != after.st_mtime_ns
+            or before.st_ctime_ns != after.st_ctime_ns
         ):
             fail(f"{label}: artifact changed during descriptor read")
         if len(data) > maximum:
