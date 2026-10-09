@@ -4667,6 +4667,45 @@ def _fixture_completion_event(verifier: Any, evidence: dict[str, Any]) -> bytes:
     )
 
 
+@pytest.mark.parametrize("failure", ("existing-output", "missing-parent"))
+def test_harden_seal_closes_earlier_target_when_later_target_is_rejected(
+    tmp_path: Path, failure: str
+) -> None:
+    producer = _restarted_producer_module("seal")
+    evidence_root = tmp_path / "evidence"
+    (evidence_root / "derived").mkdir(parents=True)
+    output = tmp_path / "sealed.json"
+    if failure == "existing-output":
+        output.write_bytes(b"occupied\n")
+    else:
+        output = tmp_path / "missing" / "sealed.json"
+
+    def live_descriptors() -> dict[int, str]:
+        entries = list(Path("/proc/self/fd").iterdir())
+        live: dict[int, str] = {}
+        for entry in entries:
+            try:
+                live[int(entry.name)] = os.readlink(entry)
+            except FileNotFoundError:
+                pass
+        return live
+
+    before = live_descriptors()
+    for _attempt in range(3):
+        with pytest.raises(producer.BuildError):
+            producer.seal(
+                tmp_path / "pre-completion.json",
+                evidence_root,
+                tmp_path / "repo",
+                tmp_path / "events.jsonl",
+                output,
+                tmp_path / "reuse-registry.json",
+                "a" * 64,
+                "b" * 64,
+            )
+    assert live_descriptors() == before
+
+
 def test_harden_seal_rejects_precompletion_and_ledger_drift(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
