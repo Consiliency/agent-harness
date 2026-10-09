@@ -26,13 +26,26 @@ use `harness_quotes` where a harness words it differently. Enforcers are either
 `module` (`phase_loop_runtime.<mod>:<symbol>`) or `skill_script` (a path inside each
 shipped copy of the skill).
 
+A `negative_control` is an exact pytest node id under `phase-loop-runtime/`
+(`tests/<file>.py::<Class>::<test>` or `tests/<file>.py::<test>`). It calls every
+enforcer its row lists in the pytest process itself, not in a subprocess. It reaches a `skill_script` enforcer through
+that script's `main()`, not by calling the check directly, so a check unwired from the
+script turns the control red.
+
 ## What refuses a bad row
 
 `phase-loop-runtime/tests/test_rule_enforcement_registry.py` fails when a quote drifts out
 of any harness copy, an enforcer symbol or script disappears, a field contradicts the
 status, or a gap has no repo-qualified tracking ref. It also **runs** every negative
-control and fails if any does not run and pass. A control that is merely present, or that
-skips in CI, proves nothing.
+control in a child pytest. A control counts as run only if its exact node id has a
+passed call-phase report and no report of any phase (setup, call, teardown or a subtest)
+that skipped or failed. A control that is merely present, deselected, set up without its
+body running, or skipped in CI proves nothing.
+
+For each enforcer of each `enforced` row, the test then runs the row's control with
+that one enforcer replaced by a stub that refuses nothing. It fails unless the stub is
+reached and the control fails its own assertion. A `skill_script` stub must also be
+reached with the script's `main()` on the stack.
 
 What it does not prove: that the enforcer covers the whole rule. The negative control is
 the evidence for the part it covers; read it before trusting a row.
@@ -42,6 +55,9 @@ the evidence for the part it covers; read it before trusting a row.
 - Edit skill text in `skills-src/` (canonical), regenerate the bundle, and then update
   the row's quote. The registry test will refuse the stale quote until you do.
 - When a gap gets an enforcer, flip the row to `enforced` in the same change.
+- A new or repointed `negative_control` must be an exact node id and call every enforcer
+  the row lists in-process, a `skill_script` one through the script's `main()`.
+  The enforcer-kill test refuses a control that still passes without one of them.
 - When a correction repeats on an `unenforced`/`gap` row, escalate it to a mechanism.
   Adding more prose does not fix it. The aggregator gates planned in
   agent-harness#1321 (REPORT 1.14/1.15) will read this registry to apply that rule.
