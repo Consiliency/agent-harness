@@ -14,7 +14,7 @@ the filter rules can be tested and cannot silently drift between harnesses.
 CLI::
 
     python3 -m phase_loop_runtime.reflection_corpus collect --out-dir DIR [--root R ...]
-    python3 -m phase_loop_runtime.reflection_corpus archive --manifest DIR/manifest.json [--dry-run]
+    python3 -m phase_loop_runtime.reflection_corpus archive --manifest DIR/manifest.json [--root R ...] [--dry-run]
 """
 from __future__ import annotations
 
@@ -22,11 +22,13 @@ import argparse
 import json
 import os
 import re
+import sys
 from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable, Sequence
 
+from .credential_redaction import redact_text
 from .skill_paths import HARNESS_DEFAULT_SKILL_ROOTS, resolve_skill_bundle_root
 
 HARNESS_PREFIXES = tuple(HARNESS_DEFAULT_SKILL_ROOTS)
@@ -59,6 +61,9 @@ SECTION_KEYS = {
 }
 
 DEFAULT_PER_BRANCH_CAP = 3
+# About 4x the largest real reflection. A larger file is excluded without being read,
+# so one runaway reflection cannot stall collection or flood the bundle.
+MAX_REFLECTION_BYTES = 32 * 1024
 DEFAULT_BOILERPLATE_MIN = 3
 BOILERPLATE_MIN_CHARS = 40
 
@@ -173,13 +178,32 @@ def _run_context_value(run_context: str, name: str) -> str:
     return match.group(1).rstrip(".") if match else ""
 
 
-def iter_reflection_paths(root: Path) -> Iterable[tuple[str, Path]]:
+def _within(path: Path, directory: Path) -> bool:
+    return path == directory or directory in path.parents
+
+
+def _contained(path: Path, reflections: Path) -> bool:
+    """A regular, non-symlink file whose real location is inside its reflections dir.
+
+    ``is_symlink`` runs first because every later check (and the size ``stat``) follows
+    links.
+    """
+    if path.is_symlink() or not path.is_file():
+        return False
+    return _within(path.resolve(), reflections.resolve())
+
+
+def iter_reflection_paths(root: Path, skipped: list[Path] | None = None) -> Iterable[tuple[str, Path]]:
     if not root.is_dir():
         return
     for reflections in sorted(root.glob("*/reflections")):
         for path in sorted(reflections.rglob("*.md")):
-            if path.is_file() and "archive" not in path.relative_to(reflections).parts:
+            if "archive" in path.relative_to(reflections).parts:
+                continue
+            if _contained(path, reflections):
                 yield reflections.parent.name, path
+            elif skipped is not None:
+                skipped.append(path)
 
 
 def read_reflection(root: Path, skill: str, path: Path) -> Reflection | None:
@@ -190,7 +214,9 @@ def read_reflection(root: Path, skill: str, path: Path) -> Reflection | None:
     rel = path.relative_to(root / skill / "reflections").parts
     repo_hash = rel[0] if len(rel) >= 3 else ""
     branch_slug = "/".join(rel[1:-1]) if len(rel) >= 3 else ""
-    raw = path.read_text(encoding="utf-8", errors="replace")
+    size = path.stat().st_size
+    oversized = size > MAX_REFLECTION_BYTES
+    raw = "" if oversized else path.read_text(encoding="utf-8", errors="replace")
     sections = parse_sections(raw)
     timestamp = _run_context_value(sections.get("run_context", ""), "Timestamp") or path.stem
     return Reflection(
@@ -205,6 +231,7 @@ def read_reflection(root: Path, skill: str, path: Path) -> Reflection | None:
         timestamp=timestamp,
         sections=sections,
         raw=raw,
+        excluded=f"oversized:{size}" if oversized else None,
     )
 
 
@@ -254,17 +281,19 @@ def _content_lines(reflection: Reflection) -> set[str]:
 def _mark_duplicates(reflections: list[Reflection]) -> None:
     """Collapse exact and near copies within one skill/repo/branch.
 
-    A near-copy is a re-emitted reflection (same run re-closed) whose content lines
-    are at least ``NEAR_DUPLICATE_OVERLAP`` contained in an earlier kept one. Copies
-    are never collapsed across repos or branches: identical reports from independent
-    runs are recurring evidence, not duplicates.
+    A near-copy is a re-emitted reflection (same run re-closed) whose own content
+    lines are at least ``NEAR_DUPLICATE_OVERLAP`` contained in an earlier kept one, so
+    a newer reflection that adds friction to an older one is kept. Copies are never
+    collapsed across repos or branches: identical reports from independent runs are
+    recurring evidence, not duplicates.
     """
     kept_by_group: dict[tuple[str, str, str], list[tuple[str, set[str]]]] = defaultdict(list)
     for reflection in reflections:
+        if reflection.excluded:
+            continue
         lines = _content_lines(reflection)
         for kept_id, kept_lines in kept_by_group[reflection.group]:
-            smaller = min(len(lines), len(kept_lines))
-            if smaller and len(lines & kept_lines) / smaller >= NEAR_DUPLICATE_OVERLAP:
+            if lines and len(lines & kept_lines) / len(lines) >= NEAR_DUPLICATE_OVERLAP:
                 reflection.excluded = f"duplicate_of:{kept_id}"
                 break
         if reflection.excluded:
@@ -345,7 +374,9 @@ def collect(
     scanned: list[Reflection] = []
     out_of_scope: list[Path] = []
     for root in roots:
-        for skill, path in iter_reflection_paths(root):
+        # A symlinked file, or one whose real location leaves its reflections dir, is
+        # never read; it counts as out of scope.
+        for skill, path in iter_reflection_paths(root, skipped=out_of_scope):
             reflection = read_reflection(root, skill, path)
             if reflection is None or reflection.bare_skill not in IN_SCOPE_SKILLS:
                 out_of_scope.append(path)
@@ -378,46 +409,55 @@ def inventory(corpus: Corpus) -> dict[str, object]:
 
 
 def render_bundle(corpus: Corpus) -> str:
-    """The aggregator's input: admitted reflections grouped by bare skill."""
+    """The aggregator's input: admitted reflections grouped by bare skill.
+
+    Every reflection-derived string passes the shared credential redaction first.
+    """
     lines = ["# Reflections to aggregate", "", f"min_reflections: {corpus.min_reflections}", ""]
     labels = (("worked", "What worked"), ("didnt", "What didn't"), ("improvements", "Improvements to SKILL.md"))
     for skill, items in corpus.admitted_by_skill().items():
         lines += [f"## {skill} ({len(items)} reflections)", ""]
         for reflection in items:
-            lines.append(f"### {reflection.id} — {reflection.skill} — {reflection.timestamp}")
+            lines.append(f"### {reflection.id} — {reflection.skill} — {redact_text(reflection.timestamp)}")
             if reflection.structured:
                 for key, label in labels:
                     body = reflection.sections.get(key, "")
                     if body:
-                        lines += [f"**{label}**", body, ""]
+                        lines += [f"**{label}**", redact_text(body), ""]
             else:
                 # Demote the raw body's own headings so they cannot open a bundle section.
-                body = re.sub(r"^#+\s+(.*)$", r"**\1**", redact(reflection.raw), flags=re.MULTILINE)
+                body = re.sub(r"^#+\s+(.*)$", r"**\1**", redact_text(redact(reflection.raw)), flags=re.MULTILINE)
                 lines += ["**unstructured**", body, ""]
     return "\n".join(lines).rstrip() + "\n"
 
 
-PERMANENT_EXCLUSIONS = ("duplicate_of", "improvements_repo_specific", "no_friction_or_proposal")
+# Exclusions whose reflection carries no evidence a later pass could use.
+ARCHIVABLE_EXCLUSIONS = ("duplicate_of", "no_friction_or_proposal")
 
 
 def consumed(corpus: Corpus) -> list[Reflection]:
     """Reflections this pass uses up, so the editor may archive them.
 
-    Everything for a ready skill feeds the plan. For a skill still below the
-    threshold, only permanently excluded reflections are consumed; its admitted and
-    capped ones stay so evidence can accumulate until the skill is ready.
+    That is the admitted reflections of ready skills (they feed the plan), plus, for
+    any skill, reflections excluded as a duplicate or as having no friction and no
+    proposal. Every other reflection stays in place: admitted ones of a skill below
+    the threshold so evidence can accumulate, and the rest of the excluded ones
+    (repo-specific Improvements, per-branch cap, oversized) because their friction
+    is still evidence (agent-harness#1371).
     """
     ready = set(corpus.ready_skills())
     return [
         r for r in corpus.scanned
-        if r.bare_skill in ready or (r.excluded or "").split(":")[0] in PERMANENT_EXCLUSIONS
+        if (r.excluded is None and r.bare_skill in ready)
+        or (r.excluded or "").split(":")[0] in ARCHIVABLE_EXCLUSIONS
     ]
 
 
 def manifest(corpus: Corpus, boilerplate: list[str]) -> dict[str, object]:
     return {
         "inventory": inventory(corpus),
-        "boilerplate_lines_stripped": boilerplate,
+        # The planner reads this file too, so stripped lines get the same redaction.
+        "boilerplate_lines_stripped": [redact_text(redact(line)) for line in boilerplate],
         "reflections_consumed": [str(r.path) for r in consumed(corpus)],
         "reflections": [
             {
@@ -452,14 +492,49 @@ def archive_target(path: Path) -> Path:
     return path.parent / "archive" / path.name
 
 
-def archive(paths: Iterable[Path], *, dry_run: bool = False) -> list[tuple[Path, Path]]:
-    """Move consumed reflections to a sibling ``archive/`` (same repo/branch subtree)."""
+def _archivable(path: Path, roots: Sequence[Path]) -> bool:
+    """``path`` is an unarchived ``<root>/<harness>-<skill>/reflections/**.md`` for one of ``roots``.
+
+    The same containment the collector reads under: never a symlink, and its real
+    location stays inside that skill's reflections dir.
+    """
+    if path.suffix != ".md" or path.is_symlink():
+        return False
+    for root in roots:
+        try:
+            rel = path.relative_to(root).parts
+        except ValueError:
+            continue
+        if len(rel) < 3 or split_skill(rel[0]) is None or rel[1] != "reflections" or "archive" in rel[2:]:
+            continue
+        reflections = root / rel[0] / "reflections"
+        if not path.exists() or _within(path.resolve(), reflections.resolve()):
+            return True
+    return False
+
+
+def archive(
+    paths: Iterable[Path], *, roots: Sequence[Path] | None = None, dry_run: bool = False
+) -> list[tuple[Path, Path]]:
+    """Move consumed reflections to a sibling ``archive/`` (same repo/branch subtree).
+
+    Every path must lie under ``default_roots()`` or one of ``roots`` (never a root
+    named by the manifest being archived). All paths are checked before anything
+    moves, so one out-of-root path moves nothing and raises ``ValueError``. A path
+    that no longer exists (already archived) is skipped.
+    """
+    allowed = [Path(os.path.abspath(Path(root).expanduser())) for root in [*default_roots(), *(roots or [])]]
+    candidates = [Path(os.path.abspath(Path(path).expanduser())) for path in paths]
+    refused = [path for path in candidates if not _archivable(path, allowed)]
+    if refused:
+        raise ValueError(f"refusing to archive {len(refused)} path(s) outside every skill reflections root: {refused[0]}")
     moves = []
-    for path in paths:
-        path = Path(path)
+    for path in candidates:
         if not path.is_file():
             continue
-        target = archive_target(path)
+        target = path.parent / "archive" / path.name
+        if target.parent.is_symlink():
+            raise ValueError(f"archive directory is a symlink: {target.parent}")
         if target.exists():
             raise FileExistsError(f"archive target already exists: {target}")
         moves.append((path, target))
@@ -481,7 +556,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     collect_cmd.add_argument("--boilerplate-min", type=int, default=DEFAULT_BOILERPLATE_MIN)
     archive_cmd = sub.add_parser("archive", help="Archive every path in a manifest's reflections_consumed.")
     archive_cmd.add_argument("--manifest", type=Path, required=True)
-    archive_cmd.add_argument("--exclude", type=Path, action="append", default=[], help="Leave this path in place (its recommendation failed).")
+    archive_cmd.add_argument(
+        "--root", action="append", type=Path, default=[],
+        help="Extra skill root the consumed paths may live under (repeatable). Every harness root and PHASE_LOOP_SKILL_BUNDLE are always allowed.",
+    )
+    archive_cmd.add_argument("--exclude", type=Path, action="append", default=[], help="Leave this consumed path in place (its recommendation failed).")
     archive_cmd.add_argument("--dry-run", action="store_true")
     args = parser.parse_args(argv)
 
@@ -499,10 +578,20 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     data = json.loads(args.manifest.read_text(encoding="utf-8"))
-    skip = {str(path) for path in args.exclude}
-    paths = [Path(p) for p in data.get("reflections_consumed", []) if p not in skip]
-    moves = archive(paths, dry_run=args.dry_run)
-    print(json.dumps({"dry_run": args.dry_run, "archived": len(moves), "left_in_place": len(skip)}, indent=2))
+    consumed_paths = [Path(p) for p in data.get("reflections_consumed", [])]
+    excludes = {path.resolve() for path in args.exclude}
+    unmatched = excludes - {path.resolve() for path in consumed_paths}
+    if unmatched:
+        print(json.dumps({"error": "--exclude matches no consumed reflection", "paths": sorted(map(str, unmatched))}), file=sys.stderr)
+        return 1
+    paths = [path for path in consumed_paths if path.resolve() not in excludes]
+    try:
+        moves = archive(paths, roots=args.root, dry_run=args.dry_run)
+    except (ValueError, FileExistsError) as exc:
+        print(json.dumps({"error": str(exc)}), file=sys.stderr)
+        return 1
+    left = len(consumed_paths) - len(paths)
+    print(json.dumps({"dry_run": args.dry_run, "archived": len(moves), "left_in_place": left}, indent=2))
     return 0
 
 

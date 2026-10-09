@@ -659,6 +659,7 @@
   {"count": 1, "function": "iter_reflection_paths", "module": "reflection_corpus", "primitive": "io.rglob", "role": "host-io"},
   {"count": 1, "function": "main", "module": "reflection_corpus", "primitive": "io.read_text", "role": "host-io"},
   {"count": 1, "function": "read_reflection", "module": "reflection_corpus", "primitive": "io.read_text", "role": "host-io"},
+  {"count": 1, "function": "read_reflection", "module": "reflection_corpus", "primitive": "io.stat", "role": "host-io"},
   {"count": 1, "function": "export_reflections", "module": "reflection_sync", "primitive": "io.read_text", "role": "host-io"},
   {"count": 1, "function": "iter_reflection_files", "module": "reflection_sync", "primitive": "io.glob", "role": "host-io"},
   {"count": 1, "function": "iter_reflection_files", "module": "reflection_sync", "primitive": "io.rglob", "role": "host-io"},
