@@ -441,12 +441,17 @@ def _claude_seat_verify(tmp_path):
     return verifier, seat, prompt, verify
 
 
-def _claude_print_argv(model: str, effort: str = "high") -> list[str]:
+_CLAUDE_PRINT_SETTINGS = '{"apiKeyHelper": "", "env": {"CLAUDE_CODE_MAX_OUTPUT_TOKENS": "128000"}}'
+
+
+def _claude_print_argv(
+    model: str, effort: str = "high", settings: str = _CLAUDE_PRINT_SETTINGS,
+) -> list[str]:
     return [
         "claude", "-p", "--verbose", "--output-format", "stream-json", "--input-format", "text",
-        "--model", model, "--effort", effort,
+        "--safe-mode", "--model", model, "--effort", effort,
         "--permission-mode", "dontAsk", "--permission-prompts", "none",
-        "--setting-sources", "", "--strict-mcp-config",
+        "--setting-sources", "", "--settings", settings, "--strict-mcp-config",
         "--mcp-config", '{"mcpServers": {}}', "--agents", "{}",
         "--no-chrome", "--disable-slash-commands", "--no-session-persistence",
         "--session-id", "<CLAUDE_SESSION_ID>",
@@ -499,6 +504,15 @@ def test_claude_print_route_evidence_fails_closed_on_every_drift(tmp_path):
         "other permission mode": [("bypassPermissions" if item == "dontAsk" else item) for item in argv],
         "prompt on argv": argv[:-1],
         "tui argv on the print route": seat["broker"]["provider_argv_shape"],
+        "safe mode dropped": [item for item in argv if item != "--safe-mode"],
+        "settings with a key helper": _claude_print_argv(
+            good["provider_model"],
+            settings='{"apiKeyHelper": "/bin/key", "env": {"CLAUDE_CODE_MAX_OUTPUT_TOKENS": "128000"}}'),
+        "settings with a foreign env": _claude_print_argv(
+            good["provider_model"],
+            settings='{"apiKeyHelper": "", "env": {"ANTHROPIC_BASE_URL": "http://x"}}'),
+        "settings dropped": [item for i, item in enumerate(argv)
+                             if item != "--settings" and (i == 0 or argv[i - 1] != "--settings")],
     }
     for name, drifted in argv_drifts.items():
         with pytest.raises(verifier.EvidenceError):
@@ -536,6 +550,7 @@ def test_claude_print_producer_argv_matches_the_verifier_grammar(tmp_path, monke
     review_dir.mkdir()
     out_dir.mkdir()
     monkeypatch.delenv("PHASE_LOOP_PANEL_CLAUDE_ROUTE", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_MAX_OUTPUT_TOKENS", raising=False)
     monkeypatch.setattr(pi, "_under_claude_code", lambda env=None: False)
     monkeypatch.setattr(pi, "_claude_code_support_status", lambda *a, **k: (True, "supported"))
     monkeypatch.setattr(pi, "_claude_subscription_auth_ok", lambda env: (True, ""))

@@ -79,7 +79,7 @@ from .agy_canary_evidence import (
 from .claude_agent_view import ClaudeAgentViewAdapter
 from . import gemini_heartbeat
 from . import credential_redaction as _credential_redaction
-from .launcher import GROK_REVIEW_READONLY_TOOLS, _extract_claude_stream_json_text
+from .launcher import GROK_REVIEW_READONLY_TOOLS
 from .profiles import CLAUDE_IMPLEMENTER_MODEL  # noqa: F401 - public compatibility export
 from .advisor_board import backing as _advisor_board_backing
 from .advisor_board import matrix as _advisor_board_matrix
@@ -6685,12 +6685,13 @@ def _panel_claude_route() -> str | None:
 
 def _claude_print_seat_command(
     model: str | None, effort: str | None, *, brokered: bool,
-    add_dirs: Sequence[Path] = (),
+    add_dirs: Sequence[Path] = (), env: Mapping[str, str] | None = None,
 ) -> list[str]:
     """Headless ``claude -p`` argv for a non-jailed Claude seat. The prompt goes on stdin.
 
-    The configuration surface is the TUI's (no settings sources, an empty MCP config and no
-    agents), under ``dontAsk`` with no permission prompts. A brokered seat has no tools at
+    The configuration surface is the TUI's (``--safe-mode``, no settings sources, the same
+    run-isolated ``--settings`` from ``env`` -- no API-key helper, the output-token budget --
+    an empty MCP config and no agents), under ``dontAsk`` with no permission prompts. A brokered seat has no tools at
     all and keeps the TUI's brokered deny-list; a direct seat may only Read, because nothing
     writes ``panel-claude.txt`` on this route. ``add_dirs`` is the direct seat's grant (the
     staged review dir and the sandbox clone or repo), exactly as the TUI computes it.
@@ -6712,9 +6713,10 @@ def _claude_print_seat_command(
     )
     command = [
         "claude", "-p", "--verbose", "--output-format", "stream-json", "--input-format", "text",
-        "--model", resolved_model, *effort_args,
+        "--safe-mode", "--model", resolved_model, *effort_args,
         "--permission-mode", "dontAsk", "--permission-prompts", "none",
-        "--setting-sources", "", "--strict-mcp-config",
+        "--setting-sources", "", "--settings", _claude_panel_settings(env),
+        "--strict-mcp-config",
         "--mcp-config", json.dumps({"mcpServers": {}}), "--agents", "{}",
         "--no-chrome", "--disable-slash-commands", "--no-session-persistence",
         "--session-id", str(uuid.uuid4()),
@@ -6787,6 +6789,18 @@ def _leg_auth_ok(
     return True, ""
 
 
+# A credential the caller's own environment could hand a Claude seat. Present, it means the
+# seat's `oauth_token` status cannot be told apart from a token the runtime did not deliver.
+_CLAUDE_CALLER_TOKEN_ENV_VARS = frozenset({
+    "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
+    "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
+})
+
+
+def _claude_caller_supplied_credential(env: Mapping[str, str]) -> bool:
+    return any(key in _CLAUDE_CALLER_TOKEN_ENV_VARS or key.startswith("ANTHROPIC_") for key in env)
+
+
 def _claude_subscription_auth_ok(
     env: Mapping[str, str], timeout_s: int = 20
 ) -> tuple[bool, str]:
@@ -6795,6 +6809,16 @@ def _claude_subscription_auth_ok(
     Claude is a strict exception to the legacy fail-open probe: a missing,
     malformed, timed-out, or non-subscription response fails closed before the
     TUI launches. Raw JSON and identity fields are neither logged nor returned.
+
+    The probe runs through ``run_provider``, inside the owned seat profile. That profile
+    replaces the environment with its own and hands the CLI the login's access token on
+    ``CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`` under a private config dir, so Claude Code
+    reports ``authMethod: "oauth_token"`` with no ``subscriptionType``, not the host's
+    ``claude.ai`` shape. That shape is accepted only when it can only be the runtime's own
+    delivery: logged in, first-party, and the caller's env carries no OAuth token or
+    ``ANTHROPIC_*`` variable of its own. (The seat would see neither, but a caller
+    configured with one is not on the route this gate vouches for.) API-key, console and
+    third-party provider shapes are refused as before.
     """
     try:
         proc = run_provider(
@@ -6817,10 +6841,18 @@ def _claude_subscription_auth_ok(
     proven = (
         isinstance(status, dict)
         and status.get("loggedIn") is True
-        and status.get("authMethod") == "claude.ai"
         and status.get("apiProvider") == "firstParty"
-        and isinstance(status.get("subscriptionType"), str)
-        and bool(status["subscriptionType"].strip())
+        and (
+            (
+                status.get("authMethod") == "claude.ai"
+                and isinstance(status.get("subscriptionType"), str)
+                and bool(status["subscriptionType"].strip())
+            )
+            or (
+                status.get("authMethod") == "oauth_token"
+                and not _claude_caller_supplied_credential(env)
+            )
+        )
     )
     return (True, "") if proven else (False, "subscription_auth_unproven")
 
@@ -9822,10 +9854,13 @@ def _run_claude_print_session(
 
     It launches through the print-mode leg runner (``_run_leg_with_liveness``): the owned
     seat profile, the filtered network namespace, the prompt fed on stdin, and a group kill
-    on heartbeat extinction. Every stream event is a heartbeat, so the TUI's spinner
-    problem (agent-harness#188) cannot arise. ``env`` is the caller's subscription env
-    (``scrub_subscription_env``). The text is the ``result`` event's, falling back to the
-    runner's stream-json extractor. ``observed`` receives ``api_key_source``.
+    on heartbeat extinction. Extinction is that runner's: no stdout or stderr byte AND no
+    process-group CPU advance for ``stall_s``; only then is the run ``claude_print_stalled``.
+    Under a review monitor (``heartbeat_only``) the runner never stall-kills, the monitor
+    governs. There is no animated screen, so the TUI's spinner problem (agent-harness#188)
+    cannot arise. ``env`` is the caller's subscription env (``scrub_subscription_env``).
+    The text is the ``result`` event's only; a run without one has empty text.
+    ``observed`` receives ``api_key_source``.
 
     ``mode`` is accepted for parity with the TUI session; completion is judged by the
     caller's classifier on the returned text.
@@ -9861,9 +9896,9 @@ def _run_claude_print_session(
     if not stream.init_seen:
         # No proof of the auth source, whatever the run printed.
         return run.returncode or 1, "", _HarnessCode(_CLAUDE_PRINT_SUBSCRIPTION_UNPROVEN), tail
-    text = stream.result_text
-    if text is None:
-        text = _extract_claude_stream_json_text(run.stdout or "")
+    # Only the `result` event is the answer. A run that exits without one has no final
+    # answer, whatever assistant turns it streamed, so its text is empty (never OK).
+    text = stream.result_text if stream.result_text is not None else ""
     return (
         run.returncode,
         _redact_seat_credentials(text.strip()),
@@ -9883,6 +9918,7 @@ def _exec_claude_print_leg(
     model: str | None,
     effort: str | None,
     env: Mapping[str, str],
+    settings_env: Mapping[str, str] | None,
     backstop_s: int | None,
     quiescence_latch: _ProviderQuiescenceLatch | None,
     broker_prompt: str | None,
@@ -9891,7 +9927,8 @@ def _exec_claude_print_leg(
     failure_detail_sink: list[_LegFailure] | None,
 ) -> tuple[str, str]:
     """The print route of ``_exec_claude_tui_leg``, entered after its deferral. ``env`` is
-    already the seat's subscription env. Returns the same ``(status, text)``."""
+    already the seat's subscription env; ``settings_env`` is the caller's env the seat
+    settings are rendered from, as on the TUI. Returns the same ``(status, text)``."""
     brokered = broker_prompt is not None
     supported, support_detail = _claude_code_support_status(min_version=_CLAUDE_PRINT_MIN_VERSION)
     if not supported:
@@ -9905,7 +9942,7 @@ def _exec_claude_print_leg(
         prompt = broker_prompt
         # The fixed task request precedes the framed material, as on the TUI.
         transport = _BROKER_CLAUDE_DIRECT_REQUEST + prompt
-        command = _claude_print_seat_command(model, effort, brokered=True)
+        command = _claude_print_seat_command(model, effort, brokered=True, env=settings_env)
     else:
         prompt = transport = _render_claude_tui_prompt(
             artifact, review_dir, out_dir / "panel-claude.txt", mode,
@@ -9914,6 +9951,7 @@ def _exec_claude_print_leg(
         command = _claude_print_seat_command(
             model, effort, brokered=False,
             add_dirs=_claude_direct_add_dirs(review_dir, repo_dir or Path.cwd(), None),
+            env=settings_env,
         )
     session_id = command[command.index("--session-id") + 1]
     backstop = (
@@ -10057,7 +10095,8 @@ def _exec_claude_tui_leg(
     if route == _PANEL_CLAUDE_ROUTE_PRINT and agy_capture is None and research_seat is None:
         return _exec_claude_print_leg(
             review_dir, out_dir, timeout_s, artifact, repo_dir=repo_dir, mode=mode,
-            model=model, effort=effort, env=env, backstop_s=backstop_s,
+            model=model, effort=effort, env=env, settings_env=claude_settings_env,
+            backstop_s=backstop_s,
             quiescence_latch=quiescence_latch, broker_prompt=broker_prompt,
             broker_evidence=broker_evidence, review_monitor=review_monitor,
             failure_detail_sink=failure_detail_sink,

@@ -463,7 +463,8 @@ class PresidentInvoke:
             timeout_s = panel_invoker._leg_timeout_for(out_dir)
             backstop_s = max(1, int(timeout_s), panel_invoker._MAX_LEG_TIMEOUT_S)
             rc, text, log, _tail = panel_invoker._run_claude_print_session(
-                panel_invoker._claude_print_seat_command(route_model, None, brokered=True),
+                panel_invoker._claude_print_seat_command(
+                    route_model, None, brokered=True, env=self.base_env),
                 panel_invoker._BROKER_CLAUDE_DIRECT_REQUEST + prompt,
                 env=env,
                 cwd=out_dir.resolve(),
