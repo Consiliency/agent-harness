@@ -1315,10 +1315,8 @@ def seal(pre_completion: Path, evidence_root: Path, repo: Path, ledger: Path, ou
     ledger_bytes: bytes | None = None
     expected_digest: str | None = None
     try:
-        targets = [
-            _open_target(final_ledger, "sealed completion ledger"),
-            _open_target(output, "output"),
-        ]
+        targets.append(_open_target(final_ledger, "sealed completion ledger"))
+        targets.append(_open_target(output, "output"))
         if len({_target_key(target) for target in targets}) != len(targets):
             raise BuildError("publication targets must be distinct")
         pre_completion_bytes = V.read_path_regular_nofollow(
