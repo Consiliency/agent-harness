@@ -5189,9 +5189,8 @@ def _sl4_sibling_sync_fixture(
     return {"landing": landing, "candidate": candidate, "revision": revision}
 
 
-@pytest.mark.skipif(os.environ.get(ACTIVATION_ENV) != "1", reason=SKIP_REASON)
 def test_harden_sl4_boundary_accepts_reviewed_sibling_syncs(tmp_path: Path) -> None:
-    verifier = _load_shipped_verifier()
+    verifier = _restarted_producer_module("seal").V
     for stale_sibling_sync in (False, True):
         repo = tmp_path / ("stale-sync" if stale_sibling_sync else "control")
         refs = _sl4_sibling_sync_fixture(
