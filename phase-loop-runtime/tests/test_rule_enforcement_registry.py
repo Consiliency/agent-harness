@@ -31,16 +31,20 @@ def _run_controls(node_ids, tmp_path, kill=""):
     log = tmp_path / f"reports{len(list(tmp_path.glob('reports*')))}.jsonl"
     # The child reads no configuration from outside the gate: no PYTEST_* variable, no
     # entry-point plugin, no ini file but this empty one, no conftest above RUNTIME_ROOT.
+    # The probe loads through the gate's own PYTEST_PLUGINS, not `-p`: `-p NAME` first loads
+    # any installed pytest11 entry point named NAME, autoload or not.
     inifile = tmp_path / "negative-control.ini"
     inifile.write_text("[pytest]\n", encoding="utf-8")
     env = {key: value for key, value in os.environ.items() if not key.startswith("PYTEST_")}
     env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    env["PYTEST_PLUGINS"] = "_negative_control_probe"
+    env.pop("PY_IGNORE_IMPORTMISMATCH", None)
     env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(PROBE_DIR), env.get("PYTHONPATH", "")]))
     env["NEGATIVE_CONTROL_REPORT_LOG"] = str(log)
     env["NEGATIVE_CONTROL_KILL"] = kill
     proc = subprocess.run(
         [sys.executable, "-m", "pytest", "-q", "-c", str(inifile), f"--rootdir={RUNTIME_ROOT}",
-         f"--confcutdir={RUNTIME_ROOT}", "-p", "no:cacheprovider", "-p", "_negative_control_probe", *node_ids],
+         f"--confcutdir={RUNTIME_ROOT}", "-p", "no:cacheprovider", *node_ids],
         cwd=RUNTIME_ROOT,
         env=env,
         capture_output=True,
@@ -349,7 +353,7 @@ _FN_SENTINEL = "from pathlib import Path\ndef test_refuses():\n    Path(__file__
 _SKIPPING = "import unittest\nclass ControlTest(unittest.TestCase):\n    def test_refuses(self):\n        self.skipTest('x')\n"
 
 
-@pytest.mark.parametrize("channel", ["ini addopts", "PYTEST_PLUGINS", "entry point"])
+@pytest.mark.parametrize("channel", ["ini addopts", "PYTEST_PLUGINS", "entry point", "entry point named like the probe"])
 @pytest.mark.parametrize("plugin", ["skip-body", "forge-report"])
 def test_an_outside_plugin_cannot_fake_a_run(tmp_path, monkeypatch, channel, plugin):
     body, node_id, source = (
@@ -359,6 +363,9 @@ def test_an_outside_plugin_cannot_fake_a_run(tmp_path, monkeypatch, channel, plu
     gate = _gate_against(tmp_path, monkeypatch, {"test_c.py": body}, [node_id])
     site = tmp_path / "site"
     site.mkdir()
+    if channel == "entry point named like the probe":
+        # Re-exporting the real probe's hooks keeps the log genuine; only the plugin is outside.
+        source = "from _negative_control_probe import *  # noqa: F403\n" + source
     (site / "outside_plugin.py").write_text(source, encoding="utf-8")
     monkeypatch.setenv("PYTHONPATH", os.pathsep.join(filter(None, [str(site), os.environ.get("PYTHONPATH", "")])))
     if channel == "ini addopts":
@@ -369,13 +376,28 @@ def test_an_outside_plugin_cannot_fake_a_run(tmp_path, monkeypatch, channel, plu
         dist = site / "outside_plugin-0.dist-info"
         dist.mkdir()
         (dist / "METADATA").write_text("Metadata-Version: 2.1\nName: outside-plugin\nVersion: 0\n", encoding="utf-8")
-        (dist / "entry_points.txt").write_text("[pytest11]\noutside = outside_plugin\n", encoding="utf-8")
+        name = "_negative_control_probe" if channel == "entry point named like the probe" else "outside"
+        (dist / "entry_points.txt").write_text(f"[pytest11]\n{name} = outside_plugin\n", encoding="utf-8")
     if plugin == "skip-body":
         gate()  # the plugin never loaded, so the body ran and the gate's proof is genuine
         assert (tmp_path / "tests" / "called").is_file(), "the gate accepted a control whose body never ran"
     else:
         with pytest.raises(AssertionError, match="did not run and pass"):
             gate()
+
+
+def test_an_outside_import_mismatch_override_cannot_lend_a_control_another_modules_body(tmp_path, monkeypatch):
+    # PY_IGNORE_IMPORTMISMATCH is not a PYTEST_* variable, but pytest reads it: with it, a
+    # same-basename module in another directory runs the first module's body under its own id.
+    gate = _gate_against(
+        tmp_path, monkeypatch, {"test_c.py": _PASSING},
+        ["tests/test_c.py::ControlTest::test_refuses", "tests/sub/test_c.py::ControlTest::test_refuses"],
+    )
+    (tmp_path / "tests" / "sub").mkdir()
+    (tmp_path / "tests" / "sub" / "test_c.py").write_text(_SKIPPING, encoding="utf-8")
+    monkeypatch.setenv("PY_IGNORE_IMPORTMISMATCH", "1")
+    with pytest.raises(AssertionError):
+        gate()
 
 
 def test_a_conftest_above_the_runtime_root_is_not_loaded(tmp_path, monkeypatch):

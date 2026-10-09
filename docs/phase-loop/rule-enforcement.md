@@ -44,13 +44,16 @@ that skipped or failed. A control that is merely present, deselected, set up wit
 body running, or skipped in CI proves nothing.
 
 The child reads no pytest configuration from outside the gate. It drops every `PYTEST_*`
-variable, disables entry-point plugin autoload, reads only an empty ini file the gate
-writes, and loads no `conftest.py` above `phase-loop-runtime/`. The only plugins it
-loads are pytest's own, the gate's report probe, and this repo's `conftest.py` files.
+variable and `PY_IGNORE_IMPORTMISMATCH`, disables entry-point plugin autoload, reads only
+an empty ini file the gate writes, and loads no `conftest.py` above `phase-loop-runtime/`.
+It loads the report probe by module name through a `PYTEST_PLUGINS` the gate sets
+itself, which never consults entry points; `-p` would not do, because `-p NAME` first
+loads any installed `pytest11` entry point named `NAME`. The only plugins it loads are
+pytest's own, the in-tree report probe, and this repo's `conftest.py` files.
 In-tree code is trusted: a hook in `tests/conftest.py` can still stand in for a body
 (CONFORM-migrated ids do this in canonical mode), so a control must not be such an id.
 The gate does not defend against code written to forge pytest results, nor against
-Python's own startup hooks (`sitecustomize`, `.pth` files on `PYTHONPATH`), which belong
+Python's own startup hooks (`sitecustomize` on `PYTHONPATH`, `.pth` files in site-packages), which belong
 to the interpreter environment rather than to pytest's configuration.
 
 For each enforcer of each `enforced` row, the test then runs the row's control with
