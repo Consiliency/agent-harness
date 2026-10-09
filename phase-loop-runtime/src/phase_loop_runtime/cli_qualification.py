@@ -535,7 +535,9 @@ class Store:
                 raise StoreCorrupt(entry_type)
             if not hmac.compare_digest(mac, self._mac(self._key(), entry_type, context, payload)):
                 raise StoreCorrupt(entry_type)
-        except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+        except (OSError, ValueError, KeyError, TypeError, AttributeError, RecursionError) as exc:
+            # RecursionError here too: decoding limits differ between Python versions, so a
+            # payload one version decodes can still exhaust the stack while it is verified.
             raise StoreCorrupt(entry_type) from exc
         return payload
 

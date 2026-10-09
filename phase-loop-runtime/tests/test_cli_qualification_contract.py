@@ -279,6 +279,85 @@ def test_a_deeply_nested_entry_is_store_unsafe_not_an_exception():
     assert cq.lookup(key, now=NOW).outcome == "store_unsafe"
 
 
+def test_nested_transient_with_invalid_mac_is_store_unsafe(tmp_path, monkeypatch):
+    monkeypatch.setattr(cq, "self_qualification_enabled", lambda harness: True)
+    key = cq.QualificationKey(
+        harness="codex", platform="linux-x64", payload_sha256="1" * 64,
+        payload_kind="binary", help_sha256="2" * 64, runtime={})
+    store = cq.Store("codex", root=tmp_path / "state", machine_id="a" * 32)
+    store.create()
+    store.put_qualified(key)
+    entry = store._path("transient", key.context(with_help=False))
+    for depth in range(max(1, sys.getrecursionlimit() - 150), sys.getrecursionlimit()):
+        raw = ('{"schema":"cli_qualification_entry.v1","type":"transient",'
+               '"payload":{"count":' + '[' * depth + '0' + ']' * depth
+               + '},"mac":"' + '0' * 64 + '"}')
+        try:
+            json.loads(raw)
+        except RecursionError:
+            continue
+        assert len(raw.encode()) < cq._MAX_ENTRY_BYTES
+        entry.write_text(raw)
+        entry.chmod(0o600)
+        assert cq.lookup(key, store=store, now=1).outcome == "store_unsafe"
+
+
+def _decodable_nested_payloads(entry_type):
+    """Entries whose JSON decodes on THIS interpreter but whose payload nests as deep as the
+    decoder allows: verifying them must still end in store_unsafe, never an exception."""
+    for depth in range(max(1, sys.getrecursionlimit() - 150), sys.getrecursionlimit()):
+        raw = ('{"schema":"cli_qualification_entry.v1","type":"' + entry_type + '",'
+               '"payload":{"x":' + "[" * depth + "0" + "]" * depth + '},"mac":"' + "0" * 64 + '"}')
+        try:
+            json.loads(raw)
+        except RecursionError:
+            continue
+        yield raw
+
+
+@pytest.mark.parametrize("entry_type", ["qualified", "failed", "transient"])
+def test_every_entry_lookup_reads_maps_a_decodable_nested_payload_to_store_unsafe(entry_type):
+    """Every store read path, on every supported Python: decoding limits differ between
+    versions, so the verification step after a successful decode is covered too.
+
+    Mutation: ``RecursionError`` mapped only around decoding, not around verification.
+    """
+    key = _key()
+    store = _seed_qualified(key)
+    name = key.context(with_help=entry_type == "qualified")
+    entry = store._path(entry_type, name)
+    tried = 0
+    for raw in _decodable_nested_payloads(entry_type):
+        tried += 1
+        entry.write_text(raw)
+        entry.chmod(0o600)
+        assert cq.lookup(key, now=NOW).outcome == "store_unsafe"
+    assert tried
+
+
+@pytest.mark.parametrize("damage", ["non_ascii_mac", "huge_integer", "nan_field", "list_entry"])
+def test_other_decodable_damage_is_store_unsafe(damage):
+    """Decodable entries that trip a type, encoding or size limit during verification (some
+    differ between Python versions) are store_unsafe, never an exception or an admission."""
+    key = _key()
+    store = _seed_qualified(key)
+    entry = store._path("qualified", key.context())
+    record = json.loads(entry.read_text())
+    if damage == "non_ascii_mac":
+        record["mac"] = "\u00e9" + record["mac"][1:]
+        text = json.dumps(record, ensure_ascii=False)
+    elif damage == "huge_integer":
+        text = json.dumps(record)[:-1] + ',"n":' + "9" * 5000 + "}"
+    elif damage == "nan_field":
+        record["payload"]["at"] = float("nan")
+        text = json.dumps(record)
+    else:
+        text = json.dumps([record])
+    entry.write_text(text, encoding="utf-8")
+    entry.chmod(0o600)
+    assert cq.lookup(key, now=NOW).outcome == "store_unsafe"
+
+
 def test_a_missing_key_with_entries_present_is_unsafe():
     """Mutation: ``status`` reporting ``absent`` for a missing key whatever the directory holds."""
     key = _key()
