@@ -6,6 +6,26 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Plan word budget: check (S) and `.phase-loop-planning.toml` (agent-harness#1302)
+
+- `validate_plan_doc.py` (plan-phase) gains check (S): it warns when a phase plan's body,
+  excluding YAML frontmatter, is longer than its word budget. The default budget is 2000
+  words plus 500 per lane, and the check warns by default. Frozen artifacts the plan
+  references have no cap. The plan-phase and phase-roadmap-builder skills now state this one
+  rule in place of the old flat 3000-word budget.
+- Configure it in the committed repo-root file `.phase-loop-planning.toml`: `[plan_budget]`
+  takes `base_words`, `per_lane_words` and `mode = "warn" | "error" | "off"`, and
+  `[plan_budget.phases.<ALIAS>]` sets a per-phase exception for the plan whose frontmatter
+  `phase:` matches. `--word-budget N` sets a flat budget for one run. Keys:
+  `docs/phase-loop/plan-budget.md`.
+- A malformed config is a validation error: an unknown key or top-level table, a misplaced
+  `phases` table, a bad mode or count, invalid TOML, or a phase entry that fails validation
+  even when it matches no plan.
+- Severity now comes from the finding's prefix alone: only `(X) WARN` and `(X) INFO` lines
+  are non-fatal. Before, any finding whose text contained `WARN` was demoted to a warning,
+  and `(P) INFO` lines (goal coverage not checked, outside the runtime) counted as errors.
+  `(P) INFO` lines no longer count as errors.
+
 ### agy: a newer upstream release only warns; seats admit self-qualified images (agent-harness#1333 PR1)
 
 - `verify_qualified_agy_image.py --upstream-only` no longer fails when the newest upstream
