@@ -239,6 +239,46 @@ def test_unsafe_failure_record_cannot_restore_a_cached_pass(damage):
     assert rerun.outcome == "store_unsafe" and calls == []
 
 
+def test_invalid_transient_entry_refuses_a_cached_pass(tmp_path, monkeypatch):
+    monkeypatch.setattr(cq, "self_qualification_enabled", lambda harness: True)
+    key = cq.QualificationKey(
+        harness="codex", platform="linux-x64", payload_sha256="1" * 64,
+        payload_kind="binary", help_sha256="2" * 64, runtime={})
+    store = cq.Store("codex", root=tmp_path / "state", machine_id="a" * 32)
+    store.create()
+    store.note_transient(key, now=1)
+    store.put_qualified(key)
+    entry = store._path("transient", key.context(with_help=False))
+    entry.chmod(0o644)
+    result = cq.lookup(key, store=store, now=2)
+    assert result.outcome == "store_unsafe" and result.refuses
+    calls = []
+    operations = {name: lambda: calls.append("ran") for name in cq.OPERATIONS}
+    admitted = cq.ensure_admitted(key, operations, store=store, now=2)
+    assert admitted.outcome == "store_unsafe" and calls == []
+
+
+def test_an_invalid_transient_entry_refuses_first_use_before_any_operation():
+    """Mutation: ``lookup`` not reading the key's transient entry runs every operation."""
+    key = _key()
+    assert _qualify(key, transient="cancel")[0].outcome == "transient"
+    store = cq.Store("codex")
+    store._path("transient", key.context(with_help=False)).chmod(0o644)
+    assert cq.lookup(key, now=NOW).outcome == "store_unsafe"
+    result, calls = _qualify(key)
+    assert result.outcome == "store_unsafe" and calls == []
+
+
+def test_a_deeply_nested_entry_is_store_unsafe_not_an_exception():
+    """Mutation: dropping ``RecursionError`` from ``Store.get``'s mapping lets it escape."""
+    key = _key()
+    store = _seed_qualified(key)
+    entry = store._path("qualified", key.context())
+    entry.write_bytes(b"[" * 32000 + b"]" * 32000)
+    assert entry.stat().st_size < cq._MAX_ENTRY_BYTES
+    assert cq.lookup(key, now=NOW).outcome == "store_unsafe"
+
+
 def test_a_missing_key_with_entries_present_is_unsafe():
     """Mutation: ``status`` reporting ``absent`` for a missing key whatever the directory holds."""
     key = _key()
@@ -493,6 +533,119 @@ def test_the_inner_alias_on_its_own_stays_in_the_closure(tmp_path):
 
 
 _needs_non_root = pytest.mark.skipif(os.geteuid() == 0, reason="root can list a directory without read permission")
+
+
+def _link_root(tmp_path):
+    base = tmp_path / "base"
+    root = base / "package"
+    root.mkdir(parents=True)
+    (root / "real.js").write_text("inside\n")
+    return base, root
+
+
+def test_recorded_link_text_must_be_the_text_checked(tmp_path, monkeypatch):
+    root = tmp_path / "package"
+    root.mkdir()
+    (root / "safe.js").write_text("safe\n")
+    (tmp_path / "outside.js").write_text("outside\n")
+    link = root / "entry.js"
+    link.symlink_to("../outside.js")
+    original = os.readlink
+    swapped = []
+
+    def swap_after_read(path, *args, **kwargs):
+        text = original(path, *args, **kwargs)
+        if Path(path) == link:
+            swapped.append(text)
+            if len(swapped) == 1:
+                link.unlink()
+                link.symlink_to("safe.js")
+            elif len(swapped) == 2:
+                link.unlink()
+                link.symlink_to("../outside.js")
+        return text
+
+    monkeypatch.setattr(cq.os, "readlink", swap_after_read)
+    with pytest.raises(cq.QualificationError, match=cq.UNAVAILABLE):
+        cq.tree_digest({"package": root})
+    assert swapped[0] == "../outside.js"
+
+
+@_needs_non_root
+def test_a_traversal_error_while_resolving_a_link_refuses(tmp_path):
+    """A link whose resolution hits an unsearchable directory (even outside the root, routed
+    back in) refuses: the kernel could not resolve it, so containment is undecidable.
+
+    Mutation: deciding containment on ``realpath`` alone, which swallows the error.
+    """
+    base, root = _link_root(tmp_path)
+    (base / "locked" / "x").mkdir(parents=True)
+    (base / "locked").chmod(0)
+    (root / "entry.js").symlink_to("../locked/x/../../package/real.js")
+    try:
+        with pytest.raises(cq.QualificationError, match=cq.UNAVAILABLE):
+            cq.tree_digest({"package": root})
+    finally:
+        (base / "locked").chmod(0o700)
+
+
+@pytest.mark.parametrize("shape", ["ghost", "notdir", "loop", "dangling"])
+def test_a_link_that_does_not_fully_resolve_refuses(tmp_path, shape):
+    """Mutation: ``realpath(strict=True)`` alone still accepts ``notdir``; dropping the kernel
+    agreement check accepts every shape."""
+    base, root = _link_root(tmp_path)
+    if shape == "notdir":
+        (base / "file.txt").write_text("f")
+    elif shape == "loop":
+        (base / "loop").symlink_to("loop")
+    text = {"ghost": "../ghost/../package/real.js", "notdir": "../file.txt/../package/real.js",
+            "loop": "../loop/../package/real.js", "dangling": "missing.js"}[shape]
+    (root / "entry.js").symlink_to(text)
+    with pytest.raises(cq.QualificationError, match=cq.UNAVAILABLE):
+        cq.tree_digest({"package": root})
+
+
+@pytest.mark.parametrize("shape", ["eacces", "notdir"])
+def test_an_unresolvable_component_behind_an_inner_alias_refuses(tmp_path, shape):
+    if shape == "eacces" and os.geteuid() == 0:
+        pytest.skip("root can search a directory without permission")
+    base, root = _link_root(tmp_path)
+    (root / "a").mkdir()
+    (root / "sub").mkdir()
+    (root / "a" / "p").symlink_to("../sub")
+    if shape == "eacces":
+        (base / "locked" / "x").mkdir(parents=True)
+        (base / "locked").chmod(0)
+        text = "p/../../locked/x/../../package/real.js"
+    else:
+        (base / "file.txt").write_text("f")
+        text = "p/../../file.txt/../package/real.js"
+    (root / "a" / "q").symlink_to(text)
+    # Lexically, and as far as ``realpath`` resolves it, the link lands back on real.js.
+    assert os.path.realpath(root / "a" / "q") == os.path.realpath(root / "real.js")
+    try:
+        with pytest.raises(cq.QualificationError, match=cq.UNAVAILABLE):
+            cq.tree_digest({"package": root})
+    finally:
+        if shape == "eacces":
+            (base / "locked").chmod(0o700)
+
+
+def test_a_link_is_recorded_by_its_text_not_its_target_bytes(tmp_path):
+    """Retargeting a link between two in-root files with identical bytes changes the digest.
+
+    Mutation: recording the target's sha256 instead of the link text.
+    """
+    _base, root = _link_root(tmp_path)
+    (root / "a.js").write_text("same bytes\n")
+    (root / "b.js").write_text("same bytes\n")
+    link = root / "entry.js"
+    link.symlink_to("a.js")
+    before = cq.tree_digest({"package": root})
+    link.unlink()
+    link.symlink_to("b.js")
+    assert cq.tree_digest({"package": root}) != before
+
 
 
 @_needs_non_root

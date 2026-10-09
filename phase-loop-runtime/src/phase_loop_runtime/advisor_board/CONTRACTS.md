@@ -1373,10 +1373,12 @@ jail and agy's first-use self-qualification (above) keep their own admission.
   - **Payload.** A native binary is the sha256 of that file, never of a link to it.
   - **Tree.** A script package is a tree digest over its adapter-declared closure:
     labelled roots, every entry's relative path, type and mode, plus file sha256 or
-    symlink text. A symlink is recorded by its text and its target is never read; it must
-    resolve inside its own label root, judged on the resolved path. Absolute link text, a
-    link resolving outside the root, any traversal error, a special file or a symlinked
-    root refuses `seat_cli_qualification_unavailable`.
+    symlink text. A symlink is read once and recorded by its text, and its target's bytes
+    are never read. It must resolve inside its own label root, judged on the resolved path
+    of the recorded text. Absolute link text, a link resolving outside the root, a link the
+    kernel cannot fully resolve (a dangling link, or a missing, non-directory, looping or
+    unsearchable component), any traversal error, a special file or a symlinked root refuses
+    `seat_cli_qualification_unavailable`.
   - **Interpreter.** The interpreter digest is in the local key only.
 - **Help.** `help_sha256` hashes, for each of the adapter's probe argvs, its stdout and
   stderr together, in a pinned environment: `LC_ALL=C.UTF-8`, `COLUMNS=200`, `TERM=dumb`, `NO_COLOR=1`,
@@ -1421,8 +1423,10 @@ jail and agy's first-use self-qualification (above) keep their own admission.
   `$XDG_STATE_HOME/phase-loop/cli-qualification/hosts/<machine>/<harness>/`. Directories
   are 0700 and files 0600, euid-owned, opened `O_NOFOLLOW`. Each entry has an HMAC over
   the entry type, euid, machine-id, harness and the live key context. An invalid entry is
-  not a missing one: a present entry with the wrong mode, owner, schema, type or MAC, or a
-  symlink, makes the store `store_unsafe`, and so does a missing key while entries remain.
+  not a missing one: an entry lookup reads for the key it looks up (qualified, failed or
+  transient) that is not a 0600 euid-owned regular file, is a symlink, or fails its schema,
+  type or MAC makes lookup return `store_unsafe`, and so does a missing key while entries
+  remain. `status` reports directory and key state only.
   The store is orthogonal to `seat-jail-passes/`: a jailed claude seat needs both.
 - **Opt-out.** In the user config only:
   - `[qualification.<harness>] self_qualification = false`.

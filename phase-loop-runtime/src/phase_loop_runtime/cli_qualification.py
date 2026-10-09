@@ -164,9 +164,11 @@ def tree_digest(closure: Mapping[str, os.PathLike | str]):
 
     ``closure`` maps a stable label (``package``, or a platform-dependency name) to a root
     directory. The digest is over the sorted ``(label/relative path, type, mode, sha256 or
-    link text)`` of every entry. A symlink is recorded by its link text and its target is
-    never read; it must resolve inside its own label root (absolute text, or a resolved path
-    outside the root, refuses). Any traversal error, a symlinked root or a special file refuses.
+    link text)`` of every entry. A symlink is read once and recorded by its text; its target's
+    bytes are never read. It must resolve inside its own label root (absolute text, or a
+    resolved path outside the root, refuses), and a link the kernel cannot fully resolve (a
+    dangling link, or a missing, non-directory, looping or unsearchable component) refuses.
+    Any traversal error, a symlinked root or a special file refuses.
     """
     def unlistable(error):
         raise QualificationError(UNAVAILABLE) from error
@@ -190,12 +192,17 @@ def tree_digest(closure: Mapping[str, os.PathLike | str]):
                     info = os.lstat(path)
                     mode = stat.S_IMODE(info.st_mode)
                     if stat.S_ISLNK(info.st_mode):
+                        # The link is read ONCE: containment is decided on the recorded text.
+                        # Its resolved path must lie under the root, never judged lexically
+                        # (an inner alias can lead outside while the text looks inside), and
+                        # the kernel's own resolution must succeed and reach that same file:
+                        # a dangling link or a missing, non-directory, looping or unsearchable
+                        # component refuses. Metadata only; the target's bytes are never read.
                         text = os.readlink(path)
-                        # Contained by its RESOLVED path, never lexically: a link through an
-                        # inner alias can read outside while its text looks inside. This
-                        # resolves the path; it never reads or hashes the target.
-                        resolved = os.path.realpath(path)
-                        if os.path.isabs(text) or not resolved.startswith(real_root + os.sep):
+                        target = os.path.join(os.path.dirname(path), text)
+                        resolved = os.path.realpath(target)
+                        if (os.path.isabs(text) or not resolved.startswith(real_root + os.sep)
+                                or not os.path.samestat(os.stat(target), os.lstat(resolved))):
                             raise QualificationError(UNAVAILABLE)
                         entries.append([relative, "link", 0, text])
                     elif stat.S_ISDIR(info.st_mode):
@@ -518,7 +525,7 @@ class Store:
             raw = json.loads(self._read(self._path(entry_type, context)))
         except FileNotFoundError:
             return None
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError, RecursionError) as exc:
             raise StoreCorrupt(entry_type) from exc
         try:
             if raw.get("schema") != _ENTRY_SCHEMA or raw.get("type") != entry_type:
@@ -640,6 +647,8 @@ def lookup(key, *, store=None, now=None):
 
 
 def _lookup_store(key, store, now):
+    # Every entry lookup reads for this key is verified, the transient one included.
+    store.get("transient", key.context(with_help=False))
     failed = store.get_failed(key)
     if failed is not None:
         if failed.get("kind") != "transient":
