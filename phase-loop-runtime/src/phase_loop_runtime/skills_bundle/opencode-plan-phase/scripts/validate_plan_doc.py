@@ -50,6 +50,11 @@ every issue at once):
       (test, snapshot, lockfile, `.env.example`, migration test) that no lane
       owns, or pins a timestamped migration name the generator will choose.
 
+  (S) WARN when the execution plan exceeds its word budget (frontmatter
+      excluded): base + per-lane words, 2000 + 500/lane by default. Set per
+      repo or per phase in the committed `.phase-loop-planning.toml`;
+      `--word-budget N` overrides. Referenced frozen artifacts are uncapped; move detail there.
+
 Design: zero external deps (stdlib only). Parses markdown by regex on
 stable headings produced by the claude-plan-phase template — not a full
 Markdown parser, which would be overkill.
@@ -830,6 +835,149 @@ def _check_l_ui_visual_verification(src: str) -> Findings:
     ]
 
 
+# --- (S) execution-plan word budget -------------------------------------------------------
+# agent-harness#1302: the execution plan is capped; the frozen artifacts it references are
+# not. The budget scales with lane count because a flat cap penalises a healthy 7-lane
+# phase as hard as a bloated 3-lane one. Repo config lives in the committed repo-root
+# `.phase-loop-planning.toml` (the runtime git-excludes `.phase-loop/`, so a config there
+# could never be reviewed):
+#
+#   [plan_budget]
+#   base_words = 2000
+#   per_lane_words = 500
+#   mode = "warn"            # warn | error | off
+#
+#   [plan_budget.phases.EXAMPLE]   # per-phase exception
+#   base_words = 8000
+#
+# Precedence: --word-budget flag > phase entry > repo default > built-in default. The
+# budget value is never read from the plan. The plan's frontmatter `phase:` selects which
+# committed per-phase entry applies, so an exception is only as strong as review of that
+# line.
+
+PLAN_BUDGET_BASE_WORDS = 2000
+PLAN_BUDGET_PER_LANE_WORDS = 500
+PLAN_BUDGET_MODES = ("warn", "error", "off")
+PLANNING_CONFIG = Path(".phase-loop-planning.toml")
+
+
+@dataclass(frozen=True)
+class PlanBudget:
+    base_words: int = PLAN_BUDGET_BASE_WORDS
+    per_lane_words: int = PLAN_BUDGET_PER_LANE_WORDS
+    mode: str = "warn"
+    source: str = "default"
+
+    def limit(self, lane_count: int) -> int:
+        return self.base_words + self.per_lane_words * max(lane_count, 0)
+
+
+def _load_toml(path: Path) -> dict:
+    try:
+        import tomllib as toml  # Python 3.11+
+    except ModuleNotFoundError:  # pragma: no cover - 3.10 floor
+        try:
+            import tomli as toml  # type: ignore[no-redef]
+        except ModuleNotFoundError:
+            raise RuntimeError("no TOML parser (Python 3.10 needs `tomli`)") from None
+    with path.open("rb") as fh:
+        return toml.load(fh)
+
+
+def _apply_budget_table(
+    budget: PlanBudget, table: object, where: str, allow_phases: bool = False
+) -> PlanBudget:
+    if not isinstance(table, dict):
+        raise ValueError(f"{where} must be a table")
+    fields = {"base_words": budget.base_words, "per_lane_words": budget.per_lane_words,
+              "mode": budget.mode}
+    for key, value in table.items():
+        if key == "phases" and allow_phases:  # only [plan_budget] holds phase entries
+            continue
+        if key not in fields:
+            raise ValueError(f"{where}.{key} is not a known setting")
+        if key == "mode":
+            if value not in PLAN_BUDGET_MODES:
+                raise ValueError(f"{where}.mode must be one of {', '.join(PLAN_BUDGET_MODES)}")
+        elif isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            raise ValueError(f"{where}.{key} must be a non-negative integer")
+        fields[key] = value
+    return PlanBudget(source=where, **fields)
+
+
+def _resolve_plan_budget(
+    repo_root: Optional[Path], phase: str, override_words: Optional[int]
+) -> "tuple[PlanBudget, Findings]":
+    budget = PlanBudget()
+    findings: Findings = []
+    config = repo_root / PLANNING_CONFIG if repo_root is not None else None
+    if config is not None and config.is_file():
+        try:
+            data = _load_toml(config)
+            for key in data:  # the file holds planning settings only
+                if key != "plan_budget":
+                    raise ValueError(f"{key} is not a known setting")
+            table = data.get("plan_budget", {})
+            budget = _apply_budget_table(budget, table, "plan_budget", allow_phases=True)
+            phases = table.get("phases", {})
+            if not isinstance(phases, dict):
+                raise ValueError("plan_budget.phases must be a table")
+            for alias, entry in phases.items():
+                # Validate every entry, so a malformed one cannot hide behind a non-match.
+                applied = _apply_budget_table(budget, entry, f"plan_budget.phases.{alias}")
+                if alias.strip().upper() == phase.strip().upper() and phase:
+                    budget = applied
+        except Exception as exc:  # malformed config must be visible, never silently ignored
+            findings.append(f"(S) invalid {PLANNING_CONFIG}: {exc}")
+            return PlanBudget(), findings
+    if override_words is not None:
+        # An explicit flag asks for the check, so it re-enables a repo-level `off`.
+        mode = "warn" if budget.mode == "off" else budget.mode
+        budget = PlanBudget(override_words, 0, mode, "--word-budget")
+    return budget, findings
+
+
+def _plan_body(src: str) -> str:
+    """Plan text with any leading YAML frontmatter removed."""
+    lines = src.splitlines()
+    if lines and lines[0].strip() == "---":
+        for i, line in enumerate(lines[1:], start=1):
+            if line.strip() == "---":
+                return "\n".join(lines[i + 1:])
+    return src
+
+
+def _check_s_plan_word_budget(
+    src: str, lane_count: int, budget: PlanBudget = PlanBudget()
+) -> Findings:
+    """Counts whitespace-separated words like `wc -w`. WARN by default; `mode = "error"`
+    makes it fatal and `mode = "off"` disables it."""
+    if budget.mode == "off":
+        return []
+    words = len(_plan_body(src).split())
+    limit = budget.limit(lane_count)
+    if words <= limit:
+        return []
+    level = "WARN: " if budget.mode == "warn" else ""
+    return [
+        f"(S) {level}execution plan is {words} words, over its {limit}-word budget "
+        f"({budget.base_words} + {budget.per_lane_words} x {lane_count} lanes, "
+        f"from {budget.source}). Move frozen detail (contracts, schemas, freeze-gate "
+        "payloads) into a referenced artifact, which carries no cap, and point at it."
+    ]
+
+
+# --- severity ------------------------------------------------------------------------------
+# A finding is non-fatal only when its prefix says so: `(X) WARN` or `(X) INFO`. The rest of
+# the text is never read, because it interpolates plan and config text (aliases, keys, lane
+# ids) that would otherwise demote an error to a warning.
+_NONFATAL_FINDING = re.compile(r"\([A-Z]+\) (WARN|INFO)\b")
+
+
+def _is_warning(finding: str) -> bool:
+    return _NONFATAL_FINDING.match(finding) is not None
+
+
 # --- (P) goal-ID coverage: acceptance references the roadmap's EC-<ALIAS>-<N> goals -----
 # check (P) uses ONLY the AUTHORITATIVE Increment-1 runtime parse (goal_coverage +
 # roadmap_lint), the exact functions the goal-coverage gate calls — so the validator and
@@ -1493,6 +1641,8 @@ def main(argv: List[str]) -> int:
     parser.add_argument("--grammar-successor-commit", default=None, help="Successor commit OID")
     parser.add_argument("--server-attested-pre-grammar-date", default=None, help="Server attested date")
     parser.add_argument("--grandfather-source-path", default=None, help="Grandfather source path")
+    parser.add_argument("--word-budget", type=int, default=None,
+                        help="Flat word budget for check (S); overrides .phase-loop-planning.toml")
 
     args = parser.parse_args(argv[1:])
     path = args.plan_path
@@ -1560,6 +1710,11 @@ def main(argv: List[str]) -> int:
     findings.extend(_check_j_docs_lane(src))
     findings.extend(_check_k_acceptance_testable(src))
     findings.extend(_check_l_ui_visual_verification(src))
+    budget, budget_findings = _resolve_plan_budget(
+        repo_root, _parse_frontmatter(src).get("phase", ""), args.word_budget
+    )
+    findings.extend(budget_findings)
+    findings.extend(_check_s_plan_word_budget(src, len(lanes), budget))
     findings.extend(_check_m_release_docs_coverage(src, lanes, lane_sections_parsed))
     findings.extend(_check_n_post_dispatch_reducer(src, lanes, lane_sections_raw, lane_sections_parsed))
     if repo_root is not None:
@@ -1569,9 +1724,9 @@ def main(argv: List[str]) -> int:
             )
         )
 
-    # Partition findings into errors vs warnings.
-    errors = [f for f in findings if "WARN" not in f]
-    warnings = [f for f in findings if "WARN" in f]
+    # Partition findings into errors vs warnings, by prefix only (see `_is_warning`).
+    errors = [f for f in findings if not _is_warning(f)]
+    warnings = [f for f in findings if _is_warning(f)]
 
     if warnings:
         for w in warnings:
