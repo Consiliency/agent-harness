@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import subprocess
 import sys
-import xml.etree.ElementTree as ET
 from pathlib import Path
 
 import pytest
@@ -22,25 +22,44 @@ def test_shipped_registry_is_sound():
     assert check_registry(load_registry(), tests_root=RUNTIME_ROOT) == []
 
 
+PROBE_DIR = Path(__file__).resolve().parent
+
+
+def _run_controls(node_ids, tmp_path, kill=""):
+    """Run node_ids in a child pytest; return it, its call-phase-passed node ids, and its other records."""
+    assert node_ids, "no negative control to run"
+    log = tmp_path / f"reports{len(list(tmp_path.glob('reports*')))}.jsonl"
+    env = {key: value for key, value in os.environ.items() if key != "PYTEST_ADDOPTS"}
+    env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(PROBE_DIR), env.get("PYTHONPATH", "")]))
+    env["NEGATIVE_CONTROL_REPORT_LOG"] = str(log)
+    env["NEGATIVE_CONTROL_KILL"] = kill
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "-p", "_negative_control_probe",
+         f"--rootdir={RUNTIME_ROOT}", *node_ids],
+        cwd=RUNTIME_ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=600,
+    )
+    # The log is written by the child above into tmp_path; it is not external input.
+    events = [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()] if log.exists() else []
+    # Proof is a passed call-phase report for the exact node id, and no report of any phase
+    # (subtests included) for it that skipped or failed.
+    spoiled = {e["nodeid"] for e in events if "outcome" in e and e["outcome"] != "passed"}
+    passed = {e["nodeid"] for e in events if e.get("when") == "call" and e.get("outcome") == "passed"} - spoiled
+    return proc, passed, [e for e in events if "outcome" not in e]
+
+
 @pytest.mark.skipif(not skills_bundle_present(), reason="negative controls load the sibling phase-loop-skills bundle")
 def test_every_negative_control_runs_and_passes(tmp_path):
     # Existence is not proof: a control that skips here never shows its enforcer refuse.
     node_ids = [rule.negative_control for rule in load_registry() if rule.negative_control]
-    report = tmp_path / "junit.xml"
-    proc = subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", f"--junitxml={report}", *node_ids],
-        cwd=RUNTIME_ROOT,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    proc, passed, _ = _run_controls(node_ids, tmp_path)
     assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-2000:]
-    # The report is written by the subprocess above into tmp_path; it is not external input.
-    cases = ET.parse(report).getroot().iter("testcase")
-    ran = {(case.get("classname", "").rsplit(".", 1)[-1], case.get("name")) for case in cases if not list(case)}
     for node_id in node_ids:
-        parts = node_id.split("::")
-        assert (parts[-2] if len(parts) > 2 else "", parts[-1]) in ran, f"{node_id} did not run and pass"
+        assert node_id in passed, f"{node_id} did not run and pass"
 
 
 def test_registry_ships_as_package_data():
