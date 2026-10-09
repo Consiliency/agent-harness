@@ -52,8 +52,8 @@ every issue at once):
 
   (S) WARN when the execution plan exceeds its word budget (frontmatter
       excluded): base + per-lane words, 2000 + 500/lane by default. Set per
-      repo or per phase in `.phase-loop/planning.toml`; `--word-budget N`
-      overrides. Referenced frozen artifacts are uncapped; move detail there.
+      repo or per phase in the committed `.phase-loop-planning.toml`;
+      `--word-budget N` overrides. Referenced frozen artifacts are uncapped; move detail there.
 
 Design: zero external deps (stdlib only). Parses markdown by regex on
 stable headings produced by the claude-plan-phase template — not a full
@@ -838,24 +838,27 @@ def _check_l_ui_visual_verification(src: str) -> Findings:
 # --- (S) execution-plan word budget -------------------------------------------------------
 # agent-harness#1302: the execution plan is capped; the frozen artifacts it references are
 # not. The budget scales with lane count because a flat cap penalises a healthy 7-lane
-# phase as hard as a bloated 3-lane one. Repo config lives in `.phase-loop/planning.toml`:
+# phase as hard as a bloated 3-lane one. Repo config lives in the committed repo-root
+# `.phase-loop-planning.toml` (the runtime git-excludes `.phase-loop/`, so a config there
+# could never be reviewed):
 #
 #   [plan_budget]
 #   base_words = 2000
 #   per_lane_words = 500
 #   mode = "warn"            # warn | error | off
 #
-#   [plan_budget.phases.CONFORM]   # owner-approved per-phase exception
+#   [plan_budget.phases.EXAMPLE]   # per-phase exception
 #   base_words = 8000
 #
 # Precedence: --word-budget flag > phase entry > repo default > built-in default. The
-# budget is deliberately not read from plan frontmatter: the author would grant
-# themselves the exception.
+# budget value is never read from the plan. The plan's frontmatter `phase:` selects which
+# committed per-phase entry applies, so an exception is only as strong as review of that
+# line.
 
 PLAN_BUDGET_BASE_WORDS = 2000
 PLAN_BUDGET_PER_LANE_WORDS = 500
 PLAN_BUDGET_MODES = ("warn", "error", "off")
-PLANNING_CONFIG = Path(".phase-loop") / "planning.toml"
+PLANNING_CONFIG = Path(".phase-loop-planning.toml")
 
 
 @dataclass(frozen=True)
@@ -881,13 +884,15 @@ def _load_toml(path: Path) -> dict:
         return toml.load(fh)
 
 
-def _apply_budget_table(budget: PlanBudget, table: object, where: str) -> PlanBudget:
+def _apply_budget_table(
+    budget: PlanBudget, table: object, where: str, allow_phases: bool = False
+) -> PlanBudget:
     if not isinstance(table, dict):
         raise ValueError(f"{where} must be a table")
     fields = {"base_words": budget.base_words, "per_lane_words": budget.per_lane_words,
               "mode": budget.mode}
     for key, value in table.items():
-        if key == "phases":
+        if key == "phases" and allow_phases:  # only [plan_budget] holds phase entries
             continue
         if key not in fields:
             raise ValueError(f"{where}.{key} is not a known setting")
@@ -908,14 +913,20 @@ def _resolve_plan_budget(
     config = repo_root / PLANNING_CONFIG if repo_root is not None else None
     if config is not None and config.is_file():
         try:
-            table = _load_toml(config).get("plan_budget", {})
-            budget = _apply_budget_table(budget, table, "plan_budget")
+            data = _load_toml(config)
+            for key in data:  # the file holds planning settings only
+                if key != "plan_budget":
+                    raise ValueError(f"{key} is not a known setting")
+            table = data.get("plan_budget", {})
+            budget = _apply_budget_table(budget, table, "plan_budget", allow_phases=True)
             phases = table.get("phases", {})
             if not isinstance(phases, dict):
                 raise ValueError("plan_budget.phases must be a table")
             for alias, entry in phases.items():
+                # Validate every entry, so a malformed one cannot hide behind a non-match.
+                applied = _apply_budget_table(budget, entry, f"plan_budget.phases.{alias}")
                 if alias.strip().upper() == phase.strip().upper() and phase:
-                    budget = _apply_budget_table(budget, entry, f"plan_budget.phases.{alias}")
+                    budget = applied
         except Exception as exc:  # malformed config must be visible, never silently ignored
             findings.append(f"(S) invalid {PLANNING_CONFIG}: {exc}")
             return PlanBudget(), findings
@@ -954,6 +965,17 @@ def _check_s_plan_word_budget(
         f"from {budget.source}). Move frozen detail (contracts, schemas, freeze-gate "
         "payloads) into a referenced artifact, which carries no cap, and point at it."
     ]
+
+
+# --- severity ------------------------------------------------------------------------------
+# A finding is non-fatal only when its prefix says so: `(X) WARN` or `(X) INFO`. The rest of
+# the text is never read, because it interpolates plan and config text (aliases, keys, lane
+# ids) that would otherwise demote an error to a warning.
+_NONFATAL_FINDING = re.compile(r"\([A-Z]+\) (WARN|INFO)\b")
+
+
+def _is_warning(finding: str) -> bool:
+    return _NONFATAL_FINDING.match(finding) is not None
 
 
 # --- (P) goal-ID coverage: acceptance references the roadmap's EC-<ALIAS>-<N> goals -----
@@ -1620,7 +1642,7 @@ def main(argv: List[str]) -> int:
     parser.add_argument("--server-attested-pre-grammar-date", default=None, help="Server attested date")
     parser.add_argument("--grandfather-source-path", default=None, help="Grandfather source path")
     parser.add_argument("--word-budget", type=int, default=None,
-                        help="Flat word budget for check (S); overrides .phase-loop/planning.toml")
+                        help="Flat word budget for check (S); overrides .phase-loop-planning.toml")
 
     args = parser.parse_args(argv[1:])
     path = args.plan_path
@@ -1702,9 +1724,9 @@ def main(argv: List[str]) -> int:
             )
         )
 
-    # Partition findings into errors vs warnings.
-    errors = [f for f in findings if "WARN" not in f]
-    warnings = [f for f in findings if "WARN" in f]
+    # Partition findings into errors vs warnings, by prefix only (see `_is_warning`).
+    errors = [f for f in findings if not _is_warning(f)]
+    warnings = [f for f in findings if _is_warning(f)]
 
     if warnings:
         for w in warnings:

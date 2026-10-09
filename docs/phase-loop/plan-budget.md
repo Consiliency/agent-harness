@@ -15,9 +15,12 @@ The built-in default is **2000 + 500 per lane**. Across this repository's 39 pha
 flags five: the four 13k–21k-word plans and EXECFIND. A flat cap flagged healthy seven-lane
 plans as well.
 
-## Configuration: `.phase-loop/planning.toml`
+## Configuration: `.phase-loop-planning.toml`
 
-Optional; without it the default applies.
+Optional; without it the default applies. The file sits at the repository root and is
+committed like any other source file. It is not under `.phase-loop/`, because the runtime
+adds that directory to `.git/info/exclude`, and a config there could not be committed or
+reviewed.
 
 ```toml
 [plan_budget]
@@ -25,7 +28,7 @@ base_words = 2000        # non-negative integer
 per_lane_words = 500     # non-negative integer
 mode = "warn"            # warn (default) | error | off
 
-[plan_budget.phases.CONFORM]   # per-phase exception; alias match is case-insensitive
+[plan_budget.phases.EXAMPLE]   # per-phase exception; alias match is case-insensitive
 base_words = 8000              # unset keys inherit from [plan_budget]
 ```
 
@@ -37,13 +40,15 @@ Settings are applied in this order, most specific first:
 3. `[plan_budget]`.
 4. The built-in default.
 
-The budget is never read from the plan's own frontmatter, so a plan cannot grant itself an
-exception. A per-phase exception belongs in the repo config, where review sees it.
+The budget value is never read from the plan. The plan's frontmatter `phase:` selects which
+committed per-phase entry applies, so an exception is only as strong as review of that line.
 
 ## Errors
 
-- **Malformed config:** an unknown key, a mode outside `warn | error | off`, a negative or
-  boolean count, or invalid TOML is a validation error, never silently ignored.
+- **Malformed config:** an unknown key or top-level table, a `phases` table anywhere but
+  directly under `[plan_budget]`, a mode outside `warn | error | off`, a negative or boolean
+  count, or invalid TOML is a validation error, never silently ignored. Every
+  `[plan_budget.phases.<ALIAS>]` entry is checked, including ones that match no plan.
 - **No TOML parser:** on Python 3.10, which has no `tomllib`, the validator falls back to
   `tomli`. If neither is installed and the config file exists, that is also an error rather
   than a silent fall-back to the defaults.

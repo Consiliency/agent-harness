@@ -105,7 +105,7 @@ A cap applied naively pushes people to under-specify, which fails just as expens
 useful discipline is *where* the length lives: long frozen contracts belong in artifacts the
 plan references; the execution plan itself stays short and points at them. So the cap applies
 to the execution plan only, and it scales with the work: here the default is 2000 words plus
-500 per lane, configurable per repo or per phase in `.phase-loop/planning.toml`, and the plan
+500 per lane, configurable per repo or per phase in `.phase-loop-planning.toml`, and the plan
 validator warns above it (check (S) in `validate_plan_doc.py`). A flat cap would penalise a
 healthy seven-lane phase as hard as a bloated three-lane one. Referenced frozen artifacts carry
 no cap. When a plan

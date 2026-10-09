@@ -4,7 +4,8 @@ The plan-size rule used to contradict itself: the skills set a 3000-word budget 
 AGENTS.md and the convergence doc said there was no fixed cap. The owner chose a split:
 the execution plan is budgeted, the frozen artifacts it references are not. The budget
 scales with lane count (2000 + 500 per lane by default) and is configurable per repo and
-per phase in `.phase-loop/planning.toml`. Check (S) is the enforcer; WARN by default.
+per phase in the tracked repo-root `.phase-loop-planning.toml`. Check (S) is the enforcer;
+WARN by default.
 
 The negative control is `plans/phase-plan-v10-PANEL.md`, a post-rule plan at 15,241
 words against a 4-lane budget of 4,000. (S) must fire on it and stay silent on
@@ -13,12 +14,21 @@ words against a 4-lane budget of 4,000. (S) must fire on it and stay silent on
 
 from __future__ import annotations
 
+import hashlib
 import importlib.util
+import re
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+
+from .proofgate_content_tdd_adapter import (
+    PROOFGATE_GRANDFATHER_CUTOFF_OID,
+    PROOFGATE_GRANDFATHER_SERVER_DATE,
+    PROOFGATE_GRANDFATHER_SUCCESSOR_OID,
+    proofgate_grandfather_plan_bytes,
+)
 
 REPO = Path(__file__).resolve().parents[2]
 BUNDLE = REPO / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "skills_bundle"
@@ -86,9 +96,28 @@ def test_modes() -> None:
 
 
 def _write_config(tmp_path: Path, text: str) -> Path:
-    (tmp_path / ".phase-loop").mkdir()
-    (tmp_path / ".phase-loop" / "planning.toml").write_text(text, encoding="utf-8")
+    config = tmp_path / V.PLANNING_CONFIG
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text(text, encoding="utf-8")
     return tmp_path
+
+
+def test_planning_config_is_not_hidden_by_runtime_exclude(tmp_path: Path) -> None:
+    # The runtime excludes `.phase-loop/` from git, so a config there could never be
+    # committed or reviewed. The config must live where `git add` takes it.
+    from phase_loop_runtime.runtime_paths import ensure_phase_loop_excluded
+
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    ensure_phase_loop_excluded(tmp_path)
+    config = tmp_path / V.PLANNING_CONFIG
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text('[plan_budget]\nmode = "error"\n', encoding="utf-8")
+    git = lambda *a: subprocess.run(  # noqa: E731
+        ["git", "-C", str(tmp_path), *a], capture_output=True
+    ).returncode
+    assert git("check-ignore", "-q", str(V.PLANNING_CONFIG)) == 1
+    assert git("add", str(V.PLANNING_CONFIG)) == 0
+    assert V._resolve_plan_budget(tmp_path, "X", None)[0].mode == "error"
 
 
 def test_config_repo_default_and_phase_override(tmp_path: Path) -> None:
@@ -116,12 +145,82 @@ def test_flag_overrides_config(tmp_path: Path) -> None:
     "[plan_budget]\nbase_words = -1\n",           # negative
     "[plan_budget]\nbase_words = true\n",         # bool is not a word count
     "[plan_budget\n",                              # not TOML
+    "[planbudget]\nmode = \"error\"\n",           # typo'd top-level table
 ])
 def test_malformed_config_is_a_visible_error(tmp_path: Path, text: str) -> None:
     budget, findings = V._resolve_plan_budget(_write_config(tmp_path, text), "X", None)
     assert budget == V.PlanBudget()
     assert len(findings) == 1 and findings[0].startswith("(S) invalid")
     assert "WARN" not in findings[0]
+
+
+def test_malformed_phase_budget_cannot_silently_leave_check_off(tmp_path: Path) -> None:
+    config = _write_config(tmp_path, '[plan_budget]\nmode = "off"\n') / V.PLANNING_CONFIG
+    budget, findings = V._resolve_plan_budget(tmp_path, "X", None)
+    assert findings == [] and budget.mode == "off"
+
+    results = []
+    for phase_settings in (
+        '[plan_budget.phases.X.phases]\nmode = "error"\n',
+        '[plan_budget.phases.OTHER]\nbase_words = true\n',
+    ):
+        config.write_text(
+            '[plan_budget]\nmode = "off"\n' + phase_settings, encoding="utf-8"
+        )
+        results.append(V._resolve_plan_budget(tmp_path, "X", None))
+    for budget, findings in results:
+        assert findings and findings[0].startswith("(S) invalid"), results
+        assert budget == V.PlanBudget()
+        assert V._check_s_plan_word_budget("w " * 5000, 1, budget)
+
+
+@pytest.mark.parametrize("finding, warning", [
+    ("(S) invalid .phase-loop-planning.toml: plan_budget.WARN is not a known setting", False),
+    ("(S) execution plan is 9 words, over its 0-word budget (0 + 0 x 0 lanes, from "
+     "plan_budget.phases.WARNGATE). Move frozen detail into a referenced artifact.", False),
+    ("(S) WARN: execution plan is 9 words, over its 0-word budget.", True),
+    ("(P) INFO: goal-coverage not checked here — phase_loop_runtime is not importable.", True),
+])
+def test_severity_reads_only_the_finding_prefix(finding: str, warning: bool) -> None:
+    assert V._is_warning(finding) is warning
+
+
+def test_warn_in_configuration_text_does_not_demote_budget_errors(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / "specs").mkdir()
+    roadmap = (REPO / "specs/phase-plans-v10.md").read_bytes()
+    (tmp_path / "specs/phase-plans-v10.md").write_bytes(roadmap)
+    src = proofgate_grandfather_plan_bytes().replace("phase: PROOFGATE", "phase: WARNINGS")
+    src = re.sub(
+        r"(?m)^roadmap_sha256:.*$",
+        "roadmap_sha256: " + hashlib.sha256(roadmap).hexdigest(), src,
+    )
+    plan = tmp_path / "phase-plan-v10-WARNINGS.md"
+    plan.write_text(src, encoding="utf-8")
+    command = [
+        sys.executable, str(PLAN_VALIDATOR), str(plan),
+        "--grammar-cutoff-commit", PROOFGATE_GRANDFATHER_CUTOFF_OID,
+        "--grammar-successor-commit", PROOFGATE_GRANDFATHER_SUCCESSOR_OID,
+        "--server-attested-pre-grammar-date", PROOFGATE_GRANDFATHER_SERVER_DATE,
+    ]
+    baseline = subprocess.run(command, capture_output=True, text=True)
+    assert baseline.returncode == 0, baseline.stderr
+
+    config = tmp_path / V.PLANNING_CONFIG
+    config.parent.mkdir(parents=True, exist_ok=True)
+    results = []
+    for config_text in (
+        '[plan_budget]\nWARN = 1\n',
+        '[plan_budget.phases.WARNINGS]\nmode = "error"\n'
+        'base_words = 0\nper_lane_words = 0\n',
+        '[plan_budget]\nmode = "error"\nbase_words = 0\nper_lane_words = 0\n',
+    ):
+        config.write_text(config_text, encoding="utf-8")
+        results.append(subprocess.run(command, capture_output=True, text=True))
+    assert all("(S)" in checked.stderr for checked in results)
+    assert [checked.returncode for checked in results] == [1, 1, 1], "\n".join(
+        checked.stdout + checked.stderr for checked in results
+    )
 
 
 def test_cli_end_to_end_flag_and_exit_code(tmp_path: Path) -> None:
@@ -149,3 +248,41 @@ def test_cli_reads_phase_override_from_repo_config(tmp_path: Path) -> None:
     )
     assert "Traceback" not in proc.stderr, proc.stderr[-2000:]
     assert "(S)" not in proc.stderr
+
+
+def test_cli_lane_scaling_is_wired_through_main(tmp_path: Path) -> None:
+    # HARDEN is over a flat 2000 but under its 7-lane budget, so (S) stays silent only if
+    # main() passes the real lane count. A bare tmp repo keeps any local root config out.
+    # Assert on (S) lines only: the bare copy exits 1 on (FM) roadmap resolution.
+    src = _plan("phase-plan-v10-HARDEN.md")
+    assert len(V._plan_body(src).split()) > V.PLAN_BUDGET_BASE_WORDS
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    plan = tmp_path / "plans" / "phase-plan-v10-HARDEN.md"
+    plan.parent.mkdir()
+    plan.write_text(src, encoding="utf-8")
+    proc = subprocess.run(
+        [sys.executable, str(PLAN_VALIDATOR), str(plan)], capture_output=True, text=True
+    )
+    assert "Traceback" not in proc.stderr, proc.stderr[-2000:]
+    assert "(S)" not in proc.stderr, proc.stderr[-2000:]
+
+
+def test_plan_budget_docs_name_the_tracked_config() -> None:
+    roots = [REPO / "skills-src", REPO / "phase-loop-skills", BUNDLE, REPO / "docs"]
+    if not all(root.is_dir() for root in roots):
+        pytest.skip("source tree absent (from-wheel layout)")
+    offenders = []
+    for root in roots:
+        for path in sorted(root.rglob("*")):
+            if not path.is_file():
+                continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except (UnicodeDecodeError, OSError):
+                continue
+            if "planning.toml" not in text:
+                continue
+            if (".phase-loop-planning.toml" not in text
+                    or ".phase-loop/planning.toml" in text or "phases.CONFORM" in text):
+                offenders.append(str(path.relative_to(REPO)))
+    assert offenders == []
