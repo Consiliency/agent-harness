@@ -79,7 +79,7 @@ from .agy_canary_evidence import (
 from .claude_agent_view import ClaudeAgentViewAdapter
 from . import gemini_heartbeat
 from . import credential_redaction as _credential_redaction
-from .launcher import GROK_REVIEW_READONLY_TOOLS
+from .launcher import GROK_REVIEW_READONLY_TOOLS, _extract_claude_stream_json_text
 from .profiles import CLAUDE_IMPLEMENTER_MODEL  # noqa: F401 - public compatibility export
 from .advisor_board import backing as _advisor_board_backing
 from .advisor_board import matrix as _advisor_board_matrix
@@ -1628,6 +1628,28 @@ _PROCESS_GROUP_KILL_GRACE_S = 5.0
 _PROCESS_GROUP_POLL_S = 0.05
 _CLAUDE_CODE_MIN_VERSION = (2, 1, 197)
 _CLAUDE_CODE_MIN_VERSION_TEXT = "2.1.197"
+# The headless print route (Stage 1b of the graduated Claude route): `claude -p
+# --output-format stream-json` is the default for non-jailed Claude panel and president
+# seats, and the PTY TUI adapter is the explicit fallback (`tui`). Anthropic confirmed
+# (2026-10-07) that `claude -p` draws on the Claude subscription. The panel has its own
+# selector; `PHASE_LOOP_CLAUDE_ROUTE` belongs to the runner. An unknown value fails
+# closed, never silently falls back.
+_PANEL_CLAUDE_ROUTE_ENV = "PHASE_LOOP_PANEL_CLAUDE_ROUTE"
+_PANEL_CLAUDE_ROUTE_PRINT = "print"
+_PANEL_CLAUDE_ROUTE_TUI = "tui"
+_PANEL_CLAUDE_ROUTE_INVALID = "panel_claude_route_invalid"
+# `--permission-prompts none` first shipped in 2.1.259; the TUI keeps its own minimum.
+_CLAUDE_PRINT_MIN_VERSION = (2, 1, 259)
+_CLAUDE_PRINT_MIN_VERSION_TEXT = "2.1.259"
+# The print route's in-band subscription guard. `system/init.apiKeySource` is "none" on
+# subscription OAuth; anything else means a key is billing the run. These retry
+# categories mean the credential itself stopped being a working subscription.
+_CLAUDE_PRINT_SUBSCRIPTION_UNPROVEN = "claude_print_subscription_unproven"
+_CLAUDE_PRINT_AUTH_DRIFT = "claude_print_auth_drift"
+_CLAUDE_PRINT_STALLED = "claude_print_stalled"
+_CLAUDE_PRINT_AUTH_DRIFT_ERRORS = frozenset(
+    {"authentication_failed", "billing_error", "oauth_org_not_allowed"}
+)
 _CLAUDE_AGENT_NAME = "advisor-panel-claude"
 _CLAUDE_LAUNCH_TIMEOUT_S = 120
 _CLAUDE_POLL_INTERVAL_S = 2.0
@@ -2202,7 +2224,8 @@ def _finalize_research_result(
 _PROVIDER_REFUSAL_KINDS = frozenset({"classifier_refusal"})
 CLAUDE_TUI_TYPED_REFUSAL_SUPPORTED = False
 _TYPED_UNAVAILABLE_DETAILS = frozenset(
-    {"subscription_auth_unproven", "tui_adapter_required", "tui_backing_required", "under_claude_code"}
+    {"subscription_auth_unproven", "tui_adapter_required", "tui_backing_required", "under_claude_code",
+     "claude_print_subscription_unproven", "claude_print_auth_drift", "panel_claude_route_invalid"}
 )
 
 
@@ -2838,6 +2861,9 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "claude_version_probe_timeout", "claude_version_probe_failed", "claude_version_unparseable",
     "subscription_auth_unproven", "tui_adapter_required", "tui_backing_required",
     "under_claude_code", "native_adapter_required", "native_fill", "unavailable",
+    # the headless print route (Stage 1b)
+    "claude_print_result", "claude_print_subscription_unproven", "claude_print_auth_drift",
+    "claude_print_stalled", "panel_claude_route_invalid",
     # route / authorization refusals
     "missing HARDEN review authorization", "missing or forged HARDEN review authorization",
     "harden_advisory_execution_refused", "harden_review_capture_route_refused",
@@ -6382,7 +6408,9 @@ def _record_broker_provider_evidence(
         evidence.update(transport_metadata)
 
 
-def _render_leg_prompt(artifact: str, review_dir: Path, mode: str = "review") -> str:
+def _render_leg_prompt(
+    artifact: str, review_dir: Path, mode: str = "review", *, read_only: bool = False,
+) -> str:
     """Prompt for a leg that reads its inputs from files rather than inline bytes.
 
     When a sandbox is staged this names it, and names the capability HONESTLY. The TUI
@@ -6402,6 +6430,14 @@ def _render_leg_prompt(artifact: str, review_dir: Path, mode: str = "review") ->
             f"\nA disposable copy of the code under review is at {sandbox}. It is a clone,"
             " not the live checkout, and is deleted when this review ends. You may READ and"
             " EDIT files there to check a claim. You cannot run commands in this seat, so do"
+            " not report results you could not have executed.\n"
+        )
+        if not read_only
+        # The Claude print route grants Read only, so the note says so.
+        else (
+            f"\nA disposable copy of the code under review is at {sandbox}. It is a clone,"
+            " not the live checkout, and is deleted when this review ends. You may READ files"
+            " there to check a claim. You cannot edit files or run commands in this seat, so do"
             " not report results you could not have executed.\n"
         )
     )
@@ -6442,9 +6478,30 @@ def _render_leg_prompt(artifact: str, review_dir: Path, mode: str = "review") ->
 
 
 def _render_claude_tui_prompt(
-    artifact: str, review_dir: Path, output_file: Path, mode: str = "review"
+    artifact: str, review_dir: Path, output_file: Path, mode: str = "review",
+    *, route: str = _PANEL_CLAUDE_ROUTE_TUI,
 ) -> str:
     label = "advice" if mode == "advisory" else "review"
+    if route == _PANEL_CLAUDE_ROUTE_PRINT:
+        # The print route reads the answer from the stream's `result` event, so there is no
+        # file handoff; the terminal line stays (IF-0-PNLCLAUDE-2).
+        closing = (
+            (
+                f"Reply with your complete final {label}. It must end with exactly one terminal "
+                "verdict line: AGREE, PARTIALLY AGREE, or DISAGREE."
+            )
+            if mode != "advisory"
+            else (
+                "Reply with your full advice in prose (tradeoffs, risks, a clear "
+                "recommendation) — NO AGREE/DISAGREE verdict is required — and end with one "
+                "final line `RECOMMENDATION: <your recommendation in one line>`."
+            )
+        )
+        return (
+            _render_leg_prompt(artifact, review_dir, mode, read_only=True)
+            + "\n\n"
+            + closing
+        )
     closing = (
         (
             "The file must contain only your review text and must end with exactly one terminal "
@@ -6488,28 +6545,7 @@ def _claude_tui_command(
     research_seat: ResearchSeatConfig | None = None,
     *, env: Mapping[str, str] | None = None,
 ) -> list[str]:
-    add_dirs = [review_dir]
-    # When a sandbox was staged, this leg is pointed at the CLONE instead of the live
-    # repo. It is the only leg that was ever granted `repo_dir`, so before the sandbox
-    # existed it reviewed the live checkout directly while the three brokered seats could
-    # read nothing -- the asymmetry the sandbox work removes. `allowed_tools` here already
-    # includes Write, which is safe against a disposable clone and was not against a live
-    # tree.
-    # A research seat may write only its isolated output workspace: it has network access
-    # AND pre-approved Write, and granting it a source directory combines the two. That
-    # guard predates the sandbox and still applies -- an earlier version of this change put
-    # the sandbox branch AHEAD of it, which silently handed research seats a directory the
-    # existing code deliberately withheld. Whether a disposable clone is safe enough for a
-    # research seat is a real question; it is not one to answer by accident.
-    sandbox = _sandbox_in(review_dir) if research_seat is None else None
-    if sandbox is not None:
-        # Sandboxed: this leg reviews the CLONE instead of the live repo. It was the only
-        # leg ever granted `repo_dir`, so before the sandbox it read the live checkout
-        # while the brokered seats read nothing. `allowed_tools` includes Write, which is
-        # safe against a disposable clone and was not against a live tree.
-        add_dirs.append(sandbox)
-    elif research_seat is None and repo_dir.resolve() != review_dir.resolve():
-        add_dirs.append(repo_dir)
+    add_dirs = _claude_direct_add_dirs(review_dir, repo_dir, research_seat)
     # Explicit seat effort wins over the panel default.
     effort_args = (
         ("--effort", "high")
@@ -6560,6 +6596,36 @@ def _claude_tui_command(
     return command
 
 
+def _claude_direct_add_dirs(
+    review_dir: Path, repo_dir: Path, research_seat: ResearchSeatConfig | None,
+) -> list[Path]:
+    """The directories a direct (non-brokered) Claude seat is granted: the staged review
+    dir, then the sandbox clone or the repo. Shared by the TUI and print builders."""
+    add_dirs = [review_dir]
+    # When a sandbox was staged, this leg is pointed at the CLONE instead of the live
+    # repo. It is the only leg that was ever granted `repo_dir`, so before the sandbox
+    # existed it reviewed the live checkout directly while the three brokered seats could
+    # read nothing -- the asymmetry the sandbox work removes. `allowed_tools` here already
+    # includes Write, which is safe against a disposable clone and was not against a live
+    # tree.
+    # A research seat may write only its isolated output workspace: it has network access
+    # AND pre-approved Write, and granting it a source directory combines the two. That
+    # guard predates the sandbox and still applies -- an earlier version of this change put
+    # the sandbox branch AHEAD of it, which silently handed research seats a directory the
+    # existing code deliberately withheld. Whether a disposable clone is safe enough for a
+    # research seat is a real question; it is not one to answer by accident.
+    sandbox = _sandbox_in(review_dir) if research_seat is None else None
+    if sandbox is not None:
+        # Sandboxed: this leg reviews the CLONE instead of the live repo. It was the only
+        # leg ever granted `repo_dir`, so before the sandbox it read the live checkout
+        # while the brokered seats read nothing. `allowed_tools` includes Write, which is
+        # safe against a disposable clone and was not against a live tree.
+        add_dirs.append(sandbox)
+    elif research_seat is None and repo_dir.resolve() != review_dir.resolve():
+        add_dirs.append(repo_dir)
+    return add_dirs
+
+
 _BROKER_CLAUDE_DIRECT_REQUEST = (
     "Please perform the review requested in the following framed material. "
 )
@@ -6603,6 +6669,64 @@ def _broker_claude_tui_command(
         "--tools", "", "--allowedTools", "", "--disallowedTools",
         "Bash,Read,Edit,Write,WebFetch,WebSearch,Task,NotebookEdit",
     ]
+
+
+def _panel_claude_route() -> str | None:
+    """The Claude seat route: ``print`` (the default) or ``tui``; ``None`` for any other
+    value, which the caller fails closed as ``panel_claude_route_invalid``."""
+    raw = os.environ.get(_PANEL_CLAUDE_ROUTE_ENV)
+    if raw is None or not raw.strip():
+        return _PANEL_CLAUDE_ROUTE_PRINT
+    value = raw.strip().lower()
+    if value in (_PANEL_CLAUDE_ROUTE_PRINT, _PANEL_CLAUDE_ROUTE_TUI):
+        return value
+    return None
+
+
+def _claude_print_seat_command(
+    model: str | None, effort: str | None, *, brokered: bool,
+    add_dirs: Sequence[Path] = (),
+) -> list[str]:
+    """Headless ``claude -p`` argv for a non-jailed Claude seat. The prompt goes on stdin.
+
+    The configuration surface is the TUI's (no settings sources, an empty MCP config and no
+    agents), under ``dontAsk`` with no permission prompts. A brokered seat has no tools at
+    all and keeps the TUI's brokered deny-list; a direct seat may only Read, because nothing
+    writes ``panel-claude.txt`` on this route. ``add_dirs`` is the direct seat's grant (the
+    staged review dir and the sandbox clone or repo), exactly as the TUI computes it.
+
+    ``--bare`` is never emitted: it turns off OAuth, so the seat could only run on a key.
+    """
+    default_model = (
+        HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["claude"] if brokered else DEFAULT_LEG_MODELS["claude"]
+    )
+    resolved_model = model or default_model
+    # The same effort rendering as the route's TUI builder.
+    effort_args = (
+        render_seat_invocation("claude", resolved_model, effort or "high").effort_args
+        if brokered
+        else ("--effort", "high") if effort is None
+        else render_seat_invocation("claude", resolved_model, effort).effort_args
+    )
+    command = [
+        "claude", "-p", "--verbose", "--output-format", "stream-json", "--input-format", "text",
+        "--model", resolved_model, *effort_args,
+        "--permission-mode", "dontAsk", "--permission-prompts", "none",
+        "--setting-sources", "", "--strict-mcp-config",
+        "--mcp-config", json.dumps({"mcpServers": {}}), "--agents", "{}",
+        "--no-chrome", "--disable-slash-commands",
+        "--session-id", str(uuid.uuid4()),
+    ]
+    if brokered:
+        command.extend((
+            "--tools", "", "--disallowedTools",
+            "Bash,Read,Edit,Write,WebFetch,WebSearch,Task,NotebookEdit",
+        ))
+    else:
+        for add_dir in add_dirs:
+            command.extend(("--add-dir", str(add_dir)))
+        command.extend(("--tools", "Read", "--allowedTools", "Read"))
+    return command
 
 
 def _subscription_env(base_env: Mapping[str, str] | None = None) -> dict[str, str]:
@@ -6706,7 +6830,12 @@ def _claude_code_version_tuple(text: str) -> tuple[int, int, int] | None:
     return tuple(int(part) for part in match.groups())
 
 
-def _claude_code_support_status(claude_bin: str = "claude") -> tuple[bool, str]:
+def _claude_code_support_status(
+    claude_bin: str = "claude", *, min_version: tuple[int, int, int] | None = None,
+) -> tuple[bool, str]:
+    """``min_version`` is the route's minimum: the TUI's by default, the print route's
+    (``_CLAUDE_PRINT_MIN_VERSION``) when it asks."""
+    minimum = _CLAUDE_CODE_MIN_VERSION if min_version is None else min_version
     try:
         proc = run_provider(
             [claude_bin, "--version"],
@@ -6728,7 +6857,7 @@ def _claude_code_support_status(claude_bin: str = "claude") -> tuple[bool, str]:
     version = _claude_code_version_tuple(output)
     if version is None:
         return False, "claude_version_unparseable"
-    if version < _CLAUDE_CODE_MIN_VERSION:
+    if version < minimum:
         return (
             False,
             f"claude_code_version_below_minimum:{'.'.join(str(part) for part in version)}",
@@ -7930,6 +8059,7 @@ def _run_leg_with_liveness(
     gemini_profile: gemini_heartbeat.GeminiHeartbeatProfile | None = None,
     retain_caps: "Sequence[str]" = (),
     child_scratch: str | None = None,
+    stdout_guard: Callable[[bytes], bool] | None = None,
 ) -> "_LegRun":
     """Run a print-mode CLI leg, killing it on HEARTBEAT EXTINCTION, not a blind clock.
 
@@ -7946,6 +8076,10 @@ def _run_leg_with_liveness(
     stderr (fail-closed; a silent+idle print-mode leg has nothing to nudge). stdin is
     fed by a daemon writer thread so a large prompt can't deadlock against the child
     filling its own stdout/stderr pipe buffers.
+
+    ``stdout_guard`` (the Claude print route's in-band subscription guard) sees every
+    stdout chunk as it arrives; when it returns True the whole process group is
+    terminated at once and the run returns ``rc or 1``. The guard records its own reason.
     """
     if gemini_profile is not None and review_monitor is None:
         raise ValueError("gemini_heartbeat_monitor_required")
@@ -8087,6 +8221,11 @@ def _run_leg_with_liveness(
                     fd_map[fd].extend(chunk)
                     last_heartbeat = time.monotonic()
                     last_output_progress = last_heartbeat
+                    if (stdout_guard is not None and fd_map[fd] is out_buf
+                            and stdout_guard(chunk)):
+                        _terminate_process_group(proc)
+                        out_s, err_s = _decode()
+                        return _LegRun(proc.returncode or 1, out_s, err_s)
                 else:
                     open_fds.discard(fd)  # EOF on this pipe
             # (3) secondary CPU heartbeat — reset only, never a kill trigger.
@@ -9602,6 +9741,266 @@ def _cleanup_capture_launches(
     _cleanup_owned_roots(roots)
 
 
+class _ClaudePrintStream:
+    """The print route's stdout reader: one stream-json event per line, read as it
+    arrives, with the in-band subscription guard.
+
+    The first ``system/init`` must report ``apiKeySource == "none"`` (subscription OAuth),
+    and no ``system/api_retry`` may carry an auth or billing category. Either breach is
+    recorded as a typed code and stops the run: ``feed`` returns True and the caller kills
+    the process group. Lines are assembled across chunk boundaries before parsing.
+    """
+
+    def __init__(self) -> None:
+        self._carry = bytearray()
+        self.events = 0
+        self.init_seen = False
+        self.api_key_source: str | None = None
+        self.result_text: str | None = None
+        self.violation: str | None = None
+
+    def feed(self, chunk: bytes) -> bool:
+        self._carry.extend(chunk)
+        last = self._carry.rfind(b"\n")
+        if last < 0:
+            return False
+        complete = bytes(self._carry[: last + 1])
+        del self._carry[: last + 1]
+        for raw in complete.splitlines():
+            self._event(raw)
+        return self.violation is not None
+
+    def finish(self) -> None:
+        if self._carry:
+            self._event(bytes(self._carry))
+            self._carry.clear()
+
+    def _event(self, raw: bytes) -> None:
+        if self.violation is not None:
+            return
+        try:
+            event = json.loads(raw.decode("utf-8", errors="replace"))
+        except (json.JSONDecodeError, ValueError):
+            return
+        if not isinstance(event, dict):
+            return
+        self.events += 1
+        kind, subtype = event.get("type"), event.get("subtype")
+        if kind == "system" and subtype == "init" and not self.init_seen:
+            self.init_seen = True
+            source = event.get("apiKeySource")
+            self.api_key_source = source if isinstance(source, str) else None
+            if source != "none":
+                self.violation = _CLAUDE_PRINT_SUBSCRIPTION_UNPROVEN
+        elif kind == "system" and subtype == "api_retry":
+            if event.get("error") in _CLAUDE_PRINT_AUTH_DRIFT_ERRORS:
+                self.violation = _CLAUDE_PRINT_AUTH_DRIFT
+        elif kind == "result":
+            text = event.get("result")
+            if isinstance(text, str):
+                self.result_text = text
+
+
+def _run_claude_print_session(
+    command: Sequence[str],
+    prompt: str,
+    *,
+    env: Mapping[str, str],
+    cwd: Path,
+    mode: str = "review",
+    timeout_s: int,
+    stall_s: float | None = None,
+    backstop_s: int | None = None,
+    quiescence_latch: _ProviderQuiescenceLatch | None = None,
+    review_monitor: _ReviewMonitor | None = None,
+    observed: dict[str, object] | None = None,
+) -> tuple[int, str, str, str]:
+    """Run a headless ``claude -p --output-format stream-json`` seat; the same
+    ``(rc, text, log, tail)`` shape as ``_run_claude_tui_session``.
+
+    It launches through the print-mode leg runner (``_run_leg_with_liveness``): the owned
+    seat profile, the filtered network namespace, the prompt fed on stdin, and a group kill
+    on heartbeat extinction. Every stream event is a heartbeat, so the TUI's spinner
+    problem (agent-harness#188) cannot arise. ``env`` is the caller's subscription env
+    (``scrub_subscription_env``). The text is the ``result`` event's, falling back to the
+    runner's stream-json extractor. ``observed`` receives ``api_key_source``.
+
+    ``mode`` is accepted for parity with the TUI session; completion is judged by the
+    caller's classifier on the returned text.
+    """
+    del mode
+    if backstop_s is None:
+        backstop_s = max(1, int(timeout_s), _MAX_LEG_TIMEOUT_S)
+    else:
+        backstop_s = max(1, int(backstop_s))
+    stall_s = _LEG_STALL_THRESHOLD_S if stall_s is None else max(0.01, float(stall_s))
+    stream = _ClaudePrintStream()
+    try:
+        run = _run_leg_with_liveness(
+            list(command), cwd=cwd, env=env, deadline_s=float(backstop_s),
+            stall_threshold_s=stall_s, input_text=prompt,
+            stdout_guard=stream.feed,
+            **({"quiescence_latch": quiescence_latch} if quiescence_latch is not None else {}),
+            **({"review_monitor": review_monitor} if review_monitor is not None else {}),
+        )
+    except subprocess.TimeoutExpired:
+        return 124, "", _HarnessCode(f"timeout after {backstop_s}s"), ""
+    stream.finish()
+    if observed is not None:
+        observed["api_key_source"] = stream.api_key_source
+    stderr = run.stderr or ""
+    tail = " ".join(_redact_seat_credentials(stderr[-2000:]).split())[-600:]
+    if stream.violation is not None:
+        return 1, "", _HarnessCode(stream.violation), tail
+    if stderr == "review_operation_cancelled":
+        return 1, "", _HarnessCode("review_operation_cancelled"), ""
+    if "[leg-liveness] stalled" in stderr:
+        return run.returncode or 1, "", _HarnessCode(_CLAUDE_PRINT_STALLED), tail
+    if not stream.init_seen:
+        # No proof of the auth source, whatever the run printed.
+        return run.returncode or 1, "", _HarnessCode(_CLAUDE_PRINT_SUBSCRIPTION_UNPROVEN), tail
+    text = stream.result_text
+    if text is None:
+        text = _extract_claude_stream_json_text(run.stdout or "")
+    return (
+        run.returncode,
+        _redact_seat_credentials(text.strip()),
+        _HarnessCode("claude_print_result") if run.returncode == 0 else "",
+        "" if run.returncode == 0 else tail,
+    )
+
+
+def _exec_claude_print_leg(
+    review_dir: Path,
+    out_dir: Path,
+    timeout_s: int,
+    artifact: str,
+    *,
+    repo_dir: Path | None,
+    mode: str,
+    model: str | None,
+    effort: str | None,
+    env: Mapping[str, str],
+    backstop_s: int | None,
+    quiescence_latch: _ProviderQuiescenceLatch | None,
+    broker_prompt: str | None,
+    broker_evidence: dict[str, object] | None,
+    review_monitor: _ReviewMonitor | None,
+    failure_detail_sink: list[_LegFailure] | None,
+) -> tuple[str, str]:
+    """The print route of ``_exec_claude_tui_leg``, entered after its deferral. ``env`` is
+    already the seat's subscription env. Returns the same ``(status, text)``."""
+    brokered = broker_prompt is not None
+    supported, support_detail = _claude_code_support_status(min_version=_CLAUDE_PRINT_MIN_VERSION)
+    if not supported:
+        return "UNAVAILABLE", support_detail
+    authed, auth_detail = _claude_subscription_auth_ok(env)
+    if not authed:
+        return "UNAVAILABLE", auth_detail
+
+    cwd = out_dir.resolve() if brokered else out_dir
+    if brokered:
+        prompt = broker_prompt
+        # The fixed task request precedes the framed material, as on the TUI.
+        transport = _BROKER_CLAUDE_DIRECT_REQUEST + prompt
+        command = _claude_print_seat_command(model, effort, brokered=True)
+    else:
+        prompt = transport = _render_claude_tui_prompt(
+            artifact, review_dir, out_dir / "panel-claude.txt", mode,
+            route=_PANEL_CLAUDE_ROUTE_PRINT,
+        )
+        command = _claude_print_seat_command(
+            model, effort, brokered=False,
+            add_dirs=_claude_direct_add_dirs(review_dir, repo_dir or Path.cwd(), None),
+        )
+    session_id = command[command.index("--session-id") + 1]
+    backstop = (
+        max(1, int(backstop_s))
+        if backstop_s is not None
+        else max(1, int(timeout_s), _MAX_LEG_TIMEOUT_S)
+    )
+    stall_s = _broker_claude_stall_threshold(prompt, backstop) if brokered else None
+    # Nothing on this route writes a transcript into the out dir; the exact path is still
+    # bound and checked afterwards, as on the TUI.
+    transcript_path = out_dir / f"claude-{session_id}.jsonl" if brokered else None
+    if transcript_path is not None and os.path.lexists(transcript_path):
+        return "UNAVAILABLE", "brokered_claude_session_collision"
+    if brokered:
+        _record_broker_provider_evidence(
+            broker_evidence, harness="claude",
+            model=model or HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["claude"],
+            command=command, prompt=prompt, cwd=cwd, env=env,
+            prompt_transport="stdin", stdin_prompt=True,
+            no_tool_controls=("dont-ask", "permission-prompts-none", "no-chrome", "disable-slash-commands", "strict-mcp-config", "empty-mcp", "empty-agents", "tools-empty"),
+            transport_payload=transport,
+            transport_metadata={
+                "provider_task_request_delivery": "plain_text_before_stdin_prompt",
+                "provider_task_request_sha256": sha256(_BROKER_CLAUDE_DIRECT_REQUEST.encode()).hexdigest(),
+                "provider_task_request_bytes": len(_BROKER_CLAUDE_DIRECT_REQUEST.encode()),
+            },
+            redacted_argv_values={session_id: "<CLAUDE_SESSION_ID>"},
+        )
+        if broker_evidence is not None:
+            broker_evidence.update({
+                "claude_route": _PANEL_CLAUDE_ROUTE_PRINT,
+                "claude_session_id_sha256": sha256(session_id.encode()).hexdigest(),
+                "claude_session_resume_forbidden": True,
+                "claude_transcript_exact_path_sha256": sha256(
+                    str(transcript_path).encode()
+                ).hexdigest(),
+                "claude_transcript_preexisting": False,
+                "provider_liveness_profile": _BROKER_CLAUDE_STALL_PROFILE,
+                "provider_liveness_stall_threshold_s": stall_s,
+                "provider_liveness_prompt_bytes": len(prompt.encode("utf-8", errors="strict")),
+            })
+    observed: dict[str, object] = {}
+    cleanup_ok = True
+    try:
+        rc, review_text, log_text, tail = _run_claude_print_session(
+            command, transport, env=env, cwd=cwd, mode=mode, timeout_s=timeout_s,
+            stall_s=stall_s, backstop_s=backstop, quiescence_latch=quiescence_latch,
+            review_monitor=review_monitor, observed=observed,
+        )
+    finally:
+        if transcript_path is not None:
+            cleanup_ok = _cleanup_broker_claude_transcript(transcript_path, broker_evidence)
+    if broker_evidence is not None:
+        broker_evidence["claude_api_key_source"] = observed.get("api_key_source")
+    if not cleanup_ok:
+        return "UNAVAILABLE", "brokered_claude_transcript_cleanup_failed"
+    if quiescence_latch is not None:
+        quiescence_latch.raise_if_set()
+    # The in-band guard's codes are reported like the pre-launch auth gate's.
+    if log_text in (_CLAUDE_PRINT_SUBSCRIPTION_UNPROVEN, _CLAUDE_PRINT_AUTH_DRIFT):
+        logging.getLogger(__name__).warning(
+            "advisor-panel claude print leg UNAVAILABLE [%s]", log_text
+        )
+        return "UNAVAILABLE", log_text
+    status = _classify_leg(rc, review_text, log_text, mode)
+    if log_text == _CLAUDE_PRINT_STALLED and status != "OK":
+        # A liveness failure, like `claude_tui_stalled`: no review happened, so the text is
+        # the real review content only (empty => governed WARN, never a false block).
+        status = "DEGRADED"
+        text = review_text
+    else:
+        text = review_text or log_text
+    if status != "OK":
+        logging.getLogger(__name__).warning(
+            "advisor-panel claude print leg %s [%s]", status, log_text
+        )
+    if status in ("ERROR", "EMPTY"):
+        if _leg_failure_kind(rc, review_text, tail) in ("auth", "usage_limit", "env_failure"):
+            status = "DEGRADED"
+    seat_paths = (review_dir, out_dir, cwd, *((repo_dir,) if repo_dir else ()))
+    if failure_detail_sink is not None and status != "OK":
+        failure = _claude_leg_failure(status, rc, review_text, log_text, tail, seat_paths)
+        if failure is not None and failure.unknown and log_text:
+            failure = replace(failure, prefix=log_text)
+        if failure is not None:
+            failure_detail_sink.append(failure)
+    return status, text
+
+
 def _exec_claude_tui_leg(
     review_dir: Path,
     out_dir: Path,
@@ -9623,12 +10022,15 @@ def _exec_claude_tui_leg(
     review_monitor: _ReviewMonitor | None = None,
     failure_detail_sink: list[_LegFailure] | None = None,
 ) -> tuple[str, str]:
-    """Run the Claude panel leg through the local Claude Code TUI.
+    """Run the Claude panel leg through local Claude Code on the subscription.
 
-    This intentionally drives the interactive TUI, not `claude -p` and not Agent
-    View. Agent View is subscription-safe but currently prone to background PTY
-    reaping on this host; the TUI route preserves Claude Max subscription billing
-    and lets Claude write a deterministic scratch output file.
+    The default route (Stage 1b) is headless ``claude -p --output-format stream-json``
+    (``_exec_claude_print_leg``), which Anthropic confirmed draws on the subscription and
+    which carries an in-band guard that it does. ``PHASE_LOOP_PANEL_CLAUDE_ROUTE=tui``
+    selects the interactive TUI below, as do capture and research seats: it lets Claude
+    write a deterministic scratch output file. Agent View stays unused; it is prone to
+    background PTY reaping on this host. The function keeps its name for its callers;
+    Stage 2 introduces the transport seam.
 
     ABDHOME: ``effort is None`` uses ``--effort high`` and ``env is None`` keeps
     ``_subscription_env()`` (scrub
@@ -9657,6 +10059,21 @@ def _exec_claude_tui_leg(
             "advisor-panel claude leg deferred to the driving session [under_claude_code]"
         )
         return "UNAVAILABLE", "under_claude_code"
+
+    # Stage 1b: headless `claude -p` is the default route. The sealed capture namespace and
+    # research seats (MCP tools, a write workspace) have no print transport yet and stay on
+    # the TUI; `PHASE_LOOP_PANEL_CLAUDE_ROUTE=tui` keeps every seat on it.
+    route = _panel_claude_route()
+    if route is None:
+        return "UNAVAILABLE", _PANEL_CLAUDE_ROUTE_INVALID
+    if route == _PANEL_CLAUDE_ROUTE_PRINT and agy_capture is None and research_seat is None:
+        return _exec_claude_print_leg(
+            review_dir, out_dir, timeout_s, artifact, repo_dir=repo_dir, mode=mode,
+            model=model, effort=effort, env=env, backstop_s=backstop_s,
+            quiescence_latch=quiescence_latch, broker_prompt=broker_prompt,
+            broker_evidence=broker_evidence, review_monitor=review_monitor,
+            failure_detail_sink=failure_detail_sink,
+        )
 
     output_file = out_dir / "panel-claude.txt"
     tui_cwd = out_dir.resolve() if brokered else out_dir
@@ -11224,6 +11641,7 @@ def _has_injected_review_execution_seam(
         or _exec_claude_tui_leg is not _PRODUCTION_EXEC_CLAUDE_TUI_LEG
         or _run_leg_with_liveness is not _PRODUCTION_RUN_LEG_WITH_LIVENESS
         or _run_claude_tui_session is not _PRODUCTION_RUN_CLAUDE_TUI_SESSION
+        or _run_claude_print_session is not _PRODUCTION_RUN_CLAUDE_PRINT_SESSION
     ):
         return True
     return False
@@ -12083,6 +12501,7 @@ _PRODUCTION_EXEC_LEG = _exec_leg
 _PRODUCTION_EXEC_CLAUDE_TUI_LEG = _exec_claude_tui_leg
 _PRODUCTION_RUN_LEG_WITH_LIVENESS = _run_leg_with_liveness
 _PRODUCTION_RUN_CLAUDE_TUI_SESSION = _run_claude_tui_session
+_PRODUCTION_RUN_CLAUDE_PRINT_SESSION = _run_claude_print_session
 # The president's control-seam predicate (agent-harness#1001) compares against THIS
 # module-level capture, so it cannot depend on when ``president_adapter`` was imported.
 _PRODUCTION_LAUNCH_PROVIDER = launch_provider
