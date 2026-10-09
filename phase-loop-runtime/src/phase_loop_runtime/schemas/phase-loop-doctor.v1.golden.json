@@ -92,5 +92,12 @@
     "max_commits_ahead": 42,
     "threshold": 20,
     "verdict": "warn"
-  }
+  },
+  "seat_jail_prerequisites": [
+    {
+      "name": "pytest",
+      "status": "present",
+      "unlocks": "seat-jail qualification (jailed Claude review seats)"
+    }
+  ]
 }
