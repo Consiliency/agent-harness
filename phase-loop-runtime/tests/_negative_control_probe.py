@@ -14,6 +14,7 @@ import importlib
 import importlib.machinery
 import json
 import os
+import re
 import sys
 import typing
 from pathlib import Path
@@ -52,12 +53,21 @@ def _stub(original, script: Path | None):
     return disabled
 
 
+_FINDING_PREFIX = re.compile(r"^(\([A-Z]+\))")
+
+
 def _demoted(original, script: Path):
-    # The plan validator refuses on a finding unless it contains "WARN"; this keeps every
-    # finding but makes each one a warning, so main() no longer refuses on this check.
+    # The plan validator treats a finding as a warning only when it starts with
+    # `(X) WARN` or `(X) INFO` (`_is_warning`, agent-harness#1323). Prefix the whole
+    # original finding so text-only controls cannot go red merely because its marker moved.
     def demoted(*args, **kwargs):
         _record({"killed_call": True, "via_main": _main_on_stack(script)})
-        return [f"WARN: {finding}" for finding in original(*args, **kwargs)]
+        findings = []
+        for finding in original(*args, **kwargs):
+            match = _FINDING_PREFIX.match(finding)
+            marker = match.group(1) if match else "(X)"
+            findings.append(f"{marker} WARN: {finding}")
+        return findings
 
     return demoted
 
