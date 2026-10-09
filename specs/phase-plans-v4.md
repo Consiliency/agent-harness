@@ -143,7 +143,7 @@ No Claude native leg in this phase; no skill packaging; no dotfiles redaction.
 ### Phase 3 — Repo-Grounded Claude Leg And Whole-Feature Review (PNLCLAUDE)
 
 **Objective**
-Add a real Claude review leg that verifies repository state and reviews the whole feature, without falling back to unsupported or unauthenticated `claude -p` behavior.
+Add a real Claude review leg that verifies repository state and reviews the whole feature, without falling back to unsupported or unauthenticated `claude -p` behavior. (Supersession note 2026-10-08: unauthenticated or API-key `claude -p` stays forbidden; subscription-proven `claude -p --output-format stream-json` is now the default Claude panel route per the EC-REVIEWTRUTH-16 amendment note (2026-10-08) in `specs/phase-plans-v10.md`.)
 
 **Exit criteria**
 - [ ] Claude leg routes Sonnet-family requests to Claude Sonnet 5.
@@ -152,7 +152,7 @@ Add a real Claude review leg that verifies repository state and reviews the whol
 - [ ] Claude writes its review to a deterministic scratch output file for durable ingestion.
 - [ ] Tests prove author/reviewer boundary remains visible and the panel can degrade when Claude is unavailable.
 - [ ] Review prompts request repo-grounded, whole-feature, integration-oriented findings.
-- [ ] No implementation requires API-key auth or unsupported headless `claude -p` behavior.
+- [ ] No implementation requires API-key auth or unsupported headless `claude -p` behavior. (Supersession note 2026-10-08: the API-key ban stands; headless `claude -p` on in-band-proven subscription OAuth is supported per the EC-REVIEWTRUTH-16 amendment note (2026-10-08) in `specs/phase-plans-v10.md`.)
 
 **Scope notes**
 Decompose into three lanes: native Claude availability/execution lane, Sonnet 5/version-gate lane, and whole-feature review prompt/evidence lane. These lanes share only the final panel result status mapping.

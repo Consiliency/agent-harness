@@ -12,7 +12,7 @@ roadmap_sha256: 906d5d558f4b713abeda01b9c1e443ab09bf9d7203cee49777d7a92fde2f4261
 Phase `PNLCLAUDE` follows the completed `PNLFEED` staged-file prompt contract. Codex and Gemini panel legs already receive compact prompts that point to staged review material; this phase replaces the old non-executing Claude state with a local Claude Code TUI path guarded by the Sonnet 5 Claude Code version requirement and keeps unsupported or unauthenticated Claude states fail-closed.
 
 ## Interface Freeze Gates
-- [ ] IF-0-PNLCLAUDE-1 — Claude panel execution contract: Claude leg uses a local Claude Code TUI session with `claude-sonnet-5`, never API-key auth or `claude -p`, writes the review to canonical scratch file `panel-claude.txt`, and unsupported Claude Code versions classify as `UNAVAILABLE` or `DEGRADED`.
+- [ ] IF-0-PNLCLAUDE-1 — Claude panel execution contract: Claude leg uses a local Claude Code TUI session with `claude-sonnet-5`, never API-key auth or `claude -p`, writes the review to canonical scratch file `panel-claude.txt`, and unsupported Claude Code versions classify as `UNAVAILABLE` or `DEGRADED`. (Amendment 2026-10-08, per the EC-REVIEWTRUTH-16 amendment note (2026-10-08) in `specs/phase-plans-v10.md`: "never API-key auth" stays; "never `claude -p`" becomes "`claude -p` only on in-band-proven subscription OAuth (`claude auth status` preflight, `system/init.apiKeySource == "none"`), never `--bare`"; `panel-claude.txt` is the TUI route's output channel, while the print route returns the review in the stream-json `result` event; the unsupported-version `UNAVAILABLE`/`DEGRADED` rule stays. The TUI remains an opt-in fallback via `PHASE_LOOP_PANEL_CLAUDE_ROUTE=tui`. IF-0-PNLCLAUDE-2 is unchanged and binds both routes.)
 - [ ] IF-0-PNLCLAUDE-2 — Whole-feature panel prompt contract: panel prompts ask for repo-grounded, integration-oriented review of the whole feature and still require a terminal `AGREE`, `PARTIALLY AGREE`, or `DISAGREE` verdict.
 
 ## Lane Index & Dependencies
@@ -35,7 +35,7 @@ SL-1 — Claude contract note and phase verification reducer
 - **Interfaces consumed**: `(pre-existing)` `IF-0-PNLFEED-3`, `(pre-existing)` `CLAUDE_IMPLEMENTER_MODEL`, `(pre-existing)` `_render_leg_prompt`, `(pre-existing)` `_classify_leg`, `(pre-existing)` `terminal_verdict`
 - **Parallel-safe**: no
 - **Tasks**:
-  - test: Add subprocess-stubbed tests proving Claude uses `claude-sonnet-5` through the Claude Code TUI, strips API-key env vars, writes `panel-claude.txt`, and never invokes `claude -p`.
+  - test: Add subprocess-stubbed tests proving Claude uses `claude-sonnet-5` through the Claude Code TUI, strips API-key env vars, writes `panel-claude.txt`, and never invokes `claude -p`. (Superseded 2026-10-08 per the EC-REVIEWTRUTH-16 amendment note (2026-10-08) in `specs/phase-plans-v10.md`: tests now pin the subscription-proven print route as default and the TUI route as opt-in.)
   - test: Add version-gate tests proving missing, unparsable, or below-`2.1.197` Claude Code returns `UNAVAILABLE` or `DEGRADED` without silently selecting older Sonnet behavior.
   - test: Add TUI lifecycle tests proving canonical output files classify as `OK`, missing or nonconforming output fails closed, and timeouts include configured timeout metadata without leaking artifact text.
   - impl: Add the Claude Code version parser/support gate and TUI command/polling path in `panel_invoker.py`.
@@ -66,7 +66,7 @@ SL-1 — Claude contract note and phase verification reducer
 
 ## Execution Notes
 
-- Do not use `claude -p`; the supported local Claude path is the Claude Code TUI driven through a PTY.
+- Do not use `claude -p`; the supported local Claude path is the Claude Code TUI driven through a PTY. (Superseded 2026-10-08 per the EC-REVIEWTRUTH-16 amendment note (2026-10-08) in `specs/phase-plans-v10.md`: subscription-proven `claude -p` is the default route; the PTY TUI is the opt-in fallback.)
 - Do not introduce Anthropic API-key execution. Child environments must continue stripping provider API key variables.
 - Claude Code versions below `2.1.197`, missing `claude`, or malformed version output should degrade the Claude leg and preserve the Codex/Gemini panel result.
 
