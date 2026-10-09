@@ -277,6 +277,11 @@ For a small one-off change, use `…-plan-detailed`. The runtime orchestrates th
 selected executor; that executor and review providers make external calls.
 Governed-pipeline integration is optional.
 
+Before a first run in a repo you care about, read
+[branch-and-publication-flow.md](./branch-and-publication-flow.md): it states who
+commits, pushes and opens pull requests, which closeout modes stop that, and one open
+gap in the interactive path ([agent-harness#1392](https://github.com/Consiliency/agent-harness/issues/1392)).
+
 ## Update / pin / uninstall
 
 - **Update:** `git pull` in your clone **first**, then re-run the installer. Re-running a
