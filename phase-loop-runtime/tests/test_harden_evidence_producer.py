@@ -322,12 +322,14 @@ def _restarted_producer_module(case: str) -> Any:
     return _producer_module(case)
 
 
-def _producer_command(*args: str) -> subprocess.CompletedProcess[str]:
+def _producer_command(
+    *args: str, manifest_swap: Path | None = None
+) -> subprocess.CompletedProcess[str]:
     # Keep CI substitution in the test process, not in a production CLI flag or
     # environment switch. Only the canonical provider query is replaced; the
     # producer, verifier and all of their validation execute unchanged.
     bootstrap = """
-import os, pathlib, runpy, subprocess, sys
+import importlib.util, inspect, os, pathlib, runpy, subprocess, sys
 producer, *arguments = sys.argv[1:]
 if '--evidence-root' in arguments:
     root = pathlib.Path(arguments[arguments.index('--evidence-root') + 1]).parent
@@ -351,9 +353,26 @@ if '--evidence-root' in arguments:
                 command = [str(fake_gh), *command[1:]]
             super().__init__(command, *positional, **keywords)
     subprocess.Popen = HermeticCIProcess
+manifest_swap = os.environ.pop('HARDEN_TEST_MANIFEST_SWAP_PATH', None)
+if manifest_swap:
+    spec = importlib.util.spec_from_file_location('harden_evidence_producer', producer)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    original_input_manifest = module._input_manifest
+    def swap_after_stage_parse(path, source):
+        parsed, parsed_bytes = original_input_manifest(path, source)
+        if any(frame.function == '_prepare_stage' for frame in inspect.stack()):
+            path.write_bytes(pathlib.Path(manifest_swap).read_bytes())
+        return parsed, parsed_bytes
+    module._input_manifest = swap_after_stage_parse
+    raise SystemExit(module.main(arguments))
 sys.argv = [producer, *arguments]
 runpy.run_path(producer, run_name='__main__')
 """
+    env = None
+    if manifest_swap is not None:
+        env = dict(os.environ)
+        env["HARDEN_TEST_MANIFEST_SWAP_PATH"] = str(manifest_swap)
     return subprocess.run(
         [sys.executable, "-c", bootstrap, str(_repo_root() / PRODUCER_PATH), *args],
         cwd=_repo_root(),
@@ -361,6 +380,7 @@ runpy.run_path(producer, run_name='__main__')
         text=True,
         timeout=30,
         check=False,
+        env=env,
     )
 
 
@@ -1467,7 +1487,9 @@ def _persist_manifest(context: dict[str, Any]) -> None:
     context["manifest_path"].write_bytes(_canonical_bytes(context["manifest"]))
 
 
-def _prepare_command(context: dict[str, Any]) -> subprocess.CompletedProcess[str]:
+def _prepare_command(
+    context: dict[str, Any], *, manifest_swap: Path | None = None
+) -> subprocess.CompletedProcess[str]:
     ledger = context["repo"] / ".phase-loop/events.jsonl"
     protected = (
         context["manifest_path"],
@@ -1482,27 +1504,33 @@ def _prepare_command(context: dict[str, Any]) -> subprocess.CompletedProcess[str
         for name, record in before[1].items()
         if record[0] == "file"
     }
-    completed = _producer_command(
-        "prepare",
-        "--inputs",
-        str(context["manifest_path"]),
-        "--source-root",
-        str(context["source_root"]),
-        "--evidence-root",
-        str(context["evidence_root"]),
-        "--repo",
-        str(context["repo"]),
-        "--output",
-        str(context["output"]),
-        "--completion-request",
-        str(context["request"]),
-        "--reuse-registry",
-        str(context["registry"]),
-        "--expected-coordinator-session-sha256",
-        context["sessions"]["coordinator"],
-        "--expected-author-session-sha256",
-        context["sessions"]["author"],
-    )
+    manifest_before = context["manifest_path"].read_bytes()
+    try:
+        completed = _producer_command(
+            "prepare",
+            "--inputs",
+            str(context["manifest_path"]),
+            "--source-root",
+            str(context["source_root"]),
+            "--evidence-root",
+            str(context["evidence_root"]),
+            "--repo",
+            str(context["repo"]),
+            "--output",
+            str(context["output"]),
+            "--completion-request",
+            str(context["request"]),
+            "--reuse-registry",
+            str(context["registry"]),
+            "--expected-coordinator-session-sha256",
+            context["sessions"]["coordinator"],
+            "--expected-author-session-sha256",
+            context["sessions"]["author"],
+            manifest_swap=manifest_swap,
+        )
+    finally:
+        if manifest_swap is not None:
+            context["manifest_path"].write_bytes(manifest_before)
     if [_path_snapshot(path) for path in protected] != before:
         pytest.fail(
             "prepare modified retained input or canonical evidence", pytrace=False
@@ -4933,23 +4961,19 @@ def test_harden_reader_rejects_ctime_change_when_other_stats_match(
 def test_harden_completion_request_binds_parsed_manifest_bytes(
     tmp_path: Path,
 ) -> None:
-    producer = _restarted_producer_module("seal")
-    source = tmp_path / "source"
-    source.mkdir()
-    retained = _write_ref(source, "retained.json", b"{}")
-    manifest = {
-        "schema": INPUT_SCHEMA,
-        "artifacts": {name: retained for name in producer.RAW_ARTIFACTS},
-        "role_attestations": {name: retained for name in producer.ROLES},
-    }
-    manifest_bytes = _canonical_bytes(manifest)
-    manifest_path = tmp_path / "inputs.json"
-    manifest_path.write_bytes(manifest_bytes)
+    _restarted_producer_module("seal")
+    context = _restorable_raw_fixture(tmp_path / "manifest-binding")()
+    parsed_bytes = context["manifest_path"].read_bytes()
+    replacement = tmp_path / "replacement-manifest"
+    replacement_bytes = b"replacement after parse\n"
+    replacement.write_bytes(replacement_bytes)
 
-    parsed, parsed_bytes = producer._input_manifest(manifest_path, source)
+    completed = _prepare_command(context, manifest_swap=replacement)
 
-    assert parsed == manifest
-    assert parsed_bytes == manifest_bytes
+    assert completed.returncode == 0, completed.stderr
+    request = _strict_json(context["request"])
+    assert request["input_manifest_sha256"] == _sha256(parsed_bytes)
+    assert request["input_manifest_sha256"] != _sha256(replacement_bytes)
 
 
 @pytest.mark.parametrize(
