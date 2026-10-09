@@ -131,7 +131,7 @@ run-isolated settings disable API-key helpers, and the Claude CLI adapter (print
 metadata-only auth probe proves a first-party `claude.ai` subscription. A board
 can't even be constructed holding an api-key seat without opting in.
 
-**Claude execution is subscription-CLI-only (amended 2026-10-08; formerly TUI-only).** Fable and Opus require the homebrew backing and
+**Claude execution is subscription-CLI-only (amended 2026-10-08, agent-harness#1391; formerly TUI-only).** Fable and Opus require the homebrew backing and
 run through the subscription-proven Claude CLI adapter with the exact requested model:
 `PHASE_LOOP_PANEL_CLAUDE_ROUTE` selects `print` (the default: `claude -p --output-format stream-json`,
 never `--bare`, launched only after a `claude auth status` preflight, with an env-scrubbed launch and

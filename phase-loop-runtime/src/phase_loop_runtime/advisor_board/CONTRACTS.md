@@ -45,7 +45,7 @@ equivalence is proven by a test (not asserted in prose).
   fills the seat of its OWN vendor with its native subagent; every other seat runs through
   that vendor's CLI lane, and the Anthropic seat on any host other than Claude Code runs
   through the subscription CLI adapter (`_run_claude_print_session` by default,
-  `_run_claude_tui_session` when `PHASE_LOOP_PANEL_CLAUDE_ROUTE=tui`; amended 2026-10-08,
+  `_run_claude_tui_session` when `PHASE_LOOP_PANEL_CLAUDE_ROUTE=tui`; amended 2026-10-08, agent-harness#1391,
   see the EC-REVIEWTRUTH-16 amendment note in `specs/phase-plans-v10.md`). Routing keys on the vendor's harness-nativeness, never on
   model tier. Implemented today only for the Claude Code → Anthropic cell
   (`under_claude_code` + `NativeAgentLegRequest`, the emit → fill → invoke protocol);
@@ -87,7 +87,7 @@ equivalence is proven by a test (not asserted in prose).
   then injects **only the seat vendor's** key(s). Never silent — an api-key seat
   without the opt-in raises.
 - **Claude Fable/Opus = subscription CLI adapter only (print default, TUI fallback)**
-  (amended 2026-10-08 from "subscription TUI only"; see the EC-REVIEWTRUTH-16 amendment
+  (amended 2026-10-08, agent-harness#1391, from "subscription TUI only"; see the EC-REVIEWTRUTH-16 amendment
   note in `specs/phase-plans-v10.md`) — the shared scrub additionally
   removes Anthropic tokens, alternate base URLs, credential-helper inputs, and
   Bedrock/Vertex/Foundry/Mantle/AWS-provider selectors. Run-isolated settings
