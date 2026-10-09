@@ -35,12 +35,50 @@ def test_every_negative_control_runs_and_passes(tmp_path):
         check=False,
     )
     assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-2000:]
-    # The report is written by the subprocess above into tmp_path; it is not external input.
-    cases = ET.parse(report).getroot().iter("testcase")
-    ran = {(case.get("classname", "").rsplit(".", 1)[-1], case.get("name")) for case in cases if not list(case)}
+    ran = _ran_keys(report)
     for node_id in node_ids:
-        parts = node_id.split("::")
-        assert (parts[-2] if len(parts) > 2 else "", parts[-1]) in ran, f"{node_id} did not run and pass"
+        assert _junit_key(node_id) in ran, f"{node_id} did not run and pass"
+
+
+def _ran_keys(report: Path) -> set[tuple[str, str | None]]:
+    """(last classname segment, test name) of every case in ``report`` that neither failed nor skipped."""
+    # The report is written by a pytest subprocess into tmp_path; it is not external input.
+    cases = ET.parse(report).getroot().iter("testcase")
+    return {(case.get("classname", "").rsplit(".", 1)[-1], case.get("name")) for case in cases if not list(case)}
+
+
+def _junit_key(node_id: str) -> tuple[str, str]:
+    """The ``_ran_keys`` entry a control that ran and passed leaves behind.
+
+    JUnit's classname is the dotted module path plus the class, when there is one. A
+    control with no class segment (``tests/x.py::test_fn``) therefore reports the module
+    stem as its last segment, not an empty string.
+    """
+    parts = node_id.split("::")
+    owner = parts[-2] if len(parts) > 2 else Path(parts[0]).stem
+    return (owner, parts[-1])
+
+
+def test_junit_key_matches_class_and_module_level_controls(tmp_path):
+    """Both control shapes must be recognised as having run, or a valid control reads as missing."""
+    (tmp_path / "tests").mkdir()
+    (tmp_path / "tests" / "test_demo.py").write_text(
+        "class TestDemo:\n    def test_in_class(self):\n        pass\n\n\ndef test_module_level():\n    pass\n",
+        encoding="utf-8",
+    )
+    node_ids = ["tests/test_demo.py::TestDemo::test_in_class", "tests/test_demo.py::test_module_level"]
+    report = tmp_path / "junit.xml"
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", f"--junitxml={report}", *node_ids],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stdout[-2000:] + proc.stderr[-2000:]
+    ran = _ran_keys(report)
+    for node_id in node_ids:
+        assert _junit_key(node_id) in ran, f"{node_id} ran and passed but was not recognised: {sorted(ran)}"
 
 
 def test_registry_ships_as_package_data():
