@@ -25,6 +25,19 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `phase-loop agy-qualification run` and the `[agy] self_qualification` opt-out. `agy_integrity.check` is unchanged: the executor
   (`trusted_command`, `admitted_command`) and canary callers stay release-only.
 
+### Closeout audit states its own required action (agent-harness#1303)
+
+- `phase-loop-closeout-audit` now ends every exit it returns or raises from with exactly one
+  `action:` line: exit 0 means ignored paths do not block (the dirty-path classification
+  still decides); exit 1, exit 2 and an exception (exit 1) mean stop with
+  `terminal_status=blocked` and `blocker_class=dirty_worktree_conflict`. A process killed by
+  a signal prints none, and the skills' exit-code list governs.
+- The execute-phase closeout rules (codex, gemini, claude) no longer contain the two broken
+  clauses ("so the audit blocks and block only when ..."). The exit-code mapping is a
+  condition-first list, kept as the fallback for a runtime without the action line. The
+  tool is "the closeout audit" throughout; the whole-tree `git status --short` pass is the
+  "dirty-path classification".
+
 ## [0.7.25] - 2026-10-08
 
 ### Qualified agy set adds 1.3.0 and 1.3.1 (agent-harness#1293)
