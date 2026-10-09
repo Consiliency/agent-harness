@@ -6,6 +6,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Plan budget: report exceptions for undeclared phase aliases (agent-harness#1381; PR agent-harness#1396)
+
+- A `[plan_budget.phases.<ALIAS>]` entry whose alias no `specs/phase-plans-*.md` roadmap
+  declares is reported as `(S) WARN`, so a typo such as `CONFROM` no longer goes unnoticed.
+  It is reported in every mode and stays a warning under `mode = "error"`.
+- The docs now say that a plan's `phase:` line selects its exception, and that one alias
+  covers every roadmap that reuses it.
+
 ## [0.7.26] - 2026-10-09
 
 ### Upgrade notes
@@ -100,11 +108,6 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   are non-fatal. Before, any finding whose text contained `WARN` was demoted to a warning,
   and `(P) INFO` lines (goal coverage not checked, outside the runtime) counted as errors.
   `(P) INFO` lines no longer count as errors.
-- A `[plan_budget.phases.<ALIAS>]` entry whose alias no `specs/phase-plans-*.md` roadmap
-  declares is reported as `(S) WARN`, so a typo such as `CONFROM` no longer goes unnoticed.
-  It is reported in every mode and stays a warning under `mode = "error"`. The docs now say that a plan's `phase:` line
-  selects its exception and that one alias covers every roadmap reusing it
-  (agent-harness#1381).
 
 ### The skill-improvement loop reads the reflections it writes (agent-harness#1301; PR agent-harness#1325)
 
