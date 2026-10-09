@@ -7,6 +7,7 @@ is unwired from the validator turns the control red too.
 import contextlib
 import importlib.util
 import io
+import re
 import sys
 import tempfile
 import unittest
@@ -71,33 +72,41 @@ class RuleEnforcementControlTest(unittest.TestCase):
             stderr = io.StringIO()
             with contextlib.redirect_stderr(stderr), contextlib.redirect_stdout(io.StringIO()):
                 code = self.mod.main(["validate_plan_doc.py", str(path)])
-        return kinds, code, stderr.getvalue()
+        summary = re.search(r"^validate_plan_doc: (\d+) error", stderr.getvalue(), re.M)
+        lines = [line for line in stderr.getvalue().splitlines() if not line.startswith("validate_plan_doc:")]
+        return kinds, code, int(summary.group(1)) if summary else 0, lines
+
+    def _assert_refused(self, text, marker):
+        # The fixture is not a complete plan, so main() exits 1 on the clean plan too. The
+        # refusal is that this violation adds exactly one finding, carrying the marker, to
+        # main()'s own error count; a finding demoted to a warning leaves the count unchanged.
+        _, _, clean_errors, clean_lines = self._refusals(_plan())
+        kinds, code, errors, lines = self._refusals(text)
+        self.assertEqual(code, 1)
+        self.assertEqual(errors, clean_errors + 1, lines)
+        added = [line for line in lines if line not in clean_lines]
+        self.assertEqual(len(added), 1, added)
+        self.assertIn(marker, added[0])
+        return kinds
 
     def test_overlapping_owned_files_are_refused(self):
-        kinds, code, stderr = self._refusals(_plan(sl1_owned="`src/a.py`"))
+        kinds = self._assert_refused(_plan(sl1_owned="`src/a.py`"), "(D) duplicate owned glob `src/a.py`")
         self.assertIn("overlapping_write_ownership", kinds)
-        self.assertEqual(code, 1)
-        self.assertIn("(D) duplicate owned glob `src/a.py`", stderr)
 
     def test_lane_cycle_is_refused(self):
-        kinds, code, stderr = self._refusals(_plan(sl0_depends="SL-1"))
+        kinds = self._assert_refused(_plan(sl0_depends="SL-1"), "(C) lane DAG has a cycle")
         self.assertIn("cycle", kinds)
-        self.assertEqual(code, 1)
-        self.assertIn("(C) lane DAG has a cycle", stderr)
 
     def test_missing_producer_edge_is_refused(self):
-        kinds, code, stderr = self._refusals(_plan(sl1_depends="(none)", sl1_consumed="`IFoo`"))
+        kinds = self._assert_refused(_plan(sl1_depends="(none)", sl1_consumed="`IFoo`"), "(O)")
         self.assertIn("missing_producer_dependency", kinds)
-        self.assertEqual(code, 1)
-        self.assertIn("(O)", stderr)
 
     def test_out_of_vocabulary_closeout_decision_is_refused(self):
-        _, code, stderr = self._refusals(_plan(decision="ship_it"))
-        self.assertEqual(code, 1)
-        self.assertIn("invalid Spec Closeout Plan decision `ship_it`", stderr)
+        self._assert_refused(_plan(decision="ship_it"), "invalid Spec Closeout Plan decision `ship_it`")
 
     def test_clean_plan_has_none_of_these_refusals(self):
-        kinds, _, stderr = self._refusals(_plan())
+        kinds, _, _, lines = self._refusals(_plan())
+        stderr = "\n".join(lines)
         self.assertNotIn("(B)", stderr)  # both lanes parsed, so the absences below mean something
         self.assertFalse(kinds & {"overlapping_write_ownership", "cycle", "missing_producer_dependency"}, kinds)
         for marker in ("(C) lane DAG has a cycle", "(D) duplicate owned glob", "(O)", "invalid Spec Closeout"):

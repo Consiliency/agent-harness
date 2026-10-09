@@ -19,7 +19,7 @@ import typing
 from pathlib import Path
 
 _LOG = os.environ.get("NEGATIVE_CONTROL_REPORT_LOG", "")
-# kind|skill|module-or-path|symbol, e.g. "skill_script|plan-phase|scripts/validate_plan_doc.py|_check_c_dag_acyclic"
+# kind|skill|module-or-path|symbol (kind "demote": keep a skill_script check's findings as warnings), e.g. "skill_script|plan-phase|scripts/validate_plan_doc.py|_check_c_dag_acyclic"
 _KILL = os.environ.get("NEGATIVE_CONTROL_KILL", "")
 
 
@@ -27,6 +27,15 @@ def _record(event: dict) -> None:
     if _LOG:
         with open(_LOG, "a", encoding="utf-8") as handle:
             handle.write(json.dumps(event) + "\n")
+
+
+def _main_on_stack(script: Path) -> bool:
+    frame = sys._getframe(2)
+    while frame is not None:
+        if frame.f_code.co_name == "main" and Path(frame.f_code.co_filename).resolve() == script:
+            return True
+        frame = frame.f_back
+    return False
 
 
 def _stub(original, script: Path | None):
@@ -37,18 +46,20 @@ def _stub(original, script: Path | None):
     empty = typing.get_origin(returns) or returns
 
     def disabled(*_args, **_kwargs):
-        via_main = False
-        if script is not None:
-            frame = sys._getframe(1)
-            while frame is not None:
-                if frame.f_code.co_name == "main" and Path(frame.f_code.co_filename).resolve() == script:
-                    via_main = True
-                    break
-                frame = frame.f_back
-        _record({"killed_call": True, "via_main": via_main})
+        _record({"killed_call": True, "via_main": script is not None and _main_on_stack(script)})
         return None if empty is type(None) else empty()
 
     return disabled
+
+
+def _demoted(original, script: Path):
+    # The plan validator refuses on a finding unless it contains "WARN"; this keeps every
+    # finding but makes each one a warning, so main() no longer refuses on this check.
+    def demoted(*args, **kwargs):
+        _record({"killed_call": True, "via_main": _main_on_stack(script)})
+        return [f"WARN: {finding}" for finding in original(*args, **kwargs)]
+
+    return demoted
 
 
 def pytest_configure(config):
@@ -66,7 +77,8 @@ def pytest_configure(config):
         original_exec(self, module)
         script = Path(getattr(module, "__file__", "") or "").resolve()
         if script.as_posix().endswith("/" + where) and script.parents[depth - 1].name.endswith(skill):
-            setattr(module, symbol, _stub(getattr(module, symbol), script))
+            make = _demoted if kind == "demote" else _stub
+            setattr(module, symbol, make(getattr(module, symbol), script))
 
     importlib.machinery.SourceFileLoader.exec_module = exec_module
 

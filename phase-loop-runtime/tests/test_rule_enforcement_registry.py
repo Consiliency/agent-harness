@@ -29,13 +29,18 @@ def _run_controls(node_ids, tmp_path, kill=""):
     """Run node_ids in a child pytest; return it, its call-phase-passed node ids, and its other records."""
     assert node_ids, "no negative control to run"
     log = tmp_path / f"reports{len(list(tmp_path.glob('reports*')))}.jsonl"
-    env = {key: value for key, value in os.environ.items() if key != "PYTEST_ADDOPTS"}
+    # The child reads no configuration from outside the gate: no PYTEST_* variable, no
+    # entry-point plugin, no ini file but this empty one, no conftest above RUNTIME_ROOT.
+    inifile = tmp_path / "negative-control.ini"
+    inifile.write_text("[pytest]\n", encoding="utf-8")
+    env = {key: value for key, value in os.environ.items() if not key.startswith("PYTEST_")}
+    env["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
     env["PYTHONPATH"] = os.pathsep.join(filter(None, [str(PROBE_DIR), env.get("PYTHONPATH", "")]))
     env["NEGATIVE_CONTROL_REPORT_LOG"] = str(log)
     env["NEGATIVE_CONTROL_KILL"] = kill
     proc = subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "-p", "_negative_control_probe",
-         f"--rootdir={RUNTIME_ROOT}", *node_ids],
+        [sys.executable, "-m", "pytest", "-q", "-c", str(inifile), f"--rootdir={RUNTIME_ROOT}",
+         f"--confcutdir={RUNTIME_ROOT}", "-p", "no:cacheprovider", "-p", "_negative_control_probe", *node_ids],
         cwd=RUNTIME_ROOT,
         env=env,
         capture_output=True,
@@ -89,6 +94,22 @@ def test_disabling_a_named_enforcer_turns_its_rows_control_red(rule, enforcer, t
     )
     if enforcer.kind == "skill_script":
         assert any(k["via_main"] for k in killed), f"{control} calls {enforcer.symbol} without main()"
+
+
+_DEMOTE_CASES = [case for case in _KILL_CASES if case.values[1].kind == "skill_script"]
+
+
+@pytest.mark.skipif(not skills_bundle_present(), reason="negative controls load the sibling phase-loop-skills bundle")
+@pytest.mark.parametrize(("rule", "enforcer"), _DEMOTE_CASES)
+def test_demoting_a_named_check_to_a_warning_turns_its_rows_control_red(rule, enforcer, tmp_path):
+    # `enforced` means the check refuses. A control that stays green when the check only warns
+    # does not show it refusing.
+    control = rule.negative_control
+    kill = f"demote|{rule.skill}|{enforcer.path}|{enforcer.symbol}"
+    proc, passed, records = _run_controls([control], tmp_path, kill=kill)
+    assert any(r.get("via_main") for r in records if r.get("killed_call")), f"{control} never reached {enforcer.symbol}"
+    assert control not in passed, f"{control} stays green with {enforcer.symbol} demoted to a warning"
+    assert any(r.get("assertion_failed") for r in records if r.get("nodeid") == control), proc.stdout[-2000:]
 
 
 def test_registry_ships_as_package_data():
@@ -256,11 +277,11 @@ def test_a_skipped_control_cannot_borrow_a_same_named_pass_from_another_module(t
         gate()
 
 
-def test_a_deselected_control_cannot_borrow_a_same_named_pass_from_another_module(tmp_path, monkeypatch):
+def test_an_outside_ini_cannot_deselect_a_control(tmp_path, monkeypatch):
+    # The child reads only the gate's own ini, so this --deselect never reaches it.
     gate = _gate_against(tmp_path, monkeypatch, {"test_first.py": _PASSING, "test_second.py": _PASSING}, _BORROWED)
     (tmp_path / "pytest.ini").write_text(f"[pytest]\naddopts = --deselect={_BORROWED[1]}\n", encoding="utf-8")
-    with pytest.raises(AssertionError, match="test_second.py::ControlTest::test_refuses did not run and pass"):
-        gate()
+    gate()
 
 
 @pytest.mark.parametrize(
@@ -296,7 +317,7 @@ def test_an_empty_registry_refuses_instead_of_running_the_whole_suite(tmp_path, 
         gate()
 
 
-@pytest.mark.parametrize("via", ["PYTEST_ADDOPTS", "ini addopts"])
+@pytest.mark.parametrize("via", ["PYTEST_ADDOPTS", "ini addopts", "conftest setuponly"])
 def test_a_control_whose_body_never_ran_is_not_execution_proof(tmp_path, monkeypatch, via):
     body = (
         "import unittest\nfrom pathlib import Path\nclass ControlTest(unittest.TestCase):\n"
@@ -305,10 +326,68 @@ def test_a_control_whose_body_never_ran_is_not_execution_proof(tmp_path, monkeyp
     gate = _gate_against(tmp_path, monkeypatch, {"test_c.py": body}, ["tests/test_c.py::ControlTest::test_refuses"])
     if via == "PYTEST_ADDOPTS":
         monkeypatch.setenv("PYTEST_ADDOPTS", "--setup-only")
-    else:
+    elif via == "ini addopts":
         (tmp_path / "pytest.ini").write_text("[pytest]\naddopts = --setup-only\n", encoding="utf-8")
+    else:
+        # In-tree code is trusted to load, so this is what still needs call-phase proof.
+        (tmp_path / "tests" / "conftest.py").write_text(
+            "def pytest_configure(config):\n    config.option.setuponly = True\n", encoding="utf-8"
+        )
     try:
         gate()
     except AssertionError:
         return
     assert (tmp_path / "tests" / "called").is_file(), "the gate accepted a control whose body never ran"
+
+
+_SKIP_BODY = "def pytest_pyfunc_call(pyfuncitem):\n    return True\n"
+_FORGE_SKIPPED = (
+    "import pytest\n@pytest.hookimpl(hookwrapper=True)\ndef pytest_runtest_makereport(item, call):\n"
+    "    out = yield\n    r = out.get_result()\n    if r.outcome == 'skipped':\n        r.outcome = 'passed'\n        r.longrepr = None\n"
+)
+_FN_SENTINEL = "from pathlib import Path\ndef test_refuses():\n    Path(__file__).with_name('called').touch()\n"
+_SKIPPING = "import unittest\nclass ControlTest(unittest.TestCase):\n    def test_refuses(self):\n        self.skipTest('x')\n"
+
+
+@pytest.mark.parametrize("channel", ["ini addopts", "PYTEST_PLUGINS", "entry point"])
+@pytest.mark.parametrize("plugin", ["skip-body", "forge-report"])
+def test_an_outside_plugin_cannot_fake_a_run(tmp_path, monkeypatch, channel, plugin):
+    body, node_id, source = (
+        (_FN_SENTINEL, "tests/test_c.py::test_refuses", _SKIP_BODY) if plugin == "skip-body"
+        else (_SKIPPING, "tests/test_c.py::ControlTest::test_refuses", _FORGE_SKIPPED)
+    )
+    gate = _gate_against(tmp_path, monkeypatch, {"test_c.py": body}, [node_id])
+    site = tmp_path / "site"
+    site.mkdir()
+    (site / "outside_plugin.py").write_text(source, encoding="utf-8")
+    monkeypatch.setenv("PYTHONPATH", os.pathsep.join(filter(None, [str(site), os.environ.get("PYTHONPATH", "")])))
+    if channel == "ini addopts":
+        (tmp_path / "pytest.ini").write_text("[pytest]\naddopts = -p outside_plugin\n", encoding="utf-8")
+    elif channel == "PYTEST_PLUGINS":
+        monkeypatch.setenv("PYTEST_PLUGINS", "outside_plugin")
+    else:
+        dist = site / "outside_plugin-0.dist-info"
+        dist.mkdir()
+        (dist / "METADATA").write_text("Metadata-Version: 2.1\nName: outside-plugin\nVersion: 0\n", encoding="utf-8")
+        (dist / "entry_points.txt").write_text("[pytest11]\noutside = outside_plugin\n", encoding="utf-8")
+    if plugin == "skip-body":
+        gate()  # the plugin never loaded, so the body ran and the gate's proof is genuine
+        assert (tmp_path / "tests" / "called").is_file(), "the gate accepted a control whose body never ran"
+    else:
+        with pytest.raises(AssertionError, match="did not run and pass"):
+            gate()
+
+
+def test_a_conftest_above_the_runtime_root_is_not_loaded(tmp_path, monkeypatch):
+    runtime = tmp_path / "checkout" / "runtime"
+    (runtime / "tests").mkdir(parents=True)
+    (runtime / "tests" / "test_c.py").write_text(_SKIPPING, encoding="utf-8")
+    (tmp_path / "checkout" / "conftest.py").write_text(_FORGE_SKIPPED, encoding="utf-8")
+    rows = [dataclasses.replace(load_registry()[0], id="demo.c0",
+                                negative_control="tests/test_c.py::ControlTest::test_refuses")]
+    monkeypatch.setattr(sys.modules[__name__], "RUNTIME_ROOT", runtime)
+    monkeypatch.setattr(sys.modules[__name__], "load_registry", lambda: rows)
+    report = tmp_path / "report"
+    report.mkdir()
+    with pytest.raises(AssertionError, match="did not run and pass"):
+        test_every_negative_control_runs_and_passes(report)
