@@ -126,6 +126,7 @@ from . import sandbox_retention as _sandbox_retention
 from . import seat_credentials as _seat_credentials
 from . import seat_jail as _seat_jail
 from . import seat_jail_autoqualify as _seat_jail_autoqualify
+from . import seat_session_label as _seat_session_label
 from . import seat_uid as _seat_uid
 from . import seat_preflight as _seat_preflight
 from .advisor_board.research import (
@@ -6487,6 +6488,7 @@ def _claude_tui_command(
     effort: str | None = None,
     research_seat: ResearchSeatConfig | None = None,
     *, env: Mapping[str, str] | None = None,
+    session_name: str | None = None,
 ) -> list[str]:
     add_dirs = [review_dir]
     # When a sandbox was staged, this leg is pointed at the CLONE instead of the live
@@ -6557,6 +6559,10 @@ def _claude_tui_command(
             allowed_tools,
         ]
     )
+    if session_name:
+        # A readable title for the app's session list (seat_session_label); with no name Claude
+        # asks a model to summarise the first message, which is the whole review prompt.
+        command.extend(["--name", session_name])
     return command
 
 
@@ -6569,6 +6575,7 @@ def _broker_claude_tui_command(
     *, model: str | None, effort: str | None, session_id: str,
     sandboxed: "_seat_jail.SeatJail | None" = None,
     env: Mapping[str, str] | None = None,
+    session_name: str | None = None,
 ) -> list[str]:
     """Claude subscription TUI command with no workspace and no model tools.
 
@@ -6576,6 +6583,10 @@ def _broker_claude_tui_command(
     configuration surface, but `--tools default` under `--permission-mode
     bypassPermissions`, because the seat jail is the boundary. The default output -- the
     president's and the sealed route's -- is unchanged.
+
+    ``session_name`` names the session in the app's session list and applies to the JAILED argv
+    only. The sealed argv is held token-for-token by the HARDEN evidence verifier's frozen
+    grammar (``scripts/verify_harden_evidence.py``), so it is never renamed here.
     """
     effort_args = render_seat_invocation(
         "claude", model or HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["claude"], effort or "high"
@@ -6583,7 +6594,7 @@ def _broker_claude_tui_command(
     if sandboxed is not None:
         if sandboxed.leg != "claude" or not sandboxed.provider_argv0:
             raise ValueError("a jailed claude argv needs a claude seat jail")
-        return [
+        jailed = [
             sandboxed.provider_argv0, "--ax-screen-reader", "--safe-mode", "--no-chrome",
             "--disable-slash-commands",
             "--model", model or HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["claude"],
@@ -6592,6 +6603,9 @@ def _broker_claude_tui_command(
             "--strict-mcp-config", "--mcp-config", json.dumps({"mcpServers": {}}),
             "--agents", "{}", "--permission-mode", "bypassPermissions", "--tools", "default",
         ]
+        if session_name:
+            jailed.extend(["--name", session_name])
+        return jailed
     return [
         "claude", "--ax-screen-reader", "--safe-mode", "--no-chrome",
         "--disable-slash-commands", "--model", model or HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["claude"],
@@ -9622,6 +9636,7 @@ def _exec_claude_tui_leg(
     broker_evidence: dict[str, object] | None = None,
     review_monitor: _ReviewMonitor | None = None,
     failure_detail_sink: list[_LegFailure] | None = None,
+    session_name: str | None = None,
 ) -> tuple[str, str]:
     """Run the Claude panel leg through the local Claude Code TUI.
 
@@ -9732,6 +9747,7 @@ def _exec_claude_tui_leg(
             child_review_dir,
             child_review_dir if agy_capture is not None else (repo_dir or Path.cwd()),
             model, effort, research_seat, env=claude_settings_env,
+            session_name=session_name,
         )
     )
     if brokered:
@@ -10054,6 +10070,7 @@ def _exec_jailed_claude_leg(
     failure_detail_sink: list[_LegFailure] | None = None,
     quiescence_latch: _ProviderQuiescenceLatch | None = None,
     review_monitor: _ReviewMonitor | None = None,
+    session_name: str | None = None,
     **_unused: object,
 ) -> tuple[str, str]:
     """The Claude seat inside its per-seat jail (agent-harness#1132).
@@ -10067,7 +10084,7 @@ def _exec_jailed_claude_leg(
     jail = seat.jail
     session_id = str(uuid.uuid4())
     command = _broker_claude_tui_command(model=model, effort=effort, session_id=session_id,
-                                         sandboxed=jail, env=env)
+                                         sandboxed=jail, env=env, session_name=session_name)
     snapshots = Path(tempfile.mkdtemp(prefix="pl-seat-snapshot-"))  # 0700, parent-owned
     transcript_snapshot = snapshots / "transcript.jsonl"
     output_snapshot = snapshots / _seat_jail.CLAUDE_OUTPUT_NAME
@@ -10118,7 +10135,11 @@ def _exec_jailed_claude_leg(
                    else value) for key, value in jail.env.items()},
         prompt_transport="pty_input", no_tool_controls=_JAILED_CLAUDE_TOOL_CONTROLS,
         transport_payload=_BROKER_CLAUDE_DIRECT_REQUEST + prompt,
-        redacted_argv_values={session_id: "<CLAUDE_SESSION_ID>"},
+        # The retained shape redacts every per-run value, and the label names a repo and a time.
+        redacted_argv_values={
+            session_id: "<CLAUDE_SESSION_ID>",
+            **({session_name: "<CLAUDE_SESSION_NAME>"} if session_name else {}),
+        },
     )
     if broker_evidence is not None:
         broker_evidence.update({
@@ -11229,6 +11250,12 @@ def _has_injected_review_execution_seam(
     return False
 
 
+def _seat_session_name(repo_dir: object, mode: str, seat_key: str | None, leg: str) -> str | None:
+    """The name a Claude seat's session gets in the app's session list, or ``None`` (naming off).
+    Derived by the runtime from the repo, the mode and the seat (``seat_session_label``)."""
+    return _seat_session_label.build_label(repo=repo_dir, mode=mode, seat=seat_key or leg)
+
+
 def _default_spawn(
     leg: str,
     artifact: str,
@@ -11716,6 +11743,7 @@ def _default_spawn(
                                 broker_evidence=broker.evidence,
                                 failure_detail_sink=claude_sink,
                                 quiescence_latch=broker_latch, review_monitor=review_monitor,
+                                session_name=_seat_session_name(resolved_repo_dir, mode, seat_key, leg),
                             )
                         except _seat_jail.SeatSandboxRefused as exc:
                             claude_sink.append(_LegFailure(template=exc.code))
@@ -11830,6 +11858,7 @@ def _default_spawn(
                 model=model,
                 backstop_s=leg_deadline,
                 failure_detail_sink=claude_sink,
+                session_name=_seat_session_name(resolved_repo_dir, mode, seat_key, leg),
                 **extra,
             )
             if quiescence_latch is not None:

@@ -6,6 +6,36 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Claude panel seats get a readable session name in the app
+
+- **The problem, measured.** Claude Code titles an unnamed session by asking a model to summarise
+  its first message and pushing that title to the app's session list. A panel seat's first message
+  is the whole review prompt, so its title was a summary of that prompt: not the repo, the seat or
+  the round, and indistinguishable from its neighbours after a few boards. On Claude Code 2.1.295
+  an unnamed seat made two `generate_session_title` calls and derived its title from message 1; a
+  seat started with `--name` made none, so nothing overwrites the name.
+- **New `seat_session_label` module and `--name <label>` on the Claude seat.** The runtime builds
+  the label itself, so it works in a client repo with no help from the driving agent:
+  `<repo> · <mode> · [<topic> ·] <seat> · <UTC date time>`, for example
+  `agent-harness · review · claude · 10-09 10:42Z`. The repo is the directory name, so a worktree
+  is told apart. Printable text only, one line, at most 80 characters, and it can never start with
+  a character that reads as an option.
+- **Where it applies.** The jailed seat and the non-brokered (homebrew) seat. **The sealed seat is
+  not renamed:** its argv is held token-for-token by the HARDEN evidence verifier's frozen grammar
+  (`scripts/verify_harden_evidence.py`), so naming it needs a coordinated verifier change. The
+  president is a sealed seat, so it is not renamed either.
+- **The evidence never carries the label.** The jailed seat's retained argv shape records
+  `--name <CLAUDE_SESSION_NAME>`, like the session id, so nothing about the repo or time is
+  retained and the shape digest stays recomputable. Every existing caller, golden and the jail
+  profile digest are unchanged (the name is optional and defaults to none).
+- **No topic is scraped from the review material.** The label is part of the seat's command line,
+  which any local user can read on a shared host, and an advisory board's material can be
+  sensitive. A topic appears only when the operator sets `PHASE_LOOP_SEAT_TOPIC`. Set
+  `PHASE_LOOP_SEAT_SESSION_NAMES=0` to turn naming off.
+- **Not verified:** that the app shows the label verbatim. The CLI documents `--name` as the
+  session's display name and the log shows the automatic title is no longer generated, but the
+  label is not written to the debug log and the app's list needs a login to read.
+
 ### Plan word budget: check (S) and `.phase-loop-planning.toml` (agent-harness#1302)
 
 - `validate_plan_doc.py` (plan-phase) gains check (S): it warns when a phase plan's body,
