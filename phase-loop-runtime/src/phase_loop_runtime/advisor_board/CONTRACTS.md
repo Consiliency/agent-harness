@@ -44,7 +44,9 @@ equivalence is proven by a test (not asserted in prose).
 - **Host×seat routing rule (maintainer; agent-harness#396 / #525 / #924)** — a harness
   fills the seat of its OWN vendor with its native subagent; every other seat runs through
   that vendor's CLI lane, and the Anthropic seat on any host other than Claude Code runs
-  through the subscription TUI adapter. Routing keys on the vendor's harness-nativeness, never on
+  through the subscription CLI adapter (`_run_claude_print_session` by default,
+  `_run_claude_tui_session` when `PHASE_LOOP_PANEL_CLAUDE_ROUTE=tui`; amended 2026-10-08,
+  see the EC-REVIEWTRUTH-16 amendment note in `specs/phase-plans-v10.md`). Routing keys on the vendor's harness-nativeness, never on
   model tier. Implemented today only for the Claude Code → Anthropic cell
   (`under_claude_code` + `NativeAgentLegRequest`, the emit → fill → invoke protocol);
   no production caller constructs a `HostContext` yet, so the host leg above is
@@ -84,11 +86,18 @@ equivalence is proven by a test (not asserted in prose).
   API-key var; an api-key seat (only behind the board opt-in) scrubs everything
   then injects **only the seat vendor's** key(s). Never silent — an api-key seat
   without the opt-in raises.
-- **Claude Fable/Opus = subscription TUI only** — the shared scrub additionally
+- **Claude Fable/Opus = subscription CLI adapter only (print default, TUI fallback)**
+  (amended 2026-10-08 from "subscription TUI only"; see the EC-REVIEWTRUTH-16 amendment
+  note in `specs/phase-plans-v10.md`) — the shared scrub additionally
   removes Anthropic tokens, alternate base URLs, credential-helper inputs, and
   Bedrock/Vertex/Foundry/Mantle/AWS-provider selectors. Run-isolated settings
   disable `apiKeyHelper`; `claude auth status --json` must prove first-party
-  `claude.ai` subscription auth before the exact-model self-PTY launch. The
+  `claude.ai` subscription auth before the exact-model launch: the print route
+  (`_run_claude_print_session`, `claude -p --output-format stream-json`, never `--bare`)
+  additionally asserts `system/init.apiKeySource == "none"` in-band and fails as
+  `claude_print_subscription_unproven` / `claude_print_auth_drift` / `claude_print_stalled`;
+  the self-PTY route is the `PHASE_LOOP_PANEL_CLAUDE_ROUTE=tui` fallback, and any other route
+  value fails as `panel_claude_route_invalid`. The
   homebrew backing is mandatory; alternate backings fail before gateway access.
   API-key fallback is forbidden on every host. Task/subagent fulfillment of the claude
   seat is forbidden on every host EXCEPT Claude Code, where the driving session fills the
@@ -195,7 +204,8 @@ the real matrix at `load_boards()` time (`tests/test_advisor_board_config.py`,
   before that and still selectable — NOT the implementer model
   `profiles.CLAUDE_IMPLEMENTER_MODEL` (`claude-sonnet-5`). `panel_invoker.DEFAULT_LEG_MODELS["claude"]`
   is the SINGLE source of truth for the panel's default claude model: the claude
-  leg builder (`_claude_tui_command`) and the Agent-View attempt both read it, so
+  leg builders (`_claude_tui_command`, and the print route's `_run_claude_print_session`
+  launch) and the Agent-View attempt all read it, so
   the *legacy* `invoke_panel` path AND the live governed gates
   (`governed_review` / `governed_premerge`, which call `invoke_panel` with no model
   override) review on Opus 5.5. `CLAUDE_IMPLEMENTER_MODEL` is untouched — the
@@ -714,8 +724,9 @@ never through — the review operation `public_board_review.v1`. Frozen falsifie
   falls back to the process environment only when none is passed, so it never spawns a
   second TUI) → a deferred native fill `{"status": "native_fill_deferred", rung,
   brief_digest, findings_digest}`, refused with `president_fill_heartbeat_refused` under
-  `heartbeat_only`. `fable` elsewhere → the brokered self-PTY session
-  (`_run_claude_tui_session`, tools off, no directory grant). A failed launch is a typed
+  `heartbeat_only`. `fable` elsewhere → the brokered print session
+  (`_run_claude_print_session`, tools off, no directory grant) by default, or the brokered
+  self-PTY session (`_run_claude_tui_session`) when `PHASE_LOOP_PANEL_CLAUDE_ROUTE=tui`. A failed launch is a typed
   `failed` (`president_invocation_failed`, no descent).
 - **Ladder** (EC-PRESROUTE-3). `PRESIDENT_LADDER` is the seat-alias tuple; each alias
   resolves to its vendor's registry PIN through `DEFAULT_REVIEW_SEAT_ALIASES` (where the

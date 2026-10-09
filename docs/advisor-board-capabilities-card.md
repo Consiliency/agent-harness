@@ -127,18 +127,27 @@ scrubs *every* vendor API-key var from the subprocess env / gateway payload; an
 api-key seat is reachable only behind `Board.allow_api_key_fallback` and injects
 ONLY its own vendor's key. Claude Fable/Opus seats are stricter: API-key fallback
 is forbidden, custom request headers and alternate endpoint/cloud-provider/helper selectors are scrubbed,
-run-isolated settings disable API-key helpers, and the TUI launches only after a
+run-isolated settings disable API-key helpers, and the Claude CLI adapter (print or TUI route) launches only after a
 metadata-only auth probe proves a first-party `claude.ai` subscription. A board
 can't even be constructed holding an api-key seat without opting in.
 
-**Claude execution is TUI-only.** Fable and Opus require the homebrew backing and
-use the existing Claude Code self-PTY adapter with the exact requested model.
+**Claude execution is subscription-CLI-only (amended 2026-10-08; formerly TUI-only).** Fable and Opus require the homebrew backing and
+run through the subscription-proven Claude CLI adapter with the exact requested model:
+`PHASE_LOOP_PANEL_CLAUDE_ROUTE` selects `print` (the default: `claude -p --output-format stream-json`,
+never `--bare`, launched only after a `claude auth status` preflight, with an env-scrubbed launch and
+`system/init.apiKeySource == "none"` asserted in-band) or `tui` (the existing Claude Code self-PTY
+adapter, now an opt-in fallback). See the EC-REVIEWTRUTH-16 amendment note in `specs/phase-plans-v10.md`.
 An alternate backing reports `tui_backing_required` before gateway access. No API, SDK, Messages, direct
 HTTP path may fulfill those seats. Under Claude Code the seat defers as
 `under_claude_code` with a native-fill request the driving session fills natively
 (EC-REVIEWTRUTH-14); a non-native host that cannot run the adapter reports
 `tui_adapter_required`; an unproven subscription reports
-`subscription_auth_unproven`. Today's adapter has no typed classifier-refusal
+`subscription_auth_unproven`. On the print route, a `system/init` whose `apiKeySource` is not
+`"none"` (or a `result` with no `system/init`) reports `claude_print_subscription_unproven`, an
+`api_retry` with an authentication, billing or org-not-allowed error reports
+`claude_print_auth_drift`, and a session that emits no event within the stall bound reports
+`claude_print_stalled`; an unrecognised `PHASE_LOOP_PANEL_CLAUDE_ROUTE` value reports
+`panel_claude_route_invalid` and never silently falls back. Today's adapter has no typed classifier-refusal
 capability, so refusal-looking text never triggers fallback. The bounded future
 policy permits one Opus TUI retry only for typed classifier refusal plus an
 independent defensive-security attestation, then fails closed.
