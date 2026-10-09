@@ -2860,6 +2860,9 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "gemini_credential_refresh_timeout", "seat_keyring_unavailable",
     "claude_agent_view_review_unsupported", "claude_tui_journal_collection_refused",
     "agy_image_unqualified",
+    # agent-harness#1333: per-host CLI qualification refusals (typed notices in seat_jail.NOTICES)
+    "seat_cli_unqualified", "seat_cli_qualification_failed", "seat_cli_qualification_unavailable",
+    "seat_cli_qualification_store_unsafe", "seat_cli_adapter_missing", "seat_cli_platform_unsupported",
     # gemini (the broker's fixed vocabulary, folded in)
     "gemini_heartbeat_broker_required", "gemini_heartbeat_capability_unavailable",
     "gemini_heartbeat_admission_handshake_failed", "gemini_broker_diagnostic_invalid",
