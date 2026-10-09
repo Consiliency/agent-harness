@@ -9423,14 +9423,6 @@
             "source": "Consiliency/agent-harness#375"
           },
           "transition": "committed"
-        },
-        {
-          "at": "2026-10-09T09:48:53Z",
-          "by": "claude-roadmap-v11-supersession",
-          "metadata": {
-            "reason": "superseded by specs/phase-plans-v11.md (agent-harness#1394); carried phases are replanned as plans/phase-plan-v11-<ALIAS>.md"
-          },
-          "transition": "orphaned"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -9643,10 +9635,10 @@
         "type": "phase"
       },
       "slug": "v10-RUNTIME",
-      "status": "orphaned",
+      "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-10-09T09:48:53Z"
+      "updated_at": "2026-08-25T16:25:15Z"
     },
     {
       "acceptance_criteria_count": null,
