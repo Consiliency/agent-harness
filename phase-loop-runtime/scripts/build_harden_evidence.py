@@ -267,7 +267,7 @@ def _summary_from_raw(junit: bytes, raw: bytes) -> tuple[dict[str, int], str]:
     return result
 
 
-def _input_manifest(path: Path, source: Path) -> dict[str, Any]:
+def _input_manifest(path: Path, source: Path) -> tuple[dict[str, Any], bytes]:
     try:
         manifest_bytes = V.read_path_regular_nofollow(
             path,
@@ -312,7 +312,7 @@ def _input_manifest(path: Path, source: Path) -> dict[str, Any]:
         if name not in roles:
             raise BuildError("missing required input")
         _read(source, roles[name], "role attestation")
-    return data
+    return data, manifest_bytes
 
 
 def _annotation(value: Any, label: str) -> str:
@@ -543,8 +543,15 @@ def _validate_raw_closure(manifest: dict[str, Any], source: Path) -> dict[str, A
     return values
 
 
-def derive_live_facts(inputs: Path, *, evidence_root: Path, repo: Path) -> dict[str, Any]:
-    manifest = _input_manifest(inputs, evidence_root)
+def derive_live_facts(
+    inputs: Path,
+    *,
+    evidence_root: Path,
+    repo: Path,
+    manifest: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if manifest is None:
+        manifest, _manifest_bytes = _input_manifest(inputs, evidence_root)
     artifacts = manifest["artifacts"]
     raw = _validate_raw_closure(manifest, evidence_root)
     plan = raw["plan_authority"]
@@ -771,8 +778,10 @@ class _temporary_directory:
 def _prepare_stage(inputs: Path, source_root: Path, evidence_root: Path, repo: Path, output: Path,
             completion_request: Path, reuse_registry: Path,
             expected_coordinator_session: str, expected_author_session: str) -> None:
-    manifest = _input_manifest(inputs, source_root)
-    facts = derive_live_facts(inputs, evidence_root=source_root, repo=repo)
+    manifest, manifest_bytes = _input_manifest(inputs, source_root)
+    facts = derive_live_facts(
+        inputs, evidence_root=source_root, repo=repo, manifest=manifest
+    )
     copies = _copy_source(source_root, evidence_root)
     artifacts = manifest["artifacts"]
     retained = lambda ref, label: _retained(ref, copies, label)
@@ -915,7 +924,7 @@ def _prepare_stage(inputs: Path, source_root: Path, evidence_root: Path, repo: P
     request = {"schema": "harden_completion_request.v1", "phase": "HARDEN", "evidence_sha256": V.normalized_precompletion_digest(evidence),
                "canonical_commit": git["canonical_main"]["commit"], "canonical_tree": git["canonical_main"]["tree"],
                "visual_render_declared": False,
-               "input_manifest_sha256": _sha(V.read_path_regular_nofollow(inputs, "input manifest", V.MAX_ARTIFACT_BYTES)),
+               "input_manifest_sha256": _sha(manifest_bytes),
                "copied_artifacts": [{"source": {"path": path, "sha256": digest}, "retained": ref} for (path, digest), ref in sorted(copies.items())]}
     completion_request.write_bytes(_canonical(request))
 
