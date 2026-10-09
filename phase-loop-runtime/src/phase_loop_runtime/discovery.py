@@ -448,6 +448,15 @@ def select_roadmap(repo: Path, explicit: str | Path | None = None) -> Path:
             raise SupersededRoadmapStateError(state_roadmap)
         return _return_selectable_roadmap(repo, assert_roadmap_authorized(repo, state_roadmap), "state")
 
+    roadmap_status = roadmap_lint.validate_roadmap_status_coherence(repo, required=False)
+    if roadmap_status is not None:
+        registered_roadmap = repo / roadmap_status["selected_roadmap"]
+        return _return_selectable_roadmap(
+            repo,
+            assert_roadmap_authorized(repo, registered_roadmap),
+            "registry",
+        )
+
     manifest_roadmap = manifest_backed_roadmap(repo)
     if manifest_roadmap is not None:
         return _return_selectable_roadmap(repo, assert_roadmap_authorized(repo, manifest_roadmap), "manifest")

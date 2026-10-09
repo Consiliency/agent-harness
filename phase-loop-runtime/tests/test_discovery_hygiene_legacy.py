@@ -1,6 +1,6 @@
 """LEGACY (CLEANSHIP P7) — roadmap-discovery hygiene.
 
-Pins the three reachable discovery-hygiene fixes that ship as a UNIT:
+Pins the four reachable discovery-hygiene fixes that ship as a UNIT:
 
 - ``manifest_backed_roadmap`` also skips ``status == "completed"`` entries (default
   ON) so a bare run never silently auto-selects a FINISHED roadmap, with a
@@ -14,6 +14,8 @@ Pins the three reachable discovery-hygiene fixes that ship as a UNIT:
   this branch and must not crash.
 - Genuine resumption is protected by the state-file ladder
   (``active_state_roadmap``), which precedes the manifest and glob branches.
+- A coherent roadmap-status registry selects its declared active roadmap before
+  the manifest fallback can surface a deliberately retained superseded entry.
 """
 from __future__ import annotations
 
