@@ -102,10 +102,13 @@ PLAN_PATH = REPO_ROOT / "plans" / "phase-plan-v10-LEGIBLE.md"
 MANIFEST_PATH = REPO_ROOT / "plans" / "manifest.json"
 CATALOG_PATH = REPO_ROOT / ".claude" / "docs-catalog.json"
 
-# The closed 1/5/7 status mapping over the live thirteen tracked roadmaps
-# (plans/phase-plan-v10-LEGIBLE.md, "The closed status mapping is").
+# The closed status mapping over the live tracked roadmaps. LEGIBLE froze it as
+# 1/5/7 over thirteen (plans/phase-plan-v10-LEGIBLE.md, "The closed status mapping
+# is"); the v11 supersession (agent-harness#1394) made it 1/5/8 over fourteen.
+ACTIVE_ROADMAP_REL = "specs/phase-plans-v11.md"
 TRACKED_ROADMAP_STATUS: dict[str, str] = {
-    "specs/phase-plans-v10.md": "active",
+    "specs/phase-plans-v11.md": "active",
+    "specs/phase-plans-v10.md": "superseded",
     "specs/phase-plans-cross-repo-v1.md": "delivered",
     "specs/phase-plans-v1-task-message-sourcebroker.md": "delivered",
     "specs/phase-plans-v1.md": "delivered",
@@ -124,7 +127,8 @@ TRACKED_ROADMAP_STATUS: dict[str, str] = {
 # byte-for-byte against every tracked file below at collection time — this table IS
 # the "positive control [that] all thirteen bytes parse" the plan describes).
 BANNER_LINE3: dict[str, str] = {
-    "specs/phase-plans-v10.md": "> **Status (2026-07-29): ACTIVE — created this date, nothing executed yet.**",
+    "specs/phase-plans-v11.md": "> **Status (2026-10-08): ACTIVE — created this date, nothing executed yet.**",
+    "specs/phase-plans-v10.md": "> # SUPERSEDED — ABSORBED INTO `specs/phase-plans-v11.md` (2026-10-08)",
     "specs/phase-plans-cross-repo-v1.md": "> # DELIVERED — CLOSED (assessed 2026-07-29)",
     "specs/phase-plans-v1-task-message-sourcebroker.md": "> # DELIVERED — CLOSED (assessed 2026-07-29)",
     "specs/phase-plans-v1.md": "> # DELIVERED — CLOSED (assessed 2026-07-29)",
@@ -313,7 +317,7 @@ def _write_all_tracked_roadmaps(repo: Path, overrides: dict[str, str] | None = N
 
 
 def _write_status_registry(
-    repo: Path, statuses: dict[str, str], selected: str = "specs/phase-plans-v10.md"
+    repo: Path, statuses: dict[str, str], selected: str = ACTIVE_ROADMAP_REL
 ) -> Path:
     registry = {
         "schema": "roadmap_status_manifest.v1",
@@ -551,15 +555,15 @@ def _build_source_fixture(
 
 
 def test_status_coherence_rejects_active_registry_with_superseded_do_not_execute_banner(tmp_path):
-    _assert_real_banner_anchor("specs/phase-plans-v10.md")
+    _assert_real_banner_anchor(ACTIVE_ROADMAP_REL)
     repo = _init_repo(tmp_path)
     _write_all_tracked_roadmaps(
         repo,
         overrides={
-            "specs/phase-plans-v10.md": BANNER_LINE3["specs/phase-plans-v7.md"],
+            ACTIVE_ROADMAP_REL: BANNER_LINE3["specs/phase-plans-v7.md"],
         },
     )
-    _write_status_registry(repo, TRACKED_ROADMAP_STATUS, selected="specs/phase-plans-v10.md")
+    _write_status_registry(repo, TRACKED_ROADMAP_STATUS, selected=ACTIVE_ROADMAP_REL)
     _commit_all(repo)
     try:
         validate = _new_symbol("phase_loop_runtime.roadmap_lint", "validate_roadmap_status_coherence")
@@ -577,10 +581,10 @@ def test_status_coherence_rejects_superseded_registry_with_active_banner(tmp_pat
     _write_all_tracked_roadmaps(
         repo,
         overrides={
-            "specs/phase-plans-v7.md": BANNER_LINE3["specs/phase-plans-v10.md"],
+            "specs/phase-plans-v7.md": BANNER_LINE3[ACTIVE_ROADMAP_REL],
         },
     )
-    _write_status_registry(repo, TRACKED_ROADMAP_STATUS, selected="specs/phase-plans-v10.md")
+    _write_status_registry(repo, TRACKED_ROADMAP_STATUS, selected=ACTIVE_ROADMAP_REL)
     _commit_all(repo)
     try:
         validate = _new_symbol("phase_loop_runtime.roadmap_lint", "validate_roadmap_status_coherence")
@@ -634,7 +638,7 @@ def test_status_coherence_rejects_missing_malformed_ambiguous_or_misplaced_banne
     except (ImportError, AttributeError) as exc:
         _red("banner-missing-malformed-ambiguous-misplaced", str(exc))
         return
-    base_line3 = BANNER_LINE3["specs/phase-plans-v10.md"]
+    base_line3 = BANNER_LINE3[ACTIVE_ROADMAP_REL]
     mutations = {
         "missing": "\n\n# no declaration at all\n",
         "malformed": "> **Status (not-a-date): ACTIVE — created this date, nothing executed yet.**\n",
@@ -644,11 +648,11 @@ def test_status_coherence_rejects_missing_malformed_ambiguous_or_misplaced_banne
     for kind, body in mutations.items():
         text = f"# Title\n\n{body}\n## Body\n"
         with pytest.raises(error_cls):
-            parse(text, "specs/phase-plans-v10.md")
+            parse(text, ACTIVE_ROADMAP_REL)
 
 
 def test_status_registry_exactly_covers_tracked_roadmaps(tmp_path):
-    assert len(TRACKED_ROADMAP_STATUS) == 13
+    assert len(TRACKED_ROADMAP_STATUS) == 14
     if _canonical_repo_ready():
         for path in TRACKED_ROADMAP_STATUS:
             assert (REPO_ROOT / path).is_file(), f"tracked roadmap missing from live repo: {path}"
@@ -685,7 +689,7 @@ def test_status_positive_controls_kill_hardwired_active_or_none(tmp_path):
         return
     if _canonical_repo_ready():
         repo = REPO_ROOT
-        active_path = ROADMAP_PATH
+        active_path = REPO_ROOT / ACTIVE_ROADMAP_REL
     else:
         # Installed-wheel clean room: no canonical specs/ tree to read, so
         # exercise the identical public contract against a synthetic repo
@@ -695,7 +699,7 @@ def test_status_positive_controls_kill_hardwired_active_or_none(tmp_path):
         _write_all_tracked_roadmaps(repo)
         _write_status_registry(repo, TRACKED_ROADMAP_STATUS)
         _commit_all(repo)
-        active_path = repo / "specs" / "phase-plans-v10.md"
+        active_path = repo / ACTIVE_ROADMAP_REL
     for path, status in TRACKED_ROADMAP_STATUS.items():
         parsed = parse((repo / path).read_text(encoding="utf-8"), path)
         assert parsed == status, f"a hardwired-'active' parser would fail on {path}"
@@ -794,35 +798,35 @@ def test_superseded_selector_paths_fail_closed(tmp_path, monkeypatch, source):
     assert calls[-1][1].resolve() == no_declaration.target.resolve()
     monkeypatch.setattr(discovery_mod, "_return_selectable_roadmap", real_gate)
 
-    # ---- positive companion: the ACTIVE v10 roadmap must still select ---------
+    # ---- positive companion: the ACTIVE roadmap must still select -------------
     # Without an executed positive control, a gate that rejects EVERY roadmap
     # passes every fail-closed assertion above while being unable to select the
-    # canonical specs/phase-plans-v10.md. The companion is driven through the
-    # PUBLIC selector for THIS source (its own fixture, built with the real v10
+    # canonical active roadmap (ACTIVE_ROADMAP_REL). The companion is driven through the
+    # PUBLIC selector for THIS source (its own fixture, built with the real active
     # path and banner), not merely through a direct gate call: a gate that
-    # accepts v10 but is never reached from ``select_roadmap`` on this source
+    # accepts it but is never reached from ``select_roadmap`` on this source
     # would satisfy a bare gate call while selecting nothing.
-    _assert_real_banner_anchor("specs/phase-plans-v10.md")
+    _assert_real_banner_anchor(ACTIVE_ROADMAP_REL)
     active = _build_source_fixture(
         tmp_path / "active",
         source,
         monkeypatch,
-        BANNER_LINE3["specs/phase-plans-v10.md"],
+        BANNER_LINE3[ACTIVE_ROADMAP_REL],
         home=home,
-        rel_path="specs/phase-plans-v10.md",
+        rel_path=ACTIVE_ROADMAP_REL,
     )
     assert active.target.is_file()
     assert gate(active.repo, active.target, source) == active.target.resolve(), (
-        "the recognized-ACTIVE v10 companion must pass the same gate"
+        "the recognized-ACTIVE companion must pass the same gate"
     )
     calls.clear()
     monkeypatch.setattr(discovery_mod, "_return_selectable_roadmap", _spy)
     assert active.select() == active.target.resolve(), (
-        f"the recognized-ACTIVE v10 companion must still be SELECTED through the "
+        f"the recognized-ACTIVE companion must still be SELECTED through the "
         f"{source} source by select_roadmap, not merely accepted by a direct gate call"
     )
     assert calls, (
-        "select_roadmap returned the ACTIVE v10 companion without calling "
+        "select_roadmap returned the ACTIVE companion without calling "
         "_return_selectable_roadmap: the common gate is not wired into this source"
     )
     assert calls[-1][2] == active.gate_source, (
@@ -848,7 +852,7 @@ def test_absent_registry_selector_rejects_recognized_non_active_banner_and_prese
     label, never that the absent-registry rule holds on the path that label names."""
     _assert_plan_contains("Legacy selection compatibility applies only when the candidate has "
                           "no lifecycle declaration at all")
-    _assert_real_banner_anchor("specs/phase-plans-v10.md")
+    _assert_real_banner_anchor(ACTIVE_ROADMAP_REL)
     try:
         gate = _new_symbol("phase_loop_runtime.discovery", "_return_selectable_roadmap")
         error_cls = _new_symbol("phase_loop_runtime.roadmap_lint", "RoadmapStatusError")
@@ -864,7 +868,7 @@ def test_absent_registry_selector_rejects_recognized_non_active_banner_and_prese
     cases: tuple[tuple[str, str, str, str], ...] = (
         ("superseded", "specs/phase-plans-v7.md", BANNER_LINE3["specs/phase-plans-v7.md"], "reject"),
         ("delivered", "specs/phase-plans-v6.md", BANNER_LINE3["specs/phase-plans-v6.md"], "reject"),
-        ("active", "specs/phase-plans-v10.md", BANNER_LINE3["specs/phase-plans-v10.md"], "accept"),
+        ("active", ACTIVE_ROADMAP_REL, BANNER_LINE3[ACTIVE_ROADMAP_REL], "accept"),
         ("no-declaration", "specs/phase-plans-v3.md", "", "accept"),
         (
             "malformed-ambiguous",
@@ -1049,7 +1053,7 @@ def test_canonical_validate_roadmap_calls_coherence_validator_with_required_true
         _red("canonical-validate-roadmap-required-true", str(exc))
         return
     if _canonical_repo_ready():
-        target_roadmap = ROADMAP_PATH
+        target_roadmap = REPO_ROOT / ACTIVE_ROADMAP_REL
     else:
         # Installed-wheel clean room: exercise the identical CLI wiring
         # against a synthetic repo built from the same frozen registry
@@ -1058,7 +1062,7 @@ def test_canonical_validate_roadmap_calls_coherence_validator_with_required_true
         _write_all_tracked_roadmaps(repo)
         _write_status_registry(repo, TRACKED_ROADMAP_STATUS)
         _commit_all(repo)
-        target_roadmap = repo / "specs" / "phase-plans-v10.md"
+        target_roadmap = repo / ACTIVE_ROADMAP_REL
     calls: list[bool] = []
     original = coherence
 
@@ -1096,7 +1100,7 @@ def test_registry_rejects_noncanonical_or_escaping_path_and_selected_active_mism
         repo = _init_repo(Path(tmp_path) / label)
         _write_all_tracked_roadmaps(repo)
         statuses = mutate(dict(TRACKED_ROADMAP_STATUS))
-        selected = "specs/phase-plans-v7.md" if label == "selected-mismatch" else "specs/phase-plans-v10.md"
+        selected = "specs/phase-plans-v7.md" if label == "selected-mismatch" else ACTIVE_ROADMAP_REL
         _write_status_registry(repo, statuses, selected=selected)
         _commit_all(repo)
         with pytest.raises(error_cls):
@@ -1159,7 +1163,7 @@ def test_declared_active_roadmap_returns_registry_and_banner_active_v10_path(tmp
         _red("declared-active-roadmap-returns-v10", str(exc))
         return
     if _canonical_repo_ready():
-        assert declared_active(REPO_ROOT) == ROADMAP_PATH.resolve()
+        assert declared_active(REPO_ROOT) == (REPO_ROOT / ACTIVE_ROADMAP_REL).resolve()
         return
     # Installed-wheel clean room: exercise the identical public contract
     # against a synthetic repo built from the same frozen registry fixtures.
@@ -1167,7 +1171,7 @@ def test_declared_active_roadmap_returns_registry_and_banner_active_v10_path(tmp
     _write_all_tracked_roadmaps(repo)
     _write_status_registry(repo, TRACKED_ROADMAP_STATUS)
     _commit_all(repo)
-    assert declared_active(repo) == (repo / "specs" / "phase-plans-v10.md").resolve()
+    assert declared_active(repo) == (repo / ACTIVE_ROADMAP_REL).resolve()
 
 
 def test_parse_roadmap_banner_status_positive_control_all_thirteen_tracked_banners_parse(tmp_path):
