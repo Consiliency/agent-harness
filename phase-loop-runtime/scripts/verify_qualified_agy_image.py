@@ -1,4 +1,9 @@
-"""Verify every qualified agy image record against source, and the latest one against Google's release asset."""
+"""Verify every qualified agy image record against source, and the newest one against Google's release asset.
+
+``--upstream-only`` (agent-harness#1333 PR1): a newest upstream release that is not a shipped
+member only warns, because hosts self-qualify it on first use. The newest SHIPPED member's
+vendor asset digest, URL and archive are still required.
+"""
 
 import argparse
 import ast
@@ -15,7 +20,8 @@ REPO = Path(__file__).resolve().parents[2]
 PACKAGE = REPO / "phase-loop-runtime/src/phase_loop_runtime"
 EVIDENCE = REPO / "plans/evidence"
 ASSET = "agy_cli_linux_x64.tar.gz"
-API = "https://api.github.com/repos/google-antigravity/antigravity-cli/releases/latest"
+RELEASES = "https://api.github.com/repos/google-antigravity/antigravity-cli/releases"
+API = RELEASES + "/latest"
 # agent-harness#1029: the files that implement the qualified route directly (and hold the
 # admitted image/help digests and profile id). This is a TRIPWIRE for direct edits, not the
 # whole route: modules they import can change its behaviour too. The FULL pin set (every
@@ -121,6 +127,19 @@ def validate_records(*, verify_sources=True, route_core_only=False):
                             route_core_only=route_core_only, actual=actual) for member in members]
 
 
+def release_key(version):
+    parts = version.split(".")
+    require(all(part.isdigit() for part in parts), f"release version {version!r} is not dotted numeric")
+    return tuple(int(part) for part in parts)
+
+
+def fetch_release(url):
+    request = Request(url, headers={"Accept": "application/vnd.github+json",
+                                    "User-Agent": "agent-harness-qualified-image-check"})
+    with urlopen(request, timeout=30) as response:
+        return json.load(response)
+
+
 def verify_archive(record, archive):
     require(digest_file(archive) == record["upstream_asset_sha256"], "archive digest mismatch")
     with tarfile.open(archive, "r:gz") as bundle:
@@ -139,7 +158,8 @@ def main():
     parser.add_argument("--archive", type=Path, help="verify a locally downloaded official asset")
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--source-only", action="store_true", help="verify the record and source pins without network")
-    mode.add_argument("--upstream-only", action="store_true", help="verify the latest release without source pins")
+    mode.add_argument("--upstream-only", action="store_true", help="verify the newest shipped member's release asset without source pins; "
+                           "the newest upstream release is reported, and only warns if not a member")
     mode.add_argument("--route-core", action="store_true",
                       help="verify the record and the route-core source pins only, without network")
     args = parser.parse_args()
@@ -157,13 +177,17 @@ def main():
         print(json.dumps({"qualified_releases": releases, "source_files": source_count,
                           "source_pins_verified": True}))
         return
-    request = Request(API, headers={"Accept": "application/vnd.github+json",
-                                    "User-Agent": "agent-harness-qualified-image-check"})
-    with urlopen(request, timeout=30) as response:
-        release = json.load(response)
-    latest = [record for record in records if record["release_version"] == release["tag_name"]]
-    require(len(latest) == 1, "latest release is not a qualified image set member")
-    record, = latest
+    latest = fetch_release(API)
+    latest_is_member = any(record["release_version"] == latest["tag_name"] for record in records)
+    if not latest_is_member:
+        # Advisory only: a host admits a genuine newer release by first-use self-qualification.
+        print(f"::warning::newest upstream agy {latest['tag_name']} is not a shipped member; "
+              "hosts self-qualify it on first use")
+    # The newest shipped member's vendor asset stays blocking, fetched by its own tag.
+    record = max(records, key=lambda record: release_key(record["release_version"]))
+    release = (latest if latest["tag_name"] == record["release_version"]
+               else fetch_release(f"{RELEASES}/tags/{record['release_version']}"))
+    require(release["tag_name"] == record["release_version"], "vendor release tag mismatch")
     asset, = (item for item in release["assets"] if item["name"] == ASSET)
     require(asset["digest"] == "sha256:" + record["upstream_asset_sha256"], "vendor asset digest mismatch")
     require(asset["browser_download_url"].startswith(
@@ -180,7 +204,8 @@ def main():
                     target.write(chunk)
                     require(target.tell() <= 128_000_000, "release asset exceeds expected size")
             verify_archive(record, archive)
-    print(json.dumps({"latest_release": release["tag_name"], "qualified_releases": releases,
+    print(json.dumps({"latest_release": latest["tag_name"], "latest_is_member": latest_is_member,
+                      "verified_member": record["release_version"], "qualified_releases": releases,
                       "source_files": source_count, "source_pins_verified": not args.upstream_only,
                       "asset_sha256": record["upstream_asset_sha256"],
                       "image_sha256": record["image_sha256"], "verified": True}))

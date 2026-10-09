@@ -27,13 +27,19 @@ def _locally_qualified(data, source, env):
     Same lookup as ``gemini_heartbeat.admit`` step 2: opt-out, failed entry, provenance,
     then the qualified entry for this host and runtime. Lookup only; it never qualifies."""
     from . import agy_qualification
+    from .sandbox_egress import EgressUnavailable
     try:
         return agy_qualification.lookup(dict(env), data, str(source)).image
     except gemini_heartbeat.AdmissionMiss as miss:
         miss.image.close()
-    except (OSError, ValueError, RuntimeError):
-        pass
-    raise AgyImageUnqualified("agy_image_unqualified")
+        raise AgyImageUnqualified("agy_image_unqualified") from None
+    except EgressUnavailable:
+        # A seat refusal that already carries its own typed code (e.g. the help
+        # measurement's seat_filtered_egress_unavailable) keeps it (agent-harness#1333 PR1).
+        raise
+    except (OSError, ValueError, RuntimeError) as exc:
+        # Opt-out, a failed record, an unsafe store, an unreadable image or a seal failure.
+        raise AgyImageUnqualified("agy_image_unqualified") from exc
 
 
 def check(path, env=None):
@@ -68,6 +74,21 @@ def check(path, env=None):
     finally:
         if descriptor is not None:
             os.close(descriptor)
+
+
+def admit_for_seat(path, env):
+    """Admission for the two owned review-seat sites only (agent-harness#1333 PR1).
+
+    ``check`` with the seat's env, from one read: a release member is admitted offline
+    before any config or store read, otherwise a ``locally_qualified`` image through
+    ``agy_qualification.lookup`` (agent-harness#1331); what runs is the sealed memfd of
+    those bytes, never the path. A miss, the opt-out, a failed record, an unsafe store, an
+    unreadable image or a memfd-seal failure is the typed refusal; a refusal that already
+    carries its own typed code (such as ``seat_filtered_egress_unavailable`` from the help
+    measurement) passes through unchanged. The executor and canary callers call ``check``
+    without an env and stay release-only.
+    """
+    return check(path, env)
 
 
 def trusted_command(argv, env):
