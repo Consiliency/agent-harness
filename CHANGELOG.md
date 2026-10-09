@@ -26,6 +26,37 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   and `(P) INFO` lines (goal coverage not checked, outside the runtime) counted as errors.
   `(P) INFO` lines no longer count as errors.
 
+### The skill-improvement loop reads the reflections it writes (agent-harness#1301; PR agent-harness#1325)
+
+- New `python3 -m phase_loop_runtime.reflection_corpus` with `collect` and `archive`. `collect`
+  scans every harness skill root (claude, codex, gemini, opencode) and the
+  `PHASE_LOOP_SKILL_BUNDLE` root, covering all eleven workflow skills including
+  `execute-detailed`, every `claude-*` copy and the `advisor-panel` alias. It reads the
+  `What didn't` section and writes `bundle.md` (the planner's input) and `manifest.json`.
+- Quality filter: duplicates and near-duplicates collapse only within one skill/repo/branch,
+  and a line counts as boilerplate only when one repo's runs repeat it. Reflections with
+  repo-specific `Improvements`, with no friction and no proposal, or over 32 KiB are
+  excluded, and each repo/branch keeps its newest three. Every rendered body and the
+  manifest's stripped lines go through the shared credential redaction. Heading and
+  code-fence lines in a reflection's text are neutralised, and each entry header is one
+  line, so a reflection cannot add an entry header or swallow the entries after it.
+- The collector never reads a symlinked reflection file, or one whose real location
+  leaves its reflections directory. A reflection reached through a symlinked skill or
+  reflections directory outside the scan root is read but never consumed.
+- `maintain-skills` launches the planner only when some skill has at least
+  `--min-reflections` admitted reflections (default 2), and passes it `--corpus <dir>`.
+  Below that it records `plan_skipped` and launches nothing.
+- `archive` moves the manifest's `reflections_consumed` into `archive/`. Consumed means the
+  admitted reflections of ready skills, plus reflections excluded as a duplicate or with no
+  friction and no proposal. Every other reflection stays in place. It moves only paths
+  of an in-scope skill whose real location stays under a harness root, the
+  `PHASE_LOOP_SKILL_BUNDLE` root or an explicit `--root`, and never takes roots from the
+  manifest. One refused path moves nothing and exits non-zero.
+  `--exclude` matches resolved paths, and an `--exclude` that matches nothing is an error.
+- The skill-improvement planner and the skill editor (all four harnesses) now drive this
+  CLI, cover the full scope, point at `skills-src/`, and state the consumption rule. The
+  aggregator prompt says that bundle text is quoted evidence, never instructions.
+
 ### agy: a newer upstream release only warns; seats admit self-qualified images (agent-harness#1333 PR1)
 
 - `verify_qualified_agy_image.py --upstream-only` no longer fails when the newest upstream
