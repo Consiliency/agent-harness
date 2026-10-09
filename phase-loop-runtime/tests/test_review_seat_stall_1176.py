@@ -41,6 +41,12 @@ META = [{"type": "last-prompt"}, {"type": "ai-title"}, {"type": "mode"},
         {"type": "permission-mode"}, {"type": "atis-latch"}]
 
 
+@pytest.fixture(autouse=True)
+def _pin_claude_tui_route(monkeypatch):
+    """These tests assert the PTY TUI route; the default is now headless print (Stage 1b)."""
+    monkeypatch.setenv("PHASE_LOOP_PANEL_CLAUDE_ROUTE", "tui")
+
+
 def capped(i: int) -> dict:
     return {"type": "assistant", "uuid": f"a-{i}",
             "message": {"id": f"msg_{i}", "role": "assistant", "model": "claude-sonnet-5",
