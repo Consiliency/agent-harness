@@ -29,6 +29,12 @@ from phase_loop_runtime import agy_canary_evidence as evidence
 from phase_loop_runtime import panel_invoker as pi
 
 
+@pytest.fixture(autouse=True)
+def _pin_claude_tui_route(monkeypatch):
+    """These tests assert the PTY TUI route; the default is now headless print (Stage 1b)."""
+    monkeypatch.setenv("PHASE_LOOP_PANEL_CLAUDE_ROUTE", "tui")
+
+
 def _mock_canonical_bwrap(monkeypatch) -> None:
     monkeypatch.setattr(evidence, "_canonical_bwrap", lambda: Path("/usr/bin/bwrap"))
 
