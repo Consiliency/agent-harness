@@ -2,9 +2,13 @@
 
 The two owned review-seat sites in ``seat_profile`` (the credential refresh and the owned
 non-heartbeat seat) admit a release member offline first, then a ``locally_qualified``
-image through ``agy_qualification.lookup``. A miss, the opt-out, a failed or tampered record,
-an unsafe store, an unreadable image or a seal failure is the typed ``agy_image_unqualified``
-refusal; a refusal that already carries its own typed code passes through. ``agy_integrity.check`` stays
+image through ``agy_qualification.lookup``. On that local-qualification path a miss, the
+opt-out, a failed or tampered record, an unsafe store, an unreadable image or a seal failure
+is the typed ``agy_image_unqualified`` refusal. What the help measurement raises with its own
+type passes through unchanged: a typed seat refusal (``EgressUnavailable`` and subclasses), a
+quiescence failure (``GeminiQuiescenceError``, ``ProviderProcessGroupQuiescenceError``) and a
+jail refusal (``SeatSandboxRefused``); on the brokered review route the gemini leg keeps the
+refusal's code and notice (agent-harness#1366). ``agy_integrity.check`` without an env stays
 release-only for its executor and canary callers; one cell per caller pins that.
 
 Nothing here reaches the network or a model: help measurement is a counting fake (except
@@ -495,3 +499,73 @@ def test_the_canary_runtime_refuses_a_locally_qualified_image(locally_qualified,
     with pytest.raises(agy_integrity.AgyImageUnqualified, match="agy_image_unqualified"):
         agy_canary_evidence._trusted_provider_runtime("gemini")
     assert world.lookups == []
+
+
+# ------------------------------------------- brokered review seat: typed outcome end to end
+
+@pytest.mark.parametrize("credential", ["fresh", "near_expiry"])
+@pytest.mark.parametrize("kind", ["seat_sandbox_refused", "seat_filtered_egress_unavailable",
+                                  "agy_image_unqualified", "gemini_quiescence",
+                                  "provider_group_quiescence"])
+def test_a_help_refusal_keeps_its_outcome_through_the_brokered_gemini_seat(
+        world, monkeypatch, kind, credential):
+    """On the bounded brokered review route (the CLI default), both admission sites end in
+    their typed outcome: a refusal degrades the leg with its own code and notice and empty
+    text; a quiescence failure stops the board. Nothing runs and no descriptor leaks.
+
+    Mutation: ``_parent_infer``'s gemini ``except Exception`` mapping every refusal to
+    "Gemini broker local provider failure" (the six refusal cells go RED; the four
+    quiescence cells are guards).
+    """
+    from phase_loop_runtime import sandbox_egress
+
+    if credential == "near_expiry":
+        _token(world.home, datetime.now(timezone.utc) - timedelta(minutes=1))
+    if kind == "seat_filtered_egress_unavailable":
+        raised = sandbox_egress.EgressUnavailable(kind)
+    elif kind != "agy_image_unqualified":
+        raised = _quiescence_or_sandbox_refusal(kind)
+    if kind != "agy_image_unqualified":  # a miss needs no record; the rest fault the help probe
+        _seed(world)
+
+        def refuse_help(image, env):
+            raise raised
+
+        monkeypatch.setattr(q, "_run_help", refuse_help)
+
+    class Broker:
+        def __init__(self, *args, **kwargs):
+            self.evidence = {}
+
+        def run_credentialless_client(self, adapter, **kwargs):
+            status, text = adapter.invoke()
+            return {"status": status, "text": text}, self.evidence
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(pi, "ParentUnixBroker", Broker)
+    monkeypatch.setattr(pi, "revalidate_review_isolation_authorization", lambda *a, **k: None)
+    monkeypatch.setattr(pi, "derive_review_leg_authorization", lambda *a, **k: None)
+    monkeypatch.setattr(pi, "_canonical_review_repo_authority", lambda *a: world.tmp)
+    monkeypatch.setattr(pi, "_seat_route_for_spawn", lambda *a, **k: (None, [], None))
+    monkeypatch.setattr(pi, "_leg_auth_ok", lambda *a, **k: (True, ""))
+    monkeypatch.setattr(pi, "_seat_provider_source", lambda *a: ("gemini", str(world.agy)))
+    before = _open_fds()
+
+    def spawn():
+        return pi._default_spawn(
+            "gemini", "synthetic review bundle", repo_dir=world.tmp, env=world.env,
+            review_authorization=SimpleNamespace(staged_tree_sha256=None),
+        )
+
+    if kind.endswith("_quiescence"):
+        with pytest.raises(pi.ProviderProcessGroupQuiescenceError):
+            spawn()
+    else:
+        code = raised.code if kind == "seat_sandbox_refused" else kind
+        result = spawn()
+        assert tuple(result) == ("DEGRADED", "", code)
+        assert code in result.seat_notices
+    assert _open_fds() == before
+    assert not world.marker.exists()

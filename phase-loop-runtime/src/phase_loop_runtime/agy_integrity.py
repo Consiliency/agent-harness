@@ -88,9 +88,11 @@ def admit_for_seat(path, env):
     ``check`` with the seat's env, from one read: a release member is admitted offline
     before any config or store read, otherwise a ``locally_qualified`` image through
     ``agy_qualification.lookup`` (agent-harness#1331); what runs is the sealed memfd of
-    those bytes, never the path. A miss, the opt-out, a failed record, an unsafe store, an
-    unreadable image or a memfd-seal failure is the typed refusal. What the help measurement
-    raises with its own type passes through unchanged: a typed seat refusal
+    those bytes, never the path. On the local-qualification path (an image that is not a
+    release member), a miss, the opt-out, a failed record, an unsafe store, an unreadable
+    image or a memfd-seal failure is the typed refusal. What the help measurement raises with
+    its own type passes through unchanged, and on the brokered review route the leg keeps its
+    code and notice: a typed seat refusal
     (``EgressUnavailable`` and its subclasses, e.g. ``seat_filtered_egress_unavailable``), a
     quiescence failure (``GeminiQuiescenceError``, ``ProviderProcessGroupQuiescenceError``)
     and a jail refusal (``SeatSandboxRefused``). The executor and canary callers call ``check``

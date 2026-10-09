@@ -17,10 +17,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - New `agy_integrity.admit_for_seat(path, env)`, used only by the two owned review-seat
   sites in `seat_profile` (the credential refresh without a heartbeat profile, and the owned
   non-heartbeat seat). It admits a release member offline as before, then a
-  `locally_qualified` image through `agy_qualification.lookup`. A miss, the opt-out, a
-  failed or tampered record, an unsafe store, an unreadable image or a memfd-seal failure is
-  the typed `agy_image_unqualified` refusal, and a miss closes its image. What the help
-  measurement raises with its own type passes through unchanged:
+  `locally_qualified` image through `agy_qualification.lookup`. On that local-qualification
+  path, a miss, the opt-out, a failed or tampered record, an unsafe store, an unreadable
+  image or a memfd-seal failure is the typed `agy_image_unqualified` refusal, and a miss
+  closes its image. What the help measurement raises with its own type passes through
+  unchanged, and on the brokered review route (the default) the gemini leg keeps that code
+  and its notice:
   - a typed seat refusal (`EgressUnavailable` and its subclasses, such as
     `seat_filtered_egress_unavailable`);
   - a quiescence failure (`GeminiQuiescenceError`, `ProviderProcessGroupQuiescenceError`),
