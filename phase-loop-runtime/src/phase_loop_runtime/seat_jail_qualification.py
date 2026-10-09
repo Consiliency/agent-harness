@@ -181,6 +181,11 @@ class QualificationError(RuntimeError):
     pass
 
 
+#: The qualification cannot start without `pytest` where the falsifier run reads dependencies
+#: (agent-harness#1357). Compared by equality in `seat_jail_autoqualify.classify_failure`.
+PYTEST_MISSING = "pytest is not installed where the jail's falsifier run reads dependencies"
+
+
 def _git(repo: Path, *args: str) -> None:
     subprocess.run(["git", "-C", str(repo), "-c", "user.email=q@local", "-c", "user.name=q",
                     "-c", "commit.gpgsign=false", *args], check=True, capture_output=True)
@@ -250,6 +255,12 @@ def qualify(leg: str = "claude", *, record: bool = True, provider: Path | None =
         raise QualificationError(seat_uid.PREREQUISITE)
     if not sandbox_egress.egress_isolation_available():
         raise QualificationError("egress isolation unavailable")
+    try:
+        pytest_present = review_stage.falsifier_distribution_available("pytest")
+    except (OSError, subprocess.SubprocessError, ValueError):
+        pytest_present = True   # cannot tell here; the run itself reports it
+    if not pytest_present:
+        raise QualificationError(PYTEST_MISSING)
     digest = seat_jail.jail_profile_digest(leg)
     layout = seat_jail.falsifier_layout_identity()
     host = seat_jail.host_identity()

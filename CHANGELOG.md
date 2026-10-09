@@ -6,6 +6,47 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### pytest is a runtime dependency; the jail's missing-pytest failure is a typed prerequisite (agent-harness#1357)
+
+- **`pytest>=8,<9` moves from the `test` dependency group to `[project].dependencies`**
+  (maintainer ruling). The seat jail's qualification runs a real falsifier run whose trusted
+  wrapper imports `pytest`, and the run copies its dependencies from the runtime's own
+  environment. A host installed from the published package had no `pytest` anywhere, so
+  `phase-loop seat-sandbox qualify` ended `sentinel never became ready ... No module named
+  'pytest'`, and the first-use requalification that 0.7.25 relies on could not succeed: jailed
+  Claude seats stayed degraded. It stayed hidden because the test and release environments install
+  `pytest` themselves. The upper bound keeps the range the suite and Gate A are tested on; widen it
+  with a test run.
+- **pytest's backports are declared with no marker: `exceptiongroup>=1`, `tomli>=2,<3` (its
+  `python_version < '3.11'` marker is dropped) and `typing-extensions>=4.6`.** The falsifier run's
+  interpreter is `/usr/bin/python3`, and its minor can be older than the runtime's. pytest selects
+  these backports by markers evaluated for the runtime's interpreter, so a runtime on Python 3.11 or
+  later over a 3.10 system interpreter installed none of them, and qualification failed with
+  `No module named 'exceptiongroup'`.
+- **A typed `prerequisite_missing` with a literal fix, not `falsifiers_failed` ("report a
+  defect").** `qualify()` now checks up front, with the dependency snapshot's own path discovery,
+  that `pytest` can be found. Only that check yields `prerequisite_missing` for pytest: an import
+  failure inside the sentinel run, including one naming `pytest` or a `pytest.` submodule, stays
+  `falsifiers_failed`, because by then the check has said pytest is present. The seat's mode line
+  shows the exact commands (`uv tool upgrade phase-loop-runtime` or
+  `pip install --upgrade phase-loop-runtime`), computed from what is missing now, not from a cached
+  reason.
+- **`phase-loop doctor` reports it.** `phase-loop-doctor.v1` gains an optional
+  `seat_jail_prerequisites[]` (`name`, `status` of `present`, `missing` or `unknown`, `unlocks`, and
+  `fix` when missing). It is additive (not `required` in the schema) and metadata-only, so
+  v0.7.25 payloads still validate.
+- **A clean-install check in Gate A.** `scripts/_gate_a_falsifier_probe.py` runs in the venv that
+  `gate_a_cleanroom.sh` builds from the wheel and its declared dependencies alone, before the
+  full-suite step installs `pytest` itself. It fails if the falsifier wrapper's imports do not
+  resolve, if the dependency snapshot cannot find `pytest`, if the snapshot does not stage
+  `pytest` and `_pytest`, or if the wrapper's import line fails when run the way the falsifier run
+  runs it: the system interpreter, the run's flags and environment, and the snapshot alone on its
+  path. A pull request runs it in the wheel-smoke job; the existing `test_gate_a_wheel_isolation`
+  drives the script and asserts the probe's success line.
+- **No jail pass is reset.** The falsifier-layout identity hashes the dependency snapshot's source,
+  so that function is untouched (the identity is still `execfind-falsifier-layout.v1:805042ce...`,
+  as on 0.7.25) and a test pins it.
+
 ### Plan word budget: check (S) and `.phase-loop-planning.toml` (agent-harness#1302)
 
 - `validate_plan_doc.py` (plan-phase) gains check (S): it warns when a phase plan's body,
