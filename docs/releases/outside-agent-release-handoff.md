@@ -706,15 +706,18 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 
 The digests below are from the pre-tag local build of the release candidate, produced by
 `uv build` under `umask 022` (archive member modes are umask-dependent,
-`Consiliency/agent-harness#519`) from a `git archive` export of `623ea0a4` (the release tree
-the agy series ran on; `phase-loop-runtime/` tree `6cc2be0f`). Later commits touch no
-packaged file. They are a preparation measurement, not a publication record: the publishing
+`Consiliency/agent-harness#519`) from a `git archive` export of the release head after main
+was merged in (agent-harness#1403, agent-harness#1411). Its `phase-loop-runtime/src/` tree
+(`483d68f0`) is the one the agy series ran on (`623ea0a4`). Compared with a build of
+`623ea0a4`, the wheel is identical member by member (498 files), and the sdist differs only in
+`tests/test_harden_evidence_producer.py` (agent-harness#1403). They are a preparation
+measurement, not a publication record: the publishing
 workflow rebuilds from the tagged commit and verifies `SHA256SUMS`, and the published digests
 are recorded here after the tag push. As for `0.7.15`–`0.7.25`, the published digests are
 expected to differ, because archive bytes are timestamp/toolchain-dependent.
 
-- prepared direct-wheel sha256: `ec3f6549d96f746d36a198a1fbda39a10abf3af3821cedca4f446b12630e6b05`
-- prepared direct-sdist sha256: `b6d0d7ad0ed8da17e664717caa8d51b74012e8ad582649f5e7fa2572e9c1247a`
+- prepared direct-wheel sha256: `7c50306f3239e4a742dbe238ab266a3f6ab97b6d15840d8d9328666968c77afd`
+- prepared direct-sdist sha256: `f7d24f4a7b53f4cc8a6a4bdad1736f3576b8b5e059f535800e22dd62b5c1b0b6`
 - sdist-derived-wheel sha256: not claimed, for the reason recorded for `0.7.14` below.
 
 ### Previous release: 0.7.25 (published)

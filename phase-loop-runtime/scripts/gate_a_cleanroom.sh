@@ -269,6 +269,8 @@ PYEOF
       /plans/phase-plan-v10-PROOFGATE.md \
       /skills-src/codex/codex-execute-phase/ \
       /skills-src/claude/claude-plan-phase/scripts/validate_plan_doc.py \
+      '/skills-src/*/*-skill-improvement-planner/' \
+      '/skills-src/*/*-skill-editor/' \
       /phase-loop-runtime/scripts/verify_harden_evidence.py \
       /phase-loop-runtime/scripts/qualify_gemini_heartbeat.py \
       /.agent-harness/advisor-boards.toml \

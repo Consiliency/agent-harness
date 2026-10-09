@@ -205,7 +205,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `/mnt/workspace/worktrees`; otherwise the repo's parent directory. Before, an existing but
   unwritable `/mnt/workspace/worktrees` failed the run.
 
-### Release records, plans and tests (PRs agent-harness#1332, agent-harness#1333, agent-harness#1348, agent-harness#1349, agent-harness#1351, agent-harness#1352, agent-harness#1380, agent-harness#1387)
+### Release records, plans, tests and CI (PRs agent-harness#1332, agent-harness#1333, agent-harness#1348, agent-harness#1349, agent-harness#1351, agent-harness#1352, agent-harness#1380, agent-harness#1387, agent-harness#1403, agent-harness#1411)
 
 - The 0.7.25 handoff record is marked published, and the `[0.7.25]` section is tidied
   (agent-harness#1352).
@@ -213,6 +213,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - HARDEN plan bookkeeping and tests (agent-harness#1348, agent-harness#1349, agent-harness#1351,
   agent-harness#1380, agent-harness#1387), and the shared owned-seat review namespace for the
   test suite (agent-harness#1332). No runtime change.
+- HARDEN test coverage for reviewed sibling syncs (agent-harness#1403), and Gate A's clean-room
+  sparse checkout now includes the skill-improvement planner and editor sources that
+  agent-harness#1325's tests read (agent-harness#1411). CI and tests only.
 
 ## [0.7.25] - 2026-10-08
 
