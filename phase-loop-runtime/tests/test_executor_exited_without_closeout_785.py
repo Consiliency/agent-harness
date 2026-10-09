@@ -93,6 +93,13 @@ def test_golden_delta_is_only_final_schema_exclusion():
     # at e7350e534e9a369be45baf34dc812eadd873e1f5. Undoing the sole permitted
     # enum exclusion must recover it, including every prompt/hash/model/argv.
     canonical = json.dumps(golden, sort_keys=True, separators=(",", ":"))
+    # The fourth permitted delta (agent-harness#1303): the execute-phase closeout rule
+    # text was restructured (broken sentences fixed, exit-code mapping as a list, one
+    # name for the audit). Undo exactly that span, which the claude prompt embeds,
+    # before the agent-harness#1139 pairs below run against the text they were written for.
+    pre_1303 = json.loads((Path(__file__).parent / "data/launchspec_golden/pre_1303_closeout_rule.json").read_text())
+    assert pre_1303["current"] in canonical
+    canonical = canonical.replace(pre_1303["current"], pre_1303["pre_1303"])
     # The third permitted delta (agent-harness#1139): the closeout-audit instruction in
     # the runner prompt and the execute-phase skill prescribes `--record-outputs` and
     # names the new producers behind exit 0. Undo exactly that prose, and the redacted
