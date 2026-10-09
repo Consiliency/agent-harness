@@ -2011,7 +2011,7 @@ def _seat_launch_modes(
             _what, why, _fix = _seat_jail.NOTICES[refusal]
             modes.append(sp.SeatMode(key, leg, sp.MODE_DEGRADED, refusal,
                                      f"{why}; reason: {reason}",
-                                     _seat_jail_autoqualify.REASON_FIXES[reason], None, position))
+                                     _seat_jail_autoqualify.fix_for(reason), None, position))
         elif refusal is not None:
             modes.append(_coded(sp.MODE_DEGRADED, refusal))
         elif not route.jailed:
