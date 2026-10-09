@@ -3396,14 +3396,18 @@ def validate_sl4_boundary(
         )
         if source_paths & sl4_paths:
             try:
-                imports_reviewed_sl4 = any(
-                    _is_ancestor(repo, reviewed_landing, commit_id)
-                    and all(
-                        blob(repo, commit_id, path)[0]
-                        == blob(repo, reviewed_landing, path)[0]
-                        for path in sl4_paths
-                    )
-                    for reviewed_landing in matches
+                reviewed_ancestor = next(
+                    (
+                        reviewed_landing
+                        for reviewed_landing in reversed(matches)
+                        if _is_ancestor(repo, reviewed_landing, commit_id)
+                    ),
+                    None,
+                )
+                imports_reviewed_sl4 = reviewed_ancestor is not None and all(
+                    blob(repo, commit_id, path)[0]
+                    == blob(repo, reviewed_ancestor, path)[0]
+                    for path in sl4_paths
                 )
             except EvidenceError:
                 imports_reviewed_sl4 = False
@@ -8180,6 +8184,7 @@ def self_test() -> None:
         _run(["git", "add", sibling_note.name], sl4_repo)
         _run(["git", "commit", "-qm", "sibling work before later reviews"], sl4_repo)
         _run(["git", "checkout", "-q", "copied-review-main"], sl4_repo)
+        copied_review_landings = []
         for sequence, contents in (
             ("second", "def test_sl4(): pass  # second reviewed correction\n"),
             ("latest", "def test_sl4(): pass  # latest reviewed correction\n"),
@@ -8197,7 +8202,75 @@ def self_test() -> None:
                 ],
                 sl4_repo,
             )
-        latest_review_landing = _run(["git", "rev-parse", "HEAD"], sl4_repo)
+            copied_review_landings.append(_run(["git", "rev-parse", "HEAD"], sl4_repo))
+        earlier_review_landing, latest_review_landing = copied_review_landings
+
+        _run(
+            [
+                "git", "checkout", "-qb", "superseded-review-candidate",
+                earlier_review_landing,
+            ],
+            sl4_repo,
+        )
+        (sl4_repo / sl5_path).write_text("VALUE = 480\n", encoding="utf-8")
+        _run(["git", "add", sl5_path], sl4_repo)
+        _run(["git", "commit", "-qm", "candidate from superseded SL-4 review"], sl4_repo)
+        superseded_candidate = _run(["git", "rev-parse", "HEAD"], sl4_repo)
+        commit_tree_rollback = integrated_candidate_revision(
+            sl4_repo,
+            latest_review_landing,
+            superseded_candidate,
+            "commit-tree rollback to superseded SL-4 review",
+        )
+        superseded_base, _ = canonical_candidate_fork(
+            sl4_repo, superseded_candidate, commit_tree_rollback
+        )
+        direct_rejected(
+            "commit-tree-rollback-to-superseded-SL-4-review",
+            lambda: validate_sl4_boundary(
+                sl4_repo,
+                sl0_landing,
+                superseded_base,
+                commit_tree_rollback,
+                candidate=superseded_candidate,
+            ),
+            "frozen SL-4 test changed after its reviewed landing",
+        )
+
+        _run(
+            [
+                "git", "checkout", "-qb", "superseded-review-merge",
+                latest_review_landing,
+            ],
+            sl4_repo,
+        )
+        _run(
+            [
+                "git", "merge", "--no-ff", "-qm", "merge stale SL-5 candidate",
+                "superseded-review-candidate",
+            ],
+            sl4_repo,
+        )
+        _run(
+            ["git", "revert", "--no-edit", "-m", "1", latest_review_landing],
+            sl4_repo,
+        )
+        merge_revert_rollback = _run(["git", "rev-parse", "HEAD"], sl4_repo)
+        merge_revert_base, _ = canonical_candidate_fork(
+            sl4_repo, superseded_candidate, merge_revert_rollback
+        )
+        direct_rejected(
+            "merge-revert-rollback-to-superseded-SL-4-review",
+            lambda: validate_sl4_boundary(
+                sl4_repo,
+                sl0_landing,
+                merge_revert_base,
+                merge_revert_rollback,
+                candidate=superseded_candidate,
+            ),
+            "frozen SL-4 test changed after its reviewed landing",
+        )
+
         _run(["git", "checkout", "-q", "copied-review-sibling"], sl4_repo)
         sl4_file.write_text(
             "def test_sl4(): pass  # latest reviewed correction\n",
