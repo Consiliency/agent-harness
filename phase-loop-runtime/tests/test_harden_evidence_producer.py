@@ -5113,3 +5113,211 @@ def test_harden_verifier_bounds_canonical_ledger_reads(
             child.join()
         if held_socket is not None:
             held_socket.close()
+
+
+def _sl4_sibling_sync_fixture(
+    root: Path, *, stale_sibling_sync: bool
+) -> dict[str, str]:
+    root.mkdir(parents=True)
+    _git(root, "init", "-q", "--initial-branch=main")
+    _git(root, "config", "user.email", "sl4-sync@example.invalid")
+    _git(root, "config", "user.name", "SL-4 sibling-sync test")
+    _git(root, "config", "commit.gpgsign", "false")
+    plan = "plans/phase-plan-v10-HARDEN.md"
+    sl0 = "phase-loop-runtime/tests/test_sl0_frozen.py"
+    sl4 = "phase-loop-runtime/tests/test_harden_evidence_producer.py"
+    sl5 = "phase-loop-runtime/scripts/build_harden_evidence.py"
+    plan_body = (
+        "# HARDEN\n\n"
+        f"### SL-0 - tests\n- **Owned files**: `{sl0}`\n\n"
+        f"### SL-4 - supplemental tests\n- **Owned files**: `{sl4}`\n\n"
+        f"### SL-5 - production\n- **Owned files**: `{sl5}`\n"
+    )
+    landing = _commit(
+        root,
+        "baseline",
+        {
+            plan: plan_body,
+            "README.md": "base\n",
+            sl0: "def test_sl0(): pass\n",
+            sl5: "VALUE = 0\n",
+        },
+    )
+
+    def merge(source: str, message: str) -> str:
+        _git(root, "merge", "--no-ff", "-q", "-m", message, source)
+        return _git(root, "rev-parse", "HEAD")
+
+    def reviewed_sl4(branch: str, body: str) -> str:
+        _git(root, "checkout", "-q", "-b", branch, "main")
+        _commit(root, f"test(HARDEN): SL-4 {branch}", {sl4: body})
+        _git(root, "checkout", "-q", "main")
+        return merge(branch, f"Merge reviewed SL-4 {branch}")
+
+    first = reviewed_sl4("sl4-r1", "def test_sl4(): assert 1\n")
+    _git(root, "checkout", "-q", "-b", "sibling", "main")
+    _commit(root, "sibling work", {"docs/sibling.md": "sibling\n"})
+    _git(root, "checkout", "-q", "main")
+    second = reviewed_sl4("sl4-r2", "def test_sl4(): assert 2\n")
+    if stale_sibling_sync:
+        _git(root, "checkout", "-q", "sibling")
+        merge("main", "Merge origin/main into sibling")
+        _git(root, "checkout", "-q", "main")
+    third = reviewed_sl4("sl4-r3", "def test_sl4(): assert 3\n")
+    _git(root, "checkout", "-q", "sibling")
+    merge("main", "Merge origin/main into sibling")
+    _git(root, "checkout", "-q", "main")
+    merge("sibling", "Merge sibling PR")
+    _git(root, "checkout", "-q", "-b", "sl5-candidate", "main")
+    candidate = _commit(
+        root,
+        "fix(HARDEN): SL-5 production",
+        {sl5: "VALUE = 1\n"},
+    )
+    _git(root, "checkout", "-q", "main")
+    revision = merge("sl5-candidate", "Merge SL-5 candidate")
+    assert _git(root, "rev-parse", f"{revision}^{{tree}}") == _git(
+        root, "rev-parse", f"{candidate}^{{tree}}"
+    )
+    reviewed_blobs = {
+        _git(root, "rev-parse", f"{commit_id}:{sl4}")
+        for commit_id in (first, second, third)
+    }
+    for commit_id in _git(root, "rev-list", revision).splitlines():
+        if _git(root, "ls-tree", "--name-only", commit_id, "--", sl4):
+            assert _git(root, "rev-parse", f"{commit_id}:{sl4}") in reviewed_blobs
+    return {"landing": landing, "candidate": candidate, "revision": revision}
+
+
+def test_harden_sl4_boundary_accepts_reviewed_sibling_syncs(tmp_path: Path) -> None:
+    verifier = _restarted_producer_module("seal").V
+    for stale_sibling_sync in (False, True):
+        repo = tmp_path / ("stale-sync" if stale_sibling_sync else "control")
+        refs = _sl4_sibling_sync_fixture(
+            repo, stale_sibling_sync=stale_sibling_sync
+        )
+        fork, _tip = verifier.canonical_candidate_fork(
+            repo, refs["candidate"], refs["revision"]
+        )
+        try:
+            verifier.validate_sl4_boundary(
+                repo,
+                refs["landing"],
+                fork,
+                refs["revision"],
+                candidate=refs["candidate"],
+            )
+        except verifier.EvidenceError as exc:
+            raise AssertionError(
+                f"stale_sibling_sync={stale_sibling_sync}: reviewed-only SL-4 "
+                f"history was refused: {exc}"
+            ) from exc
+
+
+def _sl4_superseded_rollback_fixture(
+    root: Path, *, integration: str
+) -> dict[str, str]:
+    root.mkdir(parents=True)
+    _git(root, "init", "-q", "--initial-branch=main")
+    _git(root, "config", "user.email", "sl4-rollback@example.invalid")
+    _git(root, "config", "user.name", "SL-4 rollback test")
+    _git(root, "config", "commit.gpgsign", "false")
+    plan = "plans/phase-plan-v10-HARDEN.md"
+    sl0 = "phase-loop-runtime/tests/test_sl0_frozen.py"
+    sl4 = "phase-loop-runtime/tests/test_harden_evidence_producer.py"
+    sl5 = "phase-loop-runtime/scripts/build_harden_evidence.py"
+    plan_body = (
+        "# HARDEN\n\n"
+        f"### SL-0 - tests\n- **Owned files**: `{sl0}`\n\n"
+        f"### SL-4 - supplemental tests\n- **Owned files**: `{sl4}`\n\n"
+        f"### SL-5 - production\n- **Owned files**: `{sl5}`\n"
+    )
+    landing = _commit(
+        root,
+        "baseline",
+        {plan: plan_body, sl0: "def test_sl0(): pass\n", sl5: "VALUE = 0\n"},
+    )
+
+    def reviewed_sl4(branch: str, body: str) -> str:
+        _git(root, "checkout", "-q", "-b", branch, "main")
+        _commit(root, f"test(HARDEN): SL-4 {branch}", {sl4: body})
+        _git(root, "checkout", "-q", "main")
+        _git(root, "merge", "--no-ff", "-q", "-m", f"Merge reviewed {branch}", branch)
+        return _git(root, "rev-parse", "HEAD")
+
+    first = reviewed_sl4("sl4-r1", "def test_sl4(): assert 1  # first review\n")
+    _git(root, "checkout", "-q", "-b", "sl5-candidate", "main")
+    candidate = _commit(root, "fix(HARDEN): SL-5 production", {sl5: "VALUE = 1\n"})
+    _git(root, "checkout", "-q", "main")
+    second = reviewed_sl4("sl4-r2", "def test_sl4(): assert 2  # correction\n")
+    if integration == "synced":
+        _git(root, "checkout", "-q", "sl5-candidate")
+        _git(root, "merge", "--no-ff", "-q", "-m", "Sync main", "main")
+        candidate = _git(root, "rev-parse", "HEAD")
+        _git(root, "checkout", "-q", "main")
+        _git(root, "merge", "--no-ff", "-q", "-m", "Merge SL-5", "sl5-candidate")
+        revision = _git(root, "rev-parse", "HEAD")
+    elif integration == "commit-tree":
+        tree = _git(root, "rev-parse", f"{candidate}^{{tree}}")
+        revision = _git(
+            root,
+            "commit-tree",
+            tree,
+            "-p",
+            second,
+            "-p",
+            candidate,
+            "-m",
+            "Merge SL-5",
+        )
+    else:
+        _git(root, "merge", "--no-ff", "-q", "-m", "Merge SL-5", "sl5-candidate")
+        _git(root, "revert", "--no-edit", "-m", "1", second)
+        revision = _git(root, "rev-parse", "HEAD")
+    assert _git(root, "rev-parse", f"{revision}^{{tree}}") == _git(
+        root, "rev-parse", f"{candidate}^{{tree}}"
+    )
+    return {
+        "landing": landing,
+        "first": first,
+        "second": second,
+        "candidate": candidate,
+        "revision": revision,
+        "sl4": sl4,
+    }
+
+
+def _validate_sl4_superseded_rollback(
+    verifier: Any, root: Path, refs: dict[str, str]
+) -> None:
+    fork, _tip = verifier.canonical_candidate_fork(
+        root, refs["candidate"], refs["revision"]
+    )
+    verifier.validate_sl4_boundary(
+        root,
+        refs["landing"],
+        fork,
+        refs["revision"],
+        candidate=refs["candidate"],
+    )
+
+
+@pytest.mark.parametrize("integration", ["commit-tree", "merge-then-revert"])
+def test_harden_sl4_boundary_rejects_superseded_review_rollback(
+    tmp_path: Path, integration: str
+) -> None:
+    verifier = _restarted_producer_module("seal").V
+    control_root = tmp_path / "control"
+    control = _sl4_superseded_rollback_fixture(control_root, integration="synced")
+    _validate_sl4_superseded_rollback(verifier, control_root, control)
+
+    root = tmp_path / integration
+    refs = _sl4_superseded_rollback_fixture(root, integration=integration)
+    final_sl4 = _git(root, "rev-parse", f"{refs['revision']}:{refs['sl4']}")
+    assert final_sl4 == _git(root, "rev-parse", f"{refs['first']}:{refs['sl4']}")
+    assert final_sl4 != _git(root, "rev-parse", f"{refs['second']}:{refs['sl4']}")
+    with pytest.raises(
+        verifier.EvidenceError,
+        match="frozen SL-4 test changed after its reviewed landing",
+    ):
+        _validate_sl4_superseded_rollback(verifier, root, refs)
