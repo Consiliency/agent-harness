@@ -592,6 +592,12 @@ def manifest_backed_roadmap(repo: Path) -> Path | None:
     if _phase_manifest_disabled():
         return None
     allow_completed = _discovery_allow_completed()
+    roadmap_status = roadmap_lint.validate_roadmap_status_coherence(repo, required=False)
+    registered_active = (
+        (repo / roadmap_status["selected_roadmap"]).resolve()
+        if roadmap_status is not None
+        else None
+    )
     candidates: list[Path] = []
     for entry in _phase_manifest_entries(repo):
         if entry.roadmap_ref is None or _entry_is_retired(entry, allow_completed):
@@ -601,6 +607,8 @@ def manifest_backed_roadmap(repo: Path) -> Path | None:
             resolved = path.resolve()
             resolved.relative_to(repo.resolve())
         except (OSError, ValueError):
+            continue
+        if registered_active is not None and resolved != registered_active:
             continue
         if resolved.exists() and resolved not in candidates:
             candidates.append(resolved)
