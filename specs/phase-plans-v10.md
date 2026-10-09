@@ -1,8 +1,12 @@
 # Phase roadmap v10 — Review Integrity, Contract Conformance, and Debt Retirement
 
-> **Status (2026-07-29): ACTIVE — created this date, nothing executed yet.**
-> Completion is recorded in the ledger, NOT by ticking these boxes (see `EC-LEGIBLE-1`,
-> which exists to fix exactly that). Do not read unchecked boxes as "unstarted".
+> # SUPERSEDED — ABSORBED INTO `specs/phase-plans-v11.md` (2026-10-08)
+>
+> **Do not execute this roadmap.** Six phases are DELIVERED and stay recorded in the ledger
+> (`plans/manifest.json`): LEGIBLE, CONFORM, PROOFGATE, GOVLEAN, FABPUB, FABREADMIT. Every
+> unfinished phase is carried into `specs/phase-plans-v11.md` with its alias and goal IDs
+> unchanged; v11 cites them against this file as of `9eb77a3d`. EC-HARDEN-5 is retired there and
+> replaced by EC-HARDEN-6. Completion is recorded in the ledger, NOT by ticking these boxes.
 
 ## Context
 
