@@ -146,6 +146,10 @@ For periodic human review, bound the run (`--max-phases N`) and read the finding
 summary between runs rather than blocking mid-loop. See `CHANGELOG.md` (rigor-v1)
 for the full list of gates.
 
+Who commits, pushes and opens pull requests in your repo — and which of that you can
+turn off — is in
+[docs/branch-and-publication-flow.md](docs/branch-and-publication-flow.md).
+
 ## Making phases converge
 
 Running the harness is the easy part; keeping a phase from grinding is the part
