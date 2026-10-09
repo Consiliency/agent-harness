@@ -13,6 +13,7 @@ from __future__ import annotations
 import importlib
 import importlib.machinery
 import json
+import re
 import os
 import sys
 import typing
@@ -52,12 +53,17 @@ def _stub(original, script: Path | None):
     return disabled
 
 
+_FINDING_PREFIX = re.compile(r"^(\([A-Z]+\)) ?")
+
+
 def _demoted(original, script: Path):
-    # The plan validator refuses on a finding unless it contains "WARN"; this keeps every
-    # finding but makes each one a warning, so main() no longer refuses on this check.
+    # The plan validator treats a finding as a warning only when it starts with
+    # `(X) WARN` or `(X) INFO` (`_is_warning`, agent-harness#1323). This keeps every
+    # finding but rewrites each as `(X) WARN: ...`, so main() no longer refuses on this check.
     def demoted(*args, **kwargs):
         _record({"killed_call": True, "via_main": _main_on_stack(script)})
-        return [f"WARN: {finding}" for finding in original(*args, **kwargs)]
+        return [_FINDING_PREFIX.sub(r"\1 WARN: ", finding, count=1) if _FINDING_PREFIX.match(finding)
+                else f"(X) WARN: {finding}" for finding in original(*args, **kwargs)]
 
     return demoted
 
