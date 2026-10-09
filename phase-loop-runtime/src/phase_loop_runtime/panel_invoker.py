@@ -6695,7 +6695,9 @@ def _claude_print_seat_command(
     writes ``panel-claude.txt`` on this route. ``add_dirs`` is the direct seat's grant (the
     staged review dir and the sandbox clone or repo), exactly as the TUI computes it.
 
-    ``--bare`` is never emitted: it turns off OAuth, so the seat could only run on a key.
+    ``--no-session-persistence`` keeps the seat from writing a session transcript (the
+    flag exists only with ``--print``). ``--bare`` is never emitted: it turns off OAuth, so
+    the seat could only run on a key.
     """
     default_model = (
         HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["claude"] if brokered else DEFAULT_LEG_MODELS["claude"]
@@ -6714,7 +6716,7 @@ def _claude_print_seat_command(
         "--permission-mode", "dontAsk", "--permission-prompts", "none",
         "--setting-sources", "", "--strict-mcp-config",
         "--mcp-config", json.dumps({"mcpServers": {}}), "--agents", "{}",
-        "--no-chrome", "--disable-slash-commands",
+        "--no-chrome", "--disable-slash-commands", "--no-session-persistence",
         "--session-id", str(uuid.uuid4()),
     ]
     if brokered:
@@ -9920,11 +9922,6 @@ def _exec_claude_print_leg(
         else max(1, int(timeout_s), _MAX_LEG_TIMEOUT_S)
     )
     stall_s = _broker_claude_stall_threshold(prompt, backstop) if brokered else None
-    # Nothing on this route writes a transcript into the out dir; the exact path is still
-    # bound and checked afterwards, as on the TUI.
-    transcript_path = out_dir / f"claude-{session_id}.jsonl" if brokered else None
-    if transcript_path is not None and os.path.lexists(transcript_path):
-        return "UNAVAILABLE", "brokered_claude_session_collision"
     if brokered:
         _record_broker_provider_evidence(
             broker_evidence, harness="claude",
@@ -9945,29 +9942,20 @@ def _exec_claude_print_leg(
                 "claude_route": _PANEL_CLAUDE_ROUTE_PRINT,
                 "claude_session_id_sha256": sha256(session_id.encode()).hexdigest(),
                 "claude_session_resume_forbidden": True,
-                "claude_transcript_exact_path_sha256": sha256(
-                    str(transcript_path).encode()
-                ).hexdigest(),
-                "claude_transcript_preexisting": False,
+                # `--no-session-persistence`: the seat writes no session transcript at all.
+                "claude_session_persistence": False,
                 "provider_liveness_profile": _BROKER_CLAUDE_STALL_PROFILE,
                 "provider_liveness_stall_threshold_s": stall_s,
                 "provider_liveness_prompt_bytes": len(prompt.encode("utf-8", errors="strict")),
             })
     observed: dict[str, object] = {}
-    cleanup_ok = True
-    try:
-        rc, review_text, log_text, tail = _run_claude_print_session(
-            command, transport, env=env, cwd=cwd, mode=mode, timeout_s=timeout_s,
-            stall_s=stall_s, backstop_s=backstop, quiescence_latch=quiescence_latch,
-            review_monitor=review_monitor, observed=observed,
-        )
-    finally:
-        if transcript_path is not None:
-            cleanup_ok = _cleanup_broker_claude_transcript(transcript_path, broker_evidence)
+    rc, review_text, log_text, tail = _run_claude_print_session(
+        command, transport, env=env, cwd=cwd, mode=mode, timeout_s=timeout_s,
+        stall_s=stall_s, backstop_s=backstop, quiescence_latch=quiescence_latch,
+        review_monitor=review_monitor, observed=observed,
+    )
     if broker_evidence is not None:
         broker_evidence["claude_api_key_source"] = observed.get("api_key_source")
-    if not cleanup_ok:
-        return "UNAVAILABLE", "brokered_claude_transcript_cleanup_failed"
     if quiescence_latch is not None:
         quiescence_latch.raise_if_set()
     # The in-band guard's codes are reported like the pre-launch auth gate's.

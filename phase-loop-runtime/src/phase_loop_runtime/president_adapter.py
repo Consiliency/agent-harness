@@ -450,12 +450,22 @@ class PresidentInvoke:
         if route is None:
             return 1, "", panel_invoker._PANEL_CLAUDE_ROUTE_INVALID
         if route == panel_invoker._PANEL_CLAUDE_ROUTE_PRINT:
+            env = panel_invoker._broker_leg_env(self.base_env, "claude")
+            # The panel print leg's pre-launch gates. A refusal is a failed launch with its
+            # typed code as the log, the shape every president route failure takes.
+            supported, support_detail = panel_invoker._claude_code_support_status(
+                min_version=panel_invoker._CLAUDE_PRINT_MIN_VERSION)
+            if not supported:
+                return 1, "", support_detail
+            authed, auth_detail = panel_invoker._claude_subscription_auth_ok(env)
+            if not authed:
+                return 1, "", auth_detail
             timeout_s = panel_invoker._leg_timeout_for(out_dir)
             backstop_s = max(1, int(timeout_s), panel_invoker._MAX_LEG_TIMEOUT_S)
             rc, text, log, _tail = panel_invoker._run_claude_print_session(
                 panel_invoker._claude_print_seat_command(route_model, None, brokered=True),
                 panel_invoker._BROKER_CLAUDE_DIRECT_REQUEST + prompt,
-                env=panel_invoker._broker_leg_env(self.base_env, "claude"),
+                env=env,
                 cwd=out_dir.resolve(),
                 mode="president",
                 timeout_s=timeout_s,

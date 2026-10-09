@@ -82,7 +82,8 @@ def test_brokered_print_argv_golden():
         "--permission-mode", "dontAsk", "--permission-prompts", "none",
         "--setting-sources", "", "--strict-mcp-config",
         "--mcp-config", '{"mcpServers": {}}', "--agents", "{}",
-        "--no-chrome", "--disable-slash-commands", "--session-id", "<SESSION>",
+        "--no-chrome", "--disable-slash-commands", "--no-session-persistence",
+        "--session-id", "<SESSION>",
         "--tools", "", "--disallowedTools", _BROKER_DENY,
     ]
 
@@ -98,9 +99,17 @@ def test_direct_print_argv_golden(tmp_path):
         "--permission-mode", "dontAsk", "--permission-prompts", "none",
         "--setting-sources", "", "--strict-mcp-config",
         "--mcp-config", '{"mcpServers": {}}', "--agents", "{}",
-        "--no-chrome", "--disable-slash-commands", "--session-id", "<SESSION>",
+        "--no-chrome", "--disable-slash-commands", "--no-session-persistence",
+        "--session-id", "<SESSION>",
         "--add-dir", str(review_dir), "--tools", "Read", "--allowedTools", "Read",
     ]
+
+
+@pytest.mark.parametrize("brokered", [True, False])
+def test_print_argv_disables_session_persistence_and_never_bare(brokered):
+    command = pi._claude_print_seat_command(None, None, brokered=brokered)
+    assert "--no-session-persistence" in command
+    assert "--bare" not in command
 
 
 @pytest.mark.parametrize("brokered", [True, False])
@@ -138,12 +147,14 @@ def test_brokered_leg_puts_prompt_on_stdin_with_no_add_dir(tmp_path, monkeypatch
     assert evidence["provider_prompt_transport"] == "stdin"
     assert "<STDIN_SEALED_INLINE_PROMPT>" in evidence["provider_argv_shape"]
     assert "<CLAUDE_SESSION_ID>" in evidence["provider_argv_shape"]
-    # Every key the TUI route records is still present.
-    for key in ("claude_session_id_sha256", "claude_session_resume_forbidden",
-                "claude_transcript_exact_path_sha256", "claude_transcript_preexisting",
-                "provider_liveness_profile", "provider_liveness_stall_threshold_s",
-                "provider_liveness_prompt_bytes", "claude_transcript_cleanup_verified"):
+    assert evidence["claude_session_resume_forbidden"] is True
+    assert evidence["claude_session_persistence"] is False
+    for key in ("claude_session_id_sha256", "provider_liveness_profile",
+                "provider_liveness_stall_threshold_s", "provider_liveness_prompt_bytes"):
         assert key in evidence, key
+    # No session transcript exists on this route, so none is bound or cleaned up.
+    assert not any(key.startswith("claude_transcript_") for key in evidence)
+    assert list(out_dir.iterdir()) == []
 
 
 def test_direct_leg_prompt_drops_the_file_handoff_and_keeps_the_verdict(
@@ -377,8 +388,7 @@ class _Reached(Exception):
     pass
 
 
-def test_president_fable_rung_runs_the_print_session_by_default(tmp_path, monkeypatch):
-    monkeypatch.delenv(_ROUTE_ENV, raising=False)
+def test_president_fable_rung_runs_the_print_session_by_default(tmp_path, monkeypatch, ready_host):
     calls: list = []
 
     def spy_print(command, prompt, **kwargs):
@@ -413,3 +423,28 @@ def test_president_invalid_route_fails_without_launching(tmp_path, monkeypatch):
     assert response["status"] == "failed"
     assert "panel_claude_route_invalid" in response["detail"]
     assert launched == []
+
+
+@pytest.mark.parametrize("gate,code", [
+    ("_claude_code_support_status", "claude_code_version_below_minimum:2.1.258"),
+    ("_claude_subscription_auth_ok", "subscription_auth_unproven"),
+])
+def test_president_print_gates_fail_before_launching(tmp_path, monkeypatch, ready_host, gate, code):
+    seen: list = []
+
+    def refuse(*args, **kwargs):
+        seen.append(kwargs)
+        return False, code
+
+    monkeypatch.setattr(pi, gate, refuse)
+    launched = _forbid_launches(monkeypatch)
+    seam = president_adapter.build_president_invoke(
+        DEFAULT_BOARD, repo_dir=str(tmp_path), base_env={}
+    )
+    response = seam("fable", "F001: [fable] the dispatch lock is never released")
+    assert response["status"] == "failed"
+    assert response["code"] == "president_invocation_failed"
+    assert code in response["detail"]
+    assert launched == []
+    if gate == "_claude_code_support_status":
+        assert seen == [{"min_version": pi._CLAUDE_PRINT_MIN_VERSION}]
