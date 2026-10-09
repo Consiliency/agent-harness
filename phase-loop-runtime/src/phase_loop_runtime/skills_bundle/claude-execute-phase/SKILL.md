@@ -83,17 +83,18 @@ adapter mode overrides the orchestrator-only interactive workflow below.
   against the active plan's owned files and control artifacts. If a generated
   path is unowned or derived from unauthorized raw/private inputs, stop with
   `dirty_worktree_conflict` instead of reporting completion. For IGNORED paths do
-  not judge by hand: run `phase-loop-closeout-audit --repo . --record-outputs --phase "<ALIAS>"` (module form `python -m phase_loop_runtime.closeout_classifier --repo . --record-outputs --phase "<ALIAS>"` only when the package is on the ACTIVE python's path); replace `<ALIAS>` with the alias of the phase you are executing, exactly as your plan and runner prompt name it. Pasted unchanged it is still valid shell; `--phase` matters only in a repo that commits `.phase-loop-generated-outputs.json`, and there an unsubstituted `<ALIAS>` records and accepts nothing, so the audit blocks
-  and block only when it exits 1 (unknown ignored outputs). Exit 0 means every ignored path was produced by the runner or its own toolchain (`.phase-loop/**`, pytest/Ruff caches, `__pycache__`, egg-info, `.venv`), is a harness handoff, or was written by a producer the committed `.phase-loop-generated-outputs.json` declares, re-run and recorded by `--record-outputs` (agent-harness#1139) -- the governed command's own footprint, which must never block a verified owned diff (agent-harness#670).
-  Exit 2 means the probe failed: treat that as blocking, and so is ANY
-  failure to run the audit at all (command not found on a pinned runtime
-  that predates it, non-zero for any other reason) -- inability to measure
-  is never evidence of a clean tree. But when required
-  verification passed and the ONLY uncommitted paths are phase-owned outputs this
-  run was not authorized to commit, report `awaiting_phase_closeout` and let the
-  runner's graduated closeout gate commit them — reserve `dirty_worktree_conflict`
-  for unowned paths, ignored paths the audit typed as unknown, or
-  overlapping-unrelated paths.
+  not judge by hand: run the closeout audit, `phase-loop-closeout-audit --repo . --record-outputs --phase "<ALIAS>"` (module form `python -m phase_loop_runtime.closeout_classifier --repo . --record-outputs --phase "<ALIAS>"` only when the package is on the ACTIVE python's path); replace `<ALIAS>` with the alias of the phase you are executing, exactly as your plan and runner prompt name it. Pasted unchanged it is still valid shell; `--phase` matters only in a repo that commits `.phase-loop-generated-outputs.json`, and there an unsubstituted `<ALIAS>` records and accepts nothing, so the closeout audit blocks.
+  The closeout audit's last output line (`action: exit N ... -> ...`) states the required action; follow it. A runtime that predates that line gets the same mapping from its exit code:
+    - exit 0 (every ignored path was produced by the runner or its own toolchain -- `.phase-loop/**`, pytest/Ruff caches, `__pycache__`, egg-info, `.venv` -- is a harness handoff, or was written by a producer the committed `.phase-loop-generated-outputs.json` declares, re-run and recorded by `--record-outputs`, agent-harness#1139): ignored paths are not a blocker and must never block a verified owned diff (agent-harness#670); the rest of closeout still decides the terminal status.
+    - exit 1 (unknown ignored outputs): stop with `dirty_worktree_conflict`.
+    - exit 2 (probe failed): stop with `dirty_worktree_conflict`.
+    - any failure to run the audit at all (command not found on a pinned runtime that predates it, non-zero for any other reason): stop with `dirty_worktree_conflict` -- inability to measure is never evidence of a clean tree.
+
+  Precedence: when required verification passed and the ONLY uncommitted paths
+  are phase-owned outputs this run was not authorized to commit, report
+  `awaiting_phase_closeout` and let the runner's graduated closeout gate commit
+  them — reserve `dirty_worktree_conflict` for unowned paths, ignored paths the
+  closeout audit typed as unknown, or overlapping-unrelated paths.
 
 Follow-on executor for `/<harness>-plan-phase`. Consumes the plan doc + TaskCreate'd lane tasks and drives them to completion: root lanes first, parallel lanes in parallel, auto-merge on green, retry-once on failure, halt-all on second failure.
 
