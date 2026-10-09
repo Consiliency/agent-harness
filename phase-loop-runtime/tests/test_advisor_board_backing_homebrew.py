@@ -29,6 +29,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from harden_tdd_guard import (
     assert_exact_unavailable,
     invoke_sanctioned_board_control,
@@ -51,6 +53,12 @@ from phase_loop_runtime.advisor_board.fixtures import (
     TWO_SAME_VENDOR_BOARD,
 )
 from phase_loop_runtime.advisor_board.harness_mapping import render_gemini_model
+
+
+@pytest.fixture(autouse=True)
+def _pin_claude_tui_route(monkeypatch):
+    """These tests assert the PTY TUI route; the default is now headless print (Stage 1b)."""
+    monkeypatch.setenv("PHASE_LOOP_PANEL_CLAUDE_ROUTE", "tui")
 
 
 def _invoke_board_control(board, artifact: str, **kwargs):
