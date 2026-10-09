@@ -6,6 +6,24 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Interactive execute-phase publication mode (agent-harness#1392)
+
+- The interactive execute-phase path now has a publication control, like the runner's
+  `--closeout-mode`. The values are `none` (no push, no PR), `draft-only` (push and open a
+  draft PR that is never flipped to ready) and `ready`. `ready` is the default, so behaviour
+  is unchanged unless a repo or user opts out.
+- A repo declares it in a committed root `.phase-loop-publication.toml`
+  (`[interactive] mode = "none"`). Only the copy at `HEAD` counts; an untracked, ignored,
+  staged or modified copy is an error. A user can set it in
+  `$XDG_CONFIG_HOME/agent-harness/publication.toml`. The most restrictive setting wins, and a
+  malformed setting is an error, never a silent default.
+- New `phase-loop publication-mode --repo .` prints the resolved mode and one
+  `PUBLICATION_ACTION:` line. The execute-phase skills (claude, codex, gemini, opencode) run
+  it before the first push or `gh pr create` and before closeout publication, and do what it
+  says. A non-zero exit means publish nothing.
+- `docs/branch-and-publication-flow.md` replaces its "Known gap" section with the control, and
+  notes that the inner `phase-loop execute` leg keeps the `manual` closeout default.
+
 ## [0.7.26] - 2026-10-09
 
 ### Upgrade notes
