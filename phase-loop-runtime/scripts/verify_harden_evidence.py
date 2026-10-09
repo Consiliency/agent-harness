@@ -3396,12 +3396,14 @@ def validate_sl4_boundary(
         )
         if source_paths & sl4_paths:
             try:
-                imports_reviewed_sl4 = _is_ancestor(
-                    repo, sl4_landing, commit_id
-                ) and all(
-                    blob(repo, commit_id, path)[0]
-                    == blob(repo, sl4_landing, path)[0]
-                    for path in sl4_paths
+                imports_reviewed_sl4 = any(
+                    _is_ancestor(repo, reviewed_landing, commit_id)
+                    and all(
+                        blob(repo, commit_id, path)[0]
+                        == blob(repo, reviewed_landing, path)[0]
+                        for path in sl4_paths
+                    )
+                    for reviewed_landing in matches
                 )
             except EvidenceError:
                 imports_reviewed_sl4 = False
@@ -8169,6 +8171,83 @@ def self_test() -> None:
             update_fork,
             update_canonical_main,
             candidate=update_candidate,
+        )
+
+        _run(["git", "checkout", "-qb", "copied-review-main", sl4_landing], sl4_repo)
+        _run(["git", "checkout", "-qb", "copied-review-sibling"], sl4_repo)
+        sibling_note = sl4_repo / "copied-review-sibling.txt"
+        sibling_note.write_text("sibling work\n", encoding="utf-8")
+        _run(["git", "add", sibling_note.name], sl4_repo)
+        _run(["git", "commit", "-qm", "sibling work before later reviews"], sl4_repo)
+        _run(["git", "checkout", "-q", "copied-review-main"], sl4_repo)
+        for sequence, contents in (
+            ("second", "def test_sl4(): pass  # second reviewed correction\n"),
+            ("latest", "def test_sl4(): pass  # latest reviewed correction\n"),
+        ):
+            source_branch = f"copied-review-{sequence}-source"
+            _run(["git", "checkout", "-qb", source_branch], sl4_repo)
+            sl4_file.write_text(contents, encoding="utf-8")
+            _run(["git", "add", sl4_path], sl4_repo)
+            _run(["git", "commit", "-qm", f"review {sequence} SL-4 correction"], sl4_repo)
+            _run(["git", "checkout", "-q", "copied-review-main"], sl4_repo)
+            _run(
+                [
+                    "git", "merge", "--no-ff", "-qm",
+                    f"land {sequence} reviewed SL-4 correction", source_branch,
+                ],
+                sl4_repo,
+            )
+        latest_review_landing = _run(["git", "rev-parse", "HEAD"], sl4_repo)
+        _run(["git", "checkout", "-q", "copied-review-sibling"], sl4_repo)
+        sl4_file.write_text(
+            "def test_sl4(): pass  # latest reviewed correction\n",
+            encoding="utf-8",
+        )
+        _run(["git", "add", sl4_path], sl4_repo)
+        _run(["git", "commit", "-qm", "copy latest reviewed SL-4 bytes"], sl4_repo)
+        copied_review = _run(["git", "rev-parse", "HEAD"], sl4_repo)
+        if _is_ancestor(sl4_repo, latest_review_landing, copied_review):
+            raise AssertionError("copied SL-4 review unexpectedly descends from its landing")
+        _run(
+            [
+                "git", "merge", "--no-ff", "-qm",
+                "update copied-review sibling from canonical main", "copied-review-main",
+            ],
+            sl4_repo,
+        )
+        _run(["git", "checkout", "-q", "copied-review-main"], sl4_repo)
+        _run(
+            [
+                "git", "merge", "--no-ff", "-qm",
+                "merge copied-review sibling", "copied-review-sibling",
+            ],
+            sl4_repo,
+        )
+        copied_review_base = _run(["git", "rev-parse", "HEAD"], sl4_repo)
+        _run(["git", "checkout", "-qb", "copied-review-candidate"], sl4_repo)
+        (sl4_repo / sl5_path).write_text("VALUE = 481\n", encoding="utf-8")
+        _run(["git", "add", sl5_path], sl4_repo)
+        _run(["git", "commit", "-qm", "candidate after copied SL-4 bytes"], sl4_repo)
+        copied_review_candidate = _run(["git", "rev-parse", "HEAD"], sl4_repo)
+        _run(["git", "checkout", "-q", "copied-review-main"], sl4_repo)
+        _run(
+            [
+                "git", "merge", "--no-ff", "-qm",
+                "merge candidate after copied SL-4 bytes", "copied-review-candidate",
+            ],
+            sl4_repo,
+        )
+        copied_review_revision = _run(["git", "rev-parse", "HEAD"], sl4_repo)
+        direct_rejected(
+            "copied-reviewed-SL-4-without-landing-descent",
+            lambda: validate_sl4_boundary(
+                sl4_repo,
+                sl0_landing,
+                copied_review_base,
+                copied_review_revision,
+                candidate=copied_review_candidate,
+            ),
+            "frozen SL-4 test changed after its reviewed landing",
         )
 
         _run(["git", "checkout", "-q", "main"], sl4_repo)
