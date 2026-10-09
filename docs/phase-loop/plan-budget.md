@@ -63,7 +63,8 @@ need review:
 ## Warnings
 
 - **Undeclared alias:** a `[plan_budget.phases.<ALIAS>]` entry whose alias no roadmap in the
-  repository declares (any `specs/phase-plans-*.md`, whatever its status) applies to no plan.
+  repository declares (any `specs/phase-plans-*.md`, nested paths included, whatever its
+  status) applies to no plan.
   The validator reports it as `(S) WARN: [plan_budget.phases.<ALIAS>] …`, so a typo such as
   `CONFROM` surfaces instead of being silently ignored. It is reported in every mode,
   including `off`, and stays a warning under `mode = "error"`: a phase renamed in its

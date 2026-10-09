@@ -370,6 +370,39 @@ def test_aliases_come_from_every_roadmap_not_only_the_active_one(tmp_path: Path)
     assert V._check_s_undeclared_phase_aliases(repo) == []
 
 
+def test_declared_alias_in_registered_nested_roadmap_is_not_reported(tmp_path: Path) -> None:
+    # Board finding F001 (agent-harness#1396 hb1): the runtime's roadmap set is the git
+    # pathspec `specs/phase-plans-*.md`, whose `*` also matches `/`. A registered roadmap
+    # at `specs/phase-plans-archive/convergence-v1.md` declares FREEZE, so an entry for
+    # it must not be reported.
+    import json
+
+    from phase_loop_runtime import roadmap_lint
+
+    repo, command = _roadmap_repo(tmp_path, (
+        '[plan_budget]\nmode = "error"\n[plan_budget.phases.freeze]\nbase_words = 8000\n'
+    ))
+    nested = "specs/phase-plans-archive/convergence-v1.md"
+    (repo / nested).parent.mkdir()
+    (repo / nested).write_bytes((REPO / "specs/phase-plans-convergence-v1.md").read_bytes())
+    registry = {
+        "schema": "roadmap_status_manifest.v1",
+        "selected_roadmap": "specs/phase-plans-v10.md",
+        "roadmaps": [
+            {"path": nested, "status": "superseded"},
+            {"path": "specs/phase-plans-v10.md", "status": "active"},
+        ],
+    }
+    (repo / "specs/roadmap-status.json").write_text(json.dumps(registry), encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "specs"], check=True)
+    assert roadmap_lint._tracked_roadmap_paths(repo) == [nested, "specs/phase-plans-v10.md"]
+    assert roadmap_lint.read_roadmap_status(repo, repo / "specs/roadmap-status.json") == registry
+    proc = subprocess.run(command, capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr[-2000:]
+    assert "[plan_budget.phases.freeze]" not in proc.stderr, proc.stderr[-2000:]
+    assert V._check_s_undeclared_phase_aliases(repo) == []
+
+
 def test_undeclared_alias_check_is_silent_without_roadmaps_or_readable_config(
     tmp_path: Path,
 ) -> None:

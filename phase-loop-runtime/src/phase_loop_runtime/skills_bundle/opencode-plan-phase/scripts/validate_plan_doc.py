@@ -940,15 +940,20 @@ def _resolve_plan_budget(
 
 def _declared_phase_aliases(repo_root: Path) -> Optional[Set[str]]:
     """Upper-cased aliases declared by every roadmap in the repo, whatever its status.
-    `specs/phase-plans-*.md` is the runtime's roadmap set (`specs/roadmap-status.json`
-    must register exactly those files). Uses the runtime's roadmap parser, as check (P)
+    The runtime's roadmap set is the git pathspec `specs/phase-plans-*.md`
+    (`specs/roadmap-status.json` must register exactly those files). A pathspec `*` also
+    matches `/`, so nested roadmaps such as `specs/phase-plans-archive/v1.md` count;
+    `fnmatchcase` has the same semantics. Uses the runtime's roadmap parser, as check (P)
     does. None when phase_loop_runtime is not importable."""
     try:
         from phase_loop_runtime import roadmap_lint as _rl  # type: ignore
     except ImportError:
         return None
     aliases: Set[str] = set()
-    for roadmap in sorted((repo_root / "specs").glob("phase-plans-*.md")):
+    for roadmap in sorted((repo_root / "specs").rglob("*.md")):
+        rel = roadmap.relative_to(repo_root).as_posix()
+        if not roadmap.is_file() or not fnmatchcase(rel, "specs/phase-plans-*.md"):
+            continue
         text = roadmap.read_text(encoding="utf-8")
         aliases.update(p.alias.strip().upper() for p in _rl._extract_phases(text))
     return aliases
