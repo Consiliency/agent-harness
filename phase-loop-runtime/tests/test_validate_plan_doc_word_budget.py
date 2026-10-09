@@ -286,3 +286,107 @@ def test_plan_budget_docs_name_the_tracked_config() -> None:
                     or ".phase-loop/planning.toml" in text or "phases.CONFORM" in text):
                 offenders.append(str(path.relative_to(REPO)))
     assert offenders == []
+
+
+# --- agent-harness#1381: entries whose alias no roadmap declares are reported -------------
+
+def _roadmap_repo(tmp_path: Path, config_text: str) -> "tuple[Path, list]":
+    """A git repo holding the v10 roadmap, a PROOFGATE plan anchored to it, and the given
+    `.phase-loop-planning.toml`. Returns the repo and the validator command."""
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    (tmp_path / "specs").mkdir()
+    roadmap = (REPO / "specs/phase-plans-v10.md").read_bytes()
+    (tmp_path / "specs/phase-plans-v10.md").write_bytes(roadmap)
+    src = re.sub(
+        r"(?m)^roadmap_sha256:.*$",
+        "roadmap_sha256: " + hashlib.sha256(roadmap).hexdigest(),
+        proofgate_grandfather_plan_bytes(),
+    )
+    plan = tmp_path / "phase-plan-v10-PROOFGATE.md"
+    plan.write_text(src, encoding="utf-8")
+    _write_config(tmp_path, config_text)
+    return tmp_path, [
+        sys.executable, str(PLAN_VALIDATOR), str(plan),
+        "--grammar-cutoff-commit", PROOFGATE_GRANDFATHER_CUTOFF_OID,
+        "--grammar-successor-commit", PROOFGATE_GRANDFATHER_SUCCESSOR_OID,
+        "--server-attested-pre-grammar-date", PROOFGATE_GRANDFATHER_SERVER_DATE,
+    ]
+
+
+@pytest.mark.parametrize("mode", ["warn", "error"])
+def test_cli_reports_entry_for_undeclared_alias(tmp_path: Path, mode: str) -> None:
+    # Red-first: a mistyped alias used to be silently ignored. It is a WARN in every mode;
+    # under `mode = "error"` the plan still exits 0, because the finding is about the
+    # config and a renamed phase would otherwise fail every plan in the repo.
+    _, command = _roadmap_repo(tmp_path, (
+        f'[plan_budget]\nmode = "{mode}"\n\n[plan_budget.phases.CONFROM]\nbase_words = 8000\n'
+    ))
+    proc = subprocess.run(command, capture_output=True, text=True)
+    flagged = [line for line in proc.stderr.splitlines() if "CONFROM" in line]
+    assert len(flagged) == 1, proc.stderr[-2000:]
+    assert flagged[0].startswith("(S) WARN: [plan_budget.phases.CONFROM]")
+    assert V._is_warning(flagged[0])
+    assert proc.returncode == 0, proc.stderr[-2000:]
+
+
+def test_cli_declared_aliases_are_not_reported(tmp_path: Path) -> None:
+    # Green guard: declared aliases, in any case, and the plan's own phase raise nothing.
+    _, command = _roadmap_repo(tmp_path, (
+        '[plan_budget]\nmode = "error"\n\n'
+        "[plan_budget.phases.conform]\nbase_words = 8000\n\n"
+        "[plan_budget.phases.PANEL]\nbase_words = 8000\n\n"
+        "[plan_budget.phases.ProofGate]\nbase_words = 8000\n"
+    ))
+    proc = subprocess.run(command, capture_output=True, text=True)
+    assert "(S)" not in proc.stderr, proc.stderr[-2000:]
+    assert proc.returncode == 0, proc.stderr[-2000:]
+
+
+def test_undeclared_alias_findings_name_each_entry(tmp_path: Path) -> None:
+    repo, _ = _roadmap_repo(tmp_path, (
+        '[plan_budget]\nmode = "off"\n\n'
+        "[plan_budget.phases.CONFROM]\nbase_words = 1\n\n"
+        "[plan_budget.phases.CONFORM]\nbase_words = 1\n\n"
+        "[plan_budget.phases.WARN]\nbase_words = 1\n"
+    ))
+    findings = V._check_s_undeclared_phase_aliases(repo)
+    assert [f.split("]")[0] for f in findings] == [
+        "(S) WARN: [plan_budget.phases.CONFROM", "(S) WARN: [plan_budget.phases.WARN",
+    ]
+
+
+def test_aliases_come_from_every_roadmap_not_only_the_active_one(tmp_path: Path) -> None:
+    # FREEZE is declared only by the superseded convergence-v1 roadmap, whose name is
+    # outside `phase-plans-v*`; RUNTIME is declared by both it and v10, so one entry
+    # covers both roadmaps.
+    repo, _ = _roadmap_repo(tmp_path, (
+        "[plan_budget.phases.FREEZE]\nbase_words = 1\n\n"
+        "[plan_budget.phases.RUNTIME]\nbase_words = 1\n"
+    ))
+    findings = V._check_s_undeclared_phase_aliases(repo)
+    assert [f.split("]")[0] for f in findings] == ["(S) WARN: [plan_budget.phases.FREEZE"]
+    convergence = "specs/phase-plans-convergence-v1.md"
+    (repo / convergence).write_bytes((REPO / convergence).read_bytes())
+    assert V._check_s_undeclared_phase_aliases(repo) == []
+
+
+def test_undeclared_alias_check_is_silent_without_roadmaps_or_readable_config(
+    tmp_path: Path,
+) -> None:
+    # No roadmap to compare against: nothing is reported (the plan already fails (FM)).
+    _write_config(tmp_path, "[plan_budget.phases.CONFROM]\nbase_words = 1\n")
+    assert V._check_s_undeclared_phase_aliases(tmp_path) == []
+    assert V._check_s_undeclared_phase_aliases(None) == []
+    # Unparseable TOML is reported once, by `_resolve_plan_budget`, not again here.
+    repo, _ = _roadmap_repo(tmp_path / "r", "[plan_budget.phases.CONFROM\n")
+    assert V._check_s_undeclared_phase_aliases(repo) == []
+    assert V._resolve_plan_budget(repo, "PROOFGATE", None)[1][0].startswith("(S) invalid")
+
+
+def test_undeclared_alias_check_is_visible_without_runtime(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repo, _ = _roadmap_repo(tmp_path, "[plan_budget.phases.CONFROM]\nbase_words = 1\n")
+    monkeypatch.setitem(sys.modules, "phase_loop_runtime", None)
+    findings = V._check_s_undeclared_phase_aliases(repo)
+    assert len(findings) == 1 and findings[0].startswith("(S) INFO:"), findings
