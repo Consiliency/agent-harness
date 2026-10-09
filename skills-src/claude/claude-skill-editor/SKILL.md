@@ -125,7 +125,7 @@ Per the plan's archival directive:
    Run it with `--dry-run` first and check the count.
 3. Excluded paths stay in place so the next cycle can reconsider them.
 
-A reflection cited by zero surviving recommendations (e.g., its theme was rejected as repo-specific, or the collector filtered it) is still archived — it's been considered.
+The manifest decides what is consumed: the admitted reflections of ready skills, plus reflections excluded as a duplicate (`duplicate_of`) or with no friction and no proposal (`no_friction_or_proposal`). All other reflections stay in place, including those excluded as repo-specific, capped or oversized and those of skills still below the threshold, so their friction can count in a later pass. An admitted reflection of a ready skill that no surviving recommendation cites is still archived; it has been considered.
 
 ### Step 6 — Commit + push
 

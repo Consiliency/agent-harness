@@ -57,7 +57,8 @@ If no plan path is explicit, first check the current repo and branch handoff fro
    - `phase-loop-runtime/tests/test_skills_canon_parity.py` and `test_skills_bundle_drift.py` pass after regeneration.
 8. Archive reflections:
    - run `python3 -m phase_loop_runtime.reflection_corpus archive --manifest <corpus_manifest>`, adding `--exclude <path>` for every reflection supporting a failed recommendation; it moves each consumed file to `archive/` under the same repo and branch subtree;
-   - reflections the plan excluded (duplicates, repo-specific, capped) are consumed too and archive with the rest.
+   - the manifest decides what is consumed: the admitted reflections of ready skills, plus reflections excluded as a duplicate (`duplicate_of`) or with no friction and no proposal (`no_friction_or_proposal`);
+   - all other reflections stay in place, including those excluded as repo-specific, capped or oversized and those of skills still below the threshold, so their friction can count in a later pass.
 
 ## Failure Policy
 

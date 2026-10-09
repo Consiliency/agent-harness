@@ -408,10 +408,33 @@ def inventory(corpus: Corpus) -> dict[str, object]:
     }
 
 
+_HEADING_LINE = re.compile(r"^ {0,3}#{1,6}(?:[ \t]+(.*?))?[ \t]*$")
+_FENCE_LINE = re.compile(r"^ {0,3}(?:`{3,}|~{3,})")
+
+
+def quote_body(text: str) -> str:
+    """Reflection text as inert bundle content: it cannot open a heading or a fence.
+
+    A heading line (up to three leading spaces) is demoted to bold text, and a line
+    that would open a code fence is indented so it is literal text, so one entry can
+    neither forge another entry's header nor swallow the entries after it.
+    """
+    lines = []
+    for line in text.split("\n"):
+        heading = _HEADING_LINE.match(line)
+        if heading:
+            line = f"**{heading.group(1)}**" if heading.group(1) else ""
+        elif _FENCE_LINE.match(line):
+            line = "    " + line
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def render_bundle(corpus: Corpus) -> str:
     """The aggregator's input: admitted reflections grouped by bare skill.
 
-    Every reflection-derived string passes the shared credential redaction first.
+    Every reflection-derived string passes the shared credential redaction first,
+    then ``quote_body``.
     """
     lines = ["# Reflections to aggregate", "", f"min_reflections: {corpus.min_reflections}", ""]
     labels = (("worked", "What worked"), ("didnt", "What didn't"), ("improvements", "Improvements to SKILL.md"))
@@ -423,11 +446,9 @@ def render_bundle(corpus: Corpus) -> str:
                 for key, label in labels:
                     body = reflection.sections.get(key, "")
                     if body:
-                        lines += [f"**{label}**", redact_text(body), ""]
+                        lines += [f"**{label}**", quote_body(redact_text(body)), ""]
             else:
-                # Demote the raw body's own headings so they cannot open a bundle section.
-                body = re.sub(r"^#+\s+(.*)$", r"**\1**", redact_text(redact(reflection.raw)), flags=re.MULTILINE)
-                lines += ["**unstructured**", body, ""]
+                lines += ["**unstructured**", quote_body(redact_text(redact(reflection.raw))), ""]
     return "\n".join(lines).rstrip() + "\n"
 
 
