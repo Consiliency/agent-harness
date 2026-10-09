@@ -62,6 +62,35 @@ def test_every_negative_control_runs_and_passes(tmp_path):
         assert node_id in passed, f"{node_id} did not run and pass"
 
 
+def _enforcer_kill(rule, enforcer):
+    if enforcer.kind == "module":
+        return f"module|{rule.skill}|{enforcer.module}|{enforcer.symbol}"
+    return f"skill_script|{rule.skill}|{enforcer.path}|{enforcer.symbol}"
+
+
+_KILL_CASES = [
+    pytest.param(rule, enforcer, id=f"{rule.id}-{enforcer.symbol}")
+    for rule in load_registry()
+    for enforcer in rule.enforcers
+]
+
+
+@pytest.mark.skipif(not skills_bundle_present(), reason="negative controls load the sibling phase-loop-skills bundle")
+@pytest.mark.parametrize(("rule", "enforcer"), _KILL_CASES)
+def test_disabling_a_named_enforcer_turns_its_rows_control_red(rule, enforcer, tmp_path):
+    # A control that passes without one of its row's enforcers does not show that enforcer refusing.
+    control = rule.negative_control
+    proc, passed, records = _run_controls([control], tmp_path, kill=_enforcer_kill(rule, enforcer))
+    killed = [r for r in records if r.get("killed_call")]
+    assert killed, f"{control} never reached {enforcer.symbol}"
+    assert control not in passed, f"{control} stays green with {enforcer.symbol} disabled"
+    assert any(r.get("assertion_failed") for r in records if r.get("nodeid") == control), (
+        f"{control} crashed rather than failing its assertion with {enforcer.symbol} disabled\n" + proc.stdout[-2000:]
+    )
+    if enforcer.kind == "skill_script":
+        assert any(k["via_main"] for k in killed), f"{control} calls {enforcer.symbol} without main()"
+
+
 def test_registry_ships_as_package_data():
     pyproject = (RUNTIME_ROOT / "pyproject.toml").read_text(encoding="utf-8")
     assert '"rule_enforcement.json"' in pyproject
