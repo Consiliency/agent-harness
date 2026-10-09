@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from types import SimpleNamespace
 from typing import Any, Callable
 from xml.etree import ElementTree
 
@@ -321,12 +322,14 @@ def _restarted_producer_module(case: str) -> Any:
     return _producer_module(case)
 
 
-def _producer_command(*args: str) -> subprocess.CompletedProcess[str]:
+def _producer_command(
+    *args: str, manifest_swap: Path | None = None
+) -> subprocess.CompletedProcess[str]:
     # Keep CI substitution in the test process, not in a production CLI flag or
     # environment switch. Only the canonical provider query is replaced; the
     # producer, verifier and all of their validation execute unchanged.
     bootstrap = """
-import os, pathlib, runpy, subprocess, sys
+import importlib.util, inspect, os, pathlib, runpy, subprocess, sys
 producer, *arguments = sys.argv[1:]
 if '--evidence-root' in arguments:
     root = pathlib.Path(arguments[arguments.index('--evidence-root') + 1]).parent
@@ -350,9 +353,26 @@ if '--evidence-root' in arguments:
                 command = [str(fake_gh), *command[1:]]
             super().__init__(command, *positional, **keywords)
     subprocess.Popen = HermeticCIProcess
+manifest_swap = os.environ.pop('HARDEN_TEST_MANIFEST_SWAP_PATH', None)
+if manifest_swap:
+    spec = importlib.util.spec_from_file_location('harden_evidence_producer', producer)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    original_input_manifest = module._input_manifest
+    def swap_after_stage_parse(path, source):
+        parsed, parsed_bytes = original_input_manifest(path, source)
+        if any(frame.function == '_prepare_stage' for frame in inspect.stack()):
+            path.write_bytes(pathlib.Path(manifest_swap).read_bytes())
+        return parsed, parsed_bytes
+    module._input_manifest = swap_after_stage_parse
+    raise SystemExit(module.main(arguments))
 sys.argv = [producer, *arguments]
 runpy.run_path(producer, run_name='__main__')
 """
+    env = None
+    if manifest_swap is not None:
+        env = dict(os.environ)
+        env["HARDEN_TEST_MANIFEST_SWAP_PATH"] = str(manifest_swap)
     return subprocess.run(
         [sys.executable, "-c", bootstrap, str(_repo_root() / PRODUCER_PATH), *args],
         cwd=_repo_root(),
@@ -360,6 +380,7 @@ runpy.run_path(producer, run_name='__main__')
         text=True,
         timeout=30,
         check=False,
+        env=env,
     )
 
 
@@ -1425,6 +1446,27 @@ def _raw_fixture(
     }
 
 
+def _restorable_raw_fixture(
+    root: Path, *, non_biting_mutation: bool = False
+) -> Callable[[], dict[str, Any]]:
+    """Build one expensive fixture and restore its pristine bytes between attacks."""
+    fixture_root = root / "fixture"
+    baseline = _raw_fixture(
+        fixture_root,
+        variant=_runtime_variant(fixture_root),
+        non_biting_mutation=non_biting_mutation,
+    )
+    snapshot = root / "snapshot"
+    shutil.copytree(fixture_root, snapshot, symlinks=True)
+
+    def restore() -> dict[str, Any]:
+        shutil.rmtree(fixture_root)
+        shutil.copytree(snapshot, fixture_root, symlinks=True)
+        return copy.deepcopy(baseline)
+
+    return restore
+
+
 def _ci_provider_attack(context: dict[str, Any], round_name: str, attack: str) -> None:
     path = context["root"] / "ci-responses.json"
     responses = _strict_json(path)
@@ -1445,7 +1487,9 @@ def _persist_manifest(context: dict[str, Any]) -> None:
     context["manifest_path"].write_bytes(_canonical_bytes(context["manifest"]))
 
 
-def _prepare_command(context: dict[str, Any]) -> subprocess.CompletedProcess[str]:
+def _prepare_command(
+    context: dict[str, Any], *, manifest_swap: Path | None = None
+) -> subprocess.CompletedProcess[str]:
     ledger = context["repo"] / ".phase-loop/events.jsonl"
     protected = (
         context["manifest_path"],
@@ -1460,27 +1504,33 @@ def _prepare_command(context: dict[str, Any]) -> subprocess.CompletedProcess[str
         for name, record in before[1].items()
         if record[0] == "file"
     }
-    completed = _producer_command(
-        "prepare",
-        "--inputs",
-        str(context["manifest_path"]),
-        "--source-root",
-        str(context["source_root"]),
-        "--evidence-root",
-        str(context["evidence_root"]),
-        "--repo",
-        str(context["repo"]),
-        "--output",
-        str(context["output"]),
-        "--completion-request",
-        str(context["request"]),
-        "--reuse-registry",
-        str(context["registry"]),
-        "--expected-coordinator-session-sha256",
-        context["sessions"]["coordinator"],
-        "--expected-author-session-sha256",
-        context["sessions"]["author"],
-    )
+    manifest_before = context["manifest_path"].read_bytes()
+    try:
+        completed = _producer_command(
+            "prepare",
+            "--inputs",
+            str(context["manifest_path"]),
+            "--source-root",
+            str(context["source_root"]),
+            "--evidence-root",
+            str(context["evidence_root"]),
+            "--repo",
+            str(context["repo"]),
+            "--output",
+            str(context["output"]),
+            "--completion-request",
+            str(context["request"]),
+            "--reuse-registry",
+            str(context["registry"]),
+            "--expected-coordinator-session-sha256",
+            context["sessions"]["coordinator"],
+            "--expected-author-session-sha256",
+            context["sessions"]["author"],
+            manifest_swap=manifest_swap,
+        )
+    finally:
+        if manifest_swap is not None:
+            context["manifest_path"].write_bytes(manifest_before)
     if [_path_snapshot(path) for path in protected] != before:
         pytest.fail(
             "prepare modified retained input or canonical evidence", pytrace=False
@@ -1504,6 +1554,25 @@ def _path_snapshot(root: Path) -> dict[str, tuple[Any, ...]]:
         else:
             snapshot[name] = ("absent",)
     return snapshot
+
+
+def test_harden_restorable_fixture_preserves_identity_and_isolation(
+    tmp_path: Path,
+) -> None:
+    restore = _restorable_raw_fixture(tmp_path / "restorable")
+    first = restore()
+    pristine = _path_snapshot(first["root"])
+
+    first["manifest"]["schema"] = "contaminated.v1"
+    first["manifest_path"].write_bytes(b"contaminated\n")
+    first["registry"].write_bytes(b"contaminated\n")
+    (first["root"] / "unexpected.txt").write_text("contaminated\n")
+
+    second = restore()
+    assert second["root"] == first["root"]
+    assert second["manifest_path"] == first["manifest_path"]
+    assert second["manifest"]["schema"] == INPUT_SCHEMA
+    assert _path_snapshot(second["root"]) == pristine
 
 
 def _seal_command(
@@ -2439,7 +2508,9 @@ def test_harden_producer_derives_live_facts_without_historical_literals() -> Non
         )
 
 
-def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
+def test_harden_producer_assembles_only_contained_retained_evidence(
+    tmp_path: Path,
+) -> None:
     _producer_module("assemble")
 
     for index, (author, red, final) in enumerate(_fixture_variants()):
@@ -2461,6 +2532,11 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
             _assert_prepared(context)
             assert context["registry"].read_bytes() == registry_before
 
+    restore_fixture = _restorable_raw_fixture(tmp_path / "rejected")
+    restore_non_biting_fixture = _restorable_raw_fixture(
+        tmp_path / "rejected-non-biting", non_biting_mutation=True
+    )
+
     def rejected(
         name: str,
         mutate: Callable[[dict[str, Any]], None],
@@ -2468,30 +2544,24 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
         *,
         non_biting_mutation: bool = False,
     ) -> None:
-        with tempfile.TemporaryDirectory(prefix="pl-") as td:
-            fixture_root = Path(td) / "fixture"
-            context = _raw_fixture(
-                fixture_root,
-                variant=_runtime_variant(fixture_root),
-                non_biting_mutation=non_biting_mutation,
-            )
-            mutate(context)
-            _persist_manifest(context)
-            registry_before = context["registry"].read_bytes()
-            completed = _prepare_command(context)
-            assert completed.returncode != 0, name
-            for secret in context.get("must_not_echo", ()):
-                if (
-                    secret.casefold()
-                    in (completed.stderr + completed.stdout).casefold()
-                ):
-                    pytest.fail(
-                        f"{name}: diagnostic exposed planted credential", pytrace=False
-                    )
-            diagnostic = (completed.stderr + completed.stdout).lower()
-            assert message.lower() in diagnostic, f"{name}: {diagnostic}"
-            _assert_no_prepare_output(context)
-            assert context["registry"].read_bytes() == registry_before
+        restore = (
+            restore_non_biting_fixture if non_biting_mutation else restore_fixture
+        )
+        context = restore()
+        mutate(context)
+        _persist_manifest(context)
+        registry_before = context["registry"].read_bytes()
+        completed = _prepare_command(context)
+        assert completed.returncode != 0, name
+        for secret in context.get("must_not_echo", ()):
+            if secret.casefold() in (completed.stderr + completed.stdout).casefold():
+                pytest.fail(
+                    f"{name}: diagnostic exposed planted credential", pytrace=False
+                )
+        diagnostic = (completed.stderr + completed.stdout).lower()
+        assert message.lower() in diagnostic, f"{name}: {diagnostic}"
+        _assert_no_prepare_output(context)
+        assert context["registry"].read_bytes() == registry_before
 
     rejected(
         "wrong-manifest-schema",
@@ -4103,7 +4173,9 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
         assert option in prepare_help.stdout
 
 
-def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
+def test_harden_producer_prepare_then_seal_binds_one_canonical_event(
+    tmp_path: Path,
+) -> None:
     _producer_module("seal")
 
     with tempfile.TemporaryDirectory(prefix="pl-") as td:
@@ -4154,40 +4226,40 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
         }
         _verify_with_shipped_verifier(context, sealed_path, "sealed")
 
+    restore_seal_fixture = _restorable_raw_fixture(tmp_path / "seal-rejected")
+
     def seal_rejected(
         name: str,
         mutate: Callable[[dict[str, Any], Path, dict[str, Any]], Path],
         message: str,
     ) -> None:
-        with tempfile.TemporaryDirectory(prefix="pl-") as td:
-            fixture_root = Path(td) / "fixture"
-            context = _raw_fixture(fixture_root, variant=_runtime_variant(fixture_root))
-            prepared = _prepare_command(context)
-            assert prepared.returncode == 0, prepared.stderr
-            _evidence, request = _assert_prepared(context)
-            canonical = context["repo"] / ".phase-loop/events.jsonl"
-            canonical.parent.mkdir(parents=True, exist_ok=True)
-            canonical.write_bytes(_ledger_bytes(request))
-            ledger_argument = mutate(context, canonical, request)
-            output = context["root"] / "sealed-evidence.json"
-            registry_before = context["registry"].read_bytes()
-            protected = (
-                context["evidence_root"],
-                canonical,
-                canonical.resolve(),
-                ledger_argument,
-                ledger_argument.resolve(),
-                context["output"],
-                context["request"],
-            )
-            before = [_path_snapshot(path) for path in protected]
-            completed = _seal_command(context, ledger_argument, output)
-            assert completed.returncode != 0, name
-            diagnostic = (completed.stderr + completed.stdout).lower()
-            assert message.lower() in diagnostic, f"{name}: {diagnostic}"
-            assert not output.exists()
-            assert context["registry"].read_bytes() == registry_before
-            assert [_path_snapshot(path) for path in protected] == before, name
+        context = restore_seal_fixture()
+        prepared = _prepare_command(context)
+        assert prepared.returncode == 0, prepared.stderr
+        _evidence, request = _assert_prepared(context)
+        canonical = context["repo"] / ".phase-loop/events.jsonl"
+        canonical.parent.mkdir(parents=True, exist_ok=True)
+        canonical.write_bytes(_ledger_bytes(request))
+        ledger_argument = mutate(context, canonical, request)
+        output = context["root"] / "sealed-evidence.json"
+        registry_before = context["registry"].read_bytes()
+        protected = (
+            context["evidence_root"],
+            canonical,
+            canonical.resolve(),
+            ledger_argument,
+            ledger_argument.resolve(),
+            context["output"],
+            context["request"],
+        )
+        before = [_path_snapshot(path) for path in protected]
+        completed = _seal_command(context, ledger_argument, output)
+        assert completed.returncode != 0, name
+        diagnostic = (completed.stderr + completed.stdout).lower()
+        assert message.lower() in diagnostic, f"{name}: {diagnostic}"
+        assert not output.exists()
+        assert context["registry"].read_bytes() == registry_before
+        assert [_path_snapshot(path) for path in protected] == before, name
 
     for round_name in ("candidate", "canonical_main"):
         for attack in ("stale-head", "failed", "missing-gate"):
@@ -4833,6 +4905,75 @@ def test_harden_retained_roots_reject_symlink_ancestors(
     else:
         with pytest.raises(verifier.EvidenceError, match="symlink|unavailable"):
             verifier.ArtifactStore(linked_root).read(ref, "retained root")
+
+
+def test_harden_artifact_store_rejects_symlink_before_parent_component(
+    tmp_path: Path,
+) -> None:
+    producer = _restarted_producer_module("seal")
+    verifier = producer.V
+    container = tmp_path / "container"
+    root = container / "retained"
+    root.mkdir(parents=True)
+    body = b"retained evidence\n"
+    (root / "artifact.txt").write_bytes(body)
+    selector = tmp_path / "selector"
+    selector.symlink_to(container, target_is_directory=True)
+    raw_root = selector / ".." / container.name / root.name
+    ref = {"path": "artifact.txt", "sha256": verifier.sha256(body)}
+
+    with pytest.raises(verifier.EvidenceError, match="symlink|unavailable"):
+        verifier.ArtifactStore(raw_root).read(ref, "retained root")
+
+
+def test_harden_reader_rejects_ctime_change_when_other_stats_match(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    producer = _restarted_producer_module("seal")
+    verifier = producer.V
+    artifact = tmp_path / "artifact.txt"
+    artifact.write_bytes(b"retained evidence\n")
+    real_fstat = os.fstat
+    observations = 0
+
+    def changed_ctime(descriptor: int) -> Any:
+        nonlocal observations
+        observed = real_fstat(descriptor)
+        observations += 1
+        if observations != 2:
+            return observed
+        return SimpleNamespace(
+            st_dev=observed.st_dev,
+            st_ino=observed.st_ino,
+            st_mode=observed.st_mode,
+            st_size=observed.st_size,
+            st_mtime_ns=observed.st_mtime_ns,
+            st_ctime_ns=observed.st_ctime_ns + 1,
+        )
+
+    monkeypatch.setattr(os, "fstat", changed_ctime)
+    with pytest.raises(verifier.EvidenceError, match="changed during"):
+        verifier.read_path_regular_nofollow(
+            artifact, "retained root", verifier.MAX_ARTIFACT_BYTES
+        )
+
+
+def test_harden_completion_request_binds_parsed_manifest_bytes(
+    tmp_path: Path,
+) -> None:
+    _restarted_producer_module("seal")
+    context = _restorable_raw_fixture(tmp_path / "manifest-binding")()
+    parsed_bytes = context["manifest_path"].read_bytes()
+    replacement = tmp_path / "replacement-manifest"
+    replacement_bytes = b"replacement after parse\n"
+    replacement.write_bytes(replacement_bytes)
+
+    completed = _prepare_command(context, manifest_swap=replacement)
+
+    assert completed.returncode == 0, completed.stderr
+    request = _strict_json(context["request"])
+    assert request["input_manifest_sha256"] == _sha256(parsed_bytes)
+    assert request["input_manifest_sha256"] != _sha256(replacement_bytes)
 
 
 @pytest.mark.parametrize(
