@@ -10,6 +10,8 @@ run by `gate_a_cleanroom.sh` against the built wheel."""
 
 from __future__ import annotations
 
+import importlib
+import importlib.util
 import inspect
 import json
 import os
@@ -22,6 +24,9 @@ from pathlib import Path
 
 import jsonschema
 import pytest
+from packaging.markers import default_environment
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
 
 from phase_loop_runtime import (
     doctor,
@@ -51,11 +56,29 @@ SENTINEL_RUN_ERROR = (
 
 @pytest.mark.parametrize("exc", [
     QualificationError(qualification.PYTEST_MISSING),
-    QualificationError(SENTINEL_RUN_ERROR.format(quote="'")),
-    QualificationError(SENTINEL_RUN_ERROR.format(quote="\\'")),     # the bytes repr escapes quotes
 ])
 def test_a_missing_pytest_is_a_typed_prerequisite_not_a_defect(exc):
     assert aq.classify_failure(exc) == "prerequisite_missing"
+
+
+# Only the up-front check yields prerequisite_missing for pytest. By the time the sentinel runs,
+# that check has said pytest is present, so an import failure inside the run is a real defect
+# (a broken snapshot, a missing submodule) and must not get the host-prerequisite fix.
+
+def test_missing_pytest_submodule_is_a_falsifier_failure():
+    try:
+        importlib.import_module("pytest.falsifier_missing_plugin")
+    except ModuleNotFoundError as exc:
+        stderr = f"ModuleNotFoundError: {exc}\n".encode()
+    result = {"value": (1, b"", stderr, None, None)}
+    assert aq.classify_failure(QualificationError(f"sentinel never became ready: {result}")) == "falsifiers_failed"
+
+
+@pytest.mark.parametrize("quote", ["'", "\\'"])     # the bytes repr escapes quotes
+def test_a_sentinel_pytest_import_error_while_pytest_is_present_is_a_falsifier_failure(monkeypatch, quote):
+    monkeypatch.setattr(review_stage, "falsifier_distribution_available", lambda name: True)
+    exc = QualificationError(SENTINEL_RUN_ERROR.format(quote=quote))
+    assert aq.classify_failure(exc) == "falsifiers_failed"
 
 
 @pytest.mark.parametrize("text", [
@@ -78,10 +101,12 @@ def test_the_fix_for_a_missing_pytest_is_a_literal_command_not_report_a_defect(m
     fix = aq.fix_for("prerequisite_missing")
     assert fix == prerequisites.PYTEST_FIX
     for command in ("uv tool upgrade phase-loop-runtime", "pip install --upgrade phase-loop-runtime",
-                    "uv tool install --reinstall --with 'pytest>=8,<9' phase-loop-runtime",
-                    "pip install 'pytest>=8,<9'", "phase-loop seat-sandbox qualify"):
+                    "phase-loop seat-sandbox qualify"):
         assert f"`{command}`" in fix
     assert "report a defect" not in fix
+    # pytest alone is not enough for an older system interpreter; only a release that declares
+    # the whole set can be the fix (agent-harness#1361)
+    assert "--with" not in fix
 
 
 def test_the_fix_also_names_the_host_prerequisites_when_they_are_missing_too(monkeypatch):
@@ -119,7 +144,7 @@ def test_the_qualify_command_prints_the_literal_fix_for_a_missing_pytest(monkeyp
     assert cli.main(["seat-sandbox", "qualify"]) == 1
     err = capsys.readouterr().err
     assert "cannot run: " + qualification.PYTEST_MISSING in err
-    assert "fix: " + prerequisites.PYTEST_FIX in err and "`pip install 'pytest>=8,<9'`" in err
+    assert "fix: " + prerequisites.PYTEST_FIX in err and "`uv tool upgrade phase-loop-runtime`" in err
 
 
 def test_the_qualify_command_adds_no_fix_line_for_other_failures(monkeypatch, capsys):
@@ -299,7 +324,7 @@ def _wrapper_imports() -> list[str]:
     return found[0].split(",")
 
 
-def _declared_runtime_dependencies() -> set[str]:
+def _declared_runtime_requirements() -> list[Requirement]:
     pyproject = PACKAGE_ROOT / "pyproject.toml"
     if pyproject.is_file():
         try:
@@ -310,7 +335,11 @@ def _declared_runtime_dependencies() -> set[str]:
     else:                                                       # an installed wheel: no pyproject
         requirements = [r for r in (metadata.distribution("phase-loop-runtime").requires or [])
                         if "extra ==" not in r]
-    return {re.split(r"[\s<>=!~;\[(]", r, maxsplit=1)[0].lower().replace("_", "-") for r in requirements}
+    return [Requirement(r) for r in requirements]
+
+
+def _declared_runtime_dependencies() -> set[str]:
+    return {canonicalize_name(r.name) for r in _declared_runtime_requirements()}
 
 
 def test_every_third_party_import_of_the_falsifier_wrapper_is_a_declared_runtime_dependency():
@@ -339,3 +368,70 @@ def test_pytest_is_a_runtime_dependency_and_not_only_a_test_dependency():
     runtime = [r for r in payload["project"]["dependencies"] if r.lower().startswith("pytest")]
     assert len(runtime) == 1 and ">=8" in runtime[0]            # a lower bound (maintainer ruling)
     assert not any(r.lower().startswith("pytest") for r in payload["dependency-groups"]["test"])
+
+
+# The falsifier run's interpreter is /usr/bin/python3; the runtime's own can be newer. pytest picks
+# its backports by markers, and an install evaluates them for the runtime's interpreter, so any
+# backport the system interpreter needs must be declared without a marker (agent-harness#1361).
+SYSTEM_INTERPRETER_FLOOR = "3.10"                               # requires-python's floor
+RUNTIME_MINORS = ("3.10", "3.11", "3.12", "3.13", "3.14")
+
+
+def _selected_at(requirement: Requirement, minor: str) -> bool:
+    if requirement.marker is None:
+        return True
+    env = default_environment()
+    env.update(python_version=minor, python_full_version=f"{minor}.0", extra="")
+    return requirement.marker.evaluate(env)
+
+
+def test_the_falsifier_closure_for_an_older_system_interpreter_is_declared_unconditionally():
+    declared = {canonicalize_name(r.name): r for r in _declared_runtime_requirements()}
+    pending, seen, undeclared = ["pytest"], set(), []
+    while pending:
+        name = pending.pop()
+        if name in seen:
+            continue
+        seen.add(name)
+        try:
+            requires = metadata.distribution(name).requires or []
+        except metadata.PackageNotFoundError:
+            continue
+        for raw in requires:
+            requirement = Requirement(raw)
+            if not _selected_at(requirement, SYSTEM_INTERPRETER_FLOOR):
+                continue
+            key = canonicalize_name(requirement.name)
+            pending.append(key)
+            if all(_selected_at(requirement, minor) for minor in RUNTIME_MINORS):
+                continue                                        # every install gets it
+            declaration = declared.get(key)
+            if declaration is None or not all(_selected_at(declaration, m) for m in RUNTIME_MINORS):
+                undeclared.append(key)
+    assert not undeclared, (
+        f"pytest needs {undeclared} under a {SYSTEM_INTERPRETER_FLOOR} system interpreter, but an install "
+        "on a newer runtime would leave them out: declare them in [project].dependencies with no marker")
+
+
+# --- the Gate A probe imports under the run's own conditions --------------------------------
+
+PROBE_SCRIPT = PACKAGE_ROOT / "scripts" / "_gate_a_falsifier_probe.py"
+
+
+@linux_only
+@pytest.mark.skipif(not PROBE_SCRIPT.is_file(), reason="source Gate A probe script unavailable")
+def test_the_gate_a_probe_fails_when_the_snapshot_cannot_import_under_the_run_interpreter(monkeypatch, capsys):
+    spec = importlib.util.spec_from_file_location("gate_a_falsifier_probe", PROBE_SCRIPT)
+    probe = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(probe)
+
+    def snapshot_that_cannot_import(stage, destination):
+        for name in ("pytest", "_pytest"):
+            (destination / name).mkdir()
+            (destination / name / "__init__.py").write_text("import zz_missing_backport_1361\n")
+
+    monkeypatch.setattr(review_stage, "_snapshot_falsifier_dependencies", snapshot_that_cannot_import)
+    with pytest.raises(SystemExit) as exit_info:
+        probe.main()
+    assert exit_info.value.code == 1
+    assert "zz_missing_backport_1361" in capsys.readouterr().err

@@ -23,9 +23,8 @@ PYTEST_FIX = (
     "pytest is not installed in the runtime's environment, and the seat jail's falsifier run "
     "needs it (releases after 0.7.25 depend on it). Upgrade the runtime: "
     "`uv tool upgrade phase-loop-runtime` for a uv tool install, or "
-    "`pip install --upgrade phase-loop-runtime` in the runtime's environment. For an earlier "
-    "release, add it: `uv tool install --reinstall --with 'pytest>=8,<9' phase-loop-runtime`, "
-    "or `pip install 'pytest>=8,<9'`. Then run `phase-loop seat-sandbox qualify`"
+    "`pip install --upgrade phase-loop-runtime` in the runtime's environment. Then run "
+    "`phase-loop seat-sandbox qualify`"
 )
 
 _UNLOCKS = "seat-jail qualification (jailed Claude review seats)"

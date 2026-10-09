@@ -11,13 +11,18 @@ harness put it there). Exits non-zero with a diagnostic on the first violation:
 2. the dependency snapshot can find `pytest` (the run executes without site processing, so the
    snapshot is the only way it gets pytest);
 3. running the snapshot against an empty staged tree really stages `pytest` and its private
-   companion `_pytest`, so the run can import them.
+   companion `_pytest`;
+4. the wrapper's import line succeeds when run the way the falsifier run runs it: the system
+   interpreter, the run's own flags and environment, and the snapshot alone on its path. The
+   run's interpreter can be older than this venv's, and then pytest needs backports that a
+   marker evaluated for this venv's interpreter would leave out (agent-harness#1361).
 """
 from __future__ import annotations
 
 import importlib.util
 import inspect
 import re
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -57,6 +62,14 @@ def main() -> None:
         for name in (*third_party, "_pytest"):
             if not (destination / name / "__init__.py").is_file() and not (destination / f"{name}.py").is_file():
                 fail(f"the falsifier dependency snapshot did not stage {name!r} from a clean install of the wheel")
+        run = subprocess.run(
+            [str(review_stage._falsifier_resolved_interpreter()), *review_stage._FALSIFIER_PYTHON_FLAGS,
+             "-c", f"import {','.join(names)}"],
+            env={**review_stage._FALSIFIER_PYTHON_ENV, "PYTHONPATH": str(destination)},
+            cwd="/", capture_output=True, text=True, timeout=60)
+        if run.returncode != 0:
+            fail("the falsifier run's interpreter cannot import the wrapper's modules from the snapshot alone: "
+                 + (run.stderr.strip().splitlines() or ["(no output)"])[-1])
     print(f"falsifier imports: ok ({', '.join(names)}; pytest staged)")
 
 

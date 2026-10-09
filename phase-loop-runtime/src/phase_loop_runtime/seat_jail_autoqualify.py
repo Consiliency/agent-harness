@@ -20,7 +20,6 @@ from __future__ import annotations
 import contextlib
 import json
 import os
-import re
 import stat
 import threading
 import time
@@ -57,10 +56,6 @@ REASON_FIXES: Mapping[str, str] = {
                "`phase-loop seat-sandbox qualify`",
     "error": "run `phase-loop seat-sandbox qualify` to see the error",
 }
-
-#: The sentinel run's own error text when its wrapper cannot import `pytest`. The text is a
-#: bytes repr inside a dict repr, so the quotes may be backslash-escaped.
-_PYTEST_IMPORT_ERROR = re.compile(r"No module named\s+\\*['\"]?pytest\b")
 
 RETRY_ENV = "PHASE_LOOP_SEAT_JAIL_QUALIFY_RETRY_S"
 DEFAULT_RETRY_S = 3600.0
@@ -228,8 +223,7 @@ def classify_failure(exc: BaseException) -> str:
         text = str(exc)
         if (text == seat_uid.PREREQUISITE or text == "egress isolation unavailable"
                 or text.startswith("no /etc/machine-id")
-                or text == seat_jail_qualification.PYTEST_MISSING
-                or _PYTEST_IMPORT_ERROR.search(text)):
+                or text == seat_jail_qualification.PYTEST_MISSING):
             return "prerequisite_missing"
         if "no pass recorded" in text:
             return "store_unsafe"
