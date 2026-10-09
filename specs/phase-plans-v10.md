@@ -1259,9 +1259,9 @@ Source: agent-harness#935 (maintainer direction 2026-09-21); gap record: agent-h
   Astra runs through the codex CLI, Grok through the grok CLI, Gemini through `agy`, each via
   `launch_provider` and nowhere else. The Fable rung is filled natively when the driving harness is
   Claude Code (a deferred fill with a durable resume/join point, the same seam family as
-  `load_native_leg_fills`) and through the self-PTY adapter elsewhere; a native president fill is
+  `load_native_leg_fills`) and through the self-PTY adapter elsewhere (**Amendment note 2026-10-09, agent-harness#1391:** superseded per the EC-REVIEWTRUTH-16 amendment note — off Claude Code the Fable rung defaults to the brokered headless `claude -p --output-format stream-json` session (tools off, no directory grant, pre-launch Claude Code version and `claude auth status` gates, in-band `system/init.apiKeySource == "none"` guard, never `--bare`); `PHASE_LOOP_PANEL_CLAUDE_ROUTE=tui` selects the self-PTY session. The native fill under Claude Code is unchanged); a native president fill is
   refused under `heartbeat_only` exactly as a native leg fill is. Falsified by a rung that spawns
-  outside `launch_provider`; by a Fable ruling obtained by spawning a second Claude TUI under Claude
+  outside `launch_provider`; by a Fable ruling obtained by spawning a second Claude TUI (amendment note 2026-10-09, agent-harness#1391: or a second `claude -p` print session, per the EC-REVIEWTRUTH-16 amendment note) under Claude
   Code; by a native president fill accepted under `heartbeat_only`; by a fill whose digests do not
   bind the brief and findings it was asked to rule on.
 - [ ] EC-PRESROUTE-3 — **The ladder is ordered by seat alias, stated here once, on each
@@ -1785,7 +1785,7 @@ Slice 2 makes every seat's lens reach its reviewer's prompt. Source: maintainer 
   the resolved configuration and the actual seat outcomes.
 - [ ] EC-PANEL-6 — **(Slice 2) Every seat's lens reaches its reviewer's instructions.** Each seat's lens
   name and instruction text (built-in or declared) are inside the instructions that seat's route sends:
-  inside the digest-bound authoritative-instructions frame on the brokered and TUI routes, and in the
+  inside the digest-bound authoritative-instructions frame on the brokered and TUI routes (amendment note 2026-10-09, agent-harness#1391: and on the Claude print route, the default per the EC-REVIEWTRUTH-16 amendment note), and in the
   instruction channel (not metadata) on native fill. The lens is rendered under a fixed, subordinate
   heading, followed by a statement that the verdict protocol takes precedence. It narrows what the reviewer
   looks at; the verdict protocol text is the same for every seat. Only then is the seat's lens delivery label
@@ -1815,7 +1815,7 @@ Decompose into 2 slices, each a single implementation lane.
   - the keyword-only seam beside `review_policy_for_tier`;
   - the `heartbeat_only` board selection in `cli.py` and `governed_review.py`.
 - **Slice 2** owns the lens in each route's rendered prompt: `panel_invoker.py` prompt assembly for the
-  brokered, TUI and native-fill routes.
+  brokered, TUI and native-fill routes (amendment note 2026-10-09, agent-harness#1391: the Claude print route added by the EC-REVIEWTRUTH-16 amendment note carries the same rendered prompt; its launch code is owned by the Stage 1b change).
 
 Shared files `panel_invoker.py`, `governed_review.py` and `cli.py` are owned by committed phases
 (HARDEN, REVIEWTRUTH, LEGLIFE, RESIDUAL) and touched by in-flight EXECFIND work.

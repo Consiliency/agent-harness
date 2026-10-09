@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: LEGIBLE
 roadmap: specs/phase-plans-v10.md
-roadmap_sha256: 50f5c5d48bbbb92a5347c718a6cea627318307368907c22e239b31d84905fad8
+roadmap_sha256: e60bc53793b6dcf4076e6bea05aa8899e76dad630613a8c688d0c1c263b28e53
 legible_lifecycle_contract: legible_tdd_candidate_main.v1
 legible_tdd_activation_env: PHASE_LOOP_TDD_EXPECT_LEGIBLE
 legible_capability_marker: phase_loop_runtime.legible_evidence:LEGIBLE_CAPABILITY_VERSION=legible.v1
@@ -421,7 +421,7 @@ sidecar text becomes a command. The complete per-drifting-fact inventory is:
 `Consiliency/agent-harness`, issue `396`, model `claude-fable-5`, and the Assumption 3 source
 anchor; callers cannot supply a command, route, environment, timeout, or expected issue state.
 Its fixed adapter reads one live GitHub issue snapshot, then performs the metadata-only
-first-party Claude subscription capability probe and one real Fable self-PTY leg with the
+first-party Claude subscription capability probe and one real Fable self-PTY leg (amendment note 2026-10-09, agent-harness#1391: per the EC-REVIEWTRUTH-16 amendment note (2026-10-08) in `specs/phase-plans-v10.md`, a non-native Fable leg now defaults to the subscription-proven print route and the self-PTY leg is the `PHASE_LOOP_PANEL_CLAUDE_ROUTE=tui` route; the probe's classifier and bounds are unchanged) with the
 existing 600-second activity bound and 1,800-second hard backstop. The currently reachable
 `pending` state requires all of: `Consiliency/agent-harness#396` is `OPEN`; a Fable seat
 driven under the asserted Claude marker produces no native-fill request and remains
