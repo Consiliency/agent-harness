@@ -36,6 +36,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - User config `[qualification.<harness>] self_qualification = false` opts a harness out. A
   repository config cannot carry it.
 
+### Plan budget: report exceptions for undeclared phase aliases (agent-harness#1381; PR agent-harness#1396)
+
+- A `[plan_budget.phases.<ALIAS>]` entry whose alias no `specs/phase-plans-*.md` roadmap
+  declares is reported as `(S) WARN`, so a typo such as `CONFROM` no longer goes unnoticed.
+  It is reported in every mode and stays a warning under `mode = "error"`.
+- The docs now say that a plan's `phase:` line selects its exception, and that one alias
+  covers every roadmap that reuses it.
+
 ## [0.7.26] - 2026-10-09
 
 ### Upgrade notes
