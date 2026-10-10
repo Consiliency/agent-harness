@@ -219,7 +219,12 @@ is final; backend receipts never make `sandbox_root_applied` true.
     that goes local continues from there exactly as today.
   - The preflight's sum is what makes row 7's guard a guard and not a path: a credential
     that passes the preflight still has its floor after the longest allowed wait and
-    transfer. `PHASE_LOOP_SANDBOX_TRANSFER_ALLOWANCE_S` defaults to 300.
+    transfer. `PHASE_LOOP_SANDBOX_TRANSFER_ALLOWANCE_S` defaults to 300. The driver owns the
+    arithmetic so that every caller uses the same sum: `lifetime_sufficient(remaining_s,
+    floor_s)` is true when `remaining_s` is at least the floor plus the admission-wait
+    bound plus the transfer allowance, and `lifetime_at_floor(remaining_s, floor_s)` is the
+    guard. A caller supplies only the two numbers. This plan tests both with numbers; the
+    placed-seat plans supply real ones.
   - While a seat waits at the cap the monitor record carries `placement_wait`, the notice
     `seat_placement_waiting` is shown, and the stall clock does not run. A leg's stall
     clock starts when `execute` returns: admission, the wait and the transfer are not
@@ -262,8 +267,11 @@ is final; backend receipts never make `sandbox_root_applied` true.
   started seat alive for a limited time and the launching host resumes it, tied to that
   run). **This plan does not build it.** As built here, a backend whose connection is lost
   after `execute` raises, and the leg ends with `sandbox_placement_lost_after_launch`. The
-  reconnect follow-on plan amends `wait` and the driver's loop. It is held to these
-  invariants, stated now so that nothing built here has to be undone:
+  reconnect follow-on plan amends exactly two things built here: what `wait` may return,
+  and the loop in `run_placed`. Until then `wait` returns only a result or progress, and
+  the "connection lost" case in this plan's tests describes the runtime **before** that
+  plan; it is replaced there and is not a permanent rule. The follow-on is held to these
+  invariants, stated now so that nothing else built here has to be undone:
   - the end of C2 is fixed at launch and no reconnect extends it; it applies while
     attached and while detached;
   - exactly one authority can end a kept workload, it is not something the workload can
@@ -320,6 +328,8 @@ These follow from the rulings as recorded. None is hidden in a table.
   and C10's refusal of a `leg` workload when `driver_enabled` is false. The flag is passed
   in, so `sandbox_placement` does not import the launch module. It returns one of: placed
   (a `LegPlacement`), local (with its row and code), not run (with its code).
+- `lifetime_sufficient`, `lifetime_at_floor` — add — the two comparisons of C7, pure
+  functions of two numbers and the two settings.
 - `run_placed(placement, spec, *, on_progress, cancelled) -> ExecResult` — add — `execute`,
   the `wait` loop, renewal, cancel, C2's end and C11. After `execute` is called every exit
   is post-launch.
@@ -433,7 +443,7 @@ case here.
 | Row 7: the guard fails immediately before sealing | Released with confirmation; not run with the guard's code; `execute` was never called; **not local** | Go local on a guard failure |
 | **Intersection (the one three reviewers found):** at capacity, then admitted, then the guard fails | Not run. Never local. | Let the credential rule override the capacity rule |
 | Intersection: at capacity once, then the same candidate's endpoint is closed on retry; then a second candidate's endpoint is closed | Not run. Never local. | Decide locality from the last answer |
-| Intersection: the preflight passes with exactly floor + wait + allowance, the wait runs to its end, then admitted | The guard passes; placed | Omit the wait from the preflight's sum |
+| Intersection, with injected numbers and a fake clock: `lifetime_sufficient` is true at exactly floor + wait + allowance and false one second under; the wait then runs to its end and the transfer takes the whole allowance | `lifetime_at_floor` is still true; placed. One second under at the start: local by row 3, nothing sent. | Omit the wait, or the allowance, from the sum |
 | Rows 1 to 4 under the fail-closed knob | Refused, zero spawns | Let "local by choice" override the knob |
 | Rows 3 and 4 where the local route is the sealed one | Not run | Run sealed |
 | Row 8: failure after `execute` (raise, lost acknowledgement, `wait` raises, connection lost) | `sandbox_placement_lost_after_launch`; no second `execute` anywhere | Fall back on any exception |
