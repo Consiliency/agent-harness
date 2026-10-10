@@ -25,6 +25,12 @@ GOLDEN = json.loads((Path(__file__).parent / "data" / "seat_jail_1132_sealed_gol
                     .read_text(encoding="utf-8"))
 
 
+@pytest.fixture(autouse=True)
+def _pin_claude_tui_route(monkeypatch):
+    """These tests assert the PTY TUI route; the default is now headless print (Stage 1b)."""
+    monkeypatch.setenv("PHASE_LOOP_PANEL_CLAUDE_ROUTE", "tui")
+
+
 # --------------------------------------------------------------------------------------
 # J7: one code per step, in order.
 # --------------------------------------------------------------------------------------

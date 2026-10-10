@@ -29,8 +29,10 @@ for a real landing board:
     ``PanelResult.needs_native_president`` and resumes against; a second Claude TUI
     is never spawned. Refused with ``PRESIDENT_FILL_HEARTBEAT_REFUSED`` under
     ``heartbeat_only``, as a native leg fill is.
-  - ``fable`` elsewhere: the brokered self-PTY Claude session
-    (``panel_invoker._run_claude_tui_session``) with tools off and no directory grant.
+  - ``fable`` elsewhere: a brokered headless ``claude -p`` session
+    (``panel_invoker._run_claude_print_session``) with tools off and no directory grant;
+    ``PHASE_LOOP_PANEL_CLAUDE_ROUTE=tui`` selects the self-PTY session
+    (``panel_invoker._run_claude_tui_session``) instead.
 
   A launch that fails is a typed ``failed`` response (``invoke_president`` raises
   ``president_invocation_failed``): a broken route is a structural failure, not seat
@@ -441,6 +443,39 @@ class PresidentInvoke:
         monitor: "panel_invoker._ReviewMonitor | None" = None,
         latch: "panel_invoker._ProviderQuiescenceLatch | None" = None,
     ) -> tuple[int, str, str]:
+        # Stage 1b: headless `claude -p` by default, tools off and no directory grant, the
+        # answer read from the stream's `result` event under the in-band subscription
+        # guard. `PHASE_LOOP_PANEL_CLAUDE_ROUTE=tui` keeps the self-PTY session below.
+        route = panel_invoker._panel_claude_route()
+        if route is None:
+            return 1, "", panel_invoker._PANEL_CLAUDE_ROUTE_INVALID
+        if route == panel_invoker._PANEL_CLAUDE_ROUTE_PRINT:
+            env = panel_invoker._broker_leg_env(self.base_env, "claude")
+            # The panel print leg's pre-launch gates. A refusal is a failed launch with its
+            # typed code as the log, the shape every president route failure takes.
+            supported, support_detail = panel_invoker._claude_code_support_status(
+                min_version=panel_invoker._CLAUDE_PRINT_MIN_VERSION)
+            if not supported:
+                return 1, "", support_detail
+            authed, auth_detail = panel_invoker._claude_subscription_auth_ok(env)
+            if not authed:
+                return 1, "", auth_detail
+            timeout_s = panel_invoker._leg_timeout_for(out_dir)
+            backstop_s = max(1, int(timeout_s), panel_invoker._MAX_LEG_TIMEOUT_S)
+            rc, text, log, _tail = panel_invoker._run_claude_print_session(
+                panel_invoker._claude_print_seat_command(
+                    route_model, None, brokered=True, env=self.base_env),
+                panel_invoker._BROKER_CLAUDE_DIRECT_REQUEST + prompt,
+                env=env,
+                cwd=out_dir.resolve(),
+                mode="president",
+                timeout_s=timeout_s,
+                stall_s=panel_invoker._broker_claude_stall_threshold(prompt, backstop_s),
+                backstop_s=backstop_s,
+                **({"review_monitor": monitor} if monitor is not None else {}),
+                **({"quiescence_latch": latch} if latch is not None else {}),
+            )
+            return rc, text, log
         # The brokered self-PTY session: tools off, no directory grant, answer read from
         # the session transcript. Called directly (not through the review wrapper) so a
         # host without a supported, logged-in Claude still fails closed on the session

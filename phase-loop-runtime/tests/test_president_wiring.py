@@ -114,6 +114,12 @@ _BRIEF = "brief text for one president operation"
 _FINDINGS = ("F001: [sol] the dispatch lock is never released",)
 
 
+@pytest.fixture(autouse=True)
+def _pin_claude_tui_route(monkeypatch):
+    """These tests assert the PTY TUI route; the default is now headless print (Stage 1b)."""
+    monkeypatch.setenv("PHASE_LOOP_PANEL_CLAUDE_ROUTE", "tui")
+
+
 def _sha(text: str) -> str:
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
 

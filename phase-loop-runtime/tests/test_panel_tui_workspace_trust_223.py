@@ -28,6 +28,12 @@ pytestmark = [pytest.mark.skipif(shutil.which("sh") is None, reason="needs POSIX
 
 
 @pytest.fixture(autouse=True)
+def _pin_claude_tui_route(monkeypatch):
+    """These tests assert the PTY TUI route; the default is now headless print (Stage 1b)."""
+    monkeypatch.setenv("PHASE_LOOP_PANEL_CLAUDE_ROUTE", "tui")
+
+
+@pytest.fixture(autouse=True)
 def _declared_modal_answer(monkeypatch):
     from pathlib import Path
     from contextlib import contextmanager

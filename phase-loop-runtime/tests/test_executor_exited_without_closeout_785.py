@@ -93,6 +93,14 @@ def test_golden_delta_is_only_final_schema_exclusion():
     # at e7350e534e9a369be45baf34dc812eadd873e1f5. Undoing the sole permitted
     # enum exclusion must recover it, including every prompt/hash/model/argv.
     canonical = json.dumps(golden, sort_keys=True, separators=(",", ":"))
+    # The fifth permitted delta (agent-harness#1392): the execute-phase skill gates its
+    # interactive publication on `phase-loop publication-mode` (publication mode (b),
+    # "Draft PR early", and a new "Interactive publication mode" section). Undo exactly
+    # that span, which the claude prompt embeds, before the older deltas below run
+    # against the text they were written for.
+    pre_1392 = json.loads((Path(__file__).parent / "data/launchspec_golden/pre_1392_publication_mode.json").read_text())
+    assert pre_1392["current"] in canonical
+    canonical = canonical.replace(pre_1392["current"], pre_1392["pre_1392"])
     # The fourth permitted delta (agent-harness#1303): the execute-phase closeout rule
     # text was restructured (broken sentences fixed, exit-code mapping as a list, one
     # name for the audit). Undo exactly that span, which the claude prompt embeds,

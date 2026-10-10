@@ -34,6 +34,12 @@ _CPU_AVAILABLE = sys.platform.startswith("linux") and os.path.isdir("/proc")
 pytestmark = pytest.mark.usefixtures("owned_review_network")
 
 
+@pytest.fixture(autouse=True)
+def _pin_claude_tui_route(monkeypatch):
+    """These tests assert the PTY TUI route; the default is now headless print (Stage 1b)."""
+    monkeypatch.setenv("PHASE_LOOP_PANEL_CLAUDE_ROUTE", "tui")
+
+
 def _run(cmd, *, deadline_s, stall_threshold_s, input_text=None):
     return pi._run_leg_with_liveness(
         cmd,
