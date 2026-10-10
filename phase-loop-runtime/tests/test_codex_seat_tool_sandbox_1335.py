@@ -683,3 +683,78 @@ def test_a_seat_with_no_tools_is_not_probed(tmp_path, monkeypatch, owned_review_
     probe that would fail must not take the seat down."""
     rc, text, _log = _run_codex_seat(tmp_path, monkeypatch, "namespace-refused", route="sealed")
     assert (rc, text) == (0, _last("healthy"))
+
+
+# --------------------------------------------------------------------------------------
+# The whole brokered spawn: staging, placement record, probe, leg -- nothing replaced but
+# the broker transport and the two authorization checks.
+# --------------------------------------------------------------------------------------
+
+def _full_brokered_spawn(tmp_path, monkeypatch, behaviour: str):
+    """``_default_spawn`` on the staged-tree route with the REAL ``_brokered_codex_command``:
+    the probe argv is derived from the argv a board actually launches."""
+    from phase_loop_runtime import review_stage
+    from phase_loop_runtime.advisor_board import backing
+
+    _stand_in_codex_cli(tmp_path, monkeypatch, behaviour)
+    monkeypatch.setenv("PHASE_LOOP_SANDBOX_STAGING_DIR", str(tmp_path / "staging"))
+    monkeypatch.delenv("PHASE_LOOP_SANDBOX_ROOT", raising=False)
+    monkeypatch.delenv("PHASE_LOOP_SANDBOX_REMOTE_REQUIRED", raising=False)
+    repo = tmp_path / "reviewed-repo"
+    repo.mkdir()
+    for args in (["init", "-q"], ["config", "user.email", "t@example.invalid"],
+                 ["config", "user.name", "t"]):
+        subprocess.run(["git", "-C", str(repo), *args], check=True)
+    (repo / "SOURCE.py").write_text("value = 41\n", encoding="utf-8")
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "-c", "commit.gpgsign=false", "commit", "-qm", "c"],
+                   check=True)
+    authorization = backing.ReviewIsolationAuthorization(
+        operation="public_board_review.v1", purpose="t", input_sha256="0" * 64,
+        instructions_sha256="1" * 64, broker_contract=backing.PARENT_UNIX_BROKER_V1,
+        routes=(), readonly_tools=("Read",), child_credentialless=True,
+        child_network_egress=False, live_tree_exposed=False, api_fallback=False,
+        canonical_repo_sha256="2" * 64, issued_monotonic_ns=0,
+        _seal=backing._AUTHORIZATION_SEAL,
+        staged_tree_sha256=review_stage.review_tree_manifest_sha256(repo),
+    )
+    monkeypatch.setattr(pi, "revalidate_review_isolation_authorization", lambda *a, **k: None)
+    monkeypatch.setattr(pi, "derive_review_leg_authorization",
+                        lambda *a, **k: types.SimpleNamespace(expires_monotonic_ns=1))
+    monkeypatch.setattr(pi, "ParentUnixBroker", _FakeBroker)
+    monkeypatch.setattr(_FakeBroker, "invoked", 0)
+    assert not pi._has_injected_review_execution_seam(leg="codex")
+    spawned = pi._default_spawn("codex", "REVIEW BUNDLE BODY", repo_dir=repo,
+                                review_authorization=authorization,
+                                canonical_repo_authority=repo)
+    assert _FakeBroker.invoked == 1, f"the brokered branch never ran: {spawned!r}"
+    return spawned
+
+
+@needs_owner
+def test_a_full_brokered_spawn_with_a_working_sandbox_runs_the_seat(tmp_path, monkeypatch,
+                                                                     owned_review_network):
+    """The probe passes, the leg runs, and the placement record counts every launch the
+    runtime made: the login check, the sandbox probe and the seat."""
+    spawned = _full_brokered_spawn(tmp_path, monkeypatch, "healthy")
+    assert (spawned[0], spawned[1]) == ("OK", _last("healthy"))
+    placement = spawned.sandbox_placement_evidence
+    assert placement["sandbox_root_applied"] is True
+    assert placement["sandbox_local_provider_spawns"] == 3
+    assert [r["step"] for r in placement["sandbox_placement_receipts"]] == ["prepared", "launched"]
+    assert "seat_filesystem_unconfined" in spawned.seat_notices
+
+
+@needs_owner
+def test_a_full_brokered_spawn_on_todays_read_only_tree_is_degraded(tmp_path, monkeypatch,
+                                                                     owned_review_network):
+    """The board route as it is today: the owner shows the staged tree read-only, the probe
+    (derived from the real launch argv) finds codex's launcher cannot start, and the seat
+    ends DEGRADED with the notice, beside the route's own notice, without being run."""
+    spawned = _full_brokered_spawn(tmp_path, monkeypatch, "real-mounts")
+    status, text, detail = spawned
+    assert (status, text) == ("DEGRADED", "") and pi._finalize_leg_detail(detail) == CODE
+    assert spawned.sandbox_placement_evidence["sandbox_local_provider_spawns"] == 2
+    leg = _leg_from(spawned)
+    assert sorted(n.code for n in leg.seat_notices) == ["seat_filesystem_unconfined", CODE]
+    assert not leg.usable
