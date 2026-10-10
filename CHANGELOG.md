@@ -6,6 +6,36 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### CLI qualification contract for every seat harness, inert (agent-harness#1333 PR2)
+
+- New `phase_loop_runtime.cli_qualification`. It is the harness-agnostic per-host CLI
+  qualification contract and holds:
+  - the qualification key;
+  - binary and tree payload digests (a symlink is recorded by its text and must resolve
+    inside its own root; a link the kernel cannot fully resolve, a dangling link or a
+    missing, non-directory, looping or unsearchable component, refuses, and so does any
+    traversal error);
+  - the pinned help-probe environment;
+  - the admission classes and the operations runner with its candidate token;
+  - read-only `lookup` and first-use `ensure_admitted`, which uses a bounded lock wait (an
+    expired wait is a `transient` outcome that writes nothing, never a refusal) and looks
+    up again after acquiring the lock;
+  - a per-user, per-host, per-harness HMAC store, with sticky identity failures and
+    transient-derived failures that expire after 24 h or on a key change. An entry lookup
+    reads for the key it looks up (qualified, failed or transient) that is not a 0600
+    euid-owned regular file, is a symlink, or fails its schema, type or MAC makes lookup
+    return `store_unsafe`, and so does a missing key while entries remain; `status` reports
+    directory and key state only;
+  - the closed `cli_qualification_candidate.v1` schema.
+- It is inert: no adapter exists and no seat path calls it yet.
+- `phase-loop cli-qualification status|clear --harness <h>`. `clear` removes failure and
+  transient entries; `clear --all` removes every entry.
+- Six additive notice codes (`seat_cli_*`), each a terminal degraded refusal with a fix line
+  and never a sealed fallback. No existing code is renamed.
+- `SeatMode.cli_admission_class`, additive to `seat_modes.v1`.
+- User config `[qualification.<harness>] self_qualification = false` opts a harness out. A
+  repository config cannot carry it.
+
 ### Claude panel seats get a readable session name in the app
 
 - **The problem, measured.** Claude Code titles an unnamed session by asking a model to summarise

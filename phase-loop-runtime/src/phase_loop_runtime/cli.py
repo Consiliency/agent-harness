@@ -421,6 +421,15 @@ def build_parser() -> argparse.ArgumentParser:
                               help="watch: qualify and verify, open no PR")
     agy_qual_sub.add_argument("--version", help="watch: a specific in-window stable release instead of the newest")
     agy_qual_sub.add_argument("--base-ref", default="origin/main", help="watch --dry-run only: the tree to prepare from")
+    cli_qual_sub = subparsers.add_parser(
+        "cli-qualification",
+        help="Per-host CLI qualification of a seat harness: status and clear (agent-harness#1333)",
+    )
+    cli_qual_sub.add_argument("action", choices=("status", "clear"))
+    cli_qual_sub.add_argument("--harness", dest="qual_harness", required=True,
+                              choices=("claude", "codex", "grok", "gemini", "opencode", "pi", "cursor-agent"))
+    cli_qual_sub.add_argument("--all", dest="qual_all", action="store_true",
+                              help="clear: every entry, not only failed ones")
     agy_clean_sub = subparsers.add_parser("agy-canary-clean-settings")
     agy_clean_sub.add_argument("--evidence-root", required=True)
     agy_clean_sub.add_argument("--settings-path", required=True)
@@ -1256,6 +1265,10 @@ def main(argv: list[str] | None = None) -> int:
         from .agy_qualification import cli_main as _agy_qualification_main
 
         return _agy_qualification_main(args)
+    if command == "cli-qualification":
+        from .cli_qualification import cli_main as _cli_qualification_main
+
+        return _cli_qualification_main(args)
     if command == "agy-canary-clean-settings":
         from .agy_canary_evidence import AgyCanaryEvidenceError, clean_settings
 
