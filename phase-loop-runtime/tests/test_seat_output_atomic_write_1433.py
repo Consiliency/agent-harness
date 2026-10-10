@@ -1,0 +1,627 @@
+"""agent-harness#1433: a seat's declared output survives the provider's atomic write.
+
+Claude Code's native ``Write`` creates a sibling temp file (``<name>.tmp.<pid>.<hex>``,
+``O_CREAT|O_EXCL``) and renames it over the destination. The owned seat used to bind the
+precreated output FILE writable inside a read-only parent, so, measured in the real sandbox:
+
+* output directory == the seat's cwd (a private tmpfs): the temp file is created, and the
+  rename fails ``EBUSY`` -- a bound file is a mount point, which no rename replaces;
+* output directory anywhere else: the temp file itself fails ``EROFS`` (the issue's error).
+
+Now an output its provider replaces atomically is declared ``replaceable_outputs``, and its
+directory is, in the seat's view, a PRIVATE PER-LAUNCH directory mounted at that path. The
+seat creates and renames freely there. The host's own directory is never mounted writable and
+none of its other entries is visible. When the seat has ended, the owner copies only the
+declared output names to the precreated host files, redacted, and removes the private
+directory. ``outputs`` keeps its meaning: a file bound in place, shared live with the host.
+
+Every cell that launches a seat runs it in the REAL owned sandbox (``launch_owned``).
+
+Named mutations, each run against this file (all red):
+
+* M-HOSTDIR: mount the host's own output directory writable instead of a private one ->
+  the neighbour, scratch and two-seat cells fail.
+* M-NODELIVER: skip the copy to the host file -> the atomic-write cells fail.
+* M-NOREDACT: deliver without redaction -> the redaction cell fails (the exit sweep would
+  still redact the host file afterwards; the cell records every write to it).
+* M-FOLLOW: read the seat's copy with a plain ``open`` -> the link cells deliver a host file
+  (and the FIFO cell blocks).
+* M-ORDER: mount the private directory after the read-only inputs -> the inputs cell fails.
+* M-ANCHOR: mount a private directory wherever asked -> the read-only-input and
+  system-mount cells fail.
+* M-LIVE: read the host file while the seat runs -> the session cells never see the review.
+* M-BOTH: let a replaceable declaration override an in-place one -> that cell fails.
+"""
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import tempfile
+import threading
+import time
+from contextlib import contextmanager
+from pathlib import Path
+
+import pytest
+
+from phase_loop_runtime import panel_invoker as pi
+from phase_loop_runtime import review_stage, sandbox_egress
+from test_review_seat_stall_1176 import REQUEST, _JOURNAL, _ProviderTimer, _answer, _fast_tui
+
+ADMIN = pi.SeatLaunchRole.PROVIDER_ADMIN
+REVIEW = "Review body.\nAGREE\n"
+
+#: What every fake seat below starts with. ``atomic_write`` is the provider's write, step for
+#: step: a sibling temp file created exclusively, then renamed over the target.
+SEAT = r'''
+import errno, json, os, sys
+
+def attempt(action, *args):
+    try:
+        action(*args)
+        return "ok"
+    except OSError as exc:
+        return errno.errorcode.get(exc.errno, str(exc.errno))
+
+def atomic_write(target, data):
+    temp = "%s.tmp.%d.%s" % (target, os.getpid(), os.urandom(6).hex())
+    fd = os.open(temp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        os.write(fd, data.encode())
+    finally:
+        os.close(fd)
+    os.rename(temp, target)
+
+def write(target, data):
+    with open(target, "w") as handle:
+        handle.write(data)
+
+def read(target):
+    with open(target) as handle:
+        return handle.read()
+
+def listing(directory):
+    return sorted(os.listdir(directory))
+
+facts = {}
+'''
+REPORT = "\nprint(json.dumps(facts))\n"
+
+
+@pytest.fixture
+def elsewhere(tmp_path):
+    """A host directory outside the seat's private ``/tmp``: in the seat's view its path is
+    only what the owner mounts there. (``tmp_path`` itself lies under ``/tmp``.)"""
+    if os.path.isdir("/var/tmp") and os.access("/var/tmp", os.W_OK | os.X_OK):
+        with tempfile.TemporaryDirectory(prefix="seat-output-test-", dir="/var/tmp") as directory:
+            yield Path(directory)
+        return
+    directory = tmp_path / "elsewhere"
+    directory.mkdir()
+    yield directory
+
+
+def _layout(name: str, tmp_path: Path, elsewhere: Path) -> tuple[Path, Path]:
+    """``(cwd, output directory)``: the product layout (the output beside the seat's cwd
+    inputs) and the issue's (an evidence directory of its own)."""
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    return cwd, (cwd if name == "output-in-cwd" else elsewhere)
+
+
+LAYOUTS = ["output-in-cwd", "output-elsewhere"]
+
+
+@contextmanager
+def _profile(script: str, *, cwd: Path, outputs, readonly=(), env=None, argv=(), in_place=()):
+    command = ["/usr/bin/python3", "-I", "-S", "-c", SEAT + script + REPORT, *map(str, argv)]
+    with pi._seat_command_profile(command, env=env or {"PATH": "/usr/bin:/bin"}, cwd=cwd,
+                                  replaceable_outputs=tuple(outputs), outputs=tuple(in_place),
+                                  readonly_paths=tuple(readonly), role=ADMIN) as (owned, profile):
+        yield owned, profile
+
+
+def _launch(owned, profile, cwd: Path) -> dict:
+    process = pi.launch_owned(owned, role=ADMIN, profile=profile, cwd=str(cwd),
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        stdout, stderr = process.communicate(timeout=60)
+    except BaseException:
+        process.kill()
+        process.wait()
+        raise
+    assert process.returncode == 0, stderr.decode(errors="replace")[-2000:]
+    return json.loads(stdout)
+
+
+def _seat(script: str, *, cwd: Path, outputs, readonly=(), env=None, argv=()) -> dict:
+    with _profile(script, cwd=cwd, outputs=outputs, readonly=readonly, env=env,
+                  argv=argv) as (owned, profile):
+        return _launch(owned, profile, cwd)
+
+
+def _names(directory: Path) -> list[str]:
+    return sorted(entry.name for entry in directory.iterdir())
+
+
+# --- the contract: a sibling temp file renamed over the output ---------------------------------
+
+@pytest.mark.parametrize("layout", LAYOUTS)
+def test_a_sibling_temp_file_renamed_over_the_output_is_delivered(tmp_path, elsewhere, layout):
+    cwd, directory = _layout(layout, tmp_path, elsewhere)
+    output = directory / "opus.md"
+    before = _names(directory)
+    facts = _seat(
+        "out = sys.argv[1]\n"
+        "facts['first'] = attempt(atomic_write, out, 'A draft.\\n')\n"
+        "facts['replaced'] = attempt(atomic_write, out, sys.argv[2])\n"  # over an existing file
+        "facts['seen'] = listing(os.path.dirname(out))\n",
+        cwd=cwd, outputs=(output,), argv=(output, REVIEW))
+    assert facts == {"first": "ok", "replaced": "ok", "seen": ["opus.md"]}
+    assert output.read_text() == REVIEW
+    # The host directory gained the declared output and nothing else (no temp file).
+    assert _names(directory) == sorted({*before, "opus.md"})
+
+
+@pytest.mark.parametrize("layout", LAYOUTS)
+def test_an_output_written_in_place_is_delivered_too(tmp_path, elsewhere, layout):
+    """A provider that opens the destination directly (codex's last message) still works."""
+    cwd, directory = _layout(layout, tmp_path, elsewhere)
+    output = directory / "last-message.txt"
+    facts = _seat("facts['write'] = attempt(write, sys.argv[1], sys.argv[2])\n",
+                  cwd=cwd, outputs=(output,), argv=(output, REVIEW))
+    assert facts == {"write": "ok"}
+    assert output.read_text() == REVIEW
+
+
+def test_two_outputs_of_one_seat_in_two_directories_are_both_delivered(tmp_path, elsewhere):
+    cwd, _ = _layout("output-elsewhere", tmp_path, elsewhere)
+    nested = elsewhere / "deeper" / "still"
+    nested.mkdir(parents=True)
+    first, second = elsewhere / "a.md", nested / "b.md"
+    facts = _seat(
+        "facts['a'] = attempt(atomic_write, sys.argv[1], 'first\\n')\n"
+        "facts['b'] = attempt(atomic_write, sys.argv[2], 'second\\n')\n",
+        cwd=cwd, outputs=(first, second), argv=(first, second))
+    assert facts == {"a": "ok", "b": "ok"}
+    assert (first.read_text(), second.read_text()) == ("first\n", "second\n")
+    assert _names(elsewhere) == ["a.md", "deeper"] and _names(nested) == ["b.md"]
+
+
+# --- negative cells: what the seat cannot reach ------------------------------------------------
+
+@pytest.mark.parametrize("layout", LAYOUTS)
+def test_the_host_directory_is_never_writable_and_its_other_files_are_hidden(
+        tmp_path, elsewhere, layout):
+    """Whatever the seat creates, renames or removes beside its output stays in its private
+    directory: on the host only the declared output changes, and the directory's other
+    files are neither visible to the seat nor touched."""
+    cwd, directory = _layout(layout, tmp_path, elsewhere)
+    output = directory / "opus.md"
+    neighbour = directory / "operator-notes.txt"
+    neighbour.write_text("not an input of this seat\n")
+    (directory / "kept").mkdir()
+    (directory / "kept" / "file").write_text("kept\n")
+    facts = _seat(
+        "out = sys.argv[1]; here = os.path.dirname(out)\n"
+        "facts['seen'] = listing(here)\n"
+        "facts['read_neighbour'] = attempt(read, os.path.join(here, 'operator-notes.txt'))\n"
+        "facts['read_kept'] = attempt(read, os.path.join(here, 'kept', 'file'))\n"
+        # Not declared outputs: created, and renamed onto, in the seat's own view only.
+        "facts['create'] = attempt(write, os.path.join(here, 'undeclared.md'), 'x')\n"
+        "facts['rename_onto'] = attempt(atomic_write, os.path.join(here, 'other.md'), 'x')\n"
+        "facts['overwrite_neighbour'] = attempt(\n"
+        "    atomic_write, os.path.join(here, 'operator-notes.txt'), 'overwritten')\n"
+        "facts['mkdir'] = attempt(os.makedirs, os.path.join(here, 'kept', 'new'))\n"
+        "facts['output'] = attempt(atomic_write, out, sys.argv[2])\n",
+        cwd=cwd, outputs=(output,), argv=(output, REVIEW))
+    assert facts["seen"] == []
+    assert facts["read_neighbour"] == "ENOENT" and facts["read_kept"] == "ENOENT"
+    assert facts["output"] == "ok"
+    # On the host: the declared output, and everything else exactly as it was.
+    assert output.read_text() == REVIEW
+    assert neighbour.read_text() == "not an input of this seat\n"
+    assert _names(directory) == ["kept", "operator-notes.txt", "opus.md"]
+    assert _names(directory / "kept") == ["file"]
+
+
+def test_two_live_seats_sharing_a_host_directory_never_see_each_others_output(tmp_path, elsewhere):
+    """Two seats with outputs in ONE host directory, both profiles live: the second cannot
+    read, replace or remove what the first wrote, and each host file gets its own seat's
+    bytes."""
+    cwd, _ = _layout("output-elsewhere", tmp_path, elsewhere)
+    first, second = elsewhere / "panel-first.txt", elsewhere / "panel-second.txt"
+    with _profile("facts['write'] = attempt(atomic_write, sys.argv[1], 'first seat\\n')\n",
+                  cwd=cwd, outputs=(first,), argv=(first,)) as (owned_first, profile_first):
+        assert _launch(owned_first, profile_first, cwd) == {"write": "ok"}
+        # The first seat has written; its profile is still open, as a parallel seat's is.
+        facts = _seat(
+            "mine, theirs = sys.argv[1], sys.argv[2]\n"
+            "facts['seen'] = listing(os.path.dirname(mine))\n"
+            "facts['read'] = attempt(read, theirs)\n"
+            "facts['remove'] = attempt(os.unlink, theirs)\n"
+            "facts['replace'] = attempt(atomic_write, theirs, 'second seat was here\\n')\n"
+            "facts['write'] = attempt(atomic_write, mine, 'second seat\\n')\n",
+            cwd=cwd, outputs=(second,), argv=(second, first))
+        assert facts["seen"] == [] and facts["read"] == "ENOENT" and facts["remove"] == "ENOENT"
+        assert facts["write"] == "ok"
+    assert first.read_text() == "first seat\n"
+    assert second.read_text() == "second seat\n"
+    assert _names(elsewhere) == ["panel-first.txt", "panel-second.txt"]
+
+
+def test_an_earlier_launchs_output_content_is_not_shown_to_the_next_seat(tmp_path, elsewhere):
+    cwd, _ = _layout("output-elsewhere", tmp_path, elsewhere)
+    output = elsewhere / "opus.md"
+    output.write_text("an earlier launch's review\nAGREE\n")
+    facts = _seat("facts['read'] = attempt(read, sys.argv[1])\n",
+                  cwd=cwd, outputs=(output,), argv=(output,))
+    assert facts == {"read": "ENOENT"}
+
+
+def test_the_inputs_beside_the_output_stay_visible_and_read_only(tmp_path):
+    """The product layout: the staged inputs live in the seat's cwd, next to its output.
+    They are bound read-only INTO the private directory; the seat can replace its output
+    there and nothing else."""
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    bundle = cwd / "review-bundle.md"
+    bundle.write_text("the bundle\n")
+    tree = cwd / review_stage.REVIEW_STAGE_TREE_DIRNAME
+    tree.mkdir()
+    (tree / "source.py").write_text("x = 1\n")
+    declared = cwd / "context"
+    declared.mkdir()
+    (declared / "notes.md").write_text("declared input\n")
+    output = cwd / "panel-claude.txt"
+    facts = _seat(
+        "out, bundle, tree, context = sys.argv[1:5]\n"
+        "facts['read'] = [read(bundle), read(os.path.join(tree, 'source.py')),\n"
+        "                 read(os.path.join(context, 'notes.md'))]\n"
+        "facts['write_bundle'] = attempt(write, bundle, 'changed')\n"
+        "facts['replace_bundle'] = attempt(atomic_write, bundle, 'changed')\n"
+        "facts['remove_bundle'] = attempt(os.unlink, bundle)\n"
+        "facts['write_tree'] = attempt(write, os.path.join(tree, 'new.py'), 'x')\n"
+        "facts['write_source'] = attempt(write, os.path.join(tree, 'source.py'), 'x')\n"
+        "facts['write_context'] = attempt(write, os.path.join(context, 'notes.md'), 'x')\n"
+        "facts['replace_tree'] = attempt(os.rename, tree, tree + '.moved')\n"
+        "facts['output'] = attempt(atomic_write, out, sys.argv[5])\n",
+        cwd=cwd, outputs=(output,), readonly=(declared,),
+        argv=(output, bundle, tree, declared, REVIEW))
+    assert facts["read"] == ["the bundle\n", "x = 1\n", "declared input\n"]
+    assert facts["output"] == "ok"
+    refused = {key: value for key, value in facts.items() if key not in {"read", "output"}}
+    assert set(refused.values()) <= {"EROFS", "EBUSY", "EXDEV"}, refused
+    assert "ok" not in refused.values()
+    assert bundle.read_text() == "the bundle\n"
+    assert (tree / "source.py").read_text() == "x = 1\n" and _names(tree) == ["source.py"]
+    assert (declared / "notes.md").read_text() == "declared input\n"
+    assert output.read_text() == REVIEW
+    assert _names(cwd) == sorted(["context", "panel-claude.txt", "review-bundle.md", tree.name])
+
+
+def test_an_output_inside_a_read_only_input_stays_bound_in_place(tmp_path):
+    """Where the output's directory is itself a declared read-only input, that directory's
+    content must stay visible and read-only, so no private directory is mounted over it:
+    the output is bound in place, as before (written directly; no sibling can be created)."""
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    repo = tmp_path / "repo"
+    (repo / "logs").mkdir(parents=True)
+    (repo / "logs" / "earlier.log").write_text("an input\n")
+    output = repo / "logs" / "last-message.txt"
+    with _profile(
+            "out = sys.argv[1]; here = os.path.dirname(out)\n"
+            "facts['seen'] = listing(here)\n"
+            "facts['read'] = read(os.path.join(here, 'earlier.log'))\n"
+            "facts['write_input'] = attempt(write, os.path.join(here, 'earlier.log'), 'x')\n"
+            "facts['sibling'] = attempt(write, out + '.tmp.1.abcdefabcdef', 'x')\n"
+            "facts['write'] = attempt(write, out, sys.argv[2])\n",
+            cwd=cwd, outputs=(output,), readonly=(repo,), argv=(output, REVIEW)) as (owned, profile):
+        assert profile.output_dirs == () and [Path(path) for path in profile.outputs] == [output]
+        facts = _launch(owned, profile, cwd)
+    assert facts == {"seen": ["earlier.log", "last-message.txt"], "read": "an input\n",
+                     "write_input": "EROFS", "sibling": "EROFS", "write": "ok"}
+    assert output.read_text() == REVIEW
+    assert _names(repo / "logs") == ["earlier.log", "last-message.txt"]
+
+
+# --- the other kind of output: bound in place, as before ---------------------------------------
+
+def test_an_output_declared_in_place_is_still_one_live_file_shared_with_the_host(tmp_path, elsewhere):
+    """``outputs`` keeps its meaning: one precreated host file, shared live. The seat reads
+    what the host writes into it and the host reads what the seat writes, while the seat
+    runs; the seat cannot replace it (it is a mount point). Only ``replaceable_outputs``
+    are delivered when the seat ends."""
+    cwd, _ = _layout("output-elsewhere", tmp_path, elsewhere)
+    review, signal, answer = elsewhere / "opus.md", elsewhere / "signal", elsewhere / "answer"
+    script = (
+        "import time\n"
+        "review, signal, answer = sys.argv[1:4]\n"
+        "deadline = time.monotonic() + 30\n"
+        "while not read(signal) and time.monotonic() < deadline: time.sleep(.02)\n"
+        "facts['heard'] = read(signal)\n"
+        "facts['replace'] = attempt(atomic_write, answer, 'x')\n"
+        "write(answer, 'live from the seat')\n"
+        "while read(signal) != 'done' and time.monotonic() < deadline: time.sleep(.02)\n"
+        "facts['review'] = attempt(atomic_write, review, sys.argv[4])\n")
+    with _profile(script, cwd=cwd, outputs=(review,), in_place=(signal, answer),
+                  argv=(review, signal, answer, REVIEW)) as (owned, profile):
+        assert [Path(path) for path in profile.outputs] == [signal, answer]
+        process = pi.launch_owned(owned, role=ADMIN, profile=profile, cwd=str(cwd),
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            signal.write_text("go")  # the host writes; the running seat reads it
+            deadline = time.monotonic() + 30
+            while answer.read_text() != "live from the seat" and time.monotonic() < deadline:
+                time.sleep(.02)
+            assert answer.read_text() == "live from the seat"  # read while the seat runs
+            assert pi._seat_output_text(profile, answer) == "live from the seat"
+            signal.write_text("done")
+            stdout, stderr = process.communicate(timeout=60)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+        assert process.returncode == 0, stderr.decode(errors="replace")[-2000:]
+        assert json.loads(stdout) == {"heard": "go", "replace": "EBUSY", "review": "ok"}
+        assert review.read_text() == ""  # the replaceable output arrives when the seat has ended
+    assert review.read_text() == REVIEW
+    assert _names(elsewhere) == ["answer", "opus.md", "signal"]
+
+
+def test_an_output_declared_both_ways_stays_in_place(tmp_path, elsewhere):
+    cwd, _ = _layout("output-elsewhere", tmp_path, elsewhere)
+    output = elsewhere / "opus.md"
+    with _profile("facts['write'] = attempt(write, sys.argv[1], sys.argv[2])\n"
+                  "facts['replace'] = attempt(atomic_write, sys.argv[1], 'x')\n",
+                  cwd=cwd, outputs=(output,), in_place=(output,),
+                  argv=(output, REVIEW)) as (owned, profile):
+        assert profile.output_dirs == () and [Path(path) for path in profile.outputs] == [output]
+        facts = _launch(owned, profile, cwd)
+        # No sibling can be created (EROFS) or, under the seat's /tmp, renamed over it (EBUSY).
+        assert facts["write"] == "ok" and facts["replace"] in {"EROFS", "EBUSY"}
+        assert output.read_text() == REVIEW  # live, before the profile ends
+    assert output.read_text() == REVIEW
+
+
+# --- delivery: redacted, and only a private regular file ---------------------------------------
+
+def _codex_shaped_profile(monkeypatch, tmp_path):
+    """A seat whose private home holds a copied credential (``synthetic-access-token``)."""
+    home = tmp_path / "operator"
+    (home / ".codex").mkdir(parents=True)
+    (home / ".codex/auth.json").write_text('{"tokens":{"access_token":"synthetic-access-token"}}')
+    python = str(Path("/usr/bin/python3").resolve())
+    monkeypatch.setattr(pi, "_seat_provider_source", lambda *_: ("codex", python))
+    return {"PATH": "/usr/bin:/bin", "HOME": str(home)}
+
+
+@pytest.mark.parametrize("layout", LAYOUTS)
+def test_delivery_redacts_before_the_secrets_are_released_and_keeps_nothing_else(
+        tmp_path, elsewhere, layout, monkeypatch):
+    env = _codex_shaped_profile(monkeypatch, tmp_path)
+    cwd, directory = _layout(layout, tmp_path, elsewhere)
+    output = directory / "opus.md"
+    script = (
+        "secret = json.loads(read(os.path.join(os.environ['CODEX_HOME'], 'auth.json')))\n"
+        "secret = secret['tokens']['access_token']\n"
+        "facts['copied'] = secret == 'synthetic-access-token'\n"
+        "facts['write'] = attempt(atomic_write, sys.argv[1], 'leaked ' + secret + ' here\\nAGREE\\n')\n"
+        "facts['scratch'] = attempt(write, sys.argv[1] + '.notes', 'also ' + secret)\n")
+    written: list[str] = []
+    real_write = pi._write_seat_text
+
+    def recording_write(path, text):
+        written.append(text)
+        return real_write(path, text)
+
+    monkeypatch.setattr(pi, "_write_seat_text", recording_write)
+    with _profile(script, cwd=cwd, outputs=(output,), env=env, argv=(output,)) as (owned, profile):
+        (private, seen_at), = profile.output_dirs
+        assert seen_at == str(directory) and Path(private) != directory
+        assert _launch(owned, profile, cwd) == {"copied": True, "write": "ok", "scratch": "ok"}
+        # While the profile is open the unredacted bytes exist only in the private directory;
+        # the host file has received nothing yet, and the live read is already redacted.
+        assert "synthetic-access-token" in (Path(private) / "opus.md").read_text()
+        assert output.read_text() == ""
+        assert pi._seat_output_text(profile, output) == "leaked [credential redacted] here\nAGREE"
+    assert output.read_text() == "leaked [credential redacted] here\nAGREE\n"
+    # The host file never held the secret, not even between delivery and the exit sweep.
+    assert written == ["leaked [credential redacted] here\nAGREE\n"]
+    assert not os.path.lexists(private), "the unredacted private copy was retained"
+    assert _names(directory) == ["opus.md"]
+
+
+UNSAFE = {
+    "a link to a host file": "os.symlink('/etc/hostname', out)\n",
+    "a link to its own scratch": "write(out + '.real', sys.argv[2]); os.symlink(out + '.real', out)\n",
+    "a dangling link": "os.symlink(out + '.absent', out)\n",
+    "a second name for the file": "write(out, sys.argv[2]); os.link(out, out + '.alias')\n",
+    "a directory": "os.mkdir(out)\n",
+    "a fifo": "os.mkfifo(out)\n",
+}
+
+
+@pytest.mark.parametrize("shape", sorted(UNSAFE))
+def test_a_name_that_is_not_a_private_regular_file_delivers_nothing(tmp_path, elsewhere, shape):
+    cwd, _ = _layout("output-elsewhere", tmp_path, elsewhere)
+    output = elsewhere / "opus.md"
+    with _profile("out = sys.argv[1]\n" + UNSAFE[shape], cwd=cwd, outputs=(output,),
+                  argv=(output, REVIEW)) as (owned, profile):
+        _launch(owned, profile, cwd)
+        (private, _seen_at), = profile.output_dirs
+        assert os.path.lexists(Path(private) / "opus.md")
+        assert pi._seat_output_text(profile, output) == ""  # never followed, never blocking
+    assert output.read_text() == ""
+    assert not os.path.lexists(private)
+    assert _names(elsewhere) == ["opus.md"]
+
+
+def test_the_private_directory_is_removed_whatever_the_seat_left_in_it(tmp_path, elsewhere):
+    cwd, _ = _layout("output-elsewhere", tmp_path, elsewhere)
+    output = elsewhere / "opus.md"
+    with _profile(
+            "here = os.path.dirname(sys.argv[1])\n"
+            "os.makedirs(os.path.join(here, 'a', 'b'))\n"
+            "write(os.path.join(here, 'a', 'b', 'c'), 'x')\n"
+            "os.symlink('/etc', os.path.join(here, 'a', 'link'))\n"
+            "os.mkfifo(os.path.join(here, 'pipe'))\n"
+            "os.chmod(os.path.join(here, 'a', 'b'), 0)\n"
+            "os.chmod(os.path.join(here, 'a'), 0)\n"
+            "facts['write'] = attempt(atomic_write, sys.argv[1], sys.argv[2])\n",
+            cwd=cwd, outputs=(output,), argv=(output, REVIEW)) as (owned, profile):
+        (private, _seen_at), = profile.output_dirs
+        assert _launch(owned, profile, cwd) == {"write": "ok"}
+    assert not os.path.lexists(private)
+    assert output.read_text() == REVIEW and os.path.isdir("/etc")
+
+
+def test_a_profile_that_never_launches_leaves_no_private_directory(tmp_path, elsewhere):
+    output = elsewhere / "opus.md"
+    with _profile("", cwd=tmp_path, outputs=(output,)) as (_owned, profile):
+        (private, _seen_at), = profile.output_dirs
+        info = os.stat(private)
+        assert info.st_uid == os.getuid() and (info.st_mode & 0o777) == 0o700
+        assert os.listdir(private) == []
+    assert not os.path.lexists(private) and output.read_text() == ""
+
+
+# --- the view: where the private directory is mounted ------------------------------------------
+
+def _mounts(view: list[str]) -> list[tuple[str, str]]:
+    """``(kind, destination)`` for each tmpfs and bind of a view, in mount order."""
+    mounts, index = [], 0
+    while index < len(view):
+        if view[index] == "--tmpfs":
+            mounts.append(("tmpfs", view[index + 1]))
+            index += 2
+        elif view[index] in {"--bind", "--ro-bind"}:
+            mounts.append((view[index][2:], view[index + 2]))
+            index += 3
+        else:
+            index += 1
+    return mounts
+
+
+def _private(tmp_path, name="private") -> str:
+    directory = tmp_path / name
+    directory.mkdir(mode=0o700)
+    return str(directory)
+
+
+def test_view_mounts_the_private_directory_over_the_cwd_and_under_its_inputs(tmp_path):
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    (cwd / "review-bundle.md").write_text("bundle")
+    private = _private(tmp_path)
+    view = pi._seat_filesystem_view(cwd, readonly_paths=(cwd / "review-bundle.md",),
+                                    output_dirs=((private, str(cwd)),))
+    mounts = _mounts(view)
+    order = [mounts.index(("tmpfs", str(cwd))), mounts.index(("bind", str(cwd))),
+             mounts.index(("ro-bind", str(cwd / "review-bundle.md")))]
+    assert order == sorted(order)
+    assert view[view.index("--bind"):view.index("--bind") + 3] == ["--bind", private, str(cwd)]
+    # The host's own directory is never a writable bind source.
+    assert [view[i + 1] for i, item in enumerate(view) if item == "--bind"] == [private]
+
+
+def test_view_mounts_a_private_directory_above_the_cwd_before_the_cwd(tmp_path):
+    above = tmp_path / "above"
+    cwd = above / "work"
+    cwd.mkdir(parents=True)
+    mounts = _mounts(pi._seat_filesystem_view(cwd, output_dirs=((_private(tmp_path), str(above)),)))
+    assert mounts.index(("bind", str(above))) < mounts.index(("tmpfs", str(cwd)))
+
+
+def test_view_nests_a_deeper_private_directory_inside_a_shallower_one(tmp_path):
+    outer, inner = tmp_path / "outer", tmp_path / "outer" / "inner"
+    inner.mkdir(parents=True)
+    dirs = ((_private(tmp_path, "p-inner"), str(inner)), (_private(tmp_path, "p-outer"), str(outer)))
+    mounts = _mounts(pi._seat_filesystem_view(tmp_path / "outer" / "inner", output_dirs=dirs))
+    assert mounts.index(("bind", str(outer))) < mounts.index(("bind", str(inner)))
+
+
+@pytest.mark.parametrize("where", ["the input itself", "below the input"])
+def test_view_refuses_a_private_directory_that_would_hide_a_read_only_input(tmp_path, where):
+    repo = tmp_path / "repo"
+    (repo / "logs").mkdir(parents=True)
+    destination = repo if where == "the input itself" else repo / "logs"
+    with pytest.raises(sandbox_egress.SeatIdentityUnverified):
+        pi._seat_filesystem_view(tmp_path, readonly_paths=(repo,),
+                                 output_dirs=((_private(tmp_path), str(destination)),))
+
+
+@pytest.mark.parametrize("destination", ["/", "/usr", "/usr/lib/seat-output", "/etc/ssl/certs",
+                                         "/proc/self", "/dev/shm/seat-output"])
+def test_view_refuses_a_private_directory_over_the_root_or_a_system_mount(tmp_path, destination):
+    with pytest.raises(sandbox_egress.SeatIdentityUnverified):
+        pi._seat_filesystem_view(tmp_path, output_dirs=((_private(tmp_path), destination),))
+
+
+@pytest.mark.parametrize("shape", ["a link", "a file", "open to others", "absent"])
+def test_view_refuses_a_private_directory_source_that_is_not_private(tmp_path, shape):
+    target = tmp_path / "target"
+    target.mkdir(mode=0o700)
+    source = tmp_path / "source"
+    if shape == "a link":
+        source.symlink_to(target, target_is_directory=True)
+    elif shape == "a file":
+        source.write_text("")
+    elif shape == "open to others":
+        source.mkdir()
+        source.chmod(0o755)
+    with pytest.raises(sandbox_egress.SeatIdentityUnverified):
+        pi._seat_filesystem_view(tmp_path, output_dirs=((str(source), str(tmp_path / "out")),))
+
+
+# --- the live session: the review is read while the seat runs, and delivered when it ends ------
+
+@pytest.mark.usefixtures("owned_review_network")
+@pytest.mark.parametrize("layout", LAYOUTS)
+def test_a_tui_session_accepts_and_delivers_an_atomically_written_review(
+        tmp_path, elsewhere, layout, monkeypatch):
+    _fast_tui(monkeypatch)
+    monkeypatch.setattr(pi, "_CLAUDE_TUI_SUBMIT_DELAY_S", .01)
+    monkeypatch.setattr(pi, "_CLAUDE_TUI_READY_QUIESCENCE_S", .01)
+    cwd, directory = _layout(layout, tmp_path, elsewhere)
+    output = directory / "opus.md"
+    body = json.dumps(REQUEST) + "\n" + json.dumps(_answer("a", "m", "AGREE")) + "\n"
+    script = (
+        SEAT + "import time\nfrom pathlib import Path\n" + _JOURNAL +
+        "print('Claude Code fake provider ready for review', flush=True)\n"
+        "time.sleep(.2)\n"
+        f"atomic_write({str(output)!r}, {REVIEW!r})\n"
+        f"_journal.write_text({body!r})\n"
+        "while True:\n"
+        "    sys.stdout.write('\\r* Idle...'); sys.stdout.flush(); time.sleep(.05)\n"
+    )
+    profiles = []
+    real_profile = pi._seat_command_profile
+
+    @contextmanager
+    def recording_profile(*args, **kwargs):
+        with real_profile(*args, **kwargs) as (owned, profile):
+            profiles.append(profile)
+            yield owned, profile
+
+    monkeypatch.setattr(pi, "_seat_command_profile", recording_profile)
+    monitor = pi._ReviewMonitor(tmp_path / "monitor.json", "t", 0, threading.Event(),
+                                stall_notice_s=3600)
+    guard = _ProviderTimer(monkeypatch, 15, monitor.cancel.set)
+    started = time.monotonic()
+    try:
+        rc, text, log, _tail = pi._run_claude_tui_session(
+            command=["/usr/bin/python3", "-c", script], cwd=cwd, prompt="input",
+            output_file=output, timeout_s=600, backstop_s=600, stall_threshold_s=600,
+            env=os.environ, review_monitor=monitor,
+        )
+    finally:
+        guard.cancel()
+    assert (rc, text, log) == (0, REVIEW.strip(), "claude_tui_file_output")
+    assert time.monotonic() - started < 12
+    assert output.read_text() == REVIEW
+    (private, seen_at), = profiles[0].output_dirs
+    assert seen_at == str(directory) and not os.path.lexists(private)
+    assert [name for name in _names(directory) if name.startswith("opus.md")] == ["opus.md"]

@@ -6,6 +6,35 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Claude TUI seat: atomic output writes, segmented journal admission, typed delivery refusal (agent-harness#1433, agent-harness#1434)
+
+- **A tools-enabled Claude seat can deliver its review again.** Claude Code's Write creates a
+  sibling temp file and renames it over the destination. The owned seat bound the precreated
+  output file in place, so the rename failed (`EBUSY`: a bound file is a mount point), and
+  with the output outside the seat's cwd the temp file itself failed (`EROFS`). The Claude
+  TUI's canonical output is now a *replaceable* output:
+  - in the seat's view its directory is a private per-launch directory, so the provider's
+    real temp-file-plus-rename works;
+  - the host's own directory is never mounted writable, none of its other entries is
+    visible, and another seat's output there is neither readable nor writable;
+  - read-only inputs below that directory stay bound read-only;
+  - when the seat has ended, the owner copies only the declared output to its precreated
+    host file, redacted before the profile releases its secrets, and removes the private
+    directory. A link, directory, FIFO or hard link left under the name delivers nothing.
+  - Outputs bound in place (`outputs`, a CLI's `--output-last-message`, the capture route)
+    are unchanged, and an output whose directory is itself a read-only input stays in place.
+- **A real tools-enabled journal is admitted.** Claude Code journals one API message as
+  several records that all carry the message's `stop_reason`. `_validated_claude_journal`
+  refused any thinking or text record that said `tool_use` without a tool block of its own,
+  which refused every real tool-using review. The rule is now judged per API message id
+  across its records. Every other refusal is unchanged: a second user turn, a pending or
+  unmatched tool call, a partial last line, any other stop, a missing final answer.
+- **An ended turn that was not delivered ends the leg.** When the provider's turn has ended
+  but the canonical output is absent or not a completed review, or the journal is not
+  admitted, the leg used to wait (forever under `heartbeat_only`). It now ends at once,
+  DEGRADED, with the new notice code `claude_seat_delivery_refused` and its fix line. It is
+  never an approval and never a sealed fallback. A turn still in flight waits as before.
+
 ### CLI qualification contract for every seat harness, inert (agent-harness#1333 PR2)
 
 - New `phase_loop_runtime.cli_qualification`. It is the harness-agnostic per-host CLI

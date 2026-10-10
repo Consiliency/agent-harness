@@ -851,6 +851,15 @@ give-up detector are views of it, so they cannot disagree:
   either. If the text is not an
   accepted verdict, the leg is handed it back as
   `claude_tui_broker_terminal_nonconforming` instead of waiting.
+  On a route that takes its answer only from the canonical output file, an ended
+  turn is an `answer` too, and it ends the leg at once (agent-harness#1433,
+  agent-harness#1434): the output is read once more, since the seat writes it
+  before it journals the end of its turn, and then either the file is a completed
+  review with an admitted journal (`claude_tui_file_output`), or the leg is
+  DEGRADED with `claude_seat_delivery_refused`, empty text. That covers a file
+  that is absent, empty or not a completed review, and a journal that fails strict
+  admission. It is never an approval and never a sealed or inline fallback, and
+  the leg never waits for more output from a turn that has ended.
 - `gave_up`: no answer, and the last live record after the current request is
   an `isApiErrorMessage` give-up. The leg ends at once as DEGRADED with
   `claude_seat_output_budget_exhausted` (`error: max_output_tokens`),
@@ -1349,11 +1358,46 @@ instead, and the jail is that launch's owner.
 - **Refusals.** Each owner refusal is a closed detail code and a `seat_jail.NOTICES`
   entry, with what happened, why and a fix line (`seat_owner_unavailable`,
   `seat_filtered_egress_unavailable`, `seat_keyring_unavailable`, ...).
+  `claude_seat_delivery_refused` (an ended turn whose output the route could not accept,
+  see the transcript outcomes above) is one more: a terminal degraded refusal, in neither
+  `SEALED_FALLBACK_CODES` nor `JAIL_NOT_RUN_CODES`.
+- **Outputs (agent-harness#1433).** A seat's declared output is one of two kinds, and
+  each is that launch's own precreated host file.
+  - **In place (`outputs`, and a CLI's `--output-last-message`).** The file is bound
+    writable at its own path, inside a parent the seat cannot write. Host and seat share it
+    live. The seat cannot replace it: a bound file is a mount point.
+  - **Replaceable (`replaceable_outputs`; the Claude TUI's canonical output).** Claude
+    Code's Write creates a sibling temp file (`<name>.tmp.<pid>.<hex>`, `O_CREAT|O_EXCL`)
+    and renames it over the destination, so the output must be an ordinary entry of a
+    writable directory. In the seat's view its directory is a private per-launch 0700 host
+    directory mounted at that path.
+    - **What the seat reaches.** It creates, renames and removes there freely. The host's
+      own directory is never mounted writable, none of its other entries is visible, and
+      another seat's output in the same host directory is neither readable nor writable.
+    - **Inputs.** A read-only input below that directory (the staged bundle, instructions
+      and tree in the seat's cwd) is bound into it, read-only as before.
+    - **Delivery.** When the seat has ended, the owner copies only the declared names to
+      the precreated host files (identity checked), redacted while the profile's secrets
+      are still known, and removes the private directory. A name that is not a bounded
+      regular file of this uid with one link (a symlink, a directory, a FIFO, a hard link)
+      delivers nothing. Until then the session reads the review from the private copy,
+      redacted.
+    - **Where it does not apply.** A private directory is mounted only where it hides
+      nothing of the host's: below the view's bare root, or inside a tmpfs of the seat's
+      own. Where the output's directory is itself (inside) a read-only input or a system
+      mount, the output is bound in place instead, and so is the capture route's, whose
+      caller reads the host file itself.
 - **The Claude journal.** The host collects the exact session journal through retained
   handles, after the provider has been cleaned up, and validates it before any approval.
   - **Refused on both routes:** a new user turn, a max-token continuation, an unmatched
     `tool_use`, partial JSONL, or a missing final answer.
   - **A completed tool cycle is accepted:** every `tool_use` has its `tool_result`.
+  - **Logical messages (agent-harness#1434).** Claude Code journals one API message as
+    several records (a thinking block, a text block, each tool call), and every record
+    carries the message's id and `stop_reason`. "A message that stopped for a tool holds a
+    tool call" is therefore judged per message id over all of its records, which need not
+    be adjacent. A record without an id is a message of its own. Every other refusal is
+    per record, as before.
   - **A journaled `isApiErrorMessage` record** is never an answer or a continuation. The
     answer parser (agent-harness#1194) decides the turn.
   - **The route's own answer rule:**

@@ -315,6 +315,14 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
     "claude_tui_journal_collection_refused": (
         "leg refused", "the seat's session journal was incomplete, changed, or not one turn",
         "re-run the seat; if it repeats, report a defect with the leg log"),
+    # agent-harness#1433/#1434: the provider's turn ended, and nothing it produced could be
+    # accepted. A terminal degraded refusal: never an approval, never a sealed fallback.
+    "claude_seat_delivery_refused": (
+        "leg refused",
+        "the seat's turn ended, but its review was not delivered: the output file is missing "
+        "or is not a completed review, or the session journal was not admitted",
+        "re-run the seat; give it an output path whose directory is not a read-only input; "
+        "if it repeats, report a defect with the leg log"),
     # agent-harness#1333: per-host CLI qualification (all harnesses). Each is a terminal
     # degraded refusal with its fix line, never a sealed or inline fallback.
     "seat_cli_unqualified": (

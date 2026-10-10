@@ -294,23 +294,83 @@ def _seat_bind_source(path, *, output=False) -> str:
         os.close(directory)
 
 
-def _seat_filesystem_view(cwd, *, readonly_paths=(), outputs=(), profile_mounts=(),
-                          broker_socket=None) -> list[str]:
-    view = []
+def _seat_view_layers(cwd, readonly_paths=(), *, check=True) -> list[tuple[str, bool, list[str]]]:
+    """The seat's view below its outputs, in mount order: ``(destination, private,
+    bubblewrap arguments)``. ``private`` marks a mount that shows nothing of the host: a
+    tmpfs of the seat's own. ``check=False`` only lays the destinations out, to decide
+    where an output directory can go; it checks no bind source and its arguments are not
+    for launching."""
+    layers: list[tuple[str, bool, list[str]]] = []
     for entry in _GEMINI_VIEW_SYSTEM:
         if os.path.islink(entry):
-            view += ["--symlink", os.readlink(entry), entry]
+            layers.append((entry, False, ["--symlink", os.readlink(entry), entry]))
         elif os.path.isdir(entry):
-            view += ["--ro-bind", entry, entry]
+            layers.append((entry, False, ["--ro-bind", entry, entry]))
     for entry in _GEMINI_VIEW_FILES:
-        view += ["--ro-bind-try", entry, entry]
-    view += ["--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp",
-             "--tmpfs", os.path.abspath(cwd)]
+        layers.append((entry, False, ["--ro-bind-try", entry, entry]))
+    layers += [("/dev", False, ["--dev", "/dev"]), ("/proc", False, ["--proc", "/proc"]),
+               ("/tmp", True, ["--tmpfs", "/tmp"]),
+               (os.path.abspath(cwd), True, ["--tmpfs", os.path.abspath(cwd)])]
     # Each host path is bound at the path the seat's argv names; its checked source may
     # differ only by a resolved parent link (``_trusted_host_path``).
     for source in readonly_paths:
-        checked = _seat_bind_source(source)
-        view += ["--ro-bind", checked, os.path.abspath(source)]
+        checked = _seat_bind_source(source) if check else os.path.abspath(source)
+        layers.append((os.path.abspath(source), False,
+                       ["--ro-bind", checked, os.path.abspath(source)]))
+    return layers
+
+
+def _seat_output_anchor(layers, directory: str) -> int | None:
+    """Where a private output directory may be mounted at ``directory`` (agent-harness#1433):
+    the index of the last mount at or above it, ``-1`` when there is none, or ``None`` when
+    it may not be mounted there at all.
+
+    It may be mounted only where it hides nothing of the host's: below the view's bare
+    root, or inside a tmpfs of the seat's own. Where the last mount at or above
+    ``directory`` comes from the host (a read-only input, a system directory), a directory
+    mounted over it would hide that input, so the output there stays bound in place. Mounts
+    BELOW ``directory`` come later in the view and land inside it, read-only as before."""
+    if directory == "/":
+        return None
+    anchor = -1
+    for index, (destination, _private, _arguments) in enumerate(layers):
+        if directory == destination or directory.startswith(destination.rstrip("/") + "/"):
+            anchor = index
+    return anchor if anchor < 0 or layers[anchor][1] else None
+
+
+def _seat_output_directory(source) -> str:
+    """A per-launch output directory as a bind source: a real directory, ours, private."""
+    checked = _seat_bind_source(source)
+    try:
+        info = os.lstat(checked)
+    except OSError as exc:
+        raise _sandbox_egress.SeatIdentityUnverified("seat_bind_source_unavailable") from exc
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+            or stat.S_IMODE(info.st_mode) & 0o077):
+        raise _sandbox_egress.SeatIdentityUnverified("seat_bind_source_unavailable")
+    return checked
+
+
+def _seat_filesystem_view(cwd, *, readonly_paths=(), outputs=(), output_dirs=(),
+                          profile_mounts=(), broker_socket=None) -> list[str]:
+    layers = _seat_view_layers(cwd, readonly_paths)
+    # agent-harness#1433: an output whose seat replaces it atomically (a sibling temp file
+    # renamed over it) needs its DIRECTORY to be writable and the output to be an ordinary
+    # entry of it; a file bound in place is a mount point, which no rename can replace. So
+    # the seat sees a private per-launch directory at the output's directory path
+    # (``output_dirs``: host source, seat path). The host's own directory is never mounted
+    # writable and none of its other entries is visible. Each is mounted right after the
+    # last mount at or above it, so the read-only inputs below it still land inside it.
+    for source, destination in sorted(
+            output_dirs, key=lambda item: os.path.abspath(item[1]).count("/")):
+        destination = os.path.abspath(destination)
+        anchor = _seat_output_anchor(layers, destination)
+        if anchor is None:
+            raise _sandbox_egress.SeatIdentityUnverified("seat_bind_source_unavailable")
+        layers.insert(anchor + 1, (destination, True,
+                                   ["--bind", _seat_output_directory(source), destination]))
+    view = [argument for _destination, _private, arguments in layers for argument in arguments]
     for output in outputs:
         checked = _seat_bind_source(output, output=True)
         view += ["--bind", checked, os.path.abspath(output)]
@@ -517,6 +577,12 @@ def _validated_claude_journal(data, *, require_terminal: bool = True):
         assistant_seen = False
         pending = set()
         seen = set()
+        # Claude Code journals one API message as several records (a thinking block, a text
+        # block, each tool call), and every one carries the message's id and stop_reason. So
+        # "a message that stopped for a tool holds a tool call" is judged per message id,
+        # over all of its records; they need not be adjacent (agent-harness#1434).
+        tool_stopped = set()
+        tool_calling = set()
         for line in data.split(b"\n"):
             if not line.strip():
                 continue
@@ -551,14 +617,20 @@ def _validated_claude_journal(data, *, require_terminal: bool = True):
                 if message.get("stop_reason") not in {None, "end_turn", "tool_use"}:
                     return ""
                 tools = [block for block in content or [] if block.get("type") == "tool_use"]
-                if message.get("stop_reason") == "tool_use" and not tools:
-                    return ""
+                # A record without a message id is a message of its own.
+                logical = message.get("id")
+                if not isinstance(logical, str) or not logical:
+                    logical = object()
+                if message.get("stop_reason") == "tool_use":
+                    tool_stopped.add(logical)
+                if tools:
+                    tool_calling.add(logical)
                 for block in tools:
                     tool = block.get("id")
                     if not isinstance(tool, str) or not tool:
                         return ""
                     pending.add(tool)
-        if pending:
+        if pending or tool_stopped - tool_calling:
             return ""
         # The route's own answer rule decides the text: the president's terminal-turn rule,
         # or the review rule, under which a completed answer outlives a later stray error.
@@ -2833,6 +2905,8 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     # agent-harness#1176: the provider's own journaled give-up, or a turn that ended unaccepted
     "claude_seat_output_budget_exhausted", "claude_seat_rate_limited", "claude_seat_provider_api_error",
     "claude_seat_usage_limited", "claude_seat_transcript_rejected",
+    # agent-harness#1433/#1434: the turn ended, and the route could not accept its output
+    "claude_seat_delivery_refused",
     "claude_agent_session_id_missing", "brokered_claude_session_collision",
     "brokered_claude_transcript_cleanup_failed", "missing_claude_cli",
     "claude_version_probe_timeout", "claude_version_probe_failed", "claude_version_unparseable",
@@ -4482,6 +4556,10 @@ class SeatProfile:
     terminal_fd: int | None = None
     journal: _SeatClaudeJournal | None = field(default=None, repr=False)
     broker_socket: str | Path | None = None
+    #: agent-harness#1433: ``(private host directory, the directory path the seat sees it
+    #: at)`` for each directory of declared outputs the seat may replace atomically.
+    #: ``outputs`` are the ones bound in place instead.
+    output_dirs: tuple[tuple[str, str], ...] = ()
 
 
 _OWNED_LAUNCH = ContextVar("owned_provider_launch", default=False)
@@ -4856,6 +4934,42 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
         )
 
 
+def _seat_output_text(profile, path) -> str:
+    """A declared output as its seat has written it so far, redacted and stripped.
+
+    While the seat runs, an output it may replace atomically lives in the seat's private
+    directory (``SeatProfile.output_dirs``); the host file receives it when the profile ends.
+    There the seat owns the name, so anything but a private regular file (a link, a
+    directory, a FIFO) is simply not an output yet. An output bound in place
+    (``SeatProfile.outputs``) is the host file itself."""
+    target = os.path.abspath(path)
+    directory, name = os.path.split(target)
+    if profile is not None and target not in {os.path.abspath(item) for item in profile.outputs}:
+        for source, destination in profile.output_dirs:
+            if destination == directory:
+                try:
+                    return _read_review_output(Path(source) / name)
+                except (AgyCanaryEvidenceError, _sandbox_egress.SeatIdentityUnverified):
+                    return ""
+    return _read_review_output(path)
+
+
+def _deliver_seat_output(source: Path, destination: Path) -> None:
+    """Copy one declared output from its seat's private directory to its host file.
+
+    Read as every seat output is (no-follow, a bounded regular file of this uid with one
+    name), so a link, a directory or a FIFO the seat left under the name delivers nothing.
+    Written redacted, while the profile's secrets are still known, to the host file this
+    launch precreated (its identity is checked). The unredacted copy never leaves the
+    private directory, which is removed right after."""
+    try:
+        raw = _read_seat_raw_text(source)
+    except (AgyCanaryEvidenceError, _sandbox_egress.SeatIdentityUnverified):
+        return
+    if raw:
+        _write_seat_text(destination, _redact_seat_credentials(raw))
+
+
 def _precreate_seat_output(path):
     path = Path(os.path.abspath(path))
     host = Path(_trusted_host_path(path))
@@ -4885,7 +4999,16 @@ def _precreate_seat_output(path):
 @contextmanager
 def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None,
                           gemini_profile=None, role=SeatLaunchRole.PROVIDER_REVIEW,
-                          readonly_paths=()):
+                          readonly_paths=(), replaceable_outputs=()):
+    """The owned seat's command and profile for one launch.
+
+    ``outputs`` are bound in place: each is one precreated host file, shared live with the
+    seat, which can write it but not replace it (a bound file is a mount point).
+    ``replaceable_outputs`` are files the seat's provider replaces atomically -- a sibling
+    temp file renamed over the destination, as Claude Code's Write does (agent-harness#1433).
+    Their directory is a private per-launch directory in the seat's view; the host file
+    receives what the seat wrote, redacted, when the profile ends. A path named both ways
+    stays in place."""
     if gemini_profile is None:
         harness, executable = _seat_provider_source(command[0], env)
         if harness not in {"codex", "claude", "grok", "gemini", "opencode"}:
@@ -4915,9 +5038,27 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
     transcript = _precreate_seat_output(transcript_path) if transcript_path is not None else None
     outputs = (*outputs, *((transcript,) if transcript is not None else ()))
     outputs = tuple(_precreate_seat_output(path) for path in outputs)
-    with seat_profile(harness=harness, executable=executable, env=env, cwd=cwd,
-                      readonly_paths=readonly, outputs=tuple(path for path in outputs if path != transcript),
-                      gemini_profile=gemini_profile, role=role) as (provider, profile):
+    # agent-harness#1433: the directory of each replaceable output is a private per-launch
+    # directory in the seat's view, wherever that hides nothing of the host's
+    # (``_seat_output_anchor``). Where it would (the directory is itself a read-only
+    # input), the output is bound in place like any other, as before.
+    layers = _seat_view_layers(cwd, readonly, check=False)
+    replaceable = tuple(dict.fromkeys(
+        path for path in map(_precreate_seat_output, replaceable_outputs) if path not in outputs))
+    delivered = tuple(path for path in replaceable
+                      if _seat_output_anchor(layers, str(path.parent)) is not None)
+    outputs = (*outputs, *(path for path in replaceable if path not in delivered))
+    with contextlib.ExitStack() as private_stack, \
+            seat_profile(harness=harness, executable=executable, env=env, cwd=cwd,
+                         readonly_paths=readonly,
+                         outputs=tuple(path for path in outputs if path != transcript),
+                         gemini_profile=gemini_profile, role=role) as (provider, profile):
+        # The seat's directory path -> its private host directory.
+        private = {directory: private_stack.enter_context(
+            tempfile.TemporaryDirectory(prefix="seat-output-"))
+            for directory in dict.fromkeys(str(path.parent) for path in delivered)}
+        profile = replace(profile, output_dirs=tuple(
+            (source, directory) for directory, source in private.items()))
         owned_command = [provider, *command[1:]]
         if transcript_path is not None:
             slug = re.sub(r"[^A-Za-z0-9.-]", "-", str(cwd))
@@ -4946,8 +5087,16 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
         finally:
             if profile.journal is not None:
                 profile.journal.close()
+            try:
+                # The seat has ended. Deliver what it wrote, redacted, while its secrets
+                # are still known; the unredacted copies go with the private directories.
+                for path in delivered:
+                    _deliver_seat_output(Path(private[str(path.parent)]) / path.name, path)
+            finally:
+                private_stack.close()
             if _SEAT_REDACTIONS.get():
-                retained = (*outputs, *((transcript,) if transcript_path is not None else ()))
+                retained = (*outputs, *delivered,
+                            *((transcript,) if transcript_path is not None else ()))
                 for path in dict.fromkeys(retained):
                     # Rewritten only to remove a copied secret: an unconditional rewrite is a
                     # read-truncate-write that loses any write landing between the two. A
@@ -5009,6 +5158,7 @@ def launch_owned(argv, *, role, profile: SeatProfile, supervisor=None, **kwargs)
                 cwd = kwargs.get("cwd", os.getcwd())
                 view = _seat_filesystem_view(
                     cwd, readonly_paths=profile.readonly_paths, outputs=profile.outputs,
+                    output_dirs=profile.output_dirs,
                     profile_mounts=("--ro-bind", key_source, key_destination, *profile.mount_args),
                     broker_socket=profile.broker_socket,
                 )
@@ -6975,7 +7125,13 @@ def _claude_api_error_record(payload: dict, message: dict) -> bool:
 # last record is not a provider error (for example a president ruling in a turn that also holds
 # an error record, which that route fails closed on). Nothing more will be journaled.
 _CLAUDE_TRANSCRIPT_REJECTED = "claude_seat_transcript_rejected"
-_CLAUDE_TERMINAL_CODES = _CLAUDE_PROVIDER_GAVE_UP_CODES | {_CLAUDE_TRANSCRIPT_REJECTED}
+# agent-harness#1433/#1434: the turn has ended in an answer, but the route has nothing it can
+# accept: the seat's canonical output file is absent or not a completed review, or its session
+# journal fails strict admission. Nothing more will be journaled, so the leg ends with this
+# typed refusal instead of waiting. It is a notice (``seat_jail.NOTICES``) with a fix line.
+_CLAUDE_DELIVERY_REFUSED = "claude_seat_delivery_refused"
+_CLAUDE_TERMINAL_CODES = _CLAUDE_PROVIDER_GAVE_UP_CODES | {
+    _CLAUDE_TRANSCRIPT_REJECTED, _CLAUDE_DELIVERY_REFUSED}
 
 
 def _claude_leg_failure(
@@ -7001,7 +7157,8 @@ def _claude_leg_failure(
 
 def _claude_terminal_code(detail: object) -> str | None:
     """The terminal code a session log carries (a give-up, with or without its rendered reset,
-    or a rejected transcript); None for any other log."""
+    a rejected transcript, or an ended turn whose output was not delivered); None for any
+    other log."""
     code = str.__str__(detail).split(": ", 1)[0] if isinstance(detail, str) else ""
     return code if code in _CLAUDE_TERMINAL_CODES else None
 
@@ -8374,6 +8531,7 @@ def _run_claude_tui_session(
         return 1, "", "claude_tui_unsupported_platform", ""
 
     profile_stack = contextlib.ExitStack()
+    profile: SeatProfile | None = None
     session_transcript_path = broker_transcript_path
     start_monotonic = time.monotonic()
     start_wall = time.time()
@@ -8436,10 +8594,12 @@ def _run_claude_tui_session(
     )
 
     def _current_output() -> str:
+        # The owned seat's output lives in its private directory until the profile ends
+        # (agent-harness#1433); every other route reads the file where it is.
         return (
             capture_output_reader()
             if capture_output_reader is not None
-            else _read_review_output(output_file)
+            else _seat_output_text(profile, output_file)
         )
 
     def _refresh() -> None:
@@ -8599,8 +8759,14 @@ def _run_claude_tui_session(
                 directory = profile_stack.enter_context(tempfile.TemporaryDirectory(prefix="seat-journal-"))
                 session_id = command[command.index("--session-id") + 1]
                 session_transcript_path = Path(directory) / (str(uuid.UUID(session_id)) + ".jsonl")
+            # The provider's Write replaces the canonical output atomically
+            # (agent-harness#1433). A capture launch reads the host file itself while the
+            # seat runs, so there the output stays bound in place.
+            in_place = capture_output_reader is not None
             owned_command, profile = profile_stack.enter_context(_seat_command_profile(
-                command, env=env, cwd=cwd, outputs=(output_file,), transcript_path=session_transcript_path,
+                command, env=env, cwd=cwd, transcript_path=session_transcript_path,
+                outputs=(output_file,) if in_place else (),
+                replaceable_outputs=() if in_place else (output_file,),
             ))
             journal = profile.journal
         master_fd, slave_fd = pty.openpty()
@@ -8914,6 +9080,25 @@ def _run_claude_tui_session(
                         review_monitor.observe(
                             None if last_output_progress is None else now - last_output_progress)
                     return _finish(proc.poll() or 1, "", _HarnessCode(outcome.code))
+                # agent-harness#1433/#1434: the provider's turn has ENDED in an answer, and the
+                # route still has nothing it can accept: the canonical output is absent or not
+                # a completed review (and this route takes its answer only from that file), or
+                # the journal fails strict admission. An ended turn journals nothing more, so
+                # the leg ends with the typed delivery refusal instead of waiting (forever,
+                # under heartbeat_only). The output is read once more first: the seat writes
+                # it before it journals the end of its turn, so a read taken before this
+                # journal read may be stale. A turn still in flight is ``pending`` and waits.
+                # (A journal the transcript-final route has just refused keeps its own code,
+                # ``claude_tui_journal_collection_refused``, at the top of the next pass.)
+                if outcome is not None and outcome.kind == "answer" and not journal_error:
+                    review_text = _current_output()
+                    if _canonical_complete(review_text):
+                        return _finish(0, review_text, "claude_tui_file_output")
+                    if review_monitor is not None:
+                        review_monitor.record["provider_terminal_state"] = _CLAUDE_DELIVERY_REFUSED
+                        review_monitor.observe(
+                            None if last_output_progress is None else now - last_output_progress)
+                    return _finish(proc.poll() or 1, "", _HarnessCode(_CLAUDE_DELIVERY_REFUSED))
             if proc.poll() is not None:
                 review_text = _current_output()
                 transcript_text = transcript_salvage or _transcript_text()
