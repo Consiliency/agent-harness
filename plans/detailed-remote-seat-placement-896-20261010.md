@@ -38,8 +38,7 @@ Gemini:
 |---|---|---|
 | P1, P2, P3 | nothing | 0 of 4 |
 | P4 | the Claude seat | 1 of 4 |
-| P5, default credential rule | Claude and codex | 2 of 4 |
-| P5, if the maintainer allows a long-lived credential to be placed (question Q2) | Claude, codex and grok | 3 of 4 |
+| P5 | Claude, codex and grok, each only on a subscription login whose access token expires | 3 of 4 |
 
 The Gemini seat is sealed on main (`seat_jail.GEMINI_RECORDED_STOP`), not jailed, so it is
 never placed in this slice and stays on the launching host until agent-harness#1170. The
@@ -397,6 +396,7 @@ not involved until P4. Each case is control-green and red under its mutation.
 | Accounts (B6): one shared account first, superseding RD1 (a) for the first slice | P2, P4, P5; RD3 legs (ii) is kept because of it |
 | The built-in egress list is left as it is | C5 neither changes nor relies on it |
 | Scope (B4): seats only | RD3 stands |
+| Credentials: expiring subscription tokens only. A placed seat gets only the access token of the launching user's subscription login; the renewal token never leaves the launching host; an API-key login or a stored long-lived seat token is refused for placement and the seat runs locally. No cap on a token's lifetime. A floor of 30 minutes of remaining life, in configuration, checked at the last moment before the credential is sealed into the request. Refreshing a token inside a running seat is a named follow-on. | P4, P5 |
 
 **Questions for the maintainer.** None blocks P1. Each is written so the answer is one
 setting or one named follow-on.
@@ -404,7 +404,6 @@ setting or one named follow-on.
 | ID | Question | Options | Built until ruled |
 |---|---|---|---|
 | Q1 | A dropped connection to the compute host ends a seat that may have run for hours. Accept that, or keep the seat alive for a reconnect? | (a) The seat ends, typed, not re-run. Simplest; an owner that dies can never leave a seat running. (b) The compute host keeps the seat for its lease time and accepts a resume bound to the lease id. Survives short interruptions; more protocol. (c) The seat always runs to completion and the result waits for pick-up. Survives anything; a seat can run with nobody waiting for it. | (a), in P2. (b) is a named follow-on. |
-| Q2 | May a placed seat carry a credential that does not expire (a stored Claude seat token, an API key, a bearer whose lifetime the runtime cannot read)? | (a) No: only an expiring access token is ever placed; anything else is refused before launch and the seat runs locally. (b) Yes, per harness, by a setting. | (a), in P4 and P5. One switch. |
 | Q3 | RD4 was accepted "with a signed attestation". This slice returns the compute host's facts as unsigned claims that no gate reads. Defer the signature? | (a) Defer: the channel already authenticates the host, and nothing trusts the claims. (b) Sign now. | (a). A named follow-on. |
 
 Standing rulings this plan relies on, cited and not restated: R1 and R2

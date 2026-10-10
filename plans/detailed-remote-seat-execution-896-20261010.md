@@ -106,15 +106,18 @@ the launching host rendered it**; the snapshot digest and the review-authorizati
 `_prepare_jailed_claude` reads; the credential slot; its own digest. The far end does not
 render a prompt. The launching host records the digest of the prompt it sent.
 
-**Credentials for a placed Claude seat** (ruling B1; default answer to Q2 of P1).
+**Credentials for a placed Claude seat** (rulings of 2026-10-10: the launching user's login,
+per run; expiring subscription tokens only; a 30-minute floor).
 
 | | Placed Claude seat |
 |---|---|
-| What the slot holds | The login's access token and its expiry. Never a refresh token. **Never the stored seat-token override**, which does not expire. |
-| If the session would use the override locally | The login it is bound to exists by rule, so the placed seat uses that login's access token. If that token lacks the margin after the usual wait, the leg is not a candidate (`seat_placement_credential_not_placeable`) and runs locally on the override, as today. |
-| The one switch (Q2) | `PHASE_LOOP_SANDBOX_PLACE_LONG_LIVED_CREDENTIAL`, off by default. On, the override may be placed. |
-| Lifetime | The login's own; hours. A seat that outlives it fails as a local seat would; the far end cannot wait for a renewal. |
-| When it is read | Presence and margin before staging, as today. The slot is built from a fresh read immediately before `execute`. If the margin fails then, the sandbox is released with confirmation and the seat is not run, with the same typed code a local seat gets; it does not fall back to local, where the same check would fail. |
+| What the slot holds | `claudeAiOauth.accessToken` of the launching user's subscription login, and its `expiresAt`. Never the refresh token. **Never the stored seat-token override**, which does not expire. |
+| A session with a stored override | The override is usable only while the session is logged in to the account it is bound to, so a subscription login exists. The placed seat gets that login's access token if it meets the floor. If it does not, the leg is not placed (`seat_placement_credential_under_floor`) and runs locally on the override, as today. The override's bytes never enter a request. |
+| The floor | `PHASE_LOOP_SANDBOX_PLACED_TOKEN_FLOOR_S`, default 1800. There is no cap on lifetime. |
+| When it is checked | Twice. Early, before staging, so a seat that cannot be placed costs no transfer. And, **bindingly, at the last moment**: from a fresh read immediately before the credential is sealed into the request, after the admission wait and the stage transfer. |
+| Under the floor at the last moment | The launching host first uses the renewal it already has for this vendor: the read-only wait for the owner's own session to renew the login (`seat_credentials.await_login_margin`), up to its existing wait. It never uses the refresh token itself. Then it reads again. Still under: the sandbox is released with confirmation, the leg is recorded `seat_placement_credential_under_floor`, and the seat runs **locally**. Nothing was launched, so nothing moves. |
+| Lifetime | Hours (measured on one host). |
+| A seat that outlives its token | It is cut off only if it runs longer than the token had left. Main already types this for the jailed seat: an authentication failure at or after the token's expiry is `claude_seat_login_token_expired`. The far end is given the expiry and reports the same code. It is never a silent hang: once the expiry has passed, a seat with no progress for the stall window is ended with that code, under every monitoring policy. It is never re-run on another host. |
 | On the compute host | The request is held in the entry point's memory and handed to the seat through the credential source of P3: the token goes on a drained pipe, exactly as locally. No login store is read there. |
 | The seat's home | **On disk**, as locally: the jail's `seat-home/`, owned by the seat's subordinate uid. The runtime writes no credential there. What the CLI itself writes there is not known for the token; the live check below scans for it. |
 | Destroyed on clean exit | At once, through the jail's mapped teardown |
@@ -125,6 +128,14 @@ So for this seat "nothing at rest" is a limit, stated: **the runtime puts no cre
 any file on the compute host; a jailed seat's own directories are on disk while it runs and,
 after a crash, until the next admission.** Core dumps are off and swap is zero for the
 account (P2).
+
+**Refreshing a token inside a running seat: a named follow-on, not built.** For Claude it
+is not feasible as the seat is built today: the token is delivered once, on a pipe the CLI
+drains at start, and nothing re-reads it; the seat's session may not be resumed. It would
+need either support in the CLI for a second read or a new delivery channel into the jail,
+and it would keep "no credential in a file" only if that channel stays in memory. The
+trigger for building it is evidence: the count of `claude_seat_login_token_expired`
+outcomes on placed seats, which the evidence already records per leg.
 
 **The far end's seat run** (`workload="leg"`). The entry point rebuilds the staged
 directory from the verified tree and the request; leases a seat id, from the one lock
@@ -217,7 +228,7 @@ B6; the claims are unsigned (Q3 of P1).
   actual mode.
 - `_HARNESS_DETAIL_CODES` — modify — add `sandbox_placement_leg_ineligible`,
   `sandbox_placement_result_invalid`, `sandbox_placement_bound_exceeded`,
-  `seat_placement_credential_not_placeable`.
+  `seat_placement_credential_not_placeable`, `seat_placement_credential_under_floor`.
 
   **Frozen vocabulary, quoted from `panel_invoker.py:2837-2840`:** "`PanelLegResult.detail`
   is built ONLY from our own closed vocabulary. … a HARNESS CODE — a fixed string this
@@ -316,9 +327,12 @@ red under its mutation.
 | Nothing configured | Plan 1a's local-equivalence golden and the launch-spec golden match; the jail profile digests and falsifier layout identity are equal before and after | — |
 | A placed Claude seat, end to end | Zero local provider spawns; runtime `committed` and `completed`; `sandbox_root_applied=true`; mode `remote`; the answer ingested | Build `completed` from the backend's receipt |
 | The far end has its **own, different** Claude login and stored override | The placed seat uses the slot's token; a spy records no read of the far end's stores | Resolve the credential on the far end |
-| The launching session would use a stored override | The slot holds the login's access token and never the override's bytes; with the switch on, the override | Place whatever the resolver returns |
-| Login token short of the margin, override present | Not a candidate: `seat_placement_credential_not_placeable`; runs locally | Refuse the seat outright |
-| Margin fails at the fresh read before `execute` | Released with confirmation; not run, with the local credential code; no local launch | Fall back to local |
+| The launching session would use a stored override | The slot holds the login's access token and never the override's bytes | Place whatever the resolver returns |
+| Login token under the floor before staging, override present | Not placed: `seat_placement_credential_under_floor`; nothing is staged remotely; runs locally on the override | Refuse the seat outright |
+| Token with 31 minutes left before staging and 29 at the last moment (the admission wait and the transfer took the difference); the owner's session does not renew it | Released with confirmation; `seat_placement_credential_under_floor`; the seat runs locally; no `execute` was called | Check the floor only before the session opens |
+| The same, but the owner's session renews the login during the read-only wait | The fresh token is sealed and the seat is placed; the refresh token was never read | Refresh with the refresh token |
+| A login with no readable expiry | Not placed: `seat_placement_credential_not_placeable` | Treat a missing expiry as far in the future |
+| A placed seat whose token expires mid-run, then: an authentication failure; silence for the stall window | Both end as `claude_seat_login_token_expired`, under heartbeat-only as well; no re-run on any host | Leave a silent seat running after expiry |
 | The encoded request | Contains no refresh-token value and no override value | Narrow on the far end |
 | During a placed seat, and after a clean exit | No file under the entry point's workspace, state, home or temporary directories holds the token value | Write the slot to a temporary file |
 | Entry point killed with SIGKILL during a placed seat; then a session of a **different** principal | No seat process and no egress holder remains; that session's sweep removes the tree, home and output owned by the subordinate uid; until then the seat id is not leased | Sweep through the account uid; reuse the seat id at once |
@@ -367,7 +381,8 @@ launching host; `placement qualify` passing before and after.
 
 | Ruling | What it fixes in this plan |
 |---|---|
-| Logins (B1): the launching user's, per run, in the access-only form, nothing at rest | The credential table. Its two disclosed risks and their checks are below. |
+| Logins (B1): the launching user's, per run, in the access-only form, nothing at rest | The credential table. Its disclosed risks and their checks are below. |
+| Credentials: expiring subscription tokens only; a 30-minute floor checked at the last moment; mid-run refresh a named follow-on | The credential table and the follow-on paragraph |
 | Accounts (B6): one shared account first; separation rests on the sandbox and a probe | The separation probe and the two-principal test are acceptance criteria |
 | Busy or down (B3) | C7, exercised here through `_default_spawn` |
 | Scope (B4): seats only | `_placeable` |
@@ -377,11 +392,11 @@ launching host; `placement qualify` passing before and after.
 | Risk | Check |
 |---|---|
 | Root on the compute host can read a token in memory while a seat runs, and can forge a result | Cannot be prevented, only bounded: the token expires (the override is never placed); no credential is written by the runtime; the mode line and operator guide state it |
+| A seat runs longer than its token had left | Typed (`claude_seat_login_token_expired`), never a silent hang, never re-run elsewhere; the count of such outcomes is the trigger for the refresh follow-on |
 | A vendor may object to a login used from the compute host's address | `placement qualify --seat claude` records what the vendor did; a refusal makes the harness ineligible until resolved |
 | A jailed seat's own directories are on disk after a crash until the next admission | The kill-then-different-principal case; the live scan for the token in the real seat home |
 
-**Open:** Q2 of P1 (long-lived credentials; built as "never", one switch) and Q3 of P1
-(unsigned claims; built as deferred).
+**Open:** Q3 of P1 (unsigned claims; built as deferred).
 
 ## Execution Policy
 

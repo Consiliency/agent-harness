@@ -63,9 +63,11 @@ Cited, not restated: amendments C1–C11 (P1); the entry point, sweep and host q
     without it.
   - grok: its auth file without refresh keys. The bearer is held as `key`, with **no
     lifetime the runtime can read**; plus the agent id file.
-- **Not verified here:** where each real CLI keeps the expiry of its access token. The
-  default rule is therefore written the safe way round: a token whose expiry the launching
-  host cannot read is treated as one that does not expire.
+- **No expiry is read on main for codex or grok.** The runtime reads an expiry only for the
+  Claude login. Reading the codex access token's own expiry and the expiry beside grok's
+  bearer is new code in this unit. The rule is written the safe way round: a token whose
+  expiry the launching host cannot read is treated as one that does not expire, and is not
+  placed.
 - **The local notice.** `seat_filesystem_unconfined` is attached to a tooled codex or grok
   seat today, and its mode is `unconfined`.
 
@@ -93,18 +95,28 @@ The prompt the provider receives is the prompt whose digest the launching host r
 If placement falls back to local, the prompt is rendered again for the local path before
 the local launch, and that digest is the one recorded.
 
-**Credentials** (ruling B1; default answer to Q2 of P1: only an expiring access token is
-ever placed).
+**Credentials** (rulings of 2026-10-10: the launching user's login, per run; expiring
+subscription tokens only; a 30-minute floor). The lifetimes are measurements from one host.
+The field names are what main's narrowing keeps or what was measured; the implementer
+confirms each against the CLI's real file, and a login the runtime cannot classify is
+treated as not placeable.
 
 | | Placed codex seat | Placed grok seat |
 |---|---|---|
-| What the slot holds | The narrowed auth file: access token and id token, refresh token blanked; the one-line config | The narrowed auth file: the bearer, no refresh keys; the agent id |
-| Does it expire | Yes when the login is a subscription login: both tokens carry their own expiry, which the launching host reads. **Not in API-key mode.** | **Not as far as the runtime can tell.** |
-| Default | Placed only when the file holds no API key and both tokens have a readable expiry with the margin left. Otherwise not a candidate (`seat_placement_credential_not_placeable`); the seat runs locally. | **Not a candidate. The seat runs locally.** |
-| With the switch on (Q2 ruled "yes") | API-key mode may be placed | May be placed |
+| What the slot holds | The auth file as main narrows it (`blank_refresh`): the access token and the id token, with the refresh token's value emptied; and the one-line config. The CLI sends no bearer without the id token; it is an identity token, not a renewal token. | The auth file as main narrows it (`access_only`): the bearer (`key`) with its expiry, no refresh or id token; and the agent id file |
+| Placed only when | The login is the subscription sign-in: no API key value in the file, and the access token's own expiry is readable | The login is the vendor's sign-in with an expiring bearer: an expiry is present beside the bearer |
+| **Refused for placement, runs locally** (`seat_placement_credential_not_placeable`, with its fix line) | API-key mode; any file with an API key value; an access token whose expiry cannot be read | Any other grok auth mode, an API key among them; a bearer with no expiry |
+| Lifetime | Access token: about ten days. Id token: about an hour. | About six hours |
+| The floor (30 minutes by default; `PHASE_LOOP_SANDBOX_PLACED_TOKEN_FLOOR_S`) | Applies to the access token. Checked before staging and, bindingly, at the last moment before sealing (P4). | The same, on the bearer |
+| Renewal the launching host already has | **None in the runtime** for codex: nothing on main renews a codex login. Under the floor the leg is not placed (`seat_placement_credential_under_floor`) and runs locally, where the user's own CLI renews its login in its own time. | **None in the runtime** for grok. The same. |
+| A seat that outlives its token | The far end is given the expiry. An authentication failure at or after it, or no progress for the stall window after it, ends the seat as `seat_placement_token_expired`, under every monitoring policy. Never a silent hang, never re-run on another host. | The same |
 | On the compute host | Bytes from the request, through P3's credential source, into the seat's private home | The same |
 | Where it lives there | Memory only: files in a memory-backed home inside the seat's mount namespace | The same |
 | Destroyed on clean exit, on a kill, on out-of-memory, on reboot | With the seat's namespace, in every case. By construction, given that swap is zero for the account and core dumps are off, both checked by host qualification (P2). | The same |
+
+One unknown is recorded rather than assumed: codex's id token lives about an hour and the
+seat cannot renew it. A local codex seat has the same exposure today. The live check below
+runs a placed codex seat past its id token's expiry and records what the CLI does.
 
 One thing is on disk for these seats: their **output files**, which the owner binds
 writable so the answer survives the seat. The runtime redacts credential values from them
@@ -112,7 +124,16 @@ on a clean exit. If the entry point is killed first, an output a CLI wrote a cre
 into stays on disk, owned by the seat's uid, until the next session's sweep (P2). That is
 the stated limit for these seats; the kill-then-sweep case below covers it.
 
-**Placed.** `PLACED_HARNESSES` gains `codex`, and `grok` when the switch is on. A placed
+**Refreshing a token inside a running seat: a named follow-on, not built.** Both CLIs read
+their login from a file in their home, so a renewed file could in principle be written
+into the seat's memory-backed home by the far end entering the seat's namespace, carried
+there by a new frame on the session; "nothing at rest" would still hold. Two things are
+not known and would be measured first: whether either CLI reads the file again while it
+runs, and what it does when its own attempt to renew fails because the refresh token is
+empty. With lifetimes of about ten days and six hours the need is not shown. The trigger
+for building it is the count of `seat_placement_token_expired` outcomes.
+
+**Placed.** `PLACED_HARNESSES` gains `codex` and `grok`. A placed
 seat's mode is `remote`; `seat_filesystem_unconfined` describes the local route and is not
 attached to a placed seat.
 
@@ -134,8 +155,11 @@ end admits a harness only if its view passed.
 - The launch probe — modify — the leased-uid assertion when a seat identity is given.
 - The sealed-prompt call site — modify — the fixed tree path for a candidate; re-rendered
   on fallback.
-- `_narrow_seat_credentials` (P3) — modify — reports, for codex and grok, whether what it
-  narrowed is placeable under the default rule.
+- `_narrow_seat_credentials` (P3) — modify — reports, for codex and grok, the login's kind
+  (subscription sign-in or not) and the expiry of the token a seat would use.
+- `_HARNESS_DETAIL_CODES` and `seat_jail.NOTICES` — modify — add
+  `seat_placement_token_expired`, the way each closed list already grows; no template or
+  category is added (the vocabulary rule quoted in P4 applies).
 - `PLACED_HARNESSES`, `_placeable` — modify.
 
 ### `phase-loop-runtime/src/phase_loop_runtime/seat_uid.py` (modify)
@@ -204,18 +228,20 @@ case is control-green and red under its mutation.
 | The stand-in CLI checks the directory its prompt names | It exists and is the tree, on the far end and, after a fallback, locally | Render the launching host's path for a placed leg |
 | The prompt digest | The one recorded is of the prompt the provider received, placed and after fallback | Record before re-rendering |
 | Codex login with tokens that expire and no API key | Placed; the far-end home holds byte-for-byte what a local seat's holds | Forward the unnarrowed file |
-| Codex in API-key mode; a token with no readable expiry; a token short of the margin | Not a candidate, `seat_placement_credential_not_placeable`; runs locally. With the switch on, API-key mode is placed. | Place whatever narrowing returns |
-| Grok | Not a candidate by default; placed with the switch on | Treat an unreadable lifetime as expiring |
-| The encoded request | No refresh-token value; with the switch off, no API key and no bearer without an expiry | Decide placeability on the far end |
+| Codex in API-key mode; a file with an API key value beside tokens; an access token with no readable expiry | Not placed, `seat_placement_credential_not_placeable`; runs locally | Place whatever narrowing returns |
+| Grok with an expiring sign-in bearer; grok in any other auth mode; a bearer with no expiry | Placed; not placed, `seat_placement_credential_not_placeable`, runs locally (both) | Treat a missing expiry as expiring |
+| Codex or grok token under the floor before staging; under it only at the last moment | Not placed, nothing staged remotely; released with confirmation, `seat_placement_credential_under_floor`, runs locally, no `execute` | Check the floor once, early |
+| A placed seat whose token expires mid-run, then: an authentication failure; silence for the stall window | Both end as `seat_placement_token_expired`, under heartbeat-only as well; no re-run on any host | Leave a silent seat running after expiry |
+| The encoded request | No refresh-token value, no API key, and no bearer or access token without an expiry | Decide placeability on the far end |
 | During a placed seat; after a clean exit | No file under the entry point's directories holds a credential value; output files are redacted | Skip redaction for placed seats |
 | Entry point killed with SIGKILL while a stand-in CLI has written a credential value to its output; then a session of a **different** principal | No process remains; the sweep removes the seat-uid-owned output and tree; until then the seat id is not leased | Sweep through the account uid |
 | Verifier, placed codex record | The placed shape passes; the EC-HARDEN-5 predicate gives the same answer it gives a local tooled codex record | Force the residual for every placed record |
 | Mode and notices | `remote`; no `seat_filesystem_unconfined` on a placed seat; unchanged locally | Carry the local notice |
 
-**Live check, outside CI.** `phase-loop placement qualify <name> --seat codex` (and
-`--seat grok` if the switch is ever turned on), then one board against a real compute host.
-Recorded in the PR: each vendor's response; the uids the seats ran as; the scan of the real
-output files for a credential value.
+**Live check, outside CI.** `phase-loop placement qualify <name> --seat codex` and
+`--seat grok`, then one board against a real compute host. Recorded in the PR: each
+vendor's response; the uids the seats ran as; the scan of the real output files for a
+credential value; and what a placed codex seat does once its id token has expired.
 
 ## Acceptance criteria
 - [ ] A placed codex seat runs under a leased subordinate uid that is neither the account's
@@ -224,9 +250,10 @@ output files for a credential value.
 - [ ] The separation probe, run through the owner route's seat-uid view beside another
   principal's seat, fails on every listed item and passes its mutations only when they are
   applied.
-- [ ] Codex in API-key mode, and grok, are not placed by default and run locally with
-  `seat_placement_credential_not_placeable`; no API key and no non-expiring bearer appears
-  in any encoded request.
+- [ ] Codex in API-key mode, and grok in any mode without an expiring bearer, are not placed
+  and run locally with `seat_placement_credential_not_placeable`; a token under the floor
+  at the last moment is released and runs locally; no API key, refresh token or
+  non-expiring bearer appears in any encoded request.
 - [ ] An entry point killed while a placed seat's output holds a credential value leaves
   nothing that the next session of a different principal does not remove.
 - [ ] The stand-in CLI finds the tree at the path its prompt names, and the recorded prompt
@@ -241,17 +268,19 @@ output files for a credential value.
 | RD3, legs (ii), 2026-09-29: codex and grok under a subordinate uid on the remote | The whole unit |
 | Accounts (B6), 2026-10-10: one shared account first | Why RD3 (ii) cannot be deferred: with one account it is the only kernel boundary between two users' codex or grok seats |
 | Logins (B1), 2026-10-10: the launching user's, per run, in the access-only form | The credential table |
+| Credentials, 2026-10-10: expiring subscription tokens only; a 30-minute floor checked at the last moment; mid-run refresh a named follow-on | The credential table and the follow-on paragraph |
 
 **Known risks, each with its check:**
 
 | Risk | Check |
 |---|---|
-| Root on the compute host can read a login in memory while a seat runs | Bounded by expiry under the default rule; stated in the mode line and operator guide |
+| Root on the compute host can read a login in memory while a seat runs | Bounded by expiry: only expiring tokens are placed. A codex access token lives about ten days, and the maintainer chose no cap. Stated in the mode line and operator guide. |
+| A seat runs longer than its token had left | Typed (`seat_placement_token_expired`), never a silent hang, never re-run elsewhere |
+| Codex's id token expires within the hour and cannot be renewed in the seat | The live check records what the CLI does; a local codex seat has the same exposure |
 | A vendor may object to a login used from the compute host's address | `placement qualify --seat <harness>` records each vendor's response |
 | A CLI may write a credential into its output, which is on disk | Redaction on clean exit; the kill-then-sweep case; the live scan |
 
-**Open:** Q2 of P1. Until it is ruled, grok is not placed and codex is placed only on a
-subscription login.
+**Open:** none.
 
 ## Execution Policy
 

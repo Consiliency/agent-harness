@@ -12792,14 +12792,14 @@
                 "B4",
                 "B5",
                 "B6",
-                "egress list unchanged"
+                "egress list unchanged",
+                "credentials: expiring subscription tokens only, 30-minute floor"
               ],
               "recorded_at": "2026-10-10",
               "source": "relayed by team lead"
             },
             "open_questions": [
               "Q1 dropped session",
-              "Q2 long-lived credential",
               "Q3 unsigned claims"
             ],
             "planning_artifact_only": true,
@@ -12818,7 +12818,7 @@
       "status": "committed",
       "task_summary": "Execution driver for non-local placement (agent-harness#896 plan 1b, P1): seam amendments C1-C11, runtime-owned admission outcomes, lease journal bound by lease id, reaper, runtime receipts; the driver flag stays off; amends the 2026-09-29 placement and E2B plans and the 2026-10-04 resolver plan section by section",
       "type": "detailed",
-      "updated_at": "2026-10-10T18:25:34Z"
+      "updated_at": "2026-10-10T18:31:45Z"
     },
     {
       "acceptance_criteria_count": 5,
@@ -12848,14 +12848,14 @@
                 "B4",
                 "B5",
                 "B6",
-                "egress list unchanged"
+                "egress list unchanged",
+                "credentials: expiring subscription tokens only, 30-minute floor"
               ],
               "recorded_at": "2026-10-10",
               "source": "relayed by team lead"
             },
             "open_questions": [
               "Q1 dropped session",
-              "Q2 long-lived credential",
               "Q3 unsigned claims"
             ],
             "planning_artifact_only": true,
@@ -12874,7 +12874,7 @@
       "status": "committed",
       "task_summary": "SSH placement backend, compute-host entry point and placement qualify (agent-harness#896, P2): root form, runtime-decided unreachable, session-as-lease protocol, verified stage transfer, all-principal sweep, host qualification at account level and inside a seat namespace; null workload only; flag off",
       "type": "detailed",
-      "updated_at": "2026-10-10T18:25:34Z"
+      "updated_at": "2026-10-10T18:31:45Z"
     },
     {
       "acceptance_criteria_count": 5,
@@ -12905,14 +12905,14 @@
                 "B4",
                 "B5",
                 "B6",
-                "egress list unchanged"
+                "egress list unchanged",
+                "credentials: expiring subscription tokens only, 30-minute floor"
               ],
               "recorded_at": "2026-10-10",
               "source": "relayed by team lead"
             },
             "open_questions": [
               "Q1 dropped session",
-              "Q2 long-lived credential",
               "Q3 unsigned claims"
             ],
             "planning_artifact_only": true,
@@ -12931,7 +12931,7 @@
       "status": "committed",
       "task_summary": "The jailed Claude seat is placed and the driver flag turns on (agent-harness#896, P4): candidate rule, placed route decision, leg request and result, far-end seat run, separation probe through the jail view, placed broker record and verifier order, remote mode",
       "type": "detailed",
-      "updated_at": "2026-10-10T18:25:34Z"
+      "updated_at": "2026-10-10T18:31:45Z"
     },
     {
       "acceptance_criteria_count": 4,
@@ -12961,7 +12961,8 @@
                 "B4",
                 "B5",
                 "B6",
-                "egress list unchanged"
+                "egress list unchanged",
+                "credentials: expiring subscription tokens only, 30-minute floor"
               ],
               "recorded_at": "2026-10-10",
               "source": "relayed by team lead"
@@ -12983,7 +12984,7 @@
       "status": "committed",
       "task_summary": "Factor the seat launch closure and the seat credential source so both hosts can call them, with no behaviour change (agent-harness#896, P3)",
       "type": "detailed",
-      "updated_at": "2026-10-10T18:25:34Z"
+      "updated_at": "2026-10-10T18:31:45Z"
     },
     {
       "acceptance_criteria_count": 5,
@@ -13013,14 +13014,14 @@
                 "B4",
                 "B5",
                 "B6",
-                "egress list unchanged"
+                "egress list unchanged",
+                "credentials: expiring subscription tokens only, 30-minute floor"
               ],
               "recorded_at": "2026-10-10",
               "source": "relayed by team lead"
             },
             "open_questions": [
               "Q1 dropped session",
-              "Q2 long-lived credential",
               "Q3 unsigned claims"
             ],
             "planning_artifact_only": true,
@@ -13039,7 +13040,7 @@
       "status": "committed",
       "task_summary": "Codex and grok seats run under a leased seat uid on the compute host (ruling RD3 legs (ii)), then are placed under the default credential rule (agent-harness#896, P5)",
       "type": "detailed",
-      "updated_at": "2026-10-10T18:25:34Z"
+      "updated_at": "2026-10-10T18:31:45Z"
     }
   ],
   "schema_version": 1
