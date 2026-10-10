@@ -198,3 +198,24 @@ def test_the_models_stay_strict_and_closed():
         assert model.model_config.get("extra") == "forbid"
     assert set(pr.PanelSeatReply.model_fields) == {"verdict", "summary", "findings"}
     assert set(pr.PanelFinding.model_fields) == {"severity", "title", "body", "location"}
+
+
+def test_review_instructions_ask_for_the_json_then_the_verdict_word_as_the_last_line():
+    text = pr.render_reply_instructions("review")
+    assert "exactly ONE JSON object" in text and "one final line" in text
+    for word in ("AGREE", "PARTIALLY AGREE", "DISAGREE"):
+        assert word in text
+    assert "final line of your whole reply is that same verdict word" in text
+    assert "rejected" in text                                    # the seat is told a mismatch is refused
+    assert "RECOMMENDATION:" not in text
+
+
+def test_advisory_instructions_ask_for_the_json_then_a_recommendation_line():
+    text = pr.render_reply_instructions("advisory")
+    assert "The final line of your whole reply is `RECOMMENDATION: " in text
+    assert "Do NOT include a `verdict` field" in text and "AGREE" not in text.split("JSON Schema")[0]
+
+
+def test_the_seat_failure_kinds_are_exactly_the_ones_a_seat_can_cause():
+    assert set(pr.SEAT_FAILURE_KINDS) == set(pr.FAILURE_KINDS) - {"empty", "invalid_mode"}
+    assert {"terminal_mismatch", "recommendation_missing"} <= set(pr.SEAT_FAILURE_KINDS)
