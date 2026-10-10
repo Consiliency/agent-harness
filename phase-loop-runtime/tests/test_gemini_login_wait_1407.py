@@ -272,14 +272,15 @@ def test_a_seat_in_the_window_agy_cannot_renew_waits_and_then_launches(host, mon
 def test_the_gates_floor_is_600_s_and_the_wait_adds_nothing_above_it(host, monkeypatch, tmp_path,
                                                                      left, runs, deadline_s):
     """Main launched every login with 600 s or more at once, however short the leg's
-    deadline; so does this, with no renewal run. Under 600 s the renewal runs.
+    deadline; so does this: no renewal run, and the step before the launch gathers nothing
+    (the one image lookup is the seat's own). Under 600 s the renewal runs, on its own lookup.
 
     Mutations: move ``_GEMINI_LOGIN_MIN_S``; make the wait ask for more than the gate."""
     _login(host.home, left)
     host.plan(renew_on_call=1)
     with pytest.raises(_LaunchReached):
         _run_leg(host, monkeypatch, tmp_path, deadline_s=deadline_s)
-    assert len(host.calls()) == runs
+    assert len(host.calls()) == runs and len(host.admitted) == runs + 1
 
 
 def test_a_login_inside_agys_margin_is_renewed_at_once(host, monkeypatch, tmp_path):
@@ -747,10 +748,14 @@ def test_a_cancel_arriving_as_the_renewals_lock_is_taken_starts_nothing(host, mo
         def release(self):
             pass
 
+    launched = []
+    launch = pi.launch_provider
+    monkeypatch.setattr(pi, "launch_provider",
+                        lambda *a, **k: launched.append(a) or launch(*a, **k))
     monkeypatch.setattr(pi, "_GEMINI_REFRESH_LOCK", _CancelledAsTaken())
     with pytest.raises(pi._ReviewOperationCancelled):
         pi._await_gemini_login(host.command, host.env, review_monitor=_monitor(tmp_path, cancel))
-    assert host.calls() == []
+    assert launched == [] and host.calls() == []
 
 
 def test_the_wait_runs_outside_the_quiescence_latchs_launch_lock(host, monkeypatch, tmp_path):
