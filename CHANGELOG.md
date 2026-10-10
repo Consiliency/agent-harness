@@ -23,9 +23,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
     inference scope and a non-empty subscription type in that one record. It runs nothing
     and returns only a boolean;
   - the seat reports logged-in, first-party and `authMethod: "oauth_token"`, the method of
-    the descriptor-delivered token. A seat that reports an API key, a helper, a third-party
-    provider or a login of its own is refused, and a seat's own claim of a subscription is
-    not believed.
+    the descriptor-delivered token, and no `apiKeySource`. A seat that reports an API key, a
+    helper, a third-party provider or a login of its own is refused, and a seat's own claim
+    of a subscription is not believed.
+- `_claude_subscription_auth_ok` is the one subscription proof for every Claude CLI route
+  that launches through the owner; the 2026-10-08 `claude -p` route (agent-harness#1391) still
+  asserts `system/init.apiKeySource == "none"` in-band itself.
 - The seat credential is unchanged: still the access token and its expiry, and never a
   refresh token. The harness still does not run the Claude CLI for credentials.
 - `launcher.run_auth_preflight` (the Claude executor) takes `subscription_present` from the

@@ -6701,8 +6701,13 @@ def _claude_subscription_auth_ok(
     * the SUBSCRIPTION is proven from the login that credential is drawn from
       (:func:`seat_credentials.login_subscription_proven`, the same ``env``, nothing run);
     * the SEAT, with the credential it will actually use, must report logged-in,
-      first-party, and the descriptor-delivered token. That report alone proves no
+      first-party, and the descriptor-delivered token, with no API key visible to it (the
+      CLI reports ``apiKeySource`` only when it sees one). That report alone proves no
       subscription, and any other auth method is a seat not using what it was handed.
+
+    This is the one subscription proof for every Claude CLI route that launches through the
+    owner, the TUI and the 2026-10-08 ``claude -p`` route alike; that route still asserts
+    ``system/init.apiKeySource == "none"`` in-band itself.
     """
     unproven = (False, "subscription_auth_unproven")
     if not _seat_credentials.login_subscription_proven(env):
@@ -6730,6 +6735,7 @@ def _claude_subscription_auth_ok(
         and status.get("loggedIn") is True
         and status.get("authMethod") == "oauth_token"
         and status.get("apiProvider") == "firstParty"
+        and "apiKeySource" not in status
     )
     return (True, "") if seat_proven else unproven
 
