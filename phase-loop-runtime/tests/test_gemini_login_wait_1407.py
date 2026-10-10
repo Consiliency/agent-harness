@@ -48,6 +48,10 @@ pytestmark = pytest.mark.skipif(os.name != "posix" or not Path("/proc/self/fd").
 TOKEN = ".gemini/antigravity-cli/antigravity-oauth-token"
 NO_BUS = "unix:path=/dev/null"
 NEAR_EXPIRY = "gemini_credential_near_expiry"
+# The wait's own settings, by their documented names (so that this file also runs, and is
+# red for the right reasons, against a tree that predates them).
+WAIT_ENV = "PHASE_LOOP_SEAT_GEMINI_LOGIN_REFRESH_WAIT_S"
+POLL_ENV = "PHASE_LOOP_SEAT_GEMINI_LOGIN_REFRESH_POLL_S"
 
 # agy's measured behaviours. ``$HOME/agy.plan`` (JSON) says on which call the login enters
 # agy's renewal margin (``renew_on_call``; 0 = never), whether a reachable session bus makes
@@ -140,9 +144,9 @@ def host(tmp_path, monkeypatch):
 
     monkeypatch.setattr(pi, "_PROVIDER_SEARCH_PATH", str(bindir))
     monkeypatch.setattr(agy_integrity, "admit_for_seat", admit_for_seat)
-    monkeypatch.setattr(pi, "_GEMINI_LOGIN_POLL_MIN_S", 0.0)
-    monkeypatch.setenv(pi._GEMINI_LOGIN_POLL_ENV, "0.01")
-    monkeypatch.setenv(pi._GEMINI_LOGIN_WAIT_ENV, "20")
+    monkeypatch.setattr(pi, "_GEMINI_LOGIN_POLL_MIN_S", 0.0, raising=False)
+    monkeypatch.setenv(POLL_ENV, "0.01")
+    monkeypatch.setenv(WAIT_ENV, "20")
 
     def plan(renew_on_call=0, **more):
         (home / "agy.plan").write_text(json.dumps({"renew_on_call": renew_on_call, **more}))
@@ -303,7 +307,7 @@ def test_a_login_agy_never_renews_ends_the_wait_refused_with_mains_code(host, mo
     Mutation: let the gate run its own renewal when a refusal was carried to it."""
     _needs_seat_owner()
     _login(host.home, 450)
-    monkeypatch.setenv(pi._GEMINI_LOGIN_WAIT_ENV, "0.05")
+    monkeypatch.setenv(WAIT_ENV, "0.05")
     monitor = _monitor(tmp_path)
     with caplog.at_level(logging.WARNING, logger=pi.__name__):
         outcome = pi._await_gemini_login(host.command, host.env, review_monitor=monitor)
@@ -330,7 +334,7 @@ def test_every_refusal_costs_one_renewal_run_as_on_main(host, monkeypatch, tmp_p
     _login(host.home, {"expired_not_renewed": -10}.get(state, 450),
            refresh_token=state != "expired_not_renewed")
     if state == "no_wait_allowed":
-        monkeypatch.setenv(pi._GEMINI_LOGIN_WAIT_ENV, "0")
+        monkeypatch.setenv(WAIT_ENV, "0")
     elif state == "run_fails":
         host.plan(exit=1)
     elif state == "expiry_unreadable":
@@ -475,8 +479,8 @@ def test_the_wait_is_bounded_by_the_logins_own_life(host, monkeypatch):
 
     Mutations: drop the ``left + _GEMINI_LOGIN_WAIT_GRACE_S`` bound; set the grace to 0."""
     _login(host.home, 450)
-    monkeypatch.setenv(pi._GEMINI_LOGIN_WAIT_ENV, "900")
-    monkeypatch.setenv(pi._GEMINI_LOGIN_POLL_ENV, "30")
+    monkeypatch.setenv(WAIT_ENV, "900")
+    monkeypatch.setenv(POLL_ENV, "30")
     seen = {}
 
     def wait(attempt, *, max_wait_s, poll_s, wait):
@@ -531,10 +535,10 @@ def test_a_wait_setting_that_is_not_usable_falls_back_to_the_default(given, expe
     poll under 5 s would run agy back to back with the operator's login; it is not accepted.
 
     Mutation: accept any float (``inf`` then crashed the wait's log line)."""
-    env = {name: value for name, value in zip((pi._GEMINI_LOGIN_WAIT_ENV, pi._GEMINI_LOGIN_POLL_ENV),
+    env = {name: value for name, value in zip((WAIT_ENV, POLL_ENV),
                                               given) if value is not None}
     cap, poll, ignored = pi._gemini_login_wait_settings(env)
-    names = {"WAIT": pi._GEMINI_LOGIN_WAIT_ENV, "POLL": pi._GEMINI_LOGIN_POLL_ENV}
+    names = {"WAIT": WAIT_ENV, "POLL": POLL_ENV}
     assert (cap, poll, ignored) == (expected[0], expected[1], tuple(names[n] for n in expected[2]))
 
 
@@ -544,14 +548,14 @@ def test_an_unusable_setting_is_a_typed_notice_never_a_crash(host, monkeypatch, 
     host.plan(renew_on_call=2)
     monkeypatch.setattr(pi, "_GEMINI_LOGIN_POLL_DEFAULT_S", 0.01)
     monkeypatch.setattr(pi, "_GEMINI_LOGIN_WAIT_DEFAULT_S", 20.0)
-    monkeypatch.setenv(pi._GEMINI_LOGIN_WAIT_ENV, "inf")
-    monkeypatch.setenv(pi._GEMINI_LOGIN_POLL_ENV, "inf")
+    monkeypatch.setenv(WAIT_ENV, "inf")
+    monkeypatch.setenv(POLL_ENV, "inf")
     with caplog.at_level(logging.WARNING, logger=pi.__name__), pytest.raises(_LaunchReached):
         _run_leg(host, monkeypatch, tmp_path)
     notices = [r.getMessage() for r in caplog.records if "gemini_login_wait_setting_ignored" in r.getMessage()]
     assert len(notices) == 2 and len(host.calls()) == 2
     _what, why, fix = seat_jail.NOTICES["gemini_login_wait_setting_ignored"]
-    for name, notice in zip((pi._GEMINI_LOGIN_WAIT_ENV, pi._GEMINI_LOGIN_POLL_ENV), notices):
+    for name, notice in zip((WAIT_ENV, POLL_ENV), notices):
         assert name in notice and why in notice and fix in notice
 
 
@@ -562,10 +566,11 @@ def test_the_claude_login_waits_settings_do_not_move_this_wait(host, monkeypatch
 
     monkeypatch.setenv(sc.WAIT_ENV, "0")
     monkeypatch.setenv(sc.POLL_ENV, "7")
-    monkeypatch.delenv(pi._GEMINI_LOGIN_WAIT_ENV)
-    monkeypatch.delenv(pi._GEMINI_LOGIN_POLL_ENV)
+    monkeypatch.delenv(WAIT_ENV)
+    monkeypatch.delenv(POLL_ENV)
     assert pi._gemini_login_wait_settings() == (900.0, 30.0, ())
-    assert {pi._GEMINI_LOGIN_WAIT_ENV, pi._GEMINI_LOGIN_POLL_ENV}.isdisjoint({sc.WAIT_ENV, sc.POLL_ENV})
+    assert (pi._GEMINI_LOGIN_WAIT_ENV, pi._GEMINI_LOGIN_POLL_ENV) == (WAIT_ENV, POLL_ENV)
+    assert {WAIT_ENV, POLL_ENV}.isdisjoint({sc.WAIT_ENV, sc.POLL_ENV})
 
 
 # ------------------------------------- cancellation, the latch and the runs (codex F006)
@@ -644,7 +649,7 @@ def test_board_cancellation_wakes_the_wait(host, monkeypatch, tmp_path, how):
     that the wait ENDED AS CANCELLED after its first renewal and before a second -- not how
     long it took. Mutations: sleep on a private event; drop the latch re-check."""
     _login(host.home, 450)
-    monkeypatch.setenv(pi._GEMINI_LOGIN_POLL_ENV, "60")
+    monkeypatch.setenv(POLL_ENV, "60")
     cancel, latch, monitor, fire = _cancel_sources(how, tmp_path)
     entered = threading.Event()
     real_wait = pi._gemini_login_wait.real      # past the conftest guard: this wait IS cancelled
@@ -1075,7 +1080,7 @@ def test_the_suite_never_sleeps_through_a_real_long_gemini_login_wait(host, monk
     """The conftest guard: a test that reaches the real wait with a long bound fails,
     however short its poll (a short poll with a long bound spins the most processes)."""
     _login(host.home, 450)
-    monkeypatch.setenv(pi._GEMINI_LOGIN_WAIT_ENV, "900")
-    monkeypatch.setenv(pi._GEMINI_LOGIN_POLL_ENV, poll)
+    monkeypatch.setenv(WAIT_ENV, "900")
+    monkeypatch.setenv(POLL_ENV, poll)
     with pytest.raises(pytest.fail.Exception, match="real Gemini login wait"):
         pi._await_gemini_login(host.command, host.env)
