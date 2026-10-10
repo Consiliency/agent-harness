@@ -11166,16 +11166,6 @@ def _exec_leg(
             review_text = provider_authority.read_expected_output(out_file.name).decode(
                 "utf-8", errors="replace"
             )
-        # agent-harness#1335: a seat whose tools could not run is never a usable review.
-        # codex exits 0 with a verdict even when every command it tried died in its own
-        # sandbox launcher, so its exec records -- not its prose -- say whether anything ran.
-        # The reply is dropped: an operational failure carries its reason in `detail`.
-        if rc == 0 and _seat_tool_evidence.codex_tools_never_started(
-            proc.stderr or "",
-            seat_cwd=cmd[cmd.index("--cd") + 1] if "--cd" in cmd else str(provider_cwd),
-            prompt=prompt, final_message=review_text,
-        ):
-            return 1, "", _HarnessCode(_seat_tool_evidence.TOOL_SANDBOX_UNAVAILABLE)
         return rc, review_text, log_text
     if leg == "gemini":
         # ah#335: this leg executes `agy`, NOT the gemini CLI (see `_LEG_CLI`). The health

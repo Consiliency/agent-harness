@@ -7,7 +7,7 @@ approval: never
 sandbox: workspace-write [workdir]
 reasoning effort: low
 reasoning summaries: none
-session id: 01a126be-b88c-7a92-8de8-46037f1cf07e
+session id: 00000000-0000-0000-0000-000000000000
 --------
 user
 Run exactly these two shell commands, one at a time: `cat hello.txt` and then `ls -la`. Then reply with one line quoting the file contents, and a final line `AGREE`.
