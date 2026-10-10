@@ -44,7 +44,9 @@ equivalence is proven by a test (not asserted in prose).
 - **Host×seat routing rule (maintainer; agent-harness#396 / #525 / #924)** — a harness
   fills the seat of its OWN vendor with its native subagent; every other seat runs through
   that vendor's CLI lane, and the Anthropic seat on any host other than Claude Code runs
-  through the subscription TUI adapter. Routing keys on the vendor's harness-nativeness, never on
+  through the subscription CLI adapter (`_run_claude_print_session` by default,
+  `_run_claude_tui_session` when `PHASE_LOOP_PANEL_CLAUDE_ROUTE=tui`; amended 2026-10-08,
+  see the 2026-10-08 `claude -p` ruling (`plans/decision-claude-print-subscription-route-20261008.md`, agent-harness#1391)). Routing keys on the vendor's harness-nativeness, never on
   model tier. Implemented today only for the Claude Code → Anthropic cell
   (`under_claude_code` + `NativeAgentLegRequest`, the emit → fill → invoke protocol);
   no production caller constructs a `HostContext` yet, so the host leg above is
@@ -84,11 +86,17 @@ equivalence is proven by a test (not asserted in prose).
   API-key var; an api-key seat (only behind the board opt-in) scrubs everything
   then injects **only the seat vendor's** key(s). Never silent — an api-key seat
   without the opt-in raises.
-- **Claude Fable/Opus = subscription TUI only** — the shared scrub additionally
+- **Claude Fable/Opus = subscription CLI adapter only (print default, TUI fallback)**
+  (amended 2026-10-08 from "subscription TUI only"; see the 2026-10-08 `claude -p` ruling (`plans/decision-claude-print-subscription-route-20261008.md`, agent-harness#1391)) — the shared scrub additionally
   removes Anthropic tokens, alternate base URLs, credential-helper inputs, and
   Bedrock/Vertex/Foundry/Mantle/AWS-provider selectors. Run-isolated settings
   disable `apiKeyHelper`; `claude auth status --json` must prove first-party
-  `claude.ai` subscription auth before the exact-model self-PTY launch. The
+  `claude.ai` subscription auth before the exact-model launch: the print route
+  (`_run_claude_print_session`, `claude -p --output-format stream-json --no-session-persistence`, never `--bare`)
+  additionally asserts `system/init.apiKeySource == "none"` in-band and fails as
+  `claude_print_subscription_unproven` / `claude_print_auth_drift` / `claude_print_stalled`;
+  the self-PTY route is the `PHASE_LOOP_PANEL_CLAUDE_ROUTE=tui` fallback, and any other route
+  value fails as `panel_claude_route_invalid`. The
   homebrew backing is mandatory; alternate backings fail before gateway access.
   API-key fallback is forbidden on every host. Task/subagent fulfillment of the claude
   seat is forbidden on every host EXCEPT Claude Code, where the driving session fills the
@@ -195,7 +203,8 @@ the real matrix at `load_boards()` time (`tests/test_advisor_board_config.py`,
   before that and still selectable — NOT the implementer model
   `profiles.CLAUDE_IMPLEMENTER_MODEL` (`claude-sonnet-5`). `panel_invoker.DEFAULT_LEG_MODELS["claude"]`
   is the SINGLE source of truth for the panel's default claude model: the claude
-  leg builder (`_claude_tui_command`) and the Agent-View attempt both read it, so
+  leg builders (`_claude_tui_command`, and the print route's `_run_claude_print_session`
+  launch) and the Agent-View attempt all read it, so
   the *legacy* `invoke_panel` path AND the live governed gates
   (`governed_review` / `governed_premerge`, which call `invoke_panel` with no model
   override) review on Opus 5.5. `CLAUDE_IMPLEMENTER_MODEL` is untouched — the
@@ -714,8 +723,9 @@ never through — the review operation `public_board_review.v1`. Frozen falsifie
   falls back to the process environment only when none is passed, so it never spawns a
   second TUI) → a deferred native fill `{"status": "native_fill_deferred", rung,
   brief_digest, findings_digest}`, refused with `president_fill_heartbeat_refused` under
-  `heartbeat_only`. `fable` elsewhere → the brokered self-PTY session
-  (`_run_claude_tui_session`, tools off, no directory grant). A failed launch is a typed
+  `heartbeat_only`. `fable` elsewhere → the brokered print session
+  (`_run_claude_print_session`, tools off, no directory grant) by default, or the brokered
+  self-PTY session (`_run_claude_tui_session`) when `PHASE_LOOP_PANEL_CLAUDE_ROUTE=tui`. A failed launch is a typed
   `failed` (`president_invocation_failed`, no descent).
 - **Ladder** (EC-PRESROUTE-3). `PRESIDENT_LADDER` is the seat-alias tuple; each alias
   resolves to its vendor's registry PIN through `DEFAULT_REVIEW_SEAT_ALIASES` (where the
@@ -1359,8 +1369,10 @@ instead, and the jail is that launch's owner.
   entry, with what happened, why and a fix line (`seat_owner_unavailable`,
   `seat_filtered_egress_unavailable`, `seat_keyring_unavailable`, ...).
   `claude_seat_delivery_refused` (an ended turn whose output the route could not accept,
-  see the transcript outcomes above) is one more: a terminal degraded refusal, in neither
-  `SEALED_FALLBACK_CODES` nor `JAIL_NOT_RUN_CODES`.
+  see the transcript outcomes above) and `seat_output_inside_readonly_input` (a
+  replaceable output placed where it cannot be private, refused before launch) are two
+  more: terminal degraded refusals, in neither `SEALED_FALLBACK_CODES` nor
+  `JAIL_NOT_RUN_CODES`.
 - **Outputs (agent-harness#1433).** A seat's declared output is one of two kinds, and
   each is that launch's own precreated host file.
   - **In place (`outputs`, and a CLI's `--output-last-message`).** The file is bound
@@ -1382,11 +1394,13 @@ instead, and the jail is that launch's owner.
       regular file of this uid with one link (a symlink, a directory, a FIFO, a hard link)
       delivers nothing. Until then the session reads the review from the private copy,
       redacted.
-    - **Where it does not apply.** A private directory is mounted only where it hides
+    - **Where it cannot apply.** A private directory is mounted only where it hides
       nothing of the host's: below the view's bare root, or inside a tmpfs of the seat's
-      own. Where the output's directory is itself (inside) a read-only input or a system
-      mount, the output is bound in place instead, and so is the capture route's, whose
-      caller reads the host file itself.
+      own. A replaceable output whose directory is (inside) a read-only input or a system
+      mount is refused before anything launches, and before its file is precreated, with
+      `seat_output_inside_readonly_input`: bound in place there, the provider's write could
+      only fail at the end of its turn. The capture route, whose caller reads the host file
+      itself, declares its output in place.
 - **The Claude journal.** The host collects the exact session journal through retained
   handles, after the provider has been cleaned up, and validates it before any approval.
   - **Refused on both routes:** a new user turn, a max-token continuation, an unmatched

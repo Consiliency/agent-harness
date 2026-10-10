@@ -31,6 +31,8 @@ Named mutations, each run against this file (all red):
   system-mount cells fail.
 * M-LIVE: read the host file while the seat runs -> the session cells never see the review.
 * M-BOTH: let a replaceable declaration override an in-place one -> that cell fails.
+* M-EARLY: skip the pre-launch placement check -> the read-only-input refusal cells fail
+  (the refusal moves to the view, as an untyped bind failure, after files were created).
 """
 from __future__ import annotations
 
@@ -46,7 +48,7 @@ from pathlib import Path
 import pytest
 
 from phase_loop_runtime import panel_invoker as pi
-from phase_loop_runtime import review_stage, sandbox_egress
+from phase_loop_runtime import review_stage, sandbox_egress, seat_jail
 from test_review_seat_stall_1176 import REQUEST, _JOURNAL, _ProviderTimer, _answer, _fast_tui
 
 ADMIN = pi.SeatLaunchRole.PROVIDER_ADMIN
@@ -301,30 +303,78 @@ def test_the_inputs_beside_the_output_stay_visible_and_read_only(tmp_path):
     assert _names(cwd) == sorted(["context", "panel-claude.txt", "review-bundle.md", tree.name])
 
 
-def test_an_output_inside_a_read_only_input_stays_bound_in_place(tmp_path):
-    """Where the output's directory is itself a declared read-only input, that directory's
-    content must stay visible and read-only, so no private directory is mounted over it:
-    the output is bound in place, as before (written directly; no sibling can be created)."""
+@pytest.mark.parametrize("where", ["a declared input", "below a declared input",
+                                   "the staged tree in the cwd"])
+def test_an_output_inside_a_read_only_input_is_refused_before_launch(tmp_path, where, monkeypatch):
+    """Where the output's directory is (inside) a read-only input, a private directory
+    there would hide that input, and an output bound in place cannot be replaced by the
+    provider's write: it would fail only at the end of the seat's turn. So the launch is
+    refused before anything runs, with a typed notice, and no file is created."""
     cwd = tmp_path / "cwd"
     cwd.mkdir()
     repo = tmp_path / "repo"
     (repo / "logs").mkdir(parents=True)
     (repo / "logs" / "earlier.log").write_text("an input\n")
-    output = repo / "logs" / "last-message.txt"
-    with _profile(
-            "out = sys.argv[1]; here = os.path.dirname(out)\n"
-            "facts['seen'] = listing(here)\n"
-            "facts['read'] = read(os.path.join(here, 'earlier.log'))\n"
-            "facts['write_input'] = attempt(write, os.path.join(here, 'earlier.log'), 'x')\n"
-            "facts['sibling'] = attempt(write, out + '.tmp.1.abcdefabcdef', 'x')\n"
-            "facts['write'] = attempt(write, out, sys.argv[2])\n",
-            cwd=cwd, outputs=(output,), readonly=(repo,), argv=(output, REVIEW)) as (owned, profile):
-        assert profile.output_dirs == () and [Path(path) for path in profile.outputs] == [output]
-        facts = _launch(owned, profile, cwd)
-    assert facts == {"seen": ["earlier.log", "last-message.txt"], "read": "an input\n",
-                     "write_input": "EROFS", "sibling": "EROFS", "write": "ok"}
-    assert output.read_text() == REVIEW
-    assert _names(repo / "logs") == ["earlier.log", "last-message.txt"]
+    tree = cwd / review_stage.REVIEW_STAGE_TREE_DIRNAME
+    tree.mkdir()
+    output = {"a declared input": repo / "opus.md", "below a declared input": repo / "logs" / "opus.md",
+              "the staged tree in the cwd": tree / "opus.md"}[where]
+    monkeypatch.setattr(pi, "launch_owned", lambda *a, **k: pytest.fail("the seat launched"))
+    with pytest.raises(sandbox_egress.SeatIdentityUnverified) as refused:
+        with _profile("", cwd=cwd, outputs=(output,), readonly=(repo,)):
+            pytest.fail("a profile was built")
+    assert str(refused.value) == "seat_output_inside_readonly_input"
+    assert not os.path.lexists(output)
+    assert pi._exception_failure(refused.value) == "seat_output_inside_readonly_input"
+    notice = seat_jail.render_notice(str(refused.value), "claude:a")
+    assert notice.what == "leg refused" and "outside its read-only inputs" in notice.fix
+
+
+@pytest.mark.usefixtures("owned_review_network")
+def test_a_claude_session_with_its_output_inside_an_input_is_refused_before_launch(
+        tmp_path, monkeypatch):
+    """The Claude route itself: the canonical output sits in a directory the argv grants
+    read-only (``--add-dir``). The session refuses before the provider starts, never after a
+    turn whose write cannot land (a late ``EROFS`` / ``EBUSY``)."""
+    repo = tmp_path / "repo"
+    (repo / "out").mkdir(parents=True)
+    output = repo / "out" / "panel-claude.txt"
+    launched = []
+    monkeypatch.setattr(pi, "launch_owned", lambda *a, **k: launched.append(a) or pytest.fail("launched"))
+    started = time.monotonic()
+    with pytest.raises(sandbox_egress.SeatIdentityUnverified) as refused:
+        pi._run_claude_tui_session(
+            command=["/usr/bin/python3", "-c", "pass", "--add-dir", str(repo), "x"],
+            cwd=tmp_path, prompt="input", output_file=output, timeout_s=600, backstop_s=600,
+            env=os.environ,
+            review_monitor=pi._ReviewMonitor(tmp_path / "monitor.json", "t", 0, threading.Event()))
+    assert str(refused.value) == "seat_output_inside_readonly_input"
+    assert launched == [] and time.monotonic() - started < 10
+    assert not os.path.lexists(output)
+
+
+@pytest.mark.parametrize("flag", ["--cd", "--cwd"])
+@pytest.mark.parametrize("tree_at", ["beside the output directory", "inside the output directory"])
+def test_a_tree_named_in_the_argv_composes_with_a_replaceable_output(tmp_path, flag, tree_at):
+    """agent-harness#1438's join: a seat launches in its output directory and names the
+    staged tree only in its argv (codex ``--cd``, grok ``--cwd``), and its output is
+    replaceable. The tree is visible and read-only at its path, also when it lies inside the
+    private output directory, and the atomically written output is delivered."""
+    out_dir = tmp_path / "out"
+    out_dir.mkdir()
+    tree = (tmp_path / "review" if tree_at.startswith("beside") else out_dir) / "reviewed-tree"
+    tree.mkdir(parents=True)
+    (tree / "source.txt").write_text("TREE-CONTENT\n")
+    output = out_dir / "out.txt"
+    facts = _seat(
+        "tree, out = sys.argv[2], sys.argv[3]\n"
+        "facts['read'] = read(os.path.join(tree, 'source.txt'))\n"
+        "facts['write_tree'] = attempt(write, os.path.join(tree, 'source.txt'), 'x')\n"
+        "facts['output'] = attempt(atomic_write, out, facts['read'])\n",
+        cwd=out_dir, outputs=(output,), argv=(flag, tree, output))
+    assert facts == {"read": "TREE-CONTENT\n", "write_tree": "EROFS", "output": "ok"}
+    assert output.read_text() == "TREE-CONTENT\n"
+    assert (tree / "source.txt").read_text() == "TREE-CONTENT\n"
 
 
 # --- the other kind of output: bound in place, as before ---------------------------------------

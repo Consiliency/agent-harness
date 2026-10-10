@@ -127,18 +127,27 @@ scrubs *every* vendor API-key var from the subprocess env / gateway payload; an
 api-key seat is reachable only behind `Board.allow_api_key_fallback` and injects
 ONLY its own vendor's key. Claude Fable/Opus seats are stricter: API-key fallback
 is forbidden, custom request headers and alternate endpoint/cloud-provider/helper selectors are scrubbed,
-run-isolated settings disable API-key helpers, and the TUI launches only after a
+run-isolated settings disable API-key helpers, and the Claude CLI adapter (print or TUI route) launches only after a
 metadata-only auth probe proves a first-party `claude.ai` subscription. A board
 can't even be constructed holding an api-key seat without opting in.
 
-**Claude execution is TUI-only.** Fable and Opus require the homebrew backing and
-use the existing Claude Code self-PTY adapter with the exact requested model.
+**Claude execution is subscription-CLI-only (amended 2026-10-08; formerly TUI-only).** Fable and Opus require the homebrew backing and
+run through the subscription-proven Claude CLI adapter with the exact requested model:
+`PHASE_LOOP_PANEL_CLAUDE_ROUTE` selects `print` (the default: `claude -p --output-format stream-json`,
+never `--bare`, with `--no-session-persistence`, launched only after a `claude auth status` preflight, with an env-scrubbed launch and
+`system/init.apiKeySource == "none"` asserted in-band) or `tui` (the existing Claude Code self-PTY
+adapter, now an opt-in fallback). See the 2026-10-08 `claude -p` ruling (`plans/decision-claude-print-subscription-route-20261008.md`, agent-harness#1391).
 An alternate backing reports `tui_backing_required` before gateway access. No API, SDK, Messages, direct
 HTTP path may fulfill those seats. Under Claude Code the seat defers as
 `under_claude_code` with a native-fill request the driving session fills natively
 (EC-REVIEWTRUTH-14); a non-native host that cannot run the adapter reports
 `tui_adapter_required`; an unproven subscription reports
-`subscription_auth_unproven`. Today's adapter has no typed classifier-refusal
+`subscription_auth_unproven`. On the print route, a `system/init` whose `apiKeySource` is not
+`"none"` (or a `result` with no `system/init`) reports `claude_print_subscription_unproven`, an
+`api_retry` with an authentication, billing or org-not-allowed error reports
+`claude_print_auth_drift`, and a session that emits no event within the stall bound reports
+`claude_print_stalled`; an unrecognised `PHASE_LOOP_PANEL_CLAUDE_ROUTE` value reports
+`panel_claude_route_invalid` and never silently falls back. Today's adapter has no typed classifier-refusal
 capability, so refusal-looking text never triggers fallback. The bounded future
 policy permits one Opus TUI retry only for typed classifier refusal plus an
 independent defensive-security attestation, then fails closed.
@@ -146,7 +155,7 @@ independent defensive-security attestation, then fails closed.
 **Seat routing keys on the vendor's harness-nativeness, never on model tier** (maintainer
 rule; agent-harness#396 / #525 / #924). A harness fills the seat of its OWN vendor with its
 native subagent; every other seat runs through that vendor's CLI lane, and the Anthropic seat
-on any host other than Claude Code through the subscription TUI adapter. No cell admits an API key, SDK,
+on any host other than Claude Code through the subscription TUI adapter (amended 2026-10-08, agent-harness#1391: read as the subscription-proven Claude CLI adapter, print by default with the TUI as the opt-in fallback; the "TUI adapter" cells below mean the same). No cell admits an API key, SDK,
 direct HTTP call, gateway backing or alternate endpoint; a native fill counts only once its
 verdict is bound.
 
@@ -515,6 +524,22 @@ exit or owner death closes them. The provider ownership namespace is created
 after network entry and before capability removal, so cancellation ownership
 does not restore the provider's ability to change its firewall. Missing required
 egress remains a DEGRADED leg with the exception detail, never an isolation claim.
+
+## Session names for Claude seats
+
+A Claude panel seat appears in the Claude app's session list as `<repo> · <mode> · [<topic> ·]
+<seat> · <UTC date time>`, for example
+`agent-harness · review · claude-opus-5-5:high:correctness · 10-09 10:42Z`. The seat part is the
+board's seat key without its leading harness segment, so two Claude seats that differ only in
+their lens get different names. The label is at most 80 characters and always ends with the time;
+when it does not fit, the topic gives way first, then the repo, then the seat part. Without a
+name, Claude titles a seat by summarising its first message, which is the whole review prompt.
+- **Where:** the jailed seat and the non-brokered seat. The sealed seat (and so the president) is
+  not renamed: the HARDEN evidence verifier holds its argv token-for-token.
+- **Topic:** set `PHASE_LOOP_SEAT_TOPIC` to add a short topic. It is never read from the review
+  material, because the label is visible in the process list on a shared host.
+- **Off switch:** `PHASE_LOOP_SEAT_SESSION_NAMES=0`.
+- **Evidence:** the retained argv shape records `--name <CLAUDE_SESSION_NAME>`, never the label.
 
 ## Jailed review seats (agent-harness#1132)
 

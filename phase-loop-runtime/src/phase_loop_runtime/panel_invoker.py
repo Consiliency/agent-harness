@@ -126,6 +126,7 @@ from . import sandbox_retention as _sandbox_retention
 from . import seat_credentials as _seat_credentials
 from . import seat_jail as _seat_jail
 from . import seat_jail_autoqualify as _seat_jail_autoqualify
+from . import seat_session_label as _seat_session_label
 from . import seat_uid as _seat_uid
 from . import seat_preflight as _seat_preflight
 from .advisor_board.research import (
@@ -2933,7 +2934,7 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "executor_review_route_unsupported", "gemini_credential_near_expiry",
     "gemini_credential_refresh_timeout", "seat_keyring_unavailable",
     "claude_agent_view_review_unsupported", "claude_tui_journal_collection_refused",
-    "agy_image_unqualified",
+    "agy_image_unqualified", "seat_output_inside_readonly_input",
     # agent-harness#1333: per-host CLI qualification refusals (typed notices in seat_jail.NOTICES)
     "seat_cli_unqualified", "seat_cli_qualification_failed", "seat_cli_qualification_unavailable",
     "seat_cli_qualification_store_unsafe", "seat_cli_adapter_missing", "seat_cli_platform_unsupported",
@@ -5008,7 +5009,10 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
     temp file renamed over the destination, as Claude Code's Write does (agent-harness#1433).
     Their directory is a private per-launch directory in the seat's view; the host file
     receives what the seat wrote, redacted, when the profile ends. A path named both ways
-    stays in place."""
+    stays in place. A replaceable output whose directory cannot be private -- it is (inside)
+    a read-only input or a system mount -- is refused before anything launches
+    (``seat_output_inside_readonly_input``): bound in place there, the provider's write
+    would fail only at the end of its turn."""
     if gemini_profile is None:
         harness, executable = _seat_provider_source(command[0], env)
         if harness not in {"codex", "claude", "grok", "gemini", "opencode"}:
@@ -5023,7 +5027,9 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
             _seat_bind_source(path)
             readonly.append(path)
     for index, item in enumerate(command[:-1]):
-        if item in {"--add-dir", "--cd", "--prompt-file", "--context-file", "--input-file",
+        # ``--cwd`` is grok's spelling of codex's ``--cd``: a brokered grok seat launches in
+        # its empty output directory and names the staged tree only there (agent-harness#1336).
+        if item in {"--add-dir", "--cd", "--cwd", "--prompt-file", "--context-file", "--input-file",
                     "--output-schema", "--append-system-prompt-file", "--system-prompt-file",
                     "--plugin-dir", "--file"}:
             path = Path(command[index + 1])
@@ -5039,15 +5045,21 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
     outputs = (*outputs, *((transcript,) if transcript is not None else ()))
     outputs = tuple(_precreate_seat_output(path) for path in outputs)
     # agent-harness#1433: the directory of each replaceable output is a private per-launch
-    # directory in the seat's view, wherever that hides nothing of the host's
-    # (``_seat_output_anchor``). Where it would (the directory is itself a read-only
-    # input), the output is bound in place like any other, as before.
+    # directory in the seat's view, which may go only where it hides nothing of the host's
+    # (``_seat_output_anchor``). Where it would hide a read-only input or a system mount,
+    # the launch is refused here, before the provider spends a turn it cannot deliver.
     layers = _seat_view_layers(cwd, readonly, check=False)
-    replaceable = tuple(dict.fromkeys(
-        path for path in map(_precreate_seat_output, replaceable_outputs) if path not in outputs))
-    delivered = tuple(path for path in replaceable
-                      if _seat_output_anchor(layers, str(path.parent)) is not None)
-    outputs = (*outputs, *(path for path in replaceable if path not in delivered))
+    delivered = tuple(dict.fromkeys(
+        path for path in (Path(os.path.abspath(item)) for item in replaceable_outputs)
+        if path not in outputs))
+    for path in delivered:
+        if _seat_output_anchor(layers, str(path.parent)) is None:
+            # Our own path, on the operator's log only; the leg carries the code alone.
+            # Checked before the file is precreated, so a refusal leaves nothing behind.
+            logging.getLogger(__name__).warning(
+                "seat output %s is inside a read-only input or a system directory", path)
+            raise _sandbox_egress.SeatIdentityUnverified("seat_output_inside_readonly_input")
+    delivered = tuple(_precreate_seat_output(path) for path in delivered)
     with contextlib.ExitStack() as private_stack, \
             seat_profile(harness=harness, executable=executable, env=env, cwd=cwd,
                          readonly_paths=readonly,
@@ -5528,6 +5540,12 @@ _EGRESS_LAUNCH_PREFIX: ContextVar[tuple[str, ...]] = ContextVar(
 # wait inside the seat (the login wait) honours it even where no monitor carries it (the
 # bounded policy). ``None`` outside a board.
 _BOARD_CANCEL: ContextVar["threading.Event | None"] = ContextVar("_BOARD_CANCEL", default=None)
+#: The seat key of the board seat whose provider spawn is running on this thread
+#: (``seat_session_label``). ``_default_spawn`` is called with a frozen signature that carries no
+#: seat key outside agy capture (the CS-0.8 same-signature guard and the placement round id are
+#: pinned to it), so the seat identity that names a Claude seat travels here instead. It is set
+#: inside the worker that runs the spawn: ``_run_legs`` uses a thread pool without copy_context.
+_SEAT_SESSION_SEAT: ContextVar[str | None] = ContextVar("_SEAT_SESSION_SEAT", default=None)
 
 
 def _sandbox_in(review_dir: Path | str | None) -> Path | None:
@@ -6640,6 +6658,7 @@ def _claude_tui_command(
     effort: str | None = None,
     research_seat: ResearchSeatConfig | None = None,
     *, env: Mapping[str, str] | None = None,
+    session_name: str | None = None,
 ) -> list[str]:
     add_dirs = [review_dir]
     # When a sandbox was staged, this leg is pointed at the CLONE instead of the live
@@ -6710,6 +6729,10 @@ def _claude_tui_command(
             allowed_tools,
         ]
     )
+    if session_name:
+        # A readable title for the app's session list (seat_session_label); with no name Claude
+        # asks a model to summarise the first message, which is the whole review prompt.
+        command.extend(["--name", session_name])
     return command
 
 
@@ -6722,6 +6745,7 @@ def _broker_claude_tui_command(
     *, model: str | None, effort: str | None, session_id: str,
     sandboxed: "_seat_jail.SeatJail | None" = None,
     env: Mapping[str, str] | None = None,
+    session_name: str | None = None,
 ) -> list[str]:
     """Claude subscription TUI command with no workspace and no model tools.
 
@@ -6729,6 +6753,10 @@ def _broker_claude_tui_command(
     configuration surface, but `--tools default` under `--permission-mode
     bypassPermissions`, because the seat jail is the boundary. The default output -- the
     president's and the sealed route's -- is unchanged.
+
+    ``session_name`` names the session in the app's session list and applies to the JAILED argv
+    only. The sealed argv is held token-for-token by the HARDEN evidence verifier's frozen
+    grammar (``scripts/verify_harden_evidence.py``), so it is never renamed here.
     """
     effort_args = render_seat_invocation(
         "claude", model or HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["claude"], effort or "high"
@@ -6736,7 +6764,7 @@ def _broker_claude_tui_command(
     if sandboxed is not None:
         if sandboxed.leg != "claude" or not sandboxed.provider_argv0:
             raise ValueError("a jailed claude argv needs a claude seat jail")
-        return [
+        jailed = [
             sandboxed.provider_argv0, "--ax-screen-reader", "--safe-mode", "--no-chrome",
             "--disable-slash-commands",
             "--model", model or HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["claude"],
@@ -6745,6 +6773,9 @@ def _broker_claude_tui_command(
             "--strict-mcp-config", "--mcp-config", json.dumps({"mcpServers": {}}),
             "--agents", "{}", "--permission-mode", "bypassPermissions", "--tools", "default",
         ]
+        if session_name:
+            jailed.extend(["--name", session_name])
+        return jailed
     return [
         "claude", "--ax-screen-reader", "--safe-mode", "--no-chrome",
         "--disable-slash-commands", "--model", model or HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["claude"],
@@ -9810,6 +9841,7 @@ def _exec_claude_tui_leg(
     broker_evidence: dict[str, object] | None = None,
     review_monitor: _ReviewMonitor | None = None,
     failure_detail_sink: list[_LegFailure] | None = None,
+    session_name: str | None = None,
 ) -> tuple[str, str]:
     """Run the Claude panel leg through the local Claude Code TUI.
 
@@ -9920,6 +9952,7 @@ def _exec_claude_tui_leg(
             child_review_dir,
             child_review_dir if agy_capture is not None else (repo_dir or Path.cwd()),
             model, effort, research_seat, env=claude_settings_env,
+            session_name=session_name,
         )
     )
     if brokered:
@@ -10242,6 +10275,7 @@ def _exec_jailed_claude_leg(
     failure_detail_sink: list[_LegFailure] | None = None,
     quiescence_latch: _ProviderQuiescenceLatch | None = None,
     review_monitor: _ReviewMonitor | None = None,
+    session_name: str | None = None,
     **_unused: object,
 ) -> tuple[str, str]:
     """The Claude seat inside its per-seat jail (agent-harness#1132).
@@ -10255,7 +10289,7 @@ def _exec_jailed_claude_leg(
     jail = seat.jail
     session_id = str(uuid.uuid4())
     command = _broker_claude_tui_command(model=model, effort=effort, session_id=session_id,
-                                         sandboxed=jail, env=env)
+                                         sandboxed=jail, env=env, session_name=session_name)
     snapshots = Path(tempfile.mkdtemp(prefix="pl-seat-snapshot-"))  # 0700, parent-owned
     transcript_snapshot = snapshots / "transcript.jsonl"
     output_snapshot = snapshots / _seat_jail.CLAUDE_OUTPUT_NAME
@@ -10306,7 +10340,11 @@ def _exec_jailed_claude_leg(
                    else value) for key, value in jail.env.items()},
         prompt_transport="pty_input", no_tool_controls=_JAILED_CLAUDE_TOOL_CONTROLS,
         transport_payload=_BROKER_CLAUDE_DIRECT_REQUEST + prompt,
-        redacted_argv_values={session_id: "<CLAUDE_SESSION_ID>"},
+        # The retained shape redacts every per-run value, and the label names a repo and a time.
+        redacted_argv_values={
+            session_id: "<CLAUDE_SESSION_ID>",
+            **({session_name: "<CLAUDE_SESSION_NAME>"} if session_name else {}),
+        },
     )
     if broker_evidence is not None:
         broker_evidence.update({
@@ -11417,6 +11455,15 @@ def _has_injected_review_execution_seam(
     return False
 
 
+def _seat_session_name(repo_dir: object, mode: str, seat_key: str | None, leg: str) -> str | None:
+    """The name a Claude seat's session gets in the app's session list, or ``None`` (naming off).
+    Derived by the runtime from the repo, the mode and the seat (``seat_session_label``). The seat
+    is the one the caller named, else the board seat this thread is running (``_SEAT_SESSION_SEAT``),
+    else the leg."""
+    return _seat_session_label.build_label(
+        repo=repo_dir, mode=mode, seat=seat_key or _SEAT_SESSION_SEAT.get() or leg)
+
+
 def _default_spawn(
     leg: str,
     artifact: str,
@@ -11516,6 +11563,12 @@ def _default_spawn(
             out_dir.mkdir()
     except Exception:
         raise
+    # The Claude seat's session name (seat_session_label), computed once here, on the thread that
+    # holds `_SEAT_SESSION_SEAT`: the jailed leg below runs in a closure the broker may call from
+    # another thread, which starts with an empty context. Only a Claude seat uses it.
+    claude_session_name = (
+        _seat_session_name(resolved_repo_dir, mode, seat_key, leg) if leg == "claude" else None
+    )
     provider_output_dir: Path | None = out_dir if provider_authority is not None else None
     # agent-harness#1132, J7 steps 0-4: decided once, after the public-entry authorization
     # (validated above) and BEFORE staging. `None` for a leg this plan does not jail, and
@@ -11904,6 +11957,7 @@ def _default_spawn(
                                 broker_evidence=broker.evidence,
                                 failure_detail_sink=claude_sink,
                                 quiescence_latch=broker_latch, review_monitor=review_monitor,
+                                session_name=claude_session_name,
                             )
                         except _seat_jail.SeatSandboxRefused as exc:
                             claude_sink.append(_LegFailure(template=exc.code))
@@ -12018,6 +12072,7 @@ def _default_spawn(
                 model=model,
                 backstop_s=leg_deadline,
                 failure_detail_sink=claude_sink,
+                session_name=claude_session_name,
                 **extra,
             )
             if quiescence_latch is not None:
@@ -12217,6 +12272,9 @@ def _default_spawn_via_provider(
     def _spawn_2tuple(request, register_process=None):
         if quiescence_latch is not None:
             quiescence_latch.raise_if_set()
+        seat_token = (
+            _SEAT_SESSION_SEAT.set(seat_key) if seat_key and agy_capture is None else None
+        )
         try:
             spawned = _default_spawn(
                 leg, artifact, repo_dir=repo_dir, mode=mode, model=model, **extra
@@ -12231,6 +12289,9 @@ def _default_spawn_via_provider(
                 else exc
             )
             raise
+        finally:
+            if seat_token is not None:
+                _SEAT_SESSION_SEAT.reset(seat_token)
         _placement_evidence[0] = getattr(spawned, "sandbox_placement_evidence", None)
         if isinstance(spawned, tuple) and len(spawned) == 3:
             status_, text_, _diagnostic[0] = spawned
@@ -13873,18 +13934,26 @@ def invoke_board(
                         research_extra["capture_scratch"] = scratch
                         research_extra["quiescence_latch"] = capture_quiescence
                     capture_quiescence.raise_if_set()
-                    spawned = _default_spawn_via_provider(
-                        leg,
-                        artifact,
-                        repo_dir=repo_dir,
-                        mode=mode,
-                        model=seat.model,
-                        effort=seat.effort,
-                        env=seat_env,
-                        brief_ref=brief_ref,
-                        timeout_s=leg_timeouts.get(leg),
-                        **research_extra,
-                    )
+                    # The seat's identity names its Claude session (seat_session_label). It is set
+                    # here, inside the worker: `_run_legs` submits to a thread pool without
+                    # copy_context, and the provider seam runs `_default_spawn` synchronously in
+                    # this thread. `_default_spawn`'s own kwargs stay as they were (CS-0.8).
+                    seat_token = _SEAT_SESSION_SEAT.set(str(seat.seat_key))
+                    try:
+                        spawned = _default_spawn_via_provider(
+                            leg,
+                            artifact,
+                            repo_dir=repo_dir,
+                            mode=mode,
+                            model=seat.model,
+                            effort=seat.effort,
+                            env=seat_env,
+                            brief_ref=brief_ref,
+                            timeout_s=leg_timeouts.get(leg),
+                            **research_extra,
+                        )
+                    finally:
+                        _SEAT_SESSION_SEAT.reset(seat_token)
                 capture_quiescence.raise_if_set()
                 # 2-or-3 tuple, same contract as `_run_leg`: a 3-tuple carries a failure
                 # DIAGNOSTIC bound for `detail`, never `text` (a diagnostic in text is read

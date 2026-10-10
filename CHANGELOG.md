@@ -6,6 +6,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### The grok board seat finds its staged review tree (agent-harness#1336; PR agent-harness#1438)
+
+- In 0.7.25 and 0.7.26 a sandboxed board's grok seat failed at launch (`grok: Failed to
+  resolve --cwd`). The seat starts in its empty output directory, and the staged tree it
+  names with `--cwd` was not in its view. The tree is now bound into the view, read only,
+  like the tree a codex seat names with `--cd`.
+- Known limit: the tree is read only inside the seat. A grok turn that tries to write can end
+  with an empty body, which the board records as an empty leg and never as a verdict
+  (agent-harness#1091).
+
 ### Claude TUI seat: atomic output writes, segmented journal admission, typed delivery refusal (agent-harness#1433, agent-harness#1434)
 
 - **A tools-enabled Claude seat can deliver its review again.** Claude Code's Write creates a
@@ -22,7 +32,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
     host file, redacted before the profile releases its secrets, and removes the private
     directory. A link, directory, FIFO or hard link left under the name delivers nothing.
   - Outputs bound in place (`outputs`, a CLI's `--output-last-message`, the capture route)
-    are unchanged, and an output whose directory is itself a read-only input stays in place.
+    are unchanged.
+  - A replaceable output whose directory is (inside) a read-only input or a system directory
+    is refused before the provider launches, with the new notice code
+    `seat_output_inside_readonly_input` and a fix line, instead of failing at the end of the
+    seat's turn.
 - **A real tools-enabled journal is admitted.** Claude Code journals one API message as
   several records that all carry the message's `stop_reason`. `_validated_claude_journal`
   refused any thinking or text record that said `tool_use` without a tool block of its own,
@@ -72,6 +86,40 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   It is reported in every mode and stays a warning under `mode = "error"`.
 - The docs now say that a plan's `phase:` line selects its exception, and that one alias
   covers every roadmap that reuses it.
+
+### Claude panel seats get a readable session name in the app
+
+- **The problem, measured.** Claude Code titles an unnamed session by asking a model to summarise
+  its first message and pushing that title to the app's session list. A panel seat's first message
+  is the whole review prompt, so its title was a summary of that prompt: not the repo, the seat or
+  the round, and indistinguishable from its neighbours after a few boards. On Claude Code 2.1.295
+  an unnamed seat made two `generate_session_title` calls and derived its title from message 1; a
+  seat started with `--name` made none, so nothing overwrites the name.
+- **New `seat_session_label` module and `--name <label>` on the Claude seat.** The runtime builds
+  the label itself, so it works in a client repo with no help from the driving agent:
+  `<repo> · <mode> · [<topic> ·] <seat> · <UTC date time>`, for example
+  `agent-harness · review · claude-opus-5-5:high:correctness · 10-09 10:42Z`. The repo is the
+  directory name, so a worktree is told apart. The seat part is the board's seat key without its
+  leading harness segment, so two Claude seats that differ only in their lens get different names;
+  the seat identity reaches the spawn through a per-thread variable set in the board's per-seat
+  worker, because `_default_spawn`'s own call (pinned by the CS-0.8 signature guard and the
+  placement round id) carries no seat key. Printable text only, one line, and it can never start
+  with a character that reads as an option.
+- **The label is at most 80 characters and always ends with the time.** The mode and the time are
+  reserved; when the parts do not fit, the topic gives way first, then the repo, then the seat
+  part (from its front, so the lens is the last thing to go).
+- **Where it applies.** The jailed seat and the non-brokered (homebrew) seat. **The sealed seat is
+  not renamed:** its argv is held token-for-token by the HARDEN evidence verifier's frozen grammar
+  (`scripts/verify_harden_evidence.py`), so naming it needs a coordinated verifier change. The
+  president is a sealed seat, so it is not renamed either.
+- **The evidence never carries the label.** The jailed seat's retained argv shape records
+  `--name <CLAUDE_SESSION_NAME>`, like the session id, so nothing about the repo or time is
+  retained and the shape digest stays recomputable. Every existing caller, golden and the jail
+  profile digest are unchanged (the name is optional and defaults to none).
+- **No topic is scraped from the review material.** The label is part of the seat's command line,
+  which any local user can read on a shared host, and an advisory board's material can be
+  sensitive. A topic appears only when the operator sets `PHASE_LOOP_SEAT_TOPIC`. Set
+  `PHASE_LOOP_SEAT_SESSION_NAMES=0` to turn naming off.
 
 ## [0.7.26] - 2026-10-09
 

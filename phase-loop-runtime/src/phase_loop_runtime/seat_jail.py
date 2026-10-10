@@ -315,6 +315,13 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
     "claude_tui_journal_collection_refused": (
         "leg refused", "the seat's session journal was incomplete, changed, or not one turn",
         "re-run the seat; if it repeats, report a defect with the leg log"),
+    # agent-harness#1433: refused before launch, never a late failure of the provider's write.
+    "seat_output_inside_readonly_input": (
+        "leg refused",
+        "the seat's output directory is inside one of its read-only inputs or a system "
+        "directory, where the provider's write cannot replace the file",
+        "put the seat's output outside its read-only inputs (the staged tree, --add-dir and "
+        "context paths) and outside system directories, then re-run"),
     # agent-harness#1433/#1434: the provider's turn ended, and nothing it produced could be
     # accepted. A terminal degraded refusal: never an approval, never a sealed fallback.
     "claude_seat_delivery_refused": (
