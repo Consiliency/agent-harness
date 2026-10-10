@@ -427,9 +427,19 @@ def _leg(tmp_path, monkeypatch, command, **kwargs):
     (tmp_path / "review").mkdir()
     (tmp_path / "out").mkdir()
     sink: list = []
-    status, text = panel._exec_claude_tui_leg(
-        tmp_path / "review", tmp_path / "out", 60, "bundle", env={},
-        repo_dir=tmp_path / "review", failure_detail_sink=sink, backstop_s=60, **kwargs)
+    # A heartbeat-only leg ignores its backstop, so the test bounds it itself: only a leg
+    # that would otherwise wait for good is ever cancelled by this.
+    monitor = kwargs.get("review_monitor")
+    guard = threading.Timer(45, monitor.cancel.set) if monitor is not None else None
+    if guard is not None:
+        guard.start()
+    try:
+        status, text = panel._exec_claude_tui_leg(
+            tmp_path / "review", tmp_path / "out", 60, "bundle", env={},
+            repo_dir=tmp_path / "review", failure_detail_sink=sink, backstop_s=60, **kwargs)
+    finally:
+        if guard is not None:
+            guard.cancel()
     return status, text, sink, sessions
 
 
