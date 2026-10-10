@@ -84,8 +84,9 @@ depend on the driver plan and can land in parallel with it.
     `tests/test_agy_integrity_seat_admission.py` (whose named mutation is in the closure's
     Gemini branch).
   - `tests/data/seat_launch_references.json` counts launch and file references per
-    function. The closure holds no counted reference of its own, so moving it moves no row.
-    `seat_profile` holds counted references, and its narrowing does move.
+    function. The closure holds no counted reference of its own. `seat_profile` holds one,
+    the Gemini image's `os.open`, which stays where it is; its inner helpers hold none, and
+    `_seat_credential` is called, not moved. So this unit moves no row at all.
 
 ## Changes
 
@@ -127,21 +128,36 @@ depend on the driver plan and can land in parallel with it.
   placed-seat follow-on plan, with its consumer; adding it here would land code that
   nothing calls.
 
-### `phase-loop-runtime/tests/test_seat_launch_factoring.py`, `tests/fixtures/seat_launch_factoring/closure_recording.json` (create); `tests/data/seat_launch_references.json` (modify)
+### `phase-loop-runtime/tests/test_seat_launch_factoring.py`, `tests/fixtures/seat_launch_factoring/closure_recording.json` (create)
 - The recording — add — taken **on the base, before any code moves**, by the test module's
   own recorder, for each branch of the closure and each outcome listed under
   "Verification". It holds two kinds of fact:
   - **what comes out:** the status, text, details, notices and broker-evidence keys
     `_parent_infer` produces, or the type and arguments of the exception that leaves it;
   - **what happens on the way, in order:** each credential read (which read, for which
-    path or margin, with which `HOME`), each acquisition the launch depends on (the seat
-    id, the egress prefix as read), and the launch itself as the provider is started: its
-    argument list, the names of its environment variables, and its bind list. Secret
-    values are recorded as digests, never as values.
+    path or margin, with which `HOME`); each acquisition the launch depends on (the seat
+    id, the egress prefix as read); **the keyword arguments each of the four callees
+    receives** (`_prepare_jailed_claude`, `_exec_jailed_claude_leg`, `_exec_claude_tui_leg`,
+    `_exec_leg`): the timeouts and the backstop by value, the latch, the monitor and the
+    evidence dictionary by identity, the session name; and the launch itself as the
+    provider would be started: its argument list, its environment (names, and values
+    where they are not secret), and its bind list. Broker-evidence entries are recorded
+    with their values. Secret values are recorded as digests, never as values.
+  - **What the recorder replaces, and nothing else:** the broker transport, and the
+    process start, which is replaced by a recorder that starts nothing.
+    `_record_broker_provider_evidence` runs for real. The four callees run for real behind
+    a spy that records their keyword arguments and delegates; the spy is installed on both
+    the module attribute and the production alias of each, so the runtime's own check for
+    an injected seam stays false. For the jailed branch `_prepare_jailed_claude` runs for
+    real up to the jail build; the seat-identity probe and the seat-uid holder below it
+    are replaced by recording stand-ins, so every branch can be recorded on the CI image.
+  - **Provenance.** The fixture enters the branch in a commit that changes no source file,
+    and no later commit modifies it. The recorder can be run at that commit and reproduces
+    it. A fixture re-taken after the move would be derived from the code under test.
 - The falsifiers under "Verification".
-- The inventory — modify — the rows that move from `seat_profile` to
-  `_narrow_seat_credentials` and `LOCAL_LOGIN_SOURCE`, all within `panel_invoker`. The
-  closure's move changes no row. The PR body lists every moved row.
+- The inventory — **unchanged**. No counted reference moves. A diff in
+  `tests/data/seat_launch_references.json` means something other than the planned move
+  happened.
 
 ## Documentation impact
 - `phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md` — modify — one
@@ -159,8 +175,9 @@ depend on the driver plan and can land in parallel with it.
    left exactly where it is, the implementer stops and reports before editing one.
 4. Nothing a seat sandbox permits changes: binds, capabilities, namespaces and network
    rules are the same lists in the same order.
-5. Order: write the recorder and take the recording on the base (this is the RED-capable
-   instrument: run it against a deliberately altered closure first and keep that log);
+5. Order: write the recorder and take the recording on the base, in a commit of its own
+   that changes no source file (this is the RED-capable instrument: run it against a
+   deliberately altered closure first and keep that log);
    capture the identities and goldens; move `_parent_infer`'s body alone and re-check;
    then the credential source alone and re-check.
 
@@ -191,7 +208,9 @@ does.
 | Case | Expected | Mutation that must turn it red |
 |---|---|---|
 | Each branch (jailed Claude, non-jailed Claude, `_exec_leg` for codex, grok and Gemini), success and each typed failure | Status, text, details, notices and broker-evidence keys equal the recording taken on the base | Drop a notice in the fold; lose `gemini_detail`; alter when `leg_detail` is cleared |
-| The ordered sequence for each branch: credential reads, acquisitions, then the launch with its argument list, environment names and bind list | Equal to the recording, element for element and in the same order | Swap two credential reads; resolve the Claude credential before the tree re-hash in the jailed branch; add one environment name; add or reorder one bind |
+| The ordered sequence for each branch: credential reads, acquisitions, the keyword arguments of each of the four callees, then the launch with its argument list, environment and bind list | Equal to the recording, element for element and in the same order | Swap two credential reads; resolve the Claude credential before the tree re-hash in the jailed branch; swap the leg's timeout and its deadline; drop the review monitor from one call; change `HOME` in the seat's environment; add or reorder one bind |
+| A branch that cannot be recorded on the host the suite runs on | Fails there; it does not skip. CI sets `PHASE_LOOP_REQUIRE_RECORDING=1`, and the acceptance below is claimed only from a run with it set | Skip the jailed branch where a prerequisite is missing |
+| The fixture's history | It was added by a commit that changes no source file, and no later commit touches it | Re-take the recording after the move |
 | Each exception that leaves `_parent_infer` on the base (the quiescence error; a non-Gemini `_exec_leg` exception; `gemini_broker_diagnostic_invalid`; an untyped exception from each Claude route) | Leaves `_infer_leg_here`, and `_parent_infer`, with the same type and arguments; the leg ends with the same status as on the base | Build the result inside a broad `except` |
 | A leg that is not jailed | Runs with no seat id supplied | Build every argument eagerly |
 | The two existing tests that run the real closure | Pass unchanged | — |
@@ -214,15 +233,17 @@ does.
 |---|---|
 | Plan 1a's local-equivalence golden | Matches unchanged. It covers the two unbrokered branches only and is not the proof for the closure. |
 | Launch-spec golden; seat-jail profile digests; falsifier layout identity | Equal before and after, recorded in the PR |
-| Inventory | Only rows named in the PR body move, all within `panel_invoker`; per-module totals are equal; the closure's move changes no row |
+| Inventory | `tests/data/seat_launch_references.json` is byte-identical before and after |
 
 ## Acceptance criteria
 - [ ] For every branch of the closure and every outcome in the recording taken on the base
   (jailed Claude, non-jailed Claude, `_exec_leg` for codex, grok and Gemini; success, each
   typed failure, and each exception that leaves it), `_infer_leg_here` through
   `_parent_infer` reproduces the recording: what comes out, and the ordered sequence of
-  credential reads, acquisitions and the launch's argument list, environment names and
-  binds. The recorder's own red log, one entry per named mutation, is in the PR.
+  credential reads, acquisitions, the keyword arguments of the four callees, and the
+  launch's argument list, environment and binds, in a run that skips no branch. The
+  recording was committed before any source change; the recorder's own red log, one entry
+  per named mutation, is in the PR.
 - [ ] With an injected credential source, the jailed Claude seat and every `seat_profile`
   branch receive that source's bytes with no read of the host's login stores by the moved
   code; with the default source the bytes and the redaction values equal the base's.
@@ -231,8 +252,7 @@ does.
   `_prepare_jailed_claude` positionally.
 - [ ] Plan 1a's golden, `tests/test_launchspec_golden.py`, the seat-jail profile digests
   and the falsifier layout identity are equal before and after;
-  `tests/data/seat_launch_references.json` differs only by rows that move within
-  `panel_invoker`.
+  `tests/data/seat_launch_references.json` is byte-identical.
 - [ ] `git diff --stat` lists no file among `gemini_heartbeat.py`, `agy_qualification.py`,
   `agy_provenance.py`.
 
