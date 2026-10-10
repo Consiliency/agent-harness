@@ -6,7 +6,205 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
-### agy: a newer upstream release only warns; seats admit self-qualified images (agent-harness#1333 PR1)
+### CLI qualification contract for every seat harness, inert (agent-harness#1333 PR2)
+
+- New `phase_loop_runtime.cli_qualification`. It is the harness-agnostic per-host CLI
+  qualification contract and holds:
+  - the qualification key;
+  - binary and tree payload digests (a symlink is recorded by its text and must resolve
+    inside its own root; a link the kernel cannot fully resolve, a dangling link or a
+    missing, non-directory, looping or unsearchable component, refuses, and so does any
+    traversal error);
+  - the pinned help-probe environment;
+  - the admission classes and the operations runner with its candidate token;
+  - read-only `lookup` and first-use `ensure_admitted`, which uses a bounded lock wait (an
+    expired wait is a `transient` outcome that writes nothing, never a refusal) and looks
+    up again after acquiring the lock;
+  - a per-user, per-host, per-harness HMAC store, with sticky identity failures and
+    transient-derived failures that expire after 24 h or on a key change. An entry lookup
+    reads for the key it looks up (qualified, failed or transient) that is not a 0600
+    euid-owned regular file, is a symlink, or fails its schema, type or MAC makes lookup
+    return `store_unsafe`, and so does a missing key while entries remain; `status` reports
+    directory and key state only;
+  - the closed `cli_qualification_candidate.v1` schema.
+- It is inert: no adapter exists and no seat path calls it yet.
+- `phase-loop cli-qualification status|clear --harness <h>`. `clear` removes failure and
+  transient entries; `clear --all` removes every entry.
+- Six additive notice codes (`seat_cli_*`), each a terminal degraded refusal with a fix line
+  and never a sealed fallback. No existing code is renamed.
+- `SeatMode.cli_admission_class`, additive to `seat_modes.v1`.
+- User config `[qualification.<harness>] self_qualification = false` opts a harness out. A
+  repository config cannot carry it.
+
+### Plan budget: report exceptions for undeclared phase aliases (agent-harness#1381; PR agent-harness#1396)
+
+- A `[plan_budget.phases.<ALIAS>]` entry whose alias no `specs/phase-plans-*.md` roadmap
+  declares is reported as `(S) WARN`, so a typo such as `CONFROM` no longer goes unnoticed.
+  It is reported in every mode and stays a warning under `mode = "error"`.
+- The docs now say that a plan's `phase:` line selects its exception, and that one alias
+  covers every roadmap that reuses it.
+
+### Claude panel seats get a readable session name in the app
+
+- **The problem, measured.** Claude Code titles an unnamed session by asking a model to summarise
+  its first message and pushing that title to the app's session list. A panel seat's first message
+  is the whole review prompt, so its title was a summary of that prompt: not the repo, the seat or
+  the round, and indistinguishable from its neighbours after a few boards. On Claude Code 2.1.295
+  an unnamed seat made two `generate_session_title` calls and derived its title from message 1; a
+  seat started with `--name` made none, so nothing overwrites the name.
+- **New `seat_session_label` module and `--name <label>` on the Claude seat.** The runtime builds
+  the label itself, so it works in a client repo with no help from the driving agent:
+  `<repo> · <mode> · [<topic> ·] <seat> · <UTC date time>`, for example
+  `agent-harness · review · claude-opus-5-5:high:correctness · 10-09 10:42Z`. The repo is the
+  directory name, so a worktree is told apart. The seat part is the board's seat key without its
+  leading harness segment, so two Claude seats that differ only in their lens get different names;
+  the seat identity reaches the spawn through a per-thread variable set in the board's per-seat
+  worker, because `_default_spawn`'s own call (pinned by the CS-0.8 signature guard and the
+  placement round id) carries no seat key. Printable text only, one line, and it can never start
+  with a character that reads as an option.
+- **The label is at most 80 characters and always ends with the time.** The mode and the time are
+  reserved; when the parts do not fit, the topic gives way first, then the repo, then the seat
+  part (from its front, so the lens is the last thing to go).
+- **Where it applies.** The jailed seat and the non-brokered (homebrew) seat. **The sealed seat is
+  not renamed:** its argv is held token-for-token by the HARDEN evidence verifier's frozen grammar
+  (`scripts/verify_harden_evidence.py`), so naming it needs a coordinated verifier change. The
+  president is a sealed seat, so it is not renamed either.
+- **The evidence never carries the label.** The jailed seat's retained argv shape records
+  `--name <CLAUDE_SESSION_NAME>`, like the session id, so nothing about the repo or time is
+  retained and the shape digest stays recomputable. Every existing caller, golden and the jail
+  profile digest are unchanged (the name is optional and defaults to none).
+- **No topic is scraped from the review material.** The label is part of the seat's command line,
+  which any local user can read on a shared host, and an advisory board's material can be
+  sensitive. A topic appears only when the operator sets `PHASE_LOOP_SEAT_TOPIC`. Set
+  `PHASE_LOOP_SEAT_SESSION_NAMES=0` to turn naming off.
+
+## [0.7.26] - 2026-10-09
+
+### Upgrade notes
+
+- **New runtime dependencies.** Hosts get pytest and its backports automatically on upgrade:
+  `pytest>=8,<9`, `exceptiongroup>=1`, `tomli>=2,<3` and `typing-extensions>=4.6`
+  (agent-harness#1361, agent-harness#1357). `tomli` was already required below Python 3.11;
+  it is now required on every Python, because the jail's falsifier run may use an older
+  system interpreter than the runtime. Install the runtime into an isolated tool environment
+  (`uv tool install` or pipx): in a shared environment that already has pytest 9, `<9`
+  downgrades pytest or fails to resolve.
+- **Hash-locked deployments** (Consiliency/dotfiles#77) must regenerate their lock (for example
+  with `pip-compile --generate-hashes`) so that pytest and its transitive dependencies are
+  hashed. Measured on an upgrade from 0.7.25, the new distributions are pytest,
+  exceptiongroup, iniconfig, pluggy and pygments, plus tomli on Python 3.11 and later; hashing
+  only the declared dependencies is not enough.
+- **No jail pass reset from 0.7.25.** The seat jail's falsifier-run layout identity is
+  unchanged (`execfind-falsifier-layout.v1:805042ce…`). A host upgrading from 0.7.24 or earlier
+  (layout `c1e0b88a…`) still takes the one-time 0.7.25 reset (see `[0.7.25]`), and its jail
+  requalifies on first use, which the new pytest dependency now makes possible.
+- **Known issue (agent-harness#1407; not a regression).** The brokered Gemini seat is refused as
+  `gemini_credential_near_expiry` for about the last 10 minutes of each agy token hour: the
+  runtime asks for at least 10 minutes of token life, and agy refreshes its token only at real
+  expiry. A retry after the token expires succeeds. This predates 0.7.26; agent-harness#1308
+  fixed a different cause of the same refusal code.
+
+### Qualified agy set requalified (agent-harness#1402)
+
+- All eight listed members (1.2.11, 1.2.12, 1.2.14, 1.2.15, 1.2.16, 1.2.17, 1.3.0 and 1.3.1)
+  were requalified on the release tree (completion, cancel and owner-loss each, then
+  `--validate`), because this release changes `phase_loop_runtime/**/*.py`. Each member has
+  its own regenerated record. The set is unchanged; a newer upstream agy is no longer a cut
+  criterion (agent-harness#1350) and self-qualifies on first use.
+
+### pytest is a runtime dependency; the jail's missing-pytest failure is a typed prerequisite (agent-harness#1357; PR agent-harness#1361)
+
+- **`pytest>=8,<9` moves from the `test` dependency group to `[project].dependencies`**
+  (maintainer ruling). The seat jail's qualification runs a real falsifier run whose trusted
+  wrapper imports `pytest`, and the run copies its dependencies from the runtime's own
+  environment. A host installed from the published package had no `pytest` anywhere, so
+  `phase-loop seat-sandbox qualify` ended `sentinel never became ready ... No module named
+  'pytest'`, and the first-use requalification that 0.7.25 relies on could not succeed: jailed
+  Claude seats stayed degraded. It stayed hidden because the test and release environments install
+  `pytest` themselves. The upper bound keeps the range the suite and Gate A are tested on; widen it
+  with a test run.
+- **pytest's backports are declared with no marker: `exceptiongroup>=1`, `tomli>=2,<3` (its
+  `python_version < '3.11'` marker is dropped) and `typing-extensions>=4.6`.** The falsifier run's
+  interpreter is `/usr/bin/python3`, and its minor can be older than the runtime's. pytest selects
+  these backports by markers evaluated for the runtime's interpreter, so a runtime on Python 3.11 or
+  later over a 3.10 system interpreter installed none of them, and qualification failed with
+  `No module named 'exceptiongroup'`.
+- **A typed `prerequisite_missing` with a literal fix, not `falsifiers_failed` ("report a
+  defect").** `qualify()` now checks up front, with the dependency snapshot's own path discovery,
+  that `pytest` can be found. Only that check yields `prerequisite_missing` for pytest: an import
+  failure inside the sentinel run, including one naming `pytest` or a `pytest.` submodule, stays
+  `falsifiers_failed`, because by then the check has said pytest is present. The seat's mode line
+  shows the exact commands (`uv tool upgrade phase-loop-runtime` or
+  `pip install --upgrade phase-loop-runtime`), computed from what is missing now, not from a cached
+  reason.
+- **`phase-loop doctor` reports it.** `phase-loop-doctor.v1` gains an optional
+  `seat_jail_prerequisites[]` (`name`, `status` of `present`, `missing` or `unknown`, `unlocks`, and
+  `fix` when missing). It is additive (not `required` in the schema) and metadata-only, so
+  v0.7.25 payloads still validate.
+- **A clean-install check in Gate A.** `scripts/_gate_a_falsifier_probe.py` runs in the venv that
+  `gate_a_cleanroom.sh` builds from the wheel and its declared dependencies alone, before the
+  full-suite step installs `pytest` itself. It fails if the falsifier wrapper's imports do not
+  resolve, if the dependency snapshot cannot find `pytest`, if the snapshot does not stage
+  `pytest` and `_pytest`, or if the wrapper's import line fails when run the way the falsifier run
+  runs it: the system interpreter, the run's flags and environment, and the snapshot alone on its
+  path. A pull request runs it in the wheel-smoke job; the existing `test_gate_a_wheel_isolation`
+  drives the script and asserts the probe's success line.
+- **No jail pass is reset.** The falsifier-layout identity hashes the dependency snapshot's source,
+  so that function is untouched (the identity is still `execfind-falsifier-layout.v1:805042ce...`,
+  as on 0.7.25) and a test pins it.
+
+### Plan word budget: check (S) and `.phase-loop-planning.toml` (agent-harness#1302; PR agent-harness#1323)
+
+- `validate_plan_doc.py` (plan-phase) gains check (S): it warns when a phase plan's body,
+  excluding YAML frontmatter, is longer than its word budget. The default budget is 2000
+  words plus 500 per lane, and the check warns by default. Frozen artifacts the plan
+  references have no cap. The plan-phase and phase-roadmap-builder skills now state this one
+  rule in place of the old flat 3000-word budget.
+- Configure it in the committed repo-root file `.phase-loop-planning.toml`: `[plan_budget]`
+  takes `base_words`, `per_lane_words` and `mode = "warn" | "error" | "off"`, and
+  `[plan_budget.phases.<ALIAS>]` sets a per-phase exception for the plan whose frontmatter
+  `phase:` matches. `--word-budget N` sets a flat budget for one run. Keys:
+  `docs/phase-loop/plan-budget.md`.
+- A malformed config is a validation error: an unknown key or top-level table, a misplaced
+  `phases` table, a bad mode or count, invalid TOML, or a phase entry that fails validation
+  even when it matches no plan.
+- Severity now comes from the finding's prefix alone: only `(X) WARN` and `(X) INFO` lines
+  are non-fatal. Before, any finding whose text contained `WARN` was demoted to a warning,
+  and `(P) INFO` lines (goal coverage not checked, outside the runtime) counted as errors.
+  `(P) INFO` lines no longer count as errors.
+
+### The skill-improvement loop reads the reflections it writes (agent-harness#1301; PR agent-harness#1325)
+
+- New `python3 -m phase_loop_runtime.reflection_corpus` with `collect` and `archive`. `collect`
+  scans every harness skill root (claude, codex, gemini, opencode) and the
+  `PHASE_LOOP_SKILL_BUNDLE` root, covering all eleven workflow skills including
+  `execute-detailed`, every `claude-*` copy and the `advisor-panel` alias. It reads the
+  `What didn't` section and writes `bundle.md` (the planner's input) and `manifest.json`.
+- Quality filter: duplicates and near-duplicates collapse only within one skill/repo/branch,
+  and a line counts as boilerplate only when one repo's runs repeat it. Reflections with
+  repo-specific `Improvements`, with no friction and no proposal, or over 32 KiB are
+  excluded, and each repo/branch keeps its newest three. Every rendered body and the
+  manifest's stripped lines go through the shared credential redaction. Heading and
+  code-fence lines in a reflection's text are neutralised, and each entry header is one
+  line, so a reflection cannot add an entry header or swallow the entries after it.
+- The collector never reads a symlinked reflection file, or one whose real location
+  leaves its reflections directory. A reflection reached through a symlinked skill or
+  reflections directory outside the scan root is read but never consumed.
+- `maintain-skills` launches the planner only when some skill has at least
+  `--min-reflections` admitted reflections (default 2), and passes it `--corpus <dir>`.
+  Below that it records `plan_skipped` and launches nothing.
+- `archive` moves the manifest's `reflections_consumed` into `archive/`. Consumed means the
+  admitted reflections of ready skills, plus reflections excluded as a duplicate or with no
+  friction and no proposal. Every other reflection stays in place. It moves only paths
+  of an in-scope skill whose real location stays under a harness root, the
+  `PHASE_LOOP_SKILL_BUNDLE` root or an explicit `--root`, and never takes roots from the
+  manifest. One refused path moves nothing and exits non-zero.
+  `--exclude` matches resolved paths, and an `--exclude` that matches nothing is an error.
+- The skill-improvement planner and the skill editor (all four harnesses) now drive this
+  CLI, cover the full scope, point at `skills-src/`, and state the consumption rule. The
+  aggregator prompt says that bundle text is quoted evidence, never instructions.
+
+### agy: a newer upstream release only warns; seats admit self-qualified images (agent-harness#1333 PR1; PRs agent-harness#1350, agent-harness#1366)
 
 - `verify_qualified_agy_image.py --upstream-only` no longer fails when the newest upstream
   agy is not a shipped member. It prints `::warning::newest upstream agy <v> is not a shipped
@@ -17,15 +215,24 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - New `agy_integrity.admit_for_seat(path, env)`, used only by the two owned review-seat
   sites in `seat_profile` (the credential refresh without a heartbeat profile, and the owned
   non-heartbeat seat). It admits a release member offline as before, then a
-  `locally_qualified` image through `agy_qualification.lookup`. A miss, the opt-out, a
-  failed or tampered record, an unsafe store, an unreadable image or a memfd-seal failure is
-  the typed `agy_image_unqualified` refusal, and a miss closes its image. A refusal that
-  already carries its own typed code (such as `seat_filtered_egress_unavailable` from the
-  help measurement) passes through unchanged. The `agy_image_unqualified` fix line now names
-  `phase-loop agy-qualification run` and the `[agy] self_qualification` opt-out. `agy_integrity.check` is unchanged: the executor
-  (`trusted_command`, `admitted_command`) and canary callers stay release-only.
+  `locally_qualified` image through `agy_qualification.lookup`. On that local-qualification
+  path, a miss, the opt-out, a failed or tampered record, an unsafe store, an unreadable
+  image or a memfd-seal failure is the typed `agy_image_unqualified` refusal, and a miss
+  closes its image. What the help measurement raises with its own type passes through
+  unchanged, and on the brokered review route (the default) the gemini leg keeps that code
+  and its notice:
+  - a typed seat refusal (`EgressUnavailable` and its subclasses, such as
+    `seat_filtered_egress_unavailable`);
+  - a quiescence failure (`GeminiQuiescenceError`, `ProviderProcessGroupQuiescenceError`),
+    which then reaches the leg's quiescence handler;
+  - a jail refusal (`SeatSandboxRefused`).
 
-### Closeout audit states its own required action (agent-harness#1303)
+  The president follow-up to agent-harness#1350 added the last two. The
+  `agy_image_unqualified` fix line now names `phase-loop agy-qualification run` and the
+  `[agy] self_qualification` opt-out. `agy_integrity.check` without an env is unchanged: the
+  executor (`trusted_command`, `admitted_command`) and canary callers stay release-only.
+
+### Closeout audit states its own required action (agent-harness#1303; PR agent-harness#1328)
 
 - `phase-loop-closeout-audit` now ends every exit it returns or raises from with exactly one
   `action:` line: exit 0 means ignored paths do not block (the dirty-path classification
@@ -37,6 +244,50 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   condition-first list, kept as the fallback for a runtime without the action line. The
   tool is "the closeout audit" throughout; the whole-tree `git status --short` pass is the
   "dirty-path classification".
+
+### Plan validator check (R): owned-file under-enumeration warnings (agent-harness#1304; PR agent-harness#1322)
+
+- The plan-phase validator gains check (R), WARN only. When a plan owns a file whose tracked
+  companions it leaves out of `Owned files`, it warns: the closest test file, snapshots,
+  generated migrations, env examples and lockfiles. Every rule needs repo evidence (a tracked
+  companion), so a category that does not apply to the repo stays silent. Promotion to a
+  refusal, one category at a time, is tracked in agent-harness#1355.
+
+### Shipped rule-to-enforcer registry for skill rules (agent-harness#1321; PRs agent-harness#1324, agent-harness#1356)
+
+- `phase_loop_runtime/rule_enforcement.json` (`rule_enforcement.v1`) and its loader and checker
+  `rule_enforcement.py` ship as package data. Each row quotes one normative rule from shipped
+  `SKILL.md` text and records it as `enforced` (the refusing code plus a negative-control
+  test) or `unenforced` (a tracked `gap`, or a `judgment` call). The plan-phase
+  owned-files-complete row points at agent-harness#1355.
+
+### Seats on team hosts (agent-harness#1317, agent-harness#1318, agent-harness#1331; PRs agent-harness#1329, agent-harness#1330, agent-harness#1334)
+
+- Seat bind sources are walked with `O_PATH`, so a root-owned, traverse-only ancestor (mode
+  `0711`) no longer stops a seat from launching. The no-follow guarantee is unchanged.
+- A provider CLI installed as a shell launcher wrapper is followed to its native target, and
+  that target is bound into the seat, so wrapped `codex`, `claude` and `grok` installs launch.
+- The board's auth probe and the bounded Gemini seat admit an agy image this host
+  self-qualified (`locally_qualified`), as the heartbeat route already did.
+
+### PROOFGATE mutation worktrees honour `$WORKTREE_ROOT` (PR agent-harness#1327)
+
+- `execute_proofgate_mutation_manifest` picks its worktree parent in this order:
+  `$WORKTREE_ROOT`; `~/workspace/worktrees` on a team host (`/etc/consiliency/team-host`);
+  `/mnt/workspace/worktrees`; otherwise the repo's parent directory. Before, an existing but
+  unwritable `/mnt/workspace/worktrees` failed the run.
+
+### Release records, plans, tests and CI (PRs agent-harness#1332, agent-harness#1333, agent-harness#1348, agent-harness#1349, agent-harness#1351, agent-harness#1352, agent-harness#1380, agent-harness#1387, agent-harness#1403, agent-harness#1411)
+
+- The 0.7.25 handoff record is marked published, and the `[0.7.25]` section is tidied
+  (agent-harness#1352).
+- The per-host CLI qualification parity plan (agent-harness#1333).
+- HARDEN plan bookkeeping and tests (agent-harness#1348, agent-harness#1349, agent-harness#1351,
+  agent-harness#1380, agent-harness#1387), and the shared owned-seat review namespace for the
+  test suite (agent-harness#1332). No runtime change.
+- HARDEN test coverage for reviewed sibling syncs (agent-harness#1403), and Gate A's clean-room
+  sparse checkout now includes the skill-improvement planner and editor sources that
+  agent-harness#1325's tests read (agent-harness#1411). CI and tests only.
 
 ## [0.7.25] - 2026-10-08
 

@@ -32,6 +32,22 @@ from phase_loop_runtime.skill_inventory import (
 from phase_loop_test_utils import make_repo
 
 
+def _seeded_home(td):
+    """A temp HOME holding enough planner reflections to clear ``min_reflections``.
+
+    maintain-skills only launches the planner when a skill is due, so a test that
+    needs the launch seeds its own store instead of reading the operator's.
+    """
+    home = Path(td) / "home"
+    for name in ("branch-a", "branch-b"):
+        branch = home / ".codex" / "skills" / "codex-plan-phase" / "reflections" / "repo" / name
+        branch.mkdir(parents=True)
+        (branch / "one.md").write_text(f"## What didn't\nfriction {name}\n\n## Improvements to SKILL.md\nNone.\n")
+    env = {key: value for key, value in os.environ.items() if key != "PHASE_LOOP_SKILL_BUNDLE"}
+    env["HOME"] = str(home)
+    return patch.dict(os.environ, env, clear=True)
+
+
 class PhaseLoopMaintenanceTest(unittest.TestCase):
     def test_sync_skills_check_reports_missing_bridge_roots(self):
         with tempfile.TemporaryDirectory() as td:
@@ -213,25 +229,28 @@ class PhaseLoopMaintenanceTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             repo = make_repo(Path(td))
             roadmap = repo / "specs" / "phase-plans-v1.md"
-            active = repo / "codex-config" / "skills" / "codex-plan-phase" / "reflections" / "repo" / "branch"
-            archived = active / "archive"
-            active.mkdir(parents=True)
-            archived.mkdir()
-            (active / "one.md").write_text("active\n")
-            (archived / "two.md").write_text("archived\n")
+            home = Path(td) / "home"
+            branch = home / ".codex" / "skills" / "codex-plan-phase" / "reflections" / "repo"
+            for name in ("branch-a", "branch-b"):
+                (branch / name).mkdir(parents=True)
+                (branch / name / "one.md").write_text(f"## What didn't\nfriction {name}\n\n## Improvements to SKILL.md\nNone.\n")
+            (branch / "branch-a" / "archive").mkdir()
+            (branch / "branch-a" / "archive" / "two.md").write_text("## What didn't\narchived\n")
 
-            inventory = collect_reflection_inventory(repo)
-            source_root = next(root for root in inventory["roots"] if root["root"].endswith("codex-config/skills"))
-            self.assertEqual(source_root["count"], 1)
+            with patch.dict(os.environ, {"HOME": str(home)}):
+                inventory = collect_reflection_inventory(repo)
+                codex_root = next(root for root in inventory["roots"] if root["root"].endswith(".codex/skills"))
+                self.assertEqual(codex_root["count"], 2)
+                self.assertTrue(inventory["due"])
 
-            snapshot, results = run_loop(repo, roadmap, action="maintain-skills", dry_run=True)
+                snapshot, results = run_loop(repo, roadmap, action="maintain-skills", dry_run=True)
             command = " ".join(results[0].command)
-            self.assertIn("codex-skill-improvement-planner --min-reflections 2", command)
+            self.assertIn("codex-skill-improvement-planner --min-reflections 2 --corpus ", command)
             self.assertNotIn("codex-plan-phase", command)
             self.assertNotIn("codex-execute-phase", command)
             self.assertEqual(snapshot.last_action, "maintain-skills")
             events = read_events(repo)
-            self.assertEqual(events[-1]["metadata"]["reflection_inventory"]["roots"][1]["count"], 1)
+            self.assertEqual(events[-1]["metadata"]["reflection_inventory"]["by_skill"], {"plan-phase": 2})
             self.assertNotIn("secret-value", json.dumps(events[-1]))
 
     def test_active_product_loop_refuses_maintenance(self):
@@ -303,7 +322,7 @@ class PhaseLoopMaintenanceTest(unittest.TestCase):
             def fake_launch(command, dry_run=False, log_path=None, stream_output=False, **kwargs):
                 return LaunchResult(command=command, returncode=42, output="failed\n")
 
-            with patch("phase_loop_runtime.maintenance.launch", side_effect=fake_launch):
+            with _seeded_home(td), patch("phase_loop_runtime.maintenance.launch", side_effect=fake_launch):
                 snapshot, results = run_loop(repo, roadmap, action="maintain-skills")
 
             self.assertEqual(results[0].returncode, 42)
@@ -318,7 +337,8 @@ class PhaseLoopMaintenanceTest(unittest.TestCase):
             repo = make_repo(Path(td))
             roadmap = repo / "specs" / "phase-plans-v1.md"
 
-            snapshot, results = run_loop(repo, roadmap, action="maintain-skills", dry_run=True)
+            with _seeded_home(td):
+                snapshot, results = run_loop(repo, roadmap, action="maintain-skills", dry_run=True)
 
             self.assertEqual(snapshot.last_action, "maintain-skills")
             self.assertIsNotNone(results[0].log_path)
@@ -332,7 +352,8 @@ class PhaseLoopMaintenanceTest(unittest.TestCase):
             repo = make_repo(Path(td))
             roadmap = repo / "specs" / "phase-plans-v1.md"
 
-            _snapshot, results = run_loop(repo, roadmap, action="maintain-skills", dry_run=True, bypass_approvals=True)
+            with _seeded_home(td):
+                _snapshot, results = run_loop(repo, roadmap, action="maintain-skills", dry_run=True, bypass_approvals=True)
 
             command = " ".join(results[0].command)
             self.assertIn("--dangerously-bypass-approvals-and-sandbox", command)
@@ -343,7 +364,8 @@ class PhaseLoopMaintenanceTest(unittest.TestCase):
             repo = make_repo(Path(td))
             roadmap = repo / "specs" / "phase-plans-v1.md"
 
-            _snapshot, results = run_loop(repo, roadmap, action="maintain-skills", dry_run=True)
+            with _seeded_home(td):
+                _snapshot, results = run_loop(repo, roadmap, action="maintain-skills", dry_run=True)
 
             command = results[0].command
             self.assertEqual(command[:2], ["codex", "exec"])

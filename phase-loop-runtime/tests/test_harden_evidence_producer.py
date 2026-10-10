@@ -20,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from types import SimpleNamespace
 from typing import Any, Callable
 from xml.etree import ElementTree
 
@@ -321,12 +322,14 @@ def _restarted_producer_module(case: str) -> Any:
     return _producer_module(case)
 
 
-def _producer_command(*args: str) -> subprocess.CompletedProcess[str]:
+def _producer_command(
+    *args: str, manifest_swap: Path | None = None
+) -> subprocess.CompletedProcess[str]:
     # Keep CI substitution in the test process, not in a production CLI flag or
     # environment switch. Only the canonical provider query is replaced; the
     # producer, verifier and all of their validation execute unchanged.
     bootstrap = """
-import os, pathlib, runpy, subprocess, sys
+import importlib.util, inspect, os, pathlib, runpy, subprocess, sys
 producer, *arguments = sys.argv[1:]
 if '--evidence-root' in arguments:
     root = pathlib.Path(arguments[arguments.index('--evidence-root') + 1]).parent
@@ -350,9 +353,26 @@ if '--evidence-root' in arguments:
                 command = [str(fake_gh), *command[1:]]
             super().__init__(command, *positional, **keywords)
     subprocess.Popen = HermeticCIProcess
+manifest_swap = os.environ.pop('HARDEN_TEST_MANIFEST_SWAP_PATH', None)
+if manifest_swap:
+    spec = importlib.util.spec_from_file_location('harden_evidence_producer', producer)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    original_input_manifest = module._input_manifest
+    def swap_after_stage_parse(path, source):
+        parsed, parsed_bytes = original_input_manifest(path, source)
+        if any(frame.function == '_prepare_stage' for frame in inspect.stack()):
+            path.write_bytes(pathlib.Path(manifest_swap).read_bytes())
+        return parsed, parsed_bytes
+    module._input_manifest = swap_after_stage_parse
+    raise SystemExit(module.main(arguments))
 sys.argv = [producer, *arguments]
 runpy.run_path(producer, run_name='__main__')
 """
+    env = None
+    if manifest_swap is not None:
+        env = dict(os.environ)
+        env["HARDEN_TEST_MANIFEST_SWAP_PATH"] = str(manifest_swap)
     return subprocess.run(
         [sys.executable, "-c", bootstrap, str(_repo_root() / PRODUCER_PATH), *args],
         cwd=_repo_root(),
@@ -360,6 +380,7 @@ runpy.run_path(producer, run_name='__main__')
         text=True,
         timeout=30,
         check=False,
+        env=env,
     )
 
 
@@ -1425,6 +1446,27 @@ def _raw_fixture(
     }
 
 
+def _restorable_raw_fixture(
+    root: Path, *, non_biting_mutation: bool = False
+) -> Callable[[], dict[str, Any]]:
+    """Build one expensive fixture and restore its pristine bytes between attacks."""
+    fixture_root = root / "fixture"
+    baseline = _raw_fixture(
+        fixture_root,
+        variant=_runtime_variant(fixture_root),
+        non_biting_mutation=non_biting_mutation,
+    )
+    snapshot = root / "snapshot"
+    shutil.copytree(fixture_root, snapshot, symlinks=True)
+
+    def restore() -> dict[str, Any]:
+        shutil.rmtree(fixture_root)
+        shutil.copytree(snapshot, fixture_root, symlinks=True)
+        return copy.deepcopy(baseline)
+
+    return restore
+
+
 def _ci_provider_attack(context: dict[str, Any], round_name: str, attack: str) -> None:
     path = context["root"] / "ci-responses.json"
     responses = _strict_json(path)
@@ -1445,7 +1487,9 @@ def _persist_manifest(context: dict[str, Any]) -> None:
     context["manifest_path"].write_bytes(_canonical_bytes(context["manifest"]))
 
 
-def _prepare_command(context: dict[str, Any]) -> subprocess.CompletedProcess[str]:
+def _prepare_command(
+    context: dict[str, Any], *, manifest_swap: Path | None = None
+) -> subprocess.CompletedProcess[str]:
     ledger = context["repo"] / ".phase-loop/events.jsonl"
     protected = (
         context["manifest_path"],
@@ -1460,27 +1504,33 @@ def _prepare_command(context: dict[str, Any]) -> subprocess.CompletedProcess[str
         for name, record in before[1].items()
         if record[0] == "file"
     }
-    completed = _producer_command(
-        "prepare",
-        "--inputs",
-        str(context["manifest_path"]),
-        "--source-root",
-        str(context["source_root"]),
-        "--evidence-root",
-        str(context["evidence_root"]),
-        "--repo",
-        str(context["repo"]),
-        "--output",
-        str(context["output"]),
-        "--completion-request",
-        str(context["request"]),
-        "--reuse-registry",
-        str(context["registry"]),
-        "--expected-coordinator-session-sha256",
-        context["sessions"]["coordinator"],
-        "--expected-author-session-sha256",
-        context["sessions"]["author"],
-    )
+    manifest_before = context["manifest_path"].read_bytes()
+    try:
+        completed = _producer_command(
+            "prepare",
+            "--inputs",
+            str(context["manifest_path"]),
+            "--source-root",
+            str(context["source_root"]),
+            "--evidence-root",
+            str(context["evidence_root"]),
+            "--repo",
+            str(context["repo"]),
+            "--output",
+            str(context["output"]),
+            "--completion-request",
+            str(context["request"]),
+            "--reuse-registry",
+            str(context["registry"]),
+            "--expected-coordinator-session-sha256",
+            context["sessions"]["coordinator"],
+            "--expected-author-session-sha256",
+            context["sessions"]["author"],
+            manifest_swap=manifest_swap,
+        )
+    finally:
+        if manifest_swap is not None:
+            context["manifest_path"].write_bytes(manifest_before)
     if [_path_snapshot(path) for path in protected] != before:
         pytest.fail(
             "prepare modified retained input or canonical evidence", pytrace=False
@@ -1504,6 +1554,25 @@ def _path_snapshot(root: Path) -> dict[str, tuple[Any, ...]]:
         else:
             snapshot[name] = ("absent",)
     return snapshot
+
+
+def test_harden_restorable_fixture_preserves_identity_and_isolation(
+    tmp_path: Path,
+) -> None:
+    restore = _restorable_raw_fixture(tmp_path / "restorable")
+    first = restore()
+    pristine = _path_snapshot(first["root"])
+
+    first["manifest"]["schema"] = "contaminated.v1"
+    first["manifest_path"].write_bytes(b"contaminated\n")
+    first["registry"].write_bytes(b"contaminated\n")
+    (first["root"] / "unexpected.txt").write_text("contaminated\n")
+
+    second = restore()
+    assert second["root"] == first["root"]
+    assert second["manifest_path"] == first["manifest_path"]
+    assert second["manifest"]["schema"] == INPUT_SCHEMA
+    assert _path_snapshot(second["root"]) == pristine
 
 
 def _seal_command(
@@ -2439,7 +2508,9 @@ def test_harden_producer_derives_live_facts_without_historical_literals() -> Non
         )
 
 
-def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
+def test_harden_producer_assembles_only_contained_retained_evidence(
+    tmp_path: Path,
+) -> None:
     _producer_module("assemble")
 
     for index, (author, red, final) in enumerate(_fixture_variants()):
@@ -2461,6 +2532,11 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
             _assert_prepared(context)
             assert context["registry"].read_bytes() == registry_before
 
+    restore_fixture = _restorable_raw_fixture(tmp_path / "rejected")
+    restore_non_biting_fixture = _restorable_raw_fixture(
+        tmp_path / "rejected-non-biting", non_biting_mutation=True
+    )
+
     def rejected(
         name: str,
         mutate: Callable[[dict[str, Any]], None],
@@ -2468,30 +2544,24 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
         *,
         non_biting_mutation: bool = False,
     ) -> None:
-        with tempfile.TemporaryDirectory(prefix="pl-") as td:
-            fixture_root = Path(td) / "fixture"
-            context = _raw_fixture(
-                fixture_root,
-                variant=_runtime_variant(fixture_root),
-                non_biting_mutation=non_biting_mutation,
-            )
-            mutate(context)
-            _persist_manifest(context)
-            registry_before = context["registry"].read_bytes()
-            completed = _prepare_command(context)
-            assert completed.returncode != 0, name
-            for secret in context.get("must_not_echo", ()):
-                if (
-                    secret.casefold()
-                    in (completed.stderr + completed.stdout).casefold()
-                ):
-                    pytest.fail(
-                        f"{name}: diagnostic exposed planted credential", pytrace=False
-                    )
-            diagnostic = (completed.stderr + completed.stdout).lower()
-            assert message.lower() in diagnostic, f"{name}: {diagnostic}"
-            _assert_no_prepare_output(context)
-            assert context["registry"].read_bytes() == registry_before
+        restore = (
+            restore_non_biting_fixture if non_biting_mutation else restore_fixture
+        )
+        context = restore()
+        mutate(context)
+        _persist_manifest(context)
+        registry_before = context["registry"].read_bytes()
+        completed = _prepare_command(context)
+        assert completed.returncode != 0, name
+        for secret in context.get("must_not_echo", ()):
+            if secret.casefold() in (completed.stderr + completed.stdout).casefold():
+                pytest.fail(
+                    f"{name}: diagnostic exposed planted credential", pytrace=False
+                )
+        diagnostic = (completed.stderr + completed.stdout).lower()
+        assert message.lower() in diagnostic, f"{name}: {diagnostic}"
+        _assert_no_prepare_output(context)
+        assert context["registry"].read_bytes() == registry_before
 
     rejected(
         "wrong-manifest-schema",
@@ -4103,7 +4173,9 @@ def test_harden_producer_assembles_only_contained_retained_evidence() -> None:
         assert option in prepare_help.stdout
 
 
-def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
+def test_harden_producer_prepare_then_seal_binds_one_canonical_event(
+    tmp_path: Path,
+) -> None:
     _producer_module("seal")
 
     with tempfile.TemporaryDirectory(prefix="pl-") as td:
@@ -4154,40 +4226,40 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event() -> None:
         }
         _verify_with_shipped_verifier(context, sealed_path, "sealed")
 
+    restore_seal_fixture = _restorable_raw_fixture(tmp_path / "seal-rejected")
+
     def seal_rejected(
         name: str,
         mutate: Callable[[dict[str, Any], Path, dict[str, Any]], Path],
         message: str,
     ) -> None:
-        with tempfile.TemporaryDirectory(prefix="pl-") as td:
-            fixture_root = Path(td) / "fixture"
-            context = _raw_fixture(fixture_root, variant=_runtime_variant(fixture_root))
-            prepared = _prepare_command(context)
-            assert prepared.returncode == 0, prepared.stderr
-            _evidence, request = _assert_prepared(context)
-            canonical = context["repo"] / ".phase-loop/events.jsonl"
-            canonical.parent.mkdir(parents=True, exist_ok=True)
-            canonical.write_bytes(_ledger_bytes(request))
-            ledger_argument = mutate(context, canonical, request)
-            output = context["root"] / "sealed-evidence.json"
-            registry_before = context["registry"].read_bytes()
-            protected = (
-                context["evidence_root"],
-                canonical,
-                canonical.resolve(),
-                ledger_argument,
-                ledger_argument.resolve(),
-                context["output"],
-                context["request"],
-            )
-            before = [_path_snapshot(path) for path in protected]
-            completed = _seal_command(context, ledger_argument, output)
-            assert completed.returncode != 0, name
-            diagnostic = (completed.stderr + completed.stdout).lower()
-            assert message.lower() in diagnostic, f"{name}: {diagnostic}"
-            assert not output.exists()
-            assert context["registry"].read_bytes() == registry_before
-            assert [_path_snapshot(path) for path in protected] == before, name
+        context = restore_seal_fixture()
+        prepared = _prepare_command(context)
+        assert prepared.returncode == 0, prepared.stderr
+        _evidence, request = _assert_prepared(context)
+        canonical = context["repo"] / ".phase-loop/events.jsonl"
+        canonical.parent.mkdir(parents=True, exist_ok=True)
+        canonical.write_bytes(_ledger_bytes(request))
+        ledger_argument = mutate(context, canonical, request)
+        output = context["root"] / "sealed-evidence.json"
+        registry_before = context["registry"].read_bytes()
+        protected = (
+            context["evidence_root"],
+            canonical,
+            canonical.resolve(),
+            ledger_argument,
+            ledger_argument.resolve(),
+            context["output"],
+            context["request"],
+        )
+        before = [_path_snapshot(path) for path in protected]
+        completed = _seal_command(context, ledger_argument, output)
+        assert completed.returncode != 0, name
+        diagnostic = (completed.stderr + completed.stdout).lower()
+        assert message.lower() in diagnostic, f"{name}: {diagnostic}"
+        assert not output.exists()
+        assert context["registry"].read_bytes() == registry_before
+        assert [_path_snapshot(path) for path in protected] == before, name
 
     for round_name in ("candidate", "canonical_main"):
         for attack in ("stale-head", "failed", "missing-gate"):
@@ -4595,6 +4667,45 @@ def _fixture_completion_event(verifier: Any, evidence: dict[str, Any]) -> bytes:
     )
 
 
+@pytest.mark.parametrize("failure", ("existing-output", "missing-parent"))
+def test_harden_seal_closes_earlier_target_when_later_target_is_rejected(
+    tmp_path: Path, failure: str
+) -> None:
+    producer = _restarted_producer_module("seal")
+    evidence_root = tmp_path / "evidence"
+    (evidence_root / "derived").mkdir(parents=True)
+    output = tmp_path / "sealed.json"
+    if failure == "existing-output":
+        output.write_bytes(b"occupied\n")
+    else:
+        output = tmp_path / "missing" / "sealed.json"
+
+    def live_descriptors() -> dict[int, str]:
+        entries = list(Path("/proc/self/fd").iterdir())
+        live: dict[int, str] = {}
+        for entry in entries:
+            try:
+                live[int(entry.name)] = os.readlink(entry)
+            except FileNotFoundError:
+                pass
+        return live
+
+    before = live_descriptors()
+    for _attempt in range(3):
+        with pytest.raises(producer.BuildError):
+            producer.seal(
+                tmp_path / "pre-completion.json",
+                evidence_root,
+                tmp_path / "repo",
+                tmp_path / "events.jsonl",
+                output,
+                tmp_path / "reuse-registry.json",
+                "a" * 64,
+                "b" * 64,
+            )
+    assert live_descriptors() == before
+
+
 def test_harden_seal_rejects_precompletion_and_ledger_drift(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -4835,6 +4946,75 @@ def test_harden_retained_roots_reject_symlink_ancestors(
             verifier.ArtifactStore(linked_root).read(ref, "retained root")
 
 
+def test_harden_artifact_store_rejects_symlink_before_parent_component(
+    tmp_path: Path,
+) -> None:
+    producer = _restarted_producer_module("seal")
+    verifier = producer.V
+    container = tmp_path / "container"
+    root = container / "retained"
+    root.mkdir(parents=True)
+    body = b"retained evidence\n"
+    (root / "artifact.txt").write_bytes(body)
+    selector = tmp_path / "selector"
+    selector.symlink_to(container, target_is_directory=True)
+    raw_root = selector / ".." / container.name / root.name
+    ref = {"path": "artifact.txt", "sha256": verifier.sha256(body)}
+
+    with pytest.raises(verifier.EvidenceError, match="symlink|unavailable"):
+        verifier.ArtifactStore(raw_root).read(ref, "retained root")
+
+
+def test_harden_reader_rejects_ctime_change_when_other_stats_match(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    producer = _restarted_producer_module("seal")
+    verifier = producer.V
+    artifact = tmp_path / "artifact.txt"
+    artifact.write_bytes(b"retained evidence\n")
+    real_fstat = os.fstat
+    observations = 0
+
+    def changed_ctime(descriptor: int) -> Any:
+        nonlocal observations
+        observed = real_fstat(descriptor)
+        observations += 1
+        if observations != 2:
+            return observed
+        return SimpleNamespace(
+            st_dev=observed.st_dev,
+            st_ino=observed.st_ino,
+            st_mode=observed.st_mode,
+            st_size=observed.st_size,
+            st_mtime_ns=observed.st_mtime_ns,
+            st_ctime_ns=observed.st_ctime_ns + 1,
+        )
+
+    monkeypatch.setattr(os, "fstat", changed_ctime)
+    with pytest.raises(verifier.EvidenceError, match="changed during"):
+        verifier.read_path_regular_nofollow(
+            artifact, "retained root", verifier.MAX_ARTIFACT_BYTES
+        )
+
+
+def test_harden_completion_request_binds_parsed_manifest_bytes(
+    tmp_path: Path,
+) -> None:
+    _restarted_producer_module("seal")
+    context = _restorable_raw_fixture(tmp_path / "manifest-binding")()
+    parsed_bytes = context["manifest_path"].read_bytes()
+    replacement = tmp_path / "replacement-manifest"
+    replacement_bytes = b"replacement after parse\n"
+    replacement.write_bytes(replacement_bytes)
+
+    completed = _prepare_command(context, manifest_swap=replacement)
+
+    assert completed.returncode == 0, completed.stderr
+    request = _strict_json(context["request"])
+    assert request["input_manifest_sha256"] == _sha256(parsed_bytes)
+    assert request["input_manifest_sha256"] != _sha256(replacement_bytes)
+
+
 @pytest.mark.parametrize(
     "attack",
     ("fifo", "symlink-fifo", "socket", "device", "oversized", "parent-symlink"),
@@ -4933,3 +5113,211 @@ def test_harden_verifier_bounds_canonical_ledger_reads(
             child.join()
         if held_socket is not None:
             held_socket.close()
+
+
+def _sl4_sibling_sync_fixture(
+    root: Path, *, stale_sibling_sync: bool
+) -> dict[str, str]:
+    root.mkdir(parents=True)
+    _git(root, "init", "-q", "--initial-branch=main")
+    _git(root, "config", "user.email", "sl4-sync@example.invalid")
+    _git(root, "config", "user.name", "SL-4 sibling-sync test")
+    _git(root, "config", "commit.gpgsign", "false")
+    plan = "plans/phase-plan-v10-HARDEN.md"
+    sl0 = "phase-loop-runtime/tests/test_sl0_frozen.py"
+    sl4 = "phase-loop-runtime/tests/test_harden_evidence_producer.py"
+    sl5 = "phase-loop-runtime/scripts/build_harden_evidence.py"
+    plan_body = (
+        "# HARDEN\n\n"
+        f"### SL-0 - tests\n- **Owned files**: `{sl0}`\n\n"
+        f"### SL-4 - supplemental tests\n- **Owned files**: `{sl4}`\n\n"
+        f"### SL-5 - production\n- **Owned files**: `{sl5}`\n"
+    )
+    landing = _commit(
+        root,
+        "baseline",
+        {
+            plan: plan_body,
+            "README.md": "base\n",
+            sl0: "def test_sl0(): pass\n",
+            sl5: "VALUE = 0\n",
+        },
+    )
+
+    def merge(source: str, message: str) -> str:
+        _git(root, "merge", "--no-ff", "-q", "-m", message, source)
+        return _git(root, "rev-parse", "HEAD")
+
+    def reviewed_sl4(branch: str, body: str) -> str:
+        _git(root, "checkout", "-q", "-b", branch, "main")
+        _commit(root, f"test(HARDEN): SL-4 {branch}", {sl4: body})
+        _git(root, "checkout", "-q", "main")
+        return merge(branch, f"Merge reviewed SL-4 {branch}")
+
+    first = reviewed_sl4("sl4-r1", "def test_sl4(): assert 1\n")
+    _git(root, "checkout", "-q", "-b", "sibling", "main")
+    _commit(root, "sibling work", {"docs/sibling.md": "sibling\n"})
+    _git(root, "checkout", "-q", "main")
+    second = reviewed_sl4("sl4-r2", "def test_sl4(): assert 2\n")
+    if stale_sibling_sync:
+        _git(root, "checkout", "-q", "sibling")
+        merge("main", "Merge origin/main into sibling")
+        _git(root, "checkout", "-q", "main")
+    third = reviewed_sl4("sl4-r3", "def test_sl4(): assert 3\n")
+    _git(root, "checkout", "-q", "sibling")
+    merge("main", "Merge origin/main into sibling")
+    _git(root, "checkout", "-q", "main")
+    merge("sibling", "Merge sibling PR")
+    _git(root, "checkout", "-q", "-b", "sl5-candidate", "main")
+    candidate = _commit(
+        root,
+        "fix(HARDEN): SL-5 production",
+        {sl5: "VALUE = 1\n"},
+    )
+    _git(root, "checkout", "-q", "main")
+    revision = merge("sl5-candidate", "Merge SL-5 candidate")
+    assert _git(root, "rev-parse", f"{revision}^{{tree}}") == _git(
+        root, "rev-parse", f"{candidate}^{{tree}}"
+    )
+    reviewed_blobs = {
+        _git(root, "rev-parse", f"{commit_id}:{sl4}")
+        for commit_id in (first, second, third)
+    }
+    for commit_id in _git(root, "rev-list", revision).splitlines():
+        if _git(root, "ls-tree", "--name-only", commit_id, "--", sl4):
+            assert _git(root, "rev-parse", f"{commit_id}:{sl4}") in reviewed_blobs
+    return {"landing": landing, "candidate": candidate, "revision": revision}
+
+
+def test_harden_sl4_boundary_accepts_reviewed_sibling_syncs(tmp_path: Path) -> None:
+    verifier = _restarted_producer_module("seal").V
+    for stale_sibling_sync in (False, True):
+        repo = tmp_path / ("stale-sync" if stale_sibling_sync else "control")
+        refs = _sl4_sibling_sync_fixture(
+            repo, stale_sibling_sync=stale_sibling_sync
+        )
+        fork, _tip = verifier.canonical_candidate_fork(
+            repo, refs["candidate"], refs["revision"]
+        )
+        try:
+            verifier.validate_sl4_boundary(
+                repo,
+                refs["landing"],
+                fork,
+                refs["revision"],
+                candidate=refs["candidate"],
+            )
+        except verifier.EvidenceError as exc:
+            raise AssertionError(
+                f"stale_sibling_sync={stale_sibling_sync}: reviewed-only SL-4 "
+                f"history was refused: {exc}"
+            ) from exc
+
+
+def _sl4_superseded_rollback_fixture(
+    root: Path, *, integration: str
+) -> dict[str, str]:
+    root.mkdir(parents=True)
+    _git(root, "init", "-q", "--initial-branch=main")
+    _git(root, "config", "user.email", "sl4-rollback@example.invalid")
+    _git(root, "config", "user.name", "SL-4 rollback test")
+    _git(root, "config", "commit.gpgsign", "false")
+    plan = "plans/phase-plan-v10-HARDEN.md"
+    sl0 = "phase-loop-runtime/tests/test_sl0_frozen.py"
+    sl4 = "phase-loop-runtime/tests/test_harden_evidence_producer.py"
+    sl5 = "phase-loop-runtime/scripts/build_harden_evidence.py"
+    plan_body = (
+        "# HARDEN\n\n"
+        f"### SL-0 - tests\n- **Owned files**: `{sl0}`\n\n"
+        f"### SL-4 - supplemental tests\n- **Owned files**: `{sl4}`\n\n"
+        f"### SL-5 - production\n- **Owned files**: `{sl5}`\n"
+    )
+    landing = _commit(
+        root,
+        "baseline",
+        {plan: plan_body, sl0: "def test_sl0(): pass\n", sl5: "VALUE = 0\n"},
+    )
+
+    def reviewed_sl4(branch: str, body: str) -> str:
+        _git(root, "checkout", "-q", "-b", branch, "main")
+        _commit(root, f"test(HARDEN): SL-4 {branch}", {sl4: body})
+        _git(root, "checkout", "-q", "main")
+        _git(root, "merge", "--no-ff", "-q", "-m", f"Merge reviewed {branch}", branch)
+        return _git(root, "rev-parse", "HEAD")
+
+    first = reviewed_sl4("sl4-r1", "def test_sl4(): assert 1  # first review\n")
+    _git(root, "checkout", "-q", "-b", "sl5-candidate", "main")
+    candidate = _commit(root, "fix(HARDEN): SL-5 production", {sl5: "VALUE = 1\n"})
+    _git(root, "checkout", "-q", "main")
+    second = reviewed_sl4("sl4-r2", "def test_sl4(): assert 2  # correction\n")
+    if integration == "synced":
+        _git(root, "checkout", "-q", "sl5-candidate")
+        _git(root, "merge", "--no-ff", "-q", "-m", "Sync main", "main")
+        candidate = _git(root, "rev-parse", "HEAD")
+        _git(root, "checkout", "-q", "main")
+        _git(root, "merge", "--no-ff", "-q", "-m", "Merge SL-5", "sl5-candidate")
+        revision = _git(root, "rev-parse", "HEAD")
+    elif integration == "commit-tree":
+        tree = _git(root, "rev-parse", f"{candidate}^{{tree}}")
+        revision = _git(
+            root,
+            "commit-tree",
+            tree,
+            "-p",
+            second,
+            "-p",
+            candidate,
+            "-m",
+            "Merge SL-5",
+        )
+    else:
+        _git(root, "merge", "--no-ff", "-q", "-m", "Merge SL-5", "sl5-candidate")
+        _git(root, "revert", "--no-edit", "-m", "1", second)
+        revision = _git(root, "rev-parse", "HEAD")
+    assert _git(root, "rev-parse", f"{revision}^{{tree}}") == _git(
+        root, "rev-parse", f"{candidate}^{{tree}}"
+    )
+    return {
+        "landing": landing,
+        "first": first,
+        "second": second,
+        "candidate": candidate,
+        "revision": revision,
+        "sl4": sl4,
+    }
+
+
+def _validate_sl4_superseded_rollback(
+    verifier: Any, root: Path, refs: dict[str, str]
+) -> None:
+    fork, _tip = verifier.canonical_candidate_fork(
+        root, refs["candidate"], refs["revision"]
+    )
+    verifier.validate_sl4_boundary(
+        root,
+        refs["landing"],
+        fork,
+        refs["revision"],
+        candidate=refs["candidate"],
+    )
+
+
+@pytest.mark.parametrize("integration", ["commit-tree", "merge-then-revert"])
+def test_harden_sl4_boundary_rejects_superseded_review_rollback(
+    tmp_path: Path, integration: str
+) -> None:
+    verifier = _restarted_producer_module("seal").V
+    control_root = tmp_path / "control"
+    control = _sl4_superseded_rollback_fixture(control_root, integration="synced")
+    _validate_sl4_superseded_rollback(verifier, control_root, control)
+
+    root = tmp_path / integration
+    refs = _sl4_superseded_rollback_fixture(root, integration=integration)
+    final_sl4 = _git(root, "rev-parse", f"{refs['revision']}:{refs['sl4']}")
+    assert final_sl4 == _git(root, "rev-parse", f"{refs['first']}:{refs['sl4']}")
+    assert final_sl4 != _git(root, "rev-parse", f"{refs['second']}:{refs['sl4']}")
+    with pytest.raises(
+        verifier.EvidenceError,
+        match="frozen SL-4 test changed after its reviewed landing",
+    ):
+        _validate_sl4_superseded_rollback(verifier, root, refs)

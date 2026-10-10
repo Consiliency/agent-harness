@@ -69,6 +69,8 @@ class GateAWheelIsolationTest(unittest.TestCase):
                 f"--- stderr ---\n{result.stderr}"
             )
         self.assertIn("Gate A PASSED", result.stdout)
+        # the clean-install falsifier probe ran (agent-harness#1357, #1361)
+        self.assertIn("falsifier imports: ok", result.stdout)
         # both configs must have run: fleet-install (present) and the seam (absent)
         self.assertIn("GATE-A PROBE OK (present)", result.stdout)
         self.assertIn("GATE-A PROBE OK (absent)", result.stdout)

@@ -516,6 +516,22 @@ after network entry and before capability removal, so cancellation ownership
 does not restore the provider's ability to change its firewall. Missing required
 egress remains a DEGRADED leg with the exception detail, never an isolation claim.
 
+## Session names for Claude seats
+
+A Claude panel seat appears in the Claude app's session list as `<repo> · <mode> · [<topic> ·]
+<seat> · <UTC date time>`, for example
+`agent-harness · review · claude-opus-5-5:high:correctness · 10-09 10:42Z`. The seat part is the
+board's seat key without its leading harness segment, so two Claude seats that differ only in
+their lens get different names. The label is at most 80 characters and always ends with the time;
+when it does not fit, the topic gives way first, then the repo, then the seat part. Without a
+name, Claude titles a seat by summarising its first message, which is the whole review prompt.
+- **Where:** the jailed seat and the non-brokered seat. The sealed seat (and so the president) is
+  not renamed: the HARDEN evidence verifier holds its argv token-for-token.
+- **Topic:** set `PHASE_LOOP_SEAT_TOPIC` to add a short topic. It is never read from the review
+  material, because the label is visible in the process list on a shared host.
+- **Off switch:** `PHASE_LOOP_SEAT_SESSION_NAMES=0`.
+- **Evidence:** the retained argv shape records `--name <CLAUDE_SESSION_NAME>`, never the label.
+
 ## Jailed review seats (agent-harness#1132)
 
 A brokered Claude seat can run with its full tool set inside a per-seat jail, reading the
@@ -586,6 +602,13 @@ same modes are written to `seat-modes.json` in the stream directory.
 `usermod --add-subuids <start>-<end> --add-subgids <start>-<end> <operator>` (65536 ids is
 conventional). The runtime never runs these. Without them the seat stays sealed with
 `seat_sandbox_unavailable_seat_uid`. The host must also have `dev.tty.legacy_tiocsti = 0`.
+
+The runtime's own environment must also contain `pytest`: qualification runs a real falsifier run
+whose wrapper imports it (agent-harness#1357). Releases after 0.7.25 depend on it, and on the
+backports it needs when `/usr/bin/python3` is older than 3.11 (`exceptiongroup`, `tomli`,
+`typing-extensions`), so a normal install has them. Without it, qualification fails with the typed reason `prerequisite_missing` and
+the exact install command, and `phase-loop doctor` shows `seat_jail_prerequisites[]` with
+`status: missing` and the same command in `fix`.
 
 **Ubuntu 24.04+ and 26.04: the AppArmor override (agent-harness#1276).** Ubuntu's
 `bwrap-userns-restrict` profile runs every child of `/usr/bin/bwrap` as
