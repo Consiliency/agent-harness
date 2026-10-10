@@ -309,7 +309,8 @@ def test_the_real_sleep_starts_no_process_and_takes_no_lock(host, processes, mon
     The process spy sees the two renewals and nothing in between; while the launch sleeps,
     neither the renewal lock nor the quiescence latch's launch lock is held.
 
-    Mutation: run a renewal from inside the sleep."""
+    Mutations: run a renewal from inside the sleep; hold either lock across it; report a
+    sleep that ran out as a renewal."""
     _login(host.home, 1.2)
     host.plan(margin=0)
     monkeypatch.setattr(pi, "_GEMINI_LOGIN_WAIT_MARGIN_S", 0.3)
@@ -321,10 +322,13 @@ def test_the_real_sleep_starts_no_process_and_takes_no_lock(host, processes, mon
     sleeping = threading.Event()
     real_sleep = pi._gemini_login_sleep_until
 
+    ended = []
+
     def sleep(home, need, **kwargs):
         sleeping.set()
         try:
-            return real_sleep(home, need, **kwargs)
+            ended.append(real_sleep(home, need, **kwargs))
+            return ended[-1]
         finally:
             sleeping.clear()
 
@@ -343,7 +347,7 @@ def test_the_real_sleep_starts_no_process_and_takes_no_lock(host, processes, mon
     assert len(host.calls()) == 2 and _left(host) > 3500
     assert [argv[1:] for argv in processes] == [["models"], ["models"]]
     assert len(during) >= 3 and set(during) == {(1, False, True)}
-    assert latch.is_quiescent()
+    assert ended == ["expired"] and latch.is_quiescent()     # it ran out; nothing renewed it
 
 
 @pytest.mark.parametrize("left,runs,deadline_s", [(605, 0, 1), (595, 1, 600)])
