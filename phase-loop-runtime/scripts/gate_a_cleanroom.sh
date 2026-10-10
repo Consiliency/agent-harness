@@ -175,6 +175,18 @@ PLAN
   git -C "$rd" commit -qm "gate-a fixture"
 }
 
+# --- Falsifier imports (agent-harness#1357) -----------------------------------
+# The seat jail's qualification runs a real falsifier run whose wrapper imports pytest, and the
+# run copies its dependencies from the runtime's own environment. Prove, in the venv made from the
+# wheel and its declared dependencies ALONE (the full-suite step below installs pytest itself, which
+# is what hid a missing runtime dependency), that those imports resolve and the snapshot stages them.
+echo "-- falsifier imports resolve from the wheel alone --"
+env -i \
+  HOME="$CLEAN_HOME" \
+  PATH="$VENV/bin:/usr/bin:/bin:/usr/sbin:/sbin" \
+  PYTHONNOUSERSITE=1 \
+  "$PY" "$PKG_ROOT/scripts/_gate_a_falsifier_probe.py"
+
 run_probe() {  # $1=rundir  $2=expect(present|absent)
   # Hard clean-room env: empty HOME (stale ~/.local cannot leak), PYTHONNOUSERSITE,
   # PATH/PYTHONPATH cleared, cwd outside dotfiles. PHASE_LOOP_PROFILE_PLUGINS is
@@ -257,6 +269,8 @@ PYEOF
       /plans/phase-plan-v10-PROOFGATE.md \
       /skills-src/codex/codex-execute-phase/ \
       /skills-src/claude/claude-plan-phase/scripts/validate_plan_doc.py \
+      '/skills-src/*/*-skill-improvement-planner/' \
+      '/skills-src/*/*-skill-editor/' \
       /phase-loop-runtime/scripts/verify_harden_evidence.py \
       /phase-loop-runtime/scripts/qualify_gemini_heartbeat.py \
       /.agent-harness/advisor-boards.toml \
