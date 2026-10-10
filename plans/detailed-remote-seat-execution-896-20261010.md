@@ -183,6 +183,11 @@ real values, it must fail to:
 - read a key in the account's user keyring;
 - find any inherited descriptor beyond the declared set.
 
+**CLI qualification.** The per-host CLI qualification of agent-harness#1333 is inert on
+main. When it becomes active it must run on the host whose CLI the seat uses; until then
+`READY` reports each placed CLI's path, digest and version as claims, and the launching
+host's own CLI says nothing about the compute host's.
+
 **Where trust rests, stated plainly.** The review text is produced on the compute host. Its
 operator, and root there, can read the tree, the token in memory and the output, and can
 also write: a forged result passes every rule here. With one account the same holds for
@@ -233,7 +238,7 @@ B6; the claims are unsigned (Q3 of P1).
 ### `phase-loop-runtime/src/phase_loop_runtime/seat_preflight.py`, `seat_jail.py`, `cli.py` (modify)
 - `SEAT_MODES` — modify — add `remote`, unless agent-harness#1244's PR-A1 landed first and
   added it; `SeatMode` — modify — a `placement` field.
-- `NOTICES` — modify — rows for the four codes above.
+- `NOTICES` — modify — a row for each code added above.
 - `placement qualify <name> --seat claude` — add — one minimal real seat through the whole
   placed path with the operator's own login. It records the vendor's response and scans
   the real seat home, output and tree on the compute host for the token's value before

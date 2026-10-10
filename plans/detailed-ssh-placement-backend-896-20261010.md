@@ -152,7 +152,8 @@ row with a fix line):
   under one bounded file system); caps on concurrent sandboxes overall and per principal;
   the free-space floor; maxima for the stage, a frame, a request and a result; the lease
   time; the bound on host qualification; the arrival rule; the list of local sockets the
-  account is allowed to reach (default none).
+  account is allowed to reach (default none). It refuses a workspace that lies under a
+  directory a seat's view binds whole, and a second, small cap bounds control sessions.
 - **Arrival rule.** The entry point refuses a session whose server-side address is
   globally routable, and refuses when the port it arrived on is also listening on a
   globally routable address of the host. It reports both addresses of the session. A
@@ -206,7 +207,8 @@ ids**:
 
 Checked **from inside a network namespace built exactly as a seat's is, with an empty
 private allowlist**: a TCP connection to every listening port on every address of the host
-fails, and removing the host-address rule makes one succeed.
+fails, and removing the host-address rule makes one succeed. The probes are TCP; UDP
+services are not probed, and the report says so.
 
 Also reported: `seat_jail_prerequisites.check`; the login shell; whether the home is
 writable; whether any client environment arrived; the user-namespace restriction of newer
@@ -297,7 +299,7 @@ were written for the HTTPS service and stay attached to it. For this backend, as
   plain POSIX login shell; a root-owned home with only named state directories writable;
   an SSH server instance for this account only, with a forced command per key and no
   server-wide forced command, no forwarding, no terminal, no client environment and no
-  subsystem; one source-pinned key per user; the configuration file; the workspace on a
+  subsystem, and which exposes the session's addresses to the forced command; one source-pinned key per user; the configuration file; the workspace on a
   file system of its own; resource limits including a zero swap limit; an output filter
   for the account's ids built from the account database; closing local daemon sockets;
   denying scheduled jobs for the account; installing the runtime per version;

@@ -205,8 +205,9 @@ final; backend receipts never make `sandbox_root_applied` true.
 
   A code that has a `NOTICES` row is added to the leg's seat notices, so the operator sees
   its fix line. While a seat waits at the cap the monitor record carries `placement_wait`,
-  the notice `seat_placement_waiting` is shown, and the stall clock does not run; for a
-  bounded leg the wait is charged to its deadline, as the login wait is.
+  the notice `seat_placement_waiting` is shown, and the stall clock does not run. A leg's
+  stall clock starts when `execute` returns: admission, the wait and the transfer are not
+  silence. For a bounded leg all three are charged to its deadline, as the login wait is.
 - **C8 A candidate that is abandoned is released.** When the walk leaves a candidate after
   `admit` succeeded (a failed lease write, a failed `commit`, a cancel), it calls `release`
   on it, within a bound, before trying the next.
