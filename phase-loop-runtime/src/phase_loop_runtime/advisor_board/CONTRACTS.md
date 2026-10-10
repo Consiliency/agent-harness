@@ -46,7 +46,7 @@ equivalence is proven by a test (not asserted in prose).
   that vendor's CLI lane, and the Anthropic seat on any host other than Claude Code runs
   through the subscription CLI adapter (`_run_claude_print_session` by default,
   `_run_claude_tui_session` when `PHASE_LOOP_PANEL_CLAUDE_ROUTE=tui`; amended 2026-10-08,
-  see the EC-REVIEWTRUTH-16 amendment note in `specs/phase-plans-v10.md`). Routing keys on the vendor's harness-nativeness, never on
+  see the 2026-10-08 `claude -p` ruling (`plans/decision-claude-print-subscription-route-20261008.md`, agent-harness#1391)). Routing keys on the vendor's harness-nativeness, never on
   model tier. Implemented today only for the Claude Code → Anthropic cell
   (`under_claude_code` + `NativeAgentLegRequest`, the emit → fill → invoke protocol);
   no production caller constructs a `HostContext` yet, so the host leg above is
@@ -87,13 +87,12 @@ equivalence is proven by a test (not asserted in prose).
   then injects **only the seat vendor's** key(s). Never silent — an api-key seat
   without the opt-in raises.
 - **Claude Fable/Opus = subscription CLI adapter only (print default, TUI fallback)**
-  (amended 2026-10-08 from "subscription TUI only"; see the EC-REVIEWTRUTH-16 amendment
-  note in `specs/phase-plans-v10.md`) — the shared scrub additionally
+  (amended 2026-10-08 from "subscription TUI only"; see the 2026-10-08 `claude -p` ruling (`plans/decision-claude-print-subscription-route-20261008.md`, agent-harness#1391)) — the shared scrub additionally
   removes Anthropic tokens, alternate base URLs, credential-helper inputs, and
   Bedrock/Vertex/Foundry/Mantle/AWS-provider selectors. Run-isolated settings
   disable `apiKeyHelper`; `claude auth status --json` must prove first-party
   `claude.ai` subscription auth before the exact-model launch: the print route
-  (`_run_claude_print_session`, `claude -p --output-format stream-json`, never `--bare`)
+  (`_run_claude_print_session`, `claude -p --output-format stream-json --no-session-persistence`, never `--bare`)
   additionally asserts `system/init.apiKeySource == "none"` in-band and fails as
   `claude_print_subscription_unproven` / `claude_print_auth_drift` / `claude_print_stalled`;
   the self-PTY route is the `PHASE_LOOP_PANEL_CLAUDE_ROUTE=tui` fallback, and any other route

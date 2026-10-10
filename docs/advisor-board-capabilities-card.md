@@ -134,9 +134,9 @@ can't even be constructed holding an api-key seat without opting in.
 **Claude execution is subscription-CLI-only (amended 2026-10-08; formerly TUI-only).** Fable and Opus require the homebrew backing and
 run through the subscription-proven Claude CLI adapter with the exact requested model:
 `PHASE_LOOP_PANEL_CLAUDE_ROUTE` selects `print` (the default: `claude -p --output-format stream-json`,
-never `--bare`, launched only after a `claude auth status` preflight, with an env-scrubbed launch and
+never `--bare`, with `--no-session-persistence`, launched only after a `claude auth status` preflight, with an env-scrubbed launch and
 `system/init.apiKeySource == "none"` asserted in-band) or `tui` (the existing Claude Code self-PTY
-adapter, now an opt-in fallback). See the EC-REVIEWTRUTH-16 amendment note in `specs/phase-plans-v10.md`.
+adapter, now an opt-in fallback). See the 2026-10-08 `claude -p` ruling (`plans/decision-claude-print-subscription-route-20261008.md`, agent-harness#1391).
 An alternate backing reports `tui_backing_required` before gateway access. No API, SDK, Messages, direct
 HTTP path may fulfill those seats. Under Claude Code the seat defers as
 `under_claude_code` with a native-fill request the driving session fills natively
@@ -155,7 +155,7 @@ independent defensive-security attestation, then fails closed.
 **Seat routing keys on the vendor's harness-nativeness, never on model tier** (maintainer
 rule; agent-harness#396 / #525 / #924). A harness fills the seat of its OWN vendor with its
 native subagent; every other seat runs through that vendor's CLI lane, and the Anthropic seat
-on any host other than Claude Code through the subscription TUI adapter. No cell admits an API key, SDK,
+on any host other than Claude Code through the subscription TUI adapter (amended 2026-10-08, agent-harness#1391: read as the subscription-proven Claude CLI adapter, print by default with the TUI as the opt-in fallback; the "TUI adapter" cells below mean the same). No cell admits an API key, SDK,
 direct HTTP call, gateway backing or alternate endpoint; a native fill counts only once its
 verdict is bound.
 

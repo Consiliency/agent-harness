@@ -1,5 +1,11 @@
 # Detailed plan: amend the frozen "never `claude -p`" premise for Claude panel seats (Stage 1a)
 
+> **Superseded approach (2026-10-09, agent-harness#1391).** The parts of this plan that edit
+> `specs/phase-plans-v10.md` and reseal it were replaced by a standalone ruling record,
+> `plans/decision-claude-print-subscription-route-20261008.md`, because v11
+> (agent-harness#1394) freezes v10. The non-v10 changes below were applied and point to that
+> record.
+
 ## Task
 Stage 1a of the owner-approved graduated Claude route (TUI → `claude -p` → transport seam →
 Agent SDK), chosen by the maintainer on 2026-10-08. It is the governance prerequisite for Stage 1b
