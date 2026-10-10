@@ -516,6 +516,22 @@ after network entry and before capability removal, so cancellation ownership
 does not restore the provider's ability to change its firewall. Missing required
 egress remains a DEGRADED leg with the exception detail, never an isolation claim.
 
+## Session names for Claude seats
+
+A Claude panel seat appears in the Claude app's session list as `<repo> · <mode> · [<topic> ·]
+<seat> · <UTC date time>`, for example
+`agent-harness · review · claude-opus-5-5:high:correctness · 10-09 10:42Z`. The seat part is the
+board's seat key without its leading harness segment, so two Claude seats that differ only in
+their lens get different names. The label is at most 80 characters and always ends with the time;
+when it does not fit, the topic gives way first, then the repo, then the seat part. Without a
+name, Claude titles a seat by summarising its first message, which is the whole review prompt.
+- **Where:** the jailed seat and the non-brokered seat. The sealed seat (and so the president) is
+  not renamed: the HARDEN evidence verifier holds its argv token-for-token.
+- **Topic:** set `PHASE_LOOP_SEAT_TOPIC` to add a short topic. It is never read from the review
+  material, because the label is visible in the process list on a shared host.
+- **Off switch:** `PHASE_LOOP_SEAT_SESSION_NAMES=0`.
+- **Evidence:** the retained argv shape records `--name <CLAUDE_SESSION_NAME>`, never the label.
+
 ## Jailed review seats (agent-harness#1132)
 
 A brokered Claude seat can run with its full tool set inside a per-seat jail, reading the
