@@ -272,8 +272,7 @@ is final; backend receipts never make `sandbox_root_applied` true.
     whichever is less. Two exceptions: `commit` has no bound of its own, only what is left
     of the budget; and a release keeps the answer bound whatever the budget says, so that
     a rung can always be left. The walk therefore ends within the budget plus one answer
-    bound. **Whenever the budget and any other bound end at the same moment, in any state,
-    the event that happened is `budget_spent`**, and the code recorded is the budget's.
+    bound.
   - **The lifetime arithmetic is the driver's.** `lifetime_sufficient(remaining_s,
     floor_s)`, used once by the preflight, is true when `remaining_s` is at least the
     floor plus the **whole** budget. `lifetime_at_floor(remaining_s, floor_s)` is the
@@ -283,9 +282,7 @@ is final; backend receipts never make `sandbox_root_applied` true.
   - **Code the walk did not write.** A failure of each is an event of the table, never an
     exception that leaves the walk half done. `preflight` runs before the walk.
     `open_lease` and `request_for` raising is `prepare_fail`. `seal` gives `seal_ok`,
-    `seal_fail`, `seal_raises` or `seal_no_return`: it is handed the same
-    `OperationBound` a backend call gets, and the driver gives up on it at the bound in
-    the same way (C4), whether or not it honours it. `cancelled` is the `cancel` event: it
+    `seal_fail`, `seal_raises` or `seal_no_return`. `cancelled` is the `cancel` event: it
     is checked between steps and passed to every bounded call. A backend's methods are
     the rows for `admit`, `commit` and the release. **`execute` is not an event of the
     walk**: the walk ends when it calls `execute`, and whatever `execute` then does, a
@@ -541,10 +538,8 @@ contract.
   route's own rules apply there, re-read at launch, after a walk that may have taken the
   whole budget and one answer bound more: a login that would have been long enough at the
   start may no longer be. A seat whose local route is the sealed one is not run.
-- **A backend that cannot fence, and whose late-arrival time is longer than the answer
-  bound, shows every release before `execute` as unconfirmed** (C6): the release ends
-  before a listing can count. The entry is cleared by a later reaper. The cloud backend
-  is expected to be one.
+- **A backend that cannot fence shows every release before `execute` as unconfirmed**
+  until its late-arrival time has passed (C6). The cloud backend is expected to be one.
 - **Boards run from a source checkout** (the usual way boards run in this repository) are
   never the build a compute host has installed. The SSH follow-on plan should make that a
   preflight failure, so those boards go straight to the last rung without a round trip.
