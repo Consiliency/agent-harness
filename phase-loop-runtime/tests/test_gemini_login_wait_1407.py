@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import subprocess
 import threading
 import time
@@ -217,9 +218,11 @@ def test_a_seat_in_the_window_agy_cannot_renew_waits_and_then_launches(host, mon
         _run_leg(host, monkeypatch, tmp_path)
     assert len(host.calls()) == 3 and _left(host) > 3500
     waiting, = [r.getMessage() for r in caplog.records if "gemini_credential_awaiting_refresh" in r.getMessage()]
-    # What is happening, when it clears, and that there is nothing to run.
-    assert "has 4" in waiting and "s left" in waiting and "under the 600 s a seat needs" in waiting
-    assert "clears by itself by" in waiting and "UTC" in waiting and "nothing to run" in waiting
+    # The notice's own literals (what is happening, what to run), then when it clears.
+    _what, why, fix = seat_jail.NOTICES["gemini_credential_awaiting_refresh"]
+    assert why in waiting and waiting.endswith(fix)
+    assert re.search(r"\(4[0-9]{2} s left; waiting up to [0-9]+ s, renewing every [0-9]+ s; it "
+                     r"clears by [0-9]{2}:[0-9]{2}:[0-9]{2} UTC at the latest\)", waiting)
     assert any("was renewed after" in r.getMessage() for r in caplog.records)
 
 
@@ -279,7 +282,8 @@ def test_an_expired_login_agy_does_not_renew_is_refused_without_waiting(host, mo
     Mutation: drop the ``left <= 0`` return from ``_await_gemini_login``."""
     _login(host.home, -10, refresh_token=False)        # nothing to renew it with
     waits = []
-    monkeypatch.setattr(pi, "_gemini_login_wait", lambda *a, **k: waits.append(k) or (False, 0.0))
+    monkeypatch.setattr(pi, "_gemini_login_wait", lambda *a, **k: waits.append(k) or (False, 0.0),
+                        raising=False)
     with pytest.raises(sandbox_egress.SeatIdentityUnverified, match="gemini_credential_near_expiry"):
         _run_leg(host, monkeypatch, tmp_path)
     assert waits == []
@@ -290,7 +294,8 @@ def test_a_renewal_run_that_fails_refuses_without_waiting(host, monkeypatch, tmp
     _login(host.home, 450)
     host.plan(exit=1)
     waits = []
-    monkeypatch.setattr(pi, "_gemini_login_wait", lambda *a, **k: waits.append(k) or (False, 0.0))
+    monkeypatch.setattr(pi, "_gemini_login_wait", lambda *a, **k: waits.append(k) or (False, 0.0),
+                        raising=False)
     with pytest.raises(sandbox_egress.SeatIdentityUnverified, match="gemini_credential_near_expiry"):
         _run_leg(host, monkeypatch, tmp_path)
     assert waits == []
@@ -568,7 +573,8 @@ def test_the_help_measurement_neither_waits_nor_needs_a_fresh_login(host, heartb
 
     Mutation: make ``_gemini_launch_needs_login`` return True for ``--help``."""
     _login(host.home, 450)
-    monkeypatch.setattr(pi, "_gemini_login_wait", lambda *a, **k: pytest.fail("help waited"))
+    monkeypatch.setattr(pi, "_gemini_login_wait", lambda *a, **k: pytest.fail("help waited"),
+                        raising=False)
     with pytest.raises(_LaunchReached) as reached:
         _run_heartbeat(host, heartbeat, monkeypatch, tmp_path, ["--help"])
     assert reached.value.args[0][1:] == ["--help"] and host.calls() == []
@@ -618,9 +624,10 @@ def test_other_providers_and_an_unreadable_login_are_left_to_the_launch(host, mo
 
 def test_the_notices_say_what_happens_when_it_clears_and_the_command():
     what, why, fix = seat_jail.NOTICES["gemini_credential_near_expiry"]
-    assert what == "leg refused" and "under 10 minutes" in why and "last 5 minutes" in why
-    assert "re-run in 5 minutes" in fix
-    assert "`DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null agy`" in fix
+    assert what == "leg refused" and "under 10 minutes" in why and "`agy models`" in why
+    # ONE command, the renewal's own, and when it takes effect.
+    assert fix.startswith("run `DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null agy models`, then re-run")
+    assert "last 5 minutes" in fix and "sign in" in fix
     what, why, fix = seat_jail.NOTICES["gemini_credential_awaiting_refresh"]
     assert what == "waiting" and "last 5 minutes" in why and "clears by itself within 5 minutes" in fix
     assert pi._GEMINI_LOGIN_AWAITING in seat_jail.NOTICE_CODES

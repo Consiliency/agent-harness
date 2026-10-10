@@ -1368,14 +1368,17 @@ instead, and the jail is that launch's owner.
     earlier (measured on agy 1.2.11, 1.3.1 and 1.3.3). A seat launched with less than
     630 s re-runs the renewal every `PHASE_LOOP_SEAT_LOGIN_REFRESH_POLL_S` (30 s) until the
     login is fresh, for at most the login's remaining life plus 45 s and
-    `PHASE_LOOP_SEAT_LOGIN_REFRESH_WAIT_S` (0 means no wait). It logs
-    `gemini_credential_awaiting_refresh` with the seconds left and the time it clears by.
-    No agy constant is relied on, only that agy renews by expiry.
+    `PHASE_LOOP_SEAT_LOGIN_REFRESH_WAIT_S` (0 means no wait). It logs the
+    `gemini_credential_awaiting_refresh` notice with the seconds left and the time it clears
+    by. No agy constant is relied on, only that agy renews by expiry. The 30 s above the
+    gate is deliberate: a login that clears the wait cannot fall under the gate before the
+    launch reaches it, and a seat launched with 600-630 s had about ten minutes of run.
   - **Where:** just before the launch gate, outside the quiescence latch's launch lock, on
     every route that reaches the gate (the board seat, the qualification's seat, the
     president's Gemini rung, executor `review`). The gate itself is unchanged and is the
     only place that refuses. A failing `agy models`, or an expired login it did not renew,
-    is refused at once.
+    is refused at once. The refusal's fix line is the renewal's own command,
+    `DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null agy models`.
   - **Monitoring and cancellation:** as the Claude login wait. Under `heartbeat_only` it is
     recorded as `login_wait` and the stall clock starts after it; under a bounded policy it
     is bounded by and charged to the leg's deadline; the board's cancel and the quiescence

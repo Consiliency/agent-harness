@@ -16,7 +16,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   (`PHASE_LOOP_SEAT_LOGIN_REFRESH_POLL_S`) until the login is fresh, for at most the login's
   remaining life plus 45 s (`PHASE_LOOP_SEAT_LOGIN_REFRESH_WAIT_S=0` turns the wait off). It
   then starts with a full hour. The log line `gemini_credential_awaiting_refresh` gives the
-  seconds left and the time it clears by. The board's cancel ends the wait at once.
+  seconds left and the time it clears by. The board's cancel ends the wait at once. A login
+  with 600 to 630 s left, which used to launch at once with about ten minutes of run, now
+  waits for its renewal too.
 - **The keyring.** On a host whose OS keyring agy can reach, the renewal refreshed the
   keyring's copy of the login and left agy's login file expired. The runtime reads the file,
   so the seat was refused whatever the time, until someone ran `agy` over SSH. The renewal
@@ -27,7 +29,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - Nothing about what a seat is given changes: the same access-only copy, the same launch
   gate, the same refusals. A login that stays short, an expired login agy does not renew, and
   a failing `agy models` are refused as before. The `gemini_credential_near_expiry` notice
-  now names the fix.
+  now names the one command that renews the login file,
+  `DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null agy models`.
 - Known limit, unchanged: a seat cannot renew its copy of the login, so a Gemini seat that
   runs past its login's expiry (10 minutes at the least, about an hour after a renewal)
   fails in the run.

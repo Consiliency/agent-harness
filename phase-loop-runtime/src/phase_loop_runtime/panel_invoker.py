@@ -4789,7 +4789,9 @@ _GEMINI_LOGIN_AWAITING = "gemini_credential_awaiting_refresh"
 #: and raises each of these itself, typed; the wait only ever waits.
 _GEMINI_LOGIN_REFUSALS = (RuntimeError, ValueError, OSError)
 #: The wait asks for this much more than the launch gate, so a login that clears the wait
-#: cannot slip under the gate in the moments before the launch reaches it.
+#: cannot slip under the gate in the moments before the launch reaches it. Deliberate
+#: consequence: a login with 600-630 s left, which used to launch at once, now waits for its
+#: renewal. Such a seat had about ten minutes before its session failed; it now gets an hour.
 _GEMINI_LOGIN_WAIT_MARGIN_S = 30.0
 #: How long past the login's own expiry the wait keeps trying. agy renews an expired login on
 #: its next start, so one that is still short after this is not going to be renewed by waiting.
@@ -4862,12 +4864,13 @@ def _await_gemini_login(command, env, *, gemini_profile=None, review_monitor=Non
             return 0.0
         poll = _seat_credentials.login_refresh_poll_s()
         log = logging.getLogger(__name__)
+        _what, why, fix = _seat_jail.NOTICES[_GEMINI_LOGIN_AWAITING]
+        # The notice's own literals, then this wait's numbers: what, until when, what to run.
         log.warning(
-            "seat gemini [%s]: the agy login has %d s left, under the %d s a seat needs, and "
-            "agy renews a login only in its last minutes; waiting up to %d s, re-running the "
-            "renewal every %d s. It clears by itself by %s UTC; nothing to run",
-            _GEMINI_LOGIN_AWAITING, int(left), int(_GEMINI_LOGIN_MIN_S), int(max_wait), int(poll),
-            (datetime.now(timezone.utc) + timedelta(seconds=left)).strftime("%H:%M:%S"))
+            "seat gemini [%s]: %s (%d s left; waiting up to %d s, renewing every %d s; it "
+            "clears by %s UTC at the latest) -- %s",
+            _GEMINI_LOGIN_AWAITING, why, int(left), int(max_wait), int(poll),
+            (datetime.now(timezone.utc) + timedelta(seconds=left)).strftime("%H:%M:%S"), fix)
         cancel = (review_monitor.cancel if review_monitor is not None
                   else _BOARD_CANCEL.get() or threading.Event())
 

@@ -301,11 +301,11 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "run the review through the CLI executor route"),
     "gemini_credential_near_expiry": (
         "leg refused",
-        "the agy login file has under 10 minutes left and agy did not renew it (agy renews a "
-        "login only in its last 5 minutes); the seat does not run",
-        "re-run in 5 minutes; if it is refused again, sign in with "
-        "`DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null agy` (that stores the login in agy's "
-        "file, which the seat reads, not in a desktop keyring)"),
+        "the agy login file has under 10 minutes left and the renewal (`agy models`) did not "
+        "extend it; the seat does not run",
+        "run `DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null agy models`, then re-run: it renews "
+        "agy's login file (the store the seat reads, not a desktop keyring) once the login is "
+        "in its last 5 minutes; if agy asks you to sign in, run it again without `models`"),
     "gemini_credential_awaiting_refresh": (
         "waiting",
         "the agy login has under 10 minutes left and agy renews a login only in its last 5 "
