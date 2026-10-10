@@ -67,17 +67,14 @@ REVIEW = "Review complete\nAGREE"
 
 def _seat(records: list[dict], *, write_output: str | None = None,
           lifetime_s: float | None = None, newline_after_s: float | None = 0,
-          retry_only: bool = False, churn: bool = False) -> list[str]:
+          retry_only: bool = False) -> list[str]:
     """A fake Claude TUI on the owned route: optionally writes its canonical output (in
     place, as the precreated file allows on every runtime), journals ``records``, then idles
     at its prompt, alive and silent, as the real TUI does after its turn.
 
     ``newline_after_s``: the journal's last newline is written that long after the rest
     (``None``: never) -- a record still being appended. ``retry_only``: the output is written
-    only on the leg's retry (a cwd named ``claude-retry-*``). ``churn``: after its turn the
-    seat keeps appending a new sidechain record every 20 ms."""
-    side = {"type": "assistant", "isSidechain": True,
-            "message": {"id": "side", "role": "assistant", "stop_reason": None, "content": []}}
+    only on the leg's retry (a cwd named ``claude-retry-*``)."""
     body = "".join(json.dumps(record) + "\n" for record in records)
     write = (f"Path('panel-claude.txt').write_text({write_output!r})\n" if write_output else "")
     if retry_only:
@@ -93,13 +90,9 @@ def _seat(records: list[dict], *, write_output: str | None = None,
            "with _journal.open('a') as handle: handle.write('\\n')\n") +
         f"_end = None if {lifetime_s!r} is None else time.monotonic() + {lifetime_s!r}\n"
         "i = 0\n"
-        "import json\n"
         "while _end is None or time.monotonic() < _end:\n"
         "    sys.stdout.write('\\r* Idle... (%ds)' % i); sys.stdout.flush()\n"
-        + ("    with _journal.open('a') as handle:\n"
-           f"        handle.write(json.dumps(dict({side!r}, uuid='side-%d' % i)) + '\\n')\n"
-           "    i += 1; time.sleep(.02)\n" if churn else
-           "    i += 1; time.sleep(.05)\n")
+        "    i += 1; time.sleep(.05)\n"
     )
     return ["/usr/bin/python3", "-c", script]
 
@@ -337,14 +330,25 @@ def test_the_refusal_decides_on_an_output_read_taken_after_the_journal_read(tmp_
 
 @pytest.mark.usefixtures("owned_review_network")
 def test_records_that_do_not_change_the_answer_do_not_defer_the_refusal(tmp_path, monkeypatch):
-    """After its final answer the seat keeps appending new sidechain records, a new record
-    version every 20 ms. The answer does not change, so the second sighting still comes and
-    the leg is refused; counting record versions would have kept it waiting for good."""
+    """After its final answer the journal keeps gaining new sidechain records: scripted
+    exactly, one more record version on EVERY read the host takes. The answer does not
+    change, so the second sighting still comes and the leg is refused; counting record
+    versions would keep it waiting for good."""
+    ended = "".join(json.dumps(record) + "\n" for record in (REQUEST, _answer("a", "m", REVIEW)))
+    side = {"type": "assistant", "isSidechain": True,
+            "message": {"id": "side", "role": "assistant", "stop_reason": None, "content": []}}
+    reads = []
+
+    def journal(self):
+        reads.append(1)
+        return (ended + "".join(json.dumps(dict(side, uuid=f"side-{index}")) + "\n"
+                                for index in range(len(reads)))).encode()
+
+    monkeypatch.setattr(panel._SeatClaudeJournal, "read", journal)
     rc, text, log, elapsed, _monitor = _run(
-        tmp_path, monkeypatch, _seat([REQUEST, _answer("a", "m", REVIEW)], churn=True),
-        heartbeat_only=True)
+        tmp_path, monkeypatch, _seat([REQUEST]), heartbeat_only=True)
     assert (log, text) == (CODE, "") and rc != 0
-    assert elapsed < 10
+    assert elapsed < 10 and len(reads) >= 2
 
 
 @pytest.mark.usefixtures("owned_review_network")
