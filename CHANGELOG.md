@@ -38,6 +38,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   caller's own brief must already ask for the format. The default (`None`) is byte for byte the
   previous behaviour, and `_default_spawn`'s call signature is unchanged.
 
+### The grok board seat finds its staged review tree (agent-harness#1336; PR agent-harness#1438)
+
+- In 0.7.25 and 0.7.26 a sandboxed board's grok seat failed at launch (`grok: Failed to
+  resolve --cwd`). The seat starts in its empty output directory, and the staged tree it
+  names with `--cwd` was not in its view. The tree is now bound into the view, read only,
+  like the tree a codex seat names with `--cd`.
+- Known limit: the tree is read only inside the seat. A grok turn that tries to write can end
+  with an empty body, which the board records as an empty leg and never as a verdict
+  (agent-harness#1091).
+
 ### CLI qualification contract for every seat harness, inert (agent-harness#1333 PR2)
 
 - New `phase_loop_runtime.cli_qualification`. It is the harness-agnostic per-host CLI
@@ -109,6 +119,24 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   which any local user can read on a shared host, and an advisory board's material can be
   sensitive. A topic appears only when the operator sets `PHASE_LOOP_SEAT_TOPIC`. Set
   `PHASE_LOOP_SEAT_SESSION_NAMES=0` to turn naming off.
+
+### Interactive execute-phase publication mode (agent-harness#1392)
+
+- The interactive execute-phase path now has a publication control, like the runner's
+  `--closeout-mode`. The values are `none` (no push, no PR), `draft-only` (push and open a
+  draft PR that is never flipped to ready) and `ready`. `ready` is the default, so behaviour
+  is unchanged unless a repo or user opts out.
+- A repo declares it in a committed root `.phase-loop-publication.toml`
+  (`[interactive] mode = "none"`). Only the copy at `HEAD` counts; an untracked, ignored,
+  staged or modified copy is an error. A user can set it in
+  `$XDG_CONFIG_HOME/agent-harness/publication.toml`. The most restrictive setting wins, and a
+  malformed setting is an error, never a silent default.
+- New `phase-loop publication-mode --repo .` prints the resolved mode and one
+  `PUBLICATION_ACTION:` line. The execute-phase skills (claude, codex, gemini, opencode) run
+  it before the first push or `gh pr create` and before closeout publication, and do what it
+  says. A non-zero exit means publish nothing.
+- `docs/branch-and-publication-flow.md` replaces its "Known gap" section with the control, and
+  notes that the inner `phase-loop execute` leg keeps the `manual` closeout default.
 
 ## [0.7.26] - 2026-10-09
 

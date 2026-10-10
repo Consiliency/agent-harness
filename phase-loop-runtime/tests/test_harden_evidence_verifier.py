@@ -417,6 +417,158 @@ def test_claude_typed_request_transport_binding_preserves_legacy_and_rejects_dri
         verify(stripped)
 
 
+def _claude_seat_verify(tmp_path):
+    """The fixture's retained Claude (TUI) broker record, and a verify() bound to its seat."""
+    verifier = _load_harden_evidence_verifier()
+    layout = _verifier_fixture(verifier, tmp_path / "fixture")
+    request = _request(verifier, layout, "candidate")
+    inputs = {
+        kind: _artifact_json(verifier, layout, request[kind])["content"]
+        for kind in ("bundle", "instructions")
+    }
+    prompt = verifier.broker_sealed_prompt(inputs["bundle"], inputs["instructions"])
+    item = next(item for item in layout["evidence"]["reviews"]["candidate"]["seats"]
+                if item["harness"] == "claude")
+    seat = _artifact_json(verifier, layout, item["artifact"])
+
+    def verify(broker):
+        verifier.verify_broker(
+            broker, "claude", seat["requested_model"], seat["resolved_model"],
+            verifier.sha256(inputs["bundle"].encode()),
+            verifier.sha256(inputs["instructions"].encode()), prompt, seat["report"],
+        )
+
+    return verifier, seat, prompt, verify
+
+
+_CLAUDE_PRINT_SETTINGS = '{"apiKeyHelper": "", "env": {"CLAUDE_CODE_MAX_OUTPUT_TOKENS": "128000"}}'
+
+
+def _claude_print_argv(
+    model: str, effort: str = "high", settings: str = _CLAUDE_PRINT_SETTINGS,
+) -> list[str]:
+    return [
+        "claude", "-p", "--verbose", "--output-format", "stream-json", "--input-format", "text",
+        "--safe-mode", "--model", model, "--effort", effort,
+        "--permission-mode", "dontAsk", "--permission-prompts", "none",
+        "--setting-sources", "", "--settings", settings, "--strict-mcp-config",
+        "--mcp-config", '{"mcpServers": {}}', "--agents", "{}",
+        "--no-chrome", "--disable-slash-commands", "--no-session-persistence",
+        "--session-id", "<CLAUDE_SESSION_ID>",
+        "--tools", "", "--disallowedTools", "Bash,Read,Edit,Write,WebFetch,WebSearch,Task,NotebookEdit",
+        "<STDIN_SEALED_INLINE_PROMPT>",
+    ]
+
+
+def _with_argv(verifier, broker, argv):
+    return {**broker, "provider_argv_shape": argv,
+            "provider_argv_sha256": verifier.sha256("\0".join(argv).encode())}
+
+
+def _claude_print_broker(verifier, tui_broker, prompt):
+    """The same seat's record as the print route records it (Stage 1b)."""
+    typed = verifier.CLAUDE_DIRECT_REVIEW_REQUEST
+    broker = {key: value for key, value in tui_broker.items()
+              if not key.startswith("claude_transcript_")}
+    broker.update({
+        "claude_route": "print",
+        "claude_session_persistence": False,
+        "claude_api_key_source": "none",
+        "provider_prompt_transport": "stdin",
+        "provider_no_tool_controls": list(verifier.CLAUDE_PRINT_NO_TOOL_CONTROLS),
+        "provider_task_request_delivery": "plain_text_before_stdin_prompt",
+        "provider_task_request_sha256": verifier.sha256(typed.encode()),
+        "provider_task_request_bytes": len(typed.encode()),
+        "provider_transport_sha256": verifier.sha256((typed + prompt).encode()),
+        "provider_transport_bytes": len((typed + prompt).encode()),
+    })
+    return _with_argv(verifier, broker, _claude_print_argv(tui_broker["provider_model"]))
+
+
+def test_claude_print_route_evidence_verifies_and_tui_still_does(tmp_path):
+    verifier, seat, prompt, verify = _claude_seat_verify(tmp_path)
+    verify(seat["broker"])  # the retained TUI record (no claude_route) is unchanged
+    verify(_claude_print_broker(verifier, seat["broker"], prompt))
+
+
+def test_claude_print_route_evidence_fails_closed_on_every_drift(tmp_path):
+    verifier, seat, prompt, verify = _claude_seat_verify(tmp_path)
+    good = _claude_print_broker(verifier, seat["broker"], prompt)
+    argv = good["provider_argv_shape"]
+    tools = argv.index("--tools")
+    argv_drifts = {
+        "bare": argv[:2] + ["--bare"] + argv[2:],
+        "add-dir": argv[:tools] + ["--add-dir", "/tmp/owned-empty-scratch"] + argv[tools:],
+        "non-empty tools": argv[:tools + 1] + ["Read"] + argv[tools + 2:],
+        "persistence kept": [item for item in argv if item != "--no-session-persistence"],
+        "other permission mode": [("bypassPermissions" if item == "dontAsk" else item) for item in argv],
+        "prompt on argv": argv[:-1],
+        "tui argv on the print route": seat["broker"]["provider_argv_shape"],
+        "safe mode dropped": [item for item in argv if item != "--safe-mode"],
+        "settings with a key helper": _claude_print_argv(
+            good["provider_model"],
+            settings='{"apiKeyHelper": "/bin/key", "env": {"CLAUDE_CODE_MAX_OUTPUT_TOKENS": "128000"}}'),
+        "settings with a foreign env": _claude_print_argv(
+            good["provider_model"],
+            settings='{"apiKeyHelper": "", "env": {"ANTHROPIC_BASE_URL": "http://x"}}'),
+        "settings dropped": [item for i, item in enumerate(argv)
+                             if item != "--settings" and (i == 0 or argv[i - 1] != "--settings")],
+    }
+    for name, drifted in argv_drifts.items():
+        with pytest.raises(verifier.EvidenceError):
+            verify(_with_argv(verifier, good, drifted))
+    field_drifts = {
+        "claude_route": "sdk",
+        "claude_api_key_source": "ANTHROPIC_API_KEY",
+        "claude_session_persistence": True,
+        "claude_session_resume_forbidden": False,
+        "provider_prompt_transport": "pty_input",
+        "provider_no_tool_controls": list(verifier.NO_TOOL_CONTROLS["claude"]),
+        "provider_task_request_delivery": "plain_text_before_bracketed_paste",
+    }
+    for key, value in field_drifts.items():
+        with pytest.raises(verifier.EvidenceError):
+            verify({**good, key: value})
+    for key in ("claude_api_key_source", "claude_session_persistence",
+                "provider_task_request_delivery"):
+        with pytest.raises(verifier.EvidenceError):
+            verify({k: v for k, v in good.items() if k != key})
+    # A transcript record does not belong on the print route; a TUI record cannot claim it.
+    with pytest.raises(verifier.EvidenceError):
+        verify({**good, "claude_transcript_existed": True})
+    with pytest.raises(verifier.EvidenceError):
+        verify({**seat["broker"], "claude_route": "print"})
+
+
+def test_claude_print_producer_argv_matches_the_verifier_grammar(tmp_path, monkeypatch):
+    """The runtime's recorded print argv shape is the shape the verifier accepts."""
+    from phase_loop_runtime import panel_invoker as pi
+
+    verifier = _load_harden_evidence_verifier()
+    review_dir = tmp_path / "review"
+    out_dir = tmp_path / "out"
+    review_dir.mkdir()
+    out_dir.mkdir()
+    monkeypatch.delenv("PHASE_LOOP_PANEL_CLAUDE_ROUTE", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_MAX_OUTPUT_TOKENS", raising=False)
+    monkeypatch.setattr(pi, "_under_claude_code", lambda env=None: False)
+    monkeypatch.setattr(pi, "_claude_code_support_status", lambda *a, **k: (True, "supported"))
+    monkeypatch.setattr(pi, "_claude_subscription_auth_ok", lambda env: (True, ""))
+    monkeypatch.setattr(pi, "_run_claude_print_session",
+                        lambda *a, **k: (0, "ok\nAGREE", pi._HarnessCode("claude_print_result"), ""))
+    evidence: dict[str, Any] = {}
+    model = "claude-opus-5-5"
+    pi._exec_claude_tui_leg(review_dir, out_dir, 60, "bundle", model=model,
+                            broker_prompt="SEALED", broker_evidence=evidence)
+    shape = list(evidence["provider_argv_shape"])
+    assert verifier.broker_argv_matches("claude", model, shape, "print")
+    assert shape == _claude_print_argv(model)
+    assert list(evidence["provider_no_tool_controls"]) == list(verifier.CLAUDE_PRINT_NO_TOOL_CONTROLS)
+    assert evidence["provider_prompt_transport"] == verifier.CLAUDE_PRINT_PROMPT_TRANSPORT
+    assert evidence["provider_task_request_delivery"] == verifier.CLAUDE_PRINT_TASK_REQUEST_DELIVERY
+    assert not verifier.broker_argv_matches("claude", model, shape)  # not the TUI shape
+
+
 def _real_sandbox_record(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     """The placement facts the PRODUCTION `_default_spawn` records for a staged leg."""
     import contextlib
