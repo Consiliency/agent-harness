@@ -40,8 +40,15 @@ Settings are applied in this order, most specific first:
 3. `[plan_budget]`.
 4. The built-in default.
 
-The budget value is never read from the plan. The plan's frontmatter `phase:` selects which
-committed per-phase entry applies, so an exception is only as strong as review of that line.
+The budget value is never read from the plan, but two properties of the per-phase match
+need review:
+
+- **A plan's `phase:` line selects the exception.** The file name does not bind it, so a
+  plan whose frontmatter names another phase gets that phase's exception. Review a plan's
+  `phase:` line as you would the exception itself.
+- **One alias is shared across roadmaps.** Entries are keyed by alias alone, and aliases
+  are not unique across roadmaps (INTEG and RUNTIME appear in both v10 and convergence-v1),
+  so one entry applies to every roadmap that reuses the alias.
 
 ## Errors
 
@@ -52,3 +59,15 @@ committed per-phase entry applies, so an exception is only as strong as review o
 - **No TOML parser:** on Python 3.10, which has no `tomllib`, the validator falls back to
   `tomli`. If neither is installed and the config file exists, that is also an error rather
   than a silent fall-back to the defaults.
+
+## Warnings
+
+- **Undeclared alias:** a `[plan_budget.phases.<ALIAS>]` entry whose alias no roadmap in the
+  repository declares (any `specs/phase-plans-*.md`, nested paths included, whatever its
+  status) applies to no plan.
+  The validator reports it as `(S) WARN: [plan_budget.phases.<ALIAS>] …`, so a typo such as
+  `CONFROM` surfaces instead of being silently ignored. It is reported in every mode,
+  including `off`, and stays a warning under `mode = "error"`: a phase renamed in its
+  roadmap would otherwise fail every plan in the repository, and a mistyped exception
+  already fails its intended plan through the budget itself. If `phase_loop_runtime` is not importable, the validator prints an `(S) INFO` line
+  saying the aliases were not checked.
