@@ -45,7 +45,8 @@ NO_BUS = "unix:path=/dev/null"
 # agy's two measured behaviours. ``$HOME/agy.plan`` (JSON) says on which call the login enters
 # agy's renewal margin (``renew_on_call``; 0 = never), whether a reachable session bus makes
 # agy use a keyring instead of the file (``keyring``), and which calls fail (``exit`` for
-# every call, ``exit_on_calls`` for some). Every call is appended to
+# every call, ``exit_on_calls`` for some, ``exit_after`` once the file is written). Every
+# call is appended to
 # ``$HOME/agy.calls`` with its argv, cwd listing and the environment NAMES it was given.
 _FAKE_AGY = r'''#!/usr/bin/python3
 import datetime, json, os, sys
@@ -71,6 +72,8 @@ if in_margin and not keyring and "refresh_token" in state["token"]:
                           expiry=fresh.strftime("%Y-%m-%dT%H:%M:%S.%f") + "000Z")
     with open(token, "w") as out:      # agy rewrites its file in place (measured)
         json.dump(state, out)
+if plan.get("exit_after"):
+    sys.exit(plan["exit_after"])
 print("gemini-3.8-flash-high\tGemini 3.8 Flash (High)")
 '''
 
@@ -299,6 +302,19 @@ def test_a_renewal_run_that_fails_refuses_without_waiting(host, monkeypatch, tmp
     with pytest.raises(sandbox_egress.SeatIdentityUnverified, match="gemini_credential_near_expiry"):
         _run_leg(host, monkeypatch, tmp_path)
     assert waits == []
+
+
+def test_a_run_that_fails_is_refused_even_when_it_left_a_fresh_login(host):
+    """Unchanged from main and kept as strong: the renewal must have RUN cleanly. A run that
+    exits non-zero is refused whatever the file says afterwards, for the gate and the wait.
+
+    Mutation: accept a fresh file without looking at the run's exit code."""
+    for required in (True, False):
+        _login(host.home, 200)
+        host.plan(exit_after=1)
+        with pytest.raises(sandbox_egress.SeatIdentityUnverified, match="gemini_credential_near_expiry"):
+            pi._refresh_gemini_credential(host.home, host.image, **({} if required else {"required": False}))
+        assert _left(host) > 3500      # the fake did renew the file; the run still failed
 
 
 def test_a_failed_run_in_the_middle_of_the_wait_is_not_yet(host, monkeypatch, tmp_path):
