@@ -308,14 +308,9 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "close to its expiry; if agy asks you to sign in, run it again without `models`"),
     "gemini_credential_awaiting_refresh": (
         "waiting",
-        "the agy login has under 10 minutes left and agy did not renew it yet; agy renews a "
-        "login that has expired, so the seat waits until this one has",
-        "nothing to run: the wait ends when the login expires"),
-    "gemini_login_wait_setting_ignored": (
-        "setting ignored",
-        "it is not a usable number of seconds (the longest wait: 0 or more; the re-read "
-        "interval: 1 or more; finite); the default is used",
-        "unset it, or set it to a number of seconds in range"),
+        "the agy login has under 10 minutes left and has not expired; agy renews a login that "
+        "has expired, so the seat waits until this login's expiry and then renews it once",
+        "nothing to run: the wait ends at the login's expiry"),
     "gemini_credential_refresh_timeout": (
         "leg refused", "renewing the agy login timed out",
         "check the network, then run `DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null agy models` "

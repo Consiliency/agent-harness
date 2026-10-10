@@ -1365,38 +1365,39 @@ instead, and the jail is that launch's owner.
     runs with `DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null`: agy keeps a login in the OS
     keyring when it can reach one and in its file otherwise, and with no bus it loads and
     saves the file, which is the store the runtime reads and copies (agent-harness#1420).
-  - **The wait.** agy renews a login that has expired, and before that only close to its
-    expiry (measured: its last 5 minutes, on agy 1.2.11, 1.3.1 and 1.3.3); nothing forces it
-    earlier. When the gate's renewal exits 0 and leaves an unexpired login short, the gate
-    refuses `gemini_credential_near_expiry` as before, and the launch that received that
-    refusal sleeps until the login has expired (its expiry plus 5 s), then launches again
-    through the same gate, once. The sleep starts no process and takes no lock; it reads
-    the login file every `PHASE_LOOP_SEAT_GEMINI_LOGIN_REFRESH_POLL_S` (30 s; 1 s at the
-    least) only to notice that something else renewed the login, which ends it early. No
-    agy constant is used. The cost: a seat launched just under 600 s waits about ten
-    minutes, where re-running the renewal during the wait would have taken about five.
-  - **No sleep, and the gate's refusal stands,** when the renewal failed in any way (a
-    non-zero exit, its timeout, an unproven process group: all as before, from one run),
-    when the login is unreadable or already expired, when the sleep would be longer than
-    `PHASE_LOOP_SEAT_GEMINI_LOGIN_REFRESH_WAIT_S` (0 means never wait), and, under a
-    bounded policy, when the sleep would not fit in the leg's deadline. A request refused by
-    a check made before the gate never reaches it, so it runs no renewal and does not sleep.
-  - **Where:** in the caller of the launch, after the gate's refusal has left the launch
-    (and with it the quiescence latch's launch lock): the board seat, the qualification's
-    seat, the president's Gemini rung, and executor `review` (which keeps its egress
-    namespace while it sleeps).
+  - **The wait.** agy renews a login that has expired; nothing makes it renew one earlier
+    than it chooses to (measured on agy 1.2.11, 1.3.1 and 1.3.3: only in the login's last 5
+    minutes). So a Gemini launch whose login file is readable and has more than 0 and less
+    than 600 s left sleeps, before the launch, until that login has expired. The gate then
+    runs as it always does, and its one renewal renews the expired login. The sleep starts
+    no process, takes no lock, admits no image and refuses nothing. It uses no figure of
+    agy's. The worst wait is the login's remaining life, up to ten minutes.
+  - **What ends the sleep.** The login file is read again every 0.25 s, as the gate reads
+    it. The sleep ends when the file's expiry has passed by the wall clock, when the file
+    reads fresh (something else renewed it), or when the file can no longer be read. It
+    never lasts longer than the life read when it began, a slice aside. In each case the
+    launch follows and the gate decides.
+  - **No sleep** for a login with 600 s or more, an expired login, an unreadable or missing
+    login file, or the image's `--help` measurement. Those go straight to the gate, as
+    before.
+  - **Where:** before the launch and outside the quiescence latch's launch lock, for the
+    board seat, the qualification's seat and the president's Gemini rung; and in executor
+    `review`, before its egress namespace is created.
   - **Cancellation:** the monitor's cancel event (else the board's cancel context) and the
     quiescence latch end the sleep within a 0.25 s slice. Nothing was started, so there is
-    nothing to clean up.
+    nothing to clean up. Executor `review` outside a board has no cancel event.
   - **Monitoring and deadlines:** under `heartbeat_only` the sleep is recorded as
-    `login_wait` (`awaiting_refresh`, then `expired`, `refreshed` or `cancelled`) and the
-    stall clock starts after it. Under a bounded policy the whole sleep is charged to the
-    leg's deadline. The time the gate's renewal takes is not charged, as before.
+    `login_wait` (`awaiting_refresh`, then `expired`, `refreshed`, `unreadable`, `bound` or
+    `cancelled`) and the stall clock starts after it. A bounded leg sleeps only if at least
+    600 s of its deadline are left after the sleep, and is then charged the time it slept;
+    otherwise it does not sleep and the gate decides at once. The time the gate's renewal
+    takes is not charged, as before.
   - **The notice:** `gemini_credential_awaiting_refresh`, with the seconds left and the time
-    the sleep ends, which is the login's expiry plus 5 s whatever the settings are. The two
-    settings are this wait's own, not the Claude login wait's; a value that is not a finite
-    number in range is ignored with `gemini_login_wait_setting_ignored`.
-  - **Spawn count:** a seat that slept shows the gate's two renewal runs.
+    the sleep ends, which is the login's expiry.
+  - **What this costs.** A login that agy would have renewed at once is also slept on,
+    because the sleep knows no figure of agy's. A request that is refused for another
+    reason (an unusable bind, a missing provider) is refused after the sleep, with nothing
+    run.
   - **The image's `--help` measurement** makes no provider request and asks for no login.
     For a self-qualified image this was the one point before launch (composition, the
     board preflight) where a login that cannot be renewed was noticed; such a login is now
