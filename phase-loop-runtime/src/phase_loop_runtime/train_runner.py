@@ -3853,7 +3853,9 @@ def _run_train_unfenced(
         from dataclasses import replace as _replace_board
         from . import panel_invoker as _pi
         from .advisor_board import backing as _backing
-        from .advisor_board.composition import FLOOR_SEATS, compose_review_board, composition_digest
+        from .advisor_board.composition import (
+            FLOOR_SEATS, compose_review_board, composition_digest, composition_exclusions,
+        )
         from .governed_review import author_vendor_for_executor
         from .train_review_packet import preflight_packet
         try:
@@ -3862,10 +3864,13 @@ def _run_train_unfenced(
                 board = compose_review_board()
             finally:
                 _backing.clear_review_composition_authorization()
+            # agent-harness#1431: a below-floor refusal names the seats composition left out.
+            unavailable = composition_exclusions(board)
             author = author_vendor_for_executor("train-coordinator")
             board = _replace_board(board, seats=tuple(s for s in board.seats if s.harness != author))
             if len(board.seats) < FLOOR_SEATS:
-                raise PacketError("native_fill_refused: composed board below floor")
+                raise PacketError("native_fill_refused: composed board below floor"
+                                  + "".join(f"; {item.render()}" for item in unavailable))
             brief = _pi._resolve_brief("review", None)
             preflight_packet(bundle_text, instructions=brief, board=board)
             refusal = _pi.preflight_native_leg_fills(

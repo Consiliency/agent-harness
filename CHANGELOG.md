@@ -6,6 +6,45 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### A board seat is never dropped silently (agent-harness#1431, agent-harness#1420, agent-harness#1441)
+
+- **The fault.** On a host whose agy build is outside the runtime's shipped set and has no
+  local qualification record for this runtime, the Gemini seat's probe was refused
+  (`agy_image_unqualified`). The probe gate turned that into a bare "no", composition dropped
+  the Gemini seat and backfilled a second Grok seat without saying so, and a `plan` or
+  `production_code` board then refused its own lineup with `review_board_policy_mismatch`.
+  Under `--json` the refusal printed nothing on stdout, and `--emit-native-request` handed out
+  a fill request for a lineup the board was certain to refuse.
+- **Composition says what it left out.** Every seat the composer excludes is reported with the
+  seat it would have been, a typed reason, the fix and the backfilled seat that replaced it:
+  on stderr at composition (`advisor-board: composition: ...`), again with the text result
+  (`[EXCLUDED] ...`), and as `composition.excluded[]` in every JSON result. A native-fill
+  request carries `composition_excluded[]`. The governed gate prints the same notice, names
+  the seats in a below-floor hold and carries a non-gating finding on a backfilled board.
+  The reason is the probe's own refusal code when it has one (`agy_image_unqualified`,
+  `seat_profile_unavailable`, ...); otherwise `board_seat_cli_not_on_path`,
+  `board_seat_probe_failed`, `board_seat_probe_timed_out`, `board_seat_not_logged_in` or
+  `board_seat_unauthenticated`. No CLI output is ever copied into a reason.
+- **A tier never presents a lineup its own policy refuses.** With `--landing-tier`, the tier's
+  policy is checked on the composed board at composition, before a native-fill request is
+  emitted, a fill is preflighted or anything is staged or launched. The refusal is
+  `advisor-board: refused at composition [review_board_policy_mismatch]`, it names the
+  excluded seat, its reason and its fix, and under `--json` it is the JSON result
+  (`usable: false`, `refusal.stage: "composition"`). The policy, the seat floor and the agy
+  qualification gate are unchanged: nothing new is admitted.
+- **`phase-loop doctor` reports the agy on PATH** in a new `seat_cli_qualification[]` section
+  (additive in `phase-loop-doctor.v1`, path-free, nothing is executed): `release_qualified`,
+  `locally_qualified`, `not_qualified` (not shipped, never qualified on this host),
+  `local_record_other_runtime` (this host qualified this build under another runtime; a
+  runtime upgrade drops the record, because it is bound to the runtime's own files),
+  `local_qualification_failed`, `self_qualification_disabled`, `store_unsafe` or `absent`,
+  with the command to run. When another agy on PATH is a shipped build but is not the first
+  one found, it says so.
+- **Test only (agent-harness#1441).** A test now fails if any review seat's argv names a host
+  path through a flag the seat profile does not bind. It reads the argv the product builds
+  (for codex and grok, the argv captured at the launch boundary) and the profile the real
+  `_seat_command_profile` returns, and knows no flag name.
+
 ### The grok board seat finds its staged review tree (agent-harness#1336; PR agent-harness#1438)
 
 - In 0.7.25 and 0.7.26 a sandboxed board's grok seat failed at launch (`grok: Failed to

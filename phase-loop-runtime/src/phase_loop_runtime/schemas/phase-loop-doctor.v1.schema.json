@@ -121,6 +121,28 @@
           "fix": { "type": "string" }
         }
       }
+    },
+    "seat_cli_qualification": {
+      "type": "array",
+      "description": "agent-harness#1431 / agent-harness#1420: whether a review seat's CLI is admitted on this host under THIS runtime. Today one row: the agy on PATH (the Gemini seat). `release_qualified` and `locally_qualified` are admitted; `local_record_other_runtime` means the host qualified this build under another runtime (a runtime upgrade drops the record); `not_qualified` means the build is not shipped and has no local record. `fix` is the command to run and appears only when the CLI is not admitted. Read-only (nothing is executed or qualified). Metadata-only: NO absolute paths. Additive: not in `required`, so earlier payloads still validate.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["harness", "cli", "status", "detail", "shipped_build_later_on_path"],
+        "properties": {
+          "harness": { "type": "string" },
+          "cli": { "type": "string" },
+          "status": {
+            "type": "string",
+            "enum": ["absent", "unknown", "release_qualified", "self_qualification_disabled", "store_unsafe", "local_qualification_failed", "locally_qualified", "local_record_other_runtime", "not_qualified"]
+          },
+          "detail": { "type": "string" },
+          "release": { "type": "string" },
+          "shipped_build_later_on_path": { "type": "boolean" },
+          "fix": { "type": "string" },
+          "note": { "type": "string" }
+        }
+      }
     }
   }
 }

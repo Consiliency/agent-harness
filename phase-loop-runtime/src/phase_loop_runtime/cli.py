@@ -2113,7 +2113,9 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
         set_review_instruction_digest,
         resolve_review_monitoring_policy,
     )
-    from .advisor_board.composition import FLOOR_SEATS, board_independence, compose_review_board
+    from .advisor_board.composition import (
+        FLOOR_SEATS, board_independence, compose_review_board, composition_exclusions,
+    )
     from .advisor_board.fixtures import DEFAULT_BOARD
     from .agy_canary_evidence import (
         AgyCanaryEvidenceError,
@@ -2234,12 +2236,39 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
         # A pre-composition authority is operation-local even when a caller has
         # replaced the composer with a hermetic callback.
         clear_review_composition_authorization()
+    # agent-harness#1431: a seat is never dropped silently. Every seat the composer left out
+    # is named here -- the seat, its typed reason and the fix -- before anything else
+    # happens, and is carried in every machine-readable result below.
+    excluded_seats = composition_exclusions(board)
+    for excluded in excluded_seats:
+        print(f"advisor-board: composition: {excluded.render()}", file=sys.stderr)
+    composition_json = {
+        "seats": [seat.seat_key for seat in board.seats],
+        "excluded": [excluded.as_json() for excluded in excluded_seats],
+    }
     if not board.seats:
-        print(
-            "advisor-board: no vendor is both available and authenticated — nothing to compose.",
-            file=sys.stderr,
+        _print_composition_refusal(
+            args, "review_board_no_seats",
+            "no vendor is both available and authenticated — nothing to compose.",
+            composition_json,
         )
         return 2
+    if capture is None and getattr(args, "landing_tier", None) is not None:
+        # The board never presents a lineup its own tier policy will refuse: the policy is
+        # checked on the composed board NOW, before a native-fill request is emitted, a
+        # fill is preflighted or anything is staged or launched.
+        from .panel_invoker import _validate_review_board_policy, review_policy_for_tier
+
+        try:
+            _validate_review_board_policy(board, review_policy_for_tier(args.landing_tier), None)
+        except PresidentPolicyError as exc:
+            _print_composition_refusal(
+                args, exc.code,
+                f"the {args.landing_tier} landing tier does not accept this lineup, and no seat "
+                f"was launched: {exc}",
+                composition_json,
+            )
+            return 2
     # REVIEWTRUTH early slice (EC-REVIEWTRUTH-14): the emit arm — stage the request for the
     # claude seat the driving Claude Code session fills natively; spend nothing.
     if bool(getattr(args, "emit_native_request", False)):
@@ -2262,6 +2291,8 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
             instructions.write_text(str(payload["instructions"]), encoding="utf-8")
             payload["artifact_path"] = str(staged)
             payload["instructions_path"] = str(instructions)
+            # agent-harness#1431: the request names the seats this composition left out.
+            payload["composition_excluded"] = composition_json["excluded"]
             request = out_dir / NATIVE_FILL_REQUEST_FILE
             request.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
             payload["request_path"] = str(request)
@@ -2271,7 +2302,8 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
         record = {"status": "native_fill_requested", "request_path": payload["request_path"],
                   "artifact_path": payload["artifact_path"], "instructions_path": payload["instructions_path"],
                   "seat_key": payload["seat_key"], "model": payload["model"], "request_id": payload["request_id"],
-                  "composition": payload["composition"]}
+                  "composition": payload["composition"],
+                  "composition_excluded": payload["composition_excluded"]}
         if advisory:
             record.update(_advisory_labels(review_brief))
         if bool(getattr(args, "json", False)):
@@ -2494,6 +2526,9 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
             "requested_seats": requested_seats,
             "delivered_seats": usable_count,
             "shortfall": shortfall,
+            # agent-harness#1431: the composed seats and every seat composition left out
+            # (typed reason and fix), so a backfilled board never reads as the default one.
+            "composition": composition_json,
             # agent-harness#1132: typed seat notices, board-wide and per leg.
             "notices": _board_notices_json(result.legs),
             # agent-harness#1132 (plan amendment A1): each seat's launch mode, decided before
@@ -2561,7 +2596,7 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
             # notices and seat modes (agent-harness#1132); it is written without them,
             # byte-for-byte as before.
             capture_payload = {key: value for key, value in payload.items()
-                               if key not in ("notices", "seat_modes")}
+                               if key not in ("notices", "seat_modes", "composition")}
             capture_payload["legs"] = [
                 {key: value for key, value in leg.items() if key != "notices"}
                 for leg in payload["legs"]
@@ -2584,6 +2619,9 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
         f"advisor-board: {board_label} — independence={independence.level} "
         f"({independence.distinct_vendors} distinct vendors / {independence.seats} seats)"
     )
+    for excluded in excluded_seats:
+        # agent-harness#1431: said at composition (stderr) and again with the result.
+        print(f"  [EXCLUDED] {excluded.render()}")
     from .panel_invoker import _finalize_leg_detail
 
     for leg in result.legs:
@@ -2743,6 +2781,21 @@ def _seat_sandbox_command(args: argparse.Namespace) -> int:
         return 1
     print(f"seat-sandbox reap: removed {args.seat_sandbox_path}")
     return 0
+
+
+def _print_composition_refusal(args: argparse.Namespace, code: str, detail: str,
+                               composition_json: dict[str, object]) -> None:
+    """agent-harness#1431: a board refused at composition, before any seat launches.
+
+    The typed refusal goes to stderr. Under ``--json`` the same refusal is also the JSON
+    result on stdout, with the composed seats and every excluded seat's reason and fix, so
+    a machine reader is never left with an empty stdout."""
+    print(f"advisor-board: refused at composition [{code}]: {detail}", file=sys.stderr)
+    if bool(getattr(args, "json", False)):
+        refusal = {"stage": "composition", "code": code, "detail": detail,
+                   "landing_tier": getattr(args, "landing_tier", None)}
+        print(json.dumps({"usable": False, "status": "UNAVAILABLE", "refusal": refusal,
+                          "composition": composition_json}, indent=2, sort_keys=True))
 
 
 def _board_notices_json(legs) -> list[dict[str, str]]:

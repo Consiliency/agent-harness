@@ -30,6 +30,7 @@ import urllib.request
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from . import agy_diagnosis
 from . import repo_validation
 from . import seat_jail_prerequisites
 from .install_status import _assert_redacted, build_install_status
@@ -505,6 +506,10 @@ def build_doctor_report(
         # agent-harness#1357: what the seat jail's qualification needs from the runtime's own
         # environment (today: pytest). Status only, with the literal fix when missing.
         "seat_jail_prerequisites": seat_jail_prerequisites.check(),
+        # agent-harness#1431 / agent-harness#1420: whether the agy on PATH is admitted for a
+        # Gemini review seat under THIS runtime, why not, and the command to run. Read-only
+        # (nothing is executed or qualified) and path-free.
+        "seat_cli_qualification": agy_diagnosis.report(),
     }
     # Metadata-only guarantee: no absolute paths, no secrets. Reuses the same
     # redaction contract as phase-loop-install-status.v1.
@@ -563,6 +568,23 @@ def _print_doctor(report: dict[str, Any]) -> None:
             print(f"  {item['name']:<10} {item['status']}   → {item['unlocks']}")
             if item.get("fix"):
                 print(f"    fix: {item['fix']}")
+    qualification = report.get("seat_cli_qualification")
+    if qualification:
+        print("")
+        print("Review seat CLI qualification (per host, per runtime):")
+        for item in qualification:
+            admitted = item["status"] in agy_diagnosis.ADMITTED
+            if item["status"] == agy_diagnosis.ABSENT:
+                headline = f"{item['cli']} not on PATH"
+            elif admitted:
+                headline = f"{item['cli']} present and admitted for this runtime"
+            else:
+                headline = f"{item['cli']} present but not qualified for this runtime"
+            print(f"  {item['harness']:<10} {item['status']}   → {headline}")
+            print(f"    {item['detail']}")
+            for key in ("fix", "note"):
+                if item.get(key):
+                    print(f"    {key}: {item[key]}")
     div = report.get("worktree_divergence")
     if div:
         print("")

@@ -656,11 +656,23 @@ def governed_board_gate(
             "governed_board_composition_unavailable",
             f"review board composition unavailable: {exc}; holding (non-human)",
         )
+    # agent-harness#1431: a seat composition left out is never silent. It is printed here,
+    # before any launch, named in a below-floor hold and carried as a non-gating finding.
+    from .advisor_board.composition import composition_exclusions
+
+    unavailable = composition_exclusions(board)
+    for item in unavailable:
+        print(f"governed board: composition: {item.render()}", file=sys.stderr)
+    composition_findings = tuple(
+        ReviewFinding(code=item.code, reason=f"board composition: {item.render()}",
+                      severity="warn", reviewed_sha=reviewed_sha)
+        for item in unavailable)
     seats = tuple(s for s in board.seats if getattr(s, "harness", None) not in authors)
     dropped = tuple(s for s in board.seats if getattr(s, "harness", None) in authors)
     if len(seats) < FLOOR_SEATS:
         composed = sorted({getattr(s, "harness", "?") for s in seats})
         excluded = sorted({getattr(s, "harness", "?") for s in dropped})
+        why_missing = "".join(f" {item.render()}." for item in unavailable)
         return _block_result(
             "below_reviewer_floor" if seats else "no_disjoint_reviewer",
             "governed_board_below_floor",
@@ -668,8 +680,9 @@ def governed_board_gate(
                 f"authorized review board composed {len(seats)} seat(s) {composed} "
                 f"disjoint from author vendor(s) {sorted(authors)} (excluded {excluded}); "
                 f"the composition floor is {FLOOR_SEATS}. Authenticate or install the "
-                f"missing vendor CLIs; holding (non-human)"
+                f"missing vendor CLIs;{why_missing} holding (non-human)"
             ),
+            extra_findings=composition_findings,
         )
     if dropped:
         board = _replace(board, seats=seats)
@@ -720,6 +733,7 @@ def governed_board_gate(
             instructions_path.write_text(brief_text, encoding="utf-8")
             payload["artifact_path"] = str(artifact_path)
             payload["instructions_path"] = str(instructions_path)
+            payload["composition_excluded"] = [item.as_json() for item in unavailable]
             request_path = out_dir / _pi.NATIVE_FILL_REQUEST_FILE
             request_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
             payload["request_path"] = str(request_path)
@@ -886,10 +900,13 @@ def governed_board_gate(
                 finally:
                     if authorization is not None:
                         _backing.close_falsifier_isolation_authorization(authorization)
-    return _gate_result_from_panel(
+    result = _gate_result_from_panel(
         panel, reviewed_sha=reviewed_sha, artifact=staged_artifact,
         falsifier_runs=falsifier_runs, falsifier_policy=falsifier_policy,
     )
+    if composition_findings:
+        result = replace(result, findings=(*result.findings, *composition_findings))
+    return result
 
 
 # agent-harness#802: the landing-brief pin re-enters the real gate with the same arguments.

@@ -35,7 +35,9 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import Callable
-from typing import NamedTuple
+from contextvars import ContextVar
+from dataclasses import dataclass, replace
+from typing import Any, NamedTuple
 
 from .registries import DEFAULT_HARNESS_REGISTRY
 from .schema import Board, Seat, vendor_family
@@ -119,6 +121,149 @@ def _seat_for(vendor: str, lens: str) -> Seat:
     return Seat(model=spec["model"], effort=spec["effort"], harness=spec["harness"], lens=lens)
 
 
+# --- excluded seats (agent-harness#1431) -------------------------------------------------
+#
+# A seat is never dropped silently. Every vendor the composer leaves out is returned as an
+# ``ExcludedSeat`` naming the seat the board would have had, a typed reason and the one
+# thing to run. The reason is the probe's OWN refusal code when it raised one that the
+# seat-notice table knows (``agy_image_unqualified``, ``seat_profile_unavailable``, ...),
+# so composition and the seat's own notice say the same thing; otherwise it is one of the
+# composition codes below.
+
+SEAT_CLI_NOT_ON_PATH = "board_seat_cli_not_on_path"
+SEAT_PROBE_FAILED = "board_seat_probe_failed"
+SEAT_PROBE_TIMED_OUT = "board_seat_probe_timed_out"
+SEAT_NOT_LOGGED_IN = "board_seat_not_logged_in"
+SEAT_UNAUTHENTICATED = "board_seat_unauthenticated"
+
+#: code -> (why, fix). ``{cli}`` is the vendor's CLI binary, ``{probe}`` the probe that failed.
+_EXCLUSION_TEXT: dict[str, tuple[str, str]] = {
+    SEAT_CLI_NOT_ON_PATH: (
+        "the `{cli}` CLI is not on PATH",
+        "install the `{cli}` CLI on PATH, then re-run"),
+    SEAT_PROBE_FAILED: (
+        "the availability probe `{probe}` did not succeed",
+        "run `{probe}` yourself and repair what it reports, then re-run"),
+    SEAT_PROBE_TIMED_OUT: (
+        "the availability probe `{probe}` did not answer in time",
+        "run `{probe}` yourself; when it answers promptly, re-run"),
+    SEAT_NOT_LOGGED_IN: (
+        "`{probe}` does not report a logged-in subscription session",
+        "log in to the `{cli}` CLI as yourself, check with `{probe}`, then re-run"),
+    SEAT_UNAUTHENTICATED: (
+        "the vendor's authentication gate did not pass",
+        "log in to the `{cli}` CLI as yourself, then re-run"),
+}
+
+
+@dataclass(frozen=True)
+class ExcludedSeat:
+    """One seat the composer left out, and why (agent-harness#1431)."""
+
+    vendor: str
+    #: The seat the board would have seated for this vendor.
+    seat_key: str
+    code: str
+    why: str
+    fix: str
+    #: The backfilled seat that took its place, or ``None`` when nothing did.
+    replaced_by: str | None = None
+
+    def as_json(self) -> dict[str, Any]:
+        return {"vendor": self.vendor, "seat_key": self.seat_key, "code": self.code,
+                "why": self.why, "fix": self.fix, "replaced_by": self.replaced_by}
+
+    def render(self) -> str:
+        replaced = f"; replaced by {self.replaced_by}" if self.replaced_by else "; not replaced"
+        return f"{self.seat_key} excluded [{self.code}]: {self.why} -- fix: {self.fix}{replaced}"
+
+
+class ReviewComposition(NamedTuple):
+    """A composed board with every seat the composer left out of it."""
+
+    board: Board
+    excluded: tuple[ExcludedSeat, ...]
+
+
+# The most recent composition of this context. ``compose_review_board`` keeps returning a
+# bare ``Board`` (callers and their tests pin that), so a caller that needs the excluded
+# seats asks for them by the board it was handed: ``composition_exclusions(board)``.
+_LAST_COMPOSITION: ContextVar[ReviewComposition | None] = ContextVar(
+    "review_board_last_composition", default=None)
+
+
+def composition_exclusions(board: Board) -> tuple[ExcludedSeat, ...]:
+    """The seats left out when ``board`` was composed; ``()`` for any other board.
+
+    Matched by IDENTITY, so a board that did not come from the latest composition in this
+    context (a fixture, a replaced composer, a board with seats removed since) never
+    inherits another board's exclusions."""
+    last = _LAST_COMPOSITION.get()
+    return last.excluded if last is not None and last.board is board else ()
+
+
+def _vendor_cli(vendor: str) -> str:
+    try:
+        return DEFAULT_HARNESS_REGISTRY.get(vendor).cli
+    except Exception:
+        return vendor
+
+
+def _exclusion(vendor: str, code: str, *, probe: str = "", why: str | None = None,
+               fix: str | None = None) -> ExcludedSeat:
+    spec = _VENDOR_SEAT[vendor]
+    text_why, text_fix = _EXCLUSION_TEXT.get(code, ("", ""))
+    names = {"cli": _vendor_cli(vendor), "probe": probe}
+    return ExcludedSeat(
+        vendor=vendor, seat_key=_seat_for(vendor, spec["lens"]).seat_key, code=code,
+        why=why if why is not None else text_why.format(**names),
+        fix=fix if fix is not None else text_fix.format(**names),
+    )
+
+
+def default_board_auth_refusal(vendor: str) -> ExcludedSeat:
+    """Why ``default_board_auth_ok(vendor)`` just said no, as an ``ExcludedSeat``.
+
+    Reads the refusal the gate recorded (``executor_availability.auth_refusal_for``); it
+    runs no probe. A typed refusal the seat-notice table knows keeps its code and the
+    table's own why/fix. An unqualified agy image also gets the read-only diagnosis of
+    WHICH way it is unqualified (not shipped, or qualified under another runtime)."""
+    from ..capability_registry import capability_registry
+    from ..executor_availability import auth_refusal_for
+
+    try:
+        record = capability_registry().get(vendor)
+        probes = tuple(getattr(record, "auth_preflight_probes", ()) or ())
+        refusal = auth_refusal_for(vendor, probes)
+    except Exception:
+        refusal = None
+    if refusal is None:
+        return _exclusion(vendor, SEAT_UNAUTHENTICATED)
+    if refusal.kind == "raised" and refusal.code is not None:
+        from ..seat_jail import NOTICES
+
+        if refusal.code in NOTICES:
+            _what, why, fix = NOTICES[refusal.code]
+            if refusal.code == "agy_image_unqualified":
+                from .. import agy_diagnosis
+
+                diagnosis = agy_diagnosis.diagnose()
+                if not diagnosis.admitted:
+                    why, fix = diagnosis.detail, diagnosis.fix or fix
+                    if diagnosis.shipped_build_later_on_path and diagnosis.note:
+                        why = f"{why} ({diagnosis.note})"
+            return _exclusion(vendor, refusal.code, probe=refusal.probe, why=why, fix=fix)
+    code = {"timed_out": SEAT_PROBE_TIMED_OUT, "not_logged_in": SEAT_NOT_LOGGED_IN}.get(
+        refusal.kind, SEAT_PROBE_FAILED)
+    excluded = _exclusion(vendor, code, probe=refusal.probe)
+    if refusal.kind == "raised" and refusal.exception:
+        named = refusal.code or refusal.exception
+        return replace(excluded, why=f"{excluded.why} ({named})")
+    if refusal.kind == "nonzero_exit":
+        return replace(excluded, why=f"{excluded.why} (exit {refusal.returncode})")
+    return excluded
+
+
 def default_board_auth_ok(vendor: str) -> bool:
     """Production auth gate for a board vendor (REVIEWGOV-W1 / #151).
 
@@ -151,7 +296,25 @@ def compose_review_board(
     name: str = "code-review",
     purpose: str = "code-review",
 ) -> Board:
-    """Compose the availability-aware review board.
+    """Compose the availability-aware review board (``compose_review_board_report().board``).
+
+    The seats it left out, and why, are ``composition_exclusions(board)``."""
+    return compose_review_board_report(
+        is_available=is_available, auth_ok=auth_ok, target=target, floor=floor,
+        name=name, purpose=purpose,
+    ).board
+
+
+def compose_review_board_report(
+    *,
+    is_available: Callable[[str], bool] | None = None,
+    auth_ok: Callable[[str], bool] | None = None,
+    target: int = DEFAULT_TARGET_SEATS,
+    floor: int = FLOOR_SEATS,
+    name: str = "code-review",
+    purpose: str = "code-review",
+) -> ReviewComposition:
+    """Compose the availability-aware review board, with every seat it left out.
 
     A vendor is seated only when it is BOTH reachable AND authenticated —
     composition gates on ``is_available ∧ auth_ok`` (REVIEWGOV IF-0-REVIEWGOV-1 /
@@ -183,6 +346,11 @@ def compose_review_board(
     Returns a ``Board`` of exactly ``target`` seats whenever ≥1 vendor is available
     and authed (never fewer than ``floor``); an empty board only when NO vendor is
     both up and authed.
+
+    **Never silent (agent-harness#1431):** each vendor left out is returned as an
+    ``ExcludedSeat`` -- the seat it would have held, the typed reason, the fix and the
+    backfilled seat that replaced it. The reason of an injected ``auth_ok`` is not
+    knowable here, so it is the generic ``board_seat_unauthenticated``.
     """
     if target < floor:
         raise ValueError(f"target {target} is below the floor {floor}")
@@ -208,16 +376,36 @@ def compose_review_board(
         auth_probe = lambda _vendor: True  # noqa: E731
     else:
         auth_probe = default_board_auth_ok
+    available: list[str] = []
+    excluded: list[ExcludedSeat] = []
     try:
-        available = [v for v in _VENDOR_ORDER if avail_probe(v) and auth_probe(v)]
+        for vendor in _VENDOR_ORDER:
+            if not avail_probe(vendor):
+                excluded.append(_exclusion(vendor, SEAT_CLI_NOT_ON_PATH))
+            elif not auth_probe(vendor):
+                excluded.append(
+                    default_board_auth_refusal(vendor) if auth_probe is default_board_auth_ok
+                    else _exclusion(vendor, SEAT_UNAUTHENTICATED))
+            else:
+                available.append(vendor)
     finally:
         if authorization is not None:
             _clear_composition_authorization()
+
+    def _composed(seats: tuple[Seat, ...], backfilled: tuple[Seat, ...] = ()) -> ReviewComposition:
+        # The i-th excluded vendor is paired with the i-th backfilled seat.
+        paired = tuple(
+            replace(seat, replaced_by=backfilled[i].seat_key if i < len(backfilled) else None)
+            for i, seat in enumerate(excluded))
+        composed = ReviewComposition(Board(name=name, purpose=purpose, seats=seats), paired)
+        _LAST_COMPOSITION.set(composed)
+        return composed
+
     if not available:
         # Nothing to compose — the caller's run degrades wholesale. (The floor is a
         # count of INDEPENDENT reviewers to seat on AVAILABLE vendors; with zero up
         # there is no reviewer to seat, so an empty board is the honest result.)
-        return Board(name=name, purpose=purpose, seats=())
+        return _composed(())
 
     seats: list[Seat] = []
     used_keys: set[tuple[str, str, str]] = set()
@@ -254,7 +442,7 @@ def compose_review_board(
         if not progressed:
             break  # every available vendor exhausted its lens cycle
 
-    return Board(name=name, purpose=purpose, seats=tuple(seats))
+    return _composed(tuple(seats), tuple(seats[len(available):]))
 
 
 class BoardIndependence(NamedTuple):
@@ -292,7 +480,11 @@ def board_independence(board: Board) -> BoardIndependence:
 
 __all__ = [
     "compose_review_board",
+    "compose_review_board_report",
+    "composition_exclusions",
     "default_board_auth_ok",
+    "ExcludedSeat",
+    "ReviewComposition",
     "LENS_CYCLE",
     "DEFAULT_TARGET_SEATS",
     "FLOOR_SEATS",
