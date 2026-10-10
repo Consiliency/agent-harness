@@ -1359,31 +1359,56 @@ instead, and the jail is that launch's owner.
 - **The agy login a Gemini seat needs (agent-harness#1407).** A seat's copy cannot be
   renewed, and its agy session fails about 10 s before the login expires (measured). So at
   launch the agy login FILE (`~/.gemini/antigravity-cli/antigravity-oauth-token`) must have
-  600 s left (`gemini_credential_near_expiry` otherwise).
+  600 s left (`gemini_credential_near_expiry` otherwise). A login with 600 s or more launches
+  at once, with no renewal run.
   - **The renewal** is one host run of the verified image, `agy models`, in an empty
-    directory, with `DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null`. agy keeps a login in the
-    OS keyring when it can reach one and in its file otherwise; with no bus it loads and
-    saves the file, which is the store the runtime reads and copies (agent-harness#1420).
-  - **The wait:** agy renews a login only in its last 5 minutes, and nothing forces it
-    earlier (measured on agy 1.2.11, 1.3.1 and 1.3.3). A seat launched with less than
-    630 s re-runs the renewal every `PHASE_LOOP_SEAT_LOGIN_REFRESH_POLL_S` (30 s) until the
-    login is fresh, for at most the login's remaining life plus 45 s and
-    `PHASE_LOOP_SEAT_LOGIN_REFRESH_WAIT_S` (0 means no wait). It logs the
-    `gemini_credential_awaiting_refresh` notice with the seconds left and the time it clears
-    by. No agy constant is relied on, only that agy renews by expiry. The 30 s above the
-    gate is deliberate: a login that clears the wait cannot fall under the gate before the
-    launch reaches it, and a seat launched with 600-630 s had about ten minutes of run.
-  - **Where:** just before the launch gate, outside the quiescence latch's launch lock, on
-    every route that reaches the gate (the board seat, the qualification's seat, the
-    president's Gemini rung, executor `review`). The gate itself is unchanged and is the
-    only place that refuses. A failing `agy models`, or an expired login it did not renew,
-    is refused at once. The refusal's fix line is the renewal's own command,
-    `DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null agy models`.
-  - **Monitoring and cancellation:** as the Claude login wait. Under `heartbeat_only` it is
-    recorded as `login_wait` and the stall clock starts after it; under a bounded policy it
-    is bounded by and charged to the leg's deadline; the board's cancel and the quiescence
-    latch end it.
+    directory, with `DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null`, for at most 15 s. agy
+    keeps a login in the OS keyring when it can reach one and in its file otherwise; with no
+    bus it loads and saves the file, which is the store the runtime reads and copies
+    (agent-harness#1420).
+  - **The wait:** agy renews a login only close to its expiry and nothing forces it earlier
+    (measured: its last 5 minutes, on agy 1.2.11, 1.3.1 and 1.3.3). Before the launch, a
+    short login is renewed; when the run exits 0 and leaves an unexpired login short, the
+    renewal is re-run every `PHASE_LOOP_SEAT_GEMINI_LOGIN_REFRESH_POLL_S` (30 s; 5 s at the
+    least) until the login is fresh. The wait is bounded by the login's remaining life plus
+    45 s, by `PHASE_LOOP_SEAT_GEMINI_LOGIN_REFRESH_WAIT_S` (0 means never wait) and, under
+    a bounded policy, by what is left of the leg's deadline. A run in flight at the bound
+    may add its 15 s under `heartbeat_only`; under a bounded policy it is cut at the
+    deadline. The seat logs the `gemini_credential_awaiting_refresh` notice with the
+    seconds left and the time it clears by (the login's expiry). The wait's logic uses no
+    agy constant, only that agy renews a login by its expiry. These two settings are this
+    wait's own, not the Claude login wait's; a value that is not a finite number in range
+    is ignored with the `gemini_login_wait_setting_ignored` notice and the default is used.
+  - **Only one outcome is retried:** a run that exits 0 and renewed nothing. Everything
+    else is what it was before the wait existed, from one run:
+    - a run that exits non-zero or times out, an image that is not admitted, an expired
+      login agy did not renew, and a login still short when the wait ends are refused with
+      the same codes. The refusal is raised by the launch gate, in its place behind the
+      checks made before it, whatever the login file says by then; the gate runs no second
+      renewal.
+    - a process group the renewal (or the image admission) cannot prove gone is raised at
+      once and is never retried.
+  - **Where:** before the launch, outside the quiescence latch's launch lock, on every
+    route that reaches the gate (the board seat, the qualification's seat, the president's
+    Gemini rung, executor `review`).
+  - **Cancellation:** nothing is started for a board that is already cancelled or whose
+    quiescence latch is set. A cancel (the monitor's event, else the board's cancel
+    context) or a latch ends a sleep or a run in flight within a 0.25 s slice plus the
+    time to end the run's process group, which is proven gone before the wait returns.
+    Each run is launched through the latch and registered with it, so a cancel or a trip
+    sweeps it like any provider group. A wait queued behind another seat's renewal ends the
+    same way.
+  - **Monitoring and deadlines:** under `heartbeat_only` the wait is recorded as
+    `login_wait` (`awaiting_refresh`, then `refreshed`, `timeout`, `failed` or `cancelled`)
+    and the stall clock starts after it. Under a bounded policy every second spent before
+    the launch, the first renewal included, is charged to the leg's deadline; a wait that
+    uses the deadline up without a renewal is the typed refusal, not a deadline timeout.
+  - **Spawn count:** the leg's renewal is counted as one provider spawn however often it is
+    re-run.
   - **The image's `--help` measurement** makes no provider request and asks for no login.
+    For a self-qualified image this was the one point before launch (composition, the
+    board preflight) where a login that cannot be renewed was noticed; such a login is now
+    refused at the leg, as it already was for a release-qualified image.
 - **Refusals.** Each owner refusal is a closed detail code and a `seat_jail.NOTICES`
   entry, with what happened, why and a fix line (`seat_owner_unavailable`,
   `seat_filtered_egress_unavailable`, `seat_keyring_unavailable`, ...).

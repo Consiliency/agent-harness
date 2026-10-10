@@ -2660,9 +2660,10 @@ def launch(
 ) -> LaunchResult:
     if action == "review" and _review_profile is None and not dry_run:
         from . import panel_invoker, sandbox_egress
-        # agent-harness#1407: a Gemini review whose agy login is short waits for its renewal
-        # before anything is held; the launch gate below still refuses what stays short.
-        panel_invoker._await_gemini_login(command, env or os.environ)
+        # agent-harness#1407: a Gemini review whose agy login is short is renewed, waiting
+        # for agy when it must, before anything is held; what that refuses, the launch gate
+        # below raises in its own place.
+        gemini_login = panel_invoker._await_gemini_login(command, env or os.environ)
         with contextlib.ExitStack() as stack:
             prefix = stack.enter_context(sandbox_egress.isolated_network(required=True, timeout_s=None))
             token = panel_invoker._EGRESS_LAUNCH_PREFIX.set(prefix)
@@ -2670,6 +2671,7 @@ def launch(
             owned_command, profile = stack.enter_context(panel_invoker._seat_command_profile(
                 command, env=env or os.environ, cwd=cwd or os.getcwd(),
                 readonly_paths=(cwd or os.getcwd(),),
+                gemini_login_refusal=gemini_login.refusal,
             ))
             return launch(
                 owned_command, action=action, _review_profile=profile, log_path=log_path,

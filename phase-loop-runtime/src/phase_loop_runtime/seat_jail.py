@@ -305,15 +305,21 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "extend it; the seat does not run",
         "run `DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null agy models`, then re-run: it renews "
         "agy's login file (the store the seat reads, not a desktop keyring) once the login is "
-        "in its last 5 minutes; if agy asks you to sign in, run it again without `models`"),
+        "close to its expiry; if agy asks you to sign in, run it again without `models`"),
     "gemini_credential_awaiting_refresh": (
         "waiting",
-        "the agy login has under 10 minutes left and agy renews a login only in its last 5 "
-        "minutes; the seat waits for that and then renews it",
-        "nothing to run: it clears by itself within 5 minutes"),
+        "the agy login has under 10 minutes left and agy renews a login only close to its "
+        "expiry; the seat waits, re-running the renewal, until agy renews it",
+        "nothing to run: it clears by itself, by the login's expiry at the latest"),
+    "gemini_login_wait_setting_ignored": (
+        "setting ignored",
+        "it is not a usable number of seconds (the wait: 0 or more; the poll: 5 or more; "
+        "finite); the default is used",
+        "unset it, or set it to a number of seconds in range"),
     "gemini_credential_refresh_timeout": (
         "leg refused", "renewing the agy login timed out",
-        "check the network, run `agy` once interactively, then re-run"),
+        "check the network, then run `DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null agy models` "
+        "(it renews agy's login file, the store the seat reads) and re-run"),
     "seat_keyring_unavailable": (
         "leg refused", "the seat could not join a fresh session keyring or seal its filter",
         "allow keyctl and seccomp for unprivileged processes (container runtimes may deny "

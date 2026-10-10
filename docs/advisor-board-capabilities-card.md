@@ -643,12 +643,18 @@ profile (Ubuntu 22.04, and 24.04 as measured) needs nothing. The jail itself is 
 - **Then:** run `phase-loop seat-sandbox qualify` on the host.
 
 **Gemini seat login.** A Gemini seat needs 10 minutes left on the agy login, and agy renews
-a login only in its last 5. A seat launched in between waits (at most about 5 minutes; the
-log says `gemini_credential_awaiting_refresh` and the time it clears by), renews the login
-and then runs. Nothing to run. If a seat is refused `gemini_credential_near_expiry`, run
-`DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null agy models` and re-run. That renews agy's
-login file (the store the seat reads, not a desktop keyring) once the login is in its last
-5 minutes; if agy asks you to sign in, run it again without `models`.
+a login only close to its expiry (its last 5 minutes on the builds measured). A seat launched
+in between waits, re-running the renewal every 30 s, then runs with a fresh hour. The log
+says `gemini_credential_awaiting_refresh` and the time it clears by, which is the login's
+expiry at the latest. Nothing to run.
+- **Settings:** `PHASE_LOOP_SEAT_GEMINI_LOGIN_REFRESH_WAIT_S` caps the wait (0 means never
+  wait) and `PHASE_LOOP_SEAT_GEMINI_LOGIN_REFRESH_POLL_S` sets the interval (5 s at the
+  least). They are separate from the Claude wait's settings below.
+- **If a seat is refused `gemini_credential_near_expiry` or
+  `gemini_credential_refresh_timeout`:** run
+  `DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null agy models` and re-run. That renews agy's
+  login file (the store the seat reads, not a desktop keyring) once the login is close to
+  its expiry; if agy asks you to sign in, run it again without `models`.
 
 **Claude seat credential.** By default, the seat uses the subscription you are logged in
 with.

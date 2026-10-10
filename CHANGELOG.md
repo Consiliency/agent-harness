@@ -9,28 +9,39 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 ### A Gemini seat is no longer refused by the clock, or by a desktop keyring (agent-harness#1407, agent-harness#1420)
 
 - **The window.** A Gemini seat needs 10 minutes left on the agy login, and agy renews a
-  login only in its last 5 (measured on agy 1.2.11, 1.3.1 and 1.3.3; no command forces it
-  earlier). For those 5 minutes of each hour the seat was refused
-  `gemini_credential_near_expiry`, `phase-loop agy-qualification run` failed, and a board
-  lost its Google seat. The seat now waits: it re-runs the renewal every 30 s
-  (`PHASE_LOOP_SEAT_LOGIN_REFRESH_POLL_S`) until the login is fresh, for at most the login's
-  remaining life plus 45 s (`PHASE_LOOP_SEAT_LOGIN_REFRESH_WAIT_S=0` turns the wait off). It
-  then starts with a full hour. The log line `gemini_credential_awaiting_refresh` gives the
-  seconds left and the time it clears by. The board's cancel ends the wait at once. A login
-  with 600 to 630 s left, which used to launch at once with about ten minutes of run, now
-  waits for its renewal too.
+  login only close to its expiry (measured: its last 5 minutes, on agy 1.2.11, 1.3.1 and
+  1.3.3; no command forces it earlier). For those 5 minutes of each hour the renewal was a
+  no-op, the seat was refused `gemini_credential_near_expiry`, `phase-loop agy-qualification
+  run` failed, and a board lost its Google seat. The seat now waits: it re-runs the renewal
+  every 30 s until the login is fresh, for at most the login's remaining life plus 45 s,
+  and then starts with a full hour. The log line `gemini_credential_awaiting_refresh` gives
+  the seconds left and the time it clears by.
 - **The keyring.** On a host whose OS keyring agy can reach, the renewal refreshed the
   keyring's copy of the login and left agy's login file expired. The runtime reads the file,
   so the seat was refused whatever the time, until someone ran `agy` over SSH. The renewal
   now runs with no session bus, so agy renews the file.
 - **Probes and admission.** The agy image's `--help` measurement makes no provider request
   and no longer asks for a fresh login, so an availability probe or an admission lookup in
-  the window no longer drops Gemini.
-- Nothing about what a seat is given changes: the same access-only copy, the same launch
-  gate, the same refusals. A login that stays short, an expired login agy does not renew, and
-  a failing `agy models` are refused as before. The `gemini_credential_near_expiry` notice
-  now names the one command that renews the login file,
-  `DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null agy models`.
+  the window no longer drops Gemini. A login that cannot be renewed at all is therefore
+  noticed at the leg, not at composition, for a self-qualified image too.
+- **What does not change.** A login with 10 minutes or more launches at once. Only a
+  renewal that exits 0 and renewed nothing is retried. A run that fails or times out, an
+  expired login agy does not renew, and a login still short when the wait ends are refused
+  with the same codes as before, from one renewal run; a renewal whose process group cannot
+  be proven gone is fatal as before. The seat is given the same access-only copy.
+- **New settings.** `PHASE_LOOP_SEAT_GEMINI_LOGIN_REFRESH_WAIT_S` (cap; 0 means never wait)
+  and `PHASE_LOOP_SEAT_GEMINI_LOGIN_REFRESH_POLL_S` (30 s; 5 s at the least). They are
+  separate from the Claude login wait's settings. A value that is not a finite number in
+  range is ignored with the `gemini_login_wait_setting_ignored` notice.
+- **Other behaviour changes.**
+  - Under a bounded policy the time a renewal takes is now charged to the leg's deadline,
+    also when no wait follows. It was not charged before.
+  - A leg whose board is already cancelled and whose login is short now ends as cancelled
+    before any renewal runs. Under a bounded policy the renewal used to run first.
+  - A renewal run is ended when the board is cancelled; it used to run to its 15 s limit.
+  - The fix line of `gemini_credential_near_expiry` and `gemini_credential_refresh_timeout`
+    is now the renewal's own command,
+    `DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null agy models`.
 - Known limit, unchanged: a seat cannot renew its copy of the login, so a Gemini seat that
   runs past its login's expiry (10 minutes at the least, about an hour after a renewal)
   fails in the run.
