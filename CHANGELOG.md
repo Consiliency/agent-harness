@@ -39,24 +39,28 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   - Outputs bound in place (`outputs`, a CLI's `--output-last-message`, the capture route)
     are unchanged.
 - **Behaviour changes on the TUI route to know about.**
-  - A replaceable output is refused before anything is created, with the new notice code
-    `seat_output_inside_readonly_input` and its fix line, when its directory is (inside) a
-    read-only input or a system directory, when it is itself an input, or when the staging
-    root is inside one of the seat's read-only inputs. Paths are judged as written and as
+  - A replaceable output is refused before any transcript, output file or holder is
+    created, with the new notice code `seat_output_inside_readonly_input` and its fix line,
+    when its directory is (inside) a read-only input or a system directory, when it is
+    itself an input, or when the staging root is inside one of the seat's read-only inputs.
+    (Resolving a configured staging directory creates it, as it does for every round.) Paths are judged as written and as
     the host holds them once parent links are resolved. This refuses layouts in which an
     in-place write used to succeed (an output inside an `--add-dir` directory, or under
     `/dev/shm`); Claude Code's Write (measured on 2.1.295 and 2.1.296) could not deliver
     there. A board whose reviewed repository contains the staging root sets
     `PHASE_LOOP_SANDBOX_STAGING_DIR` outside it.
-  - A replaceable output's host file is this launch's from the moment the launch is
-    accepted: content an earlier launch left in it is emptied, and the session no longer
-    returns an earlier launch's verdict from it.
+  - A replaceable output's host file is this launch's once the output's placement is
+    accepted: content an earlier launch left in it is emptied then, before the seat's
+    profile is built, so also when the launch is then refused for another reason. The
+    session no longer returns an earlier launch's verdict from it.
 - **A real tools-enabled journal is admitted.** Claude Code journals one API message as
   several records that all carry the message's `stop_reason`. `_validated_claude_journal`
   refused any thinking or text record that said `tool_use` without a tool block of its own,
   which refused every real tool-using review. Such a record is now admitted when a later
-  record of the same message id holds a tool call, or when it holds a server-side tool call
-  itself; a message that recurs after its result with no call is still refused. Every other
+  record of the same message id holds a tool call; one that holds a server-side tool call
+  needs a client tool call of its message id in some record, earlier or later. A message
+  that recurs after its result with no call, or that holds only a server tool call, is
+  still refused. Every other
   refusal is unchanged: a second user turn, a pending or unmatched tool call, a partial last
   line, any other stop, a missing final answer.
 - **An ended turn that was not delivered ends the leg.** When the provider's turn has ended
@@ -65,11 +69,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   the new notice code `claude_seat_delivery_refused`, handing back what the seat wrote to
   its file as it is. It is never an approval and never a sealed fallback.
   - It fires only once the journal ends in a newline, its last record explicitly stopped,
-    and that state was seen unchanged on two consecutive checks. A turn still in flight
-    waits as before, and so does an ended turn whose last message has no text block.
+    and that state was seen unchanged on two consecutive checks, so the refusal comes on
+    the second check (2 s later by default). A turn still in flight waits as before, and
+    so does an ended turn whose last message has no text block.
   - A bounded non-brokered leg used to reach this state as `claude_tui_stalled` and retry
     once in a fresh directory (agent-harness#343). It now gets `claude_seat_delivery_refused`
-    at once and the same one retry.
+    and the same one retry. A `heartbeat_only` non-brokered leg, which used to wait
+    instead, gets the same one retry under the same remaining-budget condition.
 
 ### CLI qualification contract for every seat harness, inert (agent-harness#1333 PR2)
 

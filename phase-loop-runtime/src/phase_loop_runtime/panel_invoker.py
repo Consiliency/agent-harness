@@ -608,10 +608,14 @@ def _validated_claude_journal(data, *, require_terminal: bool = True):
         # message BEFORE its calls, so it is admitted only when a LATER record of the same
         # message id holds a tool call (another message's tool result may be journaled in
         # between). A record that holds a server-side tool call (``server_tool_use``, run by
-        # the API and answered inside the assistant message) needs nothing further. Measured
-        # on 73,219 such records in real Claude Code 2.1.x journals: none breaks this rule,
-        # and no narrower rule admits them all (agent-harness#1434).
+        # the API and answered inside the assistant message) may come after the message's
+        # own calls and results, so it needs a client call of its message id anywhere,
+        # earlier or later: a message stops with ``tool_use`` only for a client call.
+        # Measured on 73,219 such records in real Claude Code 2.1.x journals: none breaks
+        # this rule, and no narrower rule admits them all (agent-harness#1434).
         awaiting_call = set()
+        client_called = set()  # message ids that hold a client tool call
+        served = set()         # ... that say ``tool_use`` in a record holding a server call
         for line in data.split(b"\n"):
             if not line.strip():
                 continue
@@ -652,15 +656,18 @@ def _validated_claude_journal(data, *, require_terminal: bool = True):
                     logical = object()
                 if tools:
                     awaiting_call.discard(logical)
-                elif message.get("stop_reason") == "tool_use" and not any(
-                        block.get("type") == "server_tool_use" for block in content or []):
-                    awaiting_call.add(logical)
+                    client_called.add(logical)
+                elif message.get("stop_reason") == "tool_use":
+                    if any(block.get("type") == "server_tool_use" for block in content or []):
+                        served.add(logical)
+                    else:
+                        awaiting_call.add(logical)
                 for block in tools:
                     tool = block.get("id")
                     if not isinstance(tool, str) or not tool:
                         return ""
                     pending.add(tool)
-        if pending or awaiting_call:
+        if pending or awaiting_call or served - client_called:
             return ""
         # The route's own answer rule decides the text: the president's terminal-turn rule,
         # or the review rule, under which a completed answer outlives a later stray error.
@@ -5149,10 +5156,12 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
     Their directory is a private per-launch directory in the seat's view; the host file
     receives what the seat wrote, redacted, when the profile ends. A path named both ways
     stays in place. A replaceable output whose directory cannot be private -- it is (inside)
-    a read-only input or a system mount -- is refused before anything is created or
-    launched (``seat_output_inside_readonly_input``). From the moment the launch is
-    accepted the host file is this launch's: content an earlier launch left in it is
-    emptied, so it never holds another launch's review."""
+    a read-only input or a system mount -- is refused before any transcript, output file
+    or holder is created and before anything is launched
+    (``seat_output_inside_readonly_input``). Once the output's placement is accepted the
+    host file is this launch's: content an earlier launch left in it is emptied then,
+    before the profile is built, so it never holds another launch's review (also when the
+    launch is then refused for another reason)."""
     if gemini_profile is None:
         harness, executable = _seat_provider_source(command[0], env)
         if harness not in {"codex", "claude", "grok", "gemini", "opencode"}:

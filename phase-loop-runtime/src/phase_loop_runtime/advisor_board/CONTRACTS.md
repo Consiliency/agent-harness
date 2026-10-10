@@ -867,7 +867,8 @@ give-up detector are views of it, so they cannot disagree:
   can change: the journal ends in a newline, its last live record is an
   `isApiErrorMessage` record or explicitly stopped with `end_turn` /
   `stop_sequence` and carries text, and that state was seen unchanged on two
-  consecutive checks. A last line still being written, or a record with no
+  consecutive checks, so the refusal comes on the second check (2 s later by
+  default). A last line still being written, or a record with no
   `stop_reason`, is in flight and waits. The output is read once more after the
   journal, since the seat writes it before it journals the end of its turn.
   Then either the file is a completed review with an admitted journal
@@ -877,7 +878,9 @@ give-up detector are views of it, so they cannot disagree:
   back is what the seat wrote to its file, as it is; it is never an approval (a
   refused leg with text is a nonconforming review on the governed path, a block)
   and never a sealed or inline fallback. A non-brokered leg retries once in a
-  fresh directory, as for `claude_tui_stalled` (agent-harness#343).
+  fresh directory, as for `claude_tui_stalled` (agent-harness#343); a
+  `heartbeat_only` leg, which used to wait instead, gets the same one retry
+  under the same remaining-budget condition.
   Not every ended turn is recognised: an `end_turn` record with no text block
   (empty or thinking only), `refusal` and `pause_turn` still classify `pending`,
   so a leg whose turn ends that way waits as before.
@@ -1420,16 +1423,19 @@ instead, and the jail is that launch's owner.
       follows no link, so no depth, mode or link the seat left can stop it. A holder that
       is still there afterwards is the notice `seat_output_retained_after_teardown`, not
       an exception: the delivered review stands.
-    - **The host file is this launch's.** From the moment a launch is accepted, content an
-      earlier launch left in a replaceable output's host file is emptied, so a launch that
-      delivers nothing never leaves an earlier review behind.
+    - **The host file is this launch's.** Once the output's placement is accepted, content
+      an earlier launch left in a replaceable output's host file is emptied, so a launch
+      that delivers nothing never leaves an earlier review behind. That happens before the
+      seat's profile is built: a launch refused for another reason after that point has
+      already emptied it.
     - **Where it cannot apply.** A private directory is mounted only where it hides
       nothing of the host's: below the view's bare root, or inside a tmpfs of the seat's
-      own. Refused with `seat_output_inside_readonly_input`, before anything is created
-      (no transcript, no output file, no holder): a replaceable output whose directory is
+      own. Refused with `seat_output_inside_readonly_input`, before any transcript, output
+      file or holder is created: a replaceable output whose directory is
       (inside) a read-only input or a system mount, or that is itself an input, judged on
       the paths as the argv names them and as the host holds them once parent links are
-      resolved; and a staging root that is inside one of the seat's read-only inputs.
+      resolved; and a staging root that is inside one of the seat's read-only inputs
+      (resolving a configured staging directory creates it, as it does for every round).
       This refuses layouts in which an in-place write used to succeed (an output inside
       an `--add-dir` directory, or under `/dev/shm`); Claude Code's Write (measured:
       2.1.295, 2.1.296) could never deliver there. The capture route, whose caller reads
@@ -1444,9 +1450,11 @@ instead, and the jail is that launch's owner.
     carries the message's id and `stop_reason`. A record that says `tool_use` without a
     tool call of its own is the part of the message before its calls: it is admitted only
     when a later record of the same message id holds a tool call (another message's tool
-    result may be journaled in between), or when it holds a server-side tool call
-    (`server_tool_use`) itself. A message that recurs after its result with no call is
-    refused, and a record without an id is a message of its own. Every other refusal is
+    result may be journaled in between). A record that holds a server-side tool call
+    (`server_tool_use`) may come after its message's own calls, so it needs a client tool
+    call of that message id in some record, earlier or later. A message that recurs after
+    its result with no call, or that holds only a server tool call, is refused, and a
+    record without an id is a message of its own. Every other refusal is
     per record, as before.
   - **A journaled `isApiErrorMessage` record** is never an answer or a continuation. The
     answer parser (agent-harness#1194) decides the turn.
