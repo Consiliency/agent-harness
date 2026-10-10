@@ -15,14 +15,16 @@ messages):
 * another message's tool result may be journaled in between (10 real messages: a late result
   of an earlier parallel call lands between a message's thinking and its call), so the later
   record need not be adjacent;
-* a record holding a server-side tool call (``server_tool_use``) needs nothing further (17
-  real records: such a record is journaled after the message's own client calls and results).
+* a record holding a server-side tool call (``server_tool_use``) may be journaled after the
+  message's own client call and result (17 real records), so it needs a client call of its
+  message id ANYWHERE, earlier or later. Without one it is refused: a message stops with
+  ``tool_use`` only for a client call.
 
 No real record breaks this rule, and each narrower rule refuses real ones: "the call is
-adjacent" refuses the 10, "a later client call" alone refuses the 17. A wider rule ("the
-message holds a call anywhere") admits a message that recurs after its result with no call,
-which reads as a call whose record is missing; that stays refused. Every other refusal is
-unchanged.
+adjacent" refuses the 10, "a later client call" for server records too refuses the 17. A
+wider rule ("the message holds a call anywhere", for every record) admits a message that
+recurs after its result with no call, which reads as a call whose record is missing; that
+stays refused. Every other refusal is unchanged.
 
 Named mutations, each run against this file (all red):
 
@@ -34,7 +36,10 @@ Named mutations, each run against this file (all red):
   ``after its result / after its only call`` cells are admitted.
 * M-GROUP-ANYID: accept a later call of ANY message -> ``no tool call in any record`` is
   admitted.
-* M-SERVER: drop the server-tool rule -> the ``server tool call`` cell fails.
+* M-SERVER: treat a server-tool record like any other (a later call only) -> the ``server
+  tool call after ...`` cell fails.
+* M-SERVER-ONLY: let a server tool call stand for a client call -> the three ``only a
+  server tool call`` cells are admitted.
 * M-PENDING: drop the pending-tool refusal -> the ``pending`` cells are admitted.
 """
 from __future__ import annotations
@@ -144,6 +149,16 @@ SEGMENTED = {
         assistant("a3", "m1", "tool_use", server_tool_use("srv1")),
         FINAL,
     ),
+    # Real shape (196 measured on one host): the server call comes before the client call.
+    "a server tool call before the message's own call": (
+        REQUEST,
+        assistant("a1", "m1", "tool_use", server_tool_use("srv1")),
+        assistant("a2", "m1", "tool_use", {"type": "advisor_tool_result", "tool_use_id": "srv1",
+                                           "content": []}),
+        assistant("a3", "m1", "tool_use", tool_use("t1")),
+        tool_result("r1", "t1"),
+        FINAL,
+    ),
     "a re-journaled tool segment is not a second pending call": (
         REQUEST,
         assistant("a1", "m1", "tool_use", THINKING),
@@ -225,6 +240,25 @@ REFUSED = {
         REQUEST,
         assistant("a1", "m1", "tool_use", tool_use("t1")),
         assistant("a2", "m1", "tool_use", text("Reading the change.")),
+        tool_result("r1", "t1"),
+        FINAL,
+    ),
+    # A message stops with ``tool_use`` only for a CLIENT call. A server call in the record
+    # does not stand for one: the message's client call, and its result, are missing.
+    "a tool-stopped message holding only a server tool call": (
+        REQUEST,
+        assistant("a1", "m1", "tool_use", server_tool_use("srv1")),
+        FINAL,
+    ),
+    "a tool-stopped record holding a thinking block and a server tool call, no client call": (
+        REQUEST,
+        assistant("a1", "m1", "tool_use", THINKING, server_tool_use("srv1")),
+        FINAL,
+    ),
+    "a server tool call whose only client call belongs to another message": (
+        REQUEST,
+        assistant("a1", "m1", "tool_use", server_tool_use("srv1")),
+        assistant("a2", "m2", "tool_use", tool_use("t1")),
         tool_result("r1", "t1"),
         FINAL,
     ),

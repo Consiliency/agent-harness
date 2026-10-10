@@ -318,6 +318,54 @@ def _seat_view_layers(cwd, readonly_paths=(), *, check=True) -> list[tuple[str, 
         checked = _seat_bind_source(source) if check else os.path.abspath(source)
         layers.append((os.path.abspath(source), False,
                        ["--ro-bind", checked, os.path.abspath(source)]))
+    return _mask_seat_output_holders(layers, create=check)
+
+
+#: The one directory below a staging root that holds every launch's output holder.
+_SEAT_OUTPUT_HOLDERS_DIR = "pl-seat-outputs"
+_SEAT_VIEW_BINDS = ("--ro-bind", "--ro-bind-try", "--bind")
+
+
+def _seat_output_holder_roots() -> list[Path]:
+    """Every directory a launch of this account keeps its output holders in: below the
+    configured staging directory, else below each default staging candidate. Computed, never
+    created."""
+    override = os.environ.get(_sandbox_policy._STAGING_DIR_ENV, "").strip()
+    roots = ([Path(override).expanduser()] if override
+             else [candidate for candidate, _base in _sandbox_policy._staging_candidates()])
+    return [Path(os.path.abspath(root)) / _SEAT_OUTPUT_HOLDERS_DIR for root in roots]
+
+
+def _mask_seat_output_holders(layers, *, create: bool):
+    """No seat sees an output holder, its own launch's or another's (agent-harness#1433).
+
+    Wherever a bind of this view would show a holders directory (the staging root, or a
+    directory above it, is one of the seat's inputs), an empty tmpfs is mounted over that
+    directory right after the bind. The directory is made first when it does not exist yet
+    (``create``), so a holder another launch creates later is hidden from this seat too. A
+    bind whose source is a holders directory, or lies inside one, is refused."""
+    for holders in _seat_output_holder_roots():
+        real = os.path.realpath(holders)
+        index = 0
+        while index < len(layers):
+            destination, private, arguments = layers[index]
+            index += 1
+            if private or arguments[0] not in _SEAT_VIEW_BINDS:
+                continue
+            source = os.path.realpath(arguments[1])
+            if source == real or source.startswith(real + "/"):
+                raise _sandbox_egress.SeatIdentityUnverified("seat_bind_source_unavailable")
+            if not real.startswith(source.rstrip("/") + "/"):
+                continue
+            if create and not os.path.isdir(real):
+                try:
+                    os.makedirs(real, mode=0o700, exist_ok=True)
+                except OSError:
+                    pass  # it cannot be made here, so no holder can appear here either
+            if os.path.isdir(real):
+                masked = destination.rstrip("/") + real[len(source.rstrip("/")):]
+                layers.insert(index, (masked, True, ["--tmpfs", masked]))
+                index += 1
     return layers
 
 
@@ -341,16 +389,43 @@ def _seat_output_anchor(layers, directory: str) -> int | None:
 
 
 def _seat_host_exposed(layers, host_path) -> bool:
-    """Is ``host_path`` at or below a host path this view binds in (a read-only input, a
-    system mount)? Judged on fully resolved paths, on both sides."""
+    """Does this view show ``host_path``: is it at or below a host path the view binds in (a
+    read-only input, a system mount), and not hidden by a private mount laid over that part
+    of the bind afterwards? Judged on fully resolved host paths, on both sides."""
     real = os.path.realpath(host_path)
-    for _destination, private, arguments in layers:
-        if private or arguments[0] not in ("--ro-bind", "--ro-bind-try", "--bind"):
+    for index, (destination, private, arguments) in enumerate(layers):
+        if private or arguments[0] not in _SEAT_VIEW_BINDS:
             continue
         source = os.path.realpath(arguments[1])
-        if real == source or real.startswith(source.rstrip("/") + "/"):
+        if real != source and not real.startswith(source.rstrip("/") + "/"):
+            continue
+        seen_at = destination.rstrip("/") + real[len(source.rstrip("/")):]
+        if not any(hidden and (seen_at == above or seen_at.startswith(above.rstrip("/") + "/"))
+                   for above, hidden, _arguments in layers[index + 1:]):
             return True
     return False
+
+
+def _seat_place_held(directory) -> bool:
+    """Can no other account replace ``directory`` or anything above it? It is ours or
+    root's, and neither it nor any ancestor is writable by another account unless sticky.
+    A group-writable directory counts as writable by others unless the group is this
+    account's user-private group (``seat_jail._operator_private_group``): sharing a primary
+    group with another account must not let that account rename a holder away."""
+    try:
+        resolved = Path(os.path.realpath(directory))
+        if resolved.stat().st_uid not in (os.getuid(), 0):
+            return False
+        for above in (resolved, *resolved.parents):
+            info = above.stat()
+            if info.st_mode & stat.S_ISVTX:
+                continue
+            if info.st_mode & 0o002 or (
+                    info.st_mode & 0o020 and not _seat_jail._operator_private_group(info.st_gid)):
+                return False
+    except OSError:
+        return False
+    return True
 
 
 def _seat_output_directory(source) -> str:
@@ -358,7 +433,7 @@ def _seat_output_directory(source) -> str:
 
     It is a real directory of ours, not yet opened to anyone, inside a HOLDER the seat never
     sees: a real directory of ours, mode 0700, in a place no other account can replace
-    (``_seat_output_holder``). The seat owns only the directory it is given; whatever mode it
+    (``_seat_place_held``). The seat owns only the directory it is given; whatever mode it
     later gives that, the holder above it keeps every other account out."""
     checked = _seat_bind_source(source)
     holder = os.path.dirname(checked)
@@ -371,7 +446,7 @@ def _seat_output_directory(source) -> str:
             or stat.S_IMODE(info.st_mode) & 0o077
             or not stat.S_ISDIR(above.st_mode) or above.st_uid != uid
             or stat.S_IMODE(above.st_mode) != 0o700
-            or not _sandbox_policy._held_by_us_or_root(Path(os.path.dirname(holder)))):
+            or not _seat_place_held(os.path.dirname(holder))):
         raise _sandbox_egress.SeatIdentityUnverified("seat_bind_source_unavailable")
     return checked
 
@@ -608,10 +683,14 @@ def _validated_claude_journal(data, *, require_terminal: bool = True):
         # message BEFORE its calls, so it is admitted only when a LATER record of the same
         # message id holds a tool call (another message's tool result may be journaled in
         # between). A record that holds a server-side tool call (``server_tool_use``, run by
-        # the API and answered inside the assistant message) needs nothing further. Measured
-        # on 73,219 such records in real Claude Code 2.1.x journals: none breaks this rule,
-        # and no narrower rule admits them all (agent-harness#1434).
+        # the API and answered inside the assistant message) may come after the message's
+        # own calls and results, so it needs a client call of its message id anywhere,
+        # earlier or later: a message stops with ``tool_use`` only for a client call.
+        # Measured on 73,219 such records in real Claude Code 2.1.x journals: none breaks
+        # this rule, and no narrower rule admits them all (agent-harness#1434).
         awaiting_call = set()
+        client_called = set()  # message ids that hold a client tool call
+        served = set()         # ... that say ``tool_use`` in a record holding a server call
         for line in data.split(b"\n"):
             if not line.strip():
                 continue
@@ -652,15 +731,18 @@ def _validated_claude_journal(data, *, require_terminal: bool = True):
                     logical = object()
                 if tools:
                     awaiting_call.discard(logical)
-                elif message.get("stop_reason") == "tool_use" and not any(
-                        block.get("type") == "server_tool_use" for block in content or []):
-                    awaiting_call.add(logical)
+                    client_called.add(logical)
+                elif message.get("stop_reason") == "tool_use":
+                    if any(block.get("type") == "server_tool_use" for block in content or []):
+                        served.add(logical)
+                    else:
+                        awaiting_call.add(logical)
                 for block in tools:
                     tool = block.get("id")
                     if not isinstance(tool, str) or not tool:
                         return ""
                     pending.add(tool)
-        if pending or awaiting_call:
+        if pending or awaiting_call or served - client_called:
             return ""
         # The route's own answer rule decides the text: the president's terminal-turn rule,
         # or the review rule, under which a completed answer outlives a later stray error.
@@ -2990,7 +3072,7 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "gemini_credential_refresh_timeout", "seat_keyring_unavailable",
     "claude_agent_view_review_unsupported", "claude_tui_journal_collection_refused",
     "agy_image_unqualified", "seat_output_inside_readonly_input",
-    "seat_output_retained_after_teardown",
+    "seat_output_retained_after_teardown", "seat_output_staging_unusable",
     # agent-harness#1333: per-host CLI qualification refusals (typed notices in seat_jail.NOTICES)
     "seat_cli_unqualified", "seat_cli_qualification_failed", "seat_cli_qualification_unavailable",
     "seat_cli_qualification_store_unsafe", "seat_cli_adapter_missing", "seat_cli_platform_unsupported",
@@ -3928,8 +4010,9 @@ def _gc_stale_panel_scratch(
     # age: a copy's own mtime does not move while a child works inside it.
     try:
         _gc_ownerless_residue(
-            [(base, ("pl-review-stage-*", "pl-falsifier-deps-*", _SEAT_OUTPUT_HOLDER_PREFIX + "*"))
-             for base in bases]
+            [(base, ("pl-review-stage-*", "pl-falsifier-deps-*")) for base in bases]
+            + [(base / _SEAT_OUTPUT_HOLDERS_DIR, (_SEAT_OUTPUT_HOLDER_PREFIX + "*",))
+               for base in bases]
             + [(Path(d), ("phase-loop-broker-agy-*", "phase-loop-president-agy-*"))
                for d in _sandbox_policy.child_scratch_candidates()],
         )
@@ -5019,24 +5102,44 @@ _SEAT_OUTPUT_HOLDER_PREFIX = "pl-seat-output-"
 _SEAT_OUTPUT_RETAINED = "seat_output_retained_after_teardown"
 
 
-def _seat_output_holder(staging: Path) -> Path:
-    """A fresh 0700 directory of ours under the owner's staging root, which holds one
-    launch's private output directories (agent-harness#1433).
+_SEAT_OUTPUT_STAGING_UNUSABLE = "seat_output_staging_unusable"
+
+
+def _seat_output_holders_root() -> Path:
+    """The holders directory of the owner's staging root, made and verified: a real 0700
+    directory of ours in a place no other account can replace. Refused, typed, when the
+    staging root cannot give one (agent-harness#1433).
 
     The staging root is the per-user directory every round's scratch already lives in
-    (``sandbox_policy.resolve_staging``), never the process temp root. The seat is bound
-    only a CHILD of the holder, so the holder's own mode is never the seat's to change, and
-    the holder records its owner so the crash-residue sweep removes it once this process is
-    provably gone."""
+    (``sandbox_policy.resolve_staging``), never the process temp root."""
     try:
-        holder = Path(tempfile.mkdtemp(prefix=_SEAT_OUTPUT_HOLDER_PREFIX, dir=staging))
+        holders = Path(os.path.realpath(_sandbox_policy.staging_root())) / _SEAT_OUTPUT_HOLDERS_DIR
+        holders.mkdir(mode=0o700, parents=True, exist_ok=True)
+        info = os.lstat(holders)
     except OSError as exc:
-        raise _sandbox_egress.SeatIdentityUnverified("seat_bind_source_unavailable") from exc
+        raise _sandbox_egress.SeatIdentityUnverified(_SEAT_OUTPUT_STAGING_UNUSABLE) from exc
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+            or stat.S_IMODE(info.st_mode) != 0o700 or not _seat_place_held(holders.parent)):
+        raise _sandbox_egress.SeatIdentityUnverified(_SEAT_OUTPUT_STAGING_UNUSABLE)
+    return holders
+
+
+def _seat_output_holder(holders: Path) -> Path:
+    """A fresh 0700 directory of ours in the holders directory, which holds one launch's
+    private output directories (agent-harness#1433).
+
+    The seat is bound only a CHILD of the holder, so the holder's own mode is never the
+    seat's to change, and the holder records its owner so the crash-residue sweep removes it
+    once this process is provably gone."""
+    try:
+        holder = Path(tempfile.mkdtemp(prefix=_SEAT_OUTPUT_HOLDER_PREFIX, dir=holders))
+    except OSError as exc:
+        raise _sandbox_egress.SeatIdentityUnverified(_SEAT_OUTPUT_STAGING_UNUSABLE) from exc
     try:
         _sandbox_retention.claim_scratch_dir(holder)
     except _sandbox_retention.ScratchRecordError as exc:
         _remove_seat_output_holder(holder)
-        raise _sandbox_egress.SeatIdentityUnverified("seat_bind_source_unavailable") from exc
+        raise _sandbox_egress.SeatIdentityUnverified(_SEAT_OUTPUT_STAGING_UNUSABLE) from exc
     return holder
 
 
@@ -5150,9 +5253,10 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
     receives what the seat wrote, redacted, when the profile ends. A path named both ways
     stays in place. A replaceable output whose directory cannot be private -- it is (inside)
     a read-only input or a system mount -- is refused before anything is created or
-    launched (``seat_output_inside_readonly_input``). From the moment the launch is
-    accepted the host file is this launch's: content an earlier launch left in it is
-    emptied, so it never holds another launch's review."""
+    launched (``seat_output_inside_readonly_input``), and so is a launch whose staging root
+    cannot hold its output (``seat_output_staging_unusable``). Once the launch is accepted
+    (its profile exists) the host file is this launch's: content an earlier launch left in
+    it is emptied, so it never holds another launch's review."""
     if gemini_profile is None:
         harness, executable = _seat_provider_source(command[0], env)
         if harness not in {"codex", "claude", "grok", "gemini", "opencode"}:
@@ -5191,23 +5295,17 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
     delivered = tuple(dict.fromkeys(
         path for path in (Path(os.path.abspath(item)) for item in replaceable_outputs)
         if path not in outputs))
-    staging = None
+    holders = None
     if delivered:
         _require_replaceable_placement(layers, readonly, delivered)
-        staging = Path(os.path.realpath(_sandbox_policy.staging_root()))
-        if _seat_host_exposed(layers, staging):
-            logging.getLogger(__name__).warning(
-                "the staging root %s is inside a read-only input of this seat", staging)
-            raise _sandbox_egress.SeatIdentityUnverified("seat_output_inside_readonly_input")
+        # Only now the owner's staging root: resolved, and its holders directory made and
+        # verified, after the layout was accepted and before any output file exists.
+        holders = _seat_output_holders_root()
     transcript = _precreate_seat_output(transcript_path) if transcript_path is not None else None
     outputs = (*outputs, *((transcript,) if transcript is not None else ()))
     outputs = tuple(_precreate_seat_output(path) for path in outputs)
     delivered = tuple(_precreate_seat_output(path) for path in delivered)
-    for path in delivered:
-        # This launch's file from here on: never an earlier launch's review.
-        if _read_seat_raw_text(path):
-            _write_seat_text(path, "")
-    holder = _seat_output_holder(staging) if delivered else None
+    holder = _seat_output_holder(holders) if delivered else None
     private: dict[str, str] = {}  # the seat's directory path -> its private host directory
     try:
         for directory in dict.fromkeys(str(path.parent) for path in delivered):
@@ -5228,6 +5326,12 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
             gemini_profile=gemini_profile, role=role))
         profile = replace(profile, output_dirs=tuple(
             (source, directory) for directory, source in private.items()))
+        for path in delivered:
+            # The launch is accepted: its profile exists. From here the host file is this
+            # launch's, never an earlier launch's review. (A launch refused before this
+            # point leaves an earlier file as it was.)
+            if _read_seat_raw_text(path):
+                _write_seat_text(path, "")
         owned_command = [provider, *command[1:]]
         if transcript_path is not None:
             slug = re.sub(r"[^A-Za-z0-9.-]", "-", str(cwd))
@@ -5266,8 +5370,11 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
                     _deliver_seat_output(Path(private[str(path.parent)]) / path.name, path)
             except BaseException as exc:
                 failure = exc
-            if holder is not None and not _remove_seat_output_holder(holder):
-                _note_seat_output_retained(holder)
+            try:
+                if holder is not None and not _remove_seat_output_holder(holder):
+                    _note_seat_output_retained(holder)
+            except BaseException as exc:
+                failure = failure or exc
             try:
                 if _SEAT_REDACTIONS.get():
                     retained = (*outputs, *delivered,
@@ -8941,7 +9048,7 @@ def _run_claude_tui_session(
     last_review_len = 0
     last_transcript_len = 0
     last_transcript_activity = 0
-    ended_turn: tuple[int, str] | None = None  # the ended, undelivered turn last seen
+    ended_turn: str | None = None  # the answer of the ended, undelivered turn last seen
     extended_pending_tool_uses: set[tuple[str, ...]] = set()
     # ah#196/#223 startup state machine: STARTING -> (TRUST_MODAL answered) ->
     # WAITING_FOR_EDITOR (quiescent) -> SUBMITTED. Answer the trust modal at most
@@ -9458,7 +9565,8 @@ def _run_claude_tui_session(
                 #   * ``outcome.ended``: the journal ends in a newline and its last live record
                 #     explicitly stopped (a last line still being written, or a record with
                 #     no stop, is in flight and waits);
-                #   * seen unchanged on two consecutive checks;
+                #   * seen with the same answer on two consecutive checks (records that do
+                #     not change the answer, a sidechain's for one, do not defer it);
                 #   * decided on an output read taken AFTER this check's journal read: the
                 #     seat writes its file before it journals the end of its turn.
                 # What the seat did write is handed back as it is (never OK), so a review
@@ -9470,14 +9578,14 @@ def _run_claude_tui_session(
                     review_text = _current_output()  # after the journal read
                     if _canonical_complete(review_text):
                         return _finish(0, review_text, "claude_tui_file_output")
-                    if ended_turn == (outcome.versions, outcome.text):
+                    if ended_turn == outcome.text:
                         if review_monitor is not None:
                             review_monitor.record["provider_terminal_state"] = _CLAUDE_DELIVERY_REFUSED
                             review_monitor.observe(
                                 None if last_output_progress is None else now - last_output_progress)
                         return _finish(proc.poll() or 1, review_text,
                                        _HarnessCode(_CLAUDE_DELIVERY_REFUSED))
-                    ended_turn = (outcome.versions, outcome.text)
+                    ended_turn = outcome.text
                 else:
                     ended_turn = None
             if proc.poll() is not None:
@@ -10697,6 +10805,10 @@ def _exec_claude_tui_leg(
                 logging.getLogger(__name__).warning(
                     "advisor-panel claude TUI attempt 1/2 DEGRADED [%s]", log_text
                 )
+                if review_monitor is not None:
+                    # The record names the code that ENDED THE LEG; the first attempt's
+                    # does not survive into a second attempt that may end OK.
+                    review_monitor.note(provider_terminal_state=None)
                 rc, retry_review_text, log_text, pty_tail = _run_claude_tui_session(
                     command=command,
                     cwd=retry_out_dir,

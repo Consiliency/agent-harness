@@ -14,8 +14,8 @@ it is, so a review without a verdict stays a nonconforming review (a governed BL
 empty leg (a warn).
 
 The refusal fires only on a journal state no further append of the same turn can change:
-the journal ends in a newline, its last live record explicitly stopped, and that state was
-seen unchanged on two consecutive checks. A last line still being written, a record with no
+the journal ends in a newline, its last live record explicitly stopped, and the same answer
+was seen ended on two consecutive checks (2 s apart by default). A last line still being written, a record with no
 ``stop_reason``, a tool call awaiting its result and a thinking block before its text are
 all in flight and wait as before.
 
@@ -30,6 +30,10 @@ Named mutations, each run against this file (all red):
   after the journal read`` cell is refused although its review was written.
 * M-SETTLE: refuse on the first sight of an ended turn -> the ``one check late`` cell fails,
   and the transcript-final route loses its own code.
+* M-CONSEC: never forget a sighting -> the ``starts over`` cell is refused.
+* M-VERSIONS: compare the record-version count too -> the ``do not defer`` cell waits.
+* M-MONITOR-CLEAR: keep the first attempt's code in the monitor record -> the heartbeat-only
+  retry cell fails.
 * M-NOTEXT: hand back empty text -> the ``no-verdict`` and governed-block cells fail.
 * M-RETRY: do not retry an ended, undelivered turn -> the retry cell fails.
 """
@@ -63,14 +67,17 @@ REVIEW = "Review complete\nAGREE"
 
 def _seat(records: list[dict], *, write_output: str | None = None,
           lifetime_s: float | None = None, newline_after_s: float | None = 0,
-          retry_only: bool = False) -> list[str]:
+          retry_only: bool = False, churn: bool = False) -> list[str]:
     """A fake Claude TUI on the owned route: optionally writes its canonical output (in
     place, as the precreated file allows on every runtime), journals ``records``, then idles
     at its prompt, alive and silent, as the real TUI does after its turn.
 
     ``newline_after_s``: the journal's last newline is written that long after the rest
     (``None``: never) -- a record still being appended. ``retry_only``: the output is written
-    only on the leg's retry (a cwd named ``claude-retry-*``)."""
+    only on the leg's retry (a cwd named ``claude-retry-*``). ``churn``: after its turn the
+    seat keeps appending a new sidechain record every 20 ms."""
+    side = {"type": "assistant", "isSidechain": True,
+            "message": {"id": "side", "role": "assistant", "stop_reason": None, "content": []}}
     body = "".join(json.dumps(record) + "\n" for record in records)
     write = (f"Path('panel-claude.txt').write_text({write_output!r})\n" if write_output else "")
     if retry_only:
@@ -86,9 +93,13 @@ def _seat(records: list[dict], *, write_output: str | None = None,
            "with _journal.open('a') as handle: handle.write('\\n')\n") +
         f"_end = None if {lifetime_s!r} is None else time.monotonic() + {lifetime_s!r}\n"
         "i = 0\n"
+        "import json\n"
         "while _end is None or time.monotonic() < _end:\n"
         "    sys.stdout.write('\\r* Idle... (%ds)' % i); sys.stdout.flush()\n"
-        "    i += 1; time.sleep(.05)\n"
+        + ("    with _journal.open('a') as handle:\n"
+           f"        handle.write(json.dumps(dict({side!r}, uuid='side-%d' % i)) + '\\n')\n"
+           "    i += 1; time.sleep(.02)\n" if churn else
+           "    i += 1; time.sleep(.05)\n")
     )
     return ["/usr/bin/python3", "-c", script]
 
@@ -311,6 +322,58 @@ def test_the_refusal_decides_on_an_output_read_taken_after_the_journal_read(tmp_
 
 
 @pytest.mark.usefixtures("owned_review_network")
+def test_records_that_do_not_change_the_answer_do_not_defer_the_refusal(tmp_path, monkeypatch):
+    """After its final answer the seat keeps appending new sidechain records, a new record
+    version every 20 ms. The answer does not change, so the second sighting still comes and
+    the leg is refused; counting record versions would have kept it waiting for good."""
+    rc, text, log, elapsed, _monitor = _run(
+        tmp_path, monkeypatch, _seat([REQUEST, _answer("a", "m", REVIEW)], churn=True),
+        heartbeat_only=True)
+    assert (log, text) == (CODE, "") and rc != 0
+    assert elapsed < 10
+
+
+@pytest.mark.usefixtures("owned_review_network")
+def test_a_sighting_interrupted_by_a_turn_in_flight_starts_over(tmp_path, monkeypatch):
+    """Two CONSECUTIVE sightings. Scripted exactly, through the journal the host reads: the
+    turn is seen ended, then in flight again, then ended with the same answer. That third
+    journal is a first sighting, so the leg is not refused on it; the output, which lands
+    right after, is accepted. Counting the earlier sighting would refuse it."""
+    ended = "".join(json.dumps(record) + "\n" for record in (REQUEST, _answer("a", "m", REVIEW)))
+    in_flight = json.dumps(REQUEST) + "\n"
+    seen: list[str] = []
+    after_third = []
+    real_outcome, real_output = panel._claude_transcript_outcome, panel._seat_output_text
+
+    def outcome(path, *, require_terminal=False, data=None):
+        if data is not None and not require_terminal:
+            seen.append("ended" if data == ended.encode() else "in flight")
+        return real_outcome(path, require_terminal=require_terminal, data=data)
+
+    def journal(self):
+        # ended, then in flight once that was classified, then ended again for good.
+        return (ended if seen.count("ended") == 0 or "in flight" in seen else in_flight).encode()
+
+    def third_journal_seen() -> bool:
+        return "in flight" in seen and "ended" in seen[seen.index("in flight"):]
+
+    def output(profile, path):
+        if not third_journal_seen():
+            return ""
+        after_third.append(1)
+        # Still absent for the read the refusal takes on that third journal; there after it.
+        return "" if len(after_third) == 1 else REVIEW
+
+    monkeypatch.setattr(panel, "_claude_transcript_outcome", outcome)
+    monkeypatch.setattr(panel._SeatClaudeJournal, "read", journal)
+    monkeypatch.setattr(panel, "_seat_output_text", output)
+    rc, text, log, _elapsed, _monitor = _run(
+        tmp_path, monkeypatch, _seat([REQUEST]), heartbeat_only=True)
+    assert seen[0] == "ended" and third_journal_seen()
+    assert (rc, text, log) == (0, REVIEW, "claude_tui_file_output")
+
+
+@pytest.mark.usefixtures("owned_review_network")
 def test_the_transcript_final_route_keeps_its_own_journal_refusal(tmp_path, monkeypatch):
     """On the route that takes its answer from the journal (``allow_transcript_final``), a
     parsed answer in a journal that is not admitted still ends with that route's own code,
@@ -367,6 +430,24 @@ def test_an_ended_undelivered_turn_gets_the_one_retry_in_a_fresh_directory(tmp_p
     assert [(rc, log) for _cwd, rc, log in sessions] == [(1, CODE), (0, "claude_tui_file_output")]
     assert sessions[0][0] == "out" and sessions[1][0].startswith("claude-retry-")
     assert sink == []
+
+
+@pytest.mark.usefixtures("owned_review_network")
+def test_a_heartbeat_only_leg_is_retried_too_and_its_record_names_how_the_leg_ended(
+        tmp_path, monkeypatch):
+    """Under ``heartbeat_only`` this state used to wait for good, so there was no retry to
+    keep; the leg now gets the same one retry. The monitor record names the code that ended
+    the LEG: after a retry that delivers, that is nothing, not the first attempt's refusal."""
+    monitor = panel._ReviewMonitor(tmp_path / "monitor.json", "t", 0, threading.Event(),
+                                   stall_notice_s=3600)
+    status, text, sink, sessions = _leg(
+        tmp_path, monkeypatch,
+        _seat([REQUEST, _answer("a", "m", "I have finished.")],
+              write_output="Second attempt\nAGREE\n", retry_only=True),
+        review_monitor=monitor)
+    assert (status, text) == ("OK", "Second attempt\nAGREE")
+    assert [(rc, log) for _cwd, rc, log in sessions] == [(1, CODE), (0, "claude_tui_file_output")]
+    assert json.loads(monitor.path.read_text())["provider_terminal_state"] is None
 
 
 @pytest.mark.usefixtures("owned_review_network")

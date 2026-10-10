@@ -23,6 +23,7 @@ OWNER_CODES = (
     "gemini_credential_refresh_timeout", "seat_keyring_unavailable",
     "claude_agent_view_review_unsupported", "claude_tui_journal_collection_refused",
     "agy_image_unqualified", "seat_output_inside_readonly_input",
+    "seat_output_staging_unusable",
 )
 
 

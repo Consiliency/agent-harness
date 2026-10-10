@@ -28,9 +28,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   - the host's own directory is never mounted writable, none of its other entries is
     visible, and another seat's output there is neither readable nor writable;
   - read-only inputs below that directory stay bound read-only;
-  - on the host that directory is a child of a 0700 holder (`pl-seat-output-*`) under the
-    owner's staging root, never in the process temp root and never inside a path the seat
-    can see; the seat cannot open the holder to other accounts;
+  - on the host that directory is a child of a 0700 holder (`pl-seat-output-*`) in the
+    `pl-seat-outputs` directory of the owner's staging root, never in the process temp
+    root; the seat cannot open the holder to other accounts, and no directory above it may
+    be replaceable by another account;
+  - no owned seat sees a holder, its own launch's or another's: where one of a seat's
+    inputs would show the holders directory, an empty tmpfs is mounted over it;
   - when the seat has ended, the owner copies only the declared output to its precreated
     host file, redacted before the profile releases its secrets, and removes the holder. A
     link, directory, FIFO or hard link left under the name delivers nothing. Removal does
@@ -41,22 +44,27 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - **Behaviour changes on the TUI route to know about.**
   - A replaceable output is refused before anything is created, with the new notice code
     `seat_output_inside_readonly_input` and its fix line, when its directory is (inside) a
-    read-only input or a system directory, when it is itself an input, or when the staging
-    root is inside one of the seat's read-only inputs. Paths are judged as written and as
-    the host holds them once parent links are resolved. This refuses layouts in which an
+    read-only input or a system directory, or when it is itself an input. Paths are judged
+    as written and as the host holds them once parent links are resolved. This refuses layouts in which an
     in-place write used to succeed (an output inside an `--add-dir` directory, or under
     `/dev/shm`); Claude Code's Write (measured on 2.1.295 and 2.1.296) could not deliver
     there. A board whose reviewed repository contains the staging root sets
     `PHASE_LOOP_SANDBOX_STAGING_DIR` outside it.
-  - A replaceable output's host file is this launch's from the moment the launch is
-    accepted: content an earlier launch left in it is emptied, and the session no longer
-    returns an earlier launch's verdict from it.
+  - Every Claude TUI seat, the brokered seat and the president included, now needs a
+    usable staging root: one that this account alone can write, with no directory above it
+    replaceable by another account. Without one the launch is refused before any file is
+    created, with the new notice code `seat_output_staging_unusable`.
+  - A replaceable output's host file is this launch's once the launch is accepted (its
+    layout, its staging root and its profile): content an earlier launch left in it is
+    emptied then, and the session no longer returns an earlier launch's verdict from it. A
+    launch refused before that point leaves the file as it was.
 - **A real tools-enabled journal is admitted.** Claude Code journals one API message as
   several records that all carry the message's `stop_reason`. `_validated_claude_journal`
   refused any thinking or text record that said `tool_use` without a tool block of its own,
   which refused every real tool-using review. Such a record is now admitted when a later
-  record of the same message id holds a tool call, or when it holds a server-side tool call
-  itself; a message that recurs after its result with no call is still refused. Every other
+  record of the same message id holds a tool call; one that holds a server-side tool call
+  needs a client call of its message id anywhere. A message that recurs after its result
+  with no call, or that holds only a server tool call, is still refused. Every other
   refusal is unchanged: a second user turn, a pending or unmatched tool call, a partial last
   line, any other stop, a missing final answer.
 - **An ended turn that was not delivered ends the leg.** When the provider's turn has ended
@@ -65,11 +73,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   the new notice code `claude_seat_delivery_refused`, handing back what the seat wrote to
   its file as it is. It is never an approval and never a sealed fallback.
   - It fires only once the journal ends in a newline, its last record explicitly stopped,
-    and that state was seen unchanged on two consecutive checks. A turn still in flight
-    waits as before, and so does an ended turn whose last message has no text block.
+    and the same answer was seen ended on two consecutive checks (2 s apart by default). A
+    turn still in flight waits as before, and so does an ended turn whose last message has
+    no text block.
   - A bounded non-brokered leg used to reach this state as `claude_tui_stalled` and retry
     once in a fresh directory (agent-harness#343). It now gets `claude_seat_delivery_refused`
-    at once and the same one retry.
+    and the same one retry. A `heartbeat_only` non-brokered leg, which used to wait
+    instead, is retried once too, while its wall-clock budget lasts.
 
 ### CLI qualification contract for every seat harness, inert (agent-harness#1333 PR2)
 

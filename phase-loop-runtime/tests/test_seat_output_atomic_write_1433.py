@@ -27,8 +27,22 @@ Named mutations, each run against this file (all red):
 * M-HOSTDIR: mount the host's own output directory writable instead of a private one ->
   the neighbour, scratch and two-seat cells fail.
 * M-TMPROOT: create the holder in the process temp root -> the staging-root cell fails.
-* M-EXPOSED: skip the "not inside a path this seat can see" checks -> the staging-root
-  refusal and the view cell fail.
+* M-EXPOSED: skip the "not inside a path this seat can see" check -> the view cell fails.
+* M-NOMASK: do not mask the holders directory -> the three masking cells fail (another
+  seat lists and reads a live launch's holder).
+* M-MASK-LATE: mask only a holders directory that already exists -> the ``before any
+  holder exists`` cell fails.
+* M-HOLDERS-INPUT: accept an input that is a holders directory -> that cell fails.
+* M-GROUP-HELD: accept any directory this account's primary group can write -> the
+  shared-group cell fails.
+* M-STAGE-EARLY: resolve the staging root before the layout is accepted -> the ``does not
+  touch the staging root`` cell fails.
+* M-STAGE-LATE: verify the staging root after the files are precreated -> the unusable
+  staging cell fails.
+* M-EMPTY-EARLY: empty an earlier file before the profile exists -> the ``refused after
+  its layout was accepted`` cell fails.
+* M-ENTRY: no holder removal for a failure on the way in -> the same cell fails.
+* M-REMOVE-UNWRAPPED: let a raising removal leave at once -> the exit-sweep cell fails.
 * M-HOLDER: bind the holder itself -> the seat can open it to others; that cell fails.
 * M-NODELIVER: skip the copy to the host file -> the atomic-write cells fail.
 * M-NOREDACT: deliver without redaction -> the redaction cell fails (the exit sweep would
@@ -565,10 +579,10 @@ def test_a_profile_that_never_launches_leaves_no_private_directory(tmp_path, els
 
 def _holders() -> list[str]:
     """This account's output holders under the staging root (none outside a live profile)."""
-    root = Path(os.path.realpath(sandbox_policy.staging_root()))
+    root = Path(os.path.realpath(sandbox_policy.staging_root())) / "pl-seat-outputs"
     return sorted(entry.name for entry in root.iterdir()
                   if entry.name.startswith(pi._SEAT_OUTPUT_HOLDER_PREFIX)
-                  and not entry.name.endswith(".owner"))
+                  and not entry.name.endswith(".owner")) if root.is_dir() else []
 
 
 def test_the_private_directory_lives_in_a_holder_under_the_staging_root(tmp_path, monkeypatch):
@@ -588,8 +602,10 @@ def test_the_private_directory_lives_in_a_holder_under_the_staging_root(tmp_path
     with _profile("", cwd=cwd, outputs=(out / "review.txt",), readonly=(repo,)) as (_, first):
         private = Path(first.output_dirs[0][0])
         holder = private.parent
-        assert holder.parent == staging and holder.name.startswith("pl-seat-output-")
+        assert holder.parent == staging / "pl-seat-outputs"
+        assert holder.name.startswith("pl-seat-output-")
         assert not private.is_relative_to(repo)
+        assert stat_mode(holder.parent) == 0o700
         assert stat_mode(holder) == 0o700 and stat_mode(private) == 0o700
         assert Path(str(holder) + ".owner").read_text().startswith(f"pid={os.getpid()} ")
         with _profile("", cwd=cwd, outputs=(out / "other.txt",), readonly=(repo,)) as (_, second):
@@ -605,23 +621,199 @@ def stat_mode(path) -> int:
     return os.lstat(path).st_mode & 0o7777
 
 
-def test_a_staging_root_inside_a_read_only_input_is_refused_before_anything_is_created(
-        tmp_path, monkeypatch):
-    """Where the owner's staging root is itself inside one of the seat's read-only inputs,
-    no directory under it can be private from this seat, so the launch is refused, with the
-    fix line that names the staging setting."""
+LOOK = (
+    "holders, theirs, out = sys.argv[1:4]\n"
+    "facts['holders'] = listing(holders) if os.path.isdir(holders) else 'absent'\n"
+    "facts['read'] = attempt(read, theirs)\n"
+    "facts['write_holders'] = attempt(write, os.path.join(holders, 'probe'), 'x')\n"
+    "facts['output'] = attempt(write, out, sys.argv[4])\n"
+)
+
+
+def test_no_seat_sees_another_launchs_holder_through_its_own_inputs(tmp_path, monkeypatch):
+    """A second seat whose read-only input IS the staging root, with an in-place output of
+    its own and no replaceable one: it must not find a live launch's holder there. Both
+    seats run as the same uid, so a 0700 holder would not stop it. The holders directory is
+    masked in every seat's view: empty for this seat, in the real sandbox."""
+    staging = tmp_path / "staging"
+    staging.mkdir(mode=0o700)
+    monkeypatch.setenv("PHASE_LOOP_SANDBOX_STAGING_DIR", str(staging))
+    first, second = tmp_path / "first", tmp_path / "second"
+    first.mkdir()
+    second.mkdir()
+    with _profile("", cwd=first, outputs=(first / "review.txt",)) as (_owned, writer):
+        private = Path(writer.output_dirs[0][0])
+        (private / "review.txt").write_text("Private review\nAGREE\n")
+        holders = private.parent.parent
+        assert holders == staging / "pl-seat-outputs" and _names(holders) != []
+        with _profile(LOOK, cwd=second, outputs=(), in_place=(second / "review.txt",),
+                      readonly=(staging,),
+                      argv=(holders, private / "review.txt", second / "review.txt", REVIEW)
+                      ) as (owned, reader):
+            layers = pi._seat_view_layers(second, reader.readonly_paths)
+            assert not pi._seat_host_exposed(layers, private)
+            assert not pi._seat_host_exposed(layers, holders / "anything-made-later")
+            assert pi._seat_host_exposed(layers, staging / "other-scratch")  # the input itself
+            facts = _launch(owned, reader, second)
+        assert facts["holders"] == [] and facts["read"] == "ENOENT"
+        assert facts["output"] == "ok" and (second / "review.txt").read_text() == REVIEW
+        # Whatever it writes into the mask stays in its own view.
+        assert _names(holders) == [private.parent.name, private.parent.name + ".owner"]
+        assert (private / "review.txt").read_text() == "Private review\nAGREE\n"
+
+
+def test_a_holders_directory_is_masked_before_any_holder_exists(tmp_path, monkeypatch):
+    """A seat that starts BEFORE any launch has made a holder must not see one made later.
+    So the holders directory is made, and masked, for every seat whose inputs would show
+    it, here an input above a staging root that does not exist yet."""
     repo = tmp_path / "repo"
-    (repo / "staging").mkdir(parents=True)
+    repo.mkdir()
+    staging = repo / "state" / "staging"
+    monkeypatch.setenv("PHASE_LOOP_SANDBOX_STAGING_DIR", str(staging))
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    out = cwd / "out.txt"
+    holders = staging / "pl-seat-outputs"
+    with _profile(
+            "holders, out = sys.argv[1:3]\n"
+            "facts['before'] = listing(holders)\n"
+            "import time\n"
+            "deadline = time.monotonic() + 30\n"
+            "while not os.path.exists(os.path.join(os.path.dirname(holders), 'go')) "
+            "and time.monotonic() < deadline: time.sleep(.02)\n"
+            "facts['after'] = listing(holders)\n"
+            "facts['output'] = attempt(write, out, 'done')\n",
+            cwd=cwd, outputs=(), in_place=(out,), readonly=(repo,), argv=(holders, out)
+            ) as (owned, profile):
+        process = pi.launch_owned(owned, role=ADMIN, profile=profile, cwd=str(cwd),
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        try:
+            deadline = time.monotonic() + 30
+            while not holders.is_dir() and time.monotonic() < deadline:
+                time.sleep(.02)
+            assert holders.is_dir()  # made for the mask
+            # Another launch makes a holder while the first seat runs.
+            with _profile("", cwd=tmp_path, outputs=(tmp_path / "review.txt",)) as (_o, writer):
+                private = Path(writer.output_dirs[0][0])
+                assert private.parent.parent == holders
+                (private / "review.txt").write_text("unredacted")
+                (staging / "go").write_text("")
+                stdout, stderr = process.communicate(timeout=60)
+        finally:
+            if process.poll() is None:
+                process.kill()
+                process.wait()
+    assert process.returncode == 0, stderr.decode(errors="replace")[-2000:]
+    assert json.loads(stdout) == {"before": [], "after": [], "output": "ok"}
+
+
+def test_a_seat_reading_its_own_staging_root_still_gets_its_replaceable_output(
+        tmp_path, monkeypatch):
+    """The staging root inside a read-only input is no reason to refuse: the seat's own
+    holder is masked from it like any other, and its output is delivered."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    staging = repo / "new-directory" / "staging"
+    monkeypatch.setenv("PHASE_LOOP_SANDBOX_STAGING_DIR", str(staging))
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    output = cwd / "review.txt"
+    with _profile(
+            "facts['holders'] = listing(sys.argv[2])\n"
+            "facts['write'] = attempt(atomic_write, sys.argv[1], sys.argv[3])\n",
+            cwd=cwd, outputs=(output,), readonly=(repo,),
+            argv=(output, staging / "pl-seat-outputs", REVIEW)) as (owned, profile):
+        private = Path(profile.output_dirs[0][0])
+        assert private.is_relative_to(repo)  # on the host, inside the input ...
+        layers = pi._seat_view_layers(cwd, profile.readonly_paths)
+        assert not pi._seat_host_exposed(layers, private)  # ... and not in the seat's view
+        assert _launch(owned, profile, cwd) == {"holders": [], "write": "ok"}
+    assert output.read_text() == REVIEW and _holders() == []
+
+
+def test_an_input_that_is_a_holders_directory_or_inside_one_is_refused(tmp_path, monkeypatch):
+    staging = tmp_path / "staging"
+    monkeypatch.setenv("PHASE_LOOP_SANDBOX_STAGING_DIR", str(staging))
+    with _profile("", cwd=tmp_path, outputs=(tmp_path / "review.txt",)) as (_owned, profile):
+        private = Path(profile.output_dirs[0][0])
+        for source in (private, private.parent, private.parent.parent):
+            with pytest.raises(sandbox_egress.SeatIdentityUnverified,
+                               match="seat_bind_source_unavailable"):
+                pi._seat_filesystem_view(tmp_path / "other", readonly_paths=(source,))
+
+
+@pytest.mark.parametrize("fault", ["above it a directory others can write", "not a directory"])
+def test_an_unusable_staging_root_is_refused_before_any_file_exists(tmp_path, monkeypatch, fault):
+    """A staging root that cannot give a private, un-replaceable holders directory is
+    refused with its own code, whose fix names the setting, before the output file, the
+    transcript or a holder exists, and with an earlier file left as it was."""
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    staging = shared / "staging"
+    if fault == "not a directory":
+        staging.write_text("")
+    else:
+        staging.mkdir(mode=0o700)
+        shared.chmod(0o777)
+    monkeypatch.setenv("PHASE_LOOP_SANDBOX_STAGING_DIR", str(staging))
     out = tmp_path / "out"
     out.mkdir()
-    monkeypatch.setenv("PHASE_LOOP_SANDBOX_STAGING_DIR", str(repo / "staging"))
-    monkeypatch.setattr(pi, "launch_owned", lambda *a, **k: pytest.fail("the seat launched"))
-    with pytest.raises(sandbox_egress.SeatIdentityUnverified) as refused:
-        with _profile("", cwd=tmp_path, outputs=(out / "review.txt",), readonly=(repo,)):
+    earlier = out / "earlier.md"
+    earlier.write_text("Earlier launch\nDISAGREE\n")
+    transcript = tmp_path / "journal.jsonl"
+    with pytest.raises(sandbox_egress.SeatIdentityUnverified, match="seat_output_staging_unusable"):
+        with pi._seat_command_profile(
+                ["/usr/bin/python3", "-c", "pass"], env={"PATH": "/usr/bin:/bin"}, cwd=tmp_path,
+                transcript_path=transcript,
+                replaceable_outputs=(out / "review.txt", earlier), role=ADMIN):
             pytest.fail("a profile was built")
-    assert str(refused.value) == "seat_output_inside_readonly_input"
-    assert _names(out) == [] and _names(repo / "staging") == []
-    assert "PHASE_LOOP_SANDBOX_STAGING_DIR" in seat_jail.NOTICES[str(refused.value)][2]
+    assert _names(out) == ["earlier.md"] and not os.path.lexists(transcript)
+    assert earlier.read_text() == "Earlier launch\nDISAGREE\n"
+    notice = seat_jail.render_notice("seat_output_staging_unusable", "claude:a")
+    assert notice.what == "leg refused" and "PHASE_LOOP_SANDBOX_STAGING_DIR" in notice.fix
+    assert pi._exception_failure(sandbox_egress.SeatIdentityUnverified(
+        "seat_output_staging_unusable")) == "seat_output_staging_unusable"
+
+
+def test_a_launch_refused_after_its_layout_was_accepted_leaves_no_holder_and_no_emptied_file(
+        tmp_path, elsewhere, monkeypatch):
+    """The profile itself refuses (here: the seat's credential cannot be read). The launch
+    never became this launch's: an earlier review in the host file is intact, and the
+    holder made on the way in is gone."""
+    python = str(Path("/usr/bin/python3").resolve())
+    monkeypatch.setattr(pi, "_seat_provider_source", lambda *_: ("codex", python))
+    home = tmp_path / "operator-without-a-login"
+    home.mkdir()
+    output = elsewhere / "opus.md"
+    output.write_text("Earlier launch, a complete review\nDISAGREE\n")
+    before = _holders()
+    with pytest.raises(sandbox_egress.SeatIdentityUnverified, match="seat_profile_unavailable"):
+        with pi._seat_command_profile(
+                ["/usr/bin/python3", "-c", "pass"], env={"PATH": "/usr/bin:/bin", "HOME": str(home)},
+                cwd=tmp_path, replaceable_outputs=(output,),
+                role=pi.SeatLaunchRole.PROVIDER_REVIEW):  # a review seat needs its login
+            pytest.fail("a profile was built")
+    assert output.read_text() == "Earlier launch, a complete review\nDISAGREE\n"
+    assert _holders() == before
+
+
+def test_a_refused_layout_does_not_touch_the_staging_root(tmp_path, monkeypatch):
+    """The staging root is resolved, and so made, only after the layout is accepted: a
+    refused layout leaves a configured staging directory that does not exist yet absent,
+    wherever it is."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    for staging in (repo / "new-directory" / "staging", tmp_path / "not-yet" / "staging"):
+        monkeypatch.setenv("PHASE_LOOP_SANDBOX_STAGING_DIR", str(staging))
+        with pytest.raises(sandbox_egress.SeatIdentityUnverified,
+                           match="seat_output_inside_readonly_input"):
+            with pi._seat_command_profile(
+                    ["/usr/bin/python3", "-c", "pass"], env={"PATH": "/usr/bin:/bin"},
+                    cwd=tmp_path / "cwd", role=ADMIN,
+                    replaceable_outputs=(repo / "review.txt",), readonly_paths=(repo,)):
+                pytest.fail("the refused layout was admitted")
+        assert not os.path.lexists(staging) and not os.path.lexists(staging.parent)
+    assert _names(repo) == []
 
 
 def test_the_seat_cannot_open_its_directory_to_other_accounts(tmp_path, elsewhere):
@@ -712,19 +904,21 @@ def test_a_dead_owners_holder_is_swept_whatever_the_seat_left_in_it(tmp_path, mo
     monkeypatch.setenv("PHASE_LOOP_SANDBOX_STAGING_DIR", str(staging))
     dead = subprocess.Popen(["true"])
     dead.wait()
-    gone = pi._seat_output_holder(staging)
+    holders = pi._seat_output_holders_root()
+    assert holders == staging / "pl-seat-outputs"
+    gone = pi._seat_output_holder(holders)
     (gone / "0").mkdir()
     subprocess.run(["/usr/bin/python3", "-c", "import os, sys\nos.chdir(sys.argv[1])\n"
                     "for _ in range(1200):\n    os.mkdir('d'); os.chdir('d')\n", str(gone / "0")],
                    check=True)
     (gone / "0" / "opus.md").write_text("unredacted")
     pi._sandbox_retention.claim_scratch_dir(gone, owner_pid=dead.pid)
-    live = pi._seat_output_holder(staging)
+    live = pi._seat_output_holder(holders)
     (live / "0").mkdir()
     pi._gc_stale_panel_scratch()
     assert not os.path.lexists(gone) and not os.path.lexists(str(gone) + ".owner")
     assert live.is_dir() and (live / "0").is_dir()
-    assert pi._remove_seat_output_holder(live) and _names(staging) == []
+    assert pi._remove_seat_output_holder(live) and _names(holders) == []
 
 
 DEEP = (
@@ -818,6 +1012,73 @@ def test_each_exit_step_runs_whatever_the_others_did(tmp_path, elsewhere, monkey
             monkeypatch.setattr(pi, "_deliver_seat_output", failing_delivery)
     assert not os.path.lexists(holder)
     assert in_place.read_text() == "leaked [credential redacted]\n"
+
+
+@pytest.mark.parametrize("group", ["shared with another account", "the operator's own"])
+def test_a_holder_below_a_group_writable_directory_needs_a_private_group(
+        tmp_path, monkeypatch, group):
+    """A directory above the holder that this account's primary group can write is accepted
+    only when that group is the operator's alone. A member of a shared group could rename
+    the verified holder away and put its own in its place."""
+    from types import SimpleNamespace
+
+    uid, gid = os.getuid(), os.getgid()
+    operator = SimpleNamespace(pw_uid=uid, pw_gid=gid, pw_name="operator")
+    neighbor = SimpleNamespace(pw_uid=uid + 1, pw_gid=gid, pw_name="neighbor")
+    shared_group = group == "shared with another account"
+    members = ["operator", "neighbor"] if shared_group else ["operator"]
+    accounts = [operator, neighbor] if shared_group else [operator]
+    monkeypatch.setattr(seat_jail, "_account_db", lambda: (
+        operator, lambda _gid: SimpleNamespace(gr_name="operator", gr_mem=members),
+        lambda: accounts))
+    assert seat_jail._operator_private_group(gid) is not shared_group
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    shared.chmod(0o770)
+    assert os.stat(shared).st_gid == gid
+    holder = shared / "pl-seat-output-probe"
+    holder.mkdir(mode=0o700)
+    private = holder / "0"
+    private.mkdir(mode=0o700)
+    view = lambda: pi._seat_filesystem_view(  # noqa: E731
+        tmp_path / "cwd", output_dirs=((str(private), str(tmp_path / "out")),))
+    if shared_group:
+        with pytest.raises(sandbox_egress.SeatIdentityUnverified,
+                           match="seat_bind_source_unavailable"):
+            view()
+    else:
+        assert str(private) in view()
+
+
+def test_a_removal_that_raises_does_not_skip_the_exit_sweep(tmp_path, elsewhere, monkeypatch):
+    """The removal step is wrapped like the other two: if it raises (an interrupt landing
+    in it), the exit sweep still redacts, the holder is still removed on the way out, and
+    the error is raised afterwards."""
+    env = _codex_shaped_profile(monkeypatch, tmp_path)
+    cwd, _ = _layout("output-elsewhere", tmp_path, elsewhere)
+    output, in_place = elsewhere / "opus.md", elsewhere / "notes.txt"
+    script = (
+        "secret = json.loads(read(os.path.join(os.environ['CODEX_HOME'], 'auth.json')))\n"
+        "write(sys.argv[3], 'leaked ' + secret['tokens']['access_token'] + '\\n')\n"
+        "facts['write'] = attempt(atomic_write, sys.argv[1], sys.argv[2])\n")
+    real_remove = pi._remove_seat_output_holder
+    calls = []
+
+    def interrupted_once(holder):
+        calls.append(holder)
+        if len(calls) == 1:
+            raise KeyboardInterrupt("synthetic interrupt during removal")
+        return real_remove(holder)
+
+    with pytest.raises(KeyboardInterrupt, match="synthetic interrupt"):
+        with _profile(script, cwd=cwd, outputs=(output,), in_place=(in_place,), env=env,
+                      argv=(output, REVIEW, in_place)) as (owned, profile):
+            holder = Path(profile.output_dirs[0][0]).parent
+            assert _launch(owned, profile, cwd) == {"write": "ok"}
+            monkeypatch.setattr(pi, "_remove_seat_output_holder", interrupted_once)
+    assert in_place.read_text() == "leaked [credential redacted]\n"
+    assert output.read_text() == REVIEW
+    assert not os.path.lexists(holder)
 
 
 def test_a_board_leg_carries_the_refusal_and_the_owners_notices(tmp_path, monkeypatch):

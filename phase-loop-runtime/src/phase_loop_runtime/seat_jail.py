@@ -318,12 +318,19 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
     # agent-harness#1433: refused before launch, never a late failure of the provider's write.
     "seat_output_inside_readonly_input": (
         "leg refused",
-        "the seat's output directory, or the staging directory that holds it while the seat "
-        "runs, is inside one of the seat's read-only inputs or a system directory",
+        "the seat's output directory is inside one of the seat's read-only inputs or a "
+        "system directory, where the provider's write cannot replace the file",
         "put the seat's output outside its read-only inputs (the staged tree, --add-dir and "
         "context paths) and outside system directories; for a board, set "
         "PHASE_LOOP_SANDBOX_STAGING_DIR to a directory outside the reviewed repository; "
         "then re-run"),
+    "seat_output_staging_unusable": (
+        "leg refused",
+        "the staging directory that holds the seat's output while it runs cannot be used: "
+        "it is missing or not writable, not this account's alone, or in a place another "
+        "account can replace",
+        "set PHASE_LOOP_SANDBOX_STAGING_DIR to a directory only this account can write, "
+        "with no directory above it writable by another account unless sticky, then re-run"),
     "seat_output_retained_after_teardown": (
         "directory retained",
         "the seat's private output directory could not be removed and may hold output that "
