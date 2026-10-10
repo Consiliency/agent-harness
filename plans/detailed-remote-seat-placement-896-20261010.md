@@ -32,7 +32,7 @@ transferred, executed in the seat sandbox on the compute host, and returned unde
 runtime-attested receipts.
 
 P1 changes no behaviour for a host with no remote root configured. No real backend exists
-until P2. **No maintainer decision is open for P1.**
+until P2. No maintainer decision is open for P1.
 
 **Cited follow-ons, unchanged by this slice:** the cloud adapter (agent-harness#1165, plans
 4a1, 4a2, 4b) and the self-hosted HTTPS service ("Plan 3" of the placement plan, with the
@@ -63,7 +63,8 @@ them.
 | Follow-on / "Plan 3" (self-hosted HTTPS) | **Unchanged; sequenced after this slice.** The SSH backend is a different, optional backend, not a replacement. | Maintainer, 2026-10-10 |
 | Follow-on / "Plans 4a and 4b" | Unchanged; "1b" there now means P1 | |
 | Maintainer decisions: RD6 | **(a) stands** for the legacy `host:path` form, which stays record-only. **(b) is exercised:** an optional SSH backend, as the URL scheme `ssh`, specified in P2. | Maintainer, 2026-10-10 |
-| Maintainer decisions: RD1–RD5, CD1–CD4 | Unchanged. RD1, RD2 and RD5 describe the HTTPS service; what the SSH backend does instead is stated in P2. | |
+| Maintainer decisions: RD1 | **(a) is superseded for the first slice** by the 2026-10-10 ruling "one shared account first". It stands for the HTTPS service. Per-user accounts and per-principal CPU and memory totals are a named follow-on in P2. | Maintainer, 2026-10-10 |
+| Maintainer decisions: RD2–RD5, CD1–CD4 | Unchanged. RD2 and RD5 describe the HTTPS service; what the SSH backend does instead is stated in P2. | |
 
 **`plans/detailed-e2b-cloud-backend-896-20260929.md`**
 
@@ -411,19 +412,20 @@ method call and records the order. Each case is control-green and red under its 
 
 ## Maintainer decisions
 
-**Settled (2026-10-10), cited and not restated:** the route is a self-hosted compute host
-over SSH first, with this driver built first; the cloud backend follows as overflow; the
-built-in egress list is left as it is. Standing rulings this plan relies on: R1 and R2
+**Rulings of 2026-10-10** (relayed by the team lead; each was asked with options and
+trade-offs):
+
+| Ruling | What it fixes in this plan |
+|---|---|
+| Route: a self-hosted compute host over SSH first; this driver is built first; the cloud backend follows as overflow | The slice and its order |
+| Busy or down (B3): at the cap, wait a bounded time, then not run, never local. Unreachable before launch: run locally with a loud typed record, until the cloud backend exists, then the cloud backend. A started seat never moves. | C3's retryable wait and C7's capacity rule are this ruling. "Loud typed record" is the existing `seat_sandbox_root_fell_back` notice plus the per-candidate reasons. |
+| The built-in egress list is left as it is | Nothing here changes it or relies on it. "Plan 2" stays unscheduled and awaits a maintainer decision. |
+| Scope (B4): seats only in this slice; the president next; executors under their own plan | RD3 stands |
+
+Standing rulings this plan relies on, cited and not restated: R1 and R2
 (agent-harness#1245); RD3, RD6 and CD1–CD4 (agent-harness#1162).
 
-**Open for P1:** none that blocks it. Two settings express the choices for "what happens when
-the compute host cannot take a seat": the admission wait (how long a seat queues at the
-cap; default 0) and the existing fail-closed knob (whether an unreachable compute host may
-fall back to local). C7 fixes one thing in every setting: a seat refused for capacity is
-never run on the launching host. If the maintainer rules that it may be, that one rule is
-removed and its verification row inverted; nothing else in P1 changes.
-
-**Open for P2 and P3:** listed in those plans.
+**Open for P1:** none.
 
 ## Execution Policy
 

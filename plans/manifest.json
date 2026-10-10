@@ -12783,6 +12783,20 @@
               "Consiliency/agent-harness#896",
               "Consiliency/agent-harness#1244"
             ],
+            "maintainer_decisions": {
+              "decisions": [
+                "route: ssh first",
+                "B1",
+                "B2",
+                "B3",
+                "B4",
+                "B5",
+                "B6",
+                "egress list unchanged"
+              ],
+              "recorded_at": "2026-10-10",
+              "source": "relayed by team lead"
+            },
             "open_decisions": [],
             "planning_artifact_only": true,
             "review_status": "pending",
@@ -12799,10 +12813,10 @@
       "status": "committed",
       "task_summary": "Execution driver for non-local placement (agent-harness#896 plan 1b, P1): admission, lease journal, heartbeat, reaper and the execute branch behind the placement seam, with contract amendments C1-C9; amends the 2026-09-29 placement and E2B plans section by section",
       "type": "detailed",
-      "updated_at": "2026-10-10T17:38:04Z"
+      "updated_at": "2026-10-10T17:42:43Z"
     },
     {
-      "acceptance_criteria_count": 4,
+      "acceptance_criteria_count": 5,
       "created_at": "2026-10-10T17:38:04Z",
       "file": "plans/detailed-ssh-placement-backend-896-20261010.md",
       "handoff_ref": null,
@@ -12820,11 +12834,21 @@
               "Consiliency/agent-harness#896",
               "Consiliency/agent-harness#1244"
             ],
-            "open_decisions": [
-              "B5",
-              "B6",
-              "per-principal resource totals waiver"
-            ],
+            "maintainer_decisions": {
+              "decisions": [
+                "route: ssh first",
+                "B1",
+                "B2",
+                "B3",
+                "B4",
+                "B5",
+                "B6",
+                "egress list unchanged"
+              ],
+              "recorded_at": "2026-10-10",
+              "source": "relayed by team lead"
+            },
+            "open_decisions": [],
             "planning_artifact_only": true,
             "review_status": "pending",
             "route_ruling": "maintainer 2026-10-10: self-hosted compute host over SSH first"
@@ -12840,7 +12864,7 @@
       "status": "committed",
       "task_summary": "SSH placement backend and its compute-host entry point (agent-harness#896, P2): root form, session-as-lease protocol, verified stage transfer, per-boot host qualification, sandbox qualify; proven with a null workload on a loopback sshd",
       "type": "detailed",
-      "updated_at": "2026-10-10T17:38:04Z"
+      "updated_at": "2026-10-10T17:42:43Z"
     },
     {
       "acceptance_criteria_count": 5,
@@ -12862,10 +12886,21 @@
               "Consiliency/agent-harness#896",
               "Consiliency/agent-harness#1244"
             ],
-            "open_decisions": [
-              "B1",
-              "B4"
-            ],
+            "maintainer_decisions": {
+              "decisions": [
+                "route: ssh first",
+                "B1",
+                "B2",
+                "B3",
+                "B4",
+                "B5",
+                "B6",
+                "egress list unchanged"
+              ],
+              "recorded_at": "2026-10-10",
+              "source": "relayed by team lead"
+            },
+            "open_decisions": [],
             "planning_artifact_only": true,
             "review_status": "pending",
             "route_ruling": "maintainer 2026-10-10: self-hosted compute host over SSH first"
@@ -12881,7 +12916,7 @@
       "status": "committed",
       "task_summary": "A review seat executes on the compute host through the placement entry point (agent-harness#896, P3): the launch closure factored for both hosts, per-run narrowed credentials in the request, the placed route decision, the remote seat mode",
       "type": "detailed",
-      "updated_at": "2026-10-10T17:38:04Z"
+      "updated_at": "2026-10-10T17:42:43Z"
     }
   ],
   "schema_version": 1

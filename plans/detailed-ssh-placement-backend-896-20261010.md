@@ -95,10 +95,10 @@ are JSON with a closed key set; the stage, the request and the result are bytes.
 
 **The far end.**
 - **A root-owned shim** (`deploy/phase-loop-seat-entry.sh`, POSIX `sh`, shipped as package
-  data) is what the SSH server runs, as a forced command or as the account's login shell. It
-  accepts exactly the fixed command string, maps the version to an installed runtime
-  directory, and executes that runtime's entry point with the principal name the server
-  configuration gave it. Any other request, or a version that is not installed, exits with
+  data) is what the SSH server runs as the forced command for each key. It accepts exactly
+  the fixed command string, maps the version to an installed runtime directory, and
+  executes that runtime's entry point with the principal name the server configuration
+  bound to that key. Any other request, or a version that is not installed, exits with
   a fixed status and runs nothing.
 - **The entry point** (`placement_entry.py`, console script `phase-loop-seat-entry`):
   - reads one root-owned configuration file with a closed key set (workspace, concurrency
@@ -122,7 +122,12 @@ are JSON with a closed key set; the stage, the request and the result are bytes.
     listening port on every address of the host fails;
   - the session's resource group has memory, CPU and task limits;
   - no device other than the standard pseudo-devices and the tunnel device can be opened;
-  - `seat_jail_prerequisites.check` reports nothing missing.
+  - `seat_jail_prerequisites.check` reports nothing missing;
+  - **separation:** a probe program launched through the seat-launch owner, in the same
+    filesystem view a seat gets, cannot list, open or stat another principal's sandbox
+    directory, another sandbox of its own principal, the workspace root, or the entry
+    point's configuration and state. The probe is given the real paths and must fail on
+    each.
 
   A failed probe refuses every admission with `sandbox_ssh_host_unqualified` until it
   passes. A reboot, or a new runtime version, runs it again. `READY` carries the verdict
@@ -139,14 +144,14 @@ and `resource_bounded`. Each is recorded as `backend_attested`, from `READY`. No
 Those requirements were written for the HTTPS service and stay attached to it. For this
 backend:
 
-| Requirement | This backend |
+| Requirement | This backend (as ruled 2026-10-10) |
 |---|---|
 | Reachable only over the tailnet; qualification refuses a public listener | **Met differently:** the arrival rule above, plus deployment (the port is offered only on a private interface). The launching side cannot inspect the server's listeners. |
 | A per-principal credential **and** a verified allowed source | **Met differently, by deployment:** one SSH key per user, pinned by the server to the launching host's address. No reusable secret crosses the wire. The product ships the guidance, not the server configuration. |
 | One principal per account on a shared launching host; easy issue and revoke | **Met:** the principal is the name the server configuration binds to each key. |
-| Per-principal isolation by separate uid ranges | **Open, B6.** One account on the compute host means separation by the entry point's per-principal workspace and the seat's filesystem view. |
+| Per-principal isolation by separate uid ranges | **Replaced for the first slice, by ruling.** One account on the compute host: separation is the entry point's per-principal workspace and the seat's filesystem view, proven by the separation probe. Per-user accounts are a named follow-on. |
 | Per-principal caps: concurrent sandboxes | **Met.** |
-| Per-principal caps: total CPU and memory | **Not met in this slice; needs an explicit waiver.** One limit bounds the whole account. |
+| Per-principal caps: total CPU and memory | **Not in the first slice, by ruling.** One limit bounds the whole account. A named follow-on. |
 | Later: signed requests | **Already met** by SSH keys. |
 
 ## Changes
@@ -194,7 +199,7 @@ backend:
   placement backend" subsection under the placement seam: the root form, the session as
   lease, the protocol table, the codes, the entry point's refusals.
 - `docs/phase-loop/remote-seat-host.md` — create — operator guide for a compute host: the
-  account, the forced command or login shell, one source-pinned key per user, the
+  account, a dedicated port with a forced command, one source-pinned key per user, the
   configuration file, resource limits, an output firewall for the account, installing the
   runtime per version, `sandbox qualify`. Example names and addresses use documentation
   ranges only.
@@ -244,6 +249,7 @@ mutation.
 | Session arriving on a globally routable address | Refused | Trust the client's claim |
 | Host probe: a listener the fixture opens on a host address | Verdict fails; every admission is `sandbox_ssh_host_unqualified` until it is closed and the probe re-run | Probe loopback only |
 | Host probe: no limits on the session's resource group | Verdict fails | Report limits without reading them |
+| Host probe: separation, with a second principal's sandbox present | The probe inside the seat view fails to list, open or stat each of the named paths; verdict passes | Bind the workspace root into the seat's view |
 | Forced client options | The recorded argument list carries every option listed under Design, with the operator's own configuration asking for forwarding and connection sharing | Drop one option |
 | Root with a path, with userinfo, with a query | Refused, or the userinfo and query absent from the argument list | Pass the configured text |
 | `sandbox qualify` against the loopback fixture | Exit 0 and a complete report; exit non-zero when the fixture's entry point is made to fail one property | Exit 0 on a partial report |
@@ -258,20 +264,29 @@ mutation.
   and no sandbox directory on the far end.
 - [ ] With a listener opened on one of the fixture host's addresses, every admission is
   refused with `sandbox_ssh_host_unqualified`.
+- [ ] With a second principal's sandbox present, the separation probe, run inside the seat's
+  filesystem view, cannot list, open or stat it; with the workspace root bound into that
+  view the host verdict fails and every admission is refused.
 - [ ] Every test in `automation.suite_command` passes on a machine with no network access
   beyond loopback, and the new product files contain no IPv4 literal outside loopback.
 
 ## Maintainer decisions
 
-**Settled, cited:** the route (2026-10-10); RD6 (b) is exercised by this backend.
+**Rulings of 2026-10-10** (relayed by the team lead; each was asked with options and
+trade-offs):
 
-**Open, and what this plan assumes until they are ruled:**
+| Ruling | What it fixes in this plan |
+|---|---|
+| Access (B5): a dedicated SSH port that admits only the seat account, key only, forced command, forwarding and terminals off, one source-pinned key per launching-host user in a root-owned file | The shim is a forced command; the principal is the name the server binds to each key. This is deployment, described in the operator guide; the product names no port or account. |
+| Accounts (B6): one shared account first. This supersedes RD1 (a) **for the first slice**; the maintainer was told that separation between teammates then rests on the runtime's sandbox and a probe, with resource caps for the account as a whole. | The in-seat separation probe is load-bearing: it is part of host qualification and an acceptance criterion, with a named mutation. |
+| Default (B2): opt in per user until `sandbox qualify` passes from the launching host and a few boards have run clean, then a host-wide default | Configuration only (`PHASE_LOOP_SANDBOX_ROOT`); no product change |
+| The built-in egress list is left as it is | The host probe proves that a seat cannot reach its own host's services; nothing changes the default list |
 
-| ID | Question | Assumed here | If ruled otherwise |
-|---|---|---|---|
-| B5 | Dedicated SSH port with a forced command and per-user keys, or the tailnet's own SSH with a login shell | Either: the shim serves both, and the principal is whatever the server binds | Under the tailnet's own SSH every user of a shared launching host is one identity, so a per-principal token must be added to `HELLO` |
-| B6 | One account on the compute host, or one per user | One | Per-user accounts need no code change; the per-principal workspace then sits inside each account |
-| — | Waiver: per-principal totals for CPU and memory are not in this slice | Waived | A resource group per principal is added to the entry point |
+**Named follow-ons, not dropped:** one account per teammate on the compute host, and
+per-principal totals for CPU and memory (a resource group per principal). Until then one
+limit bounds the whole account, by this ruling.
+
+**Open:** none. The limit numbers are deployment values and are not in this plan.
 
 ## Execution Policy
 

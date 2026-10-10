@@ -73,7 +73,7 @@ the **request and the login** (a staged tree, credential presence, the login's m
 its wait) are answered on the launching host, before anything is sent. If placement falls
 back to local, the route is decided again with the local host's facts.
 
-**Credentials (assumes B1 (a); RD4 (a) and CD1 as ruled).**
+**Credentials (ruling B1 of 2026-10-10; RD4 (a) and CD1 stand).**
 - The narrowing in `seat_profile` is factored into one function. Locally it reads the
   operator's home, as today. For a placed leg the launching host calls it, including
   Claude's session-binding decision and agy's refresh, and puts the result in the request's
@@ -141,6 +141,11 @@ mode line and recorded in `seat-modes.json`.
 - `kind="leg"` — modify — calls `execute_leg_request`.
 - The host probe — modify — also reports which vendor CLIs are present and whether the agy
   image is an admitted one. It performs no login and starts no model call.
+
+### `phase-loop-runtime/src/phase_loop_runtime/cli.py` (modify)
+- `sandbox qualify <name> --seat <harness>` — add — one minimal real seat for that harness
+  through the whole placed path, with the operator's own login, and a record of the
+  vendor's response. It is an operator command and never runs in CI.
 
 ### `phase-loop-runtime/src/phase_loop_runtime/seat_preflight.py`, `seat_jail.py` (modify)
 - `SEAT_MODES` — modify — add `remote`, unless agent-harness#1244's PR-A1 has landed first
@@ -225,11 +230,13 @@ case is control-green and red under its mutation.
 | Result carrying, in turn: a detail outside the vocabulary; an unknown notice; a claim block of the wrong type | In turn: the detail becomes the unknown-failure template; the notice is dropped; the result is refused as `sandbox_placement_result_invalid` | Trust the result's fields |
 | Broker record of a placed seat | Passes the verifier's placed shape; reported EC-HARDEN-5 UNMET; the claims key is present and unread | Copy a claimed launch key into the record |
 | Mode line | `remote` with the backend name for a placed seat; unchanged for a local one | Report `jailed` for a placed seat |
+| Two principals' seats on one compute-host account, at the same time | From inside each real seat launch (codex, grok and the jailed Claude seat), the other principal's staged tree, home and output cannot be listed, opened or stat-ed | Add the workspace root to the seat's read-only paths |
 
-**Live check, outside CI.** One board from a launching host against a real compute host,
-with real CLIs and `heartbeat_only` monitoring, recorded in the PR: each tooled seat shows
-mode `remote`, the launching host's process table shows no provider CLI for those seats,
-and `phase-loop sandbox qualify` passes before and after.
+**Live check, outside CI.** `phase-loop sandbox qualify <name> --seat <harness>` for each
+placed harness, then one board from a launching host against a real compute host, with real
+CLIs and `heartbeat_only` monitoring. Recorded in the PR: each vendor's response; each
+tooled seat shows mode `remote`; the launching host's process table shows no provider CLI
+for those seats; `phase-loop sandbox qualify` passes before and after.
 
 ## Acceptance criteria
 - [ ] With nothing configured, plan 1a's local-equivalence golden and
@@ -242,21 +249,30 @@ and `phase-loop sandbox qualify` passes before and after.
   in any file under the entry point's directories during or after a placed seat.
 - [ ] A Claude override bound to another account is refused on the launching host before
   any session is opened.
-- [ ] A sealed-route leg is not placed, and under the fail-closed knob it is refused with
-  zero spawns and is not run sealed.
+- [ ] With two principals' seats running under one account, neither seat can list, open or
+  stat the other's staged tree, home or output; with the workspace root added to the seat's
+  read-only paths that test fails.
 
 ## Maintainer decisions
 
-**Settled, cited:** the route (2026-10-10); RD4 (a) and CD1 (agent-harness#1162); the
-session binding of agent-harness#1253.
+**Rulings of 2026-10-10** (relayed by the team lead; each was asked with options and
+trade-offs):
 
-**Open, and what this plan assumes until they are ruled:**
+| Ruling | What it fixes in this plan |
+|---|---|
+| Logins (B1): the launching user's, per run: the same access-only form a local seat gets, delivered inside the request, held only in the seat's in-memory home on the compute host, nothing at rest, gone when the seat ends | The credential design above. RD4 (a) and CD1 stand. |
+| Accounts (B6): one shared account first | Separation between teammates' seats rests on the seat's filesystem view; the acceptance criterion below proves it for a real seat launch |
+| Scope (B4): seats only in this slice; the president next; executors under their own plan | `_placeable` |
+| Busy or down (B3), default (B2) | Configuration and P1's C7; no code here |
 
-| ID | Question | Assumed here | If ruled otherwise |
-|---|---|---|---|
-| B1 | Whose vendor login a placed seat uses | The launching user's own, per run, never at rest on the compute host | A login held on the compute host removes the credential slot and breaks the "no credential at rest" invariant; this plan would have to be rewritten, not adjusted |
-| B4 | Whether the president or executors move in this slice | Seats only (RD3 as ruled) | The president is an addition to `_placeable` and the request; executors need their own plan |
-| B2, B3 | The default on a shared launching host; behaviour when the compute host cannot take a seat | Configuration only: the root, the admission wait and the fail-closed knob already express every option | No code change |
+**Known risks, disclosed to the maintainer with this ruling, each with its check:**
+
+| Risk | Check |
+|---|---|
+| Root on the compute host can read a login in memory while a seat runs | It cannot be prevented, only bounded: the "nothing at rest" case under Verification proves no credential value reaches any file there, during or after a seat, and the mode line and operator guide state the exposure. |
+| A vendor may object to a login used from the compute host's address while the user's own session runs elsewhere | `phase-loop sandbox qualify <name> --seat <harness>` runs one minimal real seat per vendor and records what the vendor did (accepted, challenged, refused). The first run on a real compute host is recorded in the PR; a vendor that refuses makes that harness ineligible for placement until resolved. |
+
+**Open:** none.
 
 ## Execution Policy
 
