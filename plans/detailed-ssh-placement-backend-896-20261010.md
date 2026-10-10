@@ -146,7 +146,10 @@ row with a fix line):
   archive members are checked (below). It reads configuration only from the one root-owned
   file, refuses to run if that file is missing, not root-owned or writable by anyone else,
   and refuses if its own home directory or the runtime it runs from is writable by its
-  uid. It never lets a child inherit the session's input or output.
+  uid. It never lets a child inherit the session's input or output. Before any other
+  runtime code runs it sets its runtime directory to the state directory the configuration
+  names, so every seat-id lease on the host uses one lock directory; main's fallback to a
+  per-uid directory under the temporary directory is never taken.
 - **Configuration** (a closed key set): the workspace and state directories; whether the
   workspace must be a mount point of its own (default yes, so everything written sits
   under one bounded file system); caps on concurrent sandboxes overall and per principal;
@@ -357,6 +360,7 @@ control-green and red under its mutation.
 | The shim: another command string; shell metacharacters; a version with a path separator; a login-shell invocation | Fixed non-zero exit; the entry point is not started; nothing is passed to a shell | Evaluate the string |
 | The entry point: inherited environment variables; a writable home; a writable runtime directory; configuration missing, not root-owned (through an owner-check seam) or group-writable | Environment ignored; refuses before reading a frame | Read configuration from the home |
 | Session arriving on a globally routable address; port also bound on one | Refused | Trust the client's claim |
+| The entry point started with no runtime directory in its environment; two sessions at once | Both take seat-id locks under the configured state directory and get different ids; nothing is created under the temporary directory | Let `seat_uid.seat_runtime_dir` fall back |
 | Host probe, account level: a loopback listener the account can reach | Verdict fails; every admission is `sandbox_ssh_host_unqualified` | Probe from inside a namespace only |
 | Host probe, seat namespace: a listener on a host address | **Blocked: the verdict passes.** With the host-address rule removed from the namespace, the connection succeeds and the verdict fails | Count a listener's existence as a failure |
 | Host probe: a connectable unix socket outside the allow-list; no limits; a non-zero swap limit; two subordinate ranges; an openable device outside the allowed set | Verdict fails in each | Report without measuring |

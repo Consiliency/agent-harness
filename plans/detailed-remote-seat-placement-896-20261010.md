@@ -222,8 +222,10 @@ final; backend receipts never make `sandbox_root_applied` true.
 - **C10 The gate governs legs; qualification is exempt.** `PlacementRequest.workload` is
   visible to the driver and to `admit`. Only the qualification entry point builds a
   `qualification` request: it transfers a synthetic tree, its records never count as an
-  applied placement, and it may be driven while `_NONLOCAL_EXECUTION_DRIVER` is false. A
-  `leg` request is never built while the flag is false. A backend that cannot run a
+  applied placement, and it may be driven while `_NONLOCAL_EXECUTION_DRIVER` is false. **The
+  driver itself refuses a `leg` request while the flag is false**, before `admit`: the
+  guard is in `place`, not left to its callers, so no future caller can place a seat by
+  forgetting to check. A backend that cannot run a
   workload refuses it in `admit` (`sandbox_placement_workload_unsupported`, class
   `refused`), so nothing is transferred for a workload that will not run. The flag turns on
   in the unit after which a real backend runs a seat end to end (P4), not before.
@@ -248,7 +250,9 @@ final; backend receipts never make `sandbox_root_applied` true.
   backend's codes with their classes (C7). The four codes the seam already raises are
   entered here.
 - `place(candidates, prepared, request_for, lease, bound) -> LegPlacement` — add — the C7
-  walk with C8.
+  walk with C8, and C10's refusal of a `leg` workload while the flag is false. The flag is
+  read through an argument `panel_invoker` supplies, so `sandbox_placement` does not import
+  the launch module.
 - `run_placed(placement, spec, *, on_progress, cancelled) -> ExecResult` — add — `execute`,
   the `wait` loop, renewal, cancel and C11. After `execute` is called every exit is
   post-launch.
@@ -355,7 +359,7 @@ not involved until P4. Each case is control-green and red under its mutation.
 | A backend whose `admit` never returns; whose `commit`, `kill` and `list_owned` never return | Each ends within its bound as `sandbox_placement_operation_timeout`; a cancel during each returns within the bound | Wait without a timeout |
 | Cancel during the capacity wait | Zero backend calls after it | Sleep through cancel |
 | `qualification` request while the flag is false | Driven; its receipts are marked and `applied_rule` is false for them | Count them as applied |
-| A `leg` request built while the flag is false | Refused by the driver before `admit` | Check the flag in the caller only |
+| `place` called with a `leg` workload while the flag is false | Refused by `place` itself: zero backend calls | Check the flag in the caller only |
 | Backend lacking a required capability; declared but not verified after `commit` | `sandbox_placement_capability_unmet`; in the second case the sandbox is killed and confirmed first | Check `capabilities()` only |
 | Failure after `execute` (raise, lost acknowledgement, `wait` raises) | `sandbox_placement_lost_after_launch`; no second `execute` anywhere | Fall back on any exception |
 | No-deadline leg on a backend with `max_lifetime_s`; deadline beyond it | Admitted and renewed while the lock is held; refused before `commit` | Refuse when `deadline_s is None` |

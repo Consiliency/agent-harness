@@ -127,8 +127,8 @@ after a crash, until the next admission.** Core dumps are off and swap is zero f
 account (P2).
 
 **The far end's seat run** (`workload="leg"`). The entry point rebuilds the staged
-directory from the verified tree and the request; leases a seat id from the directory its
-configuration names; builds the seat's egress namespace in the owner-pipe form for every
+directory from the verified tree and the request; leases a seat id, from the one lock
+directory the entry point fixed at start (P2), as the jail's own qualification does; builds the seat's egress namespace in the owner-pipe form for every
 monitoring policy, with an empty private allowlist and `required=True`; and calls
 `_infer_leg_here` with the request's credential slot as the credential source. A stand-in
 for the review monitor turns the same progress observations the local loops make into
