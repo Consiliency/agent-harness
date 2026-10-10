@@ -129,9 +129,15 @@ depend on the driver plan and can land in parallel with it.
 
 ### `phase-loop-runtime/tests/test_seat_launch_factoring.py`, `tests/fixtures/seat_launch_factoring/closure_recording.json` (create); `tests/data/seat_launch_references.json` (modify)
 - The recording — add — taken **on the base, before any code moves**, by the test module's
-  own recorder: for each branch of the closure and each outcome listed under
-  "Verification", the status, text, details, notices and broker-evidence keys
-  `_parent_infer` produces, or the type and arguments of the exception that leaves it.
+  own recorder, for each branch of the closure and each outcome listed under
+  "Verification". It holds two kinds of fact:
+  - **what comes out:** the status, text, details, notices and broker-evidence keys
+    `_parent_infer` produces, or the type and arguments of the exception that leaves it;
+  - **what happens on the way, in order:** each credential read (which read, for which
+    path or margin, with which `HOME`), each acquisition the launch depends on (the seat
+    id, the egress prefix as read), and the launch itself as the provider is started: its
+    argument list, the names of its environment variables, and its bind list. Secret
+    values are recorded as digests, never as values.
 - The falsifiers under "Verification".
 - The inventory — modify — the rows that move from `seat_profile` to
   `_narrow_seat_credentials` and `LOCAL_LOGIN_SOURCE`, all within `panel_invoker`. The
@@ -185,6 +191,7 @@ does.
 | Case | Expected | Mutation that must turn it red |
 |---|---|---|
 | Each branch (jailed Claude, non-jailed Claude, `_exec_leg` for codex, grok and Gemini), success and each typed failure | Status, text, details, notices and broker-evidence keys equal the recording taken on the base | Drop a notice in the fold; lose `gemini_detail`; alter when `leg_detail` is cleared |
+| The ordered sequence for each branch: credential reads, acquisitions, then the launch with its argument list, environment names and bind list | Equal to the recording, element for element and in the same order | Swap two credential reads; resolve the Claude credential before the tree re-hash in the jailed branch; add one environment name; add or reorder one bind |
 | Each exception that leaves `_parent_infer` on the base (the quiescence error; a non-Gemini `_exec_leg` exception; `gemini_broker_diagnostic_invalid`; an untyped exception from each Claude route) | Leaves `_infer_leg_here`, and `_parent_infer`, with the same type and arguments; the leg ends with the same status as on the base | Build the result inside a broad `except` |
 | A leg that is not jailed | Runs with no seat id supplied | Build every argument eagerly |
 | The two existing tests that run the real closure | Pass unchanged | — |
@@ -213,8 +220,9 @@ does.
 - [ ] For every branch of the closure and every outcome in the recording taken on the base
   (jailed Claude, non-jailed Claude, `_exec_leg` for codex, grok and Gemini; success, each
   typed failure, and each exception that leaves it), `_infer_leg_here` through
-  `_parent_infer` reproduces the recording; the recorder's own red log against an altered
-  closure is in the PR.
+  `_parent_infer` reproduces the recording: what comes out, and the ordered sequence of
+  credential reads, acquisitions and the launch's argument list, environment names and
+  binds. The recorder's own red log, one entry per named mutation, is in the PR.
 - [ ] With an injected credential source, the jailed Claude seat and every `seat_profile`
   branch receive that source's bytes with no read of the host's login stores by the moved
   code; with the default source the bytes and the redaction values equal the base's.
