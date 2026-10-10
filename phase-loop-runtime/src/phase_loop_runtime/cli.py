@@ -1060,6 +1060,17 @@ def build_parser() -> argparse.ArgumentParser:
     seat_sandbox_sub.add_argument("seat_sandbox_action",
                                   choices=("qualify", "reap", "store-token", "token-status"))
     seat_sandbox_sub.add_argument("seat_sandbox_path", metavar="PATH", nargs="?")
+    # publication-mode (agent-harness#1392): the interactive execute-phase path's
+    # equivalent of --closeout-mode. Read-only; prints the mode and its required action.
+    publication_mode_sub = subparsers.add_parser(
+        "publication-mode",
+        help=("Print the interactive publication mode (none | draft-only | ready) resolved "
+              "from the repo's committed .phase-loop-publication.toml and the user's "
+              "agent-harness/publication.toml, and the action it requires. Run it before "
+              "any git push or gh pr create on the interactive path; non-zero means do "
+              "not publish."),
+    )
+    publication_mode_sub.add_argument("--repo", default=argparse.SUPPRESS)
     # train-status: non-mutating inspection of the cross-repo train ledger (#45).
     # Reads the SAME default ledger path as run-train; opens no PRs, writes nothing.
     train_status_sub = subparsers.add_parser(
@@ -1571,6 +1582,10 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
         return _advisor_board_command(args=args)
     if command == "seat-sandbox":
         return _seat_sandbox_command(args=args)
+    if command == "publication-mode":
+        from . import publication_mode
+
+        return publication_mode.main(repo=args.repo)
     if command == "docs-audit":
         from . import docs_audit
 
