@@ -126,6 +126,7 @@ from . import sandbox_retention as _sandbox_retention
 from . import seat_credentials as _seat_credentials
 from . import seat_jail as _seat_jail
 from . import seat_jail_autoqualify as _seat_jail_autoqualify
+from . import panel_reply as _panel_reply
 from . import seat_session_label as _seat_session_label
 from . import seat_uid as _seat_uid
 from . import seat_preflight as _seat_preflight
@@ -1804,6 +1805,12 @@ class PanelLegResult:
         return getattr(self, "_needs_native_agent", None)
 
     @property
+    def panel_reply(self) -> "_panel_reply.PanelSeatReply | None":
+        """The verified structured reply (``--reply-format json``), or ``None``. A non-field
+        attachment: ``dataclasses.asdict`` and every golden never see it."""
+        return getattr(self, "_panel_reply", None)
+
+    @property
     def seat_preflight_notices(self) -> "tuple[_seat_preflight.SeatPreflightNotice, ...]":
         """agent-harness#1204: the typed notices the board-level preflight raised for this
         seat before launch (a non-field attribute, so golden serializers never see it)."""
@@ -2197,6 +2204,56 @@ def _finalize_research_result(
     if result.status == "OK" and ledger.status != "success":
         object.__setattr__(result, "status", "DEGRADED")
         object.__setattr__(result, "detail", _HarnessCode(f"research_audit_{ledger.status}"))
+    return result
+
+
+def attach_panel_reply(leg: PanelLegResult, reply: "_panel_reply.PanelSeatReply") -> PanelLegResult:
+    """Keep a seat's verified structured reply with its result, outside the dataclass fields."""
+    object.__setattr__(leg, "_panel_reply", reply)
+    return leg
+
+
+def _structured_reply_outcome(text: str, mode: str) -> "_panel_reply.ReplyOutcome":
+    """Verify a seat's reply text as a structured reply (``panel_reply``) and its legacy last line.
+
+    The JSON is the machine-readable body; the last line is what every transport already uses to
+    decide a reply is complete (the verdict word in review mode, ``RECOMMENDATION:`` in advisory
+    mode). The two must agree, so a seat cannot satisfy the transport with one verdict and the
+    consumer with another."""
+    reply_mode = "advisory" if mode == "advisory" else "review"
+    outcome = _panel_reply.extract_reply(text, reply_mode)
+    if not outcome.verified:
+        return outcome
+    assert outcome.reply is not None
+    if reply_mode == "review":
+        tail = terminal_verdict(text)
+        if tail != outcome.reply.verdict:
+            return replace(outcome, reply=None, failure="terminal_mismatch",
+                           detail="the last line is not the JSON's verdict")
+    elif _advisory_recommendation(text) is None:
+        return replace(outcome, reply=None, failure="recommendation_missing",
+                       detail="the last line is not a RECOMMENDATION line")
+    return outcome
+
+
+def _verify_structured_reply_result(result: PanelLegResult, mode: str) -> PanelLegResult:
+    """Fail closed on a seat whose reply is not a verified structured reply.
+
+    A reply that does not verify is DEGRADED with a typed ``panel_reply_<kind>`` detail and its
+    text kept, exactly like a review with no conforming verdict: the governed classifier reads
+    non-usable text as ``panel_nonconforming`` and holds. Done in place (the same way
+    ``_finalize_research_result`` does) so every attachment the seat already carries survives.
+    Idempotent: a result is checked once."""
+    if getattr(result, "_panel_reply_checked", False):
+        return result
+    object.__setattr__(result, "_panel_reply_checked", True)
+    if result.status != "OK":
+        return result
+    outcome = _structured_reply_outcome(result.text, mode)
+    if outcome.reply is not None:
+        return attach_panel_reply(result, outcome.reply)
+    object.__setattr__(result, "status", "DEGRADED")
+    object.__setattr__(result, "detail", _HarnessCode(f"panel_reply_{outcome.failure}"))
     return result
 
 
@@ -2826,6 +2883,8 @@ def _redact_leg_text(text: str, known: Sequence[str | os.PathLike[str]] = ()) ->
 # `leg-logs/` dir under the run's stream dir) that detail names by a run-relative path; that
 # file is never part of PanelLegResult, the verdict JSON, governed reasons or the summary.
 _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
+    # a seat's structured reply (`--reply-format json`) failed verification (`panel_reply`)
+    *(f"panel_reply_{kind}" for kind in _panel_reply.SEAT_FAILURE_KINDS),
     # claude TUI / Agent View route
     "claude_tui_broker_final_assistant", "claude_tui_broker_terminal_nonconforming",
     "claude_tui_editor_not_ready", "claude_tui_file_output", "claude_tui_missing_canonical_output",
@@ -12182,6 +12241,10 @@ def _write_incremental_verdict(
         if result.review_monitoring is not None:
             # agent-harness#1176: heartbeat_only only; metadata, never provider text.
             payload["review_monitoring"] = dict(result.review_monitoring)
+        if result.panel_reply is not None:
+            # Present only when the board ran with `reply_format="json"` and this seat verified,
+            # so the default payload (and its consumers) are unchanged.
+            payload["reply"] = result.panel_reply.model_dump(mode="json")
         # Atomic publish: write a temp sibling then os.replace, so a directory
         # watcher never observes/parses a partially-written verdict file.
         body = json.dumps(payload, indent=2, sort_keys=True)
@@ -12818,8 +12881,19 @@ def invoke_board(
     pointer_brief: bool = False,
     on_seat_preflight: "Callable[[tuple[_seat_preflight.SeatPreflightNotice, ...]], None] | None" = None,
     on_seat_modes: "Callable[[tuple[_seat_preflight.SeatMode, ...]], None] | None" = None,
+    reply_format: str | None = None,
 ) -> PanelResult:
     """Run an Advisor Board's seats through the provider seam, fail-closed.
+
+    ``reply_format="json"`` (opt-in; ``None`` is the historical path, byte for byte) verifies each
+    seat's reply as a structured reply (``panel_reply``): ONE JSON object that matches the schema
+    exactly, with the data its mode requires, followed by the legacy last line. A verified reply
+    is attached to the seat's result (``PanelLegResult.panel_reply``); a reply that does not
+    verify is DEGRADED with a typed ``panel_reply_<kind>`` detail and its text kept, so the
+    governed classifier holds it as it holds any non-conforming review. This only verifies: the
+    caller's brief must already ask for the format, which is why ``advisor-board
+    --reply-format json`` builds the brief (the brief is bound by the HARDEN instruction digest and
+    the sealed prompt envelope, so the runtime cannot append to it after the fact).
 
     agent-harness#1132 (plan amendment A1): before ANY seat launches, every seat's launch
     mode (jailed / unconfined / sealed / degraded / native, with its reason and fix) is
@@ -12953,6 +13027,8 @@ def invoke_board(
         mode = _mode_for_purpose(board.purpose)
     if mode not in PANEL_MODES:
         raise ValueError(f"unknown panel mode {mode!r}; expected one of {PANEL_MODES}")
+    if reply_format not in (None, "json"):
+        raise ValueError(f"unknown reply_format {reply_format!r}; expected None or 'json'")
     review_lease_active = False
     explicit_spawn_refusal = explicit_mode and mode == "review" and spawn is not None
     switched = _govlean_authority_switched(repo_dir)
@@ -13346,6 +13422,10 @@ def invoke_board(
                     deferred.append(result)
                 if native_leg_fills:
                     deferred = apply_native_leg_fills(deferred, native_leg_fills)
+                    if reply_format is not None:
+                        # A fill is a seat's reply like any other: held to the same format.
+                        for filled in deferred:
+                            _verify_structured_reply_result(filled, mode)
                 attach_seat_preflight_notices(deferred, early_preflight)
                 if native_leg_fills:
                     # A filled early-deferral board joins the common president tail instead
@@ -13872,7 +13952,12 @@ def invoke_board(
             # included (set here, in the worker thread that runs the seat).
             token = _BOARD_CANCEL.set(operation_cancel)
             try:
-                return _run_seat_policy(item)
+                seat_result = _run_seat_policy(item)
+                if reply_format is not None:
+                    # Before `_run_legs_ordered` hands the result to `on_leg_complete` and the
+                    # incremental verdict file, so a consumer never sees an unverified reply as OK.
+                    _verify_structured_reply_result(seat_result, mode)
+                return seat_result
             finally:
                 _BOARD_CANCEL.reset(token)
 
@@ -13972,6 +14057,9 @@ def invoke_board(
             observer.board_completed(results)
         if native_leg_fills:
             results = apply_native_leg_fills(results, native_leg_fills)
+            if reply_format is not None:
+                for filled in results:
+                    _verify_structured_reply_result(filled, mode)
         # agent-harness#1204: mark the preflight's seats before any counting or ruling.
         attach_seat_preflight_notices(results, seat_preflight_notices)
         panel_result = PanelResult(legs=tuple(results))

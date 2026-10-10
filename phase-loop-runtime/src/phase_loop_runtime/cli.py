@@ -1135,6 +1135,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to the review material staged into the board bundle.",
     )
     advisor_board_sub.add_argument("--json", action="store_true", help="Emit the board verdicts as JSON.", default=argparse.SUPPRESS)
+    advisor_board_sub.add_argument(
+        "--reply-format", dest="reply_format", choices=("json",), default=None,
+        help=("Ask every seat for a machine-consumable reply: ONE JSON object (verdict, summary, findings[]) "
+              "then the usual last line, and verify it. A reply that does not verify is DEGRADED with a typed "
+              "panel_reply_<kind> detail and held like a non-conforming review; a verified one is under "
+              "`reply` in --json. The brief is extended with the format, so a --native-leg fill must be "
+              "prepared with the same flag. Not combinable with --advisory or agy canary capture."),
+    )
     # REVIEWTRUTH early slice (EC-REVIEWTRUTH-14): the native-fill protocol under Claude Code.
     advisor_board_sub.add_argument(
         "--emit-native-request", dest="emit_native_request", action="store_true", default=False,
@@ -2045,7 +2053,9 @@ def _review_isolation_hint(exc: BaseException) -> str | None:
     return None
 
 
-def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | None = None) -> int:
+def _advisor_board_command(
+    *, args: argparse.Namespace, _advisory_root: Path | None = None, _reply_root: Path | None = None,
+) -> int:
     """LEGACY (CLEANSHIP P7): run the 4-vendor advisor board as the RUNNABLE
     agent-facing default. Composes availability-aware seats via
     ``compose_review_board`` (REVIEWGOV IF-0-REVIEWGOV-1: ``is_available ∧ auth_ok``,
@@ -2089,6 +2099,18 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
             finally:
                 os.environ.update(removed_git)
 
+    reply_format = getattr(args, "reply_format", None)
+    if reply_format is not None:
+        if advisory:
+            # An advisory run is recognised by the exact digest of its contract; extending the
+            # brief would change that digest and a non-landing review could stop looking like one.
+            print("advisor-board: --reply-format cannot be combined with --advisory (the advisory "
+                  "contract is recognised by its exact bytes)", file=sys.stderr)
+            return 2
+        if _reply_root is None:
+            with tempfile.TemporaryDirectory(prefix="advisor-board-reply-format-") as reply_root:
+                return _advisor_board_command(args=args, _advisory_root=_advisory_root, _reply_root=Path(reply_root))
+
     from .advisor_board.backing import (
         clear_review_composition_authorization,
         prepare_review_composition_authorization,
@@ -2120,6 +2142,18 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
         advisory_brief_path = _advisory_root / "advisory-contract.md"
         advisory_brief_path.write_text(ADVISORY_CONTRACT, encoding="utf-8")
         advisory_brief_ref = str(advisory_brief_path)
+    if reply_format is not None:
+        # The brief is bound by the HARDEN instruction digest and the sealed prompt envelope, and
+        # about ten call sites resolve it independently, so the format instructions are made part
+        # of the brief itself: one file, passed as `brief_ref` everywhere (the same mechanism the
+        # advisory contract uses), and the digest minted from exactly these bytes.
+        from .panel_reply import render_reply_instructions
+
+        assert _reply_root is not None
+        review_brief = review_brief.rstrip("\n") + "\n\n" + render_reply_instructions("review")
+        reply_brief_path = _reply_root / "review-brief-reply-format.md"
+        reply_brief_path.write_text(review_brief, encoding="utf-8")
+        advisory_brief_ref = str(reply_brief_path)
     monitoring_policy = getattr(args, "monitoring_policy", "bounded")
     try:
         resolve_review_monitoring_policy(
@@ -2173,6 +2207,11 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
         return 2
     if capture is not None and advisory:
         print("advisor-board: capture is a governed exact-four run and cannot be --advisory", file=sys.stderr)
+        capture.close()
+        return 2
+    if capture is not None and reply_format is not None:
+        print("advisor-board: capture records the exact default brief and cannot be --reply-format",
+              file=sys.stderr)
         capture.close()
         return 2
     review_authorization = None
@@ -2234,7 +2273,7 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
         try:
             artifact_text = artifact_path.read_text(encoding="utf-8")
             payload = native_fill_request_payload(
-                board, artifact_text, **({"brief_ref": advisory_brief_ref} if advisory else {}),
+                board, artifact_text, **({"brief_ref": advisory_brief_ref} if advisory_brief_ref is not None else {}),
             )
             root = Path(getattr(args, "native_fill_dir", None) or artifact_path.resolve().parent)
             out_dir = root / "native-fill" / str(payload["request_id"])
@@ -2366,7 +2405,7 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
                 "artifact_ref": str(artifact_path.resolve()),
                 "repo_dir": scratch,
                 **({"native_leg_fills": native_leg_fills} if native_leg_fills else {}),
-                **({"brief_ref": advisory_brief_ref} if advisory else {}),
+                **({"brief_ref": advisory_brief_ref} if advisory_brief_ref is not None else {}),
                 "agy_canary_capture": capture,
                 **({"monitoring_policy": monitoring_policy} if monitoring_policy != "bounded" else {}),
                 "on_seat_modes": _on_seat_modes,
@@ -2379,6 +2418,8 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
                 invoke_kwargs["review_authorization"] = review_authorization
                 invoke_kwargs["canonical_repo_authority"] = canonical_repo_authority
             invoke_kwargs.update(president_kwargs)
+            if reply_format is not None:
+                invoke_kwargs["reply_format"] = reply_format
             result = invoke_board(board, artifact_text or "", **invoke_kwargs)
     except PresidentPolicyError as exc:
         # PRESROUTE: a refused president path (override, stream, resume) is a typed exit.
@@ -2508,10 +2549,15 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
                     # notice, provider terminal state); absent under the bounded policy.
                     **({"review_monitoring": dict(leg.review_monitoring)}
                        if leg.review_monitoring is not None else {}),
+                    # --reply-format json: the seat's verified structured reply; absent otherwise.
+                    **({"reply": leg.panel_reply.model_dump(mode="json")}
+                       if leg.panel_reply is not None else {}),
                 }
                 for leg in result.legs
             ],
         }
+        if reply_format is not None:
+            payload["reply_format"] = reply_format
         if pointer_brief:
             # agent-harness#1204: present only for a pointer-brief board, so every other
             # payload (and the closed capture schema) is unchanged.

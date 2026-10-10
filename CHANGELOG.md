@@ -6,6 +6,38 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### `advisor-board --reply-format json`: a machine-consumable, verified reply per seat
+
+- **What it does.** `phase-loop advisor-board <artifact> --reply-format json` asks every seat for ONE
+  JSON object (`verdict`, `summary`, `findings[]` with `severity`, `title`, `body`, optional
+  `location`) followed by the usual last line (the verdict word), and verifies the reply with the
+  strict `panel_reply` verifier that shipped in 0.7.25 and nothing called until now. A reply that
+  verifies is attached to the seat (`PanelLegResult.panel_reply`) and appears under `reply` in
+  `--json` and in the per-seat streamed verdict file. A reply that does not verify is DEGRADED with a
+  typed `panel_reply_<kind>` detail (`no_json`, `ambiguous_reply`, `schema_mismatch`,
+  `verdict_missing`, `verdict_forbidden`, `verdict_inconsistent`, `terminal_mismatch`,
+  `recommendation_missing`, `too_large`) and its text kept, so the governed classifier holds it like
+  any non-conforming review. `--json` gains a top-level `reply_format` and a per-seat `reply`, only
+  when the flag is used; every other payload is unchanged.
+- **The JSON is followed by the legacy last line, on purpose.** Every seat transport already decides
+  that a reply is complete from its last line, so nothing in the transports changes. The verifier
+  requires that line to agree with the JSON (`terminal_mismatch` otherwise): a seat cannot satisfy the
+  transport with one verdict and the consumer with another.
+- **How the format reaches the seats.** The brief is bound by the HARDEN instruction digest and by
+  the sealed prompt envelope, and about ten call sites resolve it independently, so the runtime does
+  not append to a seat's prompt. The CLI extends the review brief itself (review brief plus the
+  format instructions, rendered from the same model that verifies), stages it as one file, and passes
+  it as `brief_ref` everywhere, with the digest minted from exactly those bytes: the mechanism the
+  advisory contract already uses. A `--native-leg` fill must be prepared with the same flag; it is
+  verified like any seat.
+- **Refused combinations.** `--advisory` (an advisory review is recognised by the exact digest of its
+  contract, so extending that brief could make a non-landing review stop looking like one) and agy
+  canary capture (it records the exact default brief). Both are refused before any probe.
+- **Python callers.** `invoke_board(..., reply_format="json")` verifies each seat's reply as it
+  lands, before any `on_leg_complete` callback sees it, and again after native fills are bound; the
+  caller's own brief must already ask for the format. The default (`None`) is byte for byte the
+  previous behaviour, and `_default_spawn`'s call signature is unchanged.
+
 ### CLI qualification contract for every seat harness, inert (agent-harness#1333 PR2)
 
 - New `phase_loop_runtime.cli_qualification`. It is the harness-agnostic per-host CLI
