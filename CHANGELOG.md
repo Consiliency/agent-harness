@@ -6,6 +6,32 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### A Gemini seat is no longer refused by the clock, or by a desktop keyring (agent-harness#1407, agent-harness#1420)
+
+- **The window.** A Gemini seat needs 10 minutes left on the agy login, and agy renews a
+  login only in its last 5 (measured on agy 1.2.11, 1.3.1 and 1.3.3; no command forces it
+  earlier). For those 5 minutes of each hour the seat was refused
+  `gemini_credential_near_expiry`, `phase-loop agy-qualification run` failed, and a board
+  lost its Google seat. The seat now waits: it re-runs the renewal every 30 s
+  (`PHASE_LOOP_SEAT_LOGIN_REFRESH_POLL_S`) until the login is fresh, for at most the login's
+  remaining life plus 45 s (`PHASE_LOOP_SEAT_LOGIN_REFRESH_WAIT_S=0` turns the wait off). It
+  then starts with a full hour. The log line `gemini_credential_awaiting_refresh` gives the
+  seconds left and the time it clears by. The board's cancel ends the wait at once.
+- **The keyring.** On a host whose OS keyring agy can reach, the renewal refreshed the
+  keyring's copy of the login and left agy's login file expired. The runtime reads the file,
+  so the seat was refused whatever the time, until someone ran `agy` over SSH. The renewal
+  now runs with no session bus, so agy renews the file.
+- **Probes and admission.** The agy image's `--help` measurement makes no provider request
+  and no longer asks for a fresh login, so an availability probe or an admission lookup in
+  the window no longer drops Gemini.
+- Nothing about what a seat is given changes: the same access-only copy, the same launch
+  gate, the same refusals. A login that stays short, an expired login agy does not renew, and
+  a failing `agy models` are refused as before. The `gemini_credential_near_expiry` notice
+  now names the fix.
+- Known limit, unchanged: a seat cannot renew its copy of the login, so a Gemini seat that
+  runs past its login's expiry (10 minutes at the least, about an hour after a renewal)
+  fails in the run.
+
 ### The grok board seat finds its staged review tree (agent-harness#1336; PR agent-harness#1438)
 
 - In 0.7.25 and 0.7.26 a sandboxed board's grok seat failed at launch (`grok: Failed to

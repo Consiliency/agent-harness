@@ -1356,6 +1356,31 @@ instead, and the jail is that launch's owner.
     token stay, because the CLI sends no bearer without them (measured).
   - **Every copy:** it sits in the seat's private home, and its secret values are
     redacted from the seat's output.
+- **The agy login a Gemini seat needs (agent-harness#1407).** A seat's copy cannot be
+  renewed, and its agy session fails about 10 s before the login expires (measured). So at
+  launch the agy login FILE (`~/.gemini/antigravity-cli/antigravity-oauth-token`) must have
+  600 s left (`gemini_credential_near_expiry` otherwise).
+  - **The renewal** is one host run of the verified image, `agy models`, in an empty
+    directory, with `DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null`. agy keeps a login in the
+    OS keyring when it can reach one and in its file otherwise; with no bus it loads and
+    saves the file, which is the store the runtime reads and copies (agent-harness#1420).
+  - **The wait:** agy renews a login only in its last 5 minutes, and nothing forces it
+    earlier (measured on agy 1.2.11, 1.3.1 and 1.3.3). A seat launched with less than
+    630 s re-runs the renewal every `PHASE_LOOP_SEAT_LOGIN_REFRESH_POLL_S` (30 s) until the
+    login is fresh, for at most the login's remaining life plus 45 s and
+    `PHASE_LOOP_SEAT_LOGIN_REFRESH_WAIT_S` (0 means no wait). It logs
+    `gemini_credential_awaiting_refresh` with the seconds left and the time it clears by.
+    No agy constant is relied on, only that agy renews by expiry.
+  - **Where:** just before the launch gate, outside the quiescence latch's launch lock, on
+    every route that reaches the gate (the board seat, the qualification's seat, the
+    president's Gemini rung, executor `review`). The gate itself is unchanged and is the
+    only place that refuses. A failing `agy models`, or an expired login it did not renew,
+    is refused at once.
+  - **Monitoring and cancellation:** as the Claude login wait. Under `heartbeat_only` it is
+    recorded as `login_wait` and the stall clock starts after it; under a bounded policy it
+    is bounded by and charged to the leg's deadline; the board's cancel and the quiescence
+    latch end it.
+  - **The image's `--help` measurement** makes no provider request and asks for no login.
 - **Refusals.** Each owner refusal is a closed detail code and a `seat_jail.NOTICES`
   entry, with what happened, why and a fix line (`seat_owner_unavailable`,
   `seat_filtered_egress_unavailable`, `seat_keyring_unavailable`, ...).

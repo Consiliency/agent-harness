@@ -272,10 +272,11 @@ def test_no_wait_allowed_refuses_as_before(host, monkeypatch, tmp_path):
 
 
 def test_an_expired_login_agy_does_not_renew_is_refused_without_waiting(host, monkeypatch, tmp_path):
-    """Past expiry agy renews on any start; when it did not, waiting cannot help.
+    """Past expiry agy renews on any start; when it ran and did not, waiting cannot help.
+    (10 s past expiry is still inside the wait's grace, so only this check stops a wait.)
 
     Mutation: drop the ``left <= 0`` return from ``_await_gemini_login``."""
-    _login(host.home, -60, refresh_token=False)        # nothing to renew it with
+    _login(host.home, -10, refresh_token=False)        # nothing to renew it with
     waits = []
     monkeypatch.setattr(pi, "_gemini_login_wait", lambda *a, **k: waits.append(k) or (False, 0.0))
     with pytest.raises(sandbox_egress.SeatIdentityUnverified, match="gemini_credential_near_expiry"):

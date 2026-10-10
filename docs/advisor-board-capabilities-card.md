@@ -642,6 +642,14 @@ profile (Ubuntu 22.04, and 24.04 as measured) needs nothing. The jail itself is 
   `--local` print the two policy texts for review.
 - **Then:** run `phase-loop seat-sandbox qualify` on the host.
 
+**Gemini seat login.** A Gemini seat needs 10 minutes left on the agy login, and agy renews
+a login only in its last 5. A seat launched in between waits (at most about 5 minutes; the
+log says `gemini_credential_awaiting_refresh` and the time it clears by), renews the login
+and then runs. Nothing to run. If a seat is refused `gemini_credential_near_expiry`, re-run
+in 5 minutes; if it is refused again, sign in with
+`DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null agy`, which stores the login in agy's file
+(the store the seat reads) and not in a desktop keyring.
+
 **Claude seat credential.** By default, the seat uses the subscription you are logged in
 with.
 - **What is read, and when:** at every jailed launch, the runtime reads only the current
