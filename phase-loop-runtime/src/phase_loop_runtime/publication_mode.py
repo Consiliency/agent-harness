@@ -35,6 +35,7 @@ executing agent never guesses. Any non-zero exit means: do not publish.
 from __future__ import annotations
 
 import os
+import stat
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -212,19 +213,34 @@ def read_repo_mode(root: Path) -> str | None:
 
 
 def read_user_mode(path: Path | None) -> str | None:
-    """The user layer. It is absent only when the path itself does not exist.
+    """The user layer, found by walking ``path`` one component at a time.
 
-    A path that cannot be examined, or that exists and cannot be read (a dangling or
-    looping symlink included), is an error, never "absent".
+    It is absent only where the walk ends at a directory that lacks the next component,
+    or at a non-directory. A symlink on the way that does not resolve (dangling or
+    looping), a component that cannot be examined and a file that cannot be read are
+    errors, never "absent".
     """
     if path is None:
         return None
-    try:
-        os.lstat(path)
-    except (FileNotFoundError, NotADirectoryError):
-        return None  # the only confirmed absence
-    except OSError as exc:
-        raise PublicationConfigError(f"{path}: unreadable: {exc}") from None
+    for prefix in (*reversed(path.parents), path):
+        try:
+            is_link = stat.S_ISLNK(os.lstat(prefix).st_mode)
+        except (FileNotFoundError, NotADirectoryError):
+            return None  # every component above this one resolved: confirmed absence
+        except OSError as exc:
+            raise PublicationConfigError(f"{path}: unreadable: {exc}") from None
+        if not is_link:
+            continue
+        try:
+            os.stat(prefix)
+        except FileNotFoundError:
+            raise PublicationConfigError(
+                f"{path}: unreadable: {prefix} is a dangling symlink"
+            ) from None
+        except OSError as exc:
+            raise PublicationConfigError(
+                f"{path}: unreadable: {prefix} is a symlink that does not resolve: {exc}"
+            ) from None
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:

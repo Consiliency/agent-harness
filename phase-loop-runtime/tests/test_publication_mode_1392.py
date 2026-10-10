@@ -22,6 +22,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
 
+import pytest
+
+from phase_loop_runtime import publication_mode
 from phase_loop_runtime import publication_mode as pm
 from phase_loop_runtime.cli import main as cli_main
 
@@ -472,6 +475,105 @@ class UnconfirmedAbsenceTest(unittest.TestCase):
             self.assertEqual((rc, "publication_mode=ready\n" in out), (0, True))
             resolution = pm.resolve(repo, env={})
             self.assertEqual((resolution.mode, resolution.user_config), ("ready", None))
+
+
+def test_dangling_user_config_parent_blocks_publication(tmp_path, monkeypatch, capsys):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+
+    def git(*args):
+        subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+
+    git("init", "-q", "-b", "main")
+    git("-c", "user.name=review", "-c", "user.email=review@example.invalid",
+        "-c", "commit.gpgsign=false", "commit", "-q", "--allow-empty", "-m", "initial")
+    xdg = tmp_path / "xdg"
+    xdg.mkdir()
+    target = tmp_path / "dotfiles"
+    target.mkdir()
+    (target / "publication.toml").write_text('[interactive]\nmode = "none"\n',
+                                          encoding="utf-8")
+    pointer = xdg / "agent-harness"
+    pointer.symlink_to(target, target_is_directory=True)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(xdg))
+    assert publication_mode.main(repo=str(repo)) == 0
+    assert "publication_mode=none\n" in capsys.readouterr().out
+
+    target.rename(tmp_path / "moved-dotfiles")
+    assert pointer.is_symlink()
+    assert not pointer.exists()
+    rc = publication_mode.main(repo=str(repo))
+    out = capsys.readouterr().out
+    assert rc == 2, out
+    assert "publication_mode=error\n" in out
+    assert "PUBLICATION_ACTION: blocked:" in out
+
+
+# Each component on the way to the user file, as (environment, that component) under a
+# scratch root. The XDG_CONFIG_HOME value and the HOME fallback take the same walk.
+_USER_PATH_LEVELS = {
+    "above-config-home": lambda root: (
+        {"XDG_CONFIG_HOME": str(root / "above" / "xdg")}, root / "above"),
+    "config-home": lambda root: ({"XDG_CONFIG_HOME": str(root / "xdg")}, root / "xdg"),
+    "agent-harness-dir": lambda root: (
+        {"XDG_CONFIG_HOME": str(root / "xdg")}, root / "xdg" / "agent-harness"),
+    "home": lambda root: ({"HOME": str(root / "home")}, root / "home"),
+    "home-config-dir": lambda root: ({"HOME": str(root / "home")}, root / "home" / ".config"),
+}
+_each_level = pytest.mark.parametrize("level", list(_USER_PATH_LEVELS))
+
+
+@_each_level
+@pytest.mark.parametrize("kind", ["dangling", "looping"])
+def test_unresolvable_symlink_on_the_way_to_the_user_config_blocks_publication(
+        tmp_path, level, kind):
+    repo = _init_repo(tmp_path)
+    env, link = _USER_PATH_LEVELS[level](tmp_path)
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(tmp_path / "missing" if kind == "dangling" else link)
+    with pytest.raises(pm.PublicationConfigError) as raised:
+        pm.resolve(repo, env=env)
+    assert str(link) in str(raised.value)
+
+
+@_each_level
+@pytest.mark.parametrize("kind", ["missing", "regular-file", "symlink-to-regular-file"])
+def test_user_layer_is_absent_where_the_walk_ends_at_a_directory_or_a_non_directory(
+        tmp_path, level, kind):
+    repo = _init_repo(tmp_path)
+    env, component = _USER_PATH_LEVELS[level](tmp_path)
+    component.parent.mkdir(parents=True, exist_ok=True)
+    if kind == "regular-file":
+        component.write_text("", encoding="utf-8")
+    elif kind == "symlink-to-regular-file":
+        (tmp_path / "file").write_text("", encoding="utf-8")
+        component.symlink_to(tmp_path / "file")
+    resolution = pm.resolve(repo, env=env)
+    assert (resolution.mode, resolution.user_mode) == ("ready", None)
+
+
+@_each_level
+def test_user_config_is_read_through_a_symlinked_parent_that_resolves(tmp_path, level):
+    repo = _init_repo(tmp_path)
+    env, link = _USER_PATH_LEVELS[level](tmp_path)
+    link.parent.mkdir(parents=True, exist_ok=True)
+    (tmp_path / "real").mkdir()
+    link.symlink_to(tmp_path / "real", target_is_directory=True)
+    assert pm.resolve(repo, env=env).user_mode is None
+    path = pm.user_config_path(env)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(_mode_toml("none"), encoding="utf-8")
+    assert pm.resolve(repo, env=env).mode == "none"
+
+
+def test_user_config_symlink_that_resolves_is_honoured(tmp_path):
+    repo = _init_repo(tmp_path)
+    env = _user_env(tmp_path, None)
+    path = pm.user_config_path(env)
+    path.parent.mkdir(parents=True)
+    (tmp_path / "publication.toml").write_text(_mode_toml("draft-only"), encoding="utf-8")
+    path.symlink_to(tmp_path / "publication.toml")
+    assert pm.resolve(repo, env=env).mode == "draft-only"
 
 
 if __name__ == "__main__":
