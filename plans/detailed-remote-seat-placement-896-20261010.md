@@ -64,7 +64,7 @@ pointer under each amended plan's title, and changes nothing else in those plans
 | Section | Disposition | Why |
 |---|---|---|
 | Task: "The cloud path is plan 1a, then 1b, then agent-harness#1165…" | **Superseded.** Order is 1a, this driver, the self-hosted SSH work, then agent-harness#1165. | Maintainer, 2026-10-10 |
-| Contract / "Request", "Execution types", "Receipts", "Execution gate" | **Amended** by C1–C13 below | Stated per amendment |
+| Contract / "Request", "Execution types", "Receipts", "Execution gate" | **Amended** by C1–C12 below | Stated per amendment |
 | Contract: every other subsection | Unchanged, still normative | |
 | Follow-on / "Plan 1b" | **Superseded in full** by this document. Its rule "backends must tag every remote sandbox with the owner id and lease id at create" is **kept**, as C6. Its "periodic" reaper is **dropped**: see C6. | |
 | Follow-on / "Plan 2" (egress allowlist from configuration) | **Unchanged and not scheduled.** The maintainer chose on 2026-10-10 to leave the built-in list as it is. Nothing here changes it or relies on it: a placed seat's namespace is built with an empty private allowlist (C5). | Maintainer, 2026-10-10 |
@@ -158,9 +158,9 @@ is final; backend receipts never make `sandbox_root_applied` true.
     every state the workload can be in, without the launching side's cooperation, and
     reports `sandbox_placement_end_reached`. This plan proves the driver's side (it cancels
     at the end whatever the backend does); the backend's side is owed by each backend
-    plan, which must pass the conformance suite this plan ships. A later plan that
-    refreshes a credential inside a running seat (a named follow-on by ruling) has to amend
-    this rule; nothing else may move the end.
+    plan, which must pass a conformance suite shipped with the first backend plan. A later
+    plan that refreshes a credential inside a running seat (a named follow-on by ruling)
+    has to amend this rule; nothing else may move the end.
 - **C3 Reachability is the driver's; admission is the backend's.**
   - `ExecutingBackend.endpoint(root)` returns the host and port the backend would dial for
     that root, as a name or an address literal, **without resolving anything and without
@@ -173,8 +173,10 @@ is final; backend receipts never make `sandbox_root_applied` true.
     itself is a local failure of that rung (C7), and a backend with no endpoint is never
     "unreachable".
   - `ExecutingBackend.admit(request, bound)` then sends the admission request. It raises
-    `PlacementUnavailable(code)`. It is called after both revalidations and before
-    `commit`. `available()` keeps its meaning: a local precondition, no network.
+    `PlacementUnavailable(code)`. A refusal may be raised only to pass on an answer
+    received from the far end; anything else is "no answer". It is called after both
+    revalidations and before `commit`. `available()` keeps its meaning: a local
+    precondition, no network.
 - **C4 Every blocking call is bounded and interruptible.** `admit`, `commit`, `execute`,
   `renew`, `cancel`, `kill`, `list_owned` and `release` take an `OperationBound(timeout_s,
   cancelled)`. A backend returns, or raises `sandbox_placement_operation_timeout`, within
@@ -219,9 +221,8 @@ is final; backend receipts never make `sandbox_root_applied` true.
     planned so far bills by time. The cloud adapter adds one if it needs one.
 - **C7 Where a seat may run: one state machine** (maintainer rulings of 2026-10-10 on "busy
   or down" and on a reachable host that refuses). Everything this plan says about the
-  ladder is a restatement of the two tables below. A model of them was enumerated over
-  every event ordering for one, two and three rungs before this text was written; an
-  implementation is accepted against the same enumeration (see "Verification").
+  ladder is a restatement of the two tables below. An implementation is accepted against
+  an enumeration of the tables (see "Verification").
   - **Rungs.** The configured remote backends, in the order agent-harness#1246's
     configuration already defines. After them one **last rung**, passed to the walk as a
     value: `local` (the launching host; the default of `PHASE_LOOP_SANDBOX_LAST_RUNG`) or
@@ -237,10 +238,10 @@ is final; backend receipts never make `sandbox_root_applied` true.
     admission wait (`PHASE_LOOP_SANDBOX_ADMIT_WAIT_S`, default 600) plus the transfer
     allowance (`PHASE_LOOP_SANDBOX_TRANSFER_ALLOWANCE_S`, default 300). Two events come
     from it. **Wait spent:** the time spent waiting at capacity, summed over all rungs,
-    has reached the admission wait. **Budget spent:** the time since the walk began has
-    reached the whole budget. Every call on a rung is bounded by what is left of the
-    budget, except a release, which has its own bound outside it so that leaving a rung
-    is always possible.
+    has reached the admission wait; it stays true once reached. **Budget spent:** the time
+    since the walk began has reached the whole budget. Every call on a rung is bounded by
+    what is left of the budget, except a release, which has its own bound outside it so
+    that leaving a rung is always possible.
   - **The lifetime arithmetic is the driver's.** `lifetime_sufficient(remaining_s,
     floor_s)`, used once by the preflight, is true when `remaining_s` is at least the
     floor plus the **whole** budget. `lifetime_at_floor(remaining_s, floor_s)` is the
@@ -262,15 +263,16 @@ is final; backend receipts never make `sandbox_root_applied` true.
   | connecting | connected, lease entry fsynced | admitting | The admission request is sent |
   | admitting | admitted | committing | A slot is held on the far side |
   | admitting | the backend raises the runtime's capacity code | waiting | **The capacity bar is set for the attempt.** The far end's answer means it holds nothing. |
-  | admitting | any other code | left: **refused** | The far end's own refusal means it holds nothing; the lease entry is cleared |
-  | admitting | time-out, or the answer is lost | releasing | Something may be held |
+  | admitting | any other code except the time-out code | left: **refused** | The far end's own refusal means it holds nothing; the lease entry is cleared |
+  | admitting | no answer: the time-out code (`sandbox_placement_operation_timeout`), a lost answer, or any exception that is not a refusal | releasing | Something may be held |
   | admitting | budget spent | releasing | The request is abandoned in flight; something may be held |
-  | waiting | back-off elapsed | admitting | The admission request is sent again |
-  | waiting | wait spent, or budget spent | left: **capacity** | |
+  | waiting | back-off elapsed, while the wait is not spent | admitting | The admission request is sent again |
+  | waiting | wait spent (now, or already on an earlier rung, in which case at once), or budget spent | left: **capacity** | The lease entry is cleared |
   | committing | committed, digest equal, required capabilities verified | sealing | |
   | committing | the transfer fails or times out, a capability is not verified, or budget spent | releasing | |
   | sealing | the caller's seal step returns the request (its guard passed) | **`execute` is called** | Final: the attempt is **placed** |
   | sealing | the guard fails, or sealing raises | releasing | |
+  | sealing | budget spent before the seal step returns | releasing | `execute` is not called |
   | releasing | the kill by lease id is acknowledged and `list_owned` shows nothing for it | left: **refused** | The lease entry is cleared |
   | releasing | the kill or the confirmation times out or fails | left: **refused, unconfirmed** | `sandbox_placement_release_unconfirmed` is recorded; **the lease entry is kept for the reaper; the lease stays fenced** (C6) |
 
@@ -287,13 +289,16 @@ is final; backend receipts never make `sandbox_root_applied` true.
   | capacity | `sandbox_placement_at_capacity` |
   | refused | The code the backend raised, if it is one of the runtime's (`sandbox_placement_not_enrolled`, `sandbox_placement_identity_mismatch`, `sandbox_placement_workload_unsupported`) or one it registered; `sandbox_placement_code_invalid` if it is neither; `sandbox_placement_operation_timeout` for a time-out; `sandbox_placement_capability_unmet` for a capability not verified after `commit`; `sandbox_placement_ref_invalid` or `sandbox_placement_capability_undeclared` for a bad reference or claim from `commit`, as the seam raises them today; `sandbox_placement_refused` for a failed transfer or guard |
   | refused, unconfirmed | The refusal's code, and `sandbox_placement_release_unconfirmed` beside it |
+  | cancelled | No code: whether a release was needed, and whether it was confirmed |
 
   **Cancel** is accepted in every state and **never moves the walk on**. In start,
-  connecting and waiting the attempt ends at once. In admitting, committing and sealing
+  connecting and waiting the attempt ends at once; in waiting the lease entry is cleared.
+  In admitting, committing and sealing
   the lease is fenced and released under the release's own bound, and then the attempt
   ends, whether or not the release was confirmed. In releasing the release in flight is
-  finished and the attempt ends. The attempt's outcome is **cancelled**; `place` raises
-  what main raises for a cancelled review operation, with the trail so far attached.
+  finished and the attempt ends. The rung in hand gets a record of class "cancelled". The
+  attempt's outcome is **cancelled**; `place` raises what main raises for a cancelled
+  review operation, with the trail attached.
 
   **After a rung is left** (and no cancel is pending):
 
@@ -372,31 +377,13 @@ is final; backend receipts never make `sandbox_root_applied` true.
   reconnect follow-on plan amends exactly two things built here: what `wait` may return,
   and the loop in `run_placed`. Until then `wait` returns only a result or progress, and
   the "connection lost" case in this plan's tests describes the runtime **before** that
-  plan; it is replaced there and is not a permanent rule. The follow-on is held to these
-  invariants, stated now so that nothing else built here has to be undone:
-  - the end of C2 is fixed at launch and no reconnect extends it; it applies while
-    attached and while detached;
-  - there is one enforcement point on the far side for a kept workload's end; the
-    workload cannot influence it; and its failure to act is bounded by something
-    independent of it;
-  - an explicit end or cancel from the driver is always honoured at once. Silence is
-    treated as a lost connection. An owner that was killed says nothing, so it looks like
-    a lost connection too; it is ended by the reaper (C6) or by C2's end, whichever comes
-    first;
-  - resume is bound to the lease id of C6 and to the principal that launched it; a detached
-    leg is never started again and never moves;
-  - a finished result survives a detach.
-- **C13 A backend accounts for what it leaves behind.** A backend's plan states, for each
-  process it runs on the far side, by name, what dies with it; and for a clean exit, a
-  kill of each named process, an out-of-memory kill and a reboot, what state remains
-  (processes, files, credentials in memory) and what removes it. "Nothing at rest" may be
-  claimed only where it holds by construction; elsewhere the limit is stated. The tests
-  name the process they kill. This is a rule about what later plans must write; it has no
-  test in this plan.
+  plan; it is replaced there and is not a permanent rule.
 
 ## Consequences the maintainer should see
 
-These follow from the rulings as recorded. None is hidden in a table.
+These follow from the rulings as recorded. None is hidden in a table. They are written
+for one remote rung and the last rung `local`; with more rungs the tables govern, and "the
+launching host" and "not run" below mean "when no later remote rung takes the seat".
 
 - **A broken, misconfigured or hung compute host sends its seats back to the launching
   host.** Unreachable, another build installed there, a revoked key, a failed host check, a
@@ -519,20 +506,6 @@ These follow from the rulings as recorded. None is hidden in a table.
 - `placement` command, action `reap` — add — runs `placement_lease.reap` for the configured
   backends. Its `dest`s are uniquely named.
 
-### `phase-loop-runtime/src/phase_loop_runtime/placement_conformance.py` (create)
-- A conformance suite, parametrised over a backend factory — add — in the package, not
-  under `tests/`, so a backend delivered outside this repository can run it. It checks the
-  obligations this contract puts on a **backend**, which the driver's own tests can only
-  see from the driver's side: the workload is ended at `must_end_within_s` with no further
-  call from the driver (C2); every blocking call honours its bound and its cancel (C4);
-  everything is tagged, listed and killed by lease id, reservations included (C6); **a
-  kill fences the lease: an admission that completes after the kill leaves nothing
-  listed, and `execute` for that lease is refused** (C6); a refusal from `admit` leaves
-  nothing behind. It cannot observe what a backend on another machine puts in an
-  environment or a log (C1); that stays a matter for each backend's own plan and review.
-  This plan runs it against its fakes, including fakes built to violate each obligation,
-  which it must reject. Every backend plan runs it against its backend.
-
 ### `phase-loop-runtime/tests/test_placement_ladder_model.py`, `tests/test_placement_driver.py`, `tests/test_placement_lease.py` (create); `tests/test_sandbox_placement.py`, `tests/test_seat_notices.py`, `tests/data/seat_launch_references.json`, `tests/test_agent_cli_scratch_inventory_1147.py` (modify)
 - The falsifiers under "Verification".
 - The inventories gain the rows the new modules and the `cli.py` edit add; the PR body lists
@@ -542,7 +515,7 @@ These follow from the rulings as recorded. None is hidden in a table.
 
 ## Documentation impact
 - `phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md` — modify —
-  amendments C1–C13 in "Sandbox placement seam", the C7 ladder's tables verbatim; the placement codes
+  amendments C1–C12 in "Sandbox placement seam", the C7 ladder's tables verbatim; the placement codes
   under "Leg `detail` vocabulary". The execution-gate and fail-closed paragraphs are **not**
   changed here: they describe the flag-off runtime, which is still what ships.
 - `docs/phase-loop/convergence-runtime.md` — modify — the lease directory,
@@ -584,7 +557,8 @@ control-green and red under its mutation.
 
 `tests/test_placement_ladder_model.py` reads `LADDER_TABLE`, enumerates **every** event
 ordering it allows for one, two and three remote rungs and for both values of the last
-rung, and for each ordering:
+rung, with the waiting loop bounded by a constant of the test (at least two capacity
+answers per rung); no ordering within that bound is skipped. For each ordering it:
 1. scripts the fake backends, the loopback endpoints and a fake clock so that exactly those
    events happen, in that order;
 2. drives the real `place`;
@@ -602,10 +576,6 @@ Then it asserts, on every ordering, the properties the rulings require:
   `execute` is never sent for a fenced lease;
 - the trail names every rung that was touched, once, in order, on every kind of exit;
 - no rung is started after the budget is spent.
-
-The planning lane's model of the same table enumerated about 139 thousand orderings with
-these assertions before this plan was written; the test asserts that no ordering is
-skipped, not that number.
 
 **Mutations of the product code, each of which must turn the model-based test red:**
 
@@ -644,8 +614,6 @@ that a failure reads as the finding it answers.
 | A backend with no endpoint | Never "unreachable": `admit` is called | Treat a missing endpoint as unreachable |
 | An endpoint given as a name that does not resolve; as a name that resolves to a closed port | "Unreachable" in both cases, decided by the driver; the backend made no network call | Let the backend resolve |
 | Lifetime arithmetic with numbers | `lifetime_sufficient` is true at exactly floor plus the whole budget and false one second under; `lifetime_at_floor` is true at the floor and false one second under | Omit the wait, or the allowance, from the sum |
-| An admission that completes on the far side **after** the kill by lease id was acknowledged (the conformance suite, against a fake that allocates late) | Nothing is listed for that lease afterwards and `execute` for it is refused; a fake that keeps the late allocation is rejected by the suite | Confirm by an empty listing alone |
-| The conformance suite against this plan's fakes | Passes for the conformant fakes; fails, with the obligation named, for a fake that ignores `must_end_within_s`, one that ignores a bound, one that lists without lease ids or omits reservations, one that does not fence, and one that leaves something after refusing in `admit` | Run the suite only against conformant fakes |
 | `renew` that never returns | The heartbeat gives up within its bound; the leg is not blocked by it | Call `renew` without a bound |
 | A backend whose `admit`, `commit`, `kill`, `list_owned` never return | Each ends within its bound; a cancel during each returns within the bound | Wait without a timeout |
 | Existing call forms | `commit` with two arguments, `release` with one and `register_backend` with two still work | Make a new parameter required |
@@ -664,7 +632,8 @@ that a failure reads as the finding it answers.
 
 ## Acceptance criteria
 - [ ] **The model-based test passes:** for every event ordering `LADDER_TABLE` allows with
-  one, two and three remote rungs and either last rung, the real `place`, driven by fakes
+  one, two and three remote rungs and either last rung, within the test's bound on the
+  waiting loop, the real `place`, driven by fakes
   scripted to that ordering, produces the outcome, trail, backend calls and lease entries
   the table gives, and every property listed under "Verification" holds.
 - [ ] **Each mutation in the mutation table turns that test red**, and the log of each is
@@ -675,8 +644,7 @@ that a failure reads as the finding it answers.
 - [ ] With fake backends, `place` then `run_placed` yield runtime-attested `committed` and
   `completed` receipts for one `sandbox_ref` and the computed digest, with the lease entry
   fsynced before `admit`; a workload still reporting progress at `must_end_within_s` is
-  ended by the driver whatever renewals arrived; and the conformance suite rejects each
-  fake built to break a backend obligation, the late allocation after a kill among them.
+  ended by the driver whatever renewals arrived.
 - [ ] `_NONLOCAL_EXECUTION_DRIVER` is still false, and the existing flag-off tests in
   `tests/test_sandbox_placement.py` pass.
 
@@ -690,7 +658,7 @@ that a failure reads as the finding it answers.
 | Busy or down (B3): at the cap, wait a bounded time, then not run, never local. Unreachable before launch: run locally with a loud typed record. A started seat never moves. | C7: the capacity bar; the "unreachable" class; `execute` is final |
 | A reachable host that refuses for a reason other than being full: "Eventually we will have a fallback ladder for different machines or to E2B. For now the local fallback is fine but leave the route to a more robust fallback / routing option open." | C7: a refused rung is left for the next; the last rung is a value whose default is the launching host |
 | Credentials: expiring subscription tokens only; the renewal token never leaves the launching host; an API-key login or a stored long-lived seat token is refused for placement and the seat runs locally; no cap on a token's lifetime; a floor of 30 minutes of remaining life, in configuration, checked at the last moment before the credential is sealed into the request; refreshing a token inside a running seat is a named follow-on | C7 gives the rule its place: the preflight once, before the walk, against the floor plus the whole budget; the last-moment check is the guard in the sealing step. The credential details are the placed-seat plans'. |
-| Dropped connection (Q1): the far end keeps a started seat alive for a limited time and the launching host resumes it, tied to that run; the time is a setting with a default of about 30 minutes | C12's invariants; built by the reconnect follow-on plan |
+| Dropped connection (Q1): the far end keeps a started seat alive for a limited time and the launching host resumes it, tied to that run; the time is a setting with a default of about 30 minutes | C12; built by the reconnect follow-on plan |
 | Signed attestation (Q3): deferred, not dropped; required before any gate relies on a far end's claims and before the cloud backend | The RD4 row of the supersession table |
 | Accounts (B6): one shared account first, superseding RD1 (a) for the SSH work | The follow-on plans; RD3 legs (ii) is kept because of it |
 | The built-in egress list is left as it is | C5 neither changes nor relies on it |
@@ -701,15 +669,18 @@ They are written into the table and can each be changed in one row.
 - A full rung may fall to another **remote** rung, never to the launching host (question
   Q4, below).
 - Before `execute`, a rung that cannot be released with confirmation is left with a loud
-  record and a fenced, kept lease entry, and the walk goes on. This follows "for now the
-  local fallback is fine": nothing ran there, so going on cannot run the seat twice.
+  record and a fenced, kept lease entry, and the walk goes on (question Q5, below). This
+  follows "for now the local fallback is fine": nothing ran there, so going on cannot run
+  the seat twice.
 
-**Open: one question for the maintainer.** It does not block this plan: with one remote
-rung, which is all the SSH work configures, both answers behave the same.
+**Open: two questions for the maintainer.** Neither blocks this plan. Q4: with one remote
+rung, which is all the SSH work configures, both answers behave the same. Q5: the flag is
+off and nothing built here runs a seat; a ruling is wanted before the flag turns on.
 
 | ID | Question | Options | Built until ruled |
 |---|---|---|---|
 | Q4 | When a compute host is full and a second remote rung exists (another machine, or the cloud backend), may the seat try it? | (a) Yes: capacity on one remote rung may fall to another remote rung, never to the launching host. (b) No: a full rung ends the attempt, whatever else is configured. Simpler; a full host then never causes cloud spend. If (a): should the walk try the other remote rungs **before** it spends the wait on the full one? As built it waits first, on the rung that was full. | (a), waiting first. Changing either is one row of the table and its orderings. |
+| Q5 | Before `execute`, a compute host stops answering and the walk cannot confirm that what it reserved there is gone. Does the seat still run? | (a) Yes: the rung is left with a loud record and a fenced, kept lease entry, and the walk goes on; with one remote rung the seat runs on the launching host. Cost: a slot and a copy of the staged tree can remain on the compute host until a reaper's kill is acknowledged, while the seat runs elsewhere. No credential and no workload were sent there. (b) No: the attempt ends not run. Nothing of a seat runs while something of it may be held elsewhere; a host that goes silent then costs every board its placed seats. | (a). Changing it is one row of the table and its orderings. |
 
 Standing rulings this plan relies on, cited and not restated: R1 and R2
 (agent-harness#1245); RD3, RD4, RD6 and CD1–CD4 (agent-harness#1162).
