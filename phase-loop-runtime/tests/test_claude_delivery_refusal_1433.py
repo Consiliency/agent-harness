@@ -289,6 +289,30 @@ def test_an_output_that_lands_one_check_after_the_end_of_the_turn_is_accepted(
     assert (rc, text, log) == (0, REVIEW, "claude_tui_file_output")
 
 
+def _refusal_read_line() -> int:
+    """The line of the session on which the refusal reads the output after its journal read."""
+    import inspect
+
+    lines, first = inspect.getsourcelines(panel._run_claude_tui_session)
+    marks = [index for index, line in enumerate(lines) if "# after the journal read" in line]
+    assert len(marks) == 1 and "_current_output()" in lines[marks[0]]
+    return first + marks[0]
+
+
+def _session_line() -> int | None:
+    """The session line the current output read comes from; ``None`` for the read ``_finish``
+    takes when it accepts a review."""
+    import sys
+
+    frame = sys._getframe(2)
+    while frame is not None and frame.f_code.co_name != "_run_claude_tui_session":
+        if frame.f_code.co_name == "_finish":
+            return None
+        frame = frame.f_back
+    assert frame is not None
+    return frame.f_lineno
+
+
 @pytest.mark.usefixtures("owned_review_network")
 def test_the_refusal_decides_on_an_output_read_taken_after_the_journal_read(tmp_path, monkeypatch):
     """Each pass reads the output first and the journal after it, so that first read can
@@ -296,22 +320,12 @@ def test_the_refusal_decides_on_an_output_read_taken_after_the_journal_read(tmp_
     exactly: the file is visible ONLY to the read the refusal itself takes after its journal
     read (found by its line in the session), never to the read at the top of a pass. The
     review is accepted; deciding on the earlier read would refuse it."""
-    import inspect
-    import sys
-
-    lines, first = inspect.getsourcelines(panel._run_claude_tui_session)
-    marks = [index for index, line in enumerate(lines) if "# after the journal read" in line]
-    assert len(marks) == 1 and "_current_output()" in lines[marks[0]]
-    reread_line = first + marks[0]
+    reread_line = _refusal_read_line()
     real_output = panel._seat_output_text
 
     def output(profile, path):
-        frame, accepting = sys._getframe(1), False
-        while frame is not None and frame.f_code.co_name != "_run_claude_tui_session":
-            accepting = accepting or frame.f_code.co_name == "_finish"  # the accepted read
-            frame = frame.f_back
-        assert frame is not None
-        return real_output(profile, path) if accepting or frame.f_lineno == reread_line else ""
+        line = _session_line()
+        return real_output(profile, path) if line is None or line == reread_line else ""
 
     monkeypatch.setattr(panel, "_seat_output_text", output)
     rc, text, log, _elapsed, _monitor = _run(
@@ -341,35 +355,37 @@ def test_a_sighting_interrupted_by_a_turn_in_flight_starts_over(tmp_path, monkey
     right after, is accepted. Counting the earlier sighting would refuse it."""
     ended = "".join(json.dumps(record) + "\n" for record in (REQUEST, _answer("a", "m", REVIEW)))
     in_flight = json.dumps(REQUEST) + "\n"
-    seen: list[str] = []
-    after_third = []
-    real_outcome, real_output = panel._claude_transcript_outcome, panel._seat_output_text
+    refusal_read = _refusal_read_line()
+    phase = ["first sighting"]
+    reads_in_third = []
+    real_outcome = panel._claude_transcript_outcome
 
     def outcome(path, *, require_terminal=False, data=None):
-        if data is not None and not require_terminal:
-            seen.append("ended" if data == ended.encode() else "in flight")
+        if phase[0] == "in flight" and data == in_flight.encode():
+            phase[0] = "in flight, classified"
         return real_outcome(path, require_terminal=require_terminal, data=data)
 
     def journal(self):
-        # ended, then in flight once that was classified, then ended again for good.
-        return (ended if seen.count("ended") == 0 or "in flight" in seen else in_flight).encode()
-
-    def third_journal_seen() -> bool:
-        return "in flight" in seen and "ended" in seen[seen.index("in flight"):]
+        return (in_flight if phase[0].startswith("in flight") else ended).encode()
 
     def output(profile, path):
-        if not third_journal_seen():
+        if _session_line() == refusal_read and phase[0] == "first sighting":
+            phase[0] = "in flight"  # the first sighting has been taken
             return ""
-        after_third.append(1)
-        # Still absent for the read the refusal takes on that third journal; there after it.
-        return "" if len(after_third) == 1 else REVIEW
+        if phase[0] == "in flight, classified" and _session_line() != refusal_read:
+            phase[0] = "third journal"  # a new pass begins: the turn reads ended again
+        if phase[0] != "third journal":
+            return ""
+        reads_in_third.append(_session_line() == refusal_read)
+        # Absent until the refusal has looked at the third journal once; there after that.
+        return REVIEW if True in reads_in_third[:-1] else ""
 
     monkeypatch.setattr(panel, "_claude_transcript_outcome", outcome)
     monkeypatch.setattr(panel._SeatClaudeJournal, "read", journal)
     monkeypatch.setattr(panel, "_seat_output_text", output)
     rc, text, log, _elapsed, _monitor = _run(
         tmp_path, monkeypatch, _seat([REQUEST]), heartbeat_only=True)
-    assert seen[0] == "ended" and third_journal_seen()
+    assert phase[0] == "third journal" and True in reads_in_third
     assert (rc, text, log) == (0, REVIEW, "claude_tui_file_output")
 
 
