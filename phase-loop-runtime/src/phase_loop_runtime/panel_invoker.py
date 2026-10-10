@@ -4900,7 +4900,9 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
             _seat_bind_source(path)
             readonly.append(path)
     for index, item in enumerate(command[:-1]):
-        if item in {"--add-dir", "--cd", "--prompt-file", "--context-file", "--input-file",
+        # ``--cwd`` is grok's spelling of codex's ``--cd``: a brokered grok seat launches in
+        # its empty output directory and names the staged tree only there (agent-harness#1336).
+        if item in {"--add-dir", "--cd", "--cwd", "--prompt-file", "--context-file", "--input-file",
                     "--output-schema", "--append-system-prompt-file", "--system-prompt-file",
                     "--plugin-dir", "--file"}:
             path = Path(command[index + 1])
