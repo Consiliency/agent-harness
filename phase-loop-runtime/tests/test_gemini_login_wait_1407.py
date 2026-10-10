@@ -42,8 +42,9 @@ TOKEN = ".gemini/antigravity-cli/antigravity-oauth-token"
 NO_BUS = "unix:path=/dev/null"
 
 # agy's two measured behaviours. ``$HOME/agy.plan`` (JSON) says on which call the login enters
-# agy's renewal margin (``renew_on_call``; 0 = never) and whether a reachable session bus
-# makes agy use a keyring instead of the file (``keyring``). Every call is appended to
+# agy's renewal margin (``renew_on_call``; 0 = never), whether a reachable session bus makes
+# agy use a keyring instead of the file (``keyring``), and which calls fail (``exit`` for
+# every call, ``exit_on_calls`` for some). Every call is appended to
 # ``$HOME/agy.calls`` with its argv, cwd listing and the environment NAMES it was given.
 _FAKE_AGY = r'''#!/usr/bin/python3
 import datetime, json, os, sys
@@ -55,8 +56,8 @@ bus = os.environ.get("DBUS_SESSION_BUS_ADDRESS")
 with open(calls, "a") as log:
     log.write(json.dumps({"argv": sys.argv[1:], "cwd": sorted(os.listdir(".")), "bus": bus,
                           "env": sorted(os.environ)}) + "\n")
-if plan.get("exit"):
-    sys.exit(plan["exit"])
+if plan.get("exit") or count in plan.get("exit_on_calls", ()):
+    sys.exit(plan.get("exit") or 1)
 token = os.path.join(home, ".gemini/antigravity-cli/antigravity-oauth-token")
 state = json.load(open(token))
 expiry = datetime.datetime.fromisoformat(state["token"]["expiry"][:26] + "+00:00")
@@ -293,6 +294,18 @@ def test_a_renewal_run_that_fails_refuses_without_waiting(host, monkeypatch, tmp
     with pytest.raises(sandbox_egress.SeatIdentityUnverified, match="gemini_credential_near_expiry"):
         _run_leg(host, monkeypatch, tmp_path)
     assert waits == []
+
+
+def test_a_failed_run_in_the_middle_of_the_wait_is_not_yet(host, monkeypatch, tmp_path):
+    """The first run decides whether there is a window to wait out. A run that fails LATER
+    (a network blip in a five-minute wait) does not end the wait; the next poll tries again.
+
+    Mutation: let a failing run mid-wait propagate."""
+    _login(host.home, 450)
+    host.plan(renew_on_call=3, exit_on_calls=[2])
+    with pytest.raises(_LaunchReached):
+        _run_leg(host, monkeypatch, tmp_path)
+    assert len(host.calls()) == 3 and _left(host) > 3500
 
 
 def test_the_wait_is_bounded_by_the_logins_own_life(host, monkeypatch):
