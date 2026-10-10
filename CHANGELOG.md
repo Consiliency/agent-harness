@@ -6,6 +6,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### The grok board seat finds its staged review tree (agent-harness#1336; PR agent-harness#1438)
+
+- In 0.7.25 and 0.7.26 a sandboxed board's grok seat failed at launch (`grok: Failed to
+  resolve --cwd`). The seat starts in its empty output directory, and the staged tree it
+  names with `--cwd` was not in its view. The tree is now bound into the view, read only,
+  like the tree a codex seat names with `--cd`.
+- Known limit: the tree is read only inside the seat. A grok turn that tries to write can end
+  with an empty body, which the board records as an empty leg and never as a verdict
+  (agent-harness#1091).
+
 ### CLI qualification contract for every seat harness, inert (agent-harness#1333 PR2)
 
 - New `phase_loop_runtime.cli_qualification`. It is the harness-agnostic per-host CLI
