@@ -583,7 +583,7 @@
   {"count": 1, "function": "_seat_bind_source", "module": "panel_invoker", "primitive": "io.stat", "role": "host-io"},
   {"count": 1, "function": "_seat_credential", "module": "panel_invoker", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "_seat_filesystem_view", "module": "panel_invoker", "primitive": "io.lstat", "role": "host-io"},
-  {"count": 1, "function": "_seat_output_directory", "module": "panel_invoker", "primitive": "io.lstat", "role": "host-io"},
+  {"count": 2, "function": "_seat_output_directory", "module": "panel_invoker", "primitive": "io.lstat", "role": "host-io"},
   {"count": 2, "function": "_seat_output_metadata", "module": "panel_invoker", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "_seat_owner", "module": "panel_invoker", "primitive": "io.stat", "role": "host-io"},
   {"count": 1, "function": "_seat_transcripts", "module": "panel_invoker", "primitive": "io.open", "role": "host-io"},

@@ -2,23 +2,40 @@
 
 Claude Code journals one API message as several records: a thinking block, a text block and
 each tool call are separate records with their own uuids, and every one of them carries the
-message's id and its ``stop_reason``. Measured on Claude Code 2.1.x journals: 44,007 of 63,871
-tool-calling messages have a record with no tool block, every one of them has a tool block in
-some record, and one message id recurs after a ``tool_result`` 3,904 times (parallel tool
-calls), so the records of one message are not adjacent.
+message's id and its ``stop_reason``. ``_validated_claude_journal`` judged each record alone
+and refused a thinking or text record that said ``stop_reason: tool_use`` without a tool block
+of its own, so a real tools-enabled review was never admitted.
 
-``_validated_claude_journal`` judged each record alone and refused a thinking or text record
-that said ``stop_reason: tool_use`` without a tool block of its own, so a real tools-enabled
-review was never admitted. The rule is now per message id. Every other refusal is unchanged.
+The rule, and the measurement behind it (structure only, 600 real Claude Code 2.1.x journals,
+73,219 tool-stopped records without a tool call of their own, in 64,439 tool-calling
+messages):
 
-Named mutations, each run against this file (both red):
+* such a record is the part of a message BEFORE its calls, so it is admitted only when a
+  LATER record of the same message id holds a tool call;
+* another message's tool result may be journaled in between (10 real messages: a late result
+  of an earlier parallel call lands between a message's thinking and its call), so the later
+  record need not be adjacent;
+* a record holding a server-side tool call (``server_tool_use``) needs nothing further (17
+  real records: such a record is journaled after the message's own client calls and results).
 
-* M-GROUP: key the tool-call rule by the record instead of the message id (the old
-  per-record rule) -> every ``admitted`` cell below fails.
-* M-GROUP-ALL: treat all assistant records as one message -> ``a tool-stopped message with
-  no tool call in any record`` is admitted.
-* M-PENDING: drop the pending-tool refusal -> the ``pending`` and ``unmatched`` cells are
+No real record breaks this rule, and each narrower rule refuses real ones: "the call is
+adjacent" refuses the 10, "a later client call" alone refuses the 17. A wider rule ("the
+message holds a call anywhere") admits a message that recurs after its result with no call,
+which reads as a call whose record is missing; that stays refused. Every other refusal is
+unchanged.
+
+Named mutations, each run against this file (all red):
+
+* M-GROUP: never look beyond the record (the old per-record rule) -> every ``admitted``
+  cell fails.
+* M-GROUP-ADJ: accept only a call in the same unbroken run of the message's records ->
+  the ``another message's result in between`` cell fails.
+* M-GROUP-WIDE: accept a call of the same message anywhere, earlier too -> the two
+  ``after its result / after its only call`` cells are admitted.
+* M-GROUP-ANYID: accept a later call of ANY message -> ``no tool call in any record`` is
   admitted.
+* M-SERVER: drop the server-tool rule -> the ``server tool call`` cell fails.
+* M-PENDING: drop the pending-tool refusal -> the ``pending`` cells are admitted.
 """
 from __future__ import annotations
 
@@ -46,6 +63,10 @@ def text(value: str) -> dict:
 
 def tool_use(tool_id: str, name: str = "Read") -> dict:
     return {"type": "tool_use", "id": tool_id, "name": name, "input": {}}
+
+
+def server_tool_use(tool_id: str) -> dict:
+    return {"type": "server_tool_use", "id": tool_id, "name": "advisor", "input": {}}
 
 
 def tool_result(uuid: str, *tool_ids: str) -> dict:
@@ -99,6 +120,29 @@ SEGMENTED = {
         tool_result("r2", "t2"),
         assistant("a5", "final-message", "end_turn", THINKING),
         assistant("a6", "final-message", "end_turn", text(FINAL_TEXT)),
+    ),
+    # Real shape (10 measured): a late result of an earlier parallel call is journaled
+    # between a message's thinking and its own call.
+    "another message's result between a message's thinking and its call": (
+        REQUEST,
+        assistant("p1", "m0", "tool_use", tool_use("ta")),
+        assistant("p2", "m0", "tool_use", tool_use("tb", "Grep")),
+        tool_result("r1", "ta"),
+        assistant("a1", "m1", "tool_use", THINKING),
+        tool_result("r2", "tb"),
+        assistant("a2", "m1", "tool_use", tool_use("t1")),
+        tool_result("r3", "t1"),
+        FINAL,
+    ),
+    # Real shape (17 measured): a server-side tool call journaled after the message's own
+    # client call and its result. The API runs it; it has no tool_result record.
+    "a server tool call after the message's own call and result": (
+        REQUEST,
+        assistant("a1", "m1", "tool_use", THINKING),
+        assistant("a2", "m1", "tool_use", tool_use("t1")),
+        tool_result("r1", "t1"),
+        assistant("a3", "m1", "tool_use", server_tool_use("srv1")),
+        FINAL,
     ),
     "a re-journaled tool segment is not a second pending call": (
         REQUEST,
@@ -161,7 +205,35 @@ REFUSED = {
         assistant("a2", "m1", "tool_use", {"type": "tool_use", "name": "Read", "input": {}}),
         FINAL,
     ),
-    # --- a tool-stopped message must hold a tool call in SOME record of that message ---
+    # --- a tool-stopped record without a call needs a LATER call of its own message ---
+    "the message recurs after its result as a tool-stopped thinking record with no call": (
+        REQUEST,
+        assistant("a1", "m1", "tool_use", tool_use("t1")),
+        tool_result("r1", "t1"),
+        assistant("a2", "m1", "tool_use", THINKING),
+        FINAL,
+    ),
+    "the message recurs after its result as a tool-stopped text record with no call": (
+        REQUEST,
+        assistant("a1", "m1", "tool_use", THINKING),
+        assistant("a2", "m1", "tool_use", tool_use("t1")),
+        tool_result("r1", "t1"),
+        assistant("a3", "m1", "tool_use", text("Now the second file.")),
+        FINAL,
+    ),
+    "a tool-stopped text record after its message's only call": (
+        REQUEST,
+        assistant("a1", "m1", "tool_use", tool_use("t1")),
+        assistant("a2", "m1", "tool_use", text("Reading the change.")),
+        tool_result("r1", "t1"),
+        FINAL,
+    ),
+    "a server tool result alone does not stand for a call": (
+        REQUEST,
+        assistant("a1", "m1", "tool_use", {"type": "advisor_tool_result", "tool_use_id": "srv1",
+                                           "content": []}),
+        FINAL,
+    ),
     "a tool-stopped message with no tool call in any record": (
         REQUEST,
         assistant("a1", "m1", "tool_use", THINKING),

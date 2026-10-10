@@ -861,15 +861,26 @@ give-up detector are views of it, so they cannot disagree:
   either. If the text is not an
   accepted verdict, the leg is handed it back as
   `claude_tui_broker_terminal_nonconforming` instead of waiting.
-  On a route that takes its answer only from the canonical output file, an ended
-  turn is an `answer` too, and it ends the leg at once (agent-harness#1433,
-  agent-harness#1434): the output is read once more, since the seat writes it
-  before it journals the end of its turn, and then either the file is a completed
-  review with an admitted journal (`claude_tui_file_output`), or the leg is
-  DEGRADED with `claude_seat_delivery_refused`, empty text. That covers a file
-  that is absent, empty or not a completed review, and a journal that fails strict
-  admission. It is never an approval and never a sealed or inline fallback, and
-  the leg never waits for more output from a turn that has ended.
+  On a route that takes its answer only from the canonical output file, an
+  `answer` whose turn has ended ends the leg (agent-harness#1433,
+  agent-harness#1434). "Ended" means a state no further append of the same turn
+  can change: the journal ends in a newline, its last live record is an
+  `isApiErrorMessage` record or explicitly stopped with `end_turn` /
+  `stop_sequence` and carries text, and that state was seen unchanged on two
+  consecutive checks. A last line still being written, or a record with no
+  `stop_reason`, is in flight and waits. The output is read once more after the
+  journal, since the seat writes it before it journals the end of its turn.
+  Then either the file is a completed review with an admitted journal
+  (`claude_tui_file_output`), or the leg is DEGRADED with
+  `claude_seat_delivery_refused`. That covers a file that is absent, empty or not
+  a completed review, and a journal that fails strict admission. The text handed
+  back is what the seat wrote to its file, as it is; it is never an approval (a
+  refused leg with text is a nonconforming review on the governed path, a block)
+  and never a sealed or inline fallback. A non-brokered leg retries once in a
+  fresh directory, as for `claude_tui_stalled` (agent-harness#343).
+  Not every ended turn is recognised: an `end_turn` record with no text block
+  (empty or thinking only), `refusal` and `pause_turn` still classify `pending`,
+  so a leg whose turn ends that way waits as before.
 - `gave_up`: no answer, and the last live record after the current request is
   an `isApiErrorMessage` give-up. The leg ends at once as DEGRADED with
   `claude_seat_output_budget_exhausted` (`error: max_output_tokens`),
@@ -1372,7 +1383,8 @@ instead, and the jail is that launch's owner.
   see the transcript outcomes above) and `seat_output_inside_readonly_input` (a
   replaceable output placed where it cannot be private, refused before launch) are two
   more: terminal degraded refusals, in neither `SEALED_FALLBACK_CODES` nor
-  `JAIL_NOT_RUN_CODES`.
+  `JAIL_NOT_RUN_CODES`. `seat_output_retained_after_teardown` is a notice beside a
+  leg's own outcome, never a refusal.
 - **Outputs (agent-harness#1433).** A seat's declared output is one of two kinds, and
   each is that launch's own precreated host file.
   - **In place (`outputs`, and a CLI's `--output-last-message`).** The file is bound
@@ -1388,19 +1400,40 @@ instead, and the jail is that launch's owner.
       another seat's output in the same host directory is neither readable nor writable.
     - **Inputs.** A read-only input below that directory (the staged bundle, instructions
       and tree in the seat's cwd) is bound into it, read-only as before.
+    - **Where it lives on the host.** Each launch gets a 0700 holder,
+      `pl-seat-output-*`, under the owner's staging root (`sandbox_policy.resolve_staging`,
+      the per-user directory every round's scratch lives in), never in the process temp
+      root. The seat is bound a child of the holder, so the holder's mode is not the
+      seat's to change, and it keeps other accounts out whatever mode the seat gives its
+      own directory. The directory is verified where it is used: it and its holder are
+      real directories of this account, the holder is 0700 in a place no other account
+      can replace, and neither is a path any bind of this seat's view shows. The holder
+      records its owner; the crash-residue sweep removes it once that process is gone.
     - **Delivery.** When the seat has ended, the owner copies only the declared names to
       the precreated host files (identity checked), redacted while the profile's secrets
-      are still known, and removes the private directory. A name that is not a bounded
-      regular file of this uid with one link (a symlink, a directory, a FIFO, a hard link)
-      delivers nothing. Until then the session reads the review from the private copy,
-      redacted.
+      are still known. A name that is not a bounded regular file of this uid with one link
+      (a symlink, a directory, a FIFO, a hard link) delivers nothing. Until then the
+      session reads the review from the private copy, redacted, and never from the host
+      file.
+    - **Exit.** Delivery, removal of the holder and the exit redaction sweep are each
+      attempted whatever the others did. Removal is iterative and descriptor-relative and
+      follows no link, so no depth, mode or link the seat left can stop it. A holder that
+      is still there afterwards is the notice `seat_output_retained_after_teardown`, not
+      an exception: the delivered review stands.
+    - **The host file is this launch's.** From the moment a launch is accepted, content an
+      earlier launch left in a replaceable output's host file is emptied, so a launch that
+      delivers nothing never leaves an earlier review behind.
     - **Where it cannot apply.** A private directory is mounted only where it hides
       nothing of the host's: below the view's bare root, or inside a tmpfs of the seat's
-      own. A replaceable output whose directory is (inside) a read-only input or a system
-      mount is refused before anything launches, and before its file is precreated, with
-      `seat_output_inside_readonly_input`: bound in place there, the provider's write could
-      only fail at the end of its turn. The capture route, whose caller reads the host file
-      itself, declares its output in place.
+      own. Refused with `seat_output_inside_readonly_input`, before anything is created
+      (no transcript, no output file, no holder): a replaceable output whose directory is
+      (inside) a read-only input or a system mount, or that is itself an input, judged on
+      the paths as the argv names them and as the host holds them once parent links are
+      resolved; and a staging root that is inside one of the seat's read-only inputs.
+      This refuses layouts in which an in-place write used to succeed (an output inside
+      an `--add-dir` directory, or under `/dev/shm`); Claude Code's Write (measured:
+      2.1.295, 2.1.296) could never deliver there. The capture route, whose caller reads
+      the host file itself, declares its output in place.
 - **The Claude journal.** The host collects the exact session journal through retained
   handles, after the provider has been cleaned up, and validates it before any approval.
   - **Refused on both routes:** a new user turn, a max-token continuation, an unmatched
@@ -1408,9 +1441,12 @@ instead, and the jail is that launch's owner.
   - **A completed tool cycle is accepted:** every `tool_use` has its `tool_result`.
   - **Logical messages (agent-harness#1434).** Claude Code journals one API message as
     several records (a thinking block, a text block, each tool call), and every record
-    carries the message's id and `stop_reason`. "A message that stopped for a tool holds a
-    tool call" is therefore judged per message id over all of its records, which need not
-    be adjacent. A record without an id is a message of its own. Every other refusal is
+    carries the message's id and `stop_reason`. A record that says `tool_use` without a
+    tool call of its own is the part of the message before its calls: it is admitted only
+    when a later record of the same message id holds a tool call (another message's tool
+    result may be journaled in between), or when it holds a server-side tool call
+    (`server_tool_use`) itself. A message that recurs after its result with no call is
+    refused, and a record without an id is a message of its own. Every other refusal is
     per record, as before.
   - **A journaled `isApiErrorMessage` record** is never an answer or a continuation. The
     answer parser (agent-harness#1194) decides the turn.

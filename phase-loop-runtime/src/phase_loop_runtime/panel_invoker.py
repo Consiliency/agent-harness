@@ -340,15 +340,38 @@ def _seat_output_anchor(layers, directory: str) -> int | None:
     return anchor if anchor < 0 or layers[anchor][1] else None
 
 
+def _seat_host_exposed(layers, host_path) -> bool:
+    """Is ``host_path`` at or below a host path this view binds in (a read-only input, a
+    system mount)? Judged on fully resolved paths, on both sides."""
+    real = os.path.realpath(host_path)
+    for _destination, private, arguments in layers:
+        if private or arguments[0] not in ("--ro-bind", "--ro-bind-try", "--bind"):
+            continue
+        source = os.path.realpath(arguments[1])
+        if real == source or real.startswith(source.rstrip("/") + "/"):
+            return True
+    return False
+
+
 def _seat_output_directory(source) -> str:
-    """A per-launch output directory as a bind source: a real directory, ours, private."""
+    """A per-launch output directory as a bind source, verified where it is used.
+
+    It is a real directory of ours, not yet opened to anyone, inside a HOLDER the seat never
+    sees: a real directory of ours, mode 0700, in a place no other account can replace
+    (``_seat_output_holder``). The seat owns only the directory it is given; whatever mode it
+    later gives that, the holder above it keeps every other account out."""
     checked = _seat_bind_source(source)
+    holder = os.path.dirname(checked)
     try:
-        info = os.lstat(checked)
+        info, above = os.lstat(checked), os.lstat(holder)
     except OSError as exc:
         raise _sandbox_egress.SeatIdentityUnverified("seat_bind_source_unavailable") from exc
-    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
-            or stat.S_IMODE(info.st_mode) & 0o077):
+    uid = os.getuid()
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != uid
+            or stat.S_IMODE(info.st_mode) & 0o077
+            or not stat.S_ISDIR(above.st_mode) or above.st_uid != uid
+            or stat.S_IMODE(above.st_mode) != 0o700
+            or not _sandbox_policy._held_by_us_or_root(Path(os.path.dirname(holder)))):
         raise _sandbox_egress.SeatIdentityUnverified("seat_bind_source_unavailable")
     return checked
 
@@ -367,10 +390,11 @@ def _seat_filesystem_view(cwd, *, readonly_paths=(), outputs=(), output_dirs=(),
             output_dirs, key=lambda item: os.path.abspath(item[1]).count("/")):
         destination = os.path.abspath(destination)
         anchor = _seat_output_anchor(layers, destination)
-        if anchor is None:
+        checked = _seat_output_directory(source)
+        # The source is never a host path this seat can see through another bind.
+        if anchor is None or _seat_host_exposed(layers, checked):
             raise _sandbox_egress.SeatIdentityUnverified("seat_bind_source_unavailable")
-        layers.insert(anchor + 1, (destination, True,
-                                   ["--bind", _seat_output_directory(source), destination]))
+        layers.insert(anchor + 1, (destination, True, ["--bind", checked, destination]))
     view = [argument for _destination, _private, arguments in layers for argument in arguments]
     for output in outputs:
         checked = _seat_bind_source(output, output=True)
@@ -579,11 +603,15 @@ def _validated_claude_journal(data, *, require_terminal: bool = True):
         pending = set()
         seen = set()
         # Claude Code journals one API message as several records (a thinking block, a text
-        # block, each tool call), and every one carries the message's id and stop_reason. So
-        # "a message that stopped for a tool holds a tool call" is judged per message id,
-        # over all of its records; they need not be adjacent (agent-harness#1434).
-        tool_stopped = set()
-        tool_calling = set()
+        # block, each tool call), and every one carries the message's id and stop_reason. A
+        # record that says ``tool_use`` without a tool call of its own is the part of the
+        # message BEFORE its calls, so it is admitted only when a LATER record of the same
+        # message id holds a tool call (another message's tool result may be journaled in
+        # between). A record that holds a server-side tool call (``server_tool_use``, run by
+        # the API and answered inside the assistant message) needs nothing further. Measured
+        # on 73,219 such records in real Claude Code 2.1.x journals: none breaks this rule,
+        # and no narrower rule admits them all (agent-harness#1434).
+        awaiting_call = set()
         for line in data.split(b"\n"):
             if not line.strip():
                 continue
@@ -622,16 +650,17 @@ def _validated_claude_journal(data, *, require_terminal: bool = True):
                 logical = message.get("id")
                 if not isinstance(logical, str) or not logical:
                     logical = object()
-                if message.get("stop_reason") == "tool_use":
-                    tool_stopped.add(logical)
                 if tools:
-                    tool_calling.add(logical)
+                    awaiting_call.discard(logical)
+                elif message.get("stop_reason") == "tool_use" and not any(
+                        block.get("type") == "server_tool_use" for block in content or []):
+                    awaiting_call.add(logical)
                 for block in tools:
                     tool = block.get("id")
                     if not isinstance(tool, str) or not tool:
                         return ""
                     pending.add(tool)
-        if pending or tool_stopped - tool_calling:
+        if pending or awaiting_call:
             return ""
         # The route's own answer rule decides the text: the president's terminal-turn rule,
         # or the review rule, under which a completed answer outlives a later stray error.
@@ -2961,6 +2990,7 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "gemini_credential_refresh_timeout", "seat_keyring_unavailable",
     "claude_agent_view_review_unsupported", "claude_tui_journal_collection_refused",
     "agy_image_unqualified", "seat_output_inside_readonly_input",
+    "seat_output_retained_after_teardown",
     # agent-harness#1333: per-host CLI qualification refusals (typed notices in seat_jail.NOTICES)
     "seat_cli_unqualified", "seat_cli_qualification_failed", "seat_cli_qualification_unavailable",
     "seat_cli_qualification_store_unsafe", "seat_cli_adapter_missing", "seat_cli_platform_unsupported",
@@ -3898,7 +3928,8 @@ def _gc_stale_panel_scratch(
     # age: a copy's own mtime does not move while a child works inside it.
     try:
         _gc_ownerless_residue(
-            [(base, ("pl-review-stage-*", "pl-falsifier-deps-*")) for base in bases]
+            [(base, ("pl-review-stage-*", "pl-falsifier-deps-*", _SEAT_OUTPUT_HOLDER_PREFIX + "*"))
+             for base in bases]
             + [(Path(d), ("phase-loop-broker-agy-*", "phase-loop-president-agy-*"))
                for d in _sandbox_policy.child_scratch_candidates()],
         )
@@ -4981,6 +5012,78 @@ def _seat_output_text(profile, path) -> str:
     return _read_review_output(path)
 
 
+#: Seat-owner notices raised while a profile ends (a retained output holder): the spawn's
+#: own notice list when a board leg is running, else ``None`` (the operator's log only).
+_SEAT_OWNER_NOTICES: ContextVar["list[str] | None"] = ContextVar("seat_owner_notices", default=None)
+_SEAT_OUTPUT_HOLDER_PREFIX = "pl-seat-output-"
+_SEAT_OUTPUT_RETAINED = "seat_output_retained_after_teardown"
+
+
+def _seat_output_holder(staging: Path) -> Path:
+    """A fresh 0700 directory of ours under the owner's staging root, which holds one
+    launch's private output directories (agent-harness#1433).
+
+    The staging root is the per-user directory every round's scratch already lives in
+    (``sandbox_policy.resolve_staging``), never the process temp root. The seat is bound
+    only a CHILD of the holder, so the holder's own mode is never the seat's to change, and
+    the holder records its owner so the crash-residue sweep removes it once this process is
+    provably gone."""
+    try:
+        holder = Path(tempfile.mkdtemp(prefix=_SEAT_OUTPUT_HOLDER_PREFIX, dir=staging))
+    except OSError as exc:
+        raise _sandbox_egress.SeatIdentityUnverified("seat_bind_source_unavailable") from exc
+    try:
+        _sandbox_retention.claim_scratch_dir(holder)
+    except _sandbox_retention.ScratchRecordError as exc:
+        _remove_seat_output_holder(holder)
+        raise _sandbox_egress.SeatIdentityUnverified("seat_bind_source_unavailable") from exc
+    return holder
+
+
+def _remove_seat_output_holder(holder: Path) -> bool:
+    """Remove a holder and everything the seat left below it; ``False`` if any of it is
+    still there. The walk is iterative and descriptor-relative and never follows a link
+    (``review_stage.remove_review_stage``), so no directory depth, mode or link the seat
+    chose can stop it or turn it on another path. It never raises."""
+    _review_stage.remove_review_stage(holder)
+    if os.path.lexists(holder):
+        return False
+    _sandbox_retention.release_scratch_dir(holder)
+    return True
+
+
+def _note_seat_output_retained(holder: Path) -> None:
+    """A holder that could not be removed is a typed notice, never an exception: the
+    review that was delivered stands, and the operator is told what is left and where."""
+    logging.getLogger(__name__).warning(
+        "seat output directory retained [%s]: %s", _SEAT_OUTPUT_RETAINED, holder)
+    sink = _SEAT_OWNER_NOTICES.get()
+    if sink is not None and _SEAT_OUTPUT_RETAINED not in sink:
+        sink.append(_SEAT_OUTPUT_RETAINED)
+
+
+def _require_replaceable_placement(layers, readonly, replaceable) -> None:
+    """Refuse, before anything is created, a replaceable output that cannot get a private
+    directory (agent-harness#1433).
+
+    Refused: its directory is (inside) a read-only input or a system mount, or the output
+    is itself one of the inputs. Judged twice, as the seat's argv names the paths and as
+    the host holds them once parent links are resolved, so a path that reaches an input
+    through a link is refused too. Bound in place there, the provider's write could not
+    replace the file, and would fail only at the end of its turn."""
+    inputs = {os.path.abspath(path) for path in readonly} | {
+        _trusted_host_path(path) for path in readonly}
+    for path in replaceable:
+        host = _trusted_host_path(path)
+        if (_seat_output_anchor(layers, str(path.parent)) is None
+                or str(path) in inputs or host in inputs
+                or _seat_host_exposed(layers, os.path.dirname(host))):
+            # Our own path, on the operator's log only; the leg carries the code alone.
+            logging.getLogger(__name__).warning(
+                "seat output %s is inside a read-only input or a system directory", path)
+            raise _sandbox_egress.SeatIdentityUnverified("seat_output_inside_readonly_input")
+
+
 def _deliver_seat_output(source: Path, destination: Path) -> None:
     """Copy one declared output from its seat's private directory to its host file.
 
@@ -5036,9 +5139,10 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
     Their directory is a private per-launch directory in the seat's view; the host file
     receives what the seat wrote, redacted, when the profile ends. A path named both ways
     stays in place. A replaceable output whose directory cannot be private -- it is (inside)
-    a read-only input or a system mount -- is refused before anything launches
-    (``seat_output_inside_readonly_input``): bound in place there, the provider's write
-    would fail only at the end of its turn."""
+    a read-only input or a system mount -- is refused before anything is created or
+    launched (``seat_output_inside_readonly_input``). From the moment the launch is
+    accepted the host file is this launch's: content an earlier launch left in it is
+    emptied, so it never holds another launch's review."""
     if gemini_profile is None:
         harness, executable = _seat_provider_source(command[0], env)
         if harness not in {"codex", "claude", "grok", "gemini", "opencode"}:
@@ -5067,34 +5171,51 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
         if item == "--output-last-message":
             path = Path(command[index + 1])
             outputs = (*outputs, path if path.is_absolute() else cwd / path)
-    transcript = _precreate_seat_output(transcript_path) if transcript_path is not None else None
-    outputs = (*outputs, *((transcript,) if transcript is not None else ()))
-    outputs = tuple(_precreate_seat_output(path) for path in outputs)
     # agent-harness#1433: the directory of each replaceable output is a private per-launch
     # directory in the seat's view, which may go only where it hides nothing of the host's
-    # (``_seat_output_anchor``). Where it would hide a read-only input or a system mount,
-    # the launch is refused here, before the provider spends a turn it cannot deliver.
+    # (``_seat_output_anchor``), and it lives on the host where this seat cannot see it.
+    # Both are settled HERE, before any file or directory is created: a refused layout
+    # leaves nothing behind.
     layers = _seat_view_layers(cwd, readonly, check=False)
+    outputs = tuple(Path(os.path.abspath(path)) for path in outputs)
     delivered = tuple(dict.fromkeys(
         path for path in (Path(os.path.abspath(item)) for item in replaceable_outputs)
         if path not in outputs))
-    for path in delivered:
-        if _seat_output_anchor(layers, str(path.parent)) is None:
-            # Our own path, on the operator's log only; the leg carries the code alone.
-            # Checked before the file is precreated, so a refusal leaves nothing behind.
+    staging = None
+    if delivered:
+        _require_replaceable_placement(layers, readonly, delivered)
+        staging = Path(os.path.realpath(_sandbox_policy.staging_root()))
+        if _seat_host_exposed(layers, staging):
             logging.getLogger(__name__).warning(
-                "seat output %s is inside a read-only input or a system directory", path)
+                "the staging root %s is inside a read-only input of this seat", staging)
             raise _sandbox_egress.SeatIdentityUnverified("seat_output_inside_readonly_input")
+    transcript = _precreate_seat_output(transcript_path) if transcript_path is not None else None
+    outputs = (*outputs, *((transcript,) if transcript is not None else ()))
+    outputs = tuple(_precreate_seat_output(path) for path in outputs)
     delivered = tuple(_precreate_seat_output(path) for path in delivered)
-    with contextlib.ExitStack() as private_stack, \
-            seat_profile(harness=harness, executable=executable, env=env, cwd=cwd,
-                         readonly_paths=readonly,
-                         outputs=tuple(path for path in outputs if path != transcript),
-                         gemini_profile=gemini_profile, role=role) as (provider, profile):
-        # The seat's directory path -> its private host directory.
-        private = {directory: private_stack.enter_context(
-            tempfile.TemporaryDirectory(prefix="seat-output-"))
-            for directory in dict.fromkeys(str(path.parent) for path in delivered)}
+    for path in delivered:
+        # This launch's file from here on: never an earlier launch's review.
+        if _read_seat_raw_text(path):
+            _write_seat_text(path, "")
+    holder = _seat_output_holder(staging) if delivered else None
+    private: dict[str, str] = {}  # the seat's directory path -> its private host directory
+    try:
+        for directory in dict.fromkeys(str(path.parent) for path in delivered):
+            source = holder / str(len(private))
+            source.mkdir(mode=0o700)
+            private[directory] = str(source)
+    except BaseException:
+        _remove_seat_output_holder(holder)
+        raise
+    with contextlib.ExitStack() as profile_exit:
+        if holder is not None:
+            # Whatever else fails on the way in, the holder does not outlive the profile.
+            profile_exit.callback(_remove_seat_output_holder, holder)
+        provider, profile = profile_exit.enter_context(seat_profile(
+            harness=harness, executable=executable, env=env, cwd=cwd,
+            readonly_paths=readonly,
+            outputs=tuple(path for path in outputs if path != transcript),
+            gemini_profile=gemini_profile, role=role))
         profile = replace(profile, output_dirs=tuple(
             (source, directory) for directory, source in private.items()))
         owned_command = [provider, *command[1:]]
@@ -5125,27 +5246,38 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
         finally:
             if profile.journal is not None:
                 profile.journal.close()
+            # The seat has ended. Three steps, each attempted whatever the others did:
+            # deliver, remove the holder, sweep. The first failure is raised afterwards.
+            failure: BaseException | None = None
             try:
-                # The seat has ended. Deliver what it wrote, redacted, while its secrets
-                # are still known; the unredacted copies go with the private directories.
+                # Delivered redacted, while the profile's secrets are still known; the
+                # unredacted copies go with the holder.
                 for path in delivered:
                     _deliver_seat_output(Path(private[str(path.parent)]) / path.name, path)
-            finally:
-                private_stack.close()
-            if _SEAT_REDACTIONS.get():
-                retained = (*outputs, *delivered,
-                            *((transcript,) if transcript_path is not None else ()))
-                for path in dict.fromkeys(retained):
-                    # Rewritten only to remove a copied secret: an unconditional rewrite is a
-                    # read-truncate-write that loses any write landing between the two. A
-                    # secret-bearing output is still read-redact-written, which would race a
-                    # concurrent writer to the same file. That is acceptable ONLY because each
-                    # seat's outputs are its own files, precreated per launch: this profile's
-                    # seat has exited, and no other seat or profile writes them.
-                    raw = _read_seat_raw_text(path)
-                    redacted = _redact_seat_credentials(raw)
-                    if redacted != raw:
-                        _write_seat_text(path, redacted)
+            except BaseException as exc:
+                failure = exc
+            if holder is not None and not _remove_seat_output_holder(holder):
+                _note_seat_output_retained(holder)
+            try:
+                if _SEAT_REDACTIONS.get():
+                    retained = (*outputs, *delivered,
+                                *((transcript,) if transcript_path is not None else ()))
+                    for path in dict.fromkeys(retained):
+                        # Rewritten only to remove a copied secret: an unconditional rewrite
+                        # is a read-truncate-write that loses any write landing between the
+                        # two. A secret-bearing output is still read-redact-written, which
+                        # would race a concurrent writer to the same file. That is
+                        # acceptable ONLY because each seat's outputs are its own files,
+                        # precreated per launch: this profile's seat has exited, and no
+                        # other seat or profile writes them.
+                        raw = _read_seat_raw_text(path)
+                        redacted = _redact_seat_credentials(raw)
+                        if redacted != raw:
+                            _write_seat_text(path, redacted)
+            except BaseException as exc:
+                failure = failure or exc
+            if failure is not None:
+                raise failure
 
 
 def _filtered_holder_namespace() -> int:
@@ -7378,6 +7510,12 @@ class _TranscriptOutcome:
     versions: int = 0
     text: str = ""
     code: str | None = None
+    #: With an ``answer``: the turn is over and nothing more can be appended to it. The
+    #: transcript ends in a newline (a last line still being written is in flight by
+    #: definition) and the current request's last live record is terminal: an
+    #: ``isApiErrorMessage`` record, or an assistant record that EXPLICITLY stopped with
+    #: ``end_turn`` / ``stop_sequence`` and carries text (agent-harness#1433).
+    ended: bool = False
 
 
 def _claude_live_turn(lines: Sequence[str]) -> tuple[int, bool, list[tuple[dict, dict]]]:
@@ -7509,22 +7647,30 @@ def _claude_transcript_outcome(path: Path | None, *, require_terminal: bool = Fa
     # ``data`` is a journal the host already collected; a path is read no-follow, as a
     # regular file of this uid, bounded (``_read_seat_text``).
     try:
-        lines = (data.decode("utf-8") if data is not None else _read_seat_text(path)).split("\n")
+        raw = data.decode("utf-8") if data is not None else _read_seat_text(path)
     except (OSError, UnicodeError, AgyCanaryEvidenceError, _sandbox_egress.SeatIdentityUnverified):
         return _TranscriptOutcome("pending")
+    lines = raw.split("\n")
     versions, complete, turn = _claude_live_turn(lines)
     text = _claude_answer_from_lines(lines, require_terminal=require_terminal)
+
+    def _completed_text(message: dict) -> bool:
+        content = message.get("content")
+        return message.get("role") == "assistant" \
+            and message.get("stop_reason") in ("end_turn", "stop_sequence") \
+            and (isinstance(content, str) or isinstance(content, list) and any(
+                isinstance(item, dict) and item.get("type") == "text" for item in content))
+
     if text:
-        return _TranscriptOutcome("answer", versions, text=text)
+        ended = raw.endswith("\n") and complete and bool(turn) and (
+            _claude_api_error_record(*turn[-1]) or _completed_text(turn[-1][1]))
+        return _TranscriptOutcome("answer", versions, text=text, ended=ended)
     if not complete or not turn:
         return _TranscriptOutcome("pending", versions)
     payload, message = turn[-1]
     if _claude_api_error_record(payload, message):
         return _TranscriptOutcome("gave_up", versions, code=_claude_give_up_code(payload))
-    content = message.get("content")
-    if message.get("role") == "assistant" and message.get("stop_reason") in ("end_turn", "stop_sequence") \
-            and (isinstance(content, str) or isinstance(content, list) and any(
-                isinstance(item, dict) and item.get("type") == "text" for item in content)):
+    if _completed_text(message):
         return _TranscriptOutcome("rejected", versions, code=_CLAUDE_TRANSCRIPT_REJECTED)
     return _TranscriptOutcome("pending", versions)
 
@@ -8785,6 +8931,7 @@ def _run_claude_tui_session(
     last_review_len = 0
     last_transcript_len = 0
     last_transcript_activity = 0
+    ended_turn: tuple[int, str] | None = None  # the ended, undelivered turn last seen
     extended_pending_tool_uses: set[tuple[str, ...]] = set()
     # ah#196/#223 startup state machine: STARTING -> (TRUST_MODAL answered) ->
     # WAITING_FOR_EDITOR (quiescent) -> SUBMITTED. Answer the trust modal at most
@@ -9296,20 +9443,33 @@ def _run_claude_tui_session(
                 # a completed review (and this route takes its answer only from that file), or
                 # the journal fails strict admission. An ended turn journals nothing more, so
                 # the leg ends with the typed delivery refusal instead of waiting (forever,
-                # under heartbeat_only). The output is read once more first: the seat writes
-                # it before it journals the end of its turn, so a read taken before this
-                # journal read may be stale. A turn still in flight is ``pending`` and waits.
-                # (A journal the transcript-final route has just refused keeps its own code,
-                # ``claude_tui_journal_collection_refused``, at the top of the next pass.)
-                if outcome is not None and outcome.kind == "answer" and not journal_error:
-                    review_text = _current_output()
+                # under heartbeat_only). It fires only on a state no further append of this
+                # turn can change:
+                #   * ``outcome.ended``: the journal ends in a newline and its last live record
+                #     explicitly stopped (a last line still being written, or a record with
+                #     no stop, is in flight and waits);
+                #   * seen unchanged on two consecutive checks;
+                #   * decided on an output read taken AFTER this check's journal read: the
+                #     seat writes its file before it journals the end of its turn.
+                # What the seat did write is handed back as it is (never OK), so a review
+                # without a verdict stays a nonconforming review, not an empty leg.
+                # (The transcript-final route keeps its own code for a journal it refuses,
+                # ``claude_tui_journal_collection_refused``: that ends the leg at the top of
+                # the next pass, before this refusal's second sighting.)
+                if outcome is not None and outcome.kind == "answer" and outcome.ended:
+                    review_text = _current_output()  # after the journal read
                     if _canonical_complete(review_text):
                         return _finish(0, review_text, "claude_tui_file_output")
-                    if review_monitor is not None:
-                        review_monitor.record["provider_terminal_state"] = _CLAUDE_DELIVERY_REFUSED
-                        review_monitor.observe(
-                            None if last_output_progress is None else now - last_output_progress)
-                    return _finish(proc.poll() or 1, "", _HarnessCode(_CLAUDE_DELIVERY_REFUSED))
+                    if ended_turn == (outcome.versions, outcome.text):
+                        if review_monitor is not None:
+                            review_monitor.record["provider_terminal_state"] = _CLAUDE_DELIVERY_REFUSED
+                            review_monitor.observe(
+                                None if last_output_progress is None else now - last_output_progress)
+                        return _finish(proc.poll() or 1, review_text,
+                                       _HarnessCode(_CLAUDE_DELIVERY_REFUSED))
+                    ended_turn = (outcome.versions, outcome.text)
+                else:
+                    ended_turn = None
             if proc.poll() is not None:
                 review_text = _current_output()
                 transcript_text = transcript_salvage or _transcript_text()
@@ -10502,7 +10662,10 @@ def _exec_claude_tui_leg(
     # original leg backstop, uses the same staged inputs and subscription-TUI
     # command, and still requires its own canonical output file. Capture-enabled
     # launches remain single-attempt because their output namespace is sealed.
-    if log_text == "claude_tui_stalled" and agy_capture is None and not brokered:
+    # agent-harness#1433: a turn that ENDED without delivering its file is the same state,
+    # reached at once instead of through the stall timer, and gets the same one retry.
+    if (log_text in ("claude_tui_stalled", _CLAUDE_DELIVERY_REFUSED)
+            and agy_capture is None and not brokered):
         remaining_backstop_s = total_backstop_s - (
             time.monotonic() - leg_started
         )
@@ -10522,7 +10685,7 @@ def _exec_claude_tui_leg(
                 # No PTY text on the operator's stderr (agent-harness#1102 r8): the tail
                 # is CLI output; only our marker is logged.
                 logging.getLogger(__name__).warning(
-                    "advisor-panel claude TUI attempt 1/2 DEGRADED [claude_tui_stalled]"
+                    "advisor-panel claude TUI attempt 1/2 DEGRADED [%s]", log_text
                 )
                 rc, retry_review_text, log_text, pty_tail = _run_claude_tui_session(
                     command=command,
@@ -12083,6 +12246,8 @@ def _default_spawn(
     quiescence_failed = False
     spawn_counter = _SpawnCounter()
     spawn_token = _LEG_SPAWNS.set(spawn_counter)
+    # A notice the seat owner raises while this leg's profile ends lands in the leg's list.
+    owner_notices_token = _SEAT_OWNER_NOTICES.set(seat_notices)
     # The leg starts with NO sandbox facts, whatever its calling context holds, and the
     # leg's own `finally` restores that context through this first token -- so a leg reports
     # only facts it recorded, and the next leg on the thread can never inherit them.
@@ -12643,6 +12808,7 @@ def _default_spawn(
             finally:
                 _SANDBOX_ROUND_FACTS.reset(facts_token)
                 _LEG_SPAWNS.reset(spawn_token)
+                _SEAT_OWNER_NOTICES.reset(owner_notices_token)
 
 
 # CS-0.8: routes the `_default_spawn` real-exec boundary through the

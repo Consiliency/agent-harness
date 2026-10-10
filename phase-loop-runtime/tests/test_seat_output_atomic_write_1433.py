@@ -15,12 +15,21 @@ none of its other entries is visible. When the seat has ended, the owner copies 
 declared output names to the precreated host files, redacted, and removes the private
 directory. ``outputs`` keeps its meaning: a file bound in place, shared live with the host.
 
+On the host the private directory is a child of a 0700 holder under the owner's staging
+root: never in the process temp root, never inside a path this seat can see, and not the
+seat's to open to other accounts. A layout that cannot have one is refused before anything
+is created.
+
 Every cell that launches a seat runs it in the REAL owned sandbox (``launch_owned``).
 
 Named mutations, each run against this file (all red):
 
 * M-HOSTDIR: mount the host's own output directory writable instead of a private one ->
   the neighbour, scratch and two-seat cells fail.
+* M-TMPROOT: create the holder in the process temp root -> the staging-root cell fails.
+* M-EXPOSED: skip the "not inside a path this seat can see" checks -> the staging-root
+  refusal and the view cell fail.
+* M-HOLDER: bind the holder itself -> the seat can open it to others; that cell fails.
 * M-NODELIVER: skip the copy to the host file -> the atomic-write cells fail.
 * M-NOREDACT: deliver without redaction -> the redaction cell fails (the exit sweep would
   still redact the host file afterwards; the cell records every write to it).
@@ -30,9 +39,20 @@ Named mutations, each run against this file (all red):
 * M-ANCHOR: mount a private directory wherever asked -> the read-only-input and
   system-mount cells fail.
 * M-LIVE: read the host file while the seat runs -> the session cells never see the review.
+* M-LIVE-FALLBACK: fall back to the host file when the private copy is absent or unsafe ->
+  the live-read cell fails.
+* M-STALE: keep an earlier launch's content in the host file -> the two stale cells fail.
 * M-BOTH: let a replaceable declaration override an in-place one -> that cell fails.
-* M-EARLY: skip the pre-launch placement check -> the read-only-input refusal cells fail
-  (the refusal moves to the view, as an untyped bind failure, after files were created).
+* M-EARLY: skip the pre-launch placement check -> the read-only-input refusal cells fail.
+* M-LATE: precreate before the placement check -> the ``creates nothing`` cell fails.
+* M-EQUAL: do not refuse an output that is itself an input -> that cell fails.
+* M-LINK: judge placement on the paths as written only -> the link cell fails.
+* M-RMTREE: remove the holder with ``shutil.rmtree`` -> the deep-tree cell fails on
+  Python 3.10 and 3.11.
+* M-SWEEP: let a failed removal or delivery skip the exit sweep -> the notice and
+  exit-step cells fail.
+* M-UID / M-HOLDERMODE: drop the ownership or the holder-mode check where the directory
+  is used -> those view cells fail.
 """
 from __future__ import annotations
 
@@ -48,7 +68,7 @@ from pathlib import Path
 import pytest
 
 from phase_loop_runtime import panel_invoker as pi
-from phase_loop_runtime import review_stage, sandbox_egress, seat_jail
+from phase_loop_runtime import review_stage, sandbox_egress, sandbox_policy, seat_jail
 from test_review_seat_stall_1176 import REQUEST, _JOURNAL, _ProviderTimer, _answer, _fast_tui
 
 ADMIN = pi.SeatLaunchRole.PROVIDER_ADMIN
@@ -538,6 +558,314 @@ def test_a_profile_that_never_launches_leaves_no_private_directory(tmp_path, els
     assert not os.path.lexists(private) and output.read_text() == ""
 
 
+# --- where the private directory lives on the host ---------------------------------------------
+
+def _holders() -> list[str]:
+    """This account's output holders under the staging root (none outside a live profile)."""
+    root = Path(os.path.realpath(sandbox_policy.staging_root()))
+    return sorted(entry.name for entry in root.iterdir()
+                  if entry.name.startswith(pi._SEAT_OUTPUT_HOLDER_PREFIX)
+                  and not entry.name.endswith(".owner"))
+
+
+def test_the_private_directory_lives_in_a_holder_under_the_staging_root(tmp_path, monkeypatch):
+    """Never in the process temp root. With the temp root inside a reviewed tree, another
+    seat that reads that tree must not find this seat's private directory in it. The seat is
+    bound a child of a 0700 holder under the owner's staging root, which records its owner."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    out = tmp_path / "out"
+    out.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", str(repo))  # a TMPDIR inside the reviewed tree
+    staging = Path(os.path.realpath(sandbox_policy.staging_root()))
+    assert not staging.is_relative_to(repo)
+    before = _holders()
+    with _profile("", cwd=cwd, outputs=(out / "review.txt",), readonly=(repo,)) as (_, first):
+        private = Path(first.output_dirs[0][0])
+        holder = private.parent
+        assert holder.parent == staging and holder.name.startswith("pl-seat-output-")
+        assert not private.is_relative_to(repo)
+        assert stat_mode(holder) == 0o700 and stat_mode(private) == 0o700
+        assert Path(str(holder) + ".owner").read_text().startswith(f"pid={os.getpid()} ")
+        with _profile("", cwd=cwd, outputs=(out / "other.txt",), readonly=(repo,)) as (_, second):
+            other = Path(second.output_dirs[0][0])
+            assert other.parent != holder  # a holder per launch
+            layers = pi._seat_view_layers(cwd, second.readonly_paths)
+            assert not pi._seat_host_exposed(layers, private)
+            assert not pi._seat_host_exposed(layers, other)
+    assert _holders() == before and not os.path.lexists(str(holder) + ".owner")
+
+
+def stat_mode(path) -> int:
+    return os.lstat(path).st_mode & 0o7777
+
+
+def test_a_staging_root_inside_a_read_only_input_is_refused_before_anything_is_created(
+        tmp_path, monkeypatch):
+    """Where the owner's staging root is itself inside one of the seat's read-only inputs,
+    no directory under it can be private from this seat, so the launch is refused, with the
+    fix line that names the staging setting."""
+    repo = tmp_path / "repo"
+    (repo / "staging").mkdir(parents=True)
+    out = tmp_path / "out"
+    out.mkdir()
+    monkeypatch.setenv("PHASE_LOOP_SANDBOX_STAGING_DIR", str(repo / "staging"))
+    monkeypatch.setattr(pi, "launch_owned", lambda *a, **k: pytest.fail("the seat launched"))
+    with pytest.raises(sandbox_egress.SeatIdentityUnverified) as refused:
+        with _profile("", cwd=tmp_path, outputs=(out / "review.txt",), readonly=(repo,)):
+            pytest.fail("a profile was built")
+    assert str(refused.value) == "seat_output_inside_readonly_input"
+    assert _names(out) == [] and _names(repo / "staging") == []
+    assert "PHASE_LOOP_SANDBOX_STAGING_DIR" in seat_jail.NOTICES[str(refused.value)][2]
+
+
+def test_the_seat_cannot_open_its_directory_to_other_accounts(tmp_path, elsewhere):
+    """The seat owns the directory it is given and may give it any mode. The holder above
+    it is not in the seat's view, stays 0700, and keeps every other account out."""
+    cwd, _ = _layout("output-elsewhere", tmp_path, elsewhere)
+    output = elsewhere / "opus.md"
+    with _profile(
+            "here = os.path.dirname(sys.argv[1])\n"
+            "facts['write'] = attempt(atomic_write, sys.argv[1], sys.argv[2])\n"
+            "facts['open_dir'] = attempt(os.chmod, here, 0o777)\n"
+            "facts['open_file'] = attempt(os.chmod, sys.argv[1], 0o666)\n"
+            "facts['open_holder'] = attempt(os.chmod, os.path.join(here, '..'), 0o777)\n"
+            "facts['above'] = sorted(os.listdir(os.path.join(here, '..')))\n",
+            cwd=cwd, outputs=(output,), argv=(output, REVIEW)) as (owned, profile):
+        private = Path(profile.output_dirs[0][0])
+        facts = _launch(owned, profile, cwd)
+        assert facts["write"] == "ok" and facts["open_dir"] == "ok" and facts["open_file"] == "ok"
+        # ``..`` of the seat's directory is the seat's own view, never the holder.
+        assert facts["open_holder"] != "ok" and facts["above"] == [elsewhere.name]
+        assert stat_mode(private) == 0o777  # the seat's to change
+        assert stat_mode(private.parent) == 0o700  # not the seat's to change
+    assert output.read_text() == REVIEW and not os.path.lexists(private.parent)
+
+
+def test_a_refused_layout_creates_nothing(tmp_path):
+    """Placement is settled before any side effect: a refused launch leaves no transcript,
+    no in-place output, no replaceable output and no holder behind."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    transcript, in_place = tmp_path / "journal.jsonl", tmp_path / "capture.txt"
+    before = _holders()
+    with pytest.raises(sandbox_egress.SeatIdentityUnverified, match="seat_output_inside_readonly_input"):
+        with pi._seat_command_profile(
+                ["/usr/bin/python3", "-c", "pass"], env={"PATH": "/usr/bin:/bin"}, cwd=tmp_path,
+                readonly_paths=(repo,), outputs=(in_place,), transcript_path=transcript,
+                replaceable_outputs=(repo / "review.txt",), role=ADMIN):
+            pytest.fail("the refused layout built a profile")
+    assert [path.name for path in (transcript, in_place, repo / "review.txt")
+            if os.path.lexists(path)] == []
+    assert _holders() == before
+
+
+def test_an_output_that_is_itself_a_read_only_input_is_refused(tmp_path):
+    context = tmp_path / "context.txt"
+    context.write_text("read-only input")
+    with pytest.raises(sandbox_egress.SeatIdentityUnverified, match="seat_output_inside_readonly_input"):
+        with pi._seat_command_profile(
+                ["/usr/bin/python3", "-c", "pass"], env={"PATH": "/usr/bin:/bin"}, cwd=tmp_path / "x",
+                readonly_paths=(context,), replaceable_outputs=(context,), role=ADMIN):
+            pytest.fail("an output equal to a read-only input built a profile")
+    assert context.read_text() == "read-only input"
+
+
+def test_an_output_reached_through_a_link_into_an_input_is_refused(tmp_path):
+    """The check reads the paths as the host holds them once parent links are resolved, as
+    the binds do: an output named through a link whose target is inside a read-only input is
+    inside that input."""
+    repo = tmp_path / "repo"
+    (repo / "logs").mkdir(parents=True)
+    (tmp_path / "elsewhere").mkdir()
+    (tmp_path / "elsewhere" / "link").symlink_to(repo, target_is_directory=True)
+    output = tmp_path / "elsewhere" / "link" / "logs" / "opus.md"
+    cwd = tmp_path / "cwd"
+    cwd.mkdir()
+    with pytest.raises(sandbox_egress.SeatIdentityUnverified, match="seat_output_inside_readonly_input"):
+        with _profile("", cwd=cwd, outputs=(output,), readonly=(repo,)):
+            pytest.fail("a profile was built")
+    assert _names(repo / "logs") == []
+
+
+DEEP = (
+    "here = os.path.dirname(sys.argv[1])\n"
+    "facts['write'] = attempt(atomic_write, sys.argv[1], sys.argv[2])\n"
+    "os.chdir(here)\n"
+    "for _ in range(1200):\n"
+    "    os.mkdir('d'); os.chdir('d')\n"
+    "write('leaf', 'x')\n"
+    "facts['depth'] = 1200\n"
+)
+
+
+def test_a_deep_tree_beside_the_output_cannot_stop_removal_or_the_sweep(
+        tmp_path, elsewhere, monkeypatch):
+    """A seat leaves a tree 1,200 levels deep beside its output. Removal does not depend on
+    depth (a recursive removal raises ``RecursionError`` on Python 3.10 and 3.11): the holder
+    is gone, the review is delivered, the exit sweep still redacts the in-place output, and
+    nothing is raised."""
+    env = _codex_shaped_profile(monkeypatch, tmp_path)
+    cwd, _ = _layout("output-elsewhere", tmp_path, elsewhere)
+    output, in_place = elsewhere / "opus.md", elsewhere / "notes.txt"
+    script = (
+        "secret = json.loads(read(os.path.join(os.environ['CODEX_HOME'], 'auth.json')))\n"
+        "write(sys.argv[3], 'leaked ' + secret['tokens']['access_token'] + '\\n')\n" + DEEP)
+    with _profile(script, cwd=cwd, outputs=(output,), in_place=(in_place,), env=env,
+                  argv=(output, REVIEW, in_place)) as (owned, profile):
+        private = Path(profile.output_dirs[0][0])
+        assert _launch(owned, profile, cwd) == {"write": "ok", "depth": 1200}
+    assert not os.path.lexists(private.parent), "the private directory survived"
+    assert output.read_text() == REVIEW
+    assert in_place.read_text() == "leaked [credential redacted]\n"
+
+
+def test_a_holder_that_cannot_be_removed_is_a_notice_not_a_lost_review(
+        tmp_path, elsewhere, monkeypatch, caplog):
+    """If removal fails all the same, the delivered review stands, the exit sweep still
+    runs, nothing is raised, and the leg gets a typed notice that names what is left."""
+    env = _codex_shaped_profile(monkeypatch, tmp_path)
+    cwd, _ = _layout("output-elsewhere", tmp_path, elsewhere)
+    output, in_place = elsewhere / "opus.md", elsewhere / "notes.txt"
+    real_remove = pi._remove_seat_output_holder
+    script = (
+        "secret = json.loads(read(os.path.join(os.environ['CODEX_HOME'], 'auth.json')))\n"
+        "write(sys.argv[3], 'leaked ' + secret['tokens']['access_token'] + '\\n')\n"
+        "facts['write'] = attempt(atomic_write, sys.argv[1], sys.argv[2])\n")
+    notices: list[str] = []
+    token = pi._SEAT_OWNER_NOTICES.set(notices)
+    try:
+        with caplog.at_level("WARNING", logger=pi.__name__):
+            with _profile(script, cwd=cwd, outputs=(output,), in_place=(in_place,), env=env,
+                          argv=(output, REVIEW, in_place)) as (owned, profile):
+                holder = Path(profile.output_dirs[0][0]).parent
+                assert _launch(owned, profile, cwd) == {"write": "ok"}
+                monkeypatch.setattr(pi, "_remove_seat_output_holder", lambda path: False)
+    finally:
+        pi._SEAT_OWNER_NOTICES.reset(token)
+        monkeypatch.setattr(pi, "_remove_seat_output_holder", real_remove)
+    try:
+        assert notices == ["seat_output_retained_after_teardown"]
+        assert any("seat_output_retained_after_teardown" in record.getMessage()
+                   and str(holder) in record.getMessage() for record in caplog.records)
+        assert output.read_text() == REVIEW
+        assert in_place.read_text() == "leaked [credential redacted]\n"
+        notice = seat_jail.render_notice(notices[0], "claude:a")
+        assert notice.what == "directory retained" and "pl-seat-output-" in notice.fix
+        assert notices[0] in pi._HARNESS_DETAIL_CODES
+    finally:
+        assert real_remove(holder)
+
+
+def test_each_exit_step_runs_whatever_the_others_did(tmp_path, elsewhere, monkeypatch):
+    """Delivery fails: the holder is still removed and the sweep still redacts; the failure
+    is raised afterwards."""
+    env = _codex_shaped_profile(monkeypatch, tmp_path)
+    cwd, _ = _layout("output-elsewhere", tmp_path, elsewhere)
+    output, in_place = elsewhere / "opus.md", elsewhere / "notes.txt"
+    script = (
+        "secret = json.loads(read(os.path.join(os.environ['CODEX_HOME'], 'auth.json')))\n"
+        "write(sys.argv[3], 'leaked ' + secret['tokens']['access_token'] + '\\n')\n"
+        "facts['write'] = attempt(atomic_write, sys.argv[1], sys.argv[2])\n")
+
+    def failing_delivery(source, destination):
+        raise RuntimeError("synthetic delivery failure")
+
+    with pytest.raises(RuntimeError, match="synthetic delivery failure"):
+        with _profile(script, cwd=cwd, outputs=(output,), in_place=(in_place,), env=env,
+                      argv=(output, REVIEW, in_place)) as (owned, profile):
+            holder = Path(profile.output_dirs[0][0]).parent
+            assert _launch(owned, profile, cwd) == {"write": "ok"}
+            monkeypatch.setattr(pi, "_deliver_seat_output", failing_delivery)
+    assert not os.path.lexists(holder)
+    assert in_place.read_text() == "leaked [credential redacted]\n"
+
+
+def test_a_board_leg_carries_the_refusal_and_the_owners_notices(tmp_path, monkeypatch):
+    """Through the board's own spawn: a refusal the owner raises reaches the leg as DEGRADED
+    with empty text, its code as the detail and as a notice; and a notice the owner raises
+    while the profile ends (a retained holder) lands in the same leg's notices."""
+    monkeypatch.setenv("PHASE_LOOP_PANEL_CLAUDE_ROUTE", "tui")
+
+    def refusing_leg(*args, **kwargs):
+        pi._note_seat_output_retained(tmp_path / "pl-seat-output-left")
+        raise sandbox_egress.SeatIdentityUnverified("seat_output_inside_readonly_input")
+
+    monkeypatch.setattr(pi, "_exec_claude_tui_leg", refusing_leg)
+    spawned = pi._default_spawn("claude", "an advisory question", repo_dir=tmp_path, mode="advisory")
+    assert tuple(spawned) == ("DEGRADED", "", "seat_output_inside_readonly_input")
+    assert spawned.seat_notices == ("seat_output_retained_after_teardown",
+                                    "seat_output_inside_readonly_input")
+    assert pi._SEAT_OWNER_NOTICES.get() is None  # the leg's list does not outlive the leg
+
+
+# --- an earlier launch's content in the host file ----------------------------------------------
+
+def test_the_live_read_never_falls_back_to_the_host_file(tmp_path, elsewhere):
+    """While the seat runs, its output is what is in its private directory and nothing else:
+    not a host file with content, whether the private copy is absent or not a regular file."""
+    output = elsewhere / "opus.md"
+    with _profile("", cwd=tmp_path, outputs=(output,)) as (_owned, profile):
+        private = Path(profile.output_dirs[0][0])
+        output.write_text("Not this seat's\nAGREE\n")
+        assert pi._seat_output_text(profile, output) == ""
+        (private / "opus.md").symlink_to(output)
+        assert pi._seat_output_text(profile, output) == ""
+        (private / "opus.md").unlink()
+        (private / "opus.md").write_text(REVIEW)
+        assert pi._seat_output_text(profile, output) == REVIEW.strip()
+
+
+def test_a_host_file_left_by_an_earlier_launch_is_emptied_when_the_launch_is_accepted(
+        tmp_path, elsewhere):
+    """A replaceable output is this launch's file from the moment the launch is accepted: an
+    earlier launch's review in it is emptied, so a launch that delivers nothing never leaves
+    an earlier verdict behind. (A launch refused for its layout touches nothing.)"""
+    output = elsewhere / "opus.md"
+    output.write_text("Earlier launch\nAGREE\n")
+    with _profile("", cwd=tmp_path, outputs=(output,)) as (_owned, profile):
+        assert output.read_text() == ""
+        assert pi._seat_output_text(profile, output) == ""
+    assert output.read_text() == ""
+
+
+@pytest.mark.usefixtures("owned_review_network")
+def test_a_session_never_returns_an_earlier_launchs_verdict(tmp_path, elsewhere, monkeypatch):
+    """The host file already holds "Earlier launch / AGREE"; this seat ends its turn and
+    writes nothing. The session refuses (it used to return the stale AGREE with rc 0), and
+    the stale verdict is gone from the file."""
+    _fast_tui(monkeypatch)
+    monkeypatch.setattr(pi, "_CLAUDE_TUI_SUBMIT_DELAY_S", .01)
+    monkeypatch.setattr(pi, "_CLAUDE_TUI_READY_QUIESCENCE_S", .01)
+    cwd, directory = _layout("output-elsewhere", tmp_path, elsewhere)
+    output = directory / "opus.md"
+    output.write_text("Earlier launch\nAGREE\n")
+    body = json.dumps(REQUEST) + "\n" + json.dumps(_answer("a", "m", "AGREE")) + "\n"
+    script = (
+        "import sys, time\nfrom pathlib import Path\n" + _JOURNAL +
+        "print('Claude Code fake provider ready for review', flush=True)\n"
+        "time.sleep(.2)\n"
+        f"_journal.write_text({body!r})\n"
+        "while True:\n"
+        "    sys.stdout.write('\\r* Idle...'); sys.stdout.flush(); time.sleep(.05)\n"
+    )
+    monitor = pi._ReviewMonitor(tmp_path / "monitor.json", "t", 0, threading.Event(),
+                                stall_notice_s=3600)
+    guard = _ProviderTimer(monkeypatch, 15, monitor.cancel.set)
+    try:
+        rc, text, log, _tail = pi._run_claude_tui_session(
+            command=["/usr/bin/python3", "-c", script], cwd=cwd, prompt="input",
+            output_file=output, timeout_s=600, backstop_s=600, stall_threshold_s=600,
+            env=os.environ, review_monitor=monitor,
+        )
+    finally:
+        guard.cancel()
+    assert (rc, text, log) == (1, "", "claude_seat_delivery_refused")
+    assert output.read_text() == ""
+
+
 # --- the view: where the private directory is mounted ------------------------------------------
 
 def _mounts(view: list[str]) -> list[tuple[str, str]]:
@@ -624,6 +952,58 @@ def test_view_refuses_a_private_directory_source_that_is_not_private(tmp_path, s
         source.chmod(0o755)
     with pytest.raises(sandbox_egress.SeatIdentityUnverified):
         pi._seat_filesystem_view(tmp_path, output_dirs=((str(source), str(tmp_path / "out")),))
+
+
+@pytest.mark.parametrize("fault", ["the directory is another account's",
+                                   "the holder is another account's",
+                                   "the holder is open to others",
+                                   "the holder's parent is writable by others"])
+def test_view_refuses_a_private_directory_whose_holder_is_not_ours_and_closed(
+        tmp_path, monkeypatch, fault):
+    """Verified where it is used: the directory and the holder above it are real directories
+    of this account, the holder is 0700, and no other account can replace it."""
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    holder = shared / "holder"
+    holder.mkdir(mode=0o700)
+    source = holder / "0"
+    source.mkdir(mode=0o700)
+    view = lambda: pi._seat_filesystem_view(  # noqa: E731
+        tmp_path / "cwd", output_dirs=((str(source), str(tmp_path / "out")),))
+    built = view()  # accepted as it stands
+    assert built[built.index("--bind"):built.index("--bind") + 3] == [
+        "--bind", str(source), str(tmp_path / "out")]
+    if fault == "the holder is open to others":
+        holder.chmod(0o750)
+    elif fault == "the holder's parent is writable by others":
+        shared.chmod(0o777)
+    else:
+        foreign = str(source if fault.startswith("the directory") else holder)
+        real_lstat = os.lstat
+
+        def lstat(path, *args, **kwargs):
+            info = real_lstat(path, *args, **kwargs)
+            if os.fspath(path) != foreign:
+                return info
+            fields = list(info)
+            fields[4] = info.st_uid + 1  # st_uid
+            return os.stat_result(fields)
+
+        monkeypatch.setattr(pi.os, "lstat", lstat)
+    with pytest.raises(sandbox_egress.SeatIdentityUnverified, match="seat_bind_source_unavailable"):
+        view()
+
+
+def test_view_refuses_a_private_directory_the_seat_can_see_through_an_input(tmp_path):
+    """The source of a private directory is never a host path one of this view's binds
+    shows: here it lies inside a read-only input."""
+    repo = tmp_path / "repo"
+    holder = repo / "holder"
+    (holder / "0").mkdir(parents=True, mode=0o700)
+    holder.chmod(0o700)
+    with pytest.raises(sandbox_egress.SeatIdentityUnverified, match="seat_bind_source_unavailable"):
+        pi._seat_filesystem_view(tmp_path / "cwd", readonly_paths=(repo,),
+                                 output_dirs=((str(holder / "0"), str(tmp_path / "out")),))
 
 
 # --- the live session: the review is read while the seat runs, and delivered when it ends ------
