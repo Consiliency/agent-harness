@@ -164,11 +164,11 @@ revalidations; launch is final; backend receipts never make `sandbox_root_applie
   the same `sandbox_ref`.
 - **C5 Required capabilities** (ask B2). `PlacementRequest.required_capabilities` for a
   review leg: `inbound_closed`; `one_shot_secret_channel`; and `private_ranges_unreachable`,
-  or `private_allowlist` when `egress_needs` is not empty. `egress_needs` keeps its
-  present source; a backend applies its own host's policy and a request never widens it. The driver refuses before `admit`
-  if the set is not within `capabilities()`, and again after `commit`, before `execute`, if it
-  is not within `verified`; the second refusal kills the sandbox with confirmation first.
-  Both are `sandbox_placement_capability_unmet`.
+  or `private_allowlist` when `egress_needs` is not empty. `egress_needs` keeps its present
+  source; a backend applies its own host's policy and a request never widens it. The driver
+  refuses before `admit` if the set is not within `capabilities()`, and again after
+  `commit`, before `execute`, if it is not within `verified`; the second refusal kills the
+  sandbox with confirmation first. Both are `sandbox_placement_capability_unmet`.
 - **C6 Outcome authority stays local.** The runtime ingests `result` under a size cap and a
   strict decode, redacts the leg's registered credential values and runs the secret scan,
   and only then builds the leg record with the same classification code a local leg uses. A
@@ -188,9 +188,9 @@ revalidations; launch is final; backend receipts never make `sandbox_root_applie
   check, `admit`, the lease entry, `commit`. A `PlacementUnavailable` at any of these moves to
   the next candidate and adds `<name>: <code>` to `sandbox_root_reason`; only the validated
   code is recorded, never backend prose. A code that has a `NOTICES` row is also added to
-  the leg's seat notices, so the operator sees its fix line. With none left: a recorded local fallback, or
-  `sandbox_placement_required_unavailable` under the fail-closed knob. A refused seat is
-  never run sealed.
+  the leg's seat notices, so the operator sees its fix line. With none left: a recorded
+  local fallback, or `sandbox_placement_required_unavailable` under the fail-closed knob. A
+  refused seat is never run sealed.
   - **A capacity refusal never spills back to the launching host.** A `retryable` refusal
     whose wait is exhausted moves to the next non-local candidate like any other, but if
     any candidate ended that way the leg does **not** fall back to local: with no candidate
@@ -198,15 +198,15 @@ revalidations; launch is final; backend receipts never make `sandbox_root_applie
     Only non-retryable refusals (unreachable, unregistered, misconfigured, capability unmet)
     can end in the local fallback. A busy compute host therefore queues or refuses; a
     missing one degrades to today's behaviour unless the knob forbids it.
+- **C8 Confirmed release.** `release` on a non-local placement returns only when the
+  sandbox is confirmed gone (`kill`, then absent from `list_owned`). An unconfirmed kill
+  ends the leg with `sandbox_placement_lost_after_launch` and leaves the lease entry for
+  the reaper.
 - **C9 A backend is told its root.** The seam as built gives a backend no way to learn the
   root that selected it. `PlacementRequest.root` carries the parsed, sanitized location
   (scheme, host with optional port, path) and the configured backend name. It is the form
   `sandbox_policy.parse_location` already produces, so userinfo, query and fragment never
   reach a backend.
-- **C8 Confirmed release.** `release` on a non-local placement returns only when the
-  sandbox is confirmed gone (`kill`, then absent from `list_owned`). An unconfirmed kill
-  ends the leg with `sandbox_placement_lost_after_launch` and leaves the lease entry for
-  the reaper.
 
 ## Changes (P1)
 
