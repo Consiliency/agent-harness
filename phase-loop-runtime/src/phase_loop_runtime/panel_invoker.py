@@ -3333,8 +3333,7 @@ def _leg_failure_kind(rc: int | None, review_text: str, log_text: str) -> str:
     if (type(log_text) is _HarnessCode
             and str.__str__(log_text) == _seat_tool_evidence.TOOL_SANDBOX_UNAVAILABLE):
         # agent-harness#1335: an environment failure this runtime established itself (its
-        # sandbox probe, or the seat's own exec records). Provenance by TYPE: CLI text that
-        # spells the code is plain `str`.
+        # sandbox probe). Provenance by TYPE: CLI text that spells the code is plain `str`.
         return "env_failure"
     haystack = _ANSI_CSI_RE.sub("", _log_tail(log_text) + "\n" + str(review_text or ""))
     if _USAGE_LIMIT_LABEL_RE.search(haystack):
@@ -10942,20 +10941,23 @@ def _codex_sandbox_probe_command(cmd: "Sequence[str]") -> "list[str] | None":
 
 def _codex_command_sandbox_cannot_start(cmd: "Sequence[str]", *, cwd, env, retain_caps=(),
                                         child_scratch: "str | None" = None,
+                                        quiescence_latch: "_ProviderQuiescenceLatch | None" = None,
                                         writable_tree: "Path | None" = None) -> bool:
     """Measure the capability, not the reply: can codex start a command in this seat's view?
 
     codex runs every command inside its own bubblewrap sandbox. Where that sandbox cannot
-    start inside the seat (a refused nested namespace; a workspace root the seat's view shows
-    read-only) the seat reads nothing, and for some of those failures codex leaves no record
-    of the attempt in any stream. So the probe is launched exactly as the seat will be --
-    the same function, owner, working directory, environment, retained capability and
-    writable tree -- and only the argv after ``codex`` differs.
+    start in the seat's view (a refused nested namespace; a workspace root the view shows
+    read-only) the seat reads nothing, yet codex exits 0 with a verdict, and for some of
+    those failures it leaves no record of the attempt in any stream. So the probe is
+    launched exactly as the seat will be -- the same function, owner, working directory,
+    environment, retained capability and writable tree, under the leg's quiescence latch (a
+    cancel kills it like any launch of the leg) -- and only the argv after ``codex`` differs.
 
     True ONLY for a failed probe that printed the launcher's own diagnostic. Everything else
     (the probe ran, cannot be launched, timed out, or failed another way such as a codex
-    without this subcommand) is inconclusive: the seat runs, and its exec records are read
-    afterwards. A replaced process runner (a test seam) is never asked to answer a probe."""
+    without this subcommand or a launcher error with another prefix) is inconclusive: the
+    seat runs and is classified exactly as it was before this check existed. A replaced
+    process runner (a test seam) is never asked to answer a probe."""
     probe = _codex_sandbox_probe_command(cmd)
     if probe is None or _run_leg_with_liveness is not _PRODUCTION_RUN_LEG_WITH_LIVENESS:
         return False
@@ -10963,6 +10965,7 @@ def _codex_command_sandbox_cannot_start(cmd: "Sequence[str]", *, cwd, env, retai
         run = _run_leg_with_liveness(
             probe, cwd=cwd, env=env, deadline_s=_CODEX_SANDBOX_PROBE_TIMEOUT_S,
             retain_caps=retain_caps, child_scratch=child_scratch,
+            quiescence_latch=quiescence_latch,
             **({"writable_tree": writable_tree} if writable_tree is not None else {}),
         )
     except (OSError, subprocess.TimeoutExpired, _sandbox_egress.EgressUnavailable):
@@ -11130,14 +11133,15 @@ def _exec_leg(
         # `_seat_command_profile` checks it again). No other route is granted anything.
         codex_tree_grant: dict[str, Path] = (
             {"writable_tree": staged_tree} if brokered and staged_tree is not None else {})
-        # agent-harness#1335: a seat is never run toolless. Where this route gives codex a
-        # shell (every route but the sealed one) its command sandbox is probed in the seat's
-        # own view BEFORE the model is called; a sandbox that cannot start ends the leg here,
-        # typed. The capture route keeps its frozen launch and is checked afterwards only.
+        # agent-harness#1335: where this route gives codex a shell, its command sandbox is
+        # probed in the seat's own view BEFORE the model is called; a sandbox that cannot
+        # start ends the leg here, typed. Not probed: the sealed route (the seat has no
+        # shell) and the capture route (its launch is frozen), which has no such check.
         if (agy_capture is None and (not brokered or staged_tree is not None)
                 and _codex_command_sandbox_cannot_start(
                     cmd, cwd=provider_cwd, env=env, retain_caps=codex_retain_caps,
-                    child_scratch=leg_scratch, **codex_tree_grant)):
+                    child_scratch=leg_scratch, quiescence_latch=quiescence_latch,
+                    **codex_tree_grant)):
             return 1, "", _HarnessCode(_seat_tool_evidence.TOOL_SANDBOX_UNAVAILABLE)
         if brokered:
             _record_broker_provider_evidence(
@@ -11235,16 +11239,6 @@ def _exec_leg(
             review_text = provider_authority.read_expected_output(out_file.name).decode(
                 "utf-8", errors="replace"
             )
-        # agent-harness#1335: a seat whose tools could not run is never a usable review.
-        # codex exits 0 with a verdict even when every command it tried died in its own
-        # sandbox launcher, so its exec records -- not its prose -- say whether anything ran.
-        # The reply is dropped: an operational failure carries its reason in `detail`.
-        if rc == 0 and _seat_tool_evidence.codex_tools_never_started(
-            proc.stderr or "",
-            seat_cwd=cmd[cmd.index("--cd") + 1] if "--cd" in cmd else str(provider_cwd),
-            prompt=prompt, final_message=review_text,
-        ):
-            return 1, "", _HarnessCode(_seat_tool_evidence.TOOL_SANDBOX_UNAVAILABLE)
         return rc, review_text, log_text
     if leg == "gemini":
         # ah#335: this leg executes `agy`, NOT the gemini CLI (see `_LEG_CLI`). The health

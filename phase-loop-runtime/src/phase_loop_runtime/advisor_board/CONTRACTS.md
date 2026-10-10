@@ -1083,23 +1083,27 @@ are recorded on agent-harness#1132.
   byte-identical to before, with that notice, except a Claude seat's step 3, which is not
   run (plan amendment A3b, below). Codex and grok are not jailed
   (agent-harness#895) and carry `seat_filesystem_unconfined` when given a tree.
-- **A codex seat whose commands cannot start is DEGRADED (agent-harness#1335).** codex runs
-  each command inside its own sandbox. Where that sandbox cannot start inside the seat, the
-  seat reads nothing, yet codex exits 0 with a verdict. Such a leg is `DEGRADED` with
-  `seat_tool_sandbox_unavailable`, its text is empty, and it is not a usable review. Two
-  checks decide, neither from the reply:
-  - **Before the run, a probe.** On every route that gives codex a shell (not the sealed
-    one), `codex sandbox --permission-profile <mode> --cd <tree> ... -- true` is launched
-    exactly as the seat will be (same owner, view, working directory, environment and
-    retained capability). A failed probe that prints the launcher's own diagnostic ends the
-    leg before the model is called. Any other outcome is inconclusive and the seat runs.
-  - **After the run, the exec records** in codex's session transcript (`seat_tool_evidence`):
-    at least one record, every record the launcher's one-line diagnostic, and at least one in
-    the seat's own working directory. The echoed prompt and the final message are excluded,
-    so quoted text decides nothing.
-  A seat whose commands ran (even if each failed for its own reason), or that ran none, is
-  unchanged. The probe exists because codex writes no exec record at all for some launcher
-  failures. Other seats expose no such record or probe yet and are not covered.
+- **A codex seat whose command sandbox cannot start is DEGRADED before it runs
+  (agent-harness#1335).** codex runs each command inside its own sandbox. Where that sandbox
+  cannot start in the seat's view, the seat reads nothing, yet codex exits 0 with a verdict.
+  - **One check, a probe before the run.** Where the route gives codex a shell,
+    `codex sandbox --permission-profile <mode> --cd <tree> ... -- true` is launched exactly
+    as the seat will be (same owner, view, working directory, environment and retained
+    capability, under the leg's quiescence latch) and with no model call. A probe that exits
+    non-zero AND prints the sandbox launcher's own diagnostic (a line starting `bwrap: `)
+    ends the leg: `DEGRADED`, `seat_tool_sandbox_unavailable`, empty text, the seat not run.
+  - **Which way it can err.** Every other probe outcome is inconclusive: a timeout, a launch
+    refusal, a codex whose `sandbox` subcommand differs, a launcher error that does not start
+    with `bwrap: `. The seat then runs and is classified and counted exactly as before this
+    check existed, so a seat that cannot run commands can still be `OK` in those cases.
+  - **Not probed.** The sealed route (the seat has no shell) and the capture route (its
+    launch is frozen). The capture route therefore has no such check.
+  - **Nothing after the run.** No rule reads the seat's transcript or reply for this.
+  - **Consequence.** The degraded seat is not a usable review: the reviewer floor does not
+    count it, the president receives `unusable (DEGRADED)` for it, the governed gate records
+    a warning. The runtime has no substitute for a codex seat: it accepts no native fill for
+    one, and on the plan and production_code tiers the composition cannot omit or replace it.
+  Other harnesses' seats have no such probe.
 - **A workspace-write codex seat's own staged tree is writable in its view
   (agent-harness#1470).** Every other path a provider names is bound read-only into the
   seat-launch owner's view; outputs are the declared files only. The one exception is the

@@ -1,2 +1,0 @@
-Commands 1, 2, 5, and 6 failed with exit codes 1, 1, 1, and 2 respectively; command 5 failed because the shell couldn’t create a heredoc temporary file, while commands 3 and 4 succeeded.
-PARTIALLY AGREE
