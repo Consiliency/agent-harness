@@ -6,24 +6,33 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
-### A codex board seat whose commands could not start is no longer counted (agent-harness#1335)
+### A codex board seat that cannot run commands is no longer counted (agent-harness#1335)
 
-- On a host where codex's own command sandbox cannot start inside the seat (a host that
-  denies the nested namespace), every command the seat tried failed before it ran. codex
-  still exited 0 with a verdict, so the seat was `OK` and counted toward the reviewer floor
-  although it had read nothing.
+- codex runs each command in its own sandbox. Where that sandbox cannot start inside the
+  seat, every command fails before it runs, but codex still exits 0 with a verdict. The seat
+  was `OK` and counted toward the reviewer floor although it had read nothing.
 - Such a leg is now `DEGRADED` with the typed notice `seat_tool_sandbox_unavailable` (what
   happened, why, and a fix), its text is empty, and it is never a usable review: the floor,
   the president's findings and the governed gate (a warning, not a block) see an unusable
   seat.
-- The decision reads codex's own exec records in its session transcript, not the reply:
-  at least one command, every one refused by the sandbox launcher, at least one in the
-  seat's own working directory. A seat whose commands ran, including one whose commands all
-  failed for ordinary reasons, and a seat that ran no command, are unchanged. A review that
-  quotes the error, or a whole transcript, is not affected.
-- Not changed: what any seat sandbox permits. Making codex's sandbox start inside the seat
-  on such hosts is a separate decision and stays open on agent-harness#1335. Grok, Claude
-  and Gemini seats expose no comparable record of tool outcomes yet and are not covered.
+- Two checks decide, and neither reads the reply. Before the run, the runtime probes
+  codex's command sandbox in the seat's own view (`codex sandbox ... -- true`, no model
+  call); a launcher that is refused ends the leg there. After the run, codex's own exec
+  records are read: at least one command, every one refused by the launcher, at least one
+  in the seat's own working directory. A seat whose commands ran, including one whose
+  commands all failed for ordinary reasons, and a seat that ran no command, are unchanged.
+  A review that quotes the error, or a whole transcript, is not affected.
+- **What you will see.** Two separate faults make a sandboxed codex seat unable to run
+  commands today, and both now show as `DEGRADED` instead of `OK`:
+  - on a host that denies the nested namespace codex's sandbox needs (the fault in
+    agent-harness#1335);
+  - on every Linux host, since 0.7.25: the seat's view shows the staged tree read only,
+    and codex's `workspace-write` sandbox cannot create its mount points in it.
+  This change does not repair either one and does not change what any seat sandbox permits.
+  Until they are decided, expect the codex seat of a sandboxed board to be `DEGRADED`, and
+  review that lens through another route.
+- Grok, Claude and Gemini seats expose no comparable probe or record of tool outcomes yet
+  and are not covered.
 
 ### The grok board seat finds its staged review tree (agent-harness#1336; PR agent-harness#1438)
 

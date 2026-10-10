@@ -13,6 +13,12 @@ review. The decision is read from codex's own exec records in its session transc
 * any command that ran (even one that failed for an ordinary reason), or no command at all,
   leaves the leg exactly as it was.
 
+There are two checks, because codex's record is incomplete. When its sandbox launcher dies
+for some reasons (a read-only workspace root is one) codex reports the failure to the model and
+writes NO exec record at all, in the transcript or under ``--json``. So before the seat is
+run, the runtime probes the capability itself: ``codex sandbox ... -- true`` through the same
+seat-launch owner, with the same working tree and sandbox mode. No model is called.
+
 The transcripts under ``fixtures/codex_seat_tools_1335`` are real: codex-cli 0.162.1 run with
 the argv ``_brokered_codex_command`` builds for a staged tree, healthy and under
 ``unshare --user`` (where a nested user namespace is refused, as on the affected hosts). Only
@@ -23,6 +29,8 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
+import subprocess
 import textwrap
 import time
 import types
@@ -262,6 +270,7 @@ def _exec_codex(monkeypatch, tmp_path, name: str, *, returncode: int = 0, last: 
 
     def fake(cmd, **kw):
         seen.append(list(cmd))
+        assert "exec" in cmd, f"a replaced process runner was asked to answer a probe: {cmd!r}"
         cwd = cmd[cmd.index("--cd") + 1]
         Path(cmd[cmd.index("--output-last-message") + 1]).write_text(
             _last(name) if last is None else last, encoding="utf-8")
@@ -431,7 +440,7 @@ def test_the_notice_says_what_happened_and_how_to_fix_it(monkeypatch, tmp_path):
     leg = _degraded_leg(monkeypatch, tmp_path)
     assert [n.code for n in leg.seat_notices] == [CODE]
     what, why, fix = seat_jail.NOTICES[CODE]
-    assert "not counted" in what and "sandbox" in why and fix
+    assert "not counted" in what and "command sandbox" in why and fix
     assert "\n" not in fix, "a one-line fix"
 
 
@@ -473,3 +482,204 @@ def test_cli_text_naming_the_code_never_degrades_a_leg():
     """Provenance by type: only the runtime's own code carries the label."""
     assert pi._leg_failure_kind(0, "", CODE) == "unknown"
     assert pi._classify_leg(0, f"{CODE}\n\nAGREE", f"codex\n{CODE}\n") == "OK"
+
+
+# --------------------------------------------------------------------------------------
+# The pre-run capability probe: can codex's command sandbox start in THIS seat's view?
+# --------------------------------------------------------------------------------------
+
+def _staged_review(tmp_path: Path) -> tuple[Path, Path, Path]:
+    """A review dir holding a real staged tree (the marker `stage_review_tree` writes)."""
+    from phase_loop_runtime import review_stage
+
+    review_dir, out_dir = tmp_path / "review", tmp_path / "out"
+    tree = review_dir / review_stage.REVIEW_STAGE_TREE_DIRNAME
+    tree.mkdir(parents=True)
+    out_dir.mkdir()
+    (review_dir / "review-bundle.md").write_text("bundle", encoding="utf-8")
+    (review_dir / "review-instructions.md").write_text("instructions", encoding="utf-8")
+    (tree / "hello.txt").write_text("hello from the staged tree\n", encoding="utf-8")
+
+    def git(*args: str) -> str:
+        return subprocess.run(["git", "-C", str(tree), *args], check=True, capture_output=True,
+                              text=True).stdout.strip()
+
+    git("init", "-q")
+    git("add", ".")
+    git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "stage")
+    (tree / ".git" / "phase-loop-source-commit").write_text(git("rev-parse", "HEAD") + "\n",
+                                                            encoding="utf-8")
+    return review_dir, out_dir, tree
+
+
+def test_the_probe_argv_mirrors_the_launch(tmp_path):
+    """Same tree, same sandbox mode, same workspace-write settings: codex's own subcommand for
+    running one command in its sandbox, with `true` as the command."""
+    _review_dir, out_dir, tree = _staged_review(tmp_path)
+    launch = pi._brokered_codex_command(
+        model="gpt-test", out_dir=out_dir, out_file=out_dir / "panel-codex.txt",
+        codex_effort_args=("-c", "model_reasoning_effort=high"), staged_tree=tree)
+    assert pi._codex_sandbox_probe_command(launch) == [
+        "codex", "sandbox", "--permission-profile", ":workspace", "--cd", str(tree),
+        "-c", "sandbox_workspace_write.exclude_slash_tmp=true",
+        "-c", "sandbox_workspace_write.exclude_tmpdir_env_var=true", "--", "true"]
+    read_only = ["codex", "exec", "--cd", "/r", "--skip-git-repo-check", "--sandbox", "read-only",
+                 "--model", "m", "-c", "model_reasoning_effort=high", "--output-last-message", "/o", "-"]
+    assert pi._codex_sandbox_probe_command(read_only) == [
+        "codex", "sandbox", "--permission-profile", ":read-only", "--cd", "/r", "--", "true"]
+
+
+@pytest.mark.parametrize("argv", [
+    ["codex", "exec", "--cd", "/r", "--sandbox", "danger-full-access", "-"],   # nothing to probe
+    ["codex", "exec", "--sandbox", "read-only", "-"],                           # no tree named
+    ["codex", "exec", "--cd", "/r", "-"],                                       # no sandbox named
+    ["/usr/bin/python3", "-c", "pass", "--cd", "/r", "--sandbox", "read-only"],  # not codex
+])
+def test_no_probe_is_built_for_an_argv_it_would_not_mirror(argv):
+    assert pi._codex_sandbox_probe_command(argv) is None
+
+
+_STAND_IN_CODEX_CLI = """#!/usr/bin/python3
+import os, sys, time
+args = sys.argv[1:]
+if "login" in args:
+    sys.exit(0)
+if args and args[0] == "sandbox":
+    behaviour = {behaviour!r}
+    tree = args[args.index("--cd") + 1]
+    profile = args[args.index("--permission-profile") + 1]
+    if behaviour == "real-mounts":
+        # What codex's bwrap does first on the workspace-write route: make its protective
+        # mount point in the workspace root. On a read-only tree it dies with this line.
+        if profile == ":workspace":
+            target = os.path.join(tree, ".agents")
+            try:
+                os.mkdir(target)
+            except OSError as exc:
+                sys.stderr.write("bwrap: Can't mkdir %s: %s\\n" % (target, exc.strerror))
+                sys.exit(1)
+            os.rmdir(target)
+        sys.exit(0)
+    if behaviour == "namespace-refused":
+        sys.stderr.write({bwrap_line!r} + "\\n")
+        sys.exit(1)
+    if behaviour == "usage-error":   # a codex whose `sandbox` subcommand takes other options
+        sys.stderr.write("error: unexpected argument '--permission-profile' found\\n")
+        sys.exit(2)
+    if behaviour == "other-failure":
+        sys.stderr.write("thread 'main' panicked: no usable bwrap: something else\\n")
+        sys.exit(1)
+    if behaviour == "hangs":
+        time.sleep(60)
+    sys.exit(0)
+prompt = sys.stdin.read()
+tree = args[args.index("--cd") + 1]
+transcript = {transcript!r}.replace("{{CWD}}", tree)
+head, _user, rest = transcript.partition("\\nuser\\n")
+sys.stderr.write(head + "\\nuser\\n" + prompt + "\\n" + rest[rest.index("\\ncodex\\n"):])
+last = {last!r}
+sys.stdout.write(last)
+open(args[args.index("--output-last-message") + 1], "w").write(last)
+"""
+
+
+def _stand_in_codex_cli(tmp_path, monkeypatch, behaviour: str) -> dict[str, str]:
+    """A `codex` on the provider search path: answers `login status`, the sandbox probe (as
+    ``behaviour`` says) and `exec` (the real healthy transcript and a verdict)."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    cli = bin_dir / "codex"
+    cli.write_text(_STAND_IN_CODEX_CLI.format(
+        behaviour=behaviour, bwrap_line=TEAM_HOST_BWRAP_LINE,
+        transcript=(FIXTURES / "healthy.stderr").read_text(encoding="utf-8"),
+        last=_last("healthy")), encoding="utf-8")
+    cli.chmod(0o755)
+    home = tmp_path / "operator"
+    (home / ".codex").mkdir(parents=True)
+    (home / ".codex" / "auth.json").write_text('{"tokens": {"access_token": "synthetic-access"}}',
+                                               encoding="utf-8")
+    path = f"{bin_dir}{os.pathsep}/usr/bin:/bin"
+    monkeypatch.setenv("PATH", path)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setattr(pi, "_PROVIDER_SEARCH_PATH", path)
+    pi._recorded_provider_hashes.cache_clear()
+    return {"HOME": str(home), "PATH": path}
+
+
+def _run_codex_seat(tmp_path, monkeypatch, behaviour: str, *, route: str = "tree"):
+    """Production `_exec_leg` -> `_run_leg_with_liveness` -> seat-launch owner -> a real
+    process. ``route``: ``tree`` (brokered, staged tree, workspace-write), ``sealed`` (brokered,
+    no tree, no tools) or ``direct`` (unbrokered, read-only sandbox)."""
+    env = _stand_in_codex_cli(tmp_path, monkeypatch, behaviour)
+    review_dir, out_dir, tree = _staged_review(tmp_path)
+    if route == "sealed":
+        import shutil
+
+        shutil.rmtree(tree)
+    kwargs = {} if route == "direct" else {"broker_prompt": "Review the staged change.",
+                                           "broker_evidence": {}}
+    return pi._exec_leg("codex", review_dir, out_dir, timeout_s=60, artifact="A", env=env,
+                        **kwargs)
+
+
+needs_owner = pytest.mark.skipif(not os.path.exists("/usr/bin/bwrap") or os.getuid() == 0,
+                                 reason="needs an unprivileged /usr/bin/bwrap")
+
+
+@needs_owner
+def test_the_probe_sees_the_seats_own_view_of_the_tree(tmp_path, monkeypatch, owned_review_network):
+    """Not a stubbed fact: the stand-in does what codex's launcher does first (make its mount
+    point in the workspace root) INSIDE the seat-launch owner. Today the owner shows the staged
+    tree read-only, so a workspace-write codex seat cannot start a command, and the leg is
+    DEGRADED before the model is called -- the stand-in's `exec` would have returned AGREE."""
+    rc, text, log = _run_codex_seat(tmp_path, monkeypatch, "real-mounts")
+    assert (rc, text) == (1, "") and type(log) is pi._HarnessCode and log == CODE
+    assert pi._classify_leg(rc, text, log) == "DEGRADED"
+
+
+@needs_owner
+def test_the_probe_passes_where_the_launcher_has_nothing_to_create(tmp_path, monkeypatch,
+                                                                    owned_review_network):
+    """The control for the test above: the read-only route needs no mount point in the tree,
+    so the same stand-in, in the same kind of view, starts, and the seat runs."""
+    rc, text, _log = _run_codex_seat(tmp_path, monkeypatch, "real-mounts", route="direct")
+    assert (rc, text) == (0, _last("healthy"))
+
+
+@needs_owner
+def test_a_refused_namespace_degrades_the_seat_before_it_runs(tmp_path, monkeypatch,
+                                                               owned_review_network):
+    """The team-host fault, with that host's bubblewrap line, on the unbrokered route too."""
+    for route in ("tree", "direct"):
+        (tmp_path / route).mkdir()
+        rc, text, log = _run_codex_seat(tmp_path / route, monkeypatch, "namespace-refused",
+                                        route=route)
+        assert (rc, text, log) == (1, "", CODE), route
+
+
+@needs_owner
+@pytest.mark.parametrize("behaviour", ["healthy", "usage-error", "other-failure"])
+def test_a_probe_that_does_not_show_a_dead_launcher_lets_the_seat_run(tmp_path, monkeypatch,
+                                                                      owned_review_network,
+                                                                      behaviour):
+    """Only the launcher's own diagnostic on a failed probe decides (a line that STARTS with
+    its name). A codex that does not know the subcommand, or fails some other way -- even with
+    a message that mentions the launcher -- is inconclusive: the seat runs, and its exec
+    records are still read afterwards."""
+    rc, text, _log = _run_codex_seat(tmp_path, monkeypatch, behaviour)
+    assert (rc, text) == (0, _last("healthy"))
+
+
+@needs_owner
+def test_a_probe_that_hangs_is_inconclusive(tmp_path, monkeypatch, owned_review_network):
+    monkeypatch.setattr(pi, "_CODEX_SANDBOX_PROBE_TIMEOUT_S", 2)
+    rc, text, _log = _run_codex_seat(tmp_path, monkeypatch, "hangs")
+    assert (rc, text) == (0, _last("healthy"))
+
+
+@needs_owner
+def test_a_seat_with_no_tools_is_not_probed(tmp_path, monkeypatch, owned_review_network):
+    """The sealed route disables codex's shell: there is no command sandbox to start, and a
+    probe that would fail must not take the seat down."""
+    rc, text, _log = _run_codex_seat(tmp_path, monkeypatch, "namespace-refused", route="sealed")
+    assert (rc, text) == (0, _last("healthy"))

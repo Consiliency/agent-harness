@@ -1083,16 +1083,23 @@ are recorded on agent-harness#1132.
   byte-identical to before, with that notice, except a Claude seat's step 3, which is not
   run (plan amendment A3b, below). Codex and grok are not jailed
   (agent-harness#895) and carry `seat_filesystem_unconfined` when given a tree.
-- **A codex seat whose commands could not start is DEGRADED (agent-harness#1335).** codex
-  runs each command inside its own sandbox. Where that sandbox cannot start inside the seat,
-  every command dies in the launcher, yet codex exits 0 with a verdict. The leg is then
-  `DEGRADED` with `seat_tool_sandbox_unavailable`, its text is empty, and it is not a usable
-  review. The decision reads the exec records in codex's session transcript
-  (`seat_tool_evidence`): at least one record, every record the launcher's own one-line
-  diagnostic, and at least one in the seat's own working directory. The echoed prompt and
-  the final message are excluded, so quoted text decides nothing. A seat whose commands ran
-  (even if each failed for its own reason), or that ran none, is unchanged. Other seats
-  expose no such record yet and are not covered.
+- **A codex seat whose commands cannot start is DEGRADED (agent-harness#1335).** codex runs
+  each command inside its own sandbox. Where that sandbox cannot start inside the seat, the
+  seat reads nothing, yet codex exits 0 with a verdict. Such a leg is `DEGRADED` with
+  `seat_tool_sandbox_unavailable`, its text is empty, and it is not a usable review. Two
+  checks decide, neither from the reply:
+  - **Before the run, a probe.** On every route that gives codex a shell (not the sealed
+    one), `codex sandbox --permission-profile <mode> --cd <tree> ... -- true` is launched
+    exactly as the seat will be (same owner, view, working directory, environment and
+    retained capability). A failed probe that prints the launcher's own diagnostic ends the
+    leg before the model is called. Any other outcome is inconclusive and the seat runs.
+  - **After the run, the exec records** in codex's session transcript (`seat_tool_evidence`):
+    at least one record, every record the launcher's one-line diagnostic, and at least one in
+    the seat's own working directory. The echoed prompt and the final message are excluded,
+    so quoted text decides nothing.
+  A seat whose commands ran (even if each failed for its own reason), or that ran none, is
+  unchanged. The probe exists because codex writes no exec record at all for some launcher
+  failures. Other seats expose no such record or probe yet and are not covered.
 - **No sealed fallback for a jail-eligible seat (plan amendment A3b).** A Claude seat that
   would take the jailed route but cannot (no credential, a failed first-use qualification,
   a login not renewed within the wait, an unqualified or unsafe gate, an unsafe override)

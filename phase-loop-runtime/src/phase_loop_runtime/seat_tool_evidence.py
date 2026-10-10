@@ -6,6 +6,11 @@ run inside codex's own bubblewrap sandbox, and where that sandbox cannot start i
 seat (a host that denies the nested namespace) each attempt ends in the launcher's one-line
 diagnostic. The reply then carries a verdict over files the seat never opened.
 
+The record is not complete: for some launcher failures (a read-only workspace root is one)
+codex tells the model and writes no exec record at all, in the transcript or under
+``--json``. The runtime therefore also probes the capability before the seat runs
+(``panel_invoker._codex_command_sandbox_cannot_start``); this module is the check after it.
+
 This module reads the one record of tool attempts the runtime already holds for a codex leg:
 the exec blocks of the session transcript codex writes to stderr,
 
@@ -39,6 +44,7 @@ __all__ = [
     "ExecRecord",
     "codex_exec_records",
     "codex_tools_never_started",
+    "launcher_diagnostic_in",
 ]
 
 #: The leg detail and seat notice code (``seat_jail.NOTICES`` renders what / why / fix).
@@ -75,6 +81,14 @@ class ExecRecord:
         none), and a run that merely reports a launcher error prints more than one line."""
         return (self.outcome == "failed" and self.single_line
                 and self.output_line.startswith(_LAUNCHER_DIAGNOSTIC_PREFIXES))
+
+
+def launcher_diagnostic_in(output: str) -> bool:
+    """Does this output carry a sandbox launcher's own fatal diagnostic (a line that STARTS
+    with the launcher's name)? For output the runtime itself asked for -- a probe that runs
+    ``true`` -- and never for a model's text."""
+    return any(line.startswith(_LAUNCHER_DIAGNOSTIC_PREFIXES)
+               for line in (output or "").splitlines())
 
 
 def codex_exec_records(transcript: str) -> tuple[ExecRecord, ...]:

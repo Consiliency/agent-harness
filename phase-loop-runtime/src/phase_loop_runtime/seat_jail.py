@@ -165,13 +165,14 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
     "seat_tool_denied": (
         "tool use denied", "agy auto-denied a tool",
         "on the tooled profile a defect; on the sealed route expected"),
-    # agent-harness#1335: read from the seat's own exec records, never from its prose.
+    # agent-harness#1335: from the runtime's own probe of the CLI's command sandbox, or from
+    # the seat's exec records; never from its prose.
     "seat_tool_sandbox_unavailable": (
-        "leg degraded; its verdict is not counted",
-        "every command the seat tried failed before it ran: the CLI's own command sandbox "
-        "could not start inside the seat on this host",
+        "leg degraded; the seat could not run commands, so it is not counted as a review",
+        "the CLI's own command sandbox cannot start inside the seat on this host: its "
+        "launcher was refused when probed before the run, or for every command the seat tried",
         "review this lens through a route whose tools run on this host (for example a native "
-        "fill by the driving session); agent-harness#1335 tracks the nested sandbox"),
+        "fill by the driving session); agent-harness#1335 tracks the seat's command sandbox"),
     "claude_seat_token_missing": (
         "leg refused",
         "no Claude login found and no usable seat token override; the seat does not run",
