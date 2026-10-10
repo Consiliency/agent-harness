@@ -149,7 +149,8 @@ class HeadlessNonClaudeRunsLeg(unittest.TestCase):
                 # host without user namespaces -- so without this the seat comes back
                 # DEGRADED for a reason that has nothing to do with headless native fill.
                 unittest.mock.patch.dict(
-                    os.environ, {"PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL": "1"}
+                    os.environ,
+                    {"PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL": "1", "PHASE_LOOP_PANEL_CLAUDE_ROUTE": "tui"},
                 ),
                 unittest.mock.patch.object(
                     pi, "_claude_code_support_status", return_value=(True, "supported")
@@ -172,6 +173,46 @@ class HeadlessNonClaudeRunsLeg(unittest.TestCase):
         self.assertIsNone(leg.needs_native_agent)  # ran, not deferred
         self.assertEqual(result.native_fill_requests, ())
         session.assert_called_once()  # self-PTY session ran headless
+
+    def test_board_claude_seat_returns_ok_headless_on_the_print_route(self):
+        # The default route (agent-harness#1391): the same headless non-Claude caller runs
+        # the seat as `claude -p` instead of the self-PTY session -- still run, not deferred.
+        session = unittest.mock.MagicMock(
+            return_value=(0, "A complete advisory.\nAGREE", "claude_print_result", "")
+        )
+        tui = unittest.mock.MagicMock()
+        with tempfile.TemporaryDirectory() as td:
+            artifact = Path(td) / "bundle.md"
+            artifact.write_text("review me\n")
+            scratch = Path(td) / "scratch"
+            scratch.mkdir()
+            env = {k: v for k, v in os.environ.items() if k != "PHASE_LOOP_PANEL_CLAUDE_ROUTE"}
+            env["PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL"] = "1"
+            with (
+                unittest.mock.patch.dict(os.environ, env, clear=True),
+                unittest.mock.patch.object(
+                    pi, "_claude_code_support_status", return_value=(True, "supported")
+                ),
+                unittest.mock.patch.object(
+                    pi, "_claude_subscription_auth_ok", return_value=(True, "")
+                ),
+                unittest.mock.patch.object(pi, "_run_claude_print_session", session),
+                unittest.mock.patch.object(pi, "_run_claude_tui_session", tui),
+            ):
+                result = invoke_sanctioned_review_transport(
+                    _claude_board(),
+                    "",
+                    artifact_ref=str(artifact.resolve()),
+                    repo_dir=str(scratch),
+                    base_env={"PATH": os.environ.get("PATH", "")},  # no CLAUDECODE
+                )
+        (leg,) = result.legs
+        self.assertEqual(leg.status, "OK")
+        self.assertIn("AGREE", leg.text)
+        self.assertIsNone(leg.needs_native_agent)  # ran, not deferred
+        self.assertEqual(result.native_fill_requests, ())
+        session.assert_called_once()  # the print session ran headless
+        tui.assert_not_called()
 
 
 _REAL_COMPOSE = comp_mod.compose_review_board

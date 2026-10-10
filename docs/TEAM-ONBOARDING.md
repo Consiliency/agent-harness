@@ -12,7 +12,7 @@ choices; use answers the operator has already supplied and ask for what is missi
 | Machine and install surface | OS, per-user home, interactive harness skills or only the runtime CLI; on a fleet, repeat for each user/host. |
 | Executor and authentication | Which installed provider CLI will do the work, which account it should use, and whether its own login/health check succeeds. Never copy credentials into a plan or report. |
 | Governance | Whether autonomous work is permitted or independent review is required; preserve the target project's existing rules. |
-| Authority | Who may approve, commit, push, merge and publish. Installing tools grants none of these permissions. Start with manual closeout. |
+| Authority | Who may approve, commit, push, merge and publish. Installing tools grants none of these permissions. Start with manual closeout, and commit `.phase-loop-publication.toml` with `mode = "none"` if interactive runs may not push. |
 
 **Support boundaries:**
 
@@ -58,6 +58,8 @@ or choose a new, absent `AGENT_HARNESS_HOME`, then rerun the installer.
 **Prereqs:** git, `curl` (the installer uses it to resolve the release pin, and the one-liner
 form is delivered by it), and your harness CLI already installed (Claude Code / Codex / Gemini
 / OpenCode). The installer brings everything else (it installs `uv` if you don't have it).
+Claude advisor-board seats run headless `claude -p` by default, which needs Claude Code
+2.1.259 or newer; `PHASE_LOOP_PANEL_CLAUDE_ROUTE=tui` restores the PTY adapter.
 
 Run the chosen provider's own login and a small health check before real execution.
 `doctor` reports tool/credential discovery; it does not prove a working provider login.
@@ -279,8 +281,9 @@ Governed-pipeline integration is optional.
 
 Before a first run in a repo you care about, read
 [branch-and-publication-flow.md](./branch-and-publication-flow.md): it states who
-commits, pushes and opens pull requests, which closeout modes stop that, and one open
-gap in the interactive path ([agent-harness#1392](https://github.com/Consiliency/agent-harness/issues/1392)).
+commits, pushes and opens pull requests, which closeout modes stop that on the runner, and
+how a committed `.phase-loop-publication.toml` stops it on the interactive path
+([agent-harness#1392](https://github.com/Consiliency/agent-harness/issues/1392)).
 
 ## Update / pin / uninstall
 

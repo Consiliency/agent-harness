@@ -38,6 +38,14 @@ from test_review_seat_stall_1176 import (
 )
 
 CODE = "claude_seat_delivery_refused"
+
+
+@pytest.fixture(autouse=True)
+def _pin_claude_tui_route(monkeypatch):
+    """These tests assert the PTY TUI route; the default is now headless print (Stage 1b).
+    The session cells call ``_run_claude_tui_session`` directly; the leg cell reaches it only
+    on this route."""
+    monkeypatch.setenv("PHASE_LOOP_PANEL_CLAUDE_ROUTE", "tui")
 REVIEW = "Review complete\nAGREE"
 
 
