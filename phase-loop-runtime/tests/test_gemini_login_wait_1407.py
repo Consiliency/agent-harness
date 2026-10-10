@@ -322,15 +322,18 @@ def test_the_real_sleep_starts_no_process_takes_no_lock_and_ends_on_the_files_ex
     assert _left(host) > 3500 and latch.is_quiescent()
 
 
-def test_three_seats_sleeping_on_one_login_all_launch_from_one_renewal(host, monkeypatch, tmp_path):
-    """Three launches sharing ONE quiescence latch sleep on the same login, for real. Each
-    holds nothing while it sleeps; main's gate serialises them on its own lock: the first
-    renews, the others find the login fresh.
+@pytest.mark.parametrize("one_latch", [True, False])
+def test_three_seats_sleeping_on_one_login_all_launch_from_one_renewal(host, monkeypatch, tmp_path,
+                                                                       one_latch):
+    """Three launches sleep on the same login, for real, sharing ONE quiescence latch or
+    none. Each holds nothing while it sleeps; then main's gate serialises them (under the
+    latch's launch lock, and without one on the renewal's own lock and its re-check): the
+    first renews, the others find the login fresh.
 
-    Mutation: take the renewal lock, or the latch, around the sleep."""
+    Mutations: hold the latch across the sleep; drop the renewal's re-check under its lock."""
     _needs_seat_owner()
     _login(host.home, 1.2)
-    latch = pi._ProviderQuiescenceLatch()
+    latch = pi._ProviderQuiescenceLatch() if one_latch else None
     monkeypatch.setattr(pi, "launch_owned",
                         lambda command, **k: (_ for _ in ()).throw(_LaunchReached(command)))
     results = []
@@ -354,7 +357,7 @@ def test_three_seats_sleeping_on_one_login_all_launch_from_one_renewal(host, mon
         thread.join(60)
     assert not any(thread.is_alive() for thread in threads), "seats sharing a latch deadlocked"
     assert results == [_LaunchReached] * 3 and len(host.calls()) == 1
-    assert _left(host) > 3500 and latch.is_quiescent()
+    assert _left(host) > 3500 and (latch is None or latch.is_quiescent())
 
 
 @pytest.mark.parametrize("login,outcome,runs", [
