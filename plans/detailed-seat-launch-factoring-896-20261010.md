@@ -11,7 +11,7 @@ automation:
   human_required: true
 ---
 
-# Detailed plan: factor the seat launch closure and the seat credential source, with no behaviour change (agent-harness#896, P3)
+# Detailed plan: factor the seat launch closure and the seat credential source, with no behaviour change (agent-harness#896)
 
 ## Task
 
@@ -27,8 +27,9 @@ yet, the driver flag is untouched, and every local launch is byte-identical befo
 after. It is its own unit because it rewrites the attested launch site and the credential
 path, and a reviewer must be able to check "nothing changed" on its own.
 
-The slice is described in `plans/detailed-remote-seat-placement-896-20261010.md`. This unit
-does not depend on P1 or P2 and can land in parallel with them.
+The work it prepares for is described in
+`plans/detailed-remote-seat-placement-896-20261010.md` (the driver). This unit does not
+depend on the driver plan and can land in parallel with it.
 
 ## Research summary
 
@@ -78,6 +79,12 @@ does not depend on P1 or P2 and can land in parallel with them.
   path, and the Claude seat credential for a margin.
 - `LOCAL_LOGIN_SOURCE` — add — the only implementation in this unit: today's reads of the
   operator's stores. Every call site passes it, explicitly or by default.
+- **Deliberately not added here.** A placed seat will need a third read: the login's own
+  access token and expiry, ignoring any stored override. Main's resolver returns the
+  override first, and `login_seconds_left` and `await_login_margin` return early when an
+  override applies, so the two reads above cannot supply it. That read belongs to the
+  placed-seat follow-on plan, with its consumer; adding it here would land code that
+  nothing calls.
 
 ### `phase-loop-runtime/tests/test_seat_launch_factoring.py` (create); `tests/data/seat_launch_references.json` (modify)
 - The falsifiers under "Verification".
@@ -93,7 +100,7 @@ does not depend on P1 or P2 and can land in parallel with them.
 - Every other document — none: no behaviour changes.
 
 ## Dependencies & order
-1. No dependency on P1 or P2.
+1. No dependency on the driver plan.
 2. It edits the launch site and `seat_profile`, which the 0.7.27 seat fixes also edit. It
    starts from a base that contains them and does not merge an older one over them.
 3. No agy route-core file is edited. If the Gemini seat's host refresh cannot be left
