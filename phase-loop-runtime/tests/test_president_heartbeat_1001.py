@@ -26,6 +26,12 @@ from phase_loop_runtime.advisor_board import backing
 from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
 
 @pytest.fixture(autouse=True)
+def _pin_claude_tui_route(monkeypatch):
+    """These tests assert the PTY TUI route; the default is now headless print (Stage 1b)."""
+    monkeypatch.setenv("PHASE_LOOP_PANEL_CLAUDE_ROUTE", "tui")
+
+
+@pytest.fixture(autouse=True)
 def _terminal_fixture_owner(monkeypatch, request):
     from contextlib import contextmanager
     command_profile = panel_invoker._seat_command_profile

@@ -1169,7 +1169,8 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("plan", "production_code", "tests_only", "docs_only"),
         help=("Run the board under this review landing tier. plan/production_code require a president "
               "ruling: the Fable rung is filled natively when this process runs under Claude Code and "
-              "through the self-PTY adapter elsewhere."),
+              "elsewhere through a brokered headless `claude -p` session "
+              "(PHASE_LOOP_PANEL_CLAUDE_ROUTE=tui selects the self-PTY adapter)."),
     )
     advisor_board_sub.add_argument(
         "--native-president", dest="native_president", default=None, metavar="FILL.json",

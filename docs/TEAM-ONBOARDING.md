@@ -58,6 +58,8 @@ or choose a new, absent `AGENT_HARNESS_HOME`, then rerun the installer.
 **Prereqs:** git, `curl` (the installer uses it to resolve the release pin, and the one-liner
 form is delivered by it), and your harness CLI already installed (Claude Code / Codex / Gemini
 / OpenCode). The installer brings everything else (it installs `uv` if you don't have it).
+Claude advisor-board seats run headless `claude -p` by default, which needs Claude Code
+2.1.259 or newer; `PHASE_LOOP_PANEL_CLAUDE_ROUTE=tui` restores the PTY adapter.
 
 Run the chosen provider's own login and a small health check before real execution.
 `doctor` reports tool/credential discovery; it does not prove a working provider login.

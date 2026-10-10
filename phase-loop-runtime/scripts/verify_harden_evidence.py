@@ -210,6 +210,16 @@ PROMPT_TRANSPORT = {
     "gemini": "stream_json_same_session_ingestion",
     "grok": "stdin_sealed",
 }
+# The brokered Claude seat's headless print route (Stage 1b, maintainer decision
+# 2026-10-09), selected by the record's ``claude_route``: absent means the TUI shape
+# above, so evidence retained before the print route still verifies unchanged.
+CLAUDE_ROUTE_PRINT = "print"
+CLAUDE_PRINT_NO_TOOL_CONTROLS = (
+    "dont-ask", "permission-prompts-none", "no-chrome", "disable-slash-commands",
+    "strict-mcp-config", "empty-mcp", "empty-agents", "tools-empty",
+)
+CLAUDE_PRINT_PROMPT_TRANSPORT = "stdin"
+CLAUDE_PRINT_TASK_REQUEST_DELIVERY = "plain_text_before_stdin_prompt"
 CLAUDE_DIRECT_REVIEW_REQUEST = (
     "Please perform the review requested in the following framed material. "
 )
@@ -232,10 +242,38 @@ ARGV_CLAUDE_EFFORT = re.compile(r"^(low|medium|high|max)$")
 ARGV_GROK_EFFORT = re.compile(r"^(low|medium|high|xhigh)$")
 ARGV_AGY_DEADLINE = re.compile(r"^[1-9][0-9]*s$")
 STDIN_PROMPT_MARKER = "<STDIN_SEALED_INLINE_PROMPT>"
+# The print route's run-isolated settings (the runtime's ``_claude_panel_settings``): no
+# API-key helper, and only the output-token budget, as a positive integer.
+ARGV_CLAUDE_PRINT_SETTINGS = re.compile(
+    r'^\{"apiKeyHelper": "", "env": \{"CLAUDE_CODE_MAX_OUTPUT_TOKENS": "[1-9][0-9]{0,6}"\}\}$'
+)
 
 
-def broker_argv_grammar(harness: str, model: str) -> list[str | re.Pattern[str]]:
-    """The one argv shape a brokered ``harness`` seat may retain for ``model``."""
+def broker_argv_grammar(
+    harness: str, model: str, claude_route: str | None = None,
+) -> list[str | re.Pattern[str]]:
+    """The one argv shape a brokered ``harness`` seat may retain for ``model``.
+
+    ``claude_route`` selects the Claude shape: ``None`` is the TUI, ``print`` the headless
+    print route (no tools, the prompt on stdin, no session persistence, never ``--bare``
+    and never ``--add-dir``)."""
+    if harness == "claude" and claude_route == CLAUDE_ROUTE_PRINT:
+        return [
+            "claude", "-p", "--verbose", "--output-format", "stream-json",
+            "--input-format", "text", "--safe-mode", "--model", model,
+            "--effort", ARGV_CLAUDE_EFFORT,
+            "--permission-mode", "dontAsk", "--permission-prompts", "none",
+            "--setting-sources", "", "--settings", ARGV_CLAUDE_PRINT_SETTINGS,
+            "--strict-mcp-config",
+            "--mcp-config", "{\"mcpServers\": {}}", "--agents", "{}",
+            "--no-chrome", "--disable-slash-commands", "--no-session-persistence",
+            "--session-id", "<CLAUDE_SESSION_ID>",
+            "--tools", "", "--disallowedTools",
+            "Bash,Read,Edit,Write,WebFetch,WebSearch,Task,NotebookEdit",
+            STDIN_PROMPT_MARKER,
+        ]
+    if harness == "claude" and claude_route is not None:
+        fail("broker Claude route is not a known route")
     if harness == "claude":
         return [
             "claude", "--ax-screen-reader", "--safe-mode", "--no-chrome",
@@ -332,8 +370,10 @@ def verify_broker_argv_paths(harness: str, argv_shape: list[str], cwd_sha256: st
         fail("broker provider output path slot is not a direct child of the provider cwd")
 
 
-def broker_argv_matches(harness: str, model: str, argv_shape: list[str]) -> bool:
-    grammar = broker_argv_grammar(harness, model)
+def broker_argv_matches(
+    harness: str, model: str, argv_shape: list[str], claude_route: str | None = None,
+) -> bool:
+    grammar = broker_argv_grammar(harness, model, claude_route)
     if len(argv_shape) != len(grammar):
         return False
     for item, expected in zip(argv_shape, grammar):
@@ -4806,7 +4846,15 @@ def verify_broker(value: Any, harness: str, requested: str, resolved: str, bundl
     }
     claude = {"claude_session_id_sha256", "claude_session_resume_forbidden", "claude_transcript_exact_path_sha256", "claude_transcript_preexisting", "claude_transcript_existed", "claude_transcript_sha256", "claude_transcript_bytes", "claude_transcript_cleanup_verified", "provider_liveness_profile", "provider_liveness_stall_threshold_s", "provider_liveness_prompt_bytes"}
     task_request = {"provider_task_request_delivery", "provider_task_request_sha256", "provider_task_request_bytes"}
-    has_task_request = harness == "claude" and isinstance(value, dict) and bool(task_request.intersection(value))
+    # The recorded route selects the Claude shape; absent is the TUI (retained evidence).
+    claude_route = value.get("claude_route") if harness == "claude" and isinstance(value, dict) else None
+    if claude_route is not None and claude_route != CLAUDE_ROUTE_PRINT:
+        fail("broker Claude route is not a known route")
+    print_route = claude_route == CLAUDE_ROUTE_PRINT
+    if print_route:
+        # No session transcript exists on the print route; its typed request is mandatory.
+        claude = {"claude_route", "claude_session_id_sha256", "claude_session_resume_forbidden", "claude_session_persistence", "claude_api_key_source", "provider_liveness_profile", "provider_liveness_stall_threshold_s", "provider_liveness_prompt_bytes"} | task_request
+    has_task_request = harness == "claude" and isinstance(value, dict) and (print_route or bool(task_request.intersection(value)))
     if has_task_request:
         claude |= task_request
     gemini = {"provider_isolation_profile", "provider_agy_deny_actions", "provider_agy_settings_sha256", "provider_agy_subscription_reference", "provider_agy_home_cleanup_verified", "provider_stream_protocol", "provider_stream_chunk_count", "provider_stream_chunk_sha256", "provider_stream_chunk_bytes", "provider_stream_final_event_sha256", "provider_stream_acknowledgements", "provider_stream_result_count", "provider_stream_output_sha256", "provider_stream_output_bytes", "provider_stream_outcome", "provider_stream_acknowledgements_verified", "provider_stream_final_no_truncation"}
@@ -4857,13 +4905,13 @@ def verify_broker(value: Any, harness: str, requested: str, resolved: str, bundl
     argv_shape = broker["provider_argv_shape"]
     if not isinstance(argv_shape, list) or not argv_shape or any(not isinstance(item, str) for item in argv_shape):
         fail("broker provider argv shape is malformed")
-    if not broker_argv_matches(harness, broker["provider_model"], argv_shape):
+    if not broker_argv_matches(harness, broker["provider_model"], argv_shape, claude_route):
         fail("broker provider argv does not match the " + harness + " no-tool grammar")
     if broker["provider_argv_sha256"] != sha256("\0".join(argv_shape).encode("utf-8", errors="strict")):
         fail("broker provider argv digest is detached from its retained shape")
     verify_broker_argv_paths(harness, argv_shape, broker["provider_cwd_sha256"], broker["canonical_repo_sha256"])
     empty_positions = {
-        "claude": {"--setting-sources", "--tools", "--allowedTools"},
+        "claude": {"--setting-sources", "--tools"} if print_route else {"--setting-sources", "--tools", "--allowedTools"},
         "grok": {"--tools"},
     }.get(harness, set())
     for index, item in enumerate(argv_shape):
@@ -4871,7 +4919,9 @@ def verify_broker(value: Any, harness: str, requested: str, resolved: str, bundl
             continue
         if index == 0 or argv_shape[index - 1] not in empty_positions:
             fail("broker provider argv shape has an unbound empty value")
-    if harness == "claude" and any(
+    # The TUI never enters a permission mode; the print route's one mode (dontAsk, no
+    # prompts) is pinned token for token by its grammar above.
+    if harness == "claude" and not print_route and any(
         item == "--permission-mode" or item.startswith("--permission-mode=")
         for item in argv_shape
     ):
@@ -4899,9 +4949,9 @@ def verify_broker(value: Any, harness: str, requested: str, resolved: str, bundl
     ):
         fail("broker provider environment permits direct route metadata")
     controls = broker["provider_no_tool_controls"]
-    if controls != list(NO_TOOL_CONTROLS[harness]):
+    if controls != list(CLAUDE_PRINT_NO_TOOL_CONTROLS if print_route else NO_TOOL_CONTROLS[harness]):
         fail("broker no-tool controls are incomplete")
-    if broker["provider_prompt_transport"] != PROMPT_TRANSPORT[harness]:
+    if broker["provider_prompt_transport"] != (CLAUDE_PRINT_PROMPT_TRANSPORT if print_route else PROMPT_TRANSPORT[harness]):
         fail("broker provider prompt transport mismatch")
     expected_transport = (
         broker_gemini_stream_input(sealed_prompt, broker["provider_stream_protocol"])
@@ -4910,7 +4960,8 @@ def verify_broker(value: Any, harness: str, requested: str, resolved: str, bundl
     if has_task_request:
         request_bytes = CLAUDE_DIRECT_REVIEW_REQUEST.encode("utf-8")
         if (
-            broker["provider_task_request_delivery"] != "plain_text_before_bracketed_paste"
+            broker["provider_task_request_delivery"] != (
+                CLAUDE_PRINT_TASK_REQUEST_DELIVERY if print_route else "plain_text_before_bracketed_paste")
             or broker["provider_task_request_sha256"] != sha256(request_bytes)
             or integer(broker["provider_task_request_bytes"], "broker.provider_task_request_bytes", minimum=1) != len(request_bytes)
         ):
@@ -4919,12 +4970,23 @@ def verify_broker(value: Any, harness: str, requested: str, resolved: str, bundl
     transport_bytes = expected_transport.encode("utf-8", errors="strict")
     if broker["provider_transport_sha256"] != sha256(transport_bytes) or broker["provider_transport_bytes"] != len(transport_bytes):
         fail("broker provider transport does not bind sealed input")
-    if harness == "claude":
+    if harness == "claude" and print_route:
+        # No transcript to account for: the seat persisted none, could not resume, and its
+        # stream's own init proved subscription OAuth (no API key source).
+        if (
+            broker["claude_session_resume_forbidden"] is not True
+            or broker["claude_session_persistence"] is not False
+            or broker["claude_api_key_source"] != "none"
+        ):
+            fail("Claude print-route session proof is incomplete")
+        text(broker["claude_session_id_sha256"], "broker.claude_session_id_sha256", pattern=HEX64)
+    elif harness == "claude":
         if not all(broker[name] is True for name in ("claude_session_resume_forbidden", "claude_transcript_existed", "claude_transcript_cleanup_verified")) or broker["claude_transcript_preexisting"] is not False:
             fail("Claude owned-session proof is incomplete")
         for field in ("claude_session_id_sha256", "claude_transcript_exact_path_sha256", "claude_transcript_sha256"):
             text(broker[field], "broker." + field, pattern=HEX64)
         integer(broker["claude_transcript_bytes"], "broker.claude_transcript_bytes", minimum=1)
+    if harness == "claude":
         if broker["provider_liveness_profile"] != "broker_prompt_scaled_v1" or broker["provider_liveness_prompt_bytes"] != broker["provider_prompt_bytes"]:
             fail("Claude broker liveness profile is not input-bound")
         expected_stall = max(1, min(
