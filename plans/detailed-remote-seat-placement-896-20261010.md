@@ -25,18 +25,20 @@ off until the unit after which a real backend can run a seat end to end.
 |---|---|---|---|
 | **P1** | **The driver ("plan 1b"): seam amendments, admission outcomes, lease journal, reaper, runtime receipts. Proven with fake backends.** | off | **This document** |
 | P2 | An `ssh` backend, its compute-host entry point and `phase-loop placement qualify`, proven with a null workload | off | `plans/detailed-ssh-placement-backend-896-20261010.md` |
+| P2b | A started workload survives a dropped connection and is resumed by the run that launched it | off | `plans/detailed-placement-reconnect-896-20261010.md` |
 | P3 | The launch closure and the credential source factored so both hosts can call them. No behaviour change. | off | `plans/detailed-seat-launch-factoring-896-20261010.md` |
 | P4 | The jailed Claude seat is placed: the execute branch, the leg request, the far end's seat run, sweep and separation probe. **The flag turns on here.** | on | `plans/detailed-remote-seat-execution-896-20261010.md` |
 | P5 | Codex and grok seats run under a leased seat uid on the compute host, then are placed | on | `plans/detailed-placed-owned-seats-896-20261010.md` |
 
-P1 and P3 do not depend on each other. P2 needs P1. P4 needs P1, P2 and P3. P5 needs P4.
+P1 and P3 do not depend on each other. P2 needs P1. P2b needs P2. P4 needs P2b and P3. P5
+needs P4.
 
 **What actually leaves the launching host.** On a four-seat board of Claude, codex, grok and
 Gemini:
 
 | After | Placed | Share of the board |
 |---|---|---|
-| P1, P2, P3 | nothing | 0 of 4 |
+| P1, P2, P2b, P3 | nothing | 0 of 4 |
 | P4 | the Claude seat | 1 of 4 |
 | P5 | Claude, codex and grok, each only on a subscription login whose access token expires | 3 of 4 |
 
@@ -62,7 +64,7 @@ pointer under each amended plan's title, and changes nothing else in those plans
 | Section | Disposition | Why |
 |---|---|---|
 | Task: "The cloud path is plan 1a, then 1b, then agent-harness#1165…" | **Superseded.** Order is 1a → this slice (self-hosted over SSH), then agent-harness#1165. | Maintainer, 2026-10-10 |
-| Contract / "Request", "Execution types", "Receipts", "Execution gate" | **Amended** by C1–C11 below | Stated per amendment |
+| Contract / "Request", "Execution types", "Receipts", "Execution gate" | **Amended** by C1–C12 below | Stated per amendment |
 | Contract: every other subsection | Unchanged, still normative | |
 | Follow-on / "Plan 1b" | **Superseded in full** by this document. Its rule "backends must tag every remote sandbox with the owner id and lease id at create" is **kept**, as C6. Its "periodic" reaper is **dropped**: see C6. | |
 | Follow-on / "Plan 2" (egress allowlist from configuration) | **Unchanged and not scheduled.** The maintainer chose on 2026-10-10 to leave the built-in list as it is. This slice does not change it and does not rely on it: a placed seat's namespace is built with an empty private allowlist (C5). | Maintainer, 2026-10-10 |
@@ -70,7 +72,7 @@ pointer under each amended plan's title, and changes nothing else in those plans
 | Follow-on / "Plans 4a and 4b" | Unchanged; "1b" there now means P1 | |
 | RD1 (a), one service and account per user | **Superseded for the first slice** by "one shared account first" (2026-10-10). Stands for the HTTPS service. | Maintainer, 2026-10-10 |
 | RD3: seats only; legs (ii), codex and grok under a subordinate uid on the remote | **Both stand.** Legs (ii) is implemented by P5. Until P5, codex and grok are not placed. | |
-| RD4 (a), "with a signed attestation" | (a) stands. **The signature is deferred**, question Q3. | |
+| RD4 (a), "with a signed attestation" | (a) stands. **The signature is deferred, not dropped,** by the maintainer's ruling of 2026-10-10. It is a named follow-on, required before any gate relies on the far end's claims and before the cloud backend, where the far end is a third party. Until then the claims are unsigned and nothing reads them. | Maintainer, 2026-10-10 |
 | RD5, a disk bound per sandbox | **(b) in this slice:** a measured bound that kills the seat over it (P4), plus a stage-size cap and a free-space floor (P2). (a), file-system quotas, is a host option the product does not require. | |
 | R7 of the first draft, per-seat memory, CPU and task bounds | **Not in this slice, by ruling:** one limit bounds the whole account. Consequence, stated: one seat's memory use can get another user's seat killed, and that seat is not re-run. A named follow-on. | Maintainer, 2026-10-10 |
 | RD6 | (a) stands for the legacy `host:path` form. (b) is exercised: an optional `ssh` backend (P2). | Maintainer, 2026-10-10 |
@@ -234,6 +236,27 @@ final; backend receipts never make `sandbox_root_applied` true.
   its result, carries the notice `sandbox_placement_release_unconfirmed`, and the lease
   entry stays for the reaper. Without a result, an unconfirmed kill ends the leg with
   `sandbox_placement_lost_after_launch`.
+- **C12 A lost connection to a started workload is a state, not an end** (ruling Q1 of
+  2026-10-10). A backend that can keep a started sandbox alive without its controller says
+  so in its declaration. For such a backend `ExecSpec` carries a reconnect window and an
+  absolute time the sandbox must not be kept past: the earliest of the leg's deadline,
+  where it has one, and the expiry of the credential placed with it, where one was placed.
+  - When the backend loses its connection after `execute`, `wait` returns
+    `ExecDetached(sandbox_ref, kept_until)` instead of raising. The driver keeps calling
+    `wait`, which is the backend's chance to resume, until progress or a result arrives or
+    `kept_until` passes; then the leg ends with `sandbox_placement_lost_after_launch`.
+  - Launch stays final: a detached leg is never started again and never moves to another
+    backend or to the launching host.
+  - A bounded leg's deadline keeps running while detached. Under heartbeat-only the monitor
+    record carries `placement_detached`, the stall clock does not run, and the notices
+    `seat_placement_detached` and `seat_placement_resumed` are shown.
+  - A cancel while detached is delivered at resume; the driver's cancel still returns
+    within its bound (C4), leaving the lease entry for the reaper if the kill was not
+    confirmed.
+  - Resume belongs to the process that holds the lease's lock. A restarted runtime does not
+    resume another process's leg; its reaper applies C6.
+  - A backend that cannot keep a sandbox behaves as before: a lost connection after
+    `execute` raises, and the leg ends.
 
 ## Changes (P1)
 
@@ -241,7 +264,8 @@ final; backend receipts never make `sandbox_root_applied` true.
 - `PlacementRequest` — modify — optional deadline; `workload`, `required_capabilities`,
   `root`, `owner_id`, `lease_id`; `egress_needs` empty for a non-local candidate (C2, C5,
   C6, C10).
-- `ExecSpec`, `ExecResult` — modify; `ExecProgress`, `OperationBound` — add (C1, C4).
+- `ExecSpec`, `ExecResult`, `Declaration` — modify; `ExecProgress`, `ExecDetached`,
+  `OperationBound` — add (C1, C4, C12).
 - `ExecutingBackend` — modify — `admit`; the bound on each blocking call; `list_owned` and
   `kill` by lease (C3, C4, C6).
 - `OUTCOME_CLASSES`, `PLACEMENT_CODES` and `register_backend(scheme, backend, codes)` —
@@ -291,7 +315,7 @@ final; backend receipts never make `sandbox_root_applied` true.
   `sandbox_placement_identity_mismatch`, `sandbox_placement_refused`,
   `sandbox_placement_workload_unsupported`, `sandbox_placement_operation_timeout`,
   `sandbox_placement_code_invalid`, `sandbox_placement_release_unconfirmed`,
-  `seat_placement_waiting`.
+  `seat_placement_waiting`, `seat_placement_detached`, `seat_placement_resumed`.
 
   **Frozen vocabulary, quoted from `panel_invoker.py:2837-2840`:** "`PanelLegResult.detail`
   is built ONLY from our own closed vocabulary. … A detail is one of: a HARNESS CODE — a
@@ -311,7 +335,7 @@ final; backend receipts never make `sandbox_root_applied` true.
 
 ## Documentation impact
 - `phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md` — modify —
-  amendments C1–C11 in "Sandbox placement seam"; the placement codes under "Leg `detail`
+  amendments C1–C12 in "Sandbox placement seam"; the placement codes under "Leg `detail`
   vocabulary". The execution-gate and fail-closed paragraphs are **not** changed here: they
   describe the flag-off runtime, which is still what ships.
 - `docs/phase-loop/convergence-runtime.md` — modify — the lease directory and
@@ -365,6 +389,9 @@ not involved until P4. Each case is control-green and red under its mutation.
 | Owner killed with SIGKILL between `commit` returning and the ref being recorded, while a second leg of the same owner is committing | `reap` kills the first leg's sandbox, found by its lease id, and leaves the second | Decide by `sandbox_ref` presence; liveness by pid |
 | Another owner's sandbox; a paused sandbox on the second page | Survives; reaped | Drop the owner filter; first page only |
 | `reap` with an empty lease directory, and with only live leases | Zero backend calls, no plugin import | Call `list_owned` unconditionally |
+| A fake backend that keeps sandboxes: `wait` returns `ExecDetached`, then progress, then a result | One `completed` receipt; no second `execute`; `placement_detached` recorded; no stall notice while detached | Treat `ExecDetached` as a failure |
+| The same, but `kept_until` passes with no resume; and a cancel arrives while detached | `sandbox_placement_lost_after_launch`, nothing run again anywhere; the cancel returns within its bound and is delivered first at resume | Start the leg again on the next candidate |
+| A bounded leg detached past its deadline | Ends at the deadline; the window never extended it | Pause the deadline while detached |
 | Result received, then kill unconfirmed; no result, kill unconfirmed | Result kept with `sandbox_placement_release_unconfirmed`, entry remains; `sandbox_placement_lost_after_launch`, entry remains | Discard the result |
 | A root written with userinfo and a query | `request.root` holds neither | Pass the configured text |
 | Every placement code | A member of `_HARNESS_DETAIL_CODES` with a `NOTICES` row whose fix is non-empty; `_exception_failure` on each returns the code, not the unknown-failure template | Remove a row |
@@ -396,15 +423,11 @@ not involved until P4. Each case is control-green and red under its mutation.
 | Accounts (B6): one shared account first, superseding RD1 (a) for the first slice | P2, P4, P5; RD3 legs (ii) is kept because of it |
 | The built-in egress list is left as it is | C5 neither changes nor relies on it |
 | Scope (B4): seats only | RD3 stands |
+| Dropped connection (Q1): the compute host keeps a started seat alive for a limited time and the launching host resumes it, tied to that run; the time is a setting with a default of about 30 minutes | C12 here; built by P2b |
+| Signed attestation (Q3): deferred, not dropped; required before any gate relies on the far end's claims and before the cloud backend | The RD4 row of the supersession table; a named follow-on |
 | Credentials: expiring subscription tokens only. A placed seat gets only the access token of the launching user's subscription login; the renewal token never leaves the launching host; an API-key login or a stored long-lived seat token is refused for placement and the seat runs locally. No cap on a token's lifetime. A floor of 30 minutes of remaining life, in configuration, checked at the last moment before the credential is sealed into the request. Refreshing a token inside a running seat is a named follow-on. | P4, P5 |
 
-**Questions for the maintainer.** None blocks P1. Each is written so the answer is one
-setting or one named follow-on.
-
-| ID | Question | Options | Built until ruled |
-|---|---|---|---|
-| Q1 | A dropped connection to the compute host ends a seat that may have run for hours. Accept that, or keep the seat alive for a reconnect? | (a) The seat ends, typed, not re-run. Simplest; an owner that dies can never leave a seat running. (b) The compute host keeps the seat for its lease time and accepts a resume bound to the lease id. Survives short interruptions; more protocol. (c) The seat always runs to completion and the result waits for pick-up. Survives anything; a seat can run with nobody waiting for it. | (a), in P2. (b) is a named follow-on. |
-| Q3 | RD4 was accepted "with a signed attestation". This slice returns the compute host's facts as unsigned claims that no gate reads. Defer the signature? | (a) Defer: the channel already authenticates the host, and nothing trusts the claims. (b) Sign now. | (a). A named follow-on. |
+**Open:** none.
 
 Standing rulings this plan relies on, cited and not restated: R1 and R2
 (agent-harness#1245); RD3, RD4, RD6 and CD1–CD4 (agent-harness#1162).

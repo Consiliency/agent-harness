@@ -4,9 +4,9 @@ status: planned
 owner_skill: claude-plan-detailed
 input_base_commit: 570bdda0
 related_issues: [agent-harness#896, agent-harness#1244, agent-harness#1222, agent-harness#1166, agent-harness#1253, agent-harness#1162]
-builds_on: [plans/detailed-remote-seat-placement-896-20261010.md, plans/detailed-ssh-placement-backend-896-20261010.md, plans/detailed-seat-launch-factoring-896-20261010.md]
+builds_on: [plans/detailed-remote-seat-placement-896-20261010.md, plans/detailed-ssh-placement-backend-896-20261010.md, plans/detailed-placement-reconnect-896-20261010.md, plans/detailed-seat-launch-factoring-896-20261010.md]
 automation:
-  suite_command: "cd phase-loop-runtime && PHASE_LOOP_REQUIRE_SSHD=1 PYTHONPATH=src:tests python -m pytest -q -m 'not dotfiles_integration' tests/test_placed_seat.py tests/test_placement_entry.py tests/test_sandbox_ssh.py tests/test_placement_driver.py tests/test_sandbox_placement.py tests/test_seat_sandbox_permissions.py tests/test_seat_preflight_1204.py tests/test_cli_qualification_contract.py tests/test_seat_notices.py tests/test_seat_owner_notices.py tests/test_seat_reference_inventory.py tests/test_agent_cli_scratch_inventory_1147.py tests/test_launchspec_golden.py tests/test_harden_evidence_verifier.py tests/test_harden_evidence_producer.py tests/test_review_monitor_policy.py"
+  suite_command: "cd phase-loop-runtime && PHASE_LOOP_REQUIRE_SSHD=1 PYTHONPATH=src:tests python -m pytest -q -m 'not dotfiles_integration' tests/test_placed_seat.py tests/test_placement_entry.py tests/test_placement_reconnect.py tests/test_sandbox_ssh.py tests/test_placement_driver.py tests/test_sandbox_placement.py tests/test_seat_sandbox_permissions.py tests/test_seat_preflight_1204.py tests/test_cli_qualification_contract.py tests/test_seat_notices.py tests/test_seat_owner_notices.py tests/test_seat_reference_inventory.py tests/test_agent_cli_scratch_inventory_1147.py tests/test_launchspec_golden.py tests/test_harden_evidence_verifier.py tests/test_harden_evidence_producer.py tests/test_review_monitor_policy.py"
   verification_status: not_run
   human_required: true
 ---
@@ -15,8 +15,9 @@ automation:
 
 ## Task
 
-After P1, P2 and P3 the runtime has a driver, a transport, a far end that runs a null
-workload, and a launch closure both hosts can call. This unit makes one seat really run on
+After P1, P2, P2b and P3 the runtime has a driver, a transport, a far end that runs a null
+workload and keeps it across a dropped connection, and a launch closure both hosts can
+call. This unit makes one seat really run on
 the compute host: the **jailed Claude seat**, the only seat that on main already runs under
 its own leased subordinate uid. It adds the execute branch at the launch site, the leg
 request and result, the far end's seat run, and turns `_NONLOCAL_EXECUTION_DRIVER` on.
@@ -29,8 +30,8 @@ Codex and grok are **not** placed by this unit; they run locally until P5
 (`plans/detailed-placed-owned-seats-896-20261010.md`) gives them a seat uid on the compute
 host. The Gemini seat is sealed and is not placed in this slice.
 
-Cited, not restated: amendments C1–C11 (P1); the transport, entry point and host
-qualification (P2); `_infer_leg_here` and the credential source (P3); SEATJAIL and
+Cited, not restated: amendments C1–C12 (P1); the transport, entry point and host
+qualification (P2); the keeper, the reconnect window and resume (P2b); `_infer_leg_here` and the credential source (P3); SEATJAIL and
 SEATOWNER in `advisor_board/CONTRACTS.md`.
 
 ## Research summary
@@ -137,7 +138,10 @@ and it would keep "no credential in a file" only if that channel stays in memory
 trigger for building it is evidence: the count of `claude_seat_login_token_expired`
 outcomes on placed seats, which the evidence already records per leg.
 
-**The far end's seat run** (`workload="leg"`). The entry point rebuilds the staged
+**The far end's seat run** (`workload="leg"`). It runs inside P2b's keeper, so a seat
+survives a dropped connection for the reconnect window. That window never passes the
+token's expiry or a bounded leg's deadline; the launching host puts both into the absolute
+time C12 carries. The keeper rebuilds the staged
 directory from the verified tree and the request; leases a seat id, from the one lock
 directory the entry point fixed at start (P2), as the jail's own qualification does; builds the seat's egress namespace in the owner-pipe form for every
 monitoring policy, with an empty private allowlist and `required=True`; and calls
@@ -203,7 +207,7 @@ host's own CLI says nothing about the compute host's.
 operator, and root there, can read the tree, the token in memory and the output, and can
 also write: a forged result passes every rule here. With one account the same holds for
 anything that gains that account. That is the residual accepted under RD4 (a) and ruling
-B6; the claims are unsigned (Q3 of P1).
+B6. The claims are unsigned: the signature is deferred by the ruling on Q3.
 
 ## Changes
 
@@ -288,7 +292,7 @@ B6; the claims are unsigned (Q3 of P1).
 - `README.md`, `AGENTS.md`, `docs/TEAM-ONBOARDING.md` — none.
 
 ## Dependencies & order
-1. Needs P1, P2 and P3 merged.
+1. Needs P1, P2, P2b and P3 merged.
 2. It edits the launch site, which the 0.7.27 seat fixes also edit; it starts from a base
    that contains them.
 3. agent-harness#1244's PR-A1 moves route selection into a resolver and owns the `remote`
@@ -304,8 +308,8 @@ B6; the claims are unsigned (Q3 of P1).
 ```sh
 cd phase-loop-runtime
 PHASE_LOOP_REQUIRE_SSHD=1 PYTHONPATH=src:tests python -m pytest -q -m 'not dotfiles_integration' \
-  tests/test_placed_seat.py tests/test_placement_entry.py tests/test_sandbox_ssh.py \
-  tests/test_placement_driver.py tests/test_sandbox_placement.py \
+  tests/test_placed_seat.py tests/test_placement_entry.py tests/test_placement_reconnect.py \
+  tests/test_sandbox_ssh.py tests/test_placement_driver.py tests/test_sandbox_placement.py \
   tests/test_seat_sandbox_permissions.py tests/test_seat_preflight_1204.py \
   tests/test_cli_qualification_contract.py tests/test_seat_notices.py \
   tests/test_seat_owner_notices.py tests/test_seat_reference_inventory.py \
@@ -346,6 +350,9 @@ red under its mutation.
 | Under the knob: no non-local candidate; a candidate that admits; every candidate unreachable | Refused early; completes; refused with zero spawns | Keep the early refusal unconditional |
 | Heartbeat-only seat that keeps producing output; one waiting at the cap | `PROGRESS` reaches the review monitor and no deadline applies on either side; `placement_wait` is recorded and no stall notice is raised while it waits | Start the stall clock at `admit` |
 | Cancel from the launching host | The far end's quiescence path runs; `KILLED` only after it | Kill without quiescence |
+| Connection dropped during a placed seat; resumed inside the window | The seat never stopped; the answer arrives complete; one `completed` receipt; mode `remote` | Start the seat again |
+| Connection dropped; no resume | The keeper ends the seat at the window's end: the jail's mapped teardown removes the tree, home and output; no token remains in any process; the slot is free; the leg is `sandbox_placement_lost_after_launch` and is not run anywhere else | Leave the seat's directories for the next sweep |
+| Connection dropped with a token that expires in ten minutes and a 30-minute window | The seat is ended at the token's expiry, not at the window's end | Keep for the full window |
 | A seat that writes past the measured bound | Killed with `sandbox_placement_bound_exceeded`; other seats continue | Measure once at start |
 | Result with, in turn: a code outside the vocabulary; a usage-limit template; an unknown notice; a wrong request-digest echo; a credential value in the text | In turn: the unknown-failure template; the template re-rendered locally from its fields; the notice dropped; `sandbox_placement_lost_after_launch`; redacted | Trust the result's rendered detail |
 | Verifier, conformant placed record | `verify_sandbox_placement` accepts it; `verify_broker` raises the EC-HARDEN-5 residual and nothing else | Evaluate the predicate first |
@@ -396,7 +403,9 @@ launching host; `placement qualify` passing before and after.
 | A vendor may object to a login used from the compute host's address | `placement qualify --seat claude` records what the vendor did; a refusal makes the harness ineligible until resolved |
 | A jailed seat's own directories are on disk after a crash until the next admission | The kill-then-different-principal case; the live scan for the token in the real seat home |
 
-**Open:** Q3 of P1 (unsigned claims; built as deferred).
+**Open:** none. The claims this unit returns are unsigned by the maintainer's ruling of
+2026-10-10 (Q3: the signature is deferred, not dropped); no gate, verifier or closeout may
+read them until that follow-on lands.
 
 ## Execution Policy
 

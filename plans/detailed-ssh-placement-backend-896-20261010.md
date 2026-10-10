@@ -25,9 +25,10 @@ user who configures an `ssh` root in order to qualify it loses nothing: their se
 locally exactly as today, with the existing `sandbox_placement_driver_unavailable` record.
 Qualification is the `qualification` workload of amendment C10.
 
-The seam, amendments C1–C11 and the driver are in
+The seam, amendments C1–C12 and the driver are in
 `plans/detailed-remote-seat-placement-896-20261010.md` (P1). This plan cites them and
-restates none.
+restates none. C12 is implemented by P2b, not here: this backend's declaration says it
+cannot keep a sandbox.
 
 **General product.** Nothing here names a host, an account, an address or a tailnet. The
 destination is configuration. CI needs no particular host: every test runs against a
@@ -81,13 +82,16 @@ fails before the first frame, the host is up: the outcome is `identity_mismatch`
 refused, and `refused` otherwise. The reading of `ssh`'s diagnostics, under a fixed locale,
 only chooses among classes that never run locally; it can never produce `unreachable`.
 
-**One session per sandbox; the session is the lease (built behaviour, pending Q1 of P1).**
+**One session per sandbox; in this unit the session is the lease.**
 `admit` starts the client and holds the session until `release`. The far end kills the
 sandbox and removes its directory when the session ends for any reason: end of input, a
 cancel, or no frame within its lease time. The entry point reads its input continuously
-while a workload runs, so it sees the end of the session at once. The cost: a dropped
-connection, or a launching host that stalls for longer than the lease time, ends a launched
-seat with no fallback.
+while a workload runs, so it sees the end of the session at once. In this unit a dropped
+connection therefore ends a started workload. That is acceptable only because this unit
+runs nothing but the null workload: the maintainer ruled on 2026-10-10 that a started seat
+is kept for a reconnect, and P2b
+(`plans/detailed-placement-reconnect-896-20261010.md`) replaces this rule before any seat
+is placed.
 
 **The client forces what it can.** Fixed on every invocation: no terminal, batch mode, no
 agent, X11 or port forwarding, no connection sharing, no local command, no environment
@@ -400,9 +404,9 @@ control-green and red under its mutation.
 | The built-in egress list is left as it is | A placed seat's namespace gets an empty private allowlist (C5); nothing changes the default |
 
 **Named follow-ons, not dropped:** one account per teammate; per-principal totals for CPU
-and memory; per-seat resource bounds; a reconnect grace (Q1 of P1).
+and memory; per-seat resource bounds.
 
-**Open:** Q1 of P1 (the dropped session). This plan builds option (a).
+**Open:** none. The ruling on a dropped connection (Q1) is built by P2b.
 
 ## Execution Policy
 

@@ -30,8 +30,9 @@ harnesses placed.
 
 Local launches do not change: a local codex or grok seat keeps today's route and mode.
 
-Cited, not restated: amendments C1–C11 (P1); the entry point, sweep and host qualification
-(P2); the credential source (P3); the placed-seat request, result, evidence and mode (P4).
+Cited, not restated: amendments C1–C12 (P1); the entry point, sweep and host qualification
+(P2); the keeper and the reconnect window, which also never passes a placed token's expiry
+(P2b); the credential source (P3); the placed-seat request, result, evidence and mode (P4).
 
 ## Research summary
 
