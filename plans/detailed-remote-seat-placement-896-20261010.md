@@ -95,7 +95,7 @@ lane; amended here because the 2026-10-10 rulings change it)
 
 | Section | Disposition |
 |---|---|
-| "The chain", order of steps 1 and 2 | **Amended for a host with a remote root configured:** the remote rungs of C7's ladder are tried first, in the configured order. The local sandbox is the ladder's last rung. |
+| "The chain", order of steps 1 and 2 | **Amended for a host with a remote root configured:** the remote rungs of C7 are tried first, in the configured order. The local sandbox is reached only when the walk ends on the launching host. |
 | "The chain", step 3 (host-native fill) after a remote refusal | **Amended.** A seat whose walk ends on the launching host continues down this chain from the local sandbox as before. A seat under the capacity bar does not end on the launching host: it is not run, and is not filled natively there, which is as local as the local sandbox. |
 | PR-A3: the `admit()` walk and typed remote codes | **Delivered here** (C3, C7), under the code names this plan gives. PR-A3 then moves the walk into the resolver, unchanged in substance. |
 
@@ -254,10 +254,11 @@ is final; backend receipts never make `sandbox_root_applied` true.
 
   | State | Event | Next | What it means |
   |---|---|---|---|
-  | start | a local check fails: `available()` false, `endpoint` raises, a required capability is not declared, the deadline exceeds the backend's maximum lifetime, a `leg` workload while the driver flag is false | left: **failed locally** | Nothing was sent |
+  | start | a local check fails: no backend is registered for the root's scheme or its plugin does not load, `available()` is false, `endpoint` raises, a required capability is not declared, the deadline exceeds the backend's maximum lifetime, a `leg` workload while the driver flag is false | left: **failed locally** | Nothing was sent |
   | start | the local checks pass | connecting | |
   | connecting | the driver's own resolution or connection fails | left: **unreachable** | Nothing was sent |
   | connecting | connected, but the lease entry cannot be written | left: **failed locally** | Nothing was sent |
+  | connecting | budget spent | left: **out of time** | Nothing was sent. Running out of time is not evidence that the host is unreachable |
   | connecting | connected, lease entry fsynced | admitting | The admission request is sent |
   | admitting | admitted | committing | A slot is held on the far side |
   | admitting | the backend raises the runtime's capacity code | waiting | **The capacity bar is set for the attempt.** The far end's answer means it holds nothing. |
@@ -274,6 +275,18 @@ is final; backend receipts never make `sandbox_root_applied` true.
   | releasing | the kill or the confirmation times out or fails | left: **refused, unconfirmed** | `sandbox_placement_release_unconfirmed` is recorded; **the lease entry is kept for the reaper; the lease stays fenced** (C6) |
 
   Entering "releasing" always fences the lease first.
+
+  **The code recorded for each class**, so that every code in this plan's list is emitted
+  by a transition:
+
+  | Class | Code in the trail |
+  |---|---|
+  | failed locally | `sandbox_placement_driver_unavailable` (flag off); `sandbox_placement_capability_unmet` (a required capability not declared); `sandbox_placement_backend_unregistered`, `sandbox_placement_plugin_unavailable` or `sandbox_placement_refused` for the other local checks, as the seam raises them today |
+  | unreachable | `sandbox_placement_unreachable` |
+  | out of time | `sandbox_placement_budget_spent` |
+  | capacity | `sandbox_placement_at_capacity` |
+  | refused | The code the backend raised, if it is one of the runtime's (`sandbox_placement_not_enrolled`, `sandbox_placement_identity_mismatch`, `sandbox_placement_workload_unsupported`) or one it registered; `sandbox_placement_code_invalid` if it is neither; `sandbox_placement_operation_timeout` for a time-out; `sandbox_placement_capability_unmet` for a capability not verified after `commit`; `sandbox_placement_ref_invalid` or `sandbox_placement_capability_undeclared` for a bad reference or claim from `commit`, as the seam raises them today; `sandbox_placement_refused` for a failed transfer or guard |
+  | refused, unconfirmed | The refusal's code, and `sandbox_placement_release_unconfirmed` beside it |
 
   **Cancel** is accepted in every state and **never moves the walk on**. In start,
   connecting and waiting the attempt ends at once. In admitting, committing and sealing
@@ -473,9 +486,10 @@ These follow from the rulings as recorded. None is hidden in a table.
   is never decided by pid or age.
 
 ### `phase-loop-runtime/src/phase_loop_runtime/sandbox_policy.py` (modify)
-- `candidate_roots(...)` — add — the remote rungs: every configured non-local candidate
-  whose scheme has a registered backend, in the configured order. No backend method is
-  called and nothing is probed.
+- `candidate_roots(...)` — add — the remote rungs: every configured non-local root, in the
+  configured order. A root whose scheme has no registered backend, or whose plugin does not
+  load, is still a rung; it fails its local checks (C7). No backend method is called and
+  nothing is probed.
 - `last_rung()` — add — reads `PHASE_LOOP_SANDBOX_LAST_RUNG`: `local` (default) or `none`;
   any other value is `sandbox_config_invalid`. The fail-closed knob forces `none`.
 - `admit_wait_s()`, `transfer_allowance_s()` — add — the two settings, read with the
@@ -493,6 +507,7 @@ These follow from the rulings as recorded. None is hidden in a table.
   `sandbox_placement_refused`, `sandbox_placement_workload_unsupported`,
   `sandbox_placement_operation_timeout`, `sandbox_placement_code_invalid`,
   `sandbox_placement_release_unconfirmed`, `sandbox_placement_at_capacity`,
+  `sandbox_placement_budget_spent`,
   `seat_placement_waiting`.
 
   **Frozen vocabulary, quoted from `panel_invoker.py:2837-2840`:** "`PanelLegResult.detail`
@@ -588,7 +603,7 @@ Then it asserts, on every ordering, the properties the rulings require:
 - the trail names every rung that was touched, once, in order, on every kind of exit;
 - no rung is started after the budget is spent.
 
-The planning lane's model of the same table enumerated about 137 thousand orderings with
+The planning lane's model of the same table enumerated about 139 thousand orderings with
 these assertions before this plan was written; the test asserts that no ordering is
 skipped, not that number.
 
