@@ -12797,8 +12797,13 @@
               "recorded_at": "2026-10-10",
               "source": "relayed by team lead"
             },
-            "open_decisions": [],
+            "open_questions": [
+              "Q1 dropped session",
+              "Q2 long-lived credential",
+              "Q3 unsigned claims"
+            ],
             "planning_artifact_only": true,
+            "review_round": "revised after plan panel hb1",
             "review_status": "pending",
             "route_ruling": "maintainer 2026-10-10: self-hosted compute host over SSH first"
           },
@@ -12811,9 +12816,9 @@
       "roadmap_ref": null,
       "slug": "remote-seat-placement-896",
       "status": "committed",
-      "task_summary": "Execution driver for non-local placement (agent-harness#896 plan 1b, P1): admission, lease journal, heartbeat, reaper and the execute branch behind the placement seam, with contract amendments C1-C9; amends the 2026-09-29 placement and E2B plans section by section",
+      "task_summary": "Execution driver for non-local placement (agent-harness#896 plan 1b, P1): seam amendments C1-C11, runtime-owned admission outcomes, lease journal bound by lease id, reaper, runtime receipts; the driver flag stays off; amends the 2026-09-29 placement and E2B plans and the 2026-10-04 resolver plan section by section",
       "type": "detailed",
-      "updated_at": "2026-10-10T17:42:43Z"
+      "updated_at": "2026-10-10T18:25:34Z"
     },
     {
       "acceptance_criteria_count": 5,
@@ -12848,8 +12853,13 @@
               "recorded_at": "2026-10-10",
               "source": "relayed by team lead"
             },
-            "open_decisions": [],
+            "open_questions": [
+              "Q1 dropped session",
+              "Q2 long-lived credential",
+              "Q3 unsigned claims"
+            ],
             "planning_artifact_only": true,
+            "review_round": "revised after plan panel hb1",
             "review_status": "pending",
             "route_ruling": "maintainer 2026-10-10: self-hosted compute host over SSH first"
           },
@@ -12862,9 +12872,9 @@
       "roadmap_ref": null,
       "slug": "ssh-placement-backend-896",
       "status": "committed",
-      "task_summary": "SSH placement backend and its compute-host entry point (agent-harness#896, P2): root form, session-as-lease protocol, verified stage transfer, per-boot host qualification, sandbox qualify; proven with a null workload on a loopback sshd",
+      "task_summary": "SSH placement backend, compute-host entry point and placement qualify (agent-harness#896, P2): root form, runtime-decided unreachable, session-as-lease protocol, verified stage transfer, all-principal sweep, host qualification at account level and inside a seat namespace; null workload only; flag off",
       "type": "detailed",
-      "updated_at": "2026-10-10T17:42:43Z"
+      "updated_at": "2026-10-10T18:25:34Z"
     },
     {
       "acceptance_criteria_count": 5,
@@ -12900,8 +12910,13 @@
               "recorded_at": "2026-10-10",
               "source": "relayed by team lead"
             },
-            "open_decisions": [],
+            "open_questions": [
+              "Q1 dropped session",
+              "Q2 long-lived credential",
+              "Q3 unsigned claims"
+            ],
             "planning_artifact_only": true,
+            "review_round": "revised after plan panel hb1",
             "review_status": "pending",
             "route_ruling": "maintainer 2026-10-10: self-hosted compute host over SSH first"
           },
@@ -12914,9 +12929,117 @@
       "roadmap_ref": null,
       "slug": "remote-seat-execution-896",
       "status": "committed",
-      "task_summary": "A review seat executes on the compute host through the placement entry point (agent-harness#896, P3): the launch closure factored for both hosts, per-run narrowed credentials in the request, the placed route decision, the remote seat mode",
+      "task_summary": "The jailed Claude seat is placed and the driver flag turns on (agent-harness#896, P4): candidate rule, placed route decision, leg request and result, far-end seat run, separation probe through the jail view, placed broker record and verifier order, remote mode",
       "type": "detailed",
-      "updated_at": "2026-10-10T17:42:43Z"
+      "updated_at": "2026-10-10T18:25:34Z"
+    },
+    {
+      "acceptance_criteria_count": 4,
+      "created_at": "2026-10-10T18:25:34Z",
+      "file": "plans/detailed-seat-launch-factoring-896-20261010.md",
+      "handoff_ref": null,
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [
+        {
+          "at": "2026-10-10T18:25:34Z",
+          "by": "claude-plan-detailed",
+          "metadata": {
+            "builds_on": [
+              "plans/detailed-remote-seat-placement-896-20261010.md"
+            ],
+            "issues": [
+              "Consiliency/agent-harness#896",
+              "Consiliency/agent-harness#1244"
+            ],
+            "maintainer_decisions": {
+              "decisions": [
+                "route: ssh first",
+                "B1",
+                "B2",
+                "B3",
+                "B4",
+                "B5",
+                "B6",
+                "egress list unchanged"
+              ],
+              "recorded_at": "2026-10-10",
+              "source": "relayed by team lead"
+            },
+            "open_questions": [],
+            "planning_artifact_only": true,
+            "review_round": "revised after plan panel hb1",
+            "review_status": "pending",
+            "route_ruling": "maintainer 2026-10-10: self-hosted compute host over SSH first"
+          },
+          "transition": "committed"
+        }
+      ],
+      "owner_skill": "claude-plan-detailed",
+      "phase_alias": null,
+      "reflection_ref": null,
+      "roadmap_ref": null,
+      "slug": "seat-launch-factoring-896",
+      "status": "committed",
+      "task_summary": "Factor the seat launch closure and the seat credential source so both hosts can call them, with no behaviour change (agent-harness#896, P3)",
+      "type": "detailed",
+      "updated_at": "2026-10-10T18:25:34Z"
+    },
+    {
+      "acceptance_criteria_count": 5,
+      "created_at": "2026-10-10T18:25:34Z",
+      "file": "plans/detailed-placed-owned-seats-896-20261010.md",
+      "handoff_ref": null,
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [
+        {
+          "at": "2026-10-10T18:25:34Z",
+          "by": "claude-plan-detailed",
+          "metadata": {
+            "builds_on": [
+              "plans/detailed-remote-seat-execution-896-20261010.md"
+            ],
+            "issues": [
+              "Consiliency/agent-harness#896",
+              "Consiliency/agent-harness#1244"
+            ],
+            "maintainer_decisions": {
+              "decisions": [
+                "route: ssh first",
+                "B1",
+                "B2",
+                "B3",
+                "B4",
+                "B5",
+                "B6",
+                "egress list unchanged"
+              ],
+              "recorded_at": "2026-10-10",
+              "source": "relayed by team lead"
+            },
+            "open_questions": [
+              "Q1 dropped session",
+              "Q2 long-lived credential",
+              "Q3 unsigned claims"
+            ],
+            "planning_artifact_only": true,
+            "review_round": "revised after plan panel hb1",
+            "review_status": "pending",
+            "route_ruling": "maintainer 2026-10-10: self-hosted compute host over SSH first"
+          },
+          "transition": "committed"
+        }
+      ],
+      "owner_skill": "claude-plan-detailed",
+      "phase_alias": null,
+      "reflection_ref": null,
+      "roadmap_ref": null,
+      "slug": "placed-owned-seats-896",
+      "status": "committed",
+      "task_summary": "Codex and grok seats run under a leased seat uid on the compute host (ruling RD3 legs (ii)), then are placed under the default credential rule (agent-harness#896, P5)",
+      "type": "detailed",
+      "updated_at": "2026-10-10T18:25:34Z"
     }
   ],
   "schema_version": 1
