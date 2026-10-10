@@ -12802,12 +12802,15 @@
                 "egress list unchanged",
                 "credentials: expiring subscription tokens only, 30-minute floor",
                 "Q1: keep a started seat for a reconnect, window setting default 30 minutes",
-                "Q3: signed attestation deferred, not dropped"
+                "Q3: signed attestation deferred, not dropped",
+                "non-capacity refusal falls down a ladder whose last rung is the launching host for now"
               ],
               "recorded_at": "2026-10-10",
               "source": "relayed by team lead"
             },
-            "open_questions": [],
+            "open_questions": [
+              "Q4: may a full remote rung fall to another remote rung"
+            ],
             "planning_artifact_only": true,
             "review_rounds": [
               "plan panel hb1",
@@ -12824,9 +12827,9 @@
       "roadmap_ref": null,
       "slug": "remote-seat-placement-896",
       "status": "committed",
-      "task_summary": "Execution driver for non-local placement (agent-harness#896 plan 1b): seam amendments C1-C13, the single table of where a seat may run (local is decided only before any admission request), driver-owned reachability, lease journal bound by lease id, reaper, runtime receipts; the driver flag stays off; amends the 2026-09-29 placement and E2B plans and the 2026-10-04 resolver plan section by section",
+      "task_summary": "Execution driver for non-local placement (agent-harness#896 plan 1b): seam amendments C1-C13, the ladder of where a seat may run (remote rungs in configured order, a last rung that is the launching host by default, a capacity answer bars the launching host), driver-owned reachability, lease journal bound by lease id, reaper, runtime receipts; the driver flag stays off; amends the 2026-09-29 placement and E2B plans and the 2026-10-04 resolver plan section by section",
       "type": "detailed",
-      "updated_at": "2026-10-10T19:05:34Z"
+      "updated_at": "2026-10-10T20:44:19Z"
     },
     {
       "acceptance_criteria_count": 4,

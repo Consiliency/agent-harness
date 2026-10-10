@@ -95,8 +95,8 @@ lane; amended here because the 2026-10-10 rulings change it)
 
 | Section | Disposition |
 |---|---|
-| "The chain", order of steps 1 and 2 | **Amended for a host with a remote root configured:** remote is tried first. The local sandbox is reached only by the rows of C7 that end in "local". |
-| "The chain", step 3 (host-native fill) after a remote refusal | **Amended:** once an admission request has been sent, a seat that is not placed is not run. It is not filled natively on the launching host, which is as local as the local sandbox. |
+| "The chain", order of steps 1 and 2 | **Amended for a host with a remote root configured:** the remote rungs of C7's ladder are tried first, in the configured order. The local sandbox is the ladder's last rung. |
+| "The chain", step 3 (host-native fill) after a remote refusal | **Amended.** A seat that reaches the last rung continues down this chain from the local sandbox as before. A seat that left a rung for capacity never reaches the last rung: it is not run, and is not filled natively on the launching host, which is as local as the local sandbox. |
 | PR-A3: the `admit()` walk and typed remote codes | **Delivered here** (C3, C7), under the code names this plan gives. PR-A3 then moves the walk into the resolver, unchanged in substance. |
 
 ## Research summary
@@ -184,7 +184,7 @@ is final; backend receipts never make `sandbox_root_applied` true.
   `sandbox_policy.parse_location` already produces, so userinfo, query and fragment never
   reach a backend), `owner_id` and `lease_id`.
   - The lease id is allocated and its journal entry fsynced **before `admit`**, the first
-    call with a remote effect.
+    call with a remote effect. On a ladder each rung that is asked gets its own lease.
   - A backend tags every sandbox it creates with the owner id and the lease id.
     `list_owned(owner_id, bound)` returns `(sandbox_ref, lease_id)` pairs;
     `kill(sandbox_ref, lease_id, bound)` is targeted.
@@ -193,53 +193,76 @@ is final; backend receipts never make `sandbox_root_applied` true.
     still found, and a live leg of the same owner in that window is never killed.
   - The reaper runs at leg start and by command. A periodic reaper is not built: no backend
     planned so far bills by time. The cloud adapter adds one if it needs one.
-- **C7 Where a seat may run: local is decided only before any admission request is sent.**
-  This one rule carries two rulings (B3: at the cap wait, then not run, never local;
-  unreachable before launch, run locally; and the credential floor) and removes any
-  question of which comes first.
+- **C7 Where a seat may run: a ladder, walked by the driver** (maintainer rulings of
+  2026-10-10 on "busy or down" and on a reachable host that refuses).
+  - **The rungs.** The configured remote backends, in the order agent-harness#1246's
+    configuration already defines, then one **last rung** named by a setting.
+    `PHASE_LOOP_SANDBOX_LAST_RUNG` is `local` (the default: the launching host) or `none`.
+    The driver does not know that the last rung is special beyond that setting, so a later
+    ruling can replace it, or remove it, without changing the driver. The fail-closed knob
+    means `none`.
+  - **The driver classifies what happened on a rung itself.** Nothing a backend or a far
+    end says chooses the class: "unreachable" is the driver's own connection attempt (C3);
+    "at capacity" is a code the backend registered as such when it was installed;
+    everything else before `execute` is "refused".
 
-  | # | When | What happened | Outcome |
+  | # | On a remote rung | The driver does | Then |
   |---|---|---|---|
-  | 1 | Before anything is sent | The leg is not a placement candidate | **Local**, exactly as today |
-  | 2 | Before anything is sent | The operator chose local for this run (`PHASE_LOOP_SANDBOX_PLACEMENT=local`) | **Local**, recorded `sandbox_placement_local_by_choice` |
-  | 3 | Before anything is sent | The preflight fails. The preflight is supplied by the caller and uses only facts the launching host has; examples the follow-on plans add: the launching runtime is a source checkout and not a released build; the credential is not a kind that may be placed; the credential's remaining life, after one local renewal attempt where the runtime has one, is less than the floor **plus the admission-wait bound plus the transfer allowance**. | **Local**, with the preflight's typed code. No connection is attempted. |
-  | 4 | Before any admission request | The driver's own connection attempt (C3) fails for **every** candidate | **Local**, recorded `seat_sandbox_root_fell_back` with each `<name>: sandbox_placement_unreachable` |
-  | 5 | After an admission request was sent to any candidate | Admitted, committed, executed | **Placed** |
-  | 6 | After an admission request was sent | The candidate answers `at_capacity`: retry with backoff until `PHASE_LOOP_SANDBOX_ADMIT_WAIT_S` is spent (default 600; `0` means no wait), then the next candidate; none admits | **Not run**, `sandbox_placement_capacity_exhausted` |
-  | 7 | After an admission request was sent | Anything else before `execute`: not enrolled, the host is not the one pinned, a refusal by the far end for any reason, a capability unmet, a transfer failure, an operation timeout, a later candidate unreachable, **the caller's guard immediately before sealing fails** (for example a credential now under the floor) | **Not run**, with that outcome's typed code. A sandbox already created is released with confirmation first. |
-  | 8 | After `execute` was called | Anything | The post-launch codes. Never started again, never moved. |
+  | 1 | The driver's own connection attempt fails | Records `unreachable` for the rung. Nothing was sent, so there is nothing to release. | Next rung |
+  | 2 | The rung answers **at capacity** | Retries on **that** rung, with backoff, until `PHASE_LOOP_SANDBOX_ADMIT_WAIT_S` is spent (default 600; `0` means no wait). If it is admitted, row 4. If it is still full, records `capacity` for the rung. | Next **remote** rung. From the first capacity answer on, **the last rung is barred for this attempt** when it is the launching host. |
+  | 3 | Anything else before `execute`: not enrolled; the host is not the one pinned; any other refusal by the far end (another build installed there, its own checks failed, out of disk); a capability unmet; a transfer failure; an operation timeout; **the caller's guard immediately before sealing fails** | Records `refused` with the typed code and its fix line. **Releases anything held on that rung and confirms it is gone** (C8). | Next rung. If the release cannot be confirmed, the attempt ends **not run** (`sandbox_placement_rung_unconfirmed`): the seat does not move on while something of it may still exist behind it. |
+  | 4 | Admitted, committed, the guard passes, `execute` is called | **Placed.** | Final. The seat never moves and is never started again, on any rung, whatever happens after (C12 governs a lost connection). |
 
-  - Rows 1 to 4, under the fail-closed knob, are refusals with zero spawns, as the knob
-    means today.
-  - A seat that reaches "local" through rows 3 or 4 has its local route decided from the
-    local host's facts. **If that route is the sealed one the seat is not run**: a seat
-    that was a placement candidate never runs sealed.
-  - The decision is taken where `commit` is called today, after local staging and both
-    revalidations. Nothing has been acquired for a placed launch at that point, so a seat
-    that goes local continues from there exactly as today.
-  - The preflight's sum is what makes row 7's guard a guard and not a path: a credential
-    that passes the preflight still has its floor after the longest allowed wait and
-    transfer. `PHASE_LOOP_SANDBOX_TRANSFER_ALLOWANCE_S` defaults to 300. The driver owns the
-    arithmetic so that every caller uses the same sum: `lifetime_sufficient(remaining_s,
-    floor_s)` is true when `remaining_s` is at least the floor plus the admission-wait
-    bound plus the transfer allowance, and `lifetime_at_floor(remaining_s, floor_s)` is the
-    guard. A caller supplies only the two numbers. This plan tests both with numbers; the
-    placed-seat plans supply real ones.
-  - While a seat waits at the cap the monitor record carries `placement_wait`, the notice
-    `seat_placement_waiting` is shown, and the stall clock does not run. A leg's stall
-    clock starts when `execute` returns: admission, the wait and the transfer are not
-    silence. For a bounded leg all three are charged to its deadline, as the login wait
-    is.
-  - **Codes.** The runtime owns a closed list of placement codes; a backend registers its
-    own codes at registration, each mapped to one of the runtime's outcomes
-    (`at_capacity`, `not_enrolled`, `identity_mismatch`, `refused`). The mapping is static
-    and only chooses a wait and a fix line: under this rule no code a backend or a far end
-    returns can lead to a local run. An unregistered code is recorded as
-    `sandbox_placement_code_invalid`, never as backend text. A code that has a `NOTICES`
-    row is added to the leg's seat notices.
-- **C8 A candidate that is abandoned is released.** When the walk leaves a candidate after
-  `admit` succeeded (a failed lease write, a failed `commit`, a failed guard, a cancel), it
-  calls `release` on it, within a bound, before trying the next.
+  | # | Reaching the last rung | Outcome |
+  |---|---|---|
+  | 5 | The last rung is `local` and no rung answered at capacity | **Runs on the launching host**, with the loud record below. The local route is decided from the local host's facts; **if that route is the sealed one the seat is not run**. |
+  | 6 | The last rung is `local` but a rung answered at capacity | **Not run**, `sandbox_placement_capacity_exhausted`. A full compute host never pushes load back to the launching host. |
+  | 7 | The last rung is `none` (or the fail-closed knob is on) | **Not run**, with the code of the last rung left, or `sandbox_placement_required_unavailable` under the knob |
+
+  - **Before the ladder.** A leg that is not a placement candidate is not on the ladder and
+    runs as today. For a candidate the caller's **preflight** runs before the first
+    admission request, on facts the launching host already has (examples the follow-on
+    plans add: the launching runtime is a source checkout and not a released build; the
+    credential is not a kind that may be placed; its remaining life is too short). A seat
+    that fails it skips every remote rung and goes straight to the last rung with the
+    preflight's typed code. Nothing is sent anywhere for it.
+  - **What is checked again on a later rung.** Time passes on a ladder: a wait, a transfer,
+    a release. Before each rung's admission request the driver evaluates the preflight
+    again with fresh numbers. If it now fails, the remaining remote rungs are skipped. The
+    guard immediately before sealing stays on every rung; its failure is row 3.
+  - **The lifetime arithmetic is the driver's,** so every caller uses the same sum:
+    `lifetime_sufficient(remaining_s, floor_s)` is true when `remaining_s` is at least the
+    floor plus the admission-wait bound plus `PHASE_LOOP_SANDBOX_TRANSFER_ALLOWANCE_S`
+    (default 300); `lifetime_at_floor(remaining_s, floor_s)` is the guard. A caller supplies
+    only the two numbers. This plan tests both with numbers.
+  - **A seat is never run twice.** `execute` is called at most once per attempt, on one
+    rung. A rung is left only as row 1 (nothing was sent), row 2 (the far end answered that
+    it admitted nothing) or row 3 (a confirmed release).
+  - **Every rung change is loud.** `place` returns the trail: for each rung, in order, its
+    name, its class, its code. The trail goes into the board's output and into the leg's
+    machine-readable record (`sandbox_root_reason` carries each `<rung>: <code>`, as it
+    does today for a single root); each code with a `NOTICES` row is a seat notice with
+    its fix line; landing on the last rung adds `seat_sandbox_root_fell_back`. "Everything
+    quietly ran locally" cannot happen.
+  - **Where the decision sits.** Where `commit` is called today, after local staging and
+    both revalidations. Nothing has been acquired for a placed launch at that point, so a
+    seat that reaches the launching host continues from there exactly as today.
+  - **Waiting.** While a seat waits at the cap the monitor record carries `placement_wait`,
+    the notice `seat_placement_waiting` is shown, and the stall clock does not run. A leg's
+    stall clock starts when `execute` returns: admission, the wait, the transfer and any
+    rung change are not silence. For a bounded leg all of them are charged to its deadline,
+    as the login wait is.
+  - **Codes.** The runtime owns a closed list of placement codes. A backend registers its
+    own codes when it is installed, each marked "capacity" or not; that static mark is all
+    a backend contributes to the classes above. An unregistered code is recorded as
+    `sandbox_placement_code_invalid`, never as backend text.
+- **C8 A rung that is left is released, and the release is confirmed.** When the walk
+  leaves a rung on which `admit` was called and did not answer with a refusal (a failed
+  lease write, a failed `commit`, a failed guard, a timeout whose outcome is unknown, a
+  cancel), it calls `release` there, within a bound, and confirms through `list_owned` by
+  lease id that nothing of this attempt remains, before it tries the next rung. A refusal
+  the far end itself returned from `admit` is its statement that it admitted nothing, and
+  needs no release.
 - **C9 Runtime receipts.** The driver, which lives in `sandbox_placement` beside the seal,
   builds `committed` when `commit` returned for the digest the runtime computed, `launched`
   when it called `execute`, and `completed` when it received a terminal `ExecResult` for
@@ -292,23 +315,22 @@ is final; backend receipts never make `sandbox_root_applied` true.
 
 These follow from the rulings as recorded. None is hidden in a table.
 
-- **A reachable compute host that refuses stops the seat; it does not send it home.** After
-  an admission request has been sent, a refusal for any reason (a different build is
-  installed there, the host failed its own checks, it is out of disk, this account's key
-  is not enrolled) means the placed seats of that board are **not run** until someone
-  fixes the host or the user chooses local for the run (`PHASE_LOOP_SANDBOX_PLACEMENT=local`,
-  which every such refusal's fix line names). In the first design these ran locally.
+- **A broken or misconfigured compute host sends its seats back to the launching host.**
+  Unreachable, another build installed there, a revoked key, a failed host check, a full
+  disk: each is a typed notice with its fix line, and then the seat runs on the launching
+  host. That is the ruling ("for now the local fallback is fine"). It also means a compute
+  host that is quietly broken for everyone puts the whole load back where it started, with
+  notices on every board and nothing else to stop it.
+- **The capacity rule is the only thing that holds load off the launching host.** A compute
+  host that answers "full" makes seats wait and then not run. A compute host that answers
+  anything else, or does not answer, does not.
 - **Boards run from a source checkout** (the usual way boards run in this repository) are
-  never the build a compute host has installed. The follow-on SSH plan must make "this
-  runtime is not a released build" a preflight failure (row 3), so those boards run locally
-  with a typed record instead of being refused.
-- **A build that is merely newer or older than the compute host's** is learned only from
-  the far end's answer, so it is row 7: not run, with a fix line naming both versions.
-- **One limit for the whole account.** One seat's memory use can get another user's seat
-  killed, and that seat is not run again.
-- **"Runs locally" does not always mean the review happens.** A seat sent home by the
-  credential preflight meets the local route's own credential rules there, which for some
-  logins also refuse.
+  never the build a compute host has installed. The SSH follow-on plan should make that a
+  preflight failure, so those boards go straight to the last rung without a round trip.
+- **One limit for the whole account** on the compute host. One seat's memory use can get
+  another user's seat killed, and that seat is not run again.
+- **Reaching the launching host does not always mean the review happens.** The local
+  route's own rules apply there, and a seat whose local route is the sealed one is not run.
 
 ## Changes
 
@@ -319,15 +341,15 @@ These follow from the rulings as recorded. None is hidden in a table.
 - `ExecSpec`, `ExecResult` — modify; `ExecProgress`, `OperationBound` — add (C1, C2, C4).
 - `ExecutingBackend` — modify — `endpoint`, `admit`; the bound on each blocking call;
   `list_owned` and `kill` by lease (C3, C4, C6).
-- `PLACEMENT_CODES`, `OUTCOMES` and `register_backend(scheme, backend, codes)` — add /
-  modify — the runtime's closed code list, the four outcomes a backend code may map to,
-  and registration of a backend's codes (C7). The four codes the seam already raises are
-  entered here.
-- `PlacementDecision` and `place(candidates, prepared, request_for, lease, *, preflight,
-  guard, driver_enabled, bound)` — add — the C7 table, with C3's connection attempt, C8,
-  and C10's refusal of a `leg` workload when `driver_enabled` is false. The flag is passed
-  in, so `sandbox_placement` does not import the launch module. It returns one of: placed
-  (a `LegPlacement`), local (with its row and code), not run (with its code).
+- `PLACEMENT_CODES` and `register_backend(scheme, backend, codes)` — add / modify — the
+  runtime's closed code list, and registration of a backend's codes, each marked
+  "capacity" or not (C7). The four codes the seam already raises are entered here.
+- `PlacementDecision` and `place(rungs, last_rung, prepared, request_for, lease, *,
+  preflight, guard, driver_enabled, bound)` — add — the C7 ladder, with C3's connection
+  attempt, C8, and C10's refusal of a `leg` workload when `driver_enabled` is false. The
+  flag is passed in, so `sandbox_placement` does not import the launch module. It returns
+  one of: placed (a `LegPlacement`), the launching host, or not run (with its code); and
+  always the trail of rungs.
 - `lifetime_sufficient`, `lifetime_at_floor` — add — the two comparisons of C7, pure
   functions of two numbers and the two settings.
 - `run_placed(placement, spec, *, on_progress, cancelled) -> ExecResult` — add — `execute`,
@@ -352,9 +374,11 @@ These follow from the rulings as recorded. None is hidden in a table.
   pid or age.
 
 ### `phase-loop-runtime/src/phase_loop_runtime/sandbox_policy.py` (modify)
-- `candidate_roots(...)` — add — every configured non-local candidate whose scheme has a
-  registered backend, in order; none when `PHASE_LOOP_SANDBOX_PLACEMENT=local`. No backend
-  method is called and nothing is probed.
+- `candidate_roots(...)` — add — the remote rungs: every configured non-local candidate
+  whose scheme has a registered backend, in the configured order. No backend method is
+  called and nothing is probed.
+- `last_rung()` — add — reads `PHASE_LOOP_SANDBOX_LAST_RUNG`: `local` (default) or `none`;
+  any other value is `sandbox_config_invalid`. The fail-closed knob forces `none`.
 - `admit_wait_s()`, `transfer_allowance_s()` — add — the two settings, read with the
   `_env_int` idiom; defaults 600 and 300.
 
@@ -370,7 +394,7 @@ These follow from the rulings as recorded. None is hidden in a table.
   `sandbox_placement_not_enrolled`, `sandbox_placement_identity_mismatch`,
   `sandbox_placement_refused`, `sandbox_placement_workload_unsupported`,
   `sandbox_placement_operation_timeout`, `sandbox_placement_code_invalid`,
-  `sandbox_placement_release_unconfirmed`, `sandbox_placement_local_by_choice`,
+  `sandbox_placement_release_unconfirmed`, `sandbox_placement_rung_unconfirmed`,
   `seat_placement_waiting`.
 
   **Frozen vocabulary, quoted from `panel_invoker.py:2837-2840`:** "`PanelLegResult.detail`
@@ -391,12 +415,13 @@ These follow from the rulings as recorded. None is hidden in a table.
 
 ## Documentation impact
 - `phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md` — modify —
-  amendments C1–C13 in "Sandbox placement seam", the C7 table verbatim; the placement codes
+  amendments C1–C13 in "Sandbox placement seam", the C7 ladder's tables verbatim; the placement codes
   under "Leg `detail` vocabulary". The execution-gate and fail-closed paragraphs are **not**
   changed here: they describe the flag-off runtime, which is still what ships.
 - `docs/phase-loop/convergence-runtime.md` — modify — the lease directory,
-  `phase-loop placement reap`, and the three settings (they have no effect until a backend
-  exists and the flag is on; the text says so).
+  `phase-loop placement reap`, and the settings this plan adds (the last rung, the
+  admission wait, the transfer allowance); they have no effect until a backend exists and
+  the flag is on, and the text says so.
 - `CHANGELOG.md` — modify — one entry under `## [Unreleased]`, which notes that the
   fail-closed knob's refusal now carries a fix line.
 - `README.md`, `AGENTS.md`, `docs/TEAM-ONBOARDING.md`, `docs/advisor-board-capabilities-card.md`
@@ -427,33 +452,39 @@ leaves closed, so the driver's own connection attempt is exercised, not stubbed.
 and `run_placed` are driven directly; `_default_spawn` is not involved. Each case is
 control-green and red under its mutation.
 
-**The C7 table, one row each, then its intersections.** Row 1 is decided by the caller
-before the driver is entered; the launch site is not changed by this plan, so it has no
-case here.
+**The C7 ladder, one row each, then its intersections.** The fakes are two remote rungs and
+a last rung that the test sets to `local` or `none`. "Runs on the launching host" means
+`place` returns that decision; the launch site is not changed by this plan.
 
 | Case | Expected | Mutation that must turn it red |
 |---|---|---|
-| Row 2: local by choice | Local; zero connection attempts, zero backend calls | Probe before reading the setting |
-| Row 3: the preflight fails | Local with the preflight's code; zero connection attempts, zero backend calls | Run the preflight after `admit` |
-| Row 4: every candidate's endpoint is closed | Local; each reason recorded; zero `admit` calls | Let a backend report "unreachable" from `admit` |
-| Row 4, one candidate closed and the next open | The open one is asked; from that point local is not possible | Decide from the first candidate only |
-| Row 5 | Connection attempt, lease entry fsynced, `admit`, `commit`, guard, `execute`, `wait`, `release`, in that order; runtime `committed` and `completed` share one ref and the computed digest | Write the lease after `admit`; build `completed` from the backend's receipt |
-| Row 6: at capacity, then admitted within the wait; wait spent with no other candidate | Placed; not run, `sandbox_placement_capacity_exhausted` | Fall back to local |
-| Row 7, one case per outcome: not enrolled; identity mismatch; refused (one per registered code); capability unmet; `commit` raises; operation timeout | Not run with that code; a created sandbox is released and confirmed first; local is not possible | Treat any of them as unreachable |
-| Row 7: the guard fails immediately before sealing | Released with confirmation; not run with the guard's code; `execute` was never called; **not local** | Go local on a guard failure |
-| **Intersection (the one three reviewers found):** at capacity, then admitted, then the guard fails | Not run. Never local. | Let the credential rule override the capacity rule |
-| Intersection: at capacity once, then the same candidate's endpoint is closed on retry; then a second candidate's endpoint is closed | Not run. Never local. | Decide locality from the last answer |
-| Intersection, with injected numbers and a fake clock: `lifetime_sufficient` is true at exactly floor + wait + allowance and false one second under; the wait then runs to its end and the transfer takes the whole allowance | `lifetime_at_floor` is still true; placed. One second under at the start: local by row 3, nothing sent. | Omit the wait, or the allowance, from the sum |
-| Rows 1 to 4 under the fail-closed knob | Refused, zero spawns | Let "local by choice" override the knob |
-| Rows 3 and 4 where the local route is the sealed one | Not run | Run sealed |
-| Row 8: failure after `execute` (raise, lost acknowledgement, `wait` raises, connection lost) | `sandbox_placement_lost_after_launch`; no second `execute` anywhere | Fall back on any exception |
+| Row 1: both remote endpoints closed | Launching host; the trail shows two `unreachable` rungs; zero `admit` calls | Let a backend report "unreachable" from `admit` |
+| Row 1 then row 4: first endpoint closed, second admits | Placed on the second; the trail shows why the first was left | Stop at the first rung |
+| Row 2: at capacity, then admitted within the wait | Placed on that rung | Move on at the first capacity answer |
+| Row 2 then row 6: at capacity, wait spent, no other remote rung | Not run, `sandbox_placement_capacity_exhausted`; the launching host is not used | Fall to the last rung |
+| Row 2 across rungs: first rung at capacity (wait spent), second rung admits | Placed on the second rung | Stop the walk at the first capacity |
+| Row 2 then row 1: first rung at capacity, second rung unreachable | Not run; the launching host is not used | Decide from the last rung's class |
+| Row 2 then row 3: first rung at capacity, second rung refuses | Not run; the launching host is not used | The same |
+| Row 3, one case per kind: not enrolled; identity mismatch; another registered refusal; capability unmet; `commit` raises; operation timeout | `refused` with that code in the trail. Where `admit` had succeeded or its outcome is unknown, `release` is called and confirmed on that rung; where the far end refused in `admit`, none is needed and none is called. Then the next rung; with none left and the last rung `local`, the launching host | Skip the release; treat a refusal as capacity |
+| Row 3: the guard fails immediately before sealing | Released and confirmed; `execute` never called; next rung, or the launching host | Call `execute` and let the far end refuse |
+| Row 3, release cannot be confirmed | Not run, `sandbox_placement_rung_unconfirmed`; no further rung is tried | Move on anyway |
+| **Intersection:** at capacity, then admitted on the same rung, then the guard fails | That rung is left as `refused`, released and confirmed; a capacity answer was seen, so the launching host is barred: next remote rung, or not run | Let a later refusal clear the capacity bar |
+| Intersection: the first rung refuses (not capacity), the second is at capacity with the wait spent | Not run; the bar applies whichever rung set it | Bar the last rung only when the first rung was full |
+| Row 4, then a failure after `execute` (raise, lost acknowledgement, `wait` raises, connection lost) | `sandbox_placement_lost_after_launch`; no `admit` or `execute` on any other rung afterwards | Try the next rung after a post-launch failure |
+| Row 5 where the local route is the sealed one | Not run | Run sealed |
+| Row 7: the last rung is `none`; the fail-closed knob is on | Not run with the last rung's code; `sandbox_placement_required_unavailable`; zero spawns | Default to `local` when the setting is unreadable |
+| The preflight fails before the ladder | Launching host with the preflight's code; zero connection attempts, zero backend calls | Run the preflight after `admit` |
+| The preflight passes at first, the first rung is left after a long wait, the preflight is evaluated again and now fails | The second remote rung is skipped: zero connection attempts there; last rung, subject to the capacity bar | Evaluate the preflight once |
+| Lifetime arithmetic with injected numbers and a fake clock: `lifetime_sufficient` at exactly floor + wait + allowance, and one second under; then the wait runs to its end and the transfer takes the whole allowance | True, false; `lifetime_at_floor` still true and the seat is placed | Omit the wait, or the allowance, from the sum |
+| The trail | Every rung appears once, in order, with its class and code; the same list is what the caller is given to record; a walk that ends on the launching host can never return an empty trail | Return only the final decision |
+| Never twice | Across every case above the fakes record at most one `execute` in total | — |
 
 **The rest of the contract.**
 
 | Case | Expected | Mutation that must turn it red |
 |---|---|---|
 | A backend's `admit` raises a code registered to any outcome, an unregistered code, prose, a path, 200 characters | Never local; the unregistered ones are `sandbox_placement_code_invalid` and their text appears in no record or log | Record `str(exc.reason)` |
-| A backend with no endpoint | Never "unreachable": `admit` is called, and its failures are row 7 | Treat a missing endpoint as unreachable |
+| A backend with no endpoint | Never "unreachable": `admit` is called, and its failures are row 3 | Treat a missing endpoint as unreachable |
 | Result that does not echo the request digest | No `completed` receipt; `sandbox_placement_lost_after_launch` | Skip the echo check |
 | `admit` succeeded, then `commit` raises or the guard fails | `release` is called on that candidate before anything else | Skip the release |
 | A backend whose `admit`, `commit`, `kill`, `list_owned` never return | Each ends within its bound as `sandbox_placement_operation_timeout`; a cancel during each returns within the bound | Wait without a timeout |
@@ -472,12 +503,15 @@ case here.
 | Flag-off behaviour | Every existing test in `tests/test_sandbox_placement.py` passes unchanged in substance | Call a backend from `_default_spawn` |
 
 ## Acceptance criteria
-- [ ] Each of rows 2 to 8 of the C7 table has a passing case (row 1 is decided by the
-  caller before the driver is entered), and the two intersections hold: after an
-  `at_capacity` answer followed by admission, a failing guard yields "not run" and never
-  "local"; and a failing preflight yields "local" with zero connection attempts.
-- [ ] "Unreachable" is produced only by the driver's own connection attempt to a closed
-  endpoint: no code a backend raises, registered or not, results in a local run.
+- [ ] Each row of the C7 ladder has a passing case, and the capacity bar holds in every
+  order: once any rung has answered at capacity the launching host is never the outcome,
+  whatever later rungs answer; without a capacity answer, a refusal or an unreachable rung
+  ends on the launching host with a trail naming each rung and its code.
+- [ ] A rung is left only with nothing sent, on the far end's own refusal, or after a
+  confirmed release; when a release cannot be confirmed the attempt ends not run; the fakes
+  record at most one `execute` per attempt in every case; and a rung's class is never
+  chosen by a backend at run time ("unreachable" is only the driver's own connection
+  attempt, "capacity" only a code registered as such at installation).
 - [ ] With fake backends, `place` then `run_placed` yield runtime-attested `committed` and
   `completed` receipts for one `sandbox_ref` and the computed digest, with the lease entry
   fsynced before `admit`; an owner killed between `commit` and recording its ref has its
@@ -494,21 +528,22 @@ case here.
 
 | Ruling | Where it lands |
 |---|---|
-| Route: a self-hosted compute host over SSH first; the cloud backend follows as overflow | The order of the follow-on plans |
-| Busy or down (B3): at the cap, wait a bounded time, then not run, never local. Unreachable before launch: run locally with a loud typed record, until the cloud backend exists. A started seat never moves. | C7, rows 4, 6 and 8 |
-| Credentials: expiring subscription tokens only; the renewal token never leaves the launching host; an API-key login or a stored long-lived seat token is refused for placement and the seat runs locally; no cap on a token's lifetime; a floor of 30 minutes of remaining life, in configuration, checked at the last moment before the credential is sealed into the request; refreshing a token inside a running seat is a named follow-on | C7, rows 3 and 7, give the rule its place: the preflight sends a seat home before anything is sent; the last-moment check is the guard, and its failure is "not run". The credential details are the placed-seat plans'. |
+| Route: a self-hosted compute host over SSH first; the cloud backend follows as overflow | The order of the follow-on plans; the cloud backend is one more rung |
+| Busy or down (B3): at the cap, wait a bounded time, then not run, never local. Unreachable before launch: run locally with a loud typed record. A started seat never moves. | C7, rows 1, 2, 4 and 6 |
+| A reachable host that refuses for a reason other than being full: "Eventually we will have a fallback ladder for different machines or to E2B. For now the local fallback is fine but leave the route to a more robust fallback / routing option open." | C7 as a ladder: row 3; the last rung is a setting whose default is the launching host |
+| Credentials: expiring subscription tokens only; the renewal token never leaves the launching host; an API-key login or a stored long-lived seat token is refused for placement and the seat runs locally; no cap on a token's lifetime; a floor of 30 minutes of remaining life, in configuration, checked at the last moment before the credential is sealed into the request; refreshing a token inside a running seat is a named follow-on | C7 gives the rule its place: the preflight before the ladder and again before each rung; the last-moment check is the guard, row 3. The credential details are the placed-seat plans'. |
 | Dropped connection (Q1): the far end keeps a started seat alive for a limited time and the launching host resumes it, tied to that run; the time is a setting with a default of about 30 minutes | C12's invariants; built by the reconnect follow-on plan |
 | Signed attestation (Q3): deferred, not dropped; required before any gate relies on a far end's claims and before the cloud backend | The RD4 row of the supersession table |
 | Accounts (B6): one shared account first, superseding RD1 (a) for the SSH work | The follow-on plans; RD3 legs (ii) is kept because of it |
 | The built-in egress list is left as it is | C5 neither changes nor relies on it |
 | Access (B5), default (B2), scope (B4) | The follow-on plans; RD3 stands |
 
-**One rule in this plan is the team lead's reading of two of those rulings together, not a
-ruling itself:** "local is decided only before any admission request is sent" (C7). It
-honours "at the cap, never local" and "under the floor, run locally" by moving the floor
-decision ahead of admission. Its cost is the first item under "Consequences".
+**Open: one question for the maintainer.** It does not block this plan: with one remote
+rung, which is all the SSH work configures, both answers behave the same.
 
-**Open:** none.
+| ID | Question | Options | Built until ruled |
+|---|---|---|---|
+| Q4 | When a compute host is full and a second remote rung exists (another machine, or the cloud backend), may the seat try it? | (a) Yes: capacity on one remote rung may fall to another remote rung, never to the launching host. This is the team lead's reading of the two rulings together. (b) No: a full rung ends the attempt, whatever else is configured. Simpler; a full host then never causes cloud spend. | (a). Changing to (b) is one line in the walk and one test row. |
 
 Standing rulings this plan relies on, cited and not restated: R1 and R2
 (agent-harness#1245); RD3, RD4, RD6 and CD1–CD4 (agent-harness#1162).
