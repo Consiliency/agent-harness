@@ -4690,9 +4690,9 @@ def _gemini_login_left_s(home) -> float | None:
     try:
         value = json.loads(_seat_credential(home, ".gemini/antigravity-cli/antigravity-oauth-token"))
         expiry = _parse_agy_expiry(value["token"]["expiry"])
+        return (expiry - datetime.now(timezone.utc)).total_seconds()
     except (KeyError, TypeError, ValueError):
         return None
-    return (expiry - datetime.now(timezone.utc)).total_seconds()
 
 
 def _gemini_credential_fresh(home):

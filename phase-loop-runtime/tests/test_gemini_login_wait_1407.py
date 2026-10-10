@@ -54,11 +54,12 @@ AGY_MEASURED_MARGIN_S = 300      # the stand-in's, where a test wants agy as mea
 
 # ``$HOME/agy.plan`` (JSON): ``margin`` is how close to its expiry the stand-in renews a login
 # (0, the default: only once it has expired), ``never`` makes it renew nothing, ``keyring``
-# makes a reachable session bus take the login instead of the file, ``exit`` fails every call.
+# makes a reachable session bus take the login instead of the file, ``exit`` fails every call,
+# ``delay`` makes a run take that many seconds.
 # Every call is appended to ``$HOME/agy.calls`` with its argv, cwd listing, pid and the
 # environment NAMES it was given.
 _FAKE_AGY = r'''#!/usr/bin/python3
-import datetime, json, os, sys
+import datetime, json, os, sys, time
 home = os.environ["HOME"]
 plan = json.load(open(os.path.join(home, "agy.plan")))
 bus = os.environ.get("DBUS_SESSION_BUS_ADDRESS")
@@ -67,6 +68,7 @@ with open(os.path.join(home, "agy.calls"), "a") as log:
                           "env": sorted(os.environ), "pid": os.getpid()}) + "\n")
 if plan.get("exit"):
     sys.exit(plan["exit"])
+time.sleep(plan.get("delay", 0))
 token = os.path.join(home, ".gemini/antigravity-cli/antigravity-oauth-token")
 state = json.load(open(token))
 expiry = datetime.datetime.fromisoformat(state["token"]["expiry"][:26] + "+00:00")
@@ -333,6 +335,7 @@ def test_three_seats_sleeping_on_one_login_all_launch_from_one_renewal(host, mon
     Mutations: hold the latch across the sleep; drop the renewal's re-check under its lock."""
     _needs_seat_owner()
     _login(host.home, 1.2)
+    host.plan(delay=1.0)      # the first renewal is still running when the others reach it
     latch = pi._ProviderQuiescenceLatch() if one_latch else None
     monkeypatch.setattr(pi, "launch_owned",
                         lambda command, **k: (_ for _ in ()).throw(_LaunchReached(command)))
