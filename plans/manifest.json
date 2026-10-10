@@ -12809,16 +12809,14 @@
               "source": "relayed by team lead"
             },
             "open_questions": [
-              "Q4: may a full remote rung fall to another remote rung",
-              "Q5: before execute, does a rung whose release cannot be confirmed end the attempt"
+              "Q4: may a full remote rung fall to another remote rung"
             ],
             "planning_artifact_only": true,
             "review_rounds": [
               "plan panel hb1",
               "plan panel hb2",
               "plan panel hb3",
-              "plan panel hb4",
-              "plan panel hb5"
+              "plan panel hb4"
             ],
             "review_status": "pending"
           },
@@ -12833,7 +12831,7 @@
       "status": "committed",
       "task_summary": "Execution driver for non-local placement (agent-harness#896 plan 1b): seam amendments C1-C13, where a seat may run as one state machine with a model-based test (remote rungs in configured order, a last rung that is the launching host by default, a capacity answer bars the launching host), driver-owned reachability, lease journal bound by lease id, reaper, runtime receipts; the driver flag stays off; amends the 2026-09-29 placement and E2B plans and the 2026-10-04 resolver plan section by section",
       "type": "detailed",
-      "updated_at": "2026-10-10T22:04:02Z"
+      "updated_at": "2026-10-10T21:12:46Z"
     },
     {
       "acceptance_criteria_count": 5,
@@ -12874,8 +12872,7 @@
               "plan panel hb1",
               "plan panel hb2",
               "plan panel hb3",
-              "plan panel hb4",
-              "plan panel hb5"
+              "plan panel hb4"
             ],
             "review_status": "pending"
           },
@@ -12890,7 +12887,7 @@
       "status": "committed",
       "task_summary": "Factor the seat launch closure and the seat credential source so both hosts can call them, with no behaviour change (agent-harness#896)",
       "type": "detailed",
-      "updated_at": "2026-10-10T22:04:02Z"
+      "updated_at": "2026-10-10T21:12:46Z"
     }
   ],
   "schema_version": 1

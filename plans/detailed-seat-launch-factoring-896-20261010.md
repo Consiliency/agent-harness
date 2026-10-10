@@ -136,33 +136,24 @@ depend on the driver plan and can land in parallel with it.
     `_parent_infer` produces, or the type and arguments of the exception that leaves it;
   - **what happens on the way, in order:** each credential read (which read, for which
     path or margin, with which `HOME`); each acquisition the launch depends on (the seat
-    id, the egress prefix as read); **every argument each of the four callees receives,
-    bound to its parameter name** (`_prepare_jailed_claude`, `_exec_jailed_claude_leg`,
-    `_exec_claude_tui_leg`, `_exec_leg`), positional and keyword alike, because most of
-    what the closure passes on main is positional: the directories, the seat id and the
-    holder pid, the timeouts and the backstop by value, the latch, the monitor and the
+    id, the egress prefix as read); **the keyword arguments each of the four callees
+    receives** (`_prepare_jailed_claude`, `_exec_jailed_claude_leg`, `_exec_claude_tui_leg`,
+    `_exec_leg`): the timeouts and the backstop by value, the latch, the monitor and the
     evidence dictionary by identity, the session name; and the launch itself as the
     provider would be started: its argument list, its environment (names, and values
     where they are not secret), and its bind list. Broker-evidence entries are recorded
     with their values. Secret values are recorded as digests, never as values.
-  - **What is replaced.** Nothing inside `_parent_infer`, `_prepare_jailed_claude`,
-    `seat_profile` or the functions this plan adds is replaced. Outside them the recorder
-    replaces: the broker transport; the process start, by a recorder that starts nothing;
-    the lease and authorization checks that run before the closure, as
-    `tests/test_panel_leg_status_detail_1096.py` does, because a fixture authorization is
-    not a live lease; the egress namespace of a staged tree, as
-    `tests/test_sandbox_placement.py` does; and, below `_prepare_jailed_claude`, the
-    seat-identity probe and the seat-uid holder, by recording stand-ins, so every branch
-    can be recorded on the CI image. `_record_broker_provider_evidence` runs for real.
-    The four callees run for real behind a spy that records their bound arguments and
-    delegates. The spy is installed on the module attribute and, where one exists, on the
-    production alias (`_exec_leg` and `_exec_claude_tui_leg` have one), so the runtime's
-    own check for an injected seam stays false. `_prepare_jailed_claude` runs for real up
-    to the jail build.
-  - **Provenance.** The fixture equals what the recorder produces when it is run against
-    the base tree, which the pull request names with the command; anyone can re-run it. A
-    fixture re-taken after the move would be derived from the code under test, and
-    re-running the recorder on the base would then not reproduce it.
+  - **What the recorder replaces, and nothing else:** the broker transport, and the
+    process start, which is replaced by a recorder that starts nothing.
+    `_record_broker_provider_evidence` runs for real. The four callees run for real behind
+    a spy that records their keyword arguments and delegates; the spy is installed on both
+    the module attribute and the production alias of each, so the runtime's own check for
+    an injected seam stays false. For the jailed branch `_prepare_jailed_claude` runs for
+    real up to the jail build; the seat-identity probe and the seat-uid holder below it
+    are replaced by recording stand-ins, so every branch can be recorded on the CI image.
+  - **Provenance.** The fixture enters the branch in a commit that changes no source file,
+    and no later commit modifies it. The recorder can be run at that commit and reproduces
+    it. A fixture re-taken after the move would be derived from the code under test.
 - The falsifiers under "Verification".
 - The inventory — **unchanged**. No counted reference moves. A diff in
   `tests/data/seat_launch_references.json` means something other than the planned move
@@ -184,9 +175,9 @@ depend on the driver plan and can land in parallel with it.
    left exactly where it is, the implementer stops and reports before editing one.
 4. Nothing a seat sandbox permits changes: binds, capabilities, namespaces and network
    rules are the same lists in the same order.
-5. Order: write the recorder and take the recording on the base, before any source file
-   changes (this is the RED-capable instrument: run it against a deliberately altered
-   closure first and keep that log);
+5. Order: write the recorder and take the recording on the base, in a commit of its own
+   that changes no source file (this is the RED-capable instrument: run it against a
+   deliberately altered closure first and keep that log);
    capture the identities and goldens; move `_parent_infer`'s body alone and re-check;
    then the credential source alone and re-check.
 
@@ -217,9 +208,9 @@ does.
 | Case | Expected | Mutation that must turn it red |
 |---|---|---|
 | Each branch (jailed Claude, non-jailed Claude, `_exec_leg` for codex, grok and Gemini), success and each typed failure | Status, text, details, notices and broker-evidence keys equal the recording taken on the base | Drop a notice in the fold; lose `gemini_detail`; alter when `leg_detail` is cleared |
-| The ordered sequence for each branch: credential reads, acquisitions, the bound arguments of each of the four callees, then the launch with its argument list, environment and bind list | Equal to the recording, element for element and in the same order | Swap two credential reads; resolve the Claude credential before the tree re-hash in the jailed branch; swap the leg's timeout and its deadline; swap two positional arguments of one callee (its two directories); drop the review monitor from one call; change `HOME` in the seat's environment; add or reorder one bind |
-| A branch that cannot be recorded on the host the suite runs on | Fails there, naming the missing prerequisite. The test has no skip path | Skip the jailed branch where a prerequisite is missing |
-| The fixture's provenance | Re-running the recorder against the base tree reproduces the committed fixture byte for byte; the pull request records the base and the command | Re-take the recording after the move |
+| The ordered sequence for each branch: credential reads, acquisitions, the keyword arguments of each of the four callees, then the launch with its argument list, environment and bind list | Equal to the recording, element for element and in the same order | Swap two credential reads; resolve the Claude credential before the tree re-hash in the jailed branch; swap the leg's timeout and its deadline; drop the review monitor from one call; change `HOME` in the seat's environment; add or reorder one bind |
+| A branch that cannot be recorded on the host the suite runs on | Fails there; it does not skip. CI sets `PHASE_LOOP_REQUIRE_RECORDING=1`, and the acceptance below is claimed only from a run with it set | Skip the jailed branch where a prerequisite is missing |
+| The fixture's history | It was added by a commit that changes no source file, and no later commit touches it | Re-take the recording after the move |
 | Each exception that leaves `_parent_infer` on the base (the quiescence error; a non-Gemini `_exec_leg` exception; `gemini_broker_diagnostic_invalid`; an untyped exception from each Claude route) | Leaves `_infer_leg_here`, and `_parent_infer`, with the same type and arguments; the leg ends with the same status as on the base | Build the result inside a broad `except` |
 | A leg that is not jailed | Runs with no seat id supplied | Build every argument eagerly |
 | The two existing tests that run the real closure | Pass unchanged | — |
@@ -249,10 +240,10 @@ does.
   (jailed Claude, non-jailed Claude, `_exec_leg` for codex, grok and Gemini; success, each
   typed failure, and each exception that leaves it), `_infer_leg_here` through
   `_parent_infer` reproduces the recording: what comes out, and the ordered sequence of
-  credential reads, acquisitions, the bound arguments of the four callees, and the
+  credential reads, acquisitions, the keyword arguments of the four callees, and the
   launch's argument list, environment and binds, in a run that skips no branch. The
-  recording equals what the recorder produces on the base tree; the recorder's own red
-  log, one entry per named mutation, is in the PR.
+  recording was committed before any source change; the recorder's own red log, one entry
+  per named mutation, is in the PR.
 - [ ] With an injected credential source, the jailed Claude seat and every `seat_profile`
   branch receive that source's bytes with no read of the host's login stores by the moved
   code; with the default source the bytes and the redaction values equal the base's.
