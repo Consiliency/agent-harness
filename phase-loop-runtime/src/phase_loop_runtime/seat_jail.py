@@ -300,8 +300,17 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "leg refused", "this executor route cannot run a review through the seat-launch owner",
         "run the review through the CLI executor route"),
     "gemini_credential_near_expiry": (
-        "leg refused", "the agy login expires too soon and did not renew",
-        "run `agy` once interactively to renew the login, then re-run"),
+        "leg refused",
+        "the agy login file has under 10 minutes left and agy did not renew it (agy renews a "
+        "login only in its last 5 minutes); the seat does not run",
+        "re-run in 5 minutes; if it is refused again, sign in with "
+        "`DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null agy` (that stores the login in agy's "
+        "file, which the seat reads, not in a desktop keyring)"),
+    "gemini_credential_awaiting_refresh": (
+        "waiting",
+        "the agy login has under 10 minutes left and agy renews a login only in its last 5 "
+        "minutes; the seat waits for that and then renews it",
+        "nothing to run: it clears by itself within 5 minutes"),
     "gemini_credential_refresh_timeout": (
         "leg refused", "renewing the agy login timed out",
         "check the network, run `agy` once interactively, then re-run"),

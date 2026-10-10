@@ -179,6 +179,27 @@ def _no_long_real_login_wait(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_long_real_gemini_login_wait(monkeypatch):
+    """agent-harness#1407: a Gemini seat whose agy login is short waits, re-running the
+    renewal every poll, for up to the login's remaining life. A test that reaches that real
+    wait with a real clock and a poll it would sleep through fails here; tests set a short
+    ``PHASE_LOOP_SEAT_LOGIN_REFRESH_POLL_S`` / ``..._WAIT_S`` or inject the wait. A test of the
+    cancellation itself takes the unguarded function as ``_gemini_login_wait.real``."""
+    from phase_loop_runtime import panel_invoker
+
+    real = panel_invoker._gemini_login_wait
+
+    def _guarded(attempt, *, max_wait_s, poll_s, **kwargs):
+        if min(max_wait_s, poll_s) > 5 and kwargs.get("monotonic") is None:   # a real clock
+            pytest.fail("a test reached a real Gemini login wait of %ss polled every %ss; "
+                        "inject it or bound it" % (max_wait_s, poll_s))
+        return real(attempt, max_wait_s=max_wait_s, poll_s=poll_s, **kwargs)
+
+    _guarded.real = real
+    monkeypatch.setattr(panel_invoker, "_gemini_login_wait", _guarded)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_claude_seat_host_state(request, monkeypatch, tmp_path):
     """agent-harness#1132: keep the suite off the host's Claude login and seat state.
 

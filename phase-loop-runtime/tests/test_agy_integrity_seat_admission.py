@@ -377,6 +377,12 @@ def test_lookup_help_measurement_never_reenters_seat_admission(world, monkeypatc
 
     Mutation: building the help launch without ``gemini_profile`` calls ``admit_for_seat``
     (recursing into lookup).
+
+    agent-harness#1407: ``--help`` makes no provider request, so the measurement no longer
+    asks for a fresh login and runs no renewal, whatever the login's state. (It did, and an
+    admission lookup inside agy's no-renewal window was refused.) That a heartbeat-profile
+    launch which DOES need its login renews with the profile's own image, never a second
+    lookup, is pinned in ``test_gemini_login_wait_1407.py``.
     """
     monkeypatch.setattr(q, "_run_help", _REAL_HELP)
     expiry = timedelta(hours=1) if credential == "fresh" else -timedelta(minutes=1)
@@ -422,7 +428,7 @@ def test_lookup_help_measurement_never_reenters_seat_admission(world, monkeypatc
     assert admitted == [] and checked == []
     assert len(launched) == 1 and launched[0][0][1:] == ["--help"]
     assert "--ro-bind-data" in launched[0][1]
-    assert refreshed == ([] if credential == "fresh" else [world.digest])
+    assert refreshed == []
     assert token.exists()
 
 
