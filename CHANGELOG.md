@@ -6,6 +6,25 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### A codex board seat whose commands could not start is no longer counted (agent-harness#1335)
+
+- On a host where codex's own command sandbox cannot start inside the seat (a host that
+  denies the nested namespace), every command the seat tried failed before it ran. codex
+  still exited 0 with a verdict, so the seat was `OK` and counted toward the reviewer floor
+  although it had read nothing.
+- Such a leg is now `DEGRADED` with the typed notice `seat_tool_sandbox_unavailable` (what
+  happened, why, and a fix), its text is empty, and it is never a usable review: the floor,
+  the president's findings and the governed gate (a warning, not a block) see an unusable
+  seat.
+- The decision reads codex's own exec records in its session transcript, not the reply:
+  at least one command, every one refused by the sandbox launcher, at least one in the
+  seat's own working directory. A seat whose commands ran, including one whose commands all
+  failed for ordinary reasons, and a seat that ran no command, are unchanged. A review that
+  quotes the error, or a whole transcript, is not affected.
+- Not changed: what any seat sandbox permits. Making codex's sandbox start inside the seat
+  on such hosts is a separate decision and stays open on agent-harness#1335. Grok, Claude
+  and Gemini seats expose no comparable record of tool outcomes yet and are not covered.
+
 ### The grok board seat finds its staged review tree (agent-harness#1336; PR agent-harness#1438)
 
 - In 0.7.25 and 0.7.26 a sandboxed board's grok seat failed at launch (`grok: Failed to

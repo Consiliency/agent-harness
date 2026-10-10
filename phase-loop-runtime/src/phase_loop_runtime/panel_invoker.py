@@ -127,6 +127,7 @@ from . import seat_credentials as _seat_credentials
 from . import seat_jail as _seat_jail
 from . import seat_jail_autoqualify as _seat_jail_autoqualify
 from . import seat_session_label as _seat_session_label
+from . import seat_tool_evidence as _seat_tool_evidence
 from . import seat_uid as _seat_uid
 from . import seat_preflight as _seat_preflight
 from .advisor_board.research import (
@@ -3037,6 +3038,8 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "gemini_seat_egress_unconfined", "gemini_seat_token_refreshed_in_jail",
     "gemini_seat_subagent_or_unknown_event", "native_seat_unavailable_heartbeat_only",
     "seat_prompt_over_cap", "seat_identity_unverified",
+    # agent-harness#1335: the seat's own command sandbox could not start
+    "seat_tool_sandbox_unavailable",
     # board skips
     "skip: omnigent gateway unavailable",
     # claude opus fallback (#188)
@@ -3320,6 +3323,11 @@ def _leg_failure_kind(rc: int | None, review_text: str, log_text: str) -> str:
         return "timeout"
     if isinstance(rc, int) and rc < 0:
         return "signal"
+    if (type(log_text) is _HarnessCode
+            and str.__str__(log_text) == _seat_tool_evidence.TOOL_SANDBOX_UNAVAILABLE):
+        # agent-harness#1335: an environment failure this runtime read from the seat's own
+        # exec records. Provenance by TYPE: CLI text that spells the code is plain `str`.
+        return "env_failure"
     haystack = _ANSI_CSI_RE.sub("", _log_tail(log_text) + "\n" + str(review_text or ""))
     if _USAGE_LIMIT_LABEL_RE.search(haystack):
         return "usage_limit"
@@ -11091,6 +11099,16 @@ def _exec_leg(
             review_text = provider_authority.read_expected_output(out_file.name).decode(
                 "utf-8", errors="replace"
             )
+        # agent-harness#1335: a seat whose tools could not run is never a usable review.
+        # codex exits 0 with a verdict even when every command it tried died in its own
+        # sandbox launcher, so its exec records -- not its prose -- say whether anything ran.
+        # The reply is dropped: an operational failure carries its reason in `detail`.
+        if rc == 0 and _seat_tool_evidence.codex_tools_never_started(
+            proc.stderr or "",
+            seat_cwd=cmd[cmd.index("--cd") + 1] if "--cd" in cmd else str(provider_cwd),
+            prompt=prompt, final_message=review_text,
+        ):
+            return 1, "", _HarnessCode(_seat_tool_evidence.TOOL_SANDBOX_UNAVAILABLE)
         return rc, review_text, log_text
     if leg == "gemini":
         # ah#335: this leg executes `agy`, NOT the gemini CLI (see `_LEG_CLI`). The health
