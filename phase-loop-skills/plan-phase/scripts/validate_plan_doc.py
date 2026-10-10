@@ -853,7 +853,8 @@ def _check_l_ui_visual_verification(src: str) -> Findings:
 # Precedence: --word-budget flag > phase entry > repo default > built-in default. The
 # budget value is never read from the plan. The plan's frontmatter `phase:` selects which
 # committed per-phase entry applies, so an exception is only as strong as review of that
-# line.
+# line. Entries are keyed by alias alone, so one entry covers every roadmap that reuses the
+# alias; an entry whose alias no roadmap declares is reported as a WARN.
 
 PLAN_BUDGET_BASE_WORDS = 2000
 PLAN_BUDGET_PER_LANE_WORDS = 500
@@ -935,6 +936,59 @@ def _resolve_plan_budget(
         mode = "warn" if budget.mode == "off" else budget.mode
         budget = PlanBudget(override_words, 0, mode, "--word-budget")
     return budget, findings
+
+
+def _declared_phase_aliases(repo_root: Path) -> Optional[Set[str]]:
+    """Upper-cased aliases declared by every roadmap in the repo, whatever its status.
+    The runtime's roadmap set is the git pathspec `specs/phase-plans-*.md`
+    (`specs/roadmap-status.json` must register exactly those files). A pathspec `*` also
+    matches `/`, so nested roadmaps such as `specs/phase-plans-archive/v1.md` count;
+    `fnmatchcase` has the same semantics. Uses the runtime's roadmap parser, as check (P)
+    does. None when phase_loop_runtime is not importable."""
+    try:
+        from phase_loop_runtime import roadmap_lint as _rl  # type: ignore
+    except ImportError:
+        return None
+    aliases: Set[str] = set()
+    for roadmap in sorted((repo_root / "specs").rglob("*.md")):
+        rel = roadmap.relative_to(repo_root).as_posix()
+        if not roadmap.is_file() or not fnmatchcase(rel, "specs/phase-plans-*.md"):
+            continue
+        text = roadmap.read_text(encoding="utf-8")
+        aliases.update(p.alias.strip().upper() for p in _rl._extract_phases(text))
+    return aliases
+
+
+def _check_s_undeclared_phase_aliases(repo_root: Optional[Path]) -> Findings:
+    """agent-harness#1381: a `[plan_budget.phases.<ALIAS>]` entry whose alias no roadmap
+    declares applies to no plan, so a typo would be silently ignored. Always WARN, even
+    under `mode = "error"`: a renamed phase would otherwise fail every plan in the repo,
+    and a mistyped exception already fails its intended plan through the budget itself.
+    Silent when the config is absent or unreadable (`_resolve_plan_budget` reports that)
+    and when the repo has no roadmaps."""
+    config = repo_root / PLANNING_CONFIG if repo_root is not None else None
+    if config is None or not config.is_file():
+        return []
+    try:
+        phases = _load_toml(config).get("plan_budget", {}).get("phases", {})
+    except Exception:
+        return []
+    if not phases or not isinstance(phases, dict):
+        return []
+    aliases = list(phases)
+    declared = _declared_phase_aliases(repo_root)
+    if declared is None:
+        return [f"(S) INFO: {PLANNING_CONFIG} phase aliases not checked here — "
+                "phase_loop_runtime is not importable."]
+    if not declared:
+        return []
+    return [
+        f"(S) WARN: [plan_budget.phases.{alias}] in {PLANNING_CONFIG} names a phase alias "
+        "that no roadmap in this repository declares, so it applies to no plan. Check "
+        "its spelling against the roadmap's phase headings."
+        for alias in aliases
+        if alias.strip().upper() not in declared
+    ]
 
 
 def _plan_body(src: str) -> str:
@@ -1714,6 +1768,7 @@ def main(argv: List[str]) -> int:
         repo_root, _parse_frontmatter(src).get("phase", ""), args.word_budget
     )
     findings.extend(budget_findings)
+    findings.extend(_check_s_undeclared_phase_aliases(repo_root))
     findings.extend(_check_s_plan_word_budget(src, len(lanes), budget))
     findings.extend(_check_m_release_docs_coverage(src, lanes, lane_sections_parsed))
     findings.extend(_check_n_post_dispatch_reducer(src, lanes, lane_sections_raw, lane_sections_parsed))
