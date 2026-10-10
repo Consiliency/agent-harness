@@ -3326,8 +3326,7 @@ def _leg_failure_kind(rc: int | None, review_text: str, log_text: str) -> str:
     if (type(log_text) is _HarnessCode
             and str.__str__(log_text) == _seat_tool_evidence.TOOL_SANDBOX_UNAVAILABLE):
         # agent-harness#1335: an environment failure this runtime established itself (its
-        # sandbox probe, or the seat's own exec records). Provenance by TYPE: CLI text that
-        # spells the code is plain `str`.
+        # sandbox probe). Provenance by TYPE: CLI text that spells the code is plain `str`.
         return "env_failure"
     haystack = _ANSI_CSI_RE.sub("", _log_tail(log_text) + "\n" + str(review_text or ""))
     if _USAGE_LIMIT_LABEL_RE.search(haystack):
@@ -10887,16 +10886,18 @@ def _codex_command_sandbox_cannot_start(cmd: "Sequence[str]", *, cwd, env, retai
     """Measure the capability, not the reply: can codex start a command in this seat's view?
 
     codex runs every command inside its own bubblewrap sandbox. Where that sandbox cannot
-    start inside the seat (a refused nested namespace; a workspace root the seat's view shows
-    read-only) the seat reads nothing, and for some of those failures codex leaves no record
-    of the attempt in any stream. So the probe is launched exactly as the seat will be --
-    the same function, owner, working directory, environment and retained capability --
-    and only the argv after ``codex`` differs.
+    start in the seat's view (a refused nested namespace; a workspace root the view shows
+    read-only) the seat reads nothing, yet codex exits 0 with a verdict, and for some of
+    those failures it leaves no record of the attempt in any stream. So the probe is
+    launched exactly as the seat will be -- the same function, owner, working directory,
+    environment and retained capability, under the leg's quiescence latch (a cancel kills
+    it like any launch of the leg) -- and only the argv after ``codex`` differs.
 
     True ONLY for a failed probe that printed the launcher's own diagnostic. Everything else
     (the probe ran, cannot be launched, timed out, or failed another way such as a codex
-    without this subcommand) is inconclusive: the seat runs, and its exec records are read
-    afterwards. A replaced process runner (a test seam) is never asked to answer a probe."""
+    without this subcommand or a launcher error with another prefix) is inconclusive: the
+    seat runs and is classified exactly as it was before this check existed. A replaced
+    process runner (a test seam) is never asked to answer a probe."""
     probe = _codex_sandbox_probe_command(cmd)
     if probe is None or _run_leg_with_liveness is not _PRODUCTION_RUN_LEG_WITH_LIVENESS:
         return False
@@ -11065,10 +11066,10 @@ def _exec_leg(
                 codex_effort_args=codex_effort_args,
                 staged_tree=staged_tree,
             )
-        # agent-harness#1335: a seat is never run toolless. Where this route gives codex a
-        # shell (every route but the sealed one) its command sandbox is probed in the seat's
-        # own view BEFORE the model is called; a sandbox that cannot start ends the leg here,
-        # typed. The capture route keeps its frozen launch and is checked afterwards only.
+        # agent-harness#1335: where this route gives codex a shell, its command sandbox is
+        # probed in the seat's own view BEFORE the model is called; a sandbox that cannot
+        # start ends the leg here, typed. Not probed: the sealed route (the seat has no
+        # shell) and the capture route (its launch is frozen), which has no such check.
         if (agy_capture is None and (not brokered or staged_tree is not None)
                 and _codex_command_sandbox_cannot_start(
                     cmd, cwd=provider_cwd, env=env, retain_caps=codex_retain_caps,
