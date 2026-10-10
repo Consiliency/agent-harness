@@ -4832,6 +4832,8 @@ def _await_gemini_login(command, env, *, gemini_profile=None, review_monitor=Non
         return 0.0
     if not _gemini_launch_needs_login(command, gemini_profile):
         return 0.0
+    if review_monitor is not None and review_monitor.cancel.is_set():
+        return 0.0  # nothing is renewed for a cancelled board; the launch reports the cancel
     needed = _GEMINI_LOGIN_MIN_S + _GEMINI_LOGIN_WAIT_MARGIN_S
     with contextlib.ExitStack() as stack:
         try:

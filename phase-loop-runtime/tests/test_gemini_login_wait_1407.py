@@ -409,6 +409,18 @@ def test_board_cancellation_wakes_the_wait(host, monkeypatch, tmp_path, how):
         assert json.loads((tmp_path / "monitor.json").read_text())["login_wait"]["state"] == "cancelled"
 
 
+def test_a_board_already_cancelled_renews_nothing(host, heartbeat, monkeypatch, tmp_path):
+    """Mutation: drop the early cancel check from ``_await_gemini_login``."""
+    _login(host.home, 450)
+    cancel = threading.Event()
+    cancel.set()
+    monitor = pi._ReviewMonitor(tmp_path / "monitor.json", "inv", 0, cancel)
+    host.command = [heartbeat.executable, "--model", "m", "--print="]
+    with pytest.raises(pi._ReviewOperationCancelled):
+        _run_leg(host, monkeypatch, tmp_path, review_monitor=monitor, gemini_profile=heartbeat)
+    assert host.calls() == []
+
+
 def test_the_wait_runs_outside_the_quiescence_latchs_launch_lock(host, monkeypatch, tmp_path):
     """The latch launches a seat under one lock; a minutes-long wait inside it would block
     every cancel and trip. While the seat waits, the lock is free.
