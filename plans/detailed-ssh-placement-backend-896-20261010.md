@@ -61,6 +61,13 @@ client and holds the session until `release`. The far end kills the sandbox and 
 directory when the session ends for any reason: end of input, a cancel, or no frame within
 its lease time. An owner that dies therefore cannot leave a sandbox running.
 
+**The cost of that choice, accepted for this slice.** A session that drops for any reason,
+a network interruption included, ends the seat: after launch that is
+`sandbox_placement_lost_after_launch`, with no fallback, however long the seat had been
+running. The far end holds nothing to reconnect to. A reconnect grace (hold the sandbox for
+the lease time and accept a resume bound to a nonce) is a deliberate follow-up, not part of
+this unit; the first measurements on a real path decide whether it is needed.
+
 **The client forces what it can.** Fixed arguments on every invocation: no terminal, batch
 mode, no agent, X11 or port forwarding, no connection sharing, no local command, strict
 host-key checking, a bounded connect time, and keep-alives. The remote command is the fixed
@@ -145,8 +152,9 @@ backend:
 ## Changes
 
 ### `phase-loop-runtime/src/phase_loop_runtime/sandbox_ssh.py` (create)
-- `SshBackend` — add — the `ExecutingBackend` above. It starts `ssh` through the trusted
-  host-executable lookup, under the infrastructure-launch marker.
+- `SshBackend` — add — the `ExecutingBackend` above. It resolves `ssh` with
+  `review_stage.trusted_host_executable` (no change needed there: it resolves any name
+  from the trusted directories) and starts it under the infrastructure-launch marker.
 - `register()` — add — registers it under the scheme `ssh`.
 - The frame codec — add — shared with `placement_entry`.
 

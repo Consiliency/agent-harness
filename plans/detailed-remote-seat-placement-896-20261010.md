@@ -191,6 +191,13 @@ revalidations; launch is final; backend receipts never make `sandbox_root_applie
   the leg's seat notices, so the operator sees its fix line. With none left: a recorded local fallback, or
   `sandbox_placement_required_unavailable` under the fail-closed knob. A refused seat is
   never run sealed.
+  - **A capacity refusal never spills back to the launching host.** A `retryable` refusal
+    whose wait is exhausted moves to the next non-local candidate like any other, but if
+    any candidate ended that way the leg does **not** fall back to local: with no candidate
+    left it is not run, with `sandbox_placement_capacity_exhausted`, whatever the knob says.
+    Only non-retryable refusals (unreachable, unregistered, misconfigured, capability unmet)
+    can end in the local fallback. A busy compute host therefore queues or refuses; a
+    missing one degrades to today's behaviour unless the knob forbids it.
 - **C9 A backend is told its root.** The seam as built gives a backend no way to learn the
   root that selected it. `PlacementRequest.root` carries the parsed, sanitized location
   (scheme, host with optional port, path) and the configured backend name. It is the form
@@ -231,7 +238,9 @@ revalidations; launch is final; backend receipts never make `sandbox_root_applie
   entry naming it exists and that entry's lock is free (a non-blocking probe). With no such
   entry `reap` makes no backend call. For a contacted backend: `list_owned(owner_id())`
   across every page and state; kill only a sandbox whose lease lock is free; confirm; then
-  clear the entry. Liveness is never decided by pid or age.
+  clear the entry. An entry whose sandbox the backend no longer lists (a backend that cleans
+  up by itself when its owner goes away) is simply cleared. Liveness is never decided by
+  pid or age.
 
 ### `phase-loop-runtime/src/phase_loop_runtime/placement_leg.py` (create)
 - `encode_request(...)` / `decode_request(...)` — add — the sealed leg request, schema
@@ -275,11 +284,11 @@ revalidations; launch is final; backend receipts never make `sandbox_root_applie
   makes no call, so an ordinary leg start costs one directory listing.
 - `_HARNESS_DETAIL_CODES` — modify — add exactly `sandbox_placement_lost_after_launch`,
   `sandbox_placement_lease_expired`, `sandbox_placement_capability_unmet`,
-  `sandbox_placement_result_invalid`.
+  `sandbox_placement_result_invalid`, `sandbox_placement_capacity_exhausted`.
 
   **Frozen vocabulary, quoted from `panel_invoker.py:2837-2840`:** "`PanelLegResult.detail`
   is built ONLY from our own closed vocabulary. … A detail is one of: a HARNESS CODE — a
-  fixed string this runtime itself emits (`_HARNESS_DETAIL_CODES`)". This adds four members
+  fixed string this runtime itself emits (`_HARNESS_DETAIL_CODES`)". This adds five members
   by that mechanism, and no template or category.
 - `_record_sandbox_facts` / `_sandbox_evidence` — modify — add
   `sandbox_placement_created_at` and `sandbox_placement_confirmed_killed_at` when the
@@ -288,7 +297,7 @@ revalidations; launch is final; backend receipts never make `sandbox_root_applie
   local-launch key is written.
 
 ### `phase-loop-runtime/src/phase_loop_runtime/seat_jail.py` (modify)
-- `NOTICES` — modify — one `(what, why, fix)` row for each of the six `sandbox_placement_*`
+- `NOTICES` — modify — one `(what, why, fix)` row for each of the seven `sandbox_placement_*`
   detail codes, the two existing ones included. Every placement refusal then has a fix line.
 
 ### `phase-loop-runtime/src/phase_loop_runtime/cli.py` (modify)
@@ -314,7 +323,7 @@ revalidations; launch is final; backend receipts never make `sandbox_root_applie
 ## Documentation impact
 - `phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md` — modify —
   amendments C1–C8 in "Sandbox placement seam"; the execution-gate paragraph now says the
-  driver exists; the four codes under "Leg `detail` vocabulary".
+  driver exists; the five codes under "Leg `detail` vocabulary".
 - `docs/phase-loop/convergence-runtime.md` — modify — replace "This release has no driver
   that executes on a non-local backend"; document the lease directory, `phase-loop sandbox
   reap`, and what the fail-closed knob now exempts.
@@ -362,6 +371,7 @@ method call and records the order. Each case is control-green and red under its 
 | No remote root configured | The local-equivalence golden of plan 1a still matches; no plugin import; no lease directory created | Create the lease directory at import |
 | First candidate refuses in `admit`, second admits | Runs on the second; `sandbox_root_reason` names the first and its code | Stop at the first refusal |
 | Candidate refuses `retryable`, then admits within the wait; and never admits | Runs there after the retry; with the wait exhausted it is a refusal like any other; with the wait at 0 `admit` is called once; cancel during the wait ends the leg with zero backend calls after it | Sleep through cancel; retry a non-retryable code |
+| Capacity wait exhausted on the only candidate, knob off; and with a second candidate that admits | First: not run, `sandbox_placement_capacity_exhausted`, zero spawns, nothing launched locally. Second: runs on the second candidate | Fall back to local after a capacity refusal |
 | Every candidate refuses, knob off | Local run; `sandbox_root_fell_back=true`; each `<name>: <code>` recorded | Drop the reasons |
 | Every candidate refuses, knob on | `sandbox_placement_required_unavailable`; zero spawns; the leg is not run sealed | Fall back to local |
 | Refusal code is not a code (prose, a path, 200 characters) | Recorded as a fixed invalid-code marker; the text appears nowhere in the record or log | Record `str(exc.reason)` |
@@ -378,7 +388,7 @@ method call and records the order. Each case is control-green and red under its 
 | Result over the cap; truncated; undecodable; a `detail` outside the vocabulary; a credential value in the text | `sandbox_placement_result_invalid`, or the unknown-detail template, or the value redacted; never raw bytes in a record | Trust the result's `detail` |
 | Cancel through the broker latch | `backend.cancel` called; the leg returns only after confirmed kill | Return before confirmation |
 | Bounded leg with no progress for the stall window | Cancelled with the same stall detail a local leg gets | Count `wait` returning as progress |
-| Each of the six placement codes | A member of `_HARNESS_DETAIL_CODES` with a `NOTICES` row that has a non-empty fix | Remove a row |
+| Each of the seven placement codes | A member of `_HARNESS_DETAIL_CODES` with a `NOTICES` row that has a non-empty fix | Remove a row |
 | A root written with userinfo and a query | The backend's `request.root` holds neither | Pass the configured text |
 | The request | Its bytes appear in no lease file, evidence record, leg log or exception text | Log the spec |
 | Broker record of a placed leg | Passes the verifier's placed shape and is reported EC-HARDEN-5 UNMET; the same record with one local-launch key added, or a local record with `provider_placement` added, is rejected | Fill a local-launch key from the backend |
@@ -406,9 +416,12 @@ over SSH first, with this driver built first; the cloud backend follows as overf
 built-in egress list is left as it is. Standing rulings this plan relies on: R1 and R2
 (agent-harness#1245); RD3, RD6 and CD1–CD4 (agent-harness#1162).
 
-**Open for P1:** none. The admission wait defaults to off, and the fail-closed knob keeps
-its present meaning, so P1 implements both answers to "what happens when the compute host
-cannot take a seat"; which one a host uses is configuration.
+**Open for P1:** none that blocks it. Two settings express the choices for "what happens when
+the compute host cannot take a seat": the admission wait (how long a seat queues at the
+cap; default 0) and the existing fail-closed knob (whether an unreachable compute host may
+fall back to local). C7 fixes one thing in every setting: a seat refused for capacity is
+never run on the launching host. If the maintainer rules that it may be, that one rule is
+removed and its verification row inverted; nothing else in P1 changes.
 
 **Open for P2 and P3:** listed in those plans.
 
