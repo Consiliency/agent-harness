@@ -6,6 +6,25 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### The codex board seat can run commands again (agent-harness#1470)
+
+- Since 0.7.25 the codex seat of a sandboxed board (one that stages a review tree) could not
+  run a single command on any Linux host. The seat's view showed every directory a provider
+  names with `--cd` read only, while the codex seat runs `--sandbox workspace-write` rooted
+  at its staged tree and codex's sandbox must create its mount points there before a command
+  can start (`bwrap: Can't mkdir <tree>/.agents: Read-only file system`).
+- The seat's own staged tree is now bound writable in its view. It is that leg's disposable
+  clone, staged writable on purpose and removed when the leg ends.
+- Only that. The grant is made by the code that staged the tree and checked again where the
+  view is built: a codex argv that says `workspace-write` and names that tree with `--cd`,
+  a staged review tree by provenance, inside a directory this process marked as its
+  sandbox, a real directory of the operator's and never a link. A grant that fails a check
+  refuses the launch. The read-only codex route, grok's tree, `--add-dir`, the operator's
+  repository, other legs' trees and every other bind are unchanged.
+- Nothing the runtime records after a seat ran is read from the seat's tree, and teardown
+  removes whatever the seat left there (measured with the real CLI: codex leaves its
+  `.agents`, `.aws` and `.codex` mount-point directories when it is killed).
+
 ### A codex board seat that cannot run commands is no longer counted (agent-harness#1335)
 
 - codex runs each command in its own sandbox. Where that sandbox cannot start inside the
@@ -22,15 +41,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   in the seat's own working directory. A seat whose commands ran, including one whose
   commands all failed for ordinary reasons, and a seat that ran no command, are unchanged.
   A review that quotes the error, or a whole transcript, is not affected.
-- **What you will see.** Two separate faults make a sandboxed codex seat unable to run
-  commands today, and both now show as `DEGRADED` instead of `OK`:
-  - on a host that denies the nested namespace codex's sandbox needs (the fault in
-    agent-harness#1335);
-  - on every Linux host, since 0.7.25: the seat's view shows the staged tree read only,
-    and codex's `workspace-write` sandbox cannot create its mount points in it.
-  This change does not repair either one and does not change what any seat sandbox permits.
-  Until they are decided, expect the codex seat of a sandboxed board to be `DEGRADED`, and
-  review that lens through another route.
+- **What you will see.** A sandboxed codex seat that cannot run commands shows as `DEGRADED`
+  instead of `OK`. Two faults caused that. The one that affected every Linux host since
+  0.7.25 (the staged tree read only in the seat's view) is fixed in this release, see the
+  entry above. The other remains: on a host that denies the nested namespace codex's sandbox
+  needs, the codex seat of a sandboxed board is `DEGRADED` until agent-harness#1335 is
+  resolved; review that lens through another route there. This entry's change does not
+  alter what any seat sandbox permits.
 - Grok, Claude and Gemini seats expose no comparable probe or record of tool outcomes yet
   and are not covered.
 
