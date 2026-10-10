@@ -180,23 +180,23 @@ def _no_long_real_login_wait(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def _no_long_real_gemini_login_wait(monkeypatch):
-    """agent-harness#1407: a Gemini seat whose agy login is short waits, re-running the
-    renewal every poll, for up to the login's remaining life. A test that reaches that real
-    wait on a real clock with a bound over 30 s fails here, whatever its poll: tests set a
-    short ``PHASE_LOOP_SEAT_GEMINI_LOGIN_REFRESH_WAIT_S`` or inject the wait. A test of the
-    cancellation itself takes the unguarded function as ``_gemini_login_wait.real``."""
+    """agent-harness#1407: a Gemini seat whose agy login the launch gate left short sleeps
+    until the login has expired, up to about ten minutes. A test that reaches that real sleep
+    for more than 30 s fails here instead of sleeping; tests use a login about to expire or
+    replace the sleep. A test of the sleep's cancellation takes the unguarded function as
+    ``_gemini_login_sleep_until.real``."""
     from phase_loop_runtime import panel_invoker
 
-    real = panel_invoker._gemini_login_wait
+    real = panel_invoker._gemini_login_sleep_until
 
-    def _guarded(attempt, *, max_wait_s, **kwargs):
-        if max_wait_s > 30 and kwargs.get("monotonic") is None:   # a real clock
-            pytest.fail("a test reached a real Gemini login wait of %ss; inject it or bound it"
-                        % max_wait_s)
-        return real(attempt, max_wait_s=max_wait_s, **kwargs)
+    def _guarded(home, need, **kwargs):
+        if need > 30:
+            pytest.fail("a test reached a real Gemini login sleep of %ss; shorten the login "
+                        "or replace the sleep" % need)
+        return real(home, need, **kwargs)
 
     _guarded.real = real
-    monkeypatch.setattr(panel_invoker, "_gemini_login_wait", _guarded)
+    monkeypatch.setattr(panel_invoker, "_gemini_login_sleep_until", _guarded)
 
 
 @pytest.fixture(autouse=True)

@@ -353,33 +353,6 @@ def test_the_credential_refresh_admits_a_locally_qualified_image(world, monkeypa
     assert [path for path, _env in calls] == [str(world.agy), str(world.agy)]
 
 
-def test_the_pre_launch_renewal_admits_a_locally_qualified_image_and_carries_a_refusal(
-        world, monkeypatch):
-    """agent-harness#1407: the renewal made before the launch runs the image the REAL
-    ``admit_for_seat`` admits, once. An image that is not admitted is not retried there: the
-    typed refusal is carried to the gate, which raises it.
-
-    Mutation: leave the pre-launch site on ``check``; drop a failed admission in the wait."""
-    _token(world.home, datetime.now(timezone.utc) + timedelta(seconds=450))
-    monkeypatch.setattr(pi, "_PROVIDER_SEARCH_PATH", str(world.agy.parent))
-    calls = _spy_admit(monkeypatch)
-    refreshed = []
-
-    def refresh(home, image, **kwargs):
-        refreshed.append((home, image.sha256, os.pread(image.fd, 1 << 20, 0), kwargs["required"]))
-        _token(world.home, datetime.now(timezone.utc) + timedelta(hours=1))
-        return True
-
-    monkeypatch.setattr(pi, "_refresh_gemini_credential", refresh)
-    refused = pi._await_gemini_login(["agy", "--print="], world.env)
-    assert isinstance(refused.refusal, agy_integrity.AgyImageUnqualified) and refreshed == []
-    assert pi._exception_failure(refused.refusal) == "agy_image_unqualified"
-    _seed(world)
-    assert pi._await_gemini_login(["agy", "--print="], world.env).refusal is None
-    assert refreshed == [(world.home, world.digest, world.image, False)]
-    assert [path for path, _env in calls] == [str(world.agy), str(world.agy)]
-
-
 def test_an_unqualified_image_refuses_the_seat_with_its_typed_code(world, monkeypatch):
     calls = _spy_admit(monkeypatch)
     cwd = world.tmp / "out"
@@ -409,7 +382,7 @@ def test_lookup_help_measurement_never_reenters_seat_admission(world, monkeypatc
     asks for a fresh login and runs no renewal, whatever the login's state. (It did, and an
     admission lookup inside agy's no-renewal window was refused.) That a heartbeat-profile
     launch which DOES need its login renews with the profile's own image, never a second
-    lookup, is pinned in ``test_gemini_login_wait_1407.py``.
+    lookup, is pinned in ``test_gemini_login_wait_1407.py`` (on the real heartbeat profile and image).
     """
     monkeypatch.setattr(q, "_run_help", _REAL_HELP)
     expiry = timedelta(hours=1) if credential == "fresh" else -timedelta(minutes=1)
