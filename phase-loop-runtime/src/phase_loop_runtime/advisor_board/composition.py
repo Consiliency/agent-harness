@@ -245,9 +245,10 @@ def default_board_auth_refusal(vendor: str) -> ExcludedSeat:
         if refusal.code in NOTICES:
             _what, why, fix = NOTICES[refusal.code]
             if refusal.code == "agy_image_unqualified":
-                from .. import agy_diagnosis
+                from .. import agy_diagnosis, panel_invoker
 
-                diagnosis = agy_diagnosis.diagnose()
+                # The agy the refused probe resolved: the seat owner's own search path.
+                diagnosis = agy_diagnosis.diagnose(search_path=panel_invoker._PROVIDER_SEARCH_PATH)
                 if not diagnosis.admitted:
                     why, fix = diagnosis.detail, diagnosis.fix or fix
                     if diagnosis.shipped_build_later_on_path and diagnosis.note:

@@ -639,6 +639,38 @@ def test_the_default_composition_satisfies_each_president_tiers_own_policy(monke
     assert rc in (0, 1)
 
 
+@pytest.mark.parametrize("tier", PRESIDENT_TIERS)
+def test_a_full_board_still_gets_its_native_fill_request_under_a_tier(monkeypatch, tmp_path, capsys, tier):
+    """The sequence the agent-harness#1431 reporter ran, on a host where every vendor is up:
+    the tier check at composition lets the emit arm through."""
+    fill_dir = tmp_path / "fills"
+    rc, invoked, _minted = _cli(
+        monkeypatch, tmp_path, FOUR,
+        ["--emit-native-request", "--native-fill-dir", str(fill_dir), "--landing-tier", tier, "--json"],
+        under_claude_code=True)
+    captured = capsys.readouterr()
+    record = json.loads(captured.out)
+    assert rc == 0 and invoked == [] and record["status"] == "native_fill_requested"
+    assert record["composition_excluded"] == [] and Path(record["request_path"]).is_file()
+    assert "refused at composition" not in captured.err
+
+
+def test_the_diagnosis_explains_the_agy_the_probe_resolved(monkeypatch, tmp_path):
+    """The refused probe found agy on the seat owner's search path, fixed when the runtime
+    was imported. The reason given is about THAT binary even if this process's PATH has
+    since changed to one with no agy at all."""
+    _isolate_agy(monkeypatch, tmp_path)
+
+    def unqualified(_probe):
+        raise agy_integrity.AgyImageUnqualified("agy_image_unqualified")
+
+    _seed_default_gate(monkeypatch, {"gemini": unqualified})
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")  # no agy here; the owner's path still has it
+    (excluded,) = _compose_through_the_default_gate().excluded
+    assert excluded.code == "agy_image_unqualified" and excluded.fix == RUN_FIX
+    assert "not in this runtime's shipped set" in excluded.why
+
+
 def test_a_tierless_board_proceeds_and_says_which_seat_it_left_out(monkeypatch, tmp_path, capsys):
     rc, invoked, _minted = _cli(monkeypatch, tmp_path, THREE, [])
     captured = capsys.readouterr()
