@@ -500,7 +500,7 @@ Carried from V10 Phase 18 unchanged: panels are seated by lane from whatever ven
 - [ ] EC-PANEL-3 — Carried; as defined in V10.
 - [ ] EC-PANEL-4 — Carried; as defined in V10.
 - [ ] EC-PANEL-5 — Carried; as defined in V10.
-- [ ] EC-PANEL-6 — Carried; as defined in V10.
+- [ ] EC-PANEL-6 — Carried; as defined in V10 as amended by the 2026-10-08 `claude -p` ruling (`plans/decision-claude-print-subscription-route-20261008.md`).
 - [ ] EC-PANEL-7 — Carried; as defined in V10.
 
 **Scope notes**
@@ -662,9 +662,9 @@ Carried from V10 Phase 7, on the split panel modules and the bounded review loop
 - [ ] EC-REVIEWTRUTH-12 — Carried; as defined in V10.
 - [ ] EC-REVIEWTRUTH-13 — Carried; as defined in V10.
 - [ ] EC-REVIEWTRUTH-15 — Carried; as defined in V10.
-- [ ] EC-REVIEWTRUTH-16 — Carried; as defined in V10.
+- [ ] EC-REVIEWTRUTH-16 — Carried; as defined in V10 as amended by the 2026-10-08 `claude -p` ruling (`plans/decision-claude-print-subscription-route-20261008.md`).
 - [ ] EC-REVIEWTRUTH-17 — Carried; as defined in V10.
-- [ ] EC-REVIEWTRUTH-18 — Carried; as defined in V10.
+- [ ] EC-REVIEWTRUTH-18 — Carried; as defined in V10 as amended by the 2026-10-08 `claude -p` ruling (`plans/decision-claude-print-subscription-route-20261008.md`).
 
 **Scope notes**
 - EC-REVIEWTRUTH-14 is met (agent-harness#921) and not carried. EC-6 is met today but carried as a regression guard to re-check at closeout.
