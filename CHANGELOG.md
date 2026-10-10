@@ -6,17 +6,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
-### Claude seats launch again: the subscription is proven from the login (agent-harness#1444)
+### A Claude seat's subscription is proven from the login, not from the seat's own answer (agent-harness#1444)
 
-- Since agent-harness#1253 a Claude seat is handed the login's access token by descriptor, so
+- A Claude seat is handed the login's access token by descriptor (agent-harness#1253), so
   `claude auth status --json` inside the seat reports `authMethod: "oauth_token"` and no
-  `subscriptionType`. The precheck demanded `claude.ai` and a subscription type from the seat,
-  so `_exec_claude_tui_leg` returned `UNAVAILABLE subscription_auth_unproven` for every Claude
-  TUI seat, and the Claude executor's launch preflight reported that the subscription state
-  was missing. Nothing was admitted that should not have been.
-- The precheck now needs both of these, and still fails closed with
+  `subscriptionType`. The gate first refused every seat on that; agent-harness#1446 then
+  accepted the seat's `oauth_token` answer whenever the caller's environment carried no
+  credential of its own. That admitted a seat on a host whose login shows no subscription.
+- `_claude_subscription_auth_ok` now needs all three, and fails closed with
   `subscription_auth_unproven` on anything missing, malformed, timed out, non-zero or
   disagreeing:
+  - the caller's environment carries no OAuth-token or `ANTHROPIC_*` variable
+    (agent-harness#1446's guard, kept);
   - the login the seat's credential is drawn from shows a first-party Claude subscription.
     New `seat_credentials.login_subscription_proven(env)` reads the same login store, by the
     same environment rule, as the credential, and needs a usable access token, the CLI's
@@ -24,18 +25,25 @@ versioning; the release tag, the package `version`, and this file are kept in lo
     and returns only a boolean;
   - the seat reports logged-in, first-party and `authMethod: "oauth_token"`, the method of
     the descriptor-delivered token, and no `apiKeySource`. A seat that reports an API key, a
-    helper, a third-party provider or a login of its own is refused, and a seat's own claim
-    of a subscription is not believed.
-- `_claude_subscription_auth_ok` is the one subscription proof for every Claude CLI route
-  that launches through the owner; the 2026-10-08 `claude -p` route (agent-harness#1391) still
-  asserts `system/init.apiKeySource == "none"` in-band itself.
+    helper, a third-party provider or a login of its own is refused. The `claude.ai` +
+    subscription-type shape is no longer accepted from a seat: the owner's private config
+    directory holds no login store, so a seat cannot truthfully report it.
+- It is the one proof for both Claude seat routes (`print`, the default, and `tui`) and for
+  the president's print rung; the print route still asserts
+  `system/init.apiKeySource == "none"` in-band itself.
+- **Operator note.** A host whose Claude login is not a subscription login (no subscription
+  type or no inference scope in the CLI's credential store) now gets
+  `subscription_auth_unproven` where 0.7.26 plus agent-harness#1446 launched the seat. The
+  same notice appears if a future Claude Code renames the `oauth_token` auth method: run
+  `claude auth status --json` with `CLAUDE_CODE_OAUTH_TOKEN` set to any value and check the
+  `authMethod` field.
 - The seat credential is unchanged: still the access token and its expiry, and never a
   refresh token. The harness still does not run the Claude CLI for credentials.
-- `launcher.run_auth_preflight` (the Claude executor) takes `subscription_present` from the
-  same login proof once its probe reports a logged-in session.
-- `legible_evidence` calls the same precheck and is repaired with it.
-  `executor_availability` and the capture preflight read only `loggedIn` or the exit status
-  and were not affected.
+- `launcher.run_auth_preflight` (the Claude executor) still reported the subscription state
+  missing, because its probe runs in the same seat; it now takes `subscription_present` from
+  the same login proof once the probe reports a logged-in session.
+- `legible_evidence` calls the same gate. `executor_availability` and the capture preflight
+  read only `loggedIn` or the exit status and were not affected.
 
 ### The grok board seat finds its staged review tree (agent-harness#1336; PR agent-harness#1438)
 

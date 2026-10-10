@@ -402,16 +402,27 @@ def _stage(tmp_path):
     return review_dir, out_dir
 
 
-def _leg(monkeypatch, tmp_path, env):
+ROUTES = ("print", "tui")
+
+
+def _leg(monkeypatch, tmp_path, env, route):
+    """The real ``_exec_claude_tui_leg`` with the real precheck, on ``route``; the session
+    itself is replaced. Returns the outcome and the launches."""
+    monkeypatch.setenv("PHASE_LOOP_PANEL_CLAUDE_ROUTE", route)
     monkeypatch.setattr(pi, "_under_claude_code", lambda env=None: False)
-    monkeypatch.setattr(pi, "_claude_code_support_status", lambda: (True, "supported"))
+    monkeypatch.setattr(pi, "_claude_code_support_status", lambda *a, **k: (True, "supported"))
     launched = []
 
-    def session(**kwargs):
-        launched.append(kwargs)
+    def tui_session(**kwargs):
+        launched.append(("tui", list(kwargs["command"])))
         raise _Launched
 
-    monkeypatch.setattr(pi, "_run_claude_tui_session", session)
+    def print_session(command, prompt, **kwargs):
+        launched.append(("print", list(command)))
+        raise _Launched
+
+    monkeypatch.setattr(pi, "_run_claude_tui_session", tui_session)
+    monkeypatch.setattr(pi, "_run_claude_print_session", print_session)
     review_dir, out_dir = _stage(tmp_path)
     try:
         outcome = pi._exec_claude_tui_leg(review_dir, out_dir, 60, "bundle", env=env)
@@ -420,27 +431,72 @@ def _leg(monkeypatch, tmp_path, env):
     return outcome, launched
 
 
-def test_the_real_precheck_lets_the_tui_seat_launch(monkeypatch, tmp_path, login_env):
+@pytest.mark.parametrize("route", ROUTES)
+def test_the_real_precheck_lets_the_seat_launch_on_either_route(
+        monkeypatch, tmp_path, login_env, route):
+    """The fault agent-harness#1444 reported: the seat-side shape with a proven login."""
     assert pi._claude_subscription_auth_ok is pi._PRODUCTION_CLAUDE_SUBSCRIPTION_AUTH_OK
     stub_seat(monkeypatch, seat_report())
-    outcome, launched = _leg(monkeypatch, tmp_path, login_env)
-    assert outcome == "launched" and len(launched) == 1
-    assert launched[0]["command"][0] == "claude"
+    outcome, launched = _leg(monkeypatch, tmp_path, login_env, route)
+    assert outcome == "launched" and [kind for kind, _ in launched] == [route]
+    assert launched[0][1][0] == "claude" and ("-p" in launched[0][1]) is (route == "print")
 
 
+@pytest.mark.parametrize("route", ROUTES)
 @pytest.mark.parametrize("oauth, stdout", [
     ({"subscriptionType": _ABSENT}, seat_report()),
+    ({"scopes": ["user:profile"]}, seat_report()),
     ({"subscriptionType": _ABSENT}, login_report()),
     ({}, seat_report(authMethod="api_key")),
     ({}, seat_report(loggedIn=False)),
     ({}, seat_report(apiProvider="bedrock")),
-], ids=["login-no-plan", "login-no-plan-seat-claims-one", "seat-api-key", "seat-logged-out",
-        "seat-third-party"])
-def test_the_real_precheck_never_launches_an_unproven_tui_seat(monkeypatch, tmp_path, oauth, stdout):
+    ({}, seat_report(apiKeySource="ANTHROPIC_API_KEY")),
+    ({}, login_report()),
+], ids=["login-no-plan", "login-no-inference-scope", "login-no-plan-seat-claims-one",
+        "seat-api-key", "seat-logged-out", "seat-third-party", "seat-sees-api-key",
+        "seat-reports-a-login-of-its-own"])
+def test_the_real_precheck_never_launches_an_unproven_seat_on_either_route(
+        monkeypatch, tmp_path, oauth, stdout, route):
+    """The first two cells are what main admitted after agent-harness#1446: a seat reporting
+    the runtime's own delivery on a host whose login shows no subscription."""
     config = tmp_path / "cfg"
     write_store(config, login_store(**oauth))
     stub_seat(monkeypatch, stdout)
-    outcome, launched = _leg(monkeypatch, tmp_path, {"CLAUDE_CONFIG_DIR": str(config)})
+    outcome, launched = _leg(monkeypatch, tmp_path, {"CLAUDE_CONFIG_DIR": str(config)}, route)
+    assert outcome == ("UNAVAILABLE", "subscription_auth_unproven") and launched == []
+
+
+# --------------------------------------------------------------------------------------
+# The caller's own credential (agent-harness#1446's guard, kept as a refusal of its own).
+# --------------------------------------------------------------------------------------
+
+@pytest.mark.parametrize("key", [
+    "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
+    "CLAUDE_CODE_OAUTH_REFRESH_TOKEN", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY",
+    "ANTHROPIC_BASE_URL",
+])
+def test_a_caller_env_carrying_its_own_credential_is_refused_unprobed(
+        monkeypatch, login_env, key):
+    """Everything else holds (a proven login, a seat reporting the delivered token): the
+    caller's own credential is the one reason, and neither the login nor the seat is asked."""
+    calls = stub_seat(monkeypatch, seat_report())
+    assert pi._claude_subscription_auth_ok(login_env) == (True, "")
+    del calls[:]
+    read = []
+    real = sc.login_subscription_proven
+    monkeypatch.setattr(sc, "login_subscription_proven",
+                        lambda *a, **k: read.append(1) or real(*a, **k))
+    assert pi._claude_subscription_auth_ok({**login_env, key: "caller-value"}) == UNPROVEN
+    assert calls == [] and read == []
+
+
+@pytest.mark.parametrize("route", ROUTES)
+def test_a_caller_credential_never_launches_a_seat_on_either_route(
+        monkeypatch, tmp_path, login_env, route):
+    # `_subscription_env` keeps CLAUDE_CODE_OAUTH_TOKEN, so the gate is what refuses it.
+    stub_seat(monkeypatch, seat_report())
+    outcome, launched = _leg(monkeypatch, tmp_path,
+                             {**login_env, "CLAUDE_CODE_OAUTH_TOKEN": "caller"}, route)
     assert outcome == ("UNAVAILABLE", "subscription_auth_unproven") and launched == []
 
 
