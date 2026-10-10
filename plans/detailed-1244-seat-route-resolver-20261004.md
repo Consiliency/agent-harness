@@ -8,6 +8,10 @@ evidence: plans/detailed-1244-sandbox-selection-20261004.md
 
 # Detailed plan: review seats and the president never run toolless (agent-harness#1244)
 
+> **Amended 2026-10-10.** The order of the chain's local and remote steps on a host with a remote
+> root configured, what follows a remote refusal, and who delivers PR-A3's items are amended in
+> `plans/detailed-remote-seat-placement-896-20261010.md`, "What this plan supersedes and amends".
+
 ## Task
 
 This plan implements agent-harness#1244. The maintainer's rulings of 2026-10-04 are listed
