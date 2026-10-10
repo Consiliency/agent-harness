@@ -6709,6 +6709,7 @@ def _panel_claude_route() -> str | None:
 def _claude_print_seat_command(
     model: str | None, effort: str | None, *, brokered: bool,
     add_dirs: Sequence[Path] = (), env: Mapping[str, str] | None = None,
+    session_name: str | None = None,
 ) -> list[str]:
     """Headless ``claude -p`` argv for a non-jailed Claude seat. The prompt goes on stdin.
 
@@ -6718,6 +6719,10 @@ def _claude_print_seat_command(
     all and keeps the TUI's brokered deny-list; a direct seat may only Read, because nothing
     writes ``panel-claude.txt`` on this route. ``add_dirs`` is the direct seat's grant (the
     staged review dir and the sandbox clone or repo), exactly as the TUI computes it.
+
+    ``session_name`` (``seat_session_label``) names a DIRECT seat's session, as on the TUI.
+    The brokered argv is never named: like the sealed TUI argv it is held token for token
+    by the HARDEN evidence verifier's grammar (``scripts/verify_harden_evidence.py``).
 
     ``--no-session-persistence`` keeps the seat from writing a session transcript (the
     flag exists only with ``--print``). ``--bare`` is never emitted: it turns off OAuth, so
@@ -6753,6 +6758,8 @@ def _claude_print_seat_command(
         for add_dir in add_dirs:
             command.extend(("--add-dir", str(add_dir)))
         command.extend(("--tools", "Read", "--allowedTools", "Read"))
+        if session_name:
+            command.extend(("--name", session_name))
     return command
 
 
@@ -9942,6 +9949,7 @@ def _exec_claude_print_leg(
     effort: str | None,
     env: Mapping[str, str],
     settings_env: Mapping[str, str] | None,
+    session_name: str | None = None,
     backstop_s: int | None,
     quiescence_latch: _ProviderQuiescenceLatch | None,
     broker_prompt: str | None,
@@ -9974,7 +9982,7 @@ def _exec_claude_print_leg(
         command = _claude_print_seat_command(
             model, effort, brokered=False,
             add_dirs=_claude_direct_add_dirs(review_dir, repo_dir or Path.cwd(), None),
-            env=settings_env,
+            env=settings_env, session_name=session_name,
         )
     session_id = command[command.index("--session-id") + 1]
     backstop = (
@@ -10123,7 +10131,7 @@ def _exec_claude_tui_leg(
             backstop_s=backstop_s,
             quiescence_latch=quiescence_latch, broker_prompt=broker_prompt,
             broker_evidence=broker_evidence, review_monitor=review_monitor,
-            failure_detail_sink=failure_detail_sink,
+            failure_detail_sink=failure_detail_sink, session_name=session_name,
         )
 
     output_file = out_dir / "panel-claude.txt"

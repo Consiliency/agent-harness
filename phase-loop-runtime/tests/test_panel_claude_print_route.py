@@ -576,3 +576,37 @@ def test_no_result_event_is_never_ok(tmp_path, owned_session):
     (rc, text, log, _tail), _observed = _session(_script(_INIT_OAUTH, assistant), tmp_path)
     assert (rc, text) == (0, "")
     assert pi._classify_leg(rc, text, log) != "OK"
+
+
+# --- seat session names (agent-harness#1404), mirrored from the TUI builders -------------
+
+_LABEL = "agent-harness · review · claude · 2026-10-09 12:00Z"
+
+
+def test_the_direct_print_builder_adds_the_name_and_is_otherwise_unchanged(tmp_path):
+    plain = _without_session(pi._claude_print_seat_command(None, None, brokered=False, env={}))
+    named = _without_session(
+        pi._claude_print_seat_command(None, None, brokered=False, env={}, session_name=_LABEL))
+    assert named == [*plain, "--name", _LABEL] and "--name" not in plain
+
+
+def test_the_brokered_print_argv_is_never_renamed():
+    """Like the sealed TUI argv: the HARDEN verifier holds it token for token."""
+    named = pi._claude_print_seat_command(None, None, brokered=True, env={}, session_name=_LABEL)
+    assert "--name" not in named
+
+
+def test_the_print_leg_passes_the_name_to_a_direct_seat_only(tmp_path, monkeypatch, ready_host):
+    review_dir, out_dir = _stage(tmp_path)
+    commands: list = []
+    monkeypatch.setattr(
+        pi, "_run_claude_print_session",
+        lambda command, prompt, **k: commands.append(list(command))
+        or (0, "AGREE", pi._HarnessCode("claude_print_result"), ""),
+    )
+    pi._exec_claude_tui_leg(review_dir, out_dir, 60, "bundle", session_name=_LABEL)
+    pi._exec_claude_tui_leg(review_dir, out_dir, 60, "bundle", session_name=_LABEL,
+                            broker_prompt="SEALED")
+    direct, brokered = commands
+    assert direct[-2:] == ["--name", _LABEL]
+    assert "--name" not in brokered
