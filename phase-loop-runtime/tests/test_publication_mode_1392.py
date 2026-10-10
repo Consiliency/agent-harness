@@ -314,5 +314,165 @@ class InteractivePublicationAcceptanceTest(unittest.TestCase):
         self.assertEqual(gh_calls, "")
 
 
+def test_unreadable_committed_opt_out_blocks_publication(tmp_path, monkeypatch, capsys):
+    source = tmp_path / "source"
+    remote = tmp_path / "remote.git"
+    repo = tmp_path / "repo"
+    source.mkdir()
+
+    def git(where, *args):
+        return subprocess.check_output(
+            ["git", "-C", str(where), *args], text=True, stderr=subprocess.PIPE
+        ).strip()
+
+    git(source, "init", "-q", "-b", "main")
+    git(source, "config", "user.name", "review")
+    git(source, "config", "user.email", "review@example.invalid")
+    git(source, "config", "commit.gpgsign", "false")
+    (source / "README.md").write_text("baseline\n", encoding="utf-8")
+    (source / pm.REPO_CONFIG).write_text(
+        '[interactive]\nmode = "none"\n', encoding="utf-8"
+    )
+    git(source, "add", "README.md", pm.REPO_CONFIG)
+    git(source, "commit", "-q", "-m", "opt out")
+    subprocess.run(["git", "clone", "-q", "--bare", str(source), str(remote)], check=True)
+    git(remote, "config", "uploadpack.allowFilter", "true")
+    subprocess.run(
+        ["git", "clone", "-q", "--filter=blob:none", "--no-checkout",
+         remote.as_uri(), str(repo)],
+        check=True,
+    )
+    git(repo, "sparse-checkout", "init", "--no-cone")
+    git(repo, "sparse-checkout", "set", "/README.md")
+    git(repo, "checkout", "-q", "-b", "feature/test")
+    assert not (repo / pm.REPO_CONFIG).exists()
+    assert pm.REPO_CONFIG in git(repo, "ls-tree", "HEAD", "--", pm.REPO_CONFIG)
+    git(repo, "config", "remote.origin.url", str(tmp_path / "fetch-unavailable.git"))
+    git(repo, "config", "remote.origin.pushurl", str(remote))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "xdg"))
+    assert git(repo, "status", "--porcelain", "--", pm.REPO_CONFIG) == ""
+
+    rc = pm.main(repo=str(repo))
+
+    assert rc == 2, "an unreadable committed opt-out must block publication"
+    assert "PUBLICATION_ACTION: blocked:" in capsys.readouterr().out
+
+
+class UnconfirmedAbsenceTest(unittest.TestCase):
+    """A layer is absent only when absence is confirmed: the ``HEAD`` tree lists no such
+    path, or the user path itself does not exist. A read that fails is an error."""
+
+    _assert_blocked = MalformedConfigTest._assert_blocked
+
+    def test_committed_opt_out_with_a_missing_blob_blocks_publication(self):
+        with TemporaryDirectory() as td:
+            repo = _init_repo(Path(td))
+            _commit_config(repo, _mode_toml("none"))
+            oid = _git(repo, "rev-parse", f"HEAD:{CONFIG}")
+            loose = repo / ".git" / "objects" / oid[:2] / oid[2:]
+            self.assertTrue(loose.is_file(), "the committed blob is not a loose object")
+            loose.unlink()
+            rc, out, err = _run_cli(repo, _user_env(Path(td), None))
+        self._assert_blocked(rc, out, err, "committed at HEAD but unreadable")
+
+    def test_unborn_head_is_an_error_not_an_absent_repo_layer(self):
+        with TemporaryDirectory() as td:
+            repo = Path(td) / "repo"
+            repo.mkdir()
+            _git(repo, "init", "-q", "-b", "main")
+            rc, out, err = _run_cli(repo, _user_env(Path(td), None))
+        self._assert_blocked(rc, out, err, "HEAD has no commit")
+
+    def test_dangling_user_config_symlink_blocks_publication(self):
+        with TemporaryDirectory() as td:
+            repo = _init_repo(Path(td))
+            env = _user_env(Path(td), None)
+            path = Path(env["XDG_CONFIG_HOME"]) / pm.USER_CONFIG_RELATIVE_PATH
+            path.parent.mkdir(parents=True)
+            path.symlink_to(Path(td) / "dotfiles" / "publication.toml")
+            rc, out, err = _run_cli(repo, env)
+        self._assert_blocked(rc, out, err, "publication.toml: unreadable")
+
+    def test_looping_user_config_symlink_blocks_publication(self):
+        with TemporaryDirectory() as td:
+            repo = _init_repo(Path(td))
+            env = _user_env(Path(td), None)
+            path = Path(env["XDG_CONFIG_HOME"]) / pm.USER_CONFIG_RELATIVE_PATH
+            path.parent.mkdir(parents=True)
+            other = path.with_name("other.toml")
+            path.symlink_to(other)
+            other.symlink_to(path)
+            rc, out, err = _run_cli(repo, env)
+        self._assert_blocked(rc, out, err, "publication.toml: unreadable")
+
+    @unittest.skipIf(os.geteuid() == 0, "root bypasses directory permissions")
+    def test_unsearchable_user_config_dir_is_a_config_error_not_a_traceback(self):
+        with TemporaryDirectory() as td:
+            repo = _init_repo(Path(td))
+            env = _user_env(Path(td), _mode_toml("none"))
+            parent = (Path(env["XDG_CONFIG_HOME"]) / pm.USER_CONFIG_RELATIVE_PATH).parent
+            parent.chmod(0o000)
+            try:
+                rc, out, err = _run_cli(repo, env)
+            finally:
+                parent.chmod(0o700)
+        self._assert_blocked(rc, out, err, "publication.toml: unreadable")
+        self.assertNotIn("Traceback", err)
+
+    def test_partial_clone_with_a_reachable_source_honours_the_committed_mode(self):
+        with TemporaryDirectory() as td:
+            source = _init_repo(Path(td))
+            _commit_config(source, _mode_toml("none"))
+            remote = Path(td) / "remote.git"
+            subprocess.check_call(["git", "clone", "-q", "--bare", str(source), str(remote)])
+            _git(remote, "config", "uploadpack.allowFilter", "true")
+            clone = Path(td) / "clone"
+            subprocess.check_call(["git", "clone", "-q", "--filter=blob:none", "--no-checkout",
+                                   remote.as_uri(), str(clone)])
+            _git(clone, "sparse-checkout", "init", "--no-cone")
+            _git(clone, "sparse-checkout", "set", "/README.md")
+            _git(clone, "checkout", "-q", "-b", "feature/test")
+            missing = "?" + _git(source, "rev-parse", f"HEAD:{CONFIG}")
+            self.assertIn(missing, _git(clone, "rev-list", "--objects", "--missing=print", "HEAD"))
+            rc, out, _ = _run_cli(clone, _user_env(Path(td), None))
+            self.assertEqual((rc, "publication_mode=none\n" in out), (0, True))
+            self.assertNotIn(
+                missing, _git(clone, "rev-list", "--objects", "--missing=print", "HEAD"))
+
+    def test_committed_config_that_is_not_a_regular_file_names_its_entry_type(self):
+        def symlink(repo: Path) -> None:
+            (repo / CONFIG).symlink_to("README.md")
+            _git(repo, "add", CONFIG)
+
+        def tree(repo: Path) -> None:
+            (repo / CONFIG).mkdir()
+            (repo / CONFIG / "publication.toml").write_text(_mode_toml("ready"), encoding="utf-8")
+            _git(repo, "add", CONFIG)
+
+        def gitlink(repo: Path) -> None:
+            (repo / CONFIG).mkdir()
+            _git(repo, "update-index", "--add", "--cacheinfo",
+                 f"160000,{_git(repo, 'rev-parse', 'HEAD')},{CONFIG}")
+
+        for name, setup in {"symlink": symlink, "tree": tree, "gitlink": gitlink}.items():
+            with self.subTest(entry=name), TemporaryDirectory() as td:
+                repo = _init_repo(Path(td))
+                setup(repo)
+                _git(repo, "commit", "-q", "-m", "publication config")
+                rc, out, err = _run_cli(repo, _user_env(Path(td), None))
+                self._assert_blocked(rc, out, err, f"{CONFIG} at HEAD")
+                self.assertIn(f"is a {name}", err)
+
+    def test_user_layer_is_absent_when_its_path_cannot_exist(self):
+        with TemporaryDirectory() as td:
+            repo = _init_repo(Path(td))
+            not_a_dir = Path(td) / "xdg-is-a-file"
+            not_a_dir.write_text("", encoding="utf-8")
+            rc, out, _ = _run_cli(repo, {"XDG_CONFIG_HOME": str(not_a_dir)})
+            self.assertEqual((rc, "publication_mode=ready\n" in out), (0, True))
+            resolution = pm.resolve(repo, env={})
+            self.assertEqual((resolution.mode, resolution.user_config), ("ready", None))
+
+
 if __name__ == "__main__":
     unittest.main()

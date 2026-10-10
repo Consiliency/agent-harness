@@ -24,7 +24,8 @@ Two layers may set it, with the same file shape::
 
 The MOST RESTRICTIVE layer wins (``none`` < ``draft-only`` < ``ready``). A user cannot
 widen what a repo declares, and a user without publish authority can withhold it from
-a repo that allows it. A malformed layer is an error, never a silent default.
+a repo that allows it. A malformed layer is an error, never a silent default. So is
+a layer that cannot be read: a layer is absent only when its absence is confirmed.
 
 ``phase-loop publication-mode`` prints the resolved mode and the action it requires
 (agent-harness#1328 precedent: the tool states its own required action), so the
@@ -70,6 +71,11 @@ ERROR_ACTION = (
     "blocked: do not run git push, gh pr create or gh pr ready. Fix the publication "
     "config named above, then run phase-loop publication-mode again."
 )
+
+# Tree-entry modes of a regular file. Any other entry at the repo config path (a
+# symlink, a tree, a gitlink) is refused by name.
+_REGULAR_FILE_MODES = ("100644", "100755")
+_ENTRY_KINDS = {"120000": "symlink", "040000": "tree", "160000": "gitlink"}
 
 
 class PublicationConfigError(ValueError):
@@ -145,6 +151,10 @@ def _git(root: Path, *args: str) -> subprocess.CompletedProcess[bytes]:
     return subprocess.run(["git", "-C", str(root), *args], capture_output=True, check=False)
 
 
+def _stderr(proc: subprocess.CompletedProcess[bytes]) -> str:
+    return proc.stderr.decode("utf-8", "replace").strip()
+
+
 def repo_root(repo: Path) -> Path:
     proc = _git(repo, "rev-parse", "--show-toplevel")
     if proc.returncode != 0:
@@ -153,7 +163,11 @@ def repo_root(repo: Path) -> Path:
 
 
 def read_repo_mode(root: Path) -> str | None:
-    """The repo layer, read from ``HEAD``. Any uncommitted state of the file is an error."""
+    """The repo layer, read from ``HEAD``. Any uncommitted state of the file is an error.
+
+    The layer is absent only when the ``HEAD`` tree lists no such path. A read that
+    fails, or an entry that is not a regular file, is an error, never "absent".
+    """
     status = _git(
         root, "status", "--porcelain", "--ignored", "--untracked-files=all", "--", REPO_CONFIG
     )
@@ -167,19 +181,50 @@ def read_repo_mode(root: Path) -> str | None:
             f"({status.stdout.decode().strip()}). Only the copy committed at HEAD is "
             "honoured; commit it or restore it"
         )
-    blob = _git(root, "cat-file", "-p", f"HEAD:{REPO_CONFIG}")
+    where = f"{REPO_CONFIG} at HEAD"
+    if _git(root, "rev-parse", "--verify", "--quiet", "HEAD^{commit}").returncode != 0:
+        raise PublicationConfigError(f"{root}: HEAD has no commit; nothing can be published yet")
+    listing = _git(root, "ls-tree", "-z", "--full-tree", "HEAD", "--", REPO_CONFIG)
+    if listing.returncode != 0:
+        raise PublicationConfigError(f"{where}: git ls-tree failed: {_stderr(listing)}")
+    if not listing.stdout:
+        return None  # the HEAD tree lists no such path: the only confirmed absence
+    # One entry: "<mode> <type> <oid>\t<path>\0".
+    meta, tab, rest = listing.stdout.partition(b"\t")
+    fields = meta.decode("ascii", "replace").split(" ")
+    if not tab or rest != REPO_CONFIG.encode() + b"\0" or len(fields) != 3:
+        raise PublicationConfigError(f"{where}: unexpected git ls-tree output: {listing.stdout!r}")
+    entry_mode, entry_type, oid = fields
+    if entry_type != "blob" or entry_mode not in _REGULAR_FILE_MODES:
+        kind = _ENTRY_KINDS.get(entry_mode, entry_type)
+        raise PublicationConfigError(
+            f"{where}: is a {kind} ({entry_mode} {entry_type}), not a regular file. "
+            "Only a regular file committed at HEAD is honoured"
+        )
+    blob = _git(root, "cat-file", "blob", oid)
     if blob.returncode != 0:
-        return None  # not committed (or no HEAD yet) and nothing on disk: no repo layer
+        raise PublicationConfigError(f"{where}: committed at HEAD but unreadable: {_stderr(blob)}")
     try:
         text = blob.stdout.decode("utf-8")
     except UnicodeDecodeError:
         raise PublicationConfigError(f"{root / REPO_CONFIG}: not UTF-8") from None
-    return parse_config(text, f"{REPO_CONFIG} at HEAD")
+    return parse_config(text, where)
 
 
 def read_user_mode(path: Path | None) -> str | None:
-    if path is None or not path.exists():
+    """The user layer. It is absent only when the path itself does not exist.
+
+    A path that cannot be examined, or that exists and cannot be read (a dangling or
+    looping symlink included), is an error, never "absent".
+    """
+    if path is None:
         return None
+    try:
+        os.lstat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        return None  # the only confirmed absence
+    except OSError as exc:
+        raise PublicationConfigError(f"{path}: unreadable: {exc}") from None
     try:
         text = path.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
