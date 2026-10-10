@@ -1520,3 +1520,68 @@ and is null unless RED. The caller binds the record with SHA-256 over
 canonical JSON (`sort_keys=True`, compact separators, `ensure_ascii=False`).
 The full freeze and golden values live in
 `tests/data/execfind_falsifier_attachment_v1.golden.json`.
+
+## ABDEXCLUDED — A seat is never dropped silently · `composition.py`, `executor_availability.py`, `agy_diagnosis.py`, `cli.py` (agent-harness#1431)
+
+**Invariant 1: every excluded seat is named.** Whenever composition leaves a vendor out, the
+result names the seat that vendor would have held, a typed reason, the one thing to run and
+the backfilled seat that replaced it. `compose_review_board_report()` returns
+`ReviewComposition(board, excluded)`; `compose_review_board()` still returns the bare `Board`,
+and `composition_exclusions(board)` returns the exclusions of the latest composition in the
+calling context, matched by the board's identity, so a fixture, a copy or a board from a
+replaced composer never inherits another board's exclusions.
+
+`ExcludedSeat` is `{vendor, seat_key, code, why, fix, replaced_by}`. `code` is:
+
+- the probe's own refusal code, when the probe raised a typed refusal the seat-notice table
+  (`seat_jail.NOTICES`) knows; `why` and `fix` are then that table's literals. For
+  `agy_image_unqualified`, `why` and `fix` come from the read-only diagnosis below;
+- otherwise one of `board_seat_cli_not_on_path`, `board_seat_probe_failed`,
+  `board_seat_probe_timed_out`, `board_seat_not_logged_in`, `board_seat_unauthenticated`.
+
+The probe gate records the reason beside its cached verdict
+(`executor_availability.auth_refusal_for`): the probe that failed, how it failed, and a raised
+refusal's code only when the exception's message is code-shaped. A probe's output, and any
+other exception message, is never carried.
+
+**Where it is reported.** The `advisor-board` CLI prints `advisor-board: composition: ...` on
+stderr at composition and `[EXCLUDED] ...` with the text result; every JSON result carries
+`composition: {seats, excluded}`; a native-fill request and its record carry
+`composition_excluded`. `_validate_review_board_policy` appends, for each exclusion of the
+board it refuses, `<seat_key> was excluded at composition [<code>] -- fix: <fix>`, for every
+caller. `governed_board_gate` prints `governed board: composition: ...`, names the exclusions
+in a below-floor hold and appends one `warn` finding per exclusion to the result of a review
+on a backfilled board. The train's cache-reuse fill check names them in its below-floor
+refusal. The closed capture board schema is unchanged.
+
+**Invariant 2: a tier is not handed a lineup its own policy refuses.** When `--landing-tier`
+is given, the CLI runs `_validate_review_board_policy(board, review_policy_for_tier(tier))` on
+the composed board immediately after composition: before the emit arm, before a native fill
+is preflighted, and before the review is minted, staged or launched. A mismatch exits 2 with
+`advisor-board: refused at composition [<code>]: ...` and, under `--json`,
+`{usable: false, status: "UNAVAILABLE", refusal: {stage: "composition", code, detail,
+landing_tier}, composition}`. The policy is not changed by this: `plan` and
+`production_code` still require exactly one seat of each of `fable`, `sol`, `gemini`, `grok`,
+so every composed board with an exclusion is refused under them and a president never rules
+on a backfilled board. A board with no seats is refused the same way with
+`review_board_no_seats`.
+
+**Invariant 3: `phase-loop doctor` reports agy admission for this runtime.**
+`agy_diagnosis.diagnose()` reads the first agy on PATH and the per-user qualification store.
+It executes nothing, qualifies nothing and admits nothing; admission stays with
+`agy_integrity` and the route core. Statuses: `absent`, `release_qualified`,
+`locally_qualified` (a `qualified` entry exists under the name the live key gives this image;
+the seat's lookup still verifies it against the measured `--help`), `not_qualified`,
+`local_record_other_runtime`, `local_qualification_failed`, `self_qualification_disabled`,
+`store_unsafe`, `unknown`. `local_record_other_runtime` is an inference from two entries'
+UNVERIFIED payloads (the member cache names the release this image is, and a `qualified`
+entry names that release): the store binds the runtime into each entry's name and MAC and
+keeps no readable copy of it. It is a hint for the operator and nothing reads it as an
+admission. When another agy on PATH is a shipped build but is not the first found, the row
+says so (`shipped_build_later_on_path`) without naming a path.
+
+Not changed: the qualification gate, the review policy, the seat floor, the agy route core
+and every seat sandbox profile. Nothing is qualified automatically by composition or by
+doctor. `heartbeat_only` runs seat the frozen board and compose nothing; their whole-board
+preflight (`_preflight_gemini_heartbeat`) is still the only path that qualifies an agy build
+on first use.

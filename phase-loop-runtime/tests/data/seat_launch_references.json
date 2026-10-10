@@ -122,6 +122,8 @@
   {"count": 1, "function": "read_seat_output", "module": "agy_canary_evidence", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "retain_staged_files", "module": "agy_canary_evidence", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "write_seat_path", "module": "agy_canary_evidence", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "_image_digest", "module": "agy_diagnosis", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "_unverified_payloads", "module": "agy_diagnosis", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "check", "module": "agy_integrity", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "detect_platform", "module": "agy_provenance", "primitive": "io.glob", "role": "host-io"},
   {"count": 1, "function": "fetch_member", "module": "agy_provenance", "primitive": "io.open", "role": "host-io"},

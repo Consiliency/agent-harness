@@ -930,9 +930,17 @@ def _validate_review_board_policy(
     actual = Counter(aliases.get(seat.model, seat.model) for seat in board.seats)
     required = Counter(policy.required_seats)
     if actual != required:
+        # agent-harness#1431: when the lineup differs because composition left a seat out,
+        # the refusal says which seat, why and what to run -- never the counts alone.
+        from .advisor_board.composition import composition_exclusions
+
+        cause = "".join(
+            f"; {excluded.seat_key} was excluded at composition [{excluded.code}] -- fix: {excluded.fix}"
+            for excluded in composition_exclusions(board)
+        )
         raise PresidentPolicyError(
             "review_board_policy_mismatch",
-            f"review board seats {dict(actual)} do not match policy {dict(required)}",
+            f"review board seats {dict(actual)} do not match policy {dict(required)}{cause}",
         )
 
 

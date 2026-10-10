@@ -99,5 +99,17 @@
       "status": "present",
       "unlocks": "seat-jail qualification (jailed Claude review seats)"
     }
+  ],
+  "seat_cli_qualification": [
+    {
+      "harness": "gemini",
+      "cli": "agy",
+      "status": "local_record_other_runtime",
+      "detail": "the agy build on PATH is not in this runtime's shipped set; this host qualified agy 1.3.2 under a different runtime, and a local record is bound to the runtime's own files, so this runtime (0.7.26) has none (a runtime upgrade drops it)",
+      "shipped_build_later_on_path": false,
+      "release": "1.3.2",
+      "fix": "run `phase-loop agy-qualification run`",
+      "note": "if another agy build is installed on this host, check it by putting its directory first on PATH and re-running `phase-loop doctor`: a shipped build reports `release_qualified`"
+    }
   ]
 }
