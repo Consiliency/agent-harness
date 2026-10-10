@@ -6689,10 +6689,22 @@ def _claude_subscription_auth_ok(
 ) -> tuple[bool, str]:
     """Prove first-party Claude.ai subscription auth without retaining PII.
 
-    Claude is a strict exception to the legacy fail-open probe: a missing,
-    malformed, timed-out, or non-subscription response fails closed before the
-    TUI launches. Raw JSON and identity fields are neither logged nor returned.
+    Claude is a strict exception to the legacy fail-open probe: both halves below must hold
+    before the TUI launches, and anything missing, malformed, timed out, non-zero or
+    disagreeing fails closed. Raw JSON and identity fields are neither logged nor returned.
+
+    The seat is handed the login's access token by descriptor (agent-harness#1253), so its
+    own status reports ``oauth_token`` and never a subscription (agent-harness#1444):
+
+    * the SUBSCRIPTION is proven from the login that credential is drawn from
+      (:func:`seat_credentials.login_subscription_proven`, the same ``env``, nothing run);
+    * the SEAT, with the credential it will actually use, must report logged-in,
+      first-party, and the descriptor-delivered token. That report alone proves no
+      subscription, and any other auth method is a seat not using what it was handed.
     """
+    unproven = (False, "subscription_auth_unproven")
+    if not _seat_credentials.login_subscription_proven(env):
+        return unproven
     try:
         proc = run_provider(
             ["claude", "auth", "status", "--json"],
@@ -6704,22 +6716,20 @@ def _claude_subscription_auth_ok(
             env=_sandbox_policy.child_scratch_env(env, _sandbox_policy.CHILD_SCRATCH_RELOCATE),
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
-        return False, "subscription_auth_unproven"
+        return unproven
     if proc.returncode != 0:
-        return False, "subscription_auth_unproven"
+        return unproven
     try:
         status = json.loads(proc.stdout or "")
     except (json.JSONDecodeError, TypeError):
-        return False, "subscription_auth_unproven"
-    proven = (
+        return unproven
+    seat_proven = (
         isinstance(status, dict)
         and status.get("loggedIn") is True
-        and status.get("authMethod") == "claude.ai"
+        and status.get("authMethod") == "oauth_token"
         and status.get("apiProvider") == "firstParty"
-        and isinstance(status.get("subscriptionType"), str)
-        and bool(status["subscriptionType"].strip())
     )
-    return (True, "") if proven else (False, "subscription_auth_unproven")
+    return (True, "") if seat_proven else unproven
 
 
 def _claude_code_version_tuple(text: str) -> tuple[int, int, int] | None:

@@ -63,13 +63,16 @@ def test_auth_probe_missing_cli_fails_open(monkeypatch):
 
 
 # --- strict Claude.ai subscription preflight -----------------------------------
+# agent-harness#1444: the seat holds the login's access token alone, so the subscription is
+# proven from the login store the credential is drawn from and the seat reports only
+# logged-in / first-party / the descriptor-delivered token. Both real shapes, in depth:
+# ``test_claude_seat_subscription_proof_1444.py``.
 
 def _claude_auth_payload(**overrides):
     payload = {
         "loggedIn": True,
-        "authMethod": "claude.ai",
+        "authMethod": "oauth_token",
         "apiProvider": "firstParty",
-        "subscriptionType": "max",
         "email": "private@example.invalid",
         "orgId": "org-secret",
         "orgName": "private org",
@@ -78,7 +81,20 @@ def _claude_auth_payload(**overrides):
     return json.dumps(payload)
 
 
-def test_claude_subscription_auth_accepts_only_proven_first_party(monkeypatch):
+def _login_env(tmp_path, **oauth_overrides):
+    """A leg env whose login store is a subscription login (or, overridden, is not)."""
+    oauth = {"accessToken": "fake-login-access-" + "a" * 24, "expiresAt": 4_102_444_800_000,
+             "scopes": ["user:inference"], "subscriptionType": "max"}
+    oauth.update(oauth_overrides)
+    config = tmp_path / "login-config"
+    config.mkdir(exist_ok=True)
+    store = config / ".credentials.json"
+    store.write_text(json.dumps({"claudeAiOauth": oauth}), encoding="utf-8")
+    store.chmod(0o600)
+    return {"CLAUDE_CONFIG_DIR": str(config), "PATH": "/usr/bin"}
+
+
+def test_claude_subscription_auth_accepts_only_proven_first_party(monkeypatch, tmp_path):
     monkeypatch.setattr(
         pi,
         "run_provider",
@@ -86,20 +102,23 @@ def test_claude_subscription_auth_accepts_only_proven_first_party(monkeypatch):
             returncode=0, stdout=_claude_auth_payload(), stderr=""
         ),
     )
-    ok, detail = pi._claude_subscription_auth_ok({"PATH": "/usr/bin"})
+    ok, detail = pi._claude_subscription_auth_ok(_login_env(tmp_path))
     assert ok and detail == ""
 
 
-def test_claude_subscription_auth_rejects_every_unproven_shape(monkeypatch):
+def test_claude_subscription_auth_rejects_every_unproven_shape(monkeypatch, tmp_path):
+    proven = _login_env(tmp_path)
     rejected = (
-        _claude_auth_payload(loggedIn=False),
-        _claude_auth_payload(authMethod="apiKey"),
-        _claude_auth_payload(apiProvider="bedrock"),
-        _claude_auth_payload(subscriptionType=""),
-        _claude_auth_payload(subscriptionType=None),
-        "not-json",
+        (proven, _claude_auth_payload(loggedIn=False)),
+        (proven, _claude_auth_payload(authMethod="apiKey")),
+        (proven, _claude_auth_payload(apiProvider="bedrock")),
+        (proven, "not-json"),
+        # The login shows no subscription; a seat that claims one is not believed.
+        (lambda: _login_env(tmp_path, subscriptionType=""), _claude_auth_payload()),
+        (lambda: _login_env(tmp_path, subscriptionType=None),
+         _claude_auth_payload(authMethod="claude.ai", subscriptionType="max")),
     )
-    for raw in rejected:
+    for env, raw in rejected:
         monkeypatch.setattr(
             pi,
             "run_provider",
@@ -107,13 +126,13 @@ def test_claude_subscription_auth_rejects_every_unproven_shape(monkeypatch):
                 returncode=0, stdout=_raw, stderr="private@example.invalid"
             ),
         )
-        assert pi._claude_subscription_auth_ok({}) == (
+        assert pi._claude_subscription_auth_ok(env() if callable(env) else env) == (
             False,
             "subscription_auth_unproven",
         )
 
 
-def test_claude_subscription_auth_does_not_return_or_persist_identity(monkeypatch, caplog):
+def test_claude_subscription_auth_does_not_return_or_persist_identity(monkeypatch, caplog, tmp_path):
     monkeypatch.setattr(
         pi,
         "run_provider",
@@ -121,7 +140,8 @@ def test_claude_subscription_auth_does_not_return_or_persist_identity(monkeypatc
             returncode=0, stdout=_claude_auth_payload(), stderr=""
         ),
     )
-    result = pi._claude_subscription_auth_ok({})
+    result = pi._claude_subscription_auth_ok(_login_env(tmp_path))
+    assert result == (True, "")
     evidence = repr(result) + caplog.text
     assert "private@example.invalid" not in evidence
     assert "org-secret" not in evidence

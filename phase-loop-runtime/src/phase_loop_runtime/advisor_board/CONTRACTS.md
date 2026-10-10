@@ -87,8 +87,10 @@ equivalence is proven by a test (not asserted in prose).
 - **Claude Fable/Opus = subscription TUI only** — the shared scrub additionally
   removes Anthropic tokens, alternate base URLs, credential-helper inputs, and
   Bedrock/Vertex/Foundry/Mantle/AWS-provider selectors. Run-isolated settings
-  disable `apiKeyHelper`; `claude auth status --json` must prove first-party
-  `claude.ai` subscription auth before the exact-model self-PTY launch. The
+  disable `apiKeyHelper`; before the exact-model self-PTY launch the login the
+  seat's credential is drawn from must show a first-party `claude.ai`
+  subscription, and `claude auth status --json` inside the seat must report a
+  logged-in first-party session on the token it was handed. The
   homebrew backing is mandatory; alternate backings fail before gateway access.
   API-key fallback is forbidden on every host. Task/subagent fulfillment of the claude
   seat is forbidden on every host EXCEPT Claude Code, where the driving session fills the

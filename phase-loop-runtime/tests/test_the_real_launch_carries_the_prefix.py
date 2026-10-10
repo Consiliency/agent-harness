@@ -265,8 +265,9 @@ def test_administrative_callers_execute_the_owner_prefix(tmp_path, monkeypatch, 
     marker = tmp_path / "ADMIN_PREFIX_RAN"
     responses = {
         "_leg_auth_ok": "Logged in",
-        "_claude_subscription_auth_ok": json.dumps({"loggedIn": True, "authMethod": "claude.ai",
-                                                     "apiProvider": "firstParty", "subscriptionType": "max"}),
+        # What a seat holding the descriptor-delivered token reports (agent-harness#1444).
+        "_claude_subscription_auth_ok": json.dumps({"loggedIn": True, "authMethod": "oauth_token",
+                                                     "apiProvider": "firstParty"}),
         "_claude_code_support_status": "99.0.0",
     }
     original = panel_invoker._seat_command_profile
@@ -283,7 +284,16 @@ def test_administrative_callers_execute_the_owner_prefix(tmp_path, monkeypatch, 
         if caller == "_leg_auth_ok":
             assert panel_invoker._leg_auth_ok("codex", {}) == (True, "")
         elif caller == "_claude_subscription_auth_ok":
-            assert panel_invoker._claude_subscription_auth_ok({}) == (True, "")
+            # The subscription is proven from the login the seat's credential is drawn from:
+            # a real store file, read by the real reader, before the owner starts the seat.
+            store = tmp_path / "login-config" / ".credentials.json"
+            store.parent.mkdir()
+            store.write_text(json.dumps({"claudeAiOauth": {
+                "accessToken": "fake-login-access-" + "a" * 24, "expiresAt": 4_102_444_800_000,
+                "scopes": ["user:inference"], "subscriptionType": "max"}}), encoding="utf-8")
+            store.chmod(0o600)
+            assert panel_invoker._claude_subscription_auth_ok(
+                {"CLAUDE_CONFIG_DIR": str(store.parent)}) == (True, "")
         else:
             assert panel_invoker._claude_code_support_status()[0] is True
     _assert_process_marker(marker, processes)

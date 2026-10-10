@@ -17,6 +17,13 @@ A login token whose remaining lifetime is below the margin is never renewed here
 harness does not run the Claude CLI for credentials (plan amendment A3). The seat waits,
 reading the store read-only (:func:`await_login_margin`), for the login to be renewed by its
 owner; a wait that ends short degrades the seat. This module never uses a refresh token.
+
+Whether that login is a first-party Claude subscription (agent-harness#1444) is a separate
+question with a yes-or-no answer, :func:`login_subscription_proven`: it reads the same record
+for two fields that are not secrets (the granted scopes and the subscription type) and keeps
+neither. A seat is handed the access token alone, so the seat's own status cannot show a
+subscription; the login the token was taken from can, and the CLI's own status of that login
+is a rendering of these same two fields. The credential itself is unchanged by it.
 """
 
 from __future__ import annotations
@@ -154,9 +161,8 @@ def read_login_store(*, platform: str | None = None, env: Mapping[str, str] | No
     return _read_store_file(claude_config_dir(env) / ".credentials.json")
 
 
-def parse_login_token(raw: bytes | None) -> LoginToken | None:
-    """Only ``claudeAiOauth.accessToken`` and ``expiresAt`` (epoch ms). Anything malformed is
-    no login."""
+def _login_oauth(raw: bytes | None) -> dict | None:
+    """The store's ``claudeAiOauth`` object, or ``None`` when there is none to parse."""
     if not raw:
         return None
     try:
@@ -164,7 +170,14 @@ def parse_login_token(raw: bytes | None) -> LoginToken | None:
     except (ValueError, UnicodeError, RecursionError):
         return None
     oauth = data.get("claudeAiOauth") if isinstance(data, dict) else None
-    token = oauth.get("accessToken") if isinstance(oauth, dict) else None
+    return oauth if isinstance(oauth, dict) else None
+
+
+def parse_login_token(raw: bytes | None) -> LoginToken | None:
+    """Only ``claudeAiOauth.accessToken`` and ``expiresAt`` (epoch ms). Anything malformed is
+    no login."""
+    oauth = _login_oauth(raw)
+    token = oauth.get("accessToken") if oauth is not None else None
     if not isinstance(token, str) or not token or not all(0x21 <= ord(c) <= 0x7E for c in token):
         return None
     expires = oauth.get("expiresAt")
@@ -647,6 +660,42 @@ def claude_seat_credential_present(
     return override_present() or (read_login or read_login_token)() is not None
 
 
+def _session_env(env: Mapping[str, str] | None) -> Mapping[str, str] | None:
+    """``env`` (default: the process environment) names the session whose login and account
+    decide: its CLAUDE_CONFIG_DIR, else $HOME/.claude."""
+    if env is not None and not env.get("CLAUDE_CONFIG_DIR") and env.get("HOME"):
+        return {**env, "CLAUDE_CONFIG_DIR": str(Path(env["HOME"]) / ".claude")}
+    return env
+
+
+#: The scope the CLI requires of a stored login before it treats it as a ``claude.ai`` one.
+_INFERENCE_SCOPE = "user:inference"
+
+
+def login_subscription_proven(
+    env: Mapping[str, str] | None = None, *,
+    read_store: Callable[[], bytes | None] | None = None,
+) -> bool:
+    """Whether the login a Claude seat's credential is drawn from is a first-party Claude
+    subscription with a subscription type (agent-harness#1444).
+
+    The login is the one :func:`resolve_claude_seat_credential` reads for the same ``env``:
+    the store its login token comes from, and the session a stored override must be bound
+    to. One read of that store must yield a usable access token, the CLI's inference scope
+    and a non-empty subscription type: the facts the CLI's own status reports a ``claude.ai``
+    subscription from. Nothing is run and only the boolean is returned; an absent, unsafe or
+    malformed store, or one that shows no subscription, is ``False``."""
+    env = _session_env(env)
+    raw = read_store() if read_store is not None else (
+        read_login_store() if env is None else read_login_store(env=env))
+    oauth = _login_oauth(raw)
+    if oauth is None or parse_login_token(raw) is None:
+        return False
+    scopes, kind = oauth.get("scopes"), oauth.get("subscriptionType")
+    return (isinstance(scopes, list) and _INFERENCE_SCOPE in scopes
+            and isinstance(kind, str) and bool(kind.strip()) and kind.isprintable())
+
+
 def resolve_claude_seat_credential(
     margin_s: float, *,
     now: Callable[[], float] | None = None,
@@ -658,10 +707,7 @@ def resolve_claude_seat_credential(
     ``claude_seat_token_missing`` (neither source), or ``claude_seat_login_token_expiring``
     (a login with less than ``margin_s`` left; nothing is run to renew it)."""
     now = now or time.time
-    # ``env`` (default: the process environment) names the session whose login and account
-    # decide: its CLAUDE_CONFIG_DIR, else $HOME/.claude.
-    if env is not None and not env.get("CLAUDE_CONFIG_DIR") and env.get("HOME"):
-        env = {**env, "CLAUDE_CONFIG_DIR": str(Path(env["HOME"]) / ".claude")}
+    env = _session_env(env)
     read_login = read_login or (read_login_token if env is None else
                                 (lambda: read_login_token(env=env)))
     decision = override_decision(ClaudeCredentialAdapter(env))
