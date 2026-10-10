@@ -222,7 +222,7 @@ is final; backend receipts never make `sandbox_root_applied` true.
   |---|---|---|---|
   | 0 | The rung fails on the launching host before anything is sent: `available()` is false; `endpoint` raises; a required capability is not in `capabilities()`; the leg's deadline exceeds the backend's `max_lifetime_s`; the lease entry cannot be written; the driver flag is false and the workload is a `leg` | Records `refused` with the typed code. Nothing was sent, so there is nothing to release. | Next rung |
   | 1 | The driver's own connection attempt fails | Records `unreachable` for the rung. Nothing was sent, so there is nothing to release. | Next rung |
-  | 2 | The rung answers **at capacity** | Retries on **that** rung, with backoff, until `PHASE_LOOP_SANDBOX_ADMIT_WAIT_S` is spent (default 600; `0` means no wait). If it is admitted, row 4. If it is still full, records `capacity` for the rung. | Next **remote** rung. From the first capacity answer on, **the last rung is barred for this attempt** when it is the launching host. |
+  | 2 | The rung answers **at capacity** | Retries on **that** rung, with backoff, while the seat's admission wait lasts (`PHASE_LOOP_SANDBOX_ADMIT_WAIT_S`, default 600, `0` means no wait; one wait per seat, not per rung: see "One budget"). If it is admitted, row 4. If it is still full, records `capacity` for the rung. | Next **remote** rung. From the first capacity answer on, **the last rung is barred for this attempt** when it is the launching host. |
   | 3 | Anything else before `execute`: not enrolled; the host is not the one pinned; any other refusal by the far end (another build installed there, its own checks failed, out of disk); a required capability declared but not verified after `commit`; a transfer failure; an operation timeout; **the caller's guard immediately before sealing fails** | Records `refused` with the typed code and its fix line. **Releases anything held on that rung and confirms it is gone** (C8). | Next rung. If the release cannot be confirmed, the attempt ends **not run** (`sandbox_placement_rung_unconfirmed`): the seat does not move on while something of it may still exist behind it. |
   | 4 | Admitted, committed, the guard passes, `execute` is called | **Placed.** | Final. The seat never moves and is never started again, on any rung, whatever happens after (C12 governs a lost connection). |
 
@@ -249,8 +249,8 @@ is final; backend receipts never make `sandbox_root_applied` true.
     connection attempt, its `admit` round trips, its wait at the cap, its `commit`, and any
     release. The wait is therefore one budget per seat, shared by all rungs, not one per
     rung, and `commit` is bounded by what is left. When the budget is spent before
-    `execute`, the rung in hand is left as row 3 and the remaining remote rungs are
-    skipped.
+    `execute`, the rung in hand is left as row 3, the remaining remote rungs are skipped,
+    and the walk goes to the last rung (rows 5 to 7).
   - **The lifetime arithmetic is the driver's,** so every caller uses the same sum:
     `lifetime_sufficient(remaining_s, floor_s)` is true when `remaining_s` is at least the
     floor plus the placement budget; `lifetime_at_floor(remaining_s, floor_s)` is the
@@ -259,13 +259,16 @@ is final; backend receipts never make `sandbox_root_applied` true.
     whichever rung that is. The guard stays on every rung as a check, and its failure is
     row 3. This plan tests both functions with numbers.
   - **A seat is never run twice.** `execute` is called at most once per attempt, on one
-    rung. A rung is left only as row 1 (nothing was sent), row 2 (the far end answered that
-    it admitted nothing) or row 3 (a confirmed release).
+    rung. A rung is left only as row 0 or row 1 (nothing was sent), row 2 (the far end
+    answered that it admitted nothing) or row 3 (a confirmed release, or the far end's own
+    refusal).
   - **Every rung change is loud.** `place` returns the trail: for each rung, in order, its
-    name, its class, its code. The trail goes into the board's output and into the leg's
-    machine-readable record (`sandbox_root_reason` carries each `<rung>: <code>`, as it
-    does today for a single root); each code with a `NOTICES` row is a seat notice with
-    its fix line; landing on the last rung adds `seat_sandbox_root_fell_back`. "Everything
+    name, its class, its code. The trail is what the launch site puts into the board's
+    output and the leg's machine-readable record (`sandbox_root_reason` carries each
+    `<rung>: <code>`, as it does today for a single root); each code with a `NOTICES` row
+    is a seat notice with its fix line; landing on the last rung adds
+    `seat_sandbox_root_fell_back`. The wiring is the plan that turns the flag on; the
+    trail, complete and in order, is this plan's. "Everything
     quietly ran locally" cannot happen.
   - **Where the decision sits.** Where `commit` is called today, after local staging and
     both revalidations. Nothing has been acquired for a placed launch at that point, so a
