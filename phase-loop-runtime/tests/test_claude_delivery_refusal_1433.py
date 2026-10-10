@@ -295,11 +295,12 @@ def test_the_refusal_decides_on_an_output_read_taken_after_the_journal_read(tmp_
     real_output = panel._seat_output_text
 
     def output(profile, path):
-        frame = sys._getframe(1)
+        frame, accepting = sys._getframe(1), False
         while frame is not None and frame.f_code.co_name != "_run_claude_tui_session":
+            accepting = accepting or frame.f_code.co_name == "_finish"  # the accepted read
             frame = frame.f_back
         assert frame is not None
-        return real_output(profile, path) if frame.f_lineno == reread_line else ""
+        return real_output(profile, path) if accepting or frame.f_lineno == reread_line else ""
 
     monkeypatch.setattr(panel, "_seat_output_text", output)
     rc, text, log, _elapsed, _monitor = _run(
