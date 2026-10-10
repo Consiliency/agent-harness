@@ -24,6 +24,7 @@ import json
 import os
 import subprocess
 import textwrap
+import threading
 import time
 import types
 import unittest.mock
@@ -469,6 +470,66 @@ def test_a_seat_with_no_tools_is_not_probed(tmp_path, monkeypatch, owned_review_
     probe that would fail must not take the seat down."""
     rc, text, _log = _run_codex_seat(tmp_path, monkeypatch, "namespace-refused", route="sealed")
     assert (rc, text) == (0, _last("healthy"))
+
+
+def test_a_cancel_during_the_probe_kills_it_and_the_leg_ends_cancelled(tmp_path, monkeypatch):
+    """The probe is a launch of the leg like any other: it is registered with the leg's
+    quiescence latch, so a cancel kills its process group at once and the leg ends
+    cancelled -- not DEGRADED, and without the seat ever being launched. (The production
+    runner with a sleeping stand-in process; the falsifier of board round hb1.)"""
+    review, out = tmp_path / "review", tmp_path / "out"
+    review.mkdir()
+    out.mkdir()
+    launched = threading.Event()
+    children: list[subprocess.Popen] = []
+    errors: list[BaseException] = []
+    results: list[tuple] = []
+
+    @contextlib.contextmanager
+    def profile(command, **kwargs):
+        yield command, None
+
+    def launch(command, **kwargs):
+        for key in ("role", "profile", "retain_caps", "child_scratch"):
+            kwargs.pop(key, None)
+        child = subprocess.Popen(["/usr/bin/python3", "-c", "import time; time.sleep(10)"], **kwargs)
+        children.append(child)
+        launched.set()
+        return child
+
+    monkeypatch.setattr(pi, "_seat_command_profile", profile)
+    monkeypatch.setattr(pi, "launch_owned", launch)
+    monkeypatch.setattr(pi, "_leg_auth_ok", lambda *args: (True, ""))
+    latch = pi._ProviderQuiescenceLatch()
+
+    def run():
+        token = pi._EGRESS_LAUNCH_PREFIX.set(("test-owned-network",))
+        try:
+            results.append(pi._exec_leg("codex", review, out, timeout_s=1, artifact="x", env={},
+                                        quiescence_latch=latch))
+        except BaseException as error:
+            errors.append(error)
+        finally:
+            pi._EGRESS_LAUNCH_PREFIX.reset(token)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    try:
+        assert launched.wait(3)
+        assert children[0].poll() is None, "the probe must be running when the cancel arrives"
+        latch.cancel()
+        time.sleep(0.1)
+        assert children[0].poll() is not None, "cancel reported quiescence while the probe was alive"
+    finally:
+        thread.join(4)
+        for child in children:
+            pi._terminate_process_group(child)
+        thread.join(2)
+        assert not thread.is_alive()
+    assert len(children) == 1, "the seat was launched after its leg was cancelled"
+    assert not results, f"the leg returned a result instead of ending cancelled: {results!r}"
+    assert [type(error) for error in errors] == [pi._ReviewOperationCancelled]
+    assert latch.is_quiescent()
 
 
 # --------------------------------------------------------------------------------------

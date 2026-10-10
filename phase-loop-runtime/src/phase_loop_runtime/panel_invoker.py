@@ -10881,7 +10881,9 @@ def _codex_sandbox_probe_command(cmd: "Sequence[str]") -> "list[str] | None":
 
 
 def _codex_command_sandbox_cannot_start(cmd: "Sequence[str]", *, cwd, env, retain_caps=(),
-                                        child_scratch: "str | None" = None) -> bool:
+                                        child_scratch: "str | None" = None,
+                                        quiescence_latch: "_ProviderQuiescenceLatch | None" = None,
+                                        ) -> bool:
     """Measure the capability, not the reply: can codex start a command in this seat's view?
 
     codex runs every command inside its own bubblewrap sandbox. Where that sandbox cannot
@@ -10902,6 +10904,7 @@ def _codex_command_sandbox_cannot_start(cmd: "Sequence[str]", *, cwd, env, retai
         run = _run_leg_with_liveness(
             probe, cwd=cwd, env=env, deadline_s=_CODEX_SANDBOX_PROBE_TIMEOUT_S,
             retain_caps=retain_caps, child_scratch=child_scratch,
+            quiescence_latch=quiescence_latch,
         )
     except (OSError, subprocess.TimeoutExpired, _sandbox_egress.EgressUnavailable):
         return False  # inconclusive; the leg's own launch reports its own refusal
@@ -11069,7 +11072,7 @@ def _exec_leg(
         if (agy_capture is None and (not brokered or staged_tree is not None)
                 and _codex_command_sandbox_cannot_start(
                     cmd, cwd=provider_cwd, env=env, retain_caps=codex_retain_caps,
-                    child_scratch=leg_scratch)):
+                    child_scratch=leg_scratch, quiescence_latch=quiescence_latch)):
             return 1, "", _HarnessCode(_seat_tool_evidence.TOOL_SANDBOX_UNAVAILABLE)
         if brokered:
             _record_broker_provider_evidence(
