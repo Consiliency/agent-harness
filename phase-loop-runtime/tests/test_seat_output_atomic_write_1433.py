@@ -51,8 +51,11 @@ Named mutations, each run against this file (all red):
   Python 3.10 and 3.11.
 * M-SWEEP: let a failed removal or delivery skip the exit sweep -> the notice and
   exit-step cells fail.
-* M-UID / M-HOLDERMODE: drop the ownership or the holder-mode check where the directory
-  is used -> those view cells fail.
+* M-UID / M-HOLDERUID / M-HOLDERMODE / M-HELD: drop one of the checks made where the
+  directory is used -> its view cell fails.
+* M-OWNMOUNT: allow an output under the seat's own mounts -> those cells fail.
+* M-RESIDUE: leave holders out of the crash-residue sweep -> the dead-owner cell fails.
+* M-SINK: do not hand the leg its notice list -> the board-leg cell fails.
 """
 from __future__ import annotations
 
@@ -688,6 +691,40 @@ def test_an_output_reached_through_a_link_into_an_input_is_refused(tmp_path):
         with _profile("", cwd=cwd, outputs=(output,), readonly=(repo,)):
             pytest.fail("a profile was built")
     assert _names(repo / "logs") == []
+
+
+@pytest.mark.parametrize("directory", ["/home/phase-loop-seat/out", "/run/phase-loop-seat",
+                                       "/usr/share/out", "/proc/self", "/dev/shm/out", "/"])
+def test_an_output_under_a_system_mount_or_the_seats_own_mounts_is_refused(tmp_path, directory):
+    """Also where the owner mounts the seat's own state after its outputs: a directory
+    there would be covered by those mounts. Refused before anything is touched."""
+    with pytest.raises(sandbox_egress.SeatIdentityUnverified, match="seat_output_inside_readonly_input"):
+        with _profile("", cwd=tmp_path, outputs=(Path(directory) / "opus.md",)):
+            pytest.fail("a profile was built")
+
+
+def test_a_dead_owners_holder_is_swept_whatever_the_seat_left_in_it(tmp_path, monkeypatch):
+    """An owner killed before its profile ends leaves its holder behind. The holder records
+    its owner, so the crash-residue sweep removes it once that process is provably gone, at
+    any depth, and leaves a live owner's holder alone."""
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    monkeypatch.setenv("PHASE_LOOP_SANDBOX_STAGING_DIR", str(staging))
+    dead = subprocess.Popen(["true"])
+    dead.wait()
+    gone = pi._seat_output_holder(staging)
+    (gone / "0").mkdir()
+    subprocess.run(["/usr/bin/python3", "-c", "import os, sys\nos.chdir(sys.argv[1])\n"
+                    "for _ in range(1200):\n    os.mkdir('d'); os.chdir('d')\n", str(gone / "0")],
+                   check=True)
+    (gone / "0" / "opus.md").write_text("unredacted")
+    pi._sandbox_retention.claim_scratch_dir(gone, owner_pid=dead.pid)
+    live = pi._seat_output_holder(staging)
+    (live / "0").mkdir()
+    pi._gc_stale_panel_scratch()
+    assert not os.path.lexists(gone) and not os.path.lexists(str(gone) + ".owner")
+    assert live.is_dir() and (live / "0").is_dir()
+    assert pi._remove_seat_output_holder(live) and _names(staging) == []
 
 
 DEEP = (

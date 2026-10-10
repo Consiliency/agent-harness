@@ -5062,20 +5062,30 @@ def _note_seat_output_retained(holder: Path) -> None:
         sink.append(_SEAT_OUTPUT_RETAINED)
 
 
+#: Where the owner mounts the seat's own state after its outputs (the private home, the
+#: provider and keyring under ``/run/phase-loop-seat``): an output directory there would be
+#: covered by those mounts.
+_SEAT_OWN_MOUNTS = ("/home/phase-loop-seat", "/run/phase-loop-seat")
+
+
 def _require_replaceable_placement(layers, readonly, replaceable) -> None:
     """Refuse, before anything is created, a replaceable output that cannot get a private
     directory (agent-harness#1433).
 
-    Refused: its directory is (inside) a read-only input or a system mount, or the output
-    is itself one of the inputs. Judged twice, as the seat's argv names the paths and as
-    the host holds them once parent links are resolved, so a path that reaches an input
-    through a link is refused too. Bound in place there, the provider's write could not
-    replace the file, and would fail only at the end of its turn."""
+    Refused: its directory is (inside) a read-only input, a system mount or one of the
+    seat's own mounts, or the output is itself one of the inputs. Judged twice, as the
+    seat's argv names the paths and as the host holds them once parent links are resolved,
+    so a path that reaches an input through a link is refused too. Bound in place there,
+    the provider's write could not replace the file, and would fail only at the end of its
+    turn."""
     inputs = {os.path.abspath(path) for path in readonly} | {
         _trusted_host_path(path) for path in readonly}
     for path in replaceable:
         host = _trusted_host_path(path)
-        if (_seat_output_anchor(layers, str(path.parent)) is None
+        directory = str(path.parent)
+        if (_seat_output_anchor(layers, directory) is None
+                or any(directory == own or directory.startswith(own + "/")
+                       for own in _SEAT_OWN_MOUNTS)
                 or str(path) in inputs or host in inputs
                 or _seat_host_exposed(layers, os.path.dirname(host))):
             # Our own path, on the operator's log only; the leg carries the code alone.
