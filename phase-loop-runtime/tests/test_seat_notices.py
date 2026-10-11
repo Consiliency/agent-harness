@@ -59,6 +59,58 @@ def test_sealed_fallback_codes_are_notices():
 
 
 # --------------------------------------------------------------------------------------
+# agent-harness#896: the placement driver's codes.
+# --------------------------------------------------------------------------------------
+
+PLACEMENT_CODES = (
+    "sandbox_placement_required_unavailable", "sandbox_placement_driver_unavailable",
+    "sandbox_placement_ref_invalid", "sandbox_placement_capability_undeclared",
+    "sandbox_placement_plugin_unavailable", "sandbox_placement_backend_unregistered",
+    "sandbox_placement_lost_after_launch", "sandbox_placement_end_reached",
+    "sandbox_placement_capability_unmet", "sandbox_placement_capacity_exhausted",
+    "sandbox_placement_unreachable", "sandbox_placement_not_enrolled",
+    "sandbox_placement_identity_mismatch", "sandbox_placement_refused",
+    "sandbox_placement_workload_unsupported", "sandbox_placement_operation_timeout",
+    "sandbox_placement_code_invalid", "sandbox_placement_release_unconfirmed",
+    "sandbox_placement_at_capacity", "sandbox_placement_budget_spent",
+    "seat_placement_waiting",
+)
+
+
+@pytest.mark.parametrize("code", PLACEMENT_CODES)
+def test_every_placement_code_is_a_detail_literal_with_a_notice_and_a_fix(code):
+    """A member of the closed detail vocabulary, with a notice row whose fix is not empty;
+    a refusal that carries it reaches the leg as the code, not as an unknown failure.
+    Mutation: remove a row, or a member."""
+    from phase_loop_runtime import sandbox_placement
+
+    assert code in sandbox_placement.PLACEMENT_CODES and code in pi._HARNESS_DETAIL_CODES
+    what, why, fix = seat_jail.NOTICES[code]
+    assert what.strip() and why.strip() and fix.strip()
+    notice = seat_jail.render_notice(code, "codex:a")
+    assert notice is not None and notice.fix == fix
+    failure = pi._exception_failure(
+        sandbox_placement.PlacementUnavailable(code, "a reason that must not leak"))
+    assert failure == code and pi._finalize_leg_detail(failure) == code
+    leg = pi.PanelLegResult(leg="codex", status="DEGRADED", text="", detail=code,
+                            seat_key="codex:a")
+    assert [n.code for n in leg.seat_notices] == [code]
+
+
+def test_the_placement_code_list_is_closed_and_its_notices_name_no_deployment():
+    """The runtime's list is exactly the plan's. No notice names an address, an account or
+    a place: each must read the same on one laptop with one spare machine."""
+    import re
+
+    from phase_loop_runtime import sandbox_placement
+
+    assert sandbox_placement.PLACEMENT_CODES == frozenset(PLACEMENT_CODES)
+    for code in PLACEMENT_CODES:
+        text = " ".join(seat_jail.NOTICES[code])
+        assert not re.search(r"\d+\.\d+\.\d+\.\d+|://|@|/home/|/mnt/", text), code
+
+
+# --------------------------------------------------------------------------------------
 # J13: one code per failure; rendered only from literals.
 # --------------------------------------------------------------------------------------
 
