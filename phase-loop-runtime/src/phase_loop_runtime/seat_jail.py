@@ -315,6 +315,28 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
     "claude_tui_journal_collection_refused": (
         "leg refused", "the seat's session journal was incomplete, changed, or not one turn",
         "re-run the seat; if it repeats, report a defect with the leg log"),
+    # agent-harness#1433: refused before launch, never a late failure of the provider's write.
+    "seat_output_inside_readonly_input": (
+        "leg refused",
+        "the seat's output directory, or the staging directory that holds it while the seat "
+        "runs, is inside one of the seat's read-only inputs or a system directory",
+        "put the seat's output outside its read-only inputs (the staged tree, --add-dir and "
+        "context paths) and outside system directories; for a board, set "
+        "PHASE_LOOP_SANDBOX_STAGING_DIR to a directory outside the reviewed repository; "
+        "then re-run"),
+    "seat_output_retained_after_teardown": (
+        "directory retained",
+        "the seat's private output directory could not be removed and may hold output that "
+        "was not redacted",
+        "remove the `pl-seat-output-*` directory named in the operator's log (it is under "
+        "the staging root); the review that was delivered is unaffected"),
+    # agent-harness#1433/#1434: the provider's turn ended, and nothing it produced could be
+    # accepted. A terminal degraded refusal: never an approval, never a sealed fallback.
+    "claude_seat_delivery_refused": (
+        "leg refused",
+        "the seat's turn ended, but its review was not delivered: the output file is missing "
+        "or is not a completed review, or the session journal was not admitted",
+        "re-run the seat; if it repeats, report a defect with the leg log"),
     # agent-harness#1333: per-host CLI qualification (all harnesses). Each is a terminal
     # degraded refusal with its fix line, never a sealed or inline fallback.
     "seat_cli_unqualified": (
