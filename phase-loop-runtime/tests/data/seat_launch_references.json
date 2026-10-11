@@ -615,7 +615,6 @@
   {"count": 1, "function": "_git", "module": "pipeline_adapter/branch_ops", "primitive": "subprocess.run", "role": "operator-out-of-scope"},
   {"count": 1, "function": "_git_output_or_empty", "module": "pipeline_adapter/ratification", "primitive": "subprocess.check_output", "role": "operator-out-of-scope"},
   {"count": 1, "function": "Lease.clear", "module": "placement_lease", "primitive": "io.open", "role": "host-io"},
-  {"count": 1, "function": "_lock_free", "module": "placement_lease", "primitive": "io.open", "role": "host-io"},
   {"count": 2, "function": "_private_dir", "module": "placement_lease", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "_read_owner", "module": "placement_lease", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "open_lease", "module": "placement_lease", "primitive": "io.open", "role": "host-io"},
