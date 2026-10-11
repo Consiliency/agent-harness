@@ -861,6 +861,29 @@ give-up detector are views of it, so they cannot disagree:
   either. If the text is not an
   accepted verdict, the leg is handed it back as
   `claude_tui_broker_terminal_nonconforming` instead of waiting.
+  On a route that takes its answer only from the canonical output file, an
+  `answer` whose turn has ended ends the leg (agent-harness#1433,
+  agent-harness#1434). "Ended" means a state no further append of the same turn
+  can change: the journal ends in a newline, its last live record is an
+  `isApiErrorMessage` record or explicitly stopped with `end_turn` /
+  `stop_sequence` and carries text, and that state was seen unchanged on two
+  consecutive checks, so the refusal comes on the second check (2 s later by
+  default). A last line still being written, or a record with no
+  `stop_reason`, is in flight and waits. The output is read once more after the
+  journal, since the seat writes it before it journals the end of its turn.
+  Then either the file is a completed review with an admitted journal
+  (`claude_tui_file_output`), or the leg is DEGRADED with
+  `claude_seat_delivery_refused`. That covers a file that is absent, empty or not
+  a completed review, and a journal that fails strict admission. The text handed
+  back is what the seat wrote to its file, as it is; it is never an approval (a
+  refused leg with text is a nonconforming review on the governed path, a block)
+  and never a sealed or inline fallback. A non-brokered leg retries once in a
+  fresh directory, as for `claude_tui_stalled` (agent-harness#343); a
+  `heartbeat_only` leg, which used to wait instead, gets the same one retry
+  under the same remaining-budget condition.
+  Not every ended turn is recognised: an `end_turn` record with no text block
+  (empty or thinking only), `refusal` and `pause_turn` still classify `pending`,
+  so a leg whose turn ends that way waits as before.
 - `gave_up`: no answer, and the last live record after the current request is
   an `isApiErrorMessage` give-up. The leg ends at once as DEGRADED with
   `claude_seat_output_budget_exhausted` (`error: max_output_tokens`),
@@ -1083,6 +1106,27 @@ are recorded on agent-harness#1132.
   byte-identical to before, with that notice, except a Claude seat's step 3, which is not
   run (plan amendment A3b, below). Codex and grok are not jailed
   (agent-harness#895) and carry `seat_filesystem_unconfined` when given a tree.
+- **A codex seat whose command sandbox cannot start is DEGRADED before it runs
+  (agent-harness#1335).** codex runs each command inside its own sandbox. Where that sandbox
+  cannot start in the seat's view, the seat reads nothing, yet codex exits 0 with a verdict.
+  - **One check, a probe before the run.** Where the route gives codex a shell,
+    `codex sandbox --permission-profile <mode> --cd <tree> ... -- true` is launched exactly
+    as the seat will be (same owner, view, working directory, environment and retained
+    capability, under the leg's quiescence latch) and with no model call. A probe that exits
+    non-zero AND prints the sandbox launcher's own diagnostic (a line starting `bwrap: `)
+    ends the leg: `DEGRADED`, `seat_tool_sandbox_unavailable`, empty text, the seat not run.
+  - **Which way it can err.** Every other probe outcome is inconclusive: a timeout, a launch
+    refusal, a codex whose `sandbox` subcommand differs, a launcher error that does not start
+    with `bwrap: `. The seat then runs and is classified and counted exactly as before this
+    check existed, so a seat that cannot run commands can still be `OK` in those cases.
+  - **Not probed.** The sealed route (the seat has no shell) and the capture route (its
+    launch is frozen). The capture route therefore has no such check.
+  - **Nothing after the run.** No rule reads the seat's transcript or reply for this.
+  - **Consequence.** The degraded seat is not a usable review: the reviewer floor does not
+    count it, the president receives `unusable (DEGRADED)` for it, the governed gate records
+    a warning. The runtime has no substitute for a codex seat: it accepts no native fill for
+    one, and on the plan and production_code tiers the composition cannot omit or replace it.
+  Other harnesses' seats have no such probe.
 - **No sealed fallback for a jail-eligible seat (plan amendment A3b).** A Claude seat that
   would take the jailed route but cannot (no credential, a failed first-use qualification,
   a login not renewed within the wait, an unqualified or unsafe gate, an unsafe override)
@@ -1356,14 +1400,130 @@ instead, and the jail is that launch's owner.
     token stay, because the CLI sends no bearer without them (measured).
   - **Every copy:** it sits in the seat's private home, and its secret values are
     redacted from the seat's output.
+- **The agy login a Gemini seat needs (agent-harness#1407).** A seat's copy cannot be
+  renewed, and its agy session fails about 10 s before the login expires (measured). So at
+  launch the agy login FILE (`~/.gemini/antigravity-cli/antigravity-oauth-token`) must have
+  600 s left. The gate changes in two ways, both below: its renewal's environment, and the
+  `--help` measurement. The wait adds nothing to it.
+  - **The renewal** (the gate's) is one host run of the verified image,
+    `agy models`, in an empty directory, for at most 15 s, under the gate's own lock. It now
+    runs with `DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null`: agy keeps a login in the OS
+    keyring when it can reach one and in its file otherwise, and with no bus it loads and
+    saves the file, which is the store the runtime reads and copies (agent-harness#1420).
+  - **The wait.** agy renews a login that has expired; nothing makes it renew one earlier
+    than it chooses to (measured on agy 1.2.11, 1.3.1 and 1.3.3: only in the login's last 5
+    minutes). So a Gemini launch whose login file is readable and has more than 0 and less
+    than 600 s left sleeps, before the launch, until that login has expired. The gate then
+    runs, once, and its one renewal renews the expired login. The sleep starts
+    no process, takes no lock, admits no image and refuses nothing. It uses no figure of
+    agy's. The worst wait is the login's remaining life, up to ten minutes.
+  - **What ends the sleep.** The login file is read again every 0.25 s, as the gate reads
+    it. The sleep ends when the file's expiry has passed by the wall clock, when the file
+    reads fresh (something else renewed it), or when the file can no longer be read. It is
+    bounded by the life read when it began: once that life and one more slice have passed,
+    the next read ends it. In each case the launch follows and the gate decides.
+  - **No sleep** for a login with 600 s or more, an expired login, an unreadable or missing
+    login file, or the image's `--help` measurement. Those go straight to the gate, as
+    before.
+  - **Where:** before the launch and outside the quiescence latch's launch lock, for the
+    board seat, the qualification's seat and the president's Gemini rung; and in executor
+    `review`, before its egress namespace is created.
+  - **Cancellation:** the monitor's cancel event (else the board's cancel context) and the
+    quiescence latch end the sleep within a 0.25 s slice. Nothing was started, so there is
+    nothing to clean up. Executor `review` outside a board has no cancel event.
+  - **Monitoring and deadlines:** under `heartbeat_only` the sleep is recorded as
+    `login_wait` (`awaiting_refresh`, then `expired`, `refreshed`, `unreadable`, `bound` or
+    `cancelled`) and the stall clock starts after it. A bounded leg sleeps only if at least
+    600 s of its deadline are left after the sleep, and is then charged the time it slept;
+    otherwise it does not sleep and the gate decides at once. The time the gate's renewal
+    takes is not charged, as before.
+  - **The notice:** `gemini_credential_awaiting_refresh`, with the seconds left and the time
+    the sleep ends, which is the login's expiry.
+  - **What this costs.** A login that agy would have renewed at once is also slept on,
+    because the sleep knows no figure of agy's. A request that is refused for another
+    reason (an unusable bind, a missing provider) is refused after the sleep, with nothing
+    run.
+  - **The image's `--help` measurement** makes no provider request and asks for no login.
+    For a self-qualified image this was the one point before launch (composition, the
+    board preflight) where a login that cannot be renewed was noticed; such a login is now
+    refused at the leg, as it already was for a release-qualified image.
 - **Refusals.** Each owner refusal is a closed detail code and a `seat_jail.NOTICES`
   entry, with what happened, why and a fix line (`seat_owner_unavailable`,
   `seat_filtered_egress_unavailable`, `seat_keyring_unavailable`, ...).
+  `claude_seat_delivery_refused` (an ended turn whose output the route could not accept,
+  see the transcript outcomes above) and `seat_output_inside_readonly_input` (a
+  replaceable output placed where it cannot be private, refused before launch) are two
+  more: terminal degraded refusals, in neither `SEALED_FALLBACK_CODES` nor
+  `JAIL_NOT_RUN_CODES`. `seat_output_retained_after_teardown` is a notice beside a
+  leg's own outcome, never a refusal.
+- **Outputs (agent-harness#1433).** A seat's declared output is one of two kinds, and
+  each is that launch's own precreated host file.
+  - **In place (`outputs`, and a CLI's `--output-last-message`).** The file is bound
+    writable at its own path, inside a parent the seat cannot write. Host and seat share it
+    live. The seat cannot replace it: a bound file is a mount point.
+  - **Replaceable (`replaceable_outputs`; the Claude TUI's canonical output).** Claude
+    Code's Write creates a sibling temp file (`<name>.tmp.<pid>.<hex>`, `O_CREAT|O_EXCL`)
+    and renames it over the destination, so the output must be an ordinary entry of a
+    writable directory. In the seat's view its directory is a private per-launch 0700 host
+    directory mounted at that path.
+    - **What the seat reaches.** It creates, renames and removes there freely. The host's
+      own directory is never mounted writable, none of its other entries is visible, and
+      another seat's output in the same host directory is neither readable nor writable.
+    - **Inputs.** A read-only input below that directory (the staged bundle, instructions
+      and tree in the seat's cwd) is bound into it, read-only as before.
+    - **Where it lives on the host.** Each launch gets a 0700 holder,
+      `pl-seat-output-*`, under the owner's staging root (`sandbox_policy.resolve_staging`,
+      the per-user directory every round's scratch lives in), never in the process temp
+      root. The seat is bound a child of the holder, so the holder's mode is not the
+      seat's to change, and it keeps other accounts out whatever mode the seat gives its
+      own directory. The directory is verified where it is used: it and its holder are
+      real directories of this account, the holder is 0700 in a place no other account
+      can replace, and neither is a path any bind of this seat's view shows. The holder
+      records its owner; the crash-residue sweep removes it once that process is gone.
+    - **Delivery.** When the seat has ended, the owner copies only the declared names to
+      the precreated host files (identity checked), redacted while the profile's secrets
+      are still known. A name that is not a bounded regular file of this uid with one link
+      (a symlink, a directory, a FIFO, a hard link) delivers nothing. Until then the
+      session reads the review from the private copy, redacted, and never from the host
+      file.
+    - **Exit.** Delivery, removal of the holder and the exit redaction sweep are each
+      attempted whatever the others did. Removal is iterative and descriptor-relative and
+      follows no link, so no depth, mode or link the seat left can stop it. A holder that
+      is still there afterwards is the notice `seat_output_retained_after_teardown`, not
+      an exception: the delivered review stands.
+    - **The host file is this launch's.** Once the output's placement is accepted, content
+      an earlier launch left in a replaceable output's host file is emptied, so a launch
+      that delivers nothing never leaves an earlier review behind. That happens before the
+      seat's profile is built: a launch refused for another reason after that point has
+      already emptied it.
+    - **Where it cannot apply.** A private directory is mounted only where it hides
+      nothing of the host's: below the view's bare root, or inside a tmpfs of the seat's
+      own. Refused with `seat_output_inside_readonly_input`, before any transcript, output
+      file or holder is created: a replaceable output whose directory is
+      (inside) a read-only input or a system mount, or that is itself an input, judged on
+      the paths as the argv names them and as the host holds them once parent links are
+      resolved; and a staging root that is inside one of the seat's read-only inputs
+      (resolving a configured staging directory creates it, as it does for every round).
+      This refuses layouts in which an in-place write used to succeed (an output inside
+      an `--add-dir` directory, or under `/dev/shm`); Claude Code's Write (measured:
+      2.1.295, 2.1.296) could never deliver there. The capture route, whose caller reads
+      the host file itself, declares its output in place.
 - **The Claude journal.** The host collects the exact session journal through retained
   handles, after the provider has been cleaned up, and validates it before any approval.
   - **Refused on both routes:** a new user turn, a max-token continuation, an unmatched
     `tool_use`, partial JSONL, or a missing final answer.
   - **A completed tool cycle is accepted:** every `tool_use` has its `tool_result`.
+  - **Logical messages (agent-harness#1434).** Claude Code journals one API message as
+    several records (a thinking block, a text block, each tool call), and every record
+    carries the message's id and `stop_reason`. A record that says `tool_use` without a
+    tool call of its own is the part of the message before its calls: it is admitted only
+    when a later record of the same message id holds a tool call (another message's tool
+    result may be journaled in between). A record that holds a server-side tool call
+    (`server_tool_use`) may come after its message's own calls, so it needs a client tool
+    call of that message id in some record, earlier or later. A message that recurs after
+    its result with no call, or that holds only a server tool call, is refused, and a
+    record without an id is a message of its own. Every other refusal is
+    per record, as before.
   - **A journaled `isApiErrorMessage` record** is never an answer or a continuation. The
     answer parser (agent-harness#1194) decides the turn.
   - **The route's own answer rule:**

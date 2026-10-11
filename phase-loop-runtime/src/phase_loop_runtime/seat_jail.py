@@ -165,6 +165,17 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
     "seat_tool_denied": (
         "tool use denied", "agy auto-denied a tool",
         "on the tooled profile a defect; on the sealed route expected"),
+    # agent-harness#1335: from the runtime's own probe of the CLI's command sandbox, made
+    # before the seat runs.
+    "seat_tool_sandbox_unavailable": (
+        "leg degraded; the seat was not run and is not counted as a review",
+        "the CLI's own command sandbox could not start in the seat's view when the runtime "
+        "probed it before the run",
+        "none inside the board run: the runtime has no substitute for a codex seat (it accepts "
+        "no native fill for one, and on the plan and production_code tiers the seat cannot be "
+        "omitted or swapped), so cover this lens outside the board; the two known causes are "
+        "the staged tree being shown read-only to the seat (a separate change) and a host that "
+        "refuses the nested namespace (agent-harness#1335)"),
     "claude_seat_token_missing": (
         "leg refused",
         "no Claude login found and no usable seat token override; the seat does not run",
@@ -300,11 +311,21 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "leg refused", "this executor route cannot run a review through the seat-launch owner",
         "run the review through the CLI executor route"),
     "gemini_credential_near_expiry": (
-        "leg refused", "the agy login expires too soon and did not renew",
-        "run `agy` once interactively to renew the login, then re-run"),
+        "leg refused",
+        "the agy login file has under 10 minutes left and the renewal (`agy models`) did not "
+        "extend it; the seat does not run",
+        "run `DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null agy models`, then re-run: it renews "
+        "agy's login file (the store the seat reads, not a desktop keyring) once the login is "
+        "close to its expiry; if agy asks you to sign in, run it again without `models`"),
+    "gemini_credential_awaiting_refresh": (
+        "waiting",
+        "the agy login has under 10 minutes left and has not expired; agy renews a login that "
+        "has expired, so the seat waits until this login's expiry and then renews it once",
+        "nothing to run: the wait ends at the login's expiry"),
     "gemini_credential_refresh_timeout": (
         "leg refused", "renewing the agy login timed out",
-        "check the network, run `agy` once interactively, then re-run"),
+        "check the network, then run `DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null agy models` "
+        "(it renews agy's login file, the store the seat reads) and re-run"),
     "seat_keyring_unavailable": (
         "leg refused", "the seat could not join a fresh session keyring or seal its filter",
         "allow keyctl and seccomp for unprivileged processes (container runtimes may deny "
@@ -314,6 +335,28 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "use the Claude TUI route for review seats"),
     "claude_tui_journal_collection_refused": (
         "leg refused", "the seat's session journal was incomplete, changed, or not one turn",
+        "re-run the seat; if it repeats, report a defect with the leg log"),
+    # agent-harness#1433: refused before launch, never a late failure of the provider's write.
+    "seat_output_inside_readonly_input": (
+        "leg refused",
+        "the seat's output directory, or the staging directory that holds it while the seat "
+        "runs, is inside one of the seat's read-only inputs or a system directory",
+        "put the seat's output outside its read-only inputs (the staged tree, --add-dir and "
+        "context paths) and outside system directories; for a board, set "
+        "PHASE_LOOP_SANDBOX_STAGING_DIR to a directory outside the reviewed repository; "
+        "then re-run"),
+    "seat_output_retained_after_teardown": (
+        "directory retained",
+        "the seat's private output directory could not be removed and may hold output that "
+        "was not redacted",
+        "remove the `pl-seat-output-*` directory named in the operator's log (it is under "
+        "the staging root); the review that was delivered is unaffected"),
+    # agent-harness#1433/#1434: the provider's turn ended, and nothing it produced could be
+    # accepted. A terminal degraded refusal: never an approval, never a sealed fallback.
+    "claude_seat_delivery_refused": (
+        "leg refused",
+        "the seat's turn ended, but its review was not delivered: the output file is missing "
+        "or is not a completed review, or the session journal was not admitted",
         "re-run the seat; if it repeats, report a defect with the leg log"),
     # agent-harness#1333: per-host CLI qualification (all harnesses). Each is a terminal
     # degraded refusal with its fix line, never a sealed or inline fallback.

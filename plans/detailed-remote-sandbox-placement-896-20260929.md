@@ -12,6 +12,9 @@ automation:
 
 # Detailed plan: vendor-neutral sandbox placement seam, receipt-bound evidence and local backend (agent-harness#896, plan 1a)
 
+> **Amended 2026-10-10.** Some sections of this plan are superseded or amended; the list is in
+> `plans/detailed-remote-seat-placement-896-20261010.md`, "What this plan supersedes and amends".
+
 ## Task
 
 agent-harness#896: a configured sandbox root is resolved, and then the sandbox is staged and
