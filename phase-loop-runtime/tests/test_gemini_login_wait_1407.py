@@ -557,12 +557,26 @@ def test_the_sleep_ends_on_the_file_when_it_is_renewed_or_can_no_longer_be_read(
     Mutation: sleep on arithmetic, without reading the file again."""
     _login(host.home, 450)
     entered = _real_sleep_announced(monkeypatch)
+    # The renewal below must not land in the middle of one of the sleep's reads: a read that
+    # meets the file half-rewritten cannot parse it, and after a rename the guarded reader
+    # refuses the unlinked file. Either ends the sleep as "unreadable" instead of "refreshed"
+    # (agent-harness#1499). Each read is the real one; the lock only keeps the test's own
+    # write between two of them.
+    reading = threading.Lock()
+    real_left_s = pi._gemini_login_left_s
+
+    def left_s(home):
+        with reading:
+            return real_left_s(home)
+
+    monkeypatch.setattr(pi, "_gemini_login_left_s", left_s)
     cancel = threading.Event()
     monitor = _monitor(tmp_path, cancel)
     thread, outcome, done = _await_in_thread(host, "monitor", cancel, None, monitor)
     assert entered.wait(30)
     if change == "renewed":
-        _login(host.home, 3000)                  # e.g. the operator's own agy
+        with reading:
+            _login(host.home, 3000)              # e.g. the operator's own agy
     elif change == "garbled":
         (host.home / TOKEN).write_text("{")
     else:
