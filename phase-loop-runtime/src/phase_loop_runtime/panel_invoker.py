@@ -3000,6 +3000,17 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "review_monitoring_unsupported_api_fallback",
     # agent-harness#896: placement refusals
     "sandbox_placement_required_unavailable", "sandbox_placement_driver_unavailable",
+    # agent-harness#896: the placement driver's codes (typed notices in seat_jail.NOTICES)
+    "sandbox_placement_ref_invalid", "sandbox_placement_capability_undeclared",
+    "sandbox_placement_plugin_unavailable", "sandbox_placement_backend_unregistered",
+    "sandbox_placement_lost_after_launch", "sandbox_placement_end_reached",
+    "sandbox_placement_capability_unmet", "sandbox_placement_capacity_exhausted",
+    "sandbox_placement_unreachable", "sandbox_placement_not_enrolled",
+    "sandbox_placement_identity_mismatch", "sandbox_placement_refused",
+    "sandbox_placement_workload_unsupported", "sandbox_placement_operation_timeout",
+    "sandbox_placement_code_invalid", "sandbox_placement_release_unconfirmed",
+    "sandbox_placement_at_capacity", "sandbox_placement_budget_spent",
+    "seat_placement_waiting",
     # agent-harness#1222: the seat-launch owner's refusals (typed notices in seat_jail.NOTICES)
     "seat_owner_unavailable", "seat_bind_source_unavailable", "seat_broker_socket_unavailable",
     "seat_launch_owner_required", "seat_output_path_unavailable", "seat_profile_unavailable",

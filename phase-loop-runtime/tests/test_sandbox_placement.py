@@ -354,31 +354,38 @@ class _FakeExecutingBackend:
         self._record("available")
         return True
 
-    def commit(self, prepared, request):
+    def endpoint(self, root):
+        self._record("endpoint")
+        return None
+
+    def admit(self, request, bound):
+        self._record("admit")
+
+    def commit(self, prepared, request, bound=None):
         self._record("commit")
         return sandbox_placement.BackendReceipt("committed", "fx-1", prepared.snapshot_sha256)
 
-    def release(self, prepared):
+    def release(self, prepared, bound=None):
         self._record("release")
 
-    def execute(self, sandbox_ref, spec):
+    def execute(self, sandbox_ref, spec, bound):
         self._record("execute")
         return sandbox_placement.BackendReceipt("launched", sandbox_ref, "0" * 64)
 
-    def wait(self, sandbox_ref, deadline_s):
+    def wait(self, sandbox_ref, wait_s):
         self._record("wait")
 
-    def cancel(self, sandbox_ref):
+    def cancel(self, sandbox_ref, bound):
         self._record("cancel")
 
-    def renew(self, sandbox_ref, until_s):
+    def renew(self, sandbox_ref, until_s, bound):
         self._record("renew")
 
-    def list_owned(self, owner_id):
+    def list_owned(self, owner_id, bound):
         self._record("list_owned")
         return []
 
-    def kill(self, sandbox_ref):
+    def kill(self, lease_id, bound):
         self._record("kill")
 
 

@@ -27,6 +27,29 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   removes whatever the seat left there (measured with the real CLI: codex leaves its
   `.agents`, `.aws` and `.codex` mount-point directories when it is killed).
 
+### The execution driver for non-local placement, built and not turned on (agent-harness#896)
+
+- New: the driver that decides where a review seat may run and launches it on a remote
+  placement backend (`sandbox_placement.place`, `run_placed`), with its lease journal and
+  reaper (`placement_lease`), runtime-attested `committed` and `completed` receipts, and the
+  command `phase-loop placement reap`. It is proven with in-process fake backends only.
+  **Nothing a user runs changes:** the launch site does not call it and
+  `_NONLOCAL_EXECUTION_DRIVER` is still false. No backend ships with it.
+- One thing an operator can see: the fail-closed knob's refusal
+  (`sandbox_placement_required_unavailable`, with `PHASE_LOOP_SANDBOX_REMOTE_REQUIRED` on)
+  now carries a seat notice with its fix line. So does every other placement code; the four
+  the seam already raised (`sandbox_placement_ref_invalid`, `…_capability_undeclared`,
+  `…_plugin_unavailable`, `…_backend_unregistered`) are now members of the leg-detail
+  vocabulary instead of surfacing as an unknown failure.
+- New settings, without effect until a backend exists and the driver is turned on:
+  `PHASE_LOOP_SANDBOX_LAST_RUNG` (`local` or `none`), `PHASE_LOOP_SANDBOX_ADMIT_WAIT_S`
+  (default 600) and `PHASE_LOOP_SANDBOX_TRANSFER_ALLOWANCE_S` (default 300). New state:
+  `$XDG_STATE_HOME/phase-loop/placement-leases/` and `placement-owner-id`.
+- For backend authors: the seam's execution types changed before any backend existed.
+  `ExecSpec` carries a workload and request bytes instead of an argv; `ExecutingBackend`
+  gains `endpoint` and `admit`, a bound on every blocking call, and `list_owned` / `kill` by
+  lease id. The contract is amendments C1 to C12 in `advisor_board/CONTRACTS.md`.
+
 ### A Gemini seat is no longer refused by the clock, or by a desktop keyring (agent-harness#1407, agent-harness#1420)
 
 - **The window.** A Gemini seat needs 10 minutes left on the agy login. agy renews a login
