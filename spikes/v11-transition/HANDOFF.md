@@ -1,5 +1,22 @@
 # Handoff — finishing the v11 roadmap (2026-10-08)
 
+> **Note (2026-10-11, agent-harness#1394).** This file is the record of 2026-10-08, and its body
+> below is not rewritten.
+>
+> - Steps 1–5 of "Remaining steps" were done by agent-harness#1394: v11 is the active roadmap
+>   and v10 is superseded.
+> - The statuses below are as of 2026-10-08.
+> - `v10-RUNTIME` is the exception to "mark v10's non-completed rows `orphaned`". It stays
+>   `committed`, because the frozen `test_convergence_runtime_imports.py` requires exactly one
+>   selectable RUNTIME row. The PR that registers the v11 RUNTIME plan carries the `sl0_repairs`
+>   record and that test's edit.
+> - The HARDEN evidence verifier resolves the HARDEN ledger row by unique alias, and the v10
+>   HARDEN row is `orphaned`, which is terminal. The v11 HARDEN plan first makes the verifier
+>   resolve the live row.
+> - After merge, every checkout or worktree whose `.phase-loop/state.json` names v10 must delete
+>   that file. Until it does, each bare `phase-loop` command there fails with
+>   `NonActiveSelectionError`.
+
 Branch: `claude/roadmap-v11`. Draft: `specs/phase-plans-v11.md`. Snapshot of in-flight work:
 `spikes/v11-transition/inventory-2026-10-08.md`.
 

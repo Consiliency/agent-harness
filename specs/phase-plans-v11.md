@@ -349,7 +349,7 @@ schema: `spec_delta_closeout.v1`; expected decision: `no_spec_delta`; target sur
 ### Phase 5 — Isolation and Verification Hardening (HARDEN)
 
 **Objective**
-Carried from V10 Phase 6: finish the SL-5 evidence repair and the SL-6 completion seal.
+Carried from V10 Phase 6: finish the SL-6 completion seal; the SL-5 evidence repair has landed.
 
 **Exit criteria**
 - [ ] EC-HARDEN-0 — Carried; as defined in V10.
@@ -358,7 +358,8 @@ Carried from V10 Phase 6: finish the SL-5 evidence repair and the SL-6 completio
 **Scope notes**
 - EC-HARDEN-1 to -4 are met (agent-harness#737) and not carried.
 - EC-HARDEN-5 is retired as written: the per-seat jail (agent-harness#1133, agent-harness#1282) gives seats their own credential and tools by design, so "no credentialed capability" cannot be met. EC-HARDEN-6 is the replacement, ratified by the maintainer on 2026-10-08.
-- Single lane: SL-5 (agent-harness#1264, agent-harness#1351) then SL-6; both own only `scripts/` and `plans/`.
+- Single lane. SL-5 has landed (agent-harness#1351, agent-harness#1264); what remains is SL-6 (the completion seal) and EC-HARDEN-6. The lane owns only `scripts/` and `plans/`.
+- The evidence verifier resolves the HARDEN ledger row by unique alias and names the V10 plan (`plans/phase-plan-v10-HARDEN.md`). The v10 HARDEN row is `orphaned`, which is terminal, so the v11 HARDEN plan first makes the verifier resolve the live row, and completion is recorded on the v11 row.
 
 **Non-goals**
 - As in V10.
@@ -384,12 +385,14 @@ As in V10 for this phase.
 Carried from V10 Phase 10: replace the lost tests-first evidence and finish live reconciliation.
 
 **Exit criteria**
-- [ ] EC-RUNTIME-0 — Carried; as defined in V10, discharged under the evidence-loss policy of agent-harness#1000 once ratified.
+- [ ] EC-RUNTIME-0 — Carried; as defined in V10.
 - [ ] EC-RUNTIME-2 — Carried; as defined in V10.
 
 **Scope notes**
 - EC-RUNTIME-1, -3, -4, -5 are met (agent-harness#719, agent-harness#863, agent-harness#908) and not carried.
 - Decompose into 2 lanes: lane A evidence-loss policy and EC-0; lane B live probes and the registry positive control for EC-2.
+- EC-RUNTIME-0's receipt is lost (agent-harness#720). agent-harness#1000 is an open, unratified proposal that leaves EC-RUNTIME-0 unchecked. The goal closes only on a maintainer ruling, recorded in this phase as an explicit retirement and replacement.
+- The ledger row `v10-RUNTIME` stays `committed`, because the frozen `test_convergence_runtime_imports.py` requires exactly one selectable RUNTIME row. The PR that registers the v11 RUNTIME plan carries the `sl0_repairs` record and that test's edit.
 
 **Non-goals**
 - The INTEG-owned transition-version binding (agent-harness#720 items 4–5).
@@ -417,11 +420,11 @@ As in V10 for this phase.
 Carried from V10 Phase 14 for closeout only: every goal but the receipt is met.
 
 **Exit criteria**
-- [ ] EC-PRESROUTE-0 — Carried; as defined in V10, with the frozen-test edits from `e2dff674` and `da9502b3` recorded as `sl0_repairs` entries.
+- [ ] EC-PRESROUTE-0 — Carried; as defined in V10, with every frozen-test edit since the PRESROUTE landing (`e2dff674`, `da9502b3`, and `2d31e5c3` from agent-harness#1446) recorded as `sl0_repairs` entries.
 
 **Scope notes**
 - EC-PRESROUTE-1 to -5 are met (agent-harness#998, agent-harness#1035) and not carried.
-- Single lane: ledger repair entries and the completion record. Widen agent-harness#1143 to cover both edits.
+- Single lane: ledger repair entries and the completion record. Widen agent-harness#1143 to cover every frozen-test edit since the PRESROUTE landing: `e2dff674`, `da9502b3` and `2d31e5c3` (agent-harness#1446).
 
 **Non-goals**
 - agent-harness#1006, agent-harness#1206 (follow-ups, not goals).
@@ -505,7 +508,7 @@ Carried from V10 Phase 18 unchanged: panels are seated by lane from whatever ven
 
 **Scope notes**
 - EC-PANEL-0 is met (agent-harness#1092) and not carried. Remaining slices are SL-1, SL-1b, SL-2, SL-3 of the V10 plan; SL-1 work is on branch `claude/1078-panel-sl1`.
-- Lanes follow the V10 plan's slices; SL-1 owns `config.py`, `composition.py`, `presets.py`.
+- Lanes follow the V10 plan's slices; SL-1 owns `config.py`, `composition.py`, `presets.py`. SL-1's V10 ownership of `panel_invoker.py` lands on the split `phase_loop_runtime/panel/` modules, and `claude/1078-panel-sl1` rebases onto PANELSPLIT; that is why this phase depends on PANELSPLIT.
 - Depends on PRESROUTE because SL-1's frozen-test authorization (`agent-harness#1078:PANEL-SL1:PRESROUTE`) can land only after PRESROUTE records the `da9502b3` repair.
 - Overlaps with independent phases are listed under Execution Notes.
 
@@ -520,8 +523,10 @@ Carried from V10 Phase 18 unchanged: panels are seated by lane from whatever ven
 - `phase-loop-runtime/src/phase_loop_runtime/cli.py`
 - `phase-loop-runtime/src/phase_loop_runtime/runner.py`
 - `phase-loop-runtime/src/phase_loop_runtime/train_runner.py`
+- `phase-loop-runtime/src/phase_loop_runtime/panel/`
 
 **Depends on**
+- PANELSPLIT
 - PRESROUTE
 
 **Produces**
@@ -652,7 +657,7 @@ Carried from V10 Phase 7, on the split panel modules and the bounded review loop
 - [ ] EC-REVIEWTRUTH-2 — Carried; as defined in V10.
 - [ ] EC-REVIEWTRUTH-3 — Carried; as defined in V10.
 - [ ] EC-REVIEWTRUTH-4 — Carried; as defined in V10.
-- [ ] EC-REVIEWTRUTH-5 — Carried; as defined in V10.
+- [ ] EC-REVIEWTRUTH-5 — Carried; as defined in V10 as amended by V10's 2026-09-25 PANEL ruling.
 - [ ] EC-REVIEWTRUTH-6 — Carried; as defined in V10.
 - [ ] EC-REVIEWTRUTH-7 — Carried; as defined in V10.
 - [ ] EC-REVIEWTRUTH-8 — Carried; as defined in V10.
@@ -750,7 +755,7 @@ Carried from V10 Phase 8 unchanged.
 - [ ] EC-LEGLIFE-1 — Carried; as defined in V10.
 - [ ] EC-LEGLIFE-2 — Carried; as defined in V10.
 - [ ] EC-LEGLIFE-3 — Carried; as defined in V10.
-- [ ] EC-LEGLIFE-4 — Carried; as defined in V10.
+- [ ] EC-LEGLIFE-4 — Carried; as defined in V10 as amended by V10's 2026-09-25 PANEL ruling.
 - [ ] EC-LEGLIFE-5 — Carried; as defined in V10.
 - [ ] EC-LEGLIFE-6 — Carried; as defined in V10.
 - [ ] EC-LEGLIFE-7 — Carried; as defined in V10.
@@ -868,11 +873,11 @@ Carried from V10 Phase 16 unchanged; its plan is in agent-harness#1203.
 
 **Exit criteria**
 - [ ] EC-RATIFY-0 — Carried; as defined in V10.
-- [ ] EC-RATIFY-1 — Carried; as defined in V10.
+- [ ] EC-RATIFY-1 — Carried; as defined in V10 as amended by its 2026-09-25 advisory ruling.
 - [ ] EC-RATIFY-2 — Carried; as defined in V10.
 - [ ] EC-RATIFY-3 — Carried; as defined in V10.
 - [ ] EC-RATIFY-4 — Carried; as defined in V10.
-- [ ] EC-RATIFY-5 — Carried; as defined in V10.
+- [ ] EC-RATIFY-5 — Carried; as defined in V10 as amended by its 2026-09-25 advisory ruling.
 
 **Scope notes**
 - Decompose into 2 lanes as V10 does: lane A prompt partition, ruling classes and gate posture; lane B the ruling ledger. Plan in agent-harness#1203; SL-0 is agent-harness#1208.
@@ -916,7 +921,7 @@ Carried from V10 Phase 17 unchanged.
 - [ ] EC-GOVSETUP-6 — Carried; as defined in V10.
 
 **Scope notes**
-- Decompose into 2 lanes as V10 does: lane A schema, resolver and CLI consumers; lane B installer, `init` and `doctor`. Its profile schema must fit PANEL's layout (V10 PANEL ruling, 2026-09-27).
+- Decompose into 2 lanes as V10 does: lane A schema, resolver and CLI consumers; lane B installer, `init` and `doctor`. Profiles add required seats and never lower PANEL's minimum (V10's PANEL ruling, 2026-09-25). Its profile schema must fit PANEL's layout (maintainer decision of 2026-09-27 in `plans/phase-plan-v10-PANEL.md`, agent-harness#1111, "GOVSETUP shape").
 
 **Non-goals**
 - As in V10.
@@ -945,7 +950,7 @@ Wave 1 (roots, all parallel)
   TESTLOOP  LOOPFIX  REVBOUND  PARSCHED  PANELSPLIT  HARDEN  RUNTIME  PRESROUTE
 
 Wave 2
-  PRESROUTE ─▶ PANEL
+  PANELSPLIT, PRESROUTE ─▶ PANEL
   PANELSPLIT, PRESROUTE ─▶ ROUTE
   HARDEN ────▶ SCHED
   LOOPFIX ───▶ REFLOOP
@@ -968,6 +973,7 @@ Wave 6
 ```
 
 Edges:
+- PANELSPLIT → PANEL
 - PRESROUTE → PANEL
 - PANELSPLIT → ROUTE
 - PRESROUTE → ROUTE
@@ -990,7 +996,8 @@ Edges:
 - PANEL → GOVSETUP
 
 Critical path: PRESROUTE → PANEL → REVIEWTRUTH → EXECFIND → RATIFY → GOVSETUP (six phases;
-v10's was ten). PRESROUTE is a single ledger change, so in practice the path starts at PANEL.
+v10's was ten). PANELSPLIT → PANEL heads a path of the same length. PRESROUTE is a single ledger
+change, but PANEL also waits for PANELSPLIT, so the path does not start at PANEL.
 Wave 1 runs eight phases in parallel.
 
 ## Execution Notes
@@ -1044,9 +1051,6 @@ uv run --quiet --with-editable ./phase-loop-runtime phase-loop validate-roadmap 
 # Whole-suite regression on a team host: 0 failures, 0 errors (EC-TESTLOOP-4)
 uv run --quiet --with pytest --with-editable ./phase-loop-runtime python -m pytest phase-loop-runtime/tests -q
 
-# Goal coverage: every open goal ID is referenced by a v11 phase plan
-uv run --quiet --with-editable ./phase-loop-runtime phase-loop goal-coverage-audit --roadmap specs/phase-plans-v11.md
-
 # Concurrent dispatch is on and readiness-driven (EC-PARSCHED-1)
-uv run --quiet --with-editable ./phase-loop-runtime phase-loop dry-run --phase-scheduler concurrent --json
+uv run --quiet --with-editable ./phase-loop-runtime phase-loop --phase-scheduler concurrent dry-run --json
 ```
