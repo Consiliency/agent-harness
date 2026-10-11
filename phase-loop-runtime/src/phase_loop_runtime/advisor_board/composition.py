@@ -226,8 +226,7 @@ def default_board_auth_refusal(vendor: str) -> ExcludedSeat:
 
     Reads the refusal the gate recorded (``executor_availability.auth_refusal_for``); it
     runs no probe. A typed refusal the seat-notice table knows keeps its code and the
-    table's own why/fix. An unqualified agy image also gets the read-only diagnosis of
-    WHICH way it is unqualified (not shipped, or qualified under another runtime)."""
+    table's own why/fix."""
     from ..capability_registry import capability_registry
     from ..executor_availability import auth_refusal_for
 
@@ -244,15 +243,6 @@ def default_board_auth_refusal(vendor: str) -> ExcludedSeat:
 
         if refusal.code in NOTICES:
             _what, why, fix = NOTICES[refusal.code]
-            if refusal.code == "agy_image_unqualified":
-                from .. import agy_diagnosis, panel_invoker
-
-                # The agy the refused probe resolved: the seat owner's own search path.
-                diagnosis = agy_diagnosis.diagnose(search_path=panel_invoker._PROVIDER_SEARCH_PATH)
-                if not diagnosis.admitted:
-                    why, fix = diagnosis.detail, diagnosis.fix or fix
-                    if diagnosis.shipped_build_later_on_path and diagnosis.note:
-                        why = f"{why} ({diagnosis.note})"
             return _exclusion(vendor, refusal.code, probe=refusal.probe, why=why, fix=fix)
     code = {"timed_out": SEAT_PROBE_TIMED_OUT, "not_logged_in": SEAT_NOT_LOGGED_IN}.get(
         refusal.kind, SEAT_PROBE_FAILED)

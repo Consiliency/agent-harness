@@ -3878,7 +3878,9 @@ def _run_train_unfenced(
                 brief_sha256=_pi.content_sha256(brief), composition_sha256=composition_digest(board),
             )
             if refusal is not None:
-                raise PacketError(f"native_fill_refused: {refusal.reason}: {refusal.detail}")
+                # agent-harness#1431: a refusal caused by an excluded seat names it.
+                raise PacketError(f"native_fill_refused: {refusal.reason}: {refusal.detail}"
+                                  + "".join(f"; {item.render()}" for item in unavailable))
         except (OSError, subprocess.SubprocessError, ValueError) as exc:
             return {"status": "review_halted", "reason": "native_fill_refused", "detail": str(exc),
                     "terminal_blocker": _non_human_train_blocker(str(exc))}

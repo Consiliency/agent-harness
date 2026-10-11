@@ -19,7 +19,6 @@ from __future__ import annotations
 
 import shutil
 import os
-import re
 import shlex
 import subprocess
 import time
@@ -71,10 +70,11 @@ class ProbeRefusal:
     """Why an executor's probes did not pass (agent-harness#1431).
 
     ``kind`` is one of ``raised`` / ``timed_out`` / ``nonzero_exit`` / ``not_logged_in``.
-    ``code`` is the refusal's own typed code when the probe RAISED one (a code-shaped
-    exception message such as ``agy_image_unqualified``), else ``None``. Nothing here is
-    CLI output: only the probe that failed, how it failed and, for a typed refusal of
-    ours, its code.
+    ``code`` is the refusal's own typed code when the probe RAISED one of ours: a
+    ``seat_jail.SeatSandboxRefused`` (its ``code``) or an exception whose message is
+    exactly a ``seat_jail.NOTICES`` key (such as ``agy_image_unqualified``); else ``None``.
+    Nothing here is CLI output or other exception text: only the probe that failed, how it
+    failed and, for a typed refusal of ours, its code.
     """
 
     kind: str
@@ -84,7 +84,6 @@ class ProbeRefusal:
     returncode: int | None = None
 
 
-_CODE_SHAPED = re.compile(r"[a-z][a-z0-9_]{2,79}")
 # The refusal behind each cached FAILED verdict, under the same key as ``_auth_cache``.
 _auth_refusals: dict[tuple[str, tuple[str, ...]], ProbeRefusal] = {}
 
@@ -107,6 +106,20 @@ def _run_probe(probe: str) -> subprocess.CompletedProcess:
         check=False,
         timeout=_PROBE_TIMEOUT_SECONDS,
     )
+
+
+def _typed_refusal_code(exc: BaseException) -> str | None:
+    """The code of a typed refusal of ours, decided by type and table, never by shape.
+
+    A ``SeatSandboxRefused`` carries its code; any other exception counts only when its
+    whole message is a ``seat_jail.NOTICES`` key. Anything else is ``None``, so no other
+    exception text is ever carried (agent-harness#1431)."""
+    from .seat_jail import NOTICES, SeatSandboxRefused
+
+    if isinstance(exc, SeatSandboxRefused):
+        return exc.code if exc.code in NOTICES else None
+    message = str(exc)
+    return message if message in NOTICES else None
 
 
 def _probes_verdict(
@@ -135,10 +148,8 @@ def _probes_verdict(
         except Exception as exc:
             # A wedged/timed-out/erroring probe (TimeoutExpired, OSError, any
             # runner exception) fails the gate CLOSED — never a crash, never a pass.
-            message = str(exc)
             return False, ProbeRefusal(
-                "raised", probe, exception=type(exc).__name__,
-                code=message if _CODE_SHAPED.fullmatch(message) else None,
+                "raised", probe, exception=type(exc).__name__, code=_typed_refusal_code(exc),
             )
         if completed.returncode != 0:
             return False, ProbeRefusal("nonzero_exit", probe, returncode=completed.returncode)

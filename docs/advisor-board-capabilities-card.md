@@ -247,13 +247,15 @@ a vendor that does not is left out and its seat is backfilled onto another vendo
 excluded seat is reported, at composition and again with the result:
 
 ```text
-advisor-board: composition: gemini:gemini-3.8-flash:medium:alternative-approach excluded [agy_image_unqualified]: <why> -- fix: run `phase-loop agy-qualification run`; replaced by grok:grok-4.7:high:correctness
+advisor-board: composition: gemini:gemini-3.8-flash:medium:alternative-approach excluded [agy_image_unqualified]: the agy binary is neither a shipped release member nor qualified on this host -- fix: run `phase-loop agy-qualification run` to qualify it on this host, or ...; replaced by grok:grok-4.7:high:correctness
 ```
 
-`--json` carries the same as `composition: {seats: [...], excluded: [{vendor, seat_key, code,
-why, fix, replaced_by}]}`, and a native-fill request as `composition_excluded`. The `code` is
-the probe's own refusal when it has one (`agy_image_unqualified`, `seat_profile_unavailable`,
-...), otherwise `board_seat_cli_not_on_path`, `board_seat_probe_failed`,
+Under `--json` a board result and a composition refusal carry the same as `composition:
+{seats: [...], excluded: [{vendor, seat_key, code, why, fix, replaced_by}]}`. The
+`native_fill_requested` record keeps its `composition` seat list and carries the exclusions as
+`composition_excluded`, as does the request file. The `code` is the probe's own refusal when it
+raised a typed refusal of ours (a `seat_jail.NOTICES` key such as `agy_image_unqualified`, with
+that table's text and fix), otherwise `board_seat_cli_not_on_path`, `board_seat_probe_failed`,
 `board_seat_probe_timed_out`, `board_seat_not_logged_in` or `board_seat_unauthenticated`.
 
 With `--landing-tier`, the tier's policy is checked on the composed board at composition. A
@@ -261,7 +263,7 @@ With `--landing-tier`, the tier's policy is checked on the composed board at com
 an excluded seat stops there, before a native-fill request is emitted or any seat starts:
 
 ```text
-advisor-board: refused at composition [review_board_policy_mismatch]: the production_code landing tier does not accept this lineup, and no seat was launched: ...; gemini:... was excluded at composition [agy_image_unqualified] -- fix: run `phase-loop agy-qualification run`
+advisor-board: refused at composition [review_board_policy_mismatch]: the production_code landing tier does not accept this lineup, and no seat was launched: ...; gemini:... was excluded at composition [agy_image_unqualified] -- fix: run `phase-loop agy-qualification run` to qualify it on this host, or ...
 ```
 
 Exit 2; under `--json` the result is `{usable: false, status: "UNAVAILABLE", refusal: {stage:
@@ -269,14 +271,6 @@ Exit 2; under `--json` the result is `{usable: false, status: "UNAVAILABLE", ref
 heartbeat_only` seats the frozen four-vendor board and composes nothing, so nothing is
 excluded there: its whole-board preflight qualifies a new agy build on first use, or refuses
 with a typed code.
-
-`phase-loop doctor` answers the agy question before a board is run. Its
-`seat_cli_qualification[]` row for the agy on PATH is `release_qualified`,
-`locally_qualified`, `not_qualified` (not a shipped build and never qualified on this host),
-`local_record_other_runtime` (this host qualified this build under another runtime; a local
-record is bound to the runtime's own files, so a runtime upgrade drops it),
-`local_qualification_failed`, `self_qualification_disabled`, `store_unsafe` or `absent`, with
-the command to run in `fix`. It executes nothing and qualifies nothing.
 
 **Advisory runs over a standalone document** (agent-harness#802):
 

@@ -16,9 +16,9 @@ Pinned here, end to end:
 * the CLI names each excluded seat at composition, in text and in every JSON result, and a
   tier whose policy does not accept the composed lineup is refused AT COMPOSITION -- before
   a request is emitted, a fill is preflighted or anything is staged or launched;
-* ``phase-loop doctor`` says whether the agy on PATH is admitted under this runtime, and
-  tells "not shipped, never qualified here" from "qualified under another runtime".
+* the train's cache-reuse fill check and the governed gate name the excluded seats.
 
+An excluded agy seat carries the seat-notice table's own text for ``agy_image_unqualified``.
 The qualification gate itself is not touched: nothing here admits an image.
 """
 
@@ -28,20 +28,15 @@ import dataclasses
 import json
 import os
 import subprocess
-from importlib.resources import files
 from pathlib import Path
 
-import jsonschema
 import pytest
 
 from phase_loop_runtime import (
     agy_integrity,
-    agy_provenance,
     agy_qualification,
     cli,
-    doctor,
     executor_availability as ea,
-    gemini_heartbeat,
     governed_review as gr,
     panel_invoker,
     sandbox_egress,
@@ -55,14 +50,9 @@ from phase_loop_runtime.seat_jail import NOTICES
 
 from test_train_review_packet import synthetic_train_packet  # noqa: E402, F401 - a fixture
 
-try:
-    from phase_loop_runtime import agy_diagnosis
-except ImportError:  # a tree without the diagnosis: each test fails where it needs it
-    agy_diagnosis = None
-
 GEMINI_SEAT = "gemini:gemini-3.8-flash:medium:alternative-approach"
 BACKFILL = "grok:grok-4.7:high:correctness"
-RUN_FIX = "run `phase-loop agy-qualification run`"
+_UNQUALIFIED_WHY, _UNQUALIFIED_FIX = NOTICES["agy_image_unqualified"][1:]
 PRESIDENT_TIERS = ("plan", "production_code")
 
 
@@ -268,8 +258,7 @@ def test_the_default_gate_reports_each_vendors_own_reason(monkeypatch, tmp_path)
     assert composed.board.seats == ()
     by_vendor = {seat.vendor: seat for seat in composed.excluded}
     assert by_vendor["gemini"].code == "agy_image_unqualified"
-    assert by_vendor["gemini"].fix == RUN_FIX
-    assert "not in this runtime's shipped set" in by_vendor["gemini"].why
+    assert (by_vendor["gemini"].why, by_vendor["gemini"].fix) == (_UNQUALIFIED_WHY, _UNQUALIFIED_FIX)
     assert by_vendor["codex"].code == composition.SEAT_NOT_LOGGED_IN
     assert "codex login status" in by_vendor["codex"].why
     assert by_vendor["grok"].code == composition.SEAT_PROBE_FAILED
@@ -301,12 +290,59 @@ def test_a_raised_refusal_with_no_notice_names_its_exception_not_its_message(mon
     assert "RuntimeError" in excluded.why and "secret-looking" not in excluded.why
 
 
+def test_code_shaped_exception_text_is_not_a_typed_notice(monkeypatch):
+    """codex F005 on agent-harness#1468, verbatim: a generic exception whose message merely
+    LOOKS like a code is not a typed refusal, and its text reaches nothing."""
+    private_identity = "private_operator_alice"
+
+    def failed_probe(_probe):
+        raise RuntimeError(private_identity)
+
+    _seed_default_gate(monkeypatch, {"grok": failed_probe})
+    (excluded,) = _compose_through_the_default_gate().excluded
+    assert excluded.code == "board_seat_probe_failed"
+    assert private_identity not in json.dumps(excluded.as_json())
+    assert "RuntimeError" in excluded.why
+
+
+def test_a_typed_refusal_class_keeps_its_colon_code_and_the_tables_text(monkeypatch):
+    """A ``SeatSandboxRefused`` carries a NOTICES key that is not identifier-shaped (it has a
+    colon) and a message of its own. The code is taken from the class, the text from the
+    table; the message is never rendered."""
+    from phase_loop_runtime import seat_jail
+
+    code = seat_jail.refused("namespace")
+    assert ":" in code and code in NOTICES
+
+    def refused(_probe):
+        raise seat_jail.SeatSandboxRefused(code, "private_operator_bob could not unshare")
+
+    assert ea._probes_verdict("codex", ("codex --version",), refused) == (
+        False, ea.ProbeRefusal("raised", "codex --version", code=code, exception="SeatSandboxRefused"))
+    _seed_default_gate(monkeypatch, {"codex": refused})
+    (excluded,) = _compose_through_the_default_gate().excluded
+    _what, why, fix = NOTICES[code]
+    assert (excluded.vendor, excluded.code, excluded.why, excluded.fix) == ("codex", code, why, fix)
+    assert "private_operator_bob" not in json.dumps(excluded.as_json())
+
+
+def test_a_message_that_is_exactly_a_colon_notice_key_keeps_its_code():
+    from phase_loop_runtime import seat_jail
+
+    code = seat_jail.refused("identity")
+
+    def refused(_probe):
+        raise RuntimeError(code)
+
+    _ok, refusal = ea._probes_verdict("grok", ("grok --version",), refused)
+    assert refusal.code == code
+
+
 # =============================================================================================
-# 3. The agy diagnosis: real images, a real store, the real admission gate
+# 3. The real gathering path: an unshipped agy on PATH, the real seat admission
 # =============================================================================================
 
 MACHINE = "ab" * 16
-OTHER_RUNTIME = {"version": "0.0.1", "route_core": {name: "0" * 64 for name in agy_qualification.ROUTE_CORE}}
 
 
 def _fake_agy(directory: Path, body: str = "unshipped build") -> tuple[Path, str]:
@@ -323,7 +359,7 @@ def _fake_agy(directory: Path, body: str = "unshipped build") -> tuple[Path, str
 
 def _isolate_agy(monkeypatch, tmp_path: Path) -> tuple[Path, str, "agy_qualification.Store"]:
     """A host with one unshipped agy first on PATH, an empty per-user store and no user
-    board config. Every fact the diagnosis and the admission gate read is real."""
+    board config. Every fact the probe and the seat admission read is real."""
     home = tmp_path / "home"
     home.mkdir(exist_ok=True)
     path, digest = _fake_agy(tmp_path / "bin")
@@ -335,162 +371,6 @@ def _isolate_agy(monkeypatch, tmp_path: Path) -> tuple[Path, str, "agy_qualifica
     monkeypatch.setattr(panel_invoker, "_PROVIDER_SEARCH_PATH", os.environ["PATH"])
     monkeypatch.setattr(agy_integrity, "_PROVIDER_SEARCH_PATH", os.environ["PATH"])
     return path, digest, agy_qualification.Store()
-
-
-def _host():
-    return agy_provenance.detect_platform()
-
-
-def _asset(release: str) -> agy_provenance.ReleaseAsset:
-    fields = {field.name for field in dataclasses.fields(agy_provenance.ReleaseAsset)}
-    values = {"name": f"agy-{release}.tar.gz", "version": release, "digest": "d" * 64,
-              "url": "https://example.invalid/asset", "size": 1}
-    return agy_provenance.ReleaseAsset(**{key: value for key, value in values.items() if key in fields})
-
-
-def _qualify(store, digest: str, runtime, release: str = "9.9.9") -> None:
-    """What a successful first use leaves in the store for ``runtime``: the member cache
-    (which image a release is) and the qualified entry. Written by the store itself."""
-    host = _host()
-    store.create()
-    store.put_member(_asset(release), digest, host, runtime)
-    store.put_qualified(digest, "e" * 64, host, runtime, release)
-
-
-def _really_refused(path: Path) -> bool:
-    """The REAL seat admission for this image, with this process's environment."""
-    try:
-        agy_integrity.admit_for_seat(str(path), dict(os.environ)).close()
-    except agy_integrity.AgyImageUnqualified:
-        return True
-    return False
-
-
-def test_an_unshipped_build_with_no_record_is_not_qualified(monkeypatch, tmp_path):
-    path, _digest, _store = _isolate_agy(monkeypatch, tmp_path)
-    diagnosis = agy_diagnosis.diagnose()
-    assert diagnosis.status == agy_diagnosis.NOT_QUALIFIED
-    assert not diagnosis.admitted
-    assert diagnosis.fix == RUN_FIX
-    assert "not in this runtime's shipped set" in diagnosis.detail
-    assert "no local qualification record" in diagnosis.detail
-    assert _really_refused(path), "the diagnosis says not admitted; the real gate must agree"
-
-
-def test_a_record_made_under_another_runtime_is_told_apart(monkeypatch, tmp_path):
-    """agent-harness#1420 section 1: the host qualified this very build, under another
-    runtime. The runtime upgrade left this runtime with no record."""
-    path, digest, store = _isolate_agy(monkeypatch, tmp_path)
-    _qualify(store, digest, OTHER_RUNTIME, release="1.3.2")
-    diagnosis = agy_diagnosis.diagnose()
-    assert diagnosis.status == agy_diagnosis.LOCAL_RECORD_OTHER_RUNTIME
-    assert diagnosis.release == "1.3.2"
-    assert diagnosis.fix == RUN_FIX
-    assert "agy 1.3.2 under a different runtime" in diagnosis.detail
-    assert "runtime upgrade" in diagnosis.detail
-    assert _really_refused(path), "a record for another runtime admits nothing under this one"
-
-
-def test_a_record_for_a_different_build_does_not_read_as_this_builds_record(monkeypatch, tmp_path):
-    _path, _digest, store = _isolate_agy(monkeypatch, tmp_path)
-    _qualify(store, "f" * 64, OTHER_RUNTIME, release="1.3.1")  # some other image
-    assert agy_diagnosis.diagnose().status == agy_diagnosis.NOT_QUALIFIED
-
-
-def test_another_builds_record_is_not_this_builds_even_when_this_build_is_a_known_release(
-        monkeypatch, tmp_path):
-    """The host resolved WHICH release this image is (the member cache) but qualified only a
-    different release. That is "never qualified here", not "qualified under another runtime"."""
-    _path, digest, store = _isolate_agy(monkeypatch, tmp_path)
-    _qualify(store, "f" * 64, OTHER_RUNTIME, release="1.3.1")
-    store.put_member(_asset("1.3.3"), digest, _host(), OTHER_RUNTIME)
-    diagnosis = agy_diagnosis.diagnose()
-    assert (diagnosis.status, diagnosis.release) == (agy_diagnosis.NOT_QUALIFIED, "1.3.3")
-
-
-def test_a_record_under_this_runtime_is_reported_as_locally_qualified(monkeypatch, tmp_path):
-    _path, digest, store = _isolate_agy(monkeypatch, tmp_path)
-    _qualify(store, digest, agy_qualification.runtime_identity(), release="1.3.3")
-    diagnosis = agy_diagnosis.diagnose()
-    assert diagnosis.status == agy_diagnosis.LOCALLY_QUALIFIED
-    assert diagnosis.admitted and diagnosis.fix is None and diagnosis.note is None
-    # The record the diagnosis found is the one the store itself reads back under the live key.
-    assert store.get_qualified(digest, "e" * 64, _host(), agy_qualification.runtime_identity())
-
-
-def test_a_failed_qualification_is_reported_as_failed(monkeypatch, tmp_path):
-    path, digest, store = _isolate_agy(monkeypatch, tmp_path)
-    store.create()
-    store.put_failed(digest, "e" * 64, _host(), agy_qualification.runtime_identity(),
-                     "completion", "qualification_failed")
-    diagnosis = agy_diagnosis.diagnose()
-    assert diagnosis.status == agy_diagnosis.LOCAL_QUALIFICATION_FAILED
-    assert "agy-qualification clear" in diagnosis.fix
-    assert _really_refused(path)
-
-
-def test_the_opt_out_is_reported_as_the_opt_out(monkeypatch, tmp_path):
-    path, _digest, _store = _isolate_agy(monkeypatch, tmp_path)
-    from phase_loop_runtime.advisor_board.schema import board_config_path
-
-    config = board_config_path()
-    assert tmp_path in config.parents
-    config.parent.mkdir(parents=True)
-    config.write_text("[agy]\nself_qualification = false\n", encoding="utf-8")
-    assert agy_qualification.self_qualification_enabled() is False, "the fixture must reach the real config"
-    diagnosis = agy_diagnosis.diagnose()
-    assert diagnosis.status == agy_diagnosis.SELF_QUALIFICATION_DISABLED
-    assert "[agy] self_qualification" in diagnosis.fix
-    assert _really_refused(path)
-
-
-def test_an_unsafe_store_is_reported_as_unsafe(monkeypatch, tmp_path):
-    path, _digest, store = _isolate_agy(monkeypatch, tmp_path)
-    store.create()
-    store.root.chmod(0o755)
-    try:
-        assert agy_diagnosis.diagnose().status == agy_diagnosis.STORE_UNSAFE
-        assert _really_refused(path)
-    finally:
-        store.root.chmod(0o700)
-
-
-def test_a_shipped_build_is_release_qualified_and_needs_nothing(monkeypatch, tmp_path):
-    path, digest, _store = _isolate_agy(monkeypatch, tmp_path)
-    monkeypatch.setitem(gemini_heartbeat.QUALIFIED_IMAGES, digest, "e" * 64)
-    diagnosis = agy_diagnosis.diagnose()
-    assert diagnosis.status == agy_diagnosis.RELEASE_QUALIFIED
-    assert diagnosis.admitted and diagnosis.fix is None
-    assert not _really_refused(path)
-
-
-def test_no_agy_on_path_is_absent(monkeypatch, tmp_path):
-    monkeypatch.setenv("PATH", str(tmp_path))
-    diagnosis = agy_diagnosis.diagnose()
-    assert diagnosis.status == agy_diagnosis.ABSENT and not diagnosis.admitted
-
-
-def test_a_shipped_build_later_on_path_is_named_without_a_path(monkeypatch, tmp_path):
-    first, _digest, _store = _isolate_agy(monkeypatch, tmp_path)
-    _second, shipped_digest = _fake_agy(tmp_path / "older", body="a shipped build")
-    monkeypatch.setitem(gemini_heartbeat.QUALIFIED_IMAGES, shipped_digest, "e" * 64)
-    search = os.pathsep.join([str(first.parent), str(tmp_path / "older"), "/usr/bin"])
-    diagnosis = agy_diagnosis.diagnose(search_path=search)
-    assert diagnosis.status == agy_diagnosis.NOT_QUALIFIED
-    assert diagnosis.shipped_build_later_on_path is True
-    assert "also on PATH" in diagnosis.note and "first on PATH" in diagnosis.note
-    assert str(tmp_path) not in json.dumps(diagnosis.as_json())
-    # With no second build the note says how to check, and claims nothing.
-    alone = agy_diagnosis.diagnose(search_path=str(first.parent))
-    assert alone.shipped_build_later_on_path is False
-    assert "re-running `phase-loop doctor`" in alone.note
-
-
-def test_the_statuses_the_diagnosis_can_return_are_the_schemas(monkeypatch, tmp_path):
-    schema = json.loads((files("phase_loop_runtime") / "schemas"
-                         / "phase-loop-doctor.v1.schema.json").read_text())
-    enum = schema["properties"]["seat_cli_qualification"]["items"]["properties"]["status"]["enum"]
-    assert sorted(enum) == sorted(agy_diagnosis.STATUSES)
 
 
 # --- the real gathering path: no stubbed fact between PATH and the excluded seat -------------
@@ -506,8 +386,8 @@ def test_the_real_probe_of_an_unshipped_agy_raises_the_typed_refusal(monkeypatch
 
 def test_a_bare_composition_on_a_host_with_an_unshipped_agy_explains_the_gemini_seat(
         monkeypatch, tmp_path):
-    """The whole real path: PATH probe, capability registry, cached probe gate, the seat
-    admission, the store and the diagnosis. Only the host is arranged (one unshipped agy on
+    """The whole real path: PATH probe, capability registry, cached probe gate and the seat
+    admission. Only the host is arranged (one unshipped agy on
     PATH, an empty store)."""
     _isolate_agy(monkeypatch, tmp_path)
     backing.prepare_review_composition_authorization()
@@ -520,8 +400,7 @@ def test_a_bare_composition_on_a_host_with_an_unshipped_agy_explains_the_gemini_
     assert "gemini" not in seated
     assert by_vendor["gemini"].seat_key == GEMINI_SEAT
     assert by_vendor["gemini"].code == "agy_image_unqualified"
-    assert by_vendor["gemini"].fix == RUN_FIX
-    assert "no local qualification record" in by_vendor["gemini"].why
+    assert (by_vendor["gemini"].why, by_vendor["gemini"].fix) == (_UNQUALIFIED_WHY, _UNQUALIFIED_FIX)
     # Every board vendor is either seated or explained; none is simply missing.
     assert seated | set(by_vendor) == {"grok", "claude", "codex", "gemini"}
     assert not seated & set(by_vendor)
@@ -653,22 +532,6 @@ def test_a_full_board_still_gets_its_native_fill_request_under_a_tier(monkeypatc
     assert rc == 0 and invoked == [] and record["status"] == "native_fill_requested"
     assert record["composition_excluded"] == [] and Path(record["request_path"]).is_file()
     assert "refused at composition" not in captured.err
-
-
-def test_the_diagnosis_explains_the_agy_the_probe_resolved(monkeypatch, tmp_path):
-    """The refused probe found agy on the seat owner's search path, fixed when the runtime
-    was imported. The reason given is about THAT binary even if this process's PATH has
-    since changed to one with no agy at all."""
-    _isolate_agy(monkeypatch, tmp_path)
-
-    def unqualified(_probe):
-        raise agy_integrity.AgyImageUnqualified("agy_image_unqualified")
-
-    _seed_default_gate(monkeypatch, {"gemini": unqualified})
-    monkeypatch.setenv("PATH", "/usr/bin:/bin")  # no agy here; the owner's path still has it
-    (excluded,) = _compose_through_the_default_gate().excluded
-    assert excluded.code == "agy_image_unqualified" and excluded.fix == RUN_FIX
-    assert "not in this runtime's shipped set" in excluded.why
 
 
 def test_a_tierless_board_proceeds_and_says_which_seat_it_left_out(monkeypatch, tmp_path, capsys):
@@ -842,10 +705,10 @@ def test_a_governed_review_on_a_backfilled_board_carries_the_exclusion(tmp_path,
     assert f"governed board: composition: {GEMINI_SEAT} excluded" in capsys.readouterr().err
 
 
-@pytest.mark.usefixtures("synthetic_train_packet")
-def test_a_train_fill_refused_below_the_floor_names_the_seats_composition_left_out(tmp_path, monkeypatch):
-    """The train's cache-reuse path composes only to validate a native fill; when that
-    board is below the floor, the refusal says which seats were left out and why."""
+def _train_fill_revalidated_with(tmp_path, monkeypatch, up_at_revalidation):
+    """Emit a fill request on a four-vendor board, approve the train with that fill, then
+    re-validate the same fill (cache reuse) when only ``up_at_revalidation`` are available.
+    Returns the halted result of that re-validation."""
     from phase_loop_runtime.train_roadmap import parse_train_roadmap
     from phase_loop_runtime.train_runner import run_train
     from test_train_prebuilt import PREBUILT_1NODE_MD
@@ -890,75 +753,30 @@ def test_a_train_fill_refused_below_the_floor_names_the_seats_composition_left_o
                         lambda **kw: gr.GateResult(ran=True, promoted=True, panel=approved))
     assert train(ledger, native_leg_fills=[fill])["status"] == "review_approved"
 
-    # The approval is cached. Now no vendor is available when the fill is re-validated.
-    monkeypatch.setattr(composition, "compose_review_board",
-                        lambda *a, **k: _REAL_COMPOSE(is_available=lambda _vendor: False))
-    halted = train(ledger, native_leg_fills=[fill], _train_review_fn=never)
+    # The approval is cached. Now the fill is re-validated with fewer vendors available.
+    monkeypatch.setattr(composition, "compose_review_board", lambda *a, **k: _REAL_COMPOSE(
+        is_available=lambda vendor: vendor in up_at_revalidation))
+    return train(ledger, native_leg_fills=[fill], _train_review_fn=never)
+
+
+@pytest.mark.usefixtures("synthetic_train_packet")
+def test_a_train_fill_refused_below_the_floor_names_the_seats_composition_left_out(tmp_path, monkeypatch):
+    """The train's cache-reuse path composes only to validate a native fill; when that
+    board is below the floor, the refusal says which seats were left out and why."""
+    halted = _train_fill_revalidated_with(tmp_path, monkeypatch, frozenset())
     assert (halted["status"], halted["reason"]) == ("review_halted", "native_fill_refused")
     assert "composed board below floor" in halted["detail"]
     for vendor_seat in ("grok:grok-4.7:high:adversarial", GEMINI_SEAT):
         assert f"{vendor_seat} excluded [{composition.SEAT_CLI_NOT_ON_PATH}]" in halted["detail"]
 
 
-# =============================================================================================
-# 6. phase-loop doctor
-# =============================================================================================
-
-PACKAGE_ROOT = Path(__file__).resolve().parents[1]
-
-
-def _doctor_schema() -> dict:
-    return json.loads((files("phase_loop_runtime") / "schemas" / "phase-loop-doctor.v1.schema.json").read_text())
-
-
-def _doctor_report(monkeypatch) -> dict:
-    """The real report; only the worktree scan (minutes on a host with hundreds of
-    worktrees, and nothing to do with this section) is replaced by its documented empty form."""
-    monkeypatch.setattr(doctor, "build_worktree_divergence", lambda _repo: {
-        "base_ref": "origin/main", "worktree_count": 0, "max_commits_ahead": 0,
-        "threshold": 20, "verdict": "ok"})
-    return doctor.build_doctor_report(PACKAGE_ROOT, fetch=lambda url: None)
-
-
-def test_doctor_says_agy_is_present_but_not_qualified_for_this_runtime(monkeypatch, tmp_path, capsys):
-    _path, digest, store = _isolate_agy(monkeypatch, tmp_path)
-    _qualify(store, digest, OTHER_RUNTIME, release="1.3.2")
-    report = _doctor_report(monkeypatch)
-    jsonschema.validate(report, _doctor_schema())
-    (row,) = report["seat_cli_qualification"]
-    assert (row["harness"], row["cli"], row["status"]) == ("gemini", "agy", "local_record_other_runtime")
-    assert row["fix"] == RUN_FIX and row["release"] == "1.3.2"
-    assert str(tmp_path) not in json.dumps(report)
-    doctor._print_doctor(report)
-    printed = capsys.readouterr().out
-    assert "agy present but not qualified for this runtime" in printed
-    assert f"fix: {RUN_FIX}" in printed
-    assert "agy 1.3.2 under a different runtime" in printed
-
-
-def test_doctor_tells_never_qualified_from_qualified_under_another_runtime(monkeypatch, tmp_path):
-    _path, digest, store = _isolate_agy(monkeypatch, tmp_path)
-    (never,) = _doctor_report(monkeypatch)["seat_cli_qualification"]
-    _qualify(store, digest, OTHER_RUNTIME)
-    (other,) = _doctor_report(monkeypatch)["seat_cli_qualification"]
-    assert (never["status"], other["status"]) == ("not_qualified", "local_record_other_runtime")
-    assert never["fix"] == other["fix"] == RUN_FIX
-    assert never["detail"] != other["detail"]
-
-
-def test_doctor_reports_an_admitted_agy_without_a_fix(monkeypatch, tmp_path, capsys):
-    _path, digest, _store = _isolate_agy(monkeypatch, tmp_path)
-    monkeypatch.setitem(gemini_heartbeat.QUALIFIED_IMAGES, digest, "e" * 64)
-    report = _doctor_report(monkeypatch)
-    jsonschema.validate(report, _doctor_schema())
-    (row,) = report["seat_cli_qualification"]
-    assert row["status"] == "release_qualified" and "fix" not in row and "note" not in row
-    doctor._print_doctor(report)
-    assert "agy present and admitted for this runtime" in capsys.readouterr().out
-
-
-def test_a_doctor_payload_without_the_new_section_still_validates():
-    golden = json.loads((files("phase_loop_runtime") / "schemas" / "phase-loop-doctor.v1.golden.json").read_text())
-    jsonschema.validate(golden, _doctor_schema())
-    assert golden.pop("seat_cli_qualification")
-    jsonschema.validate(golden, _doctor_schema())
+@pytest.mark.usefixtures("synthetic_train_packet")
+def test_a_train_fill_refused_for_drift_names_the_seat_composition_left_out(tmp_path, monkeypatch):
+    """Above the floor (the case after agy updates itself): Gemini is excluded and backfilled,
+    the composition no longer matches the emitted request, and the drift refusal names the
+    excluded seat, its code and its fix (claude F3 on agent-harness#1468)."""
+    halted = _train_fill_revalidated_with(tmp_path, monkeypatch, THREE)
+    assert (halted["status"], halted["reason"]) == ("review_halted", "native_fill_refused")
+    assert "native_fill_refused: native_fill_composition_drift: " in halted["detail"]
+    assert f"; {GEMINI_SEAT} excluded [{composition.SEAT_CLI_NOT_ON_PATH}]" in halted["detail"]
+    assert "fix: install the `agy` CLI on PATH" in halted["detail"]

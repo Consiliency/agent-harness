@@ -6,7 +6,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
-### A board seat is never dropped silently (agent-harness#1431, agent-harness#1420, agent-harness#1441)
+### A board seat is never dropped silently (agent-harness#1431, agent-harness#1441)
 
 - **The fault.** On a host whose agy build is outside the runtime's shipped set and has no
   local qualification record for this runtime, the Gemini seat's probe was refused
@@ -18,13 +18,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - **Composition says what it left out.** Every seat the composer excludes is reported with the
   seat it would have been, a typed reason, the fix and the backfilled seat that replaced it:
   on stderr at composition (`advisor-board: composition: ...`), again with the text result
-  (`[EXCLUDED] ...`), and as `composition.excluded[]` in every JSON result. A native-fill
-  request carries `composition_excluded[]`. The governed gate prints the same notice, names
-  the seats in a below-floor hold and carries a non-gating finding on a backfilled board.
-  The reason is the probe's own refusal code when it has one (`agy_image_unqualified`,
-  `seat_profile_unavailable`, ...); otherwise `board_seat_cli_not_on_path`,
+  (`[EXCLUDED] ...`), and as `composition.excluded[]` in every board result and composition
+  refusal under `--json`. The `native_fill_requested` record keeps its `composition` seat list
+  as before and carries the exclusions as `composition_excluded[]`, as does the request file.
+  The governed gate prints the same notice, names the seats in a below-floor hold and carries
+  a non-gating finding on a backfilled board. The train's cache-reuse fill check names them in
+  its below-floor and drift refusals. The reason is the probe's own refusal code when it raised
+  a typed refusal of ours (a `seat_jail.NOTICES` key, such as `agy_image_unqualified`, with
+  that table's text and fix); otherwise `board_seat_cli_not_on_path`,
   `board_seat_probe_failed`, `board_seat_probe_timed_out`, `board_seat_not_logged_in` or
-  `board_seat_unauthenticated`. No CLI output is ever copied into a reason.
+  `board_seat_unauthenticated`. No CLI output and no other exception text is copied into a
+  reason.
 - **A tier never presents a lineup its own policy refuses.** With `--landing-tier`, the tier's
   policy is checked on the composed board at composition, before a native-fill request is
   emitted, a fill is preflighted or anything is staged or launched. The refusal is
@@ -32,18 +36,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   excluded seat, its reason and its fix, and under `--json` it is the JSON result
   (`usable: false`, `refusal.stage: "composition"`). The policy, the seat floor and the agy
   qualification gate are unchanged: nothing new is admitted.
-- **`phase-loop doctor` reports the agy on PATH** in a new `seat_cli_qualification[]` section
-  (additive in `phase-loop-doctor.v1`, path-free, nothing is executed): `release_qualified`,
-  `locally_qualified`, `not_qualified` (not shipped, never qualified on this host),
-  `local_record_other_runtime` (this host qualified this build under another runtime; a
-  runtime upgrade drops the record, because it is bound to the runtime's own files),
-  `local_qualification_failed`, `self_qualification_disabled`, `store_unsafe` or `absent`,
-  with the command to run. When another agy on PATH is a shipped build but is not the first
-  one found, it says so.
-- **Test only (agent-harness#1441).** A test now fails if any review seat's argv names a host
-  path through a flag the seat profile does not bind. It reads the argv the product builds
-  (for codex and grok, the argv captured at the launch boundary) and the profile the real
-  `_seat_command_profile` returns, and knows no flag name.
+- **Test only (agent-harness#1441).** A test now fails if, in the seat argv it checks, a whole
+  absolute host path given as `--flag value` or `--flag=value` is not in the view the real
+  `_seat_command_profile` builds. It checks the brokered codex and grok argv captured at the
+  launch boundary and the gemini and claude seat builders it lists, and knows no flag name.
+  Paths embedded inside another operand are not checked.
 
 ### The grok board seat finds its staged review tree (agent-harness#1336; PR agent-harness#1438)
 
