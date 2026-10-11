@@ -576,7 +576,7 @@ def test_the_sleep_ends_on_the_file_when_it_is_renewed_or_can_no_longer_be_read(
 
 def test_the_sleep_never_lasts_longer_than_the_life_read_when_it_began(host, monkeypatch):
     """A login 1 s from expiry is replaced, mid-sleep, by another short one (449 s). The sleep
-    ends at its bound, a slice aside, not 449 s later. Mutation: drop the bound."""
+    ends at its bound, not 449 s later. Mutation: drop the bound."""
     _login(host.home, 1.0)
     real = pi._gemini_login_sleep.real
     result = []

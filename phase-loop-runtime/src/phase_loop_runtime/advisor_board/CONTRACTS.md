@@ -1375,9 +1375,9 @@ instead, and the jail is that launch's owner.
     agy's. The worst wait is the login's remaining life, up to ten minutes.
   - **What ends the sleep.** The login file is read again every 0.25 s, as the gate reads
     it. The sleep ends when the file's expiry has passed by the wall clock, when the file
-    reads fresh (something else renewed it), or when the file can no longer be read. It
-    never lasts longer than the life read when it began, a slice aside. In each case the
-    launch follows and the gate decides.
+    reads fresh (something else renewed it), or when the file can no longer be read. It is
+    bounded by the life read when it began: once that life and one more slice have passed,
+    the next read ends it. In each case the launch follows and the gate decides.
   - **No sleep** for a login with 600 s or more, an expired login, an unreadable or missing
     login file, or the image's `--help` measurement. Those go straight to the gate, as
     before.

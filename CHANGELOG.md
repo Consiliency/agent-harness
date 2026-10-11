@@ -40,7 +40,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
     starts from the same renewal.
   - A bounded leg waits only if at least 600 s of its deadline are left after the sleep,
     and is then charged the time it slept: it has up to 600 s less deadline than before,
-    never less than 600 s. Otherwise it does not wait and is launched or refused at once,
+    and about 600 s at the least. Otherwise it does not wait and is launched or refused at once,
     exactly as before. With the default deadline (1800 s) a bounded leg always waits. Under
     `heartbeat_only` no deadline is charged.
   - The renewal acts on agy's login file, not on a keyring.

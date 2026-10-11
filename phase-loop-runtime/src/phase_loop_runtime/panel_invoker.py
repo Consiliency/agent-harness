@@ -4820,9 +4820,10 @@ def _gemini_login_sleep(home, left, *, cancel=None, quiescence_latch=None) -> st
     """Sleep, in slices, until the login file in ``home`` says the login has expired. Each
     slice the file is read again, as the launch gate reads it: ``"expired"`` once its expiry
     has passed, ``"refreshed"`` when something else has renewed it, ``"unreadable"`` when it
-    can no longer be read -- each ends the sleep, and the launch follows. It never lasts
-    longer than ``left``, the life read when it began, a slice aside (``"bound"``). A set
-    ``cancel`` raises the cancellation and a set latch its own error, within a slice."""
+    can no longer be read -- each ends the sleep, and the launch follows. It is bounded by
+    ``left``, the life read when it began: once ``left`` and one more slice have passed, the
+    next read ends it (``"bound"``). A set ``cancel`` raises the cancellation and a set latch
+    its own error, within a slice."""
     sleeper = cancel if cancel is not None else threading.Event()
     end = time.monotonic() + left
     while True:
