@@ -568,6 +568,13 @@ _BANNER_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
             r"\(assessed (?P<date>\d{4}-\d{2}-\d{2}); corrected after CR\)$"
         ),
     ),
+    (
+        "superseded",
+        re.compile(
+            r"^> # SUPERSEDED — ABSORBED INTO `specs/phase-plans-v11\.md` "
+            r"\((?P<date>\d{4}-\d{2}-\d{2})\)$"
+        ),
+    ),
 )
 
 

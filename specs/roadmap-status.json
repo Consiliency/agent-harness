@@ -18,6 +18,10 @@
     },
     {
       "path": "specs/phase-plans-v10.md",
+      "status": "superseded"
+    },
+    {
+      "path": "specs/phase-plans-v11.md",
       "status": "active"
     },
     {
@@ -54,5 +58,5 @@
     }
   ],
   "schema": "roadmap_status_manifest.v1",
-  "selected_roadmap": "specs/phase-plans-v10.md"
+  "selected_roadmap": "specs/phase-plans-v11.md"
 }
