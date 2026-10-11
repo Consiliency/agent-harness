@@ -6,6 +6,59 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### A Gemini seat is no longer refused by the clock, or by a desktop keyring (agent-harness#1407, agent-harness#1420)
+
+- **The window.** A Gemini seat needs 10 minutes left on the agy login. agy renews a login
+  that has expired, and before that only close to its expiry (measured: its last 5 minutes,
+  on agy 1.2.11, 1.3.1 and 1.3.3; no command forces it earlier). For those 5 minutes of each
+  hour the launch gate's renewal was a no-op, the seat was refused
+  `gemini_credential_near_expiry`, `phase-loop agy-qualification run` failed, and a board
+  lost its Google seat. Now a Gemini seat whose login is short but has not expired sleeps,
+  before it is launched, until the login has expired. The launch gate then renews it, as it
+  renews any expired login, and the seat starts with a full hour.
+  - The sleep starts no process and takes no lock, and adds nothing to the gate: the gate
+    runs once, after the sleep, with its one renewal, its lock and its refusals. No figure
+    of agy's is used, only that agy renews a login that has expired.
+  - The worst wait is the login's remaining life, up to ten minutes.
+  - The log line `gemini_credential_awaiting_refresh` gives the seconds left and the time
+    the wait ends, which is the login's expiry. The wait also ends when something else
+    renews the login file, or when the file can no longer be read. The board's cancel and
+    the quiescence latch end it within a quarter of a second; nothing was started.
+- **The keyring.** On a host whose OS keyring agy can reach, the renewal refreshed the
+  keyring's copy of the login and left agy's login file expired. The runtime reads the file,
+  so the seat was refused whatever the time, until someone ran `agy` over SSH. The renewal
+  now runs with no session bus, so agy renews the file.
+- **Probes and admission.** The agy image's `--help` measurement makes no provider request
+  and no longer asks for a fresh login, so an availability probe or an admission lookup in
+  the window neither waits nor drops Gemini. A login that cannot be renewed at all is
+  therefore noticed at the leg, not at composition, for a self-qualified image too.
+- **Behaviour changes against main.**
+  - A seat with a short, unexpired login waits to that login's expiry. The sleep delays a
+    seat main launched at once: with agy as measured, main renewed a login with under 5
+    minutes left immediately. The sleep knows no figure of agy's, so it cannot tell that
+    login from one agy leaves alone, and such a seat now waits up to five minutes before it
+    starts from the same renewal.
+  - A bounded leg waits only if at least 600 s of its deadline are left after the sleep,
+    and is then charged the time it slept: it has up to 600 s less deadline than before,
+    and about 600 s at the least. Otherwise it does not wait and is launched or refused at once,
+    exactly as before. With the default deadline (1800 s) a bounded leg always waits. Under
+    `heartbeat_only` no deadline is charged.
+  - The renewal acts on agy's login file, not on a keyring.
+  - The `--help` measurement asks for no login.
+  - The fix line of `gemini_credential_near_expiry` and of
+    `gemini_credential_refresh_timeout` is now the renewal's own command,
+    `DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null agy models`; the old advice renewed the
+    keyring on a desktop host. `gemini_credential_awaiting_refresh` is new.
+  - A request that is refused for another reason (an unusable bind, a missing provider) is
+    refused the same way, with nothing run, after the sleep and no longer at once.
+- **What does not change.** A login with 10 minutes or more launches at once. A login that
+  has expired, cannot be read or is missing is not waited on. A renewal that fails or times
+  out and a login agy does not renew are refused exactly as before, from the same single
+  renewal run.
+- Known limit, unchanged: a seat cannot renew its copy of the login, so a Gemini seat that
+  runs past its login's expiry (10 minutes at the least, about an hour after a renewal)
+  fails in the run.
+
 ### A codex board seat whose command sandbox cannot start is DEGRADED before it runs (agent-harness#1335)
 
 - codex runs each command in its own sandbox. Where that sandbox cannot start in the seat's

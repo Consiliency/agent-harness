@@ -38,7 +38,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import contextlib
 from contextvars import ContextVar
 from dataclasses import dataclass, field, replace
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 from functools import lru_cache
 from hashlib import sha256
@@ -3143,6 +3143,8 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "claude_seat_login_token_expired", "claude_seat_login_token_expiring",
     "claude_seat_login_token_awaiting_refresh",
     "seat_jail_qualification_failed",
+    # agent-harness#1407: a Gemini seat waiting for its agy login to expire (never a refusal)
+    "gemini_credential_awaiting_refresh",
     "gemini_seat_credential_missing", "gemini_seat_credential_unusable",
     "gemini_seat_token_scope_excess", "gemini_seat_stream_split_unavailable",
     "gemini_seat_profile_unqualified", "gemini_seat_token_expired", "gemini_seat_token_in_output",
@@ -4801,13 +4803,25 @@ def _parse_agy_expiry(text: str) -> datetime:
     return parsed
 
 
-def _gemini_credential_fresh(home):
+#: The login life a Gemini seat is launched with. Its copy of the login is access-only, so
+#: nothing can renew it once it runs.
+_GEMINI_LOGIN_MIN_S = 600
+
+
+def _gemini_login_left_s(home) -> float | None:
+    """Seconds left on the agy login in ``home``'s file (the store a seat is given a copy
+    of), or ``None`` when its expiry cannot be read."""
     try:
         value = json.loads(_seat_credential(home, ".gemini/antigravity-cli/antigravity-oauth-token"))
         expiry = _parse_agy_expiry(value["token"]["expiry"])
-        return (expiry - datetime.now(timezone.utc)).total_seconds() >= 600
+        return (expiry - datetime.now(timezone.utc)).total_seconds()
     except (KeyError, TypeError, ValueError):
-        return False
+        return None
+
+
+def _gemini_credential_fresh(home):
+    left = _gemini_login_left_s(home)
+    return left is not None and left >= _GEMINI_LOGIN_MIN_S
 
 
 _GEMINI_REFRESH_LOCK = threading.Lock()
@@ -4823,6 +4837,12 @@ def _refresh_gemini_credential(home, image):
             temporary = stack.enter_context(tempfile.TemporaryDirectory(prefix="seat-admin-"))
             env = _broker_subscription_env()
             env["HOME"] = str(home)
+            # agy keeps its login in the OS keyring when it can reach one over the D-Bus
+            # session bus, and in its file otherwise; when the keyring fails it loads and
+            # saves the file. The runtime reads the FILE and copies the FILE into the seat,
+            # so the renewal must act on the file: this address names no bus
+            # (agent-harness#1420).
+            env["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=/dev/null"
             token = _OWNED_LAUNCH.set(True)
             egress_token = _EGRESS_LAUNCH_PREFIX.set(())
             try:
@@ -4851,10 +4871,112 @@ def _refresh_gemini_credential(home, image):
                 raise _sandbox_egress.SeatIdentityUnverified("gemini_credential_near_expiry")
 
 
+def _gemini_launch_needs_login(command, gemini_profile=None) -> bool:
+    """Whether a Gemini seat launch will talk to the provider. The image's ``--help``
+    measurement (``agy_qualification._run_help``) makes no request, so the state of the login
+    cannot matter to it; every other launch needs a login that outlasts it."""
+    return not (gemini_profile is not None and list(command[1:]) == ["--help"])
+
+
+_GEMINI_LOGIN_AWAITING = "gemini_credential_awaiting_refresh"
+
+
+def _await_gemini_login(command, env, *, gemini_profile=None, review_monitor=None,
+                        quiescence_latch=None, deadline_s=None) -> float:
+    """agent-harness#1407: before a Gemini seat is launched on a login that is short but not
+    yet expired, sleep until the login has expired. The launch gate then renews it, as it
+    renews any expired login: agy renews a login that has expired, and nothing makes it renew
+    one earlier. Returns the seconds slept.
+
+    This is a sleep and nothing else. It starts no process, takes no lock, admits no image
+    and refuses nothing; the gate runs once, after it, with its one renewal and its
+    refusals. It applies only to a Gemini launch that needs its login and whose login file is
+    readable with more than 0 and less than :data:`_GEMINI_LOGIN_MIN_S` seconds left. Every
+    other state returns at once.
+
+    A bounded leg sleeps only when at least :data:`_GEMINI_LOGIN_MIN_S` of its deadline is
+    left after the sleep, and the caller charges it the time slept; otherwise it does not
+    sleep and the gate decides at once. The monitor's cancel event (else the board's cancel
+    context) and the quiescence latch end the sleep within a slice, by raising. Under
+    ``heartbeat_only`` it is recorded as ``login_wait`` and the stall clock restarts after
+    it."""
+    name = Path(os.fspath(command[0])).name.lower() if command else ""
+    if gemini_profile is None and name not in {"agy", "gemini"}:
+        return 0.0
+    if not _gemini_launch_needs_login(command, gemini_profile):
+        return 0.0
+    try:
+        home = Path(env.get("HOME", str(Path.home())))
+        if gemini_profile is not None:
+            home = Path(_gemini_credential_target(gemini_profile.mount_args)).parents[2]
+        left = _gemini_login_left_s(home)
+    except (_sandbox_egress.EgressUnavailable, ValueError, OSError):
+        return 0.0  # no readable login file: the launch refuses it as it always has
+    if left is None or not 0 < left < _GEMINI_LOGIN_MIN_S:
+        return 0.0
+    if (review_monitor is None and deadline_s is not None
+            and float(deadline_s) - left < _GEMINI_LOGIN_MIN_S):
+        return 0.0  # the leg would not be left a run: no sleep, the gate decides now
+    cancel = review_monitor.cancel if review_monitor is not None else _BOARD_CANCEL.get()
+    _what, why, fix = _seat_jail.NOTICES[_GEMINI_LOGIN_AWAITING]
+    log = logging.getLogger(__name__)
+    log.warning(
+        "seat gemini [%s]: %s (%d s left; until %s UTC) -- %s", _GEMINI_LOGIN_AWAITING, why,
+        int(left), (datetime.now(timezone.utc) + timedelta(seconds=left)).strftime("%H:%M:%S"),
+        fix)
+    if review_monitor is not None:
+        review_monitor.note(login_wait={"state": "awaiting_refresh", "max_wait_s": left,
+                                        "waited_s": 0.0})
+    state, started = "cancelled", time.monotonic()
+    try:
+        state = _gemini_login_sleep(home, left, cancel=cancel, quiescence_latch=quiescence_latch)
+    finally:
+        slept = time.monotonic() - started
+        if review_monitor is not None:
+            review_monitor.started = time.monotonic()  # the stall clock starts after the wait
+            review_monitor.note(login_wait={"state": state, "max_wait_s": left,
+                                            "waited_s": round(slept, 1)})
+    log.info("seat gemini: waited %d s for the agy login (%s); launching", int(slept), state)
+    return slept
+
+
+def _gemini_login_sleep(home, left, *, cancel=None, quiescence_latch=None) -> str:
+    """Sleep, in slices, until the login file in ``home`` says the login has expired. Each
+    slice the file is read again, as the launch gate reads it: ``"expired"`` once its expiry
+    has passed, ``"refreshed"`` when something else has renewed it, ``"unreadable"`` when it
+    can no longer be read -- each ends the sleep, and the launch follows. It is bounded by
+    ``left``, the life read when it began: once ``left`` and one more slice have passed, the
+    next read ends it (``"bound"``). A set ``cancel`` raises the cancellation and a set latch
+    its own error, within a slice."""
+    sleeper = cancel if cancel is not None else threading.Event()
+    end = time.monotonic() + left
+    while True:
+        if quiescence_latch is not None:
+            quiescence_latch.raise_if_set()
+        try:
+            now_left = _gemini_login_left_s(home)
+        except (_sandbox_egress.EgressUnavailable, ValueError, OSError):
+            now_left = None
+        if now_left is None:
+            return "unreadable"
+        if now_left >= _GEMINI_LOGIN_MIN_S:
+            return "refreshed"
+        if now_left <= 0:
+            return "expired"
+        if time.monotonic() >= end + _LOGIN_WAIT_SLICE_S:
+            return "bound"
+        if sleeper.wait(min(now_left, _LOGIN_WAIT_SLICE_S)):
+            raise _ReviewOperationCancelled("review_operation_cancelled")
+
+
 @contextmanager
 def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=(),
-                 broker_socket=None, gemini_profile=None, role=SeatLaunchRole.PROVIDER_REVIEW):
-    """Copy declared subscription state into a per-launch private home."""
+                 broker_socket=None, gemini_profile=None, role=SeatLaunchRole.PROVIDER_REVIEW,
+                 needs_login=True):
+    """Copy declared subscription state into a per-launch private home.
+
+    ``needs_login`` is False only for a launch that makes no provider request
+    (:func:`_gemini_launch_needs_login`): the freshness of the login is then not asked."""
     _require_owner_platform()
     home = Path(env.get("HOME", str(Path.home())))
     if gemini_profile is not None:
@@ -4872,7 +4994,8 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
     keep_fds = set()
     redactions = []
     with contextlib.ExitStack() as stack:
-        if (harness == "gemini" and SeatLaunchRole(role) is SeatLaunchRole.PROVIDER_REVIEW
+        if (harness == "gemini" and needs_login
+                and SeatLaunchRole(role) is SeatLaunchRole.PROVIDER_REVIEW
                 and not _gemini_credential_fresh(home)):
             if gemini_profile is not None:
                 # The help measurement also uses this caller. Reuse its verified image;
@@ -5242,7 +5365,8 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
             harness=harness, executable=executable, env=env, cwd=cwd,
             readonly_paths=readonly,
             outputs=tuple(path for path in outputs if path != transcript),
-            gemini_profile=gemini_profile, role=role))
+            gemini_profile=gemini_profile, role=role,
+            needs_login=_gemini_launch_needs_login(command, gemini_profile)))
         profile = replace(profile, output_dirs=tuple(
             (source, directory) for directory, source in private.items()))
         owned_command = [provider, *command[1:]]
@@ -8488,6 +8612,14 @@ def _run_leg_with_liveness(
     """
     if gemini_profile is not None and review_monitor is None:
         raise ValueError("gemini_heartbeat_monitor_required")
+    # agent-harness#1407: a Gemini seat whose agy login is short but not yet expired sleeps
+    # HERE until it has expired -- before the launch and outside the quiescence latch's
+    # launch lock. Nothing is started; the launch gate below then renews it.
+    slept = _await_gemini_login(
+        cmd, env, gemini_profile=gemini_profile, review_monitor=review_monitor,
+        quiescence_latch=quiescence_latch, deadline_s=deadline_s)
+    if slept and review_monitor is None:
+        deadline_s -= slept  # a bounded leg is charged the sleep
     proc = None
     profile_stack = contextlib.ExitStack()
 
