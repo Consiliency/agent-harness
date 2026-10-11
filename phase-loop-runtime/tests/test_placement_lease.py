@@ -452,6 +452,26 @@ def test_another_owners_sandbox_survives_and_a_sandbox_on_the_second_page_is_rea
     assert {call[1] for call in remote.calls if call[0] == "list_owned"} == {owner}
 
 
+def test_a_lease_still_listed_on_a_later_page_after_its_kill_is_kept():
+    """The confirmation reads the whole listing: a kill that was acknowledged but did not
+    remove a sandbox listed on a later page leaves the entry kept. Mutation: read the first
+    page only."""
+    owner = placement_lease.owner_id()
+    first = placement_lease.open_lease("stage", _root())
+    last = placement_lease.open_lease("stage", _root())
+    for lease in (first, last):
+        lease.abandon()
+    remote = Remote()
+    remote.page_size = 1
+    remote.hold(owner, "b" * 32, "sbx-entry-less-page-one")
+    remote.hold(owner, first.lease_id, "sbx-first")
+    remote.hold(owner, last.lease_id, "sbx-still-there")
+    remote.kill_is_noop.add(last.lease_id)
+    done = placement_lease.reap(Lookup(remote), _bound())
+    assert done == {"cleared": (first.lease_id,), "kept": (last.lease_id,)}
+    assert _files() == [f"{last.lease_id}.json"] and "b" * 32 not in remote.killed()
+
+
 def test_a_listed_lease_that_is_live_is_never_killed_even_without_being_reaped_for():
     owner = placement_lease.owner_id()
     dead = placement_lease.open_lease("stage", _root())
