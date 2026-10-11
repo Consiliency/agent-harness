@@ -429,11 +429,12 @@ def test_after_the_sleep_the_gate_is_mains_a_login_agy_does_not_renew_is_refused
     assert len(sleeps) == 1 and len(host.calls()) == 1
 
 
-@pytest.mark.parametrize("check", ["bind", "owner"])
+@pytest.mark.parametrize("check", ["bind", "owner", "provider"])
 def test_a_request_main_refuses_for_another_reason_starts_nothing_before_its_refusal(
         host, sleeps, processes, monkeypatch, tmp_path, check):
     """A request main refuses before its credential gate (a linked bind source, no owner
-    platform) is refused the same way, with no host renewal: the process spy sees nothing.
+    platform, no provider on the search path) is refused the same way, with no host renewal:
+    the process spy sees nothing.
     Stated in the PR: it is refused AFTER the sleep, where main refused it at once.
 
     Mutation: run a renewal before the launch."""
@@ -445,13 +446,19 @@ def test_a_request_main_refuses_for_another_reason_starts_nothing_before_its_ref
         link.symlink_to(source)
         host.command += ["--file", str(link)]
         code = "seat_bind_source_unavailable"
+    elif check == "provider":
+        empty = tmp_path / "no-provider"
+        empty.mkdir()
+        monkeypatch.setattr(pi, "_PROVIDER_SEARCH_PATH", str(empty))
+        code = "seat_provider_unavailable"
     else:
         def no_owner():
             raise sandbox_egress.SeatIdentityUnverified("seat_owner_unavailable")
 
         monkeypatch.setattr(pi, "_require_owner_platform", no_owner)
         code = "seat_owner_unavailable"
-    with pytest.raises(sandbox_egress.SeatIdentityUnverified, match=code):
+    refusal = FileNotFoundError if check == "provider" else sandbox_egress.SeatIdentityUnverified
+    with pytest.raises(refusal, match=code):
         _run_leg(host, monkeypatch, tmp_path)
     assert host.calls() == [] and processes == [] and len(sleeps) == 1
 
@@ -600,8 +607,11 @@ def test_heartbeat_only_records_the_sleep_and_restarts_the_stall_clock(host, sle
 
 
 @pytest.mark.parametrize("left,margin,deadline_s,waits,outcome", [
+    (450, 0, 1800, True, _LaunchReached),                 # the default deadline: it waits
     (450, 0, 1051, True, _LaunchReached),                 # 1051 - 450 >= 600: it waits
     (450, 0, 1049, False, NEAR_EXPIRY),                   # it does not: main's refusal, at once
+    (450, 0, 600, False, NEAR_EXPIRY),
+    (450, 0, 455.5, False, NEAR_EXPIRY),                  # the sleep would merely fit: it does not
     (200, AGY_MEASURED_MARGIN_S, 799, False, _LaunchReached),   # it does not: main's launch, at once
     (450, 0, 5, False, NEAR_EXPIRY),                      # an explicit short deadline: exactly main
 ])

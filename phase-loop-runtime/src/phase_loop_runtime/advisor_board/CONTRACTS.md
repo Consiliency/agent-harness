@@ -1359,8 +1359,9 @@ instead, and the jail is that launch's owner.
 - **The agy login a Gemini seat needs (agent-harness#1407).** A seat's copy cannot be
   renewed, and its agy session fails about 10 s before the login expires (measured). So at
   launch the agy login FILE (`~/.gemini/antigravity-cli/antigravity-oauth-token`) must have
-  600 s left. That gate, its one renewal and its refusals are unchanged.
-  - **The renewal** (the gate's, as before) is one host run of the verified image,
+  600 s left. The gate changes in two ways, both below: its renewal's environment, and the
+  `--help` measurement. The wait adds nothing to it.
+  - **The renewal** (the gate's) is one host run of the verified image,
     `agy models`, in an empty directory, for at most 15 s, under the gate's own lock. It now
     runs with `DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null`: agy keeps a login in the OS
     keyring when it can reach one and in its file otherwise, and with no bus it loads and
@@ -1369,7 +1370,7 @@ instead, and the jail is that launch's owner.
     than it chooses to (measured on agy 1.2.11, 1.3.1 and 1.3.3: only in the login's last 5
     minutes). So a Gemini launch whose login file is readable and has more than 0 and less
     than 600 s left sleeps, before the launch, until that login has expired. The gate then
-    runs as it always does, and its one renewal renews the expired login. The sleep starts
+    runs, once, and its one renewal renews the expired login. The sleep starts
     no process, takes no lock, admits no image and refuses nothing. It uses no figure of
     agy's. The worst wait is the login's remaining life, up to ten minutes.
   - **What ends the sleep.** The login file is read again every 0.25 s, as the gate reads

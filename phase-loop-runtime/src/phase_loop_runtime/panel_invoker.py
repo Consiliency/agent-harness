@@ -4765,8 +4765,8 @@ def _await_gemini_login(command, env, *, gemini_profile=None, review_monitor=Non
     one earlier. Returns the seconds slept.
 
     This is a sleep and nothing else. It starts no process, takes no lock, admits no image
-    and refuses nothing; the gate, its one renewal and its refusals are unchanged and follow
-    it. It applies only to a Gemini launch that needs its login and whose login file is
+    and refuses nothing; the gate runs once, after it, with its one renewal and its
+    refusals. It applies only to a Gemini launch that needs its login and whose login file is
     readable with more than 0 and less than :data:`_GEMINI_LOGIN_MIN_S` seconds left. Every
     other state returns at once.
 

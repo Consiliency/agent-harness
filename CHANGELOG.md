@@ -16,9 +16,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   lost its Google seat. Now a Gemini seat whose login is short but has not expired sleeps,
   before it is launched, until the login has expired. The launch gate then renews it, as it
   renews any expired login, and the seat starts with a full hour.
-  - The sleep starts no process and takes no lock. The gate, its one renewal, its lock and
-    its refusals are unchanged. No figure of agy's is used, only that agy renews a login
-    that has expired.
+  - The sleep starts no process and takes no lock, and adds nothing to the gate: the gate
+    runs once, after the sleep, with its one renewal, its lock and its refusals. No figure
+    of agy's is used, only that agy renews a login that has expired.
   - The worst wait is the login's remaining life, up to ten minutes.
   - The log line `gemini_credential_awaiting_refresh` gives the seconds left and the time
     the wait ends, which is the login's expiry. The wait also ends when something else
