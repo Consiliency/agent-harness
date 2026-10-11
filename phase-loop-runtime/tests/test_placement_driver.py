@@ -924,12 +924,14 @@ def test_a_no_deadline_leg_is_admitted_and_renewed_while_the_lock_is_held(far):
 
 
 def test_a_leg_with_a_deadline_is_not_renewed(far):
-    """With a deadline the backend keeps the sandbox for the deadline; nothing is renewed."""
-    far.max_lifetime_s = 0.05
-    placement = _placed(far, deadline_s=0.05)
+    """With a deadline the backend keeps the sandbox for the deadline; nothing is renewed.
+    The leg outlasts a renewal interval (a third of the maximum lifetime) and finishes
+    before its end."""
+    far.max_lifetime_s = 0.6
+    placement = _placed(far, deadline_s=0.6)
 
     def slow(ref, wait_s):
-        time.sleep(0.15)
+        time.sleep(0.3)
         return far.result(ref)
 
     far.waits = [slow]
@@ -1058,3 +1060,110 @@ def test_a_leg_receipt_keeps_todays_record_shape():
         "step": "committed", "sandbox_ref": "sbx-1", "snapshot_sha256": DIGEST,
         "attested_by": "runtime",
     }
+
+
+# --------------------------------------------------------------------------------------
+# agent-harness#1492 board round 1: the president's findings, as named tests.
+# --------------------------------------------------------------------------------------
+
+def test_a_capacity_answer_from_commit_never_sends_the_seat_to_the_launching_host(far):
+    """codex F006. A capacity code raised by `commit` sets the capacity bar (C7: the first
+    capacity answer on any rung), so the seat is not run rather than run on this machine;
+    the slot is released as a failed transfer. Mutation: the bar is not set on a
+    commit-time capacity code."""
+    far.behave["commit"] = raises(CAPACITY)
+    decision = walk(rungs("drv"), last_rung="local")
+    assert (decision.outcome, decision.code) == ("not_run", EXHAUSTED)
+    assert summary(decision.trail) == [("r1", "refused", CAPACITY)]
+    assert far.calls[-3:] == ["commit", "kill", "list_owned"] and "execute" not in far.calls
+    assert decision.notices == () and lease_files() == []
+
+
+def test_the_fixed_end_interrupts_a_wait_in_flight(far):
+    """codex F007. The call in flight is bounded by the time left to the end, so a `wait`
+    that blocks past it is cancelled at the end and the leg ends
+    `sandbox_placement_end_reached`, not lost. Mutation: bound the call by the wait slice
+    plus the answer bound."""
+    release_wait, wait_entered, cancel_seen = threading.Event(), threading.Event(), threading.Event()
+    failures: list[str] = []
+
+    def wait(ref, wait_s):
+        wait_entered.set()
+        release_wait.wait(5)
+        return sp.ExecProgress(ref, 1)
+
+    def seal(request):
+        return sp.ExecSpec("leg", b"sealed", None, 0.1, 1024)
+
+    placement = walk(rungs("drv"), seal=seal).placement
+
+    def run():
+        try:
+            sp.run_placed(placement, on_progress=None, cancelled=threading.Event())
+        except sp.PlacementUnavailable as exc:
+            failures.append(exc.code)
+
+    far.behave["wait"] = wait
+    far.behave["cancel"] = lambda *args: cancel_seen.set()
+    worker = threading.Thread(target=run)
+    worker.start()
+    try:
+        assert wait_entered.wait(1)
+        ended_in_time = cancel_seen.wait(0.5)
+    finally:
+        release_wait.set()
+        worker.join(2)
+    assert ended_in_time, "the fixed end passed while the driver stayed inside wait"
+    assert failures == [END_REACHED]
+
+
+def test_execute_receives_the_callers_cancel_in_its_bound(far):
+    """codex F009 (C4). The backend's bound carries the walk's cancel; the driver still
+    waits for the answer, so the attempt is placed and launch stays final. Mutation: pass
+    `execute` a fresh event."""
+    cancelled = threading.Event()
+    observed: list[bool] = []
+
+    def execute(ref, spec, bound):
+        cancelled.set()
+        observed.append(bound.cancelled.is_set())
+        return sp.BackendReceipt("launched", ref, far.digest)
+
+    far.behave["execute"] = execute
+    decision = walk(rungs("drv"), cancelled=cancelled)
+    assert decision.outcome == "placed" and observed == [True]
+    with pytest.raises(sp.PlacementCancelled):
+        sp.run_placed(decision.placement, on_progress=None, cancelled=cancelled)
+
+
+@pytest.mark.parametrize("returned", ["private-digest", "other-sandbox", "other-digest", "other-step"])
+def test_an_execute_receipt_that_is_not_this_sandboxes_is_dropped(far, returned):
+    """codex F008 and claude N2. `execute`'s receipt is recorded only when it says
+    `launched` for this sandbox and the runtime's digest; anything else is dropped without
+    failing the launch, so no backend text reaches a receipt and `applied_rule` is not
+    poisoned. Mutation: record the receipt unchecked."""
+    private_text = "/home/operator/.credentials?token=synthetic-secret"
+
+    def execute(ref, spec, bound):
+        if returned == "private-digest":
+            return sp.BackendReceipt("launched", ref, private_text)
+        if returned == "other-sandbox":
+            return sp.BackendReceipt("launched", "sbx-someone-else", far.digest)
+        if returned == "other-digest":
+            return sp.BackendReceipt("launched", ref, "e" * 64)
+        return sp.BackendReceipt("completed", ref, far.digest)
+
+    far.behave["execute"] = execute
+    placement = _placed(far)
+    exported = json.dumps([receipt.to_dict() for receipt in placement.receipts])
+    assert private_text not in exported and "sbx-someone-else" not in exported
+    assert _steps(placement, "backend") == ["committed"]
+    sp.run_placed(placement, on_progress=None, cancelled=threading.Event())
+    assert _applied(placement) == (True, None)
+
+
+def test_a_matching_execute_receipt_is_recorded(far):
+    placement = _placed(far)
+    assert _steps(placement, "backend") == ["committed", "launched"]
+    sp.run_placed(placement, on_progress=None, cancelled=threading.Event())
+    assert _applied(placement) == (True, None)

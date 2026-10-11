@@ -300,25 +300,6 @@ def open_lease(backend_name: str | None, root: object) -> Lease:
     return Lease(lease_id=lease_id, owner=owner, path=directory / final, fd=fd, entry=entry)
 
 
-def _lock_free(directory: Path, lease_id: str) -> bool:
-    """Is no process holding this lease? A lease with no entry at all is free: the owner id
-    and the journal live together, so a sandbox of this owner without an entry is nobody's."""
-    import fcntl
-
-    for name in (f"{lease_id}.json", f".{lease_id}.pending"):
-        try:
-            fd = os.open(directory / name, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC)
-        except OSError:
-            continue
-        try:
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            return False
-        finally:
-            os.close(fd)
-    return True
-
-
 def reap(
     backends: Callable[[str], object],
     bound: "sandbox_placement.OperationBound",
@@ -327,11 +308,11 @@ def reap(
 
     ``backends(scheme)`` returns the backend for a root's scheme, or ``None``. It is called
     only for an entry whose lock is free: with no such entry no backend is contacted and
-    no plugin is loaded. For a contacted backend: everything it lists for this owner whose
-    lease lock is free is killed by lease id, and so is every free entry naming it, listed
-    or not (the kill is also the fence); then the listing is read again, and an entry is
-    cleared only when its kill was acknowledged and nothing is listed for it. Anything else
-    is kept for the next run. Liveness is never decided by a pid or an age.
+    no plugin is loaded. For a contacted backend every free entry naming it is killed by
+    lease id, listed or not (the kill is also the fence); nothing else is ever killed. Then
+    the listing is read, and an entry is cleared only when its kill was acknowledged and
+    nothing is listed for it. Anything else, an entry that cannot be opened included, is
+    kept for the next run. Liveness is never decided by a pid or an age.
 
     Returns the lease ids ``cleared`` and ``kept``.
     """
@@ -352,7 +333,10 @@ def reap(
                 continue
             try:
                 fd = os.open(directory / name, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC)
+            except FileNotFoundError:
+                continue  # cleared since the listing
             except OSError:
+                kept.append(match.group(1))  # unreadable: never acted on, never forgotten
                 continue
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -383,7 +367,7 @@ def reap(
             if backend is None or bound.cancelled.is_set():
                 kept.extend(lease_id for lease_id, _fd, _path, _entry in group)
                 continue
-            done = _reap_backend(backend, group, directory, bound)
+            done = _reap_backend(backend, group, bound)
             cleared.extend(done)
             kept.extend(lease_id for lease_id, _fd, _path, _entry in group if lease_id not in done)
     finally:
@@ -393,10 +377,11 @@ def reap(
 
 
 def _reap_backend(
-    backend: object, group: list[tuple[str, int, Path, dict[str, object]]], directory: Path,
+    backend: object, group: list[tuple[str, int, Path, dict[str, object]]],
     bound: "sandbox_placement.OperationBound",
 ) -> set[str]:
-    """One backend: list, kill by lease, confirm, clear. Returns the lease ids cleared."""
+    """One backend: kill this journal's free entries by lease id, list, confirm, clear.
+    Returns the lease ids cleared."""
     calls = sandbox_placement._Calls()
     owner = owner_id()
 
@@ -412,13 +397,8 @@ def _reap_backend(
             return None
 
     try:
-        mine = [lease_id for lease_id, _fd, _path, _entry in group]
-        targets = list(mine)
-        for lease_id in sorted((listed() or set()) - set(mine)):
-            if _ID.fullmatch(lease_id) and _lock_free(directory, lease_id):
-                targets.append(lease_id)
         killed: set[str] = set()
-        for lease_id in targets:
+        for lease_id in [lease_id for lease_id, _fd, _path, _entry in group]:
             try:
                 calls.run(
                     lambda lease_id=lease_id: backend.kill(lease_id, bound),  # type: ignore[attr-defined]

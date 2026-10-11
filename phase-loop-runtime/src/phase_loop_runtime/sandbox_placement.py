@@ -1411,6 +1411,11 @@ class _Walk:
         except PlacementUnavailable as exc:
             if exc.code == _TIMEOUT:
                 return failed, _BUDGET_SPENT if self._budget_spent() else _TIMEOUT
+            if exc.code == _CAPACITY:
+                # The bar is set by the first capacity answer on any rung (C7). Nothing
+                # waits here: the slot is released as a failed transfer.
+                self.capacity_bar = True
+                return failed, _CAPACITY
             return failed, self._refusal_code(rung, exc.code, _COMMIT_REFUSALS)
         except Exception:
             return failed, _REFUSED
@@ -1467,6 +1472,7 @@ class _Walk:
         assert placement is not None and spec is not None
         _send_execute(
             self.calls, placement, spec, lease, min(ANSWER_BOUND_S, self._budget_left()),
+            self.cancelled,
         )
         self._record(rung, "placed", None)
         placement._trail = tuple(self.trail)
@@ -1511,9 +1517,12 @@ def _commit_claims(
 
 def _send_execute(
     calls: _Calls, placement: "LegPlacement", spec: ExecSpec, lease: object,
-    timeout_s: float = ANSWER_BOUND_S,
+    timeout_s: float = ANSWER_BOUND_S, cancelled: threading.Event | None = None,
 ) -> None:
-    """The one place `execute` is sent from. Never for a fenced lease (C6)."""
+    """The one place `execute` is sent from. Never for a fenced lease (C6).
+
+    The caller's cancel reaches the backend through `execute`'s bound (C4). The driver
+    itself still waits for the answer within the bound: launch is final."""
     if getattr(lease, "fenced", True):
         raise RuntimeError("execute is never sent for a fenced lease")
     backend, sandbox_ref = placement.backend, placement.sandbox_ref
@@ -1524,10 +1533,16 @@ def _send_execute(
     placement.record_runtime("launched")
     try:
         receipt = calls.run(
-            lambda: backend.execute(sandbox_ref, spec, _bound(timeout_s)),  # type: ignore[attr-defined]
+            lambda: backend.execute(sandbox_ref, spec, _bound(timeout_s, cancelled)),  # type: ignore[attr-defined]
             timeout_s,
         )
-        if isinstance(receipt, BackendReceipt):
+        if (
+            isinstance(receipt, BackendReceipt) and receipt.step == "launched"
+            and receipt.sandbox_ref == sandbox_ref
+            and receipt.snapshot_sha256 == placement.prepared.snapshot_sha256
+        ):
+            # Anything else is dropped: a backend's receipt is recorded only when it names
+            # this sandbox and the runtime's own digest.
             placement.record_backend_receipt(receipt)
     except Exception:
         # Launch is final: even if `execute` raised, the attempt is launched.
@@ -1645,21 +1660,28 @@ def run_placed(
                 was_cancelled = True
                 break
             wait_s = _WAIT_SLICE_S
+            call_bound = wait_s + ANSWER_BOUND_S
             if spec.must_end_within_s is not None:
                 left = spec.must_end_within_s - (_monotonic() - launched_at)
                 if left <= 0:
                     failure = _END_REACHED
                     break
                 wait_s = min(wait_s, left)
+                # The call in flight never runs past the end (C2).
+                call_bound = min(call_bound, left)
+            ends_at_the_end = spec.must_end_within_s is not None and call_bound >= left
             try:
                 got = calls.run(
                     lambda: backend.wait(sandbox_ref, wait_s),  # type: ignore[attr-defined]
-                    wait_s + ANSWER_BOUND_S, cancelled,
+                    call_bound, cancelled,
                 )
             except _CallCancelled:
                 continue
             except PlacementUnavailable as exc:
-                failure = _END_REACHED if exc.code == _END_REACHED else _LOST_AFTER_LAUNCH
+                if exc.code == _END_REACHED or (exc.code == _TIMEOUT and ends_at_the_end):
+                    failure = _END_REACHED
+                else:
+                    failure = _LOST_AFTER_LAUNCH
                 break
             except Exception:
                 failure = _LOST_AFTER_LAUNCH

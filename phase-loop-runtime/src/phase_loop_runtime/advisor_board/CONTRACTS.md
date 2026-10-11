@@ -698,6 +698,9 @@ the caller passes a PATH and the runtime reads it.
         seal.
       - A result echoes the request's digest (C9) when it is a JSON object whose
         `request_sha256` is the SHA-256 of `ExecSpec.request`.
+      - A capacity code raised by `commit` sets the capacity bar (C7: the bar is set by the
+        first capacity answer on any rung); the rung is released as a failed transfer and
+        recorded `sandbox_placement_at_capacity`.
       - A trail record is `{rung, class, code}`; class `refused_unconfirmed` adds
         `release: sandbox_placement_release_unconfirmed`, and class `cancelled` has no
         code and adds `release_needed` and `release_confirmed`. The rung a seat was

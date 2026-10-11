@@ -431,7 +431,9 @@ def test_an_abandoned_entry_is_never_cleared_on_an_empty_listing_alone():
 
 
 def test_another_owners_sandbox_survives_and_a_sandbox_on_the_second_page_is_reaped():
-    """Mutations: drop the owner filter; read the first page only."""
+    """Mutations: drop the owner filter; read the first page only. A listed sandbox of this
+    owner with no journal entry is never killed: the reaper kills only its own free
+    entries, by lease id (agent-harness#1492 board round 1)."""
     owner = placement_lease.owner_id()
     first = placement_lease.open_lease("stage", _root())
     last = placement_lease.open_lease("stage", _root())
@@ -445,8 +447,8 @@ def test_another_owners_sandbox_survives_and_a_sandbox_on_the_second_page_is_rea
     remote.hold(owner, last.lease_id, "sbx-page-two")
     done = placement_lease.reap(Lookup(remote), _bound())
     assert sorted(done["cleared"]) == sorted([first.lease_id, last.lease_id])
-    assert set(remote.sandboxes) == {"e" * 32}
-    assert "e" * 32 not in remote.killed() and "a" * 32 in remote.killed()
+    assert set(remote.sandboxes) == {"e" * 32, "a" * 32}
+    assert "e" * 32 not in remote.killed() and "a" * 32 not in remote.killed()
     assert {call[1] for call in remote.calls if call[0] == "list_owned"} == {owner}
 
 
@@ -477,6 +479,39 @@ def test_an_entry_whose_backend_is_not_configured_or_unreadable_is_kept():
     lookup = Lookup(Remote())
     assert placement_lease.reap(lookup, _bound())["kept"] == (lease.lease_id,)
     assert lookup.asked == [] and _files() == [f"{lease.lease_id}.json"]
+
+
+def test_an_entry_that_cannot_be_opened_is_kept_and_never_acted_on(monkeypatch, capsys):
+    """An entry that exists but cannot be opened is reported kept, no backend call is made
+    for it, and the command exits 1. Monkeypatched, so it holds when run as root.
+    Mutation: skip an unopenable entry silently."""
+    import errno
+
+    owner = placement_lease.owner_id()
+    blocked = placement_lease.open_lease("stage", _root())
+    blocked.abandon()
+    remote = Remote()
+    remote.hold(owner, blocked.lease_id, "sbx-blocked")
+    real_open = os.open
+
+    def deny(path, *args, **kwargs):
+        if str(path).endswith(f"{blocked.lease_id}.json"):
+            raise PermissionError(errno.EACCES, "permission denied")
+        return real_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "open", deny)
+    lookup = Lookup(remote)
+    assert placement_lease.reap(lookup, _bound()) == {"cleared": (), "kept": (blocked.lease_id,)}
+    assert lookup.asked == [] and remote.calls == [] and "sbx-blocked" in str(remote.sandboxes)
+
+    sp.register_backend("resto", _Protocol(remote))
+    try:
+        monkeypatch.setenv("PHASE_LOOP_SANDBOX_ROOT", ROOT)
+        assert cli.main(["placement", "reap"]) == 1
+        assert "0 cleared, 1 kept" in capsys.readouterr().out and remote.calls == []
+    finally:
+        sp._REGISTRY.pop("resto", None)
+        sp._BACKEND_CODES.pop("resto", None)
 
 
 def test_a_pending_entry_is_removed_only_when_nobody_holds_it():
