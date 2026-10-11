@@ -1669,7 +1669,6 @@ def run_placed(
                 wait_s = min(wait_s, left)
                 # The call in flight never runs past the end (C2).
                 call_bound = min(call_bound, left)
-            ends_at_the_end = spec.must_end_within_s is not None and call_bound >= left
             try:
                 got = calls.run(
                     lambda: backend.wait(sandbox_ref, wait_s),  # type: ignore[attr-defined]
@@ -1678,7 +1677,12 @@ def run_placed(
             except _CallCancelled:
                 continue
             except PlacementUnavailable as exc:
-                if exc.code == _END_REACHED or (exc.code == _TIMEOUT and ends_at_the_end):
+                if exc.code == _END_REACHED or (
+                    exc.code == _TIMEOUT and spec.must_end_within_s is not None
+                    # Decided from the clock now, not from the planned bound: a time-out
+                    # before the end is a lost leg (C11, C12).
+                    and _monotonic() - launched_at >= spec.must_end_within_s
+                ):
                     failure = _END_REACHED
                 else:
                     failure = _LOST_AFTER_LAUNCH

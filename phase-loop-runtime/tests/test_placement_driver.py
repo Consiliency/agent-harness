@@ -1167,3 +1167,44 @@ def test_a_matching_execute_receipt_is_recorded(far):
     assert _steps(placement, "backend") == ["committed", "launched"]
     sp.run_placed(placement, on_progress=None, cancelled=threading.Event())
     assert _applied(placement) == (True, None)
+
+
+def test_a_backend_time_out_before_the_fixed_end_is_a_lost_leg(monkeypatch):
+    """codex F001 (board round 2). Whether the end was reached is read from the clock when
+    the time-out is handled, not from the planned bound: a backend that raises the time-out
+    code at once, with ten seconds left, has lost the leg; it has not reached the end.
+    Mutation: decide from the planned call bound."""
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(sp, "_monotonic", lambda: 0.0)
+    calls = []
+
+    def wait(sandbox_ref, wait_s):
+        assert wait_s == 10.0
+        raise sp.PlacementUnavailable("sandbox_placement_operation_timeout")
+
+    backend = SimpleNamespace(
+        wait=wait,
+        cancel=lambda *args: calls.append("cancel"),
+        kill=lambda *args: calls.append("kill"),
+        list_owned=lambda *args: (),
+    )
+    lease = SimpleNamespace(
+        lease_id="a" * 32, owner_id="b" * 32,
+        fence=lambda: calls.append("fence"),
+        note_killed=lambda: None,
+        clear=lambda: calls.append("clear"),
+        abandon=lambda: calls.append("abandon"),
+    )
+    placement = SimpleNamespace(
+        backend=backend, sandbox_ref="sbx-early-timeout",
+        _spec=sp.ExecSpec("leg", b"sealed", 10.0, 10.0, 1024),
+        _lease=lease, _launched_at=0.0, _launch_failed=False,
+        _trail=(), notices=[],
+    )
+
+    with pytest.raises(sp.PlacementUnavailable) as caught:
+        sp.run_placed(placement, on_progress=None, cancelled=threading.Event())
+
+    assert calls == ["cancel", "fence", "kill", "clear"]
+    assert caught.value.code == "sandbox_placement_lost_after_launch"
