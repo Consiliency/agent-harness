@@ -6,6 +6,44 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### A codex board seat whose command sandbox cannot start is DEGRADED before it runs (agent-harness#1335)
+
+- codex runs each command in its own sandbox. Where that sandbox cannot start in the seat's
+  view, every command fails before it runs, but codex still exits 0 with a verdict. The seat
+  was `OK` and counted toward the reviewer floor although it had read nothing.
+- Before a codex seat that has a shell is run, the runtime now probes codex's command
+  sandbox in the seat's own view (`codex sandbox ... -- true`, launched exactly as the seat
+  will be, no model call). When the probe exits non-zero and prints the sandbox launcher's
+  own diagnostic (a line starting `bwrap: `), the leg ends `DEGRADED` with the typed notice
+  `seat_tool_sandbox_unavailable`, empty text, and the seat is not run. It is not a usable
+  review: the reviewer floor does not count it, the president receives
+  `unusable (DEGRADED)` for it, and the governed gate records a warning, not a block.
+- **Limit.** Every other probe outcome is inconclusive: a timeout, a launch refusal, a
+  codex whose `sandbox` subcommand differs, a launcher error that does not start with
+  `bwrap: `. The seat then runs and is counted exactly as before this change, so a codex
+  seat that cannot run commands can still be `OK` in those cases. The probe is not made on
+  the sealed route (the seat has no shell) or on the capture route (its launch is frozen);
+  the capture route is unchecked.
+- **Two known causes, neither repaired here.** This change does not alter what any seat
+  sandbox permits.
+  - A sandboxed board's staged tree (measured with codex 0.162 and bubblewrap): since
+    0.7.25 the seat's view shows the tree read only, and codex's `workspace-write` sandbox
+    cannot create its mount points in it. A tree that already contains those directories
+    starts.
+  - A host that refuses the nested namespace codex's sandbox needs (agent-harness#1335,
+    measured on such a host).
+- **What a board does.** It runs on without the codex seat. The floor is 3 usable seats of
+  4, so there is no slack: one more unusable seat makes the board unusable (non-zero exit),
+  where before it exited 0 with a codex seat that had read nothing. On the plan and
+  production_code tiers the composition cannot omit or replace the codex seat; the
+  president still rules and receives it as `unusable (DEGRADED)`. The runtime accepts no
+  native fill for a codex seat, so that lens is covered only outside the board run. This
+  holds until the staged tree's presentation to the seat is changed by a separate change.
+- A board cancel during the probe kills it at once and the leg ends cancelled. The probe is
+  one more launch per codex leg, bounded at 30 seconds; its time is not charged to a bounded
+  leg's deadline.
+- Grok, Claude and Gemini seats have no such probe and are not covered.
+
 ### The grok board seat finds its staged review tree (agent-harness#1336; PR agent-harness#1438)
 
 - In 0.7.25 and 0.7.26 a sandboxed board's grok seat failed at launch (`grok: Failed to

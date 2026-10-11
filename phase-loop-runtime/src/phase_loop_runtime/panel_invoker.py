@@ -127,6 +127,7 @@ from . import seat_credentials as _seat_credentials
 from . import seat_jail as _seat_jail
 from . import seat_jail_autoqualify as _seat_jail_autoqualify
 from . import seat_session_label as _seat_session_label
+from . import seat_tool_evidence as _seat_tool_evidence
 from . import seat_uid as _seat_uid
 from . import seat_preflight as _seat_preflight
 from .advisor_board.research import (
@@ -3148,6 +3149,8 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "gemini_seat_egress_unconfined", "gemini_seat_token_refreshed_in_jail",
     "gemini_seat_subagent_or_unknown_event", "native_seat_unavailable_heartbeat_only",
     "seat_prompt_over_cap", "seat_identity_unverified",
+    # agent-harness#1335: the seat's own command sandbox could not start
+    "seat_tool_sandbox_unavailable",
     # board skips
     "skip: omnigent gateway unavailable",
     # claude opus fallback (#188)
@@ -3431,6 +3434,11 @@ def _leg_failure_kind(rc: int | None, review_text: str, log_text: str) -> str:
         return "timeout"
     if isinstance(rc, int) and rc < 0:
         return "signal"
+    if (type(log_text) is _HarnessCode
+            and str.__str__(log_text) == _seat_tool_evidence.TOOL_SANDBOX_UNAVAILABLE):
+        # agent-harness#1335: an environment failure this runtime established itself (its
+        # sandbox probe). Provenance by TYPE: CLI text that spells the code is plain `str`.
+        return "env_failure"
     haystack = _ANSI_CSI_RE.sub("", _log_tail(log_text) + "\n" + str(review_text or ""))
     if _USAGE_LIMIT_LABEL_RE.search(haystack):
         return "usage_limit"
@@ -11220,6 +11228,66 @@ def _claude_seat_login_margin_s(timeout_s: int | None) -> float:
     return _seat_credentials.login_margin_s(_leg_hard_deadline_s(timeout_s))
 
 
+# agent-harness#1335: how long the codex command-sandbox probe may take. It runs `true`.
+_CODEX_SANDBOX_PROBE_TIMEOUT_S = 30
+_CODEX_SANDBOX_PROBE_PROFILES = {"workspace-write": ":workspace", "read-only": ":read-only"}
+
+
+def _codex_sandbox_probe_command(cmd: "Sequence[str]") -> "list[str] | None":
+    """The no-inference probe for the command sandbox THIS codex launch will use, or ``None``.
+
+    ``codex sandbox`` runs one command in codex's own sandbox. The probe names the same tree
+    (``--cd``), the same sandbox mode and the same ``sandbox_workspace_write`` settings as the
+    launch, and runs ``true``. ``None`` when the argv is not a codex launch this can mirror
+    (no tree or sandbox mode named, or a mode with no sandbox)."""
+    words = [os.fspath(word) for word in cmd]
+    if not words or Path(words[0]).name != "codex":
+        return None
+    try:
+        workdir = words[words.index("--cd") + 1]
+        profile = _CODEX_SANDBOX_PROBE_PROFILES[words[words.index("--sandbox") + 1]]
+    except (ValueError, IndexError, KeyError):
+        return None
+    settings = [item for index, word in enumerate(words[:-1])
+                if word == "-c" and words[index + 1].startswith("sandbox_workspace_write.")
+                for item in ("-c", words[index + 1])]
+    return ["codex", "sandbox", "--permission-profile", profile, "--cd", workdir,
+            *settings, "--", "true"]
+
+
+def _codex_command_sandbox_cannot_start(cmd: "Sequence[str]", *, cwd, env, retain_caps=(),
+                                        child_scratch: "str | None" = None,
+                                        quiescence_latch: "_ProviderQuiescenceLatch | None" = None,
+                                        ) -> bool:
+    """Measure the capability, not the reply: can codex start a command in this seat's view?
+
+    codex runs every command inside its own bubblewrap sandbox. Where that sandbox cannot
+    start in the seat's view (a refused nested namespace; a workspace root the view shows
+    read-only) the seat reads nothing, yet codex exits 0 with a verdict, and for some of
+    those failures it leaves no record of the attempt in any stream. So the probe is
+    launched exactly as the seat will be -- the same function, owner, working directory,
+    environment and retained capability, under the leg's quiescence latch (a cancel kills
+    it like any launch of the leg) -- and only the argv after ``codex`` differs.
+
+    True ONLY for a failed probe that printed the launcher's own diagnostic. Everything else
+    (the probe ran, cannot be launched, timed out, or failed another way such as a codex
+    without this subcommand or a launcher error with another prefix) is inconclusive: the
+    seat runs and is classified exactly as it was before this check existed. A replaced
+    process runner (a test seam) is never asked to answer a probe."""
+    probe = _codex_sandbox_probe_command(cmd)
+    if probe is None or _run_leg_with_liveness is not _PRODUCTION_RUN_LEG_WITH_LIVENESS:
+        return False
+    try:
+        run = _run_leg_with_liveness(
+            probe, cwd=cwd, env=env, deadline_s=_CODEX_SANDBOX_PROBE_TIMEOUT_S,
+            retain_caps=retain_caps, child_scratch=child_scratch,
+            quiescence_latch=quiescence_latch,
+        )
+    except (OSError, subprocess.TimeoutExpired, _sandbox_egress.EgressUnavailable):
+        return False  # inconclusive; the leg's own launch reports its own refusal
+    return run.returncode != 0 and _seat_tool_evidence.launcher_diagnostic_in(run.stderr)
+
+
 def _exec_leg(
     leg: str,
     review_dir: Path,
@@ -11363,6 +11431,7 @@ def _exec_leg(
             "-",
         ]
         codex_retain_caps: tuple[str, ...] = ()
+        staged_tree: Path | None = None
         if brokered:
             # One sandbox decision, read by the argv, the recorded controls, and the launch.
             staged_tree = _sandbox_in(review_dir)
@@ -11373,6 +11442,16 @@ def _exec_leg(
                 codex_effort_args=codex_effort_args,
                 staged_tree=staged_tree,
             )
+        # agent-harness#1335: where this route gives codex a shell, its command sandbox is
+        # probed in the seat's own view BEFORE the model is called; a sandbox that cannot
+        # start ends the leg here, typed. Not probed: the sealed route (the seat has no
+        # shell) and the capture route (its launch is frozen), which has no such check.
+        if (agy_capture is None and (not brokered or staged_tree is not None)
+                and _codex_command_sandbox_cannot_start(
+                    cmd, cwd=provider_cwd, env=env, retain_caps=codex_retain_caps,
+                    child_scratch=leg_scratch, quiescence_latch=quiescence_latch)):
+            return 1, "", _HarnessCode(_seat_tool_evidence.TOOL_SANDBOX_UNAVAILABLE)
+        if brokered:
             _record_broker_provider_evidence(
                 broker_evidence, harness="codex",
                 model=model or HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["codex"],
