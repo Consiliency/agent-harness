@@ -311,11 +311,21 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "leg refused", "this executor route cannot run a review through the seat-launch owner",
         "run the review through the CLI executor route"),
     "gemini_credential_near_expiry": (
-        "leg refused", "the agy login expires too soon and did not renew",
-        "run `agy` once interactively to renew the login, then re-run"),
+        "leg refused",
+        "the agy login file has under 10 minutes left and the renewal (`agy models`) did not "
+        "extend it; the seat does not run",
+        "run `DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null agy models`, then re-run: it renews "
+        "agy's login file (the store the seat reads, not a desktop keyring) once the login is "
+        "close to its expiry; if agy asks you to sign in, run it again without `models`"),
+    "gemini_credential_awaiting_refresh": (
+        "waiting",
+        "the agy login has under 10 minutes left and has not expired; agy renews a login that "
+        "has expired, so the seat waits until this login's expiry and then renews it once",
+        "nothing to run: the wait ends at the login's expiry"),
     "gemini_credential_refresh_timeout": (
         "leg refused", "renewing the agy login timed out",
-        "check the network, run `agy` once interactively, then re-run"),
+        "check the network, then run `DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null agy models` "
+        "(it renews agy's login file, the store the seat reads) and re-run"),
     "seat_keyring_unavailable": (
         "leg refused", "the seat could not join a fresh session keyring or seal its filter",
         "allow keyctl and seccomp for unprivileged processes (container runtimes may deny "

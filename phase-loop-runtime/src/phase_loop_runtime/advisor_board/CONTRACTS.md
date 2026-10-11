@@ -1400,6 +1400,53 @@ instead, and the jail is that launch's owner.
     token stay, because the CLI sends no bearer without them (measured).
   - **Every copy:** it sits in the seat's private home, and its secret values are
     redacted from the seat's output.
+- **The agy login a Gemini seat needs (agent-harness#1407).** A seat's copy cannot be
+  renewed, and its agy session fails about 10 s before the login expires (measured). So at
+  launch the agy login FILE (`~/.gemini/antigravity-cli/antigravity-oauth-token`) must have
+  600 s left. The gate changes in two ways, both below: its renewal's environment, and the
+  `--help` measurement. The wait adds nothing to it.
+  - **The renewal** (the gate's) is one host run of the verified image,
+    `agy models`, in an empty directory, for at most 15 s, under the gate's own lock. It now
+    runs with `DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null`: agy keeps a login in the OS
+    keyring when it can reach one and in its file otherwise, and with no bus it loads and
+    saves the file, which is the store the runtime reads and copies (agent-harness#1420).
+  - **The wait.** agy renews a login that has expired; nothing makes it renew one earlier
+    than it chooses to (measured on agy 1.2.11, 1.3.1 and 1.3.3: only in the login's last 5
+    minutes). So a Gemini launch whose login file is readable and has more than 0 and less
+    than 600 s left sleeps, before the launch, until that login has expired. The gate then
+    runs, once, and its one renewal renews the expired login. The sleep starts
+    no process, takes no lock, admits no image and refuses nothing. It uses no figure of
+    agy's. The worst wait is the login's remaining life, up to ten minutes.
+  - **What ends the sleep.** The login file is read again every 0.25 s, as the gate reads
+    it. The sleep ends when the file's expiry has passed by the wall clock, when the file
+    reads fresh (something else renewed it), or when the file can no longer be read. It is
+    bounded by the life read when it began: once that life and one more slice have passed,
+    the next read ends it. In each case the launch follows and the gate decides.
+  - **No sleep** for a login with 600 s or more, an expired login, an unreadable or missing
+    login file, or the image's `--help` measurement. Those go straight to the gate, as
+    before.
+  - **Where:** before the launch and outside the quiescence latch's launch lock, for the
+    board seat, the qualification's seat and the president's Gemini rung; and in executor
+    `review`, before its egress namespace is created.
+  - **Cancellation:** the monitor's cancel event (else the board's cancel context) and the
+    quiescence latch end the sleep within a 0.25 s slice. Nothing was started, so there is
+    nothing to clean up. Executor `review` outside a board has no cancel event.
+  - **Monitoring and deadlines:** under `heartbeat_only` the sleep is recorded as
+    `login_wait` (`awaiting_refresh`, then `expired`, `refreshed`, `unreadable`, `bound` or
+    `cancelled`) and the stall clock starts after it. A bounded leg sleeps only if at least
+    600 s of its deadline are left after the sleep, and is then charged the time it slept;
+    otherwise it does not sleep and the gate decides at once. The time the gate's renewal
+    takes is not charged, as before.
+  - **The notice:** `gemini_credential_awaiting_refresh`, with the seconds left and the time
+    the sleep ends, which is the login's expiry.
+  - **What this costs.** A login that agy would have renewed at once is also slept on,
+    because the sleep knows no figure of agy's. A request that is refused for another
+    reason (an unusable bind, a missing provider) is refused after the sleep, with nothing
+    run.
+  - **The image's `--help` measurement** makes no provider request and asks for no login.
+    For a self-qualified image this was the one point before launch (composition, the
+    board preflight) where a login that cannot be renewed was noticed; such a login is now
+    refused at the leg, as it already was for a release-qualified image.
 - **Refusals.** Each owner refusal is a closed detail code and a `seat_jail.NOTICES`
   entry, with what happened, why and a fix line (`seat_owner_unavailable`,
   `seat_filtered_egress_unavailable`, `seat_keyring_unavailable`, ...).
