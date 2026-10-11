@@ -103,6 +103,7 @@ def _view(command, *, env, cwd, **grant) -> list[str]:
     with pi._seat_command_profile(command, env=env, cwd=cwd, **grant) as (_owned, profile):
         return pi._seat_filesystem_view(
             cwd, readonly_paths=profile.readonly_paths, outputs=profile.outputs,
+            output_dirs=profile.output_dirs,
             profile_mounts=profile.mount_args, broker_socket=profile.broker_socket,
             writable_trees=profile.writable_trees)
 
