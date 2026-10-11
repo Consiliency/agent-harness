@@ -6,6 +6,27 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### The codex board seat can run commands in its staged tree again (agent-harness#1470)
+
+- Since 0.7.25 the codex seat of a sandboxed board (one that stages a review tree) could not
+  start a command (measured with codex 0.162 and bubblewrap). The seat's view showed every
+  directory a provider names with `--cd` read only, while the codex seat runs
+  `--sandbox workspace-write` rooted at its staged tree and codex's sandbox must create its
+  mount points there first (`bwrap: Can't mkdir <tree>/.agents: Read-only file system`).
+  Only a reviewed tree that already contained those directories started. This is the first
+  of the two causes named in the entry below.
+- The seat's own staged tree is now bound writable in its view. It is that leg's disposable
+  clone, staged writable on purpose and removed when the leg ends.
+- Only that. The grant is made by the code that staged the tree and checked again where the
+  view is built: a codex argv that says `workspace-write` and names that tree with `--cd`,
+  a staged review tree by provenance, inside a directory this process marked as its
+  sandbox, a real directory of the operator's and never a link. A grant that fails a check
+  refuses the launch. The read-only codex route, grok's tree, `--add-dir`, the operator's
+  repository, other legs' trees and every other bind are unchanged.
+- Nothing the runtime records after a seat ran is read from the seat's tree, and teardown
+  removes whatever the seat left there (measured with the real CLI: codex leaves its
+  `.agents`, `.aws` and `.codex` mount-point directories when it is killed).
+
 ### A codex board seat whose command sandbox cannot start is DEGRADED before it runs (agent-harness#1335)
 
 - codex runs each command in its own sandbox. Where that sandbox cannot start in the seat's

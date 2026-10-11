@@ -36,6 +36,7 @@ from .review_stage import REVIEW_STAGE_DIR_PREFIX, remove_review_stage
 
 __all__ = [
     "SandboxEntry", "discover", "reap", "reap_until_free", "mark_as_sandbox", "SANDBOX_MARKER",
+    "staged_by_this_process",
 ]
 
 WORK_DIRNAME = "work"
@@ -109,6 +110,21 @@ def _owner_alive(path: Path) -> bool:
     except OSError:
         return False
     return _recorded_owner_alive(text)
+
+
+def staged_by_this_process(path: Path) -> bool:
+    """Did THIS process mark ``path`` as its sandbox? True only for a marker of this
+    account's (read without following a link) that names this pid and its start time --
+    what `mark_as_sandbox(path, owner_pid=os.getpid())` wrote. Another process's sandbox,
+    an ownerless marker and a directory that merely looks like a stage are all False."""
+    text = _read_own_record(Path(path) / SANDBOX_MARKER)
+    if text is None:
+        return False
+    fields = dict(
+        part.split("=", 1) for line in text.splitlines() for part in line.split() if "=" in part
+    )
+    return (fields.get("pid") == str(os.getpid())
+            and fields.get("start", "") == (_process_start(os.getpid()) or ""))
 
 
 #: A per-run scratch directory that is not a sandbox (the launcher's review copy, the

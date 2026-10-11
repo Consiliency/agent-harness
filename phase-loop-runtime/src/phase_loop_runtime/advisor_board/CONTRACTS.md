@@ -1127,6 +1127,20 @@ are recorded on agent-harness#1132.
     a warning. The runtime has no substitute for a codex seat: it accepts no native fill for
     one, and on the plan and production_code tiers the composition cannot omit or replace it.
   Other harnesses' seats have no such probe.
+- **A workspace-write codex seat's own staged tree is writable in its view
+  (agent-harness#1470).** Every other path a provider names is bound read-only into the
+  seat-launch owner's view; outputs are the declared files only. The one exception is the
+  tree a codex seat is rooted at when it runs `--sandbox workspace-write`: codex's sandbox
+  creates its mount points in the workspace root before any command starts. The grant is
+  explicit (`_exec_leg` passes the tree it staged, to the sandbox probe and to the launch
+  alike) and is checked again in `_seat_command_profile`: harness codex, an argv that says
+  `workspace-write` (or the probe's profile for that mode) and names the tree with `--cd`,
+  `_require_staged_tree` provenance, a parent directory this process marked as its sandbox
+  (`sandbox_retention.staged_by_this_process`), a real directory of the operator's, not a
+  link. A grant that fails any check refuses the launch
+  (`seat_bind_source_unavailable`); it is never widened to another path and never dropped.
+  The unbrokered read-only codex route, grok's `--cwd` tree and `--add-dir` stay read-only.
+  Nothing recorded after the run is read from the tree; `remove_review_stage` removes it.
 - **No sealed fallback for a jail-eligible seat (plan amendment A3b).** A Claude seat that
   would take the jailed route but cannot (no credential, a failed first-use qualification,
   a login not renewed within the wait, an unqualified or unsafe gate, an unsafe override)
