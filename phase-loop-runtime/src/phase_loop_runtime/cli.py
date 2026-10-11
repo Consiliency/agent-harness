@@ -1060,6 +1060,16 @@ def build_parser() -> argparse.ArgumentParser:
     seat_sandbox_sub.add_argument("seat_sandbox_action",
                                   choices=("qualify", "reap", "store-token", "token-status"))
     seat_sandbox_sub.add_argument("seat_sandbox_path", metavar="PATH", nargs="?")
+    # placement reap (agent-harness#896): the lease journal's reaper for non-local
+    # placement. It contacts a backend only when a lease with a free lock names it.
+    placement_sub = subparsers.add_parser(
+        "placement",
+        help=("Non-local placement maintenance: `reap` removes what dead or abandoned "
+              "placement leases left on the configured remote roots, and clears a lease "
+              "only when its removal is confirmed. It does nothing while no lease is "
+              "recorded."),
+    )
+    placement_sub.add_argument("placement_action", choices=("reap",))
     # publication-mode (agent-harness#1392): the interactive execute-phase path's
     # equivalent of --closeout-mode. Read-only; prints the mode and its required action.
     publication_mode_sub = subparsers.add_parser(
@@ -1583,6 +1593,8 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
         return _advisor_board_command(args=args)
     if command == "seat-sandbox":
         return _seat_sandbox_command(args=args)
+    if command == "placement":
+        return _placement_command(args=args)
     if command == "publication-mode":
         from . import publication_mode
 
@@ -2743,6 +2755,33 @@ def _seat_sandbox_command(args: argparse.Namespace) -> int:
         return 1
     print(f"seat-sandbox reap: removed {args.seat_sandbox_path}")
     return 0
+
+
+def _placement_command(args: argparse.Namespace) -> int:
+    """`placement reap`: run the lease journal's reaper for the configured backends."""
+    import threading
+
+    from . import placement_lease, sandbox_placement, sandbox_policy
+
+    try:
+        schemes = {root.scheme for root in sandbox_policy.candidate_roots()}
+    except sandbox_policy.SandboxConfigError as exc:
+        print(f"placement reap: refused: {exc}", file=sys.stderr)
+        return 2
+
+    def backend_for(scheme: str) -> object:
+        # Only a configured root's backend is contacted, and its plugin is loaded only now.
+        return sandbox_placement.backend_for_scheme(scheme) if scheme in schemes else None
+
+    try:
+        done = placement_lease.reap(backend_for, sandbox_placement.OperationBound(
+            sandbox_placement.ANSWER_BOUND_S, threading.Event(),
+        ))
+    except OSError as exc:
+        print(f"placement reap: failed ({type(exc).__name__})", file=sys.stderr)
+        return 1
+    print(f"placement reap: {len(done['cleared'])} cleared, {len(done['kept'])} kept")
+    return 1 if done["kept"] else 0
 
 
 def _board_notices_json(legs) -> list[dict[str, str]]:
