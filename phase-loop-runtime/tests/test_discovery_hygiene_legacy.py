@@ -1,6 +1,6 @@
 """LEGACY (CLEANSHIP P7) — roadmap-discovery hygiene.
 
-Pins the three reachable discovery-hygiene fixes that ship as a UNIT:
+Pins the four reachable discovery-hygiene fixes that ship as a UNIT:
 
 - ``manifest_backed_roadmap`` also skips ``status == "completed"`` entries (default
   ON) so a bare run never silently auto-selects a FINISHED roadmap, with a
@@ -14,10 +14,14 @@ Pins the three reachable discovery-hygiene fixes that ship as a UNIT:
   this branch and must not crash.
 - Genuine resumption is protected by the state-file ladder
   (``active_state_roadmap``), which precedes the manifest and glob branches.
+- A coherent roadmap-status registry selects its declared active roadmap before
+  the manifest fallback, which also filters out non-active registry entries.
 """
 from __future__ import annotations
 
+import json
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -111,6 +115,50 @@ class CompletedSkipTest(unittest.TestCase):
                 manifest_backed_roadmap(repo), active.resolve(),
                 "completed-skip must leave the active roadmap as the unique candidate",
             )
+
+    def test_status_registry_precedes_superseded_manifest_candidate(self):
+        with tempfile.TemporaryDirectory() as td:
+            repo = make_repo(Path(td))
+            superseded = repo / "specs" / "phase-plans-v1.md"
+            superseded.write_text(
+                "# Roadmap v1\n\n"
+                "> # SUPERSEDED — ABSORBED INTO `specs/phase-plans-v11.md` (2026-10-09)\n\n"
+                "### Phase 0 — Runner (RUNNER)\n",
+                encoding="utf-8",
+            )
+            active = repo / "specs" / "phase-plans-v2.md"
+            active.write_text(
+                "# Roadmap v2\n\n"
+                "> **Status (2026-10-09): ACTIVE — created this date, nothing executed yet.**\n\n"
+                "### Phase 0 — Next (NEXT)\n",
+                encoding="utf-8",
+            )
+            (repo / "specs" / "roadmap-status.json").write_text(
+                json.dumps(
+                    {
+                        "schema": "roadmap_status_manifest.v1",
+                        "selected_roadmap": "specs/phase-plans-v2.md",
+                        "roadmaps": [
+                            {"path": "specs/phase-plans-v1.md", "status": "superseded"},
+                            {"path": "specs/phase-plans-v2.md", "status": "active"},
+                        ],
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            _add_phase_entry(repo, "v1", "RUNNER", "committed", superseded)
+            subprocess.run(["git", "add", "-A"], cwd=repo, check=True)
+            subprocess.run(
+                ["git", "commit", "-q", "-m", "roadmap transition fixture"],
+                cwd=repo,
+                check=True,
+            )
+
+            self.assertIsNone(manifest_backed_roadmap(repo))
+            self.assertEqual(select_roadmap(repo, None), active.resolve())
 
 
 class AmbiguousRoadmapBlockerTest(unittest.TestCase):

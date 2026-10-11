@@ -385,17 +385,22 @@ def test_declared_alias_in_registered_nested_roadmap_is_not_reported(tmp_path: P
     nested = "specs/phase-plans-archive/convergence-v1.md"
     (repo / nested).parent.mkdir()
     (repo / nested).write_bytes((REPO / "specs/phase-plans-convergence-v1.md").read_bytes())
+    active = "specs/phase-plans-v11.md"
+    (repo / active).write_bytes((REPO / active).read_bytes())
     registry = {
         "schema": "roadmap_status_manifest.v1",
-        "selected_roadmap": "specs/phase-plans-v10.md",
+        "selected_roadmap": active,
         "roadmaps": [
             {"path": nested, "status": "superseded"},
-            {"path": "specs/phase-plans-v10.md", "status": "active"},
+            {"path": "specs/phase-plans-v10.md", "status": "superseded"},
+            {"path": active, "status": "active"},
         ],
     }
     (repo / "specs/roadmap-status.json").write_text(json.dumps(registry), encoding="utf-8")
     subprocess.run(["git", "-C", str(repo), "add", "specs"], check=True)
-    assert roadmap_lint._tracked_roadmap_paths(repo) == [nested, "specs/phase-plans-v10.md"]
+    assert roadmap_lint._tracked_roadmap_paths(repo) == [
+        nested, "specs/phase-plans-v10.md", active,
+    ]
     assert roadmap_lint.read_roadmap_status(repo, repo / "specs/roadmap-status.json") == registry
     proc = subprocess.run(command, capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr[-2000:]

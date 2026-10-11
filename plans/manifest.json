@@ -1249,7 +1249,16 @@
       "handoff_ref": null,
       "if_gates_produced": [],
       "lanes": [],
-      "lifecycle": [],
+      "lifecycle": [
+        {
+          "at": "2026-10-09T09:48:53Z",
+          "by": "claude-roadmap-v11-supersession",
+          "metadata": {
+            "reason": "superseded by specs/phase-plans-v11.md (agent-harness#1394); carried phases are replanned as plans/phase-plan-v11-<ALIAS>.md"
+          },
+          "transition": "orphaned"
+        }
+      ],
       "owner_skill": "claude-phase-roadmap-builder",
       "phase_alias": "ROADMAP",
       "reflection_ref": null,
@@ -1260,10 +1269,10 @@
         "type": "phase"
       },
       "slug": "phase-plans-v10",
-      "status": "imported",
+      "status": "orphaned",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-07-29T00:00:00Z"
+      "updated_at": "2026-10-09T09:48:53Z"
     },
     {
       "acceptance_criteria_count": 4,
@@ -2762,6 +2771,12 @@
           "roadmap_sha256": "8ff479de883ad007d0ea1a32f1bffafa50d6af8068cb78fb6bd9e9a0151194b8",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1402"
+        },
+        {
+          "plan_sha256": "4661bd07417ed5855f7f95c68c2f7f1e1f12b7e0ff6ce2ff49c410ccc29c7012",
+          "roadmap_sha256": "36654e211670ba02da87650677adba957cfc7e1c8cd4a907abf0fd59194f3d10",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1394"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/99e37ba2/codex-v10-plan-conform/20260730T041108Z-65fd85.md",
@@ -3473,6 +3488,12 @@
           "roadmap_sha256": "8ff479de883ad007d0ea1a32f1bffafa50d6af8068cb78fb6bd9e9a0151194b8",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1402"
+        },
+        {
+          "plan_sha256": "bd2e5e8e8f821c8d2c912043ccb3cb18d3eb2210125aeeeadddfc45227bcd0c4",
+          "roadmap_sha256": "36654e211670ba02da87650677adba957cfc7e1c8cd4a907abf0fd59194f3d10",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1394"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/4b9cf157/codex-v10-plan-fabpub/20260730T035716Z-01-fabpub-plan.md",
@@ -5405,6 +5426,14 @@
             "scope": "Self-contained historical authority carried forward unchanged for the current HARDEN plan, including the three omitted frozen-path transitions in agent-harness#1292; preserves spent repair authorizations and landed entries; no retroactive review, test, or acceptance claim"
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-10-09T09:48:53Z",
+          "by": "claude-roadmap-v11-supersession",
+          "metadata": {
+            "reason": "superseded by specs/phase-plans-v11.md (agent-harness#1394); carried phases are replanned as plans/phase-plan-v11-<ALIAS>.md"
+          },
+          "transition": "orphaned"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -5697,6 +5726,12 @@
           "source": "Consiliency/agent-harness#1402",
           "plan_sha256": "0a667c94e434c2f4f2e60c164499b3f9833066ef4a01be84cfe5d3d68b4b8cde",
           "roadmap_sha256": "8ff479de883ad007d0ea1a32f1bffafa50d6af8068cb78fb6bd9e9a0151194b8"
+        },
+        {
+          "plan_sha256": "d3e6860ba91156194769a6a91d547043e64d5f7031036c2e8dcb474d59a4292b",
+          "roadmap_sha256": "36654e211670ba02da87650677adba957cfc7e1c8cd4a907abf0fd59194f3d10",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1394"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/fdaed78f/codex-v10-plan-harden/20260730T035939Z-01-harden-plan.md",
@@ -5707,10 +5742,10 @@
         "type": "phase"
       },
       "slug": "v10-HARDEN",
-      "status": "committed",
+      "status": "orphaned",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-10-06T17:41:12Z",
+      "updated_at": "2026-10-09T09:48:53Z",
       "sl0_repairs": [
         {
           "authorization_id": "agent-harness#1078:PANEL-SL1:HARDEN",
@@ -5993,6 +6028,14 @@
             "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0"
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-10-09T09:48:53Z",
+          "by": "claude-roadmap-v11-supersession",
+          "metadata": {
+            "reason": "superseded by specs/phase-plans-v11.md (agent-harness#1394); carried phases are replanned as plans/phase-plan-v11-<ALIAS>.md"
+          },
+          "transition": "orphaned"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -6005,10 +6048,10 @@
         "type": "phase"
       },
       "slug": "v10-INTEG",
-      "status": "committed",
+      "status": "orphaned",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-25T22:12:46Z"
+      "updated_at": "2026-10-09T09:48:53Z"
     },
     {
       "acceptance_criteria_count": null,
@@ -6336,6 +6379,12 @@
           "roadmap_sha256": "8ff479de883ad007d0ea1a32f1bffafa50d6af8068cb78fb6bd9e9a0151194b8",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1402"
+        },
+        {
+          "plan_sha256": "1ee100476b3728e2a95fa144b61bd4cdf855ad4056e03b2b38929c30fd202ca3",
+          "roadmap_sha256": "36654e211670ba02da87650677adba957cfc7e1c8cd4a907abf0fd59194f3d10",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1394"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/6a8f043f/codex-v10-plan-legible/20260730T040717Z-01-legible-plan.md",
@@ -6422,6 +6471,14 @@
             "source": "Consiliency/agent-harness#375"
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-10-09T09:48:53Z",
+          "by": "claude-roadmap-v11-supersession",
+          "metadata": {
+            "reason": "superseded by specs/phase-plans-v11.md (agent-harness#1394); carried phases are replanned as plans/phase-plan-v11-<ALIAS>.md"
+          },
+          "transition": "orphaned"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -6612,6 +6669,12 @@
           "roadmap_sha256": "8ff479de883ad007d0ea1a32f1bffafa50d6af8068cb78fb6bd9e9a0151194b8",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1402"
+        },
+        {
+          "plan_sha256": "45614648e5e69931be408bfbd08a0279a61d8a390d1baf7113944b759d15fb84",
+          "roadmap_sha256": "36654e211670ba02da87650677adba957cfc7e1c8cd4a907abf0fd59194f3d10",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1394"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/7ae6c600/codex-v10-leglife-plan/20260825T151729Z-01-leglife-plan.md",
@@ -6622,10 +6685,10 @@
         "type": "phase"
       },
       "slug": "v10-LEGLIFE",
-      "status": "committed",
+      "status": "orphaned",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-25T17:16:25Z"
+      "updated_at": "2026-10-09T09:48:53Z"
     },
     {
       "acceptance_criteria_count": null,
@@ -6641,7 +6704,16 @@
         "SL-2",
         "SL-3"
       ],
-      "lifecycle": [],
+      "lifecycle": [
+        {
+          "at": "2026-10-09T09:48:53Z",
+          "by": "claude-roadmap-v11-supersession",
+          "metadata": {
+            "reason": "superseded by specs/phase-plans-v11.md (agent-harness#1394); carried phases are replanned as plans/phase-plan-v11-<ALIAS>.md"
+          },
+          "transition": "orphaned"
+        }
+      ],
       "owner_skill": "claude-plan-phase",
       "phase_alias": "PRESROUTE",
       "plan_authority_history": [
@@ -6794,6 +6866,12 @@
           "roadmap_sha256": "8ff479de883ad007d0ea1a32f1bffafa50d6af8068cb78fb6bd9e9a0151194b8",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1402"
+        },
+        {
+          "plan_sha256": "98de5b735bfa3d82b06726c21022b9e1cf3561f479d83eb754b7e156c5c4d16b",
+          "roadmap_sha256": "36654e211670ba02da87650677adba957cfc7e1c8cd4a907abf0fd59194f3d10",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1394"
         }
       ],
       "reflection_ref": null,
@@ -6804,10 +6882,10 @@
         "type": "phase"
       },
       "slug": "v10-PRESROUTE",
-      "status": "committed",
+      "status": "orphaned",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-09-21T00:00:00Z",
+      "updated_at": "2026-10-09T09:48:53Z",
       "sl0_repairs": [
         {
           "authorization_id": "agent-harness#1078:PANEL-SL1:PRESROUTE",
@@ -7795,6 +7873,12 @@
           "roadmap_sha256": "8ff479de883ad007d0ea1a32f1bffafa50d6af8068cb78fb6bd9e9a0151194b8",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1402"
+        },
+        {
+          "plan_sha256": "664f6516884039f8724cb55732c58906b6a976e27a9b5e789b634d043e9745e7",
+          "roadmap_sha256": "36654e211670ba02da87650677adba957cfc7e1c8cd4a907abf0fd59194f3d10",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1394"
         }
       ],
       "reflection_ref": null,
@@ -7863,6 +7947,14 @@
             "roadmap_sha256": "9cef8186e5d3f6d141ccc170ad24147b611c38a0cddad907fa86a8bc4fea2be0"
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-10-09T09:48:53Z",
+          "by": "claude-roadmap-v11-supersession",
+          "metadata": {
+            "reason": "superseded by specs/phase-plans-v11.md (agent-harness#1394); carried phases are replanned as plans/phase-plan-v11-<ALIAS>.md"
+          },
+          "transition": "orphaned"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -8053,6 +8145,12 @@
           "roadmap_sha256": "8ff479de883ad007d0ea1a32f1bffafa50d6af8068cb78fb6bd9e9a0151194b8",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1402"
+        },
+        {
+          "plan_sha256": "1d474ef41c536deff7234e6449d14fc11fc434a199ac0dd49409c3a3c9c14aca",
+          "roadmap_sha256": "36654e211670ba02da87650677adba957cfc7e1c8cd4a907abf0fd59194f3d10",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1394"
         }
       ],
       "reflection_ref": null,
@@ -8063,10 +8161,10 @@
         "type": "phase"
       },
       "slug": "v10-RELEASE",
-      "status": "committed",
+      "status": "orphaned",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-09-04T11:35:01Z"
+      "updated_at": "2026-10-09T09:48:53Z"
     },
     {
       "acceptance_criteria_count": null,
@@ -8116,6 +8214,14 @@
             "run_id": "20260904T140707Z-01-residual-plan"
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-10-09T09:48:53Z",
+          "by": "claude-roadmap-v11-supersession",
+          "metadata": {
+            "reason": "superseded by specs/phase-plans-v11.md (agent-harness#1394); carried phases are replanned as plans/phase-plan-v11-<ALIAS>.md"
+          },
+          "transition": "orphaned"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -8300,6 +8406,12 @@
           "roadmap_sha256": "8ff479de883ad007d0ea1a32f1bffafa50d6af8068cb78fb6bd9e9a0151194b8",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1402"
+        },
+        {
+          "plan_sha256": "bae605d434cd09d9c1f52e990b609c9c254ecaf6591afd861025377d94ef9cbd",
+          "roadmap_sha256": "36654e211670ba02da87650677adba957cfc7e1c8cd4a907abf0fd59194f3d10",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1394"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/a27a6f9a/codex-v10-residual-plan/20260825T112801Z-01-residual-plan.md",
@@ -8310,10 +8422,10 @@
         "type": "phase"
       },
       "slug": "v10-RESIDUAL",
-      "status": "committed",
+      "status": "orphaned",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-09-04T15:18:32Z"
+      "updated_at": "2026-10-09T09:48:53Z"
     },
     {
       "acceptance_criteria_count": null,
@@ -8943,6 +9055,14 @@
             ]
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-10-09T09:48:53Z",
+          "by": "claude-roadmap-v11-supersession",
+          "metadata": {
+            "reason": "superseded by specs/phase-plans-v11.md (agent-harness#1394); carried phases are replanned as plans/phase-plan-v11-<ALIAS>.md"
+          },
+          "transition": "orphaned"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -9181,6 +9301,12 @@
           "roadmap_sha256": "8ff479de883ad007d0ea1a32f1bffafa50d6af8068cb78fb6bd9e9a0151194b8",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1402"
+        },
+        {
+          "plan_sha256": "f626ca937dc294732df008c946e204ca030c5953b86dd6fd0cb6380a2b3c8c7b",
+          "roadmap_sha256": "36654e211670ba02da87650677adba957cfc7e1c8cd4a907abf0fd59194f3d10",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1394"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/05b770de/codex-v10-reviewtruth-plan-repair/20260904T072245Z-01-reviewtruth-plan.md",
@@ -9191,10 +9317,10 @@
         "type": "phase"
       },
       "slug": "v10-REVIEWTRUTH",
-      "status": "committed",
+      "status": "orphaned",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-09-04T14:45:00Z"
+      "updated_at": "2026-10-09T09:48:53Z"
     },
     {
       "acceptance_criteria_count": null,
@@ -9493,6 +9619,12 @@
           "roadmap_sha256": "8ff479de883ad007d0ea1a32f1bffafa50d6af8068cb78fb6bd9e9a0151194b8",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1402"
+        },
+        {
+          "plan_sha256": "67499b963f1aff4b401d939d65469e5a512bcac884c676702e320e000e0b1213",
+          "roadmap_sha256": "36654e211670ba02da87650677adba957cfc7e1c8cd4a907abf0fd59194f3d10",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1394"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/84b1ecde/codex-v10-runtime-plan/20260825T144913Z-01-runtime-plan.md",
@@ -9938,6 +10070,14 @@
             "source": "Consiliency/agent-harness#660"
           },
           "transition": "executing"
+        },
+        {
+          "at": "2026-10-09T09:48:53Z",
+          "by": "claude-roadmap-v11-supersession",
+          "metadata": {
+            "reason": "superseded by specs/phase-plans-v11.md (agent-harness#1394); carried phases are replanned as plans/phase-plan-v11-<ALIAS>.md"
+          },
+          "transition": "orphaned"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -10134,6 +10274,12 @@
           "roadmap_sha256": "8ff479de883ad007d0ea1a32f1bffafa50d6af8068cb78fb6bd9e9a0151194b8",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1402"
+        },
+        {
+          "plan_sha256": "93865389155adc61a293d5a77ee4410f8e7e94f9fb0983808fe02c4f7f9a225c",
+          "roadmap_sha256": "36654e211670ba02da87650677adba957cfc7e1c8cd4a907abf0fd59194f3d10",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1394"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/ea0bef92/codex-v10-sched-plan/20260820T003600Z-01-sched-plan.md",
@@ -10144,10 +10290,10 @@
         "type": "phase"
       },
       "slug": "v10-SCHED",
-      "status": "executing",
+      "status": "orphaned",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-25T16:03:23Z"
+      "updated_at": "2026-10-09T09:48:53Z"
     },
     {
       "acceptance_criteria_count": null,
@@ -11592,7 +11738,16 @@
         "SL-3",
         "SL-4"
       ],
-      "lifecycle": [],
+      "lifecycle": [
+        {
+          "at": "2026-10-09T09:48:53Z",
+          "by": "claude-roadmap-v11-supersession",
+          "metadata": {
+            "reason": "superseded by specs/phase-plans-v11.md (agent-harness#1394); carried phases are replanned as plans/phase-plan-v11-<ALIAS>.md"
+          },
+          "transition": "orphaned"
+        }
+      ],
       "owner_skill": "claude-plan-phase",
       "phase_alias": "EXECFIND",
       "plan_authority_history": [
@@ -11775,6 +11930,12 @@
           "roadmap_sha256": "8ff479de883ad007d0ea1a32f1bffafa50d6af8068cb78fb6bd9e9a0151194b8",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1402"
+        },
+        {
+          "plan_sha256": "a4989aad301db883bd434edc8dc31b4254960e4475563f05a317dfd75de5202b",
+          "roadmap_sha256": "36654e211670ba02da87650677adba957cfc7e1c8cd4a907abf0fd59194f3d10",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1394"
         }
       ],
       "reflection_ref": null,
@@ -11785,10 +11946,10 @@
         "type": "phase"
       },
       "slug": "v10-EXECFIND",
-      "status": "committed",
+      "status": "orphaned",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-09-21T00:00:00Z",
+      "updated_at": "2026-10-09T09:48:53Z",
       "sl0_repairs": [
         {
           "authorization_id": "agent-harness#1164:EXECFIND-SL2:EXECFIND",
@@ -12212,7 +12373,16 @@
         "SL-2",
         "SL-3"
       ],
-      "lifecycle": [],
+      "lifecycle": [
+        {
+          "at": "2026-10-09T09:48:53Z",
+          "by": "claude-roadmap-v11-supersession",
+          "metadata": {
+            "reason": "superseded by specs/phase-plans-v11.md (agent-harness#1394); carried phases are replanned as plans/phase-plan-v11-<ALIAS>.md"
+          },
+          "transition": "orphaned"
+        }
+      ],
       "owner_skill": "claude-plan-phase",
       "phase_alias": "PANEL",
       "plan_authority_history": [
@@ -12407,6 +12577,12 @@
           "roadmap_sha256": "8ff479de883ad007d0ea1a32f1bffafa50d6af8068cb78fb6bd9e9a0151194b8",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1402"
+        },
+        {
+          "plan_sha256": "eafcedf6cdbb43fe3da18d180cd3ba22280d4d3c1810413e05df0df19e19e15d",
+          "roadmap_sha256": "36654e211670ba02da87650677adba957cfc7e1c8cd4a907abf0fd59194f3d10",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1394"
         }
       ],
       "reflection_ref": null,
@@ -12417,10 +12593,10 @@
         "type": "phase"
       },
       "slug": "v10-PANEL",
-      "status": "committed",
+      "status": "orphaned",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-09-25T00:00:00Z"
+      "updated_at": "2026-10-09T09:48:53Z"
     },
     {
       "acceptance_criteria_count": 5,

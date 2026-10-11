@@ -202,6 +202,8 @@ def _operational_fixture(
     )
     roadmap_v10 = repo / "specs" / "phase-plans-v10.md"
     roadmap_v10.write_bytes((source_repo / "specs" / "phase-plans-v10.md").read_bytes())
+    roadmap_v11 = repo / "specs" / "phase-plans-v11.md"
+    roadmap_v11.write_bytes((source_repo / "specs" / "phase-plans-v11.md").read_bytes())
     sidecar_path = repo / roadmap_assumptions.PROBE_SIDECAR_REL
     sidecar_path.write_bytes(
         (
@@ -224,10 +226,11 @@ def _operational_fixture(
         json.dumps(
             {
                 "schema": "roadmap_status_manifest.v1",
-                "selected_roadmap": "specs/phase-plans-v10.md",
+                "selected_roadmap": "specs/phase-plans-v11.md",
                 "roadmaps": [
                     {"path": "specs/phase-plans-v1.md", "status": "superseded"},
-                    {"path": "specs/phase-plans-v10.md", "status": "active"},
+                    {"path": "specs/phase-plans-v10.md", "status": "superseded"},
+                    {"path": "specs/phase-plans-v11.md", "status": "active"},
                 ],
             },
             indent=2,

@@ -2522,7 +2522,7 @@ class TestUsesCanonicalAuthority(unittest.TestCase):
         moment a higher-numbered one is delivered, then audits against a map
         nobody works from.
         """
-        self.assertEqual(ro.resolve_roadmap(REPO_ROOT).name, "phase-plans-v10.md")
+        self.assertEqual(ro.resolve_roadmap(REPO_ROOT).name, "phase-plans-v11.md")
 
     def test_unreadable_repo_raises_rather_than_guessing(self):
         with TemporaryDirectory() as tmp:
