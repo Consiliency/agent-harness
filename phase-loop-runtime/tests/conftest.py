@@ -179,6 +179,27 @@ def _no_long_real_login_wait(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_long_real_gemini_login_wait(monkeypatch):
+    """agent-harness#1407: a Gemini seat whose agy login is short but not yet expired sleeps
+    until the login has expired, up to ten minutes. A test that reaches that real sleep with
+    more than 30 s to go fails here instead of sleeping; tests use a login about to expire or
+    replace the sleep. A test of the sleep's cancellation takes the unguarded function as
+    ``_gemini_login_sleep.real``."""
+    from phase_loop_runtime import panel_invoker
+
+    real = panel_invoker._gemini_login_sleep
+
+    def _guarded(home, left, **kwargs):
+        if left > 30:
+            pytest.fail("a test reached a real Gemini login sleep of %ss; shorten the login "
+                        "or replace the sleep" % left)
+        return real(home, left, **kwargs)
+
+    _guarded.real = real
+    monkeypatch.setattr(panel_invoker, "_gemini_login_sleep", _guarded)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_claude_seat_host_state(request, monkeypatch, tmp_path):
     """agent-harness#1132: keep the suite off the host's Claude login and seat state.
 
