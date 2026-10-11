@@ -785,7 +785,7 @@ def test_the_notices_say_what_happens_when_it_ends_and_the_command():
         assert not re.search(r"5 minutes|300", " ".join(seat_jail.NOTICES[code]))
     assert pi._GEMINI_LOGIN_AWAITING in seat_jail.NOTICE_CODES
     assert pi._GEMINI_LOGIN_AWAITING in pi._HARNESS_DETAIL_CODES
-    assert len(seat_jail.NOTICES) == 71      # main's 70 and this one
+    assert len(seat_jail.NOTICES) == 75      # main's 74 and this one
 
 
 def test_the_suite_never_sleeps_through_a_real_long_gemini_login_sleep(host):

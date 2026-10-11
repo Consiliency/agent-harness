@@ -59,6 +59,44 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   runs past its login's expiry (10 minutes at the least, about an hour after a renewal)
   fails in the run.
 
+### A codex board seat whose command sandbox cannot start is DEGRADED before it runs (agent-harness#1335)
+
+- codex runs each command in its own sandbox. Where that sandbox cannot start in the seat's
+  view, every command fails before it runs, but codex still exits 0 with a verdict. The seat
+  was `OK` and counted toward the reviewer floor although it had read nothing.
+- Before a codex seat that has a shell is run, the runtime now probes codex's command
+  sandbox in the seat's own view (`codex sandbox ... -- true`, launched exactly as the seat
+  will be, no model call). When the probe exits non-zero and prints the sandbox launcher's
+  own diagnostic (a line starting `bwrap: `), the leg ends `DEGRADED` with the typed notice
+  `seat_tool_sandbox_unavailable`, empty text, and the seat is not run. It is not a usable
+  review: the reviewer floor does not count it, the president receives
+  `unusable (DEGRADED)` for it, and the governed gate records a warning, not a block.
+- **Limit.** Every other probe outcome is inconclusive: a timeout, a launch refusal, a
+  codex whose `sandbox` subcommand differs, a launcher error that does not start with
+  `bwrap: `. The seat then runs and is counted exactly as before this change, so a codex
+  seat that cannot run commands can still be `OK` in those cases. The probe is not made on
+  the sealed route (the seat has no shell) or on the capture route (its launch is frozen);
+  the capture route is unchecked.
+- **Two known causes, neither repaired here.** This change does not alter what any seat
+  sandbox permits.
+  - A sandboxed board's staged tree (measured with codex 0.162 and bubblewrap): since
+    0.7.25 the seat's view shows the tree read only, and codex's `workspace-write` sandbox
+    cannot create its mount points in it. A tree that already contains those directories
+    starts.
+  - A host that refuses the nested namespace codex's sandbox needs (agent-harness#1335,
+    measured on such a host).
+- **What a board does.** It runs on without the codex seat. The floor is 3 usable seats of
+  4, so there is no slack: one more unusable seat makes the board unusable (non-zero exit),
+  where before it exited 0 with a codex seat that had read nothing. On the plan and
+  production_code tiers the composition cannot omit or replace the codex seat; the
+  president still rules and receives it as `unusable (DEGRADED)`. The runtime accepts no
+  native fill for a codex seat, so that lens is covered only outside the board run. This
+  holds until the staged tree's presentation to the seat is changed by a separate change.
+- A board cancel during the probe kills it at once and the leg ends cancelled. The probe is
+  one more launch per codex leg, bounded at 30 seconds; its time is not charged to a bounded
+  leg's deadline.
+- Grok, Claude and Gemini seats have no such probe and are not covered.
+
 ### The grok board seat finds its staged review tree (agent-harness#1336; PR agent-harness#1438)
 
 - In 0.7.25 and 0.7.26 a sandboxed board's grok seat failed at launch (`grok: Failed to
@@ -68,6 +106,67 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - Known limit: the tree is read only inside the seat. A grok turn that tries to write can end
   with an empty body, which the board records as an empty leg and never as a verdict
   (agent-harness#1091).
+
+### Claude TUI seat: atomic output writes, segmented journal admission, typed delivery refusal (agent-harness#1433, agent-harness#1434)
+
+- **A tools-enabled Claude seat can deliver its review again.** Claude Code's Write creates a
+  sibling temp file and renames it over the destination. The owned seat bound the precreated
+  output file in place, so the rename failed (`EBUSY`: a bound file is a mount point), and
+  with the output outside the seat's cwd the temp file itself failed (`EROFS`). The Claude
+  TUI's canonical output is now a *replaceable* output:
+  - in the seat's view its directory is a private per-launch directory, so the provider's
+    real temp-file-plus-rename works;
+  - the host's own directory is never mounted writable, none of its other entries is
+    visible, and another seat's output there is neither readable nor writable;
+  - read-only inputs below that directory stay bound read-only;
+  - on the host that directory is a child of a 0700 holder (`pl-seat-output-*`) under the
+    owner's staging root, never in the process temp root and never inside a path the seat
+    can see; the seat cannot open the holder to other accounts;
+  - when the seat has ended, the owner copies only the declared output to its precreated
+    host file, redacted before the profile releases its secrets, and removes the holder. A
+    link, directory, FIFO or hard link left under the name delivers nothing. Removal does
+    not depend on the depth or modes of what the seat left; if it fails all the same, the
+    leg carries the notice `seat_output_retained_after_teardown` and its review stands.
+  - Outputs bound in place (`outputs`, a CLI's `--output-last-message`, the capture route)
+    are unchanged.
+- **Behaviour changes on the TUI route to know about.**
+  - A replaceable output is refused before any transcript, output file or holder is
+    created, with the new notice code `seat_output_inside_readonly_input` and its fix line,
+    when its directory is (inside) a read-only input or a system directory, when it is
+    itself an input, or when the staging root is inside one of the seat's read-only inputs.
+    (Resolving a configured staging directory creates it, as it does for every round.) Paths are judged as written and as
+    the host holds them once parent links are resolved. This refuses layouts in which an
+    in-place write used to succeed (an output inside an `--add-dir` directory, or under
+    `/dev/shm`); Claude Code's Write (measured on 2.1.295 and 2.1.296) could not deliver
+    there. A board whose reviewed repository contains the staging root sets
+    `PHASE_LOOP_SANDBOX_STAGING_DIR` outside it.
+  - A replaceable output's host file is this launch's once the output's placement is
+    accepted: content an earlier launch left in it is emptied then, before the seat's
+    profile is built, so also when the launch is then refused for another reason. The
+    session no longer returns an earlier launch's verdict from it.
+- **A real tools-enabled journal is admitted.** Claude Code journals one API message as
+  several records that all carry the message's `stop_reason`. `_validated_claude_journal`
+  refused any thinking or text record that said `tool_use` without a tool block of its own,
+  which refused every real tool-using review. Such a record is now admitted when a later
+  record of the same message id holds a tool call; one that holds a server-side tool call
+  needs a client tool call of its message id in some record, earlier or later. A message
+  that recurs after its result with no call, or that holds only a server tool call, is
+  still refused. Every other
+  refusal is unchanged: a second user turn, a pending or unmatched tool call, a partial last
+  line, any other stop, a missing final answer.
+- **An ended turn that was not delivered ends the leg.** When the provider's turn has ended
+  but the canonical output is absent or not a completed review, or the journal is not
+  admitted, the leg used to wait (forever under `heartbeat_only`). It now ends DEGRADED with
+  the new notice code `claude_seat_delivery_refused`, handing back what the seat wrote to
+  its file as it is. It is never an approval and never a sealed fallback.
+  - It fires only once the journal ends in a newline, its last record explicitly stopped,
+    and that state was seen unchanged on two consecutive checks, so the refusal comes on
+    the second check (2 s later by default). A turn still in flight waits as before, and
+    so does an ended turn whose last message has no text block.
+  - A bounded non-brokered leg used to reach this state as `claude_tui_stalled` and retry
+    once in a fresh directory (agent-harness#343). It now gets `claude_seat_delivery_refused`
+    and the same one retry. A `heartbeat_only` non-brokered leg, which used to wait
+    instead, gets the same one retry under the same remaining-budget condition.
 
 ### CLI qualification contract for every seat harness, inert (agent-harness#1333 PR2)
 
