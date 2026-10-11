@@ -40,6 +40,12 @@ _REAL_REDACTION_IDENTITY = pi._redaction_identity
 
 
 @pytest.fixture(autouse=True)
+def _pin_claude_tui_route(monkeypatch):
+    """These tests assert the PTY TUI route; the default is now headless print (Stage 1b)."""
+    monkeypatch.setenv("PHASE_LOOP_PANEL_CLAUDE_ROUTE", "tui")
+
+
+@pytest.fixture(autouse=True)
 def _fixed_identity(monkeypatch, request):
     """Host independence (agent-harness#1102 r5): the redactor substitutes the RUNNING
     user's home and name, so every test runs as one fixed fake identity — no assertion may

@@ -12,6 +12,8 @@ from __future__ import annotations
 import types
 import json
 
+import pytest
+
 import phase_loop_runtime.panel_invoker as pi
 
 
@@ -128,10 +130,12 @@ def test_claude_subscription_auth_does_not_return_or_persist_identity(monkeypatc
     assert "private org" not in evidence
 
 
-def test_claude_unproven_auth_never_launches_tui(tmp_path, monkeypatch):
+@pytest.mark.parametrize("route", ["tui", "print"])
+def test_claude_unproven_auth_never_launches_tui(tmp_path, monkeypatch, route):
     review_dir, out_dir = _stage(tmp_path)
+    monkeypatch.setenv("PHASE_LOOP_PANEL_CLAUDE_ROUTE", route)
     monkeypatch.setattr(pi, "_under_claude_code", lambda env=None: False)
-    monkeypatch.setattr(pi, "_claude_code_support_status", lambda: (True, "supported"))
+    monkeypatch.setattr(pi, "_claude_code_support_status", lambda **k: (True, "supported"))
     monkeypatch.setattr(
         pi,
         "_claude_subscription_auth_ok",
@@ -139,6 +143,8 @@ def test_claude_unproven_auth_never_launches_tui(tmp_path, monkeypatch):
     )
     launched = []
     monkeypatch.setattr(pi, "_run_claude_tui_session", lambda **kwargs: launched.append(kwargs))
+    monkeypatch.setattr(pi, "_run_claude_print_session", lambda *a, **k: launched.append(k))
+    monkeypatch.setattr(pi, "_run_leg_with_liveness", lambda *a, **k: launched.append(k))
     status, detail = pi._exec_claude_tui_leg(
         review_dir, out_dir, 60, "bundle", env={}
     )

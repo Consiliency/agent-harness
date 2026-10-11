@@ -67,6 +67,12 @@ _FINITE_ANIMATION_SCRIPT = (
 )
 
 
+@pytest.fixture(autouse=True)
+def _pin_claude_tui_route(monkeypatch):
+    """These tests assert the PTY TUI route; the default is now headless print (Stage 1b)."""
+    monkeypatch.setenv("PHASE_LOOP_PANEL_CLAUDE_ROUTE", "tui")
+
+
 def test_wedged_pty_leg_is_reclaimed_on_heartbeat_extinction(tmp_path, monkeypatch):
     """(a) A silent-hung PTY leg that keeps ANIMATING (cosmetic repaints) and trickles
     CPU is detected and terminated within the stall window — NOT at the wall-clock
