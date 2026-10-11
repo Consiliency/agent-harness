@@ -30,8 +30,7 @@ import threading
 import time
 from typing import Callable
 
-from . import sandbox_placement, sandbox_policy
-from .seat_jail import state_home
+from . import sandbox_placement, sandbox_policy, seat_jail
 
 __all__ = ["Lease", "open_lease", "owner_id", "reap"]
 
@@ -53,7 +52,7 @@ def _fsync(fd: int) -> None:
 
 
 def _state_dir() -> Path:
-    return state_home() / "phase-loop"
+    return seat_jail.state_home() / "phase-loop"
 
 
 def _lease_dir() -> Path:

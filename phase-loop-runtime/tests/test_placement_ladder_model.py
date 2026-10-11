@@ -116,7 +116,7 @@ AFTER_LEFT_EVENTS = (
 CAPACITY_ANSWERS_PER_RUNG = 2
 #: Of the three-rung orderings, one in this many also runs on real threads, sockets and
 #: lease files. One- and two-rung orderings all do.
-REAL_IO_STRIDE = 64
+REAL_IO_STRIDE = 16
 
 CAPACITY = "sandbox_placement_at_capacity"
 TIMEOUT = "sandbox_placement_operation_timeout"
@@ -515,6 +515,7 @@ class World:
         self.unexpected: list[str] = []
         self.requests: list[sp.PlacementRequest] = []
         self.connect_errors: list[str] = []
+        self.fenced_at_kill: list[bool] = []
 
     def note(self, op: str, lease: str = "") -> None:
         self.log.append((self.rung, op))
@@ -605,6 +606,8 @@ class ScriptedBackend:
     def kill(self, lease_id, bound):
         world = self.world
         step = world.take("releasing")
+        # Entering "releasing" fences first: the driver's own mark is set before the kill.
+        world.fenced_at_kill.append(world.leases[world.rung].fenced)
         world.note("kill", lease_id)
         if step.event != "release_confirmed":
             raise sp.PlacementUnavailable(TIMEOUT)
@@ -656,7 +659,10 @@ class Harness:
         self.patch = patch
         self.world = World(self.endpoints)
         self.backoff = sp._ADMIT_BACKOFF_S
-        patch.setenv("XDG_STATE_HOME", str(tmp / "state"))
+        # The suite's own fixtures remove XDG_* names before every test, so the state dir is
+        # pinned again at every drive and every lease is checked to be under it.
+        self.state = tmp / "state"
+        patch.setenv("XDG_STATE_HOME", str(self.state))
         patch.delenv("PHASE_LOOP_SANDBOX_REMOTE_REQUIRED", raising=False)
         patch.setattr(sp, "_monotonic", lambda: self.world.now)
         patch.setattr(sp, "_pause", self._pause)
@@ -666,7 +672,6 @@ class Harness:
         patch.setattr(sp, "_Calls", lambda: bounded() if self.world.real else InlineCalls())
         self._settings: dict[str, str | None] = {}
         self._leases = 0
-        self.lease_dir = placement_lease._lease_dir()
 
     def close(self) -> None:
         self.endpoints.close()
@@ -717,6 +722,7 @@ class Harness:
             raise OSError("the lease entry cannot be written")
         if world.real:
             lease = placement_lease.open_lease(name, root)
+            assert lease.path.is_relative_to(self.state), lease.path
         else:
             self._leases += 1
             lease = MemoryLease(self._leases)
@@ -749,6 +755,7 @@ class Harness:
         default values instead of ones chosen to make the script happen. `real` is whether
         the calls, the connection attempt and the lease journal under `place` are real."""
         world = self.world = World(self.endpoints, script, real)
+        self.patch.setenv("XDG_STATE_HOME", str(self.state))
         world.workload = workload
         world.guard = (lambda: guard(world)) if guard is not None else (lambda: True)
         for backend in self.backends:
@@ -900,6 +907,8 @@ def _compare(harness, model, world, decision, cancel) -> list[str]:
             continue
         if may_hold and not (states[rung] == "abandoned" and lease.lease_id in killed):
             wrong.append(f"P6: rung {rung + 1} may hold something without a fenced, kept lease")
+    if not all(world.fenced_at_kill):
+        wrong.append("P6: a kill was sent for a lease the driver had not fenced")
     for k in executes:
         if world.lease_of[k] in {
             lease for lease, (_r, op) in zip(world.lease_of[:k], log[:k]) if op == "kill"
@@ -1116,7 +1125,7 @@ def test_the_budget_wins_a_tie_with_the_connection_attempt(drive):
     ("connecting", ("start:local_checks_passed", "connecting:cancel"), None),
     ("start", ("start:cancel",), None),
     ("releasing", (*REACHED, "admitting:no_answer", "releasing:release_confirmed:cancel"), True),
-])
+], ids=["admitting", "committing", "sealing", "waiting", "connecting", "start", "releasing"])
 def test_a_cancel_ends_the_attempt_and_never_moves_the_walk_on(drive, state, specs, release):
     """Mutations: a cancel moves on to the next rung; the cancelled rung is left out of the
     trail; a cancel while something may be held skips the release."""
