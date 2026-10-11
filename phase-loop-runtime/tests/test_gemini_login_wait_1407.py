@@ -558,9 +558,10 @@ def test_the_sleep_ends_on_the_file_when_it_is_renewed_or_can_no_longer_be_read(
     _login(host.home, 450)
     entered = _real_sleep_announced(monkeypatch)
     # The renewal below must not land in the middle of one of the sleep's reads: a read that
-    # meets the file half-rewritten (or, after a rename, with no link) refuses it, which ends
-    # the sleep as "unreadable" instead of "refreshed" (agent-harness#1499). Each read is the
-    # real one; the lock only keeps the test's own write between two of them.
+    # meets the file half-rewritten cannot parse it, and after a rename the guarded reader
+    # refuses the unlinked file. Either ends the sleep as "unreadable" instead of "refreshed"
+    # (agent-harness#1499). Each read is the real one; the lock only keeps the test's own
+    # write between two of them.
     reading = threading.Lock()
     real_left_s = pi._gemini_login_left_s
 
