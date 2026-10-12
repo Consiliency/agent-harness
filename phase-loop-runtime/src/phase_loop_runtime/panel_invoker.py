@@ -5306,7 +5306,7 @@ def _precreate_seat_output(path):
         os.close(descriptor)
 
 
-def _granted_writable_tree(path: Path, command, harness) -> Path:
+def _granted_writable_tree(path: Path, command, harness, *, provenance_checked=False) -> Path:
     """Check a writable-tree grant where the seat's view is built (agent-harness#1470).
 
     A seat's view is read-only except its declared outputs. The one exception: a codex seat
@@ -5318,7 +5318,11 @@ def _granted_writable_tree(path: Path, command, harness) -> Path:
     review tree by provenance (`_require_staged_tree`); inside a directory this process
     itself marked as its sandbox; a real directory of the operator's, not a link. Anything
     else REFUSES the launch -- a grant is never widened to another path, and never quietly
-    dropped (that would leave the seat unable to run a command)."""
+    dropped (that would leave the seat unable to run a command).
+
+    ``provenance_checked``: the leg already checked this tree's provenance before its first
+    attempt, and a relaunch of the same leg reuses that check instead of repeating it. Every
+    other condition is checked on every launch."""
     words = [os.fspath(word) for word in command]
     # The seat's own spelling, or the sandbox probe's for the same mode: the probe has to
     # see the tree exactly as the seat will, or it answers for a different view.
@@ -5332,7 +5336,8 @@ def _granted_writable_tree(path: Path, command, harness) -> Path:
         if not any(_sandbox_retention.staged_by_this_process(parent)
                    for parent in (path.parent, path.parent.parent)):
             raise ValueError("the tree is not in a sandbox this process staged")
-        _require_staged_tree(path)
+        if not provenance_checked:
+            _require_staged_tree(path)
     except ValueError as exc:
         raise _sandbox_egress.SeatIdentityUnverified("seat_bind_source_unavailable") from exc
     _seat_bind_source(path, tree=True)
@@ -5342,7 +5347,8 @@ def _granted_writable_tree(path: Path, command, harness) -> Path:
 @contextmanager
 def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None,
                           gemini_profile=None, role=SeatLaunchRole.PROVIDER_REVIEW,
-                          readonly_paths=(), replaceable_outputs=(), writable_tree=None):
+                          readonly_paths=(), replaceable_outputs=(), writable_tree=None,
+                          writable_tree_checked=False):
     """The owned seat's command and profile for one launch.
 
     ``outputs`` are bound in place: each is one precreated host file, shared live with the
@@ -5361,7 +5367,8 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
 
     ``writable_tree`` (agent-harness#1470) grants a workspace-write codex seat its own staged
     tree writable; ``_granted_writable_tree`` checks the grant and refuses one it cannot
-    honour exactly."""
+    honour exactly. ``writable_tree_checked`` passes on that the leg already checked the
+    tree's provenance (a relaunch of the same leg)."""
     if gemini_profile is None:
         harness, executable = _seat_provider_source(command[0], env)
         if harness not in {"codex", "claude", "grok", "gemini", "opencode"}:
@@ -5390,7 +5397,8 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
             if path != cwd and str(path) not in {"/dev/stdin", "/dev/null"}:
                 if granted is not None and item == "--cd" and path == granted:
                     if path not in writable:
-                        writable.append(_granted_writable_tree(path, command, harness))
+                        writable.append(_granted_writable_tree(
+                            path, command, harness, provenance_checked=writable_tree_checked))
                 else:
                     _seat_bind_source(path)
                     readonly.append(path)
@@ -8680,6 +8688,7 @@ def _run_leg_with_liveness(
     child_scratch: str | None = None,
     stdout_guard: Callable[[bytes], bool] | None = None,
     writable_tree: "Path | None" = None,
+    writable_tree_checked: bool = False,
 ) -> "_LegRun":
     """Run a print-mode CLI leg, killing it on HEARTBEAT EXTINCTION, not a blind clock.
 
@@ -8726,7 +8735,8 @@ def _run_leg_with_liveness(
         owned_command, profile = profile_stack.enter_context(_seat_command_profile(
             cmd, env=env, cwd=cwd, gemini_profile=gemini_profile,
             # agent-harness#1470: a codex seat's own staged tree; checked again there.
-            **({"writable_tree": writable_tree} if writable_tree is not None else {}),
+            **({"writable_tree": writable_tree, "writable_tree_checked": writable_tree_checked}
+               if writable_tree is not None else {}),
         ))
         if not _EGRESS_LAUNCH_PREFIX.get():
             # An owned review launch runs only in the filtered namespace. A leg outside any
@@ -11739,6 +11749,9 @@ def _exec_leg(
                     retain_caps=codex_retain_caps,
                     child_scratch=leg_scratch,
                     **codex_tree_grant,
+                    # The tree's provenance was checked before the first attempt; a retry
+                    # relaunches on that same tree and reuses the check.
+                    **({"writable_tree_checked": True} if _attempt and codex_tree_grant else {}),
                     **({"review_monitor": review_monitor} if review_monitor is not None else {}),
                 )
             except subprocess.TimeoutExpired:

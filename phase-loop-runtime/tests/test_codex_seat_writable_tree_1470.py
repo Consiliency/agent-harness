@@ -505,3 +505,74 @@ def test_the_unbrokered_read_only_codex_seat_still_cannot_write_its_tree(tmp_pat
     assert report["read"] == "value = 41"
     assert report["write"] == report["overwrite"] == "ERR Read-only file system"
     assert sorted(p.name for p in tree.iterdir()) == [".git", "SOURCE.py"]
+
+
+# --------------------------------------------------------------------------------------
+# The empty-turn retry relaunches on the tree its first attempt already checked.
+# --------------------------------------------------------------------------------------
+
+_EMPTY_TURN_CLI = """#!/usr/bin/python3
+import os, sys
+args = sys.argv[1:]
+if "login" in args:
+    sys.exit(0)
+tree = args[args.index("--cd") + 1]
+if args and args[0] == "sandbox":
+    target = os.path.join(tree, ".agents")
+    os.mkdir(target)
+    os.rmdir(target)
+    sys.exit(0)
+sys.stdin.read()
+with open(os.path.join(tree, "seat-attempts"), "a") as handle:
+    handle.write("ran\\n")
+sys.exit(0)  # an empty turn: no output, no last message
+"""
+
+
+@needs_owner
+def test_the_codex_retry_relaunches_on_the_tree_it_already_checked(tmp_path, monkeypatch,
+                                                                    owned_review_network):
+    """A bounded codex leg whose first turn comes back empty is launched once more. The
+    staged tree's provenance is checked before the first attempt (the command builder, the
+    sandbox probe and the first launch); the second launch reuses that check, so no git
+    command runs against the tree once a seat has run in it. The other grant conditions
+    are still checked on the second launch, which still gets the tree writable."""
+    env = _clis(tmp_path, monkeypatch, codex=_EMPTY_TURN_CLI)
+    tree = _stage(tmp_path / "leg")
+    review_dir, out_dir = tree.parent, tmp_path / "leg" / "out"
+    attempts = tree / "seat-attempts"
+    calls: list[tuple[str, bool]] = []
+    real_host_git = review_stage.host_git
+
+    def recording_host_git(repo, *args, **kwargs):
+        if Path(repo) == tree:
+            calls.append((" ".join(args), attempts.exists()))
+        return real_host_git(repo, *args, **kwargs)
+
+    monkeypatch.setattr(review_stage, "host_git", recording_host_git)
+    rc, text, _log = pi._exec_leg("codex", review_dir, out_dir, timeout_s=60, artifact="A",
+                                  env=env, broker_prompt="Review the staged change.",
+                                  broker_evidence={})
+    assert (rc, text) == (0, "")
+    assert attempts.read_text(encoding="utf-8").splitlines() == ["ran", "ran"], (
+        "the empty first turn must have been retried, with the tree writable both times")
+    assert not [call for call, seat_had_run in calls if seat_had_run], calls
+    # Unchanged before the first attempt: the command builder, the sandbox probe's launch
+    # and the first launch each check the tree.
+    assert len(calls) == 3, calls
+
+
+def test_a_passed_on_check_still_checks_every_other_grant_condition(tmp_path):
+    """``provenance_checked`` reuses only the provenance step. The harness, the sandbox
+    mode and this process's sandbox marker are checked on every launch."""
+    tree = _stage(tmp_path / "leg")
+    out = tmp_path / "leg" / "out"
+    assert pi._granted_writable_tree(tree, _codex_argv(tree, out), "codex",
+                                     provenance_checked=True) == tree
+    unmarked = _stage(tmp_path / "unmarked", marked=False)
+    for path, command, harness in (
+            (tree, _codex_argv(tree, out), "grok"),
+            (tree, _codex_argv(tree, out, sandbox="read-only"), "codex"),
+            (unmarked, _codex_argv(unmarked, out), "codex")):
+        with pytest.raises(sandbox_egress.SeatIdentityUnverified, match=REFUSED):
+            pi._granted_writable_tree(path, command, harness, provenance_checked=True)
