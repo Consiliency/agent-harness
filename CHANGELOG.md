@@ -40,8 +40,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - The seat credential is unchanged: still the access token and its expiry, and never a
   refresh token. The harness still does not run the Claude CLI for credentials.
 - `launcher.run_auth_preflight` (the Claude executor) still reported the subscription state
-  missing, because its probe runs in the same seat; it now takes `subscription_present` from
-  the same login proof once the probe reports a logged-in session.
+  missing, because its probe runs in the same seat. It now applies the same caller guard (on
+  its own process environment), the same seat report and the same login proof to the probe it
+  already ran, and sets `subscription_present` only when all three hold.
 - `legible_evidence` calls the same gate. `executor_availability` and the capture preflight
   read only `loggedIn` or the exit status and were not affected.
 

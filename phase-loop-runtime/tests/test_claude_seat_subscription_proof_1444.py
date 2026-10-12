@@ -520,6 +520,10 @@ def _preflight(monkeypatch, status_stdout, *, status_rc: int = 0):
     spec = types.SimpleNamespace(auth_preflight_mode="metadata_only", executor="claude",
                                  auth_preflight_probes=_CLAUDE_PROBES)
     seen = []
+    # The preflight judges the process env: keep the developer's own credentials out of it.
+    for key in list(os.environ):
+        if pi._claude_caller_supplied_credential({key: ""}):
+            monkeypatch.delenv(key)
 
     def run_provider(argv, **kwargs):
         seen.append(list(argv))
@@ -567,6 +571,62 @@ def test_executor_preflight_blocks_a_logged_out_probe_before_reading_the_login(
     assert read == []
     result, _ = _preflight(monkeypatch, seat_report())
     assert result.ok is True and read == [1]
+
+
+_SEAT = {"loggedIn": True, "authMethod": "oauth_token", "apiProvider": "firstParty"}
+
+
+@pytest.mark.parametrize("status, caller_key", [
+    ({"loggedIn": True}, None),
+    ({**_SEAT, "loggedIn": "false"}, None),
+    ({**_SEAT, "authMethod": "api_key", "apiKeySource": "ANTHROPIC_API_KEY"}, None),
+    ({**_SEAT, "apiProvider": "bedrock"}, None),
+    ({**_SEAT, "apiKeySource": None}, None),
+    (_SEAT, "CLAUDE_CODE_OAUTH_TOKEN"),
+    (_SEAT, "ANTHROPIC_API_KEY"),
+], ids=["fields-missing", "loggedIn-string", "api-key", "third-party", "apiKeySource-present",
+        "caller-oauth-token", "caller-anthropic-variable"])
+def test_executor_preflight_holds_the_seat_gate_on_a_proven_login(
+        monkeypatch, login_env, status, caller_key):
+    """The executor preflight applies the seat gate's caller guard and seat report on top of
+    the login proof: with a proven subscription login, each of these is still refused, with
+    one summary that is true whatever the cause and no variable name in the metadata."""
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", login_env["CLAUDE_CONFIG_DIR"])
+    spec = types.SimpleNamespace(auth_preflight_mode="metadata_only", executor="claude",
+                                 auth_preflight_probes=_CLAUDE_PROBES)
+
+    def run_provider(argv, **kwargs):
+        if list(argv) == ["claude", "auth", "status"]:
+            return subprocess.CompletedProcess(argv, 0, json.dumps(status), "")
+        return subprocess.CompletedProcess(argv, 0, "2.1.296 (Claude Code)\n", "")
+
+    for key in list(os.environ):
+        if pi._claude_caller_supplied_credential({key: ""}):
+            monkeypatch.delenv(key)
+    if caller_key:
+        monkeypatch.setenv(caller_key, "fake-caller-value")
+    monkeypatch.setattr(pi, "run_provider", run_provider)
+    result = launcher.run_auth_preflight(spec)
+    assert result.ok is False
+    assert result.blocker_class == "account_or_billing_setup"
+    assert result.metadata["auth_status"]["subscription_present"] is False
+    if status.get("loggedIn") is True:
+        assert result.blocker_summary == (
+            "Claude CLI is logged in, but the Claude subscription is not proven.")
+    rendered = json.dumps(result.metadata, sort_keys=True) + str(result.blocker_summary)
+    for leaked in ("fake-caller-value", "CLAUDE_CODE_OAUTH_TOKEN", "ANTHROPIC_API_KEY", ACCESS):
+        assert leaked not in rendered
+
+
+def test_executor_preflight_admits_a_proven_login_with_a_clean_env_and_seat(
+        monkeypatch, login_env):
+    """Positive control for the states above: proven login, no caller credential, and the
+    seat's ``oauth_token``/``firstParty`` report."""
+    monkeypatch.setenv("CLAUDE_CONFIG_DIR", login_env["CLAUDE_CONFIG_DIR"])
+    result, _ = _preflight(monkeypatch, json.dumps(_SEAT))
+    assert result.ok is True, result.blocker_summary
+    assert result.metadata["auth_status"]["logged_in"] is True
+    assert result.metadata["auth_status"]["subscription_present"] is True
 
 
 def test_executor_preflight_metadata_carries_no_identity_or_plan(monkeypatch, login_env):
