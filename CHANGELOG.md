@@ -6,6 +6,23 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### An attested_not_landed disposition survives later rotations (agent-harness#1310)
+
+- Since agent-harness#1296, a rotation that disposes a failed publication's key
+  `attested_not_landed` lets the exact admitted transaction publish once. Only the active
+  generation's receipt was consulted, so a rotation for an unrelated key, run before the
+  retry, dropped the disposition. The retry was then refused with no rotation able to fix it.
+- The recovery now walks the authenticated receipt chain back to the first receipt that
+  adjudicates the key, and authorizes only an `attested_not_landed` disposition found there.
+  It refuses (`PublicationRecoveryRequired`, before any write) once any generation since the
+  disposing rotation holds evidence or an adapter-start owner for the key, or a later
+  receipt carries it as completed. Sealed generations are checked against the bytes their
+  successor receipts sealed; the active generation is still checked under the admissions
+  lock. A disposition therefore authorizes at most one re-admission.
+- The recovery record now names `disposing_generation`, `readmitting_generation` and
+  `intervening_rotations`. Its `generation`, and the record's file name, is the
+  re-admitting generation.
+
 ### FABPUB: a refused admission leaves no owner, and a live writer is not made ambiguous (agent-harness#1314, agent-harness#1313, agent-harness#1311)
 
 - Every refusal inside `admit_next` that runs after the adapter-start owner write
