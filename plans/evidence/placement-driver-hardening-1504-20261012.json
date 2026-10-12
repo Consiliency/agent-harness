@@ -1,0 +1,160 @@
+{
+  "schema": "placement-driver-hardening-evidence.v1",
+  "issue": "agent-harness#1504",
+  "source_head": "4b50b789f878a1c4107b03edfe73f162b47dc149",
+  "plan_sha256": "46b6c610a5db14f8b84f9e2258d72719813417193b19c973be350c1fe7624a63",
+  "plan": "plans/detailed-placement-driver-hardening-1504-20261012.md",
+  "status": "six_fresh_plan_agree_required_opus_and_president_pending",
+  "round": 3,
+  "required_reviewers": 7,
+  "usable_agree": 6,
+  "reviews": [
+    {
+      "source_head": "4b50b789f878a1c4107b03edfe73f162b47dc149",
+      "plan_sha256": "46b6c610a5db14f8b84f9e2258d72719813417193b19c973be350c1fe7624a63",
+      "seat": "codex:gpt-6-astra:max:correctness",
+      "status": "OK",
+      "detail": null,
+      "usable": true,
+      "source_grounded": true,
+      "review_sha256": "918ac68429c17206b62bc56069888a9ce0c6bf1b130bd8f3c673da6f9cb8a538",
+      "verdict": "AGREE",
+      "carried": false,
+      "report_private": true
+    },
+    {
+      "source_head": "4b50b789f878a1c4107b03edfe73f162b47dc149",
+      "plan_sha256": "46b6c610a5db14f8b84f9e2258d72719813417193b19c973be350c1fe7624a63",
+      "seat": "codex:gpt-5.6-sol:max:adversarial",
+      "status": "OK",
+      "detail": null,
+      "usable": true,
+      "source_grounded": true,
+      "review_sha256": "53e0ecee0e79713466eb44d108204a1605371c8d754d69c4404b18bfc8cd3b2a",
+      "verdict": "AGREE",
+      "carried": false,
+      "report_private": true
+    },
+    {
+      "source_head": "4b50b789f878a1c4107b03edfe73f162b47dc149",
+      "plan_sha256": "46b6c610a5db14f8b84f9e2258d72719813417193b19c973be350c1fe7624a63",
+      "seat": "codex:gpt-6-astra:max:red-team",
+      "status": "OK",
+      "detail": null,
+      "usable": true,
+      "source_grounded": true,
+      "review_sha256": "b084ed889104a07786bdbddb62b37329cb519e03aa9f96cb340432e89d470b14",
+      "verdict": "AGREE",
+      "carried": false,
+      "report_private": true
+    },
+    {
+      "source_head": "4b50b789f878a1c4107b03edfe73f162b47dc149",
+      "plan_sha256": "46b6c610a5db14f8b84f9e2258d72719813417193b19c973be350c1fe7624a63",
+      "seat": "codex:gpt-5.6-sol:max:alternative-approach",
+      "status": "OK",
+      "detail": null,
+      "usable": true,
+      "source_grounded": true,
+      "review_sha256": "3dea02e0cacaa8498b70d30ec4c99fa637435607596de743b5aaa24e8b8a32cb",
+      "verdict": "AGREE",
+      "carried": false,
+      "report_private": true
+    },
+    {
+      "seat": "separate-native-independent",
+      "source_head": "4b50b789f878a1c4107b03edfe73f162b47dc149",
+      "plan_sha256": "46b6c610a5db14f8b84f9e2258d72719813417193b19c973be350c1fe7624a63",
+      "verdict": "AGREE",
+      "usable": true,
+      "source_grounded": true,
+      "carried": false,
+      "review_sha256": "e51d85324c980ea22310079bd2faa03c56a65e0713889f7930bda9c6f0a5ed67",
+      "report_private": true,
+      "scope": "Actual plan/source inspection only; no executed implementation proof"
+    },
+    {
+      "seat": "manual:Gemini3.8FlashHigh:tools",
+      "source_head": "4b50b789f878a1c4107b03edfe73f162b47dc149",
+      "plan_sha256": "46b6c610a5db14f8b84f9e2258d72719813417193b19c973be350c1fe7624a63",
+      "verdict": "AGREE",
+      "usable": true,
+      "source_grounded": true,
+      "carried": false,
+      "review_sha256": "949f80031342f370bc078f5f46b47fe602294e57be5a7fd9655da7f1fca22639",
+      "report_private": true,
+      "scope": "Actual plan/source inspection only; no executed implementation proof"
+    }
+  ],
+  "full_plan_approval": false,
+  "implementation_started": false,
+  "production_source_changed": false,
+  "implementation_verification": "not_run",
+  "baseline_verification": {
+    "scope": "Existing unmodified driver only; not new hardening proof",
+    "python": "3.10.21 isolated environment",
+    "test": "tests/test_placement_driver.py",
+    "result": "85 passed",
+    "private_receipt_sha256": "0cf9792c0a7fb5b190fbec0328554778be594021acf963e6aff2b061111df613"
+  },
+  "round_checkpoint": {
+    "round1": "Four harness partials: cap exhaustion before probe could manufacture unreachable.",
+    "round2": "Four harness and independent partials: exact frozen C7 local class/code mismatch.",
+    "round3": "Shared readiness at final START check; translate to existing local refusal, preserve later timeout, no table/oracle/orderings/criterion change.",
+    "diagnosis": "Plan amendments exceeded implementation due worker resource boundary and exact frozen mapping. Source staging and quota failures also delayed review. Four issue1504 obligations remain in scope; no waiver."
+  },
+  "manual_opus": {
+    "status": "pending_required_review_after_quota_reset",
+    "current_round_attempted": false,
+    "prior_round_source": "e7686815004d5920cdbd264099f9d4238339c5b9",
+    "prior_round_status": "UNAVAILABLE, no actual report file",
+    "quota": {
+      "api_error_status": 429,
+      "api_error": "usage_limit_reached",
+      "auth": "firstParty claude.ai subscription; current successful probe is not quota availability proof",
+      "review_or_president_approval": false,
+      "rateLimitType": "five_hour",
+      "status": "rejected",
+      "overageStatus": "rejected",
+      "overageDisabledReason": "org_level_disabled",
+      "reported_reset_utc": "2026-10-13T00:50:00+00:00",
+      "reported_reset_new_york": "2026-10-12T20:50:00-04:00"
+    },
+    "route": "manual tools-enabled qualified Opus5.5 subscription self-PTY TUI; no fallback"
+  },
+  "owner_model_change": {
+    "authority": "Owner explicitly selected available Gemini3.8FlashHigh on2026-10-12; manual tools-enabled review retained.",
+    "previous": "Gemini3.1ProHigh absent from live agy catalog",
+    "model_id": "gemini-3.8-flash-high"
+  },
+  "president": {
+    "required": true,
+    "status": "not_invoked_missing_usable_manual_opus",
+    "ladder": [
+      "fable"
+    ],
+    "waiver": false
+  },
+  "prescript_sha256": "5edaa26144358215fb762c6d02619718c629937336e8e1833caedf75f61928b2",
+  "optional_dispositions": [
+    {
+      "source": "manual Gemini",
+      "suggestion": "Strip leading zeros, bind each submitting context, annotate neutral InlineCalls readiness.",
+      "disposition": "First two already specified in plan/controls. Adapter remains minimal; no behavior, criterion or table change."
+    }
+  ],
+  "ssh_preparation": {
+    "private_artifact": "ssh-qualification-preparation-20261012.md",
+    "sha256": "18d7646e8cd74d734fc1f9877dd6b703e1503d8a60c547580b8c23a652e02e40",
+    "scope": "Research preparation only; no reviewed backend plan, remote change or qualification."
+  },
+  "continuing_items": [
+    "agent-harness#1502 launch-site remains separate/flag off",
+    "agent-harness#1506 opaque owner refs/kill/single journal preserved for backend",
+    "agent-harness#1335/agent-harness#1170 actual Codex/Gemini qualification separate",
+    "agent-harness#1489 already merged, no duplicate",
+    "agent-harness#1549 unrelated Python floor PR remains open",
+    "omniagent-plus#25/omniagent-plus#33 WIRE approvals/acceptance remain separate"
+  ],
+  "binding": "Immutable review input4b50b789. Later metadata commits are not implementation review or acceptance. Interrupted/degraded/error attempts confer no approval. Full actual-source CR, checks/president/postmerge remain mandatory before merge."
+}
