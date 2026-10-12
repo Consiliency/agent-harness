@@ -2162,6 +2162,9 @@ def _seat_launch_modes(
             # agent-harness#1244: every route that is not jailed lands here, sealed codes
             # included -- degraded and not run, with its notice's fix.
             modes.append(_coded(sp.MODE_DEGRADED, refusal))
+        elif not route.jailed:
+            # Only the agy qualification worker's candidate measurement reaches this.
+            modes.append(_coded(sp.MODE_SEALED, str(route.code)))
         else:
             kind, code, source, left, also = (_claude_credential(leg) if leg == "claude"
                                               else (sp.MODE_JAILED, None, None, None, ()))
@@ -12305,7 +12308,9 @@ def _seat_route_for_spawn(
     Returns ``(route, notices, refusal)``.
 
     A route that is not jailed is refused with its one notice code: a review seat is never
-    run toolless with the bundle inlined (agent-harness#1244). A leg with no jail route
+    run toolless with the bundle inlined (agent-harness#1244). The one exception is the agy
+    qualification worker's Gemini leg, which measures a candidate image on that route and
+    is never a vote; it keeps the route with its notice. A leg with no jail route
     (codex, grok) keeps its own route only when a staged tree was approved for it to read;
     with none it is refused with ``seat_sandbox_not_staged``.
 
@@ -12327,8 +12332,12 @@ def _seat_route_for_spawn(
             return None, [], "seat_sandbox_not_staged"
         return None, [], None
     if not route.jailed:
-        # Plan amendment A3b, for every route code: a seat that cannot run jailed is
-        # degraded and not run, never a toolless (sealed) substitute.
+        if leg == "gemini" and _measuring_qualification_candidate():
+            # The agy qualification worker measures a candidate image on this route. Its
+            # leg is admitted `qualification_candidate`, never a vote; it is not a review.
+            return route, [str(route.code)], None
+        # Plan amendment A3b, for every route code: a review seat that cannot run jailed
+        # is degraded and not run, never a toolless (sealed) substitute.
         return route, [], str(route.code)
     if pass_recorded is not None:
         refusal = _pass_refusal(_seat_jail.jail_profile_digest(leg), pass_recorded)
@@ -12340,6 +12349,12 @@ def _seat_route_for_spawn(
     logging.getLogger(__name__).warning(
         "seat jail not qualified on this host (%s); the %s seat will not run", outcome.reason, leg)
     return route, [], "seat_jail_qualification_failed"
+
+
+def _measuring_qualification_candidate() -> bool:
+    """Is this process the agy qualification worker? Only that worker sets the heartbeat
+    module's candidate image, after proving its fd and provenance (agent-harness#1076)."""
+    return gemini_heartbeat._CANDIDATE is not None
 
 
 def _ignored_override(leg: str) -> tuple[str, ...]:

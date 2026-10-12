@@ -1458,7 +1458,10 @@ are recorded on agent-harness#1132.
   floor and `usable`, the landing vote, the governed gate, the train's recorded reviewers and
   the president's input (`unusable (DEGRADED)`) all leave it out. A board that falls below
   its floor because of it says so: the `advisor-board` text summary and the governed
-  pre-merge floor hold name each such seat with its code and fix.
+  pre-merge floor hold name each such seat with its code and fix. The one exception is not a
+  review: the agy qualification worker process (the only one that sets the heartbeat
+  module's candidate image) keeps its Gemini leg on that route, with its notice, to measure
+  the candidate; that leg is admitted `qualification_candidate`, which is never a vote.
 - **The jailed route is Claude-only.** `JAILED_LEGS` is exactly `{"claude"}`. A Gemini
   seat's route is not jailed today, so it is DEGRADED and not run with its typed notice
   (above); a tooled Gemini seat is agent-harness#1170.

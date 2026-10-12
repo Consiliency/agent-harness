@@ -20,6 +20,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   the landing vote, the governed gate, the train's recorded reviewers and the president's
   input. A board that falls below its floor because of it now names each such seat with its
   code and fix, in the `advisor-board` text summary and in the governed pre-merge floor hold.
+- The agy qualification worker still measures its candidate image on the Gemini route; that
+  leg is admitted `qualification_candidate`, which is never a vote, and is not a review.
 - What any seat sandbox permits is unchanged. A host whose seats cannot run jailed may now
   get a board below its floor, which refuses; that is intended.
 

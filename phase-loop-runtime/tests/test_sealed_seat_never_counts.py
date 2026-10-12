@@ -260,3 +260,48 @@ def test_the_governed_floor_hold_names_the_uncounted_seat_and_its_fix():
     fix = seat_jail.NOTICES[STOP][2]
     assert floor.reason.endswith(f" Not counted: gemini:a [{STOP}] fix: {fix}."), floor.reason
     assert "codex:a" not in floor.reason
+
+
+# --------------------------------------------------------------------------------------
+# The one exception: the agy qualification worker measures a candidate image on the
+# Gemini route. That process alone sets the heartbeat module's candidate; its leg is
+# admitted `qualification_candidate`, which is never a vote.
+# --------------------------------------------------------------------------------------
+
+def _stopped(leg, **_k):
+    return seat_jail.SeatRoute(False, STOP) if leg == "gemini" else seat_jail.SeatRoute(
+        False, "seat_sandbox_unavailable_host")
+
+
+def test_the_qualification_worker_keeps_the_gemini_route_and_nothing_else(monkeypatch):
+    from phase_loop_runtime import gemini_heartbeat as gh
+
+    monkeypatch.setattr(gh, "_CANDIDATE", object())
+    assert pi._seat_route_for_spawn("gemini", _auth(True), eligible=True, decide=_stopped) == (
+        seat_jail.SeatRoute(False, STOP), [STOP], None)
+    # Only the Gemini leg: any other seat in that process is still refused.
+    _route, _notices, refusal = pi._seat_route_for_spawn(
+        "claude", _auth(True), eligible=True, decide=_stopped)
+    assert refusal == "seat_sandbox_unavailable_host"
+    monkeypatch.setattr(pi._seat_jail, "decide_seat_route", _stopped)
+    modes = pi._seat_launch_modes(
+        types.SimpleNamespace(seats=[types.SimpleNamespace(harness="gemini", seat_key="g",
+                                                           model="m")]),
+        mode="review", review_authorization=_auth(True), base_env={})
+    assert [(m.mode, m.code) for m in modes] == [("sealed", STOP)]
+
+
+def test_outside_the_qualification_worker_the_gemini_route_is_refused(monkeypatch):
+    from phase_loop_runtime import gemini_heartbeat as gh
+
+    monkeypatch.setattr(gh, "_CANDIDATE", None)
+    assert pi._seat_route_for_spawn("gemini", _auth(True), eligible=True, decide=_stopped)[2] == STOP
+
+
+def test_a_qualification_candidate_leg_is_never_a_vote():
+    from phase_loop_runtime.agy_qualification import counts_toward_landing
+
+    leg = pi.PanelLegResult(leg="gemini", status="OK", text="Fine.\n\nAGREE", seat_key="g")
+    object.__setattr__(leg, "_review_monitoring", {"effective_policy": "heartbeat_only"})
+    pi.attach_harden_isolation_evidence(leg, {"provider_admission_class": "qualification_candidate"})
+    assert leg.usable and not counts_toward_landing(leg)
