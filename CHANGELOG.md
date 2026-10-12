@@ -21,7 +21,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   input. A board that falls below its floor because of it now names each such seat with its
   code and fix, in the `advisor-board` text summary and in the governed pre-merge floor hold.
 - The agy qualification worker still measures its candidate image on the Gemini route; that
-  leg is admitted `qualification_candidate`, which is never a vote, and is not a review.
+  leg is admitted `qualification_candidate`, which is never a vote, and is not a review. An
+  `--advisory` run, which stages no tree on purpose and inlines its standalone document
+  whole, keeps its seats on the inline route as before.
 - `PHASE_LOOP_SANDBOX_DISABLE=1` no longer gives a bundle-only board: every brokered review
   seat is then refused with `seat_sandbox_not_staged` (its fix now names the knob), so the
   board is below its floor and refuses.

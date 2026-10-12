@@ -337,3 +337,52 @@ def test_a_qualification_candidate_leg_is_never_a_vote():
     object.__setattr__(leg, "_review_monitoring", {"effective_policy": "heartbeat_only"})
     pi.attach_harden_isolation_evidence(leg, {"provider_admission_class": "qualification_candidate"})
     assert leg.usable and not counts_toward_landing(leg)
+
+
+# --------------------------------------------------------------------------------------
+# An advisory run (agent-harness#802) is not a review: it stages no tree on purpose and
+# inlines its standalone document whole. Its unstaged seats keep the inline route; nothing
+# else does.
+# --------------------------------------------------------------------------------------
+
+def _advisory_authorization(tmp_path, monkeypatch):
+    # The production path the `--advisory` CLI takes: the advisory contract's digest bound,
+    # a private scratch authority, no staged tree.
+    from phase_loop_runtime.advisor_board import backing
+    from phase_loop_runtime.advisor_board.advisory_contract import ADVISORY_CONTRACT
+    from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
+    from phase_loop_runtime.cli import _advisory_review_authority
+
+    token = backing.set_review_instruction_digest(ADVISORY_CONTRACT)
+    try:
+        return backing.prepare_review_isolation_authorization(
+            DEFAULT_BOARD, "a standalone document\n", mode="review",
+            canonical_repo_authority=_advisory_review_authority(tmp_path),
+            stage_review_tree=False)
+    finally:
+        backing.reset_review_instruction_digest(token)
+
+
+def test_an_advisory_run_keeps_its_unstaged_seats_inline(tmp_path, monkeypatch):
+    auth = _advisory_authorization(tmp_path, monkeypatch)
+    assert auth.staged_tree_sha256 is None
+    route, notices, refusal = pi._seat_route_for_spawn("claude", auth, eligible=True)
+    assert (route, notices, refusal) == (
+        seat_jail.SeatRoute(False, "seat_sandbox_not_staged"), ["seat_sandbox_not_staged"], None)
+    assert pi._seat_route_for_spawn("codex", auth, eligible=True) == (None, [], None)
+    modes = pi._seat_launch_modes(_board(), mode="review", review_authorization=auth, base_env={})
+    assert [(m.mode, m.code) for m in modes] == [("sealed", "seat_sandbox_not_staged")] * 4
+
+
+def test_an_advisory_run_still_refuses_every_other_sealed_code(tmp_path, monkeypatch):
+    auth = _advisory_authorization(tmp_path, monkeypatch)
+    for code in sorted(seat_jail.SEALED_FALLBACK_CODES - {"seat_sandbox_not_staged"}):
+        assert pi._seat_route_for_spawn(
+            "gemini", auth, eligible=True,
+            decide=lambda leg, code=code, **k: seat_jail.SeatRoute(False, code))[2] == code
+
+
+def test_a_review_run_with_no_staged_tree_is_refused_whatever_its_brief(tmp_path):
+    review = types.SimpleNamespace(staged_tree_sha256=None, instructions_sha256="0" * 64)
+    assert pi._seat_route_for_spawn("claude", review, eligible=True)[2] == "seat_sandbox_not_staged"
+    assert pi._seat_route_for_spawn("codex", review, eligible=True)[2] == "seat_sandbox_not_staged"

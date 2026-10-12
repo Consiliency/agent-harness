@@ -2145,7 +2145,10 @@ def _seat_launch_modes(
             routes[leg] = _seat_route_for_spawn(leg, review_authorization, eligible=True)
         route, _notices, refusal = routes[leg]
         if route is None and refusal is None:
-            if sandbox_usable_by(leg, True):
+            if getattr(review_authorization, "staged_tree_sha256", None) is None:
+                # Only an advisory run reaches this (agent-harness#802).
+                modes.append(_coded(sp.MODE_SEALED, "seat_sandbox_not_staged"))
+            elif sandbox_usable_by(leg, True):
                 modes.append(_coded(sp.MODE_UNCONFINED, "seat_filesystem_unconfined"))
             else:
                 modes.append(sp.SeatMode(key, leg, sp.MODE_SEALED, None,
@@ -2163,7 +2166,8 @@ def _seat_launch_modes(
             # included -- degraded and not run, with its notice's fix.
             modes.append(_coded(sp.MODE_DEGRADED, refusal))
         elif not route.jailed:
-            # Only the agy qualification worker's candidate measurement reaches this.
+            # Only the agy qualification worker's candidate measurement and an advisory run
+            # reach this.
             modes.append(_coded(sp.MODE_SEALED, str(route.code)))
         else:
             kind, code, source, left, also = (_claude_credential(leg) if leg == "claude"
@@ -12308,9 +12312,10 @@ def _seat_route_for_spawn(
     Returns ``(route, notices, refusal)``.
 
     A route that is not jailed is refused with its one notice code: a review seat is never
-    run toolless with the bundle inlined (agent-harness#1244). The one exception is the agy
-    qualification worker's Gemini leg, which measures a candidate image on that route and
-    is never a vote; it keeps the route with its notice. A leg with no jail route
+    run toolless with the bundle inlined (agent-harness#1244). Two runs that are not reviews
+    keep the route with its notice: the agy qualification worker's Gemini leg, which
+    measures a candidate image and is never a vote, and an advisory run's unstaged seats,
+    whose standalone document is inlined whole (agent-harness#802). A leg with no jail route
     (codex, grok) keeps its own route only when a staged tree was approved for it to read;
     with none it is refused with ``seat_sandbox_not_staged``.
 
@@ -12328,10 +12333,15 @@ def _seat_route_for_spawn(
         is not None,
     )
     if route is None:
-        if getattr(review_authorization, "staged_tree_sha256", None) is None:
+        if (getattr(review_authorization, "staged_tree_sha256", None) is None
+                and not _advisory_document_run(review_authorization)):
             return None, [], "seat_sandbox_not_staged"
         return None, [], None
     if not route.jailed:
+        if route.code == "seat_sandbox_not_staged" and _advisory_document_run(review_authorization):
+            # An advisory run (agent-harness#802) reviews a standalone document inlined whole,
+            # stages no tree on purpose, and is never a landing vote.
+            return route, [str(route.code)], None
         if leg == "gemini" and _measuring_qualification_candidate():
             # The agy qualification worker measures a candidate image on this route. Its
             # leg is admitted `qualification_candidate`, never a vote; it is not a review.
@@ -12349,6 +12359,15 @@ def _seat_route_for_spawn(
     logging.getLogger(__name__).warning(
         "seat jail not qualified on this host (%s); the %s seat will not run", outcome.reason, leg)
     return route, [], "seat_jail_qualification_failed"
+
+
+def _advisory_document_run(review_authorization: object) -> bool:
+    """Is this authorization bound to the advisory contract (agent-harness#802)? Its
+    instructions digest is a sealed field of the authorization."""
+    from .advisor_board.advisory_contract import ADVISORY_CONTRACT
+
+    digest = getattr(review_authorization, "instructions_sha256", None)
+    return digest is not None and digest == sha256(ADVISORY_CONTRACT.encode("utf-8")).hexdigest()
 
 
 def _measuring_qualification_candidate() -> bool:

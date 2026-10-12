@@ -609,6 +609,7 @@ does not run, with `gemini_seat_egress_unconfined`, until its jail egress is lim
 inference hosts (agent-harness#1170). Codex and grok are
 not jailed yet (agent-harness#895) and carry `seat_filesystem_unconfined` when given a tree;
 on a review with no staged tree they are degraded and do not run (`seat_sandbox_not_staged`).
+An `--advisory` run stages no tree on purpose and keeps every seat on the inline route.
 
 **Where the host supports the jail, Claude seats are jailed by default, and the jail is
 qualified on first use.** The seat's credential is your Claude login, which is normally

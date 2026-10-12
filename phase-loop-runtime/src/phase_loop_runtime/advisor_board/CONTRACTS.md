@@ -1462,7 +1462,11 @@ are recorded on agent-harness#1132.
   code and fix. The one exception is not a
   review: the agy qualification worker process (the only one that sets the heartbeat
   module's candidate image) keeps its Gemini leg on that route, with its notice, to measure
-  the candidate; that leg is admitted `qualification_candidate`, which is never a vote.
+  the candidate; that leg is admitted `qualification_candidate`, which is never a vote. An
+  `--advisory` run (agent-harness#802), whose authorization is bound to the advisory
+  contract and stages no tree on purpose, keeps its seats on the inline route with
+  `seat_sandbox_not_staged`: its standalone document is inlined whole and it is non-gating.
+  Every other sealed code still refuses its seats there.
 - **The jailed route is Claude-only.** `JAILED_LEGS` is exactly `{"claude"}`. A Gemini
   seat's route is not jailed today, so it is DEGRADED and not run with its typed notice
   (above); a tooled Gemini seat is agent-harness#1170.
