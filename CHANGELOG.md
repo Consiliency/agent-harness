@@ -317,6 +317,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - `docs/branch-and-publication-flow.md` replaces its "Known gap" section with the control, and
   notes that the inner `phase-loop execute` leg keeps the `manual` closeout default.
 
+### Tests: a child Python imports the tree under test, whatever its cwd
+
+- The test suite makes a relative `PYTHONPATH` (CI's `src:tests`) absolute once, at
+  conftest import. A child Python started from a test that had changed directory used to
+  import whatever `phase_loop_runtime` the interpreter had installed. With a stale install,
+  `test_owner_loss_through_real_broker_reclaims_namespace` failed locally with
+  `fixture worker exited 1` while CI, which installs the tree it tests, stayed green.
+  Before 0.7.25 the same test passed while running the installed code instead of the tree.
+- That test now puts its worker's stderr in the failure message.
+- Test-only. Nothing in the runtime changes.
+
 ## [0.7.26] - 2026-10-09
 
 ### Upgrade notes
