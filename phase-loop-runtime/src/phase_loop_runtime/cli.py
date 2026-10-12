@@ -272,10 +272,7 @@ def _profile_command_registrars():
         seen.add(key)
         registrars.append(registrar)
 
-    try:
-        entry_points = importlib.metadata.entry_points(group="phase_loop_runtime.profile_commands")
-    except TypeError:  # pragma: no cover - py<3.10 selectable API
-        entry_points = importlib.metadata.entry_points().get("phase_loop_runtime.profile_commands", [])
+    entry_points = importlib.metadata.entry_points(group="phase_loop_runtime.profile_commands")
     for entry_point in entry_points:
         try:
             _add(entry_point.load())

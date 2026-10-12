@@ -6,6 +6,29 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### BREAKING: Python 3.12 is the minimum (agent-harness#1546)
+
+- `phase-loop-runtime` and `consiliency-harness` now declare `requires-python = ">=3.12"`
+  (was `>=3.10`); the 3.10/3.11 classifiers are gone and 3.13/3.14 are listed. pip and uv
+  skip this release on an older interpreter and keep resolving the last 3.10-compatible
+  one, so existing pins keep working. `install-agent-harness.sh` installs through
+  `uv tool install`, which selects a 3.12+ interpreter itself.
+- Fleet interpreters: dev0 and display run the runtime on their Python 3.14. claw's
+  system Python is 3.10, so it runs the runtime on uv's CPython 3.12.15 (that build has
+  `os.memfd_create`, which the seat tests need).
+- CI: the hosted pytest matrix is one 3.12 lane on every event (was 3.10/3.11/3.12 on
+  push and 3.10 on pull requests). The CONFORM chronology node and its junit artifact
+  (`chronology-junit-py312`) moved with it from the 3.10 lane, so the node still runs
+  in that lane and Gate A on push, the nightly, and a dispatch with `chronology=true`.
+  The separate 3.12 I1 subset step in the BAML job is gone because the pytest lane now
+  runs it. `baml-i1-sweep.yml` and the Dagger offload module run 3.12 only.
+- The `tomllib`/`tomli` import fallbacks and the pre-3.10 `entry_points` fallback are
+  removed from the runtime. `exceptiongroup`, `tomli` and `typing-extensions` stay
+  unconditional dependencies: the falsifier run uses the host's `/usr/bin/python3`, which
+  can be older than 3.12 (3.10 on Ubuntu 22.04), and pytest needs them there
+  (agent-harness#1361). The programs the runtime runs under that interpreter stay
+  3.10-compatible, and a new test compiles them with it.
+
 ### The codex board seat can run commands in its staged tree again (agent-harness#1470)
 
 - Since 0.7.25 the codex seat of a sandboxed board (one that stages a review tree) could not
