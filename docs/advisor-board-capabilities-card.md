@@ -241,6 +241,37 @@ configuration below. Named presets and custom boards are library interfaces;
 they are not operator controls for this command. CLI configuration is follow-up
 [agent-harness#927](https://github.com/Consiliency/agent-harness/issues/927).
 
+**A seat that cannot be seated is named, never dropped silently** (agent-harness#1431). The
+default (bounded) board is composed from the vendors that are on PATH and pass their probes;
+a vendor that does not is left out and its seat is backfilled onto another vendor. Every
+excluded seat is reported, at composition and again with the result:
+
+```text
+advisor-board: composition: gemini:gemini-3.8-flash:medium:alternative-approach excluded [agy_image_unqualified]: the agy binary is neither a shipped release member nor qualified on this host -- fix: run `phase-loop agy-qualification run` to qualify it on this host, or ...; replaced by grok:grok-4.7:high:correctness
+```
+
+Under `--json` a board result and a composition refusal carry the same as `composition:
+{seats: [...], excluded: [{vendor, seat_key, code, why, fix, replaced_by}]}`. The
+`native_fill_requested` record keeps its `composition` seat list and carries the exclusions as
+`composition_excluded`, as does the request file. The `code` is the probe's own refusal when it
+raised a typed refusal of ours (a `seat_jail.NOTICES` key such as `agy_image_unqualified`, with
+that table's text and fix), otherwise `board_seat_cli_not_on_path`, `board_seat_probe_failed`,
+`board_seat_probe_timed_out`, `board_seat_not_logged_in` or `board_seat_unauthenticated`.
+
+With `--landing-tier`, the tier's policy is checked on the composed board at composition. A
+`plan` or `production_code` board needs one seat of each of the four vendors, so a board with
+an excluded seat stops there, before a native-fill request is emitted or any seat starts:
+
+```text
+advisor-board: refused at composition [review_board_policy_mismatch]: the production_code landing tier does not accept this lineup, and no seat was launched: ...; gemini:... was excluded at composition [agy_image_unqualified] -- fix: run `phase-loop agy-qualification run` to qualify it on this host, or ...
+```
+
+Exit 2; under `--json` the result is `{usable: false, status: "UNAVAILABLE", refusal: {stage:
+"composition", code, detail, landing_tier}, composition: {...}}`. `--monitoring-policy
+heartbeat_only` seats the frozen four-vendor board and composes nothing, so nothing is
+excluded there: its whole-board preflight qualifies a new agy build on first use, or refuses
+with a typed code.
+
 **Advisory runs over a standalone document** (agent-harness#802):
 
 ```sh
