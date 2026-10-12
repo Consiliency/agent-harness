@@ -327,7 +327,7 @@ refused ceremony or a fenced writer, not a silent divergence. A routing client
 from `build_routing_broker_client()` that a surviving holder built before the
 flip refuses every later request with `WriterGenerationBlocked` (`this broker
 client is bound to retired partition generation …`) before it reads or writes
-either generation. It never rebinds itself, so restart that process
+either generation's store. It never rebinds itself, so restart that process
 (agent-harness#1315).
 
 ## 7. Execute — STATE CHANGE, needs go

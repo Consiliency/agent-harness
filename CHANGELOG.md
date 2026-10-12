@@ -15,7 +15,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   Nothing was written to either generation, and the provider was not called.
 - The client now re-resolves the ACTIVE generation on every request. Once a rotation
   has moved the pointer, it refuses with `WriterGenerationBlocked` before it reads or
-  writes either generation. It never rebinds, so restart the broker process. While the
+  writes either generation's store. It never rebinds, so restart the broker process. While the
   client still holds its lease, the rotation refuses instead, as before.
 
 ### The codex board seat can run commands in its staged tree again (agent-harness#1470)
