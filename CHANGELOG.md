@@ -6,6 +6,97 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+## [0.7.27] - 2026-10-12
+
+### Upgrade notes
+
+- **No jail pass reset from 0.7.26.** The seat jail's falsifier-run layout identity is
+  unchanged (`execfind-falsifier-layout.v1:805042ce…`), and so are the Claude and Gemini jail
+  profile digests (x86_64 and aarch64), recomputed from this tree. A host upgrading from
+  0.7.24 or earlier (layout `c1e0b88a…`) still takes the one-time 0.7.25 reset (see
+  `[0.7.25]`).
+- **No dependency change.** `[project].dependencies` is identical to 0.7.26's, and
+  `uv.lock` differs only in the package's own version. A hash-locked deployment
+  (Consiliency/dotfiles#77) needs only the new package's hashes.
+- **agy 1.3.2 and 1.3.3 are shipped members.** The qualified set is now 1.2.11, 1.2.12,
+  1.2.14, 1.2.15, 1.2.16, 1.2.17, 1.3.0, 1.3.1, 1.3.2 and 1.3.3. A host on 1.3.2 or 1.3.3 no
+  longer depends on self-qualification for its Gemini seat; it uses the shipped record.
+- **The Claude executor preflight refuses a caller credential (agent-harness#1444; PR
+  agent-harness#1517).** When the environment that runs `phase-loop` holds
+  `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`,
+  `CLAUDE_CODE_OAUTH_REFRESH_TOKEN` or any variable whose name begins `ANTHROPIC_` (for
+  example `ANTHROPIC_API_KEY`, but also `ANTHROPIC_BASE_URL` or `ANTHROPIC_MODEL`), the
+  Claude executor's auth preflight now fails with blocker class `account_or_billing_setup`
+  ("Claude CLI is logged in, but the Claude subscription is not proven.") and the executor is
+  demoted to `proof_gated`. A Claude board seat in the same environment is refused
+  `subscription_auth_unproven`. So is a host whose Claude login is not a subscription login.
+  The fix is to unset those variables in the shell that runs `phase-loop` and use a Claude
+  subscription login. 0.7.26 accepted such an environment whenever `claude auth status`
+  reported a subscription type.
+- **Claude board seats run headless `claude -p` by default (agent-harness#1391; PR
+  agent-harness#1446).** This needs Claude Code 2.1.259 or newer.
+  `PHASE_LOOP_PANEL_CLAUDE_ROUTE=tui` restores the PTY adapter; any other value than `print`
+  or `tui` refuses the seat (`panel_claude_route_invalid`). A direct (non-brokered) Claude
+  seat now has Read only, where it had Read and Write.
+- **The codex seat of a sandboxed board can run commands again (agent-harness#1470; PR
+  agent-harness#1489).** Its own staged review tree, a disposable clone, is now writable in
+  its view. Nothing else a seat sandbox permits changed. A codex seat whose command sandbox
+  still cannot start is `DEGRADED` (`seat_tool_sandbox_unavailable`) and is not counted
+  toward the reviewer floor (PR agent-harness#1469), so on a board of four one more unusable
+  seat makes the board unusable (non-zero exit), where 0.7.26 counted a codex seat that had
+  read nothing.
+- **A Gemini seat can wait up to 10 minutes before it starts (agent-harness#1407; PR
+  agent-harness#1465).** When the agy login has less than 10 minutes left, the seat sleeps
+  until the login expires, then renews it and starts with a full hour, where 0.7.26 refused
+  it `gemini_credential_near_expiry`. A bounded leg waits only if enough of its deadline
+  remains, and is charged the time it slept. The log line is `gemini_credential_awaiting_refresh`.
+  The renewal runs without a session bus, so it renews agy's login file and not a desktop
+  keyring; the fix line of the two refresh refusals is now
+  `DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null agy models`.
+- **The non-local placement driver ships OFF (agent-harness#896; PR agent-harness#1492).**
+  Nothing a user runs changes: the launch site does not call it and no backend ships. The
+  new `phase-loop placement reap` command and the `PHASE_LOOP_SANDBOX_LAST_RUNG`,
+  `PHASE_LOOP_SANDBOX_ADMIT_WAIT_S` and `PHASE_LOOP_SANDBOX_TRANSFER_ALLOWANCE_S` settings
+  have no effect until a backend exists and the driver is turned on.
+- **Roadmap v11 is the active roadmap (agent-harness#1394).** In a repository whose
+  `specs/roadmap-status.json` registers an active roadmap (agent-harness's own checkouts), a
+  phase-loop state that names any other roadmap is refused. On an agent-harness checkout whose
+  `.phase-loop/state.json` names `specs/phase-plans-v10.md`, `phase-loop status` and
+  `phase-loop run` stop with `NonActiveSelectionError: specs/phase-plans-v10.md: recognized
+  non-active roadmap (superseded) cannot be selected`, as a traceback. To recover, run
+  `phase-loop archive-state --repo .`: it moves the state to
+  `.phase-loop/archive/<UTC timestamp>/`, and the next command selects
+  `specs/phase-plans-v11.md` from the registry. Passing `--roadmap specs/phase-plans-v11.md`
+  once also works, but it overwrites the old state instead of keeping it. v10's delivered
+  phases stay recorded in the ledger (`plans/manifest.json`). The refusal does not yet name
+  this remedy (agent-harness#1510).
+
+### Qualified agy set adds 1.3.2 and 1.3.3 (agent-harness#1542)
+
+- `gemini_heartbeat.QUALIFIED_IMAGES` and `plans/evidence/qualified-provider-images.json`
+  now admit agy 1.3.2 (Linux x64 image SHA256
+  `32f9478e47d1d456e090f7ed0a297fcde2fa45ec10839904f03ea1ba00645e49`, upstream asset
+  `bf8504c7…`) and 1.3.3 (image
+  `d97edcf90eda1799cd6cedc92616ef402f23c9752a723e8b8ae3e8f062ce458b`, upstream asset
+  `8ee3ca32…`). Both help digests equal 1.2.15–1.3.1's (`8fcf4022…`), so the route core
+  needed only the two new entries.
+- All ten members were requalified on the release tree (completion, cancel and owner-loss
+  each, then `--validate`), because this release changes `phase_loop_runtime/**/*.py`. Each
+  member has its own regenerated record.
+
+### Roadmap v11 replaces v10 (agent-harness#1394)
+
+- `specs/phase-plans-v11.md` ("Fast Loop First, Then Finish v10") is the active roadmap and
+  `specs/phase-plans-v10.md` is superseded. v10's six delivered phases stay recorded in the
+  ledger; its unfinished phases are carried with their aliases and goal IDs unchanged, cited
+  against v10 as of `9eb77a3d`. EC-HARDEN-5 is retired and replaced by EC-HARDEN-6.
+- Discovery selects the registry-declared active roadmap before the manifest fallback, so a
+  default run no longer picks a retained superseded v10 row (PR agent-harness#1414, merged
+  into agent-harness#1394). An explicit `--roadmap`, the resume state and repositories without
+  a registry keep their precedence. The roadmap banner parser recognises v10's supersession
+  banner.
+- See the upgrade note above for a checkout whose phase-loop state still names v10.
+
 ### The codex board seat can run commands in its staged tree again (agent-harness#1470)
 
 - Since 0.7.25 the codex seat of a sandboxed board (one that stages a review tree) could not
@@ -26,6 +117,30 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - Nothing the runtime records after a seat ran is read from the seat's tree, and teardown
   removes whatever the seat left there (measured with the real CLI: codex leaves its
   `.agents`, `.aws` and `.codex` mount-point directories when it is killed).
+
+### Claude board seats run headless `claude -p` by default (agent-harness#1391; PRs agent-harness#1442, agent-harness#1446)
+
+- **The ruling (PR agent-harness#1442, docs only).**
+  `plans/decision-claude-print-subscription-route-20261008.md` allows a non-native Claude
+  seat, and the president's Fable rung off Claude Code, to run as
+  `claude -p --output-format stream-json`, but only on a subscription login proven in band.
+  API keys, the Agent SDK, direct HTTP and gateways stay excluded. The capabilities card,
+  `advisor_board/CONTRACTS.md` and the advisor-board skills say so.
+- **The route (PR agent-harness#1446).** `PHASE_LOOP_PANEL_CLAUDE_ROUTE` selects `print`
+  (the default) or `tui`; any other value fails closed as `panel_claude_route_invalid`.
+  Jailed, capture and research seats stay on the TUI.
+  - The first `system/init` event must report `apiKeySource == "none"`, and a
+    `system/api_retry` carrying an auth, billing or organisation error stops the run. Either
+    breach kills the process group and ends the leg `claude_print_subscription_unproven` or
+    `claude_print_auth_drift`. A run without an `init` fails closed. `--bare` is never used.
+  - The prompt goes on stdin, with `--no-session-persistence`, `--safe-mode`, the TUI's
+    run-isolated `--settings` and `--permission-mode dontAsk --permission-prompts none`.
+    Brokered seats have no tools; direct seats have Read only (they had Read and Write).
+  - The review text comes only from the `result` event; a run without one is never OK.
+  - Before launch: Claude Code 2.1.259 or newer, and `claude auth status`.
+  - The HARDEN evidence verifier accepts the brokered print argv alongside the TUI argv,
+    chosen by the recorded `claude_route`; it requires `claude_api_key_source == "none"`.
+- The seat's subscription proof was tightened again by agent-harness#1517 (next entry).
 
 ### A Claude seat's subscription is proven from the login, not from the seat's own answer (agent-harness#1444)
 
@@ -388,6 +503,47 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   Before 0.7.25 the same test passed while running the installed code instead of the tree.
 - That test now puts its worker's stderr in the failure message.
 - Test-only. Nothing in the runtime changes.
+
+### HARDEN SL-5: retained completion evidence is derived and sealed (PRs agent-harness#1264, agent-harness#1412)
+
+- `scripts/build_harden_evidence.py` builds the retained, publication-safe HARDEN evidence and
+  `scripts/verify_harden_evidence.py` checks its Git, review, execution, completion-ledger,
+  artifact and reuse boundaries. The verifier rejects a rollback to an earlier, superseded
+  reviewed SL-4 landing, in both the `commit-tree` integration shape and a merge followed by
+  a first-parent revert, while a legitimate sibling sync stays accepted (agent-harness#1412
+  holds the falsifiers).
+- Repository scripts and tests only; nothing in the installed runtime changes.
+
+### The rule registry proves each negative control ran (agent-harness#1324 follow-up; PRs agent-harness#1390, agent-harness#1421, agent-harness#1427)
+
+- The registry's run check counts a control only by its exact node id, with a passed call
+  phase and no skipped or failed report in any phase; an empty registry is refused. A new
+  test disables each named enforcer in turn and requires its row's control to go red on its
+  own assertion.
+- Package data: `rule_enforcement.json` points four `plan-phase` rows
+  (`owned-files-disjoint`, `lane-dag-acyclic`, `reducer-lists-producers`,
+  `spec-closeout-plan-valid`) at new controls in `tests/test_rule_enforcement_controls.py`
+  that reach every enforcer of the row.
+- Tests only (agent-harness#1421, agent-harness#1427): the demotion probe writes the
+  validator's `(X) WARN` prefix and keeps the finding's original text.
+
+### Docs: how the harness publishes in your repository (PR agent-harness#1393)
+
+- New `docs/branch-and-publication-flow.md`: runner-managed and interactive publication,
+  the closeout modes, the merge-target safety gate, per-lane worktrees and their
+  reclamation, and what a draft pull request signals. README and `docs/TEAM-ONBOARDING.md`
+  point to it. agent-harness#1432 (above) then closed the gap it recorded.
+
+### Plans: non-local seat placement (PR agent-harness#1463)
+
+- Two detailed plans for agent-harness#896: the execution driver (amendments C1–C12) and the
+  launch factoring it needs. Planning artifacts only; agent-harness#1492 (above) implements
+  the driver.
+
+### Tests: the login-sleep renewal test no longer races its own rewrite (agent-harness#1499; PR agent-harness#1508)
+
+- The test serialises its renewal with the sleep's reads, so it no longer fails about one
+  run in seven under load. Test only.
 
 ## [0.7.26] - 2026-10-09
 
