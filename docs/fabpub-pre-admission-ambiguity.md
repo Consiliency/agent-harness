@@ -272,6 +272,14 @@ than in `attested_by`. The dispositions:
   refusals as `publication_recovery_required` with next step
   `resolve_publication_recovery_refusal`.
 
+  Before any rotation, the key's evidence is `outcome_ambiguous_blocked` and the
+  broker replays it on every retry. The human route reports that block, on the first
+  attempt and on every retry, with next step
+  `adjudicate_publication_by_partition_rotation` and the rotate command, not the
+  generic `repair_publication_precheck_and_retry`; it matches the typed
+  `terminal_state` that `publish_from_worktree` now returns on a broker-blocked
+  result (agent-harness#1312).
+
   Separately, the broker now checks the transaction-state precondition **before** it
   writes the adapter-start owner, so a refusal of that precondition no longer leaves
   an unsealed owner that the next attempt would promote to permanent ambiguity. Other
