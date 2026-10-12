@@ -163,6 +163,7 @@ def test_each_runtime_launch_of_a_named_agent_carries_the_marker(tmp_path, monke
     CLI through the seat-launch owner (agent-harness#1222), whose /tmp is private: that
     launch carries ``CHILD_SCRATCH_PRIVATE_TMP``, observed on the env object handed to the
     spawn (the owned seat cannot write a host file)."""
+    import json
     import subprocess
 
     from phase_loop_runtime import executor_availability, launcher, panel_invoker
@@ -206,7 +207,16 @@ def test_each_runtime_launch_of_a_named_agent_carries_the_marker(tmp_path, monke
     elif site == "claude_version":
         panel_invoker._claude_code_support_status(str(bin_dir / "claude"))
     elif site == "claude_auth":
-        panel_invoker._claude_subscription_auth_ok(env)
+        # agent-harness#1444: the seat probe starts only once the login the seat's credential
+        # is drawn from shows a subscription, so the leg env names one.
+        config = tmp_path / "login-config"
+        config.mkdir()
+        store = config / ".credentials.json"
+        store.write_text(json.dumps({"claudeAiOauth": {
+            "accessToken": "fake-login-access-" + "a" * 24, "expiresAt": 4_102_444_800_000,
+            "scopes": ["user:inference"], "subscriptionType": "max"}}), encoding="utf-8")
+        store.chmod(0o600)
+        panel_invoker._claude_subscription_auth_ok({**env, "CLAUDE_CONFIG_DIR": str(config)})
     else:
         # agent-harness#1285's live stop: an executor the operator runs as itself (relocated).
         # (agent-harness#1282 removed the uncalled panel-side timeout cleanup and stop pair.)

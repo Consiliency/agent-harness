@@ -2033,10 +2033,26 @@ def run_auth_preflight(spec: LaunchSpec) -> AuthPreflightResult:
         return AuthPreflightResult(ok=True, metadata=metadata)
 
     if spec.executor == "claude":
+        from . import panel_invoker, seat_credentials
         status_payload = _parse_json_object(probe_outputs.get("claude auth status", ""))
+        status = status_payload or {}
+        logged_in = status.get("loggedIn") is True
+        # The probe runs in a seat holding the login's access token alone, whose status never
+        # carries a subscription type (agent-harness#1444). The preflight holds the seat
+        # gate's rule on the probe already collected: the seat report, the caller guard on
+        # this process's env, and the subscription read from the login itself, only once the
+        # probe reports a logged-in session.
+        subscription_present = (
+            logged_in
+            and status.get("authMethod") == "oauth_token"
+            and status.get("apiProvider") == "firstParty"
+            and "apiKeySource" not in status
+            and not panel_invoker._claude_caller_supplied_credential(os.environ)
+            and seat_credentials.login_subscription_proven(os.environ)
+        )
         metadata["auth_status"] = {
-            "logged_in": bool(status_payload.get("loggedIn")) if status_payload else False,
-            "subscription_present": bool(status_payload.get("subscriptionType")) if status_payload else False,
+            "logged_in": logged_in,
+            "subscription_present": subscription_present,
             "quota_signal_present": _claude_status_has_quota_signal(status_payload),
             "source": "claude auth status",
         }
@@ -2049,7 +2065,7 @@ def run_auth_preflight(spec: LaunchSpec) -> AuthPreflightResult:
                 suggested_ttl_seconds=1800,
                 demoted_to="manual_only",
             )
-        if not status_payload or not status_payload.get("loggedIn"):
+        if not logged_in:
             return AuthPreflightResult(
                 ok=False,
                 blocker_class="account_or_billing_setup",
@@ -2058,11 +2074,11 @@ def run_auth_preflight(spec: LaunchSpec) -> AuthPreflightResult:
                 suggested_ttl_seconds=300,
                 demoted_to="proof_gated",
             )
-        if not status_payload.get("subscriptionType"):
+        if not subscription_present:
             return AuthPreflightResult(
                 ok=False,
                 blocker_class="account_or_billing_setup",
-                blocker_summary="Claude CLI auth is present but the subscription state is missing from `claude auth status`.",
+                blocker_summary="Claude CLI is logged in, but the Claude subscription is not proven.",
                 metadata=metadata,
                 suggested_ttl_seconds=300,
                 demoted_to="proof_gated",

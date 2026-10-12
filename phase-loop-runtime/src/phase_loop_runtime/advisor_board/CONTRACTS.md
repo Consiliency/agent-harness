@@ -90,8 +90,13 @@ equivalence is proven by a test (not asserted in prose).
   (amended 2026-10-08 from "subscription TUI only"; see the 2026-10-08 `claude -p` ruling (`plans/decision-claude-print-subscription-route-20261008.md`, agent-harness#1391)) — the shared scrub additionally
   removes Anthropic tokens, alternate base URLs, credential-helper inputs, and
   Bedrock/Vertex/Foundry/Mantle/AWS-provider selectors. Run-isolated settings
-  disable `apiKeyHelper`; `claude auth status --json` must prove first-party
-  `claude.ai` subscription auth before the exact-model launch: the print route
+  disable `apiKeyHelper`; before the exact-model launch the caller's environment
+  must carry no credential of its own, the login the seat's credential is drawn
+  from must show a first-party `claude.ai` subscription, and
+  `claude auth status --json` inside the seat must report a logged-in first-party
+  session on the token it was handed (one check for both routes,
+  `_claude_subscription_auth_ok`; agent-harness#1444). The seat's own answer is
+  never the proof of a subscription. The print route
   (`_run_claude_print_session`, `claude -p --output-format stream-json --no-session-persistence`, never `--bare`)
   additionally asserts `system/init.apiKeySource == "none"` in-band and fails as
   `claude_print_subscription_unproven` / `claude_print_auth_drift` / `claude_print_stalled`;
