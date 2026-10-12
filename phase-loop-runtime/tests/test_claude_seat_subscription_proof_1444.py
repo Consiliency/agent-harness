@@ -584,8 +584,9 @@ _SEAT = {"loggedIn": True, "authMethod": "oauth_token", "apiProvider": "firstPar
     ({**_SEAT, "apiKeySource": None}, None),
     (_SEAT, "CLAUDE_CODE_OAUTH_TOKEN"),
     (_SEAT, "ANTHROPIC_API_KEY"),
+    ({**_SEAT, "authMethod": "claude.ai"}, None),
 ], ids=["fields-missing", "loggedIn-string", "api-key", "third-party", "apiKeySource-present",
-        "caller-oauth-token", "caller-anthropic-variable"])
+        "caller-oauth-token", "caller-anthropic-variable", "seat-reports-a-login-of-its-own"])
 def test_executor_preflight_holds_the_seat_gate_on_a_proven_login(
         monkeypatch, login_env, status, caller_key):
     """The executor preflight applies the seat gate's caller guard and seat report on top of
