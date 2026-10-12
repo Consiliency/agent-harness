@@ -1526,6 +1526,11 @@ def _check_r_owned_companions(
         lanes = writers + [e for e in migration_editors.get(directory, []) if e not in writers]
         migration_writers[directory] = lanes
         if len(lanes) > 1:
+            # One new migration needs no broader ownership when every tracked
+            # migration companion is already owned somewhere in the phase.
+            companions = [p for p in tracked if posixpath.dirname(p) == directory and p.endswith(".sql")]
+            if len(writers) == 1 and all(_r_owned(p, owned) for p in companions):
+                continue
             out.append(
                 f"(R) WARN: {', '.join(lanes)} each write migrations under `{directory}/`; the "
                 "generator picks new timestamps and per-lane globs there overlap under the lane IR "

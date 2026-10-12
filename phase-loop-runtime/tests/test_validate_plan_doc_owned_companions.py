@@ -248,10 +248,38 @@ def test_board_f007_src_layout_module_still_warns_on_its_top_level_test(module, 
     assert _check([module, test, "tests/test_other.py"], tracked=tracked, body="") == []
 
 
-def test_board_r2_a_lane_editing_a_tracked_migration_joins_the_consolidation():
+def test_board_f018_a_new_migration_and_an_owned_tracked_migration_are_silent():
     lanes = {
         "SL-1": {"owned_globs": ["supabase/migrations/20260601000000_add_a.sql"]},
         "SL-2": {"owned_globs": ["supabase/migrations/20260501000000_init.sql"]},
     }
-    findings = V._check_r_owned_companions(lanes, {}, ["supabase/migrations/20260501000000_init.sql"])
+    assert V._check_r_owned_companions(lanes, {}, ["supabase/migrations/20260501000000_init.sql"]) == []
+
+
+def test_board_f018_an_unowned_tracked_migration_still_warns():
+    lanes = {
+        "SL-1": {"owned_globs": ["supabase/migrations/20260601000000_add_a.sql"]},
+        "SL-2": {"owned_globs": ["supabase/migrations/20260501000000_init.sql"]},
+    }
+    tracked = [
+        "supabase/migrations/20260501000000_init.sql",
+        "supabase/migrations/20260502000000_other.sql",
+    ]
+    findings = V._check_r_owned_companions(lanes, {}, tracked)
     assert len(findings) == 1 and findings[0].startswith("(R) WARN: SL-1, SL-2 each write migrations"), findings
+
+
+@pytest.mark.parametrize("test_owned", [False, True])
+def test_board_f018_migration_test_ownership_still_counts_across_lanes(test_owned):
+    lanes = {
+        "SL-1": {"owned_globs": ["supabase/migrations/20260601000000_add_a.sql"]},
+        "SL-2": {"owned_globs": ["supabase/migrations/20260501000000_init.sql"]},
+    }
+    tracked = ["supabase/migrations/20260501000000_init.sql", "supabase/tests/init.test.sql"]
+    if test_owned:
+        lanes["SL-3"] = {"owned_globs": ["supabase/tests/*.test.sql"]}
+    findings = V._check_r_owned_companions(lanes, {}, tracked)
+    if test_owned:
+        assert findings == []
+    else:
+        assert findings and all(f.startswith("(R) WARN:") and "no lane owns a `*.test.sql`" in f for f in findings), findings
