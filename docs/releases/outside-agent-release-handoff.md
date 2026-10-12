@@ -8,15 +8,15 @@ or make production merge enforcement live.
 ## Package Identity
 
 - Package: `phase-loop-runtime`
-- Version: `0.7.26`
-- Runtime `phase_loop_runtime.__version__`: `0.7.26`
-- Version pin prepared for downstream pinning: `phase-loop-runtime==0.7.26`
+- Version: `0.7.27`
+- Runtime `phase_loop_runtime.__version__`: `0.7.27`
+- Version pin prepared for downstream pinning: `phase-loop-runtime==0.7.27`
 - Console scripts: `phase-loop`, `codex-phase-loop`, `phase-loop-closeout-audit`, `roadmap-ownership`
 
 ## Validator Identity
 
 - Governed-pipeline validator authority: `governed_pipeline_validator`
-- Validator version: `0.7.26`
+- Validator version: `0.7.27`
 - Validator command: `phase-loop outside-agent-validate`
 - Advisory preflight command: `phase-loop outside-agent-preflight`
 - Advisory output remains supporting evidence only; governed-pipeline remains
@@ -49,6 +49,59 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 ## Release-Check Evidence
 
 - `publication_status=prepared`
+- `0.7.27` is an interim maintenance release. It does not claim `EC-RELEASE-1`,
+  `EC-RELEASE-5` or `EC-RELEASE-6`: no pilot trains are claimed, and the RELEASE phase is
+  carried, not started, in roadmap v11. It does not declare `production-ready`.
+- Content above the `v0.7.26` tag commit (`2c510e2a`):
+  - review-seat repairs: the Claude TUI seat's atomic output writes, segmented journal
+    admission and typed delivery refusal (agent-harness#1491; agent-harness#1433,
+    agent-harness#1434); the grok seat's `--cwd` tree bound into its view
+    (agent-harness#1438); a codex seat whose command sandbox cannot start is `DEGRADED`
+    (agent-harness#1469), and the codex seat's own staged tree is writable in its view
+    (agent-harness#1489; agent-harness#1470); a Gemini seat sleeps to its agy login's expiry
+    instead of being refused (agent-harness#1465; agent-harness#1407); a dropped seat is always
+    explained and a tier's policy is checked at composition (agent-harness#1468;
+    agent-harness#1431, agent-harness#1441);
+  - Claude seats: headless `claude -p` is the default route (agent-harness#1442,
+    agent-harness#1446; agent-harness#1391), one subscription rule for both seat routes and the
+    executor preflight (agent-harness#1517; agent-harness#1444), and seat session names
+    (agent-harness#1404). An environment holding `CLAUDE_CODE_OAUTH_TOKEN` or an `ANTHROPIC_*`
+    variable is now refused by the Claude executor preflight;
+  - the non-local placement driver, built and shipped off (agent-harness#1492;
+    agent-harness#896); the inert CLI qualification contract (agent-harness#1360); the
+    interactive publication mode (agent-harness#1432; agent-harness#1392); plan-budget
+    warnings for undeclared aliases (agent-harness#1396); negative-control proof in the
+    rule registry (agent-harness#1390, agent-harness#1421, agent-harness#1427);
+  - roadmap v11 becomes the active roadmap (agent-harness#1394, with agent-harness#1414). A
+    checkout whose phase-loop state names v10 is refused with `NonActiveSelectionError`;
+    `phase-loop archive-state --repo .` recovers it (agent-harness#1510 tracks naming the
+    remedy in the refusal);
+  - records, plans, docs and tests only: agent-harness#1264, agent-harness#1412,
+    agent-harness#1393, agent-harness#1463, agent-harness#1508 and agent-harness#1529;
+  - no dependency change (`Requires-Dist` and entry points equal `0.7.26`'s) and no seat-jail
+    pass reset: the falsifier-run layout identity (`execfind-falsifier-layout.v1:805042ce…`)
+    and the jail profile digests are unchanged;
+  - the qualified agy image set adds 1.3.2 and 1.3.3, so it is 1.2.11, 1.2.12, 1.2.14,
+    1.2.15, 1.2.16, 1.2.17, 1.3.0, 1.3.1, 1.3.2 and 1.3.3. All ten members were requalified
+    live on this release tree (validated 3 and `route_qualified` true for each; all 244
+    source pins verified; `--route-core` passes). Upstream's latest release, 1.3.3, is a
+    shipped member, and its official archive's `antigravity` member hashes to the recorded
+    image. Each series ran from a saved copy of its member's official release archive
+    member, never from the `agy` on `PATH`, and every receipt names the intended image.
+- Packaged content: a scan of every wheel and sdist member for user- or host-specific strings
+  finds nothing new in the wheel relative to the published `0.7.26` archives. The sdist adds
+  synthetic placeholder home-directory paths (including the seat's in-view home) in six new
+  or changed test files, and one host-name string that a test feeds to the CLI qualification
+  schema as a field it must refuse. No packaged evidence or pass-store file.
+- Python 3.12 cold import: in a fresh py3.12 venv, the prepared wheel imports `0.7.27`, and
+  `compileall` of the installed package succeeds under `-W error`.
+- Release tracking: agent-harness#1542; the appended plan-authority rows cite it.
+- Tag: not yet created. The signed `v0.7.27` tag push, which publishes to PyPI, is
+  maintainer-gated.
+
+### Previous release: 0.7.26 (published)
+
+- `publication_status=published`
 - `0.7.26` is an interim maintenance release. It does not claim `EC-RELEASE-1`,
   `EC-RELEASE-5` or `EC-RELEASE-6`: no pilot trains are claimed and the v10 RELEASE phase
   remains `committed`. It does not declare `production-ready`.
@@ -97,8 +150,31 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
   pygments and tomli on Python 3.12, and the same without tomli on Python 3.10;
   typing-extensions was already present through pydantic, among others.
 - Release tracking: agent-harness#1402; the appended plan-authority rows cite it.
-- Tag: not yet created. The signed `v0.7.26` tag push, which publishes to PyPI, is
-  maintainer-gated.
+- Tag: signed `v0.7.26` (tag object `f74e6b65388aebc1d72062e3bb7941d56d5ebc61`, tagger date
+  2026-10-09T17:57:03Z; good ED25519 signature, key
+  `SHA256:Eq5QKVIDgDCUb2tP264VAhjXlpywELmAMrCrrcrjuc0`; GitHub verification `valid`) →
+  `2c510e2ac80272d21052d65dfbcbd9ab21bda575`, the reviewed head of agent-harness#1406. Its merge
+  commit `3e265a62` also carries agent-harness#1264 and agent-harness#1412, which landed on
+  `main` during the release freeze (a HARDEN script and tests, sdist only); they ship in
+  `0.7.27`.
+- Publication: trusted-publish workflow run `37969872285` (workflow `publish-pypi`, event
+  `push`, head branch `v0.7.26`, head SHA `2c510e2ac80272d21052d65dfbcbd9ab21bda575`; job
+  `113953458688` build + verify wheel + sdist, including Gate A; job `113991787726` publish to
+  PyPI, trusted publishing); both succeeded, as did release-consistency run `37969872251` on
+  the tag. The workflow's `SHA256SUMS` and PyPI report wheel
+  `6ac6bd79d1a176a05a9d041f212b0fbfdb8093902409d18a8ae1c401d8b4427a` and sdist
+  `532e269b7df9a231d6001e0a85df26721c2174522cebc9431f3edcb61f5117f0`, and the files fetched
+  from PyPI have exactly those digests.
+- Content equivalence MEASURED: a local `uv build` (umask 022) of a `git archive v0.7.26`
+  export matches the published archives member by member: 498 wheel files and 1093 sdist
+  regular files, none added, missing or different.
+- Fresh install into a new Python 3.10 venv: `pip install --no-cache-dir
+  phase-loop-runtime==0.7.26` resolves `0.7.26` from the index, imports it, and
+  `phase-loop --help` loads.
+- GitHub release: https://github.com/Consiliency/agent-harness/releases/tag/v0.7.26, published
+  2026-10-09T19:36:18Z, neither a draft nor a prerelease. Its body carries the `[0.7.26]`
+  upgrade notes and the PyPI digests.
+- Gate A on the tagged commit: `test.yml` dispatch run 37934834680 on `2c510e2a` succeeded.
 
 ### Previous release: 0.7.25 (published)
 
@@ -702,7 +778,27 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 
 ## Sealed Implementation Evidence
 
-### This release: 0.7.26 (prepared)
+### This release: 0.7.27 (prepared)
+
+The digests below are from the pre-tag local build of the release candidate, produced by
+`uv build` under `umask 022` (archive member modes are umask-dependent,
+`Consiliency/agent-harness#519`) from a `git archive` export of `621d3677`, the release tree
+the agy series ran on (`phase-loop-runtime/` tree `1793a10b`). Later commits touch no
+packaged file. They are a preparation measurement, not a publication record: the publishing
+workflow rebuilds from the tagged commit and verifies `SHA256SUMS`, and the published digests
+are recorded here after the tag push. As for `0.7.15`–`0.7.26`, the published digests are
+expected to differ, because archive bytes are timestamp/toolchain-dependent.
+
+- prepared direct-wheel sha256: `5225b99fb8246207874af9077e759c453151e00fad5980f748b5c06ee6dcacd5`
+- prepared direct-sdist sha256: `8d40c0afe68d31a856030e822f5b48ccae6445b507b8d5169e83159d9419fa50`
+- sdist-derived-wheel sha256: not claimed, for the reason recorded for `0.7.14` below.
+
+### Previous release: 0.7.26 (published)
+
+The published digests are the `SHA256SUMS` tuples recorded by trusted-publish workflow
+`37969872285` from its build of the tagged commit `2c510e2a`, equal to the digests PyPI
+reports: wheel `6ac6bd79d1a176a05a9d041f212b0fbfdb8093902409d18a8ae1c401d8b4427a`, sdist
+`532e269b7df9a231d6001e0a85df26721c2174522cebc9431f3edcb61f5117f0`.
 
 The digests below are from the pre-tag local build of the release candidate, produced by
 `uv build` under `umask 022` (archive member modes are umask-dependent,
@@ -713,8 +809,8 @@ was merged in (agent-harness#1403, agent-harness#1411). Its `phase-loop-runtime/
 `tests/test_harden_evidence_producer.py` (agent-harness#1403). They are a preparation
 measurement, not a publication record: the publishing
 workflow rebuilds from the tagged commit and verifies `SHA256SUMS`, and the published digests
-are recorded here after the tag push. As for `0.7.15`–`0.7.25`, the published digests are
-expected to differ, because archive bytes are timestamp/toolchain-dependent.
+are recorded here after the tag push. As for `0.7.15`–`0.7.25`, the published digests
+differ, because archive bytes are timestamp/toolchain-dependent.
 
 - prepared direct-wheel sha256: `7c50306f3239e4a742dbe238ab266a3f6ab97b6d15840d8d9328666968c77afd`
 - prepared direct-sdist sha256: `f7d24f4a7b53f4cc8a6a4bdad1736f3576b8b5e059f535800e22dd62b5c1b0b6`
@@ -952,23 +1048,23 @@ this metadata document.
 
 ## Package Surface Inventory
 
-Measured on the prepared `0.7.26` build described above.
+Measured on the prepared `0.7.27` build described above.
 
-- Wheel artifact: `phase_loop_runtime-0.7.26-py3-none-any.whl`
-- Sdist artifact: `phase_loop_runtime-0.7.26.tar.gz`
-- Wheel top-level entries: `phase_loop_runtime`, `phase_loop_runtime-0.7.26.data`, `phase_loop_runtime-0.7.26.dist-info`
-- Wheel file count: `498`
+- Wheel artifact: `phase_loop_runtime-0.7.27-py3-none-any.whl`
+- Sdist artifact: `phase_loop_runtime-0.7.27.tar.gz`
+- Wheel top-level entries: `phase_loop_runtime`, `phase_loop_runtime-0.7.27.data`, `phase_loop_runtime-0.7.27.dist-info`
+- Wheel file count: `503`
 - Sdist top-level entries: `MANIFEST.in`, `PKG-INFO`, `README.md`, `protocol`, `pyproject.toml`, `setup.cfg`, `src`, `tests`
-- Sdist file count: `1093` regular files (`1228` archive members including directories)
+- Sdist file count: `1116` regular files (`1251` archive members including directories)
 - Wheel console entry points: `phase-loop = phase_loop_runtime.cli:main`; `codex-phase-loop = phase_loop_runtime.cli:main`; `phase-loop-closeout-audit = phase_loop_runtime.closeout_classifier:console_main`; `roadmap-ownership = phase_loop_runtime.roadmap_ownership:console_main` (plus the `phase_loop_runtime.profile_commands` and `phase_loop_runtime.skill_sources` plugin groups)
 - Runtime plugin entry points: `dotfiles = phase_loop_runtime.dotfiles_profile_plugin:register_profile_commands`; `dotfiles = phase_loop_runtime.skill_sources_plugin:register_skill_sources`
 
 ## Governed-Pipeline Pinning
 
-`0.7.25` is published (PyPI, trusted-publish workflow `37811104879`), so governed-pipeline
-may consume it as an authoritative validator by pinning `phase-loop-runtime==0.7.25`. Once
-`0.7.26` is published (tag push → PyPI; this document records it as `prepared` until then),
-the pin may move to `phase-loop-runtime==0.7.26`. In either case, call:
+`0.7.26` is published (PyPI, trusted-publish workflow `37969872285`), so governed-pipeline
+may consume it as an authoritative validator by pinning `phase-loop-runtime==0.7.26`. Once
+`0.7.27` is published (tag push → PyPI; this document records it as `prepared` until then),
+the pin may move to `phase-loop-runtime==0.7.27`. In either case, call:
 
 ```bash
 phase-loop outside-agent-validate path/to/outside-agent-submission.json \
