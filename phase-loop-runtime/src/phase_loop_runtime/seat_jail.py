@@ -157,6 +157,120 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "staged on fallback root", "configured root unreachable", "fix the root"),
     "seat_sandbox_root_unapplied": (
         "staged locally", "remote co-location not implemented", "none yet"),
+    # agent-harness#896: the placement driver. "Remote machine" is whatever a configured
+    # remote root names; nothing here assumes how many there are or who else uses them.
+    "sandbox_placement_required_unavailable": (
+        "leg refused",
+        "PHASE_LOOP_SANDBOX_REMOTE_REQUIRED is on and this seat was not run through a remote "
+        "placement backend",
+        "unset PHASE_LOOP_SANDBOX_REMOTE_REQUIRED to let the seat run on this machine; this "
+        "build does not run a seat anywhere else yet"),
+    "sandbox_placement_driver_unavailable": (
+        "remote placement not used",
+        "this build's execution driver for remote placement is turned off",
+        "nothing to fix: the seat runs on this machine until a release turns remote "
+        "execution on"),
+    "sandbox_placement_backend_unregistered": (
+        "remote placement not used",
+        "no placement backend is installed for the scheme of the configured root",
+        "install the package that provides that backend, or correct the scheme in "
+        "PHASE_LOOP_SANDBOX_ROOT or in the [sandbox] roots table"),
+    "sandbox_placement_plugin_unavailable": (
+        "remote placement not used",
+        "the placement backend plugin for the configured root's scheme failed to load",
+        "reinstall the package that provides that backend in the environment the runtime "
+        "runs in, or remove the root from the configuration"),
+    "sandbox_placement_ref_invalid": (
+        "remote placement not used",
+        "the placement backend returned something that is not a valid sandbox reference",
+        "update the placement backend; its maintainer must fix what it returns"),
+    "sandbox_placement_capability_undeclared": (
+        "remote placement not used",
+        "the placement backend claimed to have verified a capability it does not declare",
+        "update the placement backend; its maintainer must fix what it claims"),
+    "sandbox_placement_capability_unmet": (
+        "remote placement not used",
+        "the placement backend does not provide, or did not verify for this seat, an "
+        "isolation capability the seat requires",
+        "use a backend that closes inbound access, makes private network ranges "
+        "unreachable and has a one-shot secret channel, or remove the root"),
+    "sandbox_placement_unreachable": (
+        "remote placement not used",
+        "the runtime could not resolve or connect to the address of the configured root",
+        "check the address in the configured root, that the remote machine is on, and that "
+        "this machine can reach it on that port"),
+    "sandbox_placement_budget_spent": (
+        "remote placement not used",
+        "the time allowed for placing the seat (the admission wait plus the transfer "
+        "allowance) ran out",
+        "if the remote machine is healthy but slow, raise "
+        "PHASE_LOOP_SANDBOX_TRANSFER_ALLOWANCE_S or PHASE_LOOP_SANDBOX_ADMIT_WAIT_S"),
+    "sandbox_placement_at_capacity": (
+        "remote placement not used",
+        "the remote machine answered that it has no free slot until the admission wait ran "
+        "out",
+        "run the review again when a slot is free, raise the remote machine's seat limit, "
+        "or raise PHASE_LOOP_SANDBOX_ADMIT_WAIT_S"),
+    "sandbox_placement_capacity_exhausted": (
+        "seat not run",
+        "a remote machine answered that it was full, and a seat that was told \"full\" is "
+        "never moved to this machine",
+        "run the review again when the remote machine has a free slot, raise its seat "
+        "limit, or raise PHASE_LOOP_SANDBOX_ADMIT_WAIT_S"),
+    "sandbox_placement_not_enrolled": (
+        "remote placement not used",
+        "the remote machine does not know this user or this machine",
+        "enrol this user on the remote machine as its backend's setup describes, then run "
+        "the review again"),
+    "sandbox_placement_identity_mismatch": (
+        "remote placement not used",
+        "the remote machine is not the one this machine expects, or does not run the same "
+        "build of the runtime",
+        "install the same runtime version on both machines and confirm the remote "
+        "machine's identity as its backend's setup describes"),
+    "sandbox_placement_workload_unsupported": (
+        "remote placement not used",
+        "the placement backend cannot run this kind of workload",
+        "update the backend on the remote machine, or remove the root so the seat runs on "
+        "this machine"),
+    "sandbox_placement_refused": (
+        "remote placement not used",
+        "the placement backend refused or failed before the seat was started (a local "
+        "check, the transfer, or the last-moment guard)",
+        "read the placement trail for the rung, and the backend's own log on the remote "
+        "machine"),
+    "sandbox_placement_code_invalid": (
+        "remote placement not used",
+        "the placement backend refused with a code that is neither the runtime's nor one "
+        "it registered",
+        "update the placement backend; its maintainer must register its refusal codes"),
+    "sandbox_placement_operation_timeout": (
+        "remote placement not used",
+        "the remote machine accepted a connection and then did not answer in time",
+        "check the load and the backend service on the remote machine; `phase-loop "
+        "placement reap` removes anything it had reserved"),
+    "sandbox_placement_release_unconfirmed": (
+        "cleanup not confirmed",
+        "the runtime could not confirm that what it reserved on the remote machine was "
+        "removed",
+        "run `phase-loop placement reap` when the remote machine answers again; the lease "
+        "is fenced, so nothing can start under it"),
+    "sandbox_placement_lost_after_launch": (
+        "seat lost",
+        "the seat was started on the remote machine and its result did not come back",
+        "check that the remote machine is up and reachable, then run the review again; a "
+        "started seat is never run a second time on its own"),
+    "sandbox_placement_end_reached": (
+        "seat ended",
+        "the seat reached the fixed end of its run on the remote machine (its deadline, or "
+        "the expiry of the login it was given) before it finished",
+        "renew the login the seat uses or give the review a longer deadline, then run it "
+        "again"),
+    "seat_placement_waiting": (
+        "seat waiting",
+        "a remote machine is full and the seat is waiting for a slot",
+        "nothing to do: it waits up to PHASE_LOOP_SANDBOX_ADMIT_WAIT_S seconds in all, and "
+        "is then not run"),
     "seat_staging_below_floor": (
         "leg refused", "disk", "free space"),
     "seat_filesystem_unconfined": (
@@ -165,6 +279,17 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
     "seat_tool_denied": (
         "tool use denied", "agy auto-denied a tool",
         "on the tooled profile a defect; on the sealed route expected"),
+    # agent-harness#1335: from the runtime's own probe of the CLI's command sandbox, made
+    # before the seat runs.
+    "seat_tool_sandbox_unavailable": (
+        "leg degraded; the seat was not run and is not counted as a review",
+        "the CLI's own command sandbox could not start in the seat's view when the runtime "
+        "probed it before the run",
+        "none inside the board run: the runtime has no substitute for a codex seat (it accepts "
+        "no native fill for one, and on the plan and production_code tiers the seat cannot be "
+        "omitted or swapped), so cover this lens outside the board; the two known causes are "
+        "the staged tree being shown read-only to the seat (a separate change) and a host that "
+        "refuses the nested namespace (agent-harness#1335)"),
     "claude_seat_token_missing": (
         "leg refused",
         "no Claude login found and no usable seat token override; the seat does not run",
@@ -300,11 +425,21 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "leg refused", "this executor route cannot run a review through the seat-launch owner",
         "run the review through the CLI executor route"),
     "gemini_credential_near_expiry": (
-        "leg refused", "the agy login expires too soon and did not renew",
-        "run `agy` once interactively to renew the login, then re-run"),
+        "leg refused",
+        "the agy login file has under 10 minutes left and the renewal (`agy models`) did not "
+        "extend it; the seat does not run",
+        "run `DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null agy models`, then re-run: it renews "
+        "agy's login file (the store the seat reads, not a desktop keyring) once the login is "
+        "close to its expiry; if agy asks you to sign in, run it again without `models`"),
+    "gemini_credential_awaiting_refresh": (
+        "waiting",
+        "the agy login has under 10 minutes left and has not expired; agy renews a login that "
+        "has expired, so the seat waits until this login's expiry and then renews it once",
+        "nothing to run: the wait ends at the login's expiry"),
     "gemini_credential_refresh_timeout": (
         "leg refused", "renewing the agy login timed out",
-        "check the network, run `agy` once interactively, then re-run"),
+        "check the network, then run `DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null agy models` "
+        "(it renews agy's login file, the store the seat reads) and re-run"),
     "seat_keyring_unavailable": (
         "leg refused", "the seat could not join a fresh session keyring or seal its filter",
         "allow keyctl and seccomp for unprivileged processes (container runtimes may deny "
@@ -314,6 +449,28 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "use the Claude TUI route for review seats"),
     "claude_tui_journal_collection_refused": (
         "leg refused", "the seat's session journal was incomplete, changed, or not one turn",
+        "re-run the seat; if it repeats, report a defect with the leg log"),
+    # agent-harness#1433: refused before launch, never a late failure of the provider's write.
+    "seat_output_inside_readonly_input": (
+        "leg refused",
+        "the seat's output directory, or the staging directory that holds it while the seat "
+        "runs, is inside one of the seat's read-only inputs or a system directory",
+        "put the seat's output outside its read-only inputs (the staged tree, --add-dir and "
+        "context paths) and outside system directories; for a board, set "
+        "PHASE_LOOP_SANDBOX_STAGING_DIR to a directory outside the reviewed repository; "
+        "then re-run"),
+    "seat_output_retained_after_teardown": (
+        "directory retained",
+        "the seat's private output directory could not be removed and may hold output that "
+        "was not redacted",
+        "remove the `pl-seat-output-*` directory named in the operator's log (it is under "
+        "the staging root); the review that was delivered is unaffected"),
+    # agent-harness#1433/#1434: the provider's turn ended, and nothing it produced could be
+    # accepted. A terminal degraded refusal: never an approval, never a sealed fallback.
+    "claude_seat_delivery_refused": (
+        "leg refused",
+        "the seat's turn ended, but its review was not delivered: the output file is missing "
+        "or is not a completed review, or the session journal was not admitted",
         "re-run the seat; if it repeats, report a defect with the leg log"),
     # agent-harness#1333: per-host CLI qualification (all harnesses). Each is a terminal
     # degraded refusal with its fix line, never a sealed or inline fallback.

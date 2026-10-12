@@ -259,5 +259,40 @@ selection is recorded in the leg's evidence as `sandbox_root_*`.
   `0`, `false`, `no` and `off` leave it off; any other value is read as on, with a warning.
   In this release it refuses every seat leg with `sandbox_placement_required_unavailable`.
 
+### The placement driver (built, not turned on)
+
+The runtime now contains the driver that walks the configured remote roots and runs a seat
+on one of them (`sandbox_placement.place` and `run_placed`), together with its lease journal
+(`placement_lease`). **Nothing calls it yet.** The launch site is unchanged and the driver's
+flag is off, so everything in this subsection has no effect until a placement backend
+exists and a later release turns remote execution on. It is documented now because the
+directory, the command and the settings ship in this release.
+
+- **The lease directory.** `$XDG_STATE_HOME/phase-loop/placement-leases/` (default
+  `~/.local/state/phase-loop/placement-leases/`, mode 0700) holds one small JSON file per
+  placement lease, mode 0600. An entry records the lease id, the backend name, the root
+  (parsed form only: no userinfo, query or fragment), the sandbox reference once known,
+  when it was created, when a kill was acknowledged, and whether it was abandoned. It never
+  holds request or result bytes. The file is locked by the process that owns the lease; a
+  lease whose lock is free belongs to the reaper. Beside it,
+  `$XDG_STATE_HOME/phase-loop/placement-owner-id` (0600) is a random per-user id that a
+  backend tags its sandboxes with. It names no user and no host.
+- **`phase-loop placement reap`.** Removes what dead or abandoned leases left on the
+  configured remote roots. It contacts a backend only when a lease with a free lock names
+  it: with no such lease it makes no call and loads no plugin, so it is safe to run at any
+  time. An entry is cleared only when the backend acknowledged a kill by that lease id and
+  lists nothing for it; anything else is kept for the next run. It prints
+  `placement reap: <n> cleared, <m> kept` and exits 1 while something is kept.
+- **The settings.**
+
+  | Variable | Default | Meaning |
+  |---|---|---|
+  | `PHASE_LOOP_SANDBOX_LAST_RUNG` | `local` | Where a seat ends up when no remote root takes it: `local` (this machine) or `none` (the seat is not run). Any other value is `sandbox_config_invalid`. `PHASE_LOOP_SANDBOX_REMOTE_REQUIRED` forces `none`. |
+  | `PHASE_LOOP_SANDBOX_ADMIT_WAIT_S` | `600` | Seconds a seat may wait in all for a slot on remote machines that answer "full". A seat that was told "full" is never moved to this machine: when the wait runs out it is not run. |
+  | `PHASE_LOOP_SANDBOX_TRANSFER_ALLOWANCE_S` | `300` | Seconds allowed on top of that for sending the staged tree and sealing the request. The two together are the whole time a seat may spend being placed. |
+
+  A login used by a placed seat must outlast the floor its caller sets plus both numbers,
+  so raising either raises that requirement.
+
 The contract every backend follows is in
 `phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md`.

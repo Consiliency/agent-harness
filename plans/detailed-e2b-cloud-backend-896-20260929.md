@@ -12,6 +12,9 @@ automation:
 
 # Detailed plan: E2B cloud placement backend, plan 4a1 control plane (agent-harness#896, plan 4)
 
+> **Amended 2026-10-10.** Some sections of this plan are superseded or amended; the list is in
+> `plans/detailed-remote-seat-placement-896-20261010.md`, "What this plan supersedes and amends".
+
 ## Task
 
 This is the first cloud adapter behind the vendor-neutral placement seam of agent-harness#896.

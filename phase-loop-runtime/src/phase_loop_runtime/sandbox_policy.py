@@ -36,6 +36,10 @@ Environment overrides (all optional):
 * ``PHASE_LOOP_SANDBOX_REMOTE_REQUIRED`` -- fail closed: refuse a seat leg that was not placed
   remotely (:func:`remote_required`). No release has a remote execution driver yet, so with
   it on every seat leg refuses.
+* ``PHASE_LOOP_SANDBOX_LAST_RUNG``, ``PHASE_LOOP_SANDBOX_ADMIT_WAIT_S``,
+  ``PHASE_LOOP_SANDBOX_TRANSFER_ALLOWANCE_S`` -- the placement walk's last rung and its
+  budget (:func:`last_rung`, :func:`admit_wait_s`, :func:`transfer_allowance_s`). They have
+  no effect until a placement backend exists and the execution driver is turned on.
 * ``PHASE_LOOP_SANDBOX_FLOOR_BYTES`` -- free-space floor. When set it is used verbatim; the
   default (2 GiB) is lowered to a quarter of a filesystem smaller than 8 GiB, and is a quarter
   of a RAM-backed one.
@@ -90,6 +94,10 @@ __all__ = [
     "parse_location",
     "remote_required",
     "configured_roots",
+    "candidate_roots",
+    "last_rung",
+    "admit_wait_s",
+    "transfer_allowance_s",
     "SandboxConfigError",
     "select_sandbox_root",
     "egress_allowlist",
@@ -387,6 +395,62 @@ def probe_timeout_s() -> float:
         return float(os.environ["PHASE_LOOP_SANDBOX_PROBE_TIMEOUT_S"])
     except (KeyError, ValueError):
         return _DEFAULT_PROBE_TIMEOUT_S
+
+
+def candidate_roots(
+    roots: "Sequence[tuple[str | None, str]] | None" = None,
+) -> tuple[SandboxRootChoice, ...]:
+    """The remote rungs of the placement walk: every configured non-local root, in the
+    configured order (:func:`configured_roots` when ``roots`` is not given).
+
+    A rung is a root written as a URL with a usable scheme. A bare path and the legacy
+    ``host:path`` form are never rungs (``host:path`` stays record-only), and neither is a
+    root that does not parse. A root whose scheme has no registered backend, or whose
+    plugin does not load, IS a rung: it fails its local checks in the walk. Nothing is
+    looked up, called or probed here."""
+    rungs: list[SandboxRootChoice] = []
+    for name, raw in (configured_roots() if roots is None else roots):
+        parsed = parse_location(raw)
+        if parsed.url and parsed.refusal is None:
+            rungs.append(SandboxRootChoice(
+                parsed.host, parsed.path, False, scheme=parsed.scheme, name=name,
+            ))
+    return tuple(rungs)
+
+
+_LAST_RUNG_ENV = "PHASE_LOOP_SANDBOX_LAST_RUNG"
+# How long a seat waits in all for a slot on hosts that answer "full" (ten minutes: long
+# enough for a running review to finish and free one, short against a review's own length),
+# and how long the transfer of the staged tree and the sealing may take on top of that.
+_DEFAULT_ADMIT_WAIT_S = 600
+_DEFAULT_TRANSFER_ALLOWANCE_S = 300
+
+
+def last_rung() -> str:
+    """Where the placement walk ends when no remote rung takes the seat: ``local`` (the
+    launching host, the default) or ``none`` (the seat is not run). The fail-closed knob
+    (:func:`remote_required`) forces ``none``. Any other value is a configuration error."""
+    if remote_required():
+        return "none"
+    value = os.environ.get(_LAST_RUNG_ENV, "").strip().lower()
+    if value in ("", "local"):
+        return "local"
+    if value == "none":
+        return "none"
+    raise SandboxConfigError("sandbox_config_invalid")
+
+
+def admit_wait_s() -> int:
+    """Seconds a seat may spend waiting at capacity, summed over all rungs."""
+    return max(0, _env_int("PHASE_LOOP_SANDBOX_ADMIT_WAIT_S", _DEFAULT_ADMIT_WAIT_S))
+
+
+def transfer_allowance_s() -> int:
+    """Seconds allowed on top of the admission wait for the transfer and the sealing. The
+    two together are the walk's whole budget."""
+    return max(0, _env_int(
+        "PHASE_LOOP_SANDBOX_TRANSFER_ALLOWANCE_S", _DEFAULT_TRANSFER_ALLOWANCE_S,
+    ))
 
 
 def archive_destination() -> str | None:
