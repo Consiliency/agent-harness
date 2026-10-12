@@ -28,6 +28,15 @@ from _dotfiles_tree import dotfiles_tree_present
 from _quarantine import deselect_quarantined
 
 
+# A child Python inherits PYTHONPATH but not this process's cwd. After a test chdirs, a
+# relative entry (CI's `PYTHONPATH=src:tests`) names nothing, and the child silently
+# imports whatever phase_loop_runtime the interpreter has installed instead of the tree
+# under test. Resolve the entries once, against the directory this interpreter resolved
+# them against: the invocation cwd, which no test has moved yet.
+if os.environ.get("PYTHONPATH"):
+    os.environ["PYTHONPATH"] = os.pathsep.join(
+        os.path.abspath(entry) for entry in os.environ["PYTHONPATH"].split(os.pathsep))
+
 if os.environ.get("PHASE_LOOP_REQUIRE_SEAT_OWNER") == "1":
     os.environ.setdefault("PHASE_LOOP_LAUNCH_AUDIT_PATH", str(Path.cwd() / "seat-launch-audit.jsonl"))
     os.environ["PHASE_LOOP_LAUNCH_AUDIT_FAIL"] = "1"
