@@ -1457,8 +1457,9 @@ are recorded on agent-harness#1132.
   its seat mode is `degraded`, never `sealed`. It is therefore not a usable leg: the reviewer
   floor and `usable`, the landing vote, the governed gate, the train's recorded reviewers and
   the president's input (`unusable (DEGRADED)`) all leave it out. A board that falls below
-  its floor because of it says so: the `advisor-board` text summary and the governed
-  pre-merge floor hold name each such seat with its code and fix. The one exception is not a
+  its floor because of it says so: the `advisor-board` text summary, its `--json`
+  `refused_seats` list and the governed pre-merge floor hold name each such seat with its
+  code and fix. The one exception is not a
   review: the agy qualification worker process (the only one that sets the heartbeat
   module's candidate image) keeps its Gemini leg on that route, with its notice, to measure
   the candidate; that leg is admitted `qualification_candidate`, which is never a vote.

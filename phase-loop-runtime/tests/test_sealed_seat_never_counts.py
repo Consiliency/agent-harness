@@ -220,6 +220,38 @@ def test_a_refused_sealed_seat_is_not_counted_by_the_board(tmp_path):
     gemini = next(leg for leg in payload["legs"] if leg["leg"] == "gemini")
     assert (gemini["status"], gemini["detail"]) == ("DEGRADED", STOP)
     assert [n["fix"] for n in gemini["notices"]] == [seat_jail.NOTICES[STOP][2]]
+    # The refusal, structured: only the refused seat, never a counted one with a notice.
+    assert payload["refused_seats"] == [
+        {"seat_key": "gemini:a", "code": STOP, "fix": seat_jail.NOTICES[STOP][2]}]
+
+
+def test_a_refusal_survives_the_board_into_an_uncounted_leg(monkeypatch, tmp_path):
+    # invoke_board's own conversion of the spawn's refusal shape: the leg carries the code
+    # as its detail and its notice with the fix, and is not counted.
+    from phase_loop_runtime.advisor_board.fixtures import DEFAULT_SEATS
+    from phase_loop_runtime.advisor_board.matrix import default_matrix
+    from phase_loop_runtime.advisor_board.schema import Board
+    from .harden_tdd_guard import invoke_sanctioned_board_control
+
+    def provider(leg, artifact, **kwargs):
+        if leg == "gemini":
+            return pi._BrokeredSpawnResult("DEGRADED", "", pi._HarnessCode(STOP),
+                                           seat_notices=(STOP,))
+        return "OK", "Fine.\n\nAGREE"
+
+    monkeypatch.setattr(pi, "_default_spawn_via_provider", provider)
+    monkeypatch.setattr(pi, "_under_claude_code", lambda *a, **k: False)
+    monkeypatch.setattr(pi, "_claude_code_support_status", lambda *a, **k: (True, "supported"))
+    seats = tuple(s for s in DEFAULT_SEATS if s.harness in ("codex", "gemini"))
+    board = Board(name="codex-gemini", purpose="premerge-review", seats=seats)
+    result = invoke_sanctioned_board_control(
+        board, "artifact", matrix=default_matrix(env={}, probe=lambda *a: True),
+        base_env={}, repo_dir=tmp_path, stream_dir=tmp_path / "stream")
+    gemini = next(leg for leg in result.legs if leg.leg == "gemini")
+    assert (gemini.status, gemini.detail, gemini.usable) == ("DEGRADED", STOP, False)
+    assert [(n.code, n.fix) for n in pi.refused_seat_notices(result.legs)] == [
+        (STOP, seat_jail.NOTICES[STOP][2])]
+    assert [leg.leg for leg in result.usable_legs] == ["codex"]
 
 
 def test_the_below_floor_refusal_names_the_uncounted_seat_and_its_fix(tmp_path):

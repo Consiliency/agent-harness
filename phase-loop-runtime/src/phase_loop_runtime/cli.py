@@ -2476,6 +2476,8 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
                   f"the prompt in {record['stream_dir']}/president.pending.json, write FILL.json "
                   "{rung, brief_digest, findings_digest, text} and re-run with --native-president FILL.json")
         return 0
+    from .panel_invoker import refused_seat_notices
+
     independence = board_independence(board)
     usable_count = len(result.usable_legs)
     usable_vendors = {leg.leg for leg in result.usable_legs}
@@ -2546,6 +2548,11 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
             # agent-harness#1132 (plan amendment A1): each seat's launch mode, decided before
             # any seat launched.
             "seat_modes": [mode.as_json() for mode in seat_modes],
+            # agent-harness#1244: each seat refused before it ran, never counted, with its fix.
+            "refused_seats": [
+                {"seat_key": notice.seat_key, "code": notice.code, "fix": notice.fix}
+                for notice in refused_seat_notices(result.legs)
+            ],
             "independence": {
                 "level": independence.level,
                 # The sealed evidence floor derives these from concrete leg
@@ -2608,7 +2615,8 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
             # notices and seat modes (agent-harness#1132); it is written without them,
             # byte-for-byte as before.
             capture_payload = {key: value for key, value in payload.items()
-                               if key not in ("notices", "seat_modes", "composition")}
+                               if key not in ("notices", "seat_modes", "composition",
+                                              "refused_seats")}
             capture_payload["legs"] = [
                 {key: value for key, value in leg.items() if key != "notices"}
                 for leg in payload["legs"]
@@ -2698,8 +2706,6 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
         )
         # agent-harness#1244: a seat refused before it ran (a route that is not jailed, or
         # no tree to read) is named with its fix, as composition exclusions are.
-        from .panel_invoker import refused_seat_notices
-
         for notice in refused_seat_notices(result.legs):
             print(f"advisor-board:   not counted: {notice.seat_key} [{notice.code}] "
                   f"fix: {notice.fix}", file=sys.stderr)
