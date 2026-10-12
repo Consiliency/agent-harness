@@ -297,6 +297,11 @@ def _staged_review(tmp_path: Path) -> tuple[Path, Path, Path]:
     git("-c", "user.name=t", "-c", "user.email=t@example.invalid", "commit", "-qm", "stage")
     (tree / ".git" / "phase-loop-source-commit").write_text(git("rev-parse", "HEAD") + "\n",
                                                             encoding="utf-8")
+    # As `prepare_local_stage` does: the leg's directory is marked as this process's sandbox
+    # (agent-harness#1470 grants a codex seat its own staged tree only inside one).
+    from phase_loop_runtime import sandbox_retention
+
+    sandbox_retention.mark_as_sandbox(tmp_path, owner_pid=os.getpid())
     return review_dir, out_dir, tree
 
 
@@ -417,10 +422,30 @@ needs_owner = pytest.mark.skipif(not os.path.exists("/usr/bin/bwrap") or os.getu
 @needs_owner
 def test_the_probe_sees_the_seats_own_view_of_the_tree(tmp_path, monkeypatch, owned_review_network):
     """Not a stubbed fact: the stand-in does what codex's launcher does first (make its mount
-    point in the workspace root) INSIDE the seat-launch owner. Today the owner shows the staged
-    tree read-only, so a workspace-write codex seat cannot start a command, and the leg is
-    DEGRADED before the model is called -- the stand-in's `exec` would have returned AGREE."""
-    rc, text, log = _run_codex_seat(tmp_path, monkeypatch, "real-mounts")
+    point in the workspace root) INSIDE the seat-launch owner. Since agent-harness#1470 the
+    owner shows a workspace-write codex seat its own staged tree writable, so the launcher
+    starts, the probe passes by itself and the seat runs. (Before that change the view was
+    read-only and this test pinned DEGRADED.)"""
+    rc, text, _log = _run_codex_seat(tmp_path, monkeypatch, "real-mounts")
+    assert (rc, text) == (0, _last("healthy"))
+
+
+@needs_owner
+def test_the_probe_still_stops_a_seat_whose_launcher_cannot_use_the_tree(tmp_path, monkeypatch,
+                                                                         owned_review_network):
+    """The control for the test above, still without a stubbed fact: the same stand-in in a
+    tree it cannot create its mount point in (the directory itself is not writable) dies
+    with the launcher's line, and the leg is DEGRADED before the model is called -- the
+    stand-in's `exec` would have returned AGREE."""
+    review_dir, _out_dir, tree = _staged_review(tmp_path / "pre")
+    tree.chmod(0o500)
+    try:
+        env = _stand_in_codex_cli(tmp_path, monkeypatch, "real-mounts")
+        rc, text, log = pi._exec_leg("codex", review_dir, tmp_path / "pre" / "out", timeout_s=60,
+                                     artifact="A", env=env, broker_prompt="Review the staged change.",
+                                     broker_evidence={})
+    finally:
+        tree.chmod(0o700)
     assert (rc, text) == (1, "") and type(log) is pi._HarnessCode and log == CODE
     assert pi._classify_leg(rc, text, log) == "DEGRADED"
 
@@ -593,15 +618,13 @@ def test_a_full_brokered_spawn_with_a_working_sandbox_runs_the_seat(tmp_path, mo
 
 
 @needs_owner
-def test_a_full_brokered_spawn_on_todays_read_only_tree_is_degraded(tmp_path, monkeypatch,
-                                                                     owned_review_network):
-    """The board route as it is today: the owner shows the staged tree read-only, the probe
-    (derived from the real launch argv) finds codex's launcher cannot start, and the seat
-    ends DEGRADED with the notice, beside the route's own notice, without being run."""
+def test_a_full_brokered_spawn_runs_the_seat_in_its_own_writable_tree(tmp_path, monkeypatch,
+                                                                       owned_review_network):
+    """The board route since agent-harness#1470 (this test pinned DEGRADED while the owner
+    showed the staged tree read-only): the probe, derived from the real launch argv, finds
+    codex's launcher can make its mount point, and the seat runs. Three launches again."""
     spawned = _full_brokered_spawn(tmp_path, monkeypatch, "real-mounts")
-    status, text, detail = spawned
-    assert (status, text) == ("DEGRADED", "") and pi._finalize_leg_detail(detail) == CODE
-    assert spawned.sandbox_placement_evidence["sandbox_local_provider_spawns"] == 2
+    assert (spawned[0], spawned[1]) == ("OK", _last("healthy"))
+    assert spawned.sandbox_placement_evidence["sandbox_local_provider_spawns"] == 3
     leg = _leg_from(spawned)
-    assert sorted(n.code for n in leg.seat_notices) == ["seat_filesystem_unconfined", CODE]
-    assert not leg.usable
+    assert [n.code for n in leg.seat_notices] == ["seat_filesystem_unconfined"] and leg.usable

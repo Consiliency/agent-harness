@@ -287,9 +287,8 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "probed it before the run",
         "none inside the board run: the runtime has no substitute for a codex seat (it accepts "
         "no native fill for one, and on the plan and production_code tiers the seat cannot be "
-        "omitted or swapped), so cover this lens outside the board; the two known causes are "
-        "the staged tree being shown read-only to the seat (a separate change) and a host that "
-        "refuses the nested namespace (agent-harness#1335)"),
+        "omitted or swapped), so cover this lens outside the board; the known cause is a host "
+        "that refuses the nested namespace (agent-harness#1335)"),
     "claude_seat_token_missing": (
         "leg refused",
         "no Claude login found and no usable seat token override; the seat does not run",
