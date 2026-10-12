@@ -525,6 +525,27 @@ after network entry and before capability removal, so cancellation ownership
 does not restore the provider's ability to change its firewall. Missing required
 egress remains a DEGRADED leg with the exception detail, never an isolation claim.
 
+## Machine-consumable replies (`--reply-format json`)
+
+`phase-loop advisor-board <artifact> --reply-format json` asks each seat for one JSON object, then
+its usual last line, and verifies it.
+- **The reply.** `{"verdict": "AGREE" | "PARTIALLY AGREE" | "DISAGREE", "summary": "...",
+  "findings": [{"severity": "blocking" | "non_blocking", "title": "...", "body": "...",
+  "location": "..."}]}`, then the verdict word on the last line. `DISAGREE` needs a blocking
+  finding, `AGREE` allows none, `PARTIALLY AGREE` needs a finding. No extra fields, no coercion, and
+  exactly one JSON object.
+- **A verified reply** is under `reply` for that seat in `--json` (and in its streamed
+  `leg-*.verdict.json`). **One that does not verify** is `DEGRADED` with `detail` of
+  `panel_reply_<kind>` and its text kept, so a governed run holds it as a non-conforming review.
+  Kinds: `no_json`, `ambiguous_reply`, `schema_mismatch`, `verdict_missing`, `verdict_forbidden`,
+  `verdict_inconsistent`, `terminal_mismatch` (the last line is not the JSON's verdict),
+  `recommendation_missing` (advisory boards), `too_large`.
+- **The brief.** The CLI extends the review brief with the format and stages it as the one brief
+  file every seat and every native fill binds; a `--native-leg` fill must be prepared with the same
+  flag. `--advisory` and agy canary capture are refused with it.
+- **Output.** `--json` has a top-level `reply_format` and a per-seat `reply` only when the flag is
+  used. Without the flag nothing about a run changes.
+
 ## Session names for Claude seats
 
 A Claude panel seat appears in the Claude app's session list as `<repo> · <mode> · [<topic> ·]

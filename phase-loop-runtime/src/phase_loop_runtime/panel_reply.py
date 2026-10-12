@@ -45,8 +45,14 @@ FAILURE_KINDS = (
     "verdict_missing",      # review mode, no verdict
     "verdict_forbidden",    # advisory mode, a verdict present
     "verdict_inconsistent", # the verdict contradicts the findings
+    "terminal_mismatch",    # review mode: the last line is not the JSON's verdict
+    "recommendation_missing",  # advisory mode: the last line is not a RECOMMENDATION line
     "invalid_mode",         # the caller named an unknown mode
 )
+
+#: The kinds a seat's result can carry as `panel_reply_<kind>` (an empty reply is the EMPTY status
+#: before verification runs, and an invalid mode is a caller bug, never a seat's failure).
+SEAT_FAILURE_KINDS = tuple(kind for kind in FAILURE_KINDS if kind not in ("empty", "invalid_mode"))
 
 
 class PanelFinding(BaseModel):
@@ -189,10 +195,13 @@ def derive_terminal_verdict(reply: PanelSeatReply | None) -> str | None:
 
 
 def render_reply_instructions(mode: str) -> str:
-    """The instructions to append to a seat's prompt when structured replies are requested.
+    """The instructions to append to a seat's brief when structured replies are requested.
 
-    Generated from the same model that verifies the reply, so the schema the seat is shown can
-    never drift from the schema it is checked against."""
+    The reply is the JSON object, then the legacy last line (the verdict word in review mode, a
+    ``RECOMMENDATION:`` line in advisory mode). The last line is what every seat transport
+    already uses to decide a reply is complete, so no transport changes; the verifier requires
+    it to agree with the JSON. Generated from the same model that verifies the reply, so the
+    schema a seat is shown cannot drift from the one it is checked against."""
     if mode not in MODES:
         raise ValueError(f"unknown mode {mode!r}")
     schema = PanelSeatReply.model_json_schema()
@@ -203,23 +212,30 @@ def render_reply_instructions(mode: str) -> str:
              "required": ["summary", "findings"] if mode == "advisory" else ["verdict", "summary", "findings"],
              "$defs": schema.get("$defs", {})}
     rules = [
-        "Reply with exactly ONE JSON object and nothing else: no prose before or after it, "
-        "no second JSON object, no code fence is needed.",
+        "Your reply is exactly ONE JSON object that follows the schema below, then one final line "
+        "(described below). Nothing else: no second JSON object, and no prose before the object. A "
+        "```json fence around the object is fine.",
         "Use only the fields in the schema. Every string is plain text; `findings` is a list "
         "(use [] when there are none); a finding's severity is `blocking` or `non_blocking`.",
     ]
     if mode == "review":
         rules += [
-            "`verdict` is exactly one of AGREE, PARTIALLY AGREE, DISAGREE.",
-            "DISAGREE requires at least one `blocking` finding; AGREE allows none; "
-            "PARTIALLY AGREE requires at least one finding.",
+            "`verdict` is exactly one of AGREE, PARTIALLY AGREE, DISAGREE. DISAGREE requires at least "
+            "one `blocking` finding; AGREE allows none; PARTIALLY AGREE requires at least one finding.",
+            "The final line of your whole reply is that same verdict word on its own line, exactly as "
+            "it appears in the JSON. A reply whose final line differs from the JSON's `verdict` is "
+            "rejected.",
         ]
     else:
-        rules.append("Do NOT include a `verdict` field: this is advice, not a verdict.")
+        rules += [
+            "Do NOT include a `verdict` field: this is advice, not a verdict.",
+            "The final line of your whole reply is `RECOMMENDATION: <your recommendation in one "
+            "sentence>`.",
+        ]
     return (
         "## Reply format\n\n"
         + "\n".join(f"- {rule}" for rule in rules)
-        + "\n\nJSON Schema of the reply:\n\n```json\n"
+        + "\n\nJSON Schema of the JSON object:\n\n```json\n"
         + json.dumps(shown, indent=2, sort_keys=True)
         + "\n```\n"
     )
