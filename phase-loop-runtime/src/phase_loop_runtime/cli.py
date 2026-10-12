@@ -2696,6 +2696,13 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
             "— below the board's independence floor, not a usable board.",
             file=sys.stderr,
         )
+        # agent-harness#1244: a seat refused before it ran (a route that is not jailed, or
+        # no tree to read) is named with its fix, as composition exclusions are.
+        from .panel_invoker import refused_seat_notices
+
+        for notice in refused_seat_notices(result.legs):
+            print(f"advisor-board:   not counted: {notice.seat_key} [{notice.code}] "
+                  f"fix: {notice.fix}", file=sys.stderr)
     return exit_code
 
 

@@ -6,6 +6,23 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### A review seat that would run sealed is not run and not counted (agent-harness#1244)
+
+- A board seat whose route is not jailed (every `seat_jail.SEALED_FALLBACK_CODES` code, for
+  example the Gemini seat's `gemini_seat_egress_unconfined`) ran with the bundle inlined and
+  no tools, returned `OK`, and counted toward the reviewer floor and `usable`. A real-CLI
+  board showed `usable: true` with three of four seats delivered, one of them sealed.
+- Such a seat is now `DEGRADED` and not run, like a jail-eligible seat that cannot run
+  jailed: its detail and notice are its route code, with the notice table's fix, and its
+  seat mode is `degraded`. A codex or grok seat on a review with no staged tree is refused
+  the same way with `seat_sandbox_not_staged`.
+- Every count that reads a leg's usability leaves it out: the reviewer floor and `usable`,
+  the landing vote, the governed gate, the train's recorded reviewers and the president's
+  input. A board that falls below its floor because of it now names each such seat with its
+  code and fix, in the `advisor-board` text summary and in the governed pre-merge floor hold.
+- What any seat sandbox permits is unchanged. A host whose seats cannot run jailed may now
+  get a board below its floor, which refuses; that is intended.
+
 ### The codex board seat can run commands in its staged tree again (agent-harness#1470)
 
 - Since 0.7.25 the codex seat of a sandboxed board (one that stages a review tree) could not

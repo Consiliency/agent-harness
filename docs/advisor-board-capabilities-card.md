@@ -576,8 +576,9 @@ name, Claude titles a seat by summarising its first message, which is the whole 
 
 A brokered Claude seat can run with its full tool set inside a per-seat jail, reading the
 staged clone and the review bundle through tools instead of receiving the bundle inline.
-The jail, not the CLI's permission settings, is the boundary. Outside a jail nothing
-changes: the seat keeps the sealed inline route and reports why in a typed notice.
+The jail, not the CLI's permission settings, is the boundary. A brokered review seat that
+cannot run jailed is degraded and does not run, with a typed notice and its fix; it is never
+run toolless and never counted toward the reviewer floor (agent-harness#1244).
 
 A jailed launch needs an EC-EXECFIND-2 falsifier
 pass recorded **on this host** for the jail's profile digest. The pass is stored per user,
@@ -603,10 +604,11 @@ group is named after you and has no other members, and no other account uses it 
 primary group. Anything else is refused with `seat_sandbox_refused:pass_store_unsafe`. Its
 notice names the fix: `chmod go-w` on those three directories, or `chmod 0700`. Neither the
 qualification nor the gate ever changes these permissions for you. The store defends against the
-seat uid, stale records, other hosts and accidental reuse. Gemini stays sealed with
-`gemini_seat_egress_unconfined` until its jail egress is limited to agy's inference hosts
-(agent-harness#1170). Codex and grok are
-not jailed yet (agent-harness#895) and carry `seat_filesystem_unconfined` when given a tree.
+seat uid, stale records, other hosts and accidental reuse. The Gemini seat is degraded and
+does not run, with `gemini_seat_egress_unconfined`, until its jail egress is limited to agy's
+inference hosts (agent-harness#1170). Codex and grok are
+not jailed yet (agent-harness#895) and carry `seat_filesystem_unconfined` when given a tree;
+on a review with no staged tree they are degraded and do not run (`seat_sandbox_not_staged`).
 
 **Where the host supports the jail, Claude seats are jailed by default, and the jail is
 qualified on first use.** The seat's credential is your Claude login, which is normally
@@ -630,7 +632,8 @@ seat with a staged tree takes the jailed route.
 are:
 - `jailed`: tools inside the jail. `credential` names `login` or `seat_token`.
 - `unconfined`: tools on the staged tree without a jail (codex, grok).
-- `sealed`: no tools; the bundle is inlined.
+- `sealed`: no tools; the bundle is inlined. A brokered review seat is never `sealed`: a
+  route that is not jailed is `degraded` (agent-harness#1244).
 - `degraded`: will not run. The line reads `degraded — will not run [<code>]: <reason>;
   fix: <command>`, before the board starts.
 - `native`: filled by the driving session.
@@ -640,8 +643,8 @@ same modes are written to `seat-modes.json` in the stream directory.
 
 **Host prerequisite (maintainer, root, once per host).** `apt install uidmap`, then
 `usermod --add-subuids <start>-<end> --add-subgids <start>-<end> <operator>` (65536 ids is
-conventional). The runtime never runs these. Without them the seat stays sealed with
-`seat_sandbox_unavailable_seat_uid`. The host must also have `dev.tty.legacy_tiocsti = 0`.
+conventional). The runtime never runs these. Without them the seat is degraded and does not
+run, with `seat_sandbox_unavailable_seat_uid`. The host must also have `dev.tty.legacy_tiocsti = 0`.
 
 The runtime's own environment must also contain `pytest`: qualification runs a real falsifier run
 whose wrapper imports it (agent-harness#1357). Releases after 0.7.25 depend on it, and on the
