@@ -27,6 +27,46 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   removes whatever the seat left there (measured with the real CLI: codex leaves its
   `.agents`, `.aws` and `.codex` mount-point directories when it is killed).
 
+### A Claude seat's subscription is proven from the login, not from the seat's own answer (agent-harness#1444)
+
+- A Claude seat is handed the login's access token by descriptor (agent-harness#1253), so
+  `claude auth status --json` inside the seat reports `authMethod: "oauth_token"` and no
+  `subscriptionType`. The gate first refused every seat on that; agent-harness#1446 then
+  accepted the seat's `oauth_token` answer whenever the caller's environment carried no
+  credential of its own. That admitted a seat on a host whose login shows no subscription.
+- `_claude_subscription_auth_ok` now needs all three, and fails closed with
+  `subscription_auth_unproven` on anything missing, malformed, timed out, non-zero or
+  disagreeing:
+  - the caller's environment carries no OAuth-token or `ANTHROPIC_*` variable
+    (agent-harness#1446's guard, kept);
+  - the login the seat's credential is drawn from shows a first-party Claude subscription.
+    New `seat_credentials.login_subscription_proven(env)` reads the same login store, by the
+    same environment rule, as the credential, and needs a usable access token, the CLI's
+    inference scope and a non-empty subscription type in that one record. It runs nothing
+    and returns only a boolean;
+  - the seat reports logged-in, first-party and `authMethod: "oauth_token"`, the method of
+    the descriptor-delivered token, and no `apiKeySource`. A seat that reports an API key, a
+    helper, a third-party provider or a login of its own is refused. The `claude.ai` +
+    subscription-type shape is no longer accepted from a seat: the owner's private config
+    directory holds no login store, so a seat cannot truthfully report it.
+- It is the one proof for both Claude seat routes (`print`, the default, and `tui`) and for
+  the president's print rung; the print route still asserts
+  `system/init.apiKeySource == "none"` in-band itself.
+- **Operator note.** A host whose Claude login is not a subscription login (no subscription
+  type or no inference scope in the CLI's credential store) now gets
+  `subscription_auth_unproven` where 0.7.26 plus agent-harness#1446 launched the seat. The
+  same notice appears if a future Claude Code renames the `oauth_token` auth method: run
+  `claude auth status --json` with `CLAUDE_CODE_OAUTH_TOKEN` set to any value and check the
+  `authMethod` field.
+- The seat credential is unchanged: still the access token and its expiry, and never a
+  refresh token. The harness still does not run the Claude CLI for credentials.
+- `launcher.run_auth_preflight` (the Claude executor) still reported the subscription state
+  missing, because its probe runs in the same seat. It now applies the same caller guard (on
+  its own process environment), the same seat report and the same login proof to the probe it
+  already ran, and sets `subscription_present` only when all three hold.
+- `legible_evidence` calls the same gate. `executor_availability` and the capture preflight
+  read only `loggedIn` or the exit status and were not affected.
+
 ### The execution driver for non-local placement, built and not turned on (agent-harness#896)
 
 - New: the driver that decides where a review seat may run and launches it on a remote
@@ -140,6 +180,42 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   one more launch per codex leg, bounded at 30 seconds; its time is not charged to a bounded
   leg's deadline.
 - Grok, Claude and Gemini seats have no such probe and are not covered.
+
+### A board seat is never dropped silently (agent-harness#1431, agent-harness#1441)
+
+- **The fault.** On a host whose agy build is outside the runtime's shipped set and has no
+  local qualification record for this runtime, the Gemini seat's probe was refused
+  (`agy_image_unqualified`). The probe gate turned that into a bare "no", composition dropped
+  the Gemini seat and backfilled a second Grok seat without saying so, and a `plan` or
+  `production_code` board then refused its own lineup with `review_board_policy_mismatch`.
+  Under `--json` the refusal printed nothing on stdout, and `--emit-native-request` handed out
+  a fill request for a lineup the board was certain to refuse.
+- **Composition says what it left out.** Every seat the composer excludes is reported with the
+  seat it would have been, a typed reason, the fix and the backfilled seat that replaced it:
+  on stderr at composition (`advisor-board: composition: ...`), again with the text result
+  (`[EXCLUDED] ...`), and as `composition.excluded[]` in every board result and composition
+  refusal under `--json`. The `native_fill_requested` record keeps its `composition` seat list
+  as before and carries the exclusions as `composition_excluded[]`, as does the request file.
+  The governed gate prints the same notice, names the seats in a below-floor hold and carries
+  a non-gating finding on a backfilled board. The train's cache-reuse fill check names them in
+  its below-floor and drift refusals. The reason is the probe's own refusal code when it raised
+  a typed refusal of ours (a `seat_jail.NOTICES` key, such as `agy_image_unqualified`, with
+  that table's text and fix); otherwise `board_seat_cli_not_on_path`,
+  `board_seat_probe_failed`, `board_seat_probe_timed_out`, `board_seat_not_logged_in` or
+  `board_seat_unauthenticated`. No CLI output and no other exception text is copied into a
+  reason.
+- **A tier never presents a lineup its own policy refuses.** With `--landing-tier`, the tier's
+  policy is checked on the composed board at composition, before a native-fill request is
+  emitted, a fill is preflighted or anything is staged or launched. The refusal is
+  `advisor-board: refused at composition [review_board_policy_mismatch]`, it names the
+  excluded seat, its reason and its fix, and under `--json` it is the JSON result
+  (`usable: false`, `refusal.stage: "composition"`). The policy, the seat floor and the agy
+  qualification gate are unchanged: nothing new is admitted.
+- **Test only (agent-harness#1441).** A test now fails if, in the seat argv it checks, a whole
+  absolute host path given as `--flag value` or `--flag=value` is not in the view the real
+  `_seat_command_profile` builds. It checks the brokered codex and grok argv captured at the
+  launch boundary and the gemini and claude seat builders it lists, and knows no flag name.
+  Paths embedded inside another operand are not checked.
 
 ### The grok board seat finds its staged review tree (agent-harness#1336; PR agent-harness#1438)
 
@@ -301,6 +377,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   says. A non-zero exit means publish nothing.
 - `docs/branch-and-publication-flow.md` replaces its "Known gap" section with the control, and
   notes that the inner `phase-loop execute` leg keeps the `manual` closeout default.
+
+### Tests: a child Python imports the tree under test, whatever its cwd
+
+- The test suite makes a relative `PYTHONPATH` (CI's `src:tests`) absolute once, at
+  conftest import. A child Python started from a test that had changed directory used to
+  import whatever `phase_loop_runtime` the interpreter had installed. With a stale install,
+  `test_owner_loss_through_real_broker_reclaims_namespace` failed locally with
+  `fixture worker exited 1` while CI, which installs the tree it tests, stayed green.
+  Before 0.7.25 the same test passed while running the installed code instead of the tree.
+- That test now puts its worker's stderr in the failure message.
+- Test-only. Nothing in the runtime changes.
 
 ## [0.7.26] - 2026-10-09
 

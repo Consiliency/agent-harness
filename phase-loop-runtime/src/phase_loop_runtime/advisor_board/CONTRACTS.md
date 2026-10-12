@@ -90,8 +90,13 @@ equivalence is proven by a test (not asserted in prose).
   (amended 2026-10-08 from "subscription TUI only"; see the 2026-10-08 `claude -p` ruling (`plans/decision-claude-print-subscription-route-20261008.md`, agent-harness#1391)) — the shared scrub additionally
   removes Anthropic tokens, alternate base URLs, credential-helper inputs, and
   Bedrock/Vertex/Foundry/Mantle/AWS-provider selectors. Run-isolated settings
-  disable `apiKeyHelper`; `claude auth status --json` must prove first-party
-  `claude.ai` subscription auth before the exact-model launch: the print route
+  disable `apiKeyHelper`; before the exact-model launch the caller's environment
+  must carry no credential of its own, the login the seat's credential is drawn
+  from must show a first-party `claude.ai` subscription, and
+  `claude auth status --json` inside the seat must report a logged-in first-party
+  session on the token it was handed (one check for both routes,
+  `_claude_subscription_auth_ok`; agent-harness#1444). The seat's own answer is
+  never the proof of a subscription. The print route
   (`_run_claude_print_session`, `claude -p --output-format stream-json --no-session-persistence`, never `--bare`)
   additionally asserts `system/init.apiKeySource == "none"` in-band and fails as
   `claude_print_subscription_unproven` / `claude_print_auth_drift` / `claude_print_stalled`;
@@ -1990,3 +1995,56 @@ and is null unless RED. The caller binds the record with SHA-256 over
 canonical JSON (`sort_keys=True`, compact separators, `ensure_ascii=False`).
 The full freeze and golden values live in
 `tests/data/execfind_falsifier_attachment_v1.golden.json`.
+
+## ABDEXCLUDED — A seat is never dropped silently · `composition.py`, `executor_availability.py`, `cli.py` (agent-harness#1431)
+
+**Invariant 1: every excluded seat is named.** Whenever composition leaves a vendor out, the
+result names the seat that vendor would have held, a typed reason, the one thing to run and
+the backfilled seat that replaced it. `compose_review_board_report()` returns
+`ReviewComposition(board, excluded)`; `compose_review_board()` still returns the bare `Board`,
+and `composition_exclusions(board)` returns the exclusions of the latest composition in the
+calling context, matched by the board's identity, so a fixture, a copy or a board from a
+replaced composer never inherits another board's exclusions.
+
+`ExcludedSeat` is `{vendor, seat_key, code, why, fix, replaced_by}`. `code` is:
+
+- the probe's own refusal code, when the probe raised a typed refusal the seat-notice table
+  (`seat_jail.NOTICES`) knows; `why` and `fix` are then that table's literals (for
+  `agy_image_unqualified`, among others);
+- otherwise one of `board_seat_cli_not_on_path`, `board_seat_probe_failed`,
+  `board_seat_probe_timed_out`, `board_seat_not_logged_in`, `board_seat_unauthenticated`.
+
+The probe gate records the reason beside its cached verdict
+(`executor_availability.auth_refusal_for`): the probe that failed, how it failed, and a raised
+refusal's code only when the exception is a `seat_jail.SeatSandboxRefused` (its `code`) or its
+whole message is a `seat_jail.NOTICES` key. It is decided by type and by table membership,
+never by the message's shape. A probe's output, and any other exception message, is never
+carried; such a refusal is rendered by its exception class name only.
+
+**Where it is reported.** The `advisor-board` CLI prints `advisor-board: composition: ...` on
+stderr at composition and `[EXCLUDED] ...` with the text result; under `--json` a board
+result and a composition refusal carry `composition: {seats, excluded}`. The
+`native_fill_requested` record keeps its `composition` seat list (unchanged) and, like the
+request file, carries the exclusions as `composition_excluded`. `_validate_review_board_policy` appends, for each exclusion of the
+board it refuses, `<seat_key> was excluded at composition [<code>] -- fix: <fix>`, for every
+caller. `governed_board_gate` prints `governed board: composition: ...`, names the exclusions
+in a below-floor hold and appends one `warn` finding per exclusion to the result of a review
+on a backfilled board. The train's cache-reuse fill check names them in its below-floor
+and composition-drift refusals. The closed capture board schema is unchanged.
+
+**Invariant 2: a tier is not handed a lineup its own policy refuses.** When `--landing-tier`
+is given, the CLI runs `_validate_review_board_policy(board, review_policy_for_tier(tier))` on
+the composed board immediately after composition: before the emit arm, before a native fill
+is preflighted, and before the review is minted, staged or launched. A mismatch exits 2 with
+`advisor-board: refused at composition [<code>]: ...` and, under `--json`,
+`{usable: false, status: "UNAVAILABLE", refusal: {stage: "composition", code, detail,
+landing_tier}, composition}`. The policy is not changed by this: `plan` and
+`production_code` still require exactly one seat of each of `fable`, `sol`, `gemini`, `grok`,
+so every composed board with an exclusion is refused under them and a president never rules
+on a backfilled board. A board with no seats is refused the same way with
+`review_board_no_seats`.
+
+Not changed: the qualification gate, the review policy, the seat floor, the agy route core
+and every seat sandbox profile. Nothing is qualified automatically by composition. `heartbeat_only` runs seat the frozen board and compose nothing; their whole-board
+preflight (`_preflight_gemini_heartbeat`) is still the only path that qualifies an agy build
+on first use.

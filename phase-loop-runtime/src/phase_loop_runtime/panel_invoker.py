@@ -1049,9 +1049,17 @@ def _validate_review_board_policy(
     actual = Counter(aliases.get(seat.model, seat.model) for seat in board.seats)
     required = Counter(policy.required_seats)
     if actual != required:
+        # agent-harness#1431: when the lineup differs because composition left a seat out,
+        # the refusal says which seat, why and what to run -- never the counts alone.
+        from .advisor_board.composition import composition_exclusions
+
+        cause = "".join(
+            f"; {excluded.seat_key} was excluded at composition [{excluded.code}] -- fix: {excluded.fix}"
+            for excluded in composition_exclusions(board)
+        )
         raise PresidentPolicyError(
             "review_board_policy_mismatch",
-            f"review board seats {dict(actual)} do not match policy {dict(required)}",
+            f"review board seats {dict(actual)} do not match policy {dict(required)}{cause}",
         )
 
 
@@ -7338,7 +7346,8 @@ def _leg_auth_ok(
 
 
 # A credential the caller's own environment could hand a Claude seat. Present, it means the
-# seat's `oauth_token` status cannot be told apart from a token the runtime did not deliver.
+# caller is not on the route this gate vouches for: the seat's `oauth_token` status could not
+# be told apart from a token the runtime did not deliver.
 _CLAUDE_CALLER_TOKEN_ENV_VARS = frozenset({
     "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
     "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
@@ -7354,20 +7363,36 @@ def _claude_subscription_auth_ok(
 ) -> tuple[bool, str]:
     """Prove first-party Claude.ai subscription auth without retaining PII.
 
-    Claude is a strict exception to the legacy fail-open probe: a missing,
-    malformed, timed-out, or non-subscription response fails closed before the
-    TUI launches. Raw JSON and identity fields are neither logged nor returned.
+    Claude is a strict exception to the legacy fail-open probe: every condition below must
+    hold before a seat launches, and anything missing, malformed, timed out, non-zero or
+    disagreeing fails closed. Raw JSON and identity fields are neither logged nor returned.
 
     The probe runs through ``run_provider``, inside the owned seat profile. That profile
     replaces the environment with its own and hands the CLI the login's access token on
-    ``CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`` under a private config dir, so Claude Code
-    reports ``authMethod: "oauth_token"`` with no ``subscriptionType``, not the host's
-    ``claude.ai`` shape. That shape is accepted only when it can only be the runtime's own
-    delivery: logged in, first-party, and the caller's env carries no OAuth token or
-    ``ANTHROPIC_*`` variable of its own. (The seat would see neither, but a caller
-    configured with one is not on the route this gate vouches for.) API-key, console and
-    third-party provider shapes are refused as before.
+    ``CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`` under a private config dir
+    (agent-harness#1253), so the seat reports ``authMethod: "oauth_token"`` and never a
+    subscription. The seat's own answer is therefore not the proof (agent-harness#1444):
+
+    * the CALLER's env carries no OAuth token or ``ANTHROPIC_*`` variable of its own (the
+      seat would see neither, but a caller configured with one is not on the route this
+      gate vouches for);
+    * the SUBSCRIPTION is proven from the login the seat's credential is drawn from
+      (:func:`seat_credentials.login_subscription_proven`, the same ``env``, nothing run);
+    * the SEAT, with the credential it will actually use, reports logged-in, first-party
+      and the descriptor-delivered token, with no API key visible to it (the CLI reports
+      ``apiKeySource`` only when it sees one). Any other auth method is a seat not using
+      what it was handed: API-key, helper, console and third-party shapes, and a
+      ``claude.ai`` login the owner's private config dir cannot contain.
+
+    This is the one subscription proof for every Claude CLI route that launches through the
+    owner, the print route and the TUI alike; the print route still asserts
+    ``system/init.apiKeySource == "none"`` in-band itself.
     """
+    unproven = (False, "subscription_auth_unproven")
+    if _claude_caller_supplied_credential(env):
+        return unproven
+    if not _seat_credentials.login_subscription_proven(env):
+        return unproven
     try:
         proc = run_provider(
             ["claude", "auth", "status", "--json"],
@@ -7379,30 +7404,21 @@ def _claude_subscription_auth_ok(
             env=_sandbox_policy.child_scratch_env(env, _sandbox_policy.CHILD_SCRATCH_RELOCATE),
         )
     except (FileNotFoundError, subprocess.TimeoutExpired):
-        return False, "subscription_auth_unproven"
+        return unproven
     if proc.returncode != 0:
-        return False, "subscription_auth_unproven"
+        return unproven
     try:
         status = json.loads(proc.stdout or "")
     except (json.JSONDecodeError, TypeError):
-        return False, "subscription_auth_unproven"
-    proven = (
+        return unproven
+    seat_proven = (
         isinstance(status, dict)
         and status.get("loggedIn") is True
+        and status.get("authMethod") == "oauth_token"
         and status.get("apiProvider") == "firstParty"
-        and (
-            (
-                status.get("authMethod") == "claude.ai"
-                and isinstance(status.get("subscriptionType"), str)
-                and bool(status["subscriptionType"].strip())
-            )
-            or (
-                status.get("authMethod") == "oauth_token"
-                and not _claude_caller_supplied_credential(env)
-            )
-        )
+        and "apiKeySource" not in status
     )
-    return (True, "") if proven else (False, "subscription_auth_unproven")
+    return (True, "") if seat_proven else unproven
 
 
 def _claude_code_version_tuple(text: str) -> tuple[int, int, int] | None:

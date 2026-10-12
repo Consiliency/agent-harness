@@ -1082,14 +1082,18 @@ panel._seat_filesystem_view=lambda cwd,**kwargs:[*view(cwd,**kwargs),'--bind',{s
 board=replace(DEFAULT_BOARD,seats=tuple(s for s in DEFAULT_BOARD.seats if s.harness=='gemini'))
 panel.invoke_board(board,'synthetic owner-loss fixture',monitoring_policy='heartbeat_only',stream_dir=Path({str(tmp_path / 'records')!r}),review_policy=panel.ReviewLandingPolicy(('gemini',),False))
 '''
+    worker_err = (tmp_path / "worker.err").open("w")
     worker = panel.launch_provider([sys.executable, "-c", worker_code],
-                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   stdout=subprocess.DEVNULL, stderr=worker_err,
                                    start_new_session=True)
+    worker_err.close()
     pidfds = []
     try:
         until = time.monotonic() + 30
         while not detached.exists():
-            assert worker.poll() is None, f"fixture worker exited {worker.returncode}"
+            assert worker.poll() is None, (
+                f"fixture worker exited {worker.returncode}: "
+                f"{(tmp_path / 'worker.err').read_text()[-2000:]}")
             assert time.monotonic() < until, "synthetic provider never admitted"
             time.sleep(.02)
         info = json.loads(fixture_cli.observation.read_text())

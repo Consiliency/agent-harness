@@ -460,6 +460,24 @@ def test_president_print_gates_fail_before_launching(tmp_path, monkeypatch, read
 _IN_SEAT_STATUS = {"loggedIn": True, "authMethod": "oauth_token", "apiProvider": "firstParty"}
 
 
+@pytest.fixture
+def subscription_login(tmp_path, monkeypatch):
+    """The login the seat's credential is drawn from shows a subscription (agent-harness#1444):
+    the seat's own status proves none, so the gate reads the login store. The process home is
+    a fresh one holding that store, and the fixture returns a leg env naming it; without it
+    these tests would pass or fail on the developer's own login."""
+    home = tmp_path / "login-home"
+    store = home / ".claude" / ".credentials.json"
+    store.parent.mkdir(parents=True)
+    store.write_text(json.dumps({"claudeAiOauth": {
+        "accessToken": "fake-login-access-" + "a" * 24, "expiresAt": 4_102_444_800_000,
+        "scopes": ["user:inference"], "subscriptionType": "max"}}), encoding="utf-8")
+    store.chmod(0o600)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    return {"CLAUDE_CONFIG_DIR": str(store.parent)}
+
+
 def _seat_probes(monkeypatch, status: dict | str = _IN_SEAT_STATUS) -> list:
     seen: list = []
 
@@ -477,7 +495,8 @@ def _seat_probes(monkeypatch, status: dict | str = _IN_SEAT_STATUS) -> list:
     return seen
 
 
-def test_president_print_route_launches_on_the_seat_profile_credential(tmp_path, monkeypatch):
+def test_president_print_route_launches_on_the_seat_profile_credential(
+        tmp_path, monkeypatch, subscription_login):
     monkeypatch.delenv(_ROUTE_ENV, raising=False)
     monkeypatch.setattr(pi, "_under_claude_code", lambda env=None: False)
     probes = _seat_probes(monkeypatch)
@@ -498,7 +517,8 @@ def test_president_print_route_launches_on_the_seat_profile_credential(tmp_path,
     ]
 
 
-def test_panel_print_leg_launches_on_the_seat_profile_credential(tmp_path, monkeypatch):
+def test_panel_print_leg_launches_on_the_seat_profile_credential(
+        tmp_path, monkeypatch, subscription_login):
     review_dir, out_dir = _stage(tmp_path)
     monkeypatch.delenv(_ROUTE_ENV, raising=False)
     monkeypatch.setattr(pi, "_under_claude_code", lambda env=None: False)
@@ -524,26 +544,57 @@ def test_panel_print_leg_launches_on_the_seat_profile_credential(tmp_path, monke
     {"loggedIn": True, "authMethod": "claude.ai", "apiProvider": "firstParty"},
 ], ids=["api-key", "console", "no-loggedIn", "logged-out", "bedrock", "vertex",
         "no-provider", "claude.ai-without-subscription"])
-def test_unproven_seat_status_shapes_are_refused(monkeypatch, status):
-    _seat_probes(monkeypatch, status)
-    assert pi._claude_subscription_auth_ok({}) == (False, "subscription_auth_unproven")
+def test_unproven_seat_status_shapes_are_refused(monkeypatch, status, subscription_login):
+    # The login is proven, so each refusal here is the seat's own report.
+    probes = _seat_probes(monkeypatch, status)
+    assert pi._claude_subscription_auth_ok(subscription_login) == (
+        False, "subscription_auth_unproven",
+    )
+    assert len(probes) == 1
+
+
+def test_the_seat_shape_alone_is_not_proof_of_a_subscription(tmp_path, monkeypatch):
+    """agent-harness#1444: a seat that reports the runtime's own delivery, on a host whose
+    login store shows no subscription, is refused and never probed."""
+    home = tmp_path / "plain-home"
+    store = home / ".claude" / ".credentials.json"
+    store.parent.mkdir(parents=True)
+    store.write_text(json.dumps({"claudeAiOauth": {
+        "accessToken": "fake-login-access-" + "a" * 24, "expiresAt": 4_102_444_800_000,
+        "scopes": ["user:inference"]}}), encoding="utf-8")
+    store.chmod(0o600)
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
+    probes = _seat_probes(monkeypatch)
+    for env in ({}, {"CLAUDE_CONFIG_DIR": str(store.parent)}):
+        assert pi._claude_subscription_auth_ok(env) == (False, "subscription_auth_unproven")
+    assert probes == []
 
 
 @pytest.mark.parametrize("key", [
     "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
     "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_API_KEY",
 ])
-def test_a_caller_supplied_token_voids_the_in_seat_shape(monkeypatch, key):
-    _seat_probes(monkeypatch)
-    assert pi._claude_subscription_auth_ok({key: "caller-value"}) == (
+def test_a_caller_supplied_token_voids_the_in_seat_shape(monkeypatch, key, subscription_login):
+    # The login is proven and the seat reports the runtime's delivery: the caller's own
+    # credential is the only reason for this refusal, and the seat is never probed.
+    probes = _seat_probes(monkeypatch)
+    assert pi._claude_subscription_auth_ok(subscription_login) == (True, "")
+    del probes[:]
+    assert pi._claude_subscription_auth_ok({**subscription_login, key: "caller-value"}) == (
         False, "subscription_auth_unproven",
     )
-    # The host's own subscription shape is unaffected by the caller's env, as before.
+    assert probes == []
+    # agent-harness#1444: a seat cannot report the host's own `claude.ai` shape (the owner's
+    # private config dir holds no login store), and one that does is refused with or
+    # without a caller credential.
     _seat_probes(monkeypatch, {**_IN_SEAT_STATUS, "authMethod": "claude.ai", "subscriptionType": "max"})
-    assert pi._claude_subscription_auth_ok({key: "caller-value"}) == (True, "")
+    for env in (subscription_login, {**subscription_login, key: "caller-value"}):
+        assert pi._claude_subscription_auth_ok(env) == (False, "subscription_auth_unproven")
 
 
-def test_a_caller_token_refuses_the_panel_print_leg_before_launch(tmp_path, monkeypatch):
+def test_a_caller_token_refuses_the_panel_print_leg_before_launch(
+        tmp_path, monkeypatch, subscription_login):
     review_dir, out_dir = _stage(tmp_path)
     monkeypatch.delenv(_ROUTE_ENV, raising=False)
     monkeypatch.setattr(pi, "_under_claude_code", lambda env=None: False)
