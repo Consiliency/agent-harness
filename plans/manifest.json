@@ -13090,6 +13090,15 @@
             "review_source": "4f3bd1c56770688c51e918c805c9945a9656b003"
           },
           "transition": "committed"
+        },
+        {
+          "at": "2026-10-12T23:46:12Z",
+          "by": "codex-plan-detailed",
+          "metadata": {
+            "reason": "Round2 exact frozen C7 local-refusal mapping correction; scope unchanged; Opus quota pending",
+            "review_source": "e7686815004d5920cdbd264099f9d4238339c5b9"
+          },
+          "transition": "committed"
         }
       ],
       "owner_skill": "codex-plan-detailed",
@@ -13100,7 +13109,7 @@
       "status": "committed",
       "task_summary": "Complete bounded driver safety prerequisites in agent-harness#1504 before SSH backend qualification.",
       "type": "detailed",
-      "updated_at": "2026-10-12T23:18:20Z"
+      "updated_at": "2026-10-12T23:46:12Z"
     }
   ],
   "schema_version": 1
