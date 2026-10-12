@@ -280,7 +280,7 @@ CHRONOLOGY_NODE="{CHRONOLOGY_NODE}"
 
 # The deselect must never become a silent no-op: if the node is renamed,
 # `--deselect` matches nothing and pytest says nothing. Assert collectability
-# first, in every container, so a rename fails loudly in every lane.
+# first, in every container, so a rename fails loudly in all three.
 PYTHONPATH=src:tests python -m pytest --collect-only -q \\
   "{CHRONOLOGY_NODE}" >/dev/null
 
