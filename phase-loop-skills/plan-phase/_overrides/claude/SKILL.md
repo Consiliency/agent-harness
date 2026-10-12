@@ -218,67 +218,7 @@ The main thread is an orchestrator only: brief specialists, synthesize output, e
 
 ### Step 0 — Read predecessor handoff (if present)
 
-Handoffs are keyed on the current repo so each workspace has its own slot. Resolve both candidate paths first:
-
-```bash
-REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
-if [ -z "$REPO_ROOT" ]; then
-  REPO_KEY="_no-git-$(pwd | sha1sum | cut -c1-12)"
-else
-  REPO_KEY="$(basename "$REPO_ROOT")-$(printf '%s' "$REPO_ROOT" | sha1sum | cut -c1-12)"
-fi
-ROADMAP_HANDOFF="$(python3 - <<'PYH'
-from pathlib import Path
-repo = Path.cwd().resolve()
-skill = "<harness>-phase-roadmap-builder"
-try:
-    # Primary: the installed phase_loop_runtime.skill_paths resolver.
-    from phase_loop_runtime.skill_paths import resolve_handoff_root
-    print(resolve_handoff_root(repo) / skill / "latest.md")
-except Exception:
-    # Fallback: the repo-local handoff_path.py mirror, only when the runtime is not importable.
-    from importlib import util
-    spec = util.spec_from_file_location("handoff_path", repo / "shared" / "phase-loop" / "handoff_path.py")
-    mod = util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    print(mod.resolve_handoff_path(repo, skill))
-PYH
-)"
-EXECUTE_HANDOFF="$(python3 - <<'PYH'
-from pathlib import Path
-repo = Path.cwd().resolve()
-skill = "<harness>-execute-phase"
-try:
-    # Primary: the installed phase_loop_runtime.skill_paths resolver.
-    from phase_loop_runtime.skill_paths import resolve_handoff_root
-    print(resolve_handoff_root(repo) / skill / "latest.md")
-except Exception:
-    # Fallback: the repo-local handoff_path.py mirror, only when the runtime is not importable.
-    from importlib import util
-    spec = util.spec_from_file_location("handoff_path", repo / "shared" / "phase-loop" / "handoff_path.py")
-    mod = util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    print(mod.resolve_handoff_path(repo, skill))
-PYH
-)"
-```
-
-The predecessor skill may be either:
-
-- `<harness>-phase-roadmap-builder` (first time planning a phase against a new roadmap) → `$ROADMAP_HANDOFF`
-- `<harness>-execute-phase` (planning the next phase after a prior one finished executing) → `$EXECUTE_HANDOFF`
-
-Check both paths. If both exist, pick the one with the newer `timestamp:` in its metadata header. If only one exists, use it. If neither, proceed standalone.
-
-Defense-in-depth checks (the repo-key scheme prevents the common cross-project case, but these still catch symlink-shared workspaces, manual file copies, and stale handoffs):
-
-- `from:` must match the expected predecessor.
-- Timestamp must be recent (<7 days).
-- Every `artifact:` path must resolve under `$(git rev-parse --show-toplevel)`.
-
-On any failure, flag via `AskUserQuestion` with `[use anyway, ignore, abort]`.
-
-Fold the handoff's "Open items" and "Repo-specific gotchas" into the brief given to Step 2's Explore teammates so they know what to watch for.
+The predecessor is `<harness>-phase-roadmap-builder` (first phase planned against a new roadmap) or `<harness>-execute-phase` (the next phase after one finished executing). Resolve both repo-keyed `latest.md` handoff paths, use the one with the newer `timestamp:`, or proceed standalone if neither exists. Before trusting it, check that `from:` matches the predecessor, the timestamp is under 7 days old and every `artifact:` path resolves under `$(git rev-parse --show-toplevel)`; on any failure ask via `AskUserQuestion` with `[use anyway, ignore, abort]`. Fold its "Open items" and "Repo-specific gotchas" into the Step 2 briefs. The path-resolution script is in [references/interactive-workflow.md](references/interactive-workflow.md).
 
 ### Step 1 — Resolve spec path, phase, and PHASE_ID
 
@@ -303,23 +243,7 @@ Fold the handoff's "Open items" and "Repo-specific gotchas" into the brief given
 
 **Skip this reconnaissance when the context is already in session.** If the files this phase touches have already been read, the architecture was just discussed, or the caller supplied the file map, do not spawn Explore teammates to re-gather what you already have — plan directly from it. Keep reconnaissance proportional: launch one focused Explore per genuinely-unknown area, not a full three-way fan-out for a one- or two-file change.
 
-Preflight: call `TeamDelete` defensively to flush any inherited team context from a predecessor skill run, then `TeamCreate` a fresh team named for this run before dispatching any `Agent` calls. Recognize these error signatures as benign on the `TeamDelete`: `Team X does not exist` or `already leading team X`.
-
-Launch up to 3 `Agent(subagent_type: "Explore")` calls in a single message. One per major area the phase touches. Each Agent call MUST set `name:` so it can be re-addressed later via `SendMessage`.
-
-Teammate-naming template: `explore-<area>` (e.g., `explore-schema`, `explore-workers`).
-
-Each brief must include:
-
-- The phase's Objective + Exit criteria copied verbatim from the spec.
-- A scoped question: "Map existing code in `<paths>` relevant to this phase. Surface: (a) existing utilities/patterns to reuse, (b) current type/schema/interface shapes that constrain the design, (c) places that will need to change, (d) hidden coupling that would break worktree isolation."
-- A 1–2 sentence architecture context: how these paths fit the larger system.
-- Related files the teammate should know about but not rewrite (type defs, tests, shared config).
-- A preload instruction: "Load `SendMessage` via `ToolSearch(query: \"select:SendMessage\")` as your first action so you can reply without a round-trip."
-- An explicit deliverable statement: "Your deliverable is a `SendMessage` to team-lead with your findings; do not rely on text output or idle without reporting."
-- A length guideline: "Be as short as possible while citing every load-bearing file:line. No fixed word cap."
-
-Apply the `/<harness>-task-contextualizer` checklist to every brief.
+Otherwise `TeamDelete` defensively (treat `Team X does not exist` and `already leading team X` as benign), `TeamCreate` a fresh team, then launch up to 3 named `Agent(subagent_type: "Explore")` teammates (`explore-<area>`) in a single message, one per major area the phase touches. Each brief carries the phase Objective and Exit criteria verbatim, a scoped mapping question, architecture context, related files, a `SendMessage` preload and an explicit `SendMessage` deliverable; apply the `/<harness>-task-contextualizer` checklist. The full brief template is in [references/interactive-workflow.md](references/interactive-workflow.md).
 
 Block until all return. Their findings populate `## Context`.
 
@@ -329,17 +253,7 @@ If a teammate idles without a substantive reply, send one targeted `SendMessage`
 
 ### Step 3 — Architectural decisions
 
-**With `--consensus`**: Launch 2–3 `Agent(subagent_type: "Plan")` calls in a single message, each with a distinct framing:
-
-| Name | Framing |
-|---|---|
-| `arch-minimal` | Minimal change. Preserve current module boundaries. Add, don't refactor. |
-| `arch-clean` | Clean architecture. Willing to refactor to make the design right. |
-| `arch-parallel` | Maximize parallelism. Prefer more, smaller lanes over fewer, fatter lanes, even if it adds interface surface. |
-
-Each teammate's brief includes: the spec phase section, all Explore teammate findings, and its framing. Apply the `/<harness>-task-contextualizer` checklist — architecture context and related-files list carry over from the Explore briefs. Each must return: (1) proposed interface freezes, (2) proposed lane decomposition with file ownership, (3) rationale, (4) known risks.
-
-Synthesize per the Consensus mechanism below. If round 1 doesn't converge, re-address the same named teammates via `SendMessage` (not new `Agent` calls) with the specific disagreement surfaced. Max 2 rounds.
+**With `--consensus`**: launch 2–3 named `Agent(subagent_type: "Plan")` teammates in a single message, one per framing (`arch-minimal`, `arch-clean`, `arch-parallel`). Each returns proposed interface freezes, a lane decomposition with file ownership, its rationale and known risks. Synthesize by the consensus rule (unanimous, then majority with dissent recorded, then one more `SendMessage` round, then the main thread picks, biased toward `arch-parallel`). The framings, brief contents and full synthesis rule are in [references/interactive-workflow.md](references/interactive-workflow.md).
 
 **Without `--consensus`**: Launch 1 `Agent(subagent_type: "Plan", name: "arch-baseline")` for baseline architecture decisions.
 
@@ -421,18 +335,7 @@ After the plan doc is drafted in the scratch file and before `ExitPlanMode`, cal
 
 ### Step 7.5 — External CLI review (only if `--review-external`)
 
-Run the shared review script:
-
-```bash
-python3 "$(git rev-parse --show-toplevel)/.claude/skills/_shared/review_with_cli.py" \
-  --artifact plans/phase-plan-<VERSION>-<PHASE_ALIAS>.md \
-  --prompt-file "$(git rev-parse --show-toplevel)/.claude/skills/<harness>-plan-phase/assets/review_prompt.md" \
-  --out plans/phase-plan-<VERSION>-<PHASE_ALIAS>_reviews.md
-```
-
-If the script reports the frontier-model cache is empty, it prints a discovery prompt to stderr. Surface to the user via `AskUserQuestion` with options `[run discovery now, skip review this run, abort]`.
-
-Tell the user: "Review written to `plans/phase-plan-<VERSION>-<PHASE_ALIAS>_reviews.md`. When Gemini and Codex flag the same concern, treat it as real; divergent comments are context, not verdicts."
+Run `_shared/review_with_cli.py` against the plan with this skill's `assets/review_prompt.md`, writing `plans/phase-plan-<VERSION>-<PHASE_ALIAS>_reviews.md`. The command, the empty-cache path and the message to the user are in [references/interactive-workflow.md](references/interactive-workflow.md).
 
 ### Step 8 — ExitPlanMode
 
@@ -572,15 +475,6 @@ Every phase plan must include this as the final lane. Copy verbatim into the `##
 
 No opt-out. A phase with nothing to change still runs `SL-docs` and records that explicitly in its commit message — the audit trail.
 
-## Consensus mechanism (synthesis rule)
-
-Applied by the main thread after `--consensus` Step 3a:
-
-1. **Unanimous** across all teammates → accept directly.
-2. **Majority (2 of 3)** → accept the majority view; record the dissenting view under `## Execution Notes > Architectural choices > Dissent`.
-3. **No majority** → re-address the same named teammates via `SendMessage` with the specific conflict surfaced. Max 1 additional round.
-4. **Still no convergence** → main thread picks (biased toward `arch-parallel` for this skill's purpose) and records the full disagreement under `## Execution Notes > Unresolved architectural disagreements`.
-
 ## Lane validation checklist
 
 Before writing the plan doc, verify:
@@ -611,9 +505,7 @@ Before writing the plan doc, verify:
 - **Name every teammate.** Set `name:` on every `Agent` call so you can re-address via `SendMessage` without losing context or paying to restart.
 - **Task list as source of truth for the lane DAG.** Step 6's per-lane `TaskCreate` is how the plan becomes actionable; each lane task is addressable by ID for `<harness>-execute-phase`.
 - **Hand-off to `<harness>-execute-phase`.** After `ExitPlanMode` approval, invoke `/<harness>-execute-phase <plan-doc-path>`. See that skill for the full execution contract (team creation, worktree isolation, merge policy). Do NOT pass `isolation: "worktree"` alongside `team_name` — the harness drops `isolation` in that combination.
-- **Manual hand-off (when `<harness>-execute-phase` is unavailable).** Run `python scripts/validate_plan_doc.py <plan-doc-path>` first. Then execute each lane in one of two ways:
-  - (a) **Standalone** — `Agent(isolation: "worktree", name: "<SL-ID>", subagent_type: "general-purpose")` without `team_name`. The `isolation` kwarg is honored in this form; loses team coordination.
-  - (b) **Teamed** — `TeamCreate` + `Agent(team_name=…, name="<SL-ID>", subagent_type="general-purpose")`, and the teammate's first tool call is `EnterWorktree` (load via `ToolSearch(query="select:EnterWorktree")`). Worktree via tool, team coordination preserved.
+- **Manual hand-off (when `<harness>-execute-phase` is unavailable).** Validate the plan with `python scripts/validate_plan_doc.py <plan-doc-path>`, then run each lane standalone or teamed as described in [references/interactive-workflow.md](references/interactive-workflow.md).
 
 ## Output contract
 
@@ -646,124 +538,12 @@ When the generated plan is ready to execute, set `Next phase: <PHASE_ALIAS> - ex
 
 ## Close-out — Reflection + Handoff
 
-After artifacts are staged or confirmed tracked, resolve paths. Treat `_shared/next_reflection_path.py` as optional-if-present: check existence, use it when available, otherwise fall back to an inline date-based filename.
+After artifacts are staged or confirmed tracked (staging comes first unless the user explicitly forbade it), the orchestrator writes two files with the Write tool:
 
-```bash
-REFLECTION_PATH=resolve_skill_bundle_root("codex")/<harness>-plan-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md
-REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
-REPO_LOCAL_HANDOFF=$(python3 - <<'PYH'
-from pathlib import Path
-repo = Path.cwd().resolve()
-skill = "<harness>-plan-phase"
-try:
-    # Primary: the installed phase_loop_runtime.skill_paths resolver.
-    from phase_loop_runtime.skill_paths import resolve_handoff_root
-    print(resolve_handoff_root(repo) / skill / "latest.md")
-except Exception:
-    # Fallback: the repo-local handoff_path.py mirror, only when the runtime is not importable.
-    from importlib import util
-    spec = util.spec_from_file_location("handoff_path", repo / "shared" / "phase-loop" / "handoff_path.py")
-    mod = util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    print(mod.resolve_handoff_path(repo, skill))
-PYH
-)
-mkdir -p "$(dirname "$REPO_LOCAL_HANDOFF")"
-SKILL_MD=resolve_skill_bundle_root("codex")/<harness>-plan-phase/SKILL.md
-```
+- FILE 1, a repo-agnostic reflection to `resolve_skill_bundle_root("codex")/<harness>-plan-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. It is about how the skill's instructions performed, and must not name this project, codebase, filenames or domain.
+- FILE 2, the repo-specific handoff at the per-repo `latest.md` slot for `<harness>-plan-phase`, which overwrites any prior handoff from this skill in the same repo. Its frontmatter carries `from`, `timestamp`, `artifact`, `artifact_state`, `next_skill`, `next_command` and `next_phase`.
 
-Primary path: the orchestrator writes BOTH files directly with the Write tool. Before writing either file, ensure the plan doc has been staged in the preceding Close-out "Stage artifact" section unless the user explicitly forbade staging.
-
-FILE 1 — REPO-AGNOSTIC reflection → `<REFLECTION_PATH>`:
-
-```markdown
-# <harness>-plan-phase reflection — <ISO timestamp>
-
-## Run context
-- Skill: <harness>-plan-phase
-- Timestamp: <ISO timestamp>
-- Repo: <repo>
-- Branch: <branch>
-- Commit: <commit>
-- Artifact: <artifact path if any, or none>
-
-## What worked
-- <bullet, about the SKILL's instructions>
-
-## What didn't
-- <bullet, about friction or gaps in the SKILL's instructions>
-
-## Improvements to SKILL.md
-- <specific, actionable change to the instructions>
-```
-
-Do NOT reference this project, codebase, filenames, or domain in FILE 1. Feedback is about how the skill's instructions performed, for a future meta-skill that digests reflections across runs.
-
-FILE 2 — REPO-SPECIFIC handoff → `<REPO_LOCAL_HANDOFF>` (per-repo slot; overwrites any prior handoff from this skill in the same repo):
-
-```markdown
-<!--
-  Consumer validation — before acting on this handoff:
-  1. Verify `from:` matches the expected predecessor skill.
-  2. Verify `timestamp:` is within the last 7 days.
-  3. Verify every `artifact:` path resolves under your current
-     `$(git rev-parse --show-toplevel)`. If any path points to a
-     different repo, stop and surface it to the user — the handoff
-     was written against a different workspace.
--->
----
-from: <harness>-plan-phase
-timestamp: <ISO>
-artifact: <absolute path to plan doc + reviews if any>
-artifact_state: <staged|tracked|modified|unstaged|blocked>
-next_skill: <<harness>-execute-phase|none>
-next_command: </<harness>-execute-phase PHASE_ALIAS|none - reason>
-next_phase: <PHASE_ALIAS - execution ready|PHASE_ALIAS - blocked: reason>
----
-
-# Handoff for <harness>-execute-phase
-
-## Summary
-<2-3 sentences: phase planned, lanes count, plan doc path.>
-
-## Key decisions made this run
-- <numbered, one line each — lane boundaries, IF-freeze signatures, consensus outcomes if --consensus was used>
-
-## Open items for <harness>-execute-phase
-- <concrete — e.g., "SL-2 depends on SL-1's StoreRegistry.get signature; ensure lane ordering in dispatch">
-
-## Repo-specific gotchas surfaced
-- <quirks of THIS codebase discovered during planning>
-
-## Planning artifacts staged this run
-- <path> @ <artifact_state>
-
-## Execute-phase's likely scope
-- <file globs from Owned files across lanes>
-```
-
-Optional alternative: when fresh-context independent review is desired, the orchestrator MAY instead spawn ONE close-out agent using the `frontier` tier with the prompt below. Use this only when the orchestrator wants a clean-context review of the transcript before writing.
-
-```
-Agent(
-  subagent_type: "general-purpose",
-  model: "<frontier-model-id>",
-  name: "<harness>-plan-phase-closeout",
-  prompt: """
-    Review the skill at <SKILL_MD> and the current execution transcript.
-    Produce the two files above (same schemas) via the Write tool to
-    <REFLECTION_PATH> and <REPO_LOCAL_HANDOFF>.
-  """
-)
-```
-
-After the files are written, print to the user:
-
-> Plan written to `<plan-doc-path>`.
-> Reflection saved to `<REFLECTION_PATH>`.
-> Handoff written to `<REPO_LOCAL_HANDOFF>`.
->
-> Recommended next step: run `/clear` to reset your context window, then invoke `/<harness>-execute-phase <alias>`. The next skill reads the handoff automatically.
+Path resolution, both templates, the optional fresh-context close-out agent and the final message to the user are in [references/closeout-reflection-handoff.md](references/closeout-reflection-handoff.md).
 
 
 Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, handoff roots, helper roots, and reflection roots.
