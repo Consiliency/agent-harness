@@ -1077,6 +1077,11 @@ from pathlib import Path
 from phase_loop_runtime import panel_invoker as panel, gemini_heartbeat as gh
 from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
 gh.QUALIFIED_IMAGES={fixture_cli.module.QUALIFIED_IMAGES!r}
+# As conftest does in-process (agent-harness#1170): the sealed route, as on a host without
+# the seat jail.
+from phase_loop_runtime import seat_jail
+decide=seat_jail.decide_seat_route
+seat_jail.decide_seat_route=lambda leg,**k: decide(leg,**({{"capable":lambda:"seat_sandbox_unavailable_host"}}|k if leg=="gemini" else k))
 view=panel._seat_filesystem_view
 panel._seat_filesystem_view=lambda cwd,**kwargs:[*view(cwd,**kwargs),'--bind',{str(tmp_path)!r},{str(tmp_path)!r}]
 board=replace(DEFAULT_BOARD,seats=tuple(s for s in DEFAULT_BOARD.seats if s.harness=='gemini'))

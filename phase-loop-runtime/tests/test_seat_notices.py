@@ -225,7 +225,9 @@ def test_a_jail_qualified_on_first_use_stays_jailed():
     assert (route, notices, refusal) == (seat_jail.SeatRoute(True), [], None)
 
 
-def test_gemini_seat_stays_sealed_with_one_notice(monkeypatch, tmp_path):
+def test_gemini_seat_on_a_host_without_the_jail_is_sealed_with_one_notice(monkeypatch, tmp_path):
+    """The suite runs as a host without the seat jail for Gemini (conftest,
+    agent-harness#1170): that seat takes the sealed route with exactly one notice."""
     route, notices, refusal = pi._seat_route_for_spawn(
         "gemini", types.SimpleNamespace(staged_tree_sha256="a" * 64), eligible=True)
     assert not route.jailed and len(notices) == 1 and refusal is None

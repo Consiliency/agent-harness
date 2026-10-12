@@ -421,6 +421,11 @@ def build_parser() -> argparse.ArgumentParser:
                               help="watch: qualify and verify, open no PR")
     agy_qual_sub.add_argument("--version", help="watch: a specific in-window stable release instead of the newest")
     agy_qual_sub.add_argument("--base-ref", default="origin/main", help="watch --dry-run only: the tree to prepare from")
+    seat_egress_sub = subparsers.add_parser(
+        "seat-egress",
+        help="The jailed Gemini seat's egress proxy: status, or install the pinned srt (agent-harness#1170)",
+    )
+    seat_egress_sub.add_argument("action", choices=("status", "install"))
     cli_qual_sub = subparsers.add_parser(
         "cli-qualification",
         help="Per-host CLI qualification of a seat harness: status and clear (agent-harness#1333)",
@@ -1287,6 +1292,10 @@ def main(argv: list[str] | None = None) -> int:
         from .agy_qualification import cli_main as _agy_qualification_main
 
         return _agy_qualification_main(args)
+    if command == "seat-egress":
+        from .seat_egress_proxy import cli_main as _seat_egress_main
+
+        return _seat_egress_main(args)
     if command == "cli-qualification":
         from .cli_qualification import cli_main as _cli_qualification_main
 

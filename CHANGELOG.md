@@ -6,6 +6,26 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### The Gemini board seat runs jailed with tools (agent-harness#1170)
+
+- The Gemini (agy) seat now runs in its own seat jail with its tools, like the Claude seat:
+  it reads the staged tree and runs commands there. Until now it ran sealed, without tools.
+- The seat's egress goes through an allowlisting proxy: srt's TLS-terminating proxy
+  (`@anthropic-ai/sandbox-runtime` 0.0.79, pinned by version, integrity and installed-file
+  digest), run on the host outside the seat. The seat's network namespace has no other
+  route. The proxy answers only the requests agy needs (measured, pinned as config). It
+  holds no credential, and the seat cannot reconfigure it.
+- Install it once per user: `phase-loop seat-egress install` (needs node 22.12+ and npm);
+  `phase-loop seat-egress status` reports it. The proxy's CA is generated per host, owner
+  only, and only its certificate enters the seat. Without the layer the Gemini seat is
+  degraded and not run, with `gemini_seat_egress_unavailable` and that fix; it is never a
+  toolless substitute. A host without the seat jail keeps the sealed route.
+- The Gemini jail is a new jail profile: it is qualified on this host on first use, like the
+  Claude jail. The Claude jail and the falsifier-run layout are unchanged.
+- Evidence: plans/evidence/seat-jail-1132/p4-containment-egress.json (the containment probe
+  re-run through the proxy, real replies) and p3-agy-tools-workspace.json (agy's tools,
+  stream events and workspace files).
+
 ### The codex board seat can run commands in its staged tree again (agent-harness#1470)
 
 - Since 0.7.25 the codex seat of a sandboxed board (one that stages a review tree) could not

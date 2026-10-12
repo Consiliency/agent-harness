@@ -244,6 +244,25 @@ def _isolate_claude_seat_host_state(request, monkeypatch, tmp_path):
 
 
 @pytest.fixture(autouse=True)
+def _gemini_seat_off_the_host_jail(monkeypatch):
+    """agent-harness#1170: a Gemini seat on a host that can run the seat jail takes the jailed
+    route, whose egress layer is this host's srt install and CA. The suite keeps every Gemini
+    seat on the sealed route, as on a host without the seat jail, unless a test states the
+    host capability itself (``capable=``); the jailed route's tests inject its facts."""
+    from phase_loop_runtime import seat_jail
+
+    real = seat_jail.decide_seat_route
+
+    def _decide(leg, **kwargs):
+        if leg == "gemini" and "capable" not in kwargs:
+            kwargs["capable"] = lambda: "seat_sandbox_unavailable_host"
+        return real(leg, **kwargs)
+
+    _decide.real = real
+    monkeypatch.setattr(seat_jail, "decide_seat_route", _decide)
+
+
+@pytest.fixture(autouse=True)
 def _isolate_implicit_review_authority(monkeypatch):
     from phase_loop_runtime import panel_invoker
 

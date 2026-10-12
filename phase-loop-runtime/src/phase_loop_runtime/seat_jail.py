@@ -35,7 +35,7 @@ import re
 import stat
 import struct
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
@@ -55,6 +55,16 @@ SEAT_CLAUDE_CONFIG = SEAT_HOME + "/.claude"
 # root. The jail's own `/tmp` is a tmpfs, so it is not the seat's TMPDIR.
 SEAT_TMP_DIRNAME = ".tmp"
 SEAT_TMP = SEAT_HOME + "/" + SEAT_TMP_DIRNAME
+# The jailed Gemini seat (agent-harness#1170). Its config directory is the parent-built
+# `gemini-config/` bound read-only; only the subdirectories agy must write (P3: its cache, its
+# log and the shell tool's bin) are writable binds from the seat's home. Its cwd is an empty
+# workspace, so agy loads no workspace file from the tree (P3). Its trust bundle is the egress
+# CA's certificate alone.
+SEAT_GEMINI_CONFIG = SEAT_HOME + "/.gemini/antigravity-cli"
+GEMINI_WRITABLE_CONFIG_DIRS: tuple[str, ...] = ("bin", "cache", "log")
+HOST_GEMINI_WRITABLE_DIRNAME = ".agy-rw"
+SEAT_GEMINI_WORKSPACE = SEAT_HOME + "/workspace"
+SEAT_EGRESS_CA = SEAT_ROOT + "/egress-ca.pem"
 
 # Host layout under a leg's review dir.
 HOST_TREE_DIRNAME = "reviewed-tree"
@@ -358,6 +368,11 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "sealed route",
         "agy tool and subagent activity or workspace config cannot be controlled",
         "none until agy changes"),
+    "gemini_seat_egress_unavailable": (
+        "seat not run",
+        "the Gemini seat's egress proxy cannot run on this host (srt not installed or not the "
+        "pinned package, node older than 22.12, or the egress CA directory not private)",
+        "run `phase-loop seat-egress install` (needs node 22.12+ and npm), then re-run"),
     "gemini_seat_egress_unconfined": (
         "sealed route",
         "jail egress cannot be limited to agy's inference hosts, so the token's cloud-platform "
@@ -545,6 +560,7 @@ SEALED_FALLBACK_CODES: frozenset[str] = frozenset({
 JAIL_NOT_RUN_CODES: frozenset[str] = frozenset({
     "claude_seat_token_missing", "seat_jail_qualification_failed",
     "claude_seat_login_token_expiring",
+    "gemini_seat_egress_unavailable",
 })
 
 
@@ -785,9 +801,10 @@ def seat_sandbox_capable(
 # J7: the route decision, in a fixed order.
 # --------------------------------------------------------------------------------------
 
-JAILED_LEGS: frozenset[str] = frozenset({"claude"})
-"""Legs with a jailed route in this runtime. Gemini joins only when P4 and P3 pass (L3);
-codex and grok follow under agent-harness#895."""
+JAILED_LEGS: frozenset[str] = frozenset({"claude", "gemini"})
+"""Legs with a jailed route in this runtime. Gemini joined with its egress layer
+(agent-harness#1170) once P4 containment and P3 passed; codex and grok follow under
+agent-harness#895."""
 
 # The recorded P4/P3 outcome for Gemini (J7 step 1). P4 found scopes beyond inference
 # (`cloud-platform`, `cclog`, `experimentsandconfigs`; p4-agy-d7-credential.json). The
@@ -797,7 +814,19 @@ codex and grok follow under agent-harness#895."""
 # compute and iam.googleapis.com all answer from inside the jail, iam shares the inference
 # host's front-end addresses, and the egress namespace filters by address only. Gemini
 # stays sealed with this code; P3 was not run.
-GEMINI_RECORDED_STOP: str | None = "gemini_seat_egress_unconfined"
+#
+# agent-harness#1170 (rulings S3/S4 of the agent-harness#1244 plan): the seat's namespace now
+# has no uplink, and its only way out is srt's TLS-terminating proxy on the host, which answers
+# only the pinned requests and refuses a Host that differs from the tunnel's. The containment
+# probe re-run through it (p4-containment-egress.json) and P3 (p3-agy-tools-workspace.json)
+# pass, so there is no recorded stop.
+GEMINI_RECORDED_STOP: str | None = None
+
+
+def _gemini_egress_unavailable() -> str | None:
+    from . import seat_egress_proxy
+
+    return seat_egress_proxy.unavailable_reason()
 
 
 @dataclass(frozen=True)
@@ -831,6 +860,7 @@ def decide_seat_route(
     gemini_credential_present: Callable[[], bool] | None = None,
     gemini_qualified: Callable[[], bool] | None = None,
     gemini_recorded_stop: str | None = GEMINI_RECORDED_STOP,
+    gemini_egress_unavailable: Callable[[], str | None] | None = None,
 ) -> SeatRoute | None:
     """J7 steps 0-4. ``None`` for a leg this plan does not jail (codex, grok, ...).
 
@@ -841,7 +871,9 @@ def decide_seat_route(
     2. host capability -> ``seat_sandbox_unavailable_*``;
     3. credential presence (Claude: an override or a login) -> ``claude_seat_token_missing`` /
        ``gemini_seat_credential_missing``;
-    4. Gemini tooled-profile qualification -> ``gemini_seat_profile_unqualified``.
+    4. Gemini tooled profile: a leg outside ``JAILED_LEGS`` or an injected qualification
+       that fails -> ``gemini_seat_profile_unqualified``; then its egress layer
+       (agent-harness#1170) -> ``gemini_seat_egress_unavailable``, a seat that does not run.
     """
     if leg not in ("claude", "gemini"):
         return None
@@ -861,8 +893,12 @@ def decide_seat_route(
             return SeatRoute(False, "gemini_seat_credential_missing")
         # Step 4. A leg outside JAILED_LEGS is never qualified: clearing the recorded stop
         # without also shipping the tooled profile (L3) can never jail it.
-        if leg not in JAILED_LEGS or gemini_qualified is None or not gemini_qualified():
+        if leg not in JAILED_LEGS or (gemini_qualified is not None and not gemini_qualified()):
             return SeatRoute(False, "gemini_seat_profile_unqualified")
+        reason = (gemini_egress_unavailable or _gemini_egress_unavailable)()
+        if reason is not None:
+            _LOG.warning("seat gemini: egress layer unavailable on this host (%s)", reason)
+            return SeatRoute(False, "gemini_seat_egress_unavailable")
     return SeatRoute(True)
 
 
@@ -1205,6 +1241,12 @@ class SeatJail:
     provider_path: str = ""
     bundle_fd: int = -1
     instructions_fd: int = -1
+    #: The jailed Gemini seat's egress (agent-harness#1170): the host config directory, the
+    #: host copy of the CA certificate, and the proxy URL (it carries the proxy's session
+    #: token, so it is placeholdered wherever the argv is shown).
+    gemini_config_dir: str = ""
+    egress_ca: str = ""
+    egress_proxy: str = field(default="", repr=False)
 
     def redacted_owner(self) -> list[str]:
         """The owner argv with every descriptor number replaced by a placeholder, for
@@ -1212,6 +1254,9 @@ class SeatJail:
         out: list[str] = []
         fds = {str(fd) for fd in (*self.pass_fds, self.seccomp_fd)}
         for item in self.process_owner:
+            if self.egress_proxy and item == self.egress_proxy:
+                out.append(_PLACEHOLDERS["egress_proxy"])
+                continue
             out.append(TOKEN_FD_PLACEHOLDER if item in fds else item)
         return out
 
@@ -1238,7 +1283,9 @@ def _system_mounts() -> list[str]:
 # policy the launch uses: an added bind, a dropped flag or a different filter changes it.
 _PLACEHOLDERS = {"tree": "<tree>", "home": "<home>", "out": "<out>", "provider": "<provider>",
                  "bundle_fd": "<bundle-fd>", "instructions_fd": "<instructions-fd>",
-                 "token_fd": "<token-fd>", "seccomp_fd": "<seccomp-fd>"}
+                 "token_fd": "<token-fd>", "seccomp_fd": "<seccomp-fd>",
+                 "gemini_config": "<gemini-config>", "egress_ca": "<egress-ca>",
+                 "egress_proxy": "<egress-proxy>"}
 
 
 def _profile_digest_of(leg: str, owner: Sequence[str], filter_sha256: str, arch: str) -> str:
@@ -1258,7 +1305,10 @@ def jail_profile_digest(leg: str, arch: str | None = None) -> str:
                         bundle_fd=_PLACEHOLDERS["bundle_fd"],
                         instructions_fd=_PLACEHOLDERS["instructions_fd"],
                         token_fd=_PLACEHOLDERS["token_fd"] if leg == "claude" else None,
-                        seccomp_fd=_PLACEHOLDERS["seccomp_fd"])
+                        seccomp_fd=_PLACEHOLDERS["seccomp_fd"],
+                        **({"gemini_config": _PLACEHOLDERS["gemini_config"],
+                            "egress_ca": _PLACEHOLDERS["egress_ca"],
+                            "egress_proxy": _PLACEHOLDERS["egress_proxy"]} if leg == "gemini" else {}))
     return _profile_digest_of(leg, owner, production_filter_digest(arch), arch)
 
 
@@ -1286,14 +1336,22 @@ def actual_profile_digest(jail: "SeatJail", arch: str | None = None) -> str:
                   str(jail.seccomp_fd): _PLACEHOLDERS["seccomp_fd"]}
     if jail.token_fd is not None:
         substitute[str(jail.token_fd)] = _PLACEHOLDERS["token_fd"]
+    if jail.leg == "gemini":
+        home = str(Path(jail.review_dir) / HOST_HOME_DIRNAME)
+        substitute.update({jail.gemini_config_dir: _PLACEHOLDERS["gemini_config"],
+                           jail.egress_ca: _PLACEHOLDERS["egress_ca"],
+                           jail.egress_proxy: _PLACEHOLDERS["egress_proxy"],
+                           **{_gemini_writable_source(home, name):
+                              _gemini_writable_source(_PLACEHOLDERS["home"], name)
+                              for name in GEMINI_WRITABLE_CONFIG_DIRS}})
     owner = [substitute.get(item, item) for item in jail.process_owner]
     return _profile_digest_of(jail.leg, owner, installed_filter_sha256(jail), arch)
 
 
 def seat_env(leg: str, *, token_fd: int | None, lang: str = "C.UTF-8",
-             term: str = "xterm-256color") -> dict[str, str]:
+             term: str = "xterm-256color", egress_proxy: str | None = None) -> dict[str, str]:
     """The exact jail environment. Non-secret values only: a token fd's NUMBER, never its
-    bytes."""
+    bytes. A Gemini seat's ``egress_proxy`` carries only the proxy's session token."""
     env = {
         "HOME": SEAT_HOME,
         "XDG_CONFIG_HOME": SEAT_HOME + "/.config",
@@ -1311,7 +1369,17 @@ def seat_env(leg: str, *, token_fd: int | None, lang: str = "C.UTF-8",
         env["CLAUDE_CODE_TMPDIR"] = SEAT_TMP
         if token_fd is not None:
             env[CLAUDE_TOKEN_FD_ENV] = str(token_fd)
+    if leg == "gemini" and egress_proxy is not None:
+        # agy (Go) routes through HTTPS_PROXY and trusts SSL_CERT_FILE alone; the namespace
+        # has no other route. The bus address names no bus, so agy reads its file credential.
+        env["HTTPS_PROXY"] = egress_proxy
+        env["SSL_CERT_FILE"] = SEAT_EGRESS_CA
+        env["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=/dev/null"
     return env
+
+
+def _gemini_writable_source(home: str, name: str) -> str:
+    return f"{home}/{HOST_GEMINI_WRITABLE_DIRNAME}/{name}"
 
 
 # Linux memfd seal ABI (include/uapi/linux/fcntl.h). Whether CPython's `fcntl` exports these
@@ -1346,7 +1414,9 @@ def memfd_with(name: str, data: bytes) -> int:
 
 
 def _owner_argv(leg: str, *, tree: str, home: str, out: str, provider: str, bundle_fd: str,
-                instructions_fd: str, token_fd: str | None, seccomp_fd: str) -> list[str]:
+                instructions_fd: str, token_fd: str | None, seccomp_fd: str,
+                gemini_config: str | None = None, egress_ca: str | None = None,
+                egress_proxy: str | None = None) -> list[str]:
     """The bwrap owner argv, as a pure function of its per-launch values, so the canonical
     profile (placeholders) and every real launch are built by the same code."""
     owner: list[str] = [
@@ -1371,12 +1441,13 @@ def _owner_argv(leg: str, *, tree: str, home: str, out: str, provider: str, bund
         "--bind", tree, SEAT_TREE,
         "--bind", home, SEAT_HOME,
         "--bind", out, SEAT_OUT,
+        *(_gemini_binds(home, gemini_config, egress_ca) if leg == "gemini" else ()),
         "--remount-ro", "/",
         # No `--chdir`: with no DAC capability, H-root cannot enter the seat's 0700 tree.
         # The cwd is entered after the drop, as the seat (`seat_cwd`).
         "--clearenv",
     ]
-    env = seat_env(leg, token_fd=None)
+    env = seat_env(leg, token_fd=None, egress_proxy=egress_proxy)
     if leg == "claude" and token_fd is not None:
         env[CLAUDE_TOKEN_FD_ENV] = token_fd
     for key in sorted(env):
@@ -1385,6 +1456,17 @@ def _owner_argv(leg: str, *, tree: str, home: str, out: str, provider: str, bund
         owner.append("--new-session")
     owner += ["--seccomp", seccomp_fd]
     return owner
+
+
+def _gemini_binds(home: str, gemini_config: str | None, egress_ca: str | None) -> list[str]:
+    """The jailed Gemini seat's config and trust bundle (agent-harness#1170): the config
+    directory read-only, its writable subdirectories over it, the CA certificate read-only."""
+    if not gemini_config or not egress_ca:
+        raise SeatSandboxRefused(refused("jail_build"), "the gemini jail needs its config and CA")
+    binds = ["--ro-bind", gemini_config, SEAT_GEMINI_CONFIG]
+    for name in GEMINI_WRITABLE_CONFIG_DIRS:
+        binds += ["--bind", _gemini_writable_source(home, name), f"{SEAT_GEMINI_CONFIG}/{name}"]
+    return [*binds, "--ro-bind", egress_ca, SEAT_EGRESS_CA]
 
 
 def build_seat_jail(
@@ -1399,6 +1481,9 @@ def build_seat_jail(
     seat_ids: tuple[int, int] | None = None,
     arch: str | None = None,
     seccomp_program: bytes | None = None,
+    gemini_config: Path | None = None,
+    egress_ca: Path | None = None,
+    egress_proxy: str | None = None,
 ) -> SeatJail:
     """The bwrap owner for one jailed launch (plan "Seat jail").
 
@@ -1408,6 +1493,11 @@ def build_seat_jail(
     ``/seat/bin/<leg>``. No ``--unshare-user`` (the D8 holder is the user namespace), no
     ``--unshare-net`` (the egress namespace is the network), no ``/run`` and no
     ``--bind / /``.
+
+    A Gemini jail (agent-harness#1170) also takes ``gemini_config`` (the parent-built
+    ``gemini-config/``), ``egress_ca`` (the host copy of the egress CA certificate) and
+    ``egress_proxy`` (the in-seat proxy URL); its writable config subdirectories are created
+    here under ``seat-home``.
     """
     if leg not in ("claude", "gemini"):
         raise SeatSandboxRefused(refused("jail_build"), f"no jail for leg {leg!r}")
@@ -1418,7 +1508,13 @@ def build_seat_jail(
     out = review_dir / HOST_OUT_DIRNAME
     if not tree.is_dir() or tree.is_symlink():
         raise SeatSandboxRefused(refused("jail_build"), "staged tree missing")
-    for directory in (home, out, home / SEAT_TMP_DIRNAME):
+    directories = [home, out, home / SEAT_TMP_DIRNAME]
+    if leg == "gemini":
+        directories += [home / ".gemini", home / ".gemini" / "antigravity-cli",
+                        home / "workspace", home / HOST_GEMINI_WRITABLE_DIRNAME,
+                        *(home / HOST_GEMINI_WRITABLE_DIRNAME / name
+                          for name in GEMINI_WRITABLE_CONFIG_DIRS)]
+    for directory in directories:
         try:
             os.mkdir(directory, 0o700)
         except OSError as exc:
@@ -1432,8 +1528,11 @@ def build_seat_jail(
     owner = _owner_argv(leg, tree=str(tree), home=str(home), out=str(out), provider=str(provider),
                         bundle_fd=str(bundle_memfd), instructions_fd=str(instructions_memfd),
                         token_fd=None if token_fd is None else str(token_fd),
-                        seccomp_fd=str(seccomp_fd))
-    env = seat_env(leg, token_fd=token_fd)
+                        seccomp_fd=str(seccomp_fd),
+                        gemini_config=None if gemini_config is None else str(gemini_config),
+                        egress_ca=None if egress_ca is None else str(egress_ca),
+                        egress_proxy=egress_proxy)
+    env = seat_env(leg, token_fd=token_fd, egress_proxy=egress_proxy)
     pass_fds = tuple(fd for fd in (bundle_memfd, instructions_memfd, token_fd) if fd is not None)
     jail = SeatJail(
         leg=leg,
@@ -1454,6 +1553,9 @@ def build_seat_jail(
         review_dir=str(review_dir),
         tree_dir=str(tree),
         token_fd=token_fd,
+        gemini_config_dir="" if gemini_config is None else str(gemini_config),
+        egress_ca="" if egress_ca is None else str(egress_ca),
+        egress_proxy=egress_proxy or "",
     )
     return dataclasses.replace(jail, profile_digest=actual_profile_digest(jail, arch))
 
@@ -1470,6 +1572,9 @@ def expected_mount_points(jail: SeatJail) -> list[str]:
     points = {"/", "/proc", "/dev", *BWRAP_DEV_MOUNTS, "/tmp", "/dev/shm",
               f"{SEAT_BIN}/{jail.leg}", SEAT_BUNDLE, SEAT_INSTRUCTIONS, SEAT_TREE, SEAT_HOME,
               SEAT_OUT}
+    if jail.leg == "gemini":
+        points |= {SEAT_GEMINI_CONFIG, SEAT_EGRESS_CA,
+                   *(f"{SEAT_GEMINI_CONFIG}/{name}" for name in GEMINI_WRITABLE_CONFIG_DIRS)}
     for path in SYSTEM_READONLY_PATHS:
         if os.path.isdir(path) and not os.path.islink(path):
             points.add(path)

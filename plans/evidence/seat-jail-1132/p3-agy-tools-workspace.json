@@ -1,0 +1,238 @@
+{
+  "agy_version": "1.3.3",
+  "control_tree_as_workspace": {
+    "event_counts": {
+      "init": 1,
+      "result": 1,
+      "step_update": 10
+    },
+    "planted_opened": [
+      "/seat/tree/.agent/rules/r.md",
+      "/seat/tree/.agents/hooks.json",
+      "/seat/tree/.agents/mcp_config.json",
+      "/seat/tree/.agents/rules/r.md",
+      "/seat/tree/.agents/skills/s/SKILL.md",
+      "/seat/tree/.agents/workflows/w.md",
+      "/seat/tree/AGENTS.md",
+      "/seat/tree/GEMINI.md"
+    ],
+    "status": "SUCCESS",
+    "step_types": {
+      "agent_response": 5,
+      "tool": 4,
+      "user_input": 1
+    },
+    "subagent_info_only_on_subagent_steps": true,
+    "subagent_steps": [],
+    "tool_info_never_on_subagent_steps": true,
+    "tool_steps": [
+      "run_command",
+      "view_file"
+    ],
+    "tree_opened": [
+      "/seat/tree",
+      "/seat/tree/.agent",
+      "/seat/tree/.agent/AGENTS.md",
+      "/seat/tree/.agent/GEMINI.md",
+      "/seat/tree/.agent/agents.json",
+      "/seat/tree/.agent/agents.txt",
+      "/seat/tree/.agent/plugins",
+      "/seat/tree/.agent/plugins.json",
+      "/seat/tree/.agent/plugins.txt",
+      "/seat/tree/.agent/rules",
+      "/seat/tree/.agent/rules/r.md",
+      "/seat/tree/.agent/skills",
+      "/seat/tree/.agent/skills.json",
+      "/seat/tree/.agent/skills.txt",
+      "/seat/tree/.agents",
+      "/seat/tree/.agents/AGENTS.md",
+      "/seat/tree/.agents/GEMINI.md",
+      "/seat/tree/.agents/agents",
+      "/seat/tree/.agents/agents.json",
+      "/seat/tree/.agents/agents.txt",
+      "/seat/tree/.agents/hooks.json",
+      "/seat/tree/.agents/mcp_config.json",
+      "/seat/tree/.agents/plugins",
+      "/seat/tree/.agents/plugins.json",
+      "/seat/tree/.agents/plugins.txt",
+      "/seat/tree/.agents/rules",
+      "/seat/tree/.agents/rules.json",
+      "/seat/tree/.agents/rules/r.md",
+      "/seat/tree/.agents/skills",
+      "/seat/tree/.agents/skills.json",
+      "/seat/tree/.agents/skills.txt",
+      "/seat/tree/.agents/skills/s",
+      "/seat/tree/.agents/skills/s/SKILL.md",
+      "/seat/tree/.agents/workflows",
+      "/seat/tree/.agents/workflows/w.md",
+      "/seat/tree/.citc/workspace_id",
+      "/seat/tree/.codeium.yaml",
+      "/seat/tree/.gemini/config.json",
+      "/seat/tree/.hg",
+      "/seat/tree/AGENTS.md",
+      "/seat/tree/GEMINI.md",
+      "/seat/tree/MARKER.txt",
+      "/seat/tree/_agent",
+      "/seat/tree/_agent/AGENTS.md",
+      "/seat/tree/_agent/GEMINI.md",
+      "/seat/tree/_agents",
+      "/seat/tree/_agents/AGENTS.md",
+      "/seat/tree/_agents/GEMINI.md",
+      "/seat/tree/codeium.yml"
+    ],
+    "unwritable": [
+      "/seat/home/.gemini/antigravity-cli/annotations",
+      "/seat/home/.gemini/antigravity-cli/brain",
+      "/seat/home/.gemini/antigravity-cli/builtin",
+      "/seat/home/.gemini/antigravity-cli/conversation_summaries.db",
+      "/seat/home/.gemini/antigravity-cli/conversations",
+      "/seat/home/.gemini/antigravity-cli/crashes",
+      "/seat/home/.gemini/antigravity-cli/implicit",
+      "/seat/home/.gemini/antigravity-cli/jetbox_summaries_proto.pb.769cb212-e289-4fd7-9449-aa19e7756417.tmp",
+      "/seat/home/.gemini/antigravity-cli/jetbox_summaries_proto.pb.7cf3d06f-d111-48ce-afd9-6ad887a0538b.tmp",
+      "/seat/home/.gemini/antigravity-cli/jetski_state.pbtxt.081f3b9d-ce41-405c-b930-e4e4988cb9d8.tmp",
+      "/seat/home/.gemini/antigravity-cli/jetski_state.pbtxt.133df6f8-a3ac-4df6-b337-3be55dffb8bd.tmp",
+      "/seat/home/.gemini/antigravity-cli/jetski_state.pbtxt.14223ae7-3d89-4036-bacd-4b52ed27569a.tmp",
+      "/seat/home/.gemini/antigravity-cli/jetski_state.pbtxt.17c63dde-1eab-4a82-9e14-980a6ce7834a.tmp",
+      "/seat/home/.gemini/antigravity-cli/jetski_state.pbtxt.26a30bb4-75a6-4393-8b35-b1135443e253.tmp",
+      "/seat/home/.gemini/antigravity-cli/jetski_state.pbtxt.7b1fbad1-2fa0-4529-a85b-4dd918430517.tmp",
+      "/seat/home/.gemini/antigravity-cli/jetski_state.pbtxt.9ba06f86-9076-4bb3-9200-c1d48e14138d.tmp",
+      "/seat/home/.gemini/antigravity-cli/jetski_state.pbtxt.c36848df-d329-4e2a-b66c-a1e58655e175.tmp",
+      "/seat/home/.gemini/antigravity-cli/jetski_state.pbtxt.eaa70591-afb6-4f26-a28e-7f9d1b6763e6.tmp",
+      "/seat/home/.gemini/antigravity-cli/jetski_state.pbtxt.eeccb24b-c875-4be8-a80b-d6d929572e1f.tmp",
+      "/seat/home/.gemini/antigravity-cli/jetski_state.pbtxt.f22d3990-2a75-44b0-8092-66cf05ebe3a3.tmp",
+      "/seat/home/.gemini/antigravity-cli/presence"
+    ]
+  },
+  "issue": "agent-harness#1170",
+  "production_argv": [
+    "/usr/bin/env",
+    "--chdir=/seat/home/workspace",
+    "/seat/bin/gemini",
+    "--model",
+    "gemini-3.8-flash-medium",
+    "--dangerously-skip-permissions",
+    "--disable-slash-commands",
+    "--input-format",
+    "stream-json",
+    "--output-format",
+    "stream-json",
+    "--print=",
+    "--print-timeout",
+    "0"
+  ],
+  "recorded_at": "2026-10-12T22:10:15+00:00",
+  "result": "pass",
+  "schema": "seat_jail_probe_p3.v1",
+  "stops": [],
+  "subagent": {
+    "event_counts": {
+      "init": 1,
+      "result": 1,
+      "step_update": 75
+    },
+    "planted_opened": [
+      "/seat/tree/AGENTS.md",
+      "/seat/tree/GEMINI.md"
+    ],
+    "status": "SUCCESS",
+    "step_types": {
+      "agent_response": 40,
+      "subagent": 2,
+      "tool": 32,
+      "user_input": 1
+    },
+    "subagent_info_only_on_subagent_steps": true,
+    "subagent_steps": [
+      "invoke_subagent"
+    ],
+    "tool_info_never_on_subagent_steps": true,
+    "tool_steps": [
+      "invoke_subagent",
+      "run_command",
+      "view_file"
+    ],
+    "tree_opened": [
+      "/seat/tree",
+      "/seat/tree/.agent",
+      "/seat/tree/.agents",
+      "/seat/tree/AGENTS.md",
+      "/seat/tree/GEMINI.md",
+      "/seat/tree/MARKER.txt"
+    ],
+    "unwritable": [
+      "/seat/bin/.update_test3617231914",
+      "/seat/home/.gemini/antigravity-cli/annotations",
+      "/seat/home/.gemini/antigravity-cli/brain",
+      "/seat/home/.gemini/antigravity-cli/builtin",
+      "/seat/home/.gemini/antigravity-cli/conversation_summaries.db",
+      "/seat/home/.gemini/antigravity-cli/conversations",
+      "/seat/home/.gemini/antigravity-cli/crashes",
+      "/seat/home/.gemini/antigravity-cli/implicit",
+      "/seat/home/.gemini/antigravity-cli/jetbox_summaries_proto.pb.0881b2c3-7f50-492f-b920-f1431a994a49.tmp",
+      "/seat/home/.gemini/antigravity-cli/jetbox_summaries_proto.pb.3d877d4f-66ce-43a7-9027-841837390d0d.tmp",
+      "/seat/home/.gemini/antigravity-cli/jetbox_summaries_proto.pb.422d193e-0840-4a6b-bce1-021b7252066c.tmp",
+      "/seat/home/.gemini/antigravity-cli/jetbox_summaries_proto.pb.a559919c-6cbc-4aaa-a906-704114b232ea.tmp",
+      "/seat/home/.gemini/antigravity-cli/jetski_state.pbtxt.0d696638-0dcd-4706-ac19-5437c456c31f.tmp",
+      "/seat/home/.gemini/antigravity-cli/jetski_state.pbtxt.189ee3e7-29ed-413b-8d09-622b3cd6a8b3.tmp",
+      "/seat/home/.gemini/antigravity-cli/jetski_state.pbtxt.3951b402-54ed-46ef-ac09-99d70a4f5eff.tmp",
+      "/seat/home/.gemini/antigravity-cli/jetski_state.pbtxt.3b4b79e1-5988-46ab-8871-671807f8b1cc.tmp",
+      "/seat/home/.gemini/antigravity-cli/jetski_state.pbtxt.4dcd6730-5ea2-45b3-8c72-8165b3405c03.tmp",
+      "/seat/home/.gemini/antigravity-cli/jetski_state.pbtxt.59633161-fc59-49c2-a6e3-bb995aa44eb6.tmp",
+      "/seat/home/.gemini/antigravity-cli/jetski_state.pbtxt.5e89f5df-e533-4dc0-b20a-f34c004c6733.tmp",
+      "/seat/home/.gemini/antigravity-cli/jetski_state.pbtxt.94e0e3b9-5460-41a6-9b10-d6b4b22483db.tmp",
+      "/seat/home/.gemini/antigravity-cli/jetski_state.pbtxt.9fdcb085-0fb5-441b-86c8-9e4ffc186e77.tmp",
+      "/seat/home/.gemini/antigravity-cli/jetski_state.pbtxt.ce31b7ea-0c9d-48d4-aeed-5998e61f217a.tmp",
+      "/seat/home/.gemini/antigravity-cli/jetski_state.pbtxt.ff54dbb7-e0f2-4e3d-85b9-ba4aaeb97a93.tmp",
+      "/seat/home/.gemini/antigravity-cli/presence"
+    ]
+  },
+  "tool_permission": "--dangerously-skip-permissions alone",
+  "tools": {
+    "event_counts": {
+      "init": 1,
+      "result": 1,
+      "step_update": 13
+    },
+    "planted_opened": [],
+    "status": "SUCCESS",
+    "step_types": {
+      "agent_response": 8,
+      "tool": 4,
+      "user_input": 1
+    },
+    "subagent_info_only_on_subagent_steps": true,
+    "subagent_steps": [],
+    "tool_info_never_on_subagent_steps": true,
+    "tool_steps": [
+      "run_command",
+      "view_file"
+    ],
+    "tree_opened": [
+      "/seat/tree",
+      "/seat/tree/MARKER.txt"
+    ],
+    "unwritable": [
+      "/seat/bin/.update_test3005929785",
+      "/seat/home/.gemini/antigravity-cli/annotations",
+      "/seat/home/.gemini/antigravity-cli/brain",
+      "/seat/home/.gemini/antigravity-cli/builtin",
+      "/seat/home/.gemini/antigravity-cli/conversation_summaries.db",
+      "/seat/home/.gemini/antigravity-cli/conversations",
+      "/seat/home/.gemini/antigravity-cli/crashes",
+      "/seat/home/.gemini/antigravity-cli/implicit",
+      "/seat/home/.gemini/antigravity-cli/jetbox_summaries_proto.pb.20a7fd8f-e231-4d42-92e7-7850095fcda0.tmp",
+      "/seat/home/.gemini/antigravity-cli/jetbox_summaries_proto.pb.ccb8501a-8361-4b33-99e7-aef0d070530b.tmp",
+      "/seat/home/.gemini/antigravity-cli/jetski_state.pbtxt.1eed6ccd-8695-490b-a1b6-abc939a4f4c3.tmp",
+      "/seat/home/.gemini/antigravity-cli/jetski_state.pbtxt.4587498e-593a-4691-82f4-9e548e3de0aa.tmp",
+      "/seat/home/.gemini/antigravity-cli/jetski_state.pbtxt.482befb9-12c3-466c-997f-03297d6f8c50.tmp",
+      "/seat/home/.gemini/antigravity-cli/jetski_state.pbtxt.4d05a8fe-4315-46a7-90c0-0a531c04eea5.tmp",
+      "/seat/home/.gemini/antigravity-cli/jetski_state.pbtxt.558ef3a4-e008-4c97-ab6b-09e541e6ce07.tmp",
+      "/seat/home/.gemini/antigravity-cli/jetski_state.pbtxt.7d4f2889-bc42-4966-aa89-089a9a96d278.tmp",
+      "/seat/home/.gemini/antigravity-cli/jetski_state.pbtxt.ef2b7a41-2818-42ad-bc49-28af69296cdf.tmp",
+      "/seat/home/.gemini/antigravity-cli/jetski_state.pbtxt.fcd9ec82-0888-400f-ac8b-8ca733887840.tmp",
+      "/seat/home/.gemini/antigravity-cli/presence"
+    ]
+  },
+  "workspace_loading_disabled_by": "cwd is an empty workspace and the tree is no --add-dir: with the tree as a workspace (control) agy opens its loader files, with the production argv it opens none"
+}

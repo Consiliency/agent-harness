@@ -1397,15 +1397,14 @@ are recorded on agent-harness#1132.
 - **Route (J7).** A production brokered Claude or Gemini leg decides its route once, after
   the public-entry authorization and before staging, in this order; the first failure wins
   and yields exactly one code: (0) no staged tree -> `seat_sandbox_not_staged`; (1) a
-  recorded Gemini P4/P3 stop -> its code (today `gemini_seat_egress_unconfined`: the agy
-  token carries `cloud-platform`, and the "prove then enable" containment probe found jail
-  egress not limited to agy's inference hosts; P3 was not run and the tooled profile is not
-  built); (2) host capability -> `seat_sandbox_unavailable_host`,
-  `_tiocsti`, or `_seat_uid`; (3) credential presence -> `claude_seat_token_missing` /
-  `gemini_seat_credential_missing`; (4) Gemini tooled qualification ->
-  `gemini_seat_profile_unqualified`. Steps 0-4 send the seat to the sealed inline route,
-  byte-identical to before, with that notice, except a Claude seat's step 3, which is not
-  run (plan amendment A3b, below). Codex and grok are not jailed
+  recorded Gemini P4/P3 stop -> its code (none today: the containment probe re-run through
+  the seat's egress layer and P3 pass, agent-harness#1170); (2) host capability ->
+  `seat_sandbox_unavailable_host`, `_tiocsti`, or `_seat_uid`; (3) credential presence ->
+  `claude_seat_token_missing` / `gemini_seat_credential_missing`; (4) the Gemini tooled
+  profile -> `gemini_seat_profile_unqualified`, then its egress layer ->
+  `gemini_seat_egress_unavailable`. Steps 0-4 send the seat to the sealed inline route,
+  byte-identical to before, with that notice, except a Claude seat's step 3 and
+  `gemini_seat_egress_unavailable`, which are not run (plan amendment A3b, below). Codex and grok are not jailed
   (agent-harness#895) and carry `seat_filesystem_unconfined` when given a tree.
 - **A codex seat whose command sandbox cannot start is DEGRADED before it runs
   (agent-harness#1335).** codex runs each command inside its own sandbox. Where that sandbox
@@ -1449,9 +1448,21 @@ are recorded on agent-harness#1132.
   `seat_jail.JAIL_NOT_RUN_CODES` names the route codes this applies to; none of them is in
   `SEALED_FALLBACK_CODES`. The sealed route stays for hosts without the jail prerequisites,
   an unstaged review and the Gemini seat (agent-harness#1244).
-- **The jailed route is Claude-only.** `JAILED_LEGS` is exactly `{"claude"}`. A Gemini
-  seat always takes the sealed route with its typed notice, whatever its credential,
-  qualification or recorded stop; a tooled Gemini seat is agent-harness#1170.
+- **The jailed route is Claude and Gemini.** `JAILED_LEGS` is exactly `{"claude",
+  "gemini"}`. The Gemini seat (agent-harness#1170) runs agy with its tools in its own jail:
+  its config directory is the parent-built access-token-only copy, bound read-only with only
+  `bin`, `cache` and `log` writable; its cwd is an empty workspace and the tree is never an
+  `--add-dir`, so agy loads no workspace file from the tree (P3); a subagent or any event P3
+  did not record ends the leg with `gemini_seat_subagent_or_unknown_event`. Its network
+  namespace has no uplink: one loopback port is bridged to srt's TLS-terminating proxy on the
+  host (`@anthropic-ai/sandbox-runtime`, pinned by version, integrity and installed-file
+  digest), which answers only the pinned request allowlist
+  (`seat_egress/gemini-allowlist.json`) and refuses a Host or SNI inside a tunnel that is not
+  allowed. The interception CA is the host's own (`$XDG_STATE_HOME/phase-loop/seat-egress-ca`,
+  0700, key 0600); only its certificate enters the seat, as its whole trust bundle. The leg's
+  evidence records `egress` (with `tls_inspection: true`). Without the layer the seat is
+  DEGRADED and not run with `gemini_seat_egress_unavailable`; its fix is
+  `phase-loop seat-egress install`.
 - **EC-EXECFIND-2 gate.** A jailed route whose jail profile digest has no EC-EXECFIND-2
   falsifier pass recorded on THIS host is REFUSED before any effect with
   `seat_sandbox_refused:jail_unqualified`. The notice names the per-host qualification as

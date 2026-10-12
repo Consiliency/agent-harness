@@ -603,9 +603,10 @@ group is named after you and has no other members, and no other account uses it 
 primary group. Anything else is refused with `seat_sandbox_refused:pass_store_unsafe`. Its
 notice names the fix: `chmod go-w` on those three directories, or `chmod 0700`. Neither the
 qualification nor the gate ever changes these permissions for you. The store defends against the
-seat uid, stale records, other hosts and accidental reuse. Gemini stays sealed with
-`gemini_seat_egress_unconfined` until its jail egress is limited to agy's inference hosts
-(agent-harness#1170). Codex and grok are
+seat uid, stale records, other hosts and accidental reuse. Gemini seats are jailed with tools
+too (agent-harness#1170): the seat's egress goes through an allowlisting proxy, installed
+once per user with `phase-loop seat-egress install` (node 22.12+ and npm); without it the
+Gemini seat is degraded and not run, with that fix. Codex and grok are
 not jailed yet (agent-harness#895) and carry `seat_filesystem_unconfined` when given a tree.
 
 **Where the host supports the jail, Claude seats are jailed by default, and the jail is

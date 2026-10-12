@@ -1,0 +1,10 @@
+{
+  "name": "phase-loop-seat-egress",
+  "version": "0.0.0",
+  "private": true,
+  "description": "The pinned egress proxy of a jailed Gemini seat (agent-harness#1170).",
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/sandbox-runtime": "0.0.79"
+  }
+}
