@@ -65,6 +65,38 @@ Workstream B (Consiliency/agent-harness#804) removes the second blocker the
 incident hit: a sealed bootstrap inventory whose recorded worktree has since been
 pruned no longer fails the activation barrier.
 
+## Owner section refusals and liveness
+
+Two narrowings of what becomes `outcome_ambiguous_blocked`. Neither relaxes C-keep:
+an unsealed owner whose writer is gone, and that has no known terminal, is still
+promoted exactly as before.
+
+- **A refused section leaves no owner (agent-harness#1314).** Inside the one
+  `admissions.lock` acquisition, `_owner_and_admission_under_one_lock` reads the raw
+  bytes of `adapter-start-owner.json` (absent, or a sealed owner), writes this
+  attempt's owner, and calls `admit_next`. If anything refuses after the owner write
+  (generation lease, partition floor, `epoch_blocked`, policy, the request build, the
+  admission append), it puts those exact bytes back, or removes the file if there
+  were none, before the refusal propagates. The owner never reached the provider, so
+  no effect is possible, and no other writer can observe it, because the restore
+  happens under the same acquisition. Only an owner this attempt wrote is ever
+  restored. A simulated crash (`PublishCrashInjected`) gets no cleanup, as a real
+  crash would not.
+- **A live writer's owner is not promoted (agent-harness#1313).** From the owner write
+  until its attempt ends, the writer holds an advisory `flock` on the owner file's
+  inode. Before `_block_unsealed_owner` appends `provider_call_in_flight` or
+  `outcome_ambiguous_blocked` for an owner with no known terminal, it probes that
+  lock non-blocking. If it is held, the publish refuses with `AdapterStartOwnerLive`
+  (a `PermissionError` whose message says to retry), and nothing is written. The
+  kernel releases the lock when the writer process dies, so a crashed writer's owner
+  is promoted as before. No file and no owner field were added, so mixed versions are
+  unchanged: an older writer never takes the lock and its owner is promoted as
+  before, and an older reader ignores the lock. The lock relies on the same `flock`
+  coherence that `admissions.lock` already does. On NFS, where Linux emulates `flock`
+  with per-process POSIX locks, a probe from the writer's own process can read the
+  writer as dead (today's behaviour), and a crashed client's lock lasts until its
+  lease expires (a retryable refusal meanwhile).
+
 ## Recovery
 
 There is **no governed recovery** for a partition that is already blocked. What
@@ -282,8 +314,9 @@ than in `attested_by`. The dispositions:
 
   Separately, the broker now checks the transaction-state precondition **before** it
   writes the adapter-start owner, so a refusal of that precondition no longer leaves
-  an unsealed owner that the next attempt would promote to permanent ambiguity. Other
-  refusals inside admission still run after the owner write (agent-harness#1314).
+  an unsealed owner that the next attempt would promote to permanent ambiguity. Every
+  other refusal inside admission restores the owner path to the exact bytes it held
+  (see "Owner section refusals and liveness" below, agent-harness#1314).
 
 A blocked key the attestation leaves undisposed, a disposition it does not know,
 digests that do not match the predecessor's bytes, or a predecessor that is not
