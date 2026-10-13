@@ -185,9 +185,9 @@ SL-0 — Receipt repairs, documentation audit and closeout
 - downstream handling: These `sl0_repairs` records are post-hoc and are not V10
   chain links. `agent-harness#1078:PANEL-SL1:PRESROUTE` pins
   `phase-loop-runtime/tests/test_president_wiring.py` at
-  `1263876260cf2f6c09a2fc5c64c1b712794c1cdd`, while the reconciled HEAD blob at
-  review is `70a66f4a4a260796c5d44c1726582f838bbf0a42`. Under
-  `phase-loop-runtime/scripts/verify_harden_evidence.py` lines 3144/3209/3081,
+  the pre-agent-harness#1282 blob, while the reconciled HEAD blob at
+  review is the agent-harness#1446 blob. Under
+  `phase-loop-runtime/scripts/verify_harden_evidence.py` lines 3144/3215/3077-3078,
   that immutable authorization cannot pair with any future landed entry: the
   old blob must equal both its `base_blob` and the merge's first-parent blob,
   and a supplement cannot move `base_blob`. Its disposition belongs to PANEL
