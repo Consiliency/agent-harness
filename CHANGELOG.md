@@ -16,6 +16,20 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `panel_claude_transport_not_admitted` instead of `panel_claude_route_invalid`, and
   nothing launches. Admitting it (Stage 3) needs an EC-REVIEWTRUTH-18 amendment.
 
+### An ambiguous human publication now gets the rotation handoff (agent-harness#1312)
+
+- A human publication whose key holds `outcome_ambiguous_blocked` evidence is blocked
+  until an operator partition rotation adjudicates the effect, and every retry before
+  that replays the block. The human route answered it with the generic
+  `repair_publication_precheck_and_retry` handoff, which no retry can satisfy.
+- It now reports next step `adjudicate_publication_by_partition_rotation`, with the
+  `fabpub-rotate-partition` command for the worktree, what the rotation requires
+  (`observed_landed` or `attested_not_landed`), and runbook section 8a. This covers the
+  first ambiguous attempt, an adapter exception, and every replay.
+- `publish_from_worktree` adds `terminal_state` to a broker-blocked result, so the
+  match is on the typed state. `reason` and `detail` are unchanged. Other blocked
+  results keep the generic handoff.
+
 ### A routing client built before a partition rotation refuses typed (agent-harness#1315)
 
 - A FABPUB routing client caches its stores for each repository. A client built
