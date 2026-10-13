@@ -307,18 +307,24 @@ roadmap amendment before acceptance.
 
 ## Acceptance Criteria
 
-- [ ] EC-HARDEN-0 — definition and falsifier are those at
-  `9eb77a3d:specs/phase-plans-v10.md` (the v11 roadmap's V10 input).
-  Prove with both approved tests-only landings and their scoped ancestry/test-path
-  audits above, the narrow command with `-k v11_harden_chronology`,
-  and the final sealed-evidence verifier command.
+- [ ] EC-HARDEN-0 — definition at `9eb77a3d:specs/phase-plans-v10.md`.
+  Proven by both approved tests-only landings' scoped ancestry/test-path audits,
+  the narrow `-k v11_harden_chronology` command and final sealed-evidence verifier;
+  falsified by a path-entered authority/chronology mutation accepting
+  production-before-review for covered production or unapproved frozen-test
+  drift, with restored historical/current controls passing.
 - [ ] EC-HARDEN-6 — proven by the narrow command with
   `-k 'v11_harden_capabilities or v11_harden_authorization or v11_harden_disclosure'`
   plus the final sealed-evidence verifier command; falsified by path-entered
   profile, authorization or verdict mutations being accepted, with restored
   sealed and intentionally tooled positive controls passing.
-- [ ] IF-0-HARDEN-5 and IF-0-HARDEN-6 — proven by the four landing-1 selections
-  above plus prepare-side verification, provable before agent-harness#1584 lands.
+- [ ] IF-0-HARDEN-5 and IF-0-HARDEN-6 — proven by the narrow
+  `python -m pytest -q` command on `phase-loop-runtime/scripts/test_v11_harden_evidence.py`
+  with all four landing-1 `-k` selections, plus prepare-side verification.
+  Assert each selection collects tests and exits 0; falsified by path-entered
+  authority/schema/provider-input mutations being accepted with restored v11/v3
+  controls passing.
+  Provable before agent-harness#1584 lands.
 - [ ] IF-0-HARDEN-7 — conditional on landing 2; proven by the narrow command
   with `-k v11_harden_seal` plus sealed operational verification; falsified by
   a path-entered completion selector accepting a stale, duplicate or wrong-plan
