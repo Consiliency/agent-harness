@@ -45,6 +45,9 @@ class BrokerExecutionResult:
     evidence: BrokerTerminalEvidence
     publish_result: PublishCommittedBranchResult | None = None
     reason: str = ""
+    #: agent-harness#1577 (D3): whether THIS call entered the provider adapter.
+    #: A replay of stored evidence, or a refusal before provider entry, is False.
+    provider_call_made: bool = False
 
 
 class PublicationRecoveryRequired(PermissionError):
@@ -376,7 +379,12 @@ class BrokerService:
             if observed and request.verb is BrokerVerb.PUBLISH_COMMITTED_BRANCH
             else None
         )
-        return BrokerExecutionResult(observed, BrokerTerminalEvidence(key, current.state.value, current.evidence_reference), result)
+        return BrokerExecutionResult(
+            observed,
+            BrokerTerminalEvidence(key, current.state.value, current.evidence_reference),
+            result,
+            provider_call_made=False,
+        )
 
     def _legacy_terminal_replay(self, request: BrokerRequest, key: str) -> BrokerExecutionResult | None:
         """Promote only a receipt-authenticated exact historical key."""
@@ -595,6 +603,7 @@ class BrokerService:
         *,
         recovery_key: str | None = None,
         liveness_holder: list[int] | None = None,
+        prior_owner_holder: list[bytes | None] | None = None,
     ) -> tuple[AdapterStartOwnership | None, AdapterStartOwnership | None, object]:
         """ah#789: durable owner and admission under ONE ``admissions.lock`` acquisition.
 
@@ -627,6 +636,10 @@ class BrokerService:
         (agent-harness#1313) and appends its descriptor to ``liveness_holder``;
         the caller closes it when the attempt ends.  Without a holder the lock
         is released when the section returns.
+
+        ``prior_owner_holder`` receives the owner bytes the section found
+        (agent-harness#1578): ``_restore_unadmitted_owner`` puts them back if the
+        ``ADMISSION_DURABLE`` projection fails right after the section.
 
         Returns ``(foreign_owner, recorded_owner, admission_record)``; exactly
         one of ``foreign_owner`` / ``recorded_owner`` is set.
@@ -663,6 +676,8 @@ class BrokerService:
                 owner_path = _owner_path(self.evidence_store.root)
                 # Absent, or a sealed owner: an unsealed one returned above.
                 prior_owner_bytes = owner_path.read_bytes() if owner_path.exists() else None
+                if prior_owner_holder is not None:
+                    prior_owner_holder.append(prior_owner_bytes)
                 # Indirection through evidence_module keeps the durable write a crash seam.
                 # A sealed owner is a completed prior effect, not a lock on a new head.
                 recorded_owner = evidence_module.append_adapter_start_owner(
@@ -700,6 +715,103 @@ class BrokerService:
                 return None, recorded_owner, admission_record
             finally:
                 fcntl.flock(lock, fcntl.LOCK_UN)
+
+    def _provider_entry_guard(
+        self, key: str, recorded_owner: AdapterStartOwnership
+    ) -> EvidenceRecord | None:
+        """Authorize provider entry, or return the stored row that forbids it (agent-harness#1577).
+
+        Within ONE ``admissions.lock`` acquisition (the lock every runtime
+        version's ``_block_unsealed_owner`` takes): the on-disk owner must equal
+        ``recorded_owner`` exactly, nonce included, and be unsealed, AND the key's
+        evidence row must be ``provider_call_in_flight``.  ``EvidenceRecord`` has
+        no attempt field; owner equality under this lock is what proves the
+        in-flight row is still this attempt's.  Returns ``None`` when the
+        provider may be called.  Otherwise returns the stored row and writes
+        nothing: a promotion by an older prober (window (b)) is reported as the
+        ambiguity the store holds, not as a ``PermissionError``.  A failed
+        generation check still raises, as ``validate_adapter_start_owner`` did.
+        """
+        import fcntl
+
+        self.evidence_store._authorize()
+        with self.evidence_store.lock_path.open("a+", encoding="utf-8") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                self.evidence_store._authorize()
+                current_owner = evidence_module.read_adapter_start_owner(
+                    self.evidence_store.root,
+                    repository_identity=recorded_owner.repository_identity,
+                )
+                stored = self.evidence_store.replay().get(key)
+                if stored is None:
+                    # record_intent ran in this generation; no row means the store
+                    # is not the one this attempt wrote.  Fail closed, typed.
+                    raise PermissionError(
+                        f"effect key {key!r} has no evidence row before provider entry; "
+                        "no provider call was made and nothing was written"
+                    )
+                if (
+                    current_owner == recorded_owner
+                    and not current_owner.sealed
+                    and stored.state is TerminalOutcomeState.PROVIDER_CALL_IN_FLIGHT
+                ):
+                    return None
+                return stored
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+
+    def _restore_unadmitted_owner(
+        self,
+        key: str,
+        recorded_owner: AdapterStartOwnership,
+        transaction,
+        prior_owner_bytes: bytes | None,
+    ) -> None:
+        """Undo this attempt's owner after a failed ``ADMISSION_DURABLE`` projection (agent-harness#1578).
+
+        Option (i) only, and only while the checkpoint is still
+        ``COMMITTED_HEAD_RESOLVED``: once it is admitted, a restored owner makes
+        the retry refuse in ``_recovery_authority`` with no rotation able to help,
+        while a left owner is promoted and a truthful ``attested_not_landed``
+        rotation recovers it.  Under a fresh ``admissions.lock`` acquisition the
+        generation must still be this attempt's (a superseded writer must not
+        touch that generation's files), the on-disk owner must be exactly
+        ``recorded_owner``, and the key must have no evidence row.  Anything else
+        leaves the state as it is; the admission line left behind is harmless
+        (``admit_next`` dedups the retry by ``attempt_id``).  Never raises.
+        """
+        import fcntl
+
+        try:
+            with self.evidence_store.lock_path.open("a+", encoding="utf-8") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                try:
+                    durable = json.loads(transaction.checkpoint_path.read_text(encoding="utf-8"))
+                    if durable.get("state") != "COMMITTED_HEAD_RESOLVED":
+                        return
+                    # ``_authorize`` revalidates the evidence store's generation
+                    # (``evidence._require_generation``) in-lock.
+                    self.evidence_store._authorize()
+                    require_admission_generation = getattr(
+                        self.admission_store, "_require_generation", None
+                    )
+                    if require_admission_generation is not None:
+                        require_admission_generation()
+                    current_owner = evidence_module.read_adapter_start_owner(
+                        self.evidence_store.root,
+                        repository_identity=recorded_owner.repository_identity,
+                    )
+                    if current_owner != recorded_owner or current_owner.sealed:
+                        return
+                    if self.evidence_store.replay().get(key) is not None:
+                        return
+                    _restore_owner_bytes(self.evidence_store.root, prior_owner_bytes)
+                finally:
+                    fcntl.flock(lock, fcntl.LOCK_UN)
+        except Exception:
+            # Fail closed: the owner stays, and the next attempt promotes it.
+            return
 
     def _recovery_authority(self, request: BrokerRequest, key: str, envelope, transaction) -> dict:
         """Authorize re-admitting an already-admitted transaction, or refuse typed.
@@ -859,6 +971,7 @@ class BrokerService:
         # is held until the attempt ends (after the terminal seal), on every
         # path, including exceptions; process death releases it too.
         liveness: list[int] = []
+        prior_owner: list[bytes | None] = []
         try:
             # One critical section for owner + admission.  An unsealed foreign owner
             # observed INSIDE the section is resolved outside it exactly as before
@@ -873,6 +986,7 @@ class BrokerService:
                         attempt_id,
                         recovery_key=key if recovery is not None else None,
                         liveness_holder=liveness,
+                        prior_owner_holder=prior_owner,
                     )
                 )
                 if foreign_owner is None:
@@ -883,17 +997,38 @@ class BrokerService:
                 # A retired owner was replaced by another live publisher between the
                 # two entries: a retryable contention loss, not permanent ambiguity.
                 raise PermissionError("unsealed adapter-start owner contended twice in one publish; retry")
-            advance("ADMISSION_DURABLE")
+            try:
+                advance("ADMISSION_DURABLE")
+            except Exception as error:
+                from phase_loop_runtime.publishing import PublishCrashInjected
+
+                if not isinstance(error, PublishCrashInjected) and prior_owner:
+                    self._restore_unadmitted_owner(
+                        key, recorded_owner, transaction, prior_owner[-1]
+                    )
+                raise
+            # agent-harness#1578 (option i): every later failure up to the provider
+            # call (``record_intent``, the checkpoint projections, the guard's own
+            # authorization, a refused service-generation lease) leaves the owner
+            # and the admitted checkpoint as they are.  The next attempt promotes the
+            # owner, and an ``attested_not_landed`` rotation recovers it.
             self.evidence_store.record_intent(key)
             advance("BROKER_INTENT_DURABLE")
             from phase_loop_runtime.publishing import _crash_at
 
             _crash_at("after_broker_intent_before_adapter_started")
-            evidence_module.validate_adapter_start_owner(
-                self.evidence_store.root,
-                recorded_owner,
-                authorize=self.evidence_store._authorize,
-            )
+            stored = self._provider_entry_guard(key, recorded_owner)
+            if stored is not None:
+                # agent-harness#1577: the key is no longer this attempt's in-flight
+                # record (an older prober promoted the owner after the section).
+                # Nothing is written, the owner stays unsealed, and the checkpoint
+                # stays ``BROKER_INTENT_DURABLE``: the provider was never entered.
+                return BrokerExecutionResult(
+                    False,
+                    BrokerTerminalEvidence(key, stored.state.value, stored.evidence_reference),
+                    reason="outcome_ambiguous",
+                    provider_call_made=False,
+                )
             advance("ADAPTER_STARTED")
             allocated_epoch = getattr(admission_record, "epoch", None)
             if allocated_epoch is None:
@@ -904,12 +1039,18 @@ class BrokerService:
                 request.owned_paths, base=request.base, draft=request.draft, pr_body=request.pr_body,
                 adapter_worktree=request.adapter_worktree,
             )
+            # agent-harness#1574 (SG-F1): set immediately before the adapter call.  A
+            # failure before it (the service-generation lease, which a DRAINING
+            # latch refuses) never reached the provider and is not ambiguity.
+            provider_entered = False
+            result = None
             try:
                 acquire_lease = getattr(self.adapter, "_acquire_service_generation_lease", None)
                 temporary_lease = (
                     acquire_lease(self.evidence_store.root) if acquire_lease is not None else None
                 )
                 try:
+                    provider_entered = True
                     result, evidence = self.adapter.execute(adapter_request)
                 finally:
                     release_lease = getattr(self.adapter, "_release_service_generation_lease", None)
@@ -921,19 +1062,40 @@ class BrokerService:
                     recorded_owner, EvidenceRecord(key, state, reference)
                 )
                 advance("TERMINAL_SEALED")
-                return BrokerExecutionResult(state is TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED, BrokerTerminalEvidence(key, terminal.state.value, terminal.evidence_reference), result)
+                return BrokerExecutionResult(state is TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED, BrokerTerminalEvidence(key, terminal.state.value, terminal.evidence_reference), result, provider_call_made=True)
             except Exception as error:
                 from phase_loop_runtime.publishing import PublishCrashInjected
 
                 if isinstance(error, PublishCrashInjected):
                     raise
+                if not provider_entered:
+                    # Nothing to record: the owner and the in-flight row stay as on
+                    # any other pre-provider failure (agent-harness#1578, option i).
+                    raise
+                # The broker returns the state the store holds and never invents one.
                 current = self.evidence_store.replay().get(key)
+                if current is not None and current.state in (
+                    TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED,
+                    TerminalOutcomeState.NO_EFFECT_TERMINAL_PROVEN,
+                ):
+                    # The terminal is durable and only a later step failed (the
+                    # owner seal, the TERMINAL_SEALED projection).  An unsealed owner
+                    # with a known terminal is sealed by the next fresh publish's
+                    # ``_block_unsealed_owner``; a retry replays the terminal.
+                    replayed = self._replay(request, key, current)
+                    return BrokerExecutionResult(
+                        replayed.accepted,
+                        replayed.evidence,
+                        result if replayed.accepted and result is not None else replayed.publish_result,
+                        provider_call_made=True,
+                    )
                 if current is None:
                     self.evidence_store.record_intent(key)
                     current = self.evidence_store.replay().get(key)
                 if current is not None and current.state is TerminalOutcomeState.PROVIDER_CALL_IN_FLIGHT:
-                    self.evidence_store.record_terminal(EvidenceRecord(key, TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED, "adapter-exception"))
-                return BrokerExecutionResult(False, BrokerTerminalEvidence(key, TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED.value, "adapter-exception"), reason="outcome_ambiguous")
+                    current = self.evidence_store.record_terminal(EvidenceRecord(key, TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED, "adapter-exception"))
+                stored = current or EvidenceRecord(key, TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED, "adapter-exception")
+                return BrokerExecutionResult(False, BrokerTerminalEvidence(key, stored.state.value, stored.evidence_reference), reason="outcome_ambiguous", provider_call_made=True)
         finally:
             for descriptor in liveness:
                 os.close(descriptor)
@@ -989,13 +1151,14 @@ class BrokerService:
                 state is TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED,
                 BrokerTerminalEvidence(key, state.value, evidence.evidence_reference),
                 result,
+                provider_call_made=True,
             )
         try:
             result, evidence = self.adapter.execute(request)
             state = TerminalOutcomeState(evidence.terminal_state)
             reference = result.pr_url if result is not None else evidence.evidence_reference
             recorded = self.evidence_store.record_terminal(EvidenceRecord(key, state, reference))
-            return BrokerExecutionResult(state is TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED, BrokerTerminalEvidence(key, recorded.state.value, recorded.evidence_reference), result)
+            return BrokerExecutionResult(state is TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED, BrokerTerminalEvidence(key, recorded.state.value, recorded.evidence_reference), result, provider_call_made=True)
         except Exception:
             recorded = self.evidence_store.record_terminal(EvidenceRecord(key, TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED, "adapter-exception"))
-            return BrokerExecutionResult(False, BrokerTerminalEvidence(key, recorded.state.value, recorded.evidence_reference), reason="outcome_ambiguous")
+            return BrokerExecutionResult(False, BrokerTerminalEvidence(key, recorded.state.value, recorded.evidence_reference), reason="outcome_ambiguous", provider_call_made=True)

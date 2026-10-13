@@ -1853,5 +1853,8 @@ def publish_from_worktree(
         # agent-harness#1312: the typed terminal state, which ``reason`` hides
         # whenever the broker also names a reason.
         blocked["terminal_state"] = execution.evidence.terminal_state
+        # agent-harness#1577 (D3): whether THIS call entered the provider adapter;
+        # false for a replay of stored evidence and for a refusal before entry.
+        blocked["provider_call_made"] = bool(getattr(execution, "provider_call_made", False))
         return blocked
     return {"status": "published", "branch": execution.publish_result.branch, "head_sha": execution.publish_result.head_sha, "pr_url": execution.publish_result.pr_url}
