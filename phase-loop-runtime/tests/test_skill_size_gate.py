@@ -50,8 +50,7 @@ ALLOWLIST: dict[tuple[str, str], int] = {
     ("skills-src/claude/claude-execute-phase/SKILL.md", "tokens"): 14644,
     ("skills-src/claude/claude-execute-phase/SKILL.md", "lines"): 824,
     ("skills-src/claude/claude-execute-phase/SKILL.md", "long_line"): 1019,
-    ("skills-src/claude/claude-phase-roadmap-builder/SKILL.md", "tokens"): 7469,
-    ("skills-src/claude/claude-plan-detailed/SKILL.md", "tokens"): 5381,
+    ("skills-src/claude/claude-phase-roadmap-builder/SKILL.md", "tokens"): 6048,
     # Split in agent-harness#1358; what remains is test-pinned normative text.
     ("skills-src/claude/claude-plan-phase/SKILL.md", "tokens"): 7783,
     ("skills-src/codex/codex-execute-phase/SKILL.md", "tokens"): 9166,
