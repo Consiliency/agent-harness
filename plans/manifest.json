@@ -13112,6 +13112,37 @@
       "task_summary": "PR descriptions grounded in final implementation, with agent-owned readiness refresh",
       "type": "detailed",
       "updated_at": "2026-10-12T21:34:13Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "created_at": "2026-10-13T02:13:35Z",
+      "file": "plans/phase-plan-v11-REVBOUND.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20261013T021335Z-REVBOUND-plan.md",
+      "if_gates_produced": [
+        "IF-0-REVBOUND-1",
+        "IF-0-REVBOUND-2"
+      ],
+      "lanes": [
+        "SL-0",
+        "SL-1",
+        "SL-2",
+        "SL-3"
+      ],
+      "lifecycle": [],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "REVBOUND",
+      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/89b7a22e8458/claude-v11-revbound/20261013T021335Z-REVBOUND-plan.md",
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v11.md",
+        "slug": "phase-plans-v11",
+        "status": "committed",
+        "type": "phase"
+      },
+      "slug": "v11-REVBOUND",
+      "status": "committed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-10-13T02:13:35Z"
     }
   ],
   "schema_version": 1
