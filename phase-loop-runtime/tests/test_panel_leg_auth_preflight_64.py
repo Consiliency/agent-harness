@@ -65,7 +65,8 @@ def test_auth_probe_missing_cli_fails_open(monkeypatch):
 
 
 @pytest.mark.parametrize("returncode,output", [(126, ""), (127, "not logged in"),
-    (1, "sh: codex: command not found"), (1, "sh: /missing/codex: No such file or directory")])
+    (1, "sh: codex: command not found"), (1, "sh: /missing/codex: No such file or directory"),
+    (1, "command not found"), (1, "No such file"), (1, "No such file or directory")])
 @pytest.mark.parametrize("stream", ["stdout", "stderr"])
 def test_auth_probe_unavailable_executable_is_inconclusive(monkeypatch, returncode, output, stream):
     result = types.SimpleNamespace(returncode=returncode, stdout="", stderr="")

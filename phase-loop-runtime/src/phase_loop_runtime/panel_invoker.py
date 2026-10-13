@@ -7381,7 +7381,9 @@ def _leg_auth_ok(
         r"(?:^|\n)(?:[^\n]*:\s*)?(?:/[^\s:\n]*/)?" + re.escape(probe[0])
         + r"(?:\.js)?:\s*(?:command not found|no such file)", combined, re.IGNORECASE,
     )
-    if unavailable and not _AUTH_SIGNATURE.search(combined):
+    if (unavailable or combined.strip().lower() in {
+            "command not found", "no such file", "no such file or directory"}) \
+            and not _AUTH_SIGNATURE.search(combined):
         return True, ""
     if proc.returncode != 0 or _AUTH_SIGNATURE.search(combined):
         return (
