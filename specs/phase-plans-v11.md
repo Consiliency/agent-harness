@@ -318,7 +318,7 @@ schema: `spec_delta_closeout.v1`; expected decision: `no_spec_delta`; target sur
 Turn `panel_invoker.py` into a package of modules with separate owners, so panel-related phases stop serializing on one file.
 
 **Exit criteria**
-- [ ] EC-PANELSPLIT-0 — The existing test suite, unchanged, is the receipt: it passes before and after with no test file edited. (A behaviour-preserving move has no new tests to freeze, so this replaces the content-bound receipt of principle 6.)
+- [ ] EC-PANELSPLIT-0 — The existing test suite is the receipt: it passes before and after with no test file edited, except relocation repairs to the contracts that pin code to `panel_invoker.py` by location (`test_seat_reference_inventory.py` with `tests/data/seat_launch_references.json`, `test_agent_cli_scratch_inventory_1147.py`, `test_the_real_launch_carries_the_prefix.py`). A relocation repair changes only a recorded module, file or call-site location, never a count, primitive or assertion; falsified by any other test edit, or by a relocation repair that changes a count, primitive or assertion. (A behaviour-preserving move has no new tests to freeze, so this replaces the content-bound receipt of principle 6.)
 - [ ] EC-PANELSPLIT-1 — `panel_invoker.py` is a facade of at most 1,500 lines; falsified by a line count above it.
 - [ ] EC-PANELSPLIT-2 — Every name tests monkeypatch on `panel_invoker` still takes effect (late binding through the facade); falsified by a patched seam that the moved code no longer calls.
 - [ ] EC-PANELSPLIT-3 — Each carried phase that named `panel_invoker.py` names the specific modules it owns in its v11 phase plan, and no two independent phases claim the same module; falsified by the PARSCHED lint.
@@ -333,6 +333,10 @@ Turn `panel_invoker.py` into a package of modules with separate owners, so panel
 **Key files**
 - `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`
 - `phase-loop-runtime/src/phase_loop_runtime/panel/`
+- `phase-loop-runtime/tests/test_seat_reference_inventory.py`
+- `phase-loop-runtime/tests/data/seat_launch_references.json`
+- `phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py`
+- `phase-loop-runtime/tests/test_the_real_launch_carries_the_prefix.py`
 
 **Depends on**
 - (none)
