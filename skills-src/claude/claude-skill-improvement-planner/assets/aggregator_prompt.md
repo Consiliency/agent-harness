@@ -15,6 +15,7 @@ You will be given:
 - A concatenated block of reflections, grouped by skill.
 - Each reflection is headed `### <id> — <harness-skill> — <timestamp>`, where `<id>` is its manifest id (`R0001`).
 - A `min_reflections` threshold (integer).
+- The **rule enforcement registry** (`rule_enforcement.md`): shipped skill rules, each `enforced` (with the code that refuses a violation), `unenforced/gap` (with a tracking issue), or `unenforced/judgment`. This is trusted package data, not reflection text.
 
 ## What to produce
 
@@ -35,20 +36,36 @@ A single markdown document in the exact format described at the end of this prom
 
 3. **Directive-only style in proposed edits.** Write each proposed SKILL.md change in imperative form. No war stories, no stats, no narrative justification in the change text itself. Use short clauses for rationale ("because X," not paragraphs).
 
-4. **Admission gates.** Before promoting a theme to a recommendation:
-   - **Already covered?** If the target skill already says it, do not add a duplicate. If the existing guidance is buried, weak, or easy to skip past, propose a wording or placement change that makes it fire.
-   - **Decision-changing?** Keep it only if a future agent would do something different because of the edit, not merely read more text.
-   - **Structural mechanism?** If a lint rule, script, metadata flag, or runtime check already enforces the rule or could enforce it cheaply, do not write skill prose; list it under `## Mechanism candidates` instead. Skill prose is for what mechanisms cannot enforce.
+4. **Admission gates.** Apply every gate to every candidate theme before it becomes a recommendation. A theme that fails a gate goes under `## Rejected themes` with that gate's name, unless the gate routes it elsewhere.
+   - **durability**: still true after paths, SHAs, tool versions and code shapes have changed. Drop implementation detail that will drift; keep the durable pattern behind it.
+   - **specificity**: broad enough to apply across tasks, precise enough that a future agent recognises when it applies. Reject platitudes and one-off facts.
+   - **convergence**: rule 1's threshold is the floor. A theme carried by one repo/branch, or one that only just meets the threshold, must clear the other gates without doubt.
+   - **skill-was-used**: route a change only to a skill the supporting reflections show was invoked. If the friction shows a skill should have fired and did not, propose a change to that skill's frontmatter `description` instead of its body. If neither, reject.
+   - **existing-skill-first**: put the change in an existing in-scope skill. Propose a new skill only when no existing skill is a real home and the theme recurs across skills.
+   - **already-covered**: read the target skill first. If it already says this clearly and visibly, reject: the problem is execution, not the text. If the existing guidance is buried, weak, or easy to skip past, keep the theme but propose a wording or placement change that makes it fire, not a duplicate addition.
+   - **decision-changing**: keep it only if a future agent would do something different because of the edit, not merely read more text.
+   - **structural-mechanism**: check the registry before writing prose.
+     - The theme matches an `enforced` row: the mechanism exists. If the reflections show the violation still happening, the enforcer or its negative control misses this case; list that under `## Mechanism candidates`. Write no prose.
+     - It matches an `unenforced/gap` row: this is a repeat on a rule with no enforcer. Escalate it under `## Mechanism candidates`, citing the row id and its tracking issue. Write no prose.
+     - It matches an `unenforced/judgment` row: prose is allowed. Propose a wording or placement change to that rule, not a second rule.
+     - No row matches: decide the ladder level (rule 5).
 
-5. **Concrete edits, not directions to edit.** Bad: "Consider improving Step 5." Good: "In Step 5 of claude-plan-phase/SKILL.md, add a bullet after 'Apply the claude-task-contextualizer checklist' stating: 'Include the phase's full Exit criteria list, not just the Objective.'"
+5. **Ladder level.** Every promoted theme states its level on the enforcement ladder and why the level above it fails, before it may propose prose:
+   1. **architecture**: remove the possibility (restructure so the mistake cannot be made).
+   2. **unrepresentable**: make the bad state unrepresentable (types, schemas, closed vocabularies).
+   3. **check**: a validator, lint, test or runtime check whose failure names the fix.
+   4. **prose**: SKILL.md text, only for judgment calls nothing can check.
+   Levels 1 to 3 go under `## Mechanism candidates`, not into a SKILL.md edit. Only level 4 goes under `## Recommendations by skill`. A cheap check beats a paragraph: if you cannot say why level 3 fails, the theme is level 3.
 
-6. **Cite supporting reflections.** For each theme, list the manifest ids that raised it (e.g., "R0012, R0040, R0101"), and say which ones it drew from `What didn't`. Lets the user trace back.
+6. **Concrete edits, not directions to edit.** Bad: "Consider improving Step 5." Good: "In Step 5 of claude-plan-phase/SKILL.md, add a bullet after 'Apply the claude-task-contextualizer checklist' stating: 'Include the phase's full Exit criteria list, not just the Objective.'"
 
-7. **Flag contradictions.** If two reflections disagree (one says "add X," another says "remove X"), surface both in a `## Contradictions surfaced` section with both sides' supporting reflections. Let the user decide.
+7. **Cite supporting reflections.** For each theme, list the manifest ids that raised it (e.g., "R0012, R0040, R0101"), and say which ones it drew from `What didn't`. Lets the user trace back.
 
-8. **Stay lean.** If a skill had no recurring themes, write "No recurring themes above the `--min-reflections` threshold." Do not invent work. The goal is a useful plan, not a long plan.
+8. **Flag contradictions.** If two reflections disagree (one says "add X," another says "remove X"), surface both in a `## Contradictions surfaced` section with both sides' supporting reflections. Let the user decide.
 
-9. **Speculative section is a valid output, not a dump.** Use it for single-mention observations that seem plausible but lack support. Each should be a single line. If it's garbage, drop it entirely.
+9. **Stay lean.** If a skill had no recurring themes, write "No recurring themes above the `--min-reflections` threshold." Do not invent work. The goal is a useful plan, not a long plan.
+
+10. **Speculative section is a valid output, not a dump.** Use it for single-mention observations that seem plausible but lack support. Each should be a single line. If it's garbage, drop it entirely.
 
 ## Output format (emit exactly this structure)
 
@@ -57,27 +74,34 @@ A single markdown document in the exact format described at the end of this prom
 
 ## Summary
 
-<1–2 paragraphs. Include: total reflections read, skills covered, number of recurring themes promoted to recommendations, whether any contradictions were found, whether any cross-cutting themes emerged.>
+<1–2 paragraphs. Include: total reflections read, skills covered, number of recurring themes found, how many were promoted to prose recommendations, routed to mechanism candidates, or rejected (by gate), whether any contradictions were found, whether any cross-cutting themes emerged.>
 
 ## Recommendations by skill
 
 ### <skill-name>
 - **Change**: <specific SKILL.md edit in directive-only imperative form>
   - **Rationale**: <one-clause reason, tied to the recurring theme>
-  - **Target**: `skills-src/<harness>/<harness>-<skill>/SKILL.md`
+  - **Ladder level**: 4 (prose) — <one clause: why no check (level 3) can enforce this>
+  - **Target**: `skills-src/<harness>/<harness>-<skill>/SKILL.md` (body, or `description` for a skill that should have fired)
   - **Supporting reflections**: R0012, R0040, R0101 (What didn't: R0012, R0040)
 
 (Repeat per recommendation. Group all recommendations for a skill under that skill's subheading. Include a subheading for every skill that had reflections in the input — if a skill had no recurring themes, write "No recurring themes above the --min-reflections threshold." under that skill's subheading.)
 
 ## Cross-cutting recommendations
 
-<Themes that affect multiple skills simultaneously. Each item names the skills it touches. Same rationale + supporting-reflections format.>
+<Themes that affect multiple skills simultaneously. Each item names the skills it touches. Same rationale, ladder level and supporting-reflections format.>
 
 (If none, write "None this pass.")
 
 ## Mechanism candidates
 
-<Themes better enforced by a check than by prose. Name the check and the skill it relieves. These route to a filed issue, not a SKILL.md edit.>
+<Themes at ladder level 1–3, and repeats on registry rows. For each: the level and the mechanism (what would refuse the mistake), the skill it relieves, the registry row id and tracking issue if one matched, and the supporting reflections. These route to a filed issue, not a SKILL.md edit.>
+
+(If none, write "None this pass.")
+
+## Rejected themes
+
+<One line per theme that failed a gate: the theme, the gate (`durability`, `specificity`, `convergence`, `skill-was-used`, `existing-skill-first`, `already-covered`, `decision-changing`), and its supporting reflections.>
 
 (If none, write "None this pass.")
 

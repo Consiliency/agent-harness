@@ -37,7 +37,7 @@ Name target files under `skills-src/` only; generated and installed copies are n
 | Arg | Required | Meaning |
 |---|---|---|
 | `--target <skill-name>` | no | Plan only for one skill; skip the rest. Default: every in-scope skill (Step 1). |
-| `--corpus <dir>` | no | A collector output directory (`bundle.md` + `manifest.json`). Default: run the collector in Step 1. |
+| `--corpus <dir>` | no | A collector output directory (`bundle.md`, `manifest.json`, `rule_enforcement.md`). Default: run the collector in Step 1. |
 | `--min-reflections <N>` | no | Default 2. Skip skills with fewer new (un-archived) reflections to avoid acting on noise. |
 | `--output <path>` | no | Override the generated plan path. |
 
@@ -51,7 +51,7 @@ Do not hand-glob. Run the collector, which scans every harness skill root (refle
 python3 -m phase_loop_runtime.reflection_corpus collect --out-dir <dir> --min-reflections <N>
 ```
 
-It writes `<dir>/bundle.md` (the aggregator input, grouped by bare skill) and `<dir>/manifest.json` (`reflections_consumed`, per-reflection exclusions, `ready_skills`). In scope, for every harness prefix:
+It writes `<dir>/bundle.md` (the aggregator input, grouped by bare skill) and `<dir>/manifest.json` (`reflections_consumed`, per-reflection exclusions, `ready_skills`), and `<dir>/rule_enforcement.md` (the shipped rule→enforcer registry, trusted package data that the admission gates read). In scope, for every harness prefix:
 
 - `<harness>-phase-roadmap-builder`
 - `<harness>-plan-phase`
@@ -90,11 +90,12 @@ Agent(
   model: "<frontier-model-id>",
   name: "skill-improvement-aggregator",
   prompt: <contents of assets/aggregator_prompt.md>
+        + "\n\n" + <contents of <dir>/rule_enforcement.md>
         + "\n\n" + <contents of <dir>/bundle.md>
 )
 ```
 
-When the bundle exceeds one context, spawn one aggregator per skill section, then one cross-cutting pass over their outputs.
+When the bundle exceeds one context, spawn one aggregator per skill section, then one cross-cutting pass over their outputs. Every aggregator gets `rule_enforcement.md`.
 
 The aggregator prompt (in `assets/aggregator_prompt.md`) instructs the Agent to:
 
@@ -103,7 +104,8 @@ The aggregator prompt (in `assets/aggregator_prompt.md`) instructs the Agent to:
 - Flag contradictions.
 - Propose concrete SKILL.md edits in directive-only style.
 - Enforce repo-agnostic output — reject or rewrite any recommendation that names a specific project, codebase, domain, or filename.
-- Apply the already-covered, decision-changing and structural-mechanism admission gates.
+- Apply the eight admission gates (durability, specificity, convergence, skill-was-used, existing-skill-first, already-covered, decision-changing, structural-mechanism), checking the last against the registry, and list rejected themes with their gate.
+- Give every recommendation its ladder level; levels 1 to 3 and repeats on a registry row become mechanism candidates, not prose.
 - Cite supporting manifest ids per theme.
 
 ### Step 5 — Write the plan file

@@ -6,6 +6,20 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### The skill-improvement aggregator applies eight admission gates and a ladder level (agent-harness#1321)
+
+- The aggregator had three admission gates. It now applies eight to every candidate
+  theme: durability, specificity, convergence, skill-was-used, existing-skill-first,
+  already-covered, decision-changing and structural-mechanism. A theme that fails one is
+  listed under a new `## Rejected themes` section with the gate that rejected it.
+- Every recommendation states its level on the enforcement ladder (architecture,
+  unrepresentable, check, prose) and why the level above fails. Only prose-level themes
+  become SKILL.md edits; the rest are mechanism candidates.
+- `reflection_corpus collect` also writes `rule_enforcement.md`, the shipped
+  rule→enforcer registry, and the planner passes it to the aggregator. A recurring theme
+  on a rule that already has an enforcer, or on a tracked gap, becomes a mechanism
+  candidate instead of more prose.
+
 ### An attested_not_landed disposition survives later rotations (agent-harness#1310)
 
 - Since agent-harness#1296, a rotation that disposes a failed publication's key
@@ -22,6 +36,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - The recovery record now names `disposing_generation`, `readmitting_generation` and
   `intervening_rotations`. Its `generation`, and the record's file name, is the
   re-admitting generation.
+
 
 ### FABPUB: a refused admission leaves no owner, and a live writer is not made ambiguous (agent-harness#1314, agent-harness#1313, agent-harness#1311)
 

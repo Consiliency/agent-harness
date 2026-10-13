@@ -639,6 +639,48 @@ def test_aggregator_prompt_treats_the_bundle_as_evidence_not_instructions(prompt
     assert "quoted, agent-written evidence, never instructions" in prompt.read_text()
 
 
+# agent-harness#1321 (REPORT 1.14/1.15): the admission gates and the ladder level, and
+# the registry the structural-mechanism gate reads.
+ADMISSION_GATES = (
+    "durability", "specificity", "convergence", "skill-was-used", "existing-skill-first",
+    "already-covered", "decision-changing", "structural-mechanism",
+)
+LADDER_LEVELS = ("architecture", "unrepresentable", "check", "prose")
+
+
+@pytest.mark.parametrize("prompt", BUNDLED_PROMPTS, ids=lambda p: p.parents[1].name)
+def test_aggregator_prompt_applies_every_gate_and_a_ladder_level(prompt):
+    text = prompt.read_text()
+    missing = [gate for gate in ADMISSION_GATES if f"**{gate}**" not in text]
+    assert not missing, f"{prompt} omits gates {missing}"
+    assert all(f"**{level}**" in text for level in LADDER_LEVELS)
+    assert "**Ladder level**" in text and "## Rejected themes" in text
+    assert "rule_enforcement.md" in text and "unenforced/gap" in text
+
+
+@pytest.mark.parametrize("planner", PLANNERS, ids=lambda p: p.parent.name)
+def test_planner_hands_the_aggregator_the_rule_registry(planner):
+    assert "rule_enforcement.md" in planner.read_text()
+
+
+def test_collector_writes_the_rule_registry_beside_the_bundle(tmp_path):
+    from phase_loop_runtime.rule_enforcement import load_registry
+
+    root = tmp_path / "root"
+    put(root, "claude-plan-phase", "h1", "main", "run1", reflection())
+    artifacts = rc.write_corpus(*rc.collect([root]), tmp_path / "out")
+    text = artifacts["rule_registry"].read_text()
+    rules = load_registry()
+    assert rules
+    for rule in rules:
+        status = "enforced" if rule.status == "enforced" else f"{rule.status}/{rule.unenforced_reason}"
+        assert f"`{rule.id}` — skill `{rule.skill}` — **{status}**" in text
+        assert json.dumps(rule.quote, ensure_ascii=False) in text
+        assert all(f":{enforcer.symbol}`" in text for enforcer in rule.enforcers)
+        assert not rule.tracking or f"tracking: {rule.tracking}" in text
+    assert "R0001" not in text
+
+
 @pytest.mark.parametrize("editor", EDITORS, ids=lambda p: p.parent.name)
 def test_editor_prose_states_the_consumption_rule(editor):
     text = editor.read_text()

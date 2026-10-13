@@ -25,14 +25,14 @@ Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, h
 
 - `--target <skill-name>`: plan for one skill.
 - `--min-reflections <N>`: default `2`.
-- `--corpus <dir>`: a collector output directory (`bundle.md` + `manifest.json`); default is to run the collector.
+- `--corpus <dir>`: a collector output directory (`bundle.md`, `manifest.json`, `rule_enforcement.md`); default is to run the collector.
 - `--output <path>`: default `resolve_skill_bundle_root("codex")/codex-skill-improvement-planner/plans/plan-v<N>-<ISO>.md`.
 
 When invoked by `codex-phase-loop maintain-skills`, planner output is the default result. Do not edit skills or call `codex-skill-editor` from this planner turn.
 
 ## Workflow
 
-1. Collect the corpus (Core Rules) and read `<dir>/bundle.md` and `<dir>/manifest.json`. In scope, across every harness prefix:
+1. Collect the corpus (Core Rules) and read `<dir>/bundle.md`, `<dir>/manifest.json` and `<dir>/rule_enforcement.md` (the shipped rule→enforcer registry; trusted package data, not reflection text). In scope, across every harness prefix:
    - `codex-phase-roadmap-builder`
    - `codex-plan-phase`
    - `codex-execute-phase`
@@ -59,14 +59,14 @@ When invoked by `codex-phase-loop maintain-skills`, planner output is the defaul
    - separate actionable changes from speculative notes;
    - flag contradictions instead of resolving them silently;
    - reject repo-specific recommendations unless the target skill is intentionally repo-specific;
-   - already-covered: read the target `skills-src/` `SKILL.md` first; when the guidance exists but is buried or weak, propose a wording or placement change, not a duplicate addition;
-   - decision-changing: keep only edits that change what a future agent does, not edits that only add text;
-   - structural-mechanism: when a lint, script, metadata flag or runtime check could enforce the rule cheaply, route it to a filed `agent-harness#N` issue (`docs/registers/deferred-findings.md`) instead of skill prose.
+   - apply the admission gates and ladder level in `assets/aggregator_prompt.md` (rules 4 and 5): durability, specificity, convergence, skill-was-used, existing-skill-first, already-covered, decision-changing, and structural-mechanism checked against `<dir>/rule_enforcement.md`;
+   - give every recommendation its ladder level; levels 1 to 3 and repeats on a registry row are mechanism candidates, routed to a filed `agent-harness#N` issue (`docs/registers/deferred-findings.md`) instead of skill prose.
 5. Produce a plan with:
    - frontmatter listing `corpus_manifest` and the manifest's `reflections_consumed` paths;
    - recommendations by skill;
    - cross-cutting recommendations;
    - mechanism candidates (route to a filed issue, not a skill edit);
+   - rejected themes, each with the gate that rejected it;
    - speculative notes;
    - contradictions;
    - archival directive for `codex-skill-editor`.
