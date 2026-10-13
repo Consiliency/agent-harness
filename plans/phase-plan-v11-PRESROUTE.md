@@ -25,7 +25,10 @@ automation:
 This is v11 Phase 7's single-lane closeout of EC-PRESROUTE-0, tracked by
 agent-harness#1143. The carried implementation is delivered. The v10 plan is a
 frozen input; only its remaining receipt work carries forward. The roadmap has
-no upstream dependency for this phase. PANEL, ROUTE and RATIFY consume its result.
+no upstream dependency for this phase. PANEL, ROUTE and RATIFY consume the
+preserved gate and reconciled receipt subject to the carried gaps in Spec Closeout
+Plan: the post-hoc records are not V10 chain links, the pending PANEL authorization
+cannot land as written, and HARDEN's duplicate-alias lookup remains unresolved.
 
 The historical verifier checks the original receipt at its original landing,
 including physical, index and HEAD evidence bytes. It does not reconcile later
@@ -49,7 +52,8 @@ These are historical inputs, never requirements on this phase's future commits.
   Resolve their exact historical objects from the roadmap and local Git history.
 - Post-closeout repair precedent: agent-harness#614, recorded in
   `plans/manifest.json`. Pending PANEL authority:
-  `agent-harness#1078:PANEL-SL1:PRESROUTE`; it remains pending until its own landing.
+  `agent-harness#1078:PANEL-SL1:PRESROUTE`; preserve it unchanged, with its
+  unlandable disposition carried as specified in Spec Closeout Plan.
 
 ## Interface Freeze Gates
 
@@ -86,9 +90,12 @@ SL-0 — Receipt repairs, documentation audit and closeout
     unrecorded frozen-file edit, substituting unchanged HEAD bytes for dirty index
     or physical bytes, or modifying original evidence must fail. Shuffling repair
     records must preserve the result. An unrelated pending PANEL authorization
-    must neither excuse drift nor become falsely marked landed. Capture the new
-    tests' failure before extending the verifier; do not regenerate the original
-    RED receipt.
+    must neither excuse drift nor become falsely marked landed. Assert that
+    `--record-closeout` emits the informational `carried_gap` when a pending pin
+    differs from reconciled HEAD, recording the wiring-file mismatch and the
+    policy-file match without failing verification; assert that `carried_gap` is
+    absent when all pending pins match. Capture the new tests' failure before
+    extending the verifier; do not regenerate the original RED receipt.
   - impl: Extend the existing verifier with `--verify-repairs`, preserving its
     current no-flag historical behavior and all evidence-integrity checks.
     Inventory the full receipt's frozen path set, including the adapter and
@@ -102,21 +109,35 @@ SL-0 — Receipt repairs, documentation audit and closeout
     merge checker as a substitute: these are explicitly post-hoc repairs.
   - impl: Append one metadata-only post-closeout `sl0_repairs` record per
     historical change to the original `v10-PRESROUTE` row. Each record names
-    its unique record ID, qualified issue/PR, reason, actual recording time,
+    its unique `record_id`, qualified issue/PR, reason, actual recording time,
     original receipt reference, historical edit and integration, first parent,
     affected paths/nodes, old/new blobs and SHA-256 digests, and recomputable
-    patch digest. Distinguish historical edit identity from integration identity.
-    Label the record post-hoc; never invent prior authorization or a new
-    tests-first claim. Follow agent-harness#614's append-only precedent, leaving
+    patch digest. Each record carries neither an `entry` key nor an
+    `authorization_id` key; `record_id` is its own identity. Distinguish historical
+    edit identity from integration identity, using fields other than
+    `authorization_id` for both. Label the record post-hoc; never invent prior
+    authorization or a new tests-first claim. Follow agent-harness#614's append-only precedent, leaving
     existing row fields, lifecycle, timestamps, pending authorizations and every
     other phase's rows unchanged.
   - impl: Add `--record-closeout`, valid only with successful
     `--verify-repairs`, to write `.phase-loop/evidence/PRESROUTE/v11-closeout.json`.
     Derive its metadata from checked inputs: phase and goal ID, original receipt
     and RED-log digests, frozen-file inventory and current digests, repair-record
-    identities, verification command/result and IF-0-PRESROUTE-1. This records
-    receipt verification; only the runner's successful whole-suite evidence
-    authorizes phase completion. No record can substitute for rerunning checks.
+    identities, verification command/result and IF-0-PRESROUTE-1. If any pending
+    authorization pin differs from the reconciled HEAD blob, add a `carried_gap`
+    object on the agent-harness#614 shape: `finding`, `handling`, `owner`,
+    `status: "carried"`. Derive `finding` at run time by comparing the pending
+    authorization's `base_blob` with the reconciled HEAD blob for each pinned
+    path, recording both the mismatch for `test_president_wiring.py` and the match
+    for `test_govlean_panel_policy.py` on the reviewed inputs. Set `owner` to
+    `PANEL / roadmap coordinator`; `handling` carries disposition to PANEL (a
+    new authorization pinned to the current blob) or a maintainer ruling and
+    cross-references the duplicate-alias hazard assigned to v11 HARDEN in Spec
+    Closeout Plan. This
+    record is informational: the verifier does not fail on the stale pin; omit
+    `carried_gap` when all pins match. This records receipt verification; only
+    the runner's successful whole-suite evidence authorizes phase completion.
+    No record can substitute for rerunning checks.
   - docs: After the repairs and verification, record in the closeout artifact
     the `no_doc_delta` decision: public behavior and contract documentation are
     unchanged, so README, changelog and catalog need no edit. This lane is the terminal
@@ -161,7 +182,21 @@ SL-0 — Receipt repairs, documentation audit and closeout
 - target surfaces: `plans/manifest.json`, `.phase-loop/evidence/PRESROUTE/v11-closeout.json`
 - evidence paths: `.phase-loop/evidence/PRESROUTE/v11-closeout.json`, `.phase-loop/evidence/PRESROUTE/content-tdd-receipt.json`, `plans/manifest.json`
 - redaction posture: `metadata_only`
-- downstream handling: none; PANEL, ROUTE and RATIFY consume the preserved gate and reconciled receipt.
+- downstream handling: These `sl0_repairs` records are post-hoc and are not V10
+  chain links. `agent-harness#1078:PANEL-SL1:PRESROUTE` pins
+  `phase-loop-runtime/tests/test_president_wiring.py` at
+  `1263876260cf2f6c09a2fc5c64c1b712794c1cdd`, while the reconciled HEAD blob at
+  review is `70a66f4a4a260796c5d44c1726582f838bbf0a42`. Under
+  `phase-loop-runtime/scripts/verify_harden_evidence.py` lines 3144/3209/3081,
+  that immutable authorization cannot pair with any future landed entry: the
+  old blob must equal both its `base_blob` and the merge's first-parent blob,
+  and a supplement cannot move `base_blob`. Its disposition belongs to PANEL
+  (a new authorization pinned to the current blob) or a maintainer ruling,
+  not to this phase. The HARDEN checker's unique-alias row lookup (lines
+  2278-2285) will also refuse the first `landed` entry on a PRESROUTE row until
+  the v11 HARDEN plan makes it resolve the live row
+  (`specs/phase-plans-v11.md:362`). PANEL, ROUTE and RATIFY consume the preserved
+  gate and reconciled receipt subject to these carried gaps.
 
 ## Verification
 
