@@ -5829,6 +5829,17 @@ class _RepositoryRoutingBrokerService:
             )
             stores = (admission_store, evidence_store)
             self._stores[snapshot.identity] = stores
+        elif stores[1].root != snapshot.store_root:
+            # agent-harness#1315: a client cached this pair before a partition
+            # rotation moved the ACTIVE pointer.  Refuse typed on every request
+            # rather than serve the retired generation's ledger or rebind under a
+            # lease the rotation's drain never saw.
+            raise WriterGenerationBlocked(
+                f"this broker client is bound to retired partition generation "
+                f"{stores[1].root} of {snapshot.identity}; the ACTIVE generation is "
+                f"{snapshot.store_root}. A partition rotation completed after the client "
+                "was built: close it and build a new client (restart the broker process)"
+            )
         return stores
 
     def _service_for(self, request_or_worktree) -> BrokerService:
@@ -5860,9 +5871,11 @@ class _RepositoryRoutingBrokerService:
         # `git -C <worktree>`: caching the service by identity alone would send a
         # second linked worktree's publish to the FIRST worktree's checkout.
         cache_key = (snapshot.identity, str(snapshot.worktree))
+        # Resolved on EVERY request, cached service or not, so the generation
+        # binding is re-checked per request (agent-harness#1315).
+        admission_store, evidence_store = self._stores_for(snapshot)
         service = self._services.get(cache_key)
         if service is None:
-            admission_store, evidence_store = self._stores_for(snapshot)
             lease = self._leases[snapshot.identity]
             service = BrokerService(
                 admission_store,

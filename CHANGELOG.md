@@ -6,6 +6,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### A routing client built before a partition rotation refuses typed (agent-harness#1315)
+
+- A FABPUB routing client caches its stores for each repository. A client built
+  before a partition rotation used to answer from the retired generation. A new head
+  was refused by that generation's old block, as `epoch permanently blocked`, and a
+  head it had already published was served as a replay from the retired ledger.
+  Nothing was written to either generation, and the provider was not called.
+- The client now re-resolves the ACTIVE generation on every request. Once a rotation
+  has moved the pointer, it refuses with `WriterGenerationBlocked` before it reads or
+  writes either generation's store. It never rebinds, so restart the broker process. While the
+  client still holds its lease, the rotation refuses instead, as before.
+
 ### The codex board seat can run commands in its staged tree again (agent-harness#1470)
 
 - Since 0.7.25 the codex seat of a sandboxed board (one that stages a review tree) could not
