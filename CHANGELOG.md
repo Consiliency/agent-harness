@@ -6,6 +6,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### One switch picks the Claude seat transport (agent-harness#1391, Stage 2)
+
+- Claude panel seats and the president's Claude rung now get their transport from one
+  resolver, `_resolve_claude_transport`, instead of each comparing the route string
+  itself. `PHASE_LOOP_PANEL_CLAUDE_ROUTE` still selects `print` (the default) or `tui`,
+  and capture and research seats still run on the TUI.
+- `sdk` is now a named but not admitted transport. Selecting it reports
+  `panel_claude_transport_not_admitted` instead of `panel_claude_route_invalid`, and
+  nothing launches. Admitting it (Stage 3) needs an EC-REVIEWTRUTH-18 amendment.
+
 ### A routing client built before a partition rotation refuses typed (agent-harness#1315)
 
 - A FABPUB routing client caches its stores for each repository. A client built
