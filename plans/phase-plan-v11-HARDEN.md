@@ -36,9 +36,9 @@ the producer's `_prepare_stage` bind the v10 plan. Its `verify_broker` rejects
 tooled records through `harden5_unmet`. Historical checks remain meaningful,
 but those assumptions cannot govern v11 completion.
 
-Canonical `.phase-loop/` exists and owns runner state. This planning checkout
-contains the active planning run but no local state/events snapshot; absence
-does not authorize reconstructing state from `.codex/phase-loop/`.
+Canonical `.phase-loop/` owns runner state. Its ledger holds only this planning
+run's events, none a `phase_execute` complete event; `state.json` selects HARDEN.
+Do not reconstruct state from `.codex/phase-loop/`.
 The tracked v10 HARDEN row is terminal `orphaned`. Preserve it and append
 completion only to the v11 row.
 
@@ -73,8 +73,18 @@ completion only to the v11 row.
   patch, its SHA-256/byte length and the raw-blob-delta SHA-256/byte length.
   These use the runtime's ordinary-text path, without reserved v3 headers or
   inner broker frames. Existing inline/pointer renderers supply outer framing.
-  The v4 verifier independently reconstructs both JSON inputs from Git and
-  reproduces `provider_input_sha256` through those production renderers.
+  The v4 verifier independently reconstructs the JSON pair from Git; retained
+  broker evidence supplies outer-framing arguments for `provider_input_sha256` reproduction.
+  Select by retained `provider_input_mode`/`sandbox_staged_at` and the leg
+  capability table (`sandbox_usable_by`, `JAILED_LEGS`):
+  sealed → `_render_broker_inline_prompt(..., staged_tree=None)`;
+  sandbox-inline (codex/grok) → `_broker_review_sandbox_preamble(Path(sandbox_staged_at))`
+  plus `_assemble_broker_inline_prompt`;
+  jailed pointer → `_render_broker_pointer_prompt(source_commit=<reviewed head>, staged_tree_sha256=<sandbox_snapshot_sha256>)`.
+  `sandbox_snapshot_sha256` is authorization's `staged_tree_sha256`
+  (`review_tree_manifest_sha256`), not a Git tree ID. Stage cleanup prevents
+  post-hoc sandbox-inline renderer calls. A retained path/preamble mismatch or unreproducible
+  digest is filed as an unmet runtime defect with a qualified issue, never an accepted residual.
   Preserve the byte-identical v3 grammar and its v10 pin; never relabel v11
   bytes as v10 or use the retired plan as v11 review authority.
 - [ ] IF-0-HARDEN-6 — Add `harden_evidence_inputs.v2` and HARDEN's
@@ -106,28 +116,32 @@ SL-6 — Evidence migration, docs sweep and completion reducer
 ### SL-6 — Evidence migration, docs sweep and completion reducer
 
 - **Scope**: Repair v11 evidence selection, prove EC-HARDEN-6, then reduce verified retained evidence into canonical completion.
-- **Owned files**: `phase-loop-runtime/scripts/verify_harden_evidence.py`, `phase-loop-runtime/scripts/build_harden_evidence.py`, `phase-loop-runtime/scripts/test_v11_harden_evidence.py`, `plans/phase-plan-v11-HARDEN.md`, `plans/manifest.json`, `plans/evidence/v11-HARDEN-contract.md`, `plans/evidence/v11-HARDEN-closeout.md`, `plans/evidence/v11-HARDEN/*.json`, `plans/evidence/v11-HARDEN/*.jsonl`
+- **Owned files**: `phase-loop-runtime/scripts/verify_harden_evidence.py`, `phase-loop-runtime/scripts/build_harden_evidence.py`, `phase-loop-runtime/scripts/test_v11_harden_evidence.py`, `phase-loop-runtime/scripts/test_v11_harden_seal.py`, `plans/phase-plan-v11-HARDEN.md`, `plans/manifest.json`, `plans/evidence/v11-HARDEN-contract.md`, `plans/evidence/v11-HARDEN-closeout.md`, `plans/evidence/v11-HARDEN/*.json`, `plans/evidence/v11-HARDEN/*.jsonl`
 - **Interfaces provided**: IF-0-HARDEN-5, IF-0-HARDEN-6, IF-0-HARDEN-7.
 - **Interfaces consumed**: predecessor plan (pre-existing), historical SL-0/SL-4 receipts (pre-existing), seat profile and authorization records (pre-existing), canonical runner ledger (pre-existing), external reuse registry (pre-existing), runtime completion-admission contract (agent-harness#1584; see Execution Notes).
 - **Parallel-safe**: no.
 - **Tasks**:
-  - test: First freeze the contract and new regression corpus in
-    `scripts/test_v11_harden_evidence.py`; this scripts-local location respects
-    the roadmap's scripts/plans boundary and leaves landed tests immutable.
-    Require a separate tests-only landing on canonical main with exact-head
-    board approval and genuine RED results before production edits. Record
-    the approved tests-only landing head; production must descend from it.
-    Freeze the test bytes; the implementation PR must contain no test diff.
-    Use source-entered controls, not missing-import or collection errors, as RED.
+  - test: Stage separate tests-only landings on canonical main per freeze gate.
+    Landing 1 now: freeze the IF-0-HARDEN-5/-6, EC-HARDEN-6 and prepare-side
+    corpus in `scripts/test_v11_harden_evidence.py`.
+    Landing 2 after agent-harness#1584 lands and IF-0-HARDEN-7 freezes:
+    seal/completion corpus in `scripts/test_v11_harden_seal.py`, before any
+    seal/completion-admission production edit; landing 1's bytes stay immutable.
+    Each landing requires exact-head board approval and genuine source-entered
+    RED before covered production edits; import/collection errors are not RED.
+    Record each approved head; covered production descends from it.
+    Freeze both corpora; implementation PRs contain no test diff.
   - test: Exercise production `manifest_plan_row`, authority/input-envelope
     readers and `derive_live_facts` with orphaned v10 plus live v11 rows.
     Reject two live matches, wrong plan/roadmap, stale digest, forged predecessor,
     missing historical repair, unrelated alias and fallback to v10.
     Accept historical v10 evidence through explicit historical selection and
     v11 evidence through explicit current selection.
-    Exercise both current runtime renderers with the v2 JSON pair and reproduce
-    retained provider-input digests; reject changed Git identities, plan
-    path/blob or payload bytes, while preserving v3 acceptance/refusal controls.
+    Reproduce retained provider-input digests across IF-0-HARDEN-5's sealed,
+    sandbox-inline and jailed pointer routes using Git-rebuilt v2 JSON plus
+    retained `provider_input_mode`, `sandbox_staged_at`, `sandbox_snapshot_sha256`
+    and reviewed head. Exercise post-cleanup assembly and reject changed framing,
+    Git identities, plan path/blob or payload bytes.
   - test: Through production profile construction, authorization revalidation,
     verdict serialization and aggregate verification, prove EC-HARDEN-6 with
     positive sealed and deliberately tooled/credentialed profiles.
@@ -136,11 +150,14 @@ SL-6 — Evidence migration, docs sweep and completion reducer
     absent/forged/expired/wrong-operation authorization. Assert each injection
     site was entered and its restored control passes. Pure configuration
     controls perform zero capability effects without authorization.
-  - test: Drive real producer/verifier entrypoints through prepare and seal.
-    Reject copied fixture evidence, duplicate or v10 events, missing v11
-    binding, stale heads, changed retained bytes, nonce reuse, incomplete
-    review/CI, secret-bearing payloads and path escapes. Preserve all existing
-    v3 refusal and adversarial cases, including the J8 tooled-seat rejection.
+  - test: Landing 1 covers chronology, capabilities, authorization, disclosure,
+    v2 renderer reproduction and real producer/verifier prepare-path rejections:
+    copied fixtures, stale heads, changed retained bytes, nonce reuse, incomplete
+    review/CI, secret-bearing payloads and path escapes. Preserve v3 acceptance/refusal
+    and adversarial controls, including J8 tooled-seat rejection.
+    Landing 2 covers v2 request/event binding, duplicate/v10/stale/wrong-plan
+    event selection, missing v11 binding and admission rejection/replay through
+    real seal/completion entrypoints.
   - impl: Introduce explicit current-versus-historical authority resolution
     throughout both scripts, including ownership history, suite contracts,
     review envelopes, source-boundary checks and completion-event selection.
@@ -166,11 +183,11 @@ SL-6 — Evidence migration, docs sweep and completion reducer
     node inventories and outcome policy in the contract artifact; derive
     counts from raw/JUnit output. Keep v3's historical suite parser intact.
     Machine-check the new contract rather than relying on prose attestations.
-    For each implementation landing, retain `git diff --name-only` between
-    its actual PR base and landed head and reject any test path, including
-    additions, deletions or renames. Check descent from the approved tests-only
-    landing with `git merge-base --is-ancestor`; derive identities from retained
-    Git/PR evidence, never prescribed future commits.
+    For each tests-only landing, audit gated production: retain
+    `git diff --name-only` from each implementation PR's actual base to landed
+    head, rejecting all test paths (including additions/deletions/renames).
+    Check descent from that approved tests-only head with
+    `git merge-base --is-ancestor`; derive identities from retained Git/PR evidence.
   - verify: Run the narrow regression command below, unchanged producer/verifier
     tests, the existing self-test, then the effective suite. Repeat the fresh
     focused, pure-control, broad, lint and CI collection on clean candidate
@@ -210,9 +227,8 @@ defaults. Any fallback must be explicit; no downgrade is implied.
 
 ## Execution Notes
 
-One serial lane intentionally combines repair and reduction; its docs/evidence
-writer runs only after its separate tests-only landing and implementation stages. No additional
-producer lane or shared writable worktree is implied. Obtain required plan
+Docs/evidence writing follows both tests-only landings and implementation stages.
+No additional producer lane or shared writable worktree is implied. Obtain required plan
 review before production work. Treat unavailable proof as unresolved work,
 with human input required only for an actual access or policy decision.
 
@@ -220,9 +236,11 @@ with human input required only for an actual access or policy decision.
 The maintainer chose to file [agent-harness#1584](https://github.com/Consiliency/agent-harness/issues/1584)
 and land the plan. Runtime completion admission is owned outside HARDEN.
 IF-0-HARDEN-7 stays explicitly unfrozen until agent-harness#1584 lands;
-every other lane task proceeds under the existing review and tests-first gates.
+every other lane task proceeds under landing 1's review and tests-first gates.
 HARDEN's completion/closeout waits on agent-harness#1584 and the resulting
 verified seal; the open dependency is not an accepted residual.
+Per the maintainer decision in agent-harness#1584, read the carried V10
+EC-HARDEN-0 chronology falsifier against the production change each test corpus covers.
 
 HARDEN consumes the **runtime completion-admission contract** defined by
 agent-harness#1584: an authorized runtime operation validates
@@ -240,24 +258,26 @@ substitute for admission. The roadmap and `src/` remain untouched by HARDEN.
 Run commands from the repository root. Before execution, validate the effective
 `automation.suite_command` and expanded verification argv through
 `validate_verification_commands` (IF-0-VC-2). Revalidate paths created by
-SL-6 after the tests-only artifact exists. Keep runner verification output
+SL-6 after each tests-only artifact exists. Keep runner verification output
 separate from the versioned HARDEN aggregate.
 
-Narrow new regression, then existing contracts:
+Narrow new regression, then existing contracts (omit the seal test path from
+ruff before landing 2):
 
 ```bash
 uv run --quiet --with pytest --with-editable ./phase-loop-runtime python -m pytest -q phase-loop-runtime/scripts -k v11_harden
 env PHASE_LOOP_TDD_EXPECT_HARDEN=1 PHASE_LOOP_TDD_EXPECT_HARDEN_PRODUCER=1 PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests uv run --quiet --with pytest --with-editable ./phase-loop-runtime python -m pytest -q phase-loop-runtime/tests/test_harden_evidence_producer.py phase-loop-runtime/tests/test_harden_evidence_verifier.py phase-loop-runtime/tests/test_advisor_board_composition.py phase-loop-runtime/tests/test_advisor_board_cli_legacy.py phase-loop-runtime/tests/test_review_leg_sandbox.py phase-loop-runtime/tests/test_review_stage_binding.py phase-loop-runtime/tests/test_seat_jail.py phase-loop-runtime/tests/test_seat_sandbox_permissions.py phase-loop-runtime/tests/test_seat_notices.py
 uv run --quiet --with-editable ./phase-loop-runtime python phase-loop-runtime/scripts/verify_harden_evidence.py --self-test
-uv run --quiet --with ruff ruff check phase-loop-runtime/scripts/verify_harden_evidence.py phase-loop-runtime/scripts/build_harden_evidence.py phase-loop-runtime/scripts/test_v11_harden_evidence.py
+uv run --quiet --with ruff ruff check phase-loop-runtime/scripts/verify_harden_evidence.py phase-loop-runtime/scripts/build_harden_evidence.py phase-loop-runtime/scripts/test_v11_harden_evidence.py phase-loop-runtime/scripts/test_v11_harden_seal.py
 ```
 
 Run the frontmatter suite for whole-phase regression, retaining exit data and
 JUnit through the runner. Run the pure controls separately with
-`PHASE_LOOP_HARDEN_PROOF_MODE=pure_control`. New tests must expose selections
+`PHASE_LOOP_HARDEN_PROOF_MODE=pure_control`. Landing 1 must expose selections
 `v11_harden_chronology`, `v11_harden_capabilities`,
-`v11_harden_authorization`, `v11_harden_disclosure` and
-`v11_harden_seal`; zero collection is failure.
+`v11_harden_authorization` and `v11_harden_disclosure`; landing 2 adds
+`v11_harden_seal`. Zero collection fails for each of the four non-seal selections
+until landing 2, then for all five.
 
 The runner supplies absolute non-secret paths and session hashes below.
 `HARDEN_LEDGER` must resolve to this run's canonical `.phase-loop/` ledger;
@@ -266,7 +286,12 @@ the reuse registry remains externally owned.
 ```bash
 uv run --quiet --with-editable ./phase-loop-runtime python phase-loop-runtime/scripts/build_harden_evidence.py prepare --inputs "$HARDEN_INPUTS" --source-root "$HARDEN_SOURCE_ROOT" --evidence-root "$HARDEN_EVIDENCE_ROOT" --repo "$PWD" --output "$HARDEN_PRE" --completion-request "$HARDEN_REQUEST" --reuse-registry "$HARDEN_REUSE_REGISTRY" --expected-coordinator-session-sha256 "$HARDEN_COORDINATOR_SHA256" --expected-author-session-sha256 "$HARDEN_AUTHOR_SHA256"
 uv run --quiet --with-editable ./phase-loop-runtime python phase-loop-runtime/scripts/verify_harden_evidence.py --evidence "$HARDEN_PRE" --evidence-root "$HARDEN_EVIDENCE_ROOT" --repo "$PWD" --reuse-registry "$HARDEN_REUSE_REGISTRY" --expected-coordinator-session-sha256 "$HARDEN_COORDINATOR_SHA256" --expected-author-session-sha256 "$HARDEN_AUTHOR_SHA256"
-# BLOCKED until agent-harness#1584 lands and its admission contract is consumed before seal.
+```
+
+**BLOCKED until agent-harness#1584 lands, landing 2 and gated implementation pass,
+and the request is admitted under the consumed contract.** Operator-run seal:
+
+```bash
 uv run --quiet --with-editable ./phase-loop-runtime python phase-loop-runtime/scripts/build_harden_evidence.py seal --pre-completion "$HARDEN_PRE" --evidence-root "$HARDEN_EVIDENCE_ROOT" --repo "$PWD" --ledger "$HARDEN_LEDGER" --output "$HARDEN_SEALED" --reuse-registry "$HARDEN_REUSE_REGISTRY" --expected-coordinator-session-sha256 "$HARDEN_COORDINATOR_SHA256" --expected-author-session-sha256 "$HARDEN_AUTHOR_SHA256"
 uv run --quiet --with-editable ./phase-loop-runtime python phase-loop-runtime/scripts/verify_harden_evidence.py --evidence "$HARDEN_SEALED" --evidence-root "$HARDEN_EVIDENCE_ROOT" --repo "$PWD" --reuse-registry "$HARDEN_REUSE_REGISTRY" --expected-coordinator-session-sha256 "$HARDEN_COORDINATOR_SHA256" --expected-author-session-sha256 "$HARDEN_AUTHOR_SHA256"
 git diff --check
@@ -284,18 +309,20 @@ roadmap amendment before acceptance.
 
 - [ ] EC-HARDEN-0 — definition and falsifier are those at
   `9eb77a3d:specs/phase-plans-v10.md` (the v11 roadmap's V10 input).
-  Prove with the approved tests-only landing, ancestry and implementation
-  test-path diff audit above, the narrow command with `-k v11_harden_chronology`,
+  Prove with both approved tests-only landings and their scoped ancestry/test-path
+  audits above, the narrow command with `-k v11_harden_chronology`,
   and the final sealed-evidence verifier command.
 - [ ] EC-HARDEN-6 — proven by the narrow command with
   `-k 'v11_harden_capabilities or v11_harden_authorization or v11_harden_disclosure'`
   plus the final sealed-evidence verifier command; falsified by path-entered
   profile, authorization or verdict mutations being accepted, with restored
   sealed and intentionally tooled positive controls passing.
-- [ ] IF-0-HARDEN-5, IF-0-HARDEN-6 and IF-0-HARDEN-7 — proven by
-  the narrow command with `-k v11_harden_seal` and sealed operational
-  verification; falsified by a path-entered completion selector accepting a
-  stale, duplicate or wrong-plan event. Only after the effective suite and
+- [ ] IF-0-HARDEN-5 and IF-0-HARDEN-6 — proven by the four landing-1 selections
+  above plus prepare-side verification, provable before agent-harness#1584 lands.
+- [ ] IF-0-HARDEN-7 — conditional on landing 2; proven by the narrow command
+  with `-k v11_harden_seal` plus sealed operational verification; falsified by
+  a path-entered completion selector accepting a stale, duplicate or wrong-plan
+  event. Only after the effective suite and
   operational verification pass may the runner report complete with all gates.
 - [ ] Ownership — proven by `git diff --name-only` and the runner's dirty-path
   audit against SL-6 ownership, plus predecessor/roadmap/frozen-test blob
