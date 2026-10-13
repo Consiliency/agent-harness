@@ -78,6 +78,8 @@ def test_auth_probe_unavailable_executable_is_inconclusive(monkeypatch, returnco
 @pytest.mark.parametrize("output", [
     "not logged in: cannot read credentials: No such file or directory: /home/operator/.codex/auth.json",
     "cannot read /home/operator/.codex/auth.json: No such file or directory",
+    "codex: No such file or directory: /home/operator/.codex/auth.json",
+    "codex: No such file while reading /home/operator/.codex/auth.json",
 ])
 def test_auth_probe_missing_credentials_remains_a_failure(monkeypatch, output):
     result = types.SimpleNamespace(returncode=1, stdout="", stderr=output)

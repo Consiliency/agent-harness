@@ -75,6 +75,23 @@ def test_codex_launcher_requires_a_native_vendored_provider(tmp_path, native_sha
     assert pi._shell_wrapper_target(wrapper, "codex") is None
 
 
+@pytest.mark.parametrize("launcher_shape", ["directory", "fifo"])
+def test_codex_launcher_must_be_a_regular_file(tmp_path, launcher_shape):
+    launcher = tmp_path / "codex/bin/codex.js"
+    launcher.parent.mkdir(parents=True)
+    if launcher_shape == "directory":
+        launcher.mkdir()
+    else:
+        os.mkfifo(launcher)
+    machine = os.uname().machine
+    if machine not in {"x86_64", "aarch64"}:
+        pytest.skip("codex ships linux binaries for x86_64/aarch64 only")
+    _exe(tmp_path / f"codex/vendor/{machine}-unknown-linux-musl/bin/codex", "\x7fELF")
+    wrapper = _wrapper(tmp_path / "bin", "codex", launcher)
+    assert pi._shell_wrapper_target(wrapper, "codex") is None
+    assert pi._native_provider_target(launcher, "codex", resolve_launcher=True) is None
+
+
 @pytest.mark.parametrize("body", [
     '#!/bin/sh\nrm -rf "$HOME"\nexec /opt/x/grok "$@"\n',          # an extra command
     '#!/bin/bash\nexec /opt/x/grok "$@"\n',                         # another interpreter

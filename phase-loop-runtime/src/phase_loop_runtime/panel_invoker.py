@@ -4762,6 +4762,8 @@ def _native_provider_target(path, provider=None, *, resolve_launcher=False):
         if provider is not None and harness != _PROVIDER_HARNESSES.get(provider, provider):
             return None
         if harness == "codex" and name == "codex.js":
+            if not target.is_file():
+                return None
             launcher = target
             package = target.parent.parent
             machine = os.uname().machine
@@ -7379,7 +7381,8 @@ def _leg_auth_ok(
         return True, ""
     unavailable = re.search(
         r"(?:^|\n)(?:[^\n]*:\s*)?(?:/[^\s:\n]*/)?" + re.escape(probe[0])
-        + r"(?:\.js)?:\s*(?:command not found|no such file)", combined, re.IGNORECASE,
+        + r"(?:\.js)?:[ \t]*(?:command not found|no such file(?: or directory)?)[ \t]*(?:\n|$)",
+        combined, re.IGNORECASE,
     )
     if (unavailable or combined.strip().lower() in {
             "command not found", "no such file", "no such file or directory"}) \
