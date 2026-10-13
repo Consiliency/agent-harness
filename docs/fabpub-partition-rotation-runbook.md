@@ -408,7 +408,8 @@ A promotion that happens during the provider call is not covered by either
 provider-side evidence, such as no pull request and no branch for the head at the
 provider. Absence of local evidence is not enough, and provider-side absence remains
 the operator's judgement, not proof. A blocked result with `provider_call_made: false`
-means that attempt never entered the provider. A failure between the owner section and
+means that call never entered the provider. A retry that replays an earlier block
+also reports `false`, so it says nothing about the earlier attempt's effect. A failure between the owner section and
 the provider call (`record_intent`, a checkpoint projection, a refused lease) leaves
 the owner in place, and the next attempt promotes it. That case is
 `attested_not_landed` by construction. See `docs/fabpub-pre-admission-ambiguity.md`,

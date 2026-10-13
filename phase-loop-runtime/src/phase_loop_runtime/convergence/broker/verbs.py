@@ -1094,8 +1094,12 @@ class BrokerService:
                     current = self.evidence_store.replay().get(key)
                 if current is not None and current.state is TerminalOutcomeState.PROVIDER_CALL_IN_FLIGHT:
                     current = self.evidence_store.record_terminal(EvidenceRecord(key, TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED, "adapter-exception"))
-                stored = current or EvidenceRecord(key, TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED, "adapter-exception")
-                return BrokerExecutionResult(False, BrokerTerminalEvidence(key, stored.state.value, stored.evidence_reference), reason="outcome_ambiguous", provider_call_made=True)
+                if current is None:
+                    # Unreachable after record_intent; never fabricate a row.
+                    raise RuntimeError(
+                        f"effect key {key!r} has no evidence row after provider entry"
+                    ) from error
+                return BrokerExecutionResult(False, BrokerTerminalEvidence(key, current.state.value, current.evidence_reference), reason="outcome_ambiguous", provider_call_made=True)
         finally:
             for descriptor in liveness:
                 os.close(descriptor)
