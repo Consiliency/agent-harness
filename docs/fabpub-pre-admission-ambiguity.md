@@ -65,6 +65,38 @@ Workstream B (Consiliency/agent-harness#804) removes the second blocker the
 incident hit: a sealed bootstrap inventory whose recorded worktree has since been
 pruned no longer fails the activation barrier.
 
+## Owner section refusals and liveness
+
+Two narrowings of what becomes `outcome_ambiguous_blocked`. Neither relaxes C-keep:
+an unsealed owner whose writer is gone, and that has no known terminal, is still
+promoted exactly as before.
+
+- **A refused section leaves no owner (agent-harness#1314).** Inside the one
+  `admissions.lock` acquisition, `_owner_and_admission_under_one_lock` reads the raw
+  bytes of `adapter-start-owner.json` (absent, or a sealed owner), writes this
+  attempt's owner, and calls `admit_next`. If anything refuses after the owner write
+  (generation lease, partition floor, `epoch_blocked`, policy, the request build, the
+  admission append), it puts those exact bytes back, or removes the file if there
+  were none, before the refusal propagates. The owner never reached the provider, so
+  no effect is possible, and no other writer can observe it, because the restore
+  happens under the same acquisition. Only an owner this attempt wrote is ever
+  restored. A simulated crash (`PublishCrashInjected`) gets no cleanup, as a real
+  crash would not.
+- **A live writer's owner is not promoted (agent-harness#1313).** From the owner write
+  until its attempt ends, the writer holds an advisory `flock` on the owner file's
+  inode. Before `_block_unsealed_owner` appends `provider_call_in_flight` or
+  `outcome_ambiguous_blocked` for an owner with no known terminal, it probes that
+  lock non-blocking. If it is held, the publish refuses with `AdapterStartOwnerLive`
+  (a `PermissionError` whose message says to retry), and nothing is written. The
+  kernel releases the lock when the writer process dies, so a crashed writer's owner
+  is promoted as before. No file and no owner field were added, so mixed versions are
+  unchanged: an older writer never takes the lock and its owner is promoted as
+  before, and an older reader ignores the lock. The lock relies on the same `flock`
+  coherence that `admissions.lock` already does. On NFS, where Linux emulates `flock`
+  with per-process POSIX locks, a probe from the writer's own process can read the
+  writer as dead (today's behaviour), and a crashed client's lock lasts until its
+  lease expires (a retryable refusal meanwhile).
+
 ## Recovery
 
 There is **no governed recovery** for a partition that is already blocked. What
@@ -240,8 +272,8 @@ than in `attested_by`. The dispositions:
   earlier after an adapter exception or crash. A retry of the same, unchanged
   head resumes that transaction, and the successor re-admits it as-is
   (agent-harness#1296): same transaction, commit, ref, owned paths and
-  plan/verification digests. It does so only when the successor's
-  authenticated receipt disposes the key `attested_not_landed` **and** the
+  plan/verification digests. It does so only when a receipt in the partition's
+  authenticated chain disposes the key `attested_not_landed` **and** the
   sealed attestation's `transaction_id` (bound from the predecessor's
   adapter-start owner) equals the transaction being admitted. The retry's `base`,
   `draft` and PR body must also equal the transaction's frozen values, because the
@@ -255,27 +287,43 @@ than in `attested_by`. The dispositions:
   plan/proof digests, and the frozen base, draft and PR-body digest). The record is
   owner-only (0600), written atomically through an exclusive no-follow temporary file,
   and read back no-follow; an existing record that is not a regular JSON file refuses
-  typed. The outcome lives in that generation's evidence. Because the broker leaves the
-  checkpoint where it is, single use is enforced under the admissions lock: the
-  generation's evidence must hold no record for the key. If the recovered attempt is
-  ambiguous again, the successor blocks like any partition.
+  typed. The outcome lives in that generation's evidence.
+
+  The disposing rotation need not be the latest one (agent-harness#1310). The
+  recovery walks the authenticated receipt chain from the active generation back to
+  the first receipt that adjudicates the key. That newest adjudication is the current
+  word: a newer `observed_landed`, or a newer re-attestation, hides an older one. The
+  record names the `disposing_generation`, the `readmitting_generation` (its
+  `generation`) and the `intervening_rotations`. A disposition authorizes one
+  re-admission. Every generation from the disposing one up to the active one must hold
+  no evidence and no adapter-start owner for the key, and no receipt on the walk may
+  carry it as completed. Sealed generations are checked against the bytes their
+  successor receipts sealed. The active generation is checked under the admissions
+  lock, because the broker leaves the checkpoint where it is. If the recovered attempt
+  is ambiguous again, that generation blocks like any partition.
 
   Any other already-admitted current-head transaction is refused with
   `PublicationRecoveryRequired` before any owner, admission or evidence write. The
   message names what did not bind and the next step for that case. In particular, when
-  the active generation holds neither a disposition nor evidence for the key, **no
-  rotation can help**: an attestation disposes only keys that are blocked in the
-  active generation. That happens when a later rotation (for any key) superseded the
-  generation that disposed this one. It is tracked as agent-harness#1310 and needs the
-  maintainer. Retry the publication straight after the disposing rotation, before any
-  other rotation or publication on that repository. The human route reports these
+  no receipt in the chain disposes the key and the active generation holds no
+  evidence for it, **no rotation can help**: an attestation disposes only keys that
+  are blocked in the active generation. That case needs the maintainer. The human route reports these
   refusals as `publication_recovery_required` with next step
   `resolve_publication_recovery_refusal`.
 
+  Before any rotation, the key's evidence is `outcome_ambiguous_blocked` and the
+  broker replays it on every retry. The human route reports that block, on the first
+  attempt and on every retry, with next step
+  `adjudicate_publication_by_partition_rotation` and the rotate command, not the
+  generic `repair_publication_precheck_and_retry`; it matches the typed
+  `terminal_state` that `publish_from_worktree` now returns on a broker-blocked
+  result (agent-harness#1312).
+
   Separately, the broker now checks the transaction-state precondition **before** it
   writes the adapter-start owner, so a refusal of that precondition no longer leaves
-  an unsealed owner that the next attempt would promote to permanent ambiguity. Other
-  refusals inside admission still run after the owner write (agent-harness#1314).
+  an unsealed owner that the next attempt would promote to permanent ambiguity. Every
+  other refusal inside admission restores the owner path to the exact bytes it held
+  (see "Owner section refusals and liveness" below, agent-harness#1314).
 
 A blocked key the attestation leaves undisposed, a disposition it does not know,
 digests that do not match the predecessor's bytes, or a predecessor that is not
