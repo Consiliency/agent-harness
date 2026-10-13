@@ -16,6 +16,23 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `panel_claude_transport_not_admitted` instead of `panel_claude_route_invalid`, and
   nothing launches. Admitting it (Stage 3) needs an EC-REVIEWTRUTH-18 amendment.
 
+### FABPUB: a refused admission leaves no owner, and a live writer is not made ambiguous (agent-harness#1314, agent-harness#1313, agent-harness#1311)
+
+- Every refusal inside `admit_next` that runs after the adapter-start owner write
+  (generation lease, partition floor, `epoch_blocked`, policy, the admission request
+  build, the admission append) used to leave an unsealed owner behind. The next attempt
+  promoted it to permanent `outcome_ambiguous_blocked`. The broker now restores the owner
+  path to the exact bytes it found, under the same `admissions.lock` acquisition
+  (agent-harness#1314).
+- An unsealed owner whose writer is still mid-attempt is no longer promoted to
+  ambiguity. The writer holds an advisory `flock` on the owner file's inode until its
+  attempt ends, and `_block_unsealed_owner` probes it first. A live writer gets a
+  retryable `AdapterStartOwnerLive` refusal and nothing is written. A dead writer's owner
+  is promoted as before (agent-harness#1313). No schema change and no new file, so
+  mixed-version runtimes keep today's behaviour.
+- New regression `test_fabpub_owner_section_1314_1313_1311.py`, including the in-lock
+  transaction-state race (agent-harness#1311).
+
 ### An ambiguous human publication now gets the rotation handoff (agent-harness#1312)
 
 - A human publication whose key holds `outcome_ambiguous_blocked` evidence is blocked
