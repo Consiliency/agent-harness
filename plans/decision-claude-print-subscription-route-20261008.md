@@ -67,6 +67,14 @@ first parent of the Stage 1b landing merge.
 v10 is not edited by this ruling. v11 (Consiliency/agent-harness#1394) is asked to cite this
 record on the carried IDs: "as defined in V10 as amended by the 2026-10-08 `claude -p` ruling".
 
-## 6. Open questions
+## 6. Note, 2026-10-13: Stage 2 names `sdk`
+
+Consiliency/agent-harness#1575 adds the transport seam (`tui | print | sdk`). `sdk` is now a named
+transport that is not admitted, so selecting it fails as `panel_claude_transport_not_admitted`
+instead of the `panel_claude_route_invalid` that §2 names for "any other value". The rule §2 sets
+is unchanged: a refused value fails closed and never falls back. The Agent SDK stays out until
+EC-REVIEWTRUTH-18 is amended to admit it (Stage 3).
+
+## 7. Open questions
 
 Tracked on Consiliency/agent-harness#1391.
