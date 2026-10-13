@@ -535,7 +535,7 @@ class PublishTransaction:
         The broker never moves the checkpoint during a recovery; the SDK
         closeout (``publish_from_worktree``) seals it after the observed
         terminal, which releases the active pointer.  The state the transaction
-        was recovered FROM is kept here, beside it, one file per successor
+        was recovered FROM is kept here, beside it, one file per re-admitting
         generation, written BEFORE the broker writes an owner or admission, so
         the history reads: admitted, outcome ambiguous, adjudicated not-landed
         by rotation X, re-admission authorized in generation N.  The outcome
@@ -1275,7 +1275,9 @@ def _human_publication_handoff(
             recovery_procedure="docs/fabpub-partition-rotation-runbook.md section 8a",
             next_step_source=(
                 "the refusal detail: it names what did not bind and the next step for that case; "
-                "a rotation applies only while the key is blocked in the active generation"
+                "a new rotation applies only while the key is blocked in the active generation; "
+                "an earlier attested_not_landed disposition stays valid across later rotations "
+                "until the key gains evidence in a later generation"
             ),
             rotate_command_when_key_blocked=[
                 "phase-loop",

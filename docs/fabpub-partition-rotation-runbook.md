@@ -418,10 +418,15 @@ before rotating.
    beside the checkpoint, which the SDK closeout then seals. A second retry is answered from evidence
    with no provider call.
 
-**Retry straight after the rotation.** Run step 5 before any other rotation or
-publication on that repository. A later rotation (for any key) supersedes the
-generation that disposed this key, and the retry is then refused with no rotation
-able to fix it (agent-harness#1310).
+**Retrying after a later rotation.** The disposition stays valid across later
+rotations for other keys (agent-harness#1310). The retry walks the authenticated
+receipt chain back to the disposing rotation, and records both generations in
+the recovery record (`disposing_generation`, `readmitting_generation`,
+`intervening_rotations`). It is refused, with nothing written, once any
+generation since the disposing rotation holds evidence or an adapter-start
+owner for the key, or a later receipt carries or re-adjudicates it. A
+disposition authorizes one re-admission. Retrying promptly is still best, and a
+retry is refused if any receipt in the chain fails to authenticate.
 
 **After an ambiguous recovery attempt**, generation N+1 is blocked again. Do not
 attest `attested_not_landed` a second time without new evidence that this attempt
@@ -430,8 +435,8 @@ did not land either. Two ambiguous pushes are not evidence of no effect.
 Do not retry on a runtime without agent-harness#1296 after the rotation: it
 refuses at admission and leaves an unsealed owner that blocks the new
 generation. If the retry is refused with `publication_recovery_required`, the
-message names what did not bind and the next step for that case (no disposition, no transaction id, a different
-transaction, or an inventory that does not authenticate). Nothing was written;
+message names what did not bind and the next step for that case (no disposition, a disposition already used or
+superseded in a later generation, no transaction id, a different transaction, or a chain that does not authenticate). Nothing was written;
 fix the input and retry.
 
 ## 9. Residuals carried out of the 2026-09-09 preparation

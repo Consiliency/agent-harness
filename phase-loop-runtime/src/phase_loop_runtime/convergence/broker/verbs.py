@@ -657,8 +657,8 @@ class BrokerService:
                         )
                     if self.evidence_store.replay().get(recovery_key) is not None:
                         raise PermissionError(
-                            "broker admission precondition denied: this generation already "
-                            "re-admitted the transaction; retry to replay its evidence"
+                            "broker admission precondition denied: the re-admitting generation "
+                            "already re-admitted the transaction; retry to replay its evidence"
                         )
                 owner_path = _owner_path(self.evidence_store.root)
                 # Absent, or a sealed owner: an unsealed one returned above.
@@ -707,9 +707,12 @@ class BrokerService:
         agent-harness#1296: the only supported recovery is a partition rotation
         whose attestation disposes this exact effect key ``attested_not_landed``
         and binds this exact transaction (the predecessor owner's
-        ``transaction_id``).  Nothing is written here.
+        ``transaction_id``).  agent-harness#1310: that rotation may be earlier
+        than the active generation, provided no generation since holds evidence
+        for the key (``attested_not_landed_recovery`` walks the authenticated
+        chain).  Nothing is written here.
         """
-        from .live import attested_not_landed_recovery
+        from .live import RecoveryChainSuperseded, attested_not_landed_recovery
 
         tid = envelope.transaction_id
 
@@ -724,11 +727,18 @@ class BrokerService:
 
         try:
             recovery = attested_not_landed_recovery(self.evidence_store.root, key)
+        except RecoveryChainSuperseded as error:
+            raise refuse(
+                f"the attested_not_landed disposition for it no longer authorizes a re-admission: {error}",
+                f"inspect generation {error.generation}'s broker evidence for the key with the "
+                "maintainer; a disposition authorizes one re-admission, and a rotation can dispose "
+                "the key again only while it is blocked in the active generation",
+            ) from error
         except (RuntimeError, PermissionError, OSError, ValueError) as error:
             # LegacyCutoverConflict is a RuntimeError; routing/compatibility
             # refusals are PermissionErrors.  All of them are the same answer.
             raise refuse(
-                f"the active rotation does not authenticate ({type(error).__name__}: {error})",
+                f"the rotation chain does not authenticate ({type(error).__name__}: {error})",
                 "restore the rotation's receipt, journal and sealed inventory bytes; do not "
                 "rotate again over a generation that does not authenticate",
             ) from error
@@ -737,12 +747,12 @@ class BrokerService:
             # key, so reaching here means it holds none: the key is not blocked
             # in the active generation and no rotation can dispose it now.
             raise refuse(
-                "the active partition generation adjudicates no attested_not_landed disposition "
-                "for it, and holds no evidence for the key",
+                "no rotation in the partition's authenticated receipt chain disposes it "
+                "attested_not_landed as its latest adjudication, and the active generation holds "
+                "no evidence for the key",
                 "a rotation cannot help here, because an attestation only disposes keys that are "
-                "blocked in the active generation. If an earlier rotation disposed this key and a "
-                "later rotation superseded it, that is agent-harness#1310; otherwise inspect the "
-                "publish checkpoint and the broker evidence with the maintainer",
+                "blocked in the active generation; inspect the publish checkpoint and the broker "
+                "evidence with the maintainer",
             )
         if recovery["transaction_id"] is None:
             raise refuse(
