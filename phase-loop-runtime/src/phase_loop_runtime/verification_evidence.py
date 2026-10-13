@@ -44,6 +44,10 @@ _EXTENSIONS_FIELD = "extensions"
 EXTENSION_NAMESPACE_REGISTRY: dict[str, str] = {
     "phase_loop_runtime.legible_evidence": "verification_evidence_sidecar.v1",
     "phase_loop_runtime.proofgate_evidence": "proofgate_evidence_sidecar.v1",
+    # agent-harness#1321 (REPORT 3.2 Slice B): the human-asserted criterion->command
+    # links that ``acceptance_evidence.export_acceptance_evidence`` turns into spec
+    # E(C) ``acceptance_evidence`` records.
+    "phase_loop_runtime.acceptance_evidence": "acceptance_evidence_links.v1",
 }
 _RESERVED_EXTENSION_NAMESPACES = frozenset({"phase_loop_runtime.proofgate_evidence"})
 
@@ -57,6 +61,54 @@ _KNOWN_EXTENSION_RECORD_SCHEMAS: dict[str, frozenset[str]] = {
     "proofgate_evidence_sidecar.v1": frozenset(
         {"schema", "candidate_snapshot", "mutations", "chronology"}
     ),
+    "acceptance_evidence_links.v1": frozenset(
+        {"schema", "pipeline_mode", "pipeline_engaged", "links"}
+    ),
+}
+
+_PIPELINE_MODES = ("standalone", "pipeline_optional", "pipeline_required")
+_SHA256_HEX_RE = re.compile(r"[0-9a-f]{64}")
+
+
+def _validate_acceptance_links_record(namespace: str, record: Mapping[str, Any]) -> None:
+    """agent-harness#1321: content rules for ``acceptance_evidence_links.v1``.
+    Mirrors spec's E(C) ``acceptance_evidence`` checks that can be decided without
+    the spec graph: a known mode, a boolean engagement that a standalone run cannot
+    claim, and one link per criterion (a 64-hex ``engine_join_id``) to a command
+    index. Whether the index names a recorded command is checked against
+    ``commands[]`` by the binder and the exporter."""
+
+    def bad(message: str) -> None:
+        raise VerificationArtifactContractError("malformed_artifact", f"{namespace}: {message}")
+
+    mode = record["pipeline_mode"]
+    engaged = record["pipeline_engaged"]
+    if mode not in _PIPELINE_MODES:
+        bad(f"pipeline_mode must be one of {list(_PIPELINE_MODES)}")
+    if not isinstance(engaged, bool):
+        bad("pipeline_engaged must be a boolean")
+    if mode == "standalone" and engaged:
+        bad("pipeline_engaged contradicts pipeline_mode standalone")
+    links = record["links"]
+    if not isinstance(links, list) or not links:
+        bad("links must be a non-empty list")
+    seen: set[str] = set()
+    for index, link in enumerate(links):
+        if not isinstance(link, dict) or set(link) != {"criterion_logical_id", "command_index"}:
+            bad(f"links[{index}] must contain exactly ['command_index', 'criterion_logical_id']")
+        criterion = link["criterion_logical_id"]
+        if not isinstance(criterion, str) or not _SHA256_HEX_RE.fullmatch(criterion):
+            bad(f"links[{index}].criterion_logical_id must be a lowercase 64-hex engine_join_id")
+        if criterion in seen:
+            bad(f"duplicate link for criterion {criterion}")
+        seen.add(criterion)
+        command_index = link["command_index"]
+        if not isinstance(command_index, int) or isinstance(command_index, bool) or command_index < 0:
+            bad(f"links[{index}].command_index must be a non-negative integer")
+
+
+_EXTENSION_RECORD_VALIDATORS = {
+    "acceptance_evidence_links.v1": _validate_acceptance_links_record,
 }
 
 
@@ -1021,6 +1073,9 @@ def _validate_v3_extensions(extensions: Any) -> None:
             raise VerificationArtifactContractError(
                 "malformed_artifact", f"{namespace}: extension record fields do not match {expected_schema}"
             )
+        content_validator = _EXTENSION_RECORD_VALIDATORS.get(expected_schema)
+        if content_validator is not None:
+            content_validator(namespace, record)
 
 
 def register_extension_namespace(namespace: str, schema: str) -> None:
@@ -1086,6 +1141,58 @@ def _bind_sidecar_extension(artifact_path: Path, *, namespace: str, record: Mapp
     body = raw_log if seal_start is None else raw_log[:seal_start]
     new_seal = _canonical_artifact_digest(payload)
     new_log_bytes = body + f"\n{_ARTIFACT_SEAL_PREFIX}{new_seal}\n".encode("utf-8")
+
+    with tempfile.NamedTemporaryFile("wb", dir=log_path.parent, delete=False) as tmp_log:
+        tmp_log.write(new_log_bytes)
+        tmp_log_path = Path(tmp_log.name)
+    tmp_log_path.replace(log_path)
+
+    payload["log_sha256"] = hashlib.sha256(new_log_bytes).hexdigest()
+    _write_artifact_atomic(artifact_path, payload)
+
+
+def _bind_additional_extension(artifact_path: Path, *, namespace: str, record: Mapping[str, Any]) -> None:
+    """agent-harness#1321: add one registered namespace to a sealed v2 or v3
+    artifact without disturbing a namespace already bound (in the runner path
+    LEGIBLE binds first, so the artifact is already v3). Same re-seal discipline
+    as :func:`_bind_sidecar_extension`: every existing JSON value except the
+    derived ``log_sha256`` is preserved and exactly one final seal authenticates
+    the new payload. Rebinding a namespace that is already present is refused."""
+    artifact_path = Path(artifact_path)
+    log_path = artifact_path.parent / LOG_NAME
+
+    validation = validate_verification_artifact(artifact_path)
+    if not validation.ok and validation.code != "nonzero_exit":
+        raise VerificationArtifactContractError(
+            validation.code,
+            "; ".join(validation.findings) or f"artifact failed validation: {validation.code}",
+        )
+    raw_log = log_path.read_bytes()
+    seal_start = _artifact_seal_region_start(raw_log)
+    if seal_start is None:
+        raise VerificationArtifactContractError(
+            "artifact_seal_missing",
+            "extension binding requires the whole-artifact seal emitted by the current writer",
+        )
+    payload = json.loads(artifact_path.read_text(encoding="utf-8"))
+    if payload["schema_version"] not in (2, 3):
+        raise VerificationArtifactContractError(
+            "malformed_artifact",
+            f"extension binding requires a schema-v2 or v3 artifact, found v{payload['schema_version']}",
+        )
+    extensions = dict(payload.get(_EXTENSIONS_FIELD) or {})
+    if namespace in extensions:
+        raise VerificationArtifactContractError(
+            "malformed_artifact", f"extension namespace already bound: {namespace}"
+        )
+    _validate_v3_extensions({namespace: dict(record)})
+
+    extensions[namespace] = dict(record)
+    payload["schema_version"] = 3
+    payload[_EXTENSIONS_FIELD] = extensions
+
+    new_seal = _canonical_artifact_digest(payload)
+    new_log_bytes = raw_log[:seal_start] + f"\n{_ARTIFACT_SEAL_PREFIX}{new_seal}\n".encode("utf-8")
 
     with tempfile.NamedTemporaryFile("wb", dir=log_path.parent, delete=False) as tmp_log:
         tmp_log.write(new_log_bytes)
