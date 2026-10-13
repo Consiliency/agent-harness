@@ -26,7 +26,8 @@ automation:
 
 Finish the carried SL-6 completion seal and EC-HARDEN-6 under v11 Phase 5.
 EC-HARDEN-0 retains its V10 definition. EC-HARDEN-1 through EC-HARDEN-4 and
-SL-5 are delivered; EC-HARDEN-5 is retired by v11. There are no phase dependencies.
+SL-5 are delivered; EC-HARDEN-5 is retired by v11. The roadmap currently declares
+no phase dependencies; completion-admission routing remains unresolved below.
 Do not import the old FABPUB/SCHED dispatch holds or author-vendor rotation.
 
 The current verifier's `manifest_plan_row` selects by alias alone;
@@ -63,6 +64,19 @@ completion only to the v11 row.
   v11 row is unique and eligible for the current lifecycle stage; historical
   v10 queries explicitly select their predecessor row/revision. Missing,
   duplicate, stale or wrong-roadmap authority fails closed.
+  For v4 reviews, use paired `harden_review_instructions.v2` and
+  `harden_review_bundle.v2` envelopes: single-line ASCII JSON, sorted keys,
+  compact separators, escaped string contents and one terminal LF. Both bind
+  `base_head`, `base_tree`, `head`, `tree`. Instructions contain the v11 plan
+  path, base-revision blob, SHA-256, byte length, full decoded plan text and
+  profile-compatible review directives; the bundle contains the complete Git
+  patch, its SHA-256/byte length and the raw-blob-delta SHA-256/byte length.
+  These use the runtime's ordinary-text path, without reserved v3 headers or
+  inner broker frames. Existing inline/pointer renderers supply outer framing.
+  The v4 verifier independently reconstructs both JSON inputs from Git and
+  reproduces `provider_input_sha256` through those production renderers.
+  Preserve the byte-identical v3 grammar and its v10 pin; never relabel v11
+  bytes as v10 or use the retired plan as v11 review authority.
 - [ ] IF-0-HARDEN-6 — Add `harden_evidence_inputs.v2` and HARDEN's
   `verification_evidence.v4` for EC-HARDEN-6. Freeze their closed field sets
   in `plans/evidence/v11-HARDEN-contract.md` before implementation.
@@ -72,10 +86,11 @@ completion only to the v11 row.
   legacy `verify_broker` behavior unchanged. Unknown versions and mixed
   contracts fail closed; this is not a change to runner `verification.json`.
 - [ ] IF-0-HARDEN-7 — Existing `prepare`, `seal` and verifier CLI arguments
-  support the new version explicitly through input schema selection. Preparation
+  will select the new version explicitly through input schema selection. Preparation
   produces an independently verifiable pre-completion aggregate and request;
   sealing binds exactly one matching canonical event without changing the
-  normalized pre-completion digest. Freeze new `harden_completion_request.v2`
+  normalized pre-completion digest. Do not freeze this gate until the admission
+  decision in Execution Notes is resolved. Then freeze `harden_completion_request.v2`
   and `harden_completion.v2` payloads, preserving v1. The request/event binds v11 authority as
   well as candidate/main evidence; v10 completion cannot satisfy it.
 
@@ -99,16 +114,20 @@ SL-6 — Evidence migration, docs sweep and completion reducer
   - test: First freeze the contract and new regression corpus in
     `scripts/test_v11_harden_evidence.py`; this scripts-local location respects
     the roadmap's scripts/plans boundary and leaves landed tests immutable.
-    Obtain the required cross-vendor review and record genuine RED results
-    before production edits. Freeze the test bytes; subsequent implementation
-    does not modify them. Use source-entered controls, not missing-import or
-    collection errors, as RED.
+    Require a separate tests-only landing on canonical main with exact-head
+    board approval and genuine RED results before production edits. Record
+    the approved tests-only landing head; production must descend from it.
+    Freeze the test bytes; the implementation PR must contain no test diff.
+    Use source-entered controls, not missing-import or collection errors, as RED.
   - test: Exercise production `manifest_plan_row`, authority/input-envelope
     readers and `derive_live_facts` with orphaned v10 plus live v11 rows.
     Reject two live matches, wrong plan/roadmap, stale digest, forged predecessor,
     missing historical repair, unrelated alias and fallback to v10.
     Accept historical v10 evidence through explicit historical selection and
     v11 evidence through explicit current selection.
+    Exercise both current runtime renderers with the v2 JSON pair and reproduce
+    retained provider-input digests; reject changed Git identities, plan
+    path/blob or payload bytes, while preserving v3 acceptance/refusal controls.
   - test: Through production profile construction, authorization revalidation,
     verdict serialization and aggregate verification, prove EC-HARDEN-6 with
     positive sealed and deliberately tooled/credentialed profiles.
@@ -136,7 +155,9 @@ SL-6 — Evidence migration, docs sweep and completion reducer
     environment, descriptors and confinement probes. Bind authorization to
     the operation and retained verdict, including deliberate credential/tool
     use. Self-reported digests or a profile label alone cannot pass.
-    Reuse runtime notice/verdict surfaces; this lane does not change
+    Bind disclosure to `harden_isolation_evidence`, the retained broker record
+    beside each leg verdict: profile ID/digest, filter SHA-256 and owner argv.
+    A successful jailed route need not emit a notice code. This lane does not change
     `src/phase_loop_runtime/` or reopen seat confinement implementation.
     An uncovered runtime defect remains an unmet criterion with concrete
     evidence and a qualified issue, never an accepted green residual.
@@ -145,6 +166,11 @@ SL-6 — Evidence migration, docs sweep and completion reducer
     node inventories and outcome policy in the contract artifact; derive
     counts from raw/JUnit output. Keep v3's historical suite parser intact.
     Machine-check the new contract rather than relying on prose attestations.
+    For each implementation landing, retain `git diff --name-only` between
+    its actual PR base and landed head and reject any test path, including
+    additions, deletions or renames. Check descent from the approved tests-only
+    landing with `git merge-base --is-ancestor`; derive identities from retained
+    Git/PR evidence, never prescribed future commits.
   - verify: Run the narrow regression command below, unchanged producer/verifier
     tests, the existing self-test, then the effective suite. Repeat the fresh
     focused, pure-control, broad, lint and CI collection on clean candidate
@@ -185,10 +211,24 @@ defaults. Any fallback must be explicit; no downgrade is implied.
 ## Execution Notes
 
 One serial lane intentionally combines repair and reduction; its docs/evidence
-writer runs only after its tests and implementation stages. No additional
+writer runs only after its separate tests-only landing and implementation stages. No additional
 producer lane or shared writable worktree is implied. Obtain required plan
 review before production work. Treat unavailable proof as unresolved work,
 with human input required only for an actual access or policy decision.
+
+**Plan-board status: NEEDS-DECISION (codex red-team F002).** The plan cannot
+land or freeze IF-0-HARDEN-7 yet. `_prepare_stage` only writes the completion
+request; no runtime consumer admits it. The seal requires a `phase_execute`
+complete event with `metadata.harden_completion`; normal execution omits that
+proof, and `phase-loop reconcile` emits `manual_repair`, which the seal rejects.
+Neither generic event append nor manual repair is request admission.
+The owner must authorize an owning phase or qualified issue for admission and
+route HARDEN's `Depends on` and the roadmap lane boundary through the runner.
+That decision must specify the authorized operation, request validation and
+lifecycle transition that emits the bound event and updates only the live v11
+row, including rejection/replay behavior. No such ownership, dependency or
+runtime edit is authorized by this amendment; admission and sealing remain
+unresolved, not accepted residuals. The roadmap and `src/` remain untouched.
 
 ## Verification
 
@@ -221,7 +261,7 @@ the reuse registry remains externally owned.
 ```bash
 uv run --quiet --with-editable ./phase-loop-runtime python phase-loop-runtime/scripts/build_harden_evidence.py prepare --inputs "$HARDEN_INPUTS" --source-root "$HARDEN_SOURCE_ROOT" --evidence-root "$HARDEN_EVIDENCE_ROOT" --repo "$PWD" --output "$HARDEN_PRE" --completion-request "$HARDEN_REQUEST" --reuse-registry "$HARDEN_REUSE_REGISTRY" --expected-coordinator-session-sha256 "$HARDEN_COORDINATOR_SHA256" --expected-author-session-sha256 "$HARDEN_AUTHOR_SHA256"
 uv run --quiet --with-editable ./phase-loop-runtime python phase-loop-runtime/scripts/verify_harden_evidence.py --evidence "$HARDEN_PRE" --evidence-root "$HARDEN_EVIDENCE_ROOT" --repo "$PWD" --reuse-registry "$HARDEN_REUSE_REGISTRY" --expected-coordinator-session-sha256 "$HARDEN_COORDINATOR_SHA256" --expected-author-session-sha256 "$HARDEN_AUTHOR_SHA256"
-# Runner authority admits the matching request before seal.
+# BLOCKED: the admission operation and lifecycle transition above must be resolved before seal.
 uv run --quiet --with-editable ./phase-loop-runtime python phase-loop-runtime/scripts/build_harden_evidence.py seal --pre-completion "$HARDEN_PRE" --evidence-root "$HARDEN_EVIDENCE_ROOT" --repo "$PWD" --ledger "$HARDEN_LEDGER" --output "$HARDEN_SEALED" --reuse-registry "$HARDEN_REUSE_REGISTRY" --expected-coordinator-session-sha256 "$HARDEN_COORDINATOR_SHA256" --expected-author-session-sha256 "$HARDEN_AUTHOR_SHA256"
 uv run --quiet --with-editable ./phase-loop-runtime python phase-loop-runtime/scripts/verify_harden_evidence.py --evidence "$HARDEN_SEALED" --evidence-root "$HARDEN_EVIDENCE_ROOT" --repo "$PWD" --reuse-registry "$HARDEN_REUSE_REGISTRY" --expected-coordinator-session-sha256 "$HARDEN_COORDINATOR_SHA256" --expected-author-session-sha256 "$HARDEN_AUTHOR_SHA256"
 git diff --check
@@ -237,11 +277,11 @@ roadmap amendment before acceptance.
 
 ## Acceptance Criteria
 
-- [ ] EC-HARDEN-0 — proven by the narrow command with
-  `-k v11_harden_chronology` plus the final sealed-evidence verifier command;
-  falsified by a path-entered authority/chronology mutation accepting
-  production-before-review or unapproved frozen-test drift, with the restored
-  historical and current controls passing.
+- [ ] EC-HARDEN-0 — definition and falsifier are those at
+  `9eb77a3d:specs/phase-plans-v10.md` (the v11 roadmap's V10 input).
+  Prove with the approved tests-only landing, ancestry and implementation
+  test-path diff audit above, the narrow command with `-k v11_harden_chronology`,
+  and the final sealed-evidence verifier command.
 - [ ] EC-HARDEN-6 — proven by the narrow command with
   `-k 'v11_harden_capabilities or v11_harden_authorization or v11_harden_disclosure'`
   plus the final sealed-evidence verifier command; falsified by path-entered
