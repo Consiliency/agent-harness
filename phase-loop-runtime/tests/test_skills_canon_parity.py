@@ -407,21 +407,26 @@ class SkillsCanonParityTest(unittest.TestCase):
     def test_every_linked_reference_and_asset_ships_with_its_harness(self):
         """agent-harness#1358: a SKILL.md that links `references/<file>` or
         `assets/<file>` must find that file in its own packaged skill dir, for every
-        harness. Progressive disclosure is only safe if the linked file travels."""
+        harness. Progressive disclosure is only safe if the linked file travels.
+        A link followed by "from the installed `<skill>` directory" resolves in that
+        sibling skill instead (execute-phase reads execute-detailed's pr-writing.md)."""
         self._require_sources()
         import re
 
-        link = re.compile(r"(?<![\w-])((?:references|assets)/[\w./-]+\.md)")
+        link = re.compile(
+            r"(?<![\w-])((?:references|assets)/[\w./-]+\.md)`?(?:\s+from the installed `([\w-]+)` directory)?"
+        )
         packaged = PKG / "src" / "phase_loop_runtime" / "skills_bundle"
         checked = 0
         for harness, root in SKILLS_SRC.items():
             for skill_md in sorted(root.glob("*/SKILL.md")):
-                for rel in sorted(set(link.findall(skill_md.read_text(encoding="utf-8")))):
+                for rel, owner in sorted(set(link.findall(skill_md.read_text(encoding="utf-8")))):
                     checked += 1
+                    owner = owner or skill_md.parent.name
                     with self.subTest(skill=skill_md.parent.name, link=rel):
                         self.assertTrue(
-                            (packaged / skill_md.parent.name / rel).is_file(),
-                            f"{skill_md.parent.name} links {rel} but skills_bundle does not ship it",
+                            (packaged / owner / rel).is_file(),
+                            f"{skill_md.parent.name} links {rel} but skills_bundle/{owner} does not ship it",
                         )
         self.assertGreater(checked, 0, "no references/ or assets/ links found; the link regex is broken")
 
