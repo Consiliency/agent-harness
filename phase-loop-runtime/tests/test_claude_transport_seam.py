@@ -145,3 +145,23 @@ def test_the_president_follows_the_seam(tmp_path, monkeypatch, ready_host):
     assert response["status"] == "failed"
     assert "seam_refusal_probe" in response["detail"]
     assert launched == []
+
+
+@pytest.mark.parametrize("raw,code", [
+    ("bogus", "panel_claude_route_invalid"),
+    ("sdk", "panel_claude_transport_not_admitted"),
+])
+def test_a_refused_transport_reaches_the_public_panel_as_typed_detail(
+    monkeypatch, ready_host, raw, code,
+):
+    """Through ``invoke_panel`` the refusal is the leg's detail, never its text: text on an
+    unusable leg would read as a non-conforming review (a governed BLOCK)."""
+    from phase_loop_runtime import governed_review as gr
+
+    launched = _forbid_launches(monkeypatch)
+    monkeypatch.setenv(_ROUTE_ENV, raw)
+    leg = pi.invoke_panel("ARTIFACT", ["claude"]).legs[0]
+    assert (leg.status, leg.text, leg.detail) == ("UNAVAILABLE", "", code)
+    assert launched == []
+    findings = gr._findings_from_panel(pi.PanelResult(legs=(leg,)))
+    assert not any(f.code == "panel_nonconforming" for f in findings), findings

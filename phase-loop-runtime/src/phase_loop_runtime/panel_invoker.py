@@ -2361,7 +2361,8 @@ _PROVIDER_REFUSAL_KINDS = frozenset({"classifier_refusal"})
 CLAUDE_TUI_TYPED_REFUSAL_SUPPORTED = False
 _TYPED_UNAVAILABLE_DETAILS = frozenset(
     {"subscription_auth_unproven", "tui_adapter_required", "tui_backing_required", "under_claude_code",
-     "claude_print_subscription_unproven", "claude_print_auth_drift", "panel_claude_route_invalid"}
+     "claude_print_subscription_unproven", "claude_print_auth_drift", "panel_claude_route_invalid",
+     "panel_claude_transport_not_admitted"}
 )
 
 
@@ -3002,6 +3003,8 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     # the headless print route (Stage 1b)
     "claude_print_result", "claude_print_subscription_unproven", "claude_print_auth_drift",
     "claude_print_stalled", "panel_claude_route_invalid",
+    # the transport seam (Stage 2): `sdk` is named but not admitted (EC-REVIEWTRUTH-18)
+    "panel_claude_transport_not_admitted",
     # route / authorization refusals
     "missing HARDEN review authorization", "missing or forged HARDEN review authorization",
     "harden_advisory_execution_refused", "harden_review_capture_route_refused",
