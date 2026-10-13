@@ -347,3 +347,301 @@ def test_killed_writer_reads_dead(tmp_path):
         fx.service.execute(fx.request)
     assert "blocks fresh provider effect" in str(info.value)
     assert fx.service.evidence_store.epoch_blocked is True
+
+
+# ---------------------------------------------------------------------------
+# agent-harness#1577: never call the provider for a key that is no longer this
+# attempt's in-flight record.  The prober below is an OLDER runtime: it takes
+# no notice of the writer's liveness lock (``_owner_writer_alive`` reads dead).
+# ---------------------------------------------------------------------------
+
+
+IN_FLIGHT = "provider_call_in_flight"
+
+
+def _key_states(fx, key: str) -> list[str]:
+    return [row["state"] for row in _jsonl(fx.evidence) if row.get("idempotency_key") == key]
+
+
+def _old_prober(fx, monkeypatch):
+    """Promote the writer's owner the way a runtime without agent-harness#1313 would."""
+    verbs = _verbs()
+    monkeypatch.setattr(verbs, "_owner_writer_alive", lambda _root: False)
+    owner = verbs.read_adapter_start_owner(fx.root, repository_identity=fx.identity)
+    assert owner is not None and owner.sealed is False
+    prober = _service(fx.root, _CountingAdapter(), store=fx.store)
+    assert prober._block_unsealed_owner(owner) is True
+
+
+def test_promotion_before_provider_entry_refuses_without_call(tmp_path, monkeypatch):
+    """Window (b): promoted after the section, before the guard; the writer must not call it."""
+    fx = _routed(tmp_path, name="promote-before-entry-1577")
+    key = fx.service._dedup_key(fx.request)
+    parked = threading.Event()
+    release = threading.Event()
+    original_intent = fx.service.evidence_store.record_intent
+
+    def parked_intent(intent_key):
+        parked.set()
+        if not release.wait(timeout=WAIT_SECONDS):
+            raise AssertionError("parked writer was never released")
+        return original_intent(intent_key)
+
+    fx.service.evidence_store.record_intent = parked_intent
+    worker: dict = {}
+
+    def run_writer():
+        try:
+            worker["result"] = fx.service.execute(fx.request)
+        except BaseException as error:  # re-raised below
+            worker["error"] = error
+
+    thread = threading.Thread(target=run_writer, name="1577-writer", daemon=True)
+    thread.start()
+    try:
+        assert parked.wait(timeout=WAIT_SECONDS), "the writer never left the section"
+        _old_prober(fx, monkeypatch)
+        assert _key_states(fx, key) == [IN_FLIGHT, AMBIGUOUS]
+    finally:
+        release.set()
+        thread.join(timeout=WAIT_SECONDS)
+    assert not thread.is_alive()
+    if "error" in worker:
+        raise AssertionError(f"the writer raised instead of returning the stored row: {worker['error']!r}")
+    result = worker["result"]
+    assert fx.adapter.calls == [], "the provider was called for a key promoted to ambiguity"
+    assert result.accepted is False
+    assert result.reason == "outcome_ambiguous"
+    assert result.evidence.terminal_state == AMBIGUOUS
+    assert result.evidence.evidence_reference == "unsealed-adapter-start-owner"
+    assert result.provider_call_made is False
+    # Nothing written by the writer after the promotion; the owner stays unsealed.
+    assert _key_states(fx, key) == [IN_FLIGHT, AMBIGUOUS]
+    assert json.loads(fx.owner.read_text(encoding="utf-8"))["sealed"] is False
+    assert _durable_state(fx.transaction) == "BROKER_INTENT_DURABLE"
+
+
+def test_promotion_during_provider_call_is_documented_residual(tmp_path, monkeypatch):
+    """Window (a), split out to agent-harness#1591: promoted while the provider call runs.
+
+    No guard before the call can see a promotion that happens during it.  This
+    pins today's outcome: one provider call, and the key stays ambiguous.
+    """
+    fx = _routed(tmp_path, name="promote-during-call-1591")
+    key = fx.service._dedup_key(fx.request)
+    parked = _ParkedAdapter()
+    fx.service.adapter = parked
+    worker: dict = {}
+
+    def run_writer():
+        try:
+            worker["result"] = fx.service.execute(fx.request)
+        except BaseException as error:  # re-raised below
+            worker["error"] = error
+
+    thread = threading.Thread(target=run_writer, name="1591-writer", daemon=True)
+    thread.start()
+    try:
+        assert parked.parked.wait(timeout=WAIT_SECONDS), "the writer never reached the provider"
+        _old_prober(fx, monkeypatch)
+    finally:
+        parked.release.set()
+        thread.join(timeout=WAIT_SECONDS)
+    assert not thread.is_alive()
+    if "error" in worker:
+        raise worker["error"]
+    result = worker["result"]
+    assert len(parked.calls) == 1
+    assert result.accepted is False
+    assert result.evidence.terminal_state == AMBIGUOUS
+    assert _key_states(fx, key) == [IN_FLIGHT, AMBIGUOUS]
+    assert fx.service.evidence_store.epoch_blocked is True
+
+
+def test_promotion_after_guard_lock_release_is_documented_residual(tmp_path, monkeypatch):
+    """Window (a) starts at the guard's lock release, not at provider entry (agent-harness#1591).
+
+    The guard releases ``admissions.lock`` before the ``ADAPTER_STARTED``
+    projection, request finalization, lease acquisition and the call, and nothing
+    re-checks after it.  A promotion landing in that interval still makes one
+    provider call, honestly reported with ``provider_call_made: true``.
+    """
+    from phase_loop_runtime.publishing import PublishTransaction
+
+    fx = _routed(tmp_path, name="promote-after-guard-1591")
+    key = fx.service._dedup_key(fx.request)
+    real_project = PublishTransaction.project
+    promoted: list[str] = []
+
+    def project(self, state):
+        result = real_project(self, state)
+        if state == "ADAPTER_STARTED" and not promoted:
+            # The guard has released admissions.lock; the provider is not entered yet.
+            assert fx.adapter.calls == []
+            _old_prober(fx, monkeypatch)
+            promoted.append(state)
+        return result
+
+    monkeypatch.setattr(PublishTransaction, "project", project)
+    result = fx.service.execute(fx.request)
+
+    assert promoted == ["ADAPTER_STARTED"]
+    assert len(fx.adapter.calls) == 1
+    assert result.accepted is False
+    assert result.evidence.terminal_state == AMBIGUOUS
+    assert result.provider_call_made is True
+    assert _key_states(fx, key) == [IN_FLIGHT, AMBIGUOUS]
+    assert fx.service.evidence_store.epoch_blocked is True
+
+
+# ---------------------------------------------------------------------------
+# agent-harness#1578 ask 1, option (i): a failed ADMISSION_DURABLE projection
+# restores the owner only while nothing past COMMITTED_HEAD_RESOLVED is durable.
+# ---------------------------------------------------------------------------
+
+
+def _fail_admission_durable(monkeypatch, *, after_write: bool):
+    from phase_loop_runtime.publishing import PublishTransaction
+
+    real_project = PublishTransaction.project
+
+    def project(self, state):
+        if state == "ADMISSION_DURABLE":
+            if after_write:
+                real_project(self, state)
+            raise OSError("simulated ADMISSION_DURABLE checkpoint failure")
+        return real_project(self, state)
+
+    monkeypatch.setattr(PublishTransaction, "project", project)
+
+
+@pytest.mark.parametrize("prior", ["absent", "sealed"])
+def test_admission_durable_failure_restores_owner(tmp_path, monkeypatch, prior):
+    fx = _routed(tmp_path, name=f"admission-durable-{prior}-1578")
+    prior_bytes = _seed_sealed_owner_bytes(fx) if prior == "sealed" else None
+    key = fx.service._dedup_key(fx.request)
+    _fail_admission_durable(monkeypatch, after_write=False)
+
+    with pytest.raises(OSError, match="ADMISSION_DURABLE checkpoint failure"):
+        fx.service.execute(fx.request)
+
+    assert _read_or_none(fx.owner) == prior_bytes, "this attempt's owner was left behind"
+    assert _key_states(fx, key) == []
+    assert _durable_state(fx.transaction) == "COMMITTED_HEAD_RESOLVED"
+    assert fx.adapter.calls == []
+    # The admission line stays (``admit_next`` dedups the retry by attempt id).
+    assert fx.store.admit_next_calls == 1
+
+    monkeypatch.undo()
+    outcome = fx.service.execute(fx.request)
+    assert outcome.accepted is True, outcome.reason
+    assert len(fx.adapter.calls) == 1
+    owner = json.loads(fx.owner.read_text(encoding="utf-8"))
+    assert owner["sealed"] is True and owner["transaction_id"] == fx.transaction.transaction_id
+
+
+def _assert_left_for_rotation(fx, monkeypatch, key: str) -> None:
+    """The owner stays; the next attempt promotes it, which a rotation adjudicates."""
+    from phase_loop_runtime.convergence.broker.verbs import PublicationRecoveryRequired
+
+    owner = json.loads(fx.owner.read_text(encoding="utf-8"))
+    assert owner["sealed"] is False and owner["transaction_id"] == fx.transaction.transaction_id
+    assert _key_states(fx, key) == []
+    assert fx.adapter.calls == []
+
+    monkeypatch.undo()
+    with pytest.raises(PermissionError) as info:
+        fx.service.execute(fx.request)
+    # A restored owner would strand the admitted checkpoint behind
+    # ``_recovery_authority`` ("a rotation cannot help here").
+    assert not isinstance(info.value, PublicationRecoveryRequired), str(info.value)
+    assert "blocks fresh provider effect" in str(info.value)
+    assert _key_states(fx, key) == [IN_FLIGHT, AMBIGUOUS]
+    assert fx.adapter.calls == []
+
+
+def test_evidence_generation_loss_leaves_owner_for_rotation(tmp_path, monkeypatch):
+    """A superseded generation's writer must not touch that generation's owner."""
+    from phase_loop_runtime.convergence.broker import evidence as evidence_module
+
+    fx = _routed(tmp_path, name="generation-loss-1578")
+    key = fx.service._dedup_key(fx.request)
+    original = evidence_module._require_generation
+
+    def require_generation(root, lease):
+        if fx.owner.exists() and json.loads(fx.owner.read_text(encoding="utf-8"))["sealed"] is False:
+            raise PermissionError("writer generation lease was superseded")
+        return original(root, lease)
+
+    monkeypatch.setattr(evidence_module, "_require_generation", require_generation)
+    _fail_admission_durable(monkeypatch, after_write=False)
+
+    with pytest.raises(OSError, match="ADMISSION_DURABLE checkpoint failure"):
+        fx.service.execute(fx.request)
+    assert _durable_state(fx.transaction) == "COMMITTED_HEAD_RESOLVED"
+    _assert_left_for_rotation(fx, monkeypatch, key)
+
+
+def test_admission_durable_written_then_failing_leaves_owner_for_rotation(tmp_path, monkeypatch):
+    """The projection is durable but reports failure: the checkpoint is admitted, so no restore."""
+    fx = _routed(tmp_path, name="admission-durable-written-1578")
+    key = fx.service._dedup_key(fx.request)
+    _fail_admission_durable(monkeypatch, after_write=True)
+
+    with pytest.raises(OSError, match="ADMISSION_DURABLE checkpoint failure"):
+        fx.service.execute(fx.request)
+    assert _durable_state(fx.transaction) == "ADMISSION_DURABLE"
+    _assert_left_for_rotation(fx, monkeypatch, key)
+
+
+# ---------------------------------------------------------------------------
+# agent-harness#1576 ask 2: the #1314 restore on the RECOVERY path (closed in
+# code by agent-harness#1551), then a clean retry.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("seed_sealed_other_key", [False, True])
+def test_recovery_path_epoch_block_restores_owner(tmp_path, monkeypatch, seed_sealed_other_key):
+    from test_fabpub_partition_rotation_789d import _release_router, _successor_service
+    from test_fabpub_sealed_head_recovery_1296 import (
+        ATTESTED_NOT_LANDED,
+        _attestation,
+        _failed_sealed_publish,
+        _publish_on_successor,
+        _rotate,
+    )
+
+    verbs = _verbs()
+    fx, p, key = _failed_sealed_publish(tmp_path, monkeypatch)
+    outcome = _rotate(None, p, attestation=_attestation(p, dispositions={key: ATTESTED_NOT_LANDED}))
+    owner_path = outcome.store_root / "adapter-start-owner.json"
+    if seed_sealed_other_key:
+        other = verbs.AdapterStartOwnership(
+            p.identity, "other-key", "other-tx", "other-attempt", "e" * 40,
+            "publish_committed_branch", "other-nonce", "other-key", True,
+        )
+        owner_path.write_bytes((json.dumps(other.__dict__, indent=2, sort_keys=True) + "\n").encode())
+    before = _read_or_none(owner_path)
+    evidence_before = _read_or_none(outcome.store_root / "evidence.jsonl")
+
+    adapter = _CountingAdapter()
+    routed = _successor_service(None, outcome, p, adapter)
+    try:
+        # The admission store's in-lock epoch check (inside ``admit_next``, after
+        # the owner write) is the one that refuses.
+        routed.service.admission_store.epoch_blocked = lambda: True
+        with pytest.raises(PermissionError) as info:
+            routed.service.execute(p.request)
+    finally:
+        _release_router(routed)
+    assert "broker admission denied" in str(info.value)
+    assert adapter.calls == []
+    assert _read_or_none(owner_path) == before, "the recovery attempt's owner was left behind"
+    assert _read_or_none(outcome.store_root / "evidence.jsonl") == evidence_before
+
+    retry, calls = _publish_on_successor(None, outcome, p, p.request, adapter=adapter)
+    assert not isinstance(retry, Exception), f"recovery retry refused: {retry!r}"
+    assert retry.accepted is True, retry.reason
+    assert len(calls) == 1
+    owner = json.loads(owner_path.read_text(encoding="utf-8"))
+    assert owner["sealed"] is True and owner["transaction_id"] == p.transaction.transaction_id
