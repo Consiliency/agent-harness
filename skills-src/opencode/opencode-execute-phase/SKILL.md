@@ -207,13 +207,28 @@ Do not let a phase branch accumulate commits only locally — that is how lanes 
 
 Respect the publication ownership above: in runner-managed / governed mode the RUNNER owns publication, so the runner performs the early push and draft-PR — do not independently publish or bypass the governed pre-merge review panel. In the interactive-orchestrator path you perform the early push + draft PR yourself on the first commit, as the interactive publication mode allows.
 
+## PR descriptions on the interactive path
+
+Before creating or refreshing an agent-owned PR, read `references/pr-writing.md`
+from the installed `opencode-execute-detailed` directory, located with
+`resolve_skill_bundle_root("opencode")`. Draft text identifies pending work and verification.
+Create with an explicit title and `--body-file`; before readiness, reassess the title
+and body against the final PR diff and current verification artifact, then update
+with `gh pr edit <pr> --title <title> --body-file <file>`. Preserve human additions
+and machine-readable trailers. A failed update leaves the PR in draft.
+
+Repeat the reassessment after material implementation, verification, or comparison-base
+changes before merge; refresh stale agent-owned text through the same mode check.
+This is description upkeep, not a new advisor round or merge authorization. Runner
+and broker-owned descriptions remain with their publication owner.
+
 ## Interactive publication mode (agent-harness#1392)
 
-On the interactive path, run `phase-loop publication-mode --repo .` immediately before the phase's first `git push` or `gh pr create`, and again before the closeout publication in mode (b). Module form, only when the package is on the ACTIVE python's path: `python -m phase_loop_runtime.publication_mode --repo .`. It prints `publication_mode=<none|draft-only|ready>` and exactly one `PUBLICATION_ACTION:` line. Do what that line says. Never choose the mode yourself, and never read the config files by hand.
+On the interactive path, run `phase-loop publication-mode --repo .` immediately before each `git push`, `gh pr create`, `gh pr edit`, or `gh pr ready`, including the closeout publication in mode (b). Module form, only when the package is on the ACTIVE python's path: `python -m phase_loop_runtime.publication_mode --repo .`. It prints `publication_mode=<none|draft-only|ready>` and exactly one `PUBLICATION_ACTION:` line. Do what that line says. Never choose the mode yourself, and never read the config files by hand.
 
-- `ready` (the default when nothing is configured): push on the first commit, open a draft PR, and flip it to ready at closeout once verification is green.
-- `draft-only`: push and open a draft PR. Never run `gh pr ready`, and never open a ready PR.
-- `none`: no `git push`, no `gh pr create`, no `gh pr ready`. The phase still completes: lanes merge locally and closeout runs. The final report names the local branch and says publication was withheld by the publication mode.
+- `ready` (the default when nothing is configured): push on the first commit, open a draft PR, refresh its description at closeout, and flip it to ready once verification is green.
+- `draft-only`: push and open or refresh an agent-owned draft PR. Never run `gh pr ready`, and never open a ready PR.
+- `none`: no `git push`, no `gh pr create`, no `gh pr edit`, no `gh pr ready`. The phase still completes: lanes merge locally and closeout runs. The final report names the local branch and says publication was withheld by the publication mode.
 - A non-zero exit, `publication_mode=error`, or a missing command: publish nothing and report the error. Finish the phase locally as under `none`; never fall back to `ready`.
 
 The mode comes from the repo's committed `.phase-loop-publication.toml` and the user's `agent-harness/publication.toml`; the most restrictive wins. It governs only this interactive path. Runner-managed closeout (mode (a)) stays under `--closeout-mode`.

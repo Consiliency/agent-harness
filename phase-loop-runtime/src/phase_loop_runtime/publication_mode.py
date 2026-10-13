@@ -57,20 +57,27 @@ DEFAULT_MODE = "ready"
 ACTIONS = {
     "none": (
         "do not run git push, gh pr create or gh pr ready. Commit on the local feature "
-        "branch only, and report the branch as unpublished (publication_mode=none)."
+        "branch only, and report the branch as unpublished (publication_mode=none). "
+        "Do not edit PR descriptions (gh pr edit)."
     ),
     "draft-only": (
         "push the feature branch and open a DRAFT PR (gh pr create --draft). Never run "
-        "gh pr ready and never open a ready PR; leave the PR in draft at closeout."
+        "gh pr ready and never open a ready PR; leave the PR in draft at closeout. "
+        "Refresh agent-owned draft descriptions (gh pr edit) from the current diff "
+        "and verification evidence."
     ),
     "ready": (
-        "push the feature branch and open a draft PR on the first commit; flip it to "
-        "ready (gh pr ready) at closeout once verification is green."
+        "push the feature branch and open a draft PR on the first commit; refresh "
+        "its agent-owned description (gh pr edit) from the final diff and verification "
+        "evidence, then flip it to ready (gh pr ready) at closeout once verification "
+        "is green. A failed description update must not proceed to readiness. "
+        "Reassess the description after material changes before merge."
     ),
 }
 ERROR_ACTION = (
     "blocked: do not run git push, gh pr create or gh pr ready. Fix the publication "
-    "config named above, then run phase-loop publication-mode again."
+    "config named above, then run phase-loop publication-mode again. "
+    "Do not edit PR descriptions (gh pr edit)."
 )
 
 # Tree-entry modes of a regular file. Any other entry at the repo config path (a

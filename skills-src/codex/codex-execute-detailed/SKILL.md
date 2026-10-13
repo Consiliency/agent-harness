@@ -126,8 +126,15 @@ Do NOT infer "runner owns closeout" from `verification_artifact_path` — every 
 records it; it does not signal a runner. The following applies for human-invoked plan
 execution.
 
+Before composing the PR, read [PR writing](references/pr-writing.md). Review the
+final implementation diff, including owned worktree changes the adapter will commit,
+and the verification artifact. Supply a meaningful commit subject (the broker uses
+it as the PR title) and the composed body. Persist that body before publication and
+reuse the exact bytes on retry; do not reformat an admitted transaction.
+
 Call `phase_loop_runtime.publishing.publish_human_invoked_from_worktree(repo,
-owned_paths, plan_path=<plan>, verification_artifact_path=<artifact>, draft=<intent>)`
+owned_paths, plan_path=<plan>, verification_artifact_path=<artifact>, draft=<intent>,
+pr_body=<body>, commit_message=<subject>)`
 (IF-0-P1-1 — the supported human publication adapter), supplying the worktree root, the
 plan's owned paths, the exact detailed plan and verification artifact, and the draft/ready
 intent:
@@ -152,7 +159,8 @@ and then performs the complete agent-harness#28 flow through the broker-only pri
 3. **Commit + push.** Commits the audited diff and pushes without force. A rejected push
    (divergent / non-fast-forward / branch protection) returns `publication_blocked` — never
    force-push or merge to resolve it.
-4. **Open the PR.** `gh pr create --draft` or ready (`--fill`) per the intent flag.
+4. **Open the PR.** The broker supplies the commit-derived title and composed body
+   explicitly, adding `--draft` when requested.
 
 Returns `{status: "published", branch, head_sha, pr_url}` on success (IF-0-P1-1; report
 `pr_url` in the final response and include `head_sha` in the handoff for downstream
