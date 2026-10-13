@@ -34,7 +34,7 @@ implementation publishes their passing evidence.
 ## Interface Freeze Gates
 
 - [ ] IF-0-REVBOUND-1 — Add `ReviewFinding.cites: tuple[str, ...] = ()`; serialize it as a JSON string array and accept absent legacy citations as empty. Empty/blank citations are non-blocking and retain the finding body and reviewed head. A substantive citation identifies an existing goal ID, a named contract anchored to a repository path, or a pytest node ID; a citation is not proof of resolution. Preserve explicitly cited unresolved blockers. Runtime-generated structural findings cite their actual governing contract at construction; never infer citations for reviewer prose from severity, a generic finding code, or another finding.
-- [ ] IF-0-REVBOUND-2 — Freeze `review_round.v1` in `review_rounds.py`: `schema`, `pr` (repository-qualified PR or null for a non-PR subject), `subject` (stable local/packet identity when no PR), `head` (observed reviewed Git head; base HEAD for pre-commit subjects), `reviewed_content` (kind and digest: committed tree, pre-commit index tree from `git write-tree`, or plan/probe/packet artifact SHA-256), `round_number` (positive integer), `cap` (positive integer), `outcome` (`converged | descoped | halted`). Retain per-seat verdicts, previous head/content identity, finding identities/citations/resolutions and filed qualified issue references as versioned record metadata. PR or non-PR subject identity, never content/head/process, keys the budget. Reserve a round under a shared lock before a board launch, finalize its record on every exit, and refuse N+1 before spawning. Interrupted reservations consume budget and resume idempotently; do not invent an outcome meaning approved. A `halted` round has not approved the subject, even if a later allowed round repairs it.
+- [ ] IF-0-REVBOUND-2 — Freeze `review_round.v1` in `review_rounds.py`: `schema`, `pr` (repository-qualified PR or null for a non-PR subject), `subject` (stable local/packet identity when no PR), `head` (observed reviewed Git head; base HEAD for pre-commit subjects), `reviewed_content` (kind and digest: committed tree, pre-commit index tree from `git write-tree`, or plan/probe/packet artifact SHA-256), `round_number` (positive integer), `cap` (positive integer), `outcome` (`converged | descoped | halted`). Retain per-seat verdicts, previous head/content identity, finding identities/citations/resolutions and filed qualified issue references as versioned record metadata. PR or non-PR subject identity, never content/head/process, keys the budget. Reserve a round under a shared lock before a board launch, finalize its record on every exit, and refuse N+1 before spawning. Interrupted reservations consume budget and resume idempotently; do not invent an outcome meaning approved. A `halted` round has not approved the subject, even if a later allowed round repairs it. A subject's `cap` is `governed_premerge.DEFAULT_MAX_REVIEW_ROUNDS`, fixed at the subject's first reservation and recorded on every round; a later reservation never raises it; a caller's `max_rounds` bounds only its own invocation within that budget (the train's one-round policy spends one round of each member PR's budget and a following delta review resumes at the next round number); and a reservation refused because the budget is exhausted, distinct from `review_context_missing`, launches nothing and returns the last finalized outcome, promotable only when the reviewed content identity equals that record's.
 
 IF-0-REVBOUND-2 order is: autonomous no-op → advisory-brief refusal
 (`advisory_not_landing_evidence`) → missing-context admission check → composition.
@@ -99,7 +99,7 @@ SL-3 — Documentation and final evidence reducer
 ### SL-0 — Frozen behavioral tests and receipt
 
 - **Scope**: Freeze the phase's path-entered behavioral tests and record their content-bound RED evidence before production edits.
-- **Owned files**: `phase-loop-runtime/tests/test_revbound_*.py`, `phase-loop-runtime/tests/revbound_content_tdd_adapter.py`, `.phase-loop/evidence/REVBOUND/content-tdd-receipt.json`, `.phase-loop/evidence/REVBOUND/content-tdd-receipt.red.stdout.log`, `.phase-loop/evidence/REVBOUND/content-tdd-receipt.red.stderr.log`
+- **Owned files**: `phase-loop-runtime/tests/revbound/**`, `phase-loop-runtime/tests/revbound_content_tdd_adapter.py`, `.phase-loop/evidence/REVBOUND/content-tdd-receipt.json`, `.phase-loop/evidence/REVBOUND/content-tdd-receipt.red.stdout.log`, `.phase-loop/evidence/REVBOUND/content-tdd-receipt.red.stderr.log`
 - **Interfaces provided**: `REVBOUND frozen tests`, `REVBOUND content receipt`
 - **Interfaces consumed**: `record_content_tdd_receipt` (pre-existing), `verify_content_tdd_receipt` (pre-existing)
 - **Parallel-safe**: no
@@ -124,8 +124,8 @@ SL-3 — Documentation and final evidence reducer
 
 ### SL-2 — Lane B: cap disposition and delta review
 
-- **Scope**: Wire citations and durable budgets into production review entrypoints, then implement safe cap disposition and non-FAB delta rounds.
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/governed_premerge.py`, `phase-loop-runtime/src/phase_loop_runtime/governed_review.py`, `phase-loop-runtime/src/phase_loop_runtime/runner.py`, `phase-loop-runtime/src/phase_loop_runtime/train_runner.py`, `phase-loop-runtime/src/phase_loop_runtime/legible_evidence.py`, `.phase-loop/review-rounds/**`, and every test/support file matched by predicate P below, excluding SL-0's owned files; the receipt's resolved `sl2_owned_files` is the concrete admission set.
+- **Scope**: Wire citations and durable budgets into production review entrypoints, then implement safe cap disposition and non-FAB delta rounds. Within the owned test glob SL-2 edits only files matched by predicate P below; the receipt's resolved `sl2_owned_files` is the audited edit set.
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/governed_premerge.py`, `phase-loop-runtime/src/phase_loop_runtime/governed_review.py`, `phase-loop-runtime/src/phase_loop_runtime/runner.py`, `phase-loop-runtime/src/phase_loop_runtime/train_runner.py`, `phase-loop-runtime/src/phase_loop_runtime/legible_evidence.py`, `.phase-loop/review-rounds/**`, `phase-loop-runtime/tests/test_*.py`
 - **Interfaces provided**: `REVBOUND governed integration`
 - **Interfaces consumed**: `REVBOUND frozen tests`, `REVBOUND content receipt`, `IF-0-REVBOUND-1`, `IF-0-REVBOUND-2`
 - **Parallel-safe**: no
@@ -169,9 +169,7 @@ constructors and runner/train/validator consumers:
 git grep -l -E 'governed_(board_gate|planning_gate|premerge)|_gate_result_from_panel|_findings_from_panel|ReviewFinding|phase_loop_runtime[.]runner|train_runner|legible_evidence|closeout_validat|doc_delta_validator|fab_gate|verification_evidence_validator|visual_avatar_evidence_validator|visual_evidence_validator' <observed-test-ref> -- ':(glob)phase-loop-runtime/tests/**/*.py'
 ```
 
-SL-0 strips the ref prefix and sorts/deduplicates paths. Publish its resolved
-ownership manifest to scheduler admission before SL-1/SL-2 dispatch; do not treat
-predicate prose as a runtime glob. Newly matched files are absorbed by the same
+SL-0 strips the ref prefix and sorts/deduplicates paths. The scheduler admits SL-2's test edits through its owned glob; the receipt's resolved list, re-checked by the adapter's `verify`, bounds which of those files SL-2 may change. Newly matched files are absorbed by the same
 rule without another plan amendment. On rebase, re-run P, refresh the recorded
 resolution through the receipt amendment mechanism, and re-admit ownership before
 editing or verifying. Only SL-0 test/support bytes are frozen by this receipt;
