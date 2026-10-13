@@ -4,10 +4,10 @@
   "source_head": "4b50b789f878a1c4107b03edfe73f162b47dc149",
   "plan_sha256": "46b6c610a5db14f8b84f9e2258d72719813417193b19c973be350c1fe7624a63",
   "plan": "plans/detailed-placement-driver-hardening-1504-20261012.md",
-  "status": "six_fresh_plan_agree_required_opus_and_president_pending",
+  "status": "seven_fresh_plan_agree_president_pending",
   "round": 3,
   "required_reviewers": 7,
-  "usable_agree": 6,
+  "usable_agree": 7,
   "reviews": [
     {
       "source_head": "4b50b789f878a1c4107b03edfe73f162b47dc149",
@@ -84,6 +84,20 @@
       "review_sha256": "949f80031342f370bc078f5f46b47fe602294e57be5a7fd9655da7f1fca22639",
       "report_private": true,
       "scope": "Actual plan/source inspection only; no executed implementation proof"
+    },
+    {
+      "seat": "manual:claude-opus-5-5:max:TUI-tools",
+      "source_head": "4b50b789f878a1c4107b03edfe73f162b47dc149",
+      "plan_sha256": "46b6c610a5db14f8b84f9e2258d72719813417193b19c973be350c1fe7624a63",
+      "verdict": "AGREE",
+      "usable": true,
+      "source_grounded": true,
+      "carried": false,
+      "review_sha256": "6ff3170da999835d0533b9989784482e344575083b8d15aee78185604f461a66",
+      "report_private": true,
+      "route": "qualified subscription self-PTY TUI",
+      "transport_detail": "claude_tui_file_output",
+      "scope": "Actual tools-enabled read-only plan review, parent-verified input binding; no tests or implementation proof"
     }
   ],
   "full_plan_approval": false,
@@ -104,23 +118,41 @@
     "diagnosis": "Plan amendments exceeded implementation due worker resource boundary and exact frozen mapping. Source staging and quota failures also delayed review. Four issue1504 obligations remain in scope; no waiver."
   },
   "manual_opus": {
-    "status": "pending_required_review_after_quota_reset",
-    "current_round_attempted": false,
-    "prior_round_source": "e7686815004d5920cdbd264099f9d4238339c5b9",
-    "prior_round_status": "UNAVAILABLE, no actual report file",
-    "quota": {
-      "api_error_status": 429,
-      "api_error": "usage_limit_reached",
-      "auth": "firstParty claude.ai subscription; current successful probe is not quota availability proof",
-      "review_or_president_approval": false,
-      "rateLimitType": "five_hour",
-      "status": "rejected",
-      "overageStatus": "rejected",
-      "overageDisabledReason": "org_level_disabled",
-      "reported_reset_utc": "2026-10-13T00:50:00+00:00",
-      "reported_reset_new_york": "2026-10-12T20:50:00-04:00"
+    "seat": "manual:claude-opus-5-5:max:TUI-tools",
+    "source_head": "4b50b789f878a1c4107b03edfe73f162b47dc149",
+    "plan_sha256": "46b6c610a5db14f8b84f9e2258d72719813417193b19c973be350c1fe7624a63",
+    "verdict": "AGREE",
+    "usable": true,
+    "source_grounded": true,
+    "carried": false,
+    "review_sha256": "6ff3170da999835d0533b9989784482e344575083b8d15aee78185604f461a66",
+    "report_private": true,
+    "route": "qualified subscription self-PTY TUI",
+    "transport_detail": "claude_tui_file_output",
+    "scope": "Actual tools-enabled read-only plan review, parent-verified input binding; no tests or implementation proof",
+    "status": "OK",
+    "exit_code": 0,
+    "review_report_file_exists": true,
+    "previous_quota_attempt": {
+      "status": "pending_required_review_after_quota_reset",
+      "current_round_attempted": false,
+      "prior_round_source": "e7686815004d5920cdbd264099f9d4238339c5b9",
+      "prior_round_status": "UNAVAILABLE, no actual report file",
+      "quota": {
+        "api_error_status": 429,
+        "api_error": "usage_limit_reached",
+        "auth": "firstParty claude.ai subscription; current successful probe is not quota availability proof",
+        "review_or_president_approval": false,
+        "rateLimitType": "five_hour",
+        "status": "rejected",
+        "overageStatus": "rejected",
+        "overageDisabledReason": "org_level_disabled",
+        "reported_reset_utc": "2026-10-13T00:50:00+00:00",
+        "reported_reset_new_york": "2026-10-12T20:50:00-04:00"
+      },
+      "route": "manual tools-enabled qualified Opus5.5 subscription self-PTY TUI; no fallback"
     },
-    "route": "manual tools-enabled qualified Opus5.5 subscription self-PTY TUI; no fallback"
+    "reset_readiness": "Actual required review succeeded after reported reset on2026-10-13; historical quota is not current blocker."
   },
   "owner_model_change": {
     "authority": "Owner explicitly selected available Gemini3.8FlashHigh on2026-10-12; manual tools-enabled review retained.",
@@ -129,11 +161,12 @@
   },
   "president": {
     "required": true,
-    "status": "not_invoked_missing_usable_manual_opus",
+    "status": "running_required_fable_only_reconciliation",
     "ladder": [
       "fable"
     ],
-    "waiver": false
+    "waiver": false,
+    "attempted": true
   },
   "prescript_sha256": "5edaa26144358215fb762c6d02619718c629937336e8e1833caedf75f61928b2",
   "optional_dispositions": [
@@ -141,6 +174,11 @@
       "source": "manual Gemini",
       "suggestion": "Strip leading zeros, bind each submitting context, annotate neutral InlineCalls readiness.",
       "disposition": "First two already specified in plan/controls. Adapter remains minimal; no behavior, criterion or table change."
+    },
+    {
+      "source": "manual Opus5.5",
+      "suggestion": "N1 operator docs; N2 seal timeout mapping; N3 duration grammar; O1-O8 source-grounded optional couplings",
+      "disposition": "Pending president reconciliation; no scope changes, tests or implementation acceptance inferred."
     }
   ],
   "ssh_preparation": {
@@ -156,5 +194,6 @@
     "agent-harness#1549 unrelated Python floor PR remains open",
     "omniagent-plus#25/omniagent-plus#33 WIRE approvals/acceptance remain separate"
   ],
-  "binding": "Immutable review input4b50b789. Later metadata commits are not implementation review or acceptance. Interrupted/degraded/error attempts confer no approval. Full actual-source CR, checks/president/postmerge remain mandatory before merge."
+  "binding": "Immutable review input4b50b789. Later metadata commits are not implementation review or acceptance. Interrupted/degraded/error attempts confer no approval. Full actual-source CR, checks/president/postmerge remain mandatory before merge.",
+  "usable_reviewers": 7
 }
