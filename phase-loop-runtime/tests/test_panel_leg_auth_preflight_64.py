@@ -64,6 +64,16 @@ def test_auth_probe_missing_cli_fails_open(monkeypatch):
     assert ok  # a flaky/absent probe must never block the leg
 
 
+@pytest.mark.parametrize("returncode,output", [(126, ""), (127, "not logged in"),
+    (1, "sh: codex: command not found"), (1, "sh: /missing/codex: No such file or directory")])
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+def test_auth_probe_unavailable_executable_is_inconclusive(monkeypatch, returncode, output, stream):
+    result = types.SimpleNamespace(returncode=returncode, stdout="", stderr="")
+    setattr(result, stream, output)
+    monkeypatch.setattr(pi, "run_provider", lambda *a, **k: result)
+    assert pi._leg_auth_ok("codex", {}) == (True, "")
+
+
 # --- strict Claude.ai subscription preflight -----------------------------------
 # agent-harness#1444: the seat holds the login's access token alone, so the subscription is
 # proven from the login store the credential is drawn from and the seat reports only
