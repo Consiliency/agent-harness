@@ -103,7 +103,7 @@ The aggregator prompt (in `assets/aggregator_prompt.md`) instructs the Agent to:
 - Flag contradictions.
 - Propose concrete SKILL.md edits in directive-only style.
 - Enforce repo-agnostic output — reject or rewrite any recommendation that names a specific project, codebase, domain, or filename.
-- Apply the already-covered, decision-changing and structural-mechanism admission gates.
+- Apply the eight admission gates: already-covered, decision-changing, structural-mechanism, durability, specificity, existing-skill-first, convergence and skill-was-used.
 - Cite supporting manifest ids per theme.
 
 ### Step 5 — Write the plan file

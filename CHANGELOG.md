@@ -6,6 +6,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### The skill-improvement aggregator applies all eight admission gates (agent-harness#1321)
+
+- The aggregator prompt applied three of PStack's eight admission gates. It now adds
+  durability, specificity, existing-skill-first, convergence and skill-was-used, one
+  line each, saying what to do when a theme fails the gate.
+- Reflections do not yet record which skills an agent read. Until they do,
+  skill-was-used cannot conclude anything about a theme aimed at another skill, and
+  proposes `tune description:` for that skill instead of a body edit.
+- The codex, gemini and opencode planners carry the gates inline rather than loading
+  the prompt asset, so their `SKILL.md` gate lists gain the same five gates.
+
 ### An ambiguous human publication now gets the rotation handoff (agent-harness#1312)
 
 - A human publication whose key holds `outcome_ambiguous_blocked` evidence is blocked
