@@ -7375,7 +7375,13 @@ def _leg_auth_ok(
         # so don't block; the leg's own launch fail-closes with its typed code.
         return True, ""
     combined = (proc.stdout or "") + (proc.stderr or "")
-    if proc.returncode in {126, 127} or re.search(r"command not found|no such file", combined, re.IGNORECASE):
+    if proc.returncode in {126, 127}:
+        return True, ""
+    unavailable = re.search(
+        r"(?:^|\n)(?:[^\n]*:\s*)?(?:/[^\s:\n]*/)?" + re.escape(probe[0])
+        + r"(?:\.js)?:\s*(?:command not found|no such file)", combined, re.IGNORECASE,
+    )
+    if unavailable and not _AUTH_SIGNATURE.search(combined):
         return True, ""
     if proc.returncode != 0 or _AUTH_SIGNATURE.search(combined):
         return (
