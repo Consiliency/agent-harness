@@ -7241,10 +7241,12 @@ def _broker_claude_tui_command(
 
 def _panel_claude_route() -> str | None:
     """The Claude seat route: ``print`` (the default) or ``tui``; ``None`` for any other
-    value, which the caller fails closed as ``panel_claude_route_invalid``.
+    value, which a caller must fail closed.
 
-    The admitted subset of ``_resolve_claude_transport``; that resolver also tells a
-    not-admitted transport (``sdk``) apart from an unknown value."""
+    The admitted subset of ``_resolve_claude_transport``. It drops the refusal code, so a
+    caller that reports one uses the resolver, which tells a not-admitted transport
+    (``sdk``, ``panel_claude_transport_not_admitted``) apart from an unknown value
+    (``panel_claude_route_invalid``)."""
     transport, _refusal = _resolve_claude_transport()
     return transport
 
