@@ -27,7 +27,7 @@ automation:
 Finish the carried SL-6 completion seal and EC-HARDEN-6 under v11 Phase 5.
 EC-HARDEN-0 retains its V10 definition. EC-HARDEN-1 through EC-HARDEN-4 and
 SL-5 are delivered; EC-HARDEN-5 is retired by v11. The roadmap currently declares
-no phase dependencies; completion-admission routing remains unresolved below.
+no phase dependencies; completion admission is owned outside HARDEN by agent-harness#1584.
 Do not import the old FABPUB/SCHED dispatch holds or author-vendor rotation.
 
 The current verifier's `manifest_plan_row` selects by alias alone;
@@ -89,8 +89,8 @@ completion only to the v11 row.
   will select the new version explicitly through input schema selection. Preparation
   produces an independently verifiable pre-completion aggregate and request;
   sealing binds exactly one matching canonical event without changing the
-  normalized pre-completion digest. Do not freeze this gate until the admission
-  decision in Execution Notes is resolved. Then freeze `harden_completion_request.v2`
+  normalized pre-completion digest. Keep this gate explicitly unfrozen until
+  agent-harness#1584 lands, as resolved in Execution Notes. Then freeze `harden_completion_request.v2`
   and `harden_completion.v2` payloads, preserving v1. The request/event binds v11 authority as
   well as candidate/main evidence; v10 completion cannot satisfy it.
 
@@ -108,7 +108,7 @@ SL-6 — Evidence migration, docs sweep and completion reducer
 - **Scope**: Repair v11 evidence selection, prove EC-HARDEN-6, then reduce verified retained evidence into canonical completion.
 - **Owned files**: `phase-loop-runtime/scripts/verify_harden_evidence.py`, `phase-loop-runtime/scripts/build_harden_evidence.py`, `phase-loop-runtime/scripts/test_v11_harden_evidence.py`, `plans/phase-plan-v11-HARDEN.md`, `plans/manifest.json`, `plans/evidence/v11-HARDEN-contract.md`, `plans/evidence/v11-HARDEN-closeout.md`, `plans/evidence/v11-HARDEN/*.json`, `plans/evidence/v11-HARDEN/*.jsonl`
 - **Interfaces provided**: IF-0-HARDEN-5, IF-0-HARDEN-6, IF-0-HARDEN-7.
-- **Interfaces consumed**: predecessor plan (pre-existing), historical SL-0/SL-4 receipts (pre-existing), seat profile and authorization records (pre-existing), canonical runner ledger (pre-existing), external reuse registry (pre-existing).
+- **Interfaces consumed**: predecessor plan (pre-existing), historical SL-0/SL-4 receipts (pre-existing), seat profile and authorization records (pre-existing), canonical runner ledger (pre-existing), external reuse registry (pre-existing), runtime completion-admission contract (agent-harness#1584; see Execution Notes).
 - **Parallel-safe**: no.
 - **Tasks**:
   - test: First freeze the contract and new regression corpus in
@@ -216,19 +216,24 @@ producer lane or shared writable worktree is implied. Obtain required plan
 review before production work. Treat unavailable proof as unresolved work,
 with human input required only for an actual access or policy decision.
 
-**Plan-board status: NEEDS-DECISION (codex red-team F002).** The plan cannot
-land or freeze IF-0-HARDEN-7 yet. `_prepare_stage` only writes the completion
-request; no runtime consumer admits it. The seal requires a `phase_execute`
-complete event with `metadata.harden_completion`; normal execution omits that
-proof, and `phase-loop reconcile` emits `manual_repair`, which the seal rejects.
-Neither generic event append nor manual repair is request admission.
-The owner must authorize an owning phase or qualified issue for admission and
-route HARDEN's `Depends on` and the roadmap lane boundary through the runner.
-That decision must specify the authorized operation, request validation and
-lifecycle transition that emits the bound event and updates only the live v11
-row, including rejection/replay behavior. No such ownership, dependency or
-runtime edit is authorized by this amendment; admission and sealing remain
-unresolved, not accepted residuals. The roadmap and `src/` remain untouched.
+**Plan-board status: RESOLVED (maintainer decision; codex red-team F002).**
+The maintainer chose to file [agent-harness#1584](https://github.com/Consiliency/agent-harness/issues/1584)
+and land the plan. Runtime completion admission is owned outside HARDEN.
+IF-0-HARDEN-7 stays explicitly unfrozen until agent-harness#1584 lands;
+every other lane task proceeds under the existing review and tests-first gates.
+HARDEN's completion/closeout waits on agent-harness#1584 and the resulting
+verified seal; the open dependency is not an accepted residual.
+
+HARDEN consumes the **runtime completion-admission contract** defined by
+agent-harness#1584: an authorized runtime operation validates
+`harden_completion_request.v2` against v11 authority and evidence, then emits
+the bound `phase_execute` complete event with `metadata.harden_completion`
+(`harden_completion.v2`) through a lifecycle transition the seal accepts.
+Consume its landed operation, validation, rejection/replay behavior and
+live-v11-row transition by reference when freezing IF-0-HARDEN-7; preserve
+the historical v10 row. HARDEN never hand-edits events or uses generic event
+append, `phase-loop reconcile` / `manual_repair`, or other manual repair as a
+substitute for admission. The roadmap and `src/` remain untouched by HARDEN.
 
 ## Verification
 
@@ -261,7 +266,7 @@ the reuse registry remains externally owned.
 ```bash
 uv run --quiet --with-editable ./phase-loop-runtime python phase-loop-runtime/scripts/build_harden_evidence.py prepare --inputs "$HARDEN_INPUTS" --source-root "$HARDEN_SOURCE_ROOT" --evidence-root "$HARDEN_EVIDENCE_ROOT" --repo "$PWD" --output "$HARDEN_PRE" --completion-request "$HARDEN_REQUEST" --reuse-registry "$HARDEN_REUSE_REGISTRY" --expected-coordinator-session-sha256 "$HARDEN_COORDINATOR_SHA256" --expected-author-session-sha256 "$HARDEN_AUTHOR_SHA256"
 uv run --quiet --with-editable ./phase-loop-runtime python phase-loop-runtime/scripts/verify_harden_evidence.py --evidence "$HARDEN_PRE" --evidence-root "$HARDEN_EVIDENCE_ROOT" --repo "$PWD" --reuse-registry "$HARDEN_REUSE_REGISTRY" --expected-coordinator-session-sha256 "$HARDEN_COORDINATOR_SHA256" --expected-author-session-sha256 "$HARDEN_AUTHOR_SHA256"
-# BLOCKED: the admission operation and lifecycle transition above must be resolved before seal.
+# BLOCKED until agent-harness#1584 lands and its admission contract is consumed before seal.
 uv run --quiet --with-editable ./phase-loop-runtime python phase-loop-runtime/scripts/build_harden_evidence.py seal --pre-completion "$HARDEN_PRE" --evidence-root "$HARDEN_EVIDENCE_ROOT" --repo "$PWD" --ledger "$HARDEN_LEDGER" --output "$HARDEN_SEALED" --reuse-registry "$HARDEN_REUSE_REGISTRY" --expected-coordinator-session-sha256 "$HARDEN_COORDINATOR_SHA256" --expected-author-session-sha256 "$HARDEN_AUTHOR_SHA256"
 uv run --quiet --with-editable ./phase-loop-runtime python phase-loop-runtime/scripts/verify_harden_evidence.py --evidence "$HARDEN_SEALED" --evidence-root "$HARDEN_EVIDENCE_ROOT" --repo "$PWD" --reuse-registry "$HARDEN_REUSE_REGISTRY" --expected-coordinator-session-sha256 "$HARDEN_COORDINATOR_SHA256" --expected-author-session-sha256 "$HARDEN_AUTHOR_SHA256"
 git diff --check
