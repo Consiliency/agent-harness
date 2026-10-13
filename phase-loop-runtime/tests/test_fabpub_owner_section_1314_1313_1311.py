@@ -374,7 +374,7 @@ def _old_prober(fx, monkeypatch):
 
 
 def test_promotion_before_provider_entry_refuses_without_call(tmp_path, monkeypatch):
-    """Window (b): promoted after the section, before the provider; the writer must not call it."""
+    """Window (b): promoted after the section, before the guard; the writer must not call it."""
     fx = _routed(tmp_path, name="promote-before-entry-1577")
     key = fx.service._dedup_key(fx.request)
     parked = threading.Event()
@@ -454,6 +454,42 @@ def test_promotion_during_provider_call_is_documented_residual(tmp_path, monkeyp
     assert len(parked.calls) == 1
     assert result.accepted is False
     assert result.evidence.terminal_state == AMBIGUOUS
+    assert _key_states(fx, key) == [IN_FLIGHT, AMBIGUOUS]
+    assert fx.service.evidence_store.epoch_blocked is True
+
+
+def test_promotion_after_guard_lock_release_is_documented_residual(tmp_path, monkeypatch):
+    """Window (a) starts at the guard's lock release, not at provider entry (agent-harness#1591).
+
+    The guard releases ``admissions.lock`` before the ``ADAPTER_STARTED``
+    projection, request finalization, lease acquisition and the call, and nothing
+    re-checks after it.  A promotion landing in that interval still makes one
+    provider call, honestly reported with ``provider_call_made: true``.
+    """
+    from phase_loop_runtime.publishing import PublishTransaction
+
+    fx = _routed(tmp_path, name="promote-after-guard-1591")
+    key = fx.service._dedup_key(fx.request)
+    real_project = PublishTransaction.project
+    promoted: list[str] = []
+
+    def project(self, state):
+        result = real_project(self, state)
+        if state == "ADAPTER_STARTED" and not promoted:
+            # The guard has released admissions.lock; the provider is not entered yet.
+            assert fx.adapter.calls == []
+            _old_prober(fx, monkeypatch)
+            promoted.append(state)
+        return result
+
+    monkeypatch.setattr(PublishTransaction, "project", project)
+    result = fx.service.execute(fx.request)
+
+    assert promoted == ["ADAPTER_STARTED"]
+    assert len(fx.adapter.calls) == 1
+    assert result.accepted is False
+    assert result.evidence.terminal_state == AMBIGUOUS
+    assert result.provider_call_made is True
     assert _key_states(fx, key) == [IN_FLIGHT, AMBIGUOUS]
     assert fx.service.evidence_store.epoch_blocked is True
 

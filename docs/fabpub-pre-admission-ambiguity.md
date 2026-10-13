@@ -99,9 +99,11 @@ promoted exactly as before.
 
 ## Provider entry and failures around it
 
-The broker returns the state the store holds. It never invents a terminal state, and
-it never calls the provider for a key whose record is no longer this attempt's
-in-flight record.
+The broker returns the state the store holds. It never invents a terminal state. It
+enters the provider only after, within one `admissions.lock` acquisition, the on-disk
+owner equalled this attempt's (nonce included) and was unsealed and the key's row was
+`provider_call_in_flight`. A promotion landing at any point from that lock's release
+through the provider call is not covered (agent-harness#1591).
 
 - **A guard right before the provider call (agent-harness#1577).** Under one
   `admissions.lock` acquisition, `BrokerService._provider_entry_guard` checks that the
@@ -111,14 +113,18 @@ in-flight record.
   `outcome_ambiguous_blocked`) with reason `outcome_ambiguous` and
   `provider_call_made: false`, and the checkpoint stays `BROKER_INTENT_DURABLE`.
   This covers an older-runtime prober that promotes a live writer's owner after the
-  owner section and before the provider call. Such a prober does not honour the
+  owner section and before the guard. Such a prober does not honour the
   agent-harness#1313 liveness lock.
-- **Promotion during the provider call is not covered (agent-harness#1591).** No
-  check made before the call can see a promotion that happens while the call runs.
-  The attempt then makes one provider call and the key stays ambiguous.
+- **Promotion from the guard's lock release through the provider call is not covered
+  (agent-harness#1591).** The guard releases `admissions.lock` before the
+  `ADAPTER_STARTED` projection, request finalization, the service-generation lease
+  acquisition and the call itself, and nothing re-checks after it. A promotion
+  landing anywhere in that interval still makes one provider call, reported with
+  `provider_call_made: true`, and the key stays ambiguous.
 - **Mixed versions.** The agent-harness#1313 liveness lock and this guard protect a
   partition only once every runtime that writes it is upgraded. An older writer
-  has neither. The during-call window above remains regardless. Until every writer
+  has neither. The window from the guard's lock release through the provider call remains
+  regardless. Until every writer
   is upgraded, an `attested_not_landed` attestation needs provider-side evidence,
   such as the provider showing no pull request and no branch for the head. Absence of
   local evidence is not enough. Provider-side absence is still the operator's

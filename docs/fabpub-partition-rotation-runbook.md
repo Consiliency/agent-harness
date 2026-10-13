@@ -400,10 +400,14 @@ successor generation. Re-pin to a release that contains agent-harness#1296
 before rotating.
 
 **Before attesting `attested_not_landed`, check which runtimes write the partition.**
-The broker refuses to enter the provider for a key that is no longer its attempt's
-in-flight record (agent-harness#1577). Together with the agent-harness#1313 liveness
-lock, that protects a partition only once every runtime that writes it is upgraded.
-A promotion that happens during the provider call is not covered by either
+The broker enters the provider only after, within one `admissions.lock`
+acquisition, the on-disk owner equalled its attempt's (nonce included) and was
+unsealed and the key's row was `provider_call_in_flight` (agent-harness#1577).
+Together with the agent-harness#1313 liveness lock, that protects a partition only
+once every runtime that writes it is upgraded. A promotion landing at any point from
+that lock's release through the provider call (the `ADAPTER_STARTED` projection,
+request finalization, lease acquisition, the call itself) is not covered by either; it
+still makes one provider call, reported with `provider_call_made: true`
 (agent-harness#1591). Until every writer is upgraded, base the disposition on
 provider-side evidence, such as no pull request and no branch for the head at the
 provider. Absence of local evidence is not enough, and provider-side absence remains

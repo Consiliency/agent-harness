@@ -6,7 +6,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
-### FABPUB: no provider call for a key that is no longer this attempt's in-flight record (agent-harness#1577, agent-harness#1574, agent-harness#1578, agent-harness#1576)
+### FABPUB: the provider is entered only after an in-lock check that the key is still this attempt's in-flight record (agent-harness#1577, agent-harness#1574, agent-harness#1578, agent-harness#1576)
 
 - An older-runtime prober could promote a live writer's owner to
   `outcome_ambiguous_blocked` after the owner section, and the writer then still
@@ -14,8 +14,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `admissions.lock` acquisition, that the on-disk owner is exactly this attempt's and
   unsealed and that the key's row is `provider_call_in_flight`. If not, it makes no
   provider call, writes nothing and returns the stored row (reason `outcome_ambiguous`)
-  instead of raising (agent-harness#1577). A promotion during the provider call is not
-  covered; that window is agent-harness#1591.
+  instead of raising (agent-harness#1577). A promotion landing at any point from that
+  lock's release through the provider call (the `ADAPTER_STARTED` projection, request
+  finalization, lease acquisition, the call itself) is not covered and still makes one
+  provider call, reported with `provider_call_made: true`; that window is
+  agent-harness#1591.
 - A failure after the provider returned was always recorded as
   `outcome_ambiguous_blocked`, even when the terminal was already durable and only the
   owner seal or the checkpoint projection failed. The broker now returns the stored

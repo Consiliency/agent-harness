@@ -2,17 +2,28 @@
 
 Issues: agent-harness#1577 (primary), agent-harness#1574 ask 1 (SG-F1),
 agent-harness#1578 ask 1 (option i plus docs), agent-harness#1576 ask 2 (test
-only). Split out: agent-harness#1591 (window (a), promotion during the provider
-call). Design ratified by the maintainer on 2026-10-13. All code is in
+only). Split out: agent-harness#1591 (window (a), a promotion landing from the
+provider-entry guard's `admissions.lock` release through the provider call). Design ratified by the maintainer on 2026-10-13. All code is in
 `BrokerService._fresh_publish` and two new helpers in
 `phase-loop-runtime/src/phase_loop_runtime/convergence/broker/verbs.py`, with a
 one-line addition in `publishing.py`.
 
 ## Contract
 
-The broker returns the state the store holds. It never invents a terminal state,
-and it never calls the provider for a key whose record is no longer this attempt's
-in-flight record.
+The broker returns the state the store holds. It never invents a terminal state.
+It enters the provider only after, within one `admissions.lock` acquisition, the
+on-disk owner equalled this attempt's (nonce included) and was unsealed and the
+key's row was `provider_call_in_flight`. A promotion landing at any point from that
+lock's release through the provider call (the `ADAPTER_STARTED` projection, request
+finalization, lease acquisition, the call itself) is not covered and still makes one
+provider call, reported with `provider_call_made: true` (agent-harness#1591).
+
+| writer \ prober | Behaviour |
+|---|---|
+| new × new | Closed by agent-harness#1313; the guard is defence in depth. |
+| new × old, window (b): promotion after the owner section, before the guard | Closed up to the guard's lock release. |
+| new × old, window (a): promotion from the guard's lock release through the provider call | Open from the guard's lock release through the provider call — agent-harness#1591. |
+| old × any | Unchanged. |
 
 ## Maintainer decisions
 
@@ -73,6 +84,7 @@ In `test_fabpub_owner_section_1314_1313_1311.py`:
 
 - `test_promotion_before_provider_entry_refuses_without_call`;
 - `test_promotion_during_provider_call_is_documented_residual`;
+- `test_promotion_after_guard_lock_release_is_documented_residual` (board round 1);
 - `test_admission_durable_failure_restores_owner[absent|sealed]`;
 - `test_evidence_generation_loss_leaves_owner_for_rotation`;
 - `test_admission_durable_written_then_failing_leaves_owner_for_rotation`;
