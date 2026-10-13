@@ -13112,6 +13112,33 @@
       "task_summary": "PR descriptions grounded in final implementation, with agent-owned readiness refresh",
       "type": "detailed",
       "updated_at": "2026-10-12T21:34:13Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "created_at": "2026-10-13T02:14:50Z",
+      "file": "plans/phase-plan-v11-PRESROUTE.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20261013T021450Z-PRESROUTE.md",
+      "if_gates_produced": [
+        "IF-0-PRESROUTE-1"
+      ],
+      "lanes": [
+        "SL-0"
+      ],
+      "lifecycle": [],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "PRESROUTE",
+      "reflection_ref": null,
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v11.md",
+        "slug": "phase-plans-v11",
+        "status": "committed",
+        "type": "phase"
+      },
+      "slug": "v11-PRESROUTE",
+      "status": "committed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-10-13T02:14:50Z"
     }
   ],
   "schema_version": 1
