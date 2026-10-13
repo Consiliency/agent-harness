@@ -399,6 +399,21 @@ Runtime 0.7.24 and earlier refuse this retry after the rotation
 successor generation. Re-pin to a release that contains agent-harness#1296
 before rotating.
 
+**Before attesting `attested_not_landed`, check which runtimes write the partition.**
+The broker refuses to enter the provider for a key that is no longer its attempt's
+in-flight record (agent-harness#1577). Together with the agent-harness#1313 liveness
+lock, that protects a partition only once every runtime that writes it is upgraded.
+A promotion that happens during the provider call is not covered by either
+(agent-harness#1591). Until every writer is upgraded, base the disposition on
+provider-side evidence, such as no pull request and no branch for the head at the
+provider. Absence of local evidence is not enough, and provider-side absence remains
+the operator's judgement, not proof. A blocked result with `provider_call_made: false`
+means that attempt never entered the provider. A failure between the owner section and
+the provider call (`record_intent`, a checkpoint projection, a refused lease) leaves
+the owner in place, and the next attempt promotes it. That case is
+`attested_not_landed` by construction. See `docs/fabpub-pre-admission-ambiguity.md`,
+"Provider entry and failures around it".
+
 1. Leave the worktree, branch, commit, plan file and verification artifact
    exactly as they were. Do not make an empty commit, switch branch, force
    push, rebuild the proof, or edit checkpoint or broker files.

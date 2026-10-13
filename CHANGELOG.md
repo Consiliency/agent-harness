@@ -6,6 +6,34 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### FABPUB: no provider call for a key that is no longer this attempt's in-flight record (agent-harness#1577, agent-harness#1574, agent-harness#1578, agent-harness#1576)
+
+- An older-runtime prober could promote a live writer's owner to
+  `outcome_ambiguous_blocked` after the owner section, and the writer then still
+  called the provider. Right before the provider call the broker now checks, under one
+  `admissions.lock` acquisition, that the on-disk owner is exactly this attempt's and
+  unsealed and that the key's row is `provider_call_in_flight`. If not, it makes no
+  provider call, writes nothing and returns the stored row (reason `outcome_ambiguous`)
+  instead of raising (agent-harness#1577). A promotion during the provider call is not
+  covered; that window is agent-harness#1591.
+- A failure after the provider returned was always recorded as
+  `outcome_ambiguous_blocked`, even when the terminal was already durable and only the
+  owner seal or the checkpoint projection failed. The broker now returns the stored
+  terminal; a retry replays it. A refused service-generation lease before the provider
+  call is re-raised and records no ambiguity (agent-harness#1574 ask 1).
+- If the `ADMISSION_DURABLE` projection itself fails, the broker restores the owner
+  it found, but only while the checkpoint is still `COMMITTED_HEAD_RESOLVED`, the
+  generation still authorizes the writer, the owner is this attempt's and the key has
+  no evidence. Every other failure before the provider call leaves the owner for the
+  next attempt to promote and a rotation to recover (agent-harness#1578 ask 1,
+  option i; documented in `docs/fabpub-pre-admission-ambiguity.md` and runbook §8a).
+- A broker-blocked result from `publish_from_worktree` now carries
+  `provider_call_made`, true only when this call entered the provider adapter.
+  `BrokerExecutionResult` gains the same field (default false).
+- New regressions in `test_fabpub_ambiguous_handoff_1312.py` and
+  `test_fabpub_owner_section_1314_1313_1311.py`, including the recovery-path restore
+  after an `epoch_blocked` refusal (agent-harness#1576 ask 2).
+
 ### One switch picks the Claude seat transport (agent-harness#1391, Stage 2)
 
 - Claude panel seats and the president's Claude rung now get their transport from one

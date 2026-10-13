@@ -97,6 +97,60 @@ promoted exactly as before.
   writer as dead (today's behaviour), and a crashed client's lock lasts until its
   lease expires (a retryable refusal meanwhile).
 
+## Provider entry and failures around it
+
+The broker returns the state the store holds. It never invents a terminal state, and
+it never calls the provider for a key whose record is no longer this attempt's
+in-flight record.
+
+- **A guard right before the provider call (agent-harness#1577).** Under one
+  `admissions.lock` acquisition, `BrokerService._provider_entry_guard` checks that the
+  on-disk owner is exactly this attempt's owner (nonce included) and unsealed, and
+  that the key's evidence row is `provider_call_in_flight`. If not, the attempt makes
+  no provider call and writes nothing. It returns the stored row (normally
+  `outcome_ambiguous_blocked`) with reason `outcome_ambiguous` and
+  `provider_call_made: false`, and the checkpoint stays `BROKER_INTENT_DURABLE`.
+  This covers an older-runtime prober that promotes a live writer's owner after the
+  owner section and before the provider call. Such a prober does not honour the
+  agent-harness#1313 liveness lock.
+- **Promotion during the provider call is not covered (agent-harness#1591).** No
+  check made before the call can see a promotion that happens while the call runs.
+  The attempt then makes one provider call and the key stays ambiguous.
+- **Mixed versions.** The agent-harness#1313 liveness lock and this guard protect a
+  partition only once every runtime that writes it is upgraded. An older writer
+  has neither. The during-call window above remains regardless. Until every writer
+  is upgraded, an `attested_not_landed` attestation needs provider-side evidence,
+  such as the provider showing no pull request and no branch for the head. Absence of
+  local evidence is not enough. Provider-side absence is still the operator's
+  judgement, not proof (see the runbook's §3).
+- **A failure after the provider returned is not ambiguity when the terminal is
+  durable (agent-harness#1574).** If the owner seal or the `TERMINAL_SEALED`
+  projection fails after the terminal was recorded, the broker returns that
+  terminal. The owner may stay unsealed with a known terminal. The next fresh
+  publish's `_block_unsealed_owner` seals it, and a retry replays the terminal. A
+  failure inside the provider call is still recorded as `outcome_ambiguous_blocked`.
+- **A failure before the provider was entered is not ambiguity either.** A refused
+  service-generation lease (a `DRAINING` writer latch) is re-raised. Nothing is
+  recorded beyond the `provider_call_in_flight` intent.
+- **Failures between the owner section and the provider call (agent-harness#1578).**
+  If the `ADMISSION_DURABLE` checkpoint projection itself fails while the checkpoint
+  is still `COMMITTED_HEAD_RESOLVED`, the broker restores the owner bytes the
+  section found. The restore takes a fresh `admissions.lock` acquisition. It runs
+  only if the generation still authorizes this writer, the owner is exactly this
+  attempt's, and the key has no evidence row. The admission line it leaves is
+  harmless, because `admit_next` dedups the retry by attempt id. Every other failure
+  in this window leaves the owner and the checkpoint as they are. That covers a
+  projection that became durable and then reported failure, `record_intent`, the
+  later projections, the guard's own authorization, and the lease refusal above.
+  Those failures fail closed and a rotation recovers them. The next attempt promotes
+  the owner, and `attested_not_landed` is truthful there because the provider was
+  never entered. Restoring the owner there would be wrong. Once the checkpoint is
+  admitted, a retry without an owner is refused by the already-admitted recovery
+  check, and no rotation can dispose a key that has no evidence.
+- A blocked publish result from `publish_from_worktree` now carries
+  `provider_call_made`. It is true only when this call entered the provider adapter.
+  A replay of stored evidence reports false.
+
 ## Recovery
 
 There is **no governed recovery** for a partition that is already blocked. What
