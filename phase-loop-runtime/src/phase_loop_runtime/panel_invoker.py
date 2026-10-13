@@ -7379,10 +7379,11 @@ def _leg_auth_ok(
     combined = (proc.stdout or "") + (proc.stderr or "")
     if proc.returncode in {126, 127}:
         return True, ""
-    unavailable = re.search(
-        r"(?:^|\n)(?:[^\n]*:\s*)?(?:/[^\s:\n]*/)?" + re.escape(probe[0])
-        + r"(?:\.js)?:[ \t]*(?:command not found|no such file(?: or directory)?)[ \t]*(?:\n|$)",
-        combined, re.IGNORECASE,
+    unavailable = re.fullmatch(
+        r"(?:(?:/[^\s:\n]*/)?(?:sh|bash|dash|zsh|ksh|ash):[ \t]*"
+        r"(?:(?:line[ \t]+)?[0-9]+:[ \t]*)?)?(?:/[^\s:\n]*/)?" + re.escape(probe[0])
+        + r"(?:\.js)?:[ \t]*(?:command not found|no such file(?: or directory)?)",
+        combined.strip(), re.IGNORECASE,
     )
     if (unavailable or combined.strip().lower() in {
             "command not found", "no such file", "no such file or directory"}) \

@@ -66,6 +66,8 @@ def test_auth_probe_missing_cli_fails_open(monkeypatch):
 
 @pytest.mark.parametrize("returncode,output", [(126, ""), (127, "not logged in"),
     (1, "sh: codex: command not found"), (1, "sh: /missing/codex: No such file or directory"),
+    (1, "bash: line 1: codex: command not found"),
+    (1, "/bin/sh: 1: /missing/codex: No such file or directory"),
     (1, "command not found"), (1, "No such file"), (1, "No such file or directory")])
 @pytest.mark.parametrize("stream", ["stdout", "stderr"])
 def test_auth_probe_unavailable_executable_is_inconclusive(monkeypatch, returncode, output, stream):
@@ -80,6 +82,8 @@ def test_auth_probe_unavailable_executable_is_inconclusive(monkeypatch, returnco
     "cannot read /home/operator/.codex/auth.json: No such file or directory",
     "codex: No such file or directory: /home/operator/.codex/auth.json",
     "codex: No such file while reading /home/operator/.codex/auth.json",
+    "cannot read /home/operator/.codex/auth.json: codex: No such file or directory",
+    "codex: No such file or directory\ncannot read /home/operator/.codex/auth.json",
 ])
 def test_auth_probe_missing_credentials_remains_a_failure(monkeypatch, output):
     result = types.SimpleNamespace(returncode=1, stdout="", stderr=output)
