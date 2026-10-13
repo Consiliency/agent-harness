@@ -93,6 +93,13 @@ def test_golden_delta_is_only_final_schema_exclusion():
     # at e7350e534e9a369be45baf34dc812eadd873e1f5. Undoing the sole permitted
     # enum exclusion must recover it, including every prompt/hash/model/argv.
     canonical = json.dumps(golden, sort_keys=True, separators=(",", ":"))
+    # The sixth permitted delta (agent-harness#1548): the execute-phase skill adds PR
+    # description upkeep inside the agent-harness#1392 span ("PR descriptions on the
+    # interactive path" and the `gh pr edit` mode bullets). Undo it first, so the
+    # agent-harness#1392 span below matches the text it was written for.
+    pre_1548 = json.loads((Path(__file__).parent / "data/launchspec_golden/pre_1548_pr_descriptions.json").read_text())
+    assert pre_1548["current"] in canonical
+    canonical = canonical.replace(pre_1548["current"], pre_1548["pre_1548"])
     # The fifth permitted delta (agent-harness#1392): the execute-phase skill gates its
     # interactive publication on `phase-loop publication-mode` (publication mode (b),
     # "Draft PR early", and a new "Interactive publication mode" section). Undo exactly

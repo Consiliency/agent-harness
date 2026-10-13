@@ -31,7 +31,10 @@ radius from a file list.
 Summarize observed commands, exit status, and relevant results from the current
 verification artifact. State whether verification was complete, targeted, partial,
 skipped, or exempted, with the applicable reason. Keep evidence redacted and do not
-paste raw logs, secrets, host paths, or protected evidence-source contents.
+paste raw logs, secrets, host paths, or protected evidence-source contents. For a
+security fix, keep the weakness, its trigger, and any exploit path out of public PR
+and commit text; describe the change neutrally and use the repository's private
+disclosure channel for the details.
 
 Claim failing-before/passing-after evidence only if both were observed. Tests
 passing supports the tested behavior, not every inferred consequence. Existing
