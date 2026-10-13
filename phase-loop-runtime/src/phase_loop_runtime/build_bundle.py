@@ -199,6 +199,12 @@ def build_bundle(
 
         skill_texts = {harness: path.read_text(encoding="utf-8") for harness, path in canonical_paths.items()}
         shared_refs: set[str] = set()
+        if effective_apply:
+            # Only this loop writes these dirs. Clear them so a file whose placement
+            # flips (shared <-> override) leaves no stale copy behind.
+            for aux in HARNESS_AUX_SUBDIRS:
+                for generated in [skill_dir / aux] + [skill_dir / "_overrides" / h / aux for h in ACTIVE_HARNESSES]:
+                    shutil.rmtree(generated, ignore_errors=True)
         for harness in ACTIVE_HARNESSES:
             for aux in HARNESS_AUX_SUBDIRS:
                 source_aux = canonical_paths[harness].parent / aux

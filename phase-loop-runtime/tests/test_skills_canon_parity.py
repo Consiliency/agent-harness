@@ -474,6 +474,17 @@ class SkillsCanonParityTest(unittest.TestCase):
             self.assertEqual((skill_out / "references" / "shared.md").read_text(), "shared\n")
             self.assertFalse((skill_out / "references" / "own.md").exists())
 
+            # Placement flips on rebuild leave no stale copy (shared -> override -> shared).
+            gemini_md = src / "gemini" / "gemini-plan-phase" / "SKILL.md"
+            gemini_md.write_text("---\nname: gemini-plan-phase\n---\n", encoding="utf-8")
+            build_bundle({h: src / h for h in SKILLS_SRC}, out, dry_run=False, apply=True, force=True)
+            self.assertFalse((skill_out / "references" / "shared.md").exists())
+            self.assertTrue((skill_out / "_overrides" / "claude" / "references" / "shared.md").is_file())
+            gemini_md.write_text("---\nname: gemini-plan-phase\n---\nRead `references/shared.md`.\n", encoding="utf-8")
+            build_bundle({h: src / h for h in SKILLS_SRC}, out, dry_run=False, apply=True, force=True)
+            self.assertTrue((skill_out / "references" / "shared.md").is_file())
+            self.assertFalse((skill_out / "_overrides" / "claude" / "references" / "shared.md").exists())
+
     def test_plan_phase_skills_publish_falsifier_grammar(self):
         from .proofgate_content_tdd_adapter import ProofgateMissingCapabilityError, guard_proofgate_nodeid, run_proofgate_contract
         nodeid = "phase-loop-runtime/tests/test_skills_canon_parity.py::SkillsCanonParityTest::test_plan_phase_skills_publish_falsifier_grammar"
