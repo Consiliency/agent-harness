@@ -137,7 +137,7 @@ def test_exact_and_near_duplicates_collapse(tmp_path):
 
 def test_boilerplate_is_stripped_before_the_repo_agnostic_gate(tmp_path):
     root = tmp_path / "skills"
-    copied = "Publication result: reconciliation remains under some-repo#361; nothing is rewritten here."
+    copied = "Lifecycle reconciliation remains under some-repo#361; nothing is rewritten here."
     for index in range(3):
         put(root, "codex-plan-detailed", "h", f"b{index}", "r", reflection(
             didnt=f"Distinct friction {index}.",
@@ -151,7 +151,9 @@ def test_boilerplate_is_stripped_before_the_repo_agnostic_gate(tmp_path):
 
     assert boilerplate == [copied]
     assert reasons["b0"] is None and reasons["b1"] is None and reasons["b2"] is None
-    assert "some-repo#361" not in rc.render_bundle(corpus)
+    bundle = rc.render_bundle(corpus)
+    assert "some-repo#361" not in bundle
+    assert all(f"Distinct generic proposal {i}" in bundle for i in range(3))
     assert reasons["b9"] is None
     assert reasons["b8"] is None
 

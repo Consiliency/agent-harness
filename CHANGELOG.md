@@ -10,7 +10,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 - Exact and near deduplication is limited to copies of the same recorded run.
   Identical feedback from distinct runs counts toward readiness, including runs on
-  one branch. Only recognized closeout-ledger lines are stripped as boilerplate.
+  one branch. Repeated one-repo ledger lines and repeated one-repo lines carrying a
+  ref, path or URL are stripped from What worked and Improvements before
+  classification.
 - A repo-specific Improvements section is dropped and noted in the manifest,
   while usable What didn't and What worked sections remain. A reflection with
   neither friction nor an eligible proposal is still excluded.

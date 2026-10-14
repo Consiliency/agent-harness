@@ -320,8 +320,9 @@ def apply_quality_filter(
     """Mark exclusions in place and strip boilerplate; returns the boilerplate lines removed.
 
     Order matters. Duplicates collapse first so one copied reflection cannot make
-    its own lines look like cross-run boilerplate. Only known closeout-ledger
-    lines are eligible for boilerplate stripping. Repo-specific proposals are
+    its own lines look like cross-run boilerplate. Repeated one-repo ledger lines
+    and repeated one-repo lines carrying a ref, path or URL are stripped from What
+    worked and Improvements before classification. Repo-specific proposals are
     dropped section by section, and the per-branch cap keeps the newest usable
     reflections.
     """
@@ -337,7 +338,9 @@ def apply_quality_filter(
                 for line in reflection.sections.get(key, "").splitlines()
             }
             for line in ledger_lines:
-                if len(line) >= BOILERPLATE_MIN_CHARS and line.lower().startswith(_LEDGER_PREFIXES):
+                if len(line) >= BOILERPLATE_MIN_CHARS and (
+                    line.lower().startswith(_LEDGER_PREFIXES) or classify_improvements(line) == "repo_specific"
+                ):
                     line_counts[line] += 1
                     line_repos[line].add(reflection.repo_hash)
     boilerplate = {
