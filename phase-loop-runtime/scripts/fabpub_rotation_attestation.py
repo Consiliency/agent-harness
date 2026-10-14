@@ -18,6 +18,10 @@ read at the container root, so pointing this at a rotated store would build an
 attestation whose ``predecessor_generation`` and digests disagree.  See
 ``docs/fabpub-partition-rotation-runbook.md``.
 
+It also prints any post-ambiguity observation the broker recorded for the key
+(agent-harness#1591) and warns when ``--observed-head`` or ``--evidence-url``
+disagree with an observed effect; it never refuses on one.
+
 Stdlib only, on purpose: it must run under any python, including one with no
 ``phase_loop_runtime`` on its path.
 """
@@ -38,6 +42,9 @@ DIGESTED = (
     "adapter-start-owner.json",
 )
 PREFIX = "publish_committed_branch\0"
+# agent-harness#1591: provider outcomes recorded after the key became ambiguous.
+# Not digested; read here only to show the operator what the broker saw.
+OBSERVATIONS = "post-ambiguity-observations.jsonl"
 # Path names that mean "live broker or ceremony state, never an operator file".
 # ``generations`` is deliberately NOT here: a generational store only exists
 # inside a ``phase-loop-fabpub-broker-v1`` namespace, which this already catches,
@@ -78,6 +85,60 @@ def _refuse_live_destination(out: Path, container: Path) -> str | None:
     if resolved == namespace or resolved.is_relative_to(namespace):
         return f"--out {resolved} lies under the broker namespace {namespace}"
     return None
+
+
+def _post_ambiguity_observations(container: Path, key: str):
+    """Rows for ``key``, or ``None`` when the side file cannot be read."""
+    body = _read_digested(container, OBSERVATIONS)
+    if body and not body.endswith(b"\n"):
+        return None
+    rows = []
+    try:
+        for raw in body.decode("utf-8").split("\n")[:-1] if body else []:
+            row = json.loads(raw)
+            if not isinstance(row, dict):
+                return None
+            if row.get("idempotency_key") == key:
+                rows.append(row)
+    except ValueError:
+        return None
+    return rows
+
+
+def _print_observations(observations, entry: dict, a) -> None:
+    """Show what the broker recorded and warn where this attestation disagrees with it."""
+    if observations is None:
+        print(
+            f"WARNING: {OBSERVATIONS} is unreadable; the ceremony refuses attested_not_landed "
+            "for every key while it is"
+        )
+        return
+    if not observations:
+        print("post-ambiguity observation none recorded for this key")
+        return
+    for row in observations:
+        print(
+            "post-ambiguity observation",
+            row.get("observed_state"),
+            row.get("evidence_reference"),
+            "head",
+            row.get("head_sha"),
+            "binds this blocked row"
+            if row.get("ambiguity_digest") == entry["ambiguity_digest"]
+            else "does NOT bind this blocked row",
+        )
+        if row.get("observed_state") != "effect_terminal_observed":
+            continue
+        if row.get("head_sha") != a.observed_head:
+            print(
+                f"WARNING: --observed-head {a.observed_head} differs from the observed head "
+                f"{row.get('head_sha')}"
+            )
+        if row.get("evidence_reference") != a.evidence_url:
+            print(
+                f"WARNING: --evidence-url {a.evidence_url} differs from the observed evidence "
+                f"{row.get('evidence_reference')}"
+            )
 
 
 def main() -> int:
@@ -148,6 +209,7 @@ def main() -> int:
                 entry[field] = owner[field]
     if a.override_record:
         entry["override_record"] = a.override_record
+    observations = _post_ambiguity_observations(c, key)
     doc = {
         "schema": "PartitionRotationAttestation.v1",
         "attested_by": a.attested_by,
@@ -177,6 +239,7 @@ def main() -> int:
         if owner_names_key
         else f"names {owner.get('effect_key') or owner.get('idempotency_key')!r}, not this key (owner fields omitted)",
     )
+    _print_observations(observations, entry, a)
     print(
         "owner committed_head",
         owner.get("committed_head"),
