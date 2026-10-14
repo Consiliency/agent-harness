@@ -74,7 +74,7 @@ SL-5 — Documentation and bundle reducer
 ### SL-0 — Test freeze
 
 - **Scope**: Freeze the behavioral tests, downstream corpus and content-bound RED receipt before any production or skill-source edits.
-- **Owned files**: `phase-loop-runtime/tests/**.py`, `phase-loop-runtime/tests/fixtures/loopfix/**`, `.phase-loop/evidence/LOOPFIX/content-tdd*`
+- **Owned files**: `phase-loop-runtime/tests/test_*.py`, `phase-loop-runtime/tests/_*.py`, `phase-loop-runtime/tests/conftest.py`, `phase-loop-runtime/tests/execfind_content_tdd_adapter.py`, `phase-loop-runtime/tests/govlean_freeze_receipt.py`, `phase-loop-runtime/tests/harden_tdd_guard.py`, `phase-loop-runtime/tests/launch_audit_hook.py`, `phase-loop-runtime/tests/panel_content_tdd_adapter.py`, `phase-loop-runtime/tests/phase_loop_smoke_utils.py`, `phase-loop-runtime/tests/phase_loop_test_utils.py`, `phase-loop-runtime/tests/president_fakes.py`, `phase-loop-runtime/tests/presroute_content_tdd_adapter.py`, `phase-loop-runtime/tests/proofgate_bootstrap_verifier.py`, `phase-loop-runtime/tests/proofgate_content_tdd_adapter.py`, `phase-loop-runtime/tests/proofgate_tdd_guard.py`, `phase-loop-runtime/tests/runtime_content_tdd_adapter.py`, `phase-loop-runtime/tests/loopfix_content_tdd_adapter.py`, `phase-loop-runtime/tests/data/baml_v0_baseline/capture_v0.py`, `phase-loop-runtime/tests/fixtures/**`, `.phase-loop/evidence/LOOPFIX/content-tdd*`
 - **Interfaces provided**: `LOOPFIX-frozen-tests`, `LOOPFIX-RED-receipt`
 - **Interfaces consumed**: `IF-0-GOVLEAN-1` (pre-existing), `plan_ir.parse_phase_plan_ir` (pre-existing)
 - **Parallel-safe**: no
