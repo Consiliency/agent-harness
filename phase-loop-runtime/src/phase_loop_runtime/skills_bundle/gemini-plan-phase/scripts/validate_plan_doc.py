@@ -1528,8 +1528,9 @@ def _check_r_owned_companions(
         if len(lanes) > 1:
             # One new migration needs no broader ownership when every tracked
             # migration companion is already owned somewhere in the phase.
-            companions = [p for p in tracked if posixpath.dirname(p) == directory and p.endswith(".sql")]
+            companions = [p for p in tracked if p.startswith(f"{directory}/") and p.endswith(".sql")]
             if len(writers) == 1 and all(_r_owned(p, owned) for p in companions):
+                migration_writers[directory] = writers
                 continue
             out.append(
                 f"(R) WARN: {', '.join(lanes)} each write migrations under `{directory}/`; the "
