@@ -81,7 +81,7 @@ VALUE_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"(?i)(?<![\w-])--?[A-Za-z0-9_-]{0,48}?(?:" + _SECRET_WORDS + r")(?:\s+|=)"
         r"(?P<value>(?!-)(?:" + _VALUE + r"))"
     ),
-    # URL userinfo: scheme://user:VALUE@host or scheme://VALUE@host (the whole userinfo)
+    # URL userinfo: redact the username and optional password before the host.
     re.compile(r"(?i)\b[a-z][a-z0-9+.-]{0,31}://(?P<value>[^\s/@:]{1,256}(?::[^\s/@]{0,256})?)@"),
     # Cookie / Set-Cookie: a quoted value (JSON/dict form) or the rest of the header line
     re.compile(
@@ -215,7 +215,7 @@ _EMAIL_RE = re.compile(r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.
 # after a `file://` scheme — never after `~` or `/` (so `~/app` is not re-matched for
 # HOME=/app). It ends at a path boundary: anything but a name character, and a `.` only
 # when no name character follows it ("… /Users/Jane Doe." ends the path).
-_PATH_START = r"(?:(?<=^)|(?<=[\s\"'=:(])|(?<=file://))"
+_PATH_START = r"(?:(?<=^)|(?<=[\s\"`'=:(])|(?<=file://))"
 _PATH_END = r"(?![A-Za-z0-9_-])(?!\.[A-Za-z0-9_-])"
 _USERNAME_WORD = "A-Za-z0-9_"
 PLACEHOLDERS = ("<redacted>", "<user>", "<email>", "<path>", "~")
