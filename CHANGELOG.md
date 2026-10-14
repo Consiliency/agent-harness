@@ -28,6 +28,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   and fails a tune without replacement text. Clear rules that were ignored route to
   compliance fixes instead of duplicate prose.
 
+### grok executor: keep the background-task tools grok's terminal requires
+
+- The grok execute deny-list no longer removes the task tools (`get_task_output`/`kill_task`, formerly `get_command_or_subagent_output`/`kill_command_or_subagent`). grok 1.0.52 refuses to start a session whose terminal runs in background mode without them, so every grok execute launch failed before a model turn. The implementer still cannot spawn subagents (`spawn_subagent` and `workflow` stay denied, `--no-subagents` stays).
+
 ### FABPUB: a provider outcome on an already-ambiguous key is kept, and an observed effect is never attested not landed (agent-harness#1591)
 
 - A promotion by an older-runtime prober from the provider-entry guard's lock release
