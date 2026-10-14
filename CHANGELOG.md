@@ -6,6 +6,19 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Board: the sandboxed grok seat can run the tools it is granted
+
+- In a board the sandboxed grok seat ended `DEGRADED` (rc 0) after one preamble line. Its
+  argv paired `--permission-mode plan` with an allow-list granting `run_terminal_command`,
+  `write` and `search_replace`. Headless grok 1.0.52 sends those calls to an approver it
+  does not have, cancels them, and ends the turn. The earlier finding that headless grok
+  auto-approves regardless of `--permission-mode` (agent-harness#147) no longer holds.
+- The sandboxed brokered route now runs `--permission-mode bypassPermissions` and passes
+  `--disallowed-tools` for the twelve built-ins `--tools` leaves in place, so the seat holds
+  exactly `GROK_SANDBOX_TOOLS`. The seat sandbox and the allow-list are unchanged, and the
+  recorded tool controls follow the argv. The unsandboxed brokered route (`plan`, empty
+  allow-list) and the read-only `-p` route are unchanged.
+
 ### FABPUB: a provider outcome on an already-ambiguous key is kept, and an observed effect is never attested not landed (agent-harness#1591)
 
 - A promotion by an older-runtime prober from the provider-entry guard's lock release

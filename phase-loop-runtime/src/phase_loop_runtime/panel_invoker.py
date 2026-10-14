@@ -5997,7 +5997,8 @@ def _broker_tool_controls(leg: str, staged_tree: "Path | None") -> tuple[str, ..
             return ("tools-empty", "disable-web-search", "no-memory", "no-subagents",
                     "permission-plan", "prompt-file-stdin-sealed")
         return ("tools-sandbox-allowlist", "disable-web-search", "no-memory",
-                "no-subagents", "permission-plan", "prompt-file-stdin-sealed")
+                "no-subagents", "permission-bypass-inside-seat-sandbox",
+                "disallowed-unlisted-builtins", "prompt-file-stdin-sealed")
     raise ValueError(f"no tool-control derivation for leg {leg!r}")
 
 
@@ -6046,12 +6047,29 @@ def _brokered_codex_command(
     ]
 
 
-# Tools a grok review seat may use INSIDE a sandbox. Headless `grok -p` auto-approves
-# writes regardless of `--permission-mode`/`--sandbox` (agent-harness#147), so the
-# allow-list is the only lever that holds -- which is exactly why it is the thing that
+# Tools a grok review seat may use INSIDE a sandbox. The allow-list, not an approval
+# mode, is the lever that holds (agent-harness#147), which is why it is the thing that
 # changes here rather than a sandbox flag. The workspace it can now mutate IS the
 # disposable clone, deleted when the round ends.
 GROK_SANDBOX_TOOLS = "read_file,grep,list_dir,search_tool,write,search_replace,run_terminal_command"
+
+# The approval mode the sandboxed seat runs in. Headless grok (1.0.52) does NOT auto-approve
+# under `plan`: a call to a granted acting tool goes to an approver that a headless run lacks,
+# comes back "User cancelled", and ends the turn with rc 0 after the preamble -- a seat that
+# cannot use its tools and reports nothing. On an operator's machine a Claude Code
+# compatibility settings file in HOME can mask this; a seat's fresh HOME never has one, so
+# the argv must carry the mode. The sandbox and the allow-list stay the
+# boundary; this only lets the seat run what the allow-list already grants.
+GROK_SANDBOX_PERMISSION_MODE = "bypassPermissions"
+
+# Built-ins headless grok (1.0.52) offers even when `--tools` does not list them. Under `plan`
+# some of these were refused by the same missing approver; under the approving mode above
+# nothing refuses them, so they are removed outright. `--disallowed-tools` runs after
+# `--tools`, which leaves the seat exactly the `GROK_SANDBOX_TOOLS` it is granted.
+GROK_SANDBOX_DISALLOWED_TOOLS = (
+    "ask_user_question,enter_plan_mode,exit_plan_mode,image_edit,image_gen,image_to_video,"
+    "reference_to_video,monitor,send_feedback,todo_write,use_tool,workflow"
+)
 
 
 def _brokered_grok_command(
@@ -6067,13 +6085,19 @@ def _brokered_grok_command(
     allow-list, `--permission-mode plan`, and `--cwd` at an empty output directory.
 
     With one, the seat works in the clone and its allow-list gains the run/write built-ins,
-    because for grok the allow-list -- not a sandbox flag -- is the enforcement lever.
-    `--no-memory` and `--no-subagents` are retained either way.
+    because for grok the allow-list -- not a sandbox flag -- is the enforcement lever. It
+    runs in `GROK_SANDBOX_PERMISSION_MODE`, because under `plan` headless grok cancels every
+    call to those built-ins, and with `GROK_SANDBOX_DISALLOWED_TOOLS` removed, because
+    `--tools` alone does not remove them. `--no-memory` and `--no-subagents` are retained
+    either way.
     """
     tree = _require_staged_tree(staged_tree)
     return [
         "grok", "--disable-web-search", "--no-memory", "--no-subagents",
-        "--permission-mode", "plan", "--prompt-file", "/dev/stdin",
+        *(("--permission-mode", "plan") if tree is None else (
+            "--permission-mode", GROK_SANDBOX_PERMISSION_MODE,
+            "--disallowed-tools", GROK_SANDBOX_DISALLOWED_TOOLS)),
+        "--prompt-file", "/dev/stdin",
         "--output-format", "plain",
         "--cwd", str(out_dir if tree is None else tree), "-m",
         model or HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["grok"],
@@ -12191,6 +12215,11 @@ def _exec_leg(
         # the four read/search built-ins remain; whatever `search_tool` covers, it is
         # read-only, so the `--disable-web-search` flag is not the read-only lever
         # here (the allow-list is) and is intentionally left off.
+        # Measured on grok 1.0.52, both premises above are now partly wrong. Headless
+        # grok does NOT auto-approve under an asking mode; it cancels the call and ends
+        # the turn. And `--tools` leaves a dozen unlisted built-ins in place. The
+        # sandboxed brokered route handles both (`GROK_SANDBOX_PERMISSION_MODE`,
+        # `GROK_SANDBOX_DISALLOWED_TOOLS`). This route is unchanged.
         # Explicit seat effort wins; the default is high. The shared mapping still
         # renders canonical max as xhigh, the Grok CLI's supported ceiling.
         grok_effort_args = render_seat_invocation(
