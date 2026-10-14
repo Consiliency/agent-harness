@@ -137,15 +137,31 @@ def test_codex_policy_keeps_setup_capabilities_out_of_owner_and_payload():
     caps = re.findall(r"allow capability (\w+),", setup)
     assert set(caps) == {"sys_admin", "sys_chroot", "net_admin", "setuid", "setgid", "sys_ptrace"}
     assert not re.search(r"^\s*(allow )?capability,", aa.CODEX_PROFILE_TEXT, re.MULTILINE)
-    assert "allow pix /** -> &bwrap//&unpriv_bwrap," in setup
+    assert "allow px /** -> bwrap//&unpriv_bwrap," in setup
     assert "codex_finalize" not in aa.CODEX_PROFILE_TEXT
     rules = [line for line in aa.CODEX_LOCAL_TEXT.splitlines() if line.startswith("allow")]
     assert rules == [
-        f"allow pix {aa.CODEX_OWNER_PATH} -> &bwrap//&phase_loop_codex_owner,",
-        f"allow pix {aa.CODEX_PROVIDER_PATH} -> &bwrap//&phase_loop_codex_owner,",
-        f"allow pix {aa.CODEX_BWRAP_PATH} -> &bwrap//&phase_loop_codex_setup,",
+        f"allow px {aa.CODEX_OWNER_PATH} -> bwrap//&phase_loop_codex_owner,",
+        f"allow px {aa.CODEX_PROVIDER_PATH} -> bwrap//&phase_loop_codex_owner,",
+        f"allow px {aa.CODEX_BWRAP_PATH} -> bwrap//&phase_loop_codex_setup,",
     ]
     assert "/usr/bin/python" not in aa.CODEX_LOCAL_TEXT and "/usr/bin/bwrap" not in aa.CODEX_LOCAL_TEXT
+
+
+def test_codex_exec_transitions_replace_the_prior_stage_and_refuse_missing_targets():
+    # Leading '&' makes the kernel attach/ix fallback retain the previous stage before
+    # merging the target. A no-capability owner then denies inner bwrap setup forever.
+    for text in (aa.CODEX_PROFILE_TEXT, aa.CODEX_LOCAL_TEXT):
+        rules = [line.strip() for line in text.splitlines() if " -> " in line]
+        assert rules
+        for rule in rules:
+            mode, target = re.fullmatch(r"allow (\w+) .+ -> (.+),", rule).groups()
+            assert mode == "px"  # No inherited fallback if a named profile is unavailable.
+            assert target.startswith("bwrap//&")  # Preserve the no-new-privs base profile.
+    owner, setup = aa.CODEX_PROFILE_TEXT.split("profile phase_loop_codex_setup", 1)
+    assert f"{aa.CODEX_BWRAP_PATH} -> bwrap//&phase_loop_codex_setup," in owner
+    assert "phase_loop_codex_owner" not in setup
+    assert "-> bwrap//&unpriv_bwrap," in setup
 
 
 def test_codex_install_and_revert_preserve_the_claude_override_and_admin_rules(tmp_path):

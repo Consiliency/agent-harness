@@ -1,8 +1,10 @@
 # Codex nested sandbox candidate (agent-harness#1335)
 
-Status: prepared for review; not installed or qualified on dev0. Installation changes host
-security policy and requires separate administrator approval. This does not complete the
-required review board or authorize a merge.
+Status: revised after a failed, separately approved dev0 trial of `7681770e` on
+2026-10-14. The temporary policy was removed and the original denial reproduced.
+The revision is not installed or qualified. Installation changes host security policy and
+requires separate administrator approval. This does not complete the required review board
+or authorize a merge.
 
 ## Scope and prerequisites
 
@@ -25,13 +27,14 @@ or staged-tree write boundary changes. Read-only, admin, script and unknown-layo
 keep their existing launch paths. The existing no-inference probe still decides whether
 the seat can run tools; a failed launcher remains DEGRADED before inference.
 
-The candidate adds two named profiles, without attachment paths, and three specific stacked
-exec transitions in the shipped profile's local include. The owner profile permits no
-capabilities. Only the inner bubblewrap setup profile permits `sys_admin`, `sys_chroot`,
+The candidate adds two named profiles, without attachment paths, and three specific named
+exec transitions in the shipped profile's local include. Each target explicitly retains
+`bwrap` while replacing the previous stage; `px` refuses a missing named target. The owner
+profile permits no capabilities. Only the inner bubblewrap setup profile permits `sys_admin`, `sys_chroot`,
 `net_admin`, `setuid`, `setgid` and `sys_ptrace`, the six capabilities in
 [bubblewrap 0.11.1's setup set](https://github.com/containers/bubblewrap/blob/v0.11.1/bubblewrap.c).
 Linux must continue to deny them over the ancestor egress namespace. Every exec from setup
-adds `unpriv_bwrap`, including
+replaces setup with `bwrap//&unpriv_bwrap`, including
 [Codex's final seccomp stage](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/linux-sandbox/src/linux_run_main.rs),
 which explicitly checks empty effective/permitted sets before running the payload.
 
@@ -50,6 +53,32 @@ the first saved label being `bwrap` and on all three specific transitions being 
 in each stacked component. Compilation does not prove this: actual labels and denials
 must be measured during a separately approved trial. Failure must not trigger a broader
 grant, removal of no-new-privs, inner-sandbox bypass or a reviewer substitution.
+
+## Failed first trial and revision
+
+All CI, including the hosted Python suite and suite gate, passed for `7681770e`. Its
+separately approved temporary trial installed only the candidate policy file and marked
+local block, with root-only backups and an independent, transient rollback timer. The
+unchanged owned `codex sandbox --permission-profile :workspace ... -- true` probe returned
+1 with bubblewrap's namespace diagnostic, without inference. The trial stopped there.
+
+The provider's measured label was
+`bwrap//&phase_loop_codex_owner//&unpriv_bwrap (enforce)`, with all five capability sets
+empty, no-new-privs 1 and seccomp 2. Kernel audit denied `sys_admin` to nested bubblewrap
+under `phase_loop_codex_owner`. The generated revert script returned 0. The local include,
+shipped profile and Claude policy retained their exact bytes, modes and ownership; both
+candidate profiles and the candidate file were absent, no trial processes remained, and
+the original namespace denial returned in a fresh no-policy control.
+
+The revision addresses the old transitions' retention of the previous stage. In Linux's
+`x_to_label`, a target beginning with `&` uses executable attachment or the `ix` fallback
+as its base, then merges the named stack. Retaining the capability-free owner prevents
+setup from obtaining its declared rights. The revised explicit `px` targets select
+`bwrap//&<stage>` directly, without that fallback or retention. No capabilities or paths
+are added. The measured extra `unpriv_bwrap` component also makes selection of every
+transition a required qualification check; compilation and rule checks cannot prove it.
+This revision requires fresh review and separate trial approval. The first candidate's
+diagnostic AGREE does not establish enforcement or qualify this delta.
 
 ## Review and offline checks
 

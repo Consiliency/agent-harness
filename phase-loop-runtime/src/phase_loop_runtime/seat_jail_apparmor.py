@@ -94,10 +94,10 @@ profile phase_loop_codex_owner flags=(attach_disconnected,mediate_deleted) {{
   allow umount,
   allow pivot_root,
   allow dbus,
-  allow pix {CODEX_OWNER_PATH} -> &bwrap//&phase_loop_codex_owner,
-  allow pix {CODEX_PROVIDER_PATH} -> &bwrap//&phase_loop_codex_owner,
-  allow pix {CODEX_BWRAP_PATH} -> &bwrap//&phase_loop_codex_setup,
-  allow pix /** -> &bwrap//&unpriv_bwrap,
+  allow px {CODEX_OWNER_PATH} -> bwrap//&phase_loop_codex_owner,
+  allow px {CODEX_PROVIDER_PATH} -> bwrap//&phase_loop_codex_owner,
+  allow px {CODEX_BWRAP_PATH} -> bwrap//&phase_loop_codex_setup,
+  allow px /** -> bwrap//&unpriv_bwrap,
 }}
 
 profile phase_loop_codex_setup flags=(attach_disconnected,mediate_deleted) {{
@@ -121,15 +121,15 @@ profile phase_loop_codex_setup flags=(attach_disconnected,mediate_deleted) {{
   allow pivot_root,
   allow dbus,
   # Includes Codex's post-bwrap seccomp stage: no arbitrary payload keeps setup rights.
-  allow pix /** -> &bwrap//&unpriv_bwrap,
+  allow px /** -> bwrap//&unpriv_bwrap,
 }}
 """
 CODEX_LOCAL_TEXT = f"""\
 {CODEX_BEGIN_MARK}
 # Fixed read-only paths supplied only to a native Codex workspace-write review seat.
-allow pix {CODEX_OWNER_PATH} -> &bwrap//&phase_loop_codex_owner,
-allow pix {CODEX_PROVIDER_PATH} -> &bwrap//&phase_loop_codex_owner,
-allow pix {CODEX_BWRAP_PATH} -> &bwrap//&phase_loop_codex_setup,
+allow px {CODEX_OWNER_PATH} -> bwrap//&phase_loop_codex_owner,
+allow px {CODEX_PROVIDER_PATH} -> bwrap//&phase_loop_codex_owner,
+allow px {CODEX_BWRAP_PATH} -> bwrap//&phase_loop_codex_setup,
 {CODEX_END_MARK}
 """
 
