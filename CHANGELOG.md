@@ -6,6 +6,46 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### FABPUB: the human publication route picks its handoff by the broker refusal's type (agent-harness#1573, agent-harness#1578, agent-harness#1594, agent-harness#1574)
+
+- `publish_human_invoked_from_worktree` used to answer every broker
+  `PermissionError` with `next_step="repair_fabpub_authority"`. It now chooses the
+  handoff by exception type, never by message text. Any other `PermissionError`
+  keeps `repair_fabpub_authority`. The typed refusals add `provider_call_made: false`
+  to the result.
+  - A routing client built before a rotation now raises
+    `RoutingClientGenerationRetired`, a `WriterGenerationBlocked`. Its next step is
+    `rebuild_broker_client_and_retry` (agent-harness#1573 ask 4).
+  - `AdapterStartOwnerLive` and the new `AdapterStartOwnerContended` (the owner
+    section was contended twice) get `retry_after_inflight_publication`
+    (agent-harness#1578 ask 5).
+  - The unsealed-owner refusal and `epoch permanently blocked` are now typed as
+    `UnsealedOwnerBlocksPartition` and `PartitionEpochBlocked`. Both get the
+    partition-rotation handoff, which names the blocking key in
+    `blocking_effect_keys`, plus `blocking_transaction_id` for an owner. An epoch
+    block that names no key in the store, which is legacy carried ambiguity, keeps
+    `repair_fabpub_authority`.
+  - After the admission is durable and before provider entry, a
+    `WriterGenerationBlocked` from `record_intent`, `_authorize` or the
+    service-generation lease is re-raised with the same message as
+    `ProviderEntryGenerationRefused`. That type is both a `ProviderEntryRefused` and
+    a `WriterGenerationBlocked`. The guard's own "no evidence row" refusal is now a
+    `ProviderEntryRefused`. Any other `PermissionError` in that window propagates
+    unchanged and keeps `repair_fabpub_authority`; that includes EACCES and an
+    incompatible store. Its next step is
+    `retry_once_before_partition_rotation`. One retry promotes the owner, and the
+    retry returns the rotation handoff for this key. Without that retry, the rotation
+    refuses with "intents without a terminal" (agent-harness#1594 ask 1).
+- Every new type subclasses `PermissionError`, and the messages are unchanged.
+- Every rotation handoff now cites runbook §§1, 3, 4, 6, 7 and 8a. It names the
+  authority root the rotation must use, says where the `transaction_id` comes from,
+  and repeats the warning against a second `attested_not_landed` without new
+  evidence (agent-harness#1574 ask 2).
+- New `tests/test_fabpub_typed_handoffs.py` drives each refusal through the human
+  route. Documented in `docs/fabpub-pre-admission-ambiguity.md` ("Human-route
+  handoffs for broker refusals") and runbook §6 and §8a. The plan is
+  `phase-loop-runtime/plans/fabpub-typed-handoffs.md`.
+
 ### FABPUB: the recovery record no longer conflicts across runtime versions within one generation (agent-harness#1576)
 
 - Since agent-harness#1550, the `<transaction_id>.recovery.<generation>.json` record always
