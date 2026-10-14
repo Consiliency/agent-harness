@@ -50,6 +50,7 @@ from .schema import Board, Seat
 # adversarial board.
 CODE_REVIEW_BOARD: Board = compose_review_board(
     is_available=lambda _vendor: True, auth_ok=lambda _vendor: True,
+    gemini_model="gemini-4-argon",  # model-id-source: static shipped preset, excludes local preferences
 )
 
 # brainstorm: divergent, multi-vendor, each seat a different thinking lens.

@@ -6,6 +6,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Gemini: a local model preference, `PHASE_LOOP_GEMINI_MODEL` (agent-harness#1604, ported from agent-harness#1615)
+
+- `PHASE_LOOP_GEMINI_MODEL` selects a registered canonical Gemini base model for the unpinned Gemini executor actions, model classes and composed/default board seats. Explicit task models, plan/roadmap model pins and configured board seats win; effort, other providers, subscription auth and sandbox admission are unchanged. Unset, the shipped defaults hold. An invalid value fails without fallback.
+- Register the `Gemini 4 Argon` display alias and render its low/medium/high variants to the canonical `gemini-4-argon-*` ids; an unsupported or conflicting effort is rejected.
+
 ### Fix: Gemini planning, roadmap and review launch again, on Gemini 4 Argon
 
 - Gemini `roadmap`, `plan` and `review` launches exited rc 1, because agy no longer offers the `Gemini 3.1 Pro (High)` model they selected. The Gemini executor's `roadmap`, `plan` and `review` defaults, the `planner`/`reviewer` model classes and the heavy (and ultra) tier now use `gemini-4-argon` instead of the `pro` alias and `gemini-3.1-pro-preview`. Effort is unchanged: the shipped policy's `max` clamps to Gemini's `high`, so these routes launch `gemini-4-argon-high`. The heavy cell stays marked volatile. Implementation and worker routing are unchanged, and an explicit `--model` still wins.

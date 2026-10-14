@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from typing import TYPE_CHECKING
 
+from .advisor_board.harness_mapping import gemini_default_model
+
 from .capability_registry import (
     CLAUDE_HEAVY_MODEL,
     CLAUDE_LITE_MODEL,
@@ -516,7 +518,8 @@ CLASS_MODEL_OVERRIDES = {
 
 def resolve_model_class(executor: str, model_class: str) -> str | None:
     """Map (model_class, executor) -> concrete model, or None if unmapped."""
-    return CLASS_MODEL_OVERRIDES.get(executor, {}).get(model_class)
+    model = CLASS_MODEL_OVERRIDES.get(executor, {}).get(model_class)
+    return gemini_default_model(model) if executor == "gemini" and model is not None else model
 
 
 @dataclass(frozen=True)
@@ -724,6 +727,8 @@ def resolve_profile_for_executor(
     if model is not None:
         return selection
     executor_default = EXECUTOR_MODEL_OVERRIDES.get(executor, {}).get(action)
+    if executor == "gemini" and executor_default is not None:
+        executor_default = gemini_default_model(executor_default)
     effort_default = EXECUTOR_EFFORT_OVERRIDES.get(executor, {}).get(action)
     if not executor_default and not effort_default:
         return selection
@@ -799,7 +804,7 @@ def resolve_execution_policy(
         if policy.model is not None:
             policy_model = policy.model
             model_source = source or policy.source
-        elif policy.model_class is not None:
+        elif policy.model_class is not None and operator_model is None:
             # model_class -> concrete model for the resolved executor. An
             # explicit `model` always wins; a class only fills in when no model
             # is given (model-routing-v1).
