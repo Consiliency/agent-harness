@@ -4431,6 +4431,10 @@ def _compose_launch_prefix(cwd, process_owner=(), retain_caps=()) -> list[str]:
     owner = list(process_owner)
     if owner[0] != "/usr/bin/bwrap":
         raise ValueError("unsupported owned provider")
+    # The owner already restores this cwd by path. An extra env exec would enter
+    # unpriv_bwrap before the Codex owner alias and permanently deny nested setup.
+    if namespaced and owner[-3:] == ["--chdir", prefix[-2].removeprefix("--chdir="), "--"]:
+        del prefix[-3:]
     # The mapping capability is needed before the owner enters its user namespace.
     # Every provider still gets the same owner and drops it inside that namespace.
     owner[1:1] = ["--unshare-user", "--uid", str(os.getuid()),

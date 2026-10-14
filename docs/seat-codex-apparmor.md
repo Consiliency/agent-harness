@@ -1,8 +1,9 @@
 # Codex nested sandbox candidate (agent-harness#1335)
 
-Status: revised after a failed, separately approved dev0 trial of `7681770e` on
-2026-10-14. The temporary policy was removed and the original denial reproduced.
-The revision is not installed or qualified. Installation changes host security policy and
+Status: revised after failed, separately approved dev0 trials of `7681770e` and
+`4bf693b5` on 2026-10-14. Both temporary policies were removed and the original denial
+reproduced. The current runtime revision is not installed or qualified. Installation
+changes host security policy and
 requires separate administrator approval. This does not complete the required review board
 or authorize a merge.
 
@@ -24,7 +25,7 @@ bubblewrap at `/run/phase-loop-seat/codex-sandbox-bin/bwrap`.
 [Codex 0.162.1 discovers system bubblewrap through PATH](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/linux-sandbox/src/launcher.rs).
 No sandbox flag, UID mapping, outer capability drop, egress rule, credential, output grant,
 or staged-tree write boundary changes. Read-only, admin, script and unknown-layout routes
-keep their existing launch paths. The existing no-inference probe still decides whether
+do not receive the Codex aliases. The existing no-inference probe still decides whether
 the seat can run tools; a failed launcher remains DEGRADED before inference.
 
 The candidate adds two named profiles, without attachment paths, and three specific named
@@ -54,7 +55,7 @@ in each stacked component. Compilation does not prove this: actual labels and de
 must be measured during a separately approved trial. Failure must not trigger a broader
 grant, removal of no-new-privs, inner-sandbox bypass or a reviewer substitution.
 
-## Failed first trial and revision
+## Failed trials and revisions
 
 All CI, including the hosted Python suite and suite gate, passed for `7681770e`. Its
 separately approved temporary trial installed only the candidate policy file and marked
@@ -79,6 +80,28 @@ are added. The measured extra `unpriv_bwrap` component also makes selection of e
 transition a required qualification check; compilation and rule checks cannot prove it.
 This revision requires fresh review and separate trial approval. The first candidate's
 diagnostic AGREE does not establish enforcement or qualify this delta.
+
+The second, separately approved trial of `4bf693b5` also stopped at a failed `true` probe,
+without inference. The provider still had the same three-component label and empty
+capability sets, no-new-privs and seccomp. This time kernel audit denied `sys_admin` under
+`unpriv_bwrap`. Rollback again returned 0, preserved the original three policy files'
+bytes, modes and ownership, removed the candidate file and profiles, left no trial
+processes, and reproduced the original denial in a fresh control.
+
+A subsequent diagnostic of the actual composed launch prefix identified an earlier exec:
+the outer bubblewrap ran `/usr/bin/env --chdir=... --` before the trusted Python alias.
+That ordinary executable selects the shipped denying profile, which remains in the stack
+through subsequent transitions. The owner already ends in `--chdir <the same path> --`.
+The runtime revision removes only this redundant exec when those cwd values match. A
+different owner cwd or an owner without that handoff retains the path-based `env` chdir
+needed after namespace entry. No policy, capability, mount or egress grant is added.
+
+Regression tests execute a copied system Python through the actual owned launch, require
+the alias to be the first exec after bubblewrap, verify the resulting cwd is reachable,
+and retain empty capability sets, no-new-privs, seccomp and keyctl denial. A mismatching
+cwd retains the existing handoff. These are runtime controls without model calls or host
+policy installation; the revised native Codex route still needs separately approved
+host qualification. Neither earlier diagnostic AGREE establishes that qualification.
 
 ## Review and offline checks
 

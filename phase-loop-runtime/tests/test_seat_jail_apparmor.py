@@ -288,7 +288,7 @@ def test_codex_aliases_execute_with_empty_capabilities_and_keyring_filter(
 from pathlib import Path
 libc=ctypes.CDLL(None,use_errno=True)
 rc=libc.syscall({'x86_64':250,'aarch64':219}[platform.machine()],1,0,0,0,0)
-print(json.dumps({'capabilities':{line.split(':')[0]:line.split(':')[1].strip() for line in Path('/proc/self/status').read_text().splitlines() if line.startswith(('Cap','NoNewPrivs','Seccomp:'))},'keyctl_denied':rc==-1 and ctypes.get_errno()==errno.EPERM}))
+print(json.dumps({'cwd':str(Path.cwd()),'capabilities':{line.split(':')[0]:line.split(':')[1].strip() for line in Path('/proc/self/status').read_text().splitlines() if line.startswith(('Cap','NoNewPrivs','Seccomp:'))},'keyctl_denied':rc==-1 and ctypes.get_errno()==errno.EPERM}))
 """
     with _native_codex_profile(tmp_path, monkeypatch, image="/usr/bin/python3") as (provider, profile):
         process = pi.launch_owned([provider, "-I", "-S", "-c", code],
@@ -300,7 +300,10 @@ print(json.dumps({'capabilities':{line.split(':')[0]:line.split(':')[1].strip() 
         finally:
             pi._terminate_process_group(process)
     assert process.returncode == 0, stderr
+    separator = process.args.index("--", process.args.index("/usr/bin/bwrap"))
+    assert process.args[separator + 1] == aa.CODEX_OWNER_PATH
     record = json.loads(stdout)
+    assert Path(record["cwd"]) == tmp_path.resolve()
     assert record["keyctl_denied"]
     assert {key for key in record["capabilities"] if key.startswith("Cap")} == {
         "CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"}
@@ -308,6 +311,25 @@ print(json.dumps({'capabilities':{line.split(':')[0]:line.split(':')[1].strip() 
                if key.startswith("Cap"))
     assert record["capabilities"]["NoNewPrivs"] == "1"
     assert record["capabilities"]["Seccomp"] == "2"
+
+
+@needs_codex_owner
+@pytest.mark.parametrize("same_cwd", [True, False, None])
+def test_owned_cwd_handoff_is_removed_only_when_bwrap_already_sets_it(tmp_path, same_cwd):
+    from phase_loop_runtime import panel_invoker as pi
+
+    held = ("nsenter", "--", "/usr/bin/setpriv", "--bounding-set=-all", "--")
+    token = pi._EGRESS_LAUNCH_PREFIX.set(held)
+    try:
+        owner_cwd = tmp_path if same_cwd else tmp_path / "different"
+        owner = ["/usr/bin/bwrap", *(["--chdir", str(owner_cwd)] if same_cwd is not None else []), "--"]
+        prefix = pi._compose_launch_prefix(tmp_path, owner)
+        separator = prefix.index("--", prefix.index("/usr/bin/bwrap"))
+        assert prefix[separator + 1:] == ([] if same_cwd else [
+            "/usr/bin/env", "--chdir=" + str(tmp_path), "--"])
+        assert prefix[prefix.index("--cap-drop") + 1] == "ALL"
+    finally:
+        pi._EGRESS_LAUNCH_PREFIX.reset(token)
 
 
 @pytest.mark.parametrize("script", [aa.install_script(codex=True), aa.revert_script(codex=True)])

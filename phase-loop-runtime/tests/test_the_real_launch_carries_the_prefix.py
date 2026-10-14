@@ -164,7 +164,7 @@ class TestTheHelpersThemselves:
         marker = tmp_path / "RP_RAN"
         with _filtered_marker(marker, monkeypatch, administrative=True) as processes:
             done = panel_invoker.run_provider(
-                ["/bin/echo", "hi"], capture_output=True, text=True,
+                ["/bin/sh", "-c", "echo hi"], capture_output=True, text=True,
                 cwd=str(tmp_path), timeout=60,
             )
         _assert_process_marker(marker, processes)
