@@ -255,8 +255,8 @@ Falsifier: allowing `reason: "isolation"` through the filer reddens the spy cell
 The v1 migration rule is unchanged: entries are ignored and never translated, and the watcher re-establishes each host once. The route-core pins and the requalification forced by the edit are done in the same cut.
 
 Acceptance:
-- [ ] A host whose `PATH` agy fails qualification while the store holds an earlier qualified agy runs that earlier agy, with `seat_cli_running_last_good`. This is the live agy 1.3.4 shape, reproduced with fixture images.
-  - On a host whose store is new and whose only local agy is the failing one, there is no last good version yet. Only Q7 option 1 restores that seat: a seeded shipped member. Under Q7 option 2 it stays DEGRADED until a passing agy arrives.
+- [ ] A host whose `PATH` agy fails qualification while the store holds an earlier qualified agy runs that earlier agy, with `seat_cli_running_last_good`. Reproduced with fixture images.
+  - On a host whose store is new and whose only local agy fails, there is no last good version yet. Only Q7 option 1 restores that seat: a seeded shipped member. Under Q7 option 2 it stays DEGRADED until a passing agy arrives.
 - [ ] `_preflight_gemini_heartbeat` never calls `ensure_admitted` (spy).
 - [ ] After a simulated runtime upgrade with unchanged route core, the record is still found, and `doctor` names its `written_under`.
 - [ ] All PR1 per-caller admission cells are unchanged and green. `--source-only` passes on the cut tree.
@@ -343,7 +343,7 @@ automation.suite_command: `cd phase-loop-runtime && PYTHONPATH=src python3 -m py
   1. *(Recommended)* Enforce from L3. No qualified version is DEGRADED, and counting requires a qualified class, so old PR7 folds into L3.
      - Cost: after upgrading, each host must run one `cli-qualification watch` before its next board. Until it does, its codex, grok and claude seats are DEGRADED with a fix line. The release notes and `doctor` say so.
   2. Keep Q1. In L3's release, a host with no qualified version launches today's `PATH` binary with class `none`: tooled, never sealed, and still counted. Enforcement and counting land one release later.
-- **Q7. A host with no good version at all** (a fresh store, or the only local version fails). This decides whether the host behind agent-harness#1602, whose only agy is the failing 1.3.4, gets its Gemini seat back at the 0.7.28 cut.
+- **Q7. A host with no good version at all** (a fresh store, or the only local version fails). This decides whether such a host has any seat for that harness before a passing version arrives locally.
   1. *(Recommended)* The watcher seeds from the newest shipped member when the adapter can fetch it against a publisher digest (agy today, others once promoted). Otherwise DEGRADED until a local version qualifies.
   2. Observe only: never download. DEGRADED until a version on `PATH` qualifies.
   3. Option 1, and the watcher also captures older versions that a vendor still keeps on disk (codex, grok and claude version directories) as candidates.
@@ -364,5 +364,24 @@ automation.suite_command: `cd phase-loop-runtime && PYTHONPATH=src python3 -m py
   2. Re-run only the newest member, and keep older members listed regardless.
   3. Keep Q5: re-run every listed member.
 
+## Maintainer rulings (2026-10-14)
+These rulings are append-only. All six follow the recommendation (option 1).
+- **Q6: enforce from L3.** No qualified version means DEGRADED, and such a leg is never counted. Old PR7 folds into L3. This **supersedes 2026-10-08 Q1**, the recording-only release.
+- **Q7: seed.** The watcher seeds from the newest shipped member, fetched against a publisher digest. Otherwise the harness is DEGRADED.
+- **Q8: launch coverage.** The key includes the digest of the argv and environment-name set rendered for a fixed fixture, plus the seat-owner module digest.
+- **Q9: opt-in filing.** Issue filing is opt-in per host through `[qualification] report_issues_to`, and covers contract failures only.
+- **Q10: signed promotion.** The rules are:
+  - records are SSH-signed against an enrolled `allowed_signers` file;
+  - promotion goes through a draft promotion PR;
+  - CI requires the publisher digest plus at least 2 distinct signers;
+  - there is no release-lane re-run;
+  - a maintainer merges.
+
+  This **supersedes 2026-10-08 Q4**, manual submission. Q3 (strict) stands.
+- **Q11: newest member only.** A cut re-runs only the newest member per harness. Older members stay while their `qualification_inputs` match, and otherwise the cut PR removes them. This **supersedes 2026-10-08 Q5**, which requalified every member.
+
+2026-10-08 Q2 and Q3 are unchanged.
+
 ## Revision history
 - **r1** (2026-10-14): first draft, amending the 2026-10-08 plan's section (e).
+- **r2** (2026-10-14): the maintainer's rulings on Q6–Q11 are recorded, and the Q7 motivation is reworded generically, with no claim about a specific agy version.
