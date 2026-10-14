@@ -1,7 +1,7 @@
 {
   "schema": "seat_jail_mutation_receipts.v1",
   "issue": "agent-harness#1170",
-  "head": "406d9e6d80d3338770095b30256e8fdecb3bf5bd",
+  "head": "46ba0989708689cc4dbb8d3c83ff9c1bfc8c33ae",
   "receipts": [
     {
       "id": "probe-widen-allowlist",
@@ -407,6 +407,30 @@
       "mutated": {
         "returncode": 1,
         "summary": "1 failed in 0.30s"
+      },
+      "result": "red_as_required"
+    },
+    {
+      "id": "qualification-seat-jailed",
+      "kind": "test",
+      "edits": [
+        {
+          "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
+          "file_sha256": "19e6254c369d67c1b44d298b038f2d475b2579298004a580290a1fa85fe7c6f3",
+          "old": "    if leg == \"gemini\" and gemini_heartbeat._CANDIDATE is not None:\n        # The agy self-qualification",
+          "new": "    if False:\n        # The agy self-qualification"
+        }
+      ],
+      "nodes": [
+        "tests/test_gemini_seat_egress_1170.py::test_the_agy_qualification_worker_keeps_its_gemini_seat_on_the_heartbeat_route"
+      ],
+      "control": {
+        "returncode": 0,
+        "summary": "1 passed in 0.25s"
+      },
+      "mutated": {
+        "returncode": 1,
+        "summary": "1 failed in 0.29s"
       },
       "result": "red_as_required"
     },
