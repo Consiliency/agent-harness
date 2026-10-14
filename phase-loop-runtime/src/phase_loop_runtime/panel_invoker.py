@@ -1767,6 +1767,14 @@ _PANEL_CLAUDE_ROUTE_ENV = "PHASE_LOOP_PANEL_CLAUDE_ROUTE"
 _PANEL_CLAUDE_ROUTE_PRINT = "print"
 _PANEL_CLAUDE_ROUTE_TUI = "tui"
 _PANEL_CLAUDE_ROUTE_INVALID = "panel_claude_route_invalid"
+# Stage 2: the Claude transport seam (`tui | print | sdk`). `sdk` is a named member of the
+# seam but is not admitted: EC-REVIEWTRUTH-18, as amended by the 2026-10-08 ruling, keeps
+# the Agent SDK out until a further amendment admits it (Stage 3). Selecting it is refused
+# with its own code rather than read as a typo.
+_PANEL_CLAUDE_ROUTE_SDK = "sdk"
+_PANEL_CLAUDE_TRANSPORT_NOT_ADMITTED = "panel_claude_transport_not_admitted"
+_PANEL_CLAUDE_TRANSPORTS = (_PANEL_CLAUDE_ROUTE_PRINT, _PANEL_CLAUDE_ROUTE_TUI, _PANEL_CLAUDE_ROUTE_SDK)
+_PANEL_CLAUDE_ADMITTED_TRANSPORTS = frozenset({_PANEL_CLAUDE_ROUTE_PRINT, _PANEL_CLAUDE_ROUTE_TUI})
 # `--permission-prompts none` first shipped in 2.1.259; the TUI keeps its own minimum.
 _CLAUDE_PRINT_MIN_VERSION = (2, 1, 259)
 _CLAUDE_PRINT_MIN_VERSION_TEXT = "2.1.259"
@@ -2354,7 +2362,8 @@ _PROVIDER_REFUSAL_KINDS = frozenset({"classifier_refusal"})
 CLAUDE_TUI_TYPED_REFUSAL_SUPPORTED = False
 _TYPED_UNAVAILABLE_DETAILS = frozenset(
     {"subscription_auth_unproven", "tui_adapter_required", "tui_backing_required", "under_claude_code",
-     "claude_print_subscription_unproven", "claude_print_auth_drift", "panel_claude_route_invalid"}
+     "claude_print_subscription_unproven", "claude_print_auth_drift", "panel_claude_route_invalid",
+     "panel_claude_transport_not_admitted"}
 )
 
 
@@ -2995,6 +3004,8 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     # the headless print route (Stage 1b)
     "claude_print_result", "claude_print_subscription_unproven", "claude_print_auth_drift",
     "claude_print_stalled", "panel_claude_route_invalid",
+    # the transport seam (Stage 2): `sdk` is named but not admitted (EC-REVIEWTRUTH-18)
+    "panel_claude_transport_not_admitted",
     # route / authorization refusals
     "missing HARDEN review authorization", "missing or forged HARDEN review authorization",
     "harden_advisory_execution_refused", "harden_review_capture_route_refused",
@@ -7297,14 +7308,38 @@ def _broker_claude_tui_command(
 
 def _panel_claude_route() -> str | None:
     """The Claude seat route: ``print`` (the default) or ``tui``; ``None`` for any other
-    value, which the caller fails closed as ``panel_claude_route_invalid``."""
+    value, which a caller must fail closed.
+
+    The admitted subset of ``_resolve_claude_transport``. It drops the refusal code, so a
+    caller that reports one uses the resolver, which tells a not-admitted transport
+    (``sdk``, ``panel_claude_transport_not_admitted``) apart from an unknown value
+    (``panel_claude_route_invalid``)."""
+    transport, _refusal = _resolve_claude_transport()
+    return transport
+
+
+def _resolve_claude_transport(*, tui_only: bool = False) -> tuple[str | None, str | None]:
+    """The Stage 2 transport seam: which transport a Claude seat launches on.
+
+    Returns ``(transport, None)`` for an admitted transport, else ``(None, refusal)``.
+    ``PHASE_LOOP_PANEL_CLAUDE_ROUTE`` selects ``print`` (the default when unset or blank)
+    or ``tui``. ``sdk`` is a seam member that is not admitted
+    (``panel_claude_transport_not_admitted``, EC-REVIEWTRUTH-18); any other value is
+    ``panel_claude_route_invalid``. Neither refusal ever falls back to another transport.
+
+    ``tui_only`` is a seat that only the TUI can carry today (the sealed capture namespace,
+    research seats): a selected ``print`` resolves to ``tui`` for it. A refused selection
+    stays refused, so a bad value is never hidden by the kind of seat that read it.
+    """
     raw = os.environ.get(_PANEL_CLAUDE_ROUTE_ENV)
-    if raw is None or not raw.strip():
-        return _PANEL_CLAUDE_ROUTE_PRINT
-    value = raw.strip().lower()
-    if value in (_PANEL_CLAUDE_ROUTE_PRINT, _PANEL_CLAUDE_ROUTE_TUI):
-        return value
-    return None
+    value = _PANEL_CLAUDE_ROUTE_PRINT if raw is None or not raw.strip() else raw.strip().lower()
+    if value not in _PANEL_CLAUDE_TRANSPORTS:
+        return None, _PANEL_CLAUDE_ROUTE_INVALID
+    if value not in _PANEL_CLAUDE_ADMITTED_TRANSPORTS:
+        return None, _PANEL_CLAUDE_TRANSPORT_NOT_ADMITTED
+    if tui_only:
+        return _PANEL_CLAUDE_ROUTE_TUI, None
+    return value, None
 
 
 def _claude_print_seat_command(
@@ -10790,7 +10825,7 @@ def _exec_claude_tui_leg(
     selects the interactive TUI below, as do capture and research seats: it lets Claude
     write a deterministic scratch output file. Agent View stays unused; it is prone to
     background PTY reaping on this host. The function keeps its name for its callers;
-    Stage 2 introduces the transport seam.
+    ``_resolve_claude_transport`` (the Stage 2 seam) picks the route.
 
     ABDHOME: ``effort is None`` uses ``--effort high`` and ``env is None`` keeps
     ``_subscription_env()`` (scrub
@@ -10820,13 +10855,15 @@ def _exec_claude_tui_leg(
         )
         return "UNAVAILABLE", "under_claude_code"
 
-    # Stage 1b: headless `claude -p` is the default route. The sealed capture namespace and
-    # research seats (MCP tools, a write workspace) have no print transport yet and stay on
-    # the TUI; `PHASE_LOOP_PANEL_CLAUDE_ROUTE=tui` keeps every seat on it.
-    route = _panel_claude_route()
-    if route is None:
-        return "UNAVAILABLE", _PANEL_CLAUDE_ROUTE_INVALID
-    if route == _PANEL_CLAUDE_ROUTE_PRINT and agy_capture is None and research_seat is None:
+    # The transport seam: headless `claude -p` is the default. The sealed capture namespace
+    # and research seats (MCP tools, a write workspace) have no print transport yet and stay
+    # on the TUI; `PHASE_LOOP_PANEL_CLAUDE_ROUTE=tui` keeps every seat on it.
+    route, refusal = _resolve_claude_transport(
+        tui_only=agy_capture is not None or research_seat is not None,
+    )
+    if refusal is not None:
+        return "UNAVAILABLE", refusal
+    if route == _PANEL_CLAUDE_ROUTE_PRINT:
         return _exec_claude_print_leg(
             review_dir, out_dir, timeout_s, artifact, repo_dir=repo_dir, mode=mode,
             model=model, effort=effort, env=env, settings_env=claude_settings_env,

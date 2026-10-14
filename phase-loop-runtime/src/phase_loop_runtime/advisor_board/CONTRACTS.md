@@ -101,7 +101,8 @@ equivalence is proven by a test (not asserted in prose).
   additionally asserts `system/init.apiKeySource == "none"` in-band and fails as
   `claude_print_subscription_unproven` / `claude_print_auth_drift` / `claude_print_stalled`;
   the self-PTY route is the `PHASE_LOOP_PANEL_CLAUDE_ROUTE=tui` fallback, and any other route
-  value fails as `panel_claude_route_invalid`. The
+  value fails as `panel_claude_route_invalid`; `sdk`, a named but not admitted transport
+  (EC-REVIEWTRUTH-18), fails as `panel_claude_transport_not_admitted`. The
   homebrew backing is mandatory; alternate backings fail before gateway access.
   API-key fallback is forbidden on every host. Task/subagent fulfillment of the claude
   seat is forbidden on every host EXCEPT Claude Code, where the driving session fills the

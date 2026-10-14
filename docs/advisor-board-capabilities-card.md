@@ -147,7 +147,9 @@ HTTP path may fulfill those seats. Under Claude Code the seat defers as
 `api_retry` with an authentication, billing or org-not-allowed error reports
 `claude_print_auth_drift`, and a session that emits no event within the stall bound reports
 `claude_print_stalled`; an unrecognised `PHASE_LOOP_PANEL_CLAUDE_ROUTE` value reports
-`panel_claude_route_invalid` and never silently falls back. Today's adapter has no typed classifier-refusal
+`panel_claude_route_invalid` and never silently falls back. `sdk` is a named member of the
+transport seam (`tui | print | sdk`) that EC-REVIEWTRUTH-18 does not admit: selecting it reports
+`panel_claude_transport_not_admitted`, also without fallback. Today's adapter has no typed classifier-refusal
 capability, so refusal-looking text never triggers fallback. The bounded future
 policy permits one Opus TUI retry only for typed classifier refusal plus an
 independent defensive-security attestation, then fails closed.
