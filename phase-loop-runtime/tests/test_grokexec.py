@@ -205,6 +205,28 @@ def test_build_grok_launch_spec_execute_carries_disallowed_tools_deny_list():
         assert coding_tool not in denied, f"{coding_tool!r} must stay available to grok execute"
 
 
+# grok 1.0.52 refuses to START a session whose terminal tool runs in background mode
+# without the task tools that observe and cancel those tasks:
+#   "GrokBuild:run_terminal_cmd enabled_background=true requires
+#    GrokBuild:get_task_output and GrokBuild:kill_task"
+# Denying them (under their legacy names or the current ones) aborts every execute
+# launch before a model turn, at any effort. Measured live on claw, 2026-10-14.
+_GROK_BACKGROUND_TASK_TOOLS = (
+    "get_task_output",
+    "kill_task",
+    "get_command_or_subagent_output",
+    "kill_command_or_subagent",
+)
+
+
+def test_grok_execute_deny_list_keeps_the_background_task_tools():
+    denied = set(launcher.GROK_EXECUTE_DISALLOWED_TOOLS.split(","))
+    for tool in _GROK_BACKGROUND_TASK_TOOLS:
+        assert tool not in denied, f"{tool!r} is required by grok's background terminal; denying it aborts the session"
+    # The fanout lever itself stays denied (plus --no-subagents on the argv).
+    assert "spawn_subagent" in denied
+
+
 def test_build_grok_launch_spec_repair_keeps_unrestricted_write_branch():
     # #154 scope pin (deliberate): the execute `--tools` allow-list is scoped to the
     # `execute` action — its exact target. repair/roadmap/plan stay on the
