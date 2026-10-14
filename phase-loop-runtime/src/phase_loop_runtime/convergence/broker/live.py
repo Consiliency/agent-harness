@@ -1476,14 +1476,14 @@ def _generation_store(container: Path, generation: int) -> Path:
     return container if generation == 0 else container / GENERATIONS_DIR / str(generation)
 
 
-def generation_store_root(root: Path, generation: int) -> Path:
-    """The store root of ``generation`` in ``root``'s partition."""
-    container, _active = _partition_layout(Path(root))
+def generation_store_root(store_root: Path, generation: int) -> Path:
+    """The store root of ``generation`` in ``store_root``'s partition."""
+    container, _active = _partition_layout(Path(store_root))
     return _generation_store(container, generation)
 
 
-def post_ambiguity_effect_refusal(root: Path, key: str) -> str | None:
-    """Why ``key`` of ``root`` must not be disposed ``attested_not_landed``, or ``None``.
+def post_ambiguity_effect_refusal(store_root: Path, key: str) -> str | None:
+    """Why ``key`` of ``store_root`` must not be disposed ``attested_not_landed``, or ``None``.
 
     agent-harness#1591 (D2): the provider reported an effect for the key after
     its row was already ambiguous, or the side file that would say so cannot be
@@ -1496,10 +1496,10 @@ def post_ambiguity_effect_refusal(root: Path, key: str) -> str | None:
         post_ambiguity_effect,
     )
 
-    observed = post_ambiguity_effect(Path(root), key)
+    observed = post_ambiguity_effect(Path(store_root), key)
     if observed is UNREADABLE:
         return (
-            f"an unreadable {POST_AMBIGUITY_OBSERVATIONS_FILENAME} in {root} (it may hold "
+            f"an unreadable {POST_AMBIGUITY_OBSERVATIONS_FILENAME} in {store_root} (it may hold "
             "a provider-reported effect for the key)"
         )
     if observed is None:
@@ -1511,12 +1511,12 @@ def post_ambiguity_effect_refusal(root: Path, key: str) -> str | None:
     )
 
 
-def _refuse_attested_not_landed_over_observations(root: Path, effects: dict) -> None:
+def _refuse_attested_not_landed_over_observations(store_root: Path, effects: dict) -> None:
     """Refuse an ``attested_not_landed`` entry for an observed effect (agent-harness#1591, D2)."""
     for key, entry in sorted(effects.items()):
         if not isinstance(entry, dict) or entry.get("disposition") != DISPOSITION_ATTESTED_NOT_LANDED:
             continue
-        why = post_ambiguity_effect_refusal(root, key)
+        why = post_ambiguity_effect_refusal(store_root, key)
         if why is not None:
             raise PartitionRotationRefused(
                 f"attestation disposes {key!r} attested_not_landed, but the predecessor holds {why}; "
