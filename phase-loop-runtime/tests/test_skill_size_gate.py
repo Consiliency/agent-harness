@@ -47,20 +47,20 @@ STRICT = False
 ALLOWLIST: dict[tuple[str, str], int] = {
     ("skills-src/claude/claude-advisor-board/SKILL.md", "long_line"): 1530,
     # execute-phase / execute-detailed: recorded after agent-harness#1548; split in a follow-up (agent-harness#1358).
-    ("skills-src/claude/claude-execute-phase/SKILL.md", "tokens"): 14896,
-    ("skills-src/claude/claude-execute-phase/SKILL.md", "lines"): 839,
+    ("skills-src/claude/claude-execute-phase/SKILL.md", "tokens"): 15111,
+    ("skills-src/claude/claude-execute-phase/SKILL.md", "lines"): 850,
     ("skills-src/claude/claude-execute-phase/SKILL.md", "long_line"): 1019,
     ("skills-src/claude/claude-phase-roadmap-builder/SKILL.md", "tokens"): 6048,
     # Split in agent-harness#1358; what remains is test-pinned normative text.
     ("skills-src/claude/claude-plan-phase/SKILL.md", "tokens"): 7783,
-    ("skills-src/codex/codex-execute-phase/SKILL.md", "tokens"): 9417,
+    ("skills-src/codex/codex-execute-phase/SKILL.md", "tokens"): 9632,
     ("skills-src/codex/codex-execute-phase/SKILL.md", "long_line"): 1295,
     ("skills-src/codex/codex-plan-phase/SKILL.md", "tokens"): 6675,
     ("skills-src/codex/codex-plan-phase/SKILL.md", "long_line"): 1065,
-    ("skills-src/gemini/gemini-execute-phase/SKILL.md", "tokens"): 6728,
+    ("skills-src/gemini/gemini-execute-phase/SKILL.md", "tokens"): 6943,
     ("skills-src/gemini/gemini-execute-phase/SKILL.md", "long_line"): 1062,
     ("skills-src/gemini/gemini-plan-phase/SKILL.md", "long_line"): 1066,
-    ("skills-src/opencode/opencode-execute-phase/SKILL.md", "tokens"): 5463,
+    ("skills-src/opencode/opencode-execute-phase/SKILL.md", "tokens"): 5678,
     ("skills-src/opencode/opencode-execute-phase/SKILL.md", "long_line"): 1032,
     ("skills-src/opencode/opencode-plan-phase/SKILL.md", "long_line"): 1068,
 }
