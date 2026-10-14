@@ -14,6 +14,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - A repo-specific Improvements section is dropped and noted in the manifest,
   while usable What didn't and What worked sections remain. A reflection with
   neither friction nor an eligible proposal is still excluded.
+- A rejected repo-specific proposal with no remaining friction stays in place.
+  Ledger-labelled friction is retained; bulleted ledger proposals are dropped.
+  Copy matching preserves meaningful leading CLI and Markdown syntax.
 
 ### The skill-improvement aggregator applies eight admission gates and a ladder level (agent-harness#1321)
 

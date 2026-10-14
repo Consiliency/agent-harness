@@ -153,7 +153,7 @@ def test_boilerplate_is_stripped_before_the_repo_agnostic_gate(tmp_path):
     assert reasons["b0"] is None and reasons["b1"] is None and reasons["b2"] is None
     assert "some-repo#361" not in rc.render_bundle(corpus)
     assert reasons["b9"] is None
-    assert reasons["b8"] == "no_friction_or_proposal"
+    assert reasons["b8"] is None
 
 
 def test_identical_reports_from_independent_runs_both_count(tmp_path):
@@ -220,14 +220,67 @@ def test_repo_specific_proposal_does_not_discard_other_sections(tmp_path, propos
     assert len(rc.manifest(corpus, boilerplate)["reflections_consumed"]) == 2
 
 
-def test_repo_specific_proposal_without_friction_is_empty_not_unstructured(tmp_path):
+def test_repo_specific_proposal_without_friction_is_retained_not_unstructured(tmp_path):
     root = tmp_path / "skills"
-    put(root, "codex-plan-phase", "repo", "branch", "run", "## Improvements to SKILL.md\nFix agent-harness#1371.\n")
+    path = put(root, "codex-plan-phase", "repo", "branch", "run", "## Improvements to SKILL.md\nFix agent-harness#1371.\n")
 
-    corpus, _ = rc.collect([root])
+    corpus, boilerplate = rc.collect([root])
 
-    assert corpus.scanned[0].excluded == "no_friction_or_proposal"
+    assert corpus.scanned[0].excluded == "improvements_repo_specific"
+    assert "section_dropped:improvements:repo_specific" in corpus.scanned[0].notes
+    artifacts = rc.write_corpus(corpus, boilerplate, tmp_path / "corpus")
+    assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == []
+    assert rc.main(["archive", "--manifest", str(artifacts["manifest"]), "--root", str(root)]) == 0
+    assert path.exists()
     assert "Fix" not in rc.render_bundle(corpus)
+
+
+@pytest.mark.parametrize("marker", ["", "- ", "* ", "+ "])
+def test_ledger_syntax_in_friction_survives_but_ledger_proposals_do_not(tmp_path, marker):
+    root = tmp_path / "skills"
+    friction = f"{marker}Hosted CI: the windows lane silently skipped all verification tests."
+    for run in ("run1", "run2", "run3"):
+        put(root, "codex-plan-phase", "repo", "branch", run, reflection(
+            worked="", didnt=friction, improvements=f"{marker}Hosted CI: passed on main.",
+        ))
+
+    corpus, _ = rc.collect([root], min_reflections=3)
+    bundle = rc.render_bundle(corpus)
+
+    assert corpus.ready_skills() == ["plan-phase"]
+    assert bundle.count("the windows lane silently skipped all verification tests.") == 3
+    assert "passed on main" not in bundle
+
+
+@pytest.mark.parametrize("marker", ["", "- ", "* ", "+ "])
+def test_a_ledger_only_proposal_is_not_admitted(tmp_path, marker):
+    root = tmp_path / "skills"
+    put(root, "codex-plan-phase", "repo", "branch", "run", reflection(
+        worked="", didnt="", improvements=f"{marker}Hosted CI: passed on main.",
+    ))
+
+    corpus, _ = rc.collect([root], min_reflections=1)
+
+    assert not corpus.admitted
+    assert corpus.scanned[0].excluded == "no_friction_or_proposal"
+
+
+@pytest.mark.parametrize(("first", "second"), [
+    ("--no-verify must remain disabled during publication.", "no-verify must remain disabled during publication."),
+    ("**Important**: verify before reporting completion.", "Important**: verify before reporting completion."),
+])
+def test_same_run_copy_matching_preserves_meaningful_leading_syntax(tmp_path, first, second):
+    roots = [tmp_path / "first", tmp_path / "second"]
+    for root, proposal in zip(roots, (first, second)):
+        put(root, "codex-plan-phase", "repo", "branch", "run", reflection(
+            worked="", didnt="", improvements=proposal,
+        ))
+
+    corpus, _ = rc.collect(roots)
+    bundle = rc.render_bundle(corpus)
+
+    assert len(corpus.admitted) == 2
+    assert first in bundle and second in bundle
 
 
 def test_a_line_repeated_across_repos_is_evidence_not_boilerplate(tmp_path):

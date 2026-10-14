@@ -5,6 +5,22 @@ recurrence, limits exact/near deduplication to the same recorded skill/repo/bran
 and drops repo-specific proposal sections without discarding usable friction.
 Unknown legacy source identity is insufficient to deduplicate separate files.
 
+## Consolidation decision (2026-10-14)
+
+The owner selected preservation of distinct runs, including runs on one branch,
+with noise assessed by the aggregator rather than a mandatory two-branch filter.
+agent-harness#1625 is retained; agent-harness#1622 is superseded. Its applicable
+safeguards are carried over: a dropped repo-specific proposal without friction is
+not consumed, and bulleted ledger proposals are removed without dropping labelled
+friction. Friction with a bare ledger prefix also survives. Copy matching strips
+only a single Markdown list marker followed by whitespace, preserving CLI flags
+and bold syntax. No recurring-line renderer or cap/settlement loop is needed under
+the selected policy; actionable lines stay in each admitted entry with its source id.
+
+Eleven consolidation regression cases fail on the previous implementation. Relevant
+suites now give **198 passed, 1 existing skip**. The counts below are historical
+measurements of the initial candidate, not a rerun of the consolidated policy.
+
 ## Regression evidence
 
 Six new cases fail before the implementation: three distinct runs with identical

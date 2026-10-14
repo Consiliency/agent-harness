@@ -241,11 +241,14 @@ def read_reflection(root: Path, skill: str, path: Path) -> Reflection | None:
     )
 
 
-def redact(text: str) -> str:
-    """Strip closeout-ledger detail that belongs in the handoff, not a reflection."""
+def redact(text: str, *, drop_ledger: bool = True, bulleted_ledger: bool = False) -> str:
+    """Redact ledger detail; friction keeps ledger-labelled observations."""
     kept = []
     for line in text.splitlines():
-        if line.strip().lower().startswith(_LEDGER_PREFIXES):
+        head = line.strip()
+        if bulleted_ledger:
+            head = re.sub(r"^[-*+]\s+", "", head)
+        if drop_ledger and head.lower().startswith(_LEDGER_PREFIXES):
             continue
         line = _URL.sub("<url>", line)
         line = _JSON_BLOB.sub("<json>", line)
@@ -273,7 +276,7 @@ NEAR_DUPLICATE_OVERLAP = 0.8
 
 
 def _norm_line(line: str) -> str:
-    return " ".join(line.strip().lstrip("-*").split())
+    return " ".join(re.sub(r"^[-*+]\s+", "", line.strip()).split())
 
 
 def _content_lines(reflection: Reflection) -> set[str]:
@@ -328,7 +331,12 @@ def apply_quality_filter(
     line_repos: dict[str, set[str]] = defaultdict(set)
     for reflection in reflections:
         if not reflection.excluded:
-            for line in _content_lines(reflection):
+            ledger_lines = {
+                _norm_line(line)
+                for key in ("worked", "improvements")
+                for line in reflection.sections.get(key, "").splitlines()
+            }
+            for line in ledger_lines:
                 if len(line) >= BOILERPLATE_MIN_CHARS and line.lower().startswith(_LEDGER_PREFIXES):
                     line_counts[line] += 1
                     line_repos[line].add(reflection.repo_hash)
@@ -343,7 +351,7 @@ def apply_quality_filter(
             if key not in reflection.sections:
                 continue
             original = reflection.sections[key].splitlines()
-            kept = [line for line in original if _norm_line(line) not in boilerplate]
+            kept = original if key == "didnt" else [line for line in original if _norm_line(line) not in boilerplate]
             if len(kept) != len(original):
                 reflection.notes.append(f"boilerplate_stripped:{key}:{len(original) - len(kept)}")
             reflection.sections[key] = "\n".join(kept).strip()
@@ -351,11 +359,15 @@ def apply_quality_filter(
         if reflection.improvements_class == "repo_specific":
             reflection.sections["improvements"] = ""
             reflection.notes.append("improvements_repo_specific")
+            reflection.notes.append("section_dropped:improvements:repo_specific")
         for key in CONTENT_KEYS:
             if key in reflection.sections:
-                reflection.sections[key] = redact(reflection.sections[key])
-        if reflection.structured and not reflection.sections.get("didnt") and reflection.improvements_class in {"none", "missing", "repo_specific"}:
-            reflection.excluded = "no_friction_or_proposal"
+                reflection.sections[key] = redact(
+                    reflection.sections[key], drop_ledger=key != "didnt", bulleted_ledger=key == "improvements",
+                )
+        eligible_proposal = reflection.improvements_class == "agnostic" and bool(reflection.sections.get("improvements"))
+        if reflection.structured and not reflection.sections.get("didnt") and not eligible_proposal:
+            reflection.excluded = "improvements_repo_specific" if reflection.improvements_class == "repo_specific" else "no_friction_or_proposal"
 
     groups: dict[tuple[str, str, str], list[Reflection]] = defaultdict(list)
     for reflection in reflections:
@@ -485,7 +497,8 @@ def consumed(corpus: Corpus) -> list[Reflection]:
     any skill, reflections excluded as a duplicate or as having no friction and no
     proposal. Every other reflection stays in place: admitted ones of a skill below
     the threshold so evidence can accumulate, and the rest of the excluded ones
-    (per-branch cap, oversized) because their friction is still evidence.
+    (a dropped repo-specific proposal with no friction, per-branch cap, oversized)
+    because they may still be evidence.
     Repo-specific Improvements are removed without dropping usable friction.
     A reflection whose real location leaves
     its scan root is never consumed, because ``archive`` would refuse it.

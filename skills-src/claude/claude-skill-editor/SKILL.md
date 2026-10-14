@@ -127,6 +127,8 @@ Per the plan's archival directive:
 
 The manifest decides what is consumed: the admitted reflections of ready skills, plus reflections excluded as a duplicate (`duplicate_of`) or with no friction and no proposal (`no_friction_or_proposal`). Repo-specific proposal sections are dropped without discarding usable friction. All other reflections stay in place, including capped or oversized ones and those of skills still below the threshold, so their friction can count in a later pass. An admitted reflection of a ready skill that no surviving recommendation cites is still archived; it has been considered.
 
+A reflection with only a rejected repo-specific proposal stays in place; it is not consumed as empty.
+
 ### Step 6 — Commit + push
 
 Commit in the agent-harness checkout on a feature branch, never on `main`:
