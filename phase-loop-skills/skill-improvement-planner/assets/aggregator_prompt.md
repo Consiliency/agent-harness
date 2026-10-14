@@ -42,8 +42,8 @@ A single markdown document in the exact format described at the end of this prom
    - **Durable?** Keep it only if it will still be true in six months, after paths, SHAs, tool versions and code shapes have changed. If it rests on a fact that will drift (a version, a count, what a check rejects today), rewrite it as the rule behind that fact, or list a defect in a skill's own template or check under `## Mechanism candidates`.
    - **Specific?** Make it broad enough to apply across tasks and precise enough that a future agent recognizes when to use it. Drop a vague platitude; rewrite a one-off fact as the pattern it shows, or drop it.
    - **Existing skill first?** Target the in-scope skill that is a real home for it. If none is, do not invent a target: record it under `## Speculative / low-confidence notes` as a candidate new skill, and only when the pattern recurs.
-   - **Convergent?** Weigh independent support above repetition; this is separate from rule 1's count. A theme supported only by proposals with no `What didn't` friction behind them must clear a higher bar on the other gates; if it does not, move it to `## Speculative / low-confidence notes`.
-   - **Skill was used?** A reflection shows its own skill ran, so a theme that targets the reflecting skill passes. Reflections do not yet record which other skills the agent read, so for a theme that targets a different skill you cannot conclude it was read or skipped: propose `tune description: <target skill>` so it fires next time, not a body edit.
+   - **Convergent?** Weigh independent support above repetition; this is separate from rule 1's count. Count reflections from separate runs as independent even when one harness wrote them all; single-harness support does not raise the bar. A theme supported only by proposals with no `What didn't` friction behind them must clear a higher bar on the other gates; if it does not, move it to `## Speculative / low-confidence notes`.
+   - **Skill was used?** A reflection shows its own skill ran. If that skill already states the rule clearly and the agent did not follow it, treat the theme as a compliance failure: propose a placement or emphasis change, or a mechanism candidate, not more prose. Reflections do not yet record which other skills the agent read, so for a theme that targets a different skill you cannot conclude it was read or skipped; keep a body edit that fixes wrong or missing guidance. Only when the friction shows that skill should have fired and did not, propose `tune description: <target skill>` and give the complete replacement frontmatter `description:` text as the Change.
 
 5. **Concrete edits, not directions to edit.** Bad: "Consider improving Step 5." Good: "In Step 5 of claude-plan-phase/SKILL.md, add a bullet after 'Apply the claude-task-contextualizer checklist' stating: 'Include the phase's full Exit criteria list, not just the Objective.'"
 
@@ -53,7 +53,7 @@ A single markdown document in the exact format described at the end of this prom
 
 8. **Stay lean.** If a skill had no recurring themes, write "No recurring themes above the `--min-reflections` threshold." Do not invent work. The goal is a useful plan, not a long plan.
 
-9. **Speculative section is a valid output, not a dump.** Use it for single-mention observations that seem plausible but lack support. Each should be a single line. If it's garbage, drop it entirely.
+9. **Speculative section is a valid output, not a dump.** Use it for single-mention observations that seem plausible but lack support, and for the candidate new skills and unconvergent themes rule 4 sends here. Each should be a single line. If it's garbage, drop it entirely.
 
 ## Output format (emit exactly this structure)
 
@@ -88,7 +88,7 @@ A single markdown document in the exact format described at the end of this prom
 
 ## Speculative / low-confidence notes
 
-<Single-line observations from one-off reflections worth recording but not acting on. No rationale needed beyond the observation itself.>
+<Single-line observations from one-off reflections, candidate new skills, and themes that failed the convergence gate, worth recording but not acting on. No rationale needed beyond the observation itself.>
 
 (If none, write "None this pass.")
 

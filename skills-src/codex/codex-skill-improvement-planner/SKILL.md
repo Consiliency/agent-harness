@@ -59,14 +59,7 @@ When invoked by `codex-phase-loop maintain-skills`, planner output is the defaul
    - separate actionable changes from speculative notes;
    - flag contradictions instead of resolving them silently;
    - reject repo-specific recommendations unless the target skill is intentionally repo-specific;
-   - already-covered: read the target `skills-src/` `SKILL.md` first; when the guidance exists but is buried or weak, propose a wording or placement change, not a duplicate addition;
-   - decision-changing: keep only edits that change what a future agent does, not edits that only add text;
-   - structural-mechanism: when a lint, script, metadata flag or runtime check could enforce the rule cheaply, route it to a filed `agent-harness#N` issue (`docs/registers/deferred-findings.md`) instead of skill prose;
-   - durability: keep only what stays true after paths, SHAs, tool versions and code shapes change; rewrite a drifting fact as the rule behind it;
-   - specificity: drop vague platitudes; rewrite a one-off fact as the pattern it shows, or drop it;
-   - existing-skill-first: target the in-scope skill that is a real home; if none is, record a recurring pattern as a speculative candidate new skill;
-   - convergence: a theme supported only by proposals without `What didn't` friction must clear a higher bar on the other gates, else it is speculative;
-   - skill-was-used: a theme that targets the reflecting skill passes; reflections do not yet record which other skills the agent read, so for another skill you cannot conclude it was read and propose `tune description: <target skill>` instead of a body edit.
+   - apply the eight admission gates (already-covered, decision-changing, structural-mechanism, durability, specificity, existing-skill-first, convergence, skill-was-used) exactly as rule 4 of `assets/aggregator_prompt.md` states them; read that file and do not paraphrase the gates. Read each target's `skills-src/` `SKILL.md` before applying already-covered.
 5. Produce a plan with:
    - frontmatter listing `corpus_manifest` and the manifest's `reflections_consumed` paths;
    - recommendations by skill;

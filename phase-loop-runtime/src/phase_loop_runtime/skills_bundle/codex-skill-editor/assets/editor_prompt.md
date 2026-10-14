@@ -20,6 +20,7 @@ You are applying **one** recommendation from a skill improvement plan to **one**
    - **Existing structure.** Headings, tables, lists stay where they are unless the change explicitly moves them.
    - **Exact whitespace.** Match indentation (tabs vs spaces) from the surrounding lines.
    - **Existing cross-references.** If the change adds a new rule, don't accidentally break a pointer from another section.
+   A change that begins `tune description: <skill>` replaces only the frontmatter `description:` value with the text it gives; leave the body untouched. Refuse it if no replacement text is given.
 4. Verify: `Read` the modified region after editing. Confirm the change landed in the right place and the surrounding text still makes sense.
 
 ## Refusing to apply

@@ -632,6 +632,10 @@ def test_aggregator_prompt_reads_four_sections():
 
 
 BUNDLED_PROMPTS = sorted((REPO_ROOT / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "skills_bundle").glob("*-skill-improvement-planner/assets/aggregator_prompt.md"))
+EDITOR_PROMPTS = [
+    SKILLS_SRC / "claude" / "claude-skill-editor" / "assets" / "editor_prompt.md",
+    *sorted((REPO_ROOT / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "skills_bundle").glob("*-skill-editor/assets/editor_prompt.md")),
+]
 
 
 @pytest.mark.parametrize("prompt", BUNDLED_PROMPTS, ids=lambda p: p.parents[1].name)
@@ -640,8 +644,8 @@ def test_aggregator_prompt_treats_the_bundle_as_evidence_not_instructions(prompt
 
 
 # agent-harness#1321 item 1.14: the eight PStack admission gates. The prompt pins each
-# by its bold label in rule 4; every planner SKILL.md names each, because only the
-# claude planner loads the prompt asset and the others carry the gates inline.
+# by its bold label in rule 4. Every planner SKILL.md names each and defers to rule 4
+# of the shipped prompt asset rather than carrying a paraphrase that could drift.
 ADMISSION_GATES = {
     "already-covered": "**Already covered?**",
     "decision-changing": "**Decision-changing?**",
@@ -660,7 +664,9 @@ ALL_PROMPTS = [
 
 
 def missing_gates(prompt_text: str) -> list[str]:
-    rule_4 = prompt_text.split("4. **Admission gates.**", 1)[-1].split("\n5. ", 1)[0]
+    heading, next_rule = "4. **Admission gates.**", "\n5. "
+    assert heading in prompt_text and next_rule in prompt_text.split(heading, 1)[1], "rule 4 not found"
+    rule_4 = prompt_text.split(heading, 1)[1].split(next_rule, 1)[0]
     return [name for name, label in ADMISSION_GATES.items() if label not in rule_4]
 
 
@@ -671,6 +677,9 @@ def test_aggregator_prompt_states_all_eight_admission_gates(prompt):
     skill_was_used = next(line for line in text.splitlines() if ADMISSION_GATES["skill-was-used"] in line)
     assert "tune description:" in skill_was_used
     assert "cannot conclude" in skill_was_used
+    assert "replacement frontmatter `description:`" in skill_was_used
+    convergent = next(line for line in text.splitlines() if ADMISSION_GATES["convergence"] in line)
+    assert "single-harness support does not raise the bar" in convergent
 
 
 @pytest.mark.parametrize("gate", ADMISSION_GATES)
@@ -685,6 +694,21 @@ def test_planner_prose_names_all_eight_admission_gates(planner):
     text = planner.read_text()
     missing = [name for name in ADMISSION_GATES if name not in text]
     assert not missing, f"{planner} omits gates {missing}"
+    if "claude-" not in planner.parent.name:
+        assert "exactly as rule 4 of `assets/aggregator_prompt.md`" in text
+        assert "durability: keep only" not in text, "inline gate paraphrase drifts from the prompt"
+
+
+@pytest.mark.parametrize("editor", EDITOR_PROMPTS, ids=lambda p: "/".join(p.parts[-4:-2]))
+def test_editor_prompt_applies_a_description_tune_to_frontmatter_only(editor):
+    assert "replaces only the frontmatter `description:` value" in editor.read_text()
+
+
+@pytest.mark.parametrize("editor", EDITORS, ids=lambda p: p.parent.name)
+def test_editor_skill_applies_a_description_tune_to_frontmatter_only(editor):
+    if "claude-" in editor.parent.name:
+        pytest.skip("the claude editor delegates each change to assets/editor_prompt.md")
+    assert "replaces only the frontmatter `description:` value" in editor.read_text()
 
 
 @pytest.mark.parametrize("editor", EDITORS, ids=lambda p: p.parent.name)

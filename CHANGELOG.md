@@ -12,12 +12,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   durability, specificity, existing-skill-first, convergence and skill-was-used, one
   line each, saying what to do when a theme fails the gate.
 - Reflections do not yet record which skills an agent read. Until they do,
-  skill-was-used cannot conclude anything about a theme aimed at another skill, and
-  proposes `tune description:` for that skill instead of a body edit.
-- The codex, gemini and opencode planners carry the gates inline rather than loading
-  the prompt asset, so their `SKILL.md` gate lists gain the same five gates.
-- Convergence weighs recorded friction and independent support; evidence from a
-  single harness is sufficient and does not by itself raise the admission bar.
+  skill-was-used cannot conclude whether another skill was read, so a body edit that
+  fixes wrong or missing guidance stands. It proposes `tune description:` only when
+  the friction shows that skill should have fired, and the change must carry the full
+  replacement `description:` text. Every skill editor applies such a change to the
+  frontmatter `description:` alone.
+- A theme aimed at the reflecting skill whose rule is already clear is treated as a
+  compliance failure: a placement, emphasis or mechanism fix, not more prose.
+- The codex, gemini and opencode planners apply the gates as rule 4 of their shipped
+  `assets/aggregator_prompt.md` states them, instead of an inline paraphrase that could
+  drift from it.
+- Convergence counts reflections from separate runs as independent even when one
+  harness wrote them all; single-harness support does not raise the admission bar.
 
 ### FABPUB: the provider is entered only after an in-lock check that the key is still this attempt's in-flight record (agent-harness#1577, agent-harness#1574, agent-harness#1578, agent-harness#1576)
 
