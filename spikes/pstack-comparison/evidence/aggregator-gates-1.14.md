@@ -15,6 +15,14 @@ for a different target is absent, not proof that it was skipped (agent-harness#1
 Six regression cases failed before the source/template fixes; behavioral A/B replication
 still belongs to REPORT 2.1.
 
+The reviewed follow-ups `942b3ac4` and `1e18365c` from the retained
+agent-harness#1587 branch are reapplied in agent-harness#1588: missing cross-skill read
+evidence preserves a body fix; only explicit missed-trigger friction permits description
+tuning, with full replacement text; editors restrict tuning to frontmatter and refuse
+missing text. Clear-but-ignored rules route to compliance fixes. The description style
+exception and bounded rule-4 test scan are included. Twelve gate/editor regression
+cases fail before these corrections; ten gate-removal/boundary controls pass.
+
 ## Method
 
 - Corpus: `python3 -m phase_loop_runtime.reflection_corpus collect --min-reflections 2` over

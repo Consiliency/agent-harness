@@ -31,6 +31,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - Bundles carry opaque repo/branch/run identities so convergence can distinguish
   independent support. Every planner's final template preserves ladder levels and
   rejected themes; missing skill-read evidence remains inconclusive.
+- Missing read evidence does not discard a cross-skill body fix. Description tuning
+  requires a reflection's What didn't to identify a missed trigger and supply the
+  complete replacement description. Every editor changes only that frontmatter value
+  and fails a tune without replacement text. Clear rules that were ignored route to
+  compliance fixes instead of duplicate prose.
 
 ### FABPUB: the provider is entered only after an in-lock check that the key is still this attempt's in-flight record (agent-harness#1577, agent-harness#1574, agent-harness#1578, agent-harness#1576)
 
