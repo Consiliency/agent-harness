@@ -54,6 +54,14 @@ def test_final_response_schema_excludes_interim_without_changing_lifecycle(tmp_p
 
 def test_golden_delta_is_only_final_schema_exclusion():
     golden = json.loads((Path(__file__).parent / "data/launchspec_golden/launchspec_golden.json").read_text())
+    # The seventh permitted delta (agent-harness#1581) changes only the two
+    # injected instruction strings. Restore their frozen prior bytes before
+    # the older normalization steps; all metadata and historical checks remain.
+    pre_1581 = json.loads((Path(__file__).parent / "data/launchspec_golden/pre_1581_pr_hardening.json").read_text())
+    for change in pre_1581["command_strings"]:
+        argv = golden[change["case"]]["command"]
+        assert argv[change["index"]] == change["current"]
+        argv[change["index"]] = change["pre_1581"]
     command = golden["claude_print_solo"]["command"]
     index = command.index("--json-schema") + 1
     schema = json.loads(command[index])
