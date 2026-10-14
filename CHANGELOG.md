@@ -6,6 +6,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Gemini 4 Argon defaults
+
+- Register `gemini-4-argon` and render its low, medium, and high subscription
+  model IDs consistently for board seats and executor launches. Generic
+  `pro`/`auto` routing and the heavy tier now select Argon; regular/lite Flash
+  routing and explicit legacy model choices remain available.
+- Default Gemini advisor and president seats use `gemini-4-argon-medium`,
+  preserving the existing board effort. Argon is GA as of
+  [October 13, 2026](https://ai.google.dev/gemini-api/docs/changelog); its registry
+  effort ceiling is high, matching the models listed by `agy models`.
+
 ### FABPUB: the provider is entered only after an in-lock check that the key is still this attempt's in-flight record (agent-harness#1577, agent-harness#1574, agent-harness#1578, agent-harness#1576)
 
 - An older-runtime prober could promote a live writer's owner to

@@ -127,10 +127,10 @@ class PopulatedRegistryTests(unittest.TestCase):
 
     def test_current_default_board_models_resolve_to_their_lanes(self) -> None:
         # The fleet defaults: claude-opus-5-5 (claude lane; claude-fable-5-1 is the
-        # retained explicit option) and gemini-3.8-flash (gemini lane) alongside
+        # retained explicit option) and gemini-4-argon (gemini lane) alongside
         # gpt-5.6-sol above. grok's default is grok-4.7
         # (ah#971); grok-4.6 above is the retained legacy seat, not a default.
-        from phase_loop_runtime.advisor_board import DEFAULT_MODEL_REGISTRY
+        from phase_loop_runtime.advisor_board import DEFAULT_MODEL_REGISTRY, Seat
 
         opus = DEFAULT_MODEL_REGISTRY.get("claude-opus-5-5")
         self.assertEqual(opus.default_lane, "claude")
@@ -138,15 +138,23 @@ class PopulatedRegistryTests(unittest.TestCase):
         fable = DEFAULT_MODEL_REGISTRY.get("claude-fable-5-1")
         self.assertEqual(fable.default_lane, "claude")
         self.assertEqual(fable.vendor_family, "claude")
-        flash = DEFAULT_MODEL_REGISTRY.get("gemini-3.8-flash")
-        self.assertEqual(flash.default_lane, "gemini")
-        self.assertEqual(flash.effort_ceiling, "high")
+        argon = DEFAULT_MODEL_REGISTRY.get("gemini-4-argon")
+        self.assertEqual(argon.default_lane, "gemini")
+        self.assertEqual(argon.effort_ceiling, "high")
+        from phase_loop_runtime.advisor_board.matrix import default_matrix
+        from phase_loop_runtime.advisor_board.validation import validate_seat, SeatValidationError
+        matrix = default_matrix(env={}, probe=lambda _: False)
+        verdict = validate_seat(Seat(model="gemini-4-argon", effort="high"), matrix)
+        self.assertEqual(verdict.harness, "gemini")
+        with self.assertRaises(SeatValidationError):
+            validate_seat(Seat(model="gemini-4-argon", effort="max"), matrix)
 
     def test_previous_board_models_remain_registered_for_explicit_configs(self) -> None:
         from phase_loop_runtime.advisor_board import DEFAULT_MODEL_REGISTRY
 
         self.assertEqual(DEFAULT_MODEL_REGISTRY.get("gemini-3.6-flash").default_lane, "gemini")
         self.assertEqual(DEFAULT_MODEL_REGISTRY.get("gemini-3.7-flash").default_lane, "gemini")
+        self.assertEqual(DEFAULT_MODEL_REGISTRY.get("gemini-3.8-flash").default_lane, "gemini")
         self.assertEqual(DEFAULT_MODEL_REGISTRY.get("grok-4.5").default_lane, "grok")
         self.assertEqual(DEFAULT_MODEL_REGISTRY.get("claude-fable-5").default_lane, "claude")
 

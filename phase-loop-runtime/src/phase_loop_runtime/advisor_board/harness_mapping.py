@@ -124,9 +124,9 @@ _GEMINI_EMBED_RE = re.compile(r"\s*\((?:Low|Medium|High|Max)\)\s*$")
 # aliases here too: launcher and advisor-board seats must share one renderer so a
 # given (model, effort) pair cannot select different Gemini models by entrypoint.
 _AGY_CANONICAL_GEMINI = re.compile(
-    r"^(gemini-\d+\.\d+-(?:flash|pro))-(high|medium|low|thinking)$"
+    r"^(gemini-(?:\d+\.\d+-(?:flash|pro)|4-argon))-(high|medium|low|thinking)$"
 )
-_AGY_BASE_GEMINI = re.compile(r"^gemini-\d+\.\d+-(?:flash|pro)$")
+_AGY_BASE_GEMINI = re.compile(r"^gemini-(?:\d+\.\d+-(?:flash|pro)|4-argon)$")
 _GEMINI_MODEL_ID_ALIASES: dict[str, str] = {
     "gemini-3.1-pro-preview": "Gemini 3.1 Pro (High)",  # model-id-source: shared agy compatibility alias
     "gemini-3.5-flash-lite": "gemini-3.5-flash-high",  # model-id-source: shared agy capability fallback
@@ -147,20 +147,25 @@ def render_agy_model(model: str, effort: str | None = None) -> str:
     Unknown ``gemini-*`` ids fail loud instead of silently selecting Pro.
     """
     candidate = (model or "").strip()
+    if candidate in {"", "auto", "pro"}:
+        candidate = "gemini-4-argon"  # model-id-source: current GA heavy/default agy model
     if _AGY_BASE_GEMINI.match(candidate):
         rendered_effort = effort or "high"
-        if rendered_effort not in {"high", "medium", "low", "thinking"}:
+        supported = {"high", "medium", "low", "thinking"}
+        if candidate == "gemini-4-argon":  # model-id-source: Argon's listed agy effort variants
+            supported.discard("thinking")
+        if rendered_effort not in supported:
             raise ValueError(
                 f"gemini base model {candidate!r} requires a supported agy effort; got {effort!r}"
             )
         return f"{candidate}-{rendered_effort}"
-    if candidate in {"", "auto", "pro"}:
-        return "Gemini 3.1 Pro (High)"
     if candidate in _GEMINI_MODEL_ID_ALIASES:
         return _GEMINI_MODEL_ID_ALIASES[candidate]
     canonical = _AGY_CANONICAL_GEMINI.match(candidate)
     if canonical:
         embedded_effort = canonical.group(2)
+        if canonical.group(1) == "gemini-4-argon" and embedded_effort == "thinking":  # model-id-source: Argon's listed agy effort variants
+            raise ValueError(f"gemini model {candidate!r} requires low, medium, or high effort")
         if effort is not None and effort != embedded_effort:
             raise ValueError(
                 f"gemini model {candidate!r} embeds effort {embedded_effort!r}, "

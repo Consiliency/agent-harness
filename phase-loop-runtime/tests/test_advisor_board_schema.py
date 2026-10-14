@@ -117,6 +117,29 @@ class VendorProjectionByteConsistencyTests(unittest.TestCase):
 
 
 class EffortMappingRoundTripTests(unittest.TestCase):
+    def test_argon_effort_round_trip_and_launcher_agree(self) -> None:
+        from phase_loop_runtime.advisor_board.harness_mapping import agy_model_effort
+        from phase_loop_runtime.launcher import _gemini_cli_model
+
+        for effort in ("low", "medium", "high"):
+            with self.subTest(effort=effort):
+                expected = f"gemini-4-argon-{effort}"
+                inv = render_seat_invocation("gemini", "gemini-4-argon", effort)
+                self.assertEqual(inv.model, expected)
+                self.assertEqual(inv.effort_args, ())
+                self.assertEqual(render_gemini_model(expected, effort), expected)
+                self.assertEqual(agy_model_effort(expected), effort)
+                for model in ("gemini-4-argon", "pro", "auto", ""):
+                    self.assertEqual(_gemini_cli_model(model, effort), expected)
+
+    def test_argon_rejects_unsupported_or_conflicting_effort(self) -> None:
+        for model, effort in (("gemini-4-argon", "max"),
+                              ("gemini-4-argon", "thinking"),
+                              ("gemini-4-argon-thinking", "thinking"),
+                              ("gemini-4-argon-low", "high")):
+            with self.subTest(model=model, effort=effort), self.assertRaises(ValueError):
+                render_gemini_model(model, effort)
+
     def test_claude_effort_flag(self) -> None:
         inv = render_seat_invocation("claude", "claude-sonnet-5", "max")
         self.assertEqual(inv.mechanism, MECH_FLAG)

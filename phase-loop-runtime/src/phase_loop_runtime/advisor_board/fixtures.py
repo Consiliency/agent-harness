@@ -28,7 +28,7 @@ DEFAULT_BOARD_VENDOR_ORDER: tuple[str, ...] = ("codex", "gemini", "claude", "gro
 # name. These reconstruct ``DEFAULT_LEG_MODELS`` under
 # ``harness_mapping.render_seat_invocation``:
 #   codex  gpt-6-astra           + effort high  -> ``-c model_reasoning_effort=high``
-#   gemini gemini-3.8-flash   + effort medium -> model ``gemini-3.8-flash-medium``
+#   gemini gemini-4-argon    + effort medium -> model ``gemini-4-argon-medium``
 #   claude claude-opus-5-5   + effort high  -> ``--effort high``
 #   grok   grok-4.7           + effort high  -> ``--reasoning-effort high``
 #
@@ -39,7 +39,7 @@ DEFAULT_BOARD_VENDOR_ORDER: tuple[str, ...] = ("codex", "gemini", "claude", "gro
 DEFAULT_SEATS: tuple[Seat, ...] = (
     Seat(model="gpt-6-astra", effort="high", harness="codex", lens="red-team",
          auth=AUTH_SUBSCRIPTION, backing=BACKING_HOMEBREW),
-    Seat(model="gemini-3.8-flash", effort="medium", harness="gemini", lens="alternative-approach",
+    Seat(model="gemini-4-argon", effort="medium", harness="gemini", lens="alternative-approach",
          auth=AUTH_SUBSCRIPTION, backing=BACKING_HOMEBREW),
     Seat(model="claude-opus-5-5", effort="high", harness="claude", lens="correctness",
          auth=AUTH_SUBSCRIPTION, backing=BACKING_HOMEBREW),
@@ -58,7 +58,7 @@ DEFAULT_BOARD: Board = Board(
 # back-compat test against the live ``panel_invoker`` constants).
 DEFAULT_SEAT_RENDERED_MODEL: dict[str, str] = {
     "codex": "gpt-6-astra",
-    "gemini": "gemini-3.8-flash-medium",
+    "gemini": "gemini-4-argon-medium",
     "claude": "claude-opus-5-5",
     "grok": "grok-4.7",
 }
@@ -85,6 +85,7 @@ CANONICAL_VALID_PAIRS: tuple[tuple[str, str], ...] = (
     ("claude-opus-5-5", "claude"),
     ("claude-fable-5-1", "claude"),
     ("Gemini 3.1 Pro", "gemini"),
+    ("gemini-4-argon", "gemini"),
     ("gemini-3.8-flash", "gemini"),
     ("gemini-3.7-flash", "gemini"),
     ("gemini-3.6-flash", "gemini"),

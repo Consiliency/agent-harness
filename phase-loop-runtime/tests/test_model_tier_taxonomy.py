@@ -2,7 +2,7 @@
 
 Pins `resolve(role, vendor)` across every tier × vendor: the four Claude tier
 ids, the non-claude ultra→heavy@max fallback, the per-tier ADVISORY efforts, the
-gemini-heavy preview/volatile marker, and the role→tier + supervise bindings.
+gemini-heavy volatile marker, and the role→tier + supervise bindings.
 Also asserts the PIN-ONLY invariant (no floating aliases in the matrix).
 """
 import unittest
@@ -32,8 +32,8 @@ class TierMatrixTest(unittest.TestCase):
             ("heavy", "codex"): ("gpt-6-astra", "xhigh", False),
             ("regular", "codex"): ("gpt-5.6-terra", "medium", False),
             ("lite", "codex"): ("gpt-5.6-luna", "low", False),
-            ("ultra", "gemini"): ("gemini-3.1-pro-preview", "max", True),
-            ("heavy", "gemini"): ("gemini-3.1-pro-preview", "xhigh", True),
+            ("ultra", "gemini"): ("gemini-4-argon", "max", True),
+            ("heavy", "gemini"): ("gemini-4-argon", "xhigh", True),
             ("regular", "gemini"): ("gemini-3.8-flash", "medium", False),
             ("lite", "gemini"): ("gemini-3.5-flash-lite", "low", False),
             # grok: no dated snapshot published → every cell volatile (blocker 2).
@@ -66,7 +66,7 @@ class TierMatrixTest(unittest.TestCase):
             resolve("ultra", "claude").model_id, resolve("heavy", "claude").model_id
         )
 
-    def test_gemini_heavy_carries_preview_volatile_marker(self):
+    def test_gemini_heavy_carries_volatile_marker(self):
         self.assertTrue(resolve("heavy", "gemini").volatile)
         self.assertTrue(resolve("ultra", "gemini").volatile)
         # claude + codex publish immutable ids → never volatile. (grok is volatile
@@ -131,7 +131,7 @@ class PinOnlyInvariantTest(unittest.TestCase):
 
     def test_known_floating_shapes_are_marked_volatile(self):
         # A vendor id with no immutable dated snapshot MUST be volatile-marked, so a
-        # governed run can see it floats. gemini heavy (preview) + all grok cells.
+        # governed run can see it floats. Gemini heavy + all Grok cells.
         self.assertTrue(resolve("heavy", "gemini").volatile)
         for tier in MODEL_TIERS:
             self.assertTrue(resolve(tier, "grok").volatile, tier)
@@ -250,18 +250,18 @@ class TierLiveWiringTest(unittest.TestCase):
         for action in ("execute", "repair"):
             selection = resolve_profile_for_executor(action=action, executor="gemini")
             argv = _gemini_cli_model(selection.model, selection.effort)
-            self.assertNotEqual(argv, "Gemini 3.1 Pro (High)", action)
+            self.assertNotEqual(argv, "gemini-4-argon-high", action)
 
     def test_gemini_adapter_maps_tier_ids_without_collapsing_flash_to_pro(self):
         # The gemini CLI adapter must map each tier id to the RIGHT agy model — heavy
         # → Pro, but regular/lite must NOT silently collapse to Pro (the CR bug).
         from phase_loop_runtime.launcher import _gemini_cli_model
 
-        self.assertEqual(_gemini_cli_model(resolve("heavy", "gemini").model_id), "Gemini 3.1 Pro (High)")
+        self.assertEqual(_gemini_cli_model(resolve("heavy", "gemini").model_id), "gemini-4-argon-high")
         regular = _gemini_cli_model(resolve("regular", "gemini").model_id, "medium")
         lite = _gemini_cli_model(resolve("lite", "gemini").model_id)
-        self.assertNotEqual(regular, "Gemini 3.1 Pro (High)")
-        self.assertNotEqual(lite, "Gemini 3.1 Pro (High)")
+        self.assertNotEqual(regular, "gemini-4-argon-high")
+        self.assertNotEqual(lite, "gemini-4-argon-high")
         self.assertNotEqual(regular, lite)
 
     def test_gemini_adapter_fails_loud_on_unmapped_gemini_id(self):

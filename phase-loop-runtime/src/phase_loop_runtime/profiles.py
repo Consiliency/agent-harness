@@ -223,9 +223,8 @@ CODEX_LITE_MODEL = OPENAI_WORKER_MODEL
 
 # gemini/Google per-tier ids — API-style canonical ids (NOT the CLI routing
 # aliases `pro`/`auto` or the display label used by the legacy class overrides).
-# heavy is a PREVIEW model (Google already retired gemini-3-pro-preview) → marked
-# volatile in the matrix; regular/lite are stable GA ids.
-GEMINI_HEAVY_MODEL = "gemini-3.1-pro-preview"
+# Gemini 4 Argon is GA but has no dated snapshot; its heavy-tier id remains volatile.
+GEMINI_HEAVY_MODEL = "gemini-4-argon"
 GEMINI_REGULAR_MODEL = "gemini-3.8-flash"
 GEMINI_LITE_MODEL = "gemini-3.5-flash-lite"
 
@@ -388,9 +387,8 @@ def supervise_selection(vendor: str = "claude") -> TierResolution:
 #     ALIGNED (CR round-5 finding B): implementation on BOTH the class and executor paths
 #     stores the base `gemini-3.8-flash` id; the adapter appends the normalized
 #     effort to emit agy's canonical id. Two things remain: (a) the PRO/
-#     planning path still routes via the `pro` CLI alias / "Gemini 3.1 Pro (High)" DISPLAY
-#     label rather than a canonical agy id — REPRESENTATIONAL only (same Pro model), and out
-#     of this fix's scope; (b) LITE is ASPIRATIONAL — `agy models` exposes NO flash-lite, so
+#     planning path routes via the `pro` alias to canonical Gemini 4 Argon ids;
+#     (b) LITE is ASPIRATIONAL — `agy models` exposes NO flash-lite, so
 #     the matrix's gemini-3.5-flash-lite lite cell is a TARGET, not live; the live worker
 #     degrades to the real agy 3.5 Flash (gemini-3.5-flash-high). This is a genuine
 #     version/family divergence (like grok-4.3), NOT representational — repin the lite cell

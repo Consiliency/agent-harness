@@ -1257,7 +1257,7 @@ class PhaseLoopLauncherTest(unittest.TestCase):
         # v46 EXEC: the gemini executor drives agy (headless skip-permissions + add-dir).
         self.assertEqual(
             spec.command[:6],
-            ["agy", "--model", "Gemini 3.1 Pro (High)", "--dangerously-skip-permissions", "--add-dir", "/repo"],
+            ["agy", "--model", "gemini-4-argon-high", "--dangerously-skip-permissions", "--add-dir", "/repo"],
         )
         self.assertEqual(spec.command[6], "-p")
         self.assertIn("__PHASE_LOOP_CONTEXT_FILE__", spec.command[-1])
@@ -1287,7 +1287,7 @@ class PhaseLoopLauncherTest(unittest.TestCase):
         self.assertIn("--dangerously-skip-permissions", execute)
         # v46 EXEC CR (F2): routing aliases map onto agy's default; a valid agy model
         # name (or operator override) passes through verbatim, not silently coerced.
-        self.assertEqual(_gemini_cli_model("pro"), "Gemini 3.1 Pro (High)")
+        self.assertEqual(_gemini_cli_model("pro"), "gemini-4-argon-high")
         self.assertEqual(_gemini_cli_model("gemini-3.1-pro-preview"), "Gemini 3.1 Pro (High)")
         self.assertEqual(_gemini_cli_model("Gemini 3.5 Flash (High)"), "Gemini 3.5 Flash (High)")
         self.assertEqual(_gemini_cli_model("gpt-5-codex"), "gpt-5-codex")
@@ -1508,7 +1508,7 @@ class PhaseLoopLauncherTest(unittest.TestCase):
         self.assertEqual(spec.selected_model, "pro")
         self.assertIn("--model", spec.command)
         # v46 EXEC: the "pro" routing alias maps onto agy's fixed model name.
-        self.assertIn("Gemini 3.1 Pro (High)", spec.command)
+        self.assertIn("gemini-4-argon-high", spec.command)
 
     def test_gemini_executor_includes_default_execution_model_routing_alias(self):
         selection = resolve_profile_for_executor(action="execute", executor="gemini")
