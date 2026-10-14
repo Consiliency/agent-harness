@@ -669,6 +669,10 @@ def test_aggregator_prompt_reads_four_sections():
 
 
 BUNDLED_PROMPTS = sorted((REPO_ROOT / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "skills_bundle").glob("*-skill-improvement-planner/assets/aggregator_prompt.md"))
+EDITOR_PROMPTS = [
+    SKILLS_SRC / "claude" / "claude-skill-editor" / "assets" / "editor_prompt.md",
+    *sorted((REPO_ROOT / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "skills_bundle").glob("*-skill-editor/assets/editor_prompt.md")),
+]
 
 
 @pytest.mark.parametrize("prompt", BUNDLED_PROMPTS, ids=lambda p: p.parents[1].name)
@@ -685,14 +689,53 @@ ADMISSION_GATES = (
 LADDER_LEVELS = ("architecture", "unrepresentable", "check", "prose")
 
 
+def missing_gates(prompt_text: str) -> list[str]:
+    heading, next_rule = "4. **Admission gates.**", "\n5. "
+    assert heading in prompt_text and next_rule in prompt_text.split(heading, 1)[1], "rule 4 not found"
+    rule_4 = prompt_text.split(heading, 1)[1].split(next_rule, 1)[0]
+    return [gate for gate in ADMISSION_GATES if f"**{gate}**" not in rule_4]
+
+
 @pytest.mark.parametrize("prompt", BUNDLED_PROMPTS, ids=lambda p: p.parents[1].name)
 def test_aggregator_prompt_applies_every_gate_and_a_ladder_level(prompt):
     text = prompt.read_text()
-    missing = [gate for gate in ADMISSION_GATES if f"**{gate}**" not in text]
+    missing = missing_gates(text)
     assert not missing, f"{prompt} omits gates {missing}"
     assert all(f"**{level}**" in text for level in LADDER_LEVELS)
     assert "**Ladder level**" in text and "## Rejected themes" in text
     assert "rule_enforcement.md" in text and "unenforced/gap" in text
+    skill_was_used = next(line for line in text.splitlines() if "**skill-was-used**" in line)
+    assert "replacement frontmatter `description:`" in skill_was_used
+    assert "keep a body edit that fixes wrong or missing guidance" in skill_was_used
+
+
+@pytest.mark.parametrize("gate", ADMISSION_GATES)
+def test_missing_gates_detects_each_removed_gate(gate):
+    text = BUNDLED_PROMPTS[0].read_text()
+    text = "\n".join(line for line in text.splitlines() if f"**{gate}**" not in line)
+    assert missing_gates(text) == [gate]
+
+
+@pytest.mark.parametrize("marker", ["4. **Admission gates.**", "\n5. "])
+def test_missing_gates_requires_the_rule_boundaries(marker):
+    text = BUNDLED_PROMPTS[0].read_text().replace(marker, "", 1)
+    with pytest.raises(AssertionError, match="rule 4 not found"):
+        missing_gates(text)
+
+
+@pytest.mark.parametrize("editor", EDITOR_PROMPTS, ids=lambda p: "/".join(p.parts[-4:-2]))
+def test_editor_prompt_applies_a_description_tune_to_frontmatter_only(editor):
+    text = editor.read_text()
+    assert "replaces only the frontmatter `description:` value" in text
+    assert "leave the body untouched" in text
+    assert "Refuse it if no replacement text is given" in text
+
+
+@pytest.mark.parametrize("editor", [p for p in EDITORS if not p.parent.name.startswith("claude-")], ids=lambda p: p.parent.name)
+def test_editor_skill_applies_a_description_tune_to_frontmatter_only(editor):
+    text = editor.read_text()
+    assert "replaces only the frontmatter `description:` value" in text
+    assert "mark it failed when no replacement text is given" in text
 
 
 @pytest.mark.parametrize("planner", PLANNERS, ids=lambda p: p.parent.name)
