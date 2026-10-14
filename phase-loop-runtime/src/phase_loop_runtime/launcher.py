@@ -174,12 +174,13 @@ _REVIEW_STAGE_DIR_PREFIX = "pl-review-stage-"
 # 1.0.52 refuses to start a session whose terminal runs in background mode without
 # them ("run_terminal_cmd enabled_background=true requires get_task_output and
 # kill_task"), and background mode is only configurable in the operator's grok
-# config, not from the CLI. They observe and cancel the session's own tasks; spawning
-# stays denied by `spawn_subagent` and `--no-subagents`.
+# config, not from the CLI. The implementer cannot spawn subagents: `spawn_subagent`
+# and `workflow` are denied (grok documents workflows as running subagents), and
+# `--no-subagents` is passed.
 GROK_EXECUTE_DISALLOWED_TOOLS = (
     "scheduler_create,scheduler_delete,scheduler_list,monitor,"
     "image_gen,image_edit,image_to_video,reference_to_video,"
-    "spawn_subagent"
+    "spawn_subagent,workflow"
 )
 
 

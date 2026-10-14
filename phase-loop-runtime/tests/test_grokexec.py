@@ -223,8 +223,16 @@ def test_grok_execute_deny_list_keeps_the_background_task_tools():
     denied = set(launcher.GROK_EXECUTE_DISALLOWED_TOOLS.split(","))
     for tool in _GROK_BACKGROUND_TASK_TOOLS:
         assert tool not in denied, f"{tool!r} is required by grok's background terminal; denying it aborts the session"
-    # The fanout lever itself stays denied (plus --no-subagents on the argv).
-    assert "spawn_subagent" in denied
+
+
+def test_grok_execute_implementer_cannot_spawn_subagents():
+    # The implementer cannot spawn subagents: `spawn_subagent` and `workflow` are denied
+    # (grok documents workflows as running subagents), and `--no-subagents` is passed.
+    denied = set(launcher.GROK_EXECUTE_DISALLOWED_TOOLS.split(","))
+    assert {"spawn_subagent", "workflow"} <= denied
+    spec = build_launch_spec(_request("execute"))
+    assert "--no-subagents" in spec.command
+    assert spec.command[spec.command.index("--disallowed-tools") + 1] == launcher.GROK_EXECUTE_DISALLOWED_TOOLS
 
 
 def test_build_grok_launch_spec_repair_keeps_unrestricted_write_branch():
