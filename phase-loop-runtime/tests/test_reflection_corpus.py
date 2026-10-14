@@ -247,6 +247,23 @@ def test_a_bulleted_ledger_line_is_redacted_only_from_improvements(tmp_path):
     assert "passed on main" not in rc.render_bundle(corpus)
 
 
+def test_recurring_bulleted_friction_with_a_ledger_prefix_reaches_the_bundle(tmp_path):
+    # The boilerplate path keys lines with their bullet stripped; the ledger check must
+    # still judge the original line, or recurring "What didn't" friction is lost.
+    root = tmp_path / "skills"
+    friction = "- Hosted CI: the windows lane silently skipped tests again."
+    for k, branch in enumerate("abc"):
+        put(root, "codex-plan-phase", "h", branch, "r", reflection(
+            worked="", didnt=f"{friction}\nOwn friction {k}.", improvements="None.", stamp=f"2026-10-0{k + 1}T00:00:00Z",
+        ))
+
+    corpus, _ = rc.collect([root], min_reflections=1)
+
+    assert all(r.boilerplate == [friction[2:]] for r in corpus.scanned)
+    assert "3 reflections" in rc.render_bundle(corpus)
+    assert "the windows lane silently skipped tests again." in rc.render_bundle(corpus)
+
+
 def test_an_unconfirmed_copy_still_corroborates_the_other_branch(tmp_path):
     root = tmp_path / "skills"
     proposal = "Add a preflight step that validates the lane index before drafting."

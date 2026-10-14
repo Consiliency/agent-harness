@@ -444,8 +444,11 @@ def apply_quality_filter(
                 if key == "improvements" and _is_repo_specific(line):
                     dropped_repo_specific = True
                     continue
-                # A ledger line redacts to nothing: neither evidence nor a proposal.
-                if not redact(line):
+                # A ledger line redacts to nothing: neither evidence nor a proposal. Judge
+                # the original lines, not the bullet-stripped key, so a bulleted
+                # "What didn't" line keeps the same treatment ``redact`` gives it below.
+                bulleted_ledger = key == "improvements"
+                if not any(redact(orig, bulleted_ledger=bulleted_ledger) for orig in original if _norm_line(orig) == line):
                     continue
                 if line not in reflection.boilerplate:
                     reflection.boilerplate.append(line)
@@ -576,9 +579,13 @@ def _cap_line(text: str) -> str:
 
 
 def _recurring_item(line: str, ids: list[str]) -> dict[str, object]:
-    """One recurring line, redacted, on one inert line, with its text and ids capped."""
+    """One recurring line, redacted, on one inert line, with its text and ids capped.
+
+    The ledger check already ran on the original lines when the carrier was recorded;
+    re-running it on the bullet-stripped key would drop bulleted "What didn't" friction.
+    """
     return {
-        "line": _cap_line(_header_field(redact(line))),
+        "line": _cap_line(_header_field(line)),
         "count": len(ids),
         "reflections": ids[:MAX_RECURRING_IDS],
         "reflections_omitted": max(0, len(ids) - MAX_RECURRING_IDS),
