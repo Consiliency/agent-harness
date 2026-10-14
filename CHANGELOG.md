@@ -14,13 +14,21 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   "What didn't" are still admitted to `bundle.md`. It is excluded as
   `improvements_repo_specific` only when no friction is left, and stays in place
   (agent-harness#1371).
-- Lines stripped as boilerplate are rendered once per skill in a `### Recurring lines`
-  block of the bundle, with how many reflections carried each and their ids. The
-  manifest gains `boilerplate_carriers` with the same data.
-- A reflection whose repo-agnostic proposal was removed only as boilerplate is still
-  admitted (note `boilerplate_only`) and counts toward `--min-reflections`, so three
-  runs repeating one proposal make the skill due. A copied friction or ledger line
-  alone still excludes as `no_friction_or_proposal` (agent-harness#1370).
+- Boilerplate is detected per skill: one skill's copies never strip, or count
+  toward, another skill's lines. Lines stripped as boilerplate are rendered once per
+  skill under a bold `**Recurring lines**` label (not a `###` heading), with how many
+  admitted reflections carried each and their ids. Each line is capped at 500
+  characters and each id list at 10 ids plus a count. The manifest gains
+  `boilerplate_carriers` with the same data. A ledger line that redacts to nothing
+  is not listed. A repo-specific proposal stripped as boilerplate is dropped, with
+  the same `section_dropped` note.
+- A reflection whose only proposal is a repo-agnostic line stripped as boilerplate
+  is still admitted (note `boilerplate_only`), but only when admitted reflections
+  carry that line on at least two branches. It then counts toward
+  `--min-reflections`, so independent runs repeating one proposal make the skill
+  due. Re-runs on one branch (note `boilerplate_single_branch`), copied ledger lines
+  and copied friction lines alone still exclude as `no_friction_or_proposal`
+  (agent-harness#1370).
 
 ### FABPUB: the provider is entered only after an in-lock check that the key is still this attempt's in-flight record (agent-harness#1577, agent-harness#1574, agent-harness#1578, agent-harness#1576)
 

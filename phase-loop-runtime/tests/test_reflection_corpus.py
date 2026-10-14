@@ -113,7 +113,12 @@ def test_boilerplate_is_stripped_before_the_repo_agnostic_gate(tmp_path):
 
     assert boilerplate == [copied]
     assert reasons["b0"] is None and reasons["b1"] is None and reasons["b2"] is None
-    assert "some-repo#361" not in rc.render_bundle(corpus)
+    bundle = rc.render_bundle(corpus)
+    assert "some-repo#361" not in bundle and "Recurring lines" not in bundle
+    # A repo-specific proposal stripped as boilerplate is dropped, not rendered.
+    for entry in corpus.scanned:
+        if entry.branch_slug in {"b0", "b1", "b2"}:
+            assert "section_dropped:improvements:repo_specific" in entry.notes
     # Its repo-specific proposal is dropped; its friction stays (agent-harness#1371).
     assert reasons["b9"] is None
     assert reasons["b8"] == "no_friction_or_proposal"
@@ -141,7 +146,7 @@ def test_a_repo_specific_proposal_drops_only_its_own_section(tmp_path):
     assert others[0]["path"] not in rc.manifest(corpus, boilerplate)["reflections_consumed"]
 
 
-def test_a_proposal_repeated_by_independent_runs_makes_the_skill_due(tmp_path):
+def test_a_proposal_repeated_on_distinct_branches_makes_the_skill_due(tmp_path):
     root = tmp_path / "skills"
     proposal = "Add a preflight step that validates the lane index before drafting."
     for index in range(3):
@@ -157,8 +162,94 @@ def test_a_proposal_repeated_by_independent_runs_makes_the_skill_due(tmp_path):
     assert all("boilerplate_only" in r.notes for r in corpus.scanned)
     assert bundle.count(proposal) == 1
     assert f"- 3 reflections ({', '.join(ids)}): {proposal}" in bundle
-    assert data["boilerplate_carriers"] == [{"line": proposal, "count": 3, "reflections": ids}]
+    assert not any(line.startswith("### ") and "Recurring" in line for line in bundle.splitlines())
+    assert data["boilerplate_carriers"] == [
+        {"skill": "plan-phase", "line": proposal, "count": 3, "reflections": ids, "reflections_omitted": 0}
+    ]
     assert len(data["reflections_consumed"]) == 3
+
+
+def test_a_proposal_repeated_on_one_branch_is_template_noise(tmp_path):
+    root = tmp_path / "skills"
+    proposal = "Add a preflight step that validates the lane index before drafting."
+    for index in range(3):
+        put(root, "codex-plan-phase", "h", "b", f"r{index}", reflection(
+            worked=f"Run {index} read the plan first.", didnt="", improvements=proposal, stamp=f"2026-10-0{index + 1}T00:00:00Z",
+        ))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=1)
+
+    assert boilerplate == [proposal]
+    assert corpus.admitted == [] and not corpus.due
+    assert all(r.excluded == "no_friction_or_proposal" and "boilerplate_single_branch" in r.notes for r in corpus.scanned)
+    assert "Recurring lines" not in rc.render_bundle(corpus)
+
+
+def test_a_copied_ledger_line_is_not_a_proposal(tmp_path):
+    root = tmp_path / "skills"
+    ledger = "Hosted CI: passed on the default lane matrix for this branch."
+    for index in range(3):
+        put(root, "codex-plan-phase", "h", f"b{index}", "r", reflection(worked="", didnt="", improvements=ledger))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=1)
+    data = rc.manifest(corpus, boilerplate)
+
+    assert corpus.admitted == [] and not corpus.due
+    assert {r.excluded for r in corpus.scanned} == {"no_friction_or_proposal"}
+    assert data["boilerplate_carriers"] == []
+    assert "Recurring lines" not in rc.render_bundle(corpus)
+
+
+def test_boilerplate_is_scoped_per_skill(tmp_path):
+    root = tmp_path / "skills"
+    proposal = "Add a preflight step that validates the lane index before drafting."
+    put(root, "codex-plan-phase", "h", "b0", "r", reflection(didnt="Plan friction.", improvements=proposal))
+    for index in range(3):
+        put(root, "codex-execute-phase", "h", f"b{index}", "r", reflection(worked="", didnt="", improvements=proposal))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=3)
+    bundle = rc.render_bundle(corpus)
+    plan_section = bundle.split("## plan-phase")[1]
+    execute_section = bundle.split("## plan-phase")[0].split("## execute-phase")[1]
+
+    assert boilerplate == [proposal]
+    assert corpus.ready_skills() == ["execute-phase"]
+    assert "Recurring lines" not in plan_section and proposal in plan_section
+    assert "- 3 reflections (" in execute_section
+
+
+def test_recurring_carriers_are_admitted_reflections_only(tmp_path):
+    root = tmp_path / "skills"
+    proposal = "Add a preflight step that validates the lane index before drafting."
+    for index in range(3):
+        put(root, "codex-plan-phase", "h", f"b{index}", "r", reflection(didnt=f"Friction {index}.", improvements=proposal))
+    capped = put(root, "codex-plan-phase", "h", "b0", "old", reflection(
+        didnt="Older friction.", improvements=proposal, stamp="2026-09-01T00:00:00Z",
+    ))
+
+    corpus, boilerplate = rc.collect([root], per_branch_cap=1)
+    data = rc.manifest(corpus, boilerplate)
+    capped_id = next(r.id for r in corpus.scanned if r.path == capped)
+
+    assert next(r for r in corpus.scanned if r.path == capped).excluded == "per_branch_cap:1"
+    assert [item["count"] for item in data["boilerplate_carriers"]] == [3]
+    assert capped_id not in data["boilerplate_carriers"][0]["reflections"]
+    assert capped_id not in rc.render_bundle(corpus)
+
+
+def test_recurring_lines_and_their_ids_are_capped(tmp_path):
+    root = tmp_path / "skills"
+    proposal = "Add a preflight step " + "that validates the lane index " * 30
+    for index in range(rc.MAX_RECURRING_IDS + 2):
+        put(root, "codex-plan-phase", "h", f"b{index:02d}", "r", reflection(worked="", didnt="", improvements=proposal))
+
+    corpus, boilerplate = rc.collect([root])
+    item = rc.manifest(corpus, boilerplate)["boilerplate_carriers"][0]
+    rendered = next(line for line in rc.render_bundle(corpus).splitlines() if line.startswith("- 12 reflections"))
+
+    assert item["count"] == 12 and len(item["reflections"]) == rc.MAX_RECURRING_IDS and item["reflections_omitted"] == 2
+    assert item["line"].endswith("…") and len(item["line"]) == rc.MAX_RECURRING_LINE_CHARS + 1
+    assert ", +2 more): " in rendered and rendered.endswith("…")
 
 
 def test_recurring_lines_are_inert_in_the_bundle(tmp_path):
