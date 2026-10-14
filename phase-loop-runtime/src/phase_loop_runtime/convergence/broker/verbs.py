@@ -1,6 +1,8 @@
 """The sole provider-agnostic mutation boundary."""
 from __future__ import annotations
 
+import functools
+
 import hashlib
 import json
 import os
@@ -720,11 +722,16 @@ class BrokerService:
         """
         import fcntl
 
-        self.evidence_store._authorize()
+        # agent-harness#1633: a DRAINING latch alone does not refuse here.  A
+        # rotation holds admissions.lock across its drain, so this writer waits on
+        # the lock while its held lease keeps the ceremony from draining; a revoked
+        # or stale lease and a superseded generation root still refuse.  The
+        # ordinary terminal append and owner seal re-authorize strictly below.
+        self.evidence_store._authorize(allow_draining=True)
         with self.evidence_store.lock_path.open("a+", encoding="utf-8") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             try:
-                self.evidence_store._authorize()
+                self.evidence_store._authorize(allow_draining=True)
                 current = self.evidence_store.replay().get(record.idempotency_key)
                 if current is None:
                     raise ValueError("intent must precede evidence")
@@ -733,6 +740,7 @@ class BrokerService:
                     TerminalOutcomeState.NO_EFFECT_TERMINAL_PROVEN,
                 ):
                     return current, self._post_ambiguity_observation_locked(owner, record, branch)
+                self.evidence_store._authorize()
                 if current == record:
                     terminal = current
                 else:
@@ -782,7 +790,10 @@ class BrokerService:
         if current_owner != owner or current_owner.sealed or not observation.ambiguity_digest:
             return observation
         durable = evidence_module.append_post_ambiguity_observation(
-            root, observation, authorize=self.evidence_store._authorize, lock_held=True
+            root,
+            observation,
+            authorize=functools.partial(self.evidence_store._authorize, allow_draining=True),
+            lock_held=True,
         )
         return PostAmbiguityObservation(**observation.row(), durable=durable)
 
@@ -1284,8 +1295,12 @@ class BrokerService:
                     _crash_at("after_provider_return_before_terminal")
                     state = TerminalOutcomeState(evidence.terminal_state)
                     reference = result.pr_url if result is not None else evidence.evidence_reference
-                    # agent-harness#1591 (D3): recorded while this writer still holds
-                    # its generation lease, so a rotation cannot drain it first.
+                    # agent-harness#1591 (D3), agent-harness#1633: recorded while this
+                    # writer still holds its generation lease.  A rotation that started
+                    # during the call holds admissions.lock across its drain: the write
+                    # waits on that lock, the held lease makes the ceremony refuse
+                    # "predecessor writers did not drain" (it is retried), and only a
+                    # writer with no held lease, or a cleared one, loses the observation.
                     terminal, observation = self._record_terminal_and_seal_owner(
                         recorded_owner, EvidenceRecord(key, state, reference), branch=request.branch
                     )

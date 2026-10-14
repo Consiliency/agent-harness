@@ -778,7 +778,8 @@ class WriterGenerationLatch:
             return lease
 
     def validate_lease(
-        self, lease: "WriterGenerationLease | None", *, strict: bool = True
+        self, lease: "WriterGenerationLease | None", *, strict: bool = True,
+        allow_draining: bool = False,
     ) -> None:
         """Revalidate an exact lease nonce + generation against current state.
 
@@ -796,7 +797,10 @@ class WriterGenerationLatch:
         """
         with self.exclusive():
             snapshot = self.read()
-            if snapshot.generation_state == "DRAINING":
+            if snapshot.generation_state == "DRAINING" and not allow_draining:
+                # agent-harness#1633: a post-ambiguity observation by a writer that
+                # still holds its lease may wait for admissions.lock while DRAINING;
+                # the held lease is what keeps the ceremony from draining.
                 raise WriterGenerationBlocked(
                     "the repository generation latch entered DRAINING before this write"
                 )
@@ -822,7 +826,8 @@ UNDECLARED_LEASE = object()
 
 
 def require_current_generation(
-    store_root: Path, lease: "WriterGenerationLease | None" = None, *, strict: bool = True
+    store_root: Path, lease: "WriterGenerationLease | None" = None, *, strict: bool = True,
+    allow_draining: bool = False,
 ) -> None:
     """Revalidate the writer generation INSIDE a store lock, before an append.
 
@@ -841,7 +846,7 @@ def require_current_generation(
                 "generation latch; refusing to append without an activation authority"
             )
         return
-    latch.validate_lease(lease, strict=strict)
+    latch.validate_lease(lease, strict=strict, allow_draining=allow_draining)
     _require_active_generation_root(store_root)
 
 
@@ -5144,7 +5149,12 @@ def rotate_blocked_partition(
         attestation, _snapshot_predecessor(active), generation, active_receipt, identity
     )
     # agent-harness#1591: the early, zero-write answer; re-checked under the lock.
-    _refuse_attested_not_landed_over_observations(active, adjudicated.effects)
+    # agent-harness#1633: a ceremony whose own journal already holds
+    # INVENTORY_SEALED (an older runtime's, or one that crashed after its in-lock
+    # check) must still resume toward ACTIVE; as on the post-flip arm, the
+    # re-admission refusal guards the observed effect there.
+    if "INVENTORY_SEALED" not in states:
+        _refuse_attested_not_landed_over_observations(active, adjudicated.effects)
     digest = adjudicated.digest
     expected_digests = adjudicated.predecessor_digests
     derived = _derive_rotation_inventory(
@@ -5272,11 +5282,12 @@ def rotate_blocked_partition(
                     )
                 # agent-harness#1591: the side file is not digested; a writer that
                 # recorded an observation before the drain is caught here.
-                try:
-                    _refuse_attested_not_landed_over_observations(active, adjudicated.effects)
-                except PartitionRotationRefused:
-                    latch.resume_active()
-                    raise
+                if "INVENTORY_SEALED" not in states:
+                    try:
+                        _refuse_attested_not_landed_over_observations(active, adjudicated.effects)
+                    except PartitionRotationRefused:
+                        latch.resume_active()
+                        raise
                 if sealed is None:
                     sealed = derived
                     _atomic_write_json(inventory_path, sealed)

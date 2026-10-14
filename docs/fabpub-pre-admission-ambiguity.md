@@ -135,9 +135,18 @@ provider outcome after it is kept rather than lost.
     `owner_nonce` and `transaction_id`. The row is written only while the on-disk
     owner is still exactly this attempt's and unsealed; otherwise nothing is
     written and the result says `durable: false`.
-  - It is recorded before the writer releases its service-generation lease, so a
-    rotation cannot drain the writer first. A rotation that starts during the call
-    refuses at `DRAINING` and is retried.
+  - It is recorded before the writer releases its service-generation lease. A
+    rotation that starts during the call holds `admissions.lock` across its drain,
+    so the write waits on that lock (a `DRAINING` latch alone does not refuse it);
+    the writer's held lease makes the ceremony refuse "predecessor writers did not
+    drain", the latch returns to `ACTIVE`, and the ceremony is retried after the
+    observation is durable. A revoked or stale lease and a superseded generation
+    still refuse the write, so only a writer with no held lease, or one whose lease
+    the operator cleared (runbook §6), loses the observation (agent-harness#1633).
+  - A ceremony whose own journal already holds `INVENTORY_SEALED` (sealed by an
+    older runtime, or crashed after its in-lock check) is not refused on resume:
+    refusing there would strand the partition. As after the pointer flip, the
+    successor's re-admission refuses the observed effect instead.
   - Nothing else changes. The evidence log gets no row (a terminal after an
     ambiguity would make the partition unrotatable, and an older reader would treat
     it as landed), the owner stays unsealed, the checkpoint stays `ADAPTER_STARTED`,

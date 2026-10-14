@@ -748,3 +748,229 @@ def test_real_old_prober_and_old_reader_processes(tmp_path, _old_trees):
     answer = json.loads(with_file[0])
     assert answer["epoch_blocked"] is True
     assert answer["replay"][key] == [AMBIGUOUS, "unsealed-adapter-start-owner"]
+
+
+# ---------------------------------------------------------------------------
+# Board round 1 (Consiliency/agent-harness#1633)
+# (1) A rotation that starts during the provider call holds admissions.lock across
+#     its drain: the observation waits for the lock instead of being refused by the
+#     DRAINING latch, the held lease keeps the ceremony from draining, and only a
+#     writer whose lease was cleared loses the observation.
+# (2) A ceremony whose own journal already holds INVENTORY_SEALED resumes; the
+#     successor's re-admission refusal guards the observed effect.
+# ---------------------------------------------------------------------------
+
+
+class _PromoteThenWaitForDrain(_CountingAdapter):
+    """An older prober promotes during the call; the provider returns only once a
+    ceremony has put the latch in DRAINING."""
+
+    def __init__(self, p, monkeypatch, *, drain=None) -> None:
+        super().__init__()
+        self.p, self.monkeypatch, self.drain = p, monkeypatch, drain
+        self.promoted = threading.Event()
+
+    def execute(self, request):
+        import time
+
+        if not self.calls:
+            _promote(self.p.container, self.p.identity, self.monkeypatch)
+            self.promoted.set()
+            if self.drain is not None:
+                self.drain()
+            latch = _live().WriterGenerationLatch.for_store_root(self.p.container)
+            deadline = time.monotonic() + WAIT_SECONDS
+            while latch.read().generation_state != "DRAINING":
+                assert time.monotonic() < deadline, "the ceremony never began draining"
+                time.sleep(0.01)
+        return super().execute(request)
+
+
+def test_drain_started_during_the_call_does_not_lose_the_observed_effect(tmp_path, monkeypatch):
+    """Board F001 shape: DRAINING lands during the call; the effect is never published twice."""
+    fx = _bootstrap(tmp_path, monkeypatch)
+    p = fx.alpha
+    live = _live()
+    latch = live.WriterGenerationLatch.for_store_root(p.container)
+    adapter = _promoting(p, monkeypatch, after=latch.begin_draining)
+    key = p.service._dedup_key(p.request)
+    result = p.service.execute(p.request)
+    assert len(adapter.calls) == 1
+    assert result.reason == EFFECT_REASON
+    assert result.observed_after_ambiguity.durable is True
+    latch.resume_active()
+    with pytest.raises(live.PartitionRotationRefused):
+        _rotate(None, p, attestation=_attestation(p, dispositions={key: ATTESTED_NOT_LANDED}))
+
+
+def test_real_ceremony_during_the_call_does_not_drain_then_observed_landed_rotates_once(tmp_path, monkeypatch):
+    fx = _bootstrap(tmp_path, monkeypatch)
+    p = fx.alpha
+    key = p.service._dedup_key(p.request)
+    live = _live()
+    real_await = live.WriterGenerationLatch.await_quiescent
+    monkeypatch.setattr(
+        live.WriterGenerationLatch,
+        "await_quiescent",
+        lambda self, *, worktree, timeout=60.0: real_await(self, worktree=worktree, timeout=3.0),
+    )
+    adapter = _PromoteThenWaitForDrain(p, monkeypatch)
+    p.service.adapter = adapter
+    box: dict = {}
+
+    def ceremony():
+        try:
+            assert adapter.promoted.wait(WAIT_SECONDS)
+            box["outcome"] = _rotate(
+                None, p, attestation=_attestation(p, dispositions={key: ATTESTED_NOT_LANDED}), release=False
+            )
+        except BaseException as error:  # asserted below
+            box["error"] = error
+
+    thread = threading.Thread(target=ceremony, name="1633-ceremony", daemon=True)
+    thread.start()
+    first = p.service.execute(p.request)
+    thread.join(WAIT_SECONDS * 2)
+    assert not thread.is_alive()
+    assert first.reason == EFFECT_REASON and first.observed_after_ambiguity.durable is True
+    assert "did not drain" in str(box.get("error")), box
+    assert live.WriterGenerationLatch.for_store_root(p.container).read().generation_state == "ACTIVE"
+    again = p.service.execute(p.request)
+    assert again.reason == EFFECT_REASON and again.provider_call_made is False
+    _release_all(p)
+    with pytest.raises(live.PartitionRotationRefused):
+        _rotate(
+            None, p, cutover_id="rotation-1633-2",
+            attestation=_attestation(p, dispositions={key: ATTESTED_NOT_LANDED}),
+        )
+    observation = first.observed_after_ambiguity
+    observed = _attestation(p, dispositions={key: OBSERVED_LANDED}, observed_head=observation.head_sha)
+    observed["effects"][key]["evidence_url"] = observation.evidence_reference
+    outcome = _rotate(None, p, attestation=observed)
+    second, calls = _publish_on_successor(None, outcome, p, p.request, adapter=_CountingAdapter())
+    assert len(adapter.calls) + len(calls) == 1, "the observed effect was published twice"
+    assert second.publish_result.pr_url == "https://gh/pr/1"
+
+
+def test_writer_whose_lease_was_cleared_and_generation_rotated_is_still_refused(tmp_path, monkeypatch):
+    fx = _bootstrap(tmp_path, monkeypatch)
+    p = fx.alpha
+    key = p.service._dedup_key(p.request)
+    box: dict = {}
+
+    class _PromoteThenRotate(_CountingAdapter):
+        def execute(self, request):
+            if not self.calls:
+                _promote(p.container, p.identity, monkeypatch)
+                _release_all(p)  # the operator cleared the writer's lease (runbook §6)
+                box["outcome"] = _rotate(None, p, attestation=_attestation(p, dispositions={key: ATTESTED_NOT_LANDED}))
+            return super().execute(request)
+
+    p.service.adapter = _PromoteThenRotate()
+    first = p.service.execute(p.request)
+    assert first.reason == "outcome_ambiguous" and first.observed_after_ambiguity is None
+    assert box["outcome"].state == "ACTIVE"
+    assert not (p.container / OBSERVATIONS).exists()
+    assert not (box["outcome"].store_root / OBSERVATIONS).exists()
+
+
+def test_ceremony_sealed_by_an_older_runtime_resumes_and_readmission_refuses(tmp_path, monkeypatch):
+    """Board F002 shape: a sealed pre-flip ceremony must still complete after the upgrade."""
+    from phase_loop_runtime.convergence.broker.verbs import PublicationRecoveryRequired
+    from test_fabpub_partition_rotation_789d import _crash_rotation
+
+    fx, p, key, result, adapter = _observed_partition(tmp_path, monkeypatch)
+    assert result.reason == EFFECT_REASON
+    live = _live()
+    real_refusal = live._refuse_attested_not_landed_over_observations
+    attestation = _attestation(p, dispositions={key: ATTESTED_NOT_LANDED})
+    monkeypatch.setattr(live, "_refuse_attested_not_landed_over_observations", lambda *_a, **_k: None)
+    _crash_rotation(None, p, "after_journal_inventory_sealed", attestation=attestation)
+    assert _journal_states(p) == ["DRAINING", "INVENTORY_SEALED"]
+    monkeypatch.setattr(live, "_refuse_attested_not_landed_over_observations", real_refusal)
+    outcome = _rotate(None, p, attestation=attestation)
+    assert outcome.state == "ACTIVE"
+    retry = _CountingAdapter()
+    refused, calls = _publish_on_successor(None, outcome, p, p.request, adapter=retry)
+    assert isinstance(refused, PublicationRecoveryRequired), refused
+    assert calls == [] and len(adapter.calls) == 1
+
+
+def test_new_ceremony_sealed_before_a_leaseless_observation_resumes_and_readmission_refuses(tmp_path, monkeypatch):
+    """The exemption cannot seal attested_not_landed over a recorded effect into a second call."""
+    from phase_loop_runtime.convergence.broker.verbs import PublicationRecoveryRequired
+
+    fx = _bootstrap(tmp_path, monkeypatch)
+    p = fx.alpha
+    key = p.service._dedup_key(p.request)
+    live = _live()
+
+    class _PromoteSealCrash(_CountingAdapter):
+        def execute(self, request):
+            if not self.calls:
+                _promote(p.container, p.identity, monkeypatch)
+                _release_all(p)
+                with monkeypatch.context() as m:
+                    m.setattr(live, "_ROTATION_CRASH_STEP", "after_journal_inventory_sealed")
+                    with pytest.raises(Exception):
+                        _rotate(None, p, attestation=_attestation(p, dispositions={key: ATTESTED_NOT_LANDED}))
+            return super().execute(request)
+
+    adapter = _PromoteSealCrash()
+    p.service.adapter = adapter
+    p.service.execute(p.request)
+    assert _journal_states(p) == ["DRAINING", "INVENTORY_SEALED"]
+    outcome = _rotate(None, p, attestation=_attestation(p, dispositions={key: ATTESTED_NOT_LANDED}))
+    assert outcome.state == "ACTIVE"
+    retry = _CountingAdapter()
+    refused, calls = _publish_on_successor(None, outcome, p, p.request, adapter=retry)
+    assert isinstance(refused, PublicationRecoveryRequired), refused
+    assert calls == [] and len(adapter.calls) == 1
+
+
+def test_fresh_and_draining_only_ceremonies_are_still_refused(tmp_path, monkeypatch):
+    """The exemption applies only to a journal that already holds INVENTORY_SEALED."""
+    fx, p, key, result, _adapter = _observed_partition(tmp_path, monkeypatch)
+    live = _live()
+    with pytest.raises(live.PartitionRotationRefused):
+        _rotate(None, p, attestation=_attestation(p, dispositions={key: ATTESTED_NOT_LANDED}))
+    assert _journal_states(p) == []
+    real_refusal = live._refuse_attested_not_landed_over_observations
+    monkeypatch.setattr(live, "_refuse_attested_not_landed_over_observations", lambda *_a, **_k: None)
+    with monkeypatch.context() as m:
+        m.setattr(live, "_ROTATION_CRASH_STEP", "after_journal_draining")
+        with pytest.raises(Exception):
+            _rotate(None, p, attestation=_attestation(p, dispositions={key: ATTESTED_NOT_LANDED}))
+    monkeypatch.setattr(live, "_refuse_attested_not_landed_over_observations", real_refusal)
+    assert _journal_states(p) == ["DRAINING"]
+    with pytest.raises(live.PartitionRotationRefused):
+        _rotate(None, p, attestation=_attestation(p, dispositions={key: ATTESTED_NOT_LANDED}))
+    observation = result.observed_after_ambiguity
+    observed = _attestation(p, dispositions={key: OBSERVED_LANDED}, observed_head=observation.head_sha)
+    observed["effects"][key]["evidence_url"] = observation.evidence_reference
+    assert _rotate(None, p, attestation=observed).state == "ACTIVE"
+
+
+def test_ordinary_terminal_under_a_draining_latch_is_still_refused(tmp_path, monkeypatch):
+    """Only the post-ambiguity branch tolerates DRAINING; a live row's terminal does not."""
+    fx = _bootstrap(tmp_path, monkeypatch)
+    p = fx.alpha
+    key = p.service._dedup_key(p.request)
+    live = _live()
+    latch = live.WriterGenerationLatch.for_store_root(p.container)
+
+    class _DrainDuringCall(_CountingAdapter):
+        def execute(self, request):
+            latch.begin_draining()
+            return super().execute(request)
+
+    p.service.adapter = adapter = _DrainDuringCall()
+    try:
+        with pytest.raises(live.WriterGenerationBlocked):
+            p.service.execute(p.request)
+        assert len(adapter.calls) == 1
+        assert _key_states(p, key) == [IN_FLIGHT], "a terminal was appended under DRAINING"
+        assert _owner(p.container)["sealed"] is False
+        assert not (p.container / OBSERVATIONS).exists()
+    finally:
+        latch.resume_active()

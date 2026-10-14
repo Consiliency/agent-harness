@@ -39,6 +39,20 @@ def _require_generation(root: Path, generation_lease) -> None:
         require_current_generation(root, generation_lease, strict=True)
 
 
+def _require_generation_tolerating_drain(root: Path, generation_lease) -> None:
+    """agent-harness#1633: a post-ambiguity observation is not refused for a DRAINING latch alone.
+
+    A revoked lease, a lease that does not bind the current generation, and a
+    superseded generation root still refuse.
+    """
+    from .live import require_current_generation
+
+    if generation_lease is _UNDECLARED:
+        require_current_generation(root, None, strict=False, allow_draining=True)
+    else:
+        require_current_generation(root, generation_lease, strict=True, allow_draining=True)
+
+
 class EvidenceStoreIncompatible(PermissionError):
     """This runtime cannot read one ``evidence.jsonl`` record (agent-harness#789).
 
@@ -280,11 +294,14 @@ class BrokerEvidenceStore:
                     ) from error
                 result[key] = record
         return result
-    def _authorize(self) -> None:
+    def _authorize(self, *, allow_draining: bool = False) -> None:
         """Authenticate BEFORE any directory creation, then create the tree."""
         from .live import is_canonical_store_root, load_partition_receipt
 
-        _require_generation(self.root, self.generation_lease)
+        if allow_draining:
+            _require_generation_tolerating_drain(self.root, self.generation_lease)
+        else:
+            _require_generation(self.root, self.generation_lease)
         canonical_store = is_canonical_store_root(self.root)
         if (
             _fabpub_active()

@@ -436,6 +436,24 @@ refused with `publication_recovery_required` naming the observed effect: escalat
 the maintainer and do not re-publish. A no-effect observation is listed as
 `supporting_evidence` and leaves the judgement to you.
 
+**If `post-ambiguity-observations.jsonl` is unreadable** (the ceremony, the preflight or
+the retry names it; typically a torn final line from a crash mid-append), do this:
+
+1. Never truncate, edit or delete the file. It is the only record of what the provider
+   reported, and repairing it would turn the fail-closed refusal into a guess.
+2. Read the torn tail with the partition's `admissions.lock` held (for example
+   `flock <store>/admissions.lock tail -c 4096 <store>/post-ambiguity-observations.jsonl`),
+   so no writer appends while you read.
+3. If the partial line names the blocked key (its `idempotency_key`, or the effect-key
+   suffix), treat it as an effect. Confirm the pull request at the provider and rotate
+   `observed_landed` with that head and the provider-side URL (§3); never
+   `attested_not_landed`.
+4. Otherwise escalate to the maintainer. Do not rotate `attested_not_landed` while the
+   file is unreadable: the ceremony refuses it for every key, and so does the retry.
+
+The same applies to a well-formed row this runtime cannot read, such as one carrying a
+field from a newer runtime: read it, act on what it names, and escalate if it is unclear.
+
 **Before attesting `attested_not_landed`, check which runtimes write the partition.**
 The liveness lock, the guard and the observation protect a partition only once every
 runtime that writes it, and every runtime that runs its ceremony, is upgraded. An

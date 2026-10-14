@@ -59,6 +59,29 @@ classification, but a receipt-owned (`bootstrap_owned`) namespace's file list is
 compared, and canonical stores already hold growing files; historical evidence roots
 are legacy, not canonical. No change was needed.
 
+## Board round 1 (agent-harness#1633)
+
+- **D3, as it actually holds.** A rotation that starts during the provider call holds
+  `admissions.lock` across its drain. On the post-ambiguity branch only, the
+  observation's authorization does not refuse for a `DRAINING` latch alone, so the
+  write waits on that lock; the writer's held lease makes the ceremony refuse
+  "predecessor writers did not drain" (latch back to `ACTIVE`, retried). A revoked or
+  stale lease and a superseded generation root still refuse; the ordinary terminal
+  append and owner seal keep the strict `DRAINING` refusal. Only a writer with no held
+  lease, or a cleared one, loses the observation.
+- **Sealed pre-flip resume.** Both ceremony refusals are skipped when the cutover's own
+  journal already holds `INVENTORY_SEALED`; refusing there would strand the partition.
+  As on the post-flip arm, `_recovery_authority` refuses the observed effect instead.
+- **Runbook §8a:** the procedure for an unreadable side file.
+
+| Crash point | Result |
+|---|---|
+| Provider returned, before the side-file write | URL lost (residual). |
+| Mid-append (torn line) | `UNREADABLE`: ceremony, preflight and recovery refuse `attested_not_landed`. |
+| After the write | A retry replays the observation. |
+| Rotation started during the call | The write waits on `admissions.lock`; the ceremony does not drain and is retried. |
+| Lease cleared by the operator, then the generation rotated | Refused (revoked lease or superseded generation): nothing written, URL lost. |
+
 ## Outcomes on an already-ambiguous row
 
 | Provider outcome | Store | Side file | Result |

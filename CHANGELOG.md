@@ -26,13 +26,19 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   admission schemas are unchanged, no rotation digest covers the new file, and older
   readers never open it.
 - The terminal (or the observation) is now recorded before the service-generation
-  lease is released, so a rotation cannot drain the writer first, and a failed lease
-  release after a successful call is no longer recorded as ambiguity.
+  lease is released, and a failed lease release after a successful call is no longer
+  recorded as ambiguity. A rotation that starts during the call holds
+  `admissions.lock` across its drain: the observation waits on the lock (a `DRAINING`
+  latch alone does not refuse it), the writer's held lease makes the ceremony refuse
+  "predecessor writers did not drain", and the ceremony is retried. Only a writer
+  with no held lease, or a cleared one, loses the observation (agent-harness#1633).
 - New runtimes refuse to dispose a key with a recorded effect, or any key while the
   side file is unreadable, `attested_not_landed`: the rotation ceremony (zero-write,
   and again under the predecessor's lock before `INVENTORY_SEALED`), the read-only
   preflight, and the re-admission (`PublicationRecoveryRequired`, escalate to the
-  maintainer). A no-effect observation is supporting evidence only.
+  maintainer). A ceremony whose own journal already holds `INVENTORY_SEALED` is not
+  refused on resume; its successor's re-admission refuses instead (agent-harness#1633).
+  A no-effect observation is supporting evidence only.
 - The human route keeps `next_step: adjudicate_publication_by_partition_rotation` and,
   for an effect, adds `required_disposition: observed_landed`,
   `forbidden_disposition: attested_not_landed`, `attestation_inputs` and, for a
