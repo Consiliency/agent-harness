@@ -140,10 +140,7 @@ Python interpreters (agent-harness#862).
   predicate is truthy but binds nothing, and is rejected.
 - **Environment.** The child inherits only what survives the two pure scrubbers,
   the subscription scrubber and the mutation-credential stripper, so no
-  mutation credential, vendor API key, or endpoint escape reaches it. The only
-  variables then added are `TMPDIR` and `CLAUDE_CODE_TMPDIR`, set to the runtime's
-  private disk-backed scratch directory (agent-harness#1147); with no such directory
-  the adapter refuses rather than fall back to a RAM-backed temp dir.
+  mutation credential, vendor API key, or endpoint escape reaches it.
 - **Time and process group.** The child runs in its own session. Every exit,
   including an interruption, attempts to kill its owned group before reaping
   the leader. Cleanup closes the selector and pipes without draining and limits the leader wait

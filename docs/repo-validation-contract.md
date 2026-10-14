@@ -37,8 +37,7 @@ The resolver runs **only** a repo's *explicit* contract, in this order:
 1. **`just agent::<target>`** — when a root `Justfile`/`justfile` declares
    `mod agent` (or `mod? agent`) **and** the repo ships an `agent.just` module
    (also probed at `agent/mod.just`, `agent/Justfile`, `agent/justfile`,
-   `agent/.justfile`) that declares a recipe named `<target>`. Failing that, a flat
-   recipe named `agent:<target>` in the root `Justfile` is run as `just agent:<target>`.
+   `agent/.justfile`) that declares a recipe named `<target>`.
 2. **`package.json` script `agent:<target>`** — an explicit npm/pnpm/yarn/bun
    script. The runner is chosen from a present lockfile
    (`pnpm-lock.yaml`→pnpm, `package-lock.json`→npm, `yarn.lock`→yarn,

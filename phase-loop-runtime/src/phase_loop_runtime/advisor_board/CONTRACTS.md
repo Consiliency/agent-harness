@@ -119,7 +119,7 @@ equivalence is proven by a test (not asserted in prose).
 ## IF-0-ABDFREEZE-4 — Back-compat contract · `fixtures.py` + `tests/test_advisor_board_backcompat.py`
 
 - The model-first `default` board (`DEFAULT_BOARD`) resolves four vendors in
-  `DEFAULT_BOARD_VENDOR_ORDER`: Codex/Sol, Gemini/Flash medium, Claude/Opus 5.5, and
+  `DEFAULT_BOARD_VENDOR_ORDER`: Codex/Sol, Gemini/Flash high, Claude/Opus 5.5, and
   Grok 4.7. The separate legacy `PANEL_LEGS` tuple and explicit `invoke_panel`
   API remain the frozen three-leg Codex/Gemini/Claude boundary.
 - `advisor-panel` stays a working alias of `advisor-board` — the rename + alias is
@@ -220,8 +220,7 @@ the real matrix at `load_boards()` time (`tests/test_advisor_board_config.py`,
   (`tests/test_advisor_board_golden.py`), which checks the fourth (Grok) seat
   separately; the sole sanctioned delta stays `seat_key`.
 - **`default` and `code-review` are four-vendor frontier boards.** Gemini uses
-  `gemini-3.8-flash` at `medium` (one below its `high` ceiling) alongside Sol, Opus 5.5,
-  and Grok 4.7;
+  `gemini-3.8-flash` at its `high` ceiling alongside Sol, Opus 5.5, and Grok 4.7;
   `code-review` preserves availability-aware backfill and distinct lenses.
 - **President availability ladder.** Review findings go first to the `fable` seat
   (Opus 5.5 by default — the rung names the seat, not the model), then

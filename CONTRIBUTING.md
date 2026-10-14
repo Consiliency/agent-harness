@@ -66,7 +66,7 @@ Requirements: Python 3.10 or newer for the runtime (`requires-python = ">=3.10"`
   `entry-point docs verification` (`entry-doc-check.yml`), `skills-parity.yml`,
   `roadmap ownership (advisory)`, the package build workflows and
   `qualified-agy-image.yml`.
-- **Gate A (the clean-room install from the wheel) does not run on pull requests.**
+- **The Gate A suite (run against a clean-room install of the wheel) does not run on pull requests.**
   It runs on pushes to `main`, nightly and on dispatch (`test.yml`), and in the release
   build on tags (`publish-pypi.yml`). If your change touches
   packaging, `skills-src/`, `docs/` paths that tests read, or workflows, dispatch it on
@@ -93,7 +93,9 @@ Requirements: Python 3.10 or newer for the runtime (`requires-python = ">=3.10"`
 ## Security
 
 This repository is public. Don't describe a security weakness in an issue, pull request,
-commit message or test name. Report it privately to the maintainer instead.
+commit message or test name. Report it privately with the **Report a vulnerability**
+button on the repository's **Security** tab (Security → Advisories). See
+[`SECURITY.md`](SECURITY.md).
 
 ## License
 

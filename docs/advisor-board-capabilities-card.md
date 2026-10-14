@@ -104,10 +104,11 @@ actionable message, before any subprocess is spawned. Source of truth:
 
 **Effort is model-first `{model, effort}`**, split out of the model name and mapped
 per harness by `render_seat_invocation`: `claude` → `--effort <level>`, `codex` →
-`-c model_reasoning_effort=<xhigh|high|…>`, `grok` → `--reasoning-effort <level>`,
-`gemini` → effort baked into the model
+`-c model_reasoning_effort=<xhigh|high|…>`, `gemini` → effort baked into the model
 token (`gemini-3.8-flash-high`; legacy display names such as
 `"Gemini 3.1 Pro (High)"` remain accepted). Canonical effort levels: `low, medium, high, max`.
+
+The `grok` lane maps effort to `--reasoning-effort <level>`.
 
 Built-in presets use one lower canonical effort level than their previous defaults:
 `max` becomes `high`, `high` becomes `medium`, and `medium` becomes `low`.
