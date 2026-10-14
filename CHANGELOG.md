@@ -6,6 +6,210 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### FABPUB: a provider outcome on an already-ambiguous key is kept, and an observed effect is never attested not landed (agent-harness#1591)
+
+- A promotion by an older-runtime prober from the provider-entry guard's lock release
+  through the provider call still makes one provider call. When that call reported
+  success, the broker could not record it over the ambiguous row and dropped the PR
+  URL, so an operator with no local evidence could attest `attested_not_landed` and
+  the recovery would publish twice. The broker now appends the outcome to a new
+  append-only `post-ambiguity-observations.jsonl` beside the evidence log
+  (`PostAmbiguityObservation.v1`), bound to the blocked row's `ambiguity_digest` and
+  to this attempt's owner (`owner_nonce`, `transaction_id`), under the same
+  `admissions.lock` acquisition and generation check. It is written only while the
+  owner is still this attempt's; otherwise the result says `durable: false`.
+- The store stays ambiguous, the epoch blocked, the owner unsealed and the checkpoint
+  `ADAPTER_STARTED`. The result is not accepted and has no `publish_result`; its
+  `reason` is `effect_observed_after_ambiguity` or `no_effect_observed_after_ambiguity`
+  and `BrokerExecutionResult.observed_after_ambiguity` carries the observation. Every
+  retry replays it with `provider_call_made: false`. The evidence log, owner and
+  admission schemas are unchanged, no rotation digest covers the new file, and older
+  readers never open it.
+- The terminal (or the observation) is now recorded before the service-generation
+  lease is released, and a failed lease release after a successful call is no longer
+  recorded as ambiguity. A rotation that starts during the call holds
+  `admissions.lock` across its drain: the observation waits on the lock (a `DRAINING`
+  latch alone does not refuse it), the writer's held lease makes the ceremony refuse
+  "predecessor writers did not drain", and the ceremony is retried. Only a writer
+  with no held lease, or a cleared one, loses the observation (agent-harness#1633).
+- New runtimes refuse to dispose a key with a recorded effect, or any key while the
+  side file is unreadable, `attested_not_landed`: the rotation ceremony (zero-write,
+  and again under the predecessor's lock before `INVENTORY_SEALED`), the read-only
+  preflight, and the re-admission (`PublicationRecoveryRequired`, escalate to the
+  maintainer). A ceremony whose own journal already holds `INVENTORY_SEALED` is not
+  refused on resume; its successor's re-admission refuses instead (agent-harness#1633).
+  A no-effect observation is supporting evidence only.
+- The human route keeps `next_step: adjudicate_publication_by_partition_rotation` and,
+  for an effect, adds `required_disposition: observed_landed`,
+  `forbidden_disposition: attested_not_landed`, `attestation_inputs` and, for a
+  generation-0 container, a pre-filled `attestation_builder_command`. The plain
+  agent-harness#1312 handoff is unchanged. The attestation builder prints the
+  observation and warns when its inputs disagree with it.
+- Two broker crash seams (`after_provider_return_before_terminal`,
+  `after_post_ambiguity_observation`). Still open: an older writer records nothing,
+  and a crash between the provider's return and the side-file write loses the URL
+  (documented in `docs/fabpub-pre-admission-ambiguity.md` and runbook §8a).
+
+### FABPUB: the human publication route picks its handoff by the broker refusal's type (agent-harness#1573, agent-harness#1578, agent-harness#1594, agent-harness#1574)
+
+- `publish_human_invoked_from_worktree` used to answer every broker
+  `PermissionError` with `next_step="repair_fabpub_authority"`. It now chooses the
+  handoff by exception type, never by message text. Any other `PermissionError`
+  keeps `repair_fabpub_authority`. The typed refusals add `provider_call_made: false`
+  to the result.
+  - A routing client built before a rotation now raises
+    `RoutingClientGenerationRetired`, a `WriterGenerationBlocked`. Its next step is
+    `rebuild_broker_client_and_retry` (agent-harness#1573 ask 4).
+  - `AdapterStartOwnerLive` and the new `AdapterStartOwnerContended` (the owner
+    section was contended twice) get `retry_after_inflight_publication`
+    (agent-harness#1578 ask 5).
+  - The unsealed-owner refusal and `epoch permanently blocked` are now typed as
+    `UnsealedOwnerBlocksPartition` and `PartitionEpochBlocked`. Both get the
+    partition-rotation handoff, which names the blocking key in
+    `blocking_effect_keys`, plus `blocking_transaction_id` for an owner. An epoch
+    block that names no key in the store, which is legacy carried ambiguity, keeps
+    `repair_fabpub_authority`.
+  - After the admission is durable and before provider entry, a
+    `WriterGenerationBlocked` from `record_intent`, `_authorize` or the
+    service-generation lease is re-raised with the same message as
+    `ProviderEntryGenerationRefused`. That type is both a `ProviderEntryRefused` and
+    a `WriterGenerationBlocked`. The guard's own "no evidence row" refusal is now a
+    `ProviderEntryRefused`. Any other `PermissionError` in that window propagates
+    unchanged and keeps `repair_fabpub_authority`; that includes EACCES and an
+    incompatible store. Its next step is
+    `retry_once_before_partition_rotation`. One retry promotes the owner, and the
+    retry returns the rotation handoff for this key. Without that retry, the rotation
+    refuses with "intents without a terminal" (agent-harness#1594 ask 1).
+- Every new type subclasses `PermissionError`, and the messages are unchanged.
+- Every rotation handoff now cites runbook §§1, 3, 4, 6, 7 and 8a. It names the
+  authority root the rotation must use, says where the `transaction_id` comes from,
+  and repeats the warning against a second `attested_not_landed` without new
+  evidence (agent-harness#1574 ask 2).
+- New `tests/test_fabpub_typed_handoffs.py` drives each refusal through the human
+  route. Documented in `docs/fabpub-pre-admission-ambiguity.md` ("Human-route
+  handoffs for broker refusals") and runbook §6 and §8a. The plan is
+  `phase-loop-runtime/plans/fabpub-typed-handoffs.md`.
+
+### FABPUB: the recovery record no longer conflicts across runtime versions within one generation (agent-harness#1576)
+
+- Since agent-harness#1550, the `<transaction_id>.recovery.<generation>.json` record always
+  carried `disposing_generation`, `readmitting_generation` and `intervening_rotations`.
+  A record written by one runtime version, followed by a retry on another version in the
+  same generation, raised `PublishTransactionConflict` before any owner write or
+  provider call. This happened in both directions, and the key waited for an unrelated
+  rotation or for the record to be removed by hand.
+- The three fields are now written only when a rotation intervened. With none, the
+  record is byte-identical to the agent-harness#1296 record, so a retry on either
+  version in the same generation recovers once. A reader also accepts a record that
+  carries the fields with their no-rotation values, the shape written by `main` since
+  agent-harness#1550. Any other difference still refuses.
+- A recovery-record refusal is now `RecoveryRecordConflict`, a
+  `PublishTransactionConflict` that carries `record_path`. The human handoff names it
+  as `conflicting_recovery_record`.
+- New regressions in `test_fabpub_recovery_record_compat_1576.py`. They run the
+  historical runtimes in a subprocess from a `git archive` of their pinned commits.
+
+### FABPUB: the provider is entered only after an in-lock check that the key is still this attempt's in-flight record (agent-harness#1577, agent-harness#1574, agent-harness#1578, agent-harness#1576)
+
+- An older-runtime prober could promote a live writer's owner to
+  `outcome_ambiguous_blocked` after the owner section, and the writer then still
+  called the provider. Right before the provider call the broker now checks, under one
+  `admissions.lock` acquisition, that the on-disk owner is exactly this attempt's and
+  unsealed and that the key's row is `provider_call_in_flight`. If not, it makes no
+  provider call, writes nothing and returns the stored row (reason `outcome_ambiguous`)
+  instead of raising (agent-harness#1577). A promotion landing at any point from that
+  lock's release through the provider call (the `ADAPTER_STARTED` projection, request
+  finalization, lease acquisition, the call itself) is not covered and still makes one
+  provider call, reported with `provider_call_made: true`; that window is
+  agent-harness#1591.
+- A failure after the provider returned was always recorded as
+  `outcome_ambiguous_blocked`, even when the terminal was already durable and only the
+  owner seal or the checkpoint projection failed. The broker now returns the stored
+  terminal; a retry replays it. A refused service-generation lease before the provider
+  call is re-raised and records no ambiguity (agent-harness#1574 ask 1).
+- If the `ADMISSION_DURABLE` projection itself fails, the broker restores the owner
+  it found, but only while the checkpoint is still `COMMITTED_HEAD_RESOLVED`, the
+  generation still authorizes the writer, the owner is this attempt's and the key has
+  no evidence. Every other failure before the provider call leaves the owner for the
+  next attempt to promote and a rotation to recover (agent-harness#1578 ask 1,
+  option i; documented in `docs/fabpub-pre-admission-ambiguity.md` and runbook §8a).
+- A broker-blocked result from `publish_from_worktree` now carries
+  `provider_call_made`, true only when this call entered the provider adapter.
+  `BrokerExecutionResult` gains the same field (default false).
+- New regressions in `test_fabpub_ambiguous_handoff_1312.py` and
+  `test_fabpub_owner_section_1314_1313_1311.py`, including the recovery-path restore
+  after an `epoch_blocked` refusal (agent-harness#1576 ask 2).
+
+### One switch picks the Claude seat transport (agent-harness#1391, Stage 2)
+
+- Claude panel seats and the president's Claude rung now get their transport from one
+  resolver, `_resolve_claude_transport`, instead of each comparing the route string
+  itself. `PHASE_LOOP_PANEL_CLAUDE_ROUTE` still selects `print` (the default) or `tui`,
+  and capture and research seats still run on the TUI.
+- `sdk` is now a named but not admitted transport. Selecting it reports
+  `panel_claude_transport_not_admitted` instead of `panel_claude_route_invalid`, and
+  nothing launches. Admitting it (Stage 3) needs an EC-REVIEWTRUTH-18 amendment.
+
+### An attested_not_landed disposition survives later rotations (agent-harness#1310)
+
+- Since agent-harness#1296, a rotation that disposes a failed publication's key
+  `attested_not_landed` lets the exact admitted transaction publish once. Only the active
+  generation's receipt was consulted, so a rotation for an unrelated key, run before the
+  retry, dropped the disposition. The retry was then refused with no rotation able to fix it.
+- The recovery now walks the authenticated receipt chain back to the first receipt that
+  adjudicates the key, and authorizes only an `attested_not_landed` disposition found there.
+  It refuses (`PublicationRecoveryRequired`, before any write) once any generation since the
+  disposing rotation holds evidence or an adapter-start owner for the key, or a later
+  receipt carries it as completed. Sealed generations are checked against the bytes their
+  successor receipts sealed; the active generation is still checked under the admissions
+  lock. A disposition therefore authorizes at most one re-admission.
+- The recovery record now names `disposing_generation`, `readmitting_generation` and
+  `intervening_rotations`. Its `generation`, and the record's file name, is the
+  re-admitting generation.
+
+### FABPUB: a refused admission leaves no owner, and a live writer is not made ambiguous (agent-harness#1314, agent-harness#1313, agent-harness#1311)
+
+- Every refusal inside `admit_next` that runs after the adapter-start owner write
+  (generation lease, partition floor, `epoch_blocked`, policy, the admission request
+  build, the admission append) used to leave an unsealed owner behind. The next attempt
+  promoted it to permanent `outcome_ambiguous_blocked`. The broker now restores the owner
+  path to the exact bytes it found, under the same `admissions.lock` acquisition
+  (agent-harness#1314).
+- An unsealed owner whose writer is still mid-attempt is no longer promoted to
+  ambiguity. The writer holds an advisory `flock` on the owner file's inode until its
+  attempt ends, and `_block_unsealed_owner` probes it first. A live writer gets a
+  retryable `AdapterStartOwnerLive` refusal and nothing is written. A dead writer's owner
+  is promoted as before (agent-harness#1313). No schema change and no new file, so
+  mixed-version runtimes keep today's behaviour.
+- New regression `test_fabpub_owner_section_1314_1313_1311.py`, including the in-lock
+  transaction-state race (agent-harness#1311).
+
+### An ambiguous human publication now gets the rotation handoff (agent-harness#1312)
+
+- A human publication whose key holds `outcome_ambiguous_blocked` evidence is blocked
+  until an operator partition rotation adjudicates the effect, and every retry before
+  that replays the block. The human route answered it with the generic
+  `repair_publication_precheck_and_retry` handoff, which no retry can satisfy.
+- It now reports next step `adjudicate_publication_by_partition_rotation`, with the
+  `fabpub-rotate-partition` command for the worktree, what the rotation requires
+  (`observed_landed` or `attested_not_landed`), and runbook section 8a. This covers the
+  first ambiguous attempt, an adapter exception, and every replay.
+- `publish_from_worktree` adds `terminal_state` to a broker-blocked result, so the
+  match is on the typed state. `reason` and `detail` are unchanged. Other blocked
+  results keep the generic handoff.
+
+### A routing client built before a partition rotation refuses typed (agent-harness#1315)
+
+- A FABPUB routing client caches its stores for each repository. A client built
+  before a partition rotation used to answer from the retired generation. A new head
+  was refused by that generation's old block, as `epoch permanently blocked`, and a
+  head it had already published was served as a replay from the retired ledger.
+  Nothing was written to either generation, and the provider was not called.
+- The client now re-resolves the ACTIVE generation on every request. Once a rotation
+  has moved the pointer, it refuses with `WriterGenerationBlocked` before it reads or
+  writes either generation's store. It never rebinds, so restart the broker process. While the
+  client still holds its lease, the rotation refuses instead, as before.
+
 ### The codex board seat can run commands in its staged tree again (agent-harness#1470)
 
 - Since 0.7.25 the codex seat of a sandboxed board (one that stages a review tree) could not

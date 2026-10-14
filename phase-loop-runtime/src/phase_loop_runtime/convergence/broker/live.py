@@ -39,7 +39,7 @@ from phase_loop_runtime.convergence.provider_contracts import PROVIDER_COMPLETIO
 from .admission import BrokerAdmissionPolicy, LinearizableAdmissionStore
 from .credsep import ALLOWED_ORIGIN_HOSTS, GitHubBrokerAdapter
 from .evidence import BrokerEvidenceStore
-from .verbs import BrokerClient, BrokerService
+from .verbs import BrokerClient, BrokerService, ProviderEntryRefused
 
 _CANONICAL_GITHUB_BROKER_ADAPTER = GitHubBrokerAdapter
 _CANONICAL_PROVIDER_RUN = subprocess.run
@@ -85,6 +85,31 @@ class WriterGenerationBlocked(PermissionError):
 
     def __init__(self, detail: str) -> None:
         super().__init__(f"{GENERATION_BLOCKER}: {detail}")
+
+
+class RoutingClientGenerationRetired(WriterGenerationBlocked):
+    """A routing client is bound to a partition generation a rotation retired.
+
+    agent-harness#1315: the client refuses every request rather than rebind.
+    The remedy is a new client (or a restarted broker process), not an
+    authority repair or a rotation (agent-harness#1573 ask 4).
+    """
+
+
+class ProviderEntryGenerationRefused(ProviderEntryRefused, WriterGenerationBlocked):
+    """A ``WriterGenerationBlocked`` in the provider-entry window (agent-harness#1594).
+
+    Both a ``ProviderEntryRefused`` (the human route's "retry once" handoff) and
+    a ``WriterGenerationBlocked``, so callers that catch the generation refusal
+    behave as before.  The message is the original's, already prefixed, so the
+    ``GENERATION_BLOCKER`` prefix is not added again; the original is chained
+    as ``__cause__`` by the raiser.
+    """
+
+    def __init__(self, message: str, *, effect_key: str, transaction_id: str) -> None:
+        PermissionError.__init__(self, message)
+        self.effect_key = effect_key
+        self.transaction_id = transaction_id
 
 
 class FabpubConfigurationError(RuntimeError):
@@ -753,7 +778,8 @@ class WriterGenerationLatch:
             return lease
 
     def validate_lease(
-        self, lease: "WriterGenerationLease | None", *, strict: bool = True
+        self, lease: "WriterGenerationLease | None", *, strict: bool = True,
+        allow_draining: bool = False,
     ) -> None:
         """Revalidate an exact lease nonce + generation against current state.
 
@@ -771,7 +797,10 @@ class WriterGenerationLatch:
         """
         with self.exclusive():
             snapshot = self.read()
-            if snapshot.generation_state == "DRAINING":
+            if snapshot.generation_state == "DRAINING" and not allow_draining:
+                # agent-harness#1633: a post-ambiguity observation by a writer that
+                # still holds its lease may wait for admissions.lock while DRAINING;
+                # the held lease is what keeps the ceremony from draining.
                 raise WriterGenerationBlocked(
                     "the repository generation latch entered DRAINING before this write"
                 )
@@ -797,7 +826,8 @@ UNDECLARED_LEASE = object()
 
 
 def require_current_generation(
-    store_root: Path, lease: "WriterGenerationLease | None" = None, *, strict: bool = True
+    store_root: Path, lease: "WriterGenerationLease | None" = None, *, strict: bool = True,
+    allow_draining: bool = False,
 ) -> None:
     """Revalidate the writer generation INSIDE a store lock, before an append.
 
@@ -816,7 +846,7 @@ def require_current_generation(
                 "generation latch; refusing to append without an activation authority"
             )
         return
-    latch.validate_lease(lease, strict=strict)
+    latch.validate_lease(lease, strict=strict, allow_draining=allow_draining)
     _require_active_generation_root(store_root)
 
 
@@ -944,6 +974,8 @@ ROTATION_DIGESTED_FILES = (
 ROTATION_STORE_FILES = ROTATION_DIGESTED_FILES + (
     "admissions.lock",
     "legacy-promotions.jsonl",
+    # agent-harness#1591: not digested; it can only add refusals.
+    "post-ambiguity-observations.jsonl",
 )
 
 
@@ -1431,6 +1463,130 @@ def sealed_partition_effects(receipt: LegacyRepositoryPartitionReceipt) -> dict[
     return effects
 
 
+class RecoveryChainSuperseded(LegacyCutoverConflict):
+    """An earlier ``attested_not_landed`` disposition no longer authorizes a re-admission.
+
+    agent-harness#1310: a generation since the disposing rotation holds evidence
+    (or an adapter-start owner) for the key, or a later receipt carries it as
+    completed.  A ``LegacyCutoverConflict`` so every fail-closed site that
+    already refuses an unauthenticated chain refuses this too.
+    """
+
+    def __init__(self, detail: str, *, generation: int) -> None:
+        self.generation = generation
+        super().__init__(detail)
+
+
+def _generation_store(container: Path, generation: int) -> Path:
+    return container if generation == 0 else container / GENERATIONS_DIR / str(generation)
+
+
+def generation_store_root(store_root: Path, generation: int) -> Path:
+    """The store root of ``generation`` in ``store_root``'s partition."""
+    container, _active = _partition_layout(Path(store_root))
+    return _generation_store(container, generation)
+
+
+def post_ambiguity_effect_refusal(store_root: Path, key: str) -> str | None:
+    """Why ``key`` of ``store_root`` must not be disposed ``attested_not_landed``, or ``None``.
+
+    agent-harness#1591 (D2): the provider reported an effect for the key after
+    its row was already ambiguous, or the side file that would say so cannot be
+    read (fail closed).  A no-effect observation is supporting evidence only
+    (D4) and refuses nothing.
+    """
+    from .evidence import (
+        POST_AMBIGUITY_OBSERVATIONS_FILENAME,
+        UNREADABLE,
+        post_ambiguity_effect,
+    )
+
+    observed = post_ambiguity_effect(Path(store_root), key)
+    if observed is UNREADABLE:
+        return (
+            f"an unreadable {POST_AMBIGUITY_OBSERVATIONS_FILENAME} in {store_root} (it may hold "
+            "a provider-reported effect for the key)"
+        )
+    if observed is None:
+        return None
+    return (
+        f"a provider-reported effect for {key!r} after the key was blocked: "
+        f"{observed.evidence_reference} at head {observed.head_sha} (transaction "
+        f"{observed.transaction_id}, recorded in {POST_AMBIGUITY_OBSERVATIONS_FILENAME})"
+    )
+
+
+def _refuse_attested_not_landed_over_observations(store_root: Path, effects: dict) -> None:
+    """Refuse an ``attested_not_landed`` entry for an observed effect (agent-harness#1591, D2)."""
+    for key, entry in sorted(effects.items()):
+        if not isinstance(entry, dict) or entry.get("disposition") != DISPOSITION_ATTESTED_NOT_LANDED:
+            continue
+        why = post_ambiguity_effect_refusal(store_root, key)
+        if why is not None:
+            raise PartitionRotationRefused(
+                f"attestation disposes {key!r} attested_not_landed, but the predecessor holds {why}; "
+                "dispose it observed_landed with that observed head and evidence URL, or escalate "
+                "to the maintainer"
+            )
+
+
+def _sealed_generation_bytes(store: Path, name: str, sealed_digest: str | None, generation: int) -> bytes | None:
+    """Read ONE digested file of a sealed generation once; its bytes must be the sealed ones.
+
+    ``sealed_digest`` is the successor receipt's ``predecessor_digests[name]``:
+    a missing file digests as empty bytes, exactly as the rotation sealed it.
+    """
+    try:
+        raw = (store / name).read_bytes()
+    except FileNotFoundError:
+        raw = None
+    if hashlib.sha256(raw if raw is not None else b"").hexdigest() != sealed_digest:
+        raise LegacyCutoverConflict(
+            f"{name} of sealed generation {generation} at {store} is not the bytes its successor "
+            "receipt sealed"
+        )
+    return raw
+
+
+def _require_sealed_generation_never_touched(
+    store: Path, generation: int, successor, key: str
+) -> None:
+    """Refuse when sealed generation ``generation`` holds evidence or an owner for ``key``."""
+    digests = successor.predecessor_digests
+    evidence = _sealed_generation_bytes(store, "evidence.jsonl", digests.get("evidence.jsonl"), generation)
+    try:
+        rows = _parse_strict_jsonl(
+            evidence.decode("utf-8") if evidence is not None else None,
+            label=f"generation {generation} evidence",
+            path=store / "evidence.jsonl",
+        )
+    except UnicodeDecodeError as error:
+        raise LegacyCutoverConflict(f"generation {generation} evidence is not UTF-8: {error}") from error
+    states = [raw.get("state") for _line, raw in rows if raw.get("idempotency_key") == key]
+    if states:
+        raise RecoveryChainSuperseded(
+            f"generation {generation} holds evidence for {key!r} ({', '.join(map(str, states))}) after "
+            "the rotation that disposed it attested_not_landed",
+            generation=generation,
+        )
+    owner_bytes = _sealed_generation_bytes(
+        store, "adapter-start-owner.json", digests.get("adapter-start-owner.json"), generation
+    )
+    if owner_bytes is not None:
+        try:
+            owner = json.loads(owner_bytes)
+        except ValueError as error:
+            raise LegacyCutoverConflict(
+                f"generation {generation} adapter-start owner is not JSON: {error}"
+            ) from error
+        if isinstance(owner, dict) and key in (owner.get("effect_key"), owner.get("idempotency_key")):
+            raise RecoveryChainSuperseded(
+                f"generation {generation} holds an adapter-start owner for {key!r} after the rotation "
+                "that disposed it attested_not_landed",
+                generation=generation,
+            )
+
+
 def attested_not_landed_recovery(store_root: Path, key: str) -> dict | None:
     """The rotation adjudication that lets an already-admitted publish transaction publish once.
 
@@ -1438,30 +1594,83 @@ def attested_not_landed_recovery(store_root: Path, key: str) -> dict | None:
     leaves its transaction past ``COMMITTED_HEAD_RESOLVED`` (normally
     ``TERMINAL_SEALED``; ``ADAPTER_STARTED`` or earlier after an adapter
     exception or crash) and blocks the partition.  When a rotation's operator
-    attestation disposes that effect ``attested_not_landed``, the successor
-    generation may admit the exact transaction once.  This
-    returns the authenticated facts that bind that admission, or ``None`` when
-    the receipt governing ``store_root`` adjudicates no such disposition for
-    ``key``.
+    attestation disposes that effect ``attested_not_landed``, a later
+    generation may admit the exact transaction once.  This returns the
+    authenticated facts that bind that admission, or ``None`` when no receipt
+    in the authenticated chain disposes ``key`` that way.
 
-    The facts come only from authenticated bytes: the receipt is loaded and
-    chain-checked by ``load_partition_receipt``, and the sealed inventory (which
-    embeds the attestation) must digest to the receipt's ``inventory_sha256``,
+    agent-harness#1310: the disposition survives later rotations for other
+    keys.  The walk runs from the ACTIVE generation back through the
+    authenticated receipt chain and stops at the FIRST receipt that
+    adjudicates ``key`` at all; that is the current word, so a newer
+    ``observed_landed`` hides an older ``attested_not_landed`` (``None``).  A
+    receipt met on the way that carries ``key`` as completed refuses.  From the
+    disposing generation ``d`` on, the key must be untouched: every sealed
+    generation in ``[d, active)`` must hold no evidence row and no adapter-start
+    owner for it, read once and required to be the bytes the successor receipt
+    sealed.  The active generation is the caller's: ``execute`` replays it and
+    the admissions lock re-checks it.  So a disposition authorizes at most one
+    re-admission across ``[d, active]``.
+
+    Every fact comes from authenticated bytes: each receipt is loaded and
+    chain-checked by ``load_partition_receipt`` and must be the receipt bytes
+    its successor sealed, and the disposing receipt's sealed inventory (which
+    embeds the attestation) must digest to its ``inventory_sha256``,
     ``partition_map_sha256`` and ``attestation_sha256``.  The entry's
     ``transaction_id`` is whatever the ceremony bound from the predecessor's
     adapter-start owner; it is returned as found (possibly ``None``) and the
     caller decides whether it binds the transaction being admitted.
 
-    Only the ACTIVE generation's receipt is consulted: a later rotation for
-    an unrelated key does not carry this disposition forward, so the recovery
-    then refuses and needs a fresh attestation.  That is deliberate.
+    ``disposing_generation``, ``readmitting_generation`` and
+    ``intervening_rotations`` are present only when the walk crossed later
+    rotations; with none, the facts are exactly the agent-harness#1296 shape
+    (agent-harness#1576), so the recovery record compares equal across runtime
+    versions within one generation.
+
+    The walk ends at generation 0 (each receipt chains to ``generation - 1``)
+    and stops at the disposing generation; it runs only for an
+    already-admitted transaction.
     """
+    container, active_generation = _partition_layout(Path(store_root))
     receipt = load_partition_receipt(Path(store_root))
-    if not isinstance(receipt, RotatedPartitionReceipt):
-        return None
-    disposition = receipt.adjudicated_effect_dispositions.get(key)
+    walked: list = []
+    generation = active_generation
+    while True:
+        if not isinstance(receipt, RotatedPartitionReceipt):
+            return None
+        if key in receipt.legacy_completed_effect_keys:
+            raise RecoveryChainSuperseded(
+                f"rotation {receipt.cutover_id!r} (generation {receipt.generation}) carries {key!r} as a "
+                "completed effect",
+                generation=receipt.generation,
+            )
+        disposition = receipt.adjudicated_effect_dispositions.get(key)
+        if disposition is not None:
+            break
+        walked.append(receipt)
+        generation -= 1
+        predecessor = _generation_store(container, generation)
+        receipt = load_partition_receipt(predecessor)
+        if receipt is None:
+            raise LegacyCutoverConflict(f"generation {generation} of {container} has no receipt")
+        # Bind the OBJECT walked to the receipt bytes its successor sealed (a
+        # rotated receipt's bytes are exactly ``file_bytes()``); generation 0's
+        # container receipt adjudicates nothing and ends the walk above.
+        if isinstance(receipt, RotatedPartitionReceipt) and (
+            hashlib.sha256(receipt.file_bytes()).hexdigest()
+            != walked[-1].predecessor_digests.get(RECEIPT_FILENAME)
+        ):
+            raise LegacyCutoverConflict(
+                f"the receipt of generation {generation} is not the receipt its successor sealed"
+            )
     if not isinstance(disposition, dict) or disposition.get("disposition") != DISPOSITION_ATTESTED_NOT_LANDED:
         return None
+    # Generations after the disposing rotation, oldest first: none may have touched the key.
+    for successor in reversed(walked):
+        sealed_generation = successor.generation - 1
+        _require_sealed_generation_never_touched(
+            _generation_store(container, sealed_generation), sealed_generation, successor, key
+        )
     inventory_path, sealed = _read_receipt_inventory(receipt)
     if sealed is None:
         raise LegacyCutoverConflict(f"the sealed rotation inventory at {inventory_path} is missing")
@@ -1480,9 +1689,10 @@ def attested_not_landed_recovery(store_root: Path, key: str) -> dict | None:
         raise LegacyCutoverConflict(
             f"the sealed attestation of rotation {receipt.cutover_id!r} disagrees with its receipt for {key!r}"
         )
-    return {
+    recovery = {
         "cutover_id": receipt.cutover_id,
-        "generation": receipt.generation,
+        # The generation whose evidence holds the re-admission's outcome.
+        "generation": active_generation,
         "predecessor_generation": receipt.predecessor_generation,
         "attestation_sha256": receipt.attestation_sha256,
         "inventory_sha256": receipt.inventory_sha256,
@@ -1494,6 +1704,19 @@ def attested_not_landed_recovery(store_root: Path, key: str) -> dict | None:
         "transaction_id": entry.get("transaction_id"),
         "predecessor_owner_nonce": entry.get("owner_nonce"),
     }
+    if walked:
+        # agent-harness#1576: only a walk across later rotations names them.  With
+        # none, the disposing generation IS the re-admitting one (``generation``)
+        # and the record keeps the agent-harness#1296 shape, so a retry on a
+        # runtime of either version in the same generation computes equal bytes.
+        # A runtime that predates the walk refuses before recording when a
+        # rotation intervened, so these fields are never compared with its record.
+        recovery.update(
+            disposing_generation=receipt.generation,
+            readmitting_generation=active_generation,
+            intervening_rotations=[later.cutover_id for later in reversed(walked)],
+        )
+    return recovery
 
 
 # --- SOL-10: an UNFORGEABLE promotion capability ---------------------------
@@ -4925,6 +5148,13 @@ def rotate_blocked_partition(
     adjudicated = _adjudicate_rotation_predecessor(
         attestation, _snapshot_predecessor(active), generation, active_receipt, identity
     )
+    # agent-harness#1591: the early, zero-write answer; re-checked under the lock.
+    # agent-harness#1633: a ceremony whose own journal already holds
+    # INVENTORY_SEALED (an older runtime's, or one that crashed after its in-lock
+    # check) must still resume toward ACTIVE; as on the post-flip arm, the
+    # re-admission refusal guards the observed effect there.
+    if "INVENTORY_SEALED" not in states:
+        _refuse_attested_not_landed_over_observations(active, adjudicated.effects)
     digest = adjudicated.digest
     expected_digests = adjudicated.predecessor_digests
     derived = _derive_rotation_inventory(
@@ -5050,6 +5280,14 @@ def rotate_blocked_partition(
                         "the predecessor store changed between attestation and drain; re-attest over "
                         "the current bytes"
                     )
+                # agent-harness#1591: the side file is not digested; a writer that
+                # recorded an observation before the drain is caught here.
+                if "INVENTORY_SEALED" not in states:
+                    try:
+                        _refuse_attested_not_landed_over_observations(active, adjudicated.effects)
+                    except PartitionRotationRefused:
+                        latch.resume_active()
+                        raise
                 if sealed is None:
                     sealed = derived
                     _atomic_write_json(inventory_path, sealed)
@@ -5829,6 +6067,17 @@ class _RepositoryRoutingBrokerService:
             )
             stores = (admission_store, evidence_store)
             self._stores[snapshot.identity] = stores
+        elif stores[1].root != snapshot.store_root:
+            # agent-harness#1315: a client cached this pair before a partition
+            # rotation moved the ACTIVE pointer.  Refuse typed on every request
+            # rather than serve the retired generation's ledger or rebind under a
+            # lease the rotation's drain never saw.
+            raise RoutingClientGenerationRetired(
+                f"this broker client is bound to retired partition generation "
+                f"{stores[1].root} of {snapshot.identity}; the ACTIVE generation is "
+                f"{snapshot.store_root}. A partition rotation completed after the client "
+                "was built: close it and build a new client (restart the broker process)"
+            )
         return stores
 
     def _service_for(self, request_or_worktree) -> BrokerService:
@@ -5860,9 +6109,11 @@ class _RepositoryRoutingBrokerService:
         # `git -C <worktree>`: caching the service by identity alone would send a
         # second linked worktree's publish to the FIRST worktree's checkout.
         cache_key = (snapshot.identity, str(snapshot.worktree))
+        # Resolved on EVERY request, cached service or not, so the generation
+        # binding is re-checked per request (agent-harness#1315).
+        admission_store, evidence_store = self._stores_for(snapshot)
         service = self._services.get(cache_key)
         if service is None:
-            admission_store, evidence_store = self._stores_for(snapshot)
             lease = self._leases[snapshot.identity]
             service = BrokerService(
                 admission_store,
