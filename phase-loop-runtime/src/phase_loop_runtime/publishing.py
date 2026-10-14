@@ -18,7 +18,7 @@ import warnings
 from importlib.metadata import version
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Mapping, Sequence
 
 from .convergence.broker.verbs import BrokerClient, PublicationRecoveryRequired
 from .convergence.contracts import AdmissionRequest, BrokerRequest, BrokerVerb, PreAdmissionEnvelope
@@ -36,6 +36,12 @@ FABPUB_CRASH_ANCHORS = (
     "after_git_commit_success_before_committed_checkpoint",
     "after_committed_checkpoint_before_broker_execute",
     "after_broker_intent_before_adapter_started",
+)
+#: agent-harness#1591: broker seams after the provider returned.  Kept apart
+#: from the frozen four above, which the train runner's resume contract pins.
+FABPUB_POST_PROVIDER_CRASH_ANCHORS = (
+    "after_provider_return_before_terminal",
+    "after_post_ambiguity_observation",
 )
 _CRASH_STATE = threading.local()
 _FORBIDDEN_IDENTITY_FIELDS = frozenset(
@@ -233,9 +239,50 @@ class PublishTransactionConflict(RuntimeError):
     pass
 
 
+class RecoveryRecordConflict(PublishTransactionConflict):
+    """An existing recovery record refuses this re-admission (agent-harness#1576).
+
+    ``record_path`` names the ``<transaction_id>.recovery.<generation>.json``
+    file, so the human handoff can point an operator at what is stuck.
+    """
+
+    def __init__(self, message: str, *, record_path: Path) -> None:
+        super().__init__(message)
+        self.record_path = Path(record_path)
+
+
+# agent-harness#1310 fields of a recovery record.  They carry information only
+# when a rotation intervened between the disposition and the re-admission.
+_RECOVERY_ROTATION_FIELDS = ("disposing_generation", "readmitting_generation", "intervening_rotations")
+
+
+def _recovery_record_core(record: dict) -> dict:
+    """The record minus the rotation fields when they say "no rotation intervened".
+
+    agent-harness#1576: an agent-harness#1296 runtime writes no rotation fields; the
+    agent-harness#1550 runtime wrote all three even with no rotation
+    (``intervening_rotations == []``, both generations equal to ``generation``).
+    Those two records state the same authorization, so they compare equal here.
+    Any other value of the fields, or only some of them, is kept and compared.
+    """
+    if not all(name in record for name in _RECOVERY_ROTATION_FIELDS):
+        return record
+    generation = record.get("generation")
+    if (
+        record["intervening_rotations"] == []
+        and type(generation) is int
+        and type(record["disposing_generation"]) is int
+        and type(record["readmitting_generation"]) is int
+        and record["disposing_generation"] == generation
+        and record["readmitting_generation"] == generation
+    ):
+        return {key: value for key, value in record.items() if key not in _RECOVERY_ROTATION_FIELDS}
+    return record
+
+
 @contextlib.contextmanager
 def crash_after(anchor: str):
-    if anchor not in FABPUB_CRASH_ANCHORS:
+    if anchor not in FABPUB_CRASH_ANCHORS + FABPUB_POST_PROVIDER_CRASH_ANCHORS:
         raise ValueError(f"unknown FABPUB crash anchor: {anchor}")
     previous = getattr(_CRASH_STATE, "anchor", None)
     _CRASH_STATE.anchor = anchor
@@ -546,17 +593,29 @@ class PublishTransaction:
         exclusive no-follow temporary file, and read back no-follow.  A second
         write for the same generation must carry the same bytes; an existing
         record that is not a regular file, or not JSON, refuses typed.
+
+        agent-harness#1576: "the same bytes" is judged on the record's core.  The
+        rotation fields are written only when a rotation intervened, and an
+        existing record that carries them with their no-rotation values (the
+        agent-harness#1550 runtime's shape) is the same authorization.  An
+        existing record is never rewritten.  Every refusal here is a
+        ``RecoveryRecordConflict`` naming the record path.
         """
         if self.state not in PublishTransactionState.ORDERED[3:]:
             raise PublishTransactionConflict("only an admitted transaction is recovered")
         path = self.store.recovery_path(self.transaction_id, record["generation"])
         payload = {"schema": "PublishTransactionRecovery.v1", **record}
         with self.store.exclusive():
-            existing = _read_json_nofollow(path)
+            try:
+                existing = _read_json_nofollow(path)
+            except PublishTransactionConflict as error:
+                raise RecoveryRecordConflict(str(error), record_path=path) from error
             if existing is not None:
-                if existing != payload:
-                    raise PublishTransactionConflict(
-                        f"a different recovery is already recorded at {path}"
+                if _recovery_record_core(existing) != _recovery_record_core(payload):
+                    raise RecoveryRecordConflict(
+                        f"a different recovery is already recorded at {path}; nothing was "
+                        "admitted and no provider call was made",
+                        record_path=path,
                     )
                 return path
             _atomic_json(path, payload, mode=0o600)
@@ -1268,13 +1327,100 @@ def _partition_rotation_command(worktree: Path) -> list[str]:
     ]
 
 
+#: agent-harness#1574 ask 2: the rotation must authenticate the same partition.
+_ROTATION_AUTHORITY_ROOT = (
+    "run the rotation with the same authority root this route used: the same "
+    "FABPUB_AUTHORITY_ROOT environment value, or pass it as --authority-root"
+)
+
+#: agent-harness#1574 ask 2 (SG-F3): the warning runbook 8a carries.
+_SECOND_ATTESTATION_WARNING = (
+    "do not attest attested_not_landed a second time without new evidence: two "
+    "ambiguous pushes are not evidence of no effect"
+)
+
+
+def _observed_after_ambiguity_handoff(
+    snapshot, observation: Mapping[str, Any]
+) -> dict[str, Any]:
+    """agent-harness#1591: the rotation fields for a provider outcome on an ambiguous key.
+
+    An effect requires ``observed_landed`` and forbids ``attested_not_landed``
+    (new runtimes refuse it); its attestation inputs are the observation's.  A
+    no-effect observation only supports ``attested_not_landed``: the judgement
+    stays the operator's.
+    """
+    if observation.get("observed_state") != TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED.value:
+        return {
+            "required_disposition": None,
+            "supporting_evidence": {
+                "observed_state": observation.get("observed_state"),
+                "evidence_reference": observation.get("evidence_reference"),
+                "note": (
+                    "the provider reported no effect after the key was blocked; this supports "
+                    "attested_not_landed but does not prove it"
+                ),
+            },
+        }
+    key = str(observation.get("idempotency_key", ""))
+    suffix = key.split("\0", 1)[1] if "\0" in key else key
+    inputs = {
+        "observed_head": observation.get("head_sha"),
+        "evidence_url": observation.get("evidence_reference"),
+        "effect_key_suffix": suffix,
+        "owner_nonce": observation.get("owner_nonce"),
+        "transaction_id": observation.get("transaction_id"),
+    }
+    fields: dict[str, Any] = {
+        "required_disposition": "observed_landed",
+        "forbidden_disposition": "attested_not_landed",
+        "attestation_inputs": inputs,
+        "rotate_requires": (
+            "a reviewed PartitionRotationAttestation.v1 disposing the blocked effect "
+            f"observed_landed with observed_head {inputs['observed_head']} and evidence_url "
+            f"{inputs['evidence_url']} (the provider reported this effect after the key was "
+            "blocked), and a read-only preflight verdict of ready; attested_not_landed is "
+            "refused for this key, and a later remote absence is not proof that the effect "
+            "did not land"
+        ),
+    }
+    if Path(snapshot.store_root) == Path(snapshot.container):
+        # The stdlib builder digests the generation-0 container only.
+        fields["attestation_builder_command"] = [
+            "python3",
+            "phase-loop-runtime/scripts/fabpub_rotation_attestation.py",
+            "--container",
+            str(snapshot.container),
+            "--out",
+            "<operator attestation path outside the broker namespace>",
+            "--attested-by",
+            "<operator>",
+            "--effect-key-suffix",
+            suffix,
+            "--observed-head",
+            str(inputs["observed_head"]),
+            "--evidence-url",
+            str(inputs["evidence_url"]),
+        ]
+    return fields
+
+
 def _human_publication_handoff(
     repo: Path,
     *,
     next_step: str,
     required_inputs: Sequence[str] = (),
+    conflicting_recovery_record: Path | None = None,
+    refusal: Mapping[str, Any] | None = None,
+    observed_after_ambiguity: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Return the actionable, non-authorizing handoff for a human publish refusal."""
+    """Return the actionable, non-authorizing handoff for a human publish refusal.
+
+    ``refusal`` carries the typed broker refusal's fields (agent-harness#1573,
+    agent-harness#1578, agent-harness#1594): the blocking key and transaction for
+    a rotation, or this attempt's key and transaction for a pre-provider refusal.
+    """
+    refusal = dict(refusal or {})
     handoff: dict[str, Any] = {
         "schema": "HumanPublicationHandoff.v1",
         "repository": str(Path(repo).resolve()),
@@ -1283,6 +1429,19 @@ def _human_publication_handoff(
     }
     if required_inputs:
         handoff["required_inputs"] = list(required_inputs)
+    if conflicting_recovery_record is not None:
+        # agent-harness#1576: name the write-once record that refused the
+        # re-admission, so the operator knows what is stuck.
+        handoff.update(
+            conflicting_recovery_record=str(conflicting_recovery_record),
+            recovery_procedure="docs/fabpub-partition-rotation-runbook.md section 8a",
+            next_step_source=(
+                "the recovery record authorizes a re-admission in its generation and is "
+                "written before the owner; it does not prove an admission happened. Compare "
+                "it with this runtime's refusal detail and with that generation's broker "
+                "evidence and adapter-start owner for the key before changing anything"
+            ),
+        )
     try:
         from .convergence.broker.live import repository_snapshot
 
@@ -1325,9 +1484,10 @@ def _human_publication_handoff(
     if next_step == "adjudicate_publication_by_partition_rotation":
         # agent-harness#1312: the key's evidence is outcome_ambiguous_blocked in
         # the active generation; only an operator rotation adjudicates it.
+        blocking_keys = list(refusal.get("blocking_effect_keys") or ())
         handoff.update(
             recovery_procedure=(
-                "docs/fabpub-partition-rotation-runbook.md sections 3, 4, 7 and 8a"
+                "docs/fabpub-partition-rotation-runbook.md sections 1, 3, 4, 6, 7 and 8a"
             ),
             next_step_source=(
                 "the key's evidence in the active partition generation is "
@@ -1338,14 +1498,104 @@ def _human_publication_handoff(
             rotate_requires=(
                 "a reviewed PartitionRotationAttestation.v1 disposing the blocked effect "
                 "observed_landed (naming the observed head) or attested_not_landed (with "
-                "the predecessor owner's transaction_id), and a read-only preflight "
-                "verdict of ready; later remote absence is not proof that the "
-                "historical attempt had no effect"
+                "the predecessor owner's transaction_id, which for this publication's own "
+                "key is the transaction_id of its checkpoint under checkpoint_root), and a "
+                "read-only preflight verdict of ready; later remote absence is not proof "
+                "that the historical attempt had no effect; "
+                + _SECOND_ATTESTATION_WARNING
             ),
+            authority_root=_ROTATION_AUTHORITY_ROOT,
             after_rotation="restart any broker process, then retry with the same plan and verification artifact",
             resume=(
                 "only after the rotation: retry publish_human_invoked_from_worktree "
                 "with the same plan and verification artifact"
+            ),
+        )
+        if blocking_keys:
+            # agent-harness#1573: a refusal raised for the partition, not replayed
+            # for this key; the rotation disposes the BLOCKING key(s).
+            handoff["blocking_effect_keys"] = blocking_keys
+            owner_transaction = refusal.get("blocking_transaction_id")
+            if owner_transaction:
+                handoff["blocking_transaction_id"] = owner_transaction
+            handoff["next_step_source"] = (
+                "the active partition generation is blocked by outcome_ambiguous_blocked "
+                "evidence for the effect key(s) in blocking_effect_keys"
+                + (
+                    ", promoted from an unsealed adapter-start owner of transaction "
+                    f"{owner_transaction}"
+                    if owner_transaction
+                    else ""
+                )
+                + "; every publish to the partition refuses before the provider until a "
+                "rotation adjudicates them, whichever key it publishes"
+            )
+            handoff["rotate_requires"] = (
+                "the attestation disposes every key in blocking_effect_keys (which may "
+                "not be this publication's key); " + handoff["rotate_requires"]
+            )
+        if observed_after_ambiguity is not None:
+            handoff.update(_observed_after_ambiguity_handoff(snapshot, observed_after_ambiguity))
+    if next_step == "rebuild_broker_client_and_retry":
+        # agent-harness#1573 ask 4: a routing client built before a rotation.
+        handoff.update(
+            recovery_procedure="docs/fabpub-partition-rotation-runbook.md section 8 step 1",
+            next_step_source=(
+                "this call's routing client is bound to a partition generation that a "
+                "rotation retired: the rotation moved the ACTIVE generation after the "
+                "client was built (agent-harness#1315); nothing was read or written and "
+                "no provider call was made, and no rotation or authority change is needed"
+            ),
+            resume=(
+                "close the routing client and build a new one with "
+                "build_routing_broker_client() (or restart the broker process that holds "
+                "it), then retry publish_human_invoked_from_worktree with the same plan "
+                "and verification artifact"
+            ),
+        )
+    if next_step == "retry_after_inflight_publication":
+        # agent-harness#1578 ask 5 (SA-F5): contention, not ambiguity.
+        handoff.update(
+            next_step_source=(
+                "another publication of this repository is still running and holds the "
+                "partition's adapter-start owner (agent-harness#1313); this is contention, "
+                "not ambiguity: nothing was written and no provider call was made"
+            ),
+            resume=(
+                "retry publish_human_invoked_from_worktree shortly with the same plan and "
+                "verification artifact, after the in-flight publication ends; this "
+                "refusal needs no partition rotation and no authority change"
+            ),
+        )
+    if next_step == "retry_once_before_partition_rotation":
+        # agent-harness#1594 ask 1 (SA-F2): the in-flight row must become
+        # ambiguous before a rotation can adjudicate it.
+        handoff.update(
+            effect_key=refusal.get("effect_key"),
+            transaction_id=refusal.get("transaction_id"),
+            recovery_procedure=(
+                "docs/fabpub-pre-admission-ambiguity.md \"Provider entry and failures "
+                "around it\"; docs/fabpub-partition-rotation-runbook.md section 8a"
+            ),
+            next_step_source=(
+                "refused after this attempt's admission became durable and before the "
+                "provider was entered, so no provider call was made; the attempt's "
+                "unsealed adapter-start owner (and its provider_call_in_flight intent, "
+                "when recorded) stays, and a rotation now refuses with \"intents without "
+                "a terminal\" until one retry promotes the owner to "
+                "outcome_ambiguous_blocked"
+            ),
+            resume=(
+                "retry once with the same plan and verification artifact; if that retry "
+                "reports outcome_ambiguous_blocked or next step "
+                "adjudicate_publication_by_partition_rotation, follow its rotation "
+                "handoff; otherwise follow whatever handoff the retry returns"
+            ),
+            attestation_evidence=(
+                "keep this result: its provider_call_made false and refusal detail are "
+                "the evidence that this attempt never entered the provider; the "
+                "ambiguous row the retry leaves cannot be told apart from a crash "
+                "during the provider call"
             ),
         )
     if next_step == "probe_and_confirm_fabpub_authority":
@@ -1446,6 +1696,62 @@ def _human_publication_authority(
         "operation_identity": f"publish:{branch}",
     }
     return PublishAuthorityPreimages(checkpoint_root, authority)
+
+
+def _typed_refusal_handoffs() -> tuple[tuple[Any, Any], ...]:
+    """Broker refusal type -> ``(next_step, refusal fields)`` or ``None``.
+
+    Keyed on the exception type only, never on message text.  A handler that
+    returns ``None`` leaves the refusal to ``repair_fabpub_authority``.  See
+    ``plans/fabpub-typed-handoffs.md`` for the table.
+    """
+    from .convergence.broker import live, verbs
+
+    def rotation_for_partition(error):
+        keys = list(error.blocking_keys)
+        if not keys:
+            # The block is carried by the partition receipt, not by a key here.
+            return None
+        return (
+            "adjudicate_publication_by_partition_rotation",
+            {"blocking_effect_keys": keys},
+        )
+
+    return (
+        (
+            live.RoutingClientGenerationRetired,
+            lambda _error: ("rebuild_broker_client_and_retry", {}),
+        ),
+        (
+            (verbs.AdapterStartOwnerLive, verbs.AdapterStartOwnerContended),
+            lambda _error: ("retry_after_inflight_publication", {}),
+        ),
+        (
+            verbs.UnsealedOwnerBlocksPartition,
+            lambda error: (
+                "adjudicate_publication_by_partition_rotation",
+                {
+                    "blocking_effect_keys": [error.effect_key],
+                    "blocking_transaction_id": error.transaction_id,
+                },
+            ),
+        ),
+        (verbs.PartitionEpochBlocked, rotation_for_partition),
+        (
+            verbs.ProviderEntryRefused,
+            lambda error: (
+                "retry_once_before_partition_rotation",
+                {"effect_key": error.effect_key, "transaction_id": error.transaction_id},
+            ),
+        ),
+    )
+
+
+def _typed_refusal_handoff(error: BaseException) -> tuple[str, dict[str, Any]] | None:
+    for types, handler in _typed_refusal_handoffs():
+        if isinstance(error, types):
+            return handler(error)
+    return None
 
 
 def publish_human_invoked_from_worktree(
@@ -1638,6 +1944,9 @@ def publish_human_invoked_from_worktree(
                     if ambiguous
                     else "repair_publication_precheck_and_retry"
                 ),
+                observed_after_ambiguity=(
+                    result.get("observed_after_ambiguity") if ambiguous else None
+                ),
             )
             result["checkpoint_root"] = str(checkpoint_root)
         return result
@@ -1653,7 +1962,9 @@ def publish_human_invoked_from_worktree(
     except PublishTransactionConflict as error:
         result = _blocked("publication_transaction_conflicted", str(error))
         result["handoff"] = _human_publication_handoff(
-            repo, next_step="resolve_publication_transaction_conflict"
+            repo,
+            next_step="resolve_publication_transaction_conflict",
+            conflicting_recovery_record=getattr(error, "record_path", None),
         )
         result["checkpoint_root"] = str(checkpoint_root)
         return result
@@ -1663,9 +1974,18 @@ def publish_human_invoked_from_worktree(
         PermissionError,
     ) as error:
         result = _blocked("repository_publication_authority_refused", str(error))
-        result["handoff"] = _human_publication_handoff(
-            repo, next_step="repair_fabpub_authority"
-        )
+        typed = _typed_refusal_handoff(error)
+        if typed is None:
+            result["handoff"] = _human_publication_handoff(
+                repo, next_step="repair_fabpub_authority"
+            )
+        else:
+            next_step, refusal = typed
+            result["handoff"] = _human_publication_handoff(
+                repo, next_step=next_step, refusal=refusal
+            )
+            # Every typed refusal is raised before provider entry (agent-harness#1593).
+            result["provider_call_made"] = False
         if checkpoint_root.exists():
             result["checkpoint_root"] = str(checkpoint_root)
         return result
@@ -1856,5 +2176,9 @@ def publish_from_worktree(
         # agent-harness#1577 (D3): whether THIS call entered the provider adapter;
         # false for a replay of stored evidence and for a refusal before entry.
         blocked["provider_call_made"] = bool(getattr(execution, "provider_call_made", False))
+        # agent-harness#1591: a provider outcome on a key already ambiguous.
+        observation = getattr(execution, "observed_after_ambiguity", None)
+        if observation is not None:
+            blocked["observed_after_ambiguity"] = {**observation.row(), "durable": observation.durable}
         return blocked
     return {"status": "published", "branch": execution.publish_result.branch, "head_sha": execution.publish_result.head_sha, "pr_url": execution.publish_result.pr_url}
