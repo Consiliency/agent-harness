@@ -323,7 +323,12 @@ generation silently: its writes through the broker API are fenced by the
 change to the predecessor's digested bytes between the attestation and the drain
 refuses the ceremony fail-closed (`the predecessor store changed between
 attestation and drain; re-attest over the current bytes`). The failure mode is a
-refused ceremony or a fenced writer, not a silent divergence.
+refused ceremony or a fenced writer, not a silent divergence. A routing client
+from `build_routing_broker_client()` that a surviving holder built before the
+flip refuses every later request with `WriterGenerationBlocked` (`this broker
+client is bound to retired partition generation …`) before it reads or writes
+either generation's store. It never rebinds itself, so restart that process
+(agent-harness#1315).
 
 ## 7. Execute — STATE CHANGE, needs go
 
@@ -381,6 +386,14 @@ provider outcome (for example `outcome_ambiguous_blocked` / `push-unconfirmed`,
 or an adapter exception), the publish transaction for the **current** head is
 past `COMMITTED_HEAD_RESOLVED` (normally `TERMINAL_SEALED`), and the operator
 has reviewed the case and established that the push did not land.
+Before any rotation, the human route (`publish_human_invoked_from_worktree`)
+answers such a publication, and every retry of it, with next step
+`adjudicate_publication_by_partition_rotation`: the result's `terminal_state` is
+`outcome_ambiguous_blocked`, and the handoff carries the `rotate_command` for the
+worktree and what the rotation requires (agent-harness#1312). Retrying before the
+rotation replays the same block with no provider call. If the review instead
+establishes that the push landed, the disposition is `observed_landed` (§3) and the
+retry after the rotation replays it as published.
 Runtime 0.7.24 and earlier refuse this retry after the rotation
 (`broker admission precondition denied`) and leave a new unsealed owner in the
 successor generation. Re-pin to a release that contains agent-harness#1296
