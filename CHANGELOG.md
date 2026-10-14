@@ -18,9 +18,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - **No dependency change.** `[project].dependencies` is identical to 0.7.26's, and
   `uv.lock` differs only in the package's own version. A hash-locked deployment
   (Consiliency/dotfiles#77) needs only the new package's hashes.
-- **agy 1.3.2 and 1.3.3 are shipped members.** The qualified set is now 1.2.11, 1.2.12,
-  1.2.14, 1.2.15, 1.2.16, 1.2.17, 1.3.0, 1.3.1, 1.3.2 and 1.3.3. A host on 1.3.2 or 1.3.3 no
-  longer depends on self-qualification for its Gemini seat; it uses the shipped record.
+- **agy 1.3.2, 1.3.3, 1.3.4 and 1.3.5 are shipped members.** The qualified set is now
+  1.2.11, 1.2.12, 1.2.14, 1.2.15, 1.2.16, 1.2.17, 1.3.0, 1.3.1, 1.3.2, 1.3.3, 1.3.4 and 1.3.5;
+  1.3.5 is upstream's latest release. A host on one of the four new members no longer depends
+  on self-qualification for its Gemini seat; it uses the shipped record, and an earlier
+  self-qualification of it is no longer consulted. 1.3.5's `--help` differs from 1.3.4's only
+  in listing a new `--mode` value (`auto`), so it carries its own help digest; the seat still
+  passes `--mode plan`.
 - **The Claude executor preflight refuses a caller credential (agent-harness#1444; PR
   agent-harness#1517).** When the environment that runs `phase-loop` holds
   `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`,
@@ -31,20 +35,33 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   demoted to `proof_gated`. A Claude board seat in the same environment is refused
   `subscription_auth_unproven`. So is a host whose Claude login is not a subscription login.
   The fix is to unset those variables in the shell that runs `phase-loop` and use a Claude
-  subscription login. 0.7.26 accepted such an environment whenever `claude auth status`
-  reported a subscription type.
+  subscription login. In 0.7.26 the preflight's probe ran inside the seat and never saw a
+  subscription, so the Claude executor and Claude seats were refused on a subscription login
+  too. 0.7.27 admits the Claude executor, Claude seats and the president's Fable rung again
+  when the login proves a subscription, and refuses them only in the cases above.
 - **Claude board seats run headless `claude -p` by default (agent-harness#1391; PR
   agent-harness#1446).** This needs Claude Code 2.1.259 or newer.
   `PHASE_LOOP_PANEL_CLAUDE_ROUTE=tui` restores the PTY adapter; any other value than `print`
-  or `tui` refuses the seat (`panel_claude_route_invalid`). A direct (non-brokered) Claude
-  seat now has Read only, where it had Read and Write.
+  or `tui` refuses the seat (`panel_claude_route_invalid`). The same route, the same 2.1.259
+  minimum and the same caller-environment check also apply to the president's Fable rung off
+  Claude Code: a refusal there fails the president's run, and the ladder does not walk past
+  it. On the default print route a direct (non-brokered) Claude seat has Read only, where it
+  had Read and Write; `tui` keeps Read and Write.
 - **The codex seat of a sandboxed board can run commands again (agent-harness#1470; PR
   agent-harness#1489).** Its own staged review tree, a disposable clone, is now writable in
   its view. Nothing else a seat sandbox permits changed. A codex seat whose command sandbox
   still cannot start is `DEGRADED` (`seat_tool_sandbox_unavailable`) and is not counted
   toward the reviewer floor (PR agent-harness#1469), so on a board of four one more unusable
   seat makes the board unusable (non-zero exit), where 0.7.26 counted a codex seat that had
-  read nothing.
+  read nothing. On a host that refuses the nested user namespace codex's sandbox needs
+  (agent-harness#1335, open; for example some shared team hosts) the codex seat is still
+  `DEGRADED` on every round.
+- **A jailed Claude seat's output may not sit inside a read-only input (agent-harness#1433;
+  PR agent-harness#1491).** The Claude TUI seat now refuses at launch, with
+  `seat_output_inside_readonly_input`, an output whose directory is inside one of its
+  read-only inputs, including a staging root inside the reviewed repository. Set
+  `PHASE_LOOP_SANDBOX_STAGING_DIR` to a directory outside it. See the Claude TUI seat entry
+  below.
 - **A Gemini seat can wait up to 10 minutes before it starts (agent-harness#1407; PR
   agent-harness#1465).** When the agy login has less than 10 minutes left, the seat sleeps
   until the login expires, then renews it and starts with a full hour, where 0.7.26 refused
@@ -71,16 +88,22 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   phases stay recorded in the ledger (`plans/manifest.json`). The refusal does not yet name
   this remedy (agent-harness#1510).
 
-### Qualified agy set adds 1.3.2 and 1.3.3 (agent-harness#1542)
+### Qualified agy set adds 1.3.2, 1.3.3, 1.3.4 and 1.3.5 (agent-harness#1542)
 
 - `gemini_heartbeat.QUALIFIED_IMAGES` and `plans/evidence/qualified-provider-images.json`
   now admit agy 1.3.2 (Linux x64 image SHA256
   `32f9478e47d1d456e090f7ed0a297fcde2fa45ec10839904f03ea1ba00645e49`, upstream asset
   `bf8504c7…`) and 1.3.3 (image
   `d97edcf90eda1799cd6cedc92616ef402f23c9752a723e8b8ae3e8f062ce458b`, upstream asset
-  `8ee3ca32…`). Both help digests equal 1.2.15–1.3.1's (`8fcf4022…`), so the route core
-  needed only the two new entries.
-- All ten members were requalified on the release tree (completion, cancel and owner-loss
+  `8ee3ca32…`). Both help digests equal 1.2.15–1.3.1's (`8fcf4022…`).
+- They also admit agy 1.3.4 (image
+  `5b93565c5f04ea4f7b79d49d5c3237449bf6ce47b6779e8cf46c1fae97957c98`, upstream asset
+  `db5e81e8…`, help `8fcf4022…`) and 1.3.5 (image
+  `b5385638174a5e720e904f3a2678752534fb8414d10c2c302fa16daf56cbcfc9`, upstream asset
+  `007a5a44…`). 1.3.5's help digest is new (`a12355e8…`): its `--help` adds the `--mode`
+  value `auto`, which the route does not use. The route core needed only the four new
+  entries.
+- All twelve members were requalified on the release tree (completion, cancel and owner-loss
   each, then `--validate`), because this release changes `phase_loop_runtime/**/*.py`. Each
   member has its own regenerated record.
 
@@ -870,6 +893,31 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   Before 0.7.25 the same test passed while running the installed code instead of the tree.
 - That test now puts its worker's stderr in the failure message.
 - Test-only. Nothing in the runtime changes.
+
+### FABPUB refuses a dirty workspace before it commits (PR agent-harness#1564)
+
+- A fresh FABPUB publication now refuses unstaged or untracked workspace changes with
+  `publication_workspace_invalid` before it creates a transaction or advances the branch, and
+  a conflicted transaction is refused before staging. Before, it could commit and then refuse
+  with "fresh publish names no exact committed transaction", for example when private
+  publication evidence was left untracked.
+- Private plan, verification and handoff files under `.dev-skills/` must be Git-ignored
+  (`phase-loop init` adds the rule; a local `.git/info/exclude` entry also works). The
+  publisher adds no ignore rule itself. After such a refusal, repair the workspace and retry
+  the same publication: an already committed transaction resumes without another commit.
+
+### Pull request descriptions stay current through readiness (PRs agent-harness#1548, agent-harness#1581)
+
+- The four providers' `execute-detailed` and `execute-phase` skills share a PR-writing
+  reference. They pass the PR body and commit message to the publication adapter, refresh an
+  agent-owned description before the PR is marked ready and after a material change, keep
+  human edits to the title and text, and report a failed refresh instead of proceeding to
+  readiness.
+- `phase-loop publication-mode` allows description upkeep under the publishing modes and
+  forbids it under `none` and on an error.
+- Publication prepares a stable, redacted body before the transaction identity is bound; a
+  safe retry reuses the exact checkpointed body, and a body already published is never
+  rewritten. No new flag, configuration field or schema.
 
 ### HARDEN SL-5: retained completion evidence is derived and sealed (PRs agent-harness#1264, agent-harness#1412)
 
