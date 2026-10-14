@@ -34,10 +34,13 @@ def _auth(staged: bool):
 # The route decision: a non-jailed route is a refusal, never a sealed launch.
 # --------------------------------------------------------------------------------------
 
+@pytest.mark.parametrize("leg", ["claude", "gemini", "codex", "grok"])
 @pytest.mark.parametrize("code", sorted(seat_jail.SEALED_FALLBACK_CODES))
-def test_every_sealed_route_code_is_a_refusal(code):
+def test_every_sealed_route_code_is_a_refusal(code, leg):
+    # General, by route: any leg whose route is not jailed, whatever the code that sent it
+    # there (not keyed on the Gemini seat's recorded stop).
     route, notices, refusal = pi._seat_route_for_spawn(
-        "gemini", _auth(True), eligible=True,
+        leg, _auth(True), eligible=True,
         decide=lambda leg, **k: seat_jail.SeatRoute(False, code))
     assert not route.jailed
     assert refusal == code and notices == []
@@ -382,7 +385,23 @@ def test_an_advisory_run_still_refuses_every_other_sealed_code(tmp_path, monkeyp
             decide=lambda leg, code=code, **k: seat_jail.SeatRoute(False, code))[2] == code
 
 
-def test_a_review_run_with_no_staged_tree_is_refused_whatever_its_brief(tmp_path):
-    review = types.SimpleNamespace(staged_tree_sha256=None, instructions_sha256="0" * 64)
-    assert pi._seat_route_for_spawn("claude", review, eligible=True)[2] == "seat_sandbox_not_staged"
-    assert pi._seat_route_for_spawn("codex", review, eligible=True)[2] == "seat_sandbox_not_staged"
+def _near_miss_of_the_advisory_digest() -> str:
+    from hashlib import sha256
+
+    from phase_loop_runtime.advisor_board.advisory_contract import ADVISORY_CONTRACT
+
+    real = sha256(ADVISORY_CONTRACT.encode("utf-8")).hexdigest()
+    return real[:-1] + ("0" if real[-1] != "0" else "1")
+
+
+@pytest.mark.parametrize("digest", [
+    "0" * 64,                              # another brief's digest
+    "near-miss",                           # forged: one hex digit off the advisory digest
+    None,                                  # no digest bound
+])
+def test_a_review_run_with_no_staged_tree_is_refused_whatever_its_brief(tmp_path, digest):
+    if digest == "near-miss":
+        digest = _near_miss_of_the_advisory_digest()
+    review = types.SimpleNamespace(staged_tree_sha256=None, instructions_sha256=digest)
+    for leg in ("claude", "gemini", "codex", "grok"):
+        assert pi._seat_route_for_spawn(leg, review, eligible=True)[2] == "seat_sandbox_not_staged"
