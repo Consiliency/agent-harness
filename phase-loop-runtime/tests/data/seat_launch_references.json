@@ -1066,6 +1066,7 @@
   {"count": 1, "function": "_owned_main", "module": "seat_keyring_exec", "primitive": "ctypes.CDLL", "role": "helper:keyring-exec"},
   {"count": 1, "function": "join_fresh_session_keyring", "module": "seat_keyring_exec", "primitive": "ctypes.CDLL", "role": "helper:keyring-exec"},
   {"count": 1, "function": "main", "module": "seat_keyring_exec", "primitive": "os.execvp", "role": "helper:keyring-exec"},
+  {"count": 1, "function": "_handoff_gemini_tree_at", "module": "seat_uid", "primitive": "io.stat", "role": "host-io"},
   {"count": 1, "function": "_main", "module": "seat_uid", "primitive": "os.execv", "role": "host-helper"},
   {"count": 1, "function": "_privileged_helper", "module": "seat_uid", "primitive": "io.stat", "role": "host-io"},
   {"count": 1, "function": "chown_tree_at", "module": "seat_uid", "primitive": "io.open", "role": "host-io"},
