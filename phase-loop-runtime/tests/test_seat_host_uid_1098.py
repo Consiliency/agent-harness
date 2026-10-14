@@ -144,8 +144,10 @@ def test_only_the_gemini_owner_probes_without_its_single_use_descriptors(tmp_pat
             argv, 0, "\n".join(panel_invoker._expected_seat_identity(argv)) + "\n", "")))
     monkeypatch.setattr(panel_invoker.subprocess, "Popen", lambda argv, **k: seen.append(list(argv)))
     fd_args = ["--info-fd", "7", "--block-fd", "8"]
-    with_fds = _owner(tmp_path)
-    with_fds[with_fds.index("--"):with_fds.index("--")] = fd_args
+    with_fds = panel_invoker._seat_owner(
+        panel_invoker._seat_filesystem_view(tmp_path, profile_mounts=fd_args),
+        filtered_network=True,
+    )
     with _egress(HOLDER):
         panel_invoker.launch_provider(["/bin/true"], process_owner=with_fds,
                                       probe_owner=_owner(tmp_path), cwd=str(tmp_path))
