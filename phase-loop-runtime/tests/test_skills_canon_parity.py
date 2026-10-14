@@ -180,13 +180,15 @@ class SkillsCanonParityTest(unittest.TestCase):
                     "gpt-6-astra",
                     "Grok 4.7",
                     "grok-4.7",
-                    "Gemini 3.8 Flash",
+                    "Gemini 4 Argon",
+                    "gemini-4-argon",
                     "gemini-3.8-flash",
                 ):
                     self.assertIn(literal, text, f"{packaged}: lost concrete model {literal}")
                 self.assertNotIn("Harness Fable", text)
                 self.assertNotIn("Harness Opus", text)
-                self.assertNotIn("Harness 3.8 Flash", text)
+                self.assertNotIn("Harness 4 Argon", text)
+                self.assertNotIn("<harness>-4-argon", text)
                 self.assertNotIn("<harness>-3.8-flash", text)
 
     def test_installed_bundle_preserves_concrete_harness_literals(self):

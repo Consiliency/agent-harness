@@ -123,10 +123,12 @@ _GEMINI_EMBED_RE = re.compile(r"\s*\((?:Low|Medium|High|Max)\)\s*$")
 # Canonical agy model ids embed effort as a suffix. Keep the phase-loop matrix
 # aliases here too: launcher and advisor-board seats must share one renderer so a
 # given (model, effort) pair cannot select different Gemini models by entrypoint.
+# The version may lack a minor part (``gemini-4-argon``); the family stays a closed
+# list so an unknown ``gemini-*`` id still fails loud.
 _AGY_CANONICAL_GEMINI = re.compile(
-    r"^(gemini-\d+\.\d+-(?:flash|pro))-(high|medium|low|thinking)$"
+    r"^(gemini-\d+(?:\.\d+)?-(?:flash|pro|argon))-(high|medium|low|thinking)$"
 )
-_AGY_BASE_GEMINI = re.compile(r"^gemini-\d+\.\d+-(?:flash|pro)$")
+_AGY_BASE_GEMINI = re.compile(r"^gemini-\d+(?:\.\d+)?-(?:flash|pro|argon)$")
 _GEMINI_MODEL_ID_ALIASES: dict[str, str] = {
     "gemini-3.1-pro-preview": "Gemini 3.1 Pro (High)",  # model-id-source: shared agy compatibility alias
     "gemini-3.5-flash-lite": "gemini-3.5-flash-high",  # model-id-source: shared agy capability fallback

@@ -456,7 +456,7 @@ def _operational_fixture(
     panel_models = {
         "claude": "claude-opus-5-5",
         "codex": "gpt-6-astra",
-        "gemini": "gemini-3.8-flash",
+        "gemini": "gemini-4-argon",
         "grok": "grok-4.7",
     }
     leg_records = []

@@ -115,12 +115,12 @@ class GoldenPerLegLaunchTests(unittest.TestCase):
         # anchor: the codex effort literal really is in the argv both ways.
         self.assertIn("model_reasoning_effort=high", seam["cmd"])
 
-    def test_gemini_default_board_and_legacy_panel_share_flash_invocation(self) -> None:
+    def test_gemini_default_board_and_legacy_panel_share_argon_invocation(self) -> None:
         legacy, seam = self._exec_leg_pair("gemini", stdout="AGREE")
         self.assertEqual(legacy["cmd"], seam["cmd"])
         self.assertEqual(legacy["env"], seam["env"])
         self.assertEqual(legacy["deadline_s"], seam["deadline_s"])
-        self.assertEqual(seam["cmd"][seam["cmd"].index("--model") + 1], "gemini-3.8-flash-medium")
+        self.assertEqual(seam["cmd"][seam["cmd"].index("--model") + 1], "gemini-4-argon-medium")
 
     def test_claude_argv_and_env_equal_legacy(self) -> None:
         seat = _default_seat("claude")
@@ -225,7 +225,7 @@ class GoldenWholeBoardBehaviorTests(unittest.TestCase):
         self.assertEqual(
             [r.seat_key for r in board.legs],
             ["codex:gpt-6-astra:high:red-team",
-             "gemini:gemini-3.8-flash:medium:alternative-approach",
+             "gemini:gemini-4-argon:medium:alternative-approach",
              "claude:claude-opus-5-5:high:correctness",
              "grok:grok-4.7:high:adversarial"],
         )

@@ -61,13 +61,14 @@ PRESERVE_LITERALS: tuple[str, ...] = (
     "claude-fable-5-1",  # model-id-source: verbatim literal preserved through brand-collapse (explicit, non-default id)
     "claude-sonnet-5",  # model-id-source: verbatim literal preserved through brand-collapse
     "claude-haiku-4-5-20251001",  # model-id-source: verbatim literal preserved through brand-collapse (lite tier, DATED pin)
-    "gemini-3.8-flash",  # model-id-source: cross-vendor advisor-board default, never a harness placeholder
+    "gemini-4-argon",  # model-id-source: cross-vendor advisor-board default, never a harness placeholder
+    "gemini-3.8-flash",  # model-id-source: cross-vendor advisor-board explicit seat (the prior default)
     "claude-in-chrome",
     # Cross-vendor advisor-board display names are concrete model identities, not
     # prose about the harness currently installing the skill. Preserve them so a
     # Claude/Gemini source cannot become the nonexistent "Harness Opus/Flash".
     "Claude Opus 5.5",
-    "Gemini 3.8 Flash",
+    "Gemini 4 Argon",
     # Display-name model form as it appears in the `Co-Authored-By:` git trailer.
     # Without this the brand collapse (`Claude` -> `Harness`) rewrites the trailer
     # to `Harness Opus 4.8` — a concrete model attribution corrupted into a name
