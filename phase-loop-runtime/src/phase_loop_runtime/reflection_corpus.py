@@ -98,6 +98,9 @@ class Reflection:
     improvements_class: str = ""
     excluded: str | None = None
     notes: list[str] = field(default_factory=list)
+    # Normalized lines stripped from this reflection as boilerplate; the bundle renders
+    # each once per skill with its carriers (agent-harness#1370).
+    boilerplate: list[str] = field(default_factory=list)
     # False when the real location leaves the resolved scan root (a symlinked skill or
     # reflections dir): still read, but never consumed, since archive refuses it.
     in_root: bool = True
@@ -127,6 +130,18 @@ class Corpus:
         for reflection in self.admitted:
             grouped[reflection.bare_skill].append(reflection)
         return dict(sorted(grouped.items()))
+
+    def boilerplate_carriers(self, skill: str | None = None) -> dict[str, list[str]]:
+        """Each stripped boilerplate line -> ids of the reflections that carried it.
+
+        With ``skill``, only that bare skill's carriers count.
+        """
+        carriers: dict[str, list[str]] = defaultdict(list)
+        for reflection in self.scanned:
+            if skill is None or reflection.bare_skill == skill:
+                for line in reflection.boilerplate:
+                    carriers[line].append(reflection.id)
+        return dict(sorted(carriers.items()))
 
     def ready_skills(self) -> list[str]:
         return [skill for skill, items in self.admitted_by_skill().items() if len(items) >= self.min_reflections]
@@ -269,6 +284,10 @@ CONTENT_KEYS = ("worked", "didnt", "improvements")
 NEAR_DUPLICATE_OVERLAP = 0.8
 
 
+def _has_proposal(reflection: Reflection) -> bool:
+    return classify_improvements(reflection.sections.get("improvements", "")) == "agnostic"
+
+
 def _norm_line(line: str) -> str:
     return " ".join(line.strip().lstrip("-*").split())
 
@@ -317,6 +336,12 @@ def apply_quality_filter(
     the ``Improvements`` gate so a copied repo-specific line does not reject an
     otherwise repo-agnostic proposal, and the per-branch cap runs last so it keeps
     the newest *usable* reflections.
+
+    A repo-specific ``Improvements`` section is dropped on its own; the reflection's
+    friction is still admitted (agent-harness#1371). A reflection whose repo-agnostic
+    proposal was removed only as boilerplate is still admitted, so a proposal several
+    runs repeat counts toward readiness instead of vanishing (agent-harness#1370). A
+    copied friction or ledger line alone does not keep a reflection.
     """
     _mark_duplicates(reflections)
 
@@ -337,6 +362,7 @@ def apply_quality_filter(
     for reflection in reflections:
         if reflection.excluded:
             continue
+        had_proposal = _has_proposal(reflection)
         for key in CONTENT_KEYS:
             if key not in reflection.sections:
                 continue
@@ -344,16 +370,25 @@ def apply_quality_filter(
             kept = [line for line in original if _norm_line(line) not in boilerplate]
             if len(kept) != len(original):
                 reflection.notes.append(f"boilerplate_stripped:{key}:{len(original) - len(kept)}")
+                stripped = {_norm_line(line) for line in original} & boilerplate
+                reflection.boilerplate = sorted(set(reflection.boilerplate) | stripped)
             reflection.sections[key] = "\n".join(kept).strip()
         reflection.improvements_class = classify_improvements(reflection.sections.get("improvements", ""))
         if reflection.improvements_class == "repo_specific":
-            reflection.excluded = "improvements_repo_specific"
-            continue
+            # Kept as an empty section so the reflection stays structured.
+            reflection.sections["improvements"] = ""
+            reflection.notes.append("section_dropped:improvements:repo_specific")
         for key in CONTENT_KEYS:
             if key in reflection.sections:
                 reflection.sections[key] = redact(reflection.sections[key])
-        if reflection.structured and not reflection.sections.get("didnt") and reflection.improvements_class in {"none", "missing"}:
-            reflection.excluded = "no_friction_or_proposal"
+        if reflection.structured and not reflection.sections.get("didnt") and reflection.improvements_class != "agnostic":
+            if reflection.boilerplate and had_proposal:
+                reflection.notes.append("boilerplate_only")
+            elif reflection.improvements_class == "repo_specific":
+                # Its proposal was dropped, not absent, so it is not consumed.
+                reflection.excluded = "improvements_repo_specific"
+            else:
+                reflection.excluded = "no_friction_or_proposal"
 
     groups: dict[tuple[str, str, str], list[Reflection]] = defaultdict(list)
     for reflection in reflections:
@@ -448,18 +483,31 @@ def render_bundle(corpus: Corpus) -> str:
     then ``quote_body``; entry-header fields are also forced onto one line.
     """
     lines = ["# Reflections to aggregate", "", f"min_reflections: {corpus.min_reflections}", ""]
+    note = "_Every line of this entry recurs across runs; see Recurring lines below._"
     labels = (("worked", "What worked"), ("didnt", "What didn't"), ("improvements", "Improvements to SKILL.md"))
     for skill, items in corpus.admitted_by_skill().items():
         lines += [f"## {skill} ({len(items)} reflections)", ""]
         for reflection in items:
             lines.append(f"### {reflection.id} — {_header_field(reflection.skill)} — {_header_field(reflection.timestamp)}")
             if reflection.structured:
-                for key, label in labels:
-                    body = reflection.sections.get(key, "")
+                bodies = [(label, reflection.sections.get(key, "")) for key, label in labels]
+                for label, body in bodies:
                     if body:
                         lines += [f"**{label}**", quote_body(redact_text(body)), ""]
+                if not any(body for _, body in bodies):
+                    lines += [note, ""]
             else:
                 lines += ["**unstructured**", quote_body(redact_text(redact(reflection.raw))), ""]
+        carriers = corpus.boilerplate_carriers(skill)
+        if carriers:
+            # Stripped from the entries above; one line each, with how many reflections
+            # carried it (agent-harness#1370).
+            lines += ["### Recurring lines", ""]
+            for line, ids in carriers.items():
+                text = _header_field(redact(line))
+                if text:
+                    lines.append(f"- {len(ids)} reflections ({', '.join(ids)}): {text}")
+            lines.append("")
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -474,9 +522,9 @@ def consumed(corpus: Corpus) -> list[Reflection]:
     any skill, reflections excluded as a duplicate or as having no friction and no
     proposal. Every other reflection stays in place: admitted ones of a skill below
     the threshold so evidence can accumulate, and the rest of the excluded ones
-    (repo-specific Improvements, per-branch cap, oversized) because their friction
-    is still evidence (agent-harness#1371). A reflection whose real location leaves
-    its scan root is never consumed, because ``archive`` would refuse it.
+    (a dropped repo-specific proposal with no friction, per-branch cap, oversized)
+    because they may still be evidence (agent-harness#1371). A reflection whose real
+    location leaves its scan root is never consumed, because ``archive`` would refuse it.
     """
     ready = set(corpus.ready_skills())
     return [
@@ -491,6 +539,10 @@ def manifest(corpus: Corpus, boilerplate: list[str]) -> dict[str, object]:
         "inventory": inventory(corpus),
         # The planner reads this file too, so stripped lines get the same redaction.
         "boilerplate_lines_stripped": [redact_text(redact(line)) for line in boilerplate],
+        "boilerplate_carriers": [
+            {"line": redact_text(redact(line)), "count": len(ids), "reflections": ids}
+            for line, ids in corpus.boilerplate_carriers().items()
+        ],
         "reflections_consumed": [str(r.path) for r in consumed(corpus)],
         "reflections": [
             {

@@ -6,6 +6,22 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Reflection corpus: a repo-specific proposal or a recurring line no longer drops a reflection's evidence (agent-harness#1371, agent-harness#1370)
+
+- An "Improvements to SKILL.md" section that cites a `repo#N` ref, an absolute
+  path or a URL is now dropped on its own (manifest note
+  `section_dropped:improvements:repo_specific`); the reflection's "What worked" and
+  "What didn't" are still admitted to `bundle.md`. It is excluded as
+  `improvements_repo_specific` only when no friction is left, and stays in place
+  (agent-harness#1371).
+- Lines stripped as boilerplate are rendered once per skill in a `### Recurring lines`
+  block of the bundle, with how many reflections carried each and their ids. The
+  manifest gains `boilerplate_carriers` with the same data.
+- A reflection whose repo-agnostic proposal was removed only as boilerplate is still
+  admitted (note `boilerplate_only`) and counts toward `--min-reflections`, so three
+  runs repeating one proposal make the skill due. A copied friction or ledger line
+  alone still excludes as `no_friction_or_proposal` (agent-harness#1370).
+
 ### FABPUB: the provider is entered only after an in-lock check that the key is still this attempt's in-flight record (agent-harness#1577, agent-harness#1574, agent-harness#1578, agent-harness#1576)
 
 - An older-runtime prober could promote a live writer's owner to

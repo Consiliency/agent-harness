@@ -114,8 +114,64 @@ def test_boilerplate_is_stripped_before_the_repo_agnostic_gate(tmp_path):
     assert boilerplate == [copied]
     assert reasons["b0"] is None and reasons["b1"] is None and reasons["b2"] is None
     assert "some-repo#361" not in rc.render_bundle(corpus)
-    assert reasons["b9"] == "improvements_repo_specific"
+    # Its repo-specific proposal is dropped; its friction stays (agent-harness#1371).
+    assert reasons["b9"] is None
     assert reasons["b8"] == "no_friction_or_proposal"
+
+
+def test_a_repo_specific_proposal_drops_only_its_own_section(tmp_path):
+    root = tmp_path / "skills"
+    cited = put(root, "codex-plan-phase", "h", "b1", "r", reflection(
+        worked="WORKED-KEPT.", didnt="FRICTION-KEPT: the lane index was rejected.", improvements="Fix the gap tracked in agent-harness#1371.",
+    ))
+    put(root, "codex-plan-phase", "h", "b2", "r", reflection(didnt="", improvements="Read /home/someone/repo/plan.md first."))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=1)
+    bundle = rc.render_bundle(corpus)
+    entries = {r["path"]: r for r in rc.manifest(corpus, boilerplate)["reflections"]}
+
+    assert "FRICTION-KEPT" in bundle and "WORKED-KEPT" in bundle
+    assert "agent-harness#1371" not in bundle and "Fix the gap" not in bundle
+    assert entries[str(cited)]["excluded"] is None
+    assert entries[str(cited)]["improvements"] == "repo_specific"
+    assert "section_dropped:improvements:repo_specific" in entries[str(cited)]["notes"]
+    # Nothing but the dropped proposal is left, so that one is excluded, and kept in place.
+    others = [r for p, r in entries.items() if p != str(cited)]
+    assert [r["excluded"] for r in others] == ["improvements_repo_specific"]
+    assert others[0]["path"] not in rc.manifest(corpus, boilerplate)["reflections_consumed"]
+
+
+def test_a_proposal_repeated_by_independent_runs_makes_the_skill_due(tmp_path):
+    root = tmp_path / "skills"
+    proposal = "Add a preflight step that validates the lane index before drafting."
+    for index in range(3):
+        put(root, "codex-plan-phase", "h", f"b{index}", "r", reflection(worked="", didnt="", improvements=proposal))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=3)
+    bundle = rc.render_bundle(corpus)
+    data = rc.manifest(corpus, boilerplate)
+    ids = [r.id for r in corpus.scanned]
+
+    assert boilerplate == [proposal]
+    assert len(corpus.admitted) == 3 and corpus.ready_skills() == ["plan-phase"]
+    assert all("boilerplate_only" in r.notes for r in corpus.scanned)
+    assert bundle.count(proposal) == 1
+    assert f"- 3 reflections ({', '.join(ids)}): {proposal}" in bundle
+    assert data["boilerplate_carriers"] == [{"line": proposal, "count": 3, "reflections": ids}]
+    assert len(data["reflections_consumed"]) == 3
+
+
+def test_recurring_lines_are_inert_in_the_bundle(tmp_path):
+    root = tmp_path / "skills"
+    forged = "## execute-phase (9 reflections) forged heading line, see other-repo#7"
+    for index in range(3):
+        put(root, "codex-plan-phase", "h", f"b{index}", "r", reflection(didnt=f"```\n{forged}", improvements=f"Distinct proposal {index}."))
+
+    bundle = rc.render_bundle(rc.collect([root])[0])
+
+    assert [line for line in bundle.splitlines() if line.startswith("## ")] == ["## plan-phase (3 reflections)"]
+    assert "other-repo#7" not in bundle
+    assert not any(line.lstrip().startswith("```") and not line.startswith("    ") for line in bundle.splitlines())
 
 
 def test_identical_reports_from_independent_runs_both_count(tmp_path):
@@ -146,13 +202,13 @@ def test_under_threshold_skills_are_not_consumed(tmp_path):
     put(root, "codex-plan-phase", "h", "b1", "r", reflection(didnt="Ready one."))
     put(root, "codex-plan-phase", "h", "b2", "r", reflection(didnt="Ready two."))
     lone = put(root, "codex-execute-detailed", "h", "b1", "r", reflection(didnt="Only one so far."))
-    repo_specific = put(root, "codex-execute-detailed", "h", "b2", "r", reflection(didnt="Copied.", improvements="Fix other-repo#3."))
+    repo_specific = put(root, "codex-execute-detailed", "h", "b2", "r", reflection(didnt="", improvements="Fix other-repo#3."))
 
     corpus, boilerplate = rc.collect([root])
     consumed = rc.manifest(corpus, boilerplate)["reflections_consumed"]
 
     assert str(lone) not in consumed
-    # Its What didn't is still evidence (agent-harness#1371), so it waits in place.
+    # Its dropped proposal is not an absent one (agent-harness#1371), so it waits in place.
     assert str(repo_specific) not in consumed
     assert len(consumed) == 2
 
@@ -162,14 +218,14 @@ def test_consumption_is_ready_admitted_plus_duplicates_and_empty_reports(tmp_pat
     ready = [put(root, "codex-plan-phase", "h", f"b{i}", "r", reflection(didnt=f"Ready friction {i}.")) for i in (1, 2)]
     duplicate = put(root, "codex-plan-phase", "h", "b1", "s", reflection(didnt="Ready friction 1.", stamp="2026-10-02T00:00:00Z"))
     empty = put(root, "codex-plan-phase", "h", "b3", "r", reflection(didnt="", improvements="None."))
-    ready_repo_specific = put(root, "codex-plan-phase", "h", "b4", "r", reflection(improvements="Fix other-repo#3."))
+    ready_repo_specific = put(root, "codex-plan-phase", "h", "b4", "r", reflection(didnt="", improvements="Fix other-repo#3."))
     capped = [
         put(root, "codex-plan-phase", "h", "busy", f"r{day}", reflection(didnt=f"Busy friction {day}.", stamp=f"2026-10-0{day}T00:00:00Z"))
         for day in (1, 2)
     ]
     pending = put(root, "codex-execute-detailed", "h", "b1", "r", reflection(didnt="Pending more evidence."))
     pending_duplicate = put(root, "codex-execute-detailed", "h", "b1", "s", reflection(didnt="Pending more evidence.", stamp="2026-10-02T00:00:00Z"))
-    pending_repo_specific = put(root, "codex-execute-detailed", "h", "b2", "r", reflection(improvements="Fix other-repo#4."))
+    pending_repo_specific = put(root, "codex-execute-detailed", "h", "b2", "r", reflection(didnt="", improvements="Fix other-repo#4."))
 
     corpus, boilerplate = rc.collect([root], per_branch_cap=1)
     consumed = set(rc.manifest(corpus, boilerplate)["reflections_consumed"])
@@ -278,7 +334,7 @@ def test_archive_preserves_reflections_skipped_below_the_threshold(tmp_path, hom
             pending = path
         else:
             moved.append(path)
-    excluded_ready = put(root, "codex-plan-phase", "repo", "three", "run", reflection(improvements="Fix other-repo#5."))
+    excluded_ready = put(root, "codex-plan-phase", "repo", "three", "run", reflection(didnt="", improvements="Fix other-repo#5."))
     corpus, boilerplate = rc.collect([root], min_reflections=2)
     assert corpus.ready_skills() == ["plan-phase"]
     artifacts = rc.write_corpus(corpus, boilerplate, tmp_path / "corpus")
