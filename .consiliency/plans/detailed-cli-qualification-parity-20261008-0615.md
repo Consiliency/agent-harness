@@ -523,3 +523,4 @@ automation.suite_command: `cd phase-loop-runtime && PYTHONPATH=src python3 -m py
   - That plan lists every point of this one that it supersedes.
   - Rulings Q1, Q4 and Q5 are put back to the maintainer there as Q6, Q10 and Q11.
   - The rulings above are unchanged until the maintainer rules.
+  - Ruled 2026-10-14: Q1, Q4 and Q5 are superseded by Q6, Q10 and Q11 of the 2026-10-14 plan; Q2 and Q3 stand.
