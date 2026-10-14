@@ -201,7 +201,8 @@ def test_unadjudicated_sealed_transaction_refuses_without_owner_or_admission(tmp
     assert p.transaction.transaction_id in message
     assert "attested_not_landed" in message
     # No disposition and no evidence for the key: a rotation cannot dispose it (board item 4).
-    assert "a rotation cannot help here" in message and "agent-harness#1310" in message
+    assert "a rotation cannot help here" in message
+    assert "agent-harness#1310" not in message  # resolved: the walk carries dispositions forward
 
 
 def test_sealed_head_without_bound_transaction_refuses_after_rotation(tmp_path, monkeypatch):
@@ -564,28 +565,5 @@ def test_rotation_bound_to_one_transaction_refuses_another_with_the_same_key(tmp
     assert _jsonl(outcome.store_root / "admissions.jsonl") == []
 
 
-def test_intervening_rotation_refuses_without_promising_a_rotation_fix(tmp_path, monkeypatch):
-    """Board item 4: a rotation after the disposing one supersedes it; the refusal is
-    typed, writes nothing, and does not claim another rotation would resolve it."""
-    from types import SimpleNamespace
-
-    from phase_loop_runtime.convergence.broker.verbs import PublicationRecoveryRequired
-    from test_fabpub_partition_rotation_789d import ROTATION_ID_2
-
-    fx, p, key = _failed_sealed_publish(tmp_path, monkeypatch)
-    first = _rotate(None, p, attestation=_attestation(p, dispositions={key: ATTESTED_NOT_LANDED}))
-    routed = _routed_service(p)
-    try:
-        _block_key(SimpleNamespace(service=routed.service), "publish_committed_branch\x00ah1296-unrelated")
-    finally:
-        _release_router(routed)
-    second = _rotate(None, p, cutover_id=ROTATION_ID_2)
-    assert (first.generation, second.generation) == (1, 2)
-    result, calls = _publish_on_successor(None, second, p, p.request)
-    assert isinstance(result, PublicationRecoveryRequired), result
-    message = str(result)
-    assert "agent-harness#1310" in message
-    assert "a rotation cannot help here" in message
-    assert calls == []
-    assert _owner(second.store_root) is None
-    assert _jsonl(second.store_root / "admissions.jsonl") == []
+# The intervening-rotation shape (board item 4) recovers since agent-harness#1310:
+# see test_fabpub_recovery_chain_1310.py.
