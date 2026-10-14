@@ -9547,14 +9547,13 @@ def _run_claude_tui_session(
                         # boundaries so a novel line split by ``os.read`` is scanned
                         # WHOLE (only complete lines are evaluated).
                         complete = _tui_take_complete_lines(tui_carry, chunk)
-                        # Between answering the trust modal and submitting, the
-                        # modal's own late-rendering lines are not editor output
-                        # (agent-harness#992): they must not arm readiness.
+                        # Startup notices do not establish editor readiness. After
+                        # answering trust, its late-rendering lines do not either
+                        # (agent-harness#992).
                         modal_ignore = (
-                            (lambda norm: _tui_trust_modal_line(norm, cwd_norms))
-                            if trust_answered and not prompt_sent
-                            else None
-                        )
+                            lambda norm: norm.startswith("screen reader mode on via ")
+                            or (trust_answered and _tui_trust_modal_line(norm, cwd_norms))
+                        ) if not prompt_sent else None
                         if complete and _tui_chunk_has_novel_content(
                             complete, seen_tui_lines, modal_ignore
                         ):

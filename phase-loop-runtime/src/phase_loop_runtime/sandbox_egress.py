@@ -395,6 +395,9 @@ def isolated_network(
         resolv = os.path.join(work, "resolv.conf")
         with open(resolv, "w", encoding="utf-8") as handle:
             handle.write("nameserver 10.0.2.3\noptions timeout:2 attempts:2\n")
+            # The subordinate seat uid must read this public configuration even when
+            # its operator uses a private umask. The surrounding directory stays private.
+            os.fchmod(handle.fileno(), 0o644)
         Path(work, EGRESS_WORK_MARKER).touch()
         owner_read = owner_write = None
         holder = None

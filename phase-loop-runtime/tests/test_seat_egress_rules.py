@@ -57,6 +57,30 @@ def test_qualification_observer_reads_the_held_network_policy():
     assert panel_invoker._EGRESS_LAUNCH_PREFIX.get() == ()
 
 
+def test_private_umask_keeps_resolver_readable_by_seat():
+    import os
+    from phase_loop_runtime import seat_uid
+
+    if not seat_uid.seat_uid_available() or not sandbox_egress.egress_isolation_available():
+        pytest.skip("needs subordinate seat uid and isolated network")
+    previous = os.umask(0o077)
+    try:
+        with sandbox_egress.isolated_network(timeout_s=None, required=True, seat_uid_map=True) as prefix:
+            admin = prefix[:prefix.index("/usr/bin/setpriv")]
+            result = subprocess.run(
+                [*admin, "/usr/bin/setpriv", "--reuid=1", "--regid=1", "--clear-groups",
+                 "--bounding-set=-all", "--inh-caps=-all", "--ambient-caps=-all", "--",
+                 "/usr/bin/python3", "-I", "-S", "-c",
+                 "from pathlib import Path; import socket; "
+                 "assert 'nameserver 10.0.2.3' in Path('/etc/resolv.conf').read_text(); "
+                 "assert socket.getaddrinfo('api.anthropic.com',443)"],
+                capture_output=True, text=True, timeout=30,
+            )
+            assert result.returncode == 0, result.stderr
+    finally:
+        os.umask(previous)
+
+
 def test_network_helper_probe_ignores_candidate_path_entries(tmp_path, monkeypatch):
     import os
 

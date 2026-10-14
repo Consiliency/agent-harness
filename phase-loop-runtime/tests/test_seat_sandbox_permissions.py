@@ -517,6 +517,83 @@ def test_pointer_brief_names_paths_and_digests_never_the_bundle():
 # D8: the launch order and the drop.
 # --------------------------------------------------------------------------------------
 
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux seat descriptor helper")
+@pytest.mark.parametrize("terminal", [False, True])
+def test_seat_fd_closer_attaches_only_a_supplied_terminal(terminal):
+    import pty
+
+    master, slave = pty.openpty()
+    token, token_writer = os.pipe()
+    extra, extra_writer = os.pipe()
+    probe = """
+import json, os, sys
+def opened(fd):
+    try:
+        os.fstat(fd)
+        return True
+    except OSError:
+        return False
+facts = {"token_kept": opened(int(sys.argv[1])), "extra_closed": not opened(int(sys.argv[2]))}
+try:
+    terminal = os.open("/dev/tty", os.O_RDWR | os.O_NOCTTY)
+    facts["controlling_terminal"] = os.isatty(terminal) and os.tcgetpgrp(terminal) == os.getpgrp()
+    os.close(terminal)
+except OSError:
+    facts["controlling_terminal"] = False
+print(json.dumps(facts))
+"""
+    try:
+        result = subprocess.run(
+            [*seat_jail.seat_fd_closer(str(token)), sys.executable, "-I", "-S", "-c", probe,
+             str(token), str(extra)],
+            stdin=slave if terminal else subprocess.DEVNULL,
+            capture_output=True, text=True, pass_fds=(token, extra), start_new_session=True,
+            timeout=5,
+        )
+        assert result.returncode == 0, result.stderr
+        assert json.loads(result.stdout) == {
+            "token_kept": True, "extra_closed": True, "controlling_terminal": terminal,
+        }
+    finally:
+        for fd in (master, slave, token, token_writer, extra, extra_writer):
+            os.close(fd)
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="Linux seat descriptor helper")
+def test_seat_fd_closer_cannot_take_another_sessions_terminal():
+    import pty
+    import select
+
+    master, slave = pty.openpty()
+    gate, release = os.pipe()
+    holder = subprocess.Popen(
+        [sys.executable, "-I", "-S", "-c",
+         "import os,fcntl,termios,sys; fcntl.ioctl(0,termios.TIOCSCTTY,0); "
+         "print('ready',flush=True); os.read(int(sys.argv[1]),1)", str(gate)],
+        stdin=slave, stdout=subprocess.PIPE, stderr=subprocess.PIPE, pass_fds=(gate,),
+        start_new_session=True,
+    )
+    try:
+        assert select.select([holder.stdout], [], [], 5)[0]
+        assert holder.stdout.readline().strip() == b"ready"
+        result = subprocess.run(
+            [*seat_jail.seat_fd_closer(""), sys.executable, "-I", "-S", "-c",
+             "print('provider-started')"], stdin=slave, capture_output=True,
+            start_new_session=True, timeout=5,
+        )
+        assert result.returncode != 0 and b"provider-started" not in result.stdout
+        assert holder.poll() is None
+    finally:
+        os.close(release)
+        try:
+            holder.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            holder.kill()
+            holder.wait(timeout=5)
+        for fd in (master, slave, gate):
+            os.close(fd)
+
+
 def test_d8_prefix_order_replaces_the_1109_switch(tmp_path):
     jail = _fake_jail(tmp_path)
     egress = ("nsenter", "--net", "--mount", "-t", "4242", "-U", "--preserve-credentials",
