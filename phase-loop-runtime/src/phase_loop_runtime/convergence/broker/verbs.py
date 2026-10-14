@@ -140,6 +140,57 @@ class AdapterStartOwnerLive(PermissionError):
     """
 
 
+class AdapterStartOwnerContended(PermissionError):
+    """The owner section was lost to another live publisher twice in one publish.
+
+    Retryable contention, like :class:`AdapterStartOwnerLive`: nothing was
+    written and no provider call was made.
+    """
+
+
+class UnsealedOwnerBlocksPartition(PermissionError):
+    """An unsealed adapter-start owner was promoted to ``outcome_ambiguous_blocked``.
+
+    The partition is now blocked by that owner's effect key until a partition
+    rotation adjudicates it.  ``effect_key`` and ``transaction_id`` are the
+    observed owner's: the key to dispose and the transaction to bind.
+    """
+
+    def __init__(self, message: str, *, effect_key: str, transaction_id: str) -> None:
+        super().__init__(message)
+        self.effect_key = effect_key
+        self.transaction_id = transaction_id
+
+
+class PartitionEpochBlocked(PermissionError):
+    """The partition's generation is permanently blocked by ambiguity.
+
+    ``blocking_keys`` are the effect keys whose evidence in this generation is
+    ``outcome_ambiguous_blocked``.  It is empty when the block is carried by the
+    partition receipt (legacy archived ambiguity) rather than by a key here.
+    """
+
+    def __init__(self, message: str, *, blocking_keys: tuple[str, ...] = ()) -> None:
+        super().__init__(message)
+        self.blocking_keys = tuple(blocking_keys)
+
+
+class ProviderEntryRefused(PermissionError):
+    """A refusal after this attempt's admission became durable and before provider entry.
+
+    The attempt's unsealed owner (and its ``provider_call_in_flight`` intent,
+    when recorded) stays, as agent-harness#1578 option (i) requires.  A direct
+    rotation refuses an intent without a terminal; the next attempt promotes the
+    owner to ``outcome_ambiguous_blocked``, which a rotation then adjudicates.
+    The message is the original refusal's, which is chained as ``__cause__``.
+    """
+
+    def __init__(self, message: str, *, effect_key: str, transaction_id: str) -> None:
+        super().__init__(message)
+        self.effect_key = effect_key
+        self.transaction_id = transaction_id
+
+
 def _hold_owner_liveness(root: Path) -> int:
     """Take the live writer's lock on the just-written owner inode; return the descriptor.
 
@@ -324,6 +375,20 @@ def _advance_transaction(transaction, state: str) -> None:
         transaction.project(state)
 
 
+def _unsealed_owner_refusal(owner: AdapterStartOwnership) -> UnsealedOwnerBlocksPartition:
+    return UnsealedOwnerBlocksPartition(
+        "unsealed adapter-start owner blocks fresh provider effect",
+        effect_key=owner.effect_key,
+        transaction_id=owner.transaction_id,
+    )
+
+
+def _provider_entry_refusal(error: PermissionError, key: str, envelope) -> ProviderEntryRefused:
+    return ProviderEntryRefused(
+        str(error), effect_key=key, transaction_id=envelope.transaction_id
+    )
+
+
 class BrokerService:
     def __init__(self, admission_store, evidence_store: BrokerEvidenceStore, adapter: BrokerProviderAdapter, contracts=PROVIDER_COMPLETION_CLASSIFICATIONS) -> None:
         self.admission_store = admission_store
@@ -487,6 +552,22 @@ class BrokerService:
             idempotency_key,
         )
 
+
+    def _epoch_blocked_refusal(self) -> PartitionEpochBlocked:
+        """``epoch permanently blocked``, naming the keys that block it (agent-harness#1573)."""
+        try:
+            stored = self.evidence_store.replay()
+        except (OSError, PermissionError, ValueError):
+            # The refusal stands; it only loses the names of the blocking keys.
+            stored = {}
+        blocking = tuple(
+            sorted(
+                key
+                for key, record in stored.items()
+                if record.state is TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED
+            )
+        )
+        return PartitionEpochBlocked("epoch permanently blocked", blocking_keys=blocking)
 
     def _block_unsealed_owner(self, owner: AdapterStartOwnership) -> bool:
         """Resolve one observed owner under the repository evidence lock.
@@ -925,9 +1006,9 @@ class BrokerService:
         )
         if existing_owner is not None and not existing_owner.sealed:
             if self._block_unsealed_owner(existing_owner):
-                raise PermissionError("unsealed adapter-start owner blocks fresh provider effect")
+                raise _unsealed_owner_refusal(existing_owner)
         if self.evidence_store.epoch_blocked:
-            raise PermissionError("epoch permanently blocked")
+            raise self._epoch_blocked_refusal()
         # agent-harness#1296: a transaction already admitted in some generation
         # (a failed outcome leaves it there) is re-admitted only under an
         # authenticated attested_not_landed rotation, and refused typed before
@@ -992,11 +1073,13 @@ class BrokerService:
                 if foreign_owner is None:
                     break
                 if self._block_unsealed_owner(foreign_owner):
-                    raise PermissionError("unsealed adapter-start owner blocks fresh provider effect")
+                    raise _unsealed_owner_refusal(foreign_owner)
             else:
                 # A retired owner was replaced by another live publisher between the
                 # two entries: a retryable contention loss, not permanent ambiguity.
-                raise PermissionError("unsealed adapter-start owner contended twice in one publish; retry")
+                raise AdapterStartOwnerContended(
+                    "unsealed adapter-start owner contended twice in one publish; retry"
+                )
             try:
                 advance("ADMISSION_DURABLE")
             except Exception as error:
@@ -1011,13 +1094,19 @@ class BrokerService:
             # call (``record_intent``, the checkpoint projections, the guard's own
             # authorization, a refused service-generation lease) leaves the owner
             # and the admitted checkpoint as they are.  The next attempt promotes the
-            # owner, and an ``attested_not_landed`` rotation recovers it.
-            self.evidence_store.record_intent(key)
-            advance("BROKER_INTENT_DURABLE")
-            from phase_loop_runtime.publishing import _crash_at
+            # owner, and an ``attested_not_landed`` rotation recovers it.  A
+            # ``PermissionError`` in this window is re-raised as
+            # ``ProviderEntryRefused`` (same message, cause chained) so the caller
+            # can say "retry once, then rotate" (agent-harness#1594 ask 1).
+            try:
+                self.evidence_store.record_intent(key)
+                advance("BROKER_INTENT_DURABLE")
+                from phase_loop_runtime.publishing import _crash_at
 
-            _crash_at("after_broker_intent_before_adapter_started")
-            stored = self._provider_entry_guard(key, recorded_owner)
+                _crash_at("after_broker_intent_before_adapter_started")
+                stored = self._provider_entry_guard(key, recorded_owner)
+            except PermissionError as error:
+                raise _provider_entry_refusal(error, key, envelope) from error
             if stored is not None:
                 # agent-harness#1577: the key is no longer this attempt's in-flight
                 # record (an older prober promoted the owner after the section).
@@ -1071,6 +1160,8 @@ class BrokerService:
                 if not provider_entered:
                     # Nothing to record: the owner and the in-flight row stay as on
                     # any other pre-provider failure (agent-harness#1578, option i).
+                    if isinstance(error, PermissionError):
+                        raise _provider_entry_refusal(error, key, envelope) from error
                     raise
                 # The broker returns the state the store holds and never invents one.
                 current = self.evidence_store.replay().get(key)
@@ -1118,7 +1209,7 @@ class BrokerService:
             and not isinstance(request.admission, PreAdmissionEnvelope)
             and self.evidence_store.epoch_blocked
         ):
-            raise PermissionError("epoch permanently blocked")
+            raise self._epoch_blocked_refusal()
         if _fabpub_active() and request.verb is BrokerVerb.PUBLISH_COMMITTED_BRANCH:
             return self._fresh_publish(request, key)
         if _fabpub_active() and isinstance(request.admission, PreAdmissionEnvelope):
@@ -1133,7 +1224,7 @@ class BrokerService:
                 evidence = EvidenceRecord(key, TerminalOutcomeState.REJECTED_BEFORE_START, "provider-classification")
             return BrokerExecutionResult(False, BrokerTerminalEvidence(key, evidence.state.value, evidence.evidence_reference), reason="provider_not_supported")
         if self.evidence_store.epoch_blocked:
-            raise PermissionError("epoch permanently blocked")
+            raise self._epoch_blocked_refusal()
         try:
             self.admission_store.admit(request.admission)
             self.evidence_store.record_intent(key)

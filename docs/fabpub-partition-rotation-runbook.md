@@ -328,7 +328,9 @@ from `build_routing_broker_client()` that a surviving holder built before the
 flip refuses every later request with `WriterGenerationBlocked` (`this broker
 client is bound to retired partition generation …`) before it reads or writes
 either generation's store. It never rebinds itself, so restart that process
-(agent-harness#1315).
+(agent-harness#1315). The refusal's type is `RoutingClientGenerationRetired`, and
+the human route answers it with next step `rebuild_broker_client_and_retry`, not
+`repair_fabpub_authority`.
 
 ## 7. Execute — STATE CHANGE, needs go
 
@@ -418,6 +420,13 @@ the provider call (`record_intent`, a checkpoint projection, a refused lease) le
 the owner in place, and the next attempt promotes it. That case is
 `attested_not_landed` by construction. See `docs/fabpub-pre-admission-ambiguity.md`,
 "Provider entry and failures around it".
+For a `PermissionError` in that window (`ProviderEntryRefused`), the human route
+answers with next step `retry_once_before_partition_rotation`. Until one retry
+promotes the owner, the row is still `provider_call_in_flight`, and the rotation
+refuses with "intents without a terminal". Retry once. The retry returns the
+rotation handoff for this key. Keep the first result as the attestation's evidence
+that the provider was never entered. The ambiguous row alone cannot show that
+(agent-harness#1594 asks 1 and 5).
 
 1. Leave the worktree, branch, commit, plan file and verification artifact
    exactly as they were. Do not make an empty commit, switch branch, force

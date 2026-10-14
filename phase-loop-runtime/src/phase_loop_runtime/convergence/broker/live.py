@@ -87,6 +87,15 @@ class WriterGenerationBlocked(PermissionError):
         super().__init__(f"{GENERATION_BLOCKER}: {detail}")
 
 
+class RoutingClientGenerationRetired(WriterGenerationBlocked):
+    """A routing client is bound to a partition generation a rotation retired.
+
+    agent-harness#1315: the client refuses every request rather than rebind.
+    The remedy is a new client (or a restarted broker process), not an
+    authority repair or a rotation (agent-harness#1573 ask 4).
+    """
+
+
 class FabpubConfigurationError(RuntimeError):
     """The capability marker exists but could not be read."""
 
@@ -5976,7 +5985,7 @@ class _RepositoryRoutingBrokerService:
             # rotation moved the ACTIVE pointer.  Refuse typed on every request
             # rather than serve the retired generation's ledger or rebind under a
             # lease the rotation's drain never saw.
-            raise WriterGenerationBlocked(
+            raise RoutingClientGenerationRetired(
                 f"this broker client is bound to retired partition generation "
                 f"{stores[1].root} of {snapshot.identity}; the ACTIVE generation is "
                 f"{snapshot.store_root}. A partition rotation completed after the client "

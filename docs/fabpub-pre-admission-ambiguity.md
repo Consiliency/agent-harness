@@ -136,8 +136,9 @@ through the provider call is not covered (agent-harness#1591).
   publish's `_block_unsealed_owner` seals it, and a retry replays the terminal. A
   failure inside the provider call is still recorded as `outcome_ambiguous_blocked`.
 - **A failure before the provider was entered is not ambiguity either.** A refused
-  service-generation lease (a `DRAINING` writer latch) is re-raised. Nothing is
-  recorded beyond the `provider_call_in_flight` intent.
+  service-generation lease (a `DRAINING` writer latch) is re-raised as
+  `ProviderEntryRefused`, with the same message. Nothing is recorded beyond the
+  `provider_call_in_flight` intent (see "Human-route handoffs for broker refusals").
 - **Failures between the owner section and the provider call (agent-harness#1578).**
   If the `ADMISSION_DURABLE` checkpoint projection itself fails while the checkpoint
   is still `COMMITTED_HEAD_RESOLVED`, the broker restores the owner bytes the
@@ -156,6 +157,40 @@ through the provider call is not covered (agent-harness#1591).
 - A blocked publish result from `publish_from_worktree` now carries
   `provider_call_made`. It is true only when this call entered the provider adapter.
   A replay of stored evidence reports false.
+
+## Human-route handoffs for broker refusals
+
+The human route (`publish_human_invoked_from_worktree`) picks its handoff by the
+type of the broker refusal, never by its message. Every type below is a
+`PermissionError` subclass, so existing `except PermissionError` callers are
+unaffected, and its message is unchanged. Each refusal is raised before provider
+entry, and the result carries `provider_call_made: false`. Any other
+`PermissionError` keeps `repair_fabpub_authority`.
+
+| Refusal | Type | `next_step` |
+|---|---|---|
+| A routing client was built before a rotation moved the ACTIVE generation (agent-harness#1315) | `RoutingClientGenerationRetired` (a `WriterGenerationBlocked`) | `rebuild_broker_client_and_retry`: close the client and build a new one, or restart the broker process |
+| The owner's writer is still running, or the section was contended twice | `AdapterStartOwnerLive`, `AdapterStartOwnerContended` | `retry_after_inflight_publication`: retry shortly; no rotation |
+| An unsealed owner was promoted, or the epoch is blocked by a key in this generation | `UnsealedOwnerBlocksPartition`, `PartitionEpochBlocked` | `adjudicate_publication_by_partition_rotation`, with `blocking_effect_keys` (and `blocking_transaction_id` for an owner); the attestation disposes the blocking key, which may not be this publication's |
+| A refusal after the admission is durable and before provider entry: `record_intent`, the guard's authorization, a refused service-generation lease | `ProviderEntryRefused` (`effect_key`, `transaction_id`; the original is `__cause__`) | `retry_once_before_partition_rotation`: retry once, then follow the handoff the retry returns |
+
+A `PartitionEpochBlocked` that names no key in the store keeps
+`repair_fabpub_authority`. In that case the block is the partition receipt's
+carried legacy ambiguity, which a rotation does not adjudicate.
+
+Why retry once (agent-harness#1594 SA-F2). After a pre-provider refusal, the key's
+row is still `provider_call_in_flight` and the owner is unsealed. A rotation refuses
+that state with "intents without a terminal". The retry promotes the owner to
+`outcome_ambiguous_blocked`, refuses with `UnsealedOwnerBlocksPartition` and returns
+the rotation handoff for this key and transaction. Keep the first result: its
+`provider_call_made: false` and refusal detail are the only record that the provider
+was never entered. The ambiguous row cannot be told apart from a crash during the
+call.
+
+Every rotation handoff cites runbook §§1, 3, 4, 6, 7 and 8a. It also says the
+rotation must use the route's `FABPUB_AUTHORITY_ROOT` (or `--authority-root`), and
+it repeats the warning against a second `attested_not_landed` without new evidence
+(agent-harness#1574 ask 2).
 
 ## Recovery
 
