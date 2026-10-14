@@ -8,6 +8,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Gemini 4 Argon defaults
 
+- `PHASE_LOOP_GEMINI_MODEL` selects a registered canonical Gemini base model for
+  local executor/class defaults and composed boards. Explicit task and board
+  choices win; effort, other providers, subscription auth and sandbox admission
+  are preserved. Invalid values fail without fallback (agent-harness#1604).
+- Register the `Gemini 4 Argon` display alias and render its supported effort
+  variants to the same canonical IDs; reject unsupported or conflicting effort.
 - Register `gemini-4-argon` and render its low, medium, and high subscription
   model IDs consistently for board seats and executor launches. Generic
   `pro`/`auto` routing and the heavy tier now select Argon; regular/lite Flash
