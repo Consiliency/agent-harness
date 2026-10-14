@@ -10,8 +10,8 @@ defaulted-but-overridable execution lane, not the primary key.
 This card is the release reference for **how the board is invoked**, **which
 models run on which harnesses**, **the built-in board presets**, and **how to add
 a custom board**. It is derived from the live registries / install code so it
-cannot drift; a `pytest` smoke (`tests/test_advisor_board_alias_install.py`,
-`tests/test_advisor_board_integration.py`) keeps the skill names and matrix honest.
+cannot drift; a `pytest` smoke (`phase-loop-runtime/tests/test_advisor_board_alias_install.py`,
+`phase-loop-runtime/tests/test_advisor_board_integration.py`) keeps the skill names and matrix honest.
 
 ---
 
@@ -59,12 +59,14 @@ actionable message, before any subprocess is spawned. Source of truth:
 | `claude`   | `claude`       | subscription, api_key   | homebrew   |
 | `codex`    | `codex`        | subscription, api_key   | homebrew   |
 | `gemini`   | `agy`          | subscription, api_key   | homebrew   |
+| `grok`     | `grok`         | subscription            | homebrew   |
 | `opencode` | `opencode`     | subscription, api_key   | omnigent   |
 | `pi`       | `pi`           | subscription, api_key   | omnigent   |
 | `cursor`   | `cursor-agent` | subscription, api_key   | omnigent   |
 
-- **homebrew** = the built-3 CLI-lane launch (claude TUI, codex, gemini) + the
-  in-process host leg. Byte-for-byte the legacy panel for the `default` board.
+- **homebrew** = the built-4 CLI-lane launch (claude, codex, gemini, grok) + the
+  in-process host leg. For the `default` board it matches the legacy panel
+  byte-for-byte on the three shared legs (codex, gemini, claude).
 - **omnigent** = harness breadth (opencode/pi, and cursor/amp when the live
   `GET /v1/harnesses` catalog reports them) routed through omniagent-plus →
   Omnigent v0.4.0, **opt-in and fail-closed** (an unavailable lane skips-with-warning,
@@ -102,7 +104,8 @@ actionable message, before any subprocess is spawned. Source of truth:
 
 **Effort is model-first `{model, effort}`**, split out of the model name and mapped
 per harness by `render_seat_invocation`: `claude` → `--effort <level>`, `codex` →
-`-c model_reasoning_effort=<xhigh|high|…>`, `gemini` → effort baked into the model
+`-c model_reasoning_effort=<xhigh|high|…>`, `grok` → `--reasoning-effort <level>`,
+`gemini` → effort baked into the model
 token (`gemini-3.8-flash-high`; legacy display names such as
 `"Gemini 3.1 Pro (High)"` remain accepted). Canonical effort levels: `low, medium, high, max`.
 
@@ -227,16 +230,31 @@ The president availability ladder is Fable (the Anthropic seat — Opus 5.5 by d
 (`Sol` is the GPT seat alias: `gpt-6-astra` by default, `gpt-5.6-sol` accepted as an explicit legacy id).
 It advances only on typed unavailability, not on disagreement or a blocking ruling.
 `requires_president` landing policies execute it (`invoke_board(president_invoke=)`)
-and fail the landing closed without a ruling; today no HARDEN-authorized president
-execution operation exists, so a seated rung reports
-`president_execution_route_unavailable` rather than riding a review leg
-(`advisor_board/CONTRACTS.md` → ABDPRES).
+and fail the landing closed without a ruling. The ladder runs through the president's
+own operation, `public_board_president.v1` (`president_operation.py`), never through a
+review leg. Under Claude Code the Fable rung defers to a native fill, which you resume
+with `--native-president FILL.json`. Elsewhere it runs as a brokered Claude session
+(print by default, TUI when `PHASE_LOOP_PANEL_CLAUDE_ROUTE=tui`), and Sol, Grok and
+Gemini run brokered (`advisor_board/CONTRACTS.md` → ABDPRESROUTE).
 
 ### Invoking a board
 
 ```sh
 phase-loop advisor-board <artifact>      # runtime-composed four-vendor board
 ```
+
+Under Claude Code, the claude seat can be filled natively instead of by a spawned
+session:
+
+```sh
+phase-loop advisor-board <artifact> --emit-native-request [--native-fill-dir DIR]
+# fill native-fill/<request_id>/ (request.json + review.md), then:
+phase-loop advisor-board <artifact> --native-leg claude=<dir>
+```
+
+`--emit-native-request` stages the board and writes the request without spending any
+seat; `--native-leg` is checked against the staged artifact, brief and composition
+before any seat launches.
 
 The public CLI does not accept `--board` or `--seats`, and does not load the TOML
 configuration below. Named presets and custom boards are library interfaces;
@@ -334,7 +352,7 @@ phase-loop advisor-board bundle.md --pointer-brief --json
 
 `--pointer-brief` declares that the brief tells reviewers to open files in the staged tree instead of carrying their content inline.
 
-**Before launch.** Before any seat launches, the board checks each seat's route. A seat that cannot open files gets `seat_pointer_brief_unreadable`, printed on stderr. On main that means the brokered Claude seat and the brokered Gemini (agy) seat. A Claude seat filled natively has file access.
+**Before launch.** Before any seat launches, the board checks each seat's route. A seat that cannot open files gets `seat_pointer_brief_unreadable`, printed on stderr. For Claude, that is a brokered seat that does not take the jailed route on this host. A Claude seat that is jailed (agent-harness#1132) or filled natively has file access. The brokered Gemini (agy) seat is also marked.
 
 **What happens to that seat.** It still runs, but its verdict is **not source-grounded**:
 - It does not count toward the floor, the landing count or the pre-merge minimum of reviewers.
@@ -343,7 +361,7 @@ phase-loop advisor-board bundle.md --pointer-brief --json
 
 The payload adds `notices`, `legs[].notices`, `legs[].source_grounded` and `grounded_seats`, and only when the flag is set.
 
-**The fix.** Inline the referenced content, or fill the seat through a route with file access. Once agent-harness#1132 lands, a jailed Claude seat will have file access. The Gemini tool route is agent-harness#1170.
+**The fix.** Inline the referenced content, or fill the seat through a route with file access: for Claude, the jailed route or a native fill. The Gemini tool route is agent-harness#1170.
 
 ### Opt-in governed web research
 
@@ -453,12 +471,13 @@ a two-same-vendor board is not collapsed.
    (`governed_review`, `governed_premerge`) still call it. The new
    `invoke_board(board, artifact, ...)` seam is *additive*; migrate to it only when
    you want boards/presets/breadth. When you do, the `default` board reproduces the
-   legacy 3-leg run byte-for-byte on launch order, per-leg argv/env/timeout, status,
-   text, and failure semantics.
+   legacy 3-leg run byte-for-byte on its three shared legs (codex, gemini, claude):
+   launch order, per-leg argv/env/timeout, status, text, and failure semantics. Its
+   fourth seat (Grok) is checked separately.
 
    - **One intentional result-shape enrichment:** `invoke_board` populates
      `PanelLegResult.seat_key` with a richer per-seat label (e.g.
-     `codex:gpt-6-astra:max`) instead of the bare leg (`codex`). `.leg` is preserved, so
+     `codex:gpt-6-astra:high:red-team`) instead of the bare leg (`codex`). `.leg` is preserved, so
      any caller keying on `.leg` / `.status` / `.usable` is unaffected; this only
      *adds* the ability to tell two same-vendor seats apart. This is the sole
      contract-sanctioned delta (ABDRESOLVE finding 4), asserted explicitly in the
@@ -483,7 +502,7 @@ provider health. No reviewer is dropped or substituted by policy preflight.
 
 | Route | Bounded | Heartbeat-only |
 | --- | --- | --- |
-| Brokered homebrew/subscription Claude TUI | Existing behavior | Supported on Linux with bwrap |
+| Brokered homebrew/subscription Claude (print or TUI route) | Existing behavior | Supported on Linux with bwrap |
 | Brokered homebrew/subscription Codex | Existing behavior | Supported on Linux with bwrap |
 | Brokered homebrew/subscription Grok | Existing behavior | Supported on Linux with bwrap |
 | Brokered subscription Gemini / agy | Existing internal print timer | Qualified image and Linux memfd/pidfd support required |

@@ -26,7 +26,7 @@ A migrated repo exposes these six targets. Each maps to a validation *tier*:
 | `full` | 2 | Full local suite where feasible; expensive matrix/GPU/self-hosted checks may report a clear local skip and run in CI/nightly. |
 | `fix` | 0 | Safe formatters and safe autofix tools only. |
 | `affected` | 0/1 | Changed-file / workspace-aware affected-test selection; fall back to `gate` when the mapping is uncertain. |
-| `doctor` | n/a | Environment and prerequisite report: tools, Docker/engine, Dagger, package manager, declared contracts, worktree assumptions. Always exits 0. |
+| `doctor` | n/a | Environment and prerequisite report: tools, Docker/engine, Dagger, package manager, declared contracts, worktree assumptions. Exits 0 inside a git work tree (10 outside one). |
 
 `check` is accepted as an alias for `doctor`.
 
@@ -37,7 +37,8 @@ The resolver runs **only** a repo's *explicit* contract, in this order:
 1. **`just agent::<target>`** — when a root `Justfile`/`justfile` declares
    `mod agent` (or `mod? agent`) **and** the repo ships an `agent.just` module
    (also probed at `agent/mod.just`, `agent/Justfile`, `agent/justfile`,
-   `agent/.justfile`) that declares a recipe named `<target>`.
+   `agent/.justfile`) that declares a recipe named `<target>`. Failing that, a flat
+   recipe named `agent:<target>` in the root `Justfile` is run as `just agent:<target>`.
 2. **`package.json` script `agent:<target>`** — an explicit npm/pnpm/yarn/bun
    script. The runner is chosen from a present lockfile
    (`pnpm-lock.yaml`→pnpm, `package-lock.json`→npm, `yarn.lock`→yarn,
@@ -125,7 +126,7 @@ phase-loop repo-validate fast
 phase-loop repo-validate gate
 phase-loop --repo /path/to/repo repo-validate full
 
-# Environment / contract report (always exits 0):
+# Environment / contract report (exits 0 inside a git work tree, 10 outside one):
 phase-loop repo-validate doctor          # or: repo-validate check
 
 # Machine-readable resolution (INSPECTION ONLY — prints the resolved plan and

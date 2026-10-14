@@ -73,7 +73,8 @@ does not include `accepted_for_merge`, `merge_verdict`, or any acceptance field.
 
 Exit code `0` means the advisory preflight found no blocker. Exit code `2`
 means the submission is malformed, `3` means it contains redaction-forbidden
-content, `4` means provenance or digest metadata failed, and `1` is reserved for
+content, `4` means provenance or digest metadata failed, `6` means another typed
+conformance blocker (for example a source-bundle mismatch), and `1` is reserved for
 unexpected internal failures.
 
 Attach the generated advisory JSON as supporting evidence only. It can help

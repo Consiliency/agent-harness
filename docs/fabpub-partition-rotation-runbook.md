@@ -80,24 +80,19 @@ Result of the 2026-09-09 scan:
 
 ### 2.1 Runtime re-pin
 
-No release tag contains the ceremony (D2, Consiliency/agent-harness#816) yet,
-and the package version string is still `0.7.14`, so `--version` cannot tell a
-v3-aware install from a pre-v3 one (claw's git-pinned install and the `v0.7.14`
-release both report `0.7.14`) — use the probe. Pin to the exact `main`
-commit that carries D4:
+The ceremony (D2, Consiliency/agent-harness#816) and D4 ship in every release
+from `v0.7.15`. The rotation retry in §8a also needs agent-harness#1296, first
+released in `v0.7.25`. Install a released runtime at or above `0.7.25`, then
+confirm it with the probe, because `--version` alone does not prove what a
+git-pinned install carries:
 
 ```bash
-uv tool install --force \
-  "git+https://github.com/Consiliency/agent-harness@c98573ebd45452451ce719406f5b28379284b4c9#subdirectory=phase-loop-runtime"
+uv tool install --force phase-loop-runtime   # or pin: phase-loop-runtime==<version >= 0.7.25>
 python3 phase-loop-runtime/scripts/fabpub_v3_probe.py   # against that interpreter; expect exit 0
 ```
 
-Known caveat (Consiliency/agent-harness#819): every install at or after
-`b09b1a47` (claw's current `463b90c3` included; the `v0.7.14` release predates it) prints `built-in closeout validator fab_gate is not importable; gate
-NOT registered` on the CLI's first import. It is a circular-import regression
-in the closeout validator registry, unrelated to the ceremony; the rotation
-verb is unaffected, but note it in the record rather than treating it as a
-failure of the pin.
+The protections described in §8a for an `attested_not_landed` decision
+(agent-harness#1313, agent-harness#1577) are newer than `v0.7.26`; see §8a.
 
 ## 3. Attestation (read-only build, reviewed by hand)
 
@@ -133,7 +128,8 @@ What the builder **derives**, and the reviewer must re-check:
   `adapter-start-owner.json` names this effect key (either spelling —
   `effect_key` or `idempotency_key`), copied verbatim, and **omitted** when it
   does not: the adjudicator refuses both a missing value when the owner names
-  the key and a present one when it does not (`live.py:4321-4326`). The builder
+  the key and a present one when it does not (in `live.py`, the `owner_nonce` /
+  `transaction_id` check after `_rotation_owner_identity` during rotation adjudication). The builder
   prints which half it emitted.
 - a digested file that is absent digests as `sha256(b"")`, matching
   `_snapshot_predecessor`.
@@ -404,7 +400,8 @@ The broker enters the provider only after, within one `admissions.lock`
 acquisition, the on-disk owner equalled its attempt's (nonce included) and was
 unsealed and the key's row was `provider_call_in_flight` (agent-harness#1577).
 Together with the agent-harness#1313 liveness lock, that protects a partition only
-once every runtime that writes it is upgraded. A promotion landing at any point from
+once every runtime that writes it is upgraded. Both landed on `main` after `v0.7.26`
+and ship in the next release; a `v0.7.26` or older writer counts as not upgraded. A promotion landing at any point from
 that lock's release through the provider call (the `ADAPTER_STARTED` projection,
 request finalization, lease acquisition, the call itself) is not covered by either; it
 still makes one provider call, reported with `provider_call_made: true`
@@ -461,9 +458,7 @@ fix the input and retry.
 
 ## 9. Residuals carried out of the 2026-09-09 preparation
 
-- Consiliency/agent-harness#819 — `fab_gate` circular import on `git+main`
-  installs (cosmetic for this verb; real for closeout).
 - Consiliency/agent-harness#820 — leases carry no liveness; orphan detection is
   manual (§6).
 - `leno` unscanned (offline); never held FABPUB state.
-- No release tag carries D2/D4; the re-pin is by commit SHA until one does.
+- D2/D4 ship in `v0.7.15` and later; the §8a retry needs `v0.7.25` or later (§2.1).
