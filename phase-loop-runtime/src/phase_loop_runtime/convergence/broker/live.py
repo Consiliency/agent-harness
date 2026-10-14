@@ -39,7 +39,7 @@ from phase_loop_runtime.convergence.provider_contracts import PROVIDER_COMPLETIO
 from .admission import BrokerAdmissionPolicy, LinearizableAdmissionStore
 from .credsep import ALLOWED_ORIGIN_HOSTS, GitHubBrokerAdapter
 from .evidence import BrokerEvidenceStore
-from .verbs import BrokerClient, BrokerService
+from .verbs import BrokerClient, BrokerService, ProviderEntryRefused
 
 _CANONICAL_GITHUB_BROKER_ADAPTER = GitHubBrokerAdapter
 _CANONICAL_PROVIDER_RUN = subprocess.run
@@ -94,6 +94,22 @@ class RoutingClientGenerationRetired(WriterGenerationBlocked):
     The remedy is a new client (or a restarted broker process), not an
     authority repair or a rotation (agent-harness#1573 ask 4).
     """
+
+
+class ProviderEntryGenerationRefused(ProviderEntryRefused, WriterGenerationBlocked):
+    """A ``WriterGenerationBlocked`` in the provider-entry window (agent-harness#1594).
+
+    Both a ``ProviderEntryRefused`` (the human route's "retry once" handoff) and
+    a ``WriterGenerationBlocked``, so callers that catch the generation refusal
+    behave as before.  The message is the original's, already prefixed, so the
+    ``GENERATION_BLOCKER`` prefix is not added again; the original is chained
+    as ``__cause__`` by the raiser.
+    """
+
+    def __init__(self, message: str, *, effect_key: str, transaction_id: str) -> None:
+        PermissionError.__init__(self, message)
+        self.effect_key = effect_key
+        self.transaction_id = transaction_id
 
 
 class FabpubConfigurationError(RuntimeError):

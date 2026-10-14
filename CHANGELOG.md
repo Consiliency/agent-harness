@@ -25,9 +25,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
     `blocking_effect_keys`, plus `blocking_transaction_id` for an owner. An epoch
     block that names no key in the store, which is legacy carried ambiguity, keeps
     `repair_fabpub_authority`.
-  - A `PermissionError` after the admission is durable and before provider entry
-    (`record_intent`, the guard's authorization, a refused service-generation lease)
-    is re-raised as `ProviderEntryRefused` with the same message. Its next step is
+  - After the admission is durable and before provider entry, a
+    `WriterGenerationBlocked` from `record_intent`, `_authorize` or the
+    service-generation lease is re-raised with the same message as
+    `ProviderEntryGenerationRefused`. That type is both a `ProviderEntryRefused` and
+    a `WriterGenerationBlocked`. The guard's own "no evidence row" refusal is now a
+    `ProviderEntryRefused`. Any other `PermissionError` in that window propagates
+    unchanged and keeps `repair_fabpub_authority`; that includes EACCES and an
+    incompatible store. Its next step is
     `retry_once_before_partition_rotation`. One retry promotes the owner, and the
     retry returns the rotation handoff for this key. Without that retry, the rotation
     refuses with "intents without a terminal" (agent-harness#1594 ask 1).

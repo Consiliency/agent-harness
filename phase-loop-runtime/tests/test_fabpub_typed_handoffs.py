@@ -264,7 +264,7 @@ def _refuse_lease(monkeypatch):
     live = _modules().live
 
     def refuse(_self, _root):
-        raise PermissionError("writer generation latch is DRAINING; lease refused")
+        raise live.WriterGenerationBlocked("writer generation latch is DRAINING; lease refused")
 
     monkeypatch.setattr(live.GitHubBrokerAdapter, "_acquire_service_generation_lease", refuse)
     return "lease refused", [IN_FLIGHT]
@@ -309,6 +309,157 @@ def test_pre_provider_refusal_gets_retry_once_then_rotation(tmp_path, monkeypatc
     assert retry_handoff["blocking_effect_keys"] == [key]
     assert retry_handoff["blocking_transaction_id"] == handoff["transaction_id"]
     assert _evidence_states(repo)[-1] == AMBIGUOUS
+
+
+def test_window_generation_refusal_still_catchable_as_writer_generation_blocked(tmp_path, monkeypatch):
+    """Board round 1, Claude seat F001: the typed refusal is still a ``WriterGenerationBlocked``.
+
+    Callers that catch the generation refusal (runbook §6 SDK holders) behave as
+    before, at the ``BrokerService.execute`` boundary, and the human route still
+    answers it with the retry-once handoff.
+    """
+    m = _modules()
+    adapter = _CountingAdapter()
+    _repo, publish = _human_route(tmp_path, monkeypatch, adapter)
+    seen: list[BaseException] = []
+    original = m.verbs.BrokerService.execute
+
+    def spy(self, request):
+        try:
+            return original(self, request)
+        except BaseException as error:
+            seen.append(error)
+            raise
+
+    def refuse(_self, _key):
+        raise m.live.WriterGenerationBlocked("the generation latch entered DRAINING before this write")
+
+    monkeypatch.setattr(m.verbs.BrokerService, "execute", spy)
+    monkeypatch.setattr(m.evidence.BrokerEvidenceStore, "record_intent", refuse)
+    result = publish()
+
+    assert adapter.calls == []
+    assert seen, "the broker did not refuse"
+    error = seen[-1]
+    assert isinstance(error, m.live.WriterGenerationBlocked), type(error).__mro__
+    assert isinstance(error, m.verbs.ProviderEntryRefused)
+    assert isinstance(error.__cause__, m.live.WriterGenerationBlocked)
+    # The original message, with its prefix once.
+    assert str(error) == str(error.__cause__)
+    assert str(error).count(m.live.GENERATION_BLOCKER) == 1
+    _assert_typed(result, RETRY_ONCE_STEP)
+
+
+def test_guard_missing_row_gets_retry_once(tmp_path, monkeypatch):
+    """``_provider_entry_guard``'s own "no evidence row" refusal is a ``ProviderEntryRefused``."""
+    m = _modules()
+    adapter = _CountingAdapter()
+    repo, publish = _human_route(tmp_path, monkeypatch, adapter)
+    real_replay = m.evidence.BrokerEvidenceStore.replay
+    calls = {"guard": False}
+    real_guard = m.verbs.BrokerService._provider_entry_guard
+
+    def guard(self, key, owner):
+        calls["guard"] = True
+        try:
+            return real_guard(self, key, owner)
+        finally:
+            calls["guard"] = False
+
+    def replay(self):
+        rows = real_replay(self)
+        # Inside the guard only: the store no longer holds this attempt's row.
+        return {} if calls["guard"] else rows
+
+    with pytest.MonkeyPatch.context() as refused:
+        refused.setattr(m.verbs.BrokerService, "_provider_entry_guard", guard)
+        refused.setattr(m.evidence.BrokerEvidenceStore, "replay", replay)
+        result = publish()
+
+    assert adapter.calls == []
+    assert "no evidence row before provider entry" in result["detail"]
+    handoff = _assert_typed(result, RETRY_ONCE_STEP)
+    assert handoff["effect_key"] and handoff["transaction_id"]
+
+
+def _eacces(evidence, store, key):
+    return PermissionError(13, "Permission denied", str(store.path))
+
+
+def _store_incompatible(evidence, store, key):
+    return evidence.EvidenceStoreIncompatible(
+        store.path,
+        line=1,
+        idempotency_key=key,
+        constructor=evidence.EvidenceRecord,
+        unknown_keys=("future_field",),
+        missing_keys=(),
+        cause=TypeError("unexpected keyword argument 'future_field'"),
+    )
+
+
+def _plain_lease_refusal(evidence, store, key):
+    return None  # marker: refuse the lease, not record_intent
+
+
+@pytest.mark.parametrize(
+    "fault", [_eacces, _store_incompatible, _plain_lease_refusal], ids=["eacces", "store_incompatible", "plain_lease"]
+)
+def test_other_permission_errors_in_window_keep_authority_handoff(tmp_path, monkeypatch, fault):
+    """Board round 1, SA-F3: only generation and guard refusals are retry-once.
+
+    An errno-bearing ``PermissionError`` (EACCES), ``EvidenceStoreIncompatible``
+    or a plain ``PermissionError`` from the lease in the provider-entry window
+    propagates unchanged and keeps ``repair_fabpub_authority``, as on main.
+    """
+    m = _modules()
+    adapter = _CountingAdapter()
+    repo, publish = _human_route(tmp_path, monkeypatch, adapter)
+    seen: dict = {}
+    original = m.verbs.BrokerService.execute
+
+    def spy(self, request):
+        try:
+            return original(self, request)
+        except BaseException as error:
+            seen["broker"] = error
+            raise
+
+    def refuse_intent(self, key):
+        seen["raised"] = fault(m.evidence, self, key)
+        raise seen["raised"]
+
+    def refuse_lease(_self, _root):
+        seen["raised"] = PermissionError("lease refused by an unrelated authority check")
+        raise seen["raised"]
+
+    from phase_loop_runtime import publishing
+
+    real_typed = publishing._typed_refusal_handoff
+
+    def route_spy(error):
+        seen["route"] = error
+        return real_typed(error)
+
+    with pytest.MonkeyPatch.context() as refused:
+        refused.setattr(m.verbs.BrokerService, "execute", spy)
+        refused.setattr(publishing, "_typed_refusal_handoff", route_spy)
+        if fault is _plain_lease_refusal:
+            refused.setattr(m.live.GitHubBrokerAdapter, "_acquire_service_generation_lease", refuse_lease)
+        else:
+            refused.setattr(m.evidence.BrokerEvidenceStore, "record_intent", refuse_intent)
+        result = publish()
+
+    assert adapter.calls == []
+    # Propagated unchanged: same object, so same type, errno and filename.
+    assert seen["broker"] is seen["raised"] is seen["route"]
+    assert not isinstance(seen["broker"], m.verbs.ProviderEntryRefused)
+    handoff = _assert_typed(result, AUTHORITY_STEP)
+    assert "provider_call_made" not in result
+    assert "rotate_command" not in handoff
+    if fault is _eacces:
+        assert seen["route"].errno == 13
+        assert seen["route"].filename.endswith("evidence.jsonl")
 
 
 # ---------------------------------------------------------------------------

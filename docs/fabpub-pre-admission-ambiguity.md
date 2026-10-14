@@ -136,8 +136,9 @@ through the provider call is not covered (agent-harness#1591).
   publish's `_block_unsealed_owner` seals it, and a retry replays the terminal. A
   failure inside the provider call is still recorded as `outcome_ambiguous_blocked`.
 - **A failure before the provider was entered is not ambiguity either.** A refused
-  service-generation lease (a `DRAINING` writer latch) is re-raised as
-  `ProviderEntryRefused`, with the same message. Nothing is recorded beyond the
+  service-generation lease (a `DRAINING` writer latch, `WriterGenerationBlocked`) is
+  re-raised as `ProviderEntryGenerationRefused`, which is still a
+  `WriterGenerationBlocked`, with the same message. Nothing is recorded beyond the
   `provider_call_in_flight` intent (see "Human-route handoffs for broker refusals").
 - **Failures between the owner section and the provider call (agent-harness#1578).**
   If the `ADMISSION_DURABLE` checkpoint projection itself fails while the checkpoint
@@ -172,7 +173,13 @@ entry, and the result carries `provider_call_made: false`. Any other
 | A routing client was built before a rotation moved the ACTIVE generation (agent-harness#1315) | `RoutingClientGenerationRetired` (a `WriterGenerationBlocked`) | `rebuild_broker_client_and_retry`: close the client and build a new one, or restart the broker process |
 | The owner's writer is still running, or the section was contended twice | `AdapterStartOwnerLive`, `AdapterStartOwnerContended` | `retry_after_inflight_publication`: retry shortly; no rotation |
 | An unsealed owner was promoted, or the epoch is blocked by a key in this generation | `UnsealedOwnerBlocksPartition`, `PartitionEpochBlocked` | `adjudicate_publication_by_partition_rotation`, with `blocking_effect_keys` (and `blocking_transaction_id` for an owner); the attestation disposes the blocking key, which may not be this publication's |
-| A refusal after the admission is durable and before provider entry: `record_intent`, the guard's authorization, a refused service-generation lease | `ProviderEntryRefused` (`effect_key`, `transaction_id`; the original is `__cause__`) | `retry_once_before_partition_rotation`: retry once, then follow the handoff the retry returns |
+| After the admission is durable and before provider entry: a `WriterGenerationBlocked` from `record_intent`, `_authorize` or the service-generation lease, or the guard's own "no evidence row" refusal | `ProviderEntryGenerationRefused` (a `ProviderEntryRefused` and a `WriterGenerationBlocked`; the original is `__cause__`), or `ProviderEntryRefused` from the guard; both carry `effect_key`, `transaction_id` | `retry_once_before_partition_rotation`: retry once, then follow the handoff the retry returns |
+
+Any other `PermissionError` in that window propagates unchanged (same type, `errno`
+and `filename`) and keeps `repair_fabpub_authority`, as on main. That includes an
+errno-bearing `OSError` (EACCES/EPERM) and `EvidenceStoreIncompatible` /
+`AdmissionStoreIncompatible`. A non-permission `OSError` keeps
+`repair_publication_environment`.
 
 A `PartitionEpochBlocked` that names no key in the store keeps
 `repair_fabpub_authority`. In that case the block is the partition receipt's

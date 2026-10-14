@@ -31,7 +31,7 @@ authority problems. An operator who follows that handoff does the wrong thing.
 | `BrokerService._fresh_publish` | owner contended twice in one publish | `PermissionError` | `AdapterStartOwnerContended` | `retry_after_inflight_publication` |
 | `BrokerService._fresh_publish` (both entries) | unsealed owner promoted, blocks the partition | `PermissionError` | `UnsealedOwnerBlocksPartition` (`effect_key`, `transaction_id`) | `adjudicate_publication_by_partition_rotation` |
 | `BrokerService._fresh_publish`, `BrokerService.execute` (x2) | `epoch permanently blocked` (another key's ambiguity) | `PermissionError` | `PartitionEpochBlocked` (`blocking_keys`) | rotation when `blocking_keys` is non-empty, else `repair_fabpub_authority` |
-| `BrokerService._fresh_publish`, after `ADMISSION_DURABLE` and before provider entry | `record_intent`/guard authorization, guard "no evidence row", refused service-generation lease (agent-harness#1593) | `PermissionError` or `WriterGenerationBlocked` | `ProviderEntryRefused` (`effect_key`, `transaction_id`, cause chained) | `retry_once_before_partition_rotation` |
+| `BrokerService._fresh_publish`, after `ADMISSION_DURABLE` and before provider entry | a `WriterGenerationBlocked` from `record_intent`, `_authorize` or the adapter's service-generation lease (agent-harness#1593); the guard's own "no evidence row" refusal | `WriterGenerationBlocked`; `PermissionError` (guard) | `ProviderEntryGenerationRefused(ProviderEntryRefused, WriterGenerationBlocked)` for a generation refusal (cause chained); `ProviderEntryRefused` raised by the guard. Both carry `effect_key`, `transaction_id` | `retry_once_before_partition_rotation` |
 | `BrokerService._recovery_authority` | already-admitted transaction | `PublicationRecoveryRequired` | unchanged | `resolve_publication_recovery_refusal` (unchanged) |
 | `_validated_envelope`, owner section (`admit_next` policy/epoch/precondition, generation), store probes, `_stores_for` latch/receipt, `repository_snapshot` routing, barrier | binding, admission or authority refusals | `PermissionError` family / `LegacyCutoverConflict` | unchanged | `repair_fabpub_authority` (unchanged) |
 
@@ -69,8 +69,11 @@ authority problems. An operator who follows that handoff does the wrong thing.
 `publish_human_invoked_from_worktree`. The provider adapter is replaced. The stale
 client is a pre-rotation client returned by a patched `build_routing_broker_client`.
 Each test asserts the `next_step` and the key fields. A control asserts that an
-unrelated typed `PermissionError` (`AdmissionStoreIncompatible`) still gets
-`repair_fabpub_authority`. The lease case follows up with a retry and asserts the
+unrelated `PermissionError` still gets `repair_fabpub_authority`. Board round 1
+added two more checks. A `WriterGenerationBlocked` in the window is still a
+`WriterGenerationBlocked` at the `BrokerService.execute` boundary. EACCES,
+`EvidenceStoreIncompatible` and a plain-`PermissionError` lease refusal in the window
+propagate unchanged and get `repair_fabpub_authority`. The lease case follows up with a retry and asserts the
 rotation handoff for its own key.
 
 Mutation check: remove each row of the publishing mapping and run its test. The
@@ -80,5 +83,10 @@ PR records the results.
 
 - The `epoch_blocked` branch of `admit_next` ("broker admission denied") stays
   untyped. It shares its message with a policy denial, and the owner is restored.
-- `OSError` in the post-admission window keeps the environment handoff.
+- A `PermissionError` in the post-admission window that is neither a generation
+  refusal nor the guard's own refusal propagates unchanged (same type, `errno` and
+  `filename`) and gets `repair_fabpub_authority`, as on main. That includes an
+  errno-bearing `OSError` (EACCES/EPERM) and `EvidenceStoreIncompatible` /
+  `AdmissionStoreIncompatible`. A non-permission `OSError` keeps
+  `repair_publication_environment`.
 - agent-harness#1574 ask 3 (an end-to-end "retry after rotation" test).

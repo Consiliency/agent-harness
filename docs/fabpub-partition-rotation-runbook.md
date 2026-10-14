@@ -420,8 +420,11 @@ the provider call (`record_intent`, a checkpoint projection, a refused lease) le
 the owner in place, and the next attempt promotes it. That case is
 `attested_not_landed` by construction. See `docs/fabpub-pre-admission-ambiguity.md`,
 "Provider entry and failures around it".
-For a `PermissionError` in that window (`ProviderEntryRefused`), the human route
-answers with next step `retry_once_before_partition_rotation`. Until one retry
+For a generation refusal in that window (`WriterGenerationBlocked`, raised as
+`ProviderEntryGenerationRefused`) or the guard's own "no evidence row" refusal
+(`ProviderEntryRefused`), the human route answers with next step
+`retry_once_before_partition_rotation`. Any other `PermissionError` there, such as
+EACCES or an incompatible store, keeps `repair_fabpub_authority`. Until one retry
 promotes the owner, the row is still `provider_call_in_flight`, and the rotation
 refuses with "intents without a terminal". Retry once. The retry returns the
 rotation handoff for this key. Keep the first result as the attestation's evidence

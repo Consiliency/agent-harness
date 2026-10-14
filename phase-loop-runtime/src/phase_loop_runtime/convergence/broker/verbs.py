@@ -384,7 +384,16 @@ def _unsealed_owner_refusal(owner: AdapterStartOwnership) -> UnsealedOwnerBlocks
 
 
 def _provider_entry_refusal(error: PermissionError, key: str, envelope) -> ProviderEntryRefused:
-    return ProviderEntryRefused(
+    """Type a ``WriterGenerationBlocked`` in the provider-entry window (board round 1).
+
+    The result is ``ProviderEntryGenerationRefused``: still a
+    ``WriterGenerationBlocked`` for callers that catch it, with the same message.
+    Only generation refusals are passed here; every other ``PermissionError``
+    in the window propagates unchanged.
+    """
+    from .live import ProviderEntryGenerationRefused
+
+    return ProviderEntryGenerationRefused(
         str(error), effect_key=key, transaction_id=envelope.transaction_id
     )
 
@@ -828,9 +837,11 @@ class BrokerService:
                 if stored is None:
                     # record_intent ran in this generation; no row means the store
                     # is not the one this attempt wrote.  Fail closed, typed.
-                    raise PermissionError(
+                    raise ProviderEntryRefused(
                         f"effect key {key!r} has no evidence row before provider entry; "
-                        "no provider call was made and nothing was written"
+                        "no provider call was made and nothing was written",
+                        effect_key=key,
+                        transaction_id=recorded_owner.transaction_id,
                     )
                 if (
                     current_owner == recorded_owner
@@ -1094,10 +1105,16 @@ class BrokerService:
             # call (``record_intent``, the checkpoint projections, the guard's own
             # authorization, a refused service-generation lease) leaves the owner
             # and the admitted checkpoint as they are.  The next attempt promotes the
-            # owner, and an ``attested_not_landed`` rotation recovers it.  A
-            # ``PermissionError`` in this window is re-raised as
-            # ``ProviderEntryRefused`` (same message, cause chained) so the caller
-            # can say "retry once, then rotate" (agent-harness#1594 ask 1).
+            # owner, and an ``attested_not_landed`` rotation recovers it.  Only a
+            # ``WriterGenerationBlocked`` in this window is re-raised, as
+            # ``ProviderEntryGenerationRefused`` (still a ``WriterGenerationBlocked``;
+            # same message, cause chained), and the guard raises its own
+            # ``ProviderEntryRefused``, so the caller can say "retry once, then
+            # rotate" (agent-harness#1594 ask 1).  Every other ``PermissionError``
+            # (an errno-bearing ``OSError``, ``*StoreIncompatible``) propagates
+            # unchanged.
+            from .live import WriterGenerationBlocked
+
             try:
                 self.evidence_store.record_intent(key)
                 advance("BROKER_INTENT_DURABLE")
@@ -1105,7 +1122,7 @@ class BrokerService:
 
                 _crash_at("after_broker_intent_before_adapter_started")
                 stored = self._provider_entry_guard(key, recorded_owner)
-            except PermissionError as error:
+            except WriterGenerationBlocked as error:
                 raise _provider_entry_refusal(error, key, envelope) from error
             if stored is not None:
                 # agent-harness#1577: the key is no longer this attempt's in-flight
@@ -1160,7 +1177,7 @@ class BrokerService:
                 if not provider_entered:
                     # Nothing to record: the owner and the in-flight row stay as on
                     # any other pre-provider failure (agent-harness#1578, option i).
-                    if isinstance(error, PermissionError):
+                    if isinstance(error, WriterGenerationBlocked):
                         raise _provider_entry_refusal(error, key, envelope) from error
                     raise
                 # The broker returns the state the store holds and never invents one.
