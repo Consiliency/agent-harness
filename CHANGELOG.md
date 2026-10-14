@@ -6,6 +6,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Fix: Gemini planning, roadmap and review launch again, on Gemini 4 Argon
+
+- Gemini `roadmap`, `plan` and `review` launches exited rc 1, because agy no longer offers the `Gemini 3.1 Pro (High)` model they selected. The Gemini executor's `roadmap`, `plan` and `review` defaults, the `planner`/`reviewer` model classes and the heavy (and ultra) tier now use `gemini-4-argon` instead of the `pro` alias and `gemini-3.1-pro-preview`. Effort is unchanged: the shipped policy's `max` clamps to Gemini's `high`, so these routes launch `gemini-4-argon-high`. The heavy cell stays marked volatile. Implementation and worker routing are unchanged, and an explicit `--model` still wins.
+
 ### Advisor board: Gemini 4 Argon is the default Gemini seat
 
 - The panel's default Gemini seat, the `default`/`code-review` boards, the built-in presets and the president ladder's `gemini` rung now use `gemini-4-argon` at `medium` (agy `gemini-4-argon-medium`) instead of `gemini-3.8-flash`; `gemini-3.8-flash` stays an accepted explicit seat, and implementer/worker routing is unchanged.

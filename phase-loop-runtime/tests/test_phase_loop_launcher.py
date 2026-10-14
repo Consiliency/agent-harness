@@ -1231,8 +1231,8 @@ class PhaseLoopLauncherTest(unittest.TestCase):
         self.assertIn("--model", spec.command)
 
     def test_gemini_executor_builds_live_launch_spec(self):
-        # Use the gemini executor profile (model alias "pro" → agy "Gemini 3.1 Pro
-        # (High)"); a generic default like gpt-5.6-sol is no longer silently coerced.
+        # Use the gemini executor profile (heavy `gemini-4-argon` at high → agy
+        # `gemini-4-argon-high`); a generic default like gpt-5.6-sol is no longer silently coerced.
         selection = resolve_profile_for_executor(action="plan", executor="gemini")
         request = build_launch_request(
             executor="gemini",
@@ -1257,7 +1257,7 @@ class PhaseLoopLauncherTest(unittest.TestCase):
         # v46 EXEC: the gemini executor drives agy (headless skip-permissions + add-dir).
         self.assertEqual(
             spec.command[:6],
-            ["agy", "--model", "Gemini 3.1 Pro (High)", "--dangerously-skip-permissions", "--add-dir", "/repo"],
+            ["agy", "--model", "gemini-4-argon-high", "--dangerously-skip-permissions", "--add-dir", "/repo"],
         )
         self.assertEqual(spec.command[6], "-p")
         self.assertIn("__PHASE_LOOP_CONTEXT_FILE__", spec.command[-1])
@@ -1505,10 +1505,10 @@ class PhaseLoopLauncherTest(unittest.TestCase):
             bypass_approvals=False,
         )
         spec = build_launch_spec(request)
-        self.assertEqual(spec.selected_model, "pro")
+        self.assertEqual(spec.selected_model, "gemini-4-argon")
         self.assertIn("--model", spec.command)
-        # v46 EXEC: the "pro" routing alias maps onto agy's fixed model name.
-        self.assertIn("Gemini 3.1 Pro (High)", spec.command)
+        # The heavy planning id carries the selected effort in agy's canonical id.
+        self.assertIn("gemini-4-argon-high", spec.command)
 
     def test_gemini_executor_includes_default_execution_model_routing_alias(self):
         selection = resolve_profile_for_executor(action="execute", executor="gemini")
