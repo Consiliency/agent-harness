@@ -423,6 +423,65 @@ def test_codex_r1_a_jailed_launch_refusal_keeps_its_code(monkeypatch, tmp_path):
     assert pi._finalize_leg_detail(log) == "seat_sandbox_refused:identity"
 
 
+def _tooling_claude_launcher(tmp_path):
+    root = tmp_path / "release"
+    launcher = root / "bin" / "claude"
+    payload = root / "npm/node_modules/@anthropic-ai/claude-code-linux-x64/claude"
+    launcher.parent.mkdir(parents=True)
+    payload.parent.mkdir(parents=True)
+    payload.write_bytes(Path("/usr/bin/true").read_bytes())
+    payload.chmod(0o755)
+    launcher.write_text(
+        f'#!/bin/sh\nexport PATH={root}/node-v24.21.0-linux-x64/bin:"$PATH"\n'
+        f'export DISABLE_AUTOUPDATER=1\nexec {payload} "$@"\n')
+    launcher.chmod(0o755)
+    return launcher, payload
+
+
+@pytest.mark.parametrize("kind", ["native", "symlink", "managed-launcher"])
+def test_the_jailed_claude_resolver_selects_the_native_image(monkeypatch, tmp_path, kind):
+    launcher, payload = _tooling_claude_launcher(tmp_path)
+    selected = payload if kind == "native" else launcher
+    if kind == "symlink":
+        selected = tmp_path / "claude-link"
+        selected.symlink_to(payload)
+    monkeypatch.setattr(pi.shutil, "which", lambda *a, **k: str(selected))
+    assert pi._resolve_claude_executable() == payload.resolve()
+
+
+@pytest.mark.parametrize("kind", ["missing", "script", "not-executable"])
+def test_a_managed_claude_launcher_with_no_executable_native_image_is_refused(
+        monkeypatch, tmp_path, kind):
+    launcher, payload = _tooling_claude_launcher(tmp_path)
+    if kind == "missing":
+        payload.unlink()
+    elif kind == "script":
+        payload.write_text("#!/bin/sh\nexit 0\n")
+    else:
+        payload.chmod(0o600)
+    monkeypatch.setattr(pi.shutil, "which", lambda *a, **k: str(launcher))
+    with pytest.raises(seat_jail.SeatSandboxRefused) as caught:
+        pi._resolve_claude_executable()
+    assert caught.value.code == "seat_sandbox_refused:jail_build"
+
+
+@pytest.mark.parametrize("kind", ["extra-export", "extra-argument", "different-architecture"])
+def test_an_unrecognised_claude_wrapper_is_not_replaced_by_an_adjacent_payload(
+        monkeypatch, tmp_path, kind):
+    launcher, _payload = _tooling_claude_launcher(tmp_path)
+    original = launcher.read_text()
+    if kind == "extra-export":
+        altered = original.replace(
+            "export DISABLE_AUTOUPDATER=1\n", "export DISABLE_AUTOUPDATER=1\nexport EXTRA=1\n")
+    elif kind == "extra-argument":
+        altered = original.replace('"$@"', '--extra "$@"')
+    else:
+        altered = original.replace("node-v24.21.0-linux-x64", "node-v24.21.0-linux-arm64")
+    launcher.write_text(altered)
+    monkeypatch.setattr(pi.shutil, "which", lambda *a, **k: str(launcher))
+    assert pi._resolve_claude_executable() == launcher.resolve()
+
+
 class _FakeSeat:
     def __init__(self, tmp_path):
         self.jail = types.SimpleNamespace(
@@ -508,6 +567,35 @@ def _jailed_leg_ending_with(monkeypatch, tmp_path, *, rc, review_text, log_text,
     return seat, status, text, sink
 
 
+def test_a_jailed_startup_failure_keeps_its_private_diagnostic_and_public_marker(
+        monkeypatch, tmp_path):
+    tail = "local bootstrap signal JAIL-STARTUP-SENTINEL"
+    _seat, status, text, sink = _jailed_leg_ending_with(
+        monkeypatch, tmp_path, rc=17, review_text="",
+        log_text=pi._HarnessCode("claude_tui_missing_canonical_output"), tail=tail)
+    assert status == "DEGRADED" and text == ""
+    assert len(sink) == 1 and sink[0].unknown
+    detail = pi._resolve_leg_detail(sink[0], tmp_path, "claude:startup")
+    leg = pi.PanelLegResult(leg="claude", status=status, text=text, detail=detail)
+    assert leg.detail.startswith("claude_tui_missing_canonical_output: unknown failure (exit 17)")
+    assert tail not in leg.detail
+    logs = list((tmp_path / "leg-logs").glob("*.log"))
+    assert len(logs) == 1 and tail in logs[0].read_text()
+    assert logs[0].stat().st_mode & 0o777 == 0o600
+
+
+def test_a_jailed_startup_tail_with_the_seat_token_is_never_retained(monkeypatch, tmp_path):
+    token = _FakeSeat(tmp_path).token.decode()
+    _seat, status, text, sink = _jailed_leg_ending_with(
+        monkeypatch, tmp_path, rc=17, review_text="",
+        log_text=pi._HarnessCode("claude_tui_missing_canonical_output"), tail=token)
+    assert status == "DEGRADED" and text == ""
+    assert len(sink) == 1 and sink[0].template == "claude_seat_token_in_output"
+    detail = pi._resolve_leg_detail(sink[0], tmp_path, "claude:startup")
+    assert token not in str(detail)
+    assert not (tmp_path / "leg-logs").exists()
+
+
 @pytest.mark.parametrize("tail, detail", [
     ("Usage limit reached. Try again at 5:00 PM", "usage_limit (resets 17:00)"),
     ("Usage limit reached ∙ resets at Oct 5, 2026 5:00 PM", "usage_limit (resets 17:00, Oct 5 2026)"),
@@ -545,7 +633,9 @@ def test_a_leg_whose_tail_names_no_limit_carries_no_token_notice(monkeypatch, tm
         monkeypatch, tmp_path, rc=1, review_text="",
         log_text=pi._HarnessCode("claude_tui_pty_eof_no_output"), tail="something else broke")
     assert status == "DEGRADED"
-    assert [f.template for f in sink] == ["claude_tui_pty_eof_no_output"]
+    assert len(sink) == 1 and sink[0].unknown
+    assert sink[0].prefix == "claude_tui_pty_eof_no_output"
+    assert sink[0].raw == "something else broke"
     assert seat.notices == []
 
 
