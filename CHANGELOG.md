@@ -17,6 +17,25 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   custody and the undeclared-resolution bypass (agent-harness#833) remain unresolved;
   this partial repair leaves agent-harness#820 open.
 
+### FABPUB: the recovery record no longer conflicts across runtime versions within one generation (agent-harness#1576)
+
+- Since agent-harness#1550, the `<transaction_id>.recovery.<generation>.json` record always
+  carried `disposing_generation`, `readmitting_generation` and `intervening_rotations`.
+  A record written by one runtime version, followed by a retry on another version in the
+  same generation, raised `PublishTransactionConflict` before any owner write or
+  provider call. This happened in both directions, and the key waited for an unrelated
+  rotation or for the record to be removed by hand.
+- The three fields are now written only when a rotation intervened. With none, the
+  record is byte-identical to the agent-harness#1296 record, so a retry on either
+  version in the same generation recovers once. A reader also accepts a record that
+  carries the fields with their no-rotation values, the shape written by `main` since
+  agent-harness#1550. Any other difference still refuses.
+- A recovery-record refusal is now `RecoveryRecordConflict`, a
+  `PublishTransactionConflict` that carries `record_path`. The human handoff names it
+  as `conflicting_recovery_record`.
+- New regressions in `test_fabpub_recovery_record_compat_1576.py`. They run the
+  historical runtimes in a subprocess from a `git archive` of their pinned commits.
+
 ### FABPUB: the provider is entered only after an in-lock check that the key is still this attempt's in-flight record (agent-harness#1577, agent-harness#1574, agent-harness#1578, agent-harness#1576)
 
 - An older-runtime prober could promote a live writer's owner to

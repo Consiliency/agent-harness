@@ -1546,6 +1546,12 @@ def attested_not_landed_recovery(store_root: Path, key: str) -> dict | None:
     adapter-start owner; it is returned as found (possibly ``None``) and the
     caller decides whether it binds the transaction being admitted.
 
+    ``disposing_generation``, ``readmitting_generation`` and
+    ``intervening_rotations`` are present only when the walk crossed later
+    rotations; with none, the facts are exactly the agent-harness#1296 shape
+    (agent-harness#1576), so the recovery record compares equal across runtime
+    versions within one generation.
+
     The walk ends at generation 0 (each receipt chains to ``generation - 1``)
     and stops at the disposing generation; it runs only for an
     already-admitted transaction.
@@ -1608,13 +1614,10 @@ def attested_not_landed_recovery(store_root: Path, key: str) -> dict | None:
         raise LegacyCutoverConflict(
             f"the sealed attestation of rotation {receipt.cutover_id!r} disagrees with its receipt for {key!r}"
         )
-    return {
+    recovery = {
         "cutover_id": receipt.cutover_id,
         # The generation whose evidence holds the re-admission's outcome.
         "generation": active_generation,
-        "disposing_generation": receipt.generation,
-        "readmitting_generation": active_generation,
-        "intervening_rotations": [later.cutover_id for later in reversed(walked)],
         "predecessor_generation": receipt.predecessor_generation,
         "attestation_sha256": receipt.attestation_sha256,
         "inventory_sha256": receipt.inventory_sha256,
@@ -1626,6 +1629,19 @@ def attested_not_landed_recovery(store_root: Path, key: str) -> dict | None:
         "transaction_id": entry.get("transaction_id"),
         "predecessor_owner_nonce": entry.get("owner_nonce"),
     }
+    if walked:
+        # agent-harness#1576: only a walk across later rotations names them.  With
+        # none, the disposing generation IS the re-admitting one (``generation``)
+        # and the record keeps the agent-harness#1296 shape, so a retry on a
+        # runtime of either version in the same generation computes equal bytes.
+        # A runtime that predates the walk refuses before recording when a
+        # rotation intervened, so these fields are never compared with its record.
+        recovery.update(
+            disposing_generation=receipt.generation,
+            readmitting_generation=active_generation,
+            intervening_rotations=[later.cutover_id for later in reversed(walked)],
+        )
+    return recovery
 
 
 # --- SOL-10: an UNFORGEABLE promotion capability ---------------------------
