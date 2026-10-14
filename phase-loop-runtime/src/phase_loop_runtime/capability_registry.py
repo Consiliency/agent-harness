@@ -29,7 +29,9 @@ DEFAULT_LANE_EXECUTOR = "pi"
 # (2026-09-23): "Opus 5.5 should replace all Fable defaults". Fable stays registered.
 CLAUDE_ULTRA_MODEL = "claude-opus-5-5"  # model-id-source: SSOT constant definition (ultra tier)
 CLAUDE_HEAVY_MODEL = "claude-opus-5"  # model-id-source: SSOT constant definition (heavy tier)
-CLAUDE_REGULAR_MODEL = "claude-sonnet-5"  # model-id-source: SSOT constant definition (regular tier)
+# Regular (implementer) retargeted to Sonnet 5.5 for the 0.7.27 implementer roster
+# (maintainer, 2026-10-14). `claude-sonnet-5` stays an accepted explicit model.
+CLAUDE_REGULAR_MODEL = "claude-sonnet-5-5"  # model-id-source: SSOT constant definition (regular tier)
 CLAUDE_LITE_MODEL = "claude-haiku-4-5-20251001"  # model-id-source: SSOT constant definition (lite tier, dated snapshot)
 _CLAUDE_BASE_ALLOWED_TOOLS = ("Bash", "Read", "Edit", "MultiEdit", "Write", "Glob", "Grep", "LS")
 _CLAUDE_COLLABORATION_TOOLS = (
@@ -500,8 +502,8 @@ DEFAULT_PROVIDER_POLICY_CAPABILITIES = {
         requires_run_local_user_scope=True,
         notes=(
             "Gemini CLI fallback stays CLI-based and reason-coded; API-key execution requires an explicit command adapter.",
-            "Gemini defaults: `pro` for planning/review; implementation uses the canonical agy Flash ids — implementer `gemini-3.8-flash-high` (newest GA), worker `gemini-3.5-flash-high` — NOT the broad `auto` alias which the adapter collapses to Pro/heavy (design-model-tier-taxonomy.md CR round-4, retargeted to 3.6 in round-6). agy exposes no flash-lite, so the matrix's gemini-3.5-flash-lite lite cell is aspirational (worker degrades to real 3.5 Flash).",  # model-id-source: capability note mirroring profiles.GEMINI_IMPLEMENTER/WORKER_MODEL
-            "Model-routing-v3 routes implementer to `gemini-3.8-flash-high` and worker to `gemini-3.5-flash-high` (canonical agy ids), but Gemini remains capped at high effort and is not max-effort planner-of-record eligible.",  # model-id-source: capability note mirroring profiles.GEMINI_IMPLEMENTER/WORKER_MODEL
+            "Gemini defaults: `pro` for planning/review; implementation uses the canonical agy Flash ids — implementer `gemini-3.8-flash-high` (newest GA), worker `gemini-3.8-flash-high` — NOT the broad `auto` alias which the adapter collapses to Pro/heavy (design-model-tier-taxonomy.md CR round-4, retargeted to 3.6 in round-6). agy exposes no flash-lite, so the matrix's gemini-3.5-flash-lite lite cell is aspirational (the worker runs 3.8 Flash high).",  # model-id-source: capability note mirroring profiles.GEMINI_IMPLEMENTER/WORKER_MODEL
+            "Model-routing-v3 routes implementer to `gemini-3.8-flash-high` and worker to `gemini-3.8-flash-high` (canonical agy ids), but Gemini remains capped at high effort and is not max-effort planner-of-record eligible.",  # model-id-source: capability note mirroring profiles.GEMINI_IMPLEMENTER/WORKER_MODEL
             "Run-local user-scope modelConfigs.customAliases remain available only for explicit phase-loop thinking-level proof runs.",
             "thinkingConfig.thinkingLevel is carried by custom aliases and is not exposed as a CLI flag.",
         ),

@@ -2990,7 +2990,7 @@ def run_loop(
                     operator_effort=effort,
                     plan_policy=plan_execution_policy,
                     roadmap_policy=roadmap_execution_policy,
-                    model_policy_rule=shipped_model_policy_rule(launch_action),
+                    model_policy_rule=shipped_model_policy_rule(launch_action, resolved_executor),
                 )
                 if model_class_escalation_decision is not None:
                     escalation_application = apply_model_class_escalation(

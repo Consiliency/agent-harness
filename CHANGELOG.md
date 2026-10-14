@@ -6,6 +6,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Implementer roster: per-executor implementation model and effort
+
+- Implementation (execute/repair and the `implementer` class) now runs on `gemini-3.8-flash` at high, `gpt-6.1-sol` at medium, `claude-sonnet-5-5` at medium and `grok-4.7` at high, on both the runner's shipped model policy and the executor defaults; the Gemini worker moves from `gemini-3.5-flash-high` to `gemini-3.8-flash-high`. Planning, review, opencode and the other worker tiers are unchanged, and explicit model and effort settings still win.
+
 ### FABPUB: the provider is entered only after an in-lock check that the key is still this attempt's in-flight record (agent-harness#1577, agent-harness#1574, agent-harness#1578, agent-harness#1576)
 
 - An older-runtime prober could promote a live writer's owner to

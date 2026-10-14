@@ -144,9 +144,10 @@ def test_build_grok_launch_spec_write_action_argv():
     assert cmd[cmd.index("--cwd") + 1] == str(_REPO)
     assert cmd[cmd.index("-m") + 1] == GROK_DEFAULT_MODEL
     # effort reaches grok's --reasoning-effort clamped to a valid CLI token (ah#224);
-    # the default execute effort ('medium') is already valid, so it is unchanged here.
+    # the default execute effort ('high', the 0.7.27 implementer roster) is already
+    # valid, so it is unchanged here.
     assert cmd[cmd.index("--reasoning-effort") + 1] == launcher._grok_cli_effort(spec.selected_effort)
-    assert cmd[cmd.index("--reasoning-effort") + 1] == "medium"
+    assert cmd[cmd.index("--reasoning-effort") + 1] == "high"
     # write action auto-approves.
     assert cmd[cmd.index("--permission-mode") + 1] == "bypassPermissions"
     # context-file delivery: the prompt points at the staged bundle placeholder.
