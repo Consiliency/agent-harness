@@ -181,7 +181,9 @@ claim binding to this authority, active bootstrap, no foreign staging debris,
 no other rotation in progress, own-journal state, predecessor adjudication,
 no `attested_not_landed` entry for a key with a recorded post-ambiguity effect or
 while that side file is unreadable (`no_attested_not_landed_over_observed_effect`,
-agent-harness#1591), inventory derivation, the sealed inventory on a pre-flip
+agent-harness#1591; skipped, as by the verb, on a resume whose own journal already
+holds `INVENTORY_SEALED`, where the successor's re-admission refuses instead),
+inventory derivation, the sealed inventory on a pre-flip
 resume, and the writer-generation latch) by calling the same functions, then
 reports the drain
 facts the verb will meet *after* its first row: the armed marker, held lease
@@ -372,7 +374,10 @@ supplies, and *any* change to the document — a different `--attested-by`, a
 fresh `attested_at` from re-running the builder — changes its canonical digest
 and is refused with `rotation … sealed a different attestation; resume with
 the sealed one`. Keep the exact file; do not rebuild it. The preflight mirrors
-this check on both resume paths, so run it before every resume.
+this check on both resume paths, so run it before every resume. On a resume whose
+own journal already holds `INVENTORY_SEALED`, both the verb and the preflight skip
+the post-ambiguity observation check; the successor's re-admission refuses an
+observed effect instead (agent-harness#1633).
 
 A re-run never repairs its inputs (a damaged authentication-chain link or
 writer latch after the flip is refused by every re-run until the bytes are

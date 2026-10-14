@@ -888,6 +888,11 @@ def test_ceremony_sealed_by_an_older_runtime_resumes_and_readmission_refuses(tmp
     _crash_rotation(None, p, "after_journal_inventory_sealed", attestation=attestation)
     assert _journal_states(p) == ["DRAINING", "INVENTORY_SEALED"]
     monkeypatch.setattr(live, "_refuse_attested_not_landed_over_observations", real_refusal)
+    # agent-harness#1633 round 2: the preflight mirrors the sealed-resume exemption.
+    _release_all(p)
+    report = _run_preflight(p, attestation, tmp_path, monkeypatch)
+    assert report["verdict"] in ("ready", "ready_but_drain_will_block"), report
+    assert "no_attested_not_landed_over_observed_effect" not in {c["check"] for c in report["checks"]}
     outcome = _rotate(None, p, attestation=attestation)
     assert outcome.state == "ACTIVE"
     retry = _CountingAdapter()
@@ -943,6 +948,10 @@ def test_fresh_and_draining_only_ceremonies_are_still_refused(tmp_path, monkeypa
             _rotate(None, p, attestation=_attestation(p, dispositions={key: ATTESTED_NOT_LANDED}))
     monkeypatch.setattr(live, "_refuse_attested_not_landed_over_observations", real_refusal)
     assert _journal_states(p) == ["DRAINING"]
+    _release_all(p)
+    report = _run_preflight(p, _attestation(p, dispositions={key: ATTESTED_NOT_LANDED}), tmp_path, monkeypatch)
+    assert report["verdict"] == "would_refuse", report
+    assert report["checks"][-1]["check"] == "no_attested_not_landed_over_observed_effect"
     with pytest.raises(live.PartitionRotationRefused):
         _rotate(None, p, attestation=_attestation(p, dispositions={key: ATTESTED_NOT_LANDED}))
     observation = result.observed_after_ambiguity
@@ -974,3 +983,34 @@ def test_ordinary_terminal_under_a_draining_latch_is_still_refused(tmp_path, mon
         assert not (p.container / OBSERVATIONS).exists()
     finally:
         latch.resume_active()
+
+
+def test_observation_authorization_under_draining_still_checks_the_lease(tmp_path, monkeypatch):
+    """agent-harness#1633 round 2: DRAINING alone is tolerated; the lease is not."""
+    from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore
+
+    fx = _bootstrap(tmp_path, monkeypatch)
+    p = fx.alpha
+    live = _live()
+    latch = live.WriterGenerationLatch.for_store_root(p.container)
+    generation = latch.read().generation
+    valid = latch.acquire(generation=generation)
+    revoked = latch.acquire(generation=generation)
+    forged = latch.acquire(generation=generation)
+    latch.begin_draining()
+    try:
+        BrokerEvidenceStore(p.container, generation_lease=valid)._authorize(allow_draining=True)
+        os.unlink(revoked.path)
+        with pytest.raises(live.WriterGenerationBlocked, match="revoked"):
+            BrokerEvidenceStore(p.container, generation_lease=revoked)._authorize(allow_draining=True)
+        body = json.loads(forged.path.read_text(encoding="utf-8"))
+        body["nonce"] = "0" * len(str(body["nonce"]))
+        forged.path.write_text(json.dumps(body), encoding="utf-8")
+        with pytest.raises(live.WriterGenerationBlocked, match="does not bind the current canonical generation"):
+            BrokerEvidenceStore(p.container, generation_lease=forged)._authorize(allow_draining=True)
+        with pytest.raises(live.WriterGenerationBlocked, match="DRAINING"):
+            BrokerEvidenceStore(p.container, generation_lease=valid)._authorize()
+    finally:
+        latch.resume_active()
+        valid.release()
+        forged.path.unlink(missing_ok=True)  # its handle no longer matches the file
