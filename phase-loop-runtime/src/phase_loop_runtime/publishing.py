@@ -233,6 +233,47 @@ class PublishTransactionConflict(RuntimeError):
     pass
 
 
+class RecoveryRecordConflict(PublishTransactionConflict):
+    """An existing recovery record refuses this re-admission (agent-harness#1576).
+
+    ``record_path`` names the ``<transaction_id>.recovery.<generation>.json``
+    file, so the human handoff can point an operator at what is stuck.
+    """
+
+    def __init__(self, message: str, *, record_path: Path) -> None:
+        super().__init__(message)
+        self.record_path = Path(record_path)
+
+
+# agent-harness#1310 fields of a recovery record.  They carry information only
+# when a rotation intervened between the disposition and the re-admission.
+_RECOVERY_ROTATION_FIELDS = ("disposing_generation", "readmitting_generation", "intervening_rotations")
+
+
+def _recovery_record_core(record: dict) -> dict:
+    """The record minus the rotation fields when they say "no rotation intervened".
+
+    agent-harness#1576: an agent-harness#1296 runtime writes no rotation fields; the
+    agent-harness#1550 runtime wrote all three even with no rotation
+    (``intervening_rotations == []``, both generations equal to ``generation``).
+    Those two records state the same authorization, so they compare equal here.
+    Any other value of the fields, or only some of them, is kept and compared.
+    """
+    if not all(name in record for name in _RECOVERY_ROTATION_FIELDS):
+        return record
+    generation = record.get("generation")
+    if (
+        record["intervening_rotations"] == []
+        and type(generation) is int
+        and type(record["disposing_generation"]) is int
+        and type(record["readmitting_generation"]) is int
+        and record["disposing_generation"] == generation
+        and record["readmitting_generation"] == generation
+    ):
+        return {key: value for key, value in record.items() if key not in _RECOVERY_ROTATION_FIELDS}
+    return record
+
+
 @contextlib.contextmanager
 def crash_after(anchor: str):
     if anchor not in FABPUB_CRASH_ANCHORS:
@@ -546,17 +587,29 @@ class PublishTransaction:
         exclusive no-follow temporary file, and read back no-follow.  A second
         write for the same generation must carry the same bytes; an existing
         record that is not a regular file, or not JSON, refuses typed.
+
+        agent-harness#1576: "the same bytes" is judged on the record's core.  The
+        rotation fields are written only when a rotation intervened, and an
+        existing record that carries them with their no-rotation values (the
+        agent-harness#1550 runtime's shape) is the same authorization.  An
+        existing record is never rewritten.  Every refusal here is a
+        ``RecoveryRecordConflict`` naming the record path.
         """
         if self.state not in PublishTransactionState.ORDERED[3:]:
             raise PublishTransactionConflict("only an admitted transaction is recovered")
         path = self.store.recovery_path(self.transaction_id, record["generation"])
         payload = {"schema": "PublishTransactionRecovery.v1", **record}
         with self.store.exclusive():
-            existing = _read_json_nofollow(path)
+            try:
+                existing = _read_json_nofollow(path)
+            except PublishTransactionConflict as error:
+                raise RecoveryRecordConflict(str(error), record_path=path) from error
             if existing is not None:
-                if existing != payload:
-                    raise PublishTransactionConflict(
-                        f"a different recovery is already recorded at {path}"
+                if _recovery_record_core(existing) != _recovery_record_core(payload):
+                    raise RecoveryRecordConflict(
+                        f"a different recovery is already recorded at {path}; nothing was "
+                        "admitted and no provider call was made",
+                        record_path=path,
                     )
                 return path
             _atomic_json(path, payload, mode=0o600)
@@ -1273,6 +1326,7 @@ def _human_publication_handoff(
     *,
     next_step: str,
     required_inputs: Sequence[str] = (),
+    conflicting_recovery_record: Path | None = None,
 ) -> dict[str, Any]:
     """Return the actionable, non-authorizing handoff for a human publish refusal."""
     handoff: dict[str, Any] = {
@@ -1283,6 +1337,19 @@ def _human_publication_handoff(
     }
     if required_inputs:
         handoff["required_inputs"] = list(required_inputs)
+    if conflicting_recovery_record is not None:
+        # agent-harness#1576: name the write-once record that refused the
+        # re-admission, so the operator knows what is stuck.
+        handoff.update(
+            conflicting_recovery_record=str(conflicting_recovery_record),
+            recovery_procedure="docs/fabpub-partition-rotation-runbook.md section 8a",
+            next_step_source=(
+                "the recovery record authorizes a re-admission in its generation and is "
+                "written before the owner; it does not prove an admission happened. Compare "
+                "it with this runtime's refusal detail and with that generation's broker "
+                "evidence and adapter-start owner for the key before changing anything"
+            ),
+        )
     try:
         from .convergence.broker.live import repository_snapshot
 
@@ -1653,7 +1720,9 @@ def publish_human_invoked_from_worktree(
     except PublishTransactionConflict as error:
         result = _blocked("publication_transaction_conflicted", str(error))
         result["handoff"] = _human_publication_handoff(
-            repo, next_step="resolve_publication_transaction_conflict"
+            repo,
+            next_step="resolve_publication_transaction_conflict",
+            conflicting_recovery_record=getattr(error, "record_path", None),
         )
         result["checkpoint_root"] = str(checkpoint_root)
         return result
