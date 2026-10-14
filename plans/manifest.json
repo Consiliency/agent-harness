@@ -13391,12 +13391,19 @@
             ],
             "planning_artifact_only": true,
             "review_status": "pending",
-            "open_decisions": [
-              "OQ-1",
-              "OQ-2",
-              "OQ-3",
-              "OQ-4",
-              "OQ-5"
+            "decisions": {
+              "decided_by": "repository owner",
+              "decided_on": "2026-10-14",
+              "resolves": [
+                "OQ-1",
+                "OQ-2",
+                "OQ-3",
+                "OQ-4",
+                "OQ-5"
+              ]
+            },
+            "cross_repo": [
+              "Consiliency/jev-assembler#37"
             ],
             "note": "standalone issue phase; not a declared v11 roadmap phase"
           }

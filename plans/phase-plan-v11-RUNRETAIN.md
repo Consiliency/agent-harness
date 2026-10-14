@@ -32,9 +32,9 @@ plan:
 **Ownership.** Asks 1–4 are runtime work in this repository. These items belong to other
 repositories and are follow-ups, not lanes here:
 
-- Consiliency/jev-assembler: make its falsifier and BAML scripts use the scratch root from
-  SL-1 or remove their temp directories in `finally`; clean up its existing directories; cite
-  promoted paths.
+- Consiliency/jev-assembler: Consiliency/jev-assembler#37 makes the falsifier runners remove
+  their mutant copies in `finally` and use the SL-1 scratch root when it is set (D-4). Still
+  open there: a one-off cleanup of existing directories, and citing promoted paths.
 - Consiliency/dotfiles#107: guardrail report can call `phase-loop runs footprint --json`.
 - Consiliency/dotfiles#108: the reaper consults `phase-loop runs refs --json` before
   removing a worktree.
@@ -55,30 +55,30 @@ only lane that deletes run content.
 - No lane deletes anything automatically at run end except the scratch directory SL-1
   itself created.
 
-### Owner questions
+### Decisions
 
-These block only the lanes named. Each has a recommendation; none is decided by this plan.
+The repository owner (Jenner Torrence) decided OQ-1 to OQ-5 on 2026-10-14. They are
+binding on the lanes named.
 
-- **OQ-1 (SL-3): default quiet window before a settled run may be compacted.** Recommend
-  7 days since the last write and a terminal `terminal-summary.json`. Compaction stays
-  manual (`--apply`) in this phase. A config key may enable automatic compaction later; it
-  defaults off.
-- **OQ-2 (SL-2): where promoted artifacts live.** Recommend tracked in git under
-  `evidence/phase-loop-runs/<run>/<relpath>`, with a 256 KiB per-file and 2 MiB per-run cap.
-  A cited file above the cap goes to an ignored sidecar archive (`PHASE_LOOP_RUN_ARCHIVE_DEST`,
-  mirroring `PHASE_LOOP_SANDBOX_ARCHIVE_DEST`); its sha256 and location are recorded in a
-  tracked index. The alternative, sidecar-only, keeps git small but loses the evidence when
-  a host is rebuilt.
-- **OQ-3 (SL-3): what compaction does to bulky files.** Recommend gzip for logs and
-  transcripts, and removal of regenerable bundles (`claude-bundle/plugin`,
-  `implementation-panel-stream/`) once their digests are recorded. Plain deletion of
-  non-regenerable logs needs an extra `--purge`.
-- **OQ-4 (SL-3): unmanaged run directories,** the dev0 case. Recommend report-only by
-  default. Compaction needs `--include-unmanaged`, the quiet window and the SL-2 protected
-  set. Without a terminal record, "settled" can only be inferred.
-- **OQ-5 (SL-1): may the runtime sweep repository `.cache/` paths it did not create?**
-  Recommend no. The runtime cleans only the scratch root it hands out. Consiliency/jev-assembler
-  fixes its own scripts, and existing directories are removed by a one-off owner-run cleanup.
+- **D-1 (OQ-1 + OQ-4; SL-3): when a run may be compacted.** Only when it has a terminal
+  `terminal-summary.json` and has had no writes for 7 days. Compaction is manual
+  (`--apply`). Automatic compaction is a later config key, off by default, and is not part
+  of this phase. Unmanaged (agent-made) run directories are report-only unless
+  `--include-unmanaged` is passed. The 7-day quiet window and the SL-2 protected set still
+  apply to them.
+- **D-2 (OQ-2; SL-2): where promoted artifacts live.** Tracked in git under
+  `evidence/phase-loop-runs/<run>/<relpath>`, capped at 256 KiB per file and 2 MiB per run.
+  A cited file over either cap goes to an ignored sidecar archive
+  (`PHASE_LOOP_RUN_ARCHIVE_DEST`), and a tracked index records its sha256 and location.
+- **D-3 (OQ-3; SL-3): what compaction does to bulky files.** Logs and transcripts are
+  gzipped. Regenerable bundles (`claude-bundle/plugin`, `implementation-panel-stream/`) are
+  removed once their digests are recorded. Deleting a log that cannot be regenerated
+  requires `--purge`.
+- **D-4 (OQ-5; SL-1): the runtime does not sweep `.cache/` paths it did not create.** It
+  cleans only the scratch root it hands out. The jev-assembler leak is fixed in that repo by
+  Consiliency/jev-assembler#37 (open, not merged by this phase). There, the falsifier
+  runners remove their mutant copies in `finally` and honour `PHASE_LOOP_RUN_SCRATCH`.
+  Existing directories are removed by a one-off cleanup that the owner runs.
 
 ## Interface Freeze Gates
 
@@ -92,6 +92,7 @@ These block only the lanes named. Each has a recommendation; none is decided by 
 - [ ] IF-0-RUNRETAIN-2 — `run_scratch.run_scratch_dir(run_root) -> Path` (`<run>/scratch/`)
   is exported to launched agents as `PHASE_LOOP_RUN_SCRATCH` and `TMPDIR`. It is removed
   when the run's terminal summary is written, unless `PHASE_LOOP_KEEP_RUN_SCRATCH=1`.
+  It is the only path the runtime removes outside compaction (D-4).
 - [ ] IF-0-RUNRETAIN-3 — `run_references.collect(repo) -> ProtectedSet` covers relative,
   glob and absolute citations of `.phase-loop/runs/` in tracked files. An unresolvable
   citation fails closed. `run_references.resolve_run_artifact(repo, cited) -> Path | None`
@@ -151,14 +152,15 @@ SL-4 — Operator docs, skill guidance and phase verification reducer
 
 ### SL-2 — Cited-Artifact Protection, Promotion And Resolver
 
-- **Scope**: Ask 2 (`runs refs`, `runs promote`). Know every run file that tracked files cite, copy the cited files to the durable location chosen in OQ-2, and keep existing readers resolving.
+- **Scope**: Ask 2 (`runs refs`, `runs promote`). Know every run file that tracked files cite, copy the cited files to the D-2 location, and keep existing readers resolving.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/run_references.py`, `phase-loop-runtime/src/phase_loop_runtime/closeout.py`, `phase-loop-runtime/src/phase_loop_runtime/legible_evidence.py`, `phase-loop-runtime/scripts/verify_harden_evidence.py`, `phase-loop-runtime/tests/test_run_references.py`, `phase-loop-runtime/tests/test_legible_evidence.py`
 - **Interfaces provided**: IF-0-RUNRETAIN-3
 - **Interfaces consumed**: IF-0-RUNRETAIN-1
-- **Parallel-safe**: yes; disjoint files. Blocked on OQ-2 for the promotion target only. `refs` and the resolver may land first.
+- **Parallel-safe**: yes; disjoint files.
 - **Tasks**:
   - test: Citations in `.json`, `.md` and `.yaml` tracked files are collected: relative, `**` glob and absolute paths into this or a sibling worktree. Untracked files are ignored. A citation that cannot be resolved makes `collect` fail closed.
-  - test: `promote` is dry-run by default. With `--apply` it copies each cited file, verifies sha256 and writes a promotion index. Re-running it is idempotent. A file over the cap goes to the sidecar archive, or is refused when no destination is set.
+  - test: `promote` is dry-run by default. With `--apply` it copies each cited file to `evidence/phase-loop-runs/<run>/<relpath>`, verifies sha256 and writes the tracked promotion index. Re-running it is idempotent.
+  - test: A file over 256 KiB, or one that would take its run past 2 MiB, goes to `PHASE_LOOP_RUN_ARCHIVE_DEST` instead. Its index entry records the sha256 and the sidecar location. Without a destination it is refused.
   - test: After the run directory is removed, `closeout`, `legible_evidence` and `verify_harden_evidence` resolve a promoted artifact. A missing artifact still fails as before.
   - impl: Scan with `git ls-files` and the existing glob semantics; route the three readers through `resolve_run_artifact`.
   - verify: `cd phase-loop-runtime && PYTHONPATH=src python -m pytest tests/test_run_references.py -q`
@@ -169,14 +171,15 @@ SL-4 — Operator docs, skill guidance and phase verification reducer
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/run_compaction.py`, `phase-loop-runtime/tests/test_run_compaction.py`
 - **Interfaces provided**: (none)
 - **Interfaces consumed**: IF-0-RUNRETAIN-1, IF-0-RUNRETAIN-3
-- **Parallel-safe**: no; it is the only destructive lane and is blocked on OQ-1, OQ-3 and OQ-4.
+- **Parallel-safe**: no; it is the only destructive lane.
 - **Tasks**:
-  - test: A managed run is settled only if it has a terminal `terminal_status` (complete, blocked or dry_run), is quiet past the window and has no live heartbeat. An executing, unknown or recently written run is never touched.
-  - test: Unmanaged runs are reported but untouched without `--include-unmanaged`.
+  - test: A managed run is settled only if its `terminal-summary.json` has a terminal `terminal_status` (complete, blocked or dry_run), nothing in it was written in the last 7 days, and it has no live heartbeat. An executing, unknown or recently written run is never touched.
+  - test: Unmanaged runs are reported but untouched without `--include-unmanaged`. With it, the 7-day window and the protected set still apply.
+  - test: Logs and transcripts are gzipped. A regenerable bundle is removed only after its digest is in the receipt. A log that cannot be regenerated is deleted only with `--purge`.
   - test: A protected path is untouched unless a sha-matched promoted copy exists. A `**` citation protects its whole subtree.
   - test: JSON decision and ruling records under the size threshold are always kept.
   - test: Dry-run is the default and leaves the tree byte-identical. `--apply` writes `compaction-receipt.json` with each path's action, bytes before and after, and the reason. A second `--apply` is a no-op.
-  - impl: Model the policy on `sandbox_retention.py` (window, size ceiling, archive-before-remove) instead of adding a new pattern. Apply the OQ-3 per-class actions.
+  - impl: Model the policy on `sandbox_retention.py` (window, size ceiling, archive-before-remove) instead of adding a new pattern. Apply the D-3 per-class actions. No automatic trigger in this phase (D-1).
   - verify: `cd phase-loop-runtime && PYTHONPATH=src python -m pytest tests/test_run_compaction.py -q`
 
 ### SL-4 — Operator Docs, Skill Guidance And Phase Verification Reducer
@@ -187,7 +190,7 @@ SL-4 — Operator docs, skill guidance and phase verification reducer
 - **Interfaces consumed**: IF-0-RUNRETAIN-1, IF-0-RUNRETAIN-2, IF-0-RUNRETAIN-3
 - **Parallel-safe**: no; reducer.
 - **Tasks**:
-  - impl: Write the operator doc covering the commands, the safety invariants, the owner-question outcomes and the cross-repo follow-ups. Add the skill guidance and regenerate the bundled copies with the repo's skill sync.
+  - impl: Write the operator doc covering the commands, the safety invariants, decisions D-1 to D-4 and the cross-repo follow-ups. Add the skill guidance and regenerate the bundled copies with the repo's skill sync.
   - impl: Do not repair other lanes' files; route failures to the owning lane.
   - verify: `cd phase-loop-runtime && PYTHONPATH=src python -m pytest tests/test_run_footprint.py tests/test_run_scratch.py tests/test_run_references.py tests/test_run_compaction.py tests/test_sandbox_retention.py -q`
 
@@ -200,8 +203,8 @@ SL-4 — Operator docs, skill guidance and phase verification reducer
 
 - Each lane may land as its own PR in lane order. SL-0 and SL-1 deliver the disk relief that needs no decision.
 - While validating, never delete or prune a real run folder or worktree on a shared host. Destructive tests run only on `tmp_path` fixtures.
-- Opening Consiliency/jev-assembler and Consiliency/dotfiles follow-up issues is an outward action for the owner to approve. This phase does not file them.
-- If OQ-2 is answered "sidecar only", SL-2 drops the tracked location and keeps the index. The lanes stay the same.
+- Consiliency/jev-assembler#37 is reviewed and merged in that repository. It does not gate any lane here.
+- Filing Consiliency/dotfiles follow-ups is an outward action for the owner to approve. This phase does not file them.
 
 ## Spec Closeout Plan
 
@@ -226,5 +229,5 @@ automation:
 
 - [ ] AC-1 — proven by `cd phase-loop-runtime && PYTHONPATH=src python -m pytest tests/test_run_footprint.py -q`; falsified by a footprint that mutates the tree, follows a symlink out of the repo, omits an unmanaged run, or reports a budget-cut scan without `partial: true`.
 - [ ] AC-2 — proven by `cd phase-loop-runtime && PYTHONPATH=src python -m pytest tests/test_run_scratch.py -q`; falsified by a finished run whose scratch root survives without the keep flag, or a removal that reaches outside `<run>/scratch/`.
-- [ ] AC-3 — proven by `cd phase-loop-runtime && PYTHONPATH=src python -m pytest tests/test_run_references.py -q`; falsified by a tracked glob or absolute citation missing from the protected set, an unresolvable citation that passes, or a reader that fails on a promoted artifact.
-- [ ] AC-4 — proven by `cd phase-loop-runtime && PYTHONPATH=src python -m pytest tests/test_run_compaction.py -q`; falsified by compaction that changes bytes without `--apply`, touches an executing or unknown run, removes a protected path without a sha-matched promoted copy, or drops a small decision record.
+- [ ] AC-3 — proven by `cd phase-loop-runtime && PYTHONPATH=src python -m pytest tests/test_run_references.py -q`; falsified by a tracked glob or absolute citation missing from the protected set, an unresolvable citation that passes, an over-cap file tracked in git, or a reader that fails on a promoted artifact.
+- [ ] AC-4 — proven by `cd phase-loop-runtime && PYTHONPATH=src python -m pytest tests/test_run_compaction.py -q`; falsified by compaction that changes bytes without `--apply`, touches an executing, unknown or under-7-day run or an unmanaged run without `--include-unmanaged`, removes a protected path without a sha-matched promoted copy, deletes a non-regenerable log without `--purge`, or drops a small decision record.
