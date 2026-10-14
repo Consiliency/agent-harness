@@ -446,9 +446,9 @@ class PresidentInvoke:
         # Stage 1b: headless `claude -p` by default, tools off and no directory grant, the
         # answer read from the stream's `result` event under the in-band subscription
         # guard. `PHASE_LOOP_PANEL_CLAUDE_ROUTE=tui` keeps the self-PTY session below.
-        route = panel_invoker._panel_claude_route()
-        if route is None:
-            return 1, "", panel_invoker._PANEL_CLAUDE_ROUTE_INVALID
+        route, refusal = panel_invoker._resolve_claude_transport()
+        if refusal is not None:
+            return 1, "", refusal
         if route == panel_invoker._PANEL_CLAUDE_ROUTE_PRINT:
             env = panel_invoker._broker_leg_env(self.base_env, "claude")
             # The panel print leg's pre-launch gates. A refusal is a failed launch with its
