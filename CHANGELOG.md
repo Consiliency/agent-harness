@@ -6,6 +6,15 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Reflection filters preserve recurring friction (agent-harness#1370, agent-harness#1371)
+
+- Exact and near deduplication is limited to copies of the same recorded run.
+  Identical feedback from distinct runs counts toward readiness, including runs on
+  one branch. Only recognized closeout-ledger lines are stripped as boilerplate.
+- A repo-specific Improvements section is dropped and noted in the manifest,
+  while usable What didn't and What worked sections remain. A reflection with
+  neither friction nor an eligible proposal is still excluded.
+
 ### The skill-improvement aggregator applies eight admission gates and a ladder level (agent-harness#1321)
 
 - The aggregator had three admission gates. It now applies eight to every candidate
