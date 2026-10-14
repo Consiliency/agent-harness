@@ -7,8 +7,10 @@ import hashlib
 import json
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
+from jsonschema import validate
 
 from phase_loop_runtime.acceptance_evidence import (
     EXTENSION_NAMESPACE,
@@ -65,15 +67,30 @@ def _links():
 @pytest.mark.parametrize(
     ("mode", "engaged", "authority"),
     [
-        ("standalone", False, "agent-harness"),
-        ("pipeline_optional", False, "agent-harness"),
-        ("pipeline_optional", True, "governed_pipeline"),
-        ("pipeline_required", False, "governed_pipeline"),
-        ("pipeline_required", True, "governed_pipeline"),
+        ("standalone", False, "producer"),
+        ("pipeline_optional", False, "producer"),
+        ("pipeline_optional", True, "pipeline"),
+        ("pipeline_required", False, "pipeline"),
+        ("pipeline_required", True, "pipeline"),
     ],
 )
 def test_authority_follows_mode_and_actual_engagement(mode, engaged, authority):
     assert acceptance_authority(mode, engaged) == authority
+
+
+@pytest.mark.parametrize(("mode", "engaged"), [
+    ("standalone", False),
+    ("pipeline_optional", False),
+    ("pipeline_optional", True),
+    ("pipeline_required", False),
+    ("pipeline_required", True),
+])
+def test_exports_conform_to_the_merged_spec_schema(tmp_path, mode, engaged):
+    fixture = json.loads((Path(__file__).parent / "data" / "acceptance-evidence-schema.json").read_text())
+    _, _, artifact = _verified_run(tmp_path)
+    bind_acceptance_evidence(artifact, links=_links(), pipeline_mode=mode, pipeline_engaged=engaged)
+
+    validate(export_acceptance_evidence(artifact), fixture["schema"])
 
 
 def test_export_emits_one_spec_record_per_linked_criterion(tmp_path):
@@ -92,7 +109,7 @@ def test_export_emits_one_spec_record_per_linked_criterion(tmp_path):
         assert record["argv"] == command["argv"]
         own_bytes = log_bytes[command["log_offset"]:command["log_end_offset"]]
         assert record["log_sha256"] == hashlib.sha256(own_bytes).hexdigest()
-        assert record["authority"] == "agent-harness"
+        assert record["authority"] == "producer"
         assert record["pipeline_mode"] == "standalone" and record["pipeline_engaged"] is False
     assert records[0]["log_sha256"] != records[1]["log_sha256"]
 
@@ -101,7 +118,7 @@ def test_pipeline_required_evidence_is_never_harness_authority(tmp_path):
     _, _, artifact = _verified_run(tmp_path)
     bind_acceptance_evidence(artifact, links=_links(), pipeline_mode="pipeline_required", pipeline_engaged=False)
 
-    assert {record["authority"] for record in export_acceptance_evidence(artifact)} == {"governed_pipeline"}
+    assert {record["authority"] for record in export_acceptance_evidence(artifact)} == {"pipeline"}
 
 
 def test_artifact_without_links_exports_nothing(tmp_path):
@@ -177,7 +194,7 @@ def test_binds_alongside_an_existing_legible_extension(tmp_path):
     assert validate_verification_artifact_for_plan(
         artifact, (legible_evidence.EXTENSION_NAMESPACE, EXTENSION_NAMESPACE)
     ).code == "nonzero_exit"
-    assert {record["authority"] for record in export_acceptance_evidence(artifact)} == {"governed_pipeline"}
+    assert {record["authority"] for record in export_acceptance_evidence(artifact)} == {"pipeline"}
 
 
 def test_cli_prints_records(tmp_path, capsys):

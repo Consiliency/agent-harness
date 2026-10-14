@@ -32,8 +32,8 @@ from . import verification_evidence
 EXTENSION_NAMESPACE = "phase_loop_runtime.acceptance_evidence"
 RECORD_SCHEMA = "acceptance_evidence_links.v1"
 
-AUTHORITY_AGENT_HARNESS = "agent-harness"
-AUTHORITY_GOVERNED_PIPELINE = "governed_pipeline"
+AUTHORITY_PRODUCER = "producer"
+AUTHORITY_PIPELINE = "pipeline"
 
 
 class AcceptanceEvidenceError(ValueError):
@@ -43,13 +43,13 @@ class AcceptanceEvidenceError(ValueError):
 
 
 def acceptance_authority(pipeline_mode: str, pipeline_engaged: bool) -> str:
-    """Owner decision on agent-harness#1321 (2026-10-08): governed-pipeline owns
+    """Owner decision on agent-harness#1321 (2026-10-08): the pipeline owns
     acceptance truth under ``pipeline_required`` (even if engagement failed) or an
-    engaged ``pipeline_optional`` run; otherwise agent-harness owns it, for that
+    engaged ``pipeline_optional`` run; otherwise the producer owns it, for that
     run only."""
     if pipeline_mode == "pipeline_required" or pipeline_engaged:
-        return AUTHORITY_GOVERNED_PIPELINE
-    return AUTHORITY_AGENT_HARNESS
+        return AUTHORITY_PIPELINE
+    return AUTHORITY_PRODUCER
 
 
 def bind_acceptance_evidence(
@@ -91,7 +91,8 @@ def export_acceptance_evidence(artifact_path: Path) -> list[dict[str, Any]]:
 
     An artifact with no acceptance links yields ``[]``, which spec reads as
     ``unknown`` for every criterion. A failing linked command is exported as
-    evidence (spec maps non-zero to fail); an artifact that fails integrity
+    evidence (spec grades it; an unengaged required pipeline remains unknown).
+    An artifact that fails integrity
     validation is refused."""
     artifact_path = Path(artifact_path)
     validation = verification_evidence.validate_verification_artifact(artifact_path)
