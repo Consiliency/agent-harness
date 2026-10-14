@@ -12,6 +12,7 @@ local remote and a recording ``gh`` on PATH, gated on the resolver's printed mod
 from __future__ import annotations
 
 import io
+import json
 import os
 import subprocess
 import sys
@@ -75,6 +76,27 @@ def _run_cli(repo: Path, env: dict[str, str]) -> tuple[int, str, str]:
 
 
 class ModeCellsTest(unittest.TestCase):
+    def test_actions_include_description_mutations_and_failure_limits(self):
+        requirements = {
+            "none": ("Do not edit PR descriptions", "publication_mode=none"),
+            "draft-only": ("gh pr edit", "Never run gh pr ready", "agent-owned draft"),
+            "ready": ("gh pr edit", "then flip it to ready", "failed description update",
+                      "material changes before merge"),
+        }
+        for mode, snippets in requirements.items():
+            for snippet in snippets:
+                self.assertIn(snippet, pm.ACTIONS[mode])
+        self.assertIn("Do not edit PR descriptions", pm.ERROR_ACTION)
+
+    def test_cli_help_names_every_interactive_publication_mutation(self):
+        out = io.StringIO()
+        with redirect_stdout(out), self.assertRaises(SystemExit) as result:
+            cli_main(["publication-mode", "--help"])
+        self.assertEqual(result.exception.code, 0)
+        help_text = " ".join(out.getvalue().split())
+        for command in ("git push", "gh pr create", "gh pr edit", "gh pr ready"):
+            self.assertIn(command, help_text)
+
     def test_no_config_resolves_ready_the_unchanged_default(self):
         with TemporaryDirectory() as td:
             repo = _init_repo(Path(td))
@@ -240,30 +262,112 @@ _DRIVER = textwrap.dedent("""\
         git push -q -u origin feature/phase-x
         mode=$(resolve)
         if [ "$mode" != none ]; then
-            gh pr create --draft --title "Phase in progress" --body-file "$PR_WRITING_BODY_DIR/draft.md"
+            gh pr create --draft --title "Phase in progress" --body-file "$PR_WRITING_BODY_DIR/draft.md" > "$PR_WRITING_BODY_DIR/pr-url"
         fi
     fi
     echo two >> feature.txt && git commit -q -am "lane 2"
     mode=$(resolve)
     if [ "$mode" != none ]; then git push -q origin feature/phase-x; fi
-    cat feature.txt > "$PR_WRITING_BODY_DIR/final.md"
     mode=$(resolve)
     if [ "$mode" != none ]; then
-        gh pr edit --title "Phase complete" --body-file "$PR_WRITING_BODY_DIR/final.md"
+        "$PR_WRITING_PYTHON" "$PR_WRITING_BODY_DIR/refresh.py"
     fi
     mode=$(resolve)
-    if [ "$mode" = ready ]; then gh pr ready; fi
+    if [ "$mode" = ready ]; then gh pr ready "$(cat "$PR_WRITING_BODY_DIR/pr-url")"; fi
     if [ "$PR_WRITING_LATER_CHANGE" = 1 ]; then
         echo three >> feature.txt && git commit -q -am "later fix"
         mode=$(resolve)
         if [ "$mode" != none ]; then git push -q origin feature/phase-x; fi
-        cat feature.txt > "$PR_WRITING_BODY_DIR/final.md"
         mode=$(resolve)
         if [ "$mode" != none ]; then
-            gh pr edit --title "Phase complete" --body-file "$PR_WRITING_BODY_DIR/final.md"
+            "$PR_WRITING_PYTHON" "$PR_WRITING_BODY_DIR/refresh.py"
         fi
     fi
     echo "completed mode=$mode"
+""")
+
+
+_REFRESH = textwrap.dedent("""\
+    import json, os, subprocess, sys
+    from pathlib import Path
+    root = Path(os.environ["PR_WRITING_BODY_DIR"])
+    start, end = "<!-- agent-harness:pr-description:start -->", "<!-- agent-harness:pr-description:end -->"
+    ownership = json.loads((root / "ownership.json").read_text())
+    ownership["pr_url"] = (root / "pr-url").read_text().strip()
+    def read():
+        return json.loads(subprocess.check_output(["gh", "pr", "view", ownership["pr_url"], "--json", "title,body"], text=True))
+    before = read()
+    block = start + "\\nImplementation: " + ",".join(Path("feature.txt").read_text().splitlines()) + "\\n" + end
+    body = before["body"]
+    if body.count(start) == body.count(end) == 1 and ownership["block"] in body:
+        composed = body.replace(ownership["block"], block, 1)
+    else:
+        composed = body + "\\n\\n## Implementation update\\n" + block
+    latest = read()
+    concurrent = latest != before
+    if concurrent:
+        composed = latest["body"] + "\\n\\n## Implementation update\\n" + block
+    path = root / "composed.md"
+    path.write_text(composed)
+    argv = ["gh", "pr", "edit", ownership["pr_url"], "--body-file", str(path)]
+    if not concurrent and latest["title"] == ownership["title"]:
+        argv += ["--title", "Phase complete"]
+    try:
+        subprocess.run(argv, check=True)
+    except subprocess.CalledProcessError:
+        print("description refresh failed", file=sys.stderr)
+        raise SystemExit(1)
+    if "--title" in argv:
+        ownership["title"] = "Phase complete"
+    if not concurrent and ownership["block"] in body:
+        ownership["block"] = block
+    (root / "ownership.json").write_text(json.dumps(ownership))
+""")
+
+_GH = textwrap.dedent("""\
+    import json, os, sys
+    from pathlib import Path
+    root = Path(os.environ["PR_WRITING_BODY_DIR"])
+    argv = sys.argv[1:]
+    event = {"argv": argv}
+    if "--body-file" in argv:
+        event["body"] = Path(argv[argv.index("--body-file") + 1]).read_text()
+    with (root / "gh.argv.jsonl").open("a") as out:
+        out.write(json.dumps(event) + "\\n")
+    state_path = root / "pr-state.json"
+    state = json.loads(state_path.read_text()) if state_path.exists() else {}
+    action = argv[1]
+    if action == "view":
+        count_path = root / "views"
+        count = int(count_path.read_text()) + 1 if count_path.exists() else 1
+        count_path.write_text(str(count))
+        if count == 1 and os.environ["PR_WRITING_HUMAN_EDITS"] == "1":
+            state["title"] = "Human title"
+            state["body"] = state["body"].replace("Pending implementation.", "Human-edited block.")
+            state["body"] += "\\nHuman notes\\nRoadmap-Disposition: retain scope"
+        if count == 2 and os.environ["PR_WRITING_CONCURRENT_EDITS"] == "1":
+            state["title"] = "Concurrent human title"
+            state["body"] += "\\nConcurrent human note"
+        state_path.write_text(json.dumps(state))
+        print(json.dumps({"title": state["title"], "body": state["body"]}))
+        raise SystemExit(0)
+    with (root / "gh.log").open("a") as out:
+        out.write(" ".join(argv[:2]) + "\\n")
+    if action == "create":
+        assert "--draft" in argv and "--body-file" in argv and "--title" in argv
+        state = {"title": argv[argv.index("--title") + 1], "body": event["body"], "draft": True}
+    elif action == "edit":
+        if os.environ["PR_WRITING_EDIT_FAIL"] == "1" or (
+            os.environ["PR_WRITING_FAIL_AFTER_READY"] == "1" and not state["draft"]
+        ):
+            raise SystemExit(1)
+        state["body"] = event["body"]
+        if "--title" in argv:
+            state["title"] = argv[argv.index("--title") + 1]
+    elif action == "ready":
+        state["draft"] = False
+    state_path.write_text(json.dumps(state))
+    print("https://example.invalid/pr/1")
 """)
 
 
@@ -271,7 +375,8 @@ class InteractivePublicationAcceptanceTest(unittest.TestCase):
     """Scratch repo + bare local remote + recording ``gh``: what reaches the remote."""
 
     def _run_phase(self, repo_mode: str | None, *, edit_fails: bool = False,
-                   later_change: bool = False) -> tuple[subprocess.CompletedProcess, dict, str, dict]:
+                   later_change: bool = False, human_edits: bool = False,
+                   concurrent_edits: bool = False, fail_after_ready: bool = False) -> tuple[subprocess.CompletedProcess, dict, str, dict]:
         td = TemporaryDirectory()
         self.addCleanup(td.cleanup)
         root = Path(td.name)
@@ -287,16 +392,12 @@ class InteractivePublicationAcceptanceTest(unittest.TestCase):
         bin_dir = root / "bin"
         bin_dir.mkdir()
         gh_log = root / "gh.log"
-        (root / "draft.md").write_text("Implementation and verification pending.\n", encoding="utf-8")
+        block = "<!-- agent-harness:pr-description:start -->\nPending implementation.\n<!-- agent-harness:pr-description:end -->"
+        (root / "draft.md").write_text(block, encoding="utf-8")
+        (root / "ownership.json").write_text(json.dumps({"title": "Phase in progress", "block": block}))
+        (root / "refresh.py").write_text(_REFRESH)
         (bin_dir / "gh").write_text(
-            f'#!/bin/sh\necho "$1 $2" >> "{gh_log}"\n'
-            'if [ "$2" = create ] && [ "$3" != --draft ]; then exit 2; fi\n'
-            'if [ "$2" = edit ]; then\n'
-            '    if [ "$PR_WRITING_EDIT_FAIL" = 1 ]; then exit 1; fi\n'
-            f'    printf "body: " >> "{gh_log}"\n'
-            f'    tr "\\n" "," < "$PR_WRITING_BODY_DIR/final.md" >> "{gh_log}"\n'
-            f'    printf "\\n" >> "{gh_log}"\n'
-            'fi\necho https://example.invalid/pr/1\n',
+            f"#!{sys.executable}\n" + _GH,
             encoding="utf-8")
         (bin_dir / "phase-loop").write_text(
             f"#!/bin/sh\nexec {sys.executable} -c "
@@ -307,10 +408,18 @@ class InteractivePublicationAcceptanceTest(unittest.TestCase):
         env = {**os.environ, "PATH": f"{bin_dir}{os.pathsep}{os.environ['PATH']}",
                "XDG_CONFIG_HOME": str(root / "xdg"), "PR_WRITING_BODY_DIR": str(root),
                "PR_WRITING_EDIT_FAIL": str(int(edit_fails)),
-               "PR_WRITING_LATER_CHANGE": str(int(later_change))}
+               "PR_WRITING_LATER_CHANGE": str(int(later_change)),
+               "PR_WRITING_HUMAN_EDITS": str(int(human_edits)),
+               "PR_WRITING_CONCURRENT_EDITS": str(int(concurrent_edits)),
+               "PR_WRITING_FAIL_AFTER_READY": str(int(fail_after_ready)),
+               "PR_WRITING_PYTHON": sys.executable}
         proc = subprocess.run(["sh", "-c", _DRIVER], cwd=repo, env=env, text=True,
                               capture_output=True, check=False)
         gh_calls = gh_log.read_text(encoding="utf-8") if gh_log.exists() else ""
+        events = root / "gh.argv.jsonl"
+        self.gh_events = [json.loads(line) for line in events.read_text().splitlines()] if events.exists() else []
+        state = root / "pr-state.json"
+        self.pr_state = json.loads(state.read_text()) if state.exists() else {}
         return proc, before, gh_calls, self._refs(remote)
 
     @staticmethod
@@ -330,13 +439,22 @@ class InteractivePublicationAcceptanceTest(unittest.TestCase):
         proc, before, gh_calls, after = self._run_phase("draft-only")
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("refs/heads/feature/phase-x", after)
-        self.assertEqual(gh_calls.splitlines(), ["pr create", "pr edit", "body: one,two,"])
+        self.assertEqual(gh_calls.splitlines(), ["pr create", "pr edit"])
+        self.assertTrue(self.pr_state["draft"])
+        edit = next(e for e in self.gh_events if e["argv"][1] == "edit")
+        self.assertEqual(Path(edit["argv"][edit["argv"].index("--body-file") + 1]).name, "composed.md")
+        self.assertIn("Implementation: one,two", edit["body"])
 
     def test_ready_default_pushes_opens_a_draft_and_flips_it_ready(self):
         proc, before, gh_calls, after = self._run_phase(None)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertIn("refs/heads/feature/phase-x", after)
-        self.assertEqual(gh_calls.splitlines(), ["pr create", "pr edit", "body: one,two,", "pr ready"])
+        self.assertEqual(gh_calls.splitlines(), ["pr create", "pr edit", "pr ready"])
+        self.assertEqual([e["argv"][1] for e in self.gh_events], ["create", "view", "view", "edit", "ready"])
+        for event in self.gh_events[1:]:
+            self.assertEqual(event["argv"][2], "https://example.invalid/pr/1")
+        self.assertIn("Implementation: one,two", self.pr_state["body"])
+        self.assertFalse(self.pr_state["draft"])
 
     def test_description_edit_failure_does_not_mark_the_pr_ready(self):
         proc, _, gh_calls, _ = self._run_phase(None, edit_fails=True)
@@ -347,9 +465,37 @@ class InteractivePublicationAcceptanceTest(unittest.TestCase):
         proc, _, gh_calls, _ = self._run_phase(None, later_change=True)
         self.assertEqual(proc.returncode, 0, proc.stderr)
         self.assertEqual(gh_calls.splitlines(), [
-            "pr create", "pr edit", "body: one,two,", "pr ready",
-            "pr edit", "body: one,two,three,",
+            "pr create", "pr edit", "pr ready", "pr edit",
         ])
+        self.assertIn("Implementation: one,two,three", self.pr_state["body"])
+
+    def test_failed_post_ready_refresh_reports_failure_without_claiming_freshness(self):
+        proc, _, gh_calls, _ = self._run_phase(None, later_change=True, fail_after_ready=True)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("description refresh failed", proc.stderr)
+        self.assertNotIn("completed mode=", proc.stdout)
+        self.assertEqual(gh_calls.splitlines(), ["pr create", "pr edit", "pr ready", "pr edit"])
+        self.assertFalse(self.pr_state["draft"])
+        self.assertIn("Implementation: one,two", self.pr_state["body"])
+        self.assertNotIn("Implementation: one,two,three", self.pr_state["body"])
+
+    def test_refresh_preserves_human_title_notes_and_modified_agent_block(self):
+        proc, _, _, _ = self._run_phase(None, human_edits=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self.pr_state["title"], "Human title")
+        for text in ("Human notes", "Human-edited block.", "Roadmap-Disposition: retain scope",
+                     "Implementation: one,two"):
+            self.assertIn(text, self.pr_state["body"])
+        edit = next(e for e in self.gh_events if e["argv"][1] == "edit")
+        self.assertNotIn("--title", edit["argv"])
+
+    def test_concurrent_human_update_is_preserved_by_appending_to_the_latest_body(self):
+        proc, _, _, _ = self._run_phase(None, concurrent_edits=True)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertEqual(self.pr_state["title"], "Concurrent human title")
+        self.assertIn("Concurrent human note", self.pr_state["body"])
+        self.assertIn("Pending implementation.", self.pr_state["body"])
+        self.assertIn("Implementation: one,two", self.pr_state["body"])
 
     def test_malformed_config_blocks_publication_before_any_push(self):
         # A committed config with a bad value: the resolver exits non-zero, nothing leaves.
