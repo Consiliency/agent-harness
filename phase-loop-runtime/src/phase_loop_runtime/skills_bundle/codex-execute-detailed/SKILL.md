@@ -129,8 +129,12 @@ execution.
 Before composing the PR, read [PR writing](references/pr-writing.md). Review the
 final implementation diff, including owned worktree changes the adapter will commit,
 and the verification artifact. Supply a meaningful commit subject (the broker uses
-it as the PR title) and the composed body. Persist that body before publication and
-reuse the exact bytes on retry; do not reformat an admitted transaction.
+it as the PR title) and the composed body. Resolve the Git common directory with
+`git rev-parse --path-format=absolute --git-common-dir`; persist the body as
+`<git-common-dir>/phase-loop-pr-text/<run-id>/body.md` in private Git state outside
+checked-out source and the linked worktree (directory 0700, file 0600). Record its
+path and SHA-256 in the local handoff; do not stage it. Reuse the exact bytes on
+retry; do not reformat an admitted transaction.
 
 Call `phase_loop_runtime.publishing.publish_human_invoked_from_worktree(repo,
 owned_paths, plan_path=<plan>, verification_artifact_path=<artifact>, draft=<intent>,
