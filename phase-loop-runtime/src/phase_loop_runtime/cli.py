@@ -1074,10 +1074,13 @@ def build_parser() -> argparse.ArgumentParser:
     # equivalent of --closeout-mode. Read-only; prints the mode and its required action.
     publication_mode_sub = subparsers.add_parser(
         "publication-mode",
+        description=("Run before any git push, gh pr create, gh pr edit or gh pr ready "
+                     "on the interactive path. Print the resolved publication mode and "
+                     "required action; non-zero means do not publish."),
         help=("Print the interactive publication mode (none | draft-only | ready) resolved "
               "from the repo's committed .phase-loop-publication.toml and the user's "
               "agent-harness/publication.toml, and the action it requires. Run it before "
-              "any git push or gh pr create on the interactive path; non-zero means do "
+              "any git push, gh pr create, gh pr edit or gh pr ready on the interactive path; non-zero means do "
               "not publish."),
     )
     publication_mode_sub.add_argument("--repo", default=argparse.SUPPRESS)
