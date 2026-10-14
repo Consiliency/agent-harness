@@ -313,10 +313,8 @@ def test_every_seat_is_pointed_at_the_sandbox(tmp_path):
         model=None, out_dir=tmp_path / "o", grok_effort_args=(), staged_tree=tree,
     )
     assert grok[grok.index("--cwd") + 1] == str(tree)
-    # For grok the ALLOW-LIST is the enforcement lever, not a sandbox flag. Under `plan` a
-    # headless seat cancels any acting built-in, so the clone is read with read-only tools.
-    assert grok[grok.index("--tools") + 1] == panel_invoker.GROK_SANDBOX_TOOLS
-    assert "run_terminal_command" not in grok[grok.index("--tools") + 1]
+    # For grok the ALLOW-LIST is the enforcement lever, not a sandbox flag.
+    assert "run_terminal_command" in grok[grok.index("--tools") + 1]
 
     claude = panel_invoker._claude_tui_command(tree.parent, tmp_path / "live-repo")
     assert str(tree) in claude

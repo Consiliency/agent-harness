@@ -6,6 +6,19 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Board: the sandboxed grok seat can run the tools it is granted
+
+- In a board the sandboxed grok seat ended `DEGRADED` (rc 0) after one preamble line. Its
+  argv paired `--permission-mode plan` with an allow-list granting `run_terminal_command`,
+  `write` and `search_replace`. Headless grok 1.0.52 sends those calls to an approver it
+  does not have, cancels them, and ends the turn. The earlier finding that headless grok
+  auto-approves regardless of `--permission-mode` (agent-harness#147) no longer holds.
+- The sandboxed brokered route now runs `--permission-mode bypassPermissions` and passes
+  `--disallowed-tools` for the twelve built-ins `--tools` leaves in place, so the seat holds
+  exactly `GROK_SANDBOX_TOOLS`. The seat sandbox and the allow-list are unchanged, and the
+  recorded tool controls follow the argv. The unsandboxed brokered route (`plan`, empty
+  allow-list) and the read-only `-p` route are unchanged.
+
 ### FABPUB: a provider outcome on an already-ambiguous key is kept, and an observed effect is never attested not landed (agent-harness#1591)
 
 - A promotion by an older-runtime prober from the provider-entry guard's lock release
@@ -49,19 +62,6 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `after_post_ambiguity_observation`). Still open: an older writer records nothing,
   and a crash between the provider's return and the side-file write loses the URL
   (documented in `docs/fabpub-pre-admission-ambiguity.md` and runbook §8a).
-
-### Board: the sandboxed grok seat delivers a verdict again
-
-- In a board the sandboxed grok seat ended `DEGRADED` (rc 0) after one preamble line. Its
-  argv paired `--permission-mode plan` with an allow-list granting `run_terminal_command`,
-  `write` and `search_replace`. Headless grok 1.0.52 sends those calls to an approver it
-  does not have, cancels them, and ends the turn. The earlier finding that headless grok
-  auto-approves regardless of `--permission-mode` (agent-harness#147) no longer holds.
-- The sandboxed grok seat keeps read-only tools and plan mode: its allow-list is the
-  read-only review set (`read_file`, `grep`, `list_dir`, `search_tool`), and built-in tools
-  outside its allow-list are denied with `--disallowed-tools`, since `--tools` alone leaves
-  twelve of them in place. The recorded tool controls follow the argv. The unsandboxed
-  brokered route and the read-only `-p` route are unchanged.
 
 ### FABPUB: the human publication route picks its handoff by the broker refusal's type (agent-harness#1573, agent-harness#1578, agent-harness#1594, agent-harness#1574)
 
