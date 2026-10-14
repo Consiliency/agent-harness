@@ -37,6 +37,12 @@ FABPUB_CRASH_ANCHORS = (
     "after_committed_checkpoint_before_broker_execute",
     "after_broker_intent_before_adapter_started",
 )
+#: agent-harness#1591: broker seams after the provider returned.  Kept apart
+#: from the frozen four above, which the train runner's resume contract pins.
+FABPUB_POST_PROVIDER_CRASH_ANCHORS = (
+    "after_provider_return_before_terminal",
+    "after_post_ambiguity_observation",
+)
 _CRASH_STATE = threading.local()
 _FORBIDDEN_IDENTITY_FIELDS = frozenset(
     {
@@ -276,7 +282,7 @@ def _recovery_record_core(record: dict) -> dict:
 
 @contextlib.contextmanager
 def crash_after(anchor: str):
-    if anchor not in FABPUB_CRASH_ANCHORS:
+    if anchor not in FABPUB_CRASH_ANCHORS + FABPUB_POST_PROVIDER_CRASH_ANCHORS:
         raise ValueError(f"unknown FABPUB crash anchor: {anchor}")
     previous = getattr(_CRASH_STATE, "anchor", None)
     _CRASH_STATE.anchor = anchor
@@ -1334,6 +1340,71 @@ _SECOND_ATTESTATION_WARNING = (
 )
 
 
+def _observed_after_ambiguity_handoff(
+    snapshot, observation: Mapping[str, Any]
+) -> dict[str, Any]:
+    """agent-harness#1591: the rotation fields for a provider outcome on an ambiguous key.
+
+    An effect requires ``observed_landed`` and forbids ``attested_not_landed``
+    (new runtimes refuse it); its attestation inputs are the observation's.  A
+    no-effect observation only supports ``attested_not_landed``: the judgement
+    stays the operator's.
+    """
+    if observation.get("observed_state") != TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED.value:
+        return {
+            "required_disposition": None,
+            "supporting_evidence": {
+                "observed_state": observation.get("observed_state"),
+                "evidence_reference": observation.get("evidence_reference"),
+                "note": (
+                    "the provider reported no effect after the key was blocked; this supports "
+                    "attested_not_landed but does not prove it"
+                ),
+            },
+        }
+    key = str(observation.get("idempotency_key", ""))
+    suffix = key.split("\0", 1)[1] if "\0" in key else key
+    inputs = {
+        "observed_head": observation.get("head_sha"),
+        "evidence_url": observation.get("evidence_reference"),
+        "effect_key_suffix": suffix,
+        "owner_nonce": observation.get("owner_nonce"),
+        "transaction_id": observation.get("transaction_id"),
+    }
+    fields: dict[str, Any] = {
+        "required_disposition": "observed_landed",
+        "forbidden_disposition": "attested_not_landed",
+        "attestation_inputs": inputs,
+        "rotate_requires": (
+            "a reviewed PartitionRotationAttestation.v1 disposing the blocked effect "
+            f"observed_landed with observed_head {inputs['observed_head']} and evidence_url "
+            f"{inputs['evidence_url']} (the provider reported this effect after the key was "
+            "blocked), and a read-only preflight verdict of ready; attested_not_landed is "
+            "refused for this key, and a later remote absence is not proof that the effect "
+            "did not land"
+        ),
+    }
+    if Path(snapshot.store_root) == Path(snapshot.container):
+        # The stdlib builder digests the generation-0 container only.
+        fields["attestation_builder_command"] = [
+            "python3",
+            "phase-loop-runtime/scripts/fabpub_rotation_attestation.py",
+            "--container",
+            str(snapshot.container),
+            "--out",
+            "<operator attestation path outside the broker namespace>",
+            "--attested-by",
+            "<operator>",
+            "--effect-key-suffix",
+            suffix,
+            "--observed-head",
+            str(inputs["observed_head"]),
+            "--evidence-url",
+            str(inputs["evidence_url"]),
+        ]
+    return fields
+
+
 def _human_publication_handoff(
     repo: Path,
     *,
@@ -1341,6 +1412,7 @@ def _human_publication_handoff(
     required_inputs: Sequence[str] = (),
     conflicting_recovery_record: Path | None = None,
     refusal: Mapping[str, Any] | None = None,
+    observed_after_ambiguity: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Return the actionable, non-authorizing handoff for a human publish refusal.
 
@@ -1462,6 +1534,8 @@ def _human_publication_handoff(
                 "the attestation disposes every key in blocking_effect_keys (which may "
                 "not be this publication's key); " + handoff["rotate_requires"]
             )
+        if observed_after_ambiguity is not None:
+            handoff.update(_observed_after_ambiguity_handoff(snapshot, observed_after_ambiguity))
     if next_step == "rebuild_broker_client_and_retry":
         # agent-harness#1573 ask 4: a routing client built before a rotation.
         handoff.update(
@@ -1870,6 +1944,9 @@ def publish_human_invoked_from_worktree(
                     if ambiguous
                     else "repair_publication_precheck_and_retry"
                 ),
+                observed_after_ambiguity=(
+                    result.get("observed_after_ambiguity") if ambiguous else None
+                ),
             )
             result["checkpoint_root"] = str(checkpoint_root)
         return result
@@ -2099,5 +2176,9 @@ def publish_from_worktree(
         # agent-harness#1577 (D3): whether THIS call entered the provider adapter;
         # false for a replay of stored evidence and for a refusal before entry.
         blocked["provider_call_made"] = bool(getattr(execution, "provider_call_made", False))
+        # agent-harness#1591: a provider outcome on a key already ambiguous.
+        observation = getattr(execution, "observed_after_ambiguity", None)
+        if observation is not None:
+            blocked["observed_after_ambiguity"] = {**observation.row(), "durable": observation.durable}
         return blocked
     return {"status": "published", "branch": execution.publish_result.branch, "head_sha": execution.publish_result.head_sha, "pr_url": execution.publish_result.pr_url}

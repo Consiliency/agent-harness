@@ -6,6 +6,50 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### FABPUB: a provider outcome on an already-ambiguous key is kept, and an observed effect is never attested not landed (agent-harness#1591)
+
+- A promotion by an older-runtime prober from the provider-entry guard's lock release
+  through the provider call still makes one provider call. When that call reported
+  success, the broker could not record it over the ambiguous row and dropped the PR
+  URL, so an operator with no local evidence could attest `attested_not_landed` and
+  the recovery would publish twice. The broker now appends the outcome to a new
+  append-only `post-ambiguity-observations.jsonl` beside the evidence log
+  (`PostAmbiguityObservation.v1`), bound to the blocked row's `ambiguity_digest` and
+  to this attempt's owner (`owner_nonce`, `transaction_id`), under the same
+  `admissions.lock` acquisition and generation check. It is written only while the
+  owner is still this attempt's; otherwise the result says `durable: false`.
+- The store stays ambiguous, the epoch blocked, the owner unsealed and the checkpoint
+  `ADAPTER_STARTED`. The result is not accepted and has no `publish_result`; its
+  `reason` is `effect_observed_after_ambiguity` or `no_effect_observed_after_ambiguity`
+  and `BrokerExecutionResult.observed_after_ambiguity` carries the observation. Every
+  retry replays it with `provider_call_made: false`. The evidence log, owner and
+  admission schemas are unchanged, no rotation digest covers the new file, and older
+  readers never open it.
+- The terminal (or the observation) is now recorded before the service-generation
+  lease is released, and a failed lease release after a successful call is no longer
+  recorded as ambiguity. A rotation that starts during the call holds
+  `admissions.lock` across its drain: the observation waits on the lock (a `DRAINING`
+  latch alone does not refuse it), the writer's held lease makes the ceremony refuse
+  "predecessor writers did not drain", and the ceremony is retried. Only a writer
+  with no held lease, or a cleared one, loses the observation (agent-harness#1633).
+- New runtimes refuse to dispose a key with a recorded effect, or any key while the
+  side file is unreadable, `attested_not_landed`: the rotation ceremony (zero-write,
+  and again under the predecessor's lock before `INVENTORY_SEALED`), the read-only
+  preflight, and the re-admission (`PublicationRecoveryRequired`, escalate to the
+  maintainer). A ceremony whose own journal already holds `INVENTORY_SEALED` is not
+  refused on resume; its successor's re-admission refuses instead (agent-harness#1633).
+  A no-effect observation is supporting evidence only.
+- The human route keeps `next_step: adjudicate_publication_by_partition_rotation` and,
+  for an effect, adds `required_disposition: observed_landed`,
+  `forbidden_disposition: attested_not_landed`, `attestation_inputs` and, for a
+  generation-0 container, a pre-filled `attestation_builder_command`. The plain
+  agent-harness#1312 handoff is unchanged. The attestation builder prints the
+  observation and warns when its inputs disagree with it.
+- Two broker crash seams (`after_provider_return_before_terminal`,
+  `after_post_ambiguity_observation`). Still open: an older writer records nothing,
+  and a crash between the provider's return and the side-file write loses the URL
+  (documented in `docs/fabpub-pre-admission-ambiguity.md` and runbook §8a).
+
 ### FABPUB: the human publication route picks its handoff by the broker refusal's type (agent-harness#1573, agent-harness#1578, agent-harness#1594, agent-harness#1574)
 
 - `publish_human_invoked_from_worktree` used to answer every broker
