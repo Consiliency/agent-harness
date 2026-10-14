@@ -140,7 +140,22 @@ def all_findings() -> list[SizeFinding]:
     return findings
 
 
+# Key the skip on the layout, not on the files: the standalone Gate A tree runs the
+# installed wheel against a sparse skills-src, while a source checkout imports this
+# tree's src/, where the full skills-src is present and must be measured.
+def _source_checkout() -> bool:
+    import phase_loop_runtime
+
+    return Path(phase_loop_runtime.__file__).resolve().is_relative_to(REPO / "phase-loop-runtime" / "src")
+
+
+_NEEDS_SOURCE_TREE = unittest.skipUnless(
+    _source_checkout(), "measures the full skills-src tree; the standalone tree carries a sparse copy"
+)
+
+
 class SkillSizeGateTest(unittest.TestCase):
+    @_NEEDS_SOURCE_TREE
     def test_canonical_skills_within_size_guidance_or_allowlisted(self):
         self.assertTrue(canonical_skill_files(), "no skills-src/*/*/SKILL.md found")
         warned, errors = evaluate(all_findings(), ALLOWLIST, strict=STRICT)
@@ -148,6 +163,7 @@ class SkillSizeGateTest(unittest.TestCase):
             warnings.warn(f"skill size: {message}", UserWarning, stacklevel=1)
         self.assertEqual(errors, [], "\n".join(errors))
 
+    @_NEEDS_SOURCE_TREE
     def test_allowlist_paths_exist(self):
         for path, check in ALLOWLIST:
             self.assertTrue((REPO / path).is_file(), f"ALLOWLIST names a missing file: {path}")
