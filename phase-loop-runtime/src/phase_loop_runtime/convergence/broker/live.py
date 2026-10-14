@@ -969,6 +969,8 @@ ROTATION_DIGESTED_FILES = (
 ROTATION_STORE_FILES = ROTATION_DIGESTED_FILES + (
     "admissions.lock",
     "legacy-promotions.jsonl",
+    # agent-harness#1591: not digested; it can only add refusals.
+    "post-ambiguity-observations.jsonl",
 )
 
 
@@ -1472,6 +1474,55 @@ class RecoveryChainSuperseded(LegacyCutoverConflict):
 
 def _generation_store(container: Path, generation: int) -> Path:
     return container if generation == 0 else container / GENERATIONS_DIR / str(generation)
+
+
+def generation_store_root(root: Path, generation: int) -> Path:
+    """The store root of ``generation`` in ``root``'s partition."""
+    container, _active = _partition_layout(Path(root))
+    return _generation_store(container, generation)
+
+
+def post_ambiguity_effect_refusal(root: Path, key: str) -> str | None:
+    """Why ``key`` of ``root`` must not be disposed ``attested_not_landed``, or ``None``.
+
+    agent-harness#1591 (D2): the provider reported an effect for the key after
+    its row was already ambiguous, or the side file that would say so cannot be
+    read (fail closed).  A no-effect observation is supporting evidence only
+    (D4) and refuses nothing.
+    """
+    from .evidence import (
+        POST_AMBIGUITY_OBSERVATIONS_FILENAME,
+        UNREADABLE,
+        post_ambiguity_effect,
+    )
+
+    observed = post_ambiguity_effect(Path(root), key)
+    if observed is UNREADABLE:
+        return (
+            f"an unreadable {POST_AMBIGUITY_OBSERVATIONS_FILENAME} in {root} (it may hold "
+            "a provider-reported effect for the key)"
+        )
+    if observed is None:
+        return None
+    return (
+        f"a provider-reported effect for {key!r} after the key was blocked: "
+        f"{observed.evidence_reference} at head {observed.head_sha} (transaction "
+        f"{observed.transaction_id}, recorded in {POST_AMBIGUITY_OBSERVATIONS_FILENAME})"
+    )
+
+
+def _refuse_attested_not_landed_over_observations(root: Path, effects: dict) -> None:
+    """Refuse an ``attested_not_landed`` entry for an observed effect (agent-harness#1591, D2)."""
+    for key, entry in sorted(effects.items()):
+        if not isinstance(entry, dict) or entry.get("disposition") != DISPOSITION_ATTESTED_NOT_LANDED:
+            continue
+        why = post_ambiguity_effect_refusal(root, key)
+        if why is not None:
+            raise PartitionRotationRefused(
+                f"attestation disposes {key!r} attested_not_landed, but the predecessor holds {why}; "
+                "dispose it observed_landed with that observed head and evidence URL, or escalate "
+                "to the maintainer"
+            )
 
 
 def _sealed_generation_bytes(store: Path, name: str, sealed_digest: str | None, generation: int) -> bytes | None:
@@ -5092,6 +5143,8 @@ def rotate_blocked_partition(
     adjudicated = _adjudicate_rotation_predecessor(
         attestation, _snapshot_predecessor(active), generation, active_receipt, identity
     )
+    # agent-harness#1591: the early, zero-write answer; re-checked under the lock.
+    _refuse_attested_not_landed_over_observations(active, adjudicated.effects)
     digest = adjudicated.digest
     expected_digests = adjudicated.predecessor_digests
     derived = _derive_rotation_inventory(
@@ -5217,6 +5270,13 @@ def rotate_blocked_partition(
                         "the predecessor store changed between attestation and drain; re-attest over "
                         "the current bytes"
                     )
+                # agent-harness#1591: the side file is not digested; a writer that
+                # recorded an observation before the drain is caught here.
+                try:
+                    _refuse_attested_not_landed_over_observations(active, adjudicated.effects)
+                except PartitionRotationRefused:
+                    latch.resume_active()
+                    raise
                 if sealed is None:
                     sealed = derived
                     _atomic_write_json(inventory_path, sealed)

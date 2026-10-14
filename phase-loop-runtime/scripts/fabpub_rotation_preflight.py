@@ -317,6 +317,16 @@ def main() -> int:
                 ),
                 report,
             )
+            # agent-harness#1591: the verb's early, zero-write refusal of an
+            # attested_not_landed entry for a key with a provider-reported effect
+            # (or an unreadable side file); it re-checks under the lock.
+            _check(
+                "no_attested_not_landed_over_observed_effect",
+                lambda: L._refuse_attested_not_landed_over_observations(
+                    active, adjudicated.effects
+                ),
+                report,
+            )
             report["adjudication"] = {
                 "attestation_digest": adjudicated.digest,
                 "predecessor_digests": dict(adjudicated.predecessor_digests),

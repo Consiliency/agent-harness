@@ -103,7 +103,8 @@ The broker returns the state the store holds. It never invents a terminal state.
 enters the provider only after, within one `admissions.lock` acquisition, the on-disk
 owner equalled this attempt's (nonce included) and was unsealed and the key's row was
 `provider_call_in_flight`. A promotion landing at any point from that lock's release
-through the provider call is not covered (agent-harness#1591).
+through the provider call cannot be prevented; since agent-harness#1591 a definite
+provider outcome after it is kept rather than lost.
 
 - **A guard right before the provider call (agent-harness#1577).** Under one
   `admissions.lock` acquisition, `BrokerService._provider_entry_guard` checks that the
@@ -115,26 +116,72 @@ through the provider call is not covered (agent-harness#1591).
   This covers an older-runtime prober that promotes a live writer's owner after the
   owner section and before the guard. Such a prober does not honour the
   agent-harness#1313 liveness lock.
-- **Promotion from the guard's lock release through the provider call is not covered
-  (agent-harness#1591).** The guard releases `admissions.lock` before the
+- **Promotion from the guard's lock release through the provider call: the outcome
+  is kept (agent-harness#1591).** The guard releases `admissions.lock` before the
   `ADAPTER_STARTED` projection, request finalization, the service-generation lease
   acquisition and the call itself, and nothing re-checks after it. A promotion
   landing anywhere in that interval still makes one provider call, reported with
-  `provider_call_made: true`, and the key stays ambiguous.
+  `provider_call_made: true`, and the key stays ambiguous. The guard was not moved
+  closer to the call: that would only shrink the interval, and a refusal would then
+  leave the checkpoint at `ADAPTER_STARTED`, which no longer shows that no call was
+  made. Instead, when that call returns a definite outcome:
+  - The broker appends one `PostAmbiguityObservation.v1` row to
+    `post-ambiguity-observations.jsonl` beside the evidence log, under the same
+    `admissions.lock` acquisition and generation check that records a terminal. The
+    row carries the key, `observed_state` (`effect_terminal_observed` or
+    `no_effect_terminal_proven`), `evidence_reference` (the PR URL for an effect),
+    `head_sha`, `branch`, and the bindings: `ambiguity_digest` (sha256 of the blocked
+    row's raw line, the digest an attestation binds) and the attempt owner's
+    `owner_nonce` and `transaction_id`. The row is written only while the on-disk
+    owner is still exactly this attempt's and unsealed; otherwise nothing is
+    written and the result says `durable: false`.
+  - It is recorded before the writer releases its service-generation lease, so a
+    rotation cannot drain the writer first. A rotation that starts during the call
+    refuses at `DRAINING` and is retried.
+  - Nothing else changes. The evidence log gets no row (a terminal after an
+    ambiguity would make the partition unrotatable, and an older reader would treat
+    it as landed), the owner stays unsealed, the checkpoint stays `ADAPTER_STARTED`,
+    and the epoch stays blocked. The key is never resolved as landed automatically
+    (C-keep); clearing it always needs a rotation.
+  - The result is not accepted and has no `publish_result`. Its `reason` is
+    `effect_observed_after_ambiguity` or `no_effect_observed_after_ambiguity`, and
+    `observed_after_ambiguity` carries the observation. Every retry replays the
+    same answer with `provider_call_made: false`. The human route's handoff keeps
+    `next_step: adjudicate_publication_by_partition_rotation` and, for an effect,
+    adds `required_disposition: observed_landed`, `forbidden_disposition:
+    attested_not_landed` and the `attestation_inputs` (observed head, evidence URL,
+    effect-key suffix, owner nonce, transaction id). For a no-effect observation it
+    adds `supporting_evidence` and `required_disposition: null`: it supports
+    `attested_not_landed` without proving it.
+  - New runtimes refuse to dispose a key with a recorded effect, or any key while the
+    side file is unreadable (a torn append), `attested_not_landed`: the ceremony
+    (right after its zero-write adjudication, and again under the predecessor's lock
+    after the drain, before `INVENTORY_SEALED`), the read-only preflight, and the
+    re-admission
+    (`PublicationRecoveryRequired`, escalate to the maintainer), which catches a
+    disposition an older ceremony accepted.
+  - An ambiguous outcome or an exception from that call behaves as before.
 - **Mixed versions.** The agent-harness#1313 liveness lock and this guard protect a
   partition only once every runtime that writes it is upgraded. An older writer
-  has neither. The window from the guard's lock release through the provider call remains
-  regardless. Until every writer
-  is upgraded, an `attested_not_landed` attestation needs provider-side evidence,
-  such as the provider showing no pull request and no branch for the head. Absence of
-  local evidence is not enough. Provider-side absence is still the operator's
-  judgement, not proof (see the runbook's §3).
+  has neither, and records no observation: its provider outcome on an
+  already-ambiguous row is still lost. A crash after the provider returned and
+  before the side-file write loses it too. No reader, ceremony or attestation
+  builder of an earlier version opens the side file, and no rotation digests it,
+  so their answers are unchanged. An older ceremony may accept `attested_not_landed`
+  for an observed effect; a new runtime's re-admission then refuses, but an older
+  one can still publish twice. So until every writer and every ceremony runtime on
+  the partition is upgraded, an `attested_not_landed` attestation still needs
+  provider-side evidence, such as the provider showing no pull request and no
+  branch for the head. Absence of local evidence is not enough. Provider-side
+  absence is still the operator's judgement, not proof (see the runbook's §3).
 - **A failure after the provider returned is not ambiguity when the terminal is
   durable (agent-harness#1574).** If the owner seal or the `TERMINAL_SEALED`
   projection fails after the terminal was recorded, the broker returns that
   terminal. The owner may stay unsealed with a known terminal. The next fresh
-  publish's `_block_unsealed_owner` seals it, and a retry replays the terminal. A
-  failure inside the provider call is still recorded as `outcome_ambiguous_blocked`.
+  publish's `_block_unsealed_owner` seals it, and a retry replays the terminal. The
+  terminal is recorded before the service-generation lease is released, so a failed
+  release is not ambiguity either (agent-harness#1591). A failure inside the provider
+  call is still recorded as `outcome_ambiguous_blocked`.
 - **A failure before the provider was entered is not ambiguity either.** A refused
   service-generation lease (a `DRAINING` writer latch, `WriterGenerationBlocked`) is
   re-raised as `ProviderEntryGenerationRefused`, which is still a

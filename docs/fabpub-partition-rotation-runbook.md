@@ -125,6 +125,16 @@ What the builder **enforces** (exit 2, nothing written):
   inventory.)
 - an `outcome_ambiguous_blocked` row exists for the key.
 
+What the builder **reports** without refusing (agent-harness#1591): every row of
+the container's `post-ambiguity-observations.jsonl` for the key — a provider
+outcome the broker saw after the key was already blocked — and whether it binds
+this blocked row. It prints a `WARNING` when `--observed-head` or
+`--evidence-url` differs from a recorded effect, and when the file is unreadable
+(the ceremony then refuses `attested_not_landed` for every key). A human
+publication handoff with `required_disposition: observed_landed` carries a
+pre-filled builder argv (`attestation_builder_command`, generation-0 containers
+only) with these inputs; fill in `--out` and `--attested-by`.
+
 What the builder **derives**, and the reviewer must re-check:
 
 - `ambiguity_digest` is the sha256 of the **latest** `outcome_ambiguous_blocked`
@@ -169,8 +179,11 @@ it can succeed (cutover-id grammar, repository snapshot, attestation
 location and readability, container receipt shape and non-ambiguity, bootstrap
 claim binding to this authority, active bootstrap, no foreign staging debris,
 no other rotation in progress, own-journal state, predecessor adjudication,
-inventory derivation, the sealed inventory on a pre-flip resume, and the
-writer-generation latch) by calling the same functions, then reports the drain
+no `attested_not_landed` entry for a key with a recorded post-ambiguity effect or
+while that side file is unreadable (`no_attested_not_landed_over_observed_effect`,
+agent-harness#1591), inventory derivation, the sealed inventory on a pre-flip
+resume, and the writer-generation latch) by calling the same functions, then
+reports the drain
 facts the verb will meet *after* its first row: the armed marker, held lease
 files, and live pre-FABPUB writers. Verdicts:
 
@@ -401,19 +414,38 @@ Runtime 0.7.24 and earlier refuse this retry after the rotation
 successor generation. Re-pin to a release that contains agent-harness#1296
 before rotating.
 
+**If the handoff says `required_disposition: observed_landed`, do not attest
+`attested_not_landed`.** The broker enters the provider only after, within one
+`admissions.lock` acquisition, the on-disk owner equalled its attempt's (nonce
+included) and was unsealed and the key's row was `provider_call_in_flight`
+(agent-harness#1577). A promotion landing at any point from that lock's release
+through the provider call (the `ADAPTER_STARTED` projection, request finalization,
+lease acquisition, the call itself) still makes one provider call, reported with
+`provider_call_made: true`. When that call returns a definite outcome the broker keeps
+it in `post-ambiguity-observations.jsonl` and every attempt and retry is answered with
+reason `effect_observed_after_ambiguity` (or `no_effect_observed_after_ambiguity`)
+and `observed_after_ambiguity` (agent-harness#1591). For an effect, the handoff keeps
+`next_step: adjudicate_publication_by_partition_rotation` and adds
+`required_disposition: observed_landed`, `forbidden_disposition:
+attested_not_landed` and `attestation_inputs` (observed head, evidence URL, effect-key
+suffix, owner nonce, transaction id); build the attestation from them (§3) and the
+retry after the rotation replays the PR as published. The ceremony, the preflight and
+the re-admission refuse `attested_not_landed` for such a key, and for every key while
+the side file is unreadable. If an older ceremony accepted one anyway, the retry is
+refused with `publication_recovery_required` naming the observed effect: escalate to
+the maintainer and do not re-publish. A no-effect observation is listed as
+`supporting_evidence` and leaves the judgement to you.
+
 **Before attesting `attested_not_landed`, check which runtimes write the partition.**
-The broker enters the provider only after, within one `admissions.lock`
-acquisition, the on-disk owner equalled its attempt's (nonce included) and was
-unsealed and the key's row was `provider_call_in_flight` (agent-harness#1577).
-Together with the agent-harness#1313 liveness lock, that protects a partition only
-once every runtime that writes it is upgraded. A promotion landing at any point from
-that lock's release through the provider call (the `ADAPTER_STARTED` projection,
-request finalization, lease acquisition, the call itself) is not covered by either; it
-still makes one provider call, reported with `provider_call_made: true`
-(agent-harness#1591). Until every writer is upgraded, base the disposition on
-provider-side evidence, such as no pull request and no branch for the head at the
-provider. Absence of local evidence is not enough, and provider-side absence remains
-the operator's judgement, not proof. A blocked result with `provider_call_made: false`
+The liveness lock, the guard and the observation protect a partition only once every
+runtime that writes it, and every runtime that runs its ceremony, is upgraded. An
+older writer records no observation, a crash between the provider's return and the
+side-file write loses it, and an older re-admitter can still publish an effect an
+older ceremony attested not landed. Until every runtime is upgraded, base the
+disposition on provider-side evidence, such as no pull request and no branch for the
+head at the provider. Absence of local evidence is not enough, and provider-side
+absence remains the operator's judgement, not proof. A blocked result with
+`provider_call_made: false`
 means that call never entered the provider. A retry that replays an earlier block
 also reports `false`, so it says nothing about the earlier attempt's effect. A failure between the owner section and
 the provider call (`record_intent`, a checkpoint projection, a refused lease) leaves
