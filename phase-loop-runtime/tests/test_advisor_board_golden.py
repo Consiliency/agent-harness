@@ -115,7 +115,7 @@ class GoldenPerLegLaunchTests(unittest.TestCase):
         # anchor: the codex effort literal really is in the argv both ways.
         self.assertIn("model_reasoning_effort=high", seam["cmd"])
 
-    def test_gemini_default_board_and_legacy_panel_share_argon_invocation(self) -> None:
+    def test_gemini_default_board_and_legacy_panel_share_flash_invocation(self) -> None:
         legacy, seam = self._exec_leg_pair("gemini", stdout="AGREE")
         self.assertEqual(legacy["cmd"], seam["cmd"])
         self.assertEqual(legacy["env"], seam["env"])

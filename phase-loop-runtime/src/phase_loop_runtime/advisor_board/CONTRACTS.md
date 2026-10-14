@@ -118,7 +118,7 @@ equivalence is proven by a test (not asserted in prose).
 ## IF-0-ABDFREEZE-4 — Back-compat contract · `fixtures.py` + `tests/test_advisor_board_backcompat.py`
 
 - The model-first `default` board (`DEFAULT_BOARD`) resolves four vendors in
-  `DEFAULT_BOARD_VENDOR_ORDER`: Codex/Sol, Gemini/Flash high, Claude/Opus 5.5, and
+  `DEFAULT_BOARD_VENDOR_ORDER`: Codex/Sol, Gemini/Argon medium, Claude/Opus 5.5, and
   Grok 4.7. The separate legacy `PANEL_LEGS` tuple and explicit `invoke_panel`
   API remain the frozen three-leg Codex/Gemini/Claude boundary.
 - `advisor-panel` stays a working alias of `advisor-board` — the rename + alias is

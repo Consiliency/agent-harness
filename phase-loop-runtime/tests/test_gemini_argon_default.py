@@ -9,9 +9,13 @@ default, ``gemini-3.8-flash``, stays an accepted explicit seat.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 import phase_loop_runtime.panel_invoker as pi
+from phase_loop_runtime.launcher import build_gemini_command
+from phase_loop_runtime.models import ModelSelection
 from phase_loop_runtime.advisor_board import backing, presets
 from phase_loop_runtime.advisor_board.composition import compose_review_board
 from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
@@ -68,6 +72,20 @@ def test_agy_renders_argon_with_effort_in_the_id(effort):
     assert render_agy_model(ARGON, effort) == f"{ARGON}-{effort}"
     assert render_agy_model(f"{ARGON}-{effort}") == f"{ARGON}-{effort}"
     assert agy_model_effort(f"{ARGON}-{effort}") == effort
+
+
+@pytest.mark.parametrize("model", [
+    "gemini-4-pro", "gemini-3-flash", "gemini-38-flash", "gemini-04-argon", "gemini-4.1-argon",
+    "gemini-4-bogus-high", "gemini-4-pro-high", "gemini-04-argon-medium", "gemini-4.1-argon-high",
+])
+def test_grammar_admits_gemini_4_argon_only(model):
+    # Only the literal ``gemini-4-argon`` lacks a minor version; every malformed or
+    # unregistered id still fails loud on the board renderer AND the launcher route.
+    with pytest.raises(ValueError, match="unmapped gemini model id"):
+        render_agy_model(model)
+    selection = ModelSelection(profile="execute", model=model, effort="high")
+    with pytest.raises(ValueError, match="unmapped gemini model id"):
+        build_gemini_command(Path("/repo"), selection, action="execute", context_file="ctx.md")
 
 
 def test_unknown_gemini_family_still_fails_loud():

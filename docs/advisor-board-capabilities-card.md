@@ -97,7 +97,7 @@ actionable message, before any subprocess is spawned. Source of truth:
 
 `gpt-6-sol` is an explicit seat (launch-tested on `codex` only). It answers to the `sol` alias, so it cannot fill a governed review's `grok` seat.
 
-`gemini-4-argon` (Gemini 4 Argon) is the Gemini default seat. `gemini-3.8-flash`, the prior default, stays registered and answers to the `gemini` alias, so explicit boards and user configs that name it keep working.
+`gemini-4-argon` (Gemini 4 Argon) is the Gemini default seat. `gemini-3.8-flash`, the prior default, stays registered and answers to the `gemini` alias, so explicit boards and user configs that name it keep working. A president ladder rung that names the exact id `gemini-3.8-flash` (rather than the `gemini` alias) resolves only on a board that seats that model.
 
 `gpt-6.1-sol` is likewise an explicit seat, not a default: it answers to the `sol` alias, so a governed policy requiring `sol` accepts a board that seats it. It is launch-tested on `codex` only; the `opencode` pair is registered by vendor family and is not launch-verified. No shipped default names it. The production review entry points (`phase-loop advisor-board`, the governed review gate, run-train) compose `code-review` with `compose_review_board()` and do not read the user board file, so today a user `[[boards]]` entry cannot move their codex seat; the shipped default moves through the model roster (agent-harness#1171).
 
