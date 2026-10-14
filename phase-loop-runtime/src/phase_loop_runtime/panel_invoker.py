@@ -12680,6 +12680,11 @@ def _seat_route_for_spawn(
     recorded pass is refused with ``seat_sandbox_refused:jail_unqualified``."""
     if not eligible:
         return None, [], None
+    if leg == "gemini" and gemini_heartbeat._CANDIDATE is not None:
+        # The agy self-qualification worker (agent-harness#1076) runs a one-seat Gemini board
+        # to measure the heartbeat route itself: that seat takes the route it qualifies, never
+        # the jail (agent-harness#1170), or there is no heartbeat admission to observe.
+        return None, [], None
     route = (decide or _seat_jail.decide_seat_route)(
         leg, staged_tree_approved=getattr(review_authorization, "staged_tree_sha256", None)
         is not None,

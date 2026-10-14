@@ -490,3 +490,42 @@ def test_live_proxy_containment_rows(url, extra, method, refused):
             code == "000" and "SSL" in done.stderr), (code, done.stderr[-200:])
     else:
         assert code not in ("000", "403"), (code, done.stderr[-200:])
+
+
+# --------------------------------------------------------------------------------------
+# The agy self-qualification measures the SEALED heartbeat route: its own seat is never jailed.
+# --------------------------------------------------------------------------------------
+
+def _capable_spawn_route(monkeypatch, leg):
+    monkeypatch.setattr(seat_jail, "decide_seat_route", _REAL_DECIDE)
+    monkeypatch.setattr(seat_jail, "seat_sandbox_capable", lambda **kw: None)
+    monkeypatch.setattr(seat_jail, "_gemini_egress_unavailable", lambda: None)
+    monkeypatch.setattr(seat_jail, "gemini_operator_credential_present", lambda path=None: True)
+    return pi._seat_route_for_spawn(
+        leg, types.SimpleNamespace(staged_tree_sha256="a" * 64), eligible=True,
+        decide=lambda leg, **kw: _REAL_DECIDE(
+            leg, capable=lambda: None, gemini_egress_unavailable=lambda: None,
+            gemini_credential_present=lambda: True, claude_token_present=lambda: True, **kw),
+        qualify_on_first_use=lambda leg: types.SimpleNamespace(qualified=True, reason=None))
+
+
+def test_outside_a_qualification_a_capable_host_jails_the_gemini_seat(monkeypatch):
+    from phase_loop_runtime import gemini_heartbeat
+
+    monkeypatch.setattr(gemini_heartbeat, "_CANDIDATE", None)
+    route, _notices, refusal = _capable_spawn_route(monkeypatch, "gemini")
+    assert route == seat_jail.SeatRoute(True) and refusal is None
+
+
+def test_the_agy_qualification_worker_keeps_its_gemini_seat_on_the_heartbeat_route(monkeypatch):
+    """The qualification worker sets ``gemini_heartbeat._CANDIDATE`` and runs a one-seat
+    Gemini board to measure the heartbeat route's admission and quiescence. That seat must
+    take the heartbeat route it is qualifying, never the jail (a jailed seat has no heartbeat
+    admission to observe, so the qualification could never pass)."""
+    from phase_loop_runtime import gemini_heartbeat
+
+    monkeypatch.setattr(gemini_heartbeat, "_CANDIDATE", object())
+    assert _capable_spawn_route(monkeypatch, "gemini") == (None, [], None)
+    # A Claude seat in the same process is unaffected.
+    route, _notices, refusal = _capable_spawn_route(monkeypatch, "claude")
+    assert route == seat_jail.SeatRoute(True) and refusal is None
