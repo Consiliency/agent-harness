@@ -352,9 +352,17 @@ than in `attested_by`. The dispositions:
   The disposing rotation need not be the latest one (agent-harness#1310). The
   recovery walks the authenticated receipt chain from the active generation back to
   the first receipt that adjudicates the key. That newest adjudication is the current
-  word: a newer `observed_landed`, or a newer re-attestation, hides an older one. The
-  record names the `disposing_generation`, the `readmitting_generation` (its
-  `generation`) and the `intervening_rotations`. A disposition authorizes one
+  word: a newer `observed_landed`, or a newer re-attestation, hides an older one. When
+  a rotation intervened, the record also names the `disposing_generation`, the
+  `readmitting_generation` (its `generation`) and the `intervening_rotations`. With no
+  intervening rotation it carries none of them and is byte-for-byte the
+  agent-harness#1296 record, so a runtime of either version that retries in the same
+  generation computes the same record (agent-harness#1576). A reader also accepts a
+  record that carries the three fields with their no-rotation values (empty
+  `intervening_rotations`, both generations equal to `generation`), the shape the
+  agent-harness#1550 runtime wrote. Any other difference refuses with
+  `PublishTransactionConflict` before any owner write, and the human handoff names the
+  record as `conflicting_recovery_record`. A disposition authorizes one
   re-admission. Every generation from the disposing one up to the active one must hold
   no evidence and no adapter-start owner for the key, and no receipt on the walk may
   carry it as completed. Sealed generations are checked against the bytes their

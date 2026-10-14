@@ -442,7 +442,9 @@ the owner in place, and the next attempt promotes it. That case is
 rotations for other keys (agent-harness#1310). The retry walks the authenticated
 receipt chain back to the disposing rotation, and records both generations in
 the recovery record (`disposing_generation`, `readmitting_generation`,
-`intervening_rotations`). It is refused, with nothing written, once any
+`intervening_rotations`). These three fields appear only when a rotation
+intervened; a same-generation record keeps the agent-harness#1296 shape
+(agent-harness#1576). It is refused, with nothing written, once any
 generation since the disposing rotation holds evidence or an adapter-start
 owner for the key, or a later receipt carries or re-adjudicates it. A
 disposition authorizes one re-admission. Retrying promptly is still best, and a
@@ -454,7 +456,23 @@ did not land either. Two ambiguous pushes are not evidence of no effect.
 
 Do not retry on a runtime without agent-harness#1296 after the rotation: it
 refuses at admission and leaves an unsealed owner that blocks the new
-generation. If the retry is refused with `publication_recovery_required`, the
+generation.
+
+**Mixed runtime versions (agent-harness#1576).** Within one generation, a retry
+on an agent-harness#1296 runtime and a retry on a current runtime write the same
+recovery record, so either may follow a crash of the other after the record and
+before the owner. A runtime built from `main` after agent-harness#1550 and before this
+fix (never released) wrote the three fields even with no rotation. A current runtime
+accepts that record, but the agent-harness#1550 runtime refuses a current
+runtime's record. Retry such a refusal on a current runtime. Only a current runtime
+recovers after an intervening rotation. An older runtime refuses that retry with
+`publication_recovery_required` before it records anything.
+If a retry fails with `publication_transaction_conflicted` and the handoff names
+`conflicting_recovery_record`, that file disagrees with what this runtime
+authorizes. The file records an authorization, written before the owner. It does
+not prove that an admission happened. Compare it with the refusal detail and with
+that generation's evidence and adapter-start owner for the key before changing
+anything, and escalate to the maintainer. If the retry is refused with `publication_recovery_required`, the
 message names what did not bind and the next step for that case (no disposition, a disposition already used or
 superseded in a later generation, no transaction id, a different transaction, or a chain that does not authenticate). Nothing was written;
 fix the input and retry.
