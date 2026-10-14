@@ -323,7 +323,12 @@ generation silently: its writes through the broker API are fenced by the
 change to the predecessor's digested bytes between the attestation and the drain
 refuses the ceremony fail-closed (`the predecessor store changed between
 attestation and drain; re-attest over the current bytes`). The failure mode is a
-refused ceremony or a fenced writer, not a silent divergence.
+refused ceremony or a fenced writer, not a silent divergence. A routing client
+from `build_routing_broker_client()` that a surviving holder built before the
+flip refuses every later request with `WriterGenerationBlocked` (`this broker
+client is bound to retired partition generation …`) before it reads or writes
+either generation's store. It never rebinds itself, so restart that process
+(agent-harness#1315).
 
 ## 7. Execute — STATE CHANGE, needs go
 
@@ -381,10 +386,38 @@ provider outcome (for example `outcome_ambiguous_blocked` / `push-unconfirmed`,
 or an adapter exception), the publish transaction for the **current** head is
 past `COMMITTED_HEAD_RESOLVED` (normally `TERMINAL_SEALED`), and the operator
 has reviewed the case and established that the push did not land.
+Before any rotation, the human route (`publish_human_invoked_from_worktree`)
+answers such a publication, and every retry of it, with next step
+`adjudicate_publication_by_partition_rotation`: the result's `terminal_state` is
+`outcome_ambiguous_blocked`, and the handoff carries the `rotate_command` for the
+worktree and what the rotation requires (agent-harness#1312). Retrying before the
+rotation replays the same block with no provider call. If the review instead
+establishes that the push landed, the disposition is `observed_landed` (§3) and the
+retry after the rotation replays it as published.
 Runtime 0.7.24 and earlier refuse this retry after the rotation
 (`broker admission precondition denied`) and leave a new unsealed owner in the
 successor generation. Re-pin to a release that contains agent-harness#1296
 before rotating.
+
+**Before attesting `attested_not_landed`, check which runtimes write the partition.**
+The broker enters the provider only after, within one `admissions.lock`
+acquisition, the on-disk owner equalled its attempt's (nonce included) and was
+unsealed and the key's row was `provider_call_in_flight` (agent-harness#1577).
+Together with the agent-harness#1313 liveness lock, that protects a partition only
+once every runtime that writes it is upgraded. A promotion landing at any point from
+that lock's release through the provider call (the `ADAPTER_STARTED` projection,
+request finalization, lease acquisition, the call itself) is not covered by either; it
+still makes one provider call, reported with `provider_call_made: true`
+(agent-harness#1591). Until every writer is upgraded, base the disposition on
+provider-side evidence, such as no pull request and no branch for the head at the
+provider. Absence of local evidence is not enough, and provider-side absence remains
+the operator's judgement, not proof. A blocked result with `provider_call_made: false`
+means that call never entered the provider. A retry that replays an earlier block
+also reports `false`, so it says nothing about the earlier attempt's effect. A failure between the owner section and
+the provider call (`record_intent`, a checkpoint projection, a refused lease) leaves
+the owner in place, and the next attempt promotes it. That case is
+`attested_not_landed` by construction. See `docs/fabpub-pre-admission-ambiguity.md`,
+"Provider entry and failures around it".
 
 1. Leave the worktree, branch, commit, plan file and verification artifact
    exactly as they were. Do not make an empty commit, switch branch, force
@@ -405,10 +438,15 @@ before rotating.
    beside the checkpoint, which the SDK closeout then seals. A second retry is answered from evidence
    with no provider call.
 
-**Retry straight after the rotation.** Run step 5 before any other rotation or
-publication on that repository. A later rotation (for any key) supersedes the
-generation that disposed this key, and the retry is then refused with no rotation
-able to fix it (agent-harness#1310).
+**Retrying after a later rotation.** The disposition stays valid across later
+rotations for other keys (agent-harness#1310). The retry walks the authenticated
+receipt chain back to the disposing rotation, and records both generations in
+the recovery record (`disposing_generation`, `readmitting_generation`,
+`intervening_rotations`). It is refused, with nothing written, once any
+generation since the disposing rotation holds evidence or an adapter-start
+owner for the key, or a later receipt carries or re-adjudicates it. A
+disposition authorizes one re-admission. Retrying promptly is still best, and a
+retry is refused if any receipt in the chain fails to authenticate.
 
 **After an ambiguous recovery attempt**, generation N+1 is blocked again. Do not
 attest `attested_not_landed` a second time without new evidence that this attempt
@@ -417,8 +455,8 @@ did not land either. Two ambiguous pushes are not evidence of no effect.
 Do not retry on a runtime without agent-harness#1296 after the rotation: it
 refuses at admission and leaves an unsealed owner that blocks the new
 generation. If the retry is refused with `publication_recovery_required`, the
-message names what did not bind and the next step for that case (no disposition, no transaction id, a different
-transaction, or an inventory that does not authenticate). Nothing was written;
+message names what did not bind and the next step for that case (no disposition, a disposition already used or
+superseded in a later generation, no transaction id, a different transaction, or a chain that does not authenticate). Nothing was written;
 fix the input and retry.
 
 ## 9. Residuals carried out of the 2026-09-09 preparation
