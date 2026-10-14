@@ -116,3 +116,37 @@ def test_unqualified_display_argon_effort_is_rejected(model):
 def test_argon_embedded_effort_conflict_is_rejected():
     with pytest.raises(ValueError, match="conflicts"):
         render_agy_model("Gemini 4 Argon (High)", "low")
+
+
+# Port of agent-harness#1615 onto main: the preference must respect the shipped roster.
+# Unset, planning/review run on Argon and implementation on the roster's Flash id; set,
+# only the UNPINNED Gemini routes move.
+_PLANNING = ("roadmap", "plan", "review")
+
+
+def test_unset_preference_keeps_the_shipped_roster(monkeypatch):
+    from phase_loop_runtime.profiles import EXECUTOR_MODEL_OVERRIDES
+
+    monkeypatch.delenv("PHASE_LOOP_GEMINI_MODEL", raising=False)
+    for action in _PLANNING:
+        command = _launch(action)
+        assert command[command.index("--model") + 1] == "gemini-4-argon-high", action
+    for action in ("execute", "repair"):
+        command = _launch(action)
+        expected = render_agy_model(EXECUTOR_MODEL_OVERRIDES["gemini"][action], "high")
+        assert command[command.index("--model") + 1] == expected, action
+        assert "argon" not in expected
+
+
+def test_set_preference_moves_only_unpinned_gemini_routes(monkeypatch):
+    monkeypatch.delenv("PHASE_LOOP_GEMINI_MODEL", raising=False)
+    codex_plan = resolve_profile_for_executor(action="plan", executor="codex")
+    monkeypatch.setenv("PHASE_LOOP_GEMINI_MODEL", "gemini-3.8-flash")
+    for action in _PLANNING:
+        command = _launch(action)
+        assert command[command.index("--model") + 1] == "gemini-3.8-flash-high", action
+        pinned = _launch(action, model="gemini-4-argon")
+        assert pinned[pinned.index("--model") + 1] == "gemini-4-argon-high", action
+    plan_pin = _launch("plan", plan=ExecutionPolicyRule(model="gemini-4-argon"))
+    assert plan_pin[plan_pin.index("--model") + 1] == "gemini-4-argon-high"
+    assert resolve_profile_for_executor(action="plan", executor="codex") == codex_plan
