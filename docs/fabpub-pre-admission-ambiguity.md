@@ -97,6 +97,66 @@ promoted exactly as before.
   writer as dead (today's behaviour), and a crashed client's lock lasts until its
   lease expires (a retryable refusal meanwhile).
 
+## Provider entry and failures around it
+
+The broker returns the state the store holds. It never invents a terminal state. It
+enters the provider only after, within one `admissions.lock` acquisition, the on-disk
+owner equalled this attempt's (nonce included) and was unsealed and the key's row was
+`provider_call_in_flight`. A promotion landing at any point from that lock's release
+through the provider call is not covered (agent-harness#1591).
+
+- **A guard right before the provider call (agent-harness#1577).** Under one
+  `admissions.lock` acquisition, `BrokerService._provider_entry_guard` checks that the
+  on-disk owner is exactly this attempt's owner (nonce included) and unsealed, and
+  that the key's evidence row is `provider_call_in_flight`. If not, the attempt makes
+  no provider call and writes nothing. It returns the stored row (normally
+  `outcome_ambiguous_blocked`) with reason `outcome_ambiguous` and
+  `provider_call_made: false`, and the checkpoint stays `BROKER_INTENT_DURABLE`.
+  This covers an older-runtime prober that promotes a live writer's owner after the
+  owner section and before the guard. Such a prober does not honour the
+  agent-harness#1313 liveness lock.
+- **Promotion from the guard's lock release through the provider call is not covered
+  (agent-harness#1591).** The guard releases `admissions.lock` before the
+  `ADAPTER_STARTED` projection, request finalization, the service-generation lease
+  acquisition and the call itself, and nothing re-checks after it. A promotion
+  landing anywhere in that interval still makes one provider call, reported with
+  `provider_call_made: true`, and the key stays ambiguous.
+- **Mixed versions.** The agent-harness#1313 liveness lock and this guard protect a
+  partition only once every runtime that writes it is upgraded. An older writer
+  has neither. The window from the guard's lock release through the provider call remains
+  regardless. Until every writer
+  is upgraded, an `attested_not_landed` attestation needs provider-side evidence,
+  such as the provider showing no pull request and no branch for the head. Absence of
+  local evidence is not enough. Provider-side absence is still the operator's
+  judgement, not proof (see the runbook's §3).
+- **A failure after the provider returned is not ambiguity when the terminal is
+  durable (agent-harness#1574).** If the owner seal or the `TERMINAL_SEALED`
+  projection fails after the terminal was recorded, the broker returns that
+  terminal. The owner may stay unsealed with a known terminal. The next fresh
+  publish's `_block_unsealed_owner` seals it, and a retry replays the terminal. A
+  failure inside the provider call is still recorded as `outcome_ambiguous_blocked`.
+- **A failure before the provider was entered is not ambiguity either.** A refused
+  service-generation lease (a `DRAINING` writer latch) is re-raised. Nothing is
+  recorded beyond the `provider_call_in_flight` intent.
+- **Failures between the owner section and the provider call (agent-harness#1578).**
+  If the `ADMISSION_DURABLE` checkpoint projection itself fails while the checkpoint
+  is still `COMMITTED_HEAD_RESOLVED`, the broker restores the owner bytes the
+  section found. The restore takes a fresh `admissions.lock` acquisition. It runs
+  only if the generation still authorizes this writer, the owner is exactly this
+  attempt's, and the key has no evidence row. The admission line it leaves is
+  harmless, because `admit_next` dedups the retry by attempt id. Every other failure
+  in this window leaves the owner and the checkpoint as they are. That covers a
+  projection that became durable and then reported failure, `record_intent`, the
+  later projections, the guard's own authorization, and the lease refusal above.
+  Those failures fail closed and a rotation recovers them. The next attempt promotes
+  the owner, and `attested_not_landed` is truthful there because the provider was
+  never entered. Restoring the owner there would be wrong. Once the checkpoint is
+  admitted, a retry without an owner is refused by the already-admitted recovery
+  check, and no rotation can dispose a key that has no evidence.
+- A blocked publish result from `publish_from_worktree` now carries
+  `provider_call_made`. It is true only when this call entered the provider adapter.
+  A replay of stored evidence reports false.
+
 ## Recovery
 
 There is **no governed recovery** for a partition that is already blocked. What
@@ -272,8 +332,8 @@ than in `attested_by`. The dispositions:
   earlier after an adapter exception or crash. A retry of the same, unchanged
   head resumes that transaction, and the successor re-admits it as-is
   (agent-harness#1296): same transaction, commit, ref, owned paths and
-  plan/verification digests. It does so only when the successor's
-  authenticated receipt disposes the key `attested_not_landed` **and** the
+  plan/verification digests. It does so only when a receipt in the partition's
+  authenticated chain disposes the key `attested_not_landed` **and** the
   sealed attestation's `transaction_id` (bound from the predecessor's
   adapter-start owner) equals the transaction being admitted. The retry's `base`,
   `draft` and PR body must also equal the transaction's frozen values, because the
@@ -287,20 +347,27 @@ than in `attested_by`. The dispositions:
   plan/proof digests, and the frozen base, draft and PR-body digest). The record is
   owner-only (0600), written atomically through an exclusive no-follow temporary file,
   and read back no-follow; an existing record that is not a regular JSON file refuses
-  typed. The outcome lives in that generation's evidence. Because the broker leaves the
-  checkpoint where it is, single use is enforced under the admissions lock: the
-  generation's evidence must hold no record for the key. If the recovered attempt is
-  ambiguous again, the successor blocks like any partition.
+  typed. The outcome lives in that generation's evidence.
+
+  The disposing rotation need not be the latest one (agent-harness#1310). The
+  recovery walks the authenticated receipt chain from the active generation back to
+  the first receipt that adjudicates the key. That newest adjudication is the current
+  word: a newer `observed_landed`, or a newer re-attestation, hides an older one. The
+  record names the `disposing_generation`, the `readmitting_generation` (its
+  `generation`) and the `intervening_rotations`. A disposition authorizes one
+  re-admission. Every generation from the disposing one up to the active one must hold
+  no evidence and no adapter-start owner for the key, and no receipt on the walk may
+  carry it as completed. Sealed generations are checked against the bytes their
+  successor receipts sealed. The active generation is checked under the admissions
+  lock, because the broker leaves the checkpoint where it is. If the recovered attempt
+  is ambiguous again, that generation blocks like any partition.
 
   Any other already-admitted current-head transaction is refused with
   `PublicationRecoveryRequired` before any owner, admission or evidence write. The
   message names what did not bind and the next step for that case. In particular, when
-  the active generation holds neither a disposition nor evidence for the key, **no
-  rotation can help**: an attestation disposes only keys that are blocked in the
-  active generation. That happens when a later rotation (for any key) superseded the
-  generation that disposed this one. It is tracked as agent-harness#1310 and needs the
-  maintainer. Retry the publication straight after the disposing rotation, before any
-  other rotation or publication on that repository. The human route reports these
+  no receipt in the chain disposes the key and the active generation holds no
+  evidence for it, **no rotation can help**: an attestation disposes only keys that
+  are blocked in the active generation. That case needs the maintainer. The human route reports these
   refusals as `publication_recovery_required` with next step
   `resolve_publication_recovery_refusal`.
 

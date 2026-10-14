@@ -65,7 +65,7 @@ When invoked by `<harness>-phase-loop maintain-skills`, planner output is the de
    - durability: keep only what stays true after paths, SHAs, tool versions and code shapes change; rewrite a drifting fact as the rule behind it;
    - specificity: drop vague platitudes; rewrite a one-off fact as the pattern it shows, or drop it;
    - existing-skill-first: target the in-scope skill that is a real home; if none is, record a recurring pattern as a speculative candidate new skill;
-   - convergence: a theme supported by one kind of evidence only (one harness, or proposals without `What didn't` friction) must clear a higher bar on the other gates, else it is speculative;
+   - convergence: a theme supported only by proposals without `What didn't` friction must clear a higher bar on the other gates, else it is speculative;
    - skill-was-used: a theme that targets the reflecting skill passes; reflections do not yet record which other skills the agent read, so for another skill you cannot conclude it was read and propose `tune description: <target skill>` instead of a body edit.
 5. Produce a plan with:
    - frontmatter listing `corpus_manifest` and the manifest's `reflections_consumed` paths;
