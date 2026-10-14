@@ -221,8 +221,11 @@ def test_the_newest_disposition_is_the_current_word(tmp_path, monkeypatch):
     record = json.loads(
         p.transaction.store.recovery_path(p.transaction.transaction_id, 2).read_text(encoding="utf-8")
     )
-    assert record["cutover_id"] == ROTATION_ID_2
-    assert (record["disposing_generation"], record["intervening_rotations"]) == (2, [])
+    assert (record["cutover_id"], record["generation"]) == (ROTATION_ID_2, 2)
+    # agent-harness#1576: no rotation intervened since the newest disposition, so
+    # the record keeps the agent-harness#1296 shape (generation 2 disposes and
+    # re-admits) and carries none of the rotation fields.
+    assert not {"disposing_generation", "readmitting_generation", "intervening_rotations"} & set(record)
 
 
 def test_a_receipt_carrying_the_key_as_completed_refuses(tmp_path, monkeypatch):
