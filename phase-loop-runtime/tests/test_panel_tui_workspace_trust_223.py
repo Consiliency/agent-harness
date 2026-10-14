@@ -151,6 +151,23 @@ def test_no_modal_never_ready_is_editor_not_ready(tmp_path, monkeypatch):
     assert 3 <= elapsed < 30, f"must fire at the readiness deadline, not the stall; {elapsed:.1f}s"
 
 
+@pytest.mark.parametrize("origin", ["flag", "env", "settings"])
+def test_screen_reader_startup_notice_does_not_arm_editor(tmp_path, monkeypatch, origin):
+    _fast_timing(monkeypatch, ready_deadline=1.5, stall=2)
+    script = (
+        "stty raw -echo; "
+        f"printf '[Screen Reader Mode: on via {origin}]\\n'; "
+        "dd bs=1 count=1 of=wire.bin 2>/dev/null; sleep 60"
+    )
+    rc, _, status, _ = _run_claude_tui_session(
+        command=["sh", "-c", script], cwd=tmp_path, prompt="review this\n",
+        output_file=tmp_path / "panel-claude.txt", timeout_s=8,
+        env={"PATH": "/usr/bin:/bin"}, backstop_s=8,
+    )
+    assert rc != 0 and status == "claude_tui_editor_not_ready"
+    assert (tmp_path / "wire.bin").stat().st_size == 0
+
+
 def test_post_submit_trigger_text_does_not_block_or_inject(tmp_path, monkeypatch):
     """CRITICAL (self-referential): after submission, review OUTPUT containing the trust
     trigger strings ("Enter y/n:", "Please answer y or n") must NOT flip the leg to

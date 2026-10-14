@@ -313,8 +313,12 @@ def test_every_seat_is_pointed_at_the_sandbox(tmp_path):
         model=None, out_dir=tmp_path / "o", grok_effort_args=(), staged_tree=tree,
     )
     assert grok[grok.index("--cwd") + 1] == str(tree)
-    # For grok the ALLOW-LIST is the enforcement lever, not a sandbox flag.
-    assert "run_terminal_command" in grok[grok.index("--tools") + 1]
+    # Headless plan-mode shell/write prompts cancel the turn (agent-harness#1091).
+    tools = set(grok[grok.index("--tools") + 1].split(","))
+    assert tools == {"read_file", "grep", "list_dir", "search_tool"}
+    assert not tools.intersection({"run_terminal_command", "write", "search_replace"})
+    assert grok[grok.index("--permission-mode") + 1] == "plan"
+    assert "--always-approve" not in grok
 
     claude = panel_invoker._claude_tui_command(tree.parent, tmp_path / "live-repo")
     assert str(tree) in claude
@@ -398,6 +402,28 @@ def test_an_incapable_seat_gets_the_historical_sealed_preamble(tmp_path):
     assert "You MAY run commands" in capable
     assert "You MAY run commands" not in incapable
     assert "Do not use or request tools" in incapable
+
+
+def test_a_read_only_brokered_seat_is_not_asked_to_run_or_write(tmp_path):
+    tree = _sandbox(tmp_path)
+    prompt = panel_invoker._render_broker_inline_prompt(
+        "B", "I", "review", staged_tree=tree, read_only=True,
+    )
+    assert str(tree) in prompt
+    assert "read_file, grep, list_dir and search_tool" in prompt
+    assert "You cannot run commands" in prompt
+    assert "You MAY run commands" not in prompt
+    assert "run the test" not in prompt
+    assert "two inline frames below" in prompt
+    assert "do not look for separate copies in the clone" in prompt
+
+
+def test_a_command_capable_seat_is_told_where_its_inline_inputs_are(tmp_path):
+    tree = _sandbox(tmp_path)
+    prompt = panel_invoker._render_broker_inline_prompt("B", "I", "review", staged_tree=tree)
+    assert "You MAY run commands" in prompt
+    assert "two inline frames below" in prompt
+    assert "do not look for separate copies in the clone" in prompt
 
 
 def test_the_completeness_guard_covers_both_claude_routes():

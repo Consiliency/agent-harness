@@ -1544,8 +1544,14 @@ def seat_cwd() -> list[str]:
 # in the sandboxed process (measured on a hosted CI runner). The last step before the
 # provider therefore closes every descriptor except 0-2 and the declared token fd, as the
 # seat, and execs the provider. It runs /usr/bin/python3 in isolated mode with no site.
+# A supplied PTY is also attached as this session's controlling terminal, without stealing
+# one from another session. A pipe-based launch takes no terminal action.
 _FD_CLOSER = (
     "import os,sys\n"
+    "if os.isatty(0):\n"
+    " if os.getsid(0)!=os.getpid(): os.setsid()\n"
+    " import fcntl,termios\n"
+    " fcntl.ioctl(0,termios.TIOCSCTTY,0)\n"
     "keep={0,1,2}|{int(x) for x in sys.argv[1].split(',') if x}\n"
     "for name in os.listdir('/proc/self/fd'):\n"
     " fd=int(name)\n"
