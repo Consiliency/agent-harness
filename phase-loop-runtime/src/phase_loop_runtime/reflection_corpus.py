@@ -260,11 +260,19 @@ def read_reflection(root: Path, skill: str, path: Path) -> Reflection | None:
     )
 
 
-def redact(text: str) -> str:
-    """Strip closeout-ledger detail that belongs in the handoff, not a reflection."""
+def redact(text: str, *, bulleted_ledger: bool = False) -> str:
+    """Strip closeout-ledger detail that belongs in the handoff, not a reflection.
+
+    ``bulleted_ledger`` also drops a ledger line behind a list marker. Only the
+    Improvements section asks for it: in "What didn't" a bulleted ``Hosted CI:`` line
+    is usually real friction.
+    """
     kept = []
     for line in text.splitlines():
-        if line.strip().lstrip("-*+").strip().lower().startswith(_LEDGER_PREFIXES):
+        head = line.strip()
+        if bulleted_ledger:
+            head = head.lstrip("-*+").strip()
+        if head.lower().startswith(_LEDGER_PREFIXES):
             continue
         line = _URL.sub("<url>", line)
         line = _JSON_BLOB.sub("<json>", line)
@@ -320,7 +328,9 @@ def _settle_boilerplate_only(reflections: list[Reflection], cap_reason: str) -> 
         admitted: dict[tuple[str, str], set[tuple[str, str]]] = defaultdict(set)
         present: dict[tuple[str, str], set[tuple[str, str]]] = defaultdict(set)
         for reflection in reflections:
-            if reflection.excluded is None or reflection.excluded == cap_reason:
+            # An unconfirmed copy is still a carrier: it was only displaced by the cap,
+            # so it must not make the other branch's copies look single-branch.
+            if reflection.excluded in (None, cap_reason, "boilerplate_unconfirmed"):
                 for line in reflection.boilerplate:
                     key = (reflection.bare_skill, line)
                     branch = (reflection.repo_hash, reflection.branch_slug)
@@ -344,7 +354,7 @@ def _settle_boilerplate_only(reflections: list[Reflection], cap_reason: str) -> 
 
 
 def _norm_line(line: str) -> str:
-    return " ".join(line.strip().lstrip("-*").split())
+    return " ".join(line.strip().lstrip("-*+").split())
 
 
 def _content_lines(reflection: Reflection) -> set[str]:
@@ -451,7 +461,7 @@ def apply_quality_filter(
             _note(reflection, "section_dropped:improvements:repo_specific")
         for key in CONTENT_KEYS:
             if key in reflection.sections:
-                reflection.sections[key] = redact(reflection.sections[key])
+                reflection.sections[key] = redact(reflection.sections[key], bulleted_ledger=key == "improvements")
         if reflection.structured and not reflection.sections.get("didnt") and reflection.improvements_class != "agnostic":
             if reflection.boilerplate_proposals:
                 reflection.notes.append("boilerplate_only")
@@ -627,8 +637,9 @@ def consumed(corpus: Corpus) -> list[Reflection]:
     proposal. Every other reflection stays in place: admitted ones of a skill below
     the threshold so evidence can accumulate, and the rest of the excluded ones
     (a dropped repo-specific proposal with no friction, per-branch cap, a recurring
-    proposal the cap left unconfirmed, oversized) because they may still be evidence (agent-harness#1371). A reflection whose real
-    location leaves its scan root is never consumed, because ``archive`` would refuse it.
+    proposal the cap left unconfirmed, oversized) because they may still be evidence
+    (agent-harness#1371). A reflection whose real location leaves its scan root is
+    never consumed, because ``archive`` would refuse it.
     """
     ready = set(corpus.ready_skills())
     return [

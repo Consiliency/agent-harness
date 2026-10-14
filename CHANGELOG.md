@@ -30,11 +30,15 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   and copied friction lines alone still exclude as `no_friction_or_proposal`
   (agent-harness#1370). A single-branch copy that also dropped a repo-specific
   proposal is excluded as `improvements_repo_specific` instead and stays in place.
-  The per-branch cap and this check iterate until stable, so a cap-freed slot goes
-  to the branch's own friction. A copy whose other-branch carriers were only
-  displaced by the cap is `boilerplate_unconfirmed` and stays in place.
-- `redact` now drops bulleted closeout-ledger lines (`- Hosted CI: …`), and the
-  manifest's `boilerplate_lines_stripped` entries are capped like recurring lines.
+  The per-branch cap and this check iterate until stable, and a slot freed by an
+  excluded copy goes to the branch's own friction. When the cap displaced a
+  copy's other-branch carriers, the copy is not admitted: it is excluded as
+  `boilerplate_unconfirmed`, stays in place for a later pass, and still counts as a
+  carrier, so it never makes the other branch's copies look single-branch.
+- In the Improvements section, `redact` also drops bulleted closeout-ledger lines
+  (`- Hosted CI: …`). "What didn't" is unchanged, because a bulleted `Hosted CI:`
+  line there is usually real friction. The manifest's `boilerplate_lines_stripped`
+  entries are capped like recurring lines.
 
 ### FABPUB: the provider is entered only after an in-lock check that the key is still this attempt's in-flight record (agent-harness#1577, agent-harness#1574, agent-harness#1578, agent-harness#1576)
 

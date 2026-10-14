@@ -231,8 +231,38 @@ def test_the_cap_does_not_strand_a_branch_whose_recurring_proposal_it_displaced(
     assert "X friction." in rc.render_bundle(corpus)
 
 
-def test_a_bulleted_ledger_line_is_redacted():
-    assert rc.redact("- Hosted CI: passed on main.\n* Publication result: ok\nReal friction.") == "Real friction."
+def test_a_bulleted_ledger_line_is_redacted_only_from_improvements(tmp_path):
+    text = "- Hosted CI: passed on main.\n* Publication result: ok\nReal friction."
+    assert rc.redact(text, bulleted_ledger=True) == "Real friction."
+    assert rc.redact(text) == text
+
+    root = tmp_path / "skills"
+    friction = "- Hosted CI: the windows lane silently skipped tests."
+    path = put(root, "codex-plan-phase", "h", "b", "r", reflection(worked="", didnt=friction, improvements="- Hosted CI: passed on main."))
+
+    corpus, _ = rc.collect([root], min_reflections=1)
+
+    assert next(r for r in corpus.scanned if r.path == path).excluded is None
+    assert "the windows lane silently skipped tests." in rc.render_bundle(corpus)
+    assert "passed on main" not in rc.render_bundle(corpus)
+
+
+def test_an_unconfirmed_copy_still_corroborates_the_other_branch(tmp_path):
+    root = tmp_path / "skills"
+    proposal = "Add a preflight step that validates the lane index before drafting."
+    for day in (2, 3):
+        put(root, "codex-plan-phase", "h", "a", f"r{day}", reflection(
+            worked=f"A run {day} read the plan.", didnt="", improvements=proposal, stamp=f"2026-10-0{day}T00:00:00Z",
+        ))
+    b_copy = put(root, "codex-plan-phase", "h", "b", "r1", reflection(worked="", didnt="", improvements=proposal, stamp="2026-10-01T00:00:00Z"))
+    for day in (2, 3, 4):
+        put(root, "codex-plan-phase", "h", "b", f"r{day}", reflection(didnt=f"B friction {day}.", improvements="None.", stamp=f"2026-10-0{day}T00:00:00Z"))
+
+    corpus, boilerplate = rc.collect([root], per_branch_cap=3, min_reflections=1)
+    entry = next(r for r in corpus.scanned if r.path == b_copy)
+
+    assert str(b_copy) not in rc.manifest(corpus, boilerplate)["reflections_consumed"]
+    assert entry.excluded != "no_friction_or_proposal" and "boilerplate_single_branch" not in entry.notes
 
 
 def test_a_copied_ledger_line_is_not_a_proposal(tmp_path):
