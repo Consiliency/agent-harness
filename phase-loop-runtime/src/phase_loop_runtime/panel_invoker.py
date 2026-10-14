@@ -458,8 +458,8 @@ _SEAT_FD_CLOSER = (
 )
 
 
-def _seat_fd_closer(keep=(), terminal_fd=None) -> list[str]:
-    return ["/usr/bin/python3", "-I", "-S", "-c", _SEAT_FD_CLOSER,
+def _seat_fd_closer(keep=(), terminal_fd=None, *, python="/usr/bin/python3") -> list[str]:
+    return [python, "-I", "-S", "-c", _SEAT_FD_CLOSER,
             ",".join(str(descriptor) for descriptor in keep),
             str(terminal_fd if terminal_fd is not None else -1)]
 
@@ -4677,6 +4677,8 @@ class SeatProfile:
     #: at)`` for each directory of declared outputs the seat may replace atomically.
     #: ``outputs`` are the ones bound in place instead.
     output_dirs: tuple[tuple[str, str], ...] = ()
+    #: agent-harness#1335: fixed read-only exec paths for the candidate host policy.
+    codex_namespace_owner: bool = False
 
 
 _OWNED_LAUNCH = ContextVar("owned_provider_launch", default=False)
@@ -5130,6 +5132,7 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
         elif harness is not None:
             raise _sandbox_egress.SeatIdentityUnverified("seat_profile_unavailable")
         destination = "/run/phase-loop-seat/provider"
+        codex_namespace_owner = False
         if gemini_profile is not None:
             # Reuse the admitted image and blocked-wrapper handshake unchanged.
             destination = gemini_profile.executable
@@ -5163,6 +5166,17 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
                 mounts.extend(("--ro-bind", runtime, "/run/phase-loop-seat/codex-runtime"))
                 destination = "/run/phase-loop-seat/codex-runtime/bin/codex"
                 profile_env["PATH"] = "/run/phase-loop-seat/codex-runtime/codex-path:/usr/bin:/bin"
+                if writable_trees and SeatLaunchRole(role) is SeatLaunchRole.PROVIDER_REVIEW:
+                    with native.open("rb") as image:
+                        codex_namespace_owner = image.read(4) == b"\x7fELF"
+                    if codex_namespace_owner:
+                        from . import seat_jail_apparmor as aa
+
+                        mounts.extend(("--ro-bind", _seat_bind_source(Path("/usr/bin/python3").resolve()),
+                                       aa.CODEX_OWNER_PATH,
+                                       "--ro-bind", _seat_bind_source("/usr/bin/bwrap"),
+                                       aa.CODEX_BWRAP_PATH))
+                        profile_env["PATH"] = str(Path(aa.CODEX_BWRAP_PATH).parent) + ":" + profile_env["PATH"]
         token = _SEAT_REDACTIONS.set(tuple(redactions))
         stack.callback(_SEAT_REDACTIONS.reset, token)
         yield destination, SeatProfile(
@@ -5170,6 +5184,7 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
             outputs=tuple(outputs), pass_fds=tuple(sorted(pass_fds)),
             keep_fds=tuple(sorted(keep_fds)), broker_socket=broker_socket,
             writable_trees=tuple(writable_trees),
+            codex_namespace_owner=codex_namespace_owner,
         )
 
 
@@ -5576,6 +5591,11 @@ def launch_owned(argv, *, role, profile: SeatProfile, supervisor=None, **kwargs)
 
                 key_source = str(Path(seat_keyring_exec.__file__).resolve())
                 key_destination = "/run/phase-loop-seat/keyring.py"
+                python = "/usr/bin/python3"
+                if profile.codex_namespace_owner:
+                    from . import seat_jail_apparmor as aa
+
+                    python = aa.CODEX_OWNER_PATH
                 cwd = kwargs.get("cwd", os.getcwd())
                 view = _seat_filesystem_view(
                     cwd, readonly_paths=profile.readonly_paths, outputs=profile.outputs,
@@ -5598,8 +5618,8 @@ def launch_owned(argv, *, role, profile: SeatProfile, supervisor=None, **kwargs)
                                                    set(profile.pass_fds) | {descriptor}))
                 kwargs["process_owner"] = _seat_owner(view, filtered_network=filtered_network)
                 kwargs["probe_owner"] = probe_owner
-                command = ["/usr/bin/python3", "-I", "-S", key_destination, str(descriptor),
-                           *_seat_fd_closer(profile.keep_fds, profile.terminal_fd), *command]
+                command = [python, "-I", "-S", key_destination, str(descriptor),
+                           *_seat_fd_closer(profile.keep_fds, profile.terminal_fd, python=python), *command]
             if supervisor is not None:
                 owner = kwargs.pop("process_owner", ())
                 probe_owner = kwargs.pop("probe_owner", None)
