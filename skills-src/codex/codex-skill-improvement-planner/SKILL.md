@@ -93,12 +93,20 @@ reflections_consumed:
 ### <skill-name>
 - **Change**: <directive>
   - **Rationale**: <evidence>
+  - **Ladder level**: 4 (prose) — <why no check at level 3 can enforce this>
   - **Target**: `skills-src/codex/codex-<skill>/SKILL.md`
   - **Supporting reflections**: <manifest ids, e.g. R0012, R0040>
 
 ## Cross-cutting recommendations
+<Use the recommendation fields above, including ladder level, for every cross-cutting theme.>
 
 ## Mechanism candidates
+
+<For each: ladder level and why the level above fails, proposed mechanism, registry row and tracking issue if matched, and supporting reflections. Route to a filed issue, not a SKILL.md edit.>
+
+## Rejected themes
+
+<For each: theme, rejecting gate and supporting reflections.>
 
 ## Speculative / low-confidence notes
 

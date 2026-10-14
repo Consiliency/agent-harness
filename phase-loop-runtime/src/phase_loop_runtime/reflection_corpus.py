@@ -20,6 +20,7 @@ CLI::
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -443,6 +444,10 @@ def _header_field(value: str) -> str:
     return quote_body(" ".join(redact_text(value).split()))
 
 
+def _source_token(*parts: str) -> str:
+    return hashlib.sha256(json.dumps(parts).encode()).hexdigest()[:16] if all(parts) else "unknown"
+
+
 def render_bundle(corpus: Corpus) -> str:
     """The aggregator's input: admitted reflections grouped by bare skill.
 
@@ -455,6 +460,11 @@ def render_bundle(corpus: Corpus) -> str:
         lines += [f"## {skill} ({len(items)} reflections)", ""]
         for reflection in items:
             lines.append(f"### {reflection.id} — {_header_field(reflection.skill)} — {_header_field(reflection.timestamp)}")
+            lines.append(
+                f"**Source**: repo {_source_token(reflection.repo_hash)}; "
+                f"branch {_source_token(reflection.repo_hash, reflection.branch_slug)}; "
+                f"run {_source_token(reflection.repo_hash, reflection.branch_slug, reflection.run_id)}"
+            )
             if reflection.structured:
                 for key, label in labels:
                     body = reflection.sections.get(key, "")

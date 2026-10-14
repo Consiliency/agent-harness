@@ -217,6 +217,7 @@ reflections_consumed:
 ### <skill-name>
 - **Change**: <specific SKILL.md edit, directive-only imperative form>
   - **Rationale**: <recurring theme this addresses>
+  - **Ladder level**: 4 (prose) — <why no check at level 3 can enforce this>
   - **Target**: `skills-src/claude/<harness>-<skill>/SKILL.md`
   - **Supporting reflections**: R0012, R0040, R0101
 - …
@@ -224,10 +225,15 @@ reflections_consumed:
 (Repeat per skill. If a skill had no actionable themes, write: "No recurring themes above the `--min-reflections` threshold.")
 
 ## Cross-cutting recommendations
-<themes that affect multiple skills at once>
 
+<Use the recommendation fields above, including ladder level, for every cross-cutting theme.>
 ## Mechanism candidates
-<themes better enforced by a check than by prose; route each to a filed issue, not a SKILL.md edit>
+
+<For each: ladder level and why the level above fails, proposed mechanism, registry row and tracking issue if matched, and supporting reflections. Route to a filed issue, not a SKILL.md edit.>
+
+## Rejected themes
+
+<For each: theme, rejecting gate and supporting reflections.>
 
 ## Speculative / low-confidence notes
 <one-off feedback worth recording but not acting on yet>

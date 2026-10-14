@@ -3,6 +3,18 @@
 Tracking: agent-harness#1321. Change under test: the aggregator prompt with eight admission
 gates, a ladder level on every recommendation, and the rule→enforcer registry as input.
 
+## Follow-up corrections (2026-10-14)
+
+The measurements below describe the original prompt, not a rerun of the corrected
+version. agent-harness#1588 now incorporates the durable-pattern and speculative-routing
+refinements from agent-harness#1587. It also supplies opaque source identifiers in every
+bundle entry and preserves the ladder and rejected themes in every final plan template.
+The original Claude aggregator did not receive repo/branch identity; its convergence
+classifications below therefore do not establish source independence. Skill-read evidence
+for a different target is absent, not proof that it was skipped (agent-harness#1586).
+Six regression cases failed before the source/template fixes; behavioral A/B replication
+still belongs to REPORT 2.1.
+
 ## Method
 
 - Corpus: `python3 -m phase_loop_runtime.reflection_corpus collect --min-reflections 2` over

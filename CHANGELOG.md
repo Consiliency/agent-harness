@@ -19,6 +19,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   rule→enforcer registry, and the planner passes it to the aggregator. A recurring theme
   on a rule that already has an enforcer, or on a tracked gap, becomes a mechanism
   candidate instead of more prose.
+- Bundles carry opaque repo/branch/run identities so convergence can distinguish
+  independent support. Every planner's final template preserves ladder levels and
+  rejected themes; missing skill-read evidence remains inconclusive.
 
 ### FABPUB: the provider is entered only after an in-lock check that the key is still this attempt's in-flight record (agent-harness#1577, agent-harness#1574, agent-harness#1578, agent-harness#1576)
 

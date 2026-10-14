@@ -84,6 +84,43 @@ def test_unstructured_headings_cannot_open_bundle_sections(tmp_path):
     assert "**Remaining work**" in bundle and "Loose notes about friction." in bundle
 
 
+def test_bundle_exposes_opaque_source_identity_to_every_aggregator(tmp_path):
+    root = tmp_path / "skills"
+    for repo, branch, run, skill in (
+        ("private-product", "private-branch", "run1", "codex-plan-phase"),
+        ("private-product", "private-branch", "run2", "codex-plan-phase"),
+        ("private-product", "other-branch", "run3", "codex-plan-phase"),
+        ("other-product", "private-branch", "run4", "codex-plan-phase"),
+        ("private-product", "private-branch", "run1", "claude-plan-phase"),
+    ):
+        put(root, skill, repo, branch, run, reflection(didnt=f"Friction from {run} and {skill}."))
+
+    corpus, _ = rc.collect([root])
+    bundle = rc.render_bundle(corpus)
+    sources = re.findall(r"\*\*Source\*\*: repo ([0-9a-f]+); branch ([0-9a-f]+); run ([0-9a-f]+)", bundle)
+    by_id = dict(zip((r.id for r in corpus.admitted_by_skill()["plan-phase"]), sources))
+    by_source = {(r.repo_hash, r.branch_slug, r.run_id, r.harness): by_id[r.id] for r in corpus.admitted}
+    first = by_source[("private-product", "private-branch", "run1", "codex")]
+    second = by_source[("private-product", "private-branch", "run2", "codex")]
+    assert len(sources) == 5
+    assert first[:2] == second[:2] and first[2] != second[2]
+    assert first == by_source[("private-product", "private-branch", "run1", "claude")]
+    assert first[1] != by_source[("private-product", "other-branch", "run3", "codex")][1]
+    assert first[0] != by_source[("other-product", "private-branch", "run4", "codex")][0]
+    assert "private-product" not in bundle and "private-branch" not in bundle
+
+
+def test_legacy_bundle_sources_are_unknown_not_independent(tmp_path):
+    root = tmp_path / "skills"
+    path = root / "codex-plan-phase" / "reflections" / "legacy.md"
+    path.parent.mkdir(parents=True)
+    path.write_text(reflection())
+
+    bundle = rc.render_bundle(rc.collect([root], min_reflections=1)[0])
+
+    assert "**Source**: repo unknown; branch unknown; run " in bundle
+
+
 def test_exact_and_near_duplicates_collapse(tmp_path):
     root = tmp_path / "skills"
     body = reflection(didnt="Line one of friction.\nLine two of friction.\nLine three of friction.\nLine four.")
@@ -661,6 +698,16 @@ def test_aggregator_prompt_applies_every_gate_and_a_ladder_level(prompt):
 @pytest.mark.parametrize("planner", PLANNERS, ids=lambda p: p.parent.name)
 def test_planner_hands_the_aggregator_the_rule_registry(planner):
     assert "rule_enforcement.md" in planner.read_text()
+
+
+@pytest.mark.parametrize("planner", PLANNERS, ids=lambda p: p.parent.name)
+def test_final_plan_template_preserves_gate_and_ladder_decisions(planner):
+    template = planner.read_text().split("```markdown", 1)[1].split("```", 1)[0]
+    recommendation = template.split("## Recommendations by skill", 1)[1].split("## Cross-cutting recommendations", 1)[0]
+    assert "**Ladder level**" in recommendation
+    assert "## Rejected themes" in template and "gate" in template.split("## Rejected themes", 1)[1]
+    mechanism = template.split("## Mechanism candidates", 1)[1].split("## Rejected themes", 1)[0]
+    assert "level" in mechanism and "supporting" in mechanism
 
 
 def test_collector_writes_the_rule_registry_beside_the_bundle(tmp_path):
