@@ -64,7 +64,7 @@ When invoked by `<harness>-phase-loop maintain-skills`, planner output is the de
    - frontmatter listing `corpus_manifest` and the manifest's `reflections_consumed` paths;
    - recommendations by skill;
    - cross-cutting recommendations;
-   - mechanism candidates (route to a filed issue, not a skill edit);
+   - mechanism candidates (route each to a filed `agent-harness#N` issue per `docs/registers/deferred-findings.md`, not a skill edit);
    - speculative notes;
    - contradictions;
    - archival directive for `<harness>-skill-editor`.
