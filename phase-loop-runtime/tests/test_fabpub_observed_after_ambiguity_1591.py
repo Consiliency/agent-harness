@@ -17,7 +17,6 @@ windows themselves are in ``test_fabpub_owner_section_1314_1313_1311.py``.
 
 from __future__ import annotations
 
-import hashlib
 import importlib.util
 import io
 import json
@@ -33,7 +32,7 @@ from pathlib import Path
 import pytest
 
 from _fabpub_tdd_guard import FABPUB_SKIP_REASON, fabpub_capability_active
-from test_fabpub_admission_compat_789 import _durable_state, _routed
+from test_fabpub_admission_compat_789 import _routed
 from test_fabpub_owner_section_1314_1313_1311 import (
     AMBIGUOUS,
     IN_FLIGHT,
