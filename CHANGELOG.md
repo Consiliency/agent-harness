@@ -28,7 +28,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `--min-reflections`, so independent runs repeating one proposal make the skill
   due. Re-runs on one branch (note `boilerplate_single_branch`), copied ledger lines
   and copied friction lines alone still exclude as `no_friction_or_proposal`
-  (agent-harness#1370).
+  (agent-harness#1370). A single-branch copy that also dropped a repo-specific
+  proposal is excluded as `improvements_repo_specific` instead and stays in place.
+  The per-branch cap and this check iterate until stable, so a cap-freed slot goes
+  to the branch's own friction. A copy whose other-branch carriers were only
+  displaced by the cap is `boilerplate_unconfirmed` and stays in place.
+- `redact` now drops bulleted closeout-ledger lines (`- Hosted CI: …`), and the
+  manifest's `boilerplate_lines_stripped` entries are capped like recurring lines.
 
 ### FABPUB: the provider is entered only after an in-lock check that the key is still this attempt's in-flight record (agent-harness#1577, agent-harness#1574, agent-harness#1578, agent-harness#1576)
 

@@ -185,6 +185,56 @@ def test_a_proposal_repeated_on_one_branch_is_template_noise(tmp_path):
     assert "Recurring lines" not in rc.render_bundle(corpus)
 
 
+def test_a_single_branch_template_beside_a_repo_specific_proposal_is_not_archived(tmp_path):
+    root = tmp_path / "skills"
+    template = "Add a preflight step that validates the lane index before drafting."
+    paths = [
+        put(root, "codex-plan-phase", "h", "b", f"r{index}", reflection(
+            worked="", didnt="", improvements=f"- {template}\n- Fix agent-harness#10{index} in planner",
+            stamp=f"2026-10-0{index + 1}T00:00:00Z",
+        ))
+        for index in range(3)
+    ]
+
+    corpus, boilerplate = rc.collect([root], min_reflections=1)
+
+    assert {r.excluded for r in corpus.scanned} == {"improvements_repo_specific"}
+    assert all("section_dropped:improvements:repo_specific" in r.notes for r in corpus.scanned)
+    assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == []
+    assert all(path.exists() for path in paths)
+
+
+def test_the_cap_does_not_strand_a_branch_whose_recurring_proposal_it_displaced(tmp_path):
+    root = tmp_path / "skills"
+    proposal = "Add a preflight step that validates the lane index before drafting."
+    x_friction = put(root, "codex-plan-phase", "h", "x", "r0", reflection(didnt="X friction.", improvements="None.", stamp="2026-10-01T00:00:00Z"))
+    x_template = [
+        put(root, "codex-plan-phase", "h", "x", f"r{day}", reflection(
+            worked=f"X run {day} read the plan.", didnt="", improvements=proposal, stamp=f"2026-10-0{day}T00:00:00Z",
+        ))
+        for day in (2, 3, 4)
+    ]
+    y_carrier = put(root, "codex-plan-phase", "h", "y", "r0", reflection(didnt="Y old friction.", improvements=proposal, stamp="2026-10-01T00:00:00Z"))
+    for day in (2, 3, 4):
+        put(root, "codex-plan-phase", "h", "y", f"r{day}", reflection(didnt=f"Y friction {day}.", improvements="None.", stamp=f"2026-10-0{day}T00:00:00Z"))
+
+    corpus, boilerplate = rc.collect([root], per_branch_cap=3)
+    by_path = {r.path: r for r in corpus.scanned}
+    consumed = set(rc.manifest(corpus, boilerplate)["reflections_consumed"])
+
+    assert by_path[x_friction].excluded is None
+    assert by_path[y_carrier].excluded == "per_branch_cap:3"
+    assert {by_path[path].excluded for path in x_template} == {"boilerplate_unconfirmed"}
+    # X's friction feeds the plan; its template copies wait in place, not archived as noise.
+    assert str(x_friction) in consumed
+    assert not consumed & {str(path) for path in (*x_template, y_carrier)}
+    assert "X friction." in rc.render_bundle(corpus)
+
+
+def test_a_bulleted_ledger_line_is_redacted():
+    assert rc.redact("- Hosted CI: passed on main.\n* Publication result: ok\nReal friction.") == "Real friction."
+
+
 def test_a_copied_ledger_line_is_not_a_proposal(tmp_path):
     root = tmp_path / "skills"
     ledger = "Hosted CI: passed on the default lane matrix for this branch."
