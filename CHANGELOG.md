@@ -12,9 +12,15 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   it reads the staged tree and runs commands there. Until now it ran sealed, without tools.
 - The seat's egress goes through an allowlisting proxy: srt's TLS-terminating proxy
   (`@anthropic-ai/sandbox-runtime` 0.0.79, pinned by version, integrity and installed-file
-  digest), run on the host outside the seat. The seat's network namespace has no other
-  route. The proxy answers only the requests agy needs (measured, pinned as config). It
-  holds no credential, and the seat cannot reconfigure it.
+  digest, with the installed tree rejected if it holds an unexpected symlink), run on the
+  host outside the seat. The seat's network namespace has no other route, through a
+  fail-closed front that refuses any tunnel it cannot inspect as an allowed request, so the
+  proxy answers only the requests agy needs (measured, pinned as config). It holds no
+  credential, and the seat cannot reconfigure it.
+- The config directory's read-only parent is a mount the seat cannot rename, so the config
+  stays read-only (only its cache, log and the shell tool's bin are writable).
+- Both credentials the seat is given -- the model bearer and the proxy's session credential --
+  are scanned out of the returned review.
 - Install it once per user: `phase-loop seat-egress install` (needs node 22.12+ and npm);
   `phase-loop seat-egress status` reports it. The proxy's CA is generated per host, owner
   only, and only its certificate enters the seat. Without the layer the Gemini seat is

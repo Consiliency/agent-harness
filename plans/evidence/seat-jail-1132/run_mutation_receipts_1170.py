@@ -49,6 +49,13 @@ NO_BRIDGE_CHECK = ("                if not _proxy_bridge_confines(prefix, helper
                    "                if False:")
 NO_HOST_CHECK = ("  if (!innerHost(request, url)) {", "  if (false) {")
 NO_SNI_CHECK = ("if (config.inner_sni_check) {", "if (false) {")
+# grok-A: neutralise the front's behaviour (splice a non-ClientHello first flight to srt,
+# which then opaque-tunnels it) instead of refusing it. Not a string deletion.
+FRONT_FORWARDS_ANYTHING = (
+    "      client.destroy(); // not a positively-inspected allowed-SNI ClientHello: no bytes upstream",
+    "      phase = 'spliced'; spliceToSrt(client, target, buf); // neutralised guard")
+# both SNI walls: the front's allow-check and srt's SNICallback hook.
+FRONT_ANY_SNI = ("    if (sni && hosts.has(sni)) {", "    if (sni) {")
 
 MUTATIONS: list[dict[str, object]] = [
     # -- live probe rows -------------------------------------------------------------------
@@ -61,8 +68,16 @@ MUTATIONS: list[dict[str, object]] = [
      "expect": "reached https://1.1.1.1/"},
     {"id": "probe-skip-inner-host-check", "kind": "probe", "edits": [(MJS, *NO_HOST_CHECK)],
      "expect": "reached b_tunnel_inner_host"},
-    {"id": "probe-skip-inner-sni-check", "kind": "probe", "edits": [(MJS, *NO_SNI_CHECK)],
-     "expect": "b_tunnel_inner_sni_only"},
+    {"id": "probe-fail-closed-front-neutralised", "kind": "probe", "edits": [(MJS, *FRONT_FORWARDS_ANYTHING)],
+     "expect": "reached attack_0x04_record_sni_storage"},
+    # NOTE: there is deliberately no SNI-wall probe mutation. On srt's terminated path the
+    # upstream is the CONNECT target regardless of the inner SNI, so neutralising the SNI
+    # checks (front allow-check + srt SNICallback hook) does not reach a non-allowlisted
+    # service: a trial mutation of both SURVIVED, confirming the SNI wall is defense-in-depth,
+    # not the load-bearing control. The load-bearing control against SNI cross-routing is the
+    # fail-closed front keeping srt on the terminated path (probe-fail-closed-front-neutralised,
+    # which reds). The president KEPT the SNI hook and deferred its behavioural coverage
+    # (claude-sni-not-pinned, follow-up).
     {"id": "probe-drop-tls-evidence", "kind": "probe",
      "edits": [(EP, '        "tls_inspection": True,\n', "")], "expect": "S4 requirement not met"},
     {"id": "probe-mount-ca-key", "kind": "probe", "edits": [], "env": {"PROBE_MUTATION": "mount-ca-key"},
@@ -96,10 +111,22 @@ MUTATIONS: list[dict[str, object]] = [
      "edits": [(PI, "            token_seen.append(True)\n            return True\n        seen[0]",
                 "            return False\n        seen[0]")],
      "nodes": [f"{T}::test_a_token_split_across_chunks_is_caught_before_it_is_kept"]},
-    {"id": "config-dir-writable", "kind": "test",
-     "edits": [(SJ, '    binds = ["--ro-bind", gemini_config, SEAT_GEMINI_CONFIG]',
-                '    binds = ["--bind", gemini_config, SEAT_GEMINI_CONFIG]')],
+    {"id": "config-ancestor-not-bound", "kind": "test",
+     # F006 structural: binding only antigravity-cli (not the ancestor .gemini) is the
+     # pre-fix shape the seat could rename around; the canonical-digest guard refuses it at
+     # launch, and the bind test catches it here. The live falsifier is the probe's
+     # config_ancestor_check row (p4-containment-egress.json f006_config_ancestor).
+     "edits": [(SJ, '    binds = ["--ro-bind", gemini_config, SEAT_GEMINI_DOTDIR]',
+                '    binds = ["--ro-bind", gemini_config + "/antigravity-cli", SEAT_GEMINI_CONFIG]')],
      "nodes": [f"{T}::test_the_gemini_jail_binds_its_config_read_only_and_only_the_measured_dirs_writable"]},
+    {"id": "install-skip-symlink-check", "kind": "test",
+     "edits": [(EP, "        reject_unexpected_symlinks(modules)\n", "        pass  # symlink check removed\n")],
+     "nodes": [f"{T}::test_verify_install_rejects_a_symlink_shadow_outside_bin"]},
+    {"id": "proxy-token-not-scanned", "kind": "test",
+     "edits": [(PI, '    if password:\n        secrets.append(password.encode("utf-8"))',
+                '    if password and False:\n        secrets.append(password.encode("utf-8"))')],
+     "nodes": [f"{T}::test_the_proxy_session_token_in_the_output_ends_the_leg",
+               f"{T}::test_both_seat_secrets_are_scanned"]},
     {"id": "tree-made-a-workspace", "kind": "test",
      "edits": [(PI, '        "--disable-slash-commands", "--input-format", "stream-json",\n        "--output-format", "stream-json", "--print=", "--print-timeout", "0",\n    ]',
                 '        "--disable-slash-commands", "--input-format", "stream-json",\n        "--output-format", "stream-json", "--print=", "--print-timeout", "0",\n        "--add-dir", _seat_jail.SEAT_TREE,\n    ]')],

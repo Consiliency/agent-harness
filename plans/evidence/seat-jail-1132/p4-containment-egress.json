@@ -9,7 +9,7 @@
       "token.expiry",
       "token.token_type"
     ],
-    "remaining_lifetime_at_staging_s": 1431,
+    "remaining_lifetime_at_staging_s": 3391,
     "secret_keys_present": [],
     "token_value_is_nonempty_string": true
   },
@@ -33,7 +33,7 @@
     "staged_copy_unchanged": true,
     "status": "SUCCESS"
   },
-  "agy_version": "1.3.3",
+  "agy_version": "1.3.5",
   "b_direct_without_proxy": {
     "https://1.1.1.1/": {
       "connect_code": "000",
@@ -52,6 +52,18 @@
       "real_reply": false,
       "refused_by_proxy": false,
       "refused_by_request_filter": false
+    }
+  },
+  "b_fail_closed_front": {
+    "attack_0x04_record_sni_storage": {
+      "reached_a_service": false,
+      "result": "UPSTREAM_BYTES 0",
+      "upstream_bytes": 0
+    },
+    "attack_standard_hello_sni_storage": {
+      "reached_a_service": false,
+      "result": "UPSTREAM_BYTES 0",
+      "upstream_bytes": 0
     }
   },
   "b_forbidden_hosts": {
@@ -158,9 +170,10 @@
     ],
     "ca_sha256": "68dcd17828fb7b6975ea9a7e9ead4ee95f8af42015b12a27be2be648c92960d7",
     "direct_egress": "no route",
+    "fail_closed_front": true,
     "inner_host_check": true,
     "inner_sni_check": true,
-    "mechanism": "namespace without uplink; one loopback port bridged to srt's TLS-terminating proxy on the host",
+    "mechanism": "namespace without uplink; one loopback port bridged to a fail-closed front over srt's TLS-terminating proxy on the host",
     "proxy": {
       "integrity": "sha512-WjBmS9fbTpnQwQkM9SU+JjhM2CcXo9eWEELktY1100RMvTy/jPhP44yZ3NXhh+GHB350OgPbM3+FubE5WVRtSA==",
       "package": "@anthropic-ai/sandbox-runtime",
@@ -169,9 +182,28 @@
     },
     "tls_inspection": true
   },
+  "f006_config_ancestor": {
+    "config_write_refused": true,
+    "mkdir_refused": true,
+    "raw": [
+      "rename-refused",
+      "mkdir-refused",
+      "write-refused",
+      "writable:bin",
+      "writable:cache",
+      "writable:log"
+    ],
+    "rename_refused": true,
+    "writable_dirs": [
+      "bin",
+      "cache",
+      "log"
+    ]
+  },
+  "f006_holds": true,
   "gemini_route_code": null,
   "issue": "agent-harness#1170",
-  "recorded_at": "2026-10-12T22:13:14+00:00",
+  "recorded_at": "2026-10-14T21:06:18+00:00",
   "result": "pass",
   "ruling": "maintainer 'prove then enable', 2026-09-29; plan agent-harness#1244 S3/S4",
   "s4": {

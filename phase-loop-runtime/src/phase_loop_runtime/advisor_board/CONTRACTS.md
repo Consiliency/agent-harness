@@ -1451,19 +1451,24 @@ are recorded on agent-harness#1132.
   an unstaged review and the Gemini seat (agent-harness#1244).
 - **The jailed route is Claude and Gemini.** `JAILED_LEGS` is exactly `{"claude",
   "gemini"}`. The Gemini seat (agent-harness#1170) runs agy with its tools in its own jail:
-  its config directory is the parent-built access-token-only copy, bound read-only with only
-  `bin`, `cache` and `log` writable; its cwd is an empty workspace and the tree is never an
-  `--add-dir`, so agy loads no workspace file from the tree (P3); a subagent or any event P3
-  did not record ends the leg with `gemini_seat_subagent_or_unknown_event`. Its network
-  namespace has no uplink: one loopback port is bridged to srt's TLS-terminating proxy on the
-  host (`@anthropic-ai/sandbox-runtime`, pinned by version, integrity and installed-file
-  digest), which answers only the pinned request allowlist
-  (`seat_egress/gemini-allowlist.json`) and refuses a Host or SNI inside a tunnel that is not
-  allowed. The interception CA is the host's own (`$XDG_STATE_HOME/phase-loop/seat-egress-ca`,
-  0700, key 0600); only its certificate enters the seat, as its whole trust bundle. The leg's
-  evidence records `egress` (with `tls_inspection: true`). Without the layer the seat is
-  DEGRADED and not run with `gemini_seat_egress_unavailable`; its fix is
-  `phase-loop seat-egress install`.
+  the credential config directory (`antigravity-cli`) holds the parent-built access-token-only
+  copy and is read-only except `bin`, `cache` and `log`; its read-only ancestor `.gemini` is a
+  mount point the seat cannot rename, so the config cannot be made writable through its parent
+  (only agy's own `.gemini/config` runtime state is writable). Its cwd is an empty workspace and
+  the tree is never an `--add-dir`, so agy loads no workspace file from the tree (P3); a subagent
+  or any event P3 did not record ends the leg with `gemini_seat_subagent_or_unknown_event`. Its
+  network namespace has no uplink: one loopback port is bridged to a fail-closed front over srt's
+  TLS-terminating proxy on the host (`@anthropic-ai/sandbox-runtime`, pinned by version, integrity
+  and installed-file digest, the installed tree rejected if it holds any unexpected symlink). The
+  front forwards to srt only a positively-inspected ClientHello whose SNI is on the pinned request
+  allowlist (`seat_egress/gemini-allowlist.json`); every other first flight is refused, so no
+  Host or SNI inside a tunnel reaches a non-allowlisted service, and srt's opaque-tunnel fallback
+  is never reached. The interception CA is the host's own
+  (`$XDG_STATE_HOME/phase-loop/seat-egress-ca`, 0700, key 0600); only its certificate enters the
+  seat, as its whole trust bundle. Both credentials the leg hands the seat -- the model bearer and
+  the proxy's session credential -- are scanned out of the returned review. The leg's evidence
+  records `egress` (with `tls_inspection: true`). Without the layer the seat is DEGRADED and not
+  run with `gemini_seat_egress_unavailable`; its fix is `phase-loop seat-egress install`.
 - **EC-EXECFIND-2 gate.** A jailed route whose jail profile digest has no EC-EXECFIND-2
   falsifier pass recorded on THIS host is REFUSED before any effect with
   `seat_sandbox_refused:jail_unqualified`. The notice names the per-host qualification as

@@ -1,7 +1,7 @@
 {
   "schema": "seat_jail_mutation_receipts.v1",
   "issue": "agent-harness#1170",
-  "head": "46ba0989708689cc4dbb8d3c83ff9c1bfc8c33ae",
+  "head": "675b81ce008ffa42c4a481ac4e17e97ad573bc30",
   "receipts": [
     {
       "id": "probe-widen-allowlist",
@@ -16,7 +16,7 @@
       ],
       "mutated": {
         "returncode": 3,
-        "stdout": "{\n \"result\": \"stop\",\n \"stops\": [\n  \"gemini_seat_egress_unconfined: reached storage.googleapis.com, b_tunnel_inner_sni_only\"\n ],\n \"a_holds\": true,\n \"b_holds\": false,\n \"s4_holds\": true,\n \"gemini_route_code\": \"gemini_seat_egress_unconfined\"\n}\n",
+        "stdout": "{\n \"result\": \"stop\",\n \"stops\": [\n  \"gemini_seat_egress_unconfined: reached storage.googleapis.com, b_tunnel_inner_sni_only, attack_standard_hello_sni_storage\"\n ],\n \"a_holds\": true,\n \"b_holds\": false,\n \"s4_holds\": true,\n \"gemini_route_code\": \"gemini_seat_egress_unconfined\"\n}\n",
         "stderr": ""
       },
       "expected_reason": "reached storage.googleapis.com",
@@ -84,7 +84,7 @@
       "edits": [
         {
           "file": "phase-loop-runtime/src/phase_loop_runtime/seat_egress/proxy.mjs",
-          "file_sha256": "593d762951bd0493455af581ad40ea66a75630dadd8f5c9f8bfb298e51b51ef6",
+          "file_sha256": "2d58edabdea474bab359ea22d1d075302ee9e49833f81fdd9b90e93fda949dad",
           "old": "  if (!innerHost(request, url)) {",
           "new": "  if (false) {"
         }
@@ -98,22 +98,22 @@
       "result": "red_as_required"
     },
     {
-      "id": "probe-skip-inner-sni-check",
+      "id": "probe-fail-closed-front-neutralised",
       "kind": "probe",
       "edits": [
         {
           "file": "phase-loop-runtime/src/phase_loop_runtime/seat_egress/proxy.mjs",
-          "file_sha256": "593d762951bd0493455af581ad40ea66a75630dadd8f5c9f8bfb298e51b51ef6",
-          "old": "if (config.inner_sni_check) {",
-          "new": "if (false) {"
+          "file_sha256": "2d58edabdea474bab359ea22d1d075302ee9e49833f81fdd9b90e93fda949dad",
+          "old": "      client.destroy(); // not a positively-inspected allowed-SNI ClientHello: no bytes upstream",
+          "new": "      phase = 'spliced'; spliceToSrt(client, target, buf); // neutralised guard"
         }
       ],
       "mutated": {
         "returncode": 3,
-        "stdout": "{\n \"result\": \"stop\",\n \"stops\": [\n  \"gemini_seat_egress_unconfined: reached b_tunnel_inner_sni_only\"\n ],\n \"a_holds\": true,\n \"b_holds\": false,\n \"s4_holds\": true,\n \"gemini_route_code\": \"gemini_seat_egress_unconfined\"\n}\n",
+        "stdout": "{\n \"result\": \"stop\",\n \"stops\": [\n  \"gemini_seat_egress_unconfined: reached attack_0x04_record_sni_storage\"\n ],\n \"a_holds\": true,\n \"b_holds\": false,\n \"s4_holds\": true,\n \"gemini_route_code\": \"gemini_seat_egress_unconfined\"\n}\n",
         "stderr": ""
       },
-      "expected_reason": "b_tunnel_inner_sni_only",
+      "expected_reason": "reached attack_0x04_record_sni_storage",
       "result": "red_as_required"
     },
     {
@@ -122,7 +122,7 @@
       "edits": [
         {
           "file": "phase-loop-runtime/src/phase_loop_runtime/seat_egress_proxy.py",
-          "file_sha256": "3901c8bde27082b8d4f276b10c2d02372a2e85976e757bdd28a875184f02c67e",
+          "file_sha256": "bff1adabc12d70eb97cb259e6f7ecdc476b56ffdb69ca7ec266ca41887ea3023",
           "old": "        \"tls_inspection\": True,\n",
           "new": ""
         }
@@ -169,7 +169,7 @@
       "edits": [
         {
           "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-          "file_sha256": "60a4fa3a7598e0ea46fab6d2448476b8a8c854ffffb284f1c205bc91f130c0ff",
+          "file_sha256": "4f12b6ebeea8d0794f027e7134c4c919c845d24925e72816fbb493d80cad197f",
           "old": "        if reason is not None:\n            _LOG.warning(\"seat gemini: egress",
           "new": "        if False:\n            _LOG.warning(\"seat gemini: egress"
         }
@@ -180,11 +180,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "2 passed in 0.28s"
+        "summary": "2 passed in 0.30s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "2 failed in 0.58s"
+        "summary": "2 failed in 0.56s"
       },
       "result": "red_as_required"
     },
@@ -204,7 +204,7 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed in 0.25s"
+        "summary": "1 passed in 0.26s"
       },
       "mutated": {
         "returncode": 1,
@@ -228,11 +228,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed in 0.24s"
+        "summary": "1 passed in 0.28s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed in 0.28s"
+        "summary": "1 failed in 0.32s"
       },
       "result": "red_as_required"
     },
@@ -242,7 +242,7 @@
       "edits": [
         {
           "file": "phase-loop-runtime/src/phase_loop_runtime/seat_egress_proxy.py",
-          "file_sha256": "3901c8bde27082b8d4f276b10c2d02372a2e85976e757bdd28a875184f02c67e",
+          "file_sha256": "bff1adabc12d70eb97cb259e6f7ecdc476b56ffdb69ca7ec266ca41887ea3023",
           "old": "        if tree_sha256(modules) != SRT_TREE_SHA256:",
           "new": "        if False:"
         }
@@ -256,7 +256,7 @@
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed in 0.25s"
+        "summary": "1 failed in 0.32s"
       },
       "result": "red_as_required"
     },
@@ -266,7 +266,7 @@
       "edits": [
         {
           "file": "phase-loop-runtime/src/phase_loop_runtime/seat_egress_proxy.py",
-          "file_sha256": "3901c8bde27082b8d4f276b10c2d02372a2e85976e757bdd28a875184f02c67e",
+          "file_sha256": "bff1adabc12d70eb97cb259e6f7ecdc476b56ffdb69ca7ec266ca41887ea3023",
           "old": "    if stat.S_IMODE(info.st_mode) & 0o077:\n        return \"not 0700\"",
           "new": "    if False:\n        return \"not 0700\""
         }
@@ -290,13 +290,13 @@
       "edits": [
         {
           "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-          "file_sha256": "dca163fb2263664623d90d54f2c2fca388588eaba6ce6423aa55ee1b89c0f234",
+          "file_sha256": "c7437a50ab2bfe59870cb19dc85ab6e5402b4c6bb4b2ca7cdcf04632b0a1c71b",
           "old": "_JAILED_GEMINI_STEP_TYPES = frozenset({\"user_input\", \"agent_response\", \"tool\"})",
           "new": "_JAILED_GEMINI_STEP_TYPES = frozenset({\"user_input\", \"agent_response\", \"tool\", \"subagent\"})"
         },
         {
           "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-          "file_sha256": "dca163fb2263664623d90d54f2c2fca388588eaba6ce6423aa55ee1b89c0f234",
+          "file_sha256": "c7437a50ab2bfe59870cb19dc85ab6e5402b4c6bb4b2ca7cdcf04632b0a1c71b",
           "old": " not in _JAILED_GEMINI_STEP_TYPES or \"subagent_info\" in step:",
           "new": " not in _JAILED_GEMINI_STEP_TYPES:"
         }
@@ -306,7 +306,7 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "3 passed in 0.26s"
+        "summary": "3 passed in 0.28s"
       },
       "mutated": {
         "returncode": 1,
@@ -320,7 +320,7 @@
       "edits": [
         {
           "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-          "file_sha256": "dca163fb2263664623d90d54f2c2fca388588eaba6ce6423aa55ee1b89c0f234",
+          "file_sha256": "c7437a50ab2bfe59870cb19dc85ab6e5402b4c6bb4b2ca7cdcf04632b0a1c71b",
           "old": "            token_seen.append(True)\n            return True\n        seen[0]",
           "new": "            return False\n        seen[0]"
         }
@@ -330,23 +330,23 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed in 0.23s"
+        "summary": "1 passed in 0.25s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed in 0.26s"
+        "summary": "1 failed in 0.34s"
       },
       "result": "red_as_required"
     },
     {
-      "id": "config-dir-writable",
+      "id": "config-ancestor-not-bound",
       "kind": "test",
       "edits": [
         {
           "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-          "file_sha256": "60a4fa3a7598e0ea46fab6d2448476b8a8c854ffffb284f1c205bc91f130c0ff",
-          "old": "    binds = [\"--ro-bind\", gemini_config, SEAT_GEMINI_CONFIG]",
-          "new": "    binds = [\"--bind\", gemini_config, SEAT_GEMINI_CONFIG]"
+          "file_sha256": "4f12b6ebeea8d0794f027e7134c4c919c845d24925e72816fbb493d80cad197f",
+          "old": "    binds = [\"--ro-bind\", gemini_config, SEAT_GEMINI_DOTDIR]",
+          "new": "    binds = [\"--ro-bind\", gemini_config + \"/antigravity-cli\", SEAT_GEMINI_CONFIG]"
         }
       ],
       "nodes": [
@@ -354,11 +354,60 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed in 0.23s"
+        "summary": "1 passed in 0.25s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed in 0.27s"
+        "summary": "1 failed in 0.33s"
+      },
+      "result": "red_as_required"
+    },
+    {
+      "id": "install-skip-symlink-check",
+      "kind": "test",
+      "edits": [
+        {
+          "file": "phase-loop-runtime/src/phase_loop_runtime/seat_egress_proxy.py",
+          "file_sha256": "bff1adabc12d70eb97cb259e6f7ecdc476b56ffdb69ca7ec266ca41887ea3023",
+          "old": "        reject_unexpected_symlinks(modules)\n",
+          "new": "        pass  # symlink check removed\n"
+        }
+      ],
+      "nodes": [
+        "tests/test_gemini_seat_egress_1170.py::test_verify_install_rejects_a_symlink_shadow_outside_bin"
+      ],
+      "control": {
+        "returncode": 0,
+        "summary": "1 passed in 0.27s"
+      },
+      "mutated": {
+        "returncode": 1,
+        "summary": "1 failed in 0.31s"
+      },
+      "result": "red_as_required"
+    },
+    {
+      "id": "proxy-token-not-scanned",
+      "kind": "test",
+      "edits": [
+        {
+          "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
+          "file_sha256": "c7437a50ab2bfe59870cb19dc85ab6e5402b4c6bb4b2ca7cdcf04632b0a1c71b",
+          "old": "    if password:\n        secrets.append(password.encode(\"utf-8\"))",
+          "new": "    if password and False:\n        secrets.append(password.encode(\"utf-8\"))"
+        }
+      ],
+      "nodes": [
+        "tests/test_gemini_seat_egress_1170.py::test_the_proxy_session_token_in_the_output_ends_the_leg",
+        "tests/test_gemini_seat_egress_1170.py::test_both_seat_secrets_are_scanned"
+      ],
+      "control": {
+        "returncode": 0,
+        "summary": "2 passed in 0.28s"
+      },
+      "mutated": {
+        "returncode": 1,
+        "summary": "2 failed in 0.31s"
       },
       "result": "red_as_required"
     },
@@ -368,7 +417,7 @@
       "edits": [
         {
           "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-          "file_sha256": "dca163fb2263664623d90d54f2c2fca388588eaba6ce6423aa55ee1b89c0f234",
+          "file_sha256": "c7437a50ab2bfe59870cb19dc85ab6e5402b4c6bb4b2ca7cdcf04632b0a1c71b",
           "old": "        \"--disable-slash-commands\", \"--input-format\", \"stream-json\",\n        \"--output-format\", \"stream-json\", \"--print=\", \"--print-timeout\", \"0\",\n    ]",
           "new": "        \"--disable-slash-commands\", \"--input-format\", \"stream-json\",\n        \"--output-format\", \"stream-json\", \"--print=\", \"--print-timeout\", \"0\",\n        \"--add-dir\", _seat_jail.SEAT_TREE,\n    ]"
         }
@@ -382,7 +431,7 @@
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed in 0.28s"
+        "summary": "1 failed in 0.32s"
       },
       "result": "red_as_required"
     },
@@ -392,7 +441,7 @@
       "edits": [
         {
           "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
-          "file_sha256": "60a4fa3a7598e0ea46fab6d2448476b8a8c854ffffb284f1c205bc91f130c0ff",
+          "file_sha256": "4f12b6ebeea8d0794f027e7134c4c919c845d24925e72816fbb493d80cad197f",
           "old": "            if self.egress_proxy and item == self.egress_proxy:",
           "new": "            if False:"
         }
@@ -402,11 +451,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed in 0.26s"
+        "summary": "1 passed in 0.24s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed in 0.30s"
+        "summary": "1 failed in 0.31s"
       },
       "result": "red_as_required"
     },
@@ -416,7 +465,7 @@
       "edits": [
         {
           "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
-          "file_sha256": "19e6254c369d67c1b44d298b038f2d475b2579298004a580290a1fa85fe7c6f3",
+          "file_sha256": "c7437a50ab2bfe59870cb19dc85ab6e5402b4c6bb4b2ca7cdcf04632b0a1c71b",
           "old": "    if leg == \"gemini\" and gemini_heartbeat._CANDIDATE is not None:\n        # The agy self-qualification",
           "new": "    if False:\n        # The agy self-qualification"
         }
@@ -430,7 +479,7 @@
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed in 0.29s"
+        "summary": "1 failed in 0.32s"
       },
       "result": "red_as_required"
     },
@@ -440,7 +489,7 @@
       "edits": [
         {
           "file": "phase-loop-runtime/src/phase_loop_runtime/seat_egress_proxy.py",
-          "file_sha256": "3901c8bde27082b8d4f276b10c2d02372a2e85976e757bdd28a875184f02c67e",
+          "file_sha256": "bff1adabc12d70eb97cb259e6f7ecdc476b56ffdb69ca7ec266ca41887ea3023",
           "old": "        \"tls_inspection\": True,\n",
           "new": ""
         }
@@ -450,11 +499,11 @@
       ],
       "control": {
         "returncode": 0,
-        "summary": "1 passed in 0.25s"
+        "summary": "1 passed in 0.27s"
       },
       "mutated": {
         "returncode": 1,
-        "summary": "1 failed in 0.30s"
+        "summary": "1 failed in 0.32s"
       },
       "result": "red_as_required"
     }

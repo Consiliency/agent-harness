@@ -60,8 +60,21 @@ SEAT_TMP = SEAT_HOME + "/" + SEAT_TMP_DIRNAME
 # log and the shell tool's bin) are writable binds from the seat's home. Its cwd is an empty
 # workspace, so agy loads no workspace file from the tree (P3). Its trust bundle is the egress
 # CA's certificate alone.
-SEAT_GEMINI_CONFIG = SEAT_HOME + "/.gemini/antigravity-cli"
+# The agy config's ancestor `.gemini` is the read-only bind, not `antigravity-cli` itself:
+# a ro-bind protects only its exact mount point, and the seat owns `/seat/home`, so binding
+# only `antigravity-cli` would let the seat rename `.gemini` and recreate a writable config
+# under it (agent-harness#1170 F006). Binding `.gemini` makes that ancestor a mount point the
+# seat cannot rename, and only bin/cache/log are bound writable on top of it.
+SEAT_GEMINI_DOTDIR = SEAT_HOME + "/.gemini"
+SEAT_GEMINI_CONFIG = SEAT_GEMINI_DOTDIR + "/antigravity-cli"
+# Writable overlays on the read-only `.gemini` bind. The credential config dir
+# `antigravity-cli` is read-only except the three agy needs (the shell tool's bin, its
+# cache and its log); `.gemini/config` is agy's own project/runtime state (a different
+# directory from the credential config), without which agy cannot start a conversation.
+# The credential files themselves stay read-only, so the config dir is never writable
+# "beyond bin/cache/log" (agent-harness#1170 F006).
 GEMINI_WRITABLE_CONFIG_DIRS: tuple[str, ...] = ("bin", "cache", "log")
+GEMINI_WRITABLE_DOTDIR_DIRS: tuple[str, ...] = ("config",)
 HOST_GEMINI_WRITABLE_DIRNAME = ".agy-rw"
 SEAT_GEMINI_WORKSPACE = SEAT_HOME + "/workspace"
 SEAT_EGRESS_CA = SEAT_ROOT + "/egress-ca.pem"
@@ -1343,7 +1356,7 @@ def actual_profile_digest(jail: "SeatJail", arch: str | None = None) -> str:
                            jail.egress_proxy: _PLACEHOLDERS["egress_proxy"],
                            **{_gemini_writable_source(home, name):
                               _gemini_writable_source(_PLACEHOLDERS["home"], name)
-                              for name in GEMINI_WRITABLE_CONFIG_DIRS}})
+                              for name in (*GEMINI_WRITABLE_CONFIG_DIRS, *GEMINI_WRITABLE_DOTDIR_DIRS)}})
     owner = [substitute.get(item, item) for item in jail.process_owner]
     return _profile_digest_of(jail.leg, owner, installed_filter_sha256(jail), arch)
 
@@ -1459,11 +1472,16 @@ def _owner_argv(leg: str, *, tree: str, home: str, out: str, provider: str, bund
 
 
 def _gemini_binds(home: str, gemini_config: str | None, egress_ca: str | None) -> list[str]:
-    """The jailed Gemini seat's config and trust bundle (agent-harness#1170): the config
-    directory read-only, its writable subdirectories over it, the CA certificate read-only."""
+    """The jailed Gemini seat's config and trust bundle (agent-harness#1170 F006): the config
+    ancestor ``.gemini`` is read-only (so the seat cannot rename it and recreate a writable
+    config), only bin/cache/log are writable over it, and the CA certificate is read-only.
+    The staged ``gemini_config`` host directory IS the ``.gemini`` directory and holds
+    ``antigravity-cli/`` with the config files and the three empty mount points."""
     if not gemini_config or not egress_ca:
         raise SeatSandboxRefused(refused("jail_build"), "the gemini jail needs its config and CA")
-    binds = ["--ro-bind", gemini_config, SEAT_GEMINI_CONFIG]
+    binds = ["--ro-bind", gemini_config, SEAT_GEMINI_DOTDIR]
+    for name in GEMINI_WRITABLE_DOTDIR_DIRS:
+        binds += ["--bind", _gemini_writable_source(home, name), f"{SEAT_GEMINI_DOTDIR}/{name}"]
     for name in GEMINI_WRITABLE_CONFIG_DIRS:
         binds += ["--bind", _gemini_writable_source(home, name), f"{SEAT_GEMINI_CONFIG}/{name}"]
     return [*binds, "--ro-bind", egress_ca, SEAT_EGRESS_CA]
@@ -1510,10 +1528,11 @@ def build_seat_jail(
         raise SeatSandboxRefused(refused("jail_build"), "staged tree missing")
     directories = [home, out, home / SEAT_TMP_DIRNAME]
     if leg == "gemini":
-        directories += [home / ".gemini", home / ".gemini" / "antigravity-cli",
-                        home / "workspace", home / HOST_GEMINI_WRITABLE_DIRNAME,
+        # `.gemini` and `antigravity-cli` are the read-only bind (F006); only the empty
+        # workspace cwd and the writable bin/cache/log sources are created under seat-home.
+        directories += [home / "workspace", home / HOST_GEMINI_WRITABLE_DIRNAME,
                         *(home / HOST_GEMINI_WRITABLE_DIRNAME / name
-                          for name in GEMINI_WRITABLE_CONFIG_DIRS)]
+                          for name in (*GEMINI_WRITABLE_CONFIG_DIRS, *GEMINI_WRITABLE_DOTDIR_DIRS))]
     for directory in directories:
         try:
             os.mkdir(directory, 0o700)
@@ -1573,8 +1592,9 @@ def expected_mount_points(jail: SeatJail) -> list[str]:
               f"{SEAT_BIN}/{jail.leg}", SEAT_BUNDLE, SEAT_INSTRUCTIONS, SEAT_TREE, SEAT_HOME,
               SEAT_OUT}
     if jail.leg == "gemini":
-        points |= {SEAT_GEMINI_CONFIG, SEAT_EGRESS_CA,
-                   *(f"{SEAT_GEMINI_CONFIG}/{name}" for name in GEMINI_WRITABLE_CONFIG_DIRS)}
+        points |= {SEAT_GEMINI_DOTDIR, SEAT_EGRESS_CA,
+                   *(f"{SEAT_GEMINI_CONFIG}/{name}" for name in GEMINI_WRITABLE_CONFIG_DIRS),
+                   *(f"{SEAT_GEMINI_DOTDIR}/{name}" for name in GEMINI_WRITABLE_DOTDIR_DIRS)}
     for path in SYSTEM_READONLY_PATHS:
         if os.path.isdir(path) and not os.path.islink(path):
             points.add(path)

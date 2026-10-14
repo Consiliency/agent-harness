@@ -14,6 +14,7 @@ import json
 import os
 import shutil
 import subprocess
+import time
 import types
 from pathlib import Path
 
@@ -105,9 +106,12 @@ def test_the_gemini_jail_binds_its_config_read_only_and_only_the_measured_dirs_w
     try:
         binds = _binds(list(jail.process_owner))
         config = seat_jail.SEAT_GEMINI_CONFIG
-        assert ("--ro-bind", jail.gemini_config_dir, config) in binds
+        # F006: the read-only bind is the ancestor `.gemini`, not `antigravity-cli` itself,
+        # so the seat cannot rename the ancestor and recreate a writable config under it.
+        assert ("--ro-bind", jail.gemini_config_dir, seat_jail.SEAT_GEMINI_DOTDIR) in binds
+        assert not any(target == config for _k, _s, target in binds)  # config is never its own mount
         writable = sorted(target for kind, _src, target in binds
-                          if kind == "--bind" and target.startswith(config))
+                          if kind == "--bind" and target.startswith(config + "/"))
         assert writable == [f"{config}/{name}" for name in ("bin", "cache", "log")]
         assert ("--ro-bind", jail.egress_ca, seat_jail.SEAT_EGRESS_CA) in binds
         env = jail.env
@@ -159,9 +163,10 @@ def test_the_gemini_mount_set_is_declared(tmp_path):
     jail = _gemini_jail(tmp_path)
     try:
         points = seat_jail.expected_mount_points(jail)
-        for point in (seat_jail.SEAT_GEMINI_CONFIG, seat_jail.SEAT_EGRESS_CA,
+        for point in (seat_jail.SEAT_GEMINI_DOTDIR, seat_jail.SEAT_EGRESS_CA,
                       *(f"{seat_jail.SEAT_GEMINI_CONFIG}/{n}" for n in ("bin", "cache", "log"))):
             assert point in points
+        assert seat_jail.SEAT_GEMINI_CONFIG not in points  # inside the ro-bind, not its own mount
     finally:
         seat_jail.close_jail_fds(jail)
 
@@ -256,6 +261,24 @@ def test_verify_install_accepts_the_pinned_tree_and_refuses_a_changed_file(tmp_p
         seat_egress_proxy.verify_install(tmp_path)
 
 
+def test_verify_install_rejects_a_symlink_shadow_outside_bin(tmp_path, monkeypatch):
+    """F007: the digest skips symlinks and os.walk does not descend them, so a dependency
+    link would change what Node loads while the digest stayed the same. verify_install
+    rejects any symlink outside .bin before trusting the digest."""
+    modules = _fake_install(tmp_path)
+    monkeypatch.setattr(seat_egress_proxy, "SRT_TREE_SHA256", seat_egress_proxy.tree_sha256(modules))
+    # A .bin link is the clean-tree shape and is accepted.
+    (modules / ".bin").mkdir()
+    (modules / ".bin" / "srt").symlink_to("../@anthropic-ai/sandbox-runtime/dist/cli.js")
+    assert seat_egress_proxy.verify_install(tmp_path).name == "index.js"
+    # A link anywhere else redirects resolution without changing the digest: refused.
+    shadow = tmp_path / "evil"
+    shadow.mkdir()
+    (modules / "@anthropic-ai" / "sandbox-runtime" / "node_modules").symlink_to(shadow)
+    with pytest.raises(seat_egress_proxy.EgressLayerUnavailable, match="unexpected symlink"):
+        seat_egress_proxy.verify_install(tmp_path)
+
+
 def test_verify_install_refuses_another_version_or_integrity(tmp_path, monkeypatch):
     modules = _fake_install(tmp_path)
     monkeypatch.setattr(seat_egress_proxy, "SRT_TREE_SHA256", seat_egress_proxy.tree_sha256(modules))
@@ -299,6 +322,15 @@ def test_the_proxy_script_checks_the_inner_host_and_refuses_other_requests():
     assert "tlsTerminate" in script and "filterRequest" in script
     assert "the inner Host does not name the tunnel host" in script
     assert "the inner SNI is not on the seat allowlist" in script
+
+
+def test_the_proxy_script_has_a_fail_closed_front():
+    """grok-A: the front forwards to srt only a positively-inspected ClientHello whose SNI
+    is allowed, so srt never takes its opaque-tunnel fallback for a non-TLS first flight."""
+    script = seat_egress_proxy._data_path("proxy.mjs").read_text()
+    assert "clientHelloSNI" in script and "fail_closed_front" in script
+    # the refusal of anything not positively a ClientHello is a destroy, not a forward
+    assert "no bytes upstream" in script.lower() or "no positively-inspected" in script.lower()
 
 
 # --------------------------------------------------------------------------------------
@@ -366,10 +398,14 @@ def test_the_gemini_pointer_preamble_promises_no_internet_and_claudes_is_unchang
 # The jailed leg: the token never leaves, typed outcomes.
 # --------------------------------------------------------------------------------------
 
+_PROXY_TOKEN = "b7c0f2e1a9d34e5f8c1b2a3d4e5f6071"
+
+
 def _seat(tmp_path, token=b"ya29.secret-access-token-value"):
-    jail = types.SimpleNamespace(env={"HTTPS_PROXY": "http://srt:t@127.0.0.1:3128"},
-                                 profile_digest="d", profile_id="p", filter_digest="f",
-                                 redacted_owner=lambda: [], pass_fds=())
+    jail = types.SimpleNamespace(
+        env={"HTTPS_PROXY": f"http://srt:{_PROXY_TOKEN}@127.0.0.1:3128"},
+        profile_digest="d", profile_id="p", filter_digest="f",
+        redacted_owner=lambda: [], pass_fds=())
     return pi._JailedSeat(jail=jail, probe_jail=jail, holder_pid=1, token=token,
                           review_dir=tmp_path, seat_dir=tmp_path, expires_at=None)
 
@@ -415,7 +451,26 @@ def test_a_tooled_review_is_returned(monkeypatch, tmp_path):
     assert evidence["egress"] == {"tls_inspection": True}
     assert evidence["sandbox_filesystem_confined"] is True
     assert evidence["provider_cwd_class"] == "seat_jail_empty_workspace"
-    assert "http://srt:t@127.0.0.1:3128" not in json.dumps(evidence, default=str)
+    assert _PROXY_TOKEN not in json.dumps(evidence, default=str)
+
+
+def test_the_proxy_session_token_in_the_output_ends_the_leg(monkeypatch, tmp_path):
+    """F008: the proxy's session credential reaches the seat in HTTPS_PROXY; if it appears in
+    the returned review it is a leak, scanned like the model bearer."""
+    seat = _seat(tmp_path)
+    leak = json.dumps({"event": "init", "note": f"proxy={_PROXY_TOKEN}"}).encode()
+    stopped = _run_with(monkeypatch, [leak, b"more\n"])
+    sink = []
+    status, text = pi._exec_jailed_gemini_leg(seat, deadline_s=60, model="m", prompt="p",
+                                              broker_evidence={}, failure_detail_sink=sink)
+    assert (status, text) == ("DEGRADED", "") and sink[-1].template == "gemini_seat_token_in_output"
+    assert stopped == [len(leak)]
+
+
+def test_both_seat_secrets_are_scanned(tmp_path):
+    seat = _seat(tmp_path)
+    secrets = pi._jailed_gemini_secrets(seat)
+    assert seat.token in secrets and _PROXY_TOKEN.encode() in secrets
 
 
 def test_an_expired_copy_ends_the_leg_typed(monkeypatch, tmp_path):
@@ -490,6 +545,58 @@ def test_live_proxy_containment_rows(url, extra, method, refused):
             code == "000" and "SSL" in done.stderr), (code, done.stderr[-200:])
     else:
         assert code not in ("000", "403"), (code, done.stderr[-200:])
+
+
+def _client_hello(sni: bytes, rec_ver_lo: int = 0x03) -> bytes:
+    """A minimal TLS ClientHello record. ``rec_ver_lo`` sets the record-layer version low
+    byte: 0x04 is the president's attack value (srt classifies it non-TLS and opaque-tunnels)."""
+    ext = b"\x00\x00" + (len(sni) + 5).to_bytes(2, "big") + (len(sni) + 3).to_bytes(2, "big") \
+        + b"\x00" + len(sni).to_bytes(2, "big") + sni
+    body = b"\x03\x03" + b"\x00" * 32 + b"\x00" + b"\x00\x02\x13\x01" + b"\x01\x00" \
+        + len(ext).to_bytes(2, "big") + ext
+    hs = b"\x01" + len(body).to_bytes(3, "big") + body
+    return b"\x16\x03" + bytes([rec_ver_lo]) + len(hs).to_bytes(2, "big") + hs
+
+
+@pytest.mark.parametrize("label,sni,rec_ver_lo", [
+    ("opaque-tunnel attack: 0x04 record version, SNI storage", b"storage.googleapis.com", 0x04),
+    ("standard ClientHello, SNI storage (disallowed)", b"storage.googleapis.com", 0x03),
+])
+def test_live_fail_closed_front_lets_no_bytes_reach_a_non_allowlisted_service(label, sni, rec_ver_lo):
+    """grok-A: a CONNECT to the allowed host followed by a first flight that is either not a
+    standard ClientHello (0x04 record version) or names a non-allowlisted SNI reaches NO
+    service: the fail-closed front forwards nothing to srt, so srt never opaque-tunnels it."""
+    _layer_or_skip()
+    import base64
+    import socket
+
+    allowed = b"daily-cloudcode-pa.googleapis.com"
+    with socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    with seat_egress_proxy.start_proxy() as proxy:
+        token = proxy.proxy_url.split("srt:")[1].split("@")[0]
+        auth = base64.b64encode(f"srt:{token}".encode()).decode()
+        bridge = subprocess.Popen(["socat", f"TCP4-LISTEN:{port},bind=127.0.0.1,fork,reuseaddr",
+                                   f"UNIX-CONNECT:{proxy.socket}"])
+        try:
+            time.sleep(0.5)
+            s = socket.create_connection(("127.0.0.1", port), 5)
+            s.settimeout(8)
+            s.sendall(b"CONNECT " + allowed + b":443 HTTP/1.1\r\nHost: " + allowed
+                      + b":443\r\nProxy-Authorization: Basic " + auth.encode() + b"\r\n\r\n")
+            assert b"200" in s.recv(128)
+            s.sendall(_client_hello(sni, rec_ver_lo))
+            try:
+                reply = s.recv(4096)
+            except (TimeoutError, ConnectionResetError, OSError):
+                reply = b""
+            s.close()
+        finally:
+            bridge.terminate()
+            bridge.wait(5)
+    # No ServerHello, no application bytes: nothing reached an upstream service.
+    assert reply == b"", (label, reply[:64])
 
 
 # --------------------------------------------------------------------------------------

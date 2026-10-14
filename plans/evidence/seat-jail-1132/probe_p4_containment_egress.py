@@ -174,6 +174,57 @@ def body_of(seat: Seat, url: str, *extra: str) -> str:
     return done.stdout.strip()[:120]
 
 
+_FRONT_ATTACK = r'''
+import socket, sys, base64
+sni = sys.argv[1].encode(); recver = int(sys.argv[2]); token = sys.argv[3]
+allowed = b"daily-cloudcode-pa.googleapis.com"
+ext = b"\x00\x00" + (len(sni)+5).to_bytes(2,"big") + (len(sni)+3).to_bytes(2,"big") + b"\x00" + len(sni).to_bytes(2,"big") + sni
+body = b"\x03\x03" + b"\x00"*32 + b"\x00" + b"\x00\x02\x13\x01" + b"\x01\x00" + len(ext).to_bytes(2,"big") + ext
+hs = b"\x01" + len(body).to_bytes(3,"big") + body
+rec = b"\x16\x03" + bytes([recver]) + len(hs).to_bytes(2,"big") + hs
+auth = base64.b64encode(b"srt:"+token.encode()).decode()
+s = socket.create_connection(("127.0.0.1", 3128), 5); s.settimeout(8)
+s.sendall(b"CONNECT "+allowed+b":443 HTTP/1.1\r\nHost: "+allowed+b":443\r\nProxy-Authorization: Basic "+auth.encode()+b"\r\n\r\n")
+hdr = s.recv(128)
+if b"200" not in hdr:
+    print("NO200"); sys.exit(0)
+s.sendall(rec)
+try:
+    reply = s.recv(4096)
+except OSError:
+    reply = b""
+print("UPSTREAM_BYTES", len(reply))
+'''
+
+
+def front_attack(seat: Seat, sni: str, rec_ver_lo: int) -> dict:
+    """From inside the seat, CONNECT the allowed host then send a first flight that srt would
+    opaque-tunnel (non-standard record version) or a disallowed SNI; record the upstream bytes
+    that came back. The fail-closed front must let none through."""
+    token = pi.urllib.parse.urlsplit(seat.egress.proxy_url).password
+    done = seat.run(["/usr/bin/python3", "-I", "-c", _FRONT_ATTACK, sni, str(rec_ver_lo), token],
+                    timeout=60)
+    out = done.stdout.strip()
+    bytes_back = int(out.split()[-1]) if out.startswith("UPSTREAM_BYTES") else -1
+    return {"result": out[:40], "upstream_bytes": bytes_back, "reached_a_service": bytes_back > 0}
+
+
+def config_ancestor_check(seat: Seat) -> dict:
+    """F006: from inside the seat, the agy config's ancestor `.gemini` cannot be renamed and
+    the config cannot be made writable through it; only bin/cache/log are writable."""
+    script = (
+        'C=/seat/home/.gemini; '
+        'mv "$C" "$C.x" 2>/dev/null && echo RENAMED || echo rename-refused; '
+        'mkdir "$C/antigravity-cli/evil" 2>/dev/null && echo MKDIR || echo mkdir-refused; '
+        'echo x > "$C/antigravity-cli/antigravity-oauth-token" 2>/dev/null && echo WROTE || echo write-refused; '
+        'for d in bin cache log; do echo x > "$C/antigravity-cli/$d/probe" 2>/dev/null && echo "writable:$d" || echo "ro:$d"; done')
+    out = seat.run(["/bin/sh", "-c", script], timeout=60).stdout
+    return {"rename_refused": "rename-refused" in out, "mkdir_refused": "mkdir-refused" in out,
+            "config_write_refused": "write-refused" in out,
+            "writable_dirs": sorted(line.split(":")[1] for line in out.split() if line.startswith("writable:")),
+            "raw": out.split()}
+
+
 def agy_turn(seat: Seat) -> dict:
     command = [*pi._jailed_gemini_command("gemini-3.8-flash-medium")]
     event = json.dumps({"event": "user", "message": {"content": TURN_PROMPT}}) + "\n"
@@ -225,7 +276,7 @@ def main(argv: list[str]) -> int:
         with Seat(copy, egress, extra_binds=extra_binds) as seat:
             turn = agy_turn(seat)
             copy_after = (seat.seat_dir / seat_jail.HOST_GEMINI_CONFIG_DIRNAME
-                          / "antigravity-oauth-token").read_bytes()
+                          / "antigravity-cli" / "antigravity-oauth-token").read_bytes()
             token_files = seat.in_h(
                 f"grep -rlE 'access_token|refresh_token' {seat.seat_dir}/seat-home "
                 f"{seat.seat_dir}/seat-out 2>/dev/null | wc -l").strip()
@@ -255,6 +306,14 @@ def main(argv: list[str]) -> int:
             record["s4"]["ca_key_visible_in_jail"] = seat.run(
                 ["/bin/sh", "-c", "ls /seat; test -e /seat/egress-ca.key && echo KEY"]).stdout.count("KEY") > 0
             record["s4"]["trust_bundle_in_jail"] = seat.jail.env.get("SSL_CERT_FILE")
+            # grok-A: the fail-closed front. A first flight srt would opaque-tunnel (0x04
+            # record version) or a disallowed SNI must reach no service.
+            record["b_fail_closed_front"] = {
+                "attack_0x04_record_sni_storage": front_attack(seat, "storage.googleapis.com", 0x04),
+                "attack_standard_hello_sni_storage": front_attack(seat, "storage.googleapis.com", 0x03),
+            }
+            # F006: the config ancestor is non-replaceable; only bin/cache/log are writable.
+            record["f006_config_ancestor"] = config_ancestor_check(seat)
     expired = json.loads(copy)
     expired["token"]["expiry"] = "2020-01-01T00:00:00Z"
     with seat_egress_proxy.start_proxy() as egress, \
@@ -281,8 +340,14 @@ def main(argv: list[str]) -> int:
             reached.append(row)
     reached += [t for t, r in record["b_direct_without_proxy"].items()
                 if r["http_code"] not in ("", "000")]
+    reached += [name for name, r in record["b_fail_closed_front"].items() if r["reached_a_service"]]
     if reached:
         stops.append("gemini_seat_egress_unconfined: reached " + ", ".join(reached))
+    ancestor = record["f006_config_ancestor"]
+    if not (ancestor["rename_refused"] and ancestor["mkdir_refused"] and ancestor["config_write_refused"]):
+        stops.append("gemini_seat_config_writable_through_parent")
+    record["f006_holds"] = ancestor["rename_refused"] and ancestor["mkdir_refused"] \
+        and ancestor["config_write_refused"] and ancestor["writable_dirs"] == ["bin", "cache", "log"]
     s4 = record["s4"]
     if (s4["ca_in_host_trust_store"] or s4["ca_key_visible_in_jail"]
             or any(re.search(r"GOOGLE|GEMINI|AGY|TOKEN|PROXY|CREDENTIAL", k) for k in s4["proxy_env_keys"])

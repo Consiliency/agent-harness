@@ -114,6 +114,25 @@ def tree_sha256(root: Path) -> str:
     return digest.hexdigest()
 
 
+def reject_unexpected_symlinks(root: Path) -> None:
+    """Raise if the installed tree holds a symlink anywhere but ``node_modules/.bin/``.
+
+    The digest (``tree_sha256``) skips symlinks and ``os.walk`` does not descend symlinked
+    directories, so a link that redirects Node's module resolution (e.g. a ``dist`` or
+    ``node_modules`` link) would change what runs while the digest stayed the same
+    (agent-harness#1170 F007). A clean ``npm ci`` tree has links only under ``.bin``; any
+    other is refused, so the digest covers what actually runs."""
+    for directory, dirs, files in os.walk(root):
+        rel_dir = Path(directory).relative_to(root).as_posix()
+        for name in (*dirs, *files):
+            relative = name if rel_dir == "." else f"{rel_dir}/{name}"
+            if relative == ".bin" or relative.startswith(".bin/"):
+                continue
+            if (Path(directory) / name).is_symlink():
+                raise EgressLayerUnavailable(
+                    f"the installed srt tree has an unexpected symlink: {relative}")
+
+
 def _node() -> str:
     from .review_stage import trusted_host_executable
 
@@ -167,6 +186,9 @@ def verify_install(root: Path | None = None) -> Path:
     if packages.get(f"node_modules/{SRT_PACKAGE}", {}).get("integrity") != SRT_INTEGRITY:
         raise EgressLayerUnavailable("the installed srt is not the pinned package")
     try:
+        # Reject links first: the digest skips them, so the resolution boundary (what Node
+        # actually loads) must be link-free outside .bin for the digest to cover what runs.
+        reject_unexpected_symlinks(modules)
         if tree_sha256(modules) != SRT_TREE_SHA256:
             raise EgressLayerUnavailable("the installed srt files changed after install")
     except OSError as exc:
@@ -306,6 +328,8 @@ def start_proxy(*, inner_sni_check: bool = True) -> Iterator[SeatEgressProxy]:
             ready = _read_ready(process)
             if not ready.get("tls_inspection") or bool(ready.get("inner_sni_check")) != inner_sni_check:
                 raise EgressLayerUnavailable("the proxy did not start with TLS inspection")
+            if not ready.get("fail_closed_front"):
+                raise EgressLayerUnavailable("the proxy did not start its fail-closed front")
             token = str(ready["token"])
             yield SeatEgressProxy(
                 socket=str(ready["socket"]),
@@ -344,9 +368,10 @@ def egress_evidence(proxy: SeatEgressProxy) -> dict[str, object]:
     """What the seat's egress layer enforced, for the leg's evidence."""
     rules = allowlist()["allow"]
     return {
-        "mechanism": "namespace without uplink; one loopback port bridged to srt's "
-                     "TLS-terminating proxy on the host",
+        "mechanism": "namespace without uplink; one loopback port bridged to a fail-closed "
+                     "front over srt's TLS-terminating proxy on the host",
         "tls_inspection": True,
+        "fail_closed_front": True,
         "inner_host_check": True,
         "inner_sni_check": proxy.inner_sni_check,
         "proxy": {"package": SRT_PACKAGE, "version": SRT_VERSION, "integrity": SRT_INTEGRITY,

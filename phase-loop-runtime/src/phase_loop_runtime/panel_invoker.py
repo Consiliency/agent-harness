@@ -31,6 +31,7 @@ import time
 import unicodedata
 import json
 import threading
+import urllib.parse
 import uuid
 from collections import Counter
 from contextlib import contextmanager
@@ -11464,10 +11465,16 @@ def _approved_stage_or_refuse(review_dir: Path, review_authorization) -> Path:
     return tree
 
 
-def _write_gemini_config(config: Path, copy: bytes) -> None:
-    """The parent-built ``gemini-config/`` (D7): the access-token-only copy, an empty
-    settings file, an installation id, and the mount points of the writable subdirectories.
-    The in-H hand-off makes it the operator's, group n, 0750/0440."""
+def _write_gemini_config(dotdir: Path, copy: bytes) -> None:
+    """The parent-built ``.gemini`` directory (D7, F006): it holds ``antigravity-cli/`` with
+    the access-token-only copy, an empty settings file, an installation id, and the empty
+    mount points of the writable subdirectories. ``.gemini`` is the read-only bind, so the
+    seat cannot rename it; the in-H hand-off makes the tree the operator's, group n,
+    traversable (dirs 0550) and read-only to the seat (files 0440)."""
+    dotdir.mkdir(mode=0o700)
+    for name in _seat_jail.GEMINI_WRITABLE_DOTDIR_DIRS:
+        (dotdir / name).mkdir(mode=0o700)  # mount points for agy's runtime-state overlays
+    config = dotdir / "antigravity-cli"
     config.mkdir(mode=0o700)
     fd = _seat_jail.open_dir_nofollow(config)
     try:
@@ -11579,6 +11586,18 @@ def _prepare_jailed_gemini(
                        image_sha256=image_sha256, admission_class=admission_class)
 
 
+def _jailed_gemini_secrets(seat: "_JailedSeat") -> tuple[bytes, ...]:
+    """The credentials this leg hands the Gemini seat, each scanned out of the kept output:
+    the model bearer (the access-token copy) and the egress proxy's session credential,
+    which travels in the seat's ``HTTPS_PROXY`` (agent-harness#1170, F008)."""
+    secrets = [seat.token]
+    proxy_url = seat.jail.env.get("HTTPS_PROXY", "")
+    password = urllib.parse.urlsplit(proxy_url).password if proxy_url else None
+    if password:
+        secrets.append(password.encode("utf-8"))
+    return tuple(s for s in secrets if s)
+
+
 def _exec_jailed_gemini_leg(
     seat: _JailedSeat,
     *,
@@ -11602,16 +11621,22 @@ def _exec_jailed_gemini_leg(
     jail = seat.jail
     command = _jailed_gemini_command(model)
     protocol = _broker_gemini_stream_protocol(prompt, tooled=True)
+    # Both credentials this leg hands the seat are scanned out of everything the parent
+    # keeps: the model bearer (the copy's access token) and the egress proxy's session
+    # credential, which reaches the seat in HTTPS_PROXY. Either appearing in the output
+    # ends the leg as a leak (agent-harness#1170).
+    secrets = _jailed_gemini_secrets(seat)
+    longest = max((len(s) for s in secrets), default=1)
     seen: list[bytes] = [b""]
     token_seen: list[bool] = []
 
     def _guard(chunk: bytes) -> bool:
-        # The token can straddle two chunks: keep a tail as long as its longest encoding.
+        # A secret can straddle two chunks: keep a tail as long as its longest encoding.
         window = seen[0] + chunk
-        if _seat_jail.contains_secret(window, seat.token):
+        if any(_seat_jail.contains_secret(window, secret) for secret in secrets):
             token_seen.append(True)
             return True
-        seen[0] = window[-4 * len(seat.token):]
+        seen[0] = window[-4 * longest:]
         return False
 
     _record_broker_provider_evidence(
@@ -11669,8 +11694,9 @@ def _exec_jailed_gemini_leg(
             _seat_uid.record_retention(path)
         if retained:
             seat.notices.append("seat_sandbox_retained_after_teardown")
-    if token_seen or (proc is not None and _seat_jail.contains_secret(
-            f"{proc.stdout}{proc.stderr}".encode("utf-8", errors="replace"), seat.token)):
+    if token_seen or (proc is not None and any(
+            _seat_jail.contains_secret(f"{proc.stdout}{proc.stderr}".encode("utf-8", errors="replace"), secret)
+            for secret in secrets)):
         return _jailed_failure("gemini_seat_token_in_output", failure_detail_sink)
     if proc is None:
         return _jailed_failure("Gemini broker deadline exceeded", failure_detail_sink)
