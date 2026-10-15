@@ -91,12 +91,12 @@ def test_invalid_local_preference_fails_before_board_probes(monkeypatch, value):
     assert calls == []
     with pytest.raises(ValueError, match="PHASE_LOOP_GEMINI_MODEL"):
         resolve_profile_for_executor(action="execute", executor="gemini")
-    assert resolve_profile_for_executor(action="execute", executor="codex").model == "gpt-5.6-terra"
+    assert resolve_profile_for_executor(action="execute", executor="codex").model == "gpt-6.1-sol"
 
 
 def test_unset_preference_keeps_authored_gemini_tiers(monkeypatch):
     monkeypatch.delenv("PHASE_LOOP_GEMINI_MODEL", raising=False)
-    assert resolve_model_class("gemini", "worker") == "gemini-3.5-flash-high"
+    assert resolve_model_class("gemini", "worker") == "gemini-3.8-flash-high"
     assert resolve_model_class("gemini", "implementer") == "gemini-3.8-flash"
 
 
