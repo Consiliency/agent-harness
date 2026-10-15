@@ -82,6 +82,9 @@ jobs:
           # still refuses an engine without /dev/net/tun, so a proof run on an
           # unready engine is a red offload -- never a hosted green.
           OFFLOAD_PROOF: ${{ github.event_name == 'workflow_dispatch' && inputs.offload == true }}
+          # The engine host's docker-scoped login comes from repository configuration,
+          # never from this file: no value means the offload is not configured here.
+          OFFLOAD_SSH_USER_SET: ${{ vars.CI_OFFLOAD_SSH_USER != '' }}
         run: |
           set -euo pipefail
           trusted=false
@@ -104,11 +107,18 @@ jobs:
           if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$OFFLOAD_PROOF" = "true" ]; then
             ready=true
           fi
-          if [ "$trusted" = "true" ] && [ "$TS_AUTHKEY_SET" = "true" ] && [ "$ready" = "true" ]; then
+          if [ "$trusted" = "true" ] && [ "$TS_AUTHKEY_SET" = "true" ] && [ "$OFFLOAD_SSH_USER_SET" = "true" ] && [ "$ready" = "true" ]; then
             eligible=true
           fi
           echo "eligible=$eligible" >> "$GITHUB_OUTPUT"
-          echo "trusted=$trusted sandbox_ready=$OFFLOAD_SANDBOX_READY proof=$OFFLOAD_PROOF eligible=$eligible"
+          echo "trusted=$trusted sandbox_ready=$OFFLOAD_SANDBOX_READY proof=$OFFLOAD_PROOF ssh_user_set=$OFFLOAD_SSH_USER_SET eligible=$eligible"
+          # A proof run exists to exercise the offload path. One that cannot take it
+          # (no tailnet credential or no engine login configured) is a red, not a
+          # hosted green that reads as a passed proof.
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$OFFLOAD_PROOF" = "true" ] && [ "$eligible" != "true" ]; then
+            echo "::error::offload proof requested but the offload is not configured (tailnet credential set: $TS_AUTHKEY_SET, CI_OFFLOAD_SSH_USER set: $OFFLOAD_SSH_USER_SET)" >&2
+            exit 1
+          fi
 
   offload:
     name: suite (offloaded to ai)
@@ -162,6 +172,8 @@ jobs:
           eligible: ${{ needs.elig.outputs.eligible }}
           ts-oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           ts-oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
+          # Repository configuration; elig refuses the offload when it is empty.
+          ssh-user: ${{ vars.CI_OFFLOAD_SSH_USER }}
       - name: Upload offloaded junit evidence
         if: always()
         uses: actions/upload-artifact@v4
