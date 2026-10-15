@@ -13380,6 +13380,75 @@
       "task_summary": "Seat CLIs keep the last good version and qualify new versions on arrival; amends the agent-harness#1333 plan (agent-harness#1602)",
       "type": "detailed",
       "updated_at": "2026-10-14T03:59:00Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "artifact_state": "staged",
+      "created_at": "2026-10-13T02:16:41Z",
+      "file": "plans/phase-plan-v11-LOOPFIX.md",
+      "gate_status": "declared_not_produced",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20261013T021641Z-LOOPFIX-plan.md",
+      "if_gates_produced": [
+        "IF-0-LOOPFIX-1",
+        "IF-0-LOOPFIX-2"
+      ],
+      "lanes": [
+        "SL-0",
+        "SL-1",
+        "SL-2",
+        "SL-3",
+        "SL-4",
+        "SL-5"
+      ],
+      "lifecycle": [],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "LOOPFIX",
+      "plan_validation": "passed",
+      "planning_artifact_only": true,
+      "reflection_ref": null,
+      "review_status": "pending",
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v11.md",
+        "slug": "phase-plans-v11",
+        "status": "committed",
+        "type": "roadmap"
+      },
+      "slug": "phase-plan-v11-LOOPFIX",
+      "status": "committed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-10-13T02:16:41Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "created_at": "2026-10-13T02:13:35Z",
+      "file": "plans/phase-plan-v11-REVBOUND.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20261013T021335Z-REVBOUND-plan.md",
+      "if_gates_produced": [
+        "IF-0-REVBOUND-1",
+        "IF-0-REVBOUND-2"
+      ],
+      "lanes": [
+        "SL-0",
+        "SL-1",
+        "SL-2",
+        "SL-3"
+      ],
+      "lifecycle": [],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "REVBOUND",
+      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/89b7a22e8458/claude-v11-revbound/20261013T021335Z-REVBOUND-plan.md",
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v11.md",
+        "slug": "phase-plans-v11",
+        "status": "committed",
+        "type": "phase"
+      },
+      "slug": "v11-REVBOUND",
+      "status": "committed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-10-13T02:13:35Z"
     }
   ],
   "schema_version": 1

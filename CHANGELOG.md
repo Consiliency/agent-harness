@@ -11,6 +11,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - `PHASE_LOOP_GEMINI_MODEL` selects a registered canonical Gemini base model for the unpinned Gemini executor actions, model classes and composed/default board seats. Explicit task models, plan/roadmap model pins and configured board seats win; effort, other providers, subscription auth and sandbox admission are unchanged. Unset, the shipped defaults hold. An invalid value fails without fallback.
 - Register the `Gemini 4 Argon` display alias and render its low/medium/high variants to the canonical `gemini-4-argon-*` ids; an unsupported or conflicting effort is rejected.
 
+### Implementer roster: per-executor implementation model and effort
+
+- Implementation (execute/repair and the `implementer` class) now runs on `gemini-3.8-flash` at high, `gpt-6.1-sol` at medium, `claude-sonnet-5-5` at medium (on the Agent View and print routes; the default Claude Channel route binds neither model nor effort and records them as `session_model_unbound`) and `grok-4.7` at high, on both the runner's shipped model policy and the executor defaults; the Gemini worker moves from `gemini-3.5-flash-high` to `gemini-3.8-flash-high`. A governed repair that escalates to the planner class keeps the shipped `high` effort. Planning, review, opencode and the other worker tiers are unchanged, and explicit model and effort settings still win.
+
 ### The Gemini board seat runs jailed with tools (agent-harness#1170)
 
 - The Gemini (agy) seat now runs in its own seat jail with its tools, like the Claude seat:

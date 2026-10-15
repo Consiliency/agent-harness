@@ -186,8 +186,8 @@ class PopulatedRegistryTests(unittest.TestCase):
         self.assertEqual(profiles.OPENAI_HEAVY_MODEL, "gpt-6-astra")
 
     def test_claude_sonnet_5_5_is_an_explicit_claude_seat_not_a_default(self) -> None:
-        # Registration only: a board config may seat claude-sonnet-5-5; every shipped
-        # default and tier constant is unchanged (claude-sonnet-5 stays the regular tier).
+        # A board config may seat claude-sonnet-5-5; no board default or preset names it.
+        # Since the 0.7.27 implementer roster it IS the Claude regular (implementer) tier.
         from phase_loop_runtime import capability_registry
         from phase_loop_runtime.advisor_board import DEFAULT_MODEL_REGISTRY
         from phase_loop_runtime.advisor_board.backing import HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES
@@ -204,13 +204,12 @@ class PopulatedRegistryTests(unittest.TestCase):
         self.assertEqual(DEFAULT_LEG_MODELS["claude"], "claude-opus-5-5")
         self.assertEqual(HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["claude"], "claude-opus-5-5")
         self.assertNotIn("claude-sonnet-5-5", {s.model for board in PRESETS.values() for s in board.seats})
-        self.assertEqual(capability_registry.CLAUDE_REGULAR_MODEL, "claude-sonnet-5")
+        self.assertEqual(capability_registry.CLAUDE_REGULAR_MODEL, "claude-sonnet-5-5")
         self.assertNotIn(
             "claude-sonnet-5-5",
             {
                 capability_registry.CLAUDE_ULTRA_MODEL,
                 capability_registry.CLAUDE_HEAVY_MODEL,
-                capability_registry.CLAUDE_REGULAR_MODEL,
                 capability_registry.CLAUDE_LITE_MODEL,
             },
         )

@@ -29,7 +29,8 @@ if TYPE_CHECKING:
 OPENAI_HEAVY_MODEL = "gpt-6-astra"
 # codex regular (implementer) model — hoisted here so EXECUTOR_MODEL_OVERRIDES below
 # can reference it. Equals CODEX_REGULAR_MODEL in the tier matrix (single source).
-OPENAI_IMPLEMENTER_MODEL = "gpt-5.6-terra"
+# 0.7.27 implementer roster (maintainer, 2026-10-14): Sol 6.1 at medium.
+OPENAI_IMPLEMENTER_MODEL = "gpt-6.1-sol"
 # opencode heavy STAYS on sol: opencode resolves models from its own provider catalog and
 # rejects `openai/gpt-6-astra` (`ProviderModelNotFoundError: Model not found`) on 1.18.27
 # and 1.18.28 (measured 2026-09-04 with `opencode run --model …`; `openai/gpt-5.6-sol`
@@ -92,7 +93,7 @@ EXECUTOR_MODEL_OVERRIDES = {
     },
     # codex is the fleet's DEFAULT execute executor. Give it an explicit executor-
     # default map mirroring claude's (CR round 3): planning/review → heavy (ultra-
-    # else-heavy == gpt-6-astra), implementation → the regular model (gpt-5.6-terra).
+    # else-heavy == gpt-6-astra), implementation → the regular model (gpt-6.1-sol).
     # These constants ARE the tier matrix's codex source (CODEX_HEAVY/REGULAR), so this
     # AGREES with resolve() — previously codex fell through to DEFAULT_PROFILES (heavy)
     # and the DELEGATED-CHILD / HARNESS-LANE seams launched implementation on sol.
@@ -144,19 +145,26 @@ EXECUTOR_MODEL_OVERRIDES = {
     },
 }
 
+# Implementation effort per executor -- the 0.7.27 implementer roster (maintainer,
+# 2026-10-14): Gemini 3.8 Flash high, Sol 6.1 medium, Sonnet 5.5 medium, Grok 4.7
+# high. ONE source for both resolution paths: the executor defaults below and the
+# runner's shipped model policy (shipped_model_policy_rule). An executor not listed
+# keeps the shipped policy's own implementation effort.
+IMPLEMENTER_EFFORTS: dict[str, str] = {
+    "gemini": "high",
+    "codex": "medium",
+    "claude": "medium",
+    "grok": "high",
+}
+
 # Executor-path effort overrides. Consiliency/agent-harness#310 binds Claude
-# authoring/review to max and normal implementation/repair to high. Other
+# authoring/review to max; implementation/repair follow IMPLEMENTER_EFFORTS. Other
 # providers receive the same action policy through SHIPPED_MODEL_POLICY and
 # normalize or translate only at their documented provider/adapter boundary.
 EXECUTOR_EFFORT_OVERRIDES = {
-    "claude": {
-        "roadmap": "max",
-        "plan": "max",
-        "execute": "high",
-        "repair": "high",
-        "review": "max",
-    },
+    executor: {"execute": effort, "repair": effort} for executor, effort in IMPLEMENTER_EFFORTS.items()
 }
+EXECUTOR_EFFORT_OVERRIDES["claude"].update({"roadmap": "max", "plan": "max", "review": "max"})
 
 # --- model-routing-v1: vendor-agnostic model_class -> concrete model ----------
 # Where a provider exposes no separate implementer/worker tier, all classes map
@@ -177,11 +185,12 @@ OPENAI_WORKER_MODEL = "gpt-5.6-luna"
 OPENCODE_OPENAI_WORKER_MODEL = "openai/gpt-5.6-luna"
 # Gemini authoring/review uses the base heavy `gemini-4-argon` id. Implementation uses the
 # base `gemini-3.8-flash` id on both class and executor paths; the adapter appends
-# the policy-normalized effort. Worker (lite) uses the canonical
-# agy 3.5 Flash id: `agy models` exposes NO flash-lite, so the matrix's gemini-3.5-flash-lite
-# lite cell is ASPIRATIONAL (target, not live) — the live worker degrades to real 3.5 Flash,
-# named in the deferral below (a real version/family gap, like grok-4.3, NOT representational).
-GEMINI_WORKER_MODEL = "gemini-3.5-flash-high"
+# the policy-normalized effort. Worker (lite) uses the canonical agy 3.8 Flash id at
+# high (maintainer, 2026-10-14; it was 3.5 Flash high): `agy models` exposes NO
+# flash-lite, so the matrix's gemini-3.5-flash-lite lite cell is ASPIRATIONAL (target,
+# not live) — the live worker runs real 3.8 Flash, named in the deferral below (a real
+# version/family gap, like grok-4.3, NOT representational).
+GEMINI_WORKER_MODEL = "gemini-3.8-flash-high"
 
 # CLASS_MODEL_OVERRIDES + resolve_model_class are defined BELOW the tier matrix
 # (see "class↔tier bridge"), so the claude/codex class mappings can DERIVE from
@@ -215,7 +224,8 @@ GEMINI_WORKER_MODEL = "gemini-3.5-flash-high"
 
 # Per-tier advisory defaults remain part of resolve(). Action launches use the
 # explicit shipped action policy below: roadmap/plan/review request max and
-# execute/repair request high, with provider and adapter normalization recorded.
+# execute/repair request the executor's IMPLEMENTER_EFFORTS entry, with provider and
+# adapter normalization recorded.
 _TIER_ADVISORY_EFFORT: dict[str, str] = {
     "ultra": "max",
     "heavy": "xhigh",
@@ -396,7 +406,7 @@ def supervise_selection(vendor: str = "claude") -> TierResolution:
 #     and roadmap/plan/review actions) stores GEMINI_HEAVY_MODEL, the heavy tier cell, so it
 #     agrees with resolve("heavy"). One thing remains: LITE is ASPIRATIONAL — `agy models` exposes NO flash-lite, so
 #     the matrix's gemini-3.5-flash-lite lite cell is a TARGET, not live; the live worker
-#     degrades to the real agy 3.5 Flash (gemini-3.5-flash-high). This is a genuine
+#     runs the real agy 3.8 Flash (gemini-3.8-flash-high). This is a genuine
 #     version/family divergence (like grok-4.3), NOT representational — repin the lite cell
 #     when agy ships a flash-lite id.
 #   • grok class path AND grok executor path — GROK_DEFAULT_MODEL (grok-4.7) for every
@@ -634,11 +644,13 @@ def max_effort_planner_eligible(executor: str) -> bool:
 
 
 # The repo's SHIPPED model_policy. THIS repo's default: planning at max,
-# implementation at the implementer model. `clamp=True` resolves a sub-max
-# provider's `max` request to its ceiling via the provider effort_map fallback
-# (otherwise normalize_provider_effort RAISES). A downstream repo that ships no
-# policy keeps the registry defaults — that empty-policy path is the back-compat
-# contract (callers pass model_policy_rule=None to get it).
+# implementation at the implementer model, at the executor's IMPLEMENTER_EFFORTS
+# entry (shipped_model_policy_rule; `high` for an executor not listed there).
+# `clamp=True` resolves a sub-max provider's `max` request to its ceiling via the
+# provider effort_map fallback (otherwise normalize_provider_effort RAISES). A
+# downstream repo that ships no policy keeps the registry defaults — that
+# empty-policy path is the back-compat contract (callers pass model_policy_rule=None
+# to get it).
 SHIPPED_MODEL_POLICY = {
     "roadmap": {"model_class": "planner", "effort": "max", "clamp": True},
     "plan": {"model_class": "planner", "effort": "max", "clamp": True},
@@ -650,11 +662,16 @@ SHIPPED_MODEL_POLICY = {
 }
 
 
-def shipped_model_policy_rule(action: str) -> ExecutionPolicyRule | None:
-    """The shipped model_policy rule for an action, or None if unmapped."""
+def shipped_model_policy_rule(action: str, executor: str | None = None) -> ExecutionPolicyRule | None:
+    """The shipped model_policy rule for an action, or None if unmapped.
+
+    With ``executor``, an implementer-class rule carries that executor's
+    IMPLEMENTER_EFFORTS entry instead of the shared implementation effort."""
     spec = SHIPPED_MODEL_POLICY.get(action)
     if spec is None:
         return None
+    if spec.get("model_class") == "implementer" and executor in IMPLEMENTER_EFFORTS:
+        spec = {**spec, "effort": IMPLEMENTER_EFFORTS[executor]}
     clamp = bool(spec.get("clamp", False))
     return ExecutionPolicyRule(
         selector=action,
