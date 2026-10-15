@@ -38,6 +38,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   re-run through the proxy, real replies) and p3-agy-tools-workspace.json (agy's tools,
   stream events and workspace files).
 
+### Fix: Gemini planning, roadmap and review launch again, on Gemini 4 Argon
+
+- Gemini `roadmap`, `plan` and `review` launches exited rc 1, because agy no longer offers the `Gemini 3.1 Pro (High)` model they selected. The Gemini executor's `roadmap`, `plan` and `review` defaults, the `planner`/`reviewer` model classes and the heavy (and ultra) tier now use `gemini-4-argon` instead of the `pro` alias and `gemini-3.1-pro-preview`. Effort is unchanged: the shipped policy's `max` clamps to Gemini's `high`, so these routes launch `gemini-4-argon-high`. The heavy cell stays marked volatile. Implementation and worker routing are unchanged, and an explicit `--model` still wins.
+
 ### Board: the sandboxed grok seat can run the tools it is granted
 
 - In a board the sandboxed grok seat ended `DEGRADED` (rc 0) after one preamble line. Its
