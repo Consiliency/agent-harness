@@ -2,7 +2,8 @@
 
 This guide covers how to author a train roadmap for `phase-loop run-train`.
 For the technical protocol spec (ledger shape, merge-SHA gate, invariants) see
-`_contract_docs/phase-loop/protocol.md` ("Cross-Repo Release Train").
+`phase-loop-runtime/src/phase_loop_runtime/_contract_docs/phase-loop/protocol.md`
+("Cross-Repo Release Train").
 
 ## What a train roadmap does
 
@@ -239,7 +240,8 @@ upstream reference before re-verify at merge time.
 | Channel | Syntax | Use when |
 |---------|--------|----------|
 | `submodule` | `submodule path=<path>` | Downstream uses a git submodule at `<path>` pointing to the upstream repo. |
-| `pin file` | `pin file=<file> key=<yaml-key>` | Downstream reads the upstream SHA from a YAML pinfile at `<file>` under key `<key>`. |
+| `pin file` | `pin file=<file>` | Downstream reads the upstream SHA from a plain ref file: the SHA is written as the whole content of `<file>`. |
+| `pin file` + `key` | `pin file=<file> key=<dotted.json.key>` | Downstream reads the upstream SHA from a JSON file: `<file>` is loaded as JSON, the nested dotted key is set to the SHA, and the file is written back. The file must be JSON, not YAML. |
 | `order-only` | `order-only` | Downstream must merge **after** the upstream (freeze/merge order) but does **not** consume its artifact. No SHA is injected or re-resolved; the edge enforces ordering only. |
 
 Declare `**Channel:** (none)` for root nodes (no upstream dependency).
@@ -307,7 +309,7 @@ submodule pointer is updated to the merged `platform-lib` SHA.
 ### Node: worker-fleet / specs/runtime-bump.md
 
 **Depends on:** runtime-core / specs/runtime-v2.md
-**Channel:** pin file=.config/pins.yaml key=runtime_sha
+**Channel:** pin file=.config/pins.json key=runtime_sha
 ```
 
 ## Running the train

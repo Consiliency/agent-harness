@@ -82,7 +82,7 @@ try:
             ("grok-4.7", "high", "grok", "adversarial"),
             ("claude-opus-5-5", "high", "claude", "correctness"),
             ("gpt-6-astra", "high", "codex", "red-team"),
-            ("gemini-3.8-flash", "medium", "gemini", "alternative-approach"),
+            ("gemini-4-argon", "medium", "gemini", "alternative-approach"),
         ]
         seats = [dict(model=model, effort=effort, harness=harness, lens=lens,
                       auth="subscription", backing="homebrew", host_leg=False)
