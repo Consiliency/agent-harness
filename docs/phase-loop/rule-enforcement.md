@@ -76,7 +76,10 @@ the evidence for the part it covers; read it before trusting a row.
   assert on `main()`'s refusal, not only reach the check. The enforcer-kill and
   demotion tests refuse a control that still passes without a check, or with it warning.
 - When a correction repeats on an `unenforced`/`gap` row, escalate it to a mechanism.
-  Adding more prose does not fix it. The aggregator gates planned in
-  agent-harness#1321 (REPORT 1.14/1.15) will read this registry to apply that rule.
+  Adding more prose does not fix it. The skill-improvement aggregator applies that rule:
+  `reflection_corpus collect` writes this registry as `rule_enforcement.md` beside the
+  bundle, and the aggregator's structural-mechanism gate routes a theme matching an
+  `enforced` or `unenforced/gap` row to a mechanism candidate instead of prose
+  (agent-harness#1321, REPORT 1.14/1.15).
 - Coverage is partial on purpose. The seed lists rules that already had enforcers, plus
   one row of each unenforced kind. The registry does not require every rule to be listed.

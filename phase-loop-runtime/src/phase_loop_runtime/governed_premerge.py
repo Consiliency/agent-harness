@@ -32,7 +32,7 @@ from .fab_canonical import EquivalenceBinding
 from .fab_canonical import equivalent as fab_equivalent
 from .fab_provenance import EQUIVALENCE_EQUIVALENT, EquivalenceResult
 from .governed_review import GateResult, governed_planning_gate
-from .panel_invoker import PanelResult
+from .panel_invoker import PanelResult, refused_seat_notices
 
 #: A class is escalated once it has failed this many times (tests or patch retries).
 ESCALATION_FAIL_THRESHOLD = 2
@@ -170,6 +170,13 @@ def fab_delta_shortcut_enabled(coordinator_opt_in: bool, env: Mapping[str, str] 
 
 # implementer → planner is the only model_class escalation; planner is terminal.
 _NEXT_CLASS = {"implementer": "planner", "worker": "implementer"}
+
+
+def _uncounted_seats(panel: PanelResult) -> str:
+    """agent-harness#1244: each seat refused before it ran, named with its fix, for a
+    below-floor hold. Empty when there is none."""
+    return "".join(f" Not counted: {notice.seat_key} [{notice.code}] fix: {notice.fix}."
+                   for notice in refused_seat_notices(panel.legs))
 
 
 def _non_human_blocker(blocker_class: str, summary: str) -> dict:
@@ -469,6 +476,7 @@ def run_governed_premerge_loop(
                     f"(non-human). Authenticate or install a second non-author panel leg "
                     f"(a different vendor is preferred). Requiring DISTINCT vendors or "
                     f"the full 3-vendor quorum is the three-state model, held for #375."
+                    f"{_uncounted_seats(gate.panel)}"
                 ),
                 severity="block",
                 blocker_class="review_gate_block",

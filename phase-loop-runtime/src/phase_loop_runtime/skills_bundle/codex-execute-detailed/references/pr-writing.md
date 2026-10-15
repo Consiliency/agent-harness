@@ -4,6 +4,13 @@ Explain the final change to a reviewer who has not read the conversation. Follow
 the destination repository's PR template and vocabulary. Keep small and docs-only
 PRs short; section names and diagrams are optional.
 
+## Contents
+
+- Problem and resulting behavior
+- Evidence and limits
+- Consumers and rollback
+- Ownership and refresh
+
 ## Problem and resulting behavior
 
 Lead with the problem and what changes for a user or consumer. A concrete

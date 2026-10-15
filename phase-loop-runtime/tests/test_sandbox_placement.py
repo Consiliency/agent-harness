@@ -895,7 +895,11 @@ def test_the_knob_refuses_every_seat_leg_this_build_cannot_place_remotely(
         warnings.simplefilter("ignore", RuntimeWarning)
         result = _spawn(_branch_leg(branch), repo, tree=spec.get("tree", True))
 
-    assert (result[0], result[-1]) == ("DEGRADED", REQUIRED)
+    # agent-harness#1244: a brokered seat with no staged tree is refused before the knob is
+    # asked (it would otherwise run toolless); it is refused all the same, with nothing staged.
+    refused = ("seat_sandbox_not_staged" if not spec.get("tree", True) and branch == "brokered"
+               else REQUIRED)
+    assert (result[0], result[-1]) == ("DEGRADED", refused)
     assert staged == [], "1a refuses before prepare"
     assert probed == [], "nothing is probed for a leg the knob refuses"
     assert launches == [] and egress == []
