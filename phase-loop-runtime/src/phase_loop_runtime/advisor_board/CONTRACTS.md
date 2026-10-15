@@ -1406,10 +1406,11 @@ are recorded on agent-harness#1132.
   built); (2) host capability -> `seat_sandbox_unavailable_host`,
   `_tiocsti`, or `_seat_uid`; (3) credential presence -> `claude_seat_token_missing` /
   `gemini_seat_credential_missing`; (4) Gemini tooled qualification ->
-  `gemini_seat_profile_unqualified`. Steps 0-4 send the seat to the sealed inline route,
-  byte-identical to before, with that notice, except a Claude seat's step 3, which is not
-  run (plan amendment A3b, below). Codex and grok are not jailed
-  (agent-harness#895) and carry `seat_filesystem_unconfined` when given a tree.
+  `gemini_seat_profile_unqualified`. A seat stopped at any of steps 0-4 is DEGRADED and not
+  run, with that code as its detail and notice (agent-harness#1244, below). Codex and grok
+  are not jailed (agent-harness#895) and carry `seat_filesystem_unconfined` when given a
+  tree; without a staged tree they too are DEGRADED and not run, with
+  `seat_sandbox_not_staged`.
 - **A codex seat whose command sandbox cannot start is DEGRADED before it runs
   (agent-harness#1335).** codex runs each command inside its own sandbox. Where that sandbox
   cannot start in the seat's view, the seat reads nothing, yet codex exits 0 with a verdict.
@@ -1450,11 +1451,28 @@ are recorded on agent-harness#1132.
   a login not renewed within the wait, an unqualified or unsafe gate, an unsafe override)
   is DEGRADED and NOT RUN, typed, with a fix. It is never a toolless substitute.
   `seat_jail.JAIL_NOT_RUN_CODES` names the route codes this applies to; none of them is in
-  `SEALED_FALLBACK_CODES`. The sealed route stays for hosts without the jail prerequisites,
-  an unstaged review and the Gemini seat (agent-harness#1244).
+  `SEALED_FALLBACK_CODES`.
+- **A sealed or toolless review seat is never run and never counted (agent-harness#1244).**
+  A brokered review seat whose route is not jailed (every `SEALED_FALLBACK_CODES` code:
+  a host without the jail prerequisites, an unstaged review, the Gemini seat's recorded
+  stop), and a codex or grok seat with no staged tree, is DEGRADED and NOT RUN before
+  anything is staged. Its detail and notice are the route code, with the notice table's fix;
+  its seat mode is `degraded`, never `sealed`. It is therefore not a usable leg: the reviewer
+  floor and `usable`, the landing vote, the governed gate, the train's recorded reviewers and
+  the president's input (`unusable (DEGRADED)`) all leave it out. A board that falls below
+  its floor because of it says so: the `advisor-board` text summary, its `--json`
+  `refused_seats` list and the governed pre-merge floor hold name each such seat with its
+  code and fix. The one exception is not a
+  review: the agy qualification worker process (the only one that sets the heartbeat
+  module's candidate image) keeps its Gemini leg on that route, with its notice, to measure
+  the candidate; that leg is admitted `qualification_candidate`, which is never a vote. An
+  `--advisory` run (agent-harness#802), whose authorization is bound to the advisory
+  contract and stages no tree on purpose, keeps its seats on the inline route with
+  `seat_sandbox_not_staged`: its standalone document is inlined whole and it is non-gating.
+  Every other sealed code still refuses its seats there.
 - **The jailed route is Claude-only.** `JAILED_LEGS` is exactly `{"claude"}`. A Gemini
-  seat always takes the sealed route with its typed notice, whatever its credential,
-  qualification or recorded stop; a tooled Gemini seat is agent-harness#1170.
+  seat's route is not jailed today, so it is DEGRADED and not run with its typed notice
+  (above); a tooled Gemini seat is agent-harness#1170.
 - **EC-EXECFIND-2 gate.** A jailed route whose jail profile digest has no EC-EXECFIND-2
   falsifier pass recorded on THIS host is REFUSED before any effect with
   `seat_sandbox_refused:jail_unqualified`. The notice names the per-host qualification as
@@ -1594,7 +1612,8 @@ are recorded on agent-harness#1132.
     `PHASE_LOOP_SEAT_JAIL_QUALIFY_RETRY_S` (default 3600 s). A lock timeout is not cached.
   - **The launch-time re-check** against the built jail still refuses an unrecorded digest.
 - **Seat modes (plan amendment A1).** Before any seat launches, every board publishes one
-  mode per seat: `jailed`, `unconfined`, `sealed`, `degraded` or `native`. Each mode carries
+  mode per seat: `jailed`, `unconfined`, `sealed`, `degraded` or `native` (a brokered review
+  seat is never `sealed`: such a route is `degraded`, agent-harness#1244). Each mode carries
   its notice code, reason and fix, and the modes are delivered through `on_seat_modes`, the
   log and `seat-modes.json`. The `advisor-board` CLI prints them to stderr and carries them as
   `seat_modes` in `--json`.

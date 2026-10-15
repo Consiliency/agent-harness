@@ -109,7 +109,9 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "inline fallback", "host allows keystroke injection",
         "kernel >= 6.2 and dev.tty.legacy_tiocsti=0"),
     "seat_sandbox_not_staged": (
-        "inline fallback", "caller requested no tree", "pass a staged-tree authorization"),
+        "inline fallback", "caller requested no tree",
+        "unset PHASE_LOOP_SANDBOX_DISABLE so the review stages a tree for its seats, or pass a "
+        "staged-tree authorization"),
     "seat_sandbox_refused:jail_build": (
         "leg refused", "jail setup failed", "report a defect"),
     "seat_sandbox_refused:namespace": (
