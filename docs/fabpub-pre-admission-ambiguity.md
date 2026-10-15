@@ -196,7 +196,10 @@ provider outcome after it is kept rather than lost.
   publish's `_block_unsealed_owner` seals it, and a retry replays the terminal. The
   terminal is recorded before the service-generation lease is released, so a failed
   release is not ambiguity either (agent-harness#1591). A failure inside the provider
-  call is still recorded as `outcome_ambiguous_blocked`.
+  call, or a generation refusal of the terminal record after the call returned, is
+  still recorded as `outcome_ambiguous_blocked`, unless the generation fence refuses
+  that record (agent-harness#1628, agent-harness#1684, see "Human-route handoffs for
+  broker refusals").
 - **A failure before the provider was entered is not ambiguity either.** A refused
   service-generation lease (a `DRAINING` writer latch, `WriterGenerationBlocked`) is
   re-raised as `ProviderEntryGenerationRefused`, which is still a
@@ -226,9 +229,10 @@ provider outcome after it is kept rather than lost.
 The human route (`publish_human_invoked_from_worktree`) picks its handoff by the
 type of the broker refusal, never by its message. Every type below is a
 `PermissionError` subclass, so existing `except PermissionError` callers are
-unaffected, and its message is unchanged. Each refusal is raised before provider
-entry, and the result carries `provider_call_made: false`. Any other
-`PermissionError` keeps `repair_fabpub_authority`.
+unaffected, and its message is unchanged. Each refusal except the last row is raised
+before provider entry, and the result carries `provider_call_made: false`; the last
+row's result carries `provider_call_made: true`. Any other `PermissionError` keeps
+`repair_fabpub_authority`.
 
 | Refusal | Type | `next_step` |
 |---|---|---|
@@ -236,6 +240,7 @@ entry, and the result carries `provider_call_made: false`. Any other
 | The owner's writer is still running, or the section was contended twice | `AdapterStartOwnerLive`, `AdapterStartOwnerContended` | `retry_after_inflight_publication`: retry shortly; no rotation |
 | An unsealed owner was promoted, or the epoch is blocked by a key in this generation | `UnsealedOwnerBlocksPartition`, `PartitionEpochBlocked` | `adjudicate_publication_by_partition_rotation`, with `blocking_effect_keys` (and `blocking_transaction_id` for an owner); the attestation disposes the blocking key, which may not be this publication's |
 | After the admission is durable and before provider entry: a `WriterGenerationBlocked` from `record_intent`, `_authorize` or the service-generation lease, or the guard's own "no evidence row" refusal | `ProviderEntryGenerationRefused` (a `ProviderEntryRefused` and a `WriterGenerationBlocked`; the original is `__cause__`), or `ProviderEntryRefused` from the guard; both carry `effect_key`, `transaction_id` | `retry_once_before_partition_rotation`: retry once, then follow the handoff the retry returns |
+| After provider entry: the adapter raised, or it returned and the fence refused its terminal record, then the generation fence (a `DRAINING` latch, a revoked shared lease) refused the `outcome_ambiguous_blocked` record (agent-harness#1628, agent-harness#1684) | `ProviderEffectGenerationRefused` (a `WriterGenerationBlocked`, never a `ProviderEntryRefused`; the write refusal is `__cause__` and the adapter error or the terminal record's refusal its `__context__`); carries `effect_key`, `transaction_id`, `execute_returned`, and the returned `pr_url`, `head_sha`, `branch` | `retry_once_before_partition_rotation` with `provider_call_made: true`: retry once after any ceremony in progress has finished or rolled back; the disposition is the operator's judgement |
 
 Any other `PermissionError` in that window propagates unchanged (same type, `errno`
 and `filename`) and keeps `repair_fabpub_authority`, as on main. That includes an
@@ -255,6 +260,24 @@ the rotation handoff for this key and transaction. Keep the first result: its
 `provider_call_made: false` and refusal detail are the only record that the provider
 was never entered. The ambiguous row cannot be told apart from a crash during the
 call.
+
+After provider entry (agent-harness#1628). The adapter raised, or it returned and
+the generation fence refused its terminal record (agent-harness#1684), so the broker
+records `outcome_ambiguous_blocked`. That write is generation-fenced, and under a
+`DRAINING` latch or a revoked shared lease it is refused. The broker writes no
+terminal and invents no state: the row stays `provider_call_in_flight` and the owner
+unsealed, the same shape as above, so the handoff is the same "retry once". The
+difference is that the provider was entered: the result says
+`provider_call_made: true`, and the handoff does not offer `attested_not_landed` as
+true by construction. `execute_returned` tells the two paths apart. When the adapter
+returned, the handoff says the provider returned (PR `<url>`) but its terminal record
+was refused, and the result and handoff carry `pr_url`; the disposition is then
+`observed_landed` with that URL. Otherwise it is `observed_landed` if the head is on
+the remote branch or a pull request exists, and `attested_not_landed` on the
+operator's judgement (remote absence is not proof). The adapter's own pre-push check reaches this path today, and the planned
+agent-harness#820 effect fence inherits it. Any other error from that write propagates
+unchanged. When the write succeeds, the result is `outcome_ambiguous` and the rotation
+handoff, as before.
 
 Every rotation handoff cites runbook §§1, 3, 4, 6, 7 and 8a. It also says the
 rotation must use the route's `FABPUB_AUTHORITY_ROOT` (or `--authority-root`), and

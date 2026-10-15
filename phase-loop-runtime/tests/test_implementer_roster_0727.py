@@ -80,6 +80,15 @@ def test_implementer_class_is_the_roster_model(executor):
     assert profiles.resolve_model_class(executor, "implementer") == ROSTER[executor][0]
 
 
+def test_planner_and_reviewer_classes_are_unchanged_by_the_roster():
+    # agent-harness#1695 owns these (Gemini plans and reviews on Argon); the roster
+    # moves only the implementer class and the Gemini worker.
+    assert profiles.resolve_model_class("gemini", "planner") == "gemini-4-argon"
+    assert profiles.resolve_model_class("gemini", "reviewer") == "gemini-4-argon"
+    assert profiles.resolve_model_class("claude", "planner") == "claude-opus-5"
+    assert profiles.resolve_model_class("codex", "planner") == "gpt-6-astra"
+
+
 def test_workers():
     assert profiles.resolve_model_class("gemini", "worker") == "gemini-3.8-flash-high"
     assert profiles.resolve_model_class("codex", "worker") == "gpt-5.6-luna"
@@ -96,8 +105,8 @@ def test_execute_launch_argv_carries_the_roster(executor, monkeypatch):
 
 
 @pytest.mark.parametrize(("executor", "action", "expected"), [
-    ("gemini", "plan", ("pro", "high")),
-    ("gemini", "review", ("pro", "high")),
+    ("gemini", "plan", ("gemini-4-argon", "high")),
+    ("gemini", "review", ("gemini-4-argon", "high")),
     ("codex", "plan", ("gpt-6-astra", "high")),
     ("codex", "review", ("gpt-6-astra", "high")),
     ("claude", "plan", ("claude-opus-5", "max")),

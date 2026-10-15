@@ -39,6 +39,11 @@ OPENCODE_OPENAI_HEAVY_MODEL = "openai/gpt-5.6-sol"
 OPENCODE_OPENAI_IMPLEMENTER_MODEL = "openai/gpt-5.6-terra"
 GEMINI_PRO_ROUTED_MODEL = "pro"
 GEMINI_AUTO_ROUTED_MODEL = "auto"
+# Gemini planning/review (heavy tier): Gemini 4 Argon, GA 2026-10-13 and listed by `agy models`
+# as gemini-4-argon-{low,medium,high}. It replaced the `pro` alias, whose
+# "Gemini 3.1 Pro (High)" label agy no longer accepts. Argon has no dated snapshot, so the
+# matrix marks the heavy cell volatile. Hoisted here so EXECUTOR_MODEL_OVERRIDES can reference it.
+GEMINI_HEAVY_MODEL = "gemini-4-argon"
 # Gemini implementer (regular tier) — the CANONICAL agy model id from `agy models`
 # (authoritative list), NOT a display label. CR round-5 finding B: the operator asked us
 # to adopt the newest gemini light/medium models; `agy models` exposes the Flash family
@@ -114,13 +119,13 @@ EXECUTOR_MODEL_OVERRIDES = {
     # alias — _gemini_cli_model('auto') collapses to the Pro (HEAVY) argv, so the
     # delegated-child / harness-lane seams were launching implementation on Pro while
     # the main seam launched Flash. execute/repair → the validated Flash implementer
-    # name (== the class map), planning/review → `pro` (heavy, agrees with the class map).
+    # name (== the class map), planning/review → the heavy Argon id (agrees with the class map).
     "gemini": {
-        "roadmap": GEMINI_PRO_ROUTED_MODEL,
-        "plan": GEMINI_PRO_ROUTED_MODEL,
+        "roadmap": GEMINI_HEAVY_MODEL,
+        "plan": GEMINI_HEAVY_MODEL,
         "execute": GEMINI_IMPLEMENTER_MODEL,
         "repair": GEMINI_IMPLEMENTER_MODEL,
-        "review": GEMINI_PRO_ROUTED_MODEL,
+        "review": GEMINI_HEAVY_MODEL,
     },
     "grok": {
         "roadmap": GROK_DEFAULT_MODEL,
@@ -176,7 +181,7 @@ CLAUDE_IMPLEMENTER_MODEL = CLAUDE_REGULAR_MODEL
 OPENAI_WORKER_MODEL = "gpt-5.6-luna"
 # OPENCODE_OPENAI_IMPLEMENTER_MODEL is hoisted near OPENCODE_OPENAI_HEAVY_MODEL (top).
 OPENCODE_OPENAI_WORKER_MODEL = "openai/gpt-5.6-luna"
-# Gemini authoring/review stays on the CLI `pro` alias. Implementation uses the
+# Gemini authoring/review uses the base heavy `gemini-4-argon` id. Implementation uses the
 # base `gemini-3.8-flash` id on both class and executor paths; the adapter appends
 # the policy-normalized effort. Worker (lite) uses the canonical agy 3.8 Flash id at
 # high (maintainer, 2026-10-14; it was 3.5 Flash high): `agy models` exposes NO
@@ -203,7 +208,7 @@ GEMINI_WORKER_MODEL = "gemini-3.8-flash-high"
 # PIN where the vendor publishes immutable ids: claude (dateless per-gen snapshots)
 # and codex (gpt-5.6-<name>) are pinned canonical literals — no floating aliases
 # (`gpt-5.6`, `gemini-flash-latest`, `-latest`). Two exceptions are marked
-# `volatile=True` in the matrix: gemini heavy (a PREVIEW id) and ALL grok cells (xAI
+# `volatile=True` in the matrix: gemini heavy (no dated snapshot) and ALL grok cells (xAI
 # ships no dated snapshot; bare ids float to latest stable — blocker 2). A version
 # bump is a single-line edit to one of these constants.
 #
@@ -232,10 +237,8 @@ CODEX_REGULAR_MODEL = OPENAI_IMPLEMENTER_MODEL
 CODEX_LITE_MODEL = OPENAI_WORKER_MODEL
 
 # gemini/Google per-tier ids — API-style canonical ids (NOT the CLI routing
-# aliases `pro`/`auto` or the display label used by the legacy class overrides).
-# heavy is a PREVIEW model (Google already retired gemini-3-pro-preview) → marked
-# volatile in the matrix; regular/lite are stable GA ids.
-GEMINI_HEAVY_MODEL = "gemini-3.1-pro-preview"
+# aliases `pro`/`auto`). heavy (GEMINI_HEAVY_MODEL, hoisted to the top of this module) has
+# no dated snapshot → marked volatile in the matrix; regular/lite are stable GA ids.
 GEMINI_REGULAR_MODEL = "gemini-3.8-flash"
 GEMINI_LITE_MODEL = "gemini-3.5-flash-lite"
 
@@ -397,10 +400,9 @@ def supervise_selection(vendor: str = "claude") -> TierResolution:
 #   • gemini — the MODEL-PATH split is FIXED (CR round-4) and the REGULAR VERSION is now
 #     ALIGNED (CR round-5 finding B): implementation on BOTH the class and executor paths
 #     stores the base `gemini-3.8-flash` id; the adapter appends the normalized
-#     effort to emit agy's canonical id. Two things remain: (a) the PRO/
-#     planning path still routes via the `pro` CLI alias / "Gemini 3.1 Pro (High)" DISPLAY
-#     label rather than a canonical agy id — REPRESENTATIONAL only (same Pro model), and out
-#     of this fix's scope; (b) LITE is ASPIRATIONAL — `agy models` exposes NO flash-lite, so
+#     effort to emit agy's canonical id. The planning/review path (planner/reviewer class
+#     and roadmap/plan/review actions) stores GEMINI_HEAVY_MODEL, the heavy tier cell, so it
+#     agrees with resolve("heavy"). One thing remains: LITE is ASPIRATIONAL — `agy models` exposes NO flash-lite, so
 #     the matrix's gemini-3.5-flash-lite lite cell is a TARGET, not live; the live worker
 #     runs the real agy 3.8 Flash (gemini-3.8-flash-high). This is a genuine
 #     version/family divergence (like grok-4.3), NOT representational — repin the lite cell
@@ -499,8 +501,8 @@ CLASS_MODEL_OVERRIDES = {
         "worker": OPENCODE_OPENAI_WORKER_MODEL,
     },
     "gemini": {
-        "planner": GEMINI_PRO_ROUTED_MODEL,
-        "reviewer": GEMINI_PRO_ROUTED_MODEL,
+        "planner": GEMINI_HEAVY_MODEL,
+        "reviewer": GEMINI_HEAVY_MODEL,
         "implementer": GEMINI_IMPLEMENTER_MODEL,
         "worker": GEMINI_WORKER_MODEL,
     },

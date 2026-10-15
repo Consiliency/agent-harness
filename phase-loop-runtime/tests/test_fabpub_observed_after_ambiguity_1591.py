@@ -1030,3 +1030,111 @@ def test_observation_authorization_under_draining_still_checks_the_lease(tmp_pat
         latch.resume_active()
         valid.release()
         forged.path.unlink(missing_ok=True)  # its handle no longer matches the file
+
+
+# ---------------------------------------------------------------------------
+# agent-harness#1640: deferred board findings from agent-harness#1633
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("draining", [False, True], ids=["strict", "allow_draining"])
+def test_lease_whose_generation_was_rewritten_is_refused(tmp_path, monkeypatch, draining):
+    """Ask 1 (SA3-F1): the generation half of the lease binding, on both paths."""
+    from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore
+
+    fx = _bootstrap(tmp_path, monkeypatch)
+    p = fx.alpha
+    live = _live()
+    latch = live.WriterGenerationLatch.for_store_root(p.container)
+    lease = latch.acquire(generation=latch.read().generation)
+    body = json.loads(lease.path.read_text(encoding="utf-8"))
+    body["generation"] = "0" * len(str(body["generation"]))  # the nonce still matches
+    lease.path.write_text(json.dumps(body), encoding="utf-8")
+    if draining:
+        latch.begin_draining()
+    try:
+        with pytest.raises(live.WriterGenerationBlocked, match="does not bind the current canonical generation"):
+            latch.validate_lease(lease, allow_draining=draining)
+        with pytest.raises(live.WriterGenerationBlocked, match="does not bind the current canonical generation"):
+            BrokerEvidenceStore(p.container, generation_lease=lease)._authorize(allow_draining=draining)
+    finally:
+        latch.resume_active()
+        lease.path.unlink(missing_ok=True)  # its handle no longer matches the file
+
+
+def test_declared_absent_lease_is_refused_under_draining_too(tmp_path, monkeypatch):
+    """Ask 2 (SA2-F3): ``generation_lease=None`` (strict) is refused in both states."""
+    from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore
+
+    fx = _bootstrap(tmp_path, monkeypatch)
+    p = fx.alpha
+    live = _live()
+    latch = live.WriterGenerationLatch.for_store_root(p.container)
+    with pytest.raises(live.WriterGenerationBlocked, match="requires a held"):
+        latch.validate_lease(None, allow_draining=True)
+    latch.begin_draining()
+    try:
+        with pytest.raises(live.WriterGenerationBlocked, match="DRAINING repository generation requires a held"):
+            latch.validate_lease(None, allow_draining=True)
+        with pytest.raises(live.WriterGenerationBlocked, match="requires a held"):
+            BrokerEvidenceStore(p.container, generation_lease=None)._authorize(allow_draining=True)
+        # An undeclared lease is validated against latch state only, as before.
+        latch.validate_lease(None, strict=False, allow_draining=True)
+        BrokerEvidenceStore(p.container)._authorize(allow_draining=True)
+    finally:
+        latch.resume_active()
+
+
+def test_terminal_lands_after_a_lock_holding_ceremony_aborts(tmp_path, monkeypatch):
+    """Ask 3 (SA2-F4): a ceremony drains under admissions.lock during the call, the
+    writer's held lease makes it abort, and the live key's terminal then lands
+    instead of the key being stranded ``provider_call_in_flight``."""
+    import fcntl
+    import time
+
+    fx = _bootstrap(tmp_path, monkeypatch)
+    p = fx.alpha
+    key = p.service._dedup_key(p.request)
+    live = _live()
+    latch = live.WriterGenerationLatch.for_store_root(p.container)
+    box: dict = {}
+
+    def ceremony():
+        # The rotation ceremony's own drain, under the predecessor's lock.
+        try:
+            with (p.container / "admissions.lock").open("a+", encoding="utf-8") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                try:
+                    latch.begin_draining()
+                    try:
+                        latch.await_quiescent(worktree=p.repo, timeout=1.0)
+                    except live.WriterGenerationBlocked as error:
+                        latch.resume_active()
+                        box["aborted"] = str(error)
+                finally:
+                    fcntl.flock(lock, fcntl.LOCK_UN)
+        except BaseException as error:  # asserted below
+            box["error"] = error
+
+    thread = threading.Thread(target=ceremony, name="1640-ceremony", daemon=True)
+
+    class _CeremonyDuringCall(_CountingAdapter):
+        def execute(self, request):
+            thread.start()
+            deadline = time.monotonic() + WAIT_SECONDS
+            while latch.read().generation_state != "DRAINING":
+                assert time.monotonic() < deadline, "the ceremony never began draining"
+                time.sleep(0.01)
+            return super().execute(request)
+
+    p.service.adapter = adapter = _CeremonyDuringCall()
+    result = p.service.execute(p.request)
+    thread.join(WAIT_SECONDS)
+    assert not thread.is_alive()
+    assert "error" not in box, box
+    assert "held generation lease" in box.get("aborted", ""), box
+    assert len(adapter.calls) == 1
+    assert result.accepted and result.provider_call_made is True
+    assert _key_states(p, key) == [IN_FLIGHT, OBSERVED]
+    assert _owner(p.container)["sealed"] is True
+    assert latch.read().generation_state == "ACTIVE"

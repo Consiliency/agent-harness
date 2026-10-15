@@ -32,8 +32,8 @@ class TierMatrixTest(unittest.TestCase):
             ("heavy", "codex"): ("gpt-6-astra", "xhigh", False),
             ("regular", "codex"): ("gpt-6.1-sol", "medium", False),
             ("lite", "codex"): ("gpt-5.6-luna", "low", False),
-            ("ultra", "gemini"): ("gemini-3.1-pro-preview", "max", True),
-            ("heavy", "gemini"): ("gemini-3.1-pro-preview", "xhigh", True),
+            ("ultra", "gemini"): ("gemini-4-argon", "max", True),
+            ("heavy", "gemini"): ("gemini-4-argon", "xhigh", True),
             ("regular", "gemini"): ("gemini-3.8-flash", "medium", False),
             ("lite", "gemini"): ("gemini-3.5-flash-lite", "low", False),
             # grok: no dated snapshot published → every cell volatile (blocker 2).
@@ -131,7 +131,7 @@ class PinOnlyInvariantTest(unittest.TestCase):
 
     def test_known_floating_shapes_are_marked_volatile(self):
         # A vendor id with no immutable dated snapshot MUST be volatile-marked, so a
-        # governed run can see it floats. gemini heavy (preview) + all grok cells.
+        # governed run can see it floats. gemini heavy (Argon, undated) + all grok cells.
         self.assertTrue(resolve("heavy", "gemini").volatile)
         for tier in MODEL_TIERS:
             self.assertTrue(resolve(tier, "grok").volatile, tier)
@@ -246,22 +246,24 @@ class TierLiveWiringTest(unittest.TestCase):
                 action,
             )
         # Anti-collapse guard (the sneaky adapter defect): implementation's argv must NOT
-        # resolve to the Pro/heavy agy model.
+        # resolve to the heavy agy model (compared at the same effort).
+        heavy = resolve("heavy", "gemini").model_id
         for action in ("execute", "repair"):
             selection = resolve_profile_for_executor(action=action, executor="gemini")
             argv = _gemini_cli_model(selection.model, selection.effort)
-            self.assertNotEqual(argv, "Gemini 3.1 Pro (High)", action)
+            self.assertNotEqual(argv, _gemini_cli_model(heavy, selection.effort), action)
 
     def test_gemini_adapter_maps_tier_ids_without_collapsing_flash_to_pro(self):
         # The gemini CLI adapter must map each tier id to the RIGHT agy model — heavy
-        # → Pro, but regular/lite must NOT silently collapse to Pro (the CR bug).
+        # → Argon, but regular/lite must NOT silently collapse to heavy (the CR bug).
         from phase_loop_runtime.launcher import _gemini_cli_model
 
-        self.assertEqual(_gemini_cli_model(resolve("heavy", "gemini").model_id), "Gemini 3.1 Pro (High)")
+        heavy = resolve("heavy", "gemini").model_id
+        self.assertEqual(_gemini_cli_model(heavy), "gemini-4-argon-high")
         regular = _gemini_cli_model(resolve("regular", "gemini").model_id, "medium")
         lite = _gemini_cli_model(resolve("lite", "gemini").model_id)
-        self.assertNotEqual(regular, "Gemini 3.1 Pro (High)")
-        self.assertNotEqual(lite, "Gemini 3.1 Pro (High)")
+        self.assertNotEqual(regular, _gemini_cli_model(heavy, "medium"))
+        self.assertNotEqual(lite, _gemini_cli_model(heavy))
         self.assertNotEqual(regular, lite)
 
     def test_gemini_adapter_fails_loud_on_unmapped_gemini_id(self):
