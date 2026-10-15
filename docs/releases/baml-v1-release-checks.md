@@ -5,7 +5,7 @@ checks on the release commit, in addition to the release handoff:
 
 1. **agy requalification.** The worker is `phase_loop_runtime/_baml_worker.py`
    and the client lives in `baml_modular.py`; both are in agy's `source_sha256` pin
-   set, so both agy images requalify at the cut (see the CHANGELOG entry for
+   set, so every member of the qualified agy image set requalifies at the cut (see the CHANGELOG entry for
    agent-harness#1135). Record the `baml-bridge` and `protobuf` versions in the
    release notes.
 2. **Full I1 interrupt sweep.** Dispatch `.github/workflows/baml-i1-sweep.yml` on

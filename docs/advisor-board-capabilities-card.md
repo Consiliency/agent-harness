@@ -10,8 +10,8 @@ defaulted-but-overridable execution lane, not the primary key.
 This card is the release reference for **how the board is invoked**, **which
 models run on which harnesses**, **the built-in board presets**, and **how to add
 a custom board**. It is derived from the live registries / install code so it
-cannot drift; a `pytest` smoke (`tests/test_advisor_board_alias_install.py`,
-`tests/test_advisor_board_integration.py`) keeps the skill names and matrix honest.
+cannot drift; a `pytest` smoke (`phase-loop-runtime/tests/test_advisor_board_alias_install.py`,
+`phase-loop-runtime/tests/test_advisor_board_integration.py`) keeps the skill names and matrix honest.
 
 ---
 
@@ -59,12 +59,14 @@ actionable message, before any subprocess is spawned. Source of truth:
 | `claude`   | `claude`       | subscription, api_key   | homebrew   |
 | `codex`    | `codex`        | subscription, api_key   | homebrew   |
 | `gemini`   | `agy`          | subscription, api_key   | homebrew   |
+| `grok`     | `grok`         | subscription            | homebrew   |
 | `opencode` | `opencode`     | subscription, api_key   | omnigent   |
 | `pi`       | `pi`           | subscription, api_key   | omnigent   |
 | `cursor`   | `cursor-agent` | subscription, api_key   | omnigent   |
 
-- **homebrew** = the built-3 CLI-lane launch (claude TUI, codex, gemini) + the
-  in-process host leg. Byte-for-byte the legacy panel for the `default` board.
+- **homebrew** = the built-4 CLI-lane launch (claude, codex, gemini, grok) + the
+  in-process host leg. For the `default` board it matches the legacy panel
+  byte-for-byte on the three shared legs (codex, gemini, claude).
 - **omnigent** = harness breadth (opencode/pi, and cursor/amp when the live
   `GET /v1/harnesses` catalog reports them) routed through omniagent-plus →
   Omnigent v0.4.0, **opt-in and fail-closed** (an unavailable lane skips-with-warning,
@@ -87,6 +89,7 @@ actionable message, before any subprocess is spawned. Source of truth:
 | `claude-fable-5-1` | claude      | `claude`     | claude            | max            |
 | `claude-fable-5` | claude        | `claude`     | claude            | max            |
 | `Gemini 3.1 Pro` | gemini        | `gemini`     | gemini            | max            |
+| `gemini-4-argon` | gemini        | `gemini`     | gemini            | high           |
 | `gemini-3.8-flash` | gemini      | `gemini`     | gemini            | high           |
 | `gemini-3.7-flash` | gemini      | `gemini`     | gemini            | high           |
 | `gemini-3.6-flash` | gemini      | `gemini`     | gemini            | high           |
@@ -96,6 +99,8 @@ actionable message, before any subprocess is spawned. Source of truth:
 
 `gpt-6-sol` is an explicit seat (launch-tested on `codex` only). It answers to the `sol` alias, so it cannot fill a governed review's `grok` seat.
 
+`gemini-4-argon` (Gemini 4 Argon) is the Gemini default seat. `gemini-3.8-flash`, the prior default, stays registered and answers to the `gemini` alias, so explicit boards and user configs that name it keep working. A president ladder rung that names the exact id `gemini-3.8-flash` (rather than the `gemini` alias) resolves only on a board that seats that model.
+
 `gpt-6.1-sol` is likewise an explicit seat, not a default: it answers to the `sol` alias, so a governed policy requiring `sol` accepts a board that seats it. It is launch-tested on `codex` only; the `opencode` pair is registered by vendor family and is not launch-verified. No shipped default names it. The production review entry points (`phase-loop advisor-board`, the governed review gate, run-train) compose `code-review` with `compose_review_board()` and do not read the user board file, so today a user `[[boards]]` entry cannot move their codex seat; the shipped default moves through the model roster (agent-harness#1171).
 
 `claude-sonnet-5-5` (Claude Sonnet 5.5) is likewise an explicit seat, not a default. It is registered only: it answers to the `fable` alias, the Anthropic seat, so a governed policy requiring `fable` accepts a board that seats it. It does not answer to `gemini`, so seating it where the gemini seat would sit does not satisfy a policy that requires `gemini`. It runs only on the `claude` lane. It is not a TUI-policy model (that is the `claude-fable-*` and `claude-opus-*` prefixes), so it is routed like `claude-sonnet-5`. No board default or preset names it. Since the 0.7.27 implementer roster it is the Claude regular tier, and therefore the implementer model; `claude-sonnet-5` stays an accepted explicit model. As with `gpt-6.1-sol`, there is no user-config route to it in the production review entry points yet (agent-harness#1171).
@@ -103,8 +108,10 @@ actionable message, before any subprocess is spawned. Source of truth:
 **Effort is model-first `{model, effort}`**, split out of the model name and mapped
 per harness by `render_seat_invocation`: `claude` → `--effort <level>`, `codex` →
 `-c model_reasoning_effort=<xhigh|high|…>`, `gemini` → effort baked into the model
-token (`gemini-3.8-flash-high`; legacy display names such as
+token (`gemini-4-argon-high`; legacy display names such as
 `"Gemini 3.1 Pro (High)"` remain accepted). Canonical effort levels: `low, medium, high, max`.
+
+The `grok` lane maps effort to `--reasoning-effort <level>`.
 
 Built-in presets use one lower canonical effort level than their previous defaults:
 `max` becomes `high`, `high` becomes `medium`, and `medium` becomes `low`.
@@ -161,7 +168,7 @@ on any host other than Claude Code through the subscription TUI adapter (amended
 direct HTTP call, gateway backing or alternate endpoint; a native fill counts only once its
 verdict is bound.
 
-| host ↓ / seat vendor → | Anthropic (`claude-opus-5-5` / Fable) | OpenAI (`gpt-6-astra`) | Google (`gemini-3.8-flash`) | xAI (`grok-4.7`) |
+| host ↓ / seat vendor → | Anthropic (`claude-opus-5-5` / Fable) | OpenAI (`gpt-6-astra`) | Google (`gemini-4-argon`) | xAI (`grok-4.7`) |
 |---|---|---|---|---|
 | Claude Code | native sub-agent (emit → fill → invoke) | `codex` CLI | `agy` CLI | `grok` CLI |
 | `codex` | TUI adapter (self-PTY) | native `codex` subagent | `agy` CLI | `grok` CLI |
@@ -183,14 +190,14 @@ the matrix at load time).
 
 | Preset                  | Purpose               | Seats (model · effort · harness · lens) |
 | ----------------------- | --------------------- | ---------------------------------------- |
-| `default`               | premerge-review       | gpt-6-astra · high · codex · red-team ; gemini-3.8-flash · medium · gemini · alternative-approach ; claude-opus-5-5 · high · claude · correctness ; grok-4.7 · high · grok · adversarial |
-| `code-review`           | code-review           | grok-4.7 · high · grok · adversarial ; claude-opus-5-5 · high · claude · correctness ; gpt-6-astra · high · codex · red-team ; gemini-3.8-flash · medium · gemini · alternative-approach |
-| `brainstorm`            | brainstorm            | claude-sonnet-5 · medium · claude · adversarial ; gpt-6-astra · medium · codex · supportive ; gemini-3.8-flash · medium · gemini · lateral |
+| `default`               | premerge-review       | gpt-6-astra · high · codex · red-team ; gemini-4-argon · medium · gemini · alternative-approach ; claude-opus-5-5 · high · claude · correctness ; grok-4.7 · high · grok · adversarial |
+| `code-review`           | code-review           | grok-4.7 · high · grok · adversarial ; claude-opus-5-5 · high · claude · correctness ; gpt-6-astra · high · codex · red-team ; gemini-4-argon · medium · gemini · alternative-approach |
+| `brainstorm`            | brainstorm            | claude-sonnet-5 · medium · claude · adversarial ; gpt-6-astra · medium · codex · supportive ; gemini-4-argon · medium · gemini · lateral |
 | `doc-edit`              | doc-edit              | claude-sonnet-5 · low · claude · copyedit ; gpt-6-astra · low · codex · structure |
-| `legal-review`          | legal-review          | gpt-6-astra · high · codex · opposing-counsel ; gemini-3.8-flash · medium · gemini · risk-liability ; claude-opus-5-5 · high · claude · authority-verification |
-| `legal-strategy-review` | legal-strategy-review | gpt-6-astra · high · codex · red-team ; gemini-3.8-flash · medium · gemini · alternatives ; claude-opus-5-5 · high · claude · downside-ethics |
-| `legal-brainstorm`      | legal-brainstorm      | claude-sonnet-5 · medium · claude · aggressive ; gpt-6-astra · medium · codex · conservative ; gemini-3.8-flash · medium · gemini · creative |
-| `general`               | general               | gpt-6-astra · high · codex · adversarial ; gemini-3.8-flash · medium · gemini · alternative ; claude-opus-5-5 · high · claude · completeness |
+| `legal-review`          | legal-review          | gpt-6-astra · high · codex · opposing-counsel ; gemini-4-argon · medium · gemini · risk-liability ; claude-opus-5-5 · high · claude · authority-verification |
+| `legal-strategy-review` | legal-strategy-review | gpt-6-astra · high · codex · red-team ; gemini-4-argon · medium · gemini · alternatives ; claude-opus-5-5 · high · claude · downside-ethics |
+| `legal-brainstorm`      | legal-brainstorm      | claude-sonnet-5 · medium · claude · aggressive ; gpt-6-astra · medium · codex · conservative ; gemini-4-argon · medium · gemini · creative |
+| `general`               | general               | gpt-6-astra · high · codex · adversarial ; gemini-4-argon · medium · gemini · alternative ; claude-opus-5-5 · high · claude · completeness |
 | `solo`                  | general               | claude-opus-5-5 · high · claude · completeness |
 
 **Catch-alls for unmodeled tasks.** `general` (top-tier cross-vendor panel) and
@@ -223,20 +230,35 @@ citation-verification treatment is a documented deep-seat follow-on
 The explicit `PANEL_LEGS == (codex, gemini, claude)` and `invoke_panel` API stay
 separately frozen for legacy callers (proven in `tests/test_advisor_board_golden.py`).
 
-The president availability ladder is Fable (the Anthropic seat — Opus 5.5 by default) → Sol → Grok 4.7 → Gemini 3.8 Flash
+The president availability ladder is Fable (the Anthropic seat — Opus 5.5 by default) → Sol → Grok 4.7 → Gemini 4 Argon
 (`Sol` is the GPT seat alias: `gpt-6-astra` by default, `gpt-5.6-sol` accepted as an explicit legacy id).
 It advances only on typed unavailability, not on disagreement or a blocking ruling.
 `requires_president` landing policies execute it (`invoke_board(president_invoke=)`)
-and fail the landing closed without a ruling; today no HARDEN-authorized president
-execution operation exists, so a seated rung reports
-`president_execution_route_unavailable` rather than riding a review leg
-(`advisor_board/CONTRACTS.md` → ABDPRES).
+and fail the landing closed without a ruling. The ladder runs through the president's
+own operation, `public_board_president.v1` (`president_operation.py`), never through a
+review leg. Under Claude Code the Fable rung defers to a native fill, which you resume
+with `--native-president FILL.json`. Elsewhere it runs as a brokered Claude session
+(print by default, TUI when `PHASE_LOOP_PANEL_CLAUDE_ROUTE=tui`), and Sol, Grok and
+Gemini run brokered (`advisor_board/CONTRACTS.md` → ABDPRESROUTE).
 
 ### Invoking a board
 
 ```sh
 phase-loop advisor-board <artifact>      # runtime-composed four-vendor board
 ```
+
+Under Claude Code, the claude seat can be filled natively instead of by a spawned
+session:
+
+```sh
+phase-loop advisor-board <artifact> --emit-native-request [--native-fill-dir DIR]
+# fill native-fill/<request_id>/ (request.json + review.md), then:
+phase-loop advisor-board <artifact> --native-leg claude=<dir>
+```
+
+`--emit-native-request` stages the board and writes the request without spending any
+seat; `--native-leg` is checked against the staged artifact, brief and composition
+before any seat launches.
 
 The public CLI does not accept `--board` or `--seats`, and does not load the TOML
 configuration below. Named presets and custom boards are library interfaces;
@@ -334,7 +356,7 @@ phase-loop advisor-board bundle.md --pointer-brief --json
 
 `--pointer-brief` declares that the brief tells reviewers to open files in the staged tree instead of carrying their content inline.
 
-**Before launch.** Before any seat launches, the board checks each seat's route. A seat that cannot open files gets `seat_pointer_brief_unreadable`, printed on stderr. On main that means the brokered Claude seat and the brokered Gemini (agy) seat. A Claude seat filled natively has file access.
+**Before launch.** Before any seat launches, the board checks each seat's route. A seat that cannot open files gets `seat_pointer_brief_unreadable`, printed on stderr. For Claude, that is a brokered seat that does not take the jailed route on this host. A Claude seat that is jailed (agent-harness#1132) or filled natively has file access. The brokered Gemini (agy) seat is also marked.
 
 **What happens to that seat.** It still runs, but its verdict is **not source-grounded**:
 - It does not count toward the floor, the landing count or the pre-merge minimum of reviewers.
@@ -343,7 +365,7 @@ phase-loop advisor-board bundle.md --pointer-brief --json
 
 The payload adds `notices`, `legs[].notices`, `legs[].source_grounded` and `grounded_seats`, and only when the flag is set.
 
-**The fix.** Inline the referenced content, or fill the seat through a route with file access. Once agent-harness#1132 lands, a jailed Claude seat will have file access. The Gemini tool route is agent-harness#1170.
+**The fix.** Inline the referenced content, or fill the seat through a route with file access: for Claude, the jailed route or a native fill. The Gemini tool route is agent-harness#1170.
 
 ### Opt-in governed web research
 
@@ -453,12 +475,13 @@ a two-same-vendor board is not collapsed.
    (`governed_review`, `governed_premerge`) still call it. The new
    `invoke_board(board, artifact, ...)` seam is *additive*; migrate to it only when
    you want boards/presets/breadth. When you do, the `default` board reproduces the
-   legacy 3-leg run byte-for-byte on launch order, per-leg argv/env/timeout, status,
-   text, and failure semantics.
+   legacy 3-leg run byte-for-byte on its three shared legs (codex, gemini, claude):
+   launch order, per-leg argv/env/timeout, status, text, and failure semantics. Its
+   fourth seat (Grok) is checked separately.
 
    - **One intentional result-shape enrichment:** `invoke_board` populates
      `PanelLegResult.seat_key` with a richer per-seat label (e.g.
-     `codex:gpt-6-astra:max`) instead of the bare leg (`codex`). `.leg` is preserved, so
+     `codex:gpt-6-astra:high:red-team`) instead of the bare leg (`codex`). `.leg` is preserved, so
      any caller keying on `.leg` / `.status` / `.usable` is unaffected; this only
      *adds* the ability to tell two same-vendor seats apart. This is the sole
      contract-sanctioned delta (ABDRESOLVE finding 4), asserted explicitly in the
@@ -483,7 +506,7 @@ provider health. No reviewer is dropped or substituted by policy preflight.
 
 | Route | Bounded | Heartbeat-only |
 | --- | --- | --- |
-| Brokered homebrew/subscription Claude TUI | Existing behavior | Supported on Linux with bwrap |
+| Brokered homebrew/subscription Claude (print or TUI route) | Existing behavior | Supported on Linux with bwrap |
 | Brokered homebrew/subscription Codex | Existing behavior | Supported on Linux with bwrap |
 | Brokered homebrew/subscription Grok | Existing behavior | Supported on Linux with bwrap |
 | Brokered subscription Gemini / agy | Existing internal print timer | Qualified image and Linux memfd/pidfd support required |
