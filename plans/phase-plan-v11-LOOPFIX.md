@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: LOOPFIX
 roadmap: specs/phase-plans-v11.md
-roadmap_sha256: be453ea57c7fe77c0f16f2af0e47158440cb2b0241fa65794292464556a8fa3c
+roadmap_sha256: d294c3bab92c995bda8266a12340c78a9d73c12a18919a47b2154ceb4555aba4
 automation:
   suite_command: "uv run --quiet --with-editable ./phase-loop-runtime python -m pytest phase-loop-runtime/tests -q"
 ---
