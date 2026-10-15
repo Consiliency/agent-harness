@@ -174,6 +174,8 @@ def render_agy_model(model: str, effort: str | None = None) -> str:
         if display is None:
             raise ValueError("Gemini 4 Argon requires low, medium, or high effort")
         embedded = display.group(1).lower() if display.group(1) else None
+        if effort not in (None, "low", "medium", "high"):
+            raise ValueError("Gemini 4 Argon requires low, medium, or high effort")
         if effort is not None and embedded is not None and effort != embedded:
             raise ValueError(f"gemini model {candidate!r} conflicts with requested effort {effort!r}")
         return render_agy_model("gemini-4-argon", effort or embedded)  # model-id-source: display alias

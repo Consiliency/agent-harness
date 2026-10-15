@@ -113,6 +113,11 @@ def test_unqualified_display_argon_effort_is_rejected(model):
         render_agy_model(model)
 
 
+def test_display_argon_rejects_a_separate_thinking_effort():
+    with pytest.raises(ValueError):
+        render_agy_model("Gemini 4 Argon", "thinking")
+
+
 def test_argon_embedded_effort_conflict_is_rejected():
     with pytest.raises(ValueError, match="conflicts"):
         render_agy_model("Gemini 4 Argon (High)", "low")
