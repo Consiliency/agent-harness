@@ -67,7 +67,7 @@ It writes `<dir>/bundle.md` (the aggregator input, grouped by bare skill) and `<
 
 `advisor-panel` reflections count as `advisor-board`. The meta-skills close the self-improvement loop: this planner and the editor write reflections on their own runs, and those must be aggregated here or the meta-skills can never be improved by their own pipeline.
 
-The quality filter drops exact and near-duplicate reflections, strips lines repeated across reflections (boilerplate), redacts closeout-ledger detail (paths, URLs, SHAs, issue refs), rejects reflections whose `Improvements` are repo-specific, drops reflections with neither friction nor a proposal, and caps reflections per repo/branch. Every exclusion and its reason is in the manifest.
+The quality filter collapses exact and near copies of the same recorded run, strips recognized closeout-ledger lines, redacts ledger detail (paths, URLs, SHAs, issue refs), drops repo-specific `Improvements` sections while keeping usable friction, drops reflections with neither friction nor a proposal, and caps reflections per repo/branch. Recurring actionable text from distinct runs is retained. Every exclusion and section-drop reason is in the manifest.
 
 If `--target <skill>` is set, limit aggregation to that skill.
 
