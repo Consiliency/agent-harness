@@ -35,7 +35,7 @@ class PresetTests(unittest.TestCase):
         self.assertEqual(len(general.seats), 3)
         self.assertEqual(
             {s.model for s in general.seats},
-            {"gpt-6-astra", "gemini-3.8-flash", "claude-opus-5-5"},
+            {"gpt-6-astra", "gemini-4-argon", "claude-opus-5-5"},
         )
         solo = PRESETS["solo"]
         self.assertEqual(len(solo.seats), 1)  # a 1-seat board is fully valid
@@ -55,7 +55,7 @@ class PresetTests(unittest.TestCase):
             tuple((s.model, s.effort, s.harness) for s in PRESETS["default"].seats),
             (
                 ("gpt-6-astra", "high", "codex"),
-                ("gemini-3.8-flash", "medium", "gemini"),
+                ("gemini-4-argon", "medium", "gemini"),
                 ("claude-opus-5-5", "high", "claude"),
                 ("grok-4.7", "high", "grok"),
             ),
@@ -82,7 +82,7 @@ class PresetTests(unittest.TestCase):
                 ("grok-4.7", "high", "grok", "adversarial"),
                 ("claude-opus-5-5", "high", "claude", "correctness"),
                 ("gpt-6-astra", "high", "codex", "red-team"),
-                ("gemini-3.8-flash", "medium", "gemini", "alternative-approach"),
+                ("gemini-4-argon", "medium", "gemini", "alternative-approach"),
             ),
         )
 
@@ -102,7 +102,7 @@ class PresetTests(unittest.TestCase):
             "brainstorm": (
                 ("claude-sonnet-5", "medium", "claude", "adversarial"),
                 ("gpt-6-astra", "medium", "codex", "supportive"),
-                ("gemini-3.8-flash", "medium", "gemini", "lateral"),
+                ("gemini-4-argon", "medium", "gemini", "lateral"),
             ),
             "doc-edit": (
                 ("claude-sonnet-5", "low", "claude", "copyedit"),
@@ -120,18 +120,18 @@ class PresetTests(unittest.TestCase):
         legal = {
             "legal-review": (
                 ("gpt-6-astra", "high", "codex", "opposing-counsel"),
-                ("gemini-3.8-flash", "medium", "gemini", "risk-liability"),
+                ("gemini-4-argon", "medium", "gemini", "risk-liability"),
                 ("claude-opus-5-5", "high", "claude", "authority-verification"),
             ),
             "legal-strategy-review": (
                 ("gpt-6-astra", "high", "codex", "red-team"),
-                ("gemini-3.8-flash", "medium", "gemini", "alternatives"),
+                ("gemini-4-argon", "medium", "gemini", "alternatives"),
                 ("claude-opus-5-5", "high", "claude", "downside-ethics"),
             ),
             "legal-brainstorm": (
                 ("claude-sonnet-5", "medium", "claude", "aggressive"),
                 ("gpt-6-astra", "medium", "codex", "conservative"),
-                ("gemini-3.8-flash", "medium", "gemini", "creative"),
+                ("gemini-4-argon", "medium", "gemini", "creative"),
             ),
         }
         for name, expected in legal.items():

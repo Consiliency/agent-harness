@@ -2,6 +2,14 @@
 
 Copy and fill in the placeholders (in ALL_CAPS) for each task type.
 
+## Contents
+
+- Bug Fix Template
+- New Feature Template
+- Explore / Research Template
+- Refactor Template
+- Multi-File Edit Template
+
 ## Bug Fix Template
 
 ```

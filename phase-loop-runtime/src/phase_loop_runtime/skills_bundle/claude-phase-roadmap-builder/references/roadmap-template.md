@@ -2,6 +2,24 @@
 
 Emit this exact structure. Heading names are stable IDs that `/claude-plan-phase` parses — do not rename, reorder, or drop required sections.
 
+## Contents
+
+The template's sections, in order:
+
+- Context
+- Architecture North Star
+- Assumptions (fail-loud if wrong)
+- Non-Goals
+- Cross-Cutting Principles
+- Phase Dependency DAG
+- Top Interface-Freeze Gates
+- Phases
+- Execution Notes
+- Acceptance Criteria
+- Verification
+
+After the template: Notes on filling in the template.
+
 ```markdown
 # <Project Name> — Phase Plan v<N>
 
