@@ -2,6 +2,19 @@
 
 Extended rules for phase/lane decomposition. The goal is to minimize wall-clock time to deliver the full roadmap. The main SKILL.md carries the seven core rules; this doc expands them for edge cases.
 
+## Contents
+
+- Core model
+- Rule 1 — Fewer phases, more lanes
+- Rule 2 — A phase boundary exists only at a necessary interface freeze
+- Rule 3 — Prefer narrow, early freezes
+- Rule 4 — Split fat phases into parallel sibling phases
+- Rule 5 — ≥2 lanes per phase (with exceptions)
+- Rule 6 — Parallelism hints in Scope notes
+- Rule 7 — Cross-phase parallelism in the DAG
+- Anti-patterns
+- Diagnostic questions
+
 ## Core model
 
 - **Phases are serial checkpoints.** Each phase closes an interface freeze that the next phase consumes. Wall-clock cost of a phase = wall-clock cost of its slowest lane.

@@ -421,6 +421,11 @@ def build_parser() -> argparse.ArgumentParser:
                               help="watch: qualify and verify, open no PR")
     agy_qual_sub.add_argument("--version", help="watch: a specific in-window stable release instead of the newest")
     agy_qual_sub.add_argument("--base-ref", default="origin/main", help="watch --dry-run only: the tree to prepare from")
+    seat_egress_sub = subparsers.add_parser(
+        "seat-egress",
+        help="The jailed Gemini seat's egress proxy: status, or install the pinned srt (agent-harness#1170)",
+    )
+    seat_egress_sub.add_argument("action", choices=("status", "install"))
     cli_qual_sub = subparsers.add_parser(
         "cli-qualification",
         help="Per-host CLI qualification of a seat harness: status and clear (agent-harness#1333)",
@@ -1074,10 +1079,13 @@ def build_parser() -> argparse.ArgumentParser:
     # equivalent of --closeout-mode. Read-only; prints the mode and its required action.
     publication_mode_sub = subparsers.add_parser(
         "publication-mode",
+        description=("Run before any git push, gh pr create, gh pr edit or gh pr ready "
+                     "on the interactive path. Print the resolved publication mode and "
+                     "required action; non-zero means do not publish."),
         help=("Print the interactive publication mode (none | draft-only | ready) resolved "
               "from the repo's committed .phase-loop-publication.toml and the user's "
               "agent-harness/publication.toml, and the action it requires. Run it before "
-              "any git push or gh pr create on the interactive path; non-zero means do "
+              "any git push, gh pr create, gh pr edit or gh pr ready on the interactive path; non-zero means do "
               "not publish."),
     )
     publication_mode_sub.add_argument("--repo", default=argparse.SUPPRESS)
@@ -1287,6 +1295,10 @@ def main(argv: list[str] | None = None) -> int:
         from .agy_qualification import cli_main as _agy_qualification_main
 
         return _agy_qualification_main(args)
+    if command == "seat-egress":
+        from .seat_egress_proxy import cli_main as _seat_egress_main
+
+        return _seat_egress_main(args)
     if command == "cli-qualification":
         from .cli_qualification import cli_main as _cli_qualification_main
 
@@ -2476,6 +2488,8 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
                   f"the prompt in {record['stream_dir']}/president.pending.json, write FILL.json "
                   "{rung, brief_digest, findings_digest, text} and re-run with --native-president FILL.json")
         return 0
+    from .panel_invoker import refused_seat_notices
+
     independence = board_independence(board)
     usable_count = len(result.usable_legs)
     usable_vendors = {leg.leg for leg in result.usable_legs}
@@ -2546,6 +2560,11 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
             # agent-harness#1132 (plan amendment A1): each seat's launch mode, decided before
             # any seat launched.
             "seat_modes": [mode.as_json() for mode in seat_modes],
+            # agent-harness#1244: each seat refused before it ran, never counted, with its fix.
+            "refused_seats": [
+                {"seat_key": notice.seat_key, "code": notice.code, "fix": notice.fix}
+                for notice in refused_seat_notices(result.legs)
+            ],
             "independence": {
                 "level": independence.level,
                 # The sealed evidence floor derives these from concrete leg
@@ -2608,7 +2627,8 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
             # notices and seat modes (agent-harness#1132); it is written without them,
             # byte-for-byte as before.
             capture_payload = {key: value for key, value in payload.items()
-                               if key not in ("notices", "seat_modes", "composition")}
+                               if key not in ("notices", "seat_modes", "composition",
+                                              "refused_seats")}
             capture_payload["legs"] = [
                 {key: value for key, value in leg.items() if key != "notices"}
                 for leg in payload["legs"]
@@ -2696,6 +2716,11 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
             "— below the board's independence floor, not a usable board.",
             file=sys.stderr,
         )
+        # agent-harness#1244: a seat refused before it ran (a route that is not jailed, or
+        # no tree to read) is named with its fix, as composition exclusions are.
+        for notice in refused_seat_notices(result.legs):
+            print(f"advisor-board:   not counted: {notice.seat_key} [{notice.code}] "
+                  f"fix: {notice.fix}", file=sys.stderr)
     return exit_code
 
 

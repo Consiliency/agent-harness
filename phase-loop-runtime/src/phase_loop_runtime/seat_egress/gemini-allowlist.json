@@ -1,0 +1,15 @@
+{
+  "schema": "phase_loop_seat_egress_allowlist.v1",
+  "leg": "gemini",
+  "measured": "agy 1.3.3 on Linux, 2026-10-12 (agent-harness#1170): a tooled turn through the TLS-terminating proxy with every request logged; the seat does not start without each allowed request",
+  "allow": [
+    {"host": "daily-cloudcode-pa.googleapis.com", "port": 443, "method": "POST", "path_prefix": "/v1internal:"},
+    {"host": "www.googleapis.com", "port": 443, "method": "GET", "path": "/oauth2/v2/userinfo"},
+    {"host": "lh3.googleusercontent.com", "port": 443, "method": "GET", "path_prefix": "/a/"}
+  ],
+  "measured_and_refused": [
+    "play.googleapis.com",
+    "antigravity-unleash.goog",
+    "antigravity-cli-auto-updater-*.run.app"
+  ]
+}

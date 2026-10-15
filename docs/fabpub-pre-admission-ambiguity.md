@@ -4,31 +4,31 @@ Operator note for the state Consiliency/agent-harness#789 hit: a governed FABPUB
 publication that failed **before** admission, left a durable adapter-start owner
 behind, and therefore permanently blocked its repository partition.
 
-Paths below are relative to the repository root; line numbers are for
-`phase-loop-runtime/src/phase_loop_runtime/` on the tree that carries this file.
+Code paths below are relative to `phase-loop-runtime/src/phase_loop_runtime/`; code is
+cited by symbol, not line number.
 
 ## What a pre-admission ambiguity is
 
-`BrokerService._fresh_publish` (`convergence/broker/verbs.py:518`) makes the
+`BrokerService._fresh_publish` (`convergence/broker/verbs.py`) makes the
 adapter-start owner durable **before** it allocates an admission, so that a crash
 between the two cannot be mistaken for "nothing happened". On the next attempt it
 reads that owner back and, if the owner is unsealed, asks
-`_block_unsealed_owner` (`verbs.py:530-532`, defined at `verbs.py:375`) to
+`_block_unsealed_owner` (`verbs.py`) to
 resolve it. An unsealed owner with no terminal is an **unknown provider effect**:
 the runtime cannot prove the adapter was never entered, so it durably promotes
 the effect key to `outcome_ambiguous_blocked`.
 
 That record blocks the whole repository partition:
-`BrokerEvidenceStore.epoch_blocked` (`convergence/broker/evidence.py:86-95`)
+`BrokerEvidenceStore.epoch_blocked` (`convergence/broker/evidence.py`)
 scans one store root, and `_fresh_publish` refuses on it with
-`PermissionError("epoch permanently blocked")` (`verbs.py:533-534`). The scope is
+`PermissionError("epoch permanently blocked")`. The scope is
 one repository, by construction — "each repo gets its OWN admission + evidence
 store … the stores are NOT shared" (the `_RoutingBrokerService` class docstring in
 `convergence/broker/live.py`).
 
 The block is permanent at the storage layer, not just by convention: no append
 may transition out of an `outcome_ambiguous_blocked` record, whatever the caller
-path (`evidence.py:229-230`).
+path (the append guard in `evidence.py`, `_append_locked`).
 
 ## Why it stays permanent (decision: C-keep, 2026-09-06)
 
@@ -64,6 +64,225 @@ ambiguity should not recur from a reader-schema skew.
 Workstream B (Consiliency/agent-harness#804) removes the second blocker the
 incident hit: a sealed bootstrap inventory whose recorded worktree has since been
 pruned no longer fails the activation barrier.
+
+## Owner section refusals and liveness
+
+The behaviour in this section and the two after it (agent-harness#1311,
+agent-harness#1312, agent-harness#1313, agent-harness#1314, agent-harness#1315,
+agent-harness#1574, agent-harness#1577, agent-harness#1578, agent-harness#1591,
+agent-harness#1633) landed on `main` after `v0.7.26` and ships in the next release. A
+`v0.7.26` or older runtime does not have it.
+
+Two narrowings of what becomes `outcome_ambiguous_blocked`. Neither relaxes C-keep:
+an unsealed owner whose writer is gone, and that has no known terminal, is still
+promoted exactly as before.
+
+- **A refused section leaves no owner (agent-harness#1314).** Inside the one
+  `admissions.lock` acquisition, `_owner_and_admission_under_one_lock` reads the raw
+  bytes of `adapter-start-owner.json` (absent, or a sealed owner), writes this
+  attempt's owner, and calls `admit_next`. If anything refuses after the owner write
+  (generation lease, partition floor, `epoch_blocked`, policy, the request build, the
+  admission append), it puts those exact bytes back, or removes the file if there
+  were none, before the refusal propagates. The owner never reached the provider, so
+  no effect is possible, and no other writer can observe it, because the restore
+  happens under the same acquisition. Only an owner this attempt wrote is ever
+  restored. A simulated crash (`PublishCrashInjected`) gets no cleanup, as a real
+  crash would not.
+- **A live writer's owner is not promoted (agent-harness#1313).** From the owner write
+  until its attempt ends, the writer holds an advisory `flock` on the owner file's
+  inode. Before `_block_unsealed_owner` appends `provider_call_in_flight` or
+  `outcome_ambiguous_blocked` for an owner with no known terminal, it probes that
+  lock non-blocking. If it is held, the publish refuses with `AdapterStartOwnerLive`
+  (a `PermissionError` whose message says to retry), and nothing is written. The
+  kernel releases the lock when the writer process dies, so a crashed writer's owner
+  is promoted as before. No file and no owner field were added, so mixed versions are
+  unchanged: an older writer never takes the lock and its owner is promoted as
+  before, and an older reader ignores the lock. The lock relies on the same `flock`
+  coherence that `admissions.lock` already does. On NFS, where Linux emulates `flock`
+  with per-process POSIX locks, a probe from the writer's own process can read the
+  writer as dead (today's behaviour), and a crashed client's lock lasts until its
+  lease expires (a retryable refusal meanwhile).
+
+## Provider entry and failures around it
+
+The broker returns the state the store holds. It never invents a terminal state. It
+enters the provider only after, within one `admissions.lock` acquisition, the on-disk
+owner equalled this attempt's (nonce included) and was unsealed and the key's row was
+`provider_call_in_flight`. A promotion landing at any point from that lock's release
+through the provider call cannot be prevented; since agent-harness#1591 a definite
+provider outcome after it is kept rather than lost.
+
+- **A guard right before the provider call (agent-harness#1577).** Under one
+  `admissions.lock` acquisition, `BrokerService._provider_entry_guard` checks that the
+  on-disk owner is exactly this attempt's owner (nonce included) and unsealed, and
+  that the key's evidence row is `provider_call_in_flight`. If not, the attempt makes
+  no provider call and writes nothing. It returns the stored row (normally
+  `outcome_ambiguous_blocked`) with reason `outcome_ambiguous` and
+  `provider_call_made: false`, and the checkpoint stays `BROKER_INTENT_DURABLE`.
+  This covers an older-runtime prober that promotes a live writer's owner after the
+  owner section and before the guard. Such a prober does not honour the
+  agent-harness#1313 liveness lock.
+- **Promotion from the guard's lock release through the provider call: the outcome
+  is kept (agent-harness#1591).** The guard releases `admissions.lock` before the
+  `ADAPTER_STARTED` projection, request finalization, the service-generation lease
+  acquisition and the call itself, and nothing re-checks after it. A promotion
+  landing anywhere in that interval still makes one provider call, reported with
+  `provider_call_made: true`, and the key stays ambiguous. The guard was not moved
+  closer to the call: that would only shrink the interval, and a refusal would then
+  leave the checkpoint at `ADAPTER_STARTED`, which no longer shows that no call was
+  made. Instead, when that call returns a definite outcome:
+  - The broker appends one `PostAmbiguityObservation.v1` row to
+    `post-ambiguity-observations.jsonl` beside the evidence log, under the same
+    `admissions.lock` acquisition and generation check that records a terminal. The
+    row carries the key, `observed_state` (`effect_terminal_observed` or
+    `no_effect_terminal_proven`), `evidence_reference` (the PR URL for an effect),
+    `head_sha`, `branch`, and the bindings: `ambiguity_digest` (sha256 of the blocked
+    row's raw line, the digest an attestation binds) and the attempt owner's
+    `owner_nonce` and `transaction_id`. The row is written only while the on-disk
+    owner is still exactly this attempt's and unsealed; otherwise nothing is
+    written and the result says `durable: false`.
+  - It is recorded before the writer releases its service-generation lease. A
+    rotation that starts during the call holds `admissions.lock` across its drain,
+    so the write waits on that lock (a `DRAINING` latch alone does not refuse it);
+    the writer's held lease makes the ceremony refuse "predecessor writers did not
+    drain", the latch returns to `ACTIVE`, and the ceremony is retried after the
+    observation is durable. A revoked or stale lease and a superseded generation
+    still refuse the write, so only a writer with no held lease, or one whose lease
+    the operator cleared (runbook §6), loses the observation (agent-harness#1633).
+  - A ceremony whose own journal already holds `INVENTORY_SEALED` (sealed by an
+    older runtime, or crashed after its in-lock check) is not refused on resume:
+    refusing there would strand the partition. As after the pointer flip, the
+    successor's re-admission refuses the observed effect instead.
+  - Nothing else changes. The evidence log gets no row (a terminal after an
+    ambiguity would make the partition unrotatable, and an older reader would treat
+    it as landed), the owner stays unsealed, the checkpoint stays `ADAPTER_STARTED`,
+    and the epoch stays blocked. The key is never resolved as landed automatically
+    (C-keep); clearing it always needs a rotation.
+  - The result is not accepted and has no `publish_result`. Its `reason` is
+    `effect_observed_after_ambiguity` or `no_effect_observed_after_ambiguity`, and
+    `observed_after_ambiguity` carries the observation. Every retry replays the
+    same answer with `provider_call_made: false`. The human route's handoff keeps
+    `next_step: adjudicate_publication_by_partition_rotation` and, for an effect,
+    adds `required_disposition: observed_landed`, `forbidden_disposition:
+    attested_not_landed` and the `attestation_inputs` (observed head, evidence URL,
+    effect-key suffix, owner nonce, transaction id). For a no-effect observation it
+    adds `supporting_evidence` and `required_disposition: null`: it supports
+    `attested_not_landed` without proving it.
+  - New runtimes refuse to dispose a key with a recorded effect, or any key while the
+    side file is unreadable (a torn append), `attested_not_landed`: the ceremony
+    (right after its zero-write adjudication, and again under the predecessor's lock
+    after the drain, before `INVENTORY_SEALED`), the read-only preflight, and the
+    re-admission
+    (`PublicationRecoveryRequired`, escalate to the maintainer), which catches a
+    disposition an older ceremony accepted.
+  - An ambiguous outcome or an exception from that call behaves as before.
+- **Mixed versions.** The agent-harness#1313 liveness lock and this guard protect a
+  partition only once every runtime that writes it is upgraded. An older writer
+  has neither, and records no observation: its provider outcome on an
+  already-ambiguous row is still lost. A crash after the provider returned and
+  before the side-file write loses it too. No reader, ceremony or attestation
+  builder of an earlier version opens the side file, and no rotation digests it,
+  so their answers are unchanged. An older ceremony may accept `attested_not_landed`
+  for an observed effect; a new runtime's re-admission then refuses, but an older
+  one can still publish twice. So until every writer and every ceremony runtime on
+  the partition is upgraded, an `attested_not_landed` attestation still needs
+  provider-side evidence, such as the provider showing no pull request and no
+  branch for the head. Absence of local evidence is not enough. Provider-side
+  absence is still the operator's judgement, not proof (see the runbook's §3).
+- **A failure after the provider returned is not ambiguity when the terminal is
+  durable (agent-harness#1574).** If the owner seal or the `TERMINAL_SEALED`
+  projection fails after the terminal was recorded, the broker returns that
+  terminal. The owner may stay unsealed with a known terminal. The next fresh
+  publish's `_block_unsealed_owner` seals it, and a retry replays the terminal. The
+  terminal is recorded before the service-generation lease is released, so a failed
+  release is not ambiguity either (agent-harness#1591). A failure inside the provider
+  call, or a generation refusal of the terminal record after the call returned, is
+  still recorded as `outcome_ambiguous_blocked`, unless the generation fence refuses
+  that record (agent-harness#1628, agent-harness#1684, see "Human-route handoffs for
+  broker refusals").
+- **A failure before the provider was entered is not ambiguity either.** A refused
+  service-generation lease (a `DRAINING` writer latch, `WriterGenerationBlocked`) is
+  re-raised as `ProviderEntryGenerationRefused`, which is still a
+  `WriterGenerationBlocked`, with the same message. Nothing is recorded beyond the
+  `provider_call_in_flight` intent (see "Human-route handoffs for broker refusals").
+- **Failures between the owner section and the provider call (agent-harness#1578).**
+  If the `ADMISSION_DURABLE` checkpoint projection itself fails while the checkpoint
+  is still `COMMITTED_HEAD_RESOLVED`, the broker restores the owner bytes the
+  section found. The restore takes a fresh `admissions.lock` acquisition. It runs
+  only if the generation still authorizes this writer, the owner is exactly this
+  attempt's, and the key has no evidence row. The admission line it leaves is
+  harmless, because `admit_next` dedups the retry by attempt id. Every other failure
+  in this window leaves the owner and the checkpoint as they are. That covers a
+  projection that became durable and then reported failure, `record_intent`, the
+  later projections, the guard's own authorization, and the lease refusal above.
+  Those failures fail closed and a rotation recovers them. The next attempt promotes
+  the owner, and `attested_not_landed` is truthful there because the provider was
+  never entered. Restoring the owner there would be wrong. Once the checkpoint is
+  admitted, a retry without an owner is refused by the already-admitted recovery
+  check, and no rotation can dispose a key that has no evidence.
+- A blocked publish result from `publish_from_worktree` now carries
+  `provider_call_made`. It is true only when this call entered the provider adapter.
+  A replay of stored evidence reports false.
+
+## Human-route handoffs for broker refusals
+
+The human route (`publish_human_invoked_from_worktree`) picks its handoff by the
+type of the broker refusal, never by its message. Every type below is a
+`PermissionError` subclass, so existing `except PermissionError` callers are
+unaffected, and its message is unchanged. Each refusal except the last row is raised
+before provider entry, and the result carries `provider_call_made: false`; the last
+row's result carries `provider_call_made: true`. Any other `PermissionError` keeps
+`repair_fabpub_authority`.
+
+| Refusal | Type | `next_step` |
+|---|---|---|
+| A routing client was built before a rotation moved the ACTIVE generation (agent-harness#1315) | `RoutingClientGenerationRetired` (a `WriterGenerationBlocked`) | `rebuild_broker_client_and_retry`: close the client and build a new one, or restart the broker process |
+| The owner's writer is still running, or the section was contended twice | `AdapterStartOwnerLive`, `AdapterStartOwnerContended` | `retry_after_inflight_publication`: retry shortly; no rotation |
+| An unsealed owner was promoted, or the epoch is blocked by a key in this generation | `UnsealedOwnerBlocksPartition`, `PartitionEpochBlocked` | `adjudicate_publication_by_partition_rotation`, with `blocking_effect_keys` (and `blocking_transaction_id` for an owner); the attestation disposes the blocking key, which may not be this publication's |
+| After the admission is durable and before provider entry: a `WriterGenerationBlocked` from `record_intent`, `_authorize` or the service-generation lease, or the guard's own "no evidence row" refusal | `ProviderEntryGenerationRefused` (a `ProviderEntryRefused` and a `WriterGenerationBlocked`; the original is `__cause__`), or `ProviderEntryRefused` from the guard; both carry `effect_key`, `transaction_id` | `retry_once_before_partition_rotation`: retry once, then follow the handoff the retry returns |
+| After provider entry: the adapter raised, or it returned and the fence refused its terminal record, then the generation fence (a `DRAINING` latch, a revoked shared lease) refused the `outcome_ambiguous_blocked` record (agent-harness#1628, agent-harness#1684) | `ProviderEffectGenerationRefused` (a `WriterGenerationBlocked`, never a `ProviderEntryRefused`; the write refusal is `__cause__` and the adapter error or the terminal record's refusal its `__context__`); carries `effect_key`, `transaction_id`, `execute_returned`, and the returned `pr_url`, `head_sha`, `branch` | `retry_once_before_partition_rotation` with `provider_call_made: true`: retry once after any ceremony in progress has finished or rolled back; the disposition is the operator's judgement |
+
+Any other `PermissionError` in that window propagates unchanged (same type, `errno`
+and `filename`) and keeps `repair_fabpub_authority`, as on main. That includes an
+errno-bearing `OSError` (EACCES/EPERM) and `EvidenceStoreIncompatible` /
+`AdmissionStoreIncompatible`. A non-permission `OSError` keeps
+`repair_publication_environment`.
+
+A `PartitionEpochBlocked` that names no key in the store keeps
+`repair_fabpub_authority`. In that case the block is the partition receipt's
+carried legacy ambiguity, which a rotation does not adjudicate.
+
+Why retry once (agent-harness#1594 SA-F2). After a pre-provider refusal, the key's
+row is still `provider_call_in_flight` and the owner is unsealed. A rotation refuses
+that state with "intents without a terminal". The retry promotes the owner to
+`outcome_ambiguous_blocked`, refuses with `UnsealedOwnerBlocksPartition` and returns
+the rotation handoff for this key and transaction. Keep the first result: its
+`provider_call_made: false` and refusal detail are the only record that the provider
+was never entered. The ambiguous row cannot be told apart from a crash during the
+call.
+
+After provider entry (agent-harness#1628). The adapter raised, or it returned and
+the generation fence refused its terminal record (agent-harness#1684), so the broker
+records `outcome_ambiguous_blocked`. That write is generation-fenced, and under a
+`DRAINING` latch or a revoked shared lease it is refused. The broker writes no
+terminal and invents no state: the row stays `provider_call_in_flight` and the owner
+unsealed, the same shape as above, so the handoff is the same "retry once". The
+difference is that the provider was entered: the result says
+`provider_call_made: true`, and the handoff does not offer `attested_not_landed` as
+true by construction. `execute_returned` tells the two paths apart. When the adapter
+returned, the handoff says the provider returned (PR `<url>`) but its terminal record
+was refused, and the result and handoff carry `pr_url`; the disposition is then
+`observed_landed` with that URL. Otherwise it is `observed_landed` if the head is on
+the remote branch or a pull request exists, and `attested_not_landed` on the
+operator's judgement (remote absence is not proof). The adapter's own pre-push check reaches this path today, and the planned
+agent-harness#820 effect fence inherits it. Any other error from that write propagates
+unchanged. When the write succeeds, the result is `outcome_ambiguous` and the rotation
+handoff, as before.
+
+Every rotation handoff cites runbook §§1, 3, 4, 6, 7 and 8a. It also says the
+rotation must use the route's `FABPUB_AUTHORITY_ROOT` (or `--authority-root`), and
+it repeats the warning against a second `attested_not_landed` without new evidence
+(agent-harness#1574 ask 2).
 
 ## Recovery
 
@@ -240,8 +459,8 @@ than in `attested_by`. The dispositions:
   earlier after an adapter exception or crash. A retry of the same, unchanged
   head resumes that transaction, and the successor re-admits it as-is
   (agent-harness#1296): same transaction, commit, ref, owned paths and
-  plan/verification digests. It does so only when the successor's
-  authenticated receipt disposes the key `attested_not_landed` **and** the
+  plan/verification digests. It does so only when a receipt in the partition's
+  authenticated chain disposes the key `attested_not_landed` **and** the
   sealed attestation's `transaction_id` (bound from the predecessor's
   adapter-start owner) equals the transaction being admitted. The retry's `base`,
   `draft` and PR body must also equal the transaction's frozen values, because the
@@ -255,27 +474,51 @@ than in `attested_by`. The dispositions:
   plan/proof digests, and the frozen base, draft and PR-body digest). The record is
   owner-only (0600), written atomically through an exclusive no-follow temporary file,
   and read back no-follow; an existing record that is not a regular JSON file refuses
-  typed. The outcome lives in that generation's evidence. Because the broker leaves the
-  checkpoint where it is, single use is enforced under the admissions lock: the
-  generation's evidence must hold no record for the key. If the recovered attempt is
-  ambiguous again, the successor blocks like any partition.
+  typed. The outcome lives in that generation's evidence.
+
+  The disposing rotation need not be the latest one (agent-harness#1310). The
+  recovery walks the authenticated receipt chain from the active generation back to
+  the first receipt that adjudicates the key. That newest adjudication is the current
+  word: a newer `observed_landed`, or a newer re-attestation, hides an older one. When
+  a rotation intervened, the record also names the `disposing_generation`, the
+  `readmitting_generation` (its `generation`) and the `intervening_rotations`. With no
+  intervening rotation it carries none of them and is byte-for-byte the
+  agent-harness#1296 record, so a runtime of either version that retries in the same
+  generation computes the same record (agent-harness#1576). A reader also accepts a
+  record that carries the three fields with their no-rotation values (empty
+  `intervening_rotations`, both generations equal to `generation`), the shape the
+  agent-harness#1550 runtime wrote. Any other difference refuses with
+  `PublishTransactionConflict` before any owner write, and the human handoff names the
+  record as `conflicting_recovery_record`. A disposition authorizes one
+  re-admission. Every generation from the disposing one up to the active one must hold
+  no evidence and no adapter-start owner for the key, and no receipt on the walk may
+  carry it as completed. Sealed generations are checked against the bytes their
+  successor receipts sealed. The active generation is checked under the admissions
+  lock, because the broker leaves the checkpoint where it is. If the recovered attempt
+  is ambiguous again, that generation blocks like any partition.
 
   Any other already-admitted current-head transaction is refused with
   `PublicationRecoveryRequired` before any owner, admission or evidence write. The
   message names what did not bind and the next step for that case. In particular, when
-  the active generation holds neither a disposition nor evidence for the key, **no
-  rotation can help**: an attestation disposes only keys that are blocked in the
-  active generation. That happens when a later rotation (for any key) superseded the
-  generation that disposed this one. It is tracked as agent-harness#1310 and needs the
-  maintainer. Retry the publication straight after the disposing rotation, before any
-  other rotation or publication on that repository. The human route reports these
+  no receipt in the chain disposes the key and the active generation holds no
+  evidence for it, **no rotation can help**: an attestation disposes only keys that
+  are blocked in the active generation. That case needs the maintainer. The human route reports these
   refusals as `publication_recovery_required` with next step
   `resolve_publication_recovery_refusal`.
 
+  Before any rotation, the key's evidence is `outcome_ambiguous_blocked` and the
+  broker replays it on every retry. The human route reports that block, on the first
+  attempt and on every retry, with next step
+  `adjudicate_publication_by_partition_rotation` and the rotate command, not the
+  generic `repair_publication_precheck_and_retry`; it matches the typed
+  `terminal_state` that `publish_from_worktree` now returns on a broker-blocked
+  result (agent-harness#1312).
+
   Separately, the broker now checks the transaction-state precondition **before** it
   writes the adapter-start owner, so a refusal of that precondition no longer leaves
-  an unsealed owner that the next attempt would promote to permanent ambiguity. Other
-  refusals inside admission still run after the owner write (agent-harness#1314).
+  an unsealed owner that the next attempt would promote to permanent ambiguity. Every
+  other refusal inside admission restores the owner path to the exact bytes it held
+  (see "Owner section refusals and liveness" above, agent-harness#1314).
 
 A blocked key the attestation leaves undisposed, a disposition it does not know,
 digests that do not match the predecessor's bytes, or a predecessor that is not

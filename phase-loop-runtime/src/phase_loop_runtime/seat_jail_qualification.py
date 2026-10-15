@@ -249,8 +249,8 @@ def qualify(leg: str = "claude", *, record: bool = True, provider: Path | None =
             _mutate_jail=None) -> dict[str, object]:
     """Run the EC-EXECFIND-2 jail falsifiers on this host. Returns the evidence; on a pass
     (and ``record``), writes the evidence and pass record to this host's store."""
-    if leg != "claude":
-        raise QualificationError("only the claude jail is shipped")
+    if leg not in seat_jail.JAILED_LEGS:
+        raise QualificationError(f"no {leg} jail is shipped")
     if not seat_uid.seat_uid_available():
         raise QualificationError(seat_uid.PREREQUISITE)
     if not sandbox_egress.egress_isolation_available():
@@ -406,7 +406,8 @@ def _run_probe_in_jail(leg, base: Path, config: dict, provider: Path | None, mut
             leg, seat_dir, provider or Path("/usr/bin/python3"), tree=tree,
             bundle_memfd=seat_jail.memfd_with("b", b"B"),
             instructions_memfd=seat_jail.memfd_with("i", b"I"),
-            token_fd=seat_jail.token_pipe(b"QUALIFY-SENTINEL"), seat_ids=(n, n))
+            token_fd=seat_jail.token_pipe(b"QUALIFY-SENTINEL") if leg == "claude" else None,
+            seat_ids=(n, n), **(_gemini_shape(seat_dir) if leg == "gemini" else {}))
         try:
             if mutate is not None:
                 mutate(jail)
@@ -426,6 +427,21 @@ def _run_probe_in_jail(leg, base: Path, config: dict, provider: Path | None, mut
     if done.returncode != 0:
         raise QualificationError(f"probe failed to run: {done.stderr[-400:]}")
     return json.loads(done.stdout.strip().splitlines()[-1])
+
+
+def _gemini_shape(seat_dir: Path) -> dict[str, object]:
+    """The jailed Gemini seat's config, CA certificate and proxy URL (agent-harness#1170), in
+    the production shape: the qualification judges the jail's boundaries, so the files only
+    need to be where the seat's are. No credential and no CA key is involved."""
+    from .panel_invoker import _write_gemini_config
+
+    config = seat_dir / seat_jail.HOST_GEMINI_CONFIG_DIRNAME
+    _write_gemini_config(config, b"")
+    certificate = seat_dir / "egress-ca.pem"
+    certificate.write_text("qualification placeholder certificate\n", encoding="ascii")
+    certificate.chmod(0o444)
+    return {"gemini_config": config, "egress_ca": certificate,
+            "egress_proxy": "http://srt:qualification@127.0.0.1:3128"}
 
 
 def _record_pass(evidence: dict[str, object]) -> Path:
