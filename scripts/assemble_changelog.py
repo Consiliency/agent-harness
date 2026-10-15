@@ -51,7 +51,9 @@ def fragment_paths(root: Path) -> list[Path]:
     directory = root / FRAGMENT_DIR
     if not directory.is_dir():
         return []
-    return sorted(p for p in directory.iterdir() if p.is_file() and p.name not in NON_FRAGMENTS)
+    # Everything except README.md, directories included: load_fragments rejects any
+    # entry that is not a fragment, so a misplaced entry fails instead of being dropped.
+    return sorted(p for p in directory.iterdir() if p.name not in NON_FRAGMENTS)
 
 
 def _sort_key(path: Path) -> tuple[int, int, int]:
@@ -65,6 +67,12 @@ def load_fragments(root: Path) -> list[tuple[Path, str]]:
     errors: list[str] = []
     loaded: list[tuple[Path, str]] = []
     for path in fragment_paths(root):
+        if path.is_symlink() or not path.is_file():
+            errors.append(
+                f"{FRAGMENT_DIR}/{path.name}: not a regular file; fragments are top-level "
+                f"files in {FRAGMENT_DIR}/ (no subdirectories)"
+            )
+            continue
         match = _NAME.fullmatch(path.name)
         if match is None:
             errors.append(

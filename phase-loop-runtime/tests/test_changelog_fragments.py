@@ -131,6 +131,20 @@ def test_a_malformed_fragment_fails_and_changes_nothing(tmp_path, name, text):
     assert (root / "changelog.d" / name).is_file()
 
 
+def test_a_subdirectory_fails_and_changes_nothing(tmp_path):
+    # A misplaced entry (changelog.d/7/x.fix.md) must fail, never be silently skipped.
+    root = _repo(tmp_path, {"5.ci.md": "### CI\n"})
+    (root / "changelog.d" / "7").mkdir()
+    (root / "changelog.d" / "7" / "x.fix.md").write_text("### x\n", encoding="utf-8")
+    result = _run(root, "--check")
+    assert result.returncode == 1
+    assert "changelog.d/7" in result.stderr
+    assert _run(root, "--version", "1.0.0").returncode == 1
+    assert (root / "CHANGELOG.md").read_text(encoding="utf-8") == CHANGELOG
+    assert (root / "changelog.d" / "5.ci.md").is_file()
+    assert (root / "changelog.d" / "7" / "x.fix.md").is_file()
+
+
 def test_no_unreleased_heading_is_an_error(tmp_path):
     root = _repo(tmp_path, {"5.ci.md": "### CI\n"}, changelog="# Changelog\n")
     result = _run(root, "--version", "1.0.0")
