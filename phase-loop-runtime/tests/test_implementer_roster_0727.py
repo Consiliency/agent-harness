@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 
 # Imported before phase_loop_runtime: it pins the skill-source root the runner seam needs.
-from phase_loop_test_utils import build_fake_automation_output, make_repo, write_phase_plan
+from phase_loop_test_utils import make_repo, write_phase_plan
 
 from phase_loop_runtime import profiles
 from phase_loop_runtime.launcher import build_launch_request, build_launch_spec
@@ -175,3 +175,61 @@ def test_executor_defaults_and_shipped_policy_agree(executor, action):
         == profiles.IMPLEMENTER_EFFORTS[executor]
     )
     assert sorted(profiles.IMPLEMENTER_EFFORTS) == sorted(ROSTER)
+
+
+@pytest.mark.parametrize(("executor", "expected"), [
+    ("claude", ("claude-opus-5", "high")),
+    ("codex", ("gpt-6-astra", "high")),
+])
+def test_governed_repair_escalation_keeps_the_shipped_high_effort(executor, expected, tmp_path):
+    # A governed repair that escalates to the planner class keeps main's shipped `high`
+    # effort: the roster's per-executor implementer effort applies to the implementer
+    # class only. Driven through the run_loop seam; the escalated policy is captured
+    # and the run stops before launch.
+    import subprocess
+    from unittest.mock import patch
+
+    from phase_loop_runtime import runner
+    from phase_loop_runtime.events import append_event
+    from phase_loop_runtime.models import LoopEvent, utc_now
+    from phase_loop_runtime.provenance import event_provenance
+
+    repo = make_repo(tmp_path)
+    roadmap = repo / "specs" / "phase-plans-v1.md"
+    plan = write_phase_plan(repo, "CONTRACT", roadmap, owned_files=("README.md",))
+    subprocess.run(["git", "add", str(plan.relative_to(repo))], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "add repair plan"], cwd=repo, check=True, stdout=subprocess.DEVNULL)
+    blocker = {
+        "human_required": False,
+        "blocker_class": "repeated_verification_failure",
+        "blocker_summary": "Repair emitted the same malformed closeout.",
+        "required_human_inputs": (),
+        "access_attempts": (),
+    }
+    for _ in range(2):
+        append_event(repo, LoopEvent(
+            timestamp=utc_now(), repo=str(repo), roadmap=str(roadmap), phase="CONTRACT",
+            action="run", status="blocked", model=ROSTER[executor][0], reasoning_effort=ROSTER[executor][1],
+            source="fixture", blocker=blocker,
+            metadata={
+                "launch_request": {"executor": executor, "action": "repair", "repo": str(repo),
+                                   "roadmap": str(roadmap), "phase": "CONTRACT", "plan": str(plan)},
+                "terminal_summary": {"terminal_status": "blocked", "verification_status": "blocked",
+                                     "next_action": "Retry repair on the heavy class.", "dirty_paths": []},
+            },
+            selected_executor=executor, **event_provenance(roadmap, "CONTRACT"),
+        ))
+    escalated = []
+    real = runner.apply_model_class_escalation
+
+    def capture(policy, **kwargs):
+        application = real(policy, **kwargs)
+        escalated.append((application.applied, application.policy.model, application.policy.effort))
+        raise _Resolved
+
+    with patch("phase_loop_runtime.runner.run_auth_preflight",
+               return_value=type("Preflight", (), {"ok": True, "metadata": {"probes": []}})()), \
+            patch("phase_loop_runtime.runner.apply_model_class_escalation", side_effect=capture), \
+            pytest.raises(_Resolved):
+        runner.run_loop(repo, roadmap, phase="CONTRACT", executor=executor, run_mode="governed")
+    assert escalated == [(True, *expected)]

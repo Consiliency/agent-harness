@@ -51,9 +51,10 @@ class PhaseLoopLauncherTest(unittest.TestCase):
         self.assertEqual(selection.model, "claude-opus-5")
         self.assertEqual(selection.effort, "max")
         execute_selection = resolve_profile_for_executor(action="execute", executor="claude")
-        # design-model-tier-taxonomy.md (operator-ratified): implementation → regular (sonnet-5).
-        self.assertEqual(execute_selection.model, "claude-sonnet-5")
-        self.assertEqual(execute_selection.effort, "high")
+        # design-model-tier-taxonomy.md (operator-ratified): implementation → regular
+        # (sonnet-5-5 at medium since the 0.7.27 implementer roster).
+        self.assertEqual(execute_selection.model, "claude-sonnet-5-5")
+        self.assertEqual(execute_selection.effort, "medium")
         self.assertEqual(selection.source, "claude_default")
 
     def test_opencode_executor_uses_provider_qualified_model_alias(self):
@@ -1533,7 +1534,7 @@ class PhaseLoopLauncherTest(unittest.TestCase):
         spec = build_launch_spec(request)
         self.assertEqual(spec.selected_model, "gemini-3.8-flash")
         self.assertIn("--model", spec.command)
-        self.assertIn("gemini-3.8-flash-medium", spec.command)
+        self.assertIn("gemini-3.8-flash-high", spec.command)
 
     def test_launch_metadata_records_policy_and_adapter_effort(self):
         roadmap = Path("/repo/specs/phase-plans-v1.md")
