@@ -828,13 +828,21 @@ UNDECLARED_LEASE = object()
 def require_current_generation(
     store_root: Path, lease: "WriterGenerationLease | None" = None, *, strict: bool = True,
     allow_draining: bool = False,
-) -> None:
-    """Revalidate the writer generation INSIDE a store lock, before an append.
+    effect=None,
+):
+    """Validate before an append, or hold the latch across a synchronous effect.
+
+    Validation-only callers hold their store lock. Effect callbacks must not
+    acquire store locks, append evidence, release leases or wait for drain.
+    ``allow_draining`` is for validation only (the agent-harness#1633
+    post-ambiguity observation); an effect never runs under a DRAINING latch.
 
     SL1-SOL-02/07: a MISSING latch is only legal where no activation authority
     exists.  If the namespace carries an authenticated receipt, an absent latch
     means the authority was removed under us, which is denial — not permission.
     """
+    if effect is not None and allow_draining:
+        raise ValueError("a synchronous effect cannot run under allow_draining")
     store_root = Path(store_root)
     if lease is UNDECLARED_LEASE:
         lease, strict = None, False
@@ -845,9 +853,11 @@ def require_current_generation(
                 f"{store_root} carries an authenticated partition receipt but no writer "
                 "generation latch; refusing to append without an activation authority"
             )
-        return
-    latch.validate_lease(lease, strict=strict, allow_draining=allow_draining)
-    _require_active_generation_root(store_root)
+        return effect() if effect is not None else None
+    with latch.exclusive() if effect is not None else contextlib.nullcontext():
+        latch.validate_lease(lease, strict=strict, allow_draining=allow_draining)
+        _require_active_generation_root(store_root)
+        return effect() if effect is not None else None
 
 
 def _require_active_generation_root(root: Path) -> None:
