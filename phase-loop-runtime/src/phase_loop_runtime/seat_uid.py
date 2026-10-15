@@ -262,19 +262,40 @@ def handoff(review_dir: str, seat_id: int, *, gemini: bool = False,
             finally:
                 os.close(fd)
         if gemini:
-            # Owned by H-root (the operator), group n, 0750/0440: the seat reads through
-            # the group grant and can neither write nor chmod it.
+            # Owned by H-root (the operator), group n: the seat reads through the group
+            # grant and can neither write nor chmod it. The `.gemini` tree (ancestor + its
+            # `antigravity-cli` and the writable mount points) is now more than one level
+            # deep (agent-harness#1170 F006), so hand it off recursively: directories 0550
+            # so the seat can traverse to the config, regular files 0440.
             fd = seat_jail.open_dir_nofollow(seat_jail.HOST_GEMINI_CONFIG_DIRNAME, dir_fd=root)
             try:
-                os.chown(fd, 0, seat_id)
-                os.chmod(fd, 0o750)
-                for name in os.listdir(fd):
-                    os.chown(name, 0, seat_id, dir_fd=fd, follow_symlinks=False)
-                    os.chmod(name, 0o440, dir_fd=fd, follow_symlinks=False)
+                _handoff_gemini_tree_at(fd, seat_id)
             finally:
                 os.close(fd)
     finally:
         os.close(root)
+
+
+def _handoff_gemini_tree_at(dir_fd: int, seat_id: int) -> None:
+    """``fchownat(..., AT_SYMLINK_NOFOLLOW)`` the agy config tree to H-root:seat_id, with
+    directories 0550 (traversable, not writable) and regular files 0440. Recurses without
+    following any link; a non-regular, non-directory entry is refused."""
+    os.chown(dir_fd, 0, seat_id)
+    os.chmod(dir_fd, 0o550)
+    for name in os.listdir(dir_fd):
+        info = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+        if stat.S_ISDIR(info.st_mode):
+            child = seat_jail.open_dir_nofollow(name, dir_fd=dir_fd)
+            try:
+                _handoff_gemini_tree_at(child, seat_id)
+            finally:
+                os.close(child)
+        elif stat.S_ISREG(info.st_mode):
+            os.chown(name, 0, seat_id, dir_fd=dir_fd, follow_symlinks=False)
+            os.chmod(name, 0o440, dir_fd=dir_fd, follow_symlinks=False)
+        else:
+            raise seat_jail.SeatSandboxRefused(
+                seat_jail.refused("gemini_credential_unsafe"), f"unexpected config entry {name!r}")
 
 
 SEAT_DIR_NAMES: tuple[str, ...] = (

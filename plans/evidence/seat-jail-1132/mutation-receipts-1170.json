@@ -1,0 +1,560 @@
+{
+  "schema": "seat_jail_mutation_receipts.v1",
+  "issue": "agent-harness#1170",
+  "head": "952b30e9e9d2725a3571394284ea9c8d375598e9",
+  "receipts": [
+    {
+      "id": "probe-widen-allowlist",
+      "kind": "probe",
+      "edits": [
+        {
+          "file": "phase-loop-runtime/src/phase_loop_runtime/seat_egress/gemini-allowlist.json",
+          "file_sha256": "7ed38bb15aee22b55c1952c6b6edddf6b54fc7fe0420c300097990592a16348f",
+          "old": "    {\"host\": \"lh3.googleusercontent.com\", \"port\": 443, \"method\": \"GET\", \"path_prefix\": \"/a/\"}\n",
+          "new": "    {\"host\": \"lh3.googleusercontent.com\", \"port\": 443, \"method\": \"GET\", \"path_prefix\": \"/a/\"},\n    {\"host\": \"storage.googleapis.com\", \"port\": 443, \"method\": \"GET\", \"path_prefix\": \"/\"}\n"
+        }
+      ],
+      "mutated": {
+        "returncode": 3,
+        "stdout": "{\n \"result\": \"stop\",\n \"stops\": [\n  \"gemini_seat_egress_unconfined: reached storage.googleapis.com, b_tunnel_inner_sni_only, attack_standard_hello_sni_storage\"\n ],\n \"a_holds\": true,\n \"b_holds\": false,\n \"s4_holds\": true,\n \"gemini_route_code\": \"gemini_seat_egress_unconfined\"\n}\n",
+        "stderr": ""
+      },
+      "expected_reason": "reached storage.googleapis.com",
+      "result": "red_as_required"
+    },
+    {
+      "id": "probe-direct-egress",
+      "kind": "probe",
+      "edits": [
+        {
+          "file": "phase-loop-runtime/src/phase_loop_runtime/sandbox_egress.py",
+          "file_sha256": "b2ee27e167a14e58f0be23004c3757fb77ded4a00e2e682234577582b6f30a5d",
+          "old": "        \"-A OUTPUT -j REJECT\",\n        \"-P OUTPUT DROP\",\n",
+          "new": "        \"-A OUTPUT -j ACCEPT\",\n        \"-P OUTPUT ACCEPT\",\n"
+        },
+        {
+          "file": "phase-loop-runtime/src/phase_loop_runtime/sandbox_egress.py",
+          "file_sha256": "b2ee27e167a14e58f0be23004c3757fb77ded4a00e2e682234577582b6f30a5d",
+          "old": "            if proxy_socket is not None:\n                pass  # no uplink",
+          "new": "            if False:\n                pass  # no uplink"
+        }
+      ],
+      "mutated": {
+        "returncode": 1,
+        "stdout": "",
+        "stderr": "return next(self.gen)\n           ^^^^^^^^^^^^^^\n  File \"/mnt/HC_Volume_105438154/worktrees/agent-harness-1170-egress/phase-loop-runtime/src/phase_loop_runtime/sandbox_egress.py\", line 572, in isolated_network\n    yield _degrade(\n          ^^^^^^^^^\n  File \"/mnt/HC_Volume_105438154/worktrees/agent-harness-1170-egress/phase-loop-runtime/src/phase_loop_runtime/sandbox_egress.py\", line 380, in _degrade\n    raise EgressUnavailable(reason)\nphase_loop_runtime.sandbox_egress.EgressUnavailable: the proxy-only namespace came up but its bridge does not answer, or a public address is reachable without it\n"
+      },
+      "expected_reason": "refused_by_runtime",
+      "result": "red_as_required"
+    },
+    {
+      "id": "probe-direct-egress-past-the-bridge-check",
+      "kind": "probe",
+      "edits": [
+        {
+          "file": "phase-loop-runtime/src/phase_loop_runtime/sandbox_egress.py",
+          "file_sha256": "b2ee27e167a14e58f0be23004c3757fb77ded4a00e2e682234577582b6f30a5d",
+          "old": "        \"-A OUTPUT -j REJECT\",\n        \"-P OUTPUT DROP\",\n",
+          "new": "        \"-A OUTPUT -j ACCEPT\",\n        \"-P OUTPUT ACCEPT\",\n"
+        },
+        {
+          "file": "phase-loop-runtime/src/phase_loop_runtime/sandbox_egress.py",
+          "file_sha256": "b2ee27e167a14e58f0be23004c3757fb77ded4a00e2e682234577582b6f30a5d",
+          "old": "            if proxy_socket is not None:\n                pass  # no uplink",
+          "new": "            if False:\n                pass  # no uplink"
+        },
+        {
+          "file": "phase-loop-runtime/src/phase_loop_runtime/sandbox_egress.py",
+          "file_sha256": "b2ee27e167a14e58f0be23004c3757fb77ded4a00e2e682234577582b6f30a5d",
+          "old": "                if not _proxy_bridge_confines(prefix, helpers[\"python3\"], proxy_port):",
+          "new": "                if False:"
+        }
+      ],
+      "mutated": {
+        "returncode": 3,
+        "stdout": "{\n \"result\": \"stop\",\n \"stops\": [\n  \"gemini_seat_egress_unconfined: reached https://1.1.1.1/, https://daily-cloudcode-pa.googleapis.com/\"\n ],\n \"a_holds\": true,\n \"b_holds\": false,\n \"s4_holds\": true,\n \"gemini_route_code\": \"gemini_seat_egress_unconfined\"\n}\n",
+        "stderr": ""
+      },
+      "expected_reason": "reached https://1.1.1.1/",
+      "result": "red_as_required"
+    },
+    {
+      "id": "probe-skip-inner-host-check",
+      "kind": "probe",
+      "edits": [
+        {
+          "file": "phase-loop-runtime/src/phase_loop_runtime/seat_egress/proxy.mjs",
+          "file_sha256": "2d58edabdea474bab359ea22d1d075302ee9e49833f81fdd9b90e93fda949dad",
+          "old": "  if (!innerHost(request, url)) {",
+          "new": "  if (false) {"
+        }
+      ],
+      "mutated": {
+        "returncode": 3,
+        "stdout": "{\n \"result\": \"stop\",\n \"stops\": [\n  \"gemini_seat_egress_unconfined: reached b_tunnel_inner_host\"\n ],\n \"a_holds\": true,\n \"b_holds\": false,\n \"s4_holds\": true,\n \"gemini_route_code\": \"gemini_seat_egress_unconfined\"\n}\n",
+        "stderr": ""
+      },
+      "expected_reason": "reached b_tunnel_inner_host",
+      "result": "red_as_required"
+    },
+    {
+      "id": "probe-fail-closed-front-neutralised",
+      "kind": "probe",
+      "edits": [
+        {
+          "file": "phase-loop-runtime/src/phase_loop_runtime/seat_egress/proxy.mjs",
+          "file_sha256": "2d58edabdea474bab359ea22d1d075302ee9e49833f81fdd9b90e93fda949dad",
+          "old": "      client.destroy(); // not a positively-inspected allowed-SNI ClientHello: no bytes upstream",
+          "new": "      phase = 'spliced'; spliceToSrt(client, target, buf); // neutralised guard"
+        }
+      ],
+      "mutated": {
+        "returncode": 3,
+        "stdout": "{\n \"result\": \"stop\",\n \"stops\": [\n  \"gemini_seat_egress_unconfined: reached attack_0x04_record_sni_storage\"\n ],\n \"a_holds\": true,\n \"b_holds\": false,\n \"s4_holds\": true,\n \"gemini_route_code\": \"gemini_seat_egress_unconfined\"\n}\n",
+        "stderr": ""
+      },
+      "expected_reason": "reached attack_0x04_record_sni_storage",
+      "result": "red_as_required"
+    },
+    {
+      "id": "front-record-version-clause-removed",
+      "kind": "test",
+      "edits": [
+        {
+          "file": "phase-loop-runtime/src/phase_loop_runtime/seat_egress/proxy.mjs",
+          "file_sha256": "2d58edabdea474bab359ea22d1d075302ee9e49833f81fdd9b90e93fda949dad",
+          "old": "  if (buf[0] !== 0x16 || buf[1] !== 0x03 || buf[2] > 0x03) return null;",
+          "new": "  if (buf[0] !== 0x16 || buf[1] !== 0x03) return null;"
+        }
+      ],
+      "nodes": [
+        "tests/test_gemini_seat_egress_1170.py::test_live_fail_closed_front_lets_no_bytes_reach_a_non_allowlisted_service[0x04-record-allowed-sni]"
+      ],
+      "control": {
+        "returncode": 0,
+        "summary": "1 passed in 1.85s"
+      },
+      "mutated": {
+        "returncode": 1,
+        "summary": "1 failed in 1.98s"
+      },
+      "result": "red_as_required"
+    },
+    {
+      "id": "probe-drop-tls-evidence",
+      "kind": "probe",
+      "edits": [
+        {
+          "file": "phase-loop-runtime/src/phase_loop_runtime/seat_egress_proxy.py",
+          "file_sha256": "bff1adabc12d70eb97cb259e6f7ecdc476b56ffdb69ca7ec266ca41887ea3023",
+          "old": "        \"tls_inspection\": True,\n",
+          "new": ""
+        }
+      ],
+      "mutated": {
+        "returncode": 3,
+        "stdout": "{\n \"result\": \"stop\",\n \"stops\": [\n  \"gemini_seat_egress_unconfined: S4 requirement not met\"\n ],\n \"a_holds\": true,\n \"b_holds\": true,\n \"s4_holds\": false,\n \"gemini_route_code\": \"gemini_seat_egress_unconfined\"\n}\n",
+        "stderr": ""
+      },
+      "expected_reason": "S4 requirement not met",
+      "result": "red_as_required"
+    },
+    {
+      "id": "probe-mount-ca-key",
+      "kind": "probe",
+      "edits": [],
+      "probe_input": {
+        "PROBE_MUTATION": "mount-ca-key"
+      },
+      "mutated": {
+        "returncode": 3,
+        "stdout": "{\n \"result\": \"stop\",\n \"stops\": [\n  \"gemini_seat_egress_unconfined: S4 requirement not met\"\n ],\n \"a_holds\": true,\n \"b_holds\": true,\n \"s4_holds\": false,\n \"gemini_route_code\": \"gemini_seat_egress_unconfined\"\n}\n",
+        "stderr": ""
+      },
+      "expected_reason": "S4 requirement not met",
+      "result": "red_as_required"
+    },
+    {
+      "id": "probe-trust-ca-in-host-store",
+      "kind": "probe",
+      "edits": [],
+      "probe_input": "PROBE_HOST_TRUST_BUNDLE = the host bundle plus the seat CA",
+      "mutated": {
+        "returncode": 3,
+        "stdout": "{\n \"result\": \"stop\",\n \"stops\": [\n  \"gemini_seat_egress_unconfined: S4 requirement not met\"\n ],\n \"a_holds\": true,\n \"b_holds\": true,\n \"s4_holds\": false,\n \"gemini_route_code\": \"gemini_seat_egress_unconfined\"\n}\n",
+        "stderr": ""
+      },
+      "expected_reason": "S4 requirement not met",
+      "result": "red_as_required"
+    },
+    {
+      "id": "route-skip-egress-check",
+      "kind": "test",
+      "edits": [
+        {
+          "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
+          "file_sha256": "4f12b6ebeea8d0794f027e7134c4c919c845d24925e72816fbb493d80cad197f",
+          "old": "        if reason is not None:\n            _LOG.warning(\"seat gemini: egress",
+          "new": "        if False:\n            _LOG.warning(\"seat gemini: egress"
+        }
+      ],
+      "nodes": [
+        "tests/test_gemini_seat_egress_1170.py::test_without_its_egress_layer_the_gemini_seat_is_degraded_never_sealed",
+        "tests/test_gemini_seat_egress_1170.py::test_the_spawn_refuses_a_gemini_seat_without_its_egress_layer"
+      ],
+      "control": {
+        "returncode": 0,
+        "summary": "2 passed in 0.30s"
+      },
+      "mutated": {
+        "returncode": 1,
+        "summary": "2 failed in 0.56s"
+      },
+      "result": "red_as_required"
+    },
+    {
+      "id": "rules-open",
+      "kind": "test",
+      "edits": [
+        {
+          "file": "phase-loop-runtime/src/phase_loop_runtime/sandbox_egress.py",
+          "file_sha256": "b2ee27e167a14e58f0be23004c3757fb77ded4a00e2e682234577582b6f30a5d",
+          "old": "        \"-A OUTPUT -j REJECT\",\n        \"-P OUTPUT DROP\",\n",
+          "new": "        \"-A OUTPUT -j ACCEPT\",\n        \"-P OUTPUT ACCEPT\",\n"
+        }
+      ],
+      "nodes": [
+        "tests/test_gemini_seat_egress_1170.py::test_the_proxy_only_rules_admit_one_loopback_port_and_nothing_else"
+      ],
+      "control": {
+        "returncode": 0,
+        "summary": "1 passed in 0.26s"
+      },
+      "mutated": {
+        "returncode": 1,
+        "summary": "1 failed in 0.29s"
+      },
+      "result": "red_as_required"
+    },
+    {
+      "id": "allowlist-widened",
+      "kind": "test",
+      "edits": [
+        {
+          "file": "phase-loop-runtime/src/phase_loop_runtime/seat_egress/gemini-allowlist.json",
+          "file_sha256": "7ed38bb15aee22b55c1952c6b6edddf6b54fc7fe0420c300097990592a16348f",
+          "old": "    {\"host\": \"lh3.googleusercontent.com\", \"port\": 443, \"method\": \"GET\", \"path_prefix\": \"/a/\"}\n",
+          "new": "    {\"host\": \"lh3.googleusercontent.com\", \"port\": 443, \"method\": \"GET\", \"path_prefix\": \"/a/\"},\n    {\"host\": \"storage.googleapis.com\", \"port\": 443, \"method\": \"GET\", \"path_prefix\": \"/\"}\n"
+        }
+      ],
+      "nodes": [
+        "tests/test_gemini_seat_egress_1170.py::test_the_allowlist_is_the_measured_request_set"
+      ],
+      "control": {
+        "returncode": 0,
+        "summary": "1 passed in 0.28s"
+      },
+      "mutated": {
+        "returncode": 1,
+        "summary": "1 failed in 0.32s"
+      },
+      "result": "red_as_required"
+    },
+    {
+      "id": "install-skip-tree-digest",
+      "kind": "test",
+      "edits": [
+        {
+          "file": "phase-loop-runtime/src/phase_loop_runtime/seat_egress_proxy.py",
+          "file_sha256": "bff1adabc12d70eb97cb259e6f7ecdc476b56ffdb69ca7ec266ca41887ea3023",
+          "old": "        if tree_sha256(modules) != SRT_TREE_SHA256:",
+          "new": "        if False:"
+        }
+      ],
+      "nodes": [
+        "tests/test_gemini_seat_egress_1170.py::test_verify_install_accepts_the_pinned_tree_and_refuses_a_changed_file"
+      ],
+      "control": {
+        "returncode": 0,
+        "summary": "1 passed in 0.27s"
+      },
+      "mutated": {
+        "returncode": 1,
+        "summary": "1 failed in 0.32s"
+      },
+      "result": "red_as_required"
+    },
+    {
+      "id": "ca-skip-owner-only",
+      "kind": "test",
+      "edits": [
+        {
+          "file": "phase-loop-runtime/src/phase_loop_runtime/seat_egress_proxy.py",
+          "file_sha256": "bff1adabc12d70eb97cb259e6f7ecdc476b56ffdb69ca7ec266ca41887ea3023",
+          "old": "    if stat.S_IMODE(info.st_mode) & 0o077:\n        return \"not 0700\"",
+          "new": "    if False:\n        return \"not 0700\""
+        }
+      ],
+      "nodes": [
+        "tests/test_gemini_seat_egress_1170.py::test_the_ca_must_be_owner_only"
+      ],
+      "control": {
+        "returncode": 0,
+        "summary": "3 passed in 0.28s"
+      },
+      "mutated": {
+        "returncode": 1,
+        "summary": "1 failed, 2 passed in 0.30s"
+      },
+      "result": "red_as_required"
+    },
+    {
+      "id": "stream-accepts-subagent",
+      "kind": "test",
+      "edits": [
+        {
+          "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
+          "file_sha256": "c7437a50ab2bfe59870cb19dc85ab6e5402b4c6bb4b2ca7cdcf04632b0a1c71b",
+          "old": "_JAILED_GEMINI_STEP_TYPES = frozenset({\"user_input\", \"agent_response\", \"tool\"})",
+          "new": "_JAILED_GEMINI_STEP_TYPES = frozenset({\"user_input\", \"agent_response\", \"tool\", \"subagent\"})"
+        },
+        {
+          "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
+          "file_sha256": "c7437a50ab2bfe59870cb19dc85ab6e5402b4c6bb4b2ca7cdcf04632b0a1c71b",
+          "old": " not in _JAILED_GEMINI_STEP_TYPES or \"subagent_info\" in step:",
+          "new": " not in _JAILED_GEMINI_STEP_TYPES:"
+        }
+      ],
+      "nodes": [
+        "tests/test_gemini_seat_egress_1170.py::test_a_subagent_or_unrecorded_step_ends_the_tooled_leg"
+      ],
+      "control": {
+        "returncode": 0,
+        "summary": "3 passed in 0.28s"
+      },
+      "mutated": {
+        "returncode": 1,
+        "summary": "2 failed, 1 passed in 0.34s"
+      },
+      "result": "red_as_required"
+    },
+    {
+      "id": "token-guard-off",
+      "kind": "test",
+      "edits": [
+        {
+          "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
+          "file_sha256": "c7437a50ab2bfe59870cb19dc85ab6e5402b4c6bb4b2ca7cdcf04632b0a1c71b",
+          "old": "            token_seen.append(True)\n            return True\n        seen[0]",
+          "new": "            return False\n        seen[0]"
+        }
+      ],
+      "nodes": [
+        "tests/test_gemini_seat_egress_1170.py::test_a_token_split_across_chunks_is_caught_before_it_is_kept"
+      ],
+      "control": {
+        "returncode": 0,
+        "summary": "1 passed in 0.25s"
+      },
+      "mutated": {
+        "returncode": 1,
+        "summary": "1 failed in 0.34s"
+      },
+      "result": "red_as_required"
+    },
+    {
+      "id": "config-ancestor-not-bound",
+      "kind": "test",
+      "edits": [
+        {
+          "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
+          "file_sha256": "4f12b6ebeea8d0794f027e7134c4c919c845d24925e72816fbb493d80cad197f",
+          "old": "    binds = [\"--ro-bind\", gemini_config, SEAT_GEMINI_DOTDIR]",
+          "new": "    binds = [\"--ro-bind\", gemini_config + \"/antigravity-cli\", SEAT_GEMINI_CONFIG]"
+        }
+      ],
+      "nodes": [
+        "tests/test_gemini_seat_egress_1170.py::test_the_gemini_jail_binds_its_config_read_only_and_only_the_measured_dirs_writable"
+      ],
+      "control": {
+        "returncode": 0,
+        "summary": "1 passed in 0.25s"
+      },
+      "mutated": {
+        "returncode": 1,
+        "summary": "1 failed in 0.33s"
+      },
+      "result": "red_as_required"
+    },
+    {
+      "id": "install-skip-symlink-check",
+      "kind": "test",
+      "edits": [
+        {
+          "file": "phase-loop-runtime/src/phase_loop_runtime/seat_egress_proxy.py",
+          "file_sha256": "bff1adabc12d70eb97cb259e6f7ecdc476b56ffdb69ca7ec266ca41887ea3023",
+          "old": "        reject_unexpected_symlinks(modules)\n",
+          "new": "        pass  # symlink check removed\n"
+        }
+      ],
+      "nodes": [
+        "tests/test_gemini_seat_egress_1170.py::test_verify_install_rejects_a_symlink_shadow_outside_bin"
+      ],
+      "control": {
+        "returncode": 0,
+        "summary": "1 passed in 0.27s"
+      },
+      "mutated": {
+        "returncode": 1,
+        "summary": "1 failed in 0.31s"
+      },
+      "result": "red_as_required"
+    },
+    {
+      "id": "proxy-token-not-scanned",
+      "kind": "test",
+      "edits": [
+        {
+          "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
+          "file_sha256": "c7437a50ab2bfe59870cb19dc85ab6e5402b4c6bb4b2ca7cdcf04632b0a1c71b",
+          "old": "    if password:\n        secrets.append(password.encode(\"utf-8\"))",
+          "new": "    if password and False:\n        secrets.append(password.encode(\"utf-8\"))"
+        }
+      ],
+      "nodes": [
+        "tests/test_gemini_seat_egress_1170.py::test_the_proxy_session_token_in_the_output_ends_the_leg",
+        "tests/test_gemini_seat_egress_1170.py::test_both_seat_secrets_are_scanned"
+      ],
+      "control": {
+        "returncode": 0,
+        "summary": "2 passed in 0.28s"
+      },
+      "mutated": {
+        "returncode": 1,
+        "summary": "2 failed in 0.31s"
+      },
+      "result": "red_as_required"
+    },
+    {
+      "id": "tree-made-a-workspace",
+      "kind": "test",
+      "edits": [
+        {
+          "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
+          "file_sha256": "c7437a50ab2bfe59870cb19dc85ab6e5402b4c6bb4b2ca7cdcf04632b0a1c71b",
+          "old": "        \"--disable-slash-commands\", \"--input-format\", \"stream-json\",\n        \"--output-format\", \"stream-json\", \"--print=\", \"--print-timeout\", \"0\",\n    ]",
+          "new": "        \"--disable-slash-commands\", \"--input-format\", \"stream-json\",\n        \"--output-format\", \"stream-json\", \"--print=\", \"--print-timeout\", \"0\",\n        \"--add-dir\", _seat_jail.SEAT_TREE,\n    ]"
+        }
+      ],
+      "nodes": [
+        "tests/test_gemini_seat_egress_1170.py::test_the_jailed_argv_makes_no_workspace_of_the_tree"
+      ],
+      "control": {
+        "returncode": 0,
+        "summary": "1 passed in 0.24s"
+      },
+      "mutated": {
+        "returncode": 1,
+        "summary": "1 failed in 0.32s"
+      },
+      "result": "red_as_required"
+    },
+    {
+      "id": "proxy-url-unredacted",
+      "kind": "test",
+      "edits": [
+        {
+          "file": "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py",
+          "file_sha256": "4f12b6ebeea8d0794f027e7134c4c919c845d24925e72816fbb493d80cad197f",
+          "old": "            if self.egress_proxy and item == self.egress_proxy:",
+          "new": "            if False:"
+        }
+      ],
+      "nodes": [
+        "tests/test_gemini_seat_egress_1170.py::test_per_launch_egress_values_do_not_move_the_qualified_digest"
+      ],
+      "control": {
+        "returncode": 0,
+        "summary": "1 passed in 0.24s"
+      },
+      "mutated": {
+        "returncode": 1,
+        "summary": "1 failed in 0.31s"
+      },
+      "result": "red_as_required"
+    },
+    {
+      "id": "qualification-seat-jailed",
+      "kind": "test",
+      "edits": [
+        {
+          "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
+          "file_sha256": "7c0be5297e994e45172d88bb1440599b22415783dddf2619a4af611fadc4e6dd",
+          "old": "        if route.jailed:\n            route = _seat_jail.SeatRoute(False, _GEMINI_QUALIFICATION_CANDIDATE)",
+          "new": "        if False:\n            route = _seat_jail.SeatRoute(False, _GEMINI_QUALIFICATION_CANDIDATE)"
+        }
+      ],
+      "nodes": [
+        "tests/test_gemini_seat_egress_1170.py::test_the_agy_qualification_worker_keeps_its_gemini_seat_on_the_heartbeat_route"
+      ],
+      "control": {
+        "returncode": 0,
+        "summary": "1 passed in 0.25s"
+      },
+      "mutated": {
+        "returncode": 1,
+        "summary": "1 failed in 0.39s"
+      },
+      "result": "red_as_required"
+    },
+    {
+      "id": "qualification-seam-removed",
+      "kind": "test",
+      "edits": [
+        {
+          "file": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
+          "file_sha256": "7c0be5297e994e45172d88bb1440599b22415783dddf2619a4af611fadc4e6dd",
+          "old": "    if leg == \"gemini\" and _measuring_qualification_candidate():\n        # The one candidate seam",
+          "new": "    if False:\n        # The one candidate seam"
+        }
+      ],
+      "nodes": [
+        "tests/test_gemini_seat_egress_1170.py::test_the_agy_qualification_worker_keeps_its_gemini_seat_on_the_heartbeat_route",
+        "tests/test_sealed_seat_never_counts.py::test_the_qualification_worker_keeps_the_gemini_route_and_nothing_else"
+      ],
+      "control": {
+        "returncode": 0,
+        "summary": "2 passed in 0.25s"
+      },
+      "mutated": {
+        "returncode": 1,
+        "summary": "2 failed in 0.36s"
+      },
+      "result": "red_as_required"
+    },
+    {
+      "id": "evidence-drops-tls-inspection",
+      "kind": "test",
+      "edits": [
+        {
+          "file": "phase-loop-runtime/src/phase_loop_runtime/seat_egress_proxy.py",
+          "file_sha256": "bff1adabc12d70eb97cb259e6f7ecdc476b56ffdb69ca7ec266ca41887ea3023",
+          "old": "        \"tls_inspection\": True,\n",
+          "new": ""
+        }
+      ],
+      "nodes": [
+        "tests/test_gemini_seat_egress_1170.py::test_the_egress_evidence_records_tls_inspection"
+      ],
+      "control": {
+        "returncode": 0,
+        "summary": "1 passed in 0.27s"
+      },
+      "mutated": {
+        "returncode": 1,
+        "summary": "1 failed in 0.32s"
+      },
+      "result": "red_as_required"
+    }
+  ]
+}
