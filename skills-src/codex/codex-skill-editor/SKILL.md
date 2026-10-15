@@ -49,6 +49,7 @@ If no plan path is explicit, first check the current repo and branch handoff fro
 5. For `--dry-run`, report the target files and recommendation summaries, then stop.
 6. Apply recommendations:
    - group changes per target skill to avoid conflicting edits;
+   - a change that begins `tune description: <skill>` replaces only the frontmatter `description:` value with the text it gives; leave the body untouched and mark it failed when no replacement text is given;
    - keep `SKILL.md` concise;
    - move lengthy examples into `references/`;
    - update `agents/openai.yaml` when display metadata becomes stale.

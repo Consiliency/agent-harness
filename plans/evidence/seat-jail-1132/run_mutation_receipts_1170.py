@@ -135,10 +135,19 @@ MUTATIONS: list[dict[str, object]] = [
      "edits": [(SJ, "            if self.egress_proxy and item == self.egress_proxy:",
                 "            if False:")],
      "nodes": [f"{T}::test_per_launch_egress_values_do_not_move_the_qualified_digest"]},
+    # The one candidate seam (agent-harness#1170 x agent-harness#1244): on a host that could
+    # jail a Gemini seat, the worker's leg must still not be jailed.
     {"id": "qualification-seat-jailed", "kind": "test",
-     "edits": [(PI, '    if leg == "gemini" and gemini_heartbeat._CANDIDATE is not None:\n        # The agy self-qualification',
-                '    if False:\n        # The agy self-qualification')],
+     "edits": [(PI, "        if route.jailed:\n            route = _seat_jail.SeatRoute(False, _GEMINI_QUALIFICATION_CANDIDATE)",
+                "        if False:\n            route = _seat_jail.SeatRoute(False, _GEMINI_QUALIFICATION_CANDIDATE)")],
      "nodes": [f"{T}::test_the_agy_qualification_worker_keeps_its_gemini_seat_on_the_heartbeat_route"]},
+    # The whole seam removed: the worker's leg is refused like a review seat (#1601's test) and,
+    # on a capable host, jailed (this PR's test).
+    {"id": "qualification-seam-removed", "kind": "test",
+     "edits": [(PI, '    if leg == "gemini" and _measuring_qualification_candidate():\n        # The one candidate seam',
+                '    if False:\n        # The one candidate seam')],
+     "nodes": [f"{T}::test_the_agy_qualification_worker_keeps_its_gemini_seat_on_the_heartbeat_route",
+               "tests/test_sealed_seat_never_counts.py::test_the_qualification_worker_keeps_the_gemini_route_and_nothing_else"]},
     {"id": "evidence-drops-tls-inspection", "kind": "test",
      "edits": [(EP, '        "tls_inspection": True,\n', "")],
      "nodes": [f"{T}::test_the_egress_evidence_records_tls_inspection"]},

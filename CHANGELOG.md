@@ -9,7 +9,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 ### The Gemini board seat runs jailed with tools (agent-harness#1170)
 
 - The Gemini (agy) seat now runs in its own seat jail with its tools, like the Claude seat:
-  it reads the staged tree and runs commands there. Until now it ran sealed, without tools.
+  it reads the staged tree and runs commands there. Until now it did not run at all
+  (degraded with `gemini_seat_egress_unconfined`, agent-harness#1244; before that it ran
+  sealed, without tools).
 - The seat's egress goes through an allowlisting proxy: srt's TLS-terminating proxy
   (`@anthropic-ai/sandbox-runtime` 0.0.79, pinned by version, integrity and installed-file
   digest, with the installed tree rejected if it holds an unexpected symlink), run on the
@@ -25,12 +27,64 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `phase-loop seat-egress status` reports it. The proxy's CA is generated per host, owner
   only, and only its certificate enters the seat. Without the layer the Gemini seat is
   degraded and not run, with `gemini_seat_egress_unavailable` and that fix; it is never a
-  toolless substitute. A host without the seat jail keeps the sealed route.
+  toolless substitute. On a host without the seat jail the Gemini seat is degraded and not
+  run, like every review seat whose route is not jailed (agent-harness#1244).
+- The agy qualification worker still measures its candidate image on the heartbeat route,
+  never in the jail: on a host that could jail a Gemini seat its leg keeps that route with
+  `gemini_seat_qualification_candidate`. It is never a review or a vote.
 - The Gemini jail is a new jail profile: it is qualified on this host on first use, like the
   Claude jail. The Claude jail and the falsifier-run layout are unchanged.
 - Evidence: plans/evidence/seat-jail-1132/p4-containment-egress.json (the containment probe
   re-run through the proxy, real replies) and p3-agy-tools-workspace.json (agy's tools,
   stream events and workspace files).
+
+### A review seat that would run sealed is not run and not counted (agent-harness#1244)
+
+- A board seat whose route is not jailed (every `seat_jail.SEALED_FALLBACK_CODES` code, for
+  example the Gemini seat's `gemini_seat_egress_unconfined`) ran with the bundle inlined and
+  no tools, returned `OK`, and counted toward the reviewer floor and `usable`. A real-CLI
+  board showed `usable: true` with three of four seats delivered, one of them sealed.
+- Such a seat is now `DEGRADED` and not run, like a jail-eligible seat that cannot run
+  jailed: its detail and notice are its route code, with the notice table's fix, and its
+  seat mode is `degraded`. A codex or grok seat on a review with no staged tree is refused
+  the same way with `seat_sandbox_not_staged`.
+- Every count that reads a leg's usability leaves it out: the reviewer floor and `usable`,
+  the landing vote, the governed gate, the train's recorded reviewers and the president's
+  input. A board that falls below its floor because of it now names each such seat with its
+  code and fix, in the `advisor-board` text summary and in the governed pre-merge floor hold.
+- The agy qualification worker still measures its candidate image on the Gemini route; that
+  leg is admitted `qualification_candidate`, which is never a vote, and is not a review. An
+  `--advisory` run, which stages no tree on purpose and inlines its standalone document
+  whole, keeps its seats on the inline route as before.
+- `PHASE_LOOP_SANDBOX_DISABLE=1` no longer gives a bundle-only board: every brokered review
+  seat is then refused with `seat_sandbox_not_staged` (its fix now names the knob), so the
+  board is below its floor and refuses.
+- The `advisor-board --json` payload carries `refused_seats` (seat key, code, fix) for those
+  seats; the private capture board is unchanged.
+- What any seat sandbox permits is unchanged. A host whose seats cannot run jailed may now
+  get a board below its floor, which refuses; that is intended.
+
+### The skill-improvement aggregator applies eight admission gates and a ladder level (agent-harness#1321)
+
+- The aggregator had three admission gates. It now applies eight to every candidate
+  theme: durability, specificity, convergence, skill-was-used, existing-skill-first,
+  already-covered, decision-changing and structural-mechanism. A theme that fails one is
+  listed under a new `## Rejected themes` section with the gate that rejected it.
+- Every recommendation states its level on the enforcement ladder (architecture,
+  unrepresentable, check, prose) and why the level above fails. Only prose-level themes
+  become SKILL.md edits; the rest are mechanism candidates.
+- `reflection_corpus collect` also writes `rule_enforcement.md`, the shipped
+  rule→enforcer registry, and the planner passes it to the aggregator. A recurring theme
+  on a rule that already has an enforcer, or on a tracked gap, becomes a mechanism
+  candidate instead of more prose.
+- Bundles carry opaque repo/branch/run identities so convergence can distinguish
+  independent support. Every planner's final template preserves ladder levels and
+  rejected themes; missing skill-read evidence remains inconclusive.
+- Missing read evidence does not discard a cross-skill body fix. Description tuning
+  requires a reflection's What didn't to identify a missed trigger and supply the
+  complete replacement description. Every editor changes only that frontmatter value
+  and fails a tune without replacement text. Clear rules that were ignored route to
+  compliance fixes instead of duplicate prose.
 
 ### grok executor: keep the background-task tools grok's terminal requires
 

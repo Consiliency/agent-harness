@@ -191,8 +191,11 @@ def _brokered(monkeypatch, tmp_path, leg: str, staged: str | None):
 
 
 def test_sealed_claude_seat_carries_its_notice_through_the_spawn(monkeypatch, tmp_path):
+    # agent-harness#1244: the sealed route is a refusal -- degraded and not run, its notice
+    # carried through the spawn.
     spawned = _brokered(monkeypatch, tmp_path, "claude", None)
-    assert _FakeBroker.invoked == 1
+    assert _FakeBroker.invoked == 0
+    assert tuple(spawned) == ("DEGRADED", "", "seat_sandbox_not_staged")
     assert spawned.seat_notices == ("seat_sandbox_not_staged",)
 
 
@@ -225,13 +228,12 @@ def test_a_jail_qualified_on_first_use_stays_jailed():
     assert (route, notices, refusal) == (seat_jail.SeatRoute(True), [], None)
 
 
-def test_gemini_seat_on_a_host_without_the_jail_is_sealed_with_one_notice(monkeypatch, tmp_path):
-    """The suite runs as a host without the seat jail for Gemini (conftest,
-    agent-harness#1170): that seat takes the sealed route with exactly one notice."""
+def test_gemini_seat_is_refused_with_its_one_code(monkeypatch, tmp_path):
+    # agent-harness#1244: a Gemini route that is not jailed is refused with its one code.
     route, notices, refusal = pi._seat_route_for_spawn(
         "gemini", types.SimpleNamespace(staged_tree_sha256="a" * 64), eligible=True)
-    assert not route.jailed and len(notices) == 1 and refusal is None
-    assert notices[0] in seat_jail.SEALED_FALLBACK_CODES
+    assert not route.jailed and notices == [] and refusal == route.code
+    assert refusal in seat_jail.SEALED_FALLBACK_CODES
 
 
 # --------------------------------------------------------------------------------------
@@ -705,7 +707,7 @@ def _by_leg(modes):
 def test_seat_modes_name_every_route_before_launch(monkeypatch):
     assert _by_leg(_modes(monkeypatch)) == {
         "claude": ("jailed", None, "login"),
-        "gemini": ("sealed", "gemini_seat_egress_unconfined", None),
+        "gemini": ("degraded", "gemini_seat_egress_unconfined", None),
         "codex": ("unconfined", "seat_filesystem_unconfined", None),
         "grok": ("unconfined", "seat_filesystem_unconfined", None),
     }
@@ -785,7 +787,7 @@ def test_seat_modes_are_published_before_launch(monkeypatch, tmp_path):
     assert seen == [modes]
     record = json.loads((tmp_path / "stream" / "seat-modes.json").read_text())
     assert record["schema"] == "seat_modes.v1"
-    assert [m["mode"] for m in record["modes"]] == ["jailed", "sealed", "unconfined", "unconfined"]
+    assert [m["mode"] for m in record["modes"]] == ["jailed", "degraded", "unconfined", "unconfined"]
 
 
 @pytest.mark.parametrize("give_up, source, notice", [

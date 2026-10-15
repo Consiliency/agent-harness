@@ -334,7 +334,7 @@ phase-loop advisor-board bundle.md --pointer-brief --json
 
 `--pointer-brief` declares that the brief tells reviewers to open files in the staged tree instead of carrying their content inline.
 
-**Before launch.** Before any seat launches, the board checks each seat's route. A seat that cannot open files gets `seat_pointer_brief_unreadable`, printed on stderr. On main that means the brokered Claude seat and the brokered Gemini (agy) seat. A Claude seat filled natively has file access.
+**Before launch.** Before any seat launches, the board checks each seat's route. A seat that cannot open files gets `seat_pointer_brief_unreadable`, printed on stderr: a brokered seat that is not jailed. A jailed Claude or Gemini (agy) seat has file access (agent-harness#1132, agent-harness#1170), and so does a Claude seat filled natively.
 
 **What happens to that seat.** It still runs, but its verdict is **not source-grounded**:
 - It does not count toward the floor, the landing count or the pre-merge minimum of reviewers.
@@ -343,7 +343,7 @@ phase-loop advisor-board bundle.md --pointer-brief --json
 
 The payload adds `notices`, `legs[].notices`, `legs[].source_grounded` and `grounded_seats`, and only when the flag is set.
 
-**The fix.** Inline the referenced content, or fill the seat through a route with file access. Once agent-harness#1132 lands, a jailed Claude seat will have file access. The Gemini tool route is agent-harness#1170.
+**The fix.** Inline the referenced content, or fill the seat through a route with file access: run it where the seat jail is available, so the Claude or Gemini seat is jailed, or fill the Claude seat natively.
 
 ### Opt-in governed web research
 
@@ -578,8 +578,9 @@ name, Claude titles a seat by summarising its first message, which is the whole 
 
 A brokered Claude seat can run with its full tool set inside a per-seat jail, reading the
 staged clone and the review bundle through tools instead of receiving the bundle inline.
-The jail, not the CLI's permission settings, is the boundary. Outside a jail nothing
-changes: the seat keeps the sealed inline route and reports why in a typed notice.
+The jail, not the CLI's permission settings, is the boundary. A brokered review seat that
+cannot run jailed is degraded and does not run, with a typed notice and its fix; it is never
+run toolless and never counted toward the reviewer floor (agent-harness#1244).
 
 A jailed launch needs an EC-EXECFIND-2 falsifier
 pass recorded **on this host** for the jail's profile digest. The pass is stored per user,
@@ -608,8 +609,10 @@ qualification nor the gate ever changes these permissions for you. The store def
 seat uid, stale records, other hosts and accidental reuse. Gemini seats are jailed with tools
 too (agent-harness#1170): the seat's egress goes through an allowlisting proxy, installed
 once per user with `phase-loop seat-egress install` (node 22.12+ and npm); without it the
-Gemini seat is degraded and not run, with that fix. Codex and grok are
-not jailed yet (agent-harness#895) and carry `seat_filesystem_unconfined` when given a tree.
+Gemini seat is degraded and does not run, with that fix. Codex and grok are
+not jailed yet (agent-harness#895) and carry `seat_filesystem_unconfined` when given a tree;
+on a review with no staged tree they are degraded and do not run (`seat_sandbox_not_staged`).
+An `--advisory` run stages no tree on purpose and keeps every seat on the inline route.
 
 **Where the host supports the jail, Claude seats are jailed by default, and the jail is
 qualified on first use.** The seat's credential is your Claude login, which is normally
@@ -633,7 +636,8 @@ seat with a staged tree takes the jailed route.
 are:
 - `jailed`: tools inside the jail. `credential` names `login` or `seat_token`.
 - `unconfined`: tools on the staged tree without a jail (codex, grok).
-- `sealed`: no tools; the bundle is inlined.
+- `sealed`: no tools; the bundle is inlined. A brokered review seat is never `sealed`: a
+  route that is not jailed is `degraded` (agent-harness#1244).
 - `degraded`: will not run. The line reads `degraded — will not run [<code>]: <reason>;
   fix: <command>`, before the board starts.
 - `native`: filled by the driving session.
@@ -643,8 +647,8 @@ same modes are written to `seat-modes.json` in the stream directory.
 
 **Host prerequisite (maintainer, root, once per host).** `apt install uidmap`, then
 `usermod --add-subuids <start>-<end> --add-subgids <start>-<end> <operator>` (65536 ids is
-conventional). The runtime never runs these. Without them the seat stays sealed with
-`seat_sandbox_unavailable_seat_uid`. The host must also have `dev.tty.legacy_tiocsti = 0`.
+conventional). The runtime never runs these. Without them the seat is degraded and does not
+run, with `seat_sandbox_unavailable_seat_uid`. The host must also have `dev.tty.legacy_tiocsti = 0`.
 
 The runtime's own environment must also contain `pytest`: qualification runs a real falsifier run
 whose wrapper imports it (agent-harness#1357). Releases after 0.7.25 depend on it, and on the

@@ -167,6 +167,9 @@ def _brokered_codex(monkeypatch, tmp_path, name: str):
                 "--output-last-message", str(out_file)]
 
     monkeypatch.setattr(pi, "_brokered_codex_command", fake_command)
+    # The route decision is not under test: without a staged tree a codex seat is refused
+    # (agent-harness#1244); with one it takes this branch, which is what is driven here.
+    monkeypatch.setattr(pi, "_seat_route_for_spawn", lambda *a, **k: (None, [], None))
     monkeypatch.setattr(_FakeBroker, "invoked", 0)
     spawned = pi._default_spawn(
         "codex", "ARTIFACT", mode="review", model="gpt-test",

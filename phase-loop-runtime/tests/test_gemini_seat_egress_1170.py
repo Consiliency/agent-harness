@@ -632,7 +632,11 @@ def test_the_agy_qualification_worker_keeps_its_gemini_seat_on_the_heartbeat_rou
     from phase_loop_runtime import gemini_heartbeat
 
     monkeypatch.setattr(gemini_heartbeat, "_CANDIDATE", object())
-    assert _capable_spawn_route(monkeypatch, "gemini") == (None, [], None)
+    # On a host that could jail it, the worker's leg keeps the heartbeat route with its own
+    # code (the one candidate seam shared with agent-harness#1244): never jailed, never refused.
+    code = "gemini_seat_qualification_candidate"
+    assert _capable_spawn_route(monkeypatch, "gemini") == (
+        seat_jail.SeatRoute(False, code), [code], None)
     # A Claude seat in the same process is unaffected.
     route, _notices, refusal = _capable_spawn_route(monkeypatch, "claude")
     assert route == seat_jail.SeatRoute(True) and refusal is None

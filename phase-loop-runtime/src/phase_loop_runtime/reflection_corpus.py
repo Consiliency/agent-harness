@@ -14,11 +14,13 @@ the filter rules can be tested and cannot silently drift between harnesses.
 CLI::
 
     python3 -m phase_loop_runtime.reflection_corpus collect --out-dir DIR [--root R ...]
+        (writes DIR/bundle.md, DIR/manifest.json and DIR/rule_enforcement.md)
     python3 -m phase_loop_runtime.reflection_corpus archive --manifest DIR/manifest.json [--root R ...] [--dry-run]
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -29,6 +31,7 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 from .credential_redaction import redact_text
+from .rule_enforcement import Rule, load_registry
 from .skill_paths import HARNESS_DEFAULT_SKILL_ROOTS, resolve_skill_bundle_root
 
 HARNESS_PREFIXES = tuple(HARNESS_DEFAULT_SKILL_ROOTS)
@@ -441,6 +444,10 @@ def _header_field(value: str) -> str:
     return quote_body(" ".join(redact_text(value).split()))
 
 
+def _source_token(*parts: str) -> str:
+    return hashlib.sha256(json.dumps(parts).encode()).hexdigest()[:16] if all(parts) else "unknown"
+
+
 def render_bundle(corpus: Corpus) -> str:
     """The aggregator's input: admitted reflections grouped by bare skill.
 
@@ -453,6 +460,11 @@ def render_bundle(corpus: Corpus) -> str:
         lines += [f"## {skill} ({len(items)} reflections)", ""]
         for reflection in items:
             lines.append(f"### {reflection.id} — {_header_field(reflection.skill)} — {_header_field(reflection.timestamp)}")
+            lines.append(
+                f"**Source**: repo {_source_token(reflection.repo_hash)}; "
+                f"branch {_source_token(reflection.repo_hash, reflection.branch_slug)}; "
+                f"run {_source_token(reflection.repo_hash, reflection.branch_slug, reflection.run_id)}"
+            )
             if reflection.structured:
                 for key, label in labels:
                     body = reflection.sections.get(key, "")
@@ -509,13 +521,42 @@ def manifest(corpus: Corpus, boilerplate: list[str]) -> dict[str, object]:
     }
 
 
+def render_rule_registry(rules: Sequence[Rule]) -> str:
+    """agent-harness#1321 (REPORT 1.14/1.15): the shipped rule->enforcer registry as
+    the aggregator reads it. Unlike ``bundle.md`` this is trusted package data, so it
+    is a separate artifact; the aggregator's structural-mechanism gate and ladder
+    level are decided against it."""
+    lines = [
+        "# Rule enforcement registry",
+        "",
+        "Shipped skill rules and what refuses a violation of each "
+        "(`phase_loop_runtime/rule_enforcement.json`). Statuses: `enforced` (named code "
+        "refuses a violation), `unenforced/gap` (a mechanism could exist and does not "
+        "yet; `tracking` names its issue), `unenforced/judgment` (prose is the correct, "
+        "final level).",
+        "",
+    ]
+    for rule in sorted(rules, key=lambda r: r.id):
+        status = rule.status if rule.status == "enforced" else f"{rule.status}/{rule.unenforced_reason}"
+        lines.append(f"- `{rule.id}` — skill `{rule.skill}` — **{status}**")
+        lines.append(f"  - rule: {json.dumps(rule.quote, ensure_ascii=False)}")
+        for enforcer in rule.enforcers:
+            where = enforcer.module if enforcer.kind == "module" else enforcer.path
+            lines.append(f"  - enforcer: {enforcer.kind} `{where}:{enforcer.symbol}`")
+        if rule.tracking:
+            lines.append(f"  - tracking: {rule.tracking}")
+    return "\n".join(lines) + "\n"
+
+
 def write_corpus(corpus: Corpus, boilerplate: list[str], out_dir: Path) -> dict[str, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     bundle = out_dir / "bundle.md"
     manifest_path = out_dir / "manifest.json"
+    registry = out_dir / "rule_enforcement.md"
     bundle.write_text(render_bundle(corpus), encoding="utf-8")
     manifest_path.write_text(json.dumps(manifest(corpus, boilerplate), indent=2) + "\n", encoding="utf-8")
-    return {"bundle": bundle, "manifest": manifest_path}
+    registry.write_text(render_rule_registry(load_registry()), encoding="utf-8")
+    return {"bundle": bundle, "manifest": manifest_path, "rule_registry": registry}
 
 
 def archive_target(path: Path) -> Path:
@@ -585,7 +626,7 @@ def archive(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python3 -m phase_loop_runtime.reflection_corpus")
     sub = parser.add_subparsers(dest="command", required=True)
-    collect_cmd = sub.add_parser("collect", help="Enumerate, parse and filter reflections; write bundle.md + manifest.json.")
+    collect_cmd = sub.add_parser("collect", help="Enumerate, parse and filter reflections; write bundle.md, manifest.json and rule_enforcement.md.")
     collect_cmd.add_argument("--root", action="append", type=Path, help="Skill root to scan (repeatable). Default: every harness root.")
     collect_cmd.add_argument("--out-dir", type=Path)
     collect_cmd.add_argument("--min-reflections", type=int, default=2)

@@ -132,7 +132,9 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "inline fallback", "host allows keystroke injection",
         "kernel >= 6.2 and dev.tty.legacy_tiocsti=0"),
     "seat_sandbox_not_staged": (
-        "inline fallback", "caller requested no tree", "pass a staged-tree authorization"),
+        "inline fallback", "caller requested no tree",
+        "unset PHASE_LOOP_SANDBOX_DISABLE so the review stages a tree for its seats, or pass a "
+        "staged-tree authorization"),
     "seat_sandbox_refused:jail_build": (
         "leg refused", "jail setup failed", "report a defect"),
     "seat_sandbox_refused:namespace": (
@@ -396,6 +398,11 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "none until agy changes; re-run the P4 containment probe"),
     "gemini_seat_profile_unqualified": (
         "sealed route", "image not qualified for the tooled profile", "requalify"),
+    # agent-harness#1170: only the agy qualification worker's own Gemini leg, on a host that
+    # could jail it, carries this; it measures the heartbeat route and is never a vote.
+    "gemini_seat_qualification_candidate": (
+        "sealed route", "the agy qualification worker measures a candidate image on the "
+        "heartbeat route; that leg is never a review or a vote", "none: it is not a review"),
     "gemini_seat_token_expired": (
         "leg ended", "short-lived seat credential expired", "re-run"),
     "gemini_seat_token_in_output": (
@@ -566,6 +573,7 @@ SEALED_FALLBACK_CODES: frozenset[str] = frozenset({
     "seat_sandbox_unavailable_seat_uid",
     "gemini_seat_credential_missing",
     "gemini_seat_profile_unqualified",
+    "gemini_seat_qualification_candidate",
 })
 #: Plan amendment A3b: a jail-eligible Claude seat that cannot run jailed is DEGRADED and
 #: not run, never a toolless (sealed) substitute. ``decide_seat_route`` may still name one

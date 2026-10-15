@@ -237,6 +237,9 @@ emit('' if mode in ('empty','denied-empty','empty-timeout') else '<truncated 123
     monkeypatch.delenv("PHASE_LOOP_SANDBOX_DISABLE", raising=False)
     monkeypatch.delenv("PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL", raising=False)
     monkeypatch.setattr(gh, "QUALIFIED_IMAGES", {sha256(cli.read_bytes()).hexdigest(): "d" * 64})
+    # agent-harness#1244: a brokered Gemini seat whose route is not jailed runs only as the agy
+    # qualification worker's candidate measurement; these tests play that worker.
+    monkeypatch.setattr(panel, "_measuring_qualification_candidate", lambda: True)
     # The synthetic provider reads its mode and reports through files under tmp_path,
     # which the sandbox view does not otherwise include; bind that one directory.
     view = panel._seat_filesystem_view
@@ -1077,11 +1080,7 @@ from pathlib import Path
 from phase_loop_runtime import panel_invoker as panel, gemini_heartbeat as gh
 from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
 gh.QUALIFIED_IMAGES={fixture_cli.module.QUALIFIED_IMAGES!r}
-# As conftest does in-process (agent-harness#1170): the sealed route, as on a host without
-# the seat jail.
-from phase_loop_runtime import seat_jail
-decide=seat_jail.decide_seat_route
-seat_jail.decide_seat_route=lambda leg,**k: decide(leg,**({{"capable":lambda:"seat_sandbox_unavailable_host"}}|k if leg=="gemini" else k))
+panel._measuring_qualification_candidate=lambda: True
 view=panel._seat_filesystem_view
 panel._seat_filesystem_view=lambda cwd,**kwargs:[*view(cwd,**kwargs),'--bind',{str(tmp_path)!r},{str(tmp_path)!r}]
 board=replace(DEFAULT_BOARD,seats=tuple(s for s in DEFAULT_BOARD.seats if s.harness=='gemini'))
