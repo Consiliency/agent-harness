@@ -115,21 +115,39 @@ class ProviderEntryGenerationRefused(ProviderEntryRefused, WriterGenerationBlock
 class ProviderEffectGenerationRefused(WriterGenerationBlocked):
     """The ambiguity record after provider entry was refused by the generation fence.
 
-    agent-harness#1628: the provider was entered and the adapter raised, then the
-    ``outcome_ambiguous_blocked`` write (``record_intent`` or ``record_terminal``)
-    raised ``WriterGenerationBlocked`` (a DRAINING latch, a revoked shared lease).
-    Nothing was written: the row stays ``provider_call_in_flight`` and the owner
+    agent-harness#1628: the provider was entered and then either the adapter
+    raised, or it returned and its terminal record was refused by the generation
+    fence (agent-harness#1684).  The ``outcome_ambiguous_blocked`` write
+    (``record_intent`` or ``record_terminal``) then raised
+    ``WriterGenerationBlocked`` (a DRAINING latch, a revoked shared lease).  No
+    terminal was written: the row stays ``provider_call_in_flight`` and the owner
     unsealed.  Deliberately NOT a ``ProviderEntryRefused``, which means "never
     entered"; the human route still answers "retry once", with
-    ``provider_call_made: true``.  The message is the write refusal's, already
-    prefixed; it is chained as ``__cause__`` and its ``__context__`` is the
-    adapter error.
+    ``provider_call_made: true``.  ``execute_returned`` says which path it was
+    (``None`` when the raiser did not say); when it is true, ``pr_url``, ``head_sha`` and ``branch`` are the adapter's
+    returned result (``None`` when it returned no pull request).  The message is
+    the write refusal's, already prefixed; it is chained as ``__cause__`` and its
+    ``__context__`` is the adapter error or the terminal record's refusal.
     """
 
-    def __init__(self, message: str, *, effect_key: str, transaction_id: str) -> None:
+    def __init__(
+        self,
+        message: str,
+        *,
+        effect_key: str,
+        transaction_id: str,
+        execute_returned: bool | None = None,
+        pr_url: str | None = None,
+        head_sha: str | None = None,
+        branch: str | None = None,
+    ) -> None:
         PermissionError.__init__(self, message)
         self.effect_key = effect_key
         self.transaction_id = transaction_id
+        self.execute_returned = execute_returned
+        self.pr_url = pr_url
+        self.head_sha = head_sha
+        self.branch = branch
 
 
 class FabpubConfigurationError(RuntimeError):

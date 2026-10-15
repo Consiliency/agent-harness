@@ -6,8 +6,10 @@ Builds on the refusal table in `plans/fabpub-typed-handoffs.md`.
 ## Problem
 
 In `BrokerService._fresh_publish`, the provider has been entered
-(`provider_entered = True`) and `adapter.execute` raises. The except arm then
-writes `outcome_ambiguous_blocked` with `record_terminal` (and `record_intent` if
+(`provider_entered = True`) and either `adapter.execute` raises, or it returns and
+`_record_terminal_and_seal_owner` is refused by the generation fence (a revoked
+lease at its `allow_draining` authorize, or `DRAINING` at the strict one before
+the terminal append; agent-harness#1684). The except arm then writes `outcome_ambiguous_blocked` with `record_terminal` (and `record_intent` if
 the row is missing). Both writes go through `_append` → `_require_generation`,
 which refuses strictly. If the latch is DRAINING, or the shared lease has been
 revoked, that write raises `WriterGenerationBlocked`. It escapes as a plain
@@ -15,6 +17,8 @@ revoked, that write raises `WriterGenerationBlocked`. It escapes as a plain
 `repair_fabpub_authority`.
 
 The store is left with the key `provider_call_in_flight` and the owner unsealed.
+On the returned path the adapter's `PublishCommittedBranchResult` (its `pr_url`)
+was discarded as well.
 The adapter's own pre-push check (`credsep._revalidate_generation_before_effect`)
 raises inside `execute`, after entry, so it reaches this arm today. The planned
 agent-harness#820 fence adds a second site between push and PR create.
@@ -32,14 +36,17 @@ that the provider *was* entered.
 ## Contract
 
 1. **New type.** `live.ProviderEffectGenerationRefused(WriterGenerationBlocked)`
-   carries `effect_key` and `transaction_id`, and keeps the original message.
+   carries `effect_key`, `transaction_id`, `execute_returned` and, when the adapter
+   returned, its `pr_url`, `head_sha` and `branch` (agent-harness#1684), and keeps
+   the original message.
    It is deliberately **not** a `ProviderEntryRefused`. That type means "never
    entered", and the attestation guidance relies on it.
 2. **Where it is raised.** It is raised only in the `_fresh_publish` except arm, with
    `provider_entered` true and no observation, when the ambiguous-terminal write
    (`record_intent` or `record_terminal`) raises `WriterGenerationBlocked`. The
-   refusal chains from the write error, whose `__context__` is the adapter error.
-   Nothing else is written. The broker does not invent a state. The row stays
+   refusal chains from the write error, whose `__context__` is the adapter error
+   or the terminal record's refusal. No terminal is written (an intent row can be
+   written on the unreachable missing-row branch). The broker does not invent a state. The row stays
    `provider_call_in_flight` and the owner stays unsealed.
 3. **Unchanged paths:**
    - When the terminal write succeeds, the result is the existing
@@ -49,21 +56,29 @@ that the provider *was* entered.
    - Pre-entry refusals still report `provider_call_made: false`.
 4. **Human route.** Add a row to `_typed_refusal_handoffs` that maps
    `ProviderEffectGenerationRefused` to `retry_once_before_partition_rotation`.
-   The refusal fields are `effect_key`, `transaction_id` and
-   `provider_call_made: true`. The `provider_call_made = False` that is hardcoded
+   The refusal fields are `effect_key`, `transaction_id`,
+   `provider_call_made: true`, `execute_returned`, `pr_url`, `head_sha` and
+   `branch`; a known `pr_url` is also set on the result. The `provider_call_made = False` that is hardcoded
    after the typed dispatch becomes per-handler. Every existing handler stays false.
 5. **Handoff wording when `provider_call_made` is true:**
    - `next_step_source` says that the provider was entered, that the outcome is
-     unknown, and that the generation fence refused the ambiguity record.
+     unknown, and that the generation fence refused the ambiguity record. When
+     `execute_returned` is true it says instead that the provider returned (PR
+     `<url>`) but its terminal record was refused by the generation fence, so the
+     outcome is not recorded (agent-harness#1684).
    - `rotate_requires` drops the "attested_not_landed by construction" guidance.
      The disposition is the operator's judgement:
      - `observed_landed` if the head is on the remote branch or a PR exists;
      - otherwise `attested_not_landed`, with the usual warning that remote absence
        is not proof.
+     - When a `pr_url` is known: `observed_landed` with that URL as `evidence_url`
+       and the returned head as `observed_head`, never `attested_not_landed`.
    - `resume` says to retry once after any rotation ceremony in progress has
      finished or rolled back, then follow the handoff the retry returns.
 6. **agent-harness#820** inherits this route without new code. Any
-   `WriterGenerationBlocked` raised inside `adapter.execute` reaches the same arm.
+   `WriterGenerationBlocked` raised inside `adapter.execute` reaches the same arm,
+   and so does a generation refusal of the terminal record after `adapter.execute`
+   returned (agent-harness#1684); `execute_returned` tells the two apart.
 
 ## Things the implementer must check (record the answers in the PR)
 
@@ -92,6 +107,9 @@ that the provider *was* entered.
 - **A non-generation error from the terminal write.** It propagates unchanged.
 - **A generic adapter that raises `WriterGenerationBlocked` mid-call.** This is the
   agent-harness#820 shape, and it routes the same way.
+- **The adapter returned, then its terminal record was refused** (revoked lease and
+  `DRAINING`, agent-harness#1684). The same route with the returned wording, and the
+  `pr_url` on the result and the handoff; the retry makes no second provider call.
 
 ## agent-harness#1640 asks in this PR
 

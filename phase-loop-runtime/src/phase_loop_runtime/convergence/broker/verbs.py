@@ -417,17 +417,28 @@ def _provider_entry_refusal(error: PermissionError, key: str, envelope) -> Provi
     )
 
 
-def _provider_effect_refusal(error: PermissionError, key: str, envelope):
+def _provider_effect_refusal(
+    error: PermissionError, key: str, envelope, *, execute_returned: bool, result=None
+):
     """Type a ``WriterGenerationBlocked`` that refused the ambiguity record after entry.
 
     agent-harness#1628: the result is ``ProviderEffectGenerationRefused``, still
     a ``WriterGenerationBlocked`` with the same message, and never a
-    ``ProviderEntryRefused``: the provider was entered.
+    ``ProviderEntryRefused``: the provider was entered.  agent-harness#1684:
+    ``execute_returned`` says whether the adapter returned (its terminal record
+    was then refused) or raised; a returned result's PR URL, head and branch are
+    carried, never discarded.
     """
     from .live import ProviderEffectGenerationRefused
 
     return ProviderEffectGenerationRefused(
-        str(error), effect_key=key, transaction_id=envelope.transaction_id
+        str(error),
+        effect_key=key,
+        transaction_id=envelope.transaction_id,
+        execute_returned=execute_returned,
+        pr_url=getattr(result, "pr_url", None),
+        head_sha=getattr(result, "head_sha", None),
+        branch=getattr(result, "branch", None),
     )
 
 
@@ -1296,6 +1307,9 @@ class BrokerService:
             # failure before it (the service-generation lease, which a DRAINING
             # latch refuses) never reached the provider and is not ambiguity.
             provider_entered = False
+            # agent-harness#1684: set once ``adapter.execute`` returns, so a
+            # refused terminal record is not reported as an adapter failure.
+            provider_returned = False
             result = None
             observation: PostAmbiguityObservation | None = None
             try:
@@ -1306,6 +1320,7 @@ class BrokerService:
                 try:
                     provider_entered = True
                     result, evidence = self.adapter.execute(adapter_request)
+                    provider_returned = True
                     _crash_at("after_provider_return_before_terminal")
                     state = TerminalOutcomeState(evidence.terminal_state)
                     reference = result.pr_url if result is not None else evidence.evidence_reference
@@ -1366,10 +1381,12 @@ class BrokerService:
                 # agent-harness#1628: both writes are generation-fenced.  A
                 # ``WriterGenerationBlocked`` here (a DRAINING latch, a revoked
                 # shared lease) is re-raised as ``ProviderEffectGenerationRefused``
-                # with nothing written: the row stays ``provider_call_in_flight``
+                # with no terminal written: the row stays ``provider_call_in_flight``
                 # and the owner unsealed, so the caller can say "retry once" (the
-                # retry's ``_block_unsealed_owner`` promotes it).  Every other
-                # error from these writes propagates unchanged.
+                # retry's ``_block_unsealed_owner`` promotes it).  It records
+                # whether the adapter returned (its terminal record was refused)
+                # and carries the returned result (agent-harness#1684).  Every
+                # other error from these writes propagates unchanged.
                 try:
                     if current is None:
                         self.evidence_store.record_intent(key)
@@ -1377,7 +1394,9 @@ class BrokerService:
                     if current is not None and current.state is TerminalOutcomeState.PROVIDER_CALL_IN_FLIGHT:
                         current = self.evidence_store.record_terminal(EvidenceRecord(key, TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED, "adapter-exception"))
                 except WriterGenerationBlocked as refused:
-                    raise _provider_effect_refusal(refused, key, envelope) from refused
+                    raise _provider_effect_refusal(
+                        refused, key, envelope, execute_returned=provider_returned, result=result
+                    ) from refused
                 if current is None:
                     # Unreachable after record_intent; never fabricate a row.
                     raise RuntimeError(

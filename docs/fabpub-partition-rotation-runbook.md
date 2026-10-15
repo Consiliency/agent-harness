@@ -499,15 +499,19 @@ rotation handoff for this key. Keep the first result as the attestation's eviden
 that the provider was never entered. The ambiguous row alone cannot show that
 (agent-harness#1594 asks 1 and 5).
 The same next step can follow a refusal **after** provider entry, with
-`provider_call_made: true` (agent-harness#1628). The adapter raised, and the
-generation fence (a `DRAINING` latch during a rotation ceremony, or a revoked lease)
-refused the `outcome_ambiguous_blocked` record, so the row is still
-`provider_call_in_flight` and the owner unsealed. The outcome is unknown, so the
-"by construction" reasoning above does not apply. Retry once after any rotation
-ceremony in progress has finished or rolled back (the latch is `ACTIVE` again), then
-follow the handoff the retry returns. In the attestation, dispose the key
-`observed_landed` if the head is on the remote branch or a pull request exists for it;
-otherwise `attested_not_landed` is your judgement, and remote absence is not proof.
+`provider_call_made: true` (agent-harness#1628). The adapter raised, or it returned
+and its terminal record was refused (`execute_returned: true`, agent-harness#1684), and
+the generation fence (a `DRAINING` latch during a rotation ceremony, or a revoked
+lease) refused the `outcome_ambiguous_blocked` record, so no terminal was written: the
+row is still `provider_call_in_flight` and the owner unsealed. The outcome is not
+recorded, so the "by construction" reasoning above does not apply. Retry once after
+any rotation ceremony in progress has finished or rolled back (the latch is `ACTIVE`
+again), then follow the handoff the retry returns. Keep the first result: when the
+adapter returned, its `pr_url` and `head_sha` are the provider's returned pull
+request, which the retry does not repeat. In the attestation, dispose the key
+`observed_landed` with that URL and head; without one, `observed_landed` if the head
+is on the remote branch or a pull request exists for it, otherwise
+`attested_not_landed` is your judgement, and remote absence is not proof.
 
 1. Leave the worktree, branch, commit, plan file and verification artifact
    exactly as they were. Do not make an empty commit, switch branch, force

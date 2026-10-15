@@ -1603,16 +1603,55 @@ def _human_publication_handoff(
         if refusal.get("provider_call_made"):
             # agent-harness#1628: the same stored shape, but the provider WAS
             # entered.  Nothing here supports attested_not_landed by construction.
-            handoff.update(
-                next_step_source=(
-                    "the provider was entered and the adapter failed, so the outcome is "
+            # agent-harness#1684: an adapter that returned is not reported as
+            # failed, and its pull request URL is carried, not discarded.
+            execute_returned = refusal.get("execute_returned")
+            pr_url = refusal.get("pr_url")
+            head_sha = refusal.get("head_sha")
+            if execute_returned:
+                returned = f"PR {pr_url}" if pr_url else "no pull request URL"
+                source = (
+                    f"the provider returned ({returned}) but its terminal record was "
+                    "refused by the generation fence (a DRAINING writer latch or a revoked "
+                    "generation lease), so the outcome is not recorded (provider_call_made "
+                    "true); the fence then refused the outcome_ambiguous_blocked record too"
+                )
+            else:
+                failed = (
+                    "the adapter failed"
+                    if execute_returned is False
+                    else "the adapter failed, or its outcome could not be recorded"
+                )
+                source = (
+                    f"the provider was entered and {failed}, so the outcome is "
                     "unknown (provider_call_made true); the generation fence (a DRAINING "
                     "writer latch or a revoked generation lease) then refused the "
-                    "outcome_ambiguous_blocked record, so nothing was written: the "
-                    "attempt's unsealed adapter-start owner and its "
-                    "provider_call_in_flight intent stay, and a rotation now refuses "
-                    "with \"intents without a terminal\" until one retry promotes the "
-                    "owner to outcome_ambiguous_blocked"
+                    "outcome_ambiguous_blocked record"
+                )
+            if pr_url:
+                rotate_requires = (
+                    "the provider returned a pull request for this attempt, so dispose "
+                    f"this key observed_landed with evidence_url {pr_url} and observed_head "
+                    f"{head_sha} (this result's pr_url and head_sha; confirm them at the "
+                    "provider), never attested_not_landed; a later remote absence is not "
+                    "proof that the effect did not land"
+                )
+            else:
+                rotate_requires = (
+                    "the provider was entered, so the disposition of this key is the "
+                    "operator's judgement: observed_landed (naming the observed head) if "
+                    "the head is on the remote branch or a pull request exists for it; "
+                    "otherwise attested_not_landed with this result's transaction_id, "
+                    "where later remote absence is not proof that the attempt had no "
+                    "effect; " + _SECOND_ATTESTATION_WARNING
+                )
+            handoff.update(
+                execute_returned=execute_returned,
+                next_step_source=(
+                    source + ", so no terminal was written: the attempt's unsealed "
+                    "adapter-start owner and its provider_call_in_flight intent stay, and "
+                    "a rotation now refuses with \"intents without a terminal\" until one "
+                    "retry promotes the owner to outcome_ambiguous_blocked"
                 ),
                 resume=(
                     "retry once with the same plan and verification artifact, after any "
@@ -1621,20 +1660,21 @@ def _human_publication_handoff(
                     "adjudicate_publication_by_partition_rotation, follow its rotation "
                     "handoff; otherwise follow whatever handoff the retry returns"
                 ),
-                rotate_requires=(
-                    "the provider was entered, so the disposition of this key is the "
-                    "operator's judgement: observed_landed (naming the observed head) if "
-                    "the head is on the remote branch or a pull request exists for it; "
-                    "otherwise attested_not_landed with this result's transaction_id, "
-                    "where later remote absence is not proof that the attempt had no "
-                    "effect; " + _SECOND_ATTESTATION_WARNING
-                ),
+                rotate_requires=rotate_requires,
                 attestation_evidence=(
                     "keep this result: its provider_call_made true and refusal detail "
-                    "record that this attempt entered the provider with an unknown "
-                    "outcome; it is not evidence that the provider was never entered"
+                    "record that this attempt entered the provider"
+                    + (
+                        ", and its pr_url is the provider's returned pull request, which "
+                        "the retry's handoff does not repeat"
+                        if pr_url
+                        else " with an unknown outcome"
+                    )
+                    + "; it is not evidence that the provider was never entered"
                 ),
             )
+            if execute_returned:
+                handoff.update(pr_url=pr_url, head_sha=head_sha, branch=refusal.get("branch"))
     if next_step == "probe_and_confirm_fabpub_authority":
         inventory = (
             snapshot.common_dir
@@ -1786,6 +1826,7 @@ def _typed_refusal_handoffs() -> tuple[tuple[Any, Any], ...]:
         (
             # agent-harness#1628: the provider WAS entered; the generation fence
             # refused the ambiguity record, so the row is still in flight.
+            # agent-harness#1684: whether the adapter returned, and its result.
             live.ProviderEffectGenerationRefused,
             lambda error: (
                 "retry_once_before_partition_rotation",
@@ -1793,6 +1834,10 @@ def _typed_refusal_handoffs() -> tuple[tuple[Any, Any], ...]:
                     "effect_key": error.effect_key,
                     "transaction_id": error.transaction_id,
                     "provider_call_made": True,
+                    "execute_returned": error.execute_returned,
+                    "pr_url": error.pr_url,
+                    "head_sha": error.head_sha,
+                    "branch": error.branch,
                 },
             ),
         ),
@@ -2040,6 +2085,10 @@ def publish_human_invoked_from_worktree(
             # (agent-harness#1593) except the post-entry generation refusal
             # (agent-harness#1628).
             result["provider_call_made"] = bool(refusal.get("provider_call_made", False))
+            if refusal.get("pr_url"):
+                # agent-harness#1684: the provider returned a pull request whose
+                # terminal record was refused; keep its URL (status stays blocked).
+                result["pr_url"] = refusal["pr_url"]
         if checkpoint_root.exists():
             result["checkpoint_root"] = str(checkpoint_root)
         return result

@@ -564,9 +564,13 @@ def _assert_post_entry_retry_once(result, repo: Path, before: list[str]) -> dict
     handoff = result["handoff"]
     assert handoff["next_step"] == RETRY_ONCE_STEP, handoff
     assert handoff["effect_key"] and handoff["transaction_id"]
-    assert "provider was entered" in handoff["next_step_source"]
+    # The adapter raised (agent-harness#1684 keeps this wording for that path).
+    assert handoff["execute_returned"] is False
+    assert "the provider was entered and the adapter failed," in handoff["next_step_source"]
     assert "outcome is unknown" in handoff["next_step_source"]
+    assert "no terminal was written" in handoff["next_step_source"]
     assert "intents without a terminal" in handoff["next_step_source"]
+    assert "pr_url" not in handoff and "pr_url" not in result
     assert handoff["resume"].startswith("retry once")
     assert "ceremony in progress has finished or rolled back" in handoff["resume"]
     # The "attested_not_landed by construction" guidance is gone: the
@@ -575,14 +579,18 @@ def _assert_post_entry_retry_once(result, repo: Path, before: list[str]) -> dict
     assert "not proof" in handoff["rotate_requires"]
     assert "entered the provider with an unknown outcome" in handoff["attestation_evidence"]
     assert "rotate_command" not in handoff
-    # Nothing was written: the row is still in flight and the owner unsealed.
+    _assert_no_terminal_and_owner_unsealed(repo, before, handoff)
+    return handoff
+
+
+def _assert_no_terminal_and_owner_unsealed(repo: Path, before: list[str], handoff: dict) -> None:
+    # No terminal was written: the row is still in flight and the owner unsealed.
     assert _evidence_lines(repo) == before
     assert _evidence_states(repo) == [IN_FLIGHT]
     owner = _owner_file(repo)
     assert owner["sealed"] is False
     assert owner["effect_key"] == handoff["effect_key"]
     assert owner["transaction_id"] == handoff["transaction_id"]
-    return handoff
 
 
 def _retry_promotes_to_rotation(publish, repo: Path, handoff: dict, calls: list) -> None:
@@ -777,3 +785,88 @@ def test_post_entry_refusal_is_not_a_provider_entry_refusal():
     m = _modules()
     assert issubclass(m.live.ProviderEffectGenerationRefused, m.live.WriterGenerationBlocked)
     assert not issubclass(m.live.ProviderEffectGenerationRefused, m.verbs.ProviderEntryRefused)
+
+
+# ---------------------------------------------------------------------------
+# agent-harness#1684 (F014): the adapter RETURNED, then its terminal record was
+# refused by the generation fence.  Not "the adapter failed"; the PR URL is kept.
+# ---------------------------------------------------------------------------
+
+
+class _ReturnThenFence(_CountingAdapter):
+    """The provider call succeeds (a PR exists), then the fence fires before the record."""
+
+    def __init__(self, fence) -> None:
+        super().__init__()
+        self._fence = fence
+
+    def execute(self, request):
+        out = super().execute(request)
+        self._fence()
+        return out
+
+
+@pytest.mark.parametrize("fence_kind", ["revoked", "draining"])
+def test_execute_returned_then_terminal_refused_keeps_the_pr_url(tmp_path, monkeypatch, fence_kind):
+    m = _modules()
+    repo_box: list[Path] = []
+    before: list[str] = []
+
+    def fence():
+        repo = repo_box[0]
+        before[:] = _evidence_lines(repo)
+        (_revoke_shared_lease if fence_kind == "revoked" else _drain)(repo)
+
+    adapter = _ReturnThenFence(fence)
+    repo, publish = _human_route(tmp_path, monkeypatch, adapter)
+    repo_box.append(repo)
+    seen: list[BaseException] = []
+    original = m.verbs.BrokerService.execute
+
+    def spy(self, request):
+        try:
+            return original(self, request)
+        except BaseException as error:
+            seen.append(error)
+            raise
+
+    monkeypatch.setattr(m.verbs.BrokerService, "execute", spy)
+    first = publish()
+    assert len(adapter.calls) == 1
+    request = adapter.calls[0]
+    pr_url = "https://gh/pr/1"
+
+    error = seen[-1]
+    assert isinstance(error, m.live.ProviderEffectGenerationRefused)
+    assert not isinstance(error, m.verbs.ProviderEntryRefused)
+    assert error.execute_returned is True
+    assert (error.pr_url, error.head_sha, error.branch) == (pr_url, request.head_sha, request.branch)
+
+    assert first["status"] == "publication_blocked", first
+    assert first["reason"] == "repository_publication_authority_refused"
+    assert first["provider_call_made"] is True
+    assert first["pr_url"] == pr_url
+    handoff = first["handoff"]
+    assert handoff["next_step"] == RETRY_ONCE_STEP, handoff
+    assert handoff["execute_returned"] is True
+    assert (handoff["pr_url"], handoff["head_sha"]) == (pr_url, request.head_sha)
+    source = handoff["next_step_source"]
+    assert (
+        f"the provider returned (PR {pr_url}) but its terminal record was refused by the "
+        "generation fence"
+    ) in source
+    assert "outcome is not recorded" in source
+    assert "no terminal was written" in source
+    assert "adapter failed" not in source and "nothing was written" not in source
+    assert "ceremony in progress has finished or rolled back" in handoff["resume"]
+    rotate = handoff["rotate_requires"]
+    assert f"observed_landed with evidence_url {pr_url} and observed_head {request.head_sha}" in rotate
+    assert "never attested_not_landed" in rotate
+    assert "not proof" in rotate
+    assert "its pr_url is the provider's returned pull request" in handoff["attestation_evidence"]
+    _assert_no_terminal_and_owner_unsealed(repo, before, handoff)
+
+    if fence_kind == "draining":
+        _latch(repo).resume_active()
+    _retry_promotes_to_rotation(publish, repo, handoff, adapter.calls)
+    assert len(adapter.calls) == 1

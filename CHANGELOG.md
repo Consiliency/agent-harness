@@ -8,18 +8,23 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### FABPUB: a generation refusal after provider entry gets "retry once", not "repair authority" (agent-harness#1628, agent-harness#1640)
 
-- When the provider adapter raised after entry and the generation fence (a `DRAINING`
-  writer latch, a revoked shared lease) then refused the `outcome_ambiguous_blocked`
-  record, the refusal escaped as a plain `PermissionError` and the human route answered
+- When, after provider entry, the adapter raised or it returned and its terminal
+  record was refused, and the generation fence (a `DRAINING` writer latch, a revoked
+  shared lease) then refused the `outcome_ambiguous_blocked` record, the refusal
+  escaped as a plain `PermissionError` and the human route answered
   `repair_fabpub_authority`. The broker now raises
   `ProviderEffectGenerationRefused` (a `WriterGenerationBlocked`, never a
-  `ProviderEntryRefused`; same message, the write refusal chained) and writes nothing
-  else: the row stays `provider_call_in_flight` and the owner unsealed.
+  `ProviderEntryRefused`; same message, the write refusal chained) and writes no
+  terminal: the row stays `provider_call_in_flight` and the owner unsealed. The
+  refusal records `execute_returned` and, when the adapter returned, its `pr_url`,
+  `head_sha` and `branch`, which the result and the handoff carry (agent-harness#1684).
 - The human route answers it with `retry_once_before_partition_rotation` and
-  `provider_call_made: true`. The handoff says the provider was entered and the outcome
-  is unknown, retries once after any rotation ceremony in progress has finished or
-  rolled back, and leaves the disposition to the operator (`observed_landed` if the head
-  is on the remote branch or a pull request exists). `provider_call_made` is now set per
+  `provider_call_made: true`. The handoff says the provider was entered and the adapter
+  failed (or, when it returned, that the provider returned the pull request but its
+  terminal record was refused, so the outcome is not recorded), retries once after any
+  rotation ceremony in progress has finished or rolled back, and leaves the disposition
+  to the operator (`observed_landed` if the head is on the remote branch or a pull
+  request exists; with a returned `pr_url`, `observed_landed` with that URL). `provider_call_made` is now set per
   typed refusal; every pre-entry refusal still reports `false`. A successful ambiguity
   record and every other error from that write are unchanged. The planned
   agent-harness#820 effect fence inherits the route.
