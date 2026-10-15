@@ -477,22 +477,51 @@ def test_workflows_retain_the_node_on_main_nightly_and_release() -> None:
     ("pull_request", "refs/pull/1/merge", "owner/repo", "false", True),
 ])
 @pytest.mark.parametrize("sandbox_ready", ["false", "true"])
+@pytest.mark.parametrize("proof", ["false", "true"])
+@pytest.mark.parametrize("ssh_user_set", ["false", "true"])
 def test_offload_requires_trust_secret_and_supported_sandbox(
-    tmp_path, event, ref, head_repo, secret, trusted, sandbox_ready,
+    tmp_path, event, ref, head_repo, secret, trusted, sandbox_ready, proof, ssh_user_set,
 ):
-    jobs = yaml.safe_load(WORKFLOW_PATH.read_text())["jobs"]
+    workflow = yaml.safe_load(WORKFLOW_PATH.read_text())
+    jobs = workflow["jobs"]
     step = next(s for s in jobs["elig"]["steps"] if s.get("id") == "elig")
     assert step["env"]["OFFLOAD_SANDBOX_READY"] == "false"
+    # A proof run is opt-in per dispatch: the input defaults off, and the env can
+    # only be true on a workflow_dispatch, whatever any other event carries.
+    offload_input = workflow.get("on", workflow.get(True))["workflow_dispatch"]["inputs"]["offload"]
+    assert offload_input["type"] == "boolean" and offload_input["default"] is False
+    assert step["env"]["OFFLOAD_PROOF"] == (
+        "${{ github.event_name == 'workflow_dispatch' && inputs.offload == true }}"
+    )
+    # The engine login is a repository secret (masked in public logs), never a
+    # literal or a variable in the workflow.
+    assert step["env"]["OFFLOAD_SSH_USER_SET"] == "${{ secrets.CI_OFFLOAD_SSH_USER != '' }}"
+    offload_step = next(
+        s for s in jobs["offload"]["steps"] if "dagger-offload@" in s.get("uses", "")
+    )
+    assert offload_step["with"]["ssh-user"] == "${{ secrets.CI_OFFLOAD_SSH_USER }}"
     output = tmp_path / "outputs"
     result = subprocess.run(
         ["bash", "-c", step["run"]], capture_output=True, text=True,
         env={**os.environ, "EVENT_NAME": event, "REF": ref,
              "PR_HEAD_REPO": head_repo, "REPO": "owner/repo",
              "TS_AUTHKEY_SET": secret, "OFFLOAD_SANDBOX_READY": sandbox_ready,
+             "OFFLOAD_PROOF": proof, "OFFLOAD_SSH_USER_SET": ssh_user_set,
              "GITHUB_OUTPUT": str(output)},
     )
-    assert result.returncode == 0, result.stderr
-    eligible = trusted and secret == "true" and sandbox_ready == "true"
+    # The step's own event check is the second guard: a proof flag that somehow
+    # reached a push or pull_request run still cannot select the offload path.
+    proof_run = proof == "true" and event == "workflow_dispatch"
+    eligible = (
+        trusted and secret == "true" and ssh_user_set == "true"
+        and (sandbox_ready == "true" or proof_run)
+    )
+    if proof_run and not eligible:
+        # A proof that cannot take the offload path is red, never a hosted green.
+        assert result.returncode == 1, result.stdout
+        assert "offload proof requested but the offload is not configured" in result.stderr
+    else:
+        assert result.returncode == 0, result.stderr
     assert output.read_text().strip() == f"eligible={str(eligible).lower()}"
     assert jobs["offload"]["if"] == "needs.elig.outputs.eligible == 'true'"
     assert jobs["pytest"]["if"] == "needs.elig.outputs.eligible != 'true'"
