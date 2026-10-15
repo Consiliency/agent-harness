@@ -26,6 +26,39 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 - The panel's default Gemini seat, the `default`/`code-review` boards, the built-in presets and the president ladder's `gemini` rung now use `gemini-4-argon` at `medium` (agy `gemini-4-argon-medium`) instead of `gemini-3.8-flash`; `gemini-3.8-flash` stays an accepted explicit seat, and implementer/worker routing is unchanged.
 
+### FABPUB: a generation refusal after provider entry gets "retry once", not "repair authority" (agent-harness#1628, agent-harness#1640)
+
+- When, after provider entry, the adapter raised or it returned and its terminal
+  record was refused, and the generation fence (a `DRAINING` writer latch, a revoked
+  shared lease) then refused the `outcome_ambiguous_blocked` record, the refusal
+  escaped as a plain `PermissionError` and the human route answered
+  `repair_fabpub_authority`. The broker now raises
+  `ProviderEffectGenerationRefused` (a `WriterGenerationBlocked`, never a
+  `ProviderEntryRefused`; same message, the write refusal chained) and writes no
+  terminal: the row stays `provider_call_in_flight` and the owner unsealed. The
+  refusal records `execute_returned` and, when the adapter returned, its `pr_url`,
+  `head_sha` and `branch`, which the result and the handoff carry (agent-harness#1684).
+- The human route answers it with `retry_once_before_partition_rotation` and
+  `provider_call_made: true`. The handoff says the provider was entered and the adapter
+  failed (or, when it returned, that the provider returned the pull request but its
+  terminal record was refused, so the outcome is not recorded), retries once after any
+  rotation ceremony in progress has finished or rolled back, and leaves the disposition
+  to the operator (`observed_landed` if the head is on the remote branch or a pull
+  request exists; with a returned `pr_url`, `observed_landed` with that URL). `provider_call_made` is now set per
+  typed refusal; every pre-entry refusal still reports `false`. A successful ambiguity
+  record and every other error from that write are unchanged. The planned
+  agent-harness#820 effect fence inherits the route.
+- `WriterGenerationLatch.validate_lease` refuses a declared absent lease
+  (`generation_lease=None`, strict) under `DRAINING` as well as `ACTIVE`; an undeclared
+  lease is unchanged (agent-harness#1640 ask 2).
+- New tests pin the generation half of the lease binding on the strict and
+  `allow_draining` paths, and a terminal that lands after a lock-holding ceremony
+  aborts (agent-harness#1640 asks 1 and 3).
+- Runbook: §8a covers a torn observation line that names the key but not the outcome,
+  §7 points to §8a for the key the successor refuses after a sealed resume, and the
+  `retry_once` paragraph covers the post-entry variant (agent-harness#1640 ask 4).
+  Design note: `phase-loop-runtime/plans/fabpub-post-entry-refusal-1628.md`.
+
 ### Reflection filters preserve recurring friction (agent-harness#1370, agent-harness#1371)
 
 - Exact and near deduplication is limited to copies of the same recorded run.
