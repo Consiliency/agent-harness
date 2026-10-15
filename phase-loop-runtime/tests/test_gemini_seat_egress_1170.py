@@ -561,7 +561,11 @@ def _client_hello(sni: bytes, rec_ver_lo: int = 0x03) -> bytes:
 @pytest.mark.parametrize("label,sni,rec_ver_lo", [
     ("opaque-tunnel attack: 0x04 record version, SNI storage", b"storage.googleapis.com", 0x04),
     ("standard ClientHello, SNI storage (disallowed)", b"storage.googleapis.com", 0x03),
-])
+    # Shape (b): the SNI is ALLOWED, so only the front's record-version check keeps this first
+    # flight off srt's opaque path (srt would tunnel a 0x04 record to the upstream uninspected).
+    ("opaque-tunnel attack: 0x04 record version, ALLOWED SNI", b"daily-cloudcode-pa.googleapis.com",
+     0x04),
+], ids=["0x04-record-sni-storage", "standard-hello-sni-storage", "0x04-record-allowed-sni"])
 def test_live_fail_closed_front_lets_no_bytes_reach_a_non_allowlisted_service(label, sni, rec_ver_lo):
     """grok-A: a CONNECT to the allowed host followed by a first flight that is either not a
     standard ClientHello (0x04 record version) or names a non-allowlisted SNI reaches NO

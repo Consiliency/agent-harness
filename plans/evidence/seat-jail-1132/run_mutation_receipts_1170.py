@@ -70,6 +70,14 @@ MUTATIONS: list[dict[str, object]] = [
      "expect": "reached b_tunnel_inner_host"},
     {"id": "probe-fail-closed-front-neutralised", "kind": "probe", "edits": [(MJS, *FRONT_FORWARDS_ANYTHING)],
      "expect": "reached attack_0x04_record_sni_storage"},
+    # hb2 grok-hb2-1: remove ONLY the front's record-version clause. With an ALLOWED SNI, that
+    # clause is the one guard keeping a non-standard first flight off srt's opaque path; the
+    # shape-(b) live row must turn red.
+    {"id": "front-record-version-clause-removed", "kind": "test",
+     "edits": [(MJS, "  if (buf[0] !== 0x16 || buf[1] !== 0x03 || buf[2] > 0x03) return null;",
+                "  if (buf[0] !== 0x16 || buf[1] !== 0x03) return null;")],
+     "nodes": [f"{T}::test_live_fail_closed_front_lets_no_bytes_reach_a_non_allowlisted_service"
+               "[0x04-record-allowed-sni]"]},
     # NOTE: there is deliberately no SNI-wall probe mutation. On srt's terminated path the
     # upstream is the CONNECT target regardless of the inner SNI, so neutralising the SNI
     # checks (front allow-check + srt SNICallback hook) does not reach a non-allowlisted
