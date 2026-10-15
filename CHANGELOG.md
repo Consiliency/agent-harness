@@ -38,6 +38,22 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   re-run through the proxy, real replies) and p3-agy-tools-workspace.json (agy's tools,
   stream events and workspace files).
 
+### Board: the sandboxed grok seat can run the tools it is granted
+
+- In a board the sandboxed grok seat ended `DEGRADED` (rc 0) after one preamble line. Its
+  argv paired `--permission-mode plan` with an allow-list granting `run_terminal_command`,
+  `write` and `search_replace`. Headless grok 1.0.52 sends those calls to an approver it
+  does not have, cancels them, and ends the turn. The earlier finding that headless grok
+  auto-approves regardless of `--permission-mode` (agent-harness#147) no longer holds.
+- The sandboxed brokered route now runs `--permission-mode bypassPermissions` and passes
+  `--disallowed-tools` for the twelve built-ins `--tools` leaves in place, so the seat holds
+  exactly `GROK_SANDBOX_TOOLS`. The seat sandbox and the allow-list are unchanged, and the
+  recorded tool controls follow the argv. The unsandboxed brokered route (`plan`, empty
+  allow-list) and the read-only `-p` route are unchanged. The grok seat's tree stays
+  read-only, so `write` and `search_replace` return a read-only-filesystem error; only codex
+  gets a writable tree (agent-harness#1470), and writable-tree parity for grok is
+  agent-harness#1686.
+
 ### Advisor board: Gemini 4 Argon is the default Gemini seat
 
 - The panel's default Gemini seat, the `default`/`code-review` boards, the built-in presets and the president ladder's `gemini` rung now use `gemini-4-argon` at `medium` (agy `gemini-4-argon-medium`) instead of `gemini-3.8-flash`; `gemini-3.8-flash` stays an accepted explicit seat, and implementer/worker routing is unchanged.
