@@ -6,6 +6,24 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### verification.json can carry acceptance-criterion evidence for spec (agent-harness#1321)
+
+- A new `verification.json` extension, `phase_loop_runtime.acceptance_evidence`,
+  records human-asserted links from a spec acceptance criterion (its `engine_join_id`)
+  to one verification command, plus the run's pipeline mode and whether the pipeline
+  actually engaged. `bind_acceptance_evidence` adds it to a sealed artifact next to any
+  extension already bound, such as LEGIBLE's, and re-seals.
+- `export_acceptance_evidence` (or `python -m phase_loop_runtime.acceptance_evidence`)
+  turns those links into spec E(C) `acceptance_evidence` records
+  (Consiliency/spec#250): the command's argv and exit code, a SHA-256 of that
+  command's own log bytes, and the authority. Governed-pipeline owns the result under
+  `pipeline_required` or an engaged `pipeline_optional` run; agent-harness owns it
+  otherwise. A standalone pass is never reported as pipeline-certified.
+- Exported authority uses spec's merged generic roles, `producer` and `pipeline`.
+  Five mode/engagement cases are checked against the published spec v0.7.2 schema.
+- Nothing binds links automatically yet: no plan format declares criteria. Exit 0
+  shows a command passed, not that it tests the criterion.
+
 ### Advisor board: Gemini 4 Argon is the default Gemini seat
 
 - The panel's default Gemini seat, the `default`/`code-review` boards, the built-in presets and the president ladder's `gemini` rung now use `gemini-4-argon` at `medium` (agy `gemini-4-argon-medium`) instead of `gemini-3.8-flash`; `gemini-3.8-flash` stays an accepted explicit seat, and implementer/worker routing is unchanged.
@@ -253,6 +271,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   mixed-version runtimes keep today's behaviour.
 - New regression `test_fabpub_owner_section_1314_1313_1311.py`, including the in-lock
   transaction-state race (agent-harness#1311).
+
 
 ### An ambiguous human publication now gets the rotation handoff (agent-harness#1312)
 

@@ -1,6 +1,8 @@
 [
   {"count": 1, "function": "_pgrp_and_ticks", "module": "_proc_cpu", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "group_cpu_ticks", "module": "_proc_cpu", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "export_acceptance_evidence", "module": "acceptance_evidence", "primitive": "io.read_bytes", "role": "host-io"},
+  {"count": 1, "function": "export_acceptance_evidence", "module": "acceptance_evidence", "primitive": "io.read_text", "role": "host-io"},
   {"count": 1, "function": "_c4_document_refs", "module": "adoption_bundle", "primitive": "io.read_text", "role": "host-io"},
   {"count": 1, "function": "_contract_rows", "module": "adoption_bundle", "primitive": "io.read_text", "role": "host-io"},
   {"count": 1, "function": "_load_committed_bundle", "module": "adoption_bundle", "primitive": "io.read_text", "role": "host-io"},
@@ -955,6 +957,8 @@
   {"count": 1, "function": "_workspace_head", "module": "train_runner", "primitive": "subprocess.run", "role": "operator-out-of-scope"},
   {"count": 2, "function": "_append_verification_command", "module": "verification_evidence", "primitive": "io.read_bytes", "role": "host-io"},
   {"count": 1, "function": "_artifact_seal_finding", "module": "verification_evidence", "primitive": "io.read_text", "role": "host-io"},
+  {"count": 1, "function": "_bind_additional_extension", "module": "verification_evidence", "primitive": "io.read_bytes", "role": "host-io"},
+  {"count": 1, "function": "_bind_additional_extension", "module": "verification_evidence", "primitive": "io.read_text", "role": "host-io"},
   {"count": 1, "function": "_bind_sidecar_extension", "module": "verification_evidence", "primitive": "io.read_bytes", "role": "host-io"},
   {"count": 1, "function": "_bind_sidecar_extension", "module": "verification_evidence", "primitive": "io.read_text", "role": "host-io"},
   {"count": 1, "function": "_interpreter_full_version", "module": "verification_evidence", "primitive": "subprocess.check_output", "role": "operator-out-of-scope"},

@@ -1,0 +1,134 @@
+{
+  "source": "Consiliency/spec@v0.7.2:spec-parity/schemas/ec.schema.json",
+  "source_sha256": "c7c7ca682042553d67acb5ecc042089addbaca644a3c4a244e3038dd96e399f2",
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "type": "array",
+    "items": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "criterion_logical_id",
+        "argv",
+        "exit_code",
+        "log_sha256",
+        "pipeline_mode",
+        "pipeline_engaged",
+        "authority"
+      ],
+      "properties": {
+        "criterion_logical_id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "not": {
+            "pattern": "\\n"
+          }
+        },
+        "argv": {
+          "type": "array",
+          "minItems": 1,
+          "prefixItems": [
+            {
+              "type": "string",
+              "minLength": 1
+            }
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
+        "exit_code": {
+          "type": "integer",
+          "minimum": -9007199254740991,
+          "maximum": 9007199254740991
+        },
+        "log_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "not": {
+            "pattern": "\\n"
+          },
+          "description": "SHA-256 of the command log bytes; no log payload is carried."
+        },
+        "pipeline_mode": {
+          "enum": [
+            "standalone",
+            "pipeline_optional",
+            "pipeline_required"
+          ]
+        },
+        "pipeline_engaged": {
+          "type": "boolean",
+          "description": "Whether the pipeline actually engaged on this run, including pipeline_optional."
+        },
+        "authority": {
+          "enum": [
+            "producer",
+            "pipeline"
+          ],
+          "description": "Who owns acceptance truth for this run (SEMANTICS sec 7.6): `producer`, the run that executed the command, owns its own result; `pipeline`, an external acceptance authority owns the truth and this result is input to it. Fixed by pipeline_mode and pipeline_engaged. Not a claim that any pipeline issued a verdict."
+        },
+        "authority_id": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._/-]{0,127}$",
+          "not": {
+            "pattern": "\\n"
+          },
+          "description": "Optional producer-declared name of the concrete owner (for example a CI system's or an agent runtime's name). Copied into the acceptance result and bound by record_digest; spec never interprets it."
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "pipeline_mode": {
+                "const": "standalone"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "pipeline_engaged": {
+                "const": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "anyOf": [
+              {
+                "properties": {
+                  "pipeline_mode": {
+                    "const": "pipeline_required"
+                  }
+                }
+              },
+              {
+                "properties": {
+                  "pipeline_engaged": {
+                    "const": true
+                  }
+                }
+              }
+            ]
+          },
+          "then": {
+            "properties": {
+              "authority": {
+                "const": "pipeline"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "authority": {
+                "const": "producer"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}
