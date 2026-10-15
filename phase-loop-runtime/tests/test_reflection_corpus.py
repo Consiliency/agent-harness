@@ -237,6 +237,21 @@ def test_repo_specific_proposal_without_friction_is_retained_not_unstructured(tm
     assert "Fix" not in rc.render_bundle(corpus)
 
 
+def test_a_frictionless_repeated_repo_specific_proposal_is_retained_not_archived(tmp_path):
+    root = tmp_path / "skills"
+    proposal = "Fix the defect tracked in other-repo#12 before the plan is frozen."
+    for index in range(3):
+        put(root, "codex-plan-phase", "repo", f"branch{index}", "run", reflection(worked="", didnt="", improvements=proposal))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=1)
+
+    # Stripped as boilerplate, it is still a dropped proposal, not an absent one.
+    assert boilerplate == [proposal]
+    assert {r.excluded for r in corpus.scanned} == {"improvements_repo_specific"}
+    assert all("section_dropped:improvements:repo_specific" in r.notes for r in corpus.scanned)
+    assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == []
+
+
 @pytest.mark.parametrize("marker", ["", "- ", "* ", "+ "])
 def test_ledger_syntax_in_friction_survives_but_ledger_proposals_do_not(tmp_path, marker):
     root = tmp_path / "skills"
@@ -283,6 +298,19 @@ def test_same_run_copy_matching_preserves_meaningful_leading_syntax(tmp_path, fi
 
     assert len(corpus.admitted) == 2
     assert first in bundle and second in bundle
+
+
+def test_same_run_copy_matching_treats_a_plus_marker_like_a_dash(tmp_path):
+    roots = [tmp_path / "first", tmp_path / "second"]
+    for root, bullet in zip(roots, ("- ", "+ ")):
+        put(root, "codex-plan-phase", "repo", "branch", "run", reflection(
+            worked="", didnt=f"{bullet}The validator rejected the lane index.\n{bullet}The retry lost the draft.", improvements="None.",
+        ))
+
+    corpus, _ = rc.collect(roots)
+
+    assert len(corpus.admitted) == 1
+    assert [r.excluded.split(":")[0] for r in corpus.scanned if r.excluded] == ["duplicate_of"]
 
 
 def test_a_line_repeated_across_repos_is_evidence_not_boilerplate(tmp_path):

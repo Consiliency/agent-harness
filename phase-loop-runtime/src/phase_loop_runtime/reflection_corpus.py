@@ -350,6 +350,7 @@ def apply_quality_filter(
     for reflection in reflections:
         if reflection.excluded:
             continue
+        stripped_repo_specific = False
         for key in CONTENT_KEYS:
             if key not in reflection.sections:
                 continue
@@ -357,8 +358,12 @@ def apply_quality_filter(
             kept = original if key == "didnt" else [line for line in original if _norm_line(line) not in boilerplate]
             if len(kept) != len(original):
                 reflection.notes.append(f"boilerplate_stripped:{key}:{len(original) - len(kept)}")
+            if key == "improvements":
+                stripped_repo_specific = any(classify_improvements(line) == "repo_specific" for line in original if line not in kept)
             reflection.sections[key] = "\n".join(kept).strip()
         reflection.improvements_class = classify_improvements(reflection.sections.get("improvements", ""))
+        if stripped_repo_specific and reflection.improvements_class in {"none", "missing"}:
+            reflection.improvements_class = "repo_specific"
         if reflection.improvements_class == "repo_specific":
             reflection.sections["improvements"] = ""
             reflection.notes.append("improvements_repo_specific")
