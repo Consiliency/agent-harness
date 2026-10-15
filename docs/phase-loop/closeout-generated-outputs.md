@@ -140,8 +140,9 @@ state.
     runs in its own process group, and on timeout the whole group is killed, so no
     grandchild keeps writing. A producer that times out counts as failed.
   - With no declaration, the flag does nothing extra, so it is safe to pass
-    everywhere. The shipped execute-phase skills and runner prompt prescribe this
-    form.
+    everywhere. The runner prompt and the shipped claude, codex and gemini
+    execute-phase skills prescribe this form. The opencode execute-phase skill does
+    not yet; a runner-launched opencode child gets it from the runner prompt.
   - The flag executes the commands the committed declaration names. That is the same
     trust level as the plan's verification commands. Don't pass it on a checkout you
     don't trust. A producer can also write tracked files, so check `git status`

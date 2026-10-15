@@ -3,7 +3,8 @@
 Interface-freeze for the model-first, multi-harness Advisor Board
 (`specs/phase-plans-v5.md`). Everything here is **additive and behavior-neutral**:
 no running path changes, `panel_invoker` is untouched, and the `default` board
-reproduces today's 3-leg panel byte-for-byte. Downstream phases (ABDREG,
+reproduced the then 3-leg panel byte-for-byte (the `default` board is now four-vendor;
+see IF-0-ABDFREEZE-4). Downstream phases (ABDREG,
 ABDRESOLVE, ABDHOME) code against these interfaces so the fan-out integrates
 without a big-bang.
 
@@ -26,7 +27,7 @@ equivalence is proven by a test (not asserted in prose).
 - **Per-harness model/effort mapping** — `render_seat_invocation(harness, model,
   effort) -> SeatInvocation`. Freezes how `seat.effort` reaches each CLI, incl.
   the **agy/gemini leg where effort is embedded in the model-name string**
-  (`render_gemini_model`, panel_invoker.py:1016). Built-3 lanes are concrete;
+  (`render_gemini_model` in `panel_invoker.py`). Built-3 lanes are concrete;
   breadth lanes raise `EffortMappingError` until ABDREG/ABDHOME/ABDOMNI.
   Default round-trip (proven): claude→`--effort high`, codex→
   `-c model_reasoning_effort=high`, Gemini Flash→`gemini-3.8-flash-medium`;
@@ -41,7 +42,7 @@ equivalence is proven by a test (not asserted in prose).
   *inside* that harness (`HostContext.host_harness`). The standalone runner
   (`host_harness=None`) has no host leg — every leg is a subprocess, exactly as
   today.
-- **Host×seat routing rule (maintainer; agent-harness#396 / #525 / #924)** — a harness
+- **Host×seat routing rule (maintainer; agent-harness#396 / agent-harness#525 / agent-harness#924)** — a harness
   fills the seat of its OWN vendor with its native subagent; every other seat runs through
   that vendor's CLI lane, and the Anthropic seat on any host other than Claude Code runs
   through the subscription CLI adapter (`_run_claude_print_session` by default,
@@ -54,8 +55,8 @@ equivalence is proven by a test (not asserted in prose).
   agent-harness#924.
 - **Seat → vendor-family projection** — `vendor_family(model, harness)` /
   `seat_vendor_family(seat)`, model-first with a harness-lane fallback.
-  Byte-consistent with `governed_review.author_vendor_for_model` (:60-75) and
-  `_EXECUTOR_VENDOR` (:47-53). Two same-vendor seats on different harnesses
+  Byte-consistent with `governed_review.author_vendor_for_model` and
+  `_EXECUTOR_VENDOR`. Two same-vendor seats on different harnesses
   (`gpt-6-astra` on `codex` and on `opencode`) project to the same family, so the
   governed reviewer≠author disjointness survives model-first. ABDHOME rewires the
   governed gates onto *this* canonical function (not a copy).
@@ -82,7 +83,7 @@ equivalence is proven by a test (not asserted in prose).
   breadth fallback).
 - **Auth = active env scrubbing** — `resolve_seat_env(seat, base_env,
   allow_api_key_fallback)`, freezing the `_subscription_env` pattern
-  (panel_invoker.py:226-230,348-353): a subscription seat scrubs **every** vendor
+  (`panel_invoker._subscription_env`): a subscription seat scrubs **every** vendor
   API-key var; an api-key seat (only behind the board opt-in) scrubs everything
   then injects **only the seat vendor's** key(s). Never silent — an api-key seat
   without the opt-in raises.
@@ -197,7 +198,7 @@ endpoint for an externally-launched (native) session, so a native leg is
 
 ## ABDPRESET — Board preset library + Fable review-path · `presets.py`, `panel_invoker.py`
 
-The seven built-in presets (`presets.PRESETS`). Every preset self-validates against
+The nine built-in presets (`presets.PRESETS`). Every preset self-validates against
 the real matrix at `load_boards()` time (`tests/test_advisor_board_config.py`,
 `tests/test_advisor_board_integration.py`).
 
@@ -215,8 +216,9 @@ the real matrix at `load_boards()` time (`tests/test_advisor_board_config.py`,
   (`governed_review` / `governed_premerge`, which call `invoke_panel` with no model
   override) review on Opus 5.5. `CLAUDE_IMPLEMENTER_MODEL` is untouched — the
   implementer stays Sonnet. The `default` board (`fixtures.DEFAULT_BOARD`) is
-  byte-pinned to this `invoke_panel` panel by the golden proof
-  (`tests/test_advisor_board_golden.py`); the sole sanctioned delta stays `seat_key`.
+  byte-pinned to this `invoke_panel` panel on its three shared legs by the golden proof
+  (`tests/test_advisor_board_golden.py`), which checks the fourth (Grok) seat
+  separately; the sole sanctioned delta stays `seat_key`.
 - **`default` and `code-review` are four-vendor frontier boards.** Gemini uses
   `gemini-3.8-flash` at its `high` ceiling alongside Sol, Opus 5.5, and Grok 4.7;
   `code-review` preserves availability-aware backfill and distinct lenses.
@@ -267,7 +269,7 @@ subprocess I/O (the CLI wait releases the GIL), so wall-clock is `~max(leg)`, no
   It is the SAME thread-pool path: `max_workers = max(1, min(max_concurrency or len(seats), 8))`,
   so `max_concurrency=1` degrades to one worker (strictly serial) with no separate
   sequential branch. `max_concurrency` is a keyword-only, default-valued additive
-  extension to the frozen `invoke_panel` signature (back-compat, like `models` #66).
+  extension to the frozen `invoke_panel` signature (back-compat, like `models` agent-harness#66).
 
 Frozen invariants (concurrency is a **timing-only** change — never a leg's outcome;
 the golden proves byte-identity):
@@ -782,9 +784,9 @@ the caller passes a PATH and the runtime reads it.
   `_exec_leg`; Proof B injects `spawn=`) is untouched;
   `tests/test_advisor_board_ingestion.py` proves the new path is byte-transparent.
 
-## CTXFREEZE — Context references and panel reliability (#114)
+## CTXFREEZE — Context references and panel reliability (agent-harness#114)
 
-CTXFREEZE freezes the #114 public contract for downstream implementation and
+CTXFREEZE freezes the agent-harness#114 public contract for downstream implementation and
 documentation phases. It does not claim that `artifact_ref` or `brief_ref` are true
 non-inlining modes: both are read-file-and-inline conveniences that keep bytes out
 of the caller context but still stage raw contents for each leg.
@@ -836,7 +838,7 @@ of the caller context but still stage raw contents for each leg.
   timeouts return timeout status without retry. CTXRELY owns any follow-on reliability
   split beyond these frozen names and retry/timeout invariants.
 
-## Leg `detail` vocabulary (agent-harness#1096 / #1102)
+## Leg `detail` vocabulary (agent-harness#1096 / agent-harness#1102)
 
 A `PanelLegResult.detail` is built ONLY from this runtime's closed vocabulary; raw CLI text
 never enters it. It is a harness code (`_HARNESS_DETAIL_CODES`, or a
@@ -885,7 +887,7 @@ recorded as `sandbox_placement_code_invalid` with its text dropped.
 
 **Threat model.** I3 defends against untrusted TEXT: CLI stdout/stderr, leg bodies, exception messages and PTY output. None of it can choose or enter `detail`. In-process Python code is trusted runtime code and is out of scope: it can do anything (for example `object.__setattr__` on arbitrary objects, or replacing this module's functions). The exact-type checks (`PanelLegResult` refuses any subclass instance; only an exact `_HarnessCode` / `_LegFailure` has provenance; contents are read with `str.__str__` and re-created as a fresh `_HarnessCode`) close the cheap structural bypasses, but they are not a sandbox against hostile in-process code.
 
-## ABDMODE — Purpose-derived default mode + advisory prompt hygiene · `panel_invoker.py` (#107)
+## ABDMODE — Purpose-derived default mode + advisory prompt hygiene · `panel_invoker.py` (agent-harness#107)
 
 A board's PURPOSE now selects its default panel MODE automatically, so a domain
 board (esp. the legal boards) runs in the right posture instead of being hard
@@ -1113,7 +1115,7 @@ never through — the review operation `public_board_review.v1`. Frozen falsifie
 ## Review monitoring policy v1 (agent-harness#892)
 
 The opt-in policy vocabulary is `bounded | heartbeat_only`; omission is bounded.
-Heartbeat-only permits brokered subscription/homebrew Claude TUI, Codex and
+Heartbeat-only permits brokered subscription/homebrew Claude (print or TUI route), Codex and
 Grok, plus the qualified Gemini extension below. It permits no timeout overrides,
 capture, research, API fallback, gateway or native host seat. Whole-board
 capability preflight precedes availability, auth, session creation and provider
@@ -1653,7 +1655,7 @@ are recorded on agent-harness#1132.
     DEGRADED result and the mode line all carry it.
   - **Per harness:** the rule lives once, in `override_decision(adapter)`. Each harness's
     `SeatCredentialAdapter` answers `override_present()`, `read_override()` (the record,
-    read once) and `current_account()`, and declares its credential `sources` in precedence
+    read once) and `current_identity()`, and declares its credential `sources` in precedence
     order; an adapter without the override source never uses one. Claude is the only
     adapter today, and `store-token` stores Claude's override.
   - **One slot per user:** the override lives under the Unix user's `$XDG_STATE_HOME`, so

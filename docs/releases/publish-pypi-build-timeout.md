@@ -19,7 +19,7 @@ in both cases (66 of 66 minutes when slow, 11 of 11 when normal). The cause was
 the heavy CONFORM chronology node running on pull requests.
 
 Two changes that day fixed it: *run the CONFORM chronology node only where its
-verdict can change*, and #753 *pull requests defer the chronology node*. The
+verdict can change*, and agent-harness#753 *pull requests defer the chronology node*. The
 60-minute runs were branches that had not picked them up yet — the same branch
 went from 62 minutes to 7 with no change to its own content.
 
@@ -31,9 +31,13 @@ in under half that.
 - `test.yml` `suite (offloaded to ai)` keeps **120**. It genuinely runs long when
   the chronology node is retained, and its own comment records **7:45** when the
   node is deselected. 120 is the right headroom for the retained case.
-- `test.yml` `pytest` and `clean-room` keep **100**. Both are skipped on pull
-  requests, so the sampled runs carry no timing for them; any tighter number
-  would be a guess rather than a measurement.
+- `test.yml` `pytest` and `clean-room` were left at **100**: at the time both were
+  skipped on pull requests, so the sampled runs carried no timing for them, and any
+  tighter number would have been a guess. Since then `pytest` runs on pull requests
+  (its py3.10 lane), because the offload path is disabled in `test.yml`
+  (`OFFLOAD_SANDBOX_READY: 'false'`), and
+  `clean-room` runs only on push, schedule, dispatch and tags (agent-harness#1029) with
+  a stopgap of **150** (agent-harness#1297).
 
 ## The tag and dispatch path runs the full suite, and it is measured too
 
