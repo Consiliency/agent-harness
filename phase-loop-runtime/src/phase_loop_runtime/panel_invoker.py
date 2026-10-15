@@ -6064,8 +6064,10 @@ def _brokered_codex_command(
 
 # Tools a grok review seat may use INSIDE a sandbox. The allow-list, not an approval
 # mode, is the lever that holds (agent-harness#147), which is why it is the thing that
-# changes here rather than a sandbox flag. The workspace it can now mutate IS the
-# disposable clone, deleted when the round ends.
+# changes here rather than a sandbox flag. The seat works in the disposable clone, which is
+# bind-mounted read-only, so `write` and `search_replace` are offered but fail; only codex
+# gets a writable tree (agent-harness#1470), and writable-tree parity for grok is
+# agent-harness#1686.
 GROK_SANDBOX_TOOLS = "read_file,grep,list_dir,search_tool,write,search_replace,run_terminal_command"
 
 # The approval mode the sandboxed seat runs in. Headless grok (1.0.52) does NOT auto-approve

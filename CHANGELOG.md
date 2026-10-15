@@ -17,7 +17,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `--disallowed-tools` for the twelve built-ins `--tools` leaves in place, so the seat holds
   exactly `GROK_SANDBOX_TOOLS`. The seat sandbox and the allow-list are unchanged, and the
   recorded tool controls follow the argv. The unsandboxed brokered route (`plan`, empty
-  allow-list) and the read-only `-p` route are unchanged.
+  allow-list) and the read-only `-p` route are unchanged. The grok seat's tree stays
+  read-only, so `write` and `search_replace` return a read-only-filesystem error; only codex
+  gets a writable tree (agent-harness#1470), and writable-tree parity for grok is
+  agent-harness#1686.
 
 ### Reflection filters preserve recurring friction (agent-harness#1370, agent-harness#1371)
 

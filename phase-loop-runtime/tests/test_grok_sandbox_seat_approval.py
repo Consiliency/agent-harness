@@ -112,6 +112,17 @@ def test_the_approving_mode_ships_with_every_unlisted_builtin_removed(tmp_path, 
     assert _GROK_1_0_52_OFFERED - granted == removed, (
         f"left to the approving mode: {sorted(_GROK_1_0_52_OFFERED - granted - removed)}; "
         f"removing a granted tool: {sorted(removed & granted)}")
+    # The exact sets, by name: widening the allow-list and shrinking the denylist together
+    # keeps the partition above consistent, so it is pinned literally as well.
+    assert granted == {
+        "read_file", "grep", "list_dir", "search_tool", "write", "search_replace",
+        "run_terminal_command",
+    }
+    assert removed == {
+        "ask_user_question", "enter_plan_mode", "exit_plan_mode", "image_edit", "image_gen",
+        "image_to_video", "reference_to_video", "monitor", "send_feedback", "todo_write",
+        "use_tool", "workflow",
+    }
 
 
 def test_the_unsandboxed_seat_is_byte_for_byte_the_historical_argv(tmp_path):
