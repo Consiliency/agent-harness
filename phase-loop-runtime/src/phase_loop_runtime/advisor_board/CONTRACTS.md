@@ -30,7 +30,7 @@ equivalence is proven by a test (not asserted in prose).
   (`render_gemini_model` in `panel_invoker.py`). Built-3 lanes are concrete;
   breadth lanes raise `EffortMappingError` until ABDREG/ABDHOME/ABDOMNI.
   Default round-trip (proven): claude→`--effort high`, codex→
-  `-c model_reasoning_effort=high`, Gemini Flash→`gemini-3.8-flash-medium`;
+  `-c model_reasoning_effort=high`, Gemini Argon→`gemini-4-argon-medium`;
   explicit legacy Pro display names remain compatible.
 - **Seat identity for result re-keying** — `Seat.seat_key` is a stable LABEL over
   every distinguishing field (lane, model, effort, lens), so lens-only-different
@@ -119,7 +119,7 @@ equivalence is proven by a test (not asserted in prose).
 ## IF-0-ABDFREEZE-4 — Back-compat contract · `fixtures.py` + `tests/test_advisor_board_backcompat.py`
 
 - The model-first `default` board (`DEFAULT_BOARD`) resolves four vendors in
-  `DEFAULT_BOARD_VENDOR_ORDER`: Codex/Sol, Gemini/Flash high, Claude/Opus 5.5, and
+  `DEFAULT_BOARD_VENDOR_ORDER`: Codex/Sol, Gemini/Argon medium, Claude/Opus 5.5, and
   Grok 4.7. The separate legacy `PANEL_LEGS` tuple and explicit `invoke_panel`
   API remain the frozen three-leg Codex/Gemini/Claude boundary.
 - `advisor-panel` stays a working alias of `advisor-board` — the rename + alias is
@@ -220,11 +220,12 @@ the real matrix at `load_boards()` time (`tests/test_advisor_board_config.py`,
   (`tests/test_advisor_board_golden.py`), which checks the fourth (Grok) seat
   separately; the sole sanctioned delta stays `seat_key`.
 - **`default` and `code-review` are four-vendor frontier boards.** Gemini uses
-  `gemini-3.8-flash` at its `high` ceiling alongside Sol, Opus 5.5, and Grok 4.7;
+  `gemini-4-argon` at `medium` alongside Sol, Opus 5.5, and Grok 4.7
+  (`gemini-3.8-flash`, the prior default, stays an accepted explicit seat);
   `code-review` preserves availability-aware backfill and distinct lenses.
 - **President availability ladder.** Review findings go first to the `fable` seat
   (Opus 5.5 by default — the rung names the seat, not the model), then
-  Sol, Grok 4.7, and Gemini 3.8 Flash. Descent occurs only for a typed
+  Sol, Grok 4.7, and Gemini 4 Argon. Descent occurs only for a typed
   `president_unavailable` result, never because a president dissents. The ladder
   is EXECUTED (not merely declared) by every `requires_president` landing policy —
   see ABDPRES below.
@@ -236,7 +237,7 @@ the real matrix at `load_boards()` time (`tests/test_advisor_board_config.py`,
   (`schema.py`), so the legal lenses/purposes need no enum extension.
 - **Catch-alls for unmodeled tasks (`general`, `solo`).** So the board library is not
   limited to the pre-modeled domains: `general` is the domain-agnostic top-tier PANEL
-  (three frontier vendors — gpt-6-astra/adversarial, gemini-3.8-flash/alternative,
+  (three frontier vendors — gpt-6-astra/adversarial, gemini-4-argon/alternative,
   claude-opus-5-5/completeness — hand it any task + brief), and `solo` is the
   single-MEMBER form (one `claude-opus-5-5` seat) for a quick top-end opinion when a
   panel is overkill. A ONE-seat board validates + resolves through `invoke_board` like

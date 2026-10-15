@@ -977,7 +977,8 @@ DEFAULT_REVIEW_SEAT_ALIASES: Mapping[str, str] = {
     "gpt-5.6-sol": "sol",  # model-id-source: explicit legacy review seat
     "gpt-6-sol": "sol",  # model-id-source: explicit review seat
     "gpt-6.1-sol": "sol",  # model-id-source: explicit review seat (board-config selected)
-    "gemini-3.8-flash": "gemini",  # model-id-source: frozen review policy default seat
+    "gemini-4-argon": "gemini",  # model-id-source: frozen review policy default seat
+    "gemini-3.8-flash": "gemini",  # model-id-source: explicit review seat (the prior default)
     "gemini-3.7-flash": "gemini",  # model-id-source: explicit legacy review seat
     "gemini-3.6-flash": "gemini",  # model-id-source: explicit legacy review seat
     "grok-4.7": "grok",  # model-id-source: frozen review policy default seat
@@ -1712,7 +1713,7 @@ _LEG_CLI: dict[str, str] = {
 # drift back to Sonnet.
 DEFAULT_LEG_MODELS: dict[str, str] = {
     "codex": "gpt-6-astra",  # model-id-source: panel per-leg default (single source of truth)
-    "gemini": "gemini-3.8-flash-medium",  # model-id-source: panel per-leg default
+    "gemini": "gemini-4-argon-medium",  # model-id-source: panel per-leg default
     "claude": "claude-opus-5-5",  # model-id-source: panel per-leg default (single source of truth)
     "grok": "grok-4.7",  # model-id-source: panel per-leg default (single source of truth)
 }
@@ -11879,7 +11880,7 @@ def _exec_leg(
             if effort is None
             else render_seat_invocation(
                 "gemini",
-                model or "gemini-3.8-flash",  # model-id-source: board base default
+                model or "gemini-4-argon",  # model-id-source: board base default
                 effort,
             ).model
         )
