@@ -202,6 +202,49 @@ def test_lock_lost_just_before_the_call_returns_is_not_reported_green(harness) -
     assert intervals("tail"), "dagger did complete; the point is that it must not be reported green"
 
 
+def test_a_silent_holder_gives_the_lock_up_after_the_idle_bound(harness) -> None:
+    # A cancelled or timed-out job can leave its remote session alive with the pipe
+    # still open and nobody writing to it; the old `exec cat` holder then kept the
+    # lock forever and every later offload waited out its budget with zero tests
+    # run. Heartbeats off (an interval far past the run) model that orphan: the
+    # holder must give the lock up after the idle bound, and the script must treat
+    # that as a lost lock, not finish the call unlocked.
+    run, intervals, _, lock = harness
+    r = run("orphan", extra={
+        "OFFLOAD_LOCK_HEARTBEAT_SECONDS": "1000", "OFFLOAD_LOCK_IDLE_SECONDS": "1",
+        "DAGGER_STUB_SECONDS": "6",
+    })
+    assert r.returncode == 1, r.stdout + r.stderr
+    assert "lost" in r.stderr and "stopping the call" in r.stderr
+    assert intervals("orphan") == [], "the call finished after the lock was given up"
+    probe = subprocess.run(["flock", "-n", str(lock), "-c", "true"])
+    assert probe.returncode == 0, "lock still held after the idle bound"
+
+
+def test_heartbeats_keep_a_live_holder_past_the_idle_bound(harness) -> None:
+    run, intervals, _, _ = harness
+    r = run("beating", extra={
+        "OFFLOAD_LOCK_HEARTBEAT_SECONDS": "0.2", "OFFLOAD_LOCK_IDLE_SECONDS": "1",
+        "DAGGER_STUB_SECONDS": "3",
+    })
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert intervals("beating"), "dagger ran under the lock"
+    assert "offload lock: released" in r.stdout
+
+
+def test_release_does_not_wait_out_a_heartbeat_interval(harness) -> None:
+    # The heartbeat loop holds the pipe's write end; if its `sleep` held it too, the
+    # holder would only see EOF when that sleep ended, and release would stall.
+    run, intervals, _, lock = harness
+    started = time.monotonic()
+    r = run("prompt", extra={"OFFLOAD_LOCK_HEARTBEAT_SECONDS": "30"})
+    elapsed = time.monotonic() - started
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert elapsed < 15, f"release waited on the heartbeat interval ({elapsed:.1f}s)"
+    probe = subprocess.run(["flock", "-n", str(lock), "-c", "true"])
+    assert probe.returncode == 0, "lock still held after the script exited"
+
+
 def test_non_ssh_engine_skips_the_lock(harness) -> None:
     run, intervals, ssh_hosts, _ = harness
     r = run("local", docker_host="unix:///var/run/docker.sock")

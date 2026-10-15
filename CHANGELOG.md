@@ -6,6 +6,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### CI: offload proof runs, and an offload lock that a dead runner cannot keep
+
+- A manual dispatch of the test workflow can now ask for the offload path (`offload: true`), so a candidate offload environment can be proven on a real run. Push, pull-request and scheduled runs keep the hosted suite: the offload default is unchanged and still requires a reviewed environment. Only a dispatch can select it, and the Dagger preflight still refuses an engine without `/dev/net/tun`, so a proof run on an unready engine is a red offload, never a hosted green.
+- `ci/offload-gate.sh` used to hold its lock on the engine host with `exec cat`. A cancelled or timed-out job whose remote session outlived the runner kept that lock with nothing running, and every later offload waited out its budget with zero tests run. The holder now gives the lock up after `OFFLOAD_LOCK_IDLE_SECONDS` (120) without a heartbeat. The script sends one every `OFFLOAD_LOCK_HEARTBEAT_SECONDS` (15) while it waits or holds, and a silent holder is still a lost lock that stops the call.
+
 ### Fix: Gemini planning, roadmap and review launch again, on Gemini 4 Argon
 
 - Gemini `roadmap`, `plan` and `review` launches exited rc 1, because agy no longer offers the `Gemini 3.1 Pro (High)` model they selected. The Gemini executor's `roadmap`, `plan` and `review` defaults, the `planner`/`reviewer` model classes and the heavy (and ultra) tier now use `gemini-4-argon` instead of the `pro` alias and `gemini-3.1-pro-preview`. Effort is unchanged: the shipped policy's `max` clamps to Gemini's `high`, so these routes launch `gemini-4-argon-high`. The heavy cell stays marked volatile. Implementation and worker routing are unchanged, and an explicit `--model` still wins.

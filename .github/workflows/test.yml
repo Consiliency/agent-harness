@@ -20,6 +20,12 @@ on:
         description: Run the heavy CONFORM chronology node (false = quick suite)
         type: boolean
         default: true
+      offload:
+        description: >-
+          Proof run: take the offload path even though the default stays hosted
+          (offload environment under qualification; see the elig step)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -70,6 +76,12 @@ jobs:
           # nested exec containers. Use the complete hosted lanes until a
           # reviewed offload environment proves the real egress tests pass.
           OFFLOAD_SANDBOX_READY: 'false'
+          # A manual dispatch may still ask for the offload path, so a candidate
+          # offload environment can be PROVEN on a real run before the default
+          # above flips. Only a dispatch can set it, and the Dagger preflight
+          # still refuses an engine without /dev/net/tun, so a proof run on an
+          # unready engine is a red offload -- never a hosted green.
+          OFFLOAD_PROOF: ${{ github.event_name == 'workflow_dispatch' && inputs.offload == true }}
         run: |
           set -euo pipefail
           trusted=false
@@ -85,11 +97,18 @@ jobs:
             trusted=true
           fi
           eligible=false
-          if [ "$trusted" = "true" ] && [ "$TS_AUTHKEY_SET" = "true" ] && [ "$OFFLOAD_SANDBOX_READY" = "true" ]; then
+          ready=false
+          if [ "$OFFLOAD_SANDBOX_READY" = "true" ]; then
+            ready=true
+          fi
+          if [ "$EVENT_NAME" = "workflow_dispatch" ] && [ "$OFFLOAD_PROOF" = "true" ]; then
+            ready=true
+          fi
+          if [ "$trusted" = "true" ] && [ "$TS_AUTHKEY_SET" = "true" ] && [ "$ready" = "true" ]; then
             eligible=true
           fi
           echo "eligible=$eligible" >> "$GITHUB_OUTPUT"
-          echo "trusted=$trusted sandbox_ready=$OFFLOAD_SANDBOX_READY eligible=$eligible"
+          echo "trusted=$trusted sandbox_ready=$OFFLOAD_SANDBOX_READY proof=$OFFLOAD_PROOF eligible=$eligible"
 
   offload:
     name: suite (offloaded to ai)

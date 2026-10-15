@@ -98,16 +98,27 @@ OFFLOAD_LOCK_POLL_SECONDS="${OFFLOAD_LOCK_POLL_SECONDS:-1}"
 OFFLOAD_JOB_BUDGET_SECONDS="${OFFLOAD_JOB_BUDGET_SECONDS:-7200}"
 OFFLOAD_SUITE_SECONDS="${OFFLOAD_SUITE_SECONDS:-4050}"
 OFFLOAD_SETUP_SECONDS="${OFFLOAD_SETUP_SECONDS:-450}"
+# The holder on the engine host releases the lock once it has heard nothing on
+# its stdin for OFFLOAD_LOCK_IDLE_SECONDS; this script writes a heartbeat line
+# every OFFLOAD_LOCK_HEARTBEAT_SECONDS while it holds or waits. Without the idle
+# bound, a runner that dies (a cancelled or timed-out job) can leave the remote
+# session -- and with it the lock -- alive with nothing running, and every later
+# offload waits out its whole budget and fails having run zero tests.
+OFFLOAD_LOCK_IDLE_SECONDS="${OFFLOAD_LOCK_IDLE_SECONDS:-120}"
+OFFLOAD_LOCK_HEARTBEAT_SECONDS="${OFFLOAD_LOCK_HEARTBEAT_SECONDS:-15}"
 _lock_fifo=""
 _lock_out=""
 _lock_pid=""
+_lock_hb_pid=""
 _lock_host=""
 _lock_wait_started=""
 
-# The lock is held by a `flock ... -c cat` on the engine host whose stdin is a
-# pipe we keep open here; closing our end (or dying: the runner kills the ssh)
-# ends `cat`, `flock` exits, and the kernel releases the lock. No state survives
-# a crash on either side.
+# The lock is held by a `flock` on the engine host whose child reads a pipe we
+# keep open here; closing our end (or dying: the runner kills the ssh) ends the
+# reader, `flock` exits, and the kernel releases the lock. A remote session that
+# outlives a dead runner still keeps the pipe open, so the reader also stops after
+# OFFLOAD_LOCK_IDLE_SECONDS without a heartbeat line. No state survives a crash on
+# either side for longer than that.
 offload_lock_host() {
   case "${DOCKER_HOST:-}" in
     ssh://*) printf '%s\n' "${DOCKER_HOST#ssh://}" ;;
@@ -135,10 +146,27 @@ offload_lock_acquire() {
   # Keepalives so a dead link surfaces as an exited ssh (which the supervisor
   # below turns into a stopped call) instead of a holder that looks alive.
   ssh -o ServerAliveInterval=30 -o ServerAliveCountMax=3 "${ssh_target[@]}" \
-    "flock -w '$OFFLOAD_LOCK_WAIT_SECONDS' '$OFFLOAD_LOCK' -c 'echo acquired; exec cat'" \
+    "flock -w '$OFFLOAD_LOCK_WAIT_SECONDS' '$OFFLOAD_LOCK' bash -c 'echo acquired; while IFS= read -r -t $OFFLOAD_LOCK_IDLE_SECONDS _; do :; done'" \
     <"$_lock_fifo" >"$_lock_out" 2>&1 &
   _lock_pid=$!
   exec 3>"$_lock_fifo"
+  # Lines written while still waiting queue in the pipe and are drained the moment
+  # the lock is taken, so the idle clock starts at acquisition. A write after the
+  # ssh has gone kills this loop with SIGPIPE; release stops it otherwise. It
+  # holds a copy of fd 3 (its `sleep` does not), so release must stop it before
+  # the holder can see EOF; the trap takes the `sleep` down with it, and the
+  # `sleep` holds none of this script's output streams in any case.
+  (
+    _hb_sleep=""
+    trap '[ -z "$_hb_sleep" ] || kill "$_hb_sleep" 2>/dev/null; exit 0' TERM
+    while :; do
+      sleep "$OFFLOAD_LOCK_HEARTBEAT_SECONDS" </dev/null >/dev/null 2>&1 3>&- &
+      _hb_sleep=$!
+      wait "$_hb_sleep"
+      printf '\n' >&3
+    done
+  ) &
+  _lock_hb_pid=$!
   trap offload_lock_release EXIT
   echo "offload lock: waiting for $OFFLOAD_LOCK on $host (up to ${OFFLOAD_LOCK_WAIT_SECONDS}s; the suite that follows needs ~${OFFLOAD_SUITE_SECONDS}s of the ${OFFLOAD_JOB_BUDGET_SECONDS}s job budget)"
   while ! grep -q '^acquired$' "$_lock_out"; do
@@ -163,6 +191,11 @@ offload_lock_acquire() {
 
 offload_lock_release() {
   [ -n "$_lock_pid" ] || return 0
+  if [ -n "$_lock_hb_pid" ]; then
+    kill "$_lock_hb_pid" 2>/dev/null || true
+    wait "$_lock_hb_pid" 2>/dev/null || true
+    _lock_hb_pid=""
+  fi
   exec 3>&-
   wait "$_lock_pid" 2>/dev/null || true
   rm -f "$_lock_fifo" "$_lock_out"
