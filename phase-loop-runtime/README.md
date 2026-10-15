@@ -2,7 +2,7 @@
 
 The harness-neutral **phase-loop** orchestration runtime and CLI. It drives the
 roadmap → plan → execute workflow by dispatching each phase to whatever harness you
-choose (Claude / Codex / Gemini / OpenCode); the runtime itself makes no model calls.
+choose (Claude / Codex / Gemini / Grok / OpenCode / Pi); the runtime itself makes no model calls.
 Part of the public [`agent-harness`](https://github.com/Consiliency/agent-harness)
 monorepo (Apache-2.0).
 
@@ -29,9 +29,12 @@ To pin a specific tag from source instead, substitute a tag from
 uv tool install "git+https://github.com/Consiliency/agent-harness@<TAG>#subdirectory=phase-loop-runtime"
 ```
 
-This exposes two console scripts — `phase-loop` and `codex-phase-loop` — both calling
-`phase_loop_runtime.cli:main`. The canonical protocol document ships in the wheel as
-package data and is also installed to `share/phase-loop-runtime/protocol/protocol.md`.
+This exposes four console scripts: `phase-loop` and `codex-phase-loop` (both calling
+`phase_loop_runtime.cli:main`), `phase-loop-closeout-audit` (the closeout
+ignored-output audit) and `roadmap-ownership` (the roadmap-ownership preflight). The
+canonical protocol document ships in the wheel as package data
+(from `src/phase_loop_runtime/_contract_docs/phase-loop/protocol.md`); an older copy is also
+installed to `share/phase-loop-runtime/protocol/protocol.md`.
 
 ## Contributor test environment
 

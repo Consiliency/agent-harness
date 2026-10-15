@@ -27,12 +27,14 @@ build-relevant inputs — `SKILL.md` plus the aux subdirs `scripts/`,
 never reads them.
 
 The scoped skill set is exactly the phase-loop workflow pack
-(`REQUIRED_SKILLS`): `advisor-panel`, `plan-phase`, `execute-phase`,
-`phase-roadmap-builder`, `phase-loop`, `plan-detailed`, `execute-detailed`,
-`skill-editor`, `skill-improvement-planner`, `task-contextualizer`.
-The `advisor-panel` skill is source-first in this repository and stays thin over
-`phase_loop_runtime.panel_invoker`; dotfiles may install or expose it during
-cutover, but dotfiles does not own a divergent advisor-panel implementation.
+(`REQUIRED_SKILLS`): `advisor-board`, `execute-detailed`, `execute-phase`,
+`plan-phase`, `plan-detailed`, `phase-roadmap-builder`, `phase-loop`, `run-train`,
+`skill-editor`, `skill-improvement-planner`, `task-contextualizer`. The old name
+`advisor-panel` still resolves to `advisor-board`, and the packaged bundle ships a
+compatibility shim under that name.
+The `advisor-board` skill is source-first in this repository and stays thin over
+`phase_loop_runtime.panel_invoker`; no other repository owns a divergent
+implementation of it.
 
 ## Auxiliary files
 
@@ -87,12 +89,16 @@ Both steps are self-contained — no dotfiles checkout required.
 `build_bundle(skills-src/)`. The downstream `phase-loop-skills/` ->
 `skills_bundle/` half stays guarded by `test_skills_bundle_drift.py`.
 
-## Cutover status (transitional)
+## Cutover status
 
-During the v50 cutover the dotfiles `*-config` skill roots
-(`claude-config/claude-skills/`, `codex-config/skills/`, `gemini-config/skills/`,
-`opencode-config/skills/`) remain valid **build inputs**: the fleet `bootstrap.sh`
-still rebuilds the bundle live from them via an explicit
-`phase-loop build-bundle --source <dotfiles-root> …`. That path is left working
-on purpose. Repointing the fleet consumer to the package bundle is Phase 2
-(SINGLESRC); deleting the dotfiles roots is Phase 3 (REMOVE).
+The v50 cutover is complete. The fleet dotfiles no longer carry their own
+`*-config` phase-loop skill roots; they install these skills from a pinned
+agent-harness clone's `phase-loop-skills/`. `skills-src/` is the only authored
+source.
+
+`phase-loop build-bundle` still accepts explicit harness roots. Pass `--source` once
+per harness root (claude, codex, gemini, opencode); a single parent directory is
+rejected because the harness cannot be inferred from it. Without `--apply` the command
+is read-only, and `--destination` defaults to `vendor/phase-loop-skills`, so name
+`phase-loop-skills` explicitly when regenerating this repository's bundle. The two
+scripts above are the supported regenerate path.

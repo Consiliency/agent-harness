@@ -36,7 +36,7 @@ Upgrade directly over the Unix socket with compression disabled, matching
 Codex 0.144.1's supported transport. It does not expose the socket or add a
 network listener. The caller is responsible for authenticating the outer
 channel and pinning `--authority` to that source host. Direct network WebSocket mode
-continues to require `--token-env`; control-socket mode never accepts or reads a
+(`--endpoint ws[s]://…`) continues to require `--token-env`; control-socket mode never accepts or reads a
 bearer. A missing socket, failed handshake, or unavailable task fails closed
 with `source_task_unavailable`.
 
@@ -45,13 +45,16 @@ with `source_task_unavailable`.
 The broker is a separate read-only wrapper around the local resolver, not an
 app-server proxy. Install the exact merged Agent Harness commit with an immutable
 VCS revision, then install `deploy/phase-loop-task-message-broker.service` as a
-root-managed system unit on the source host. It runs as `User=viperjuice` and
-`Group=viperjuice`; it never runs the broker as root. The unit also ships inside
+root-managed system unit on the source host. It never runs the broker as root. The
+shipped unit is written for the maintainer's source host: its `User=` and `Group=`, the
+control-socket path in `ExecStart` and `BindReadOnlyPaths`, and the `--authority` in
+`ExecStart` all belong to that host. Replace them with your source host's account,
+socket path and authority before installing. The unit also ships inside
 the runtime wheel as
 `phase_loop_runtime/deploy/phase-loop-task-message-broker.service`. Its
 environment file contains only the SHA-256 of the capability token and the
 merged 40-hex Agent Harness commit; it never contains the raw token. Source the
-raw token from 1Password only into the caller environment.
+raw token from your secret manager only into the caller environment.
 
 The broker reads the installed distribution's PEP 610 `direct_url.json` at
 startup and requires both `requested_revision` and `commit_id` to exactly match
@@ -82,7 +85,7 @@ Tailscale Serve HTTPS:
 tailscale serve --service=svc:phase-loop-task-message-broker --bg --https=8765 http://127.0.0.1:18765
 ```
 
-Never use Tailscale Funnel. Probe from the authenticated caller:
+Never use Tailscale Funnel.
 
 The root system manager gives the unit a private mount namespace, hides the
 user's home, and binds back only the exact `app-server-control.sock` inode
@@ -102,6 +105,8 @@ client rejects redirects rather than forwarding its bearer to another origin.
 The system-service environment file is `/etc/phase-loop/task-message-broker.env`
 and contains exactly `TASK_MESSAGE_TOKEN_SHA256=<64-hex>` plus
 `AGENT_HARNESS_SHA=<merged-40-hex>`. Install it root-owned at mode `0600`.
+
+Probe from the authenticated caller:
 
 ```sh
 phase-loop task-message-probe \

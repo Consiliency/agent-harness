@@ -38,6 +38,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   re-run through the proxy, real replies) and p3-agy-tools-workspace.json (agy's tools,
   stream events and workspace files).
 
+### Advisor board: Gemini 4 Argon is the default Gemini seat
+
+- The panel's default Gemini seat, the `default`/`code-review` boards, the built-in presets and the president ladder's `gemini` rung now use `gemini-4-argon` at `medium` (agy `gemini-4-argon-medium`) instead of `gemini-3.8-flash`; `gemini-3.8-flash` stays an accepted explicit seat, and implementer/worker routing is unchanged.
+
 ### Reflection filters preserve recurring friction (agent-harness#1370, agent-harness#1371)
 
 - Exact and near deduplication is limited to copies of the same recorded run.

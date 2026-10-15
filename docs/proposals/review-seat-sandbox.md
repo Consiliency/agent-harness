@@ -1,5 +1,12 @@
 # Proposal: review-seat sandbox roadmap phases
 
+> **Status (2026-10-14): stale as written.** `specs/phase-plans-v10.md` has since been
+> resealed and is now `superseded` by `specs/phase-plans-v11.md`, and v10 Phases 14–16 are
+> taken. The pinned digest, the verification recipe and the promotion rule below therefore
+> no longer apply. Re-panel against the active roadmap before promoting anything. The
+> narrower jailed-seat step shipped separately
+> (`plans/detailed-seat-sandbox-permissions-1132-20260928.md`, agent-harness#1132).
+
 This proposal adds execution capability for review seats: agent-harness#848.
 
 **It is a proposal, not a roadmap.** Nothing reads this directory. It is not registered in
