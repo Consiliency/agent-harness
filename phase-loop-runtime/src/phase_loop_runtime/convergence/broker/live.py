@@ -112,6 +112,26 @@ class ProviderEntryGenerationRefused(ProviderEntryRefused, WriterGenerationBlock
         self.transaction_id = transaction_id
 
 
+class ProviderEffectGenerationRefused(WriterGenerationBlocked):
+    """The ambiguity record after provider entry was refused by the generation fence.
+
+    agent-harness#1628: the provider was entered and the adapter raised, then the
+    ``outcome_ambiguous_blocked`` write (``record_intent`` or ``record_terminal``)
+    raised ``WriterGenerationBlocked`` (a DRAINING latch, a revoked shared lease).
+    Nothing was written: the row stays ``provider_call_in_flight`` and the owner
+    unsealed.  Deliberately NOT a ``ProviderEntryRefused``, which means "never
+    entered"; the human route still answers "retry once", with
+    ``provider_call_made: true``.  The message is the write refusal's, already
+    prefixed; it is chained as ``__cause__`` and its ``__context__`` is the
+    adapter error.
+    """
+
+    def __init__(self, message: str, *, effect_key: str, transaction_id: str) -> None:
+        PermissionError.__init__(self, message)
+        self.effect_key = effect_key
+        self.transaction_id = transaction_id
+
+
 class FabpubConfigurationError(RuntimeError):
     """The capability marker exists but could not be read."""
 
@@ -787,7 +807,8 @@ class WriterGenerationLatch:
         DECLARED its lease.  ``strict`` distinguishes the two frozen shapes:
 
         * ``generation_lease=None`` passed explicitly — the adversarial fence
-          node — is a declared absence and must be blocked under ACTIVE;
+          node — is a declared absence and must be blocked under ACTIVE (and
+          under DRAINING, agent-harness#1640);
         * a store constructed without the argument at all (the shared
           compatibility ``_service`` helper, which SL-0 did not change) has
           declared nothing, so it is validated against latch state only.
@@ -805,10 +826,16 @@ class WriterGenerationLatch:
                     "the repository generation latch entered DRAINING before this write"
                 )
             if lease is None:
-                if strict and snapshot.generation_state == "ACTIVE":
+                if strict and snapshot.generation_state in ("ACTIVE", "DRAINING"):
+                    # agent-harness#1640 ask 2 (SA2-F3): a declared absence is
+                    # refused under DRAINING as well, so the ``allow_draining``
+                    # observation check no longer admits a writer with no lease
+                    # that ACTIVE would refuse.  An undeclared lease
+                    # (``strict=False``) is validated against latch state only.
+                    article = "an" if snapshot.generation_state == "ACTIVE" else "a"
                     raise WriterGenerationBlocked(
-                        "an ACTIVE repository generation requires a held "
-                        "WriterGenerationLease.v1 for every write"
+                        f"{article} {snapshot.generation_state} repository generation requires "
+                        "a held WriterGenerationLease.v1 for every write"
                     )
                 return
             if not lease.path.exists():

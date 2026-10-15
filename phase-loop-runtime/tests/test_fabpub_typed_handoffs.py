@@ -1,7 +1,8 @@
 """Typed publication handoffs for FABPUB broker refusals.
 
 agent-harness#1573 ask 4, agent-harness#1578 ask 5 (SA-F5), agent-harness#1594 ask 1
-(SA-F2) and agent-harness#1574 ask 2 (rotation handoff wording).
+(SA-F2), agent-harness#1574 ask 2 (rotation handoff wording) and agent-harness#1628
+(a generation refusal of the ambiguity record after provider entry).
 
 The human route used to answer every ``PermissionError`` from the broker with
 ``next_step="repair_fabpub_authority"``. Contention, a stale routing client, a
@@ -499,3 +500,280 @@ def test_legacy_carried_block_without_a_blocking_key_keeps_authority_handoff(tmp
     assert result["detail"] == "epoch permanently blocked"
     handoff = _assert_typed(result, AUTHORITY_STEP)
     assert "rotate_command" not in handoff
+
+
+# ---------------------------------------------------------------------------
+# agent-harness#1628: the ambiguity record after provider entry is refused
+# ---------------------------------------------------------------------------
+
+
+def _latch(repo: Path):
+    return _modules().live.WriterGenerationLatch.open(repo)
+
+
+def _drain(repo: Path) -> None:
+    _latch(repo).begin_draining()
+
+
+def _revoke_shared_lease(repo: Path) -> None:
+    """The operator cleared the writer's lease (runbook §6) during the call."""
+    for lease in _latch(repo).held_leases():
+        os.unlink(lease)
+
+
+def _evidence_lines(repo: Path) -> list[str]:
+    path = _store_root(repo) / "evidence.jsonl"
+    return path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+
+
+def _owner_file(repo: Path) -> dict:
+    return json.loads((_store_root(repo) / "adapter-start-owner.json").read_text(encoding="utf-8"))
+
+
+def _pre_push_fence(adapter, monkeypatch, fence):
+    """The real adapter's pre-push check refuses inside ``execute``, after entry."""
+    live = _modules().live
+
+    def execute(self, request):
+        adapter.calls.append(request)
+        fence()
+        # ``credsep._revalidate_generation_before_effect``: the shape on main.
+        self._revalidate_generation_before_effect()
+        raise AssertionError("the generation fence did not refuse the provider effect")
+
+    monkeypatch.setattr(live.GitHubBrokerAdapter, "execute", execute)
+
+
+class _MidCallFence(_CountingAdapter):
+    """agent-harness#820 shape: a generic adapter refuses between push and PR create."""
+
+    def __init__(self, fence) -> None:
+        super().__init__()
+        self._fence = fence
+
+    def execute(self, request):
+        self.calls.append(request)
+        self._fence()
+        raise _modules().live.WriterGenerationBlocked("effect fence refused PR create after push")
+
+
+def _assert_post_entry_retry_once(result, repo: Path, before: list[str]) -> dict:
+    assert result["status"] == "publication_blocked", result
+    assert result["reason"] == "repository_publication_authority_refused"
+    assert result["provider_call_made"] is True
+    handoff = result["handoff"]
+    assert handoff["next_step"] == RETRY_ONCE_STEP, handoff
+    assert handoff["effect_key"] and handoff["transaction_id"]
+    assert "provider was entered" in handoff["next_step_source"]
+    assert "outcome is unknown" in handoff["next_step_source"]
+    assert "intents without a terminal" in handoff["next_step_source"]
+    assert handoff["resume"].startswith("retry once")
+    assert "ceremony in progress has finished or rolled back" in handoff["resume"]
+    # The "attested_not_landed by construction" guidance is gone: the
+    # disposition is the operator's judgement.
+    assert "observed_landed" in handoff["rotate_requires"]
+    assert "not proof" in handoff["rotate_requires"]
+    assert "entered the provider with an unknown outcome" in handoff["attestation_evidence"]
+    assert "rotate_command" not in handoff
+    # Nothing was written: the row is still in flight and the owner unsealed.
+    assert _evidence_lines(repo) == before
+    assert _evidence_states(repo) == [IN_FLIGHT]
+    owner = _owner_file(repo)
+    assert owner["sealed"] is False
+    assert owner["effect_key"] == handoff["effect_key"]
+    assert owner["transaction_id"] == handoff["transaction_id"]
+    return handoff
+
+
+def _retry_promotes_to_rotation(publish, repo: Path, handoff: dict, calls: list) -> None:
+    made = len(calls)
+    retry = publish()
+    assert len(calls) == made, "the retry reached the provider"
+    retry_handoff = _assert_typed(retry, ROTATION_STEP)
+    _assert_rotation_fields(retry_handoff, repo)
+    assert retry_handoff["blocking_effect_keys"] == [handoff["effect_key"]]
+    assert retry_handoff["blocking_transaction_id"] == handoff["transaction_id"]
+    assert _evidence_states(repo)[-1] == AMBIGUOUS
+
+
+def _assert_dangling_ceremony_leaves_latch_active(tmp_path: Path, repo: Path) -> None:
+    """Findings, item 1: a ceremony refused on the dangling intent never touched the latch."""
+    live = _modules().live
+    store = _store_root(repo)
+    from test_fabpub_partition_rotation_789d import _attestation
+
+    attestation = _attestation(SimpleNamespace(repo=repo, container=store), keys=[])
+    with pytest.raises(live.PartitionRotationRefused, match="intents without a terminal"):
+        live.rotate_blocked_partition(
+            repo, cutover_id="rotation-1628", attestation=attestation, authority_root=tmp_path / "authority"
+        )
+    assert _latch(repo).read().generation_state == "ACTIVE"
+    assert not list((tmp_path / "authority").rglob("rotation-1628*")), "the refused ceremony journalled"
+
+
+def test_post_entry_refusal_under_draining_gets_retry_once_then_rotation(tmp_path, monkeypatch):
+    adapter = _CountingAdapter()
+    repo, publish = _human_route(tmp_path, monkeypatch, adapter)
+    before: list[str] = []
+
+    def fence():
+        before[:] = _evidence_lines(repo)
+        _drain(repo)
+
+    with pytest.MonkeyPatch.context() as fenced:
+        _pre_push_fence(adapter, fenced, fence)
+        first = publish()
+    assert len(adapter.calls) == 1
+    assert "DRAINING" in first["detail"]
+    handoff = _assert_post_entry_retry_once(first, repo, before)
+
+    _latch(repo).resume_active()
+    _assert_dangling_ceremony_leaves_latch_active(tmp_path, repo)
+    _retry_promotes_to_rotation(publish, repo, handoff, adapter.calls)
+
+
+def test_post_entry_refusal_with_revoked_shared_lease_gets_retry_once_then_rotation(tmp_path, monkeypatch):
+    adapter = _CountingAdapter()
+    repo, publish = _human_route(tmp_path, monkeypatch, adapter)
+    before: list[str] = []
+
+    def fence():
+        before[:] = _evidence_lines(repo)
+        _revoke_shared_lease(repo)
+
+    with pytest.MonkeyPatch.context() as fenced:
+        _pre_push_fence(adapter, fenced, fence)
+        first = publish()
+    assert len(adapter.calls) == 1
+    assert "revoked" in first["detail"]
+    handoff = _assert_post_entry_retry_once(first, repo, before)
+    assert _latch(repo).read().generation_state == "ACTIVE"
+    _retry_promotes_to_rotation(publish, repo, handoff, adapter.calls)
+
+
+def test_mid_call_effect_fence_routes_the_same_way(tmp_path, monkeypatch):
+    """agent-harness#820 inherits the route: any generation refusal inside ``execute``."""
+    repo_box: list[Path] = []
+    before: list[str] = []
+
+    def fence():
+        before[:] = _evidence_lines(repo_box[0])
+        _drain(repo_box[0])
+
+    adapter = _MidCallFence(fence)
+    repo, publish = _human_route(tmp_path, monkeypatch, adapter)
+    repo_box.append(repo)
+    first = publish()
+    assert len(adapter.calls) == 1
+    handoff = _assert_post_entry_retry_once(first, repo, before)
+    _latch(repo).resume_active()
+    _retry_promotes_to_rotation(publish, repo, handoff, adapter.calls)
+
+
+def test_post_entry_refusal_type_and_chain(tmp_path, monkeypatch):
+    """Still a ``WriterGenerationBlocked``; never a ``ProviderEntryRefused``; chained."""
+    m = _modules()
+    repo_box: list[Path] = []
+    adapter = _MidCallFence(lambda: _drain(repo_box[0]))
+    repo, publish = _human_route(tmp_path, monkeypatch, adapter)
+    repo_box.append(repo)
+    seen: list[BaseException] = []
+    original = m.verbs.BrokerService.execute
+
+    def spy(self, request):
+        try:
+            return original(self, request)
+        except BaseException as error:
+            seen.append(error)
+            raise
+
+    monkeypatch.setattr(m.verbs.BrokerService, "execute", spy)
+    result = publish()
+    _latch(repo).resume_active()
+
+    error = seen[-1]
+    assert isinstance(error, m.live.ProviderEffectGenerationRefused)
+    assert isinstance(error, m.live.WriterGenerationBlocked)
+    assert not isinstance(error, m.verbs.ProviderEntryRefused)
+    write_refusal = error.__cause__
+    assert isinstance(write_refusal, m.live.WriterGenerationBlocked)
+    assert "DRAINING" in str(write_refusal)
+    assert str(error) == str(write_refusal)
+    assert str(error).count(m.live.GENERATION_BLOCKER) == 1
+    # The write refusal was raised while handling the adapter's own refusal.
+    assert "effect fence refused PR create" in str(write_refusal.__context__)
+    assert error.effect_key == result["handoff"]["effect_key"]
+    assert error.transaction_id == result["handoff"]["transaction_id"]
+
+
+def test_post_entry_terminal_write_that_succeeds_is_unchanged(tmp_path, monkeypatch):
+    """The adapter refuses but the fence still admits the ambiguity record: rotation."""
+    adapter = _MidCallFence(lambda: None)
+    repo, publish = _human_route(tmp_path, monkeypatch, adapter)
+    result = publish()
+
+    assert len(adapter.calls) == 1
+    assert result["reason"] == "outcome_ambiguous"
+    assert result["terminal_state"] == AMBIGUOUS
+    assert result["provider_call_made"] is True
+    assert result["handoff"]["next_step"] == ROTATION_STEP
+    assert _evidence_states(repo) == [IN_FLIGHT, AMBIGUOUS]
+
+
+def _eio(_m):
+    import errno
+
+    return OSError(errno.EIO, "Input/output error")
+
+
+def _plain_permission(_m):
+    return PermissionError("an unrelated permission refusal on the ambiguity record")
+
+
+def _invalid_transition(_m):
+    return ValueError("invalid terminal transition")
+
+
+@pytest.mark.parametrize(
+    ("fault", "next_step"),
+    [
+        (_eio, "repair_publication_environment"),
+        (_plain_permission, AUTHORITY_STEP),
+        (_invalid_transition, "inspect_publication_failure_and_retry"),
+    ],
+    ids=["eio", "plain_permission", "value_error"],
+)
+def test_post_entry_non_generation_write_error_propagates_unchanged(tmp_path, monkeypatch, fault, next_step):
+    m = _modules()
+    adapter = _MidCallFence(lambda: None)
+    repo, publish = _human_route(tmp_path, monkeypatch, adapter)
+    seen: dict = {}
+    original = m.verbs.BrokerService.execute
+
+    def spy(self, request):
+        try:
+            return original(self, request)
+        except BaseException as error:
+            seen["broker"] = error
+            raise
+
+    def refuse(self, record, **_kwargs):
+        seen["raised"] = fault(m)
+        raise seen["raised"]
+
+    monkeypatch.setattr(m.verbs.BrokerService, "execute", spy)
+    monkeypatch.setattr(m.evidence.BrokerEvidenceStore, "record_terminal", refuse)
+    result = publish()
+
+    assert len(adapter.calls) == 1
+    assert seen["broker"] is seen["raised"]
+    assert not isinstance(seen["broker"], m.live.ProviderEffectGenerationRefused)
+    assert result["handoff"]["next_step"] == next_step
+    assert "provider_call_made" not in result
+    assert _evidence_states(repo) == [IN_FLIGHT]
+
+
+def test_post_entry_refusal_is_not_a_provider_entry_refusal():
+    m = _modules()
+    assert issubclass(m.live.ProviderEffectGenerationRefused, m.live.WriterGenerationBlocked)
+    assert not issubclass(m.live.ProviderEffectGenerationRefused, m.verbs.ProviderEntryRefused)

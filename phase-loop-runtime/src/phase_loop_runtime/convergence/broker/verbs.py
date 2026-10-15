@@ -417,6 +417,20 @@ def _provider_entry_refusal(error: PermissionError, key: str, envelope) -> Provi
     )
 
 
+def _provider_effect_refusal(error: PermissionError, key: str, envelope):
+    """Type a ``WriterGenerationBlocked`` that refused the ambiguity record after entry.
+
+    agent-harness#1628: the result is ``ProviderEffectGenerationRefused``, still
+    a ``WriterGenerationBlocked`` with the same message, and never a
+    ``ProviderEntryRefused``: the provider was entered.
+    """
+    from .live import ProviderEffectGenerationRefused
+
+    return ProviderEffectGenerationRefused(
+        str(error), effect_key=key, transaction_id=envelope.transaction_id
+    )
+
+
 class BrokerService:
     def __init__(self, admission_store, evidence_store: BrokerEvidenceStore, adapter: BrokerProviderAdapter, contracts=PROVIDER_COMPLETION_CLASSIFICATIONS) -> None:
         self.admission_store = admission_store
@@ -1349,11 +1363,21 @@ class BrokerService:
                         result if replayed.accepted and result is not None else replayed.publish_result,
                         provider_call_made=True,
                     )
-                if current is None:
-                    self.evidence_store.record_intent(key)
-                    current = self.evidence_store.replay().get(key)
-                if current is not None and current.state is TerminalOutcomeState.PROVIDER_CALL_IN_FLIGHT:
-                    current = self.evidence_store.record_terminal(EvidenceRecord(key, TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED, "adapter-exception"))
+                # agent-harness#1628: both writes are generation-fenced.  A
+                # ``WriterGenerationBlocked`` here (a DRAINING latch, a revoked
+                # shared lease) is re-raised as ``ProviderEffectGenerationRefused``
+                # with nothing written: the row stays ``provider_call_in_flight``
+                # and the owner unsealed, so the caller can say "retry once" (the
+                # retry's ``_block_unsealed_owner`` promotes it).  Every other
+                # error from these writes propagates unchanged.
+                try:
+                    if current is None:
+                        self.evidence_store.record_intent(key)
+                        current = self.evidence_store.replay().get(key)
+                    if current is not None and current.state is TerminalOutcomeState.PROVIDER_CALL_IN_FLIGHT:
+                        current = self.evidence_store.record_terminal(EvidenceRecord(key, TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED, "adapter-exception"))
+                except WriterGenerationBlocked as refused:
+                    raise _provider_effect_refusal(refused, key, envelope) from refused
                 if current is None:
                     # Unreachable after record_intent; never fabricate a row.
                     raise RuntimeError(

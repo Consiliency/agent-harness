@@ -1418,7 +1418,9 @@ def _human_publication_handoff(
 
     ``refusal`` carries the typed broker refusal's fields (agent-harness#1573,
     agent-harness#1578, agent-harness#1594): the blocking key and transaction for
-    a rotation, or this attempt's key and transaction for a pre-provider refusal.
+    a rotation, or this attempt's key and transaction for a pre-provider refusal
+    (with ``provider_call_made: True`` for the post-entry generation refusal,
+    agent-harness#1628).
     """
     refusal = dict(refusal or {})
     handoff: dict[str, Any] = {
@@ -1598,6 +1600,41 @@ def _human_publication_handoff(
                 "during the provider call"
             ),
         )
+        if refusal.get("provider_call_made"):
+            # agent-harness#1628: the same stored shape, but the provider WAS
+            # entered.  Nothing here supports attested_not_landed by construction.
+            handoff.update(
+                next_step_source=(
+                    "the provider was entered and the adapter failed, so the outcome is "
+                    "unknown (provider_call_made true); the generation fence (a DRAINING "
+                    "writer latch or a revoked generation lease) then refused the "
+                    "outcome_ambiguous_blocked record, so nothing was written: the "
+                    "attempt's unsealed adapter-start owner and its "
+                    "provider_call_in_flight intent stay, and a rotation now refuses "
+                    "with \"intents without a terminal\" until one retry promotes the "
+                    "owner to outcome_ambiguous_blocked"
+                ),
+                resume=(
+                    "retry once with the same plan and verification artifact, after any "
+                    "partition rotation ceremony in progress has finished or rolled back; "
+                    "if that retry reports outcome_ambiguous_blocked or next step "
+                    "adjudicate_publication_by_partition_rotation, follow its rotation "
+                    "handoff; otherwise follow whatever handoff the retry returns"
+                ),
+                rotate_requires=(
+                    "the provider was entered, so the disposition of this key is the "
+                    "operator's judgement: observed_landed (naming the observed head) if "
+                    "the head is on the remote branch or a pull request exists for it; "
+                    "otherwise attested_not_landed with this result's transaction_id, "
+                    "where later remote absence is not proof that the attempt had no "
+                    "effect; " + _SECOND_ATTESTATION_WARNING
+                ),
+                attestation_evidence=(
+                    "keep this result: its provider_call_made true and refusal detail "
+                    "record that this attempt entered the provider with an unknown "
+                    "outcome; it is not evidence that the provider was never entered"
+                ),
+            )
     if next_step == "probe_and_confirm_fabpub_authority":
         inventory = (
             snapshot.common_dir
@@ -1702,8 +1739,10 @@ def _typed_refusal_handoffs() -> tuple[tuple[Any, Any], ...]:
     """Broker refusal type -> ``(next_step, refusal fields)`` or ``None``.
 
     Keyed on the exception type only, never on message text.  A handler that
-    returns ``None`` leaves the refusal to ``repair_fabpub_authority``.  See
-    ``plans/fabpub-typed-handoffs.md`` for the table.
+    returns ``None`` leaves the refusal to ``repair_fabpub_authority``.  The
+    refusal fields carry ``provider_call_made: True`` only for a refusal raised
+    after provider entry (agent-harness#1628); every other handler is pre-entry.
+    See ``plans/fabpub-typed-handoffs.md`` for the table.
     """
     from .convergence.broker import live, verbs
 
@@ -1742,6 +1781,19 @@ def _typed_refusal_handoffs() -> tuple[tuple[Any, Any], ...]:
             lambda error: (
                 "retry_once_before_partition_rotation",
                 {"effect_key": error.effect_key, "transaction_id": error.transaction_id},
+            ),
+        ),
+        (
+            # agent-harness#1628: the provider WAS entered; the generation fence
+            # refused the ambiguity record, so the row is still in flight.
+            live.ProviderEffectGenerationRefused,
+            lambda error: (
+                "retry_once_before_partition_rotation",
+                {
+                    "effect_key": error.effect_key,
+                    "transaction_id": error.transaction_id,
+                    "provider_call_made": True,
+                },
             ),
         ),
     )
@@ -1984,8 +2036,10 @@ def publish_human_invoked_from_worktree(
             result["handoff"] = _human_publication_handoff(
                 repo, next_step=next_step, refusal=refusal
             )
-            # Every typed refusal is raised before provider entry (agent-harness#1593).
-            result["provider_call_made"] = False
+            # Per handler: every typed refusal is raised before provider entry
+            # (agent-harness#1593) except the post-entry generation refusal
+            # (agent-harness#1628).
+            result["provider_call_made"] = bool(refusal.get("provider_call_made", False))
         if checkpoint_root.exists():
             result["checkpoint_root"] = str(checkpoint_root)
         return result

@@ -377,7 +377,9 @@ the sealed one`. Keep the exact file; do not rebuild it. The preflight mirrors
 this check on both resume paths, so run it before every resume. On a resume whose
 own journal already holds `INVENTORY_SEALED`, both the verb and the preflight skip
 the post-ambiguity observation check; the successor's re-admission refuses an
-observed effect instead (agent-harness#1633).
+observed effect instead (agent-harness#1633). If the successor then refuses a key
+with `publication_recovery_required` naming an observed effect, follow §8a: escalate
+to the maintainer and do not re-publish (agent-harness#1640).
 
 A re-run never repairs its inputs (a damaged authentication-chain link or
 writer latch after the flip is refused by every re-run until the bytes are
@@ -453,6 +455,17 @@ the retry names it; typically a torn final line from a crash mid-append), do thi
    suffix), treat it as an effect. Confirm the pull request at the provider and rotate
    `observed_landed` with that head and the provider-side URL (§3); never
    `attested_not_landed`.
+   A row is written with its fields in sorted order (`ambiguity_digest`, `branch`,
+   `evidence_reference`, `head_sha`, `idempotency_key`, `observed_state`, then the
+   owner bindings), so a torn line can show the pull request URL and head without the
+   key, or name the key and stop before `observed_state` (agent-harness#1640):
+   - **The URL or head without the key.** If the branch and head are this
+     publication's, treat the line as naming it and continue as above.
+   - **The key without the outcome.** The line does not say whether the provider
+     reported an effect or no effect. Treat it as a possible effect: if the head is on
+     the remote branch or a pull request exists for it, rotate `observed_landed` as
+     above. If the provider shows neither, go to step 4; a missing `observed_state` is
+     not a no-effect observation.
 4. Otherwise escalate to the maintainer. Do not rotate `attested_not_landed` while the
    file is unreadable: the ceremony refuses it for every key, and so does the retry.
 
@@ -485,6 +498,16 @@ refuses with "intents without a terminal". Retry once. The retry returns the
 rotation handoff for this key. Keep the first result as the attestation's evidence
 that the provider was never entered. The ambiguous row alone cannot show that
 (agent-harness#1594 asks 1 and 5).
+The same next step can follow a refusal **after** provider entry, with
+`provider_call_made: true` (agent-harness#1628). The adapter raised, and the
+generation fence (a `DRAINING` latch during a rotation ceremony, or a revoked lease)
+refused the `outcome_ambiguous_blocked` record, so the row is still
+`provider_call_in_flight` and the owner unsealed. The outcome is unknown, so the
+"by construction" reasoning above does not apply. Retry once after any rotation
+ceremony in progress has finished or rolled back (the latch is `ACTIVE` again), then
+follow the handoff the retry returns. In the attestation, dispose the key
+`observed_landed` if the head is on the remote branch or a pull request exists for it;
+otherwise `attested_not_landed` is your judgement, and remote absence is not proof.
 
 1. Leave the worktree, branch, commit, plan file and verification artifact
    exactly as they were. Do not make an empty commit, switch branch, force
