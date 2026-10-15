@@ -157,7 +157,7 @@ is enough — the property that matters is a single mutable definition with immu
 
 Record the digest of the roadmap in the plan's frontmatter and make dispatch **fail closed**
 on a mismatch. In our runtime this was a small change; note that "small" is measured against
-already having a dispatcher. Our plan validator is 1,222 lines — the cheap part is the check,
+already having a dispatcher. Our plan validator is about 1,800 lines — the cheap part is the check,
 not the surrounding machinery.
 
 **Portable analog:** a CI job on every pull request that recomputes the digest of the

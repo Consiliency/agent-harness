@@ -50,7 +50,7 @@ from phase_loop_runtime.seat_jail import NOTICES
 
 from test_train_review_packet import synthetic_train_packet  # noqa: E402, F401 - a fixture
 
-GEMINI_SEAT = "gemini:gemini-3.8-flash:medium:alternative-approach"
+GEMINI_SEAT = "gemini:gemini-4-argon:medium:alternative-approach"
 BACKFILL = "grok:grok-4.7:high:correctness"
 _UNQUALIFIED_WHY, _UNQUALIFIED_FIX = NOTICES["agy_image_unqualified"][1:]
 PRESIDENT_TIERS = ("plan", "production_code")
