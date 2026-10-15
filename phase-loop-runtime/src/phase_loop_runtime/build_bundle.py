@@ -16,7 +16,15 @@ ACTIVE_HARNESSES: tuple[str, ...] = ("claude", "codex", "gemini", "opencode")
 # bundle so that `install` (which copytrees the whole skill dir) propagates them
 # to every harness root. Without this, the SKILL Step 8 helper
 # `scripts/validate_roadmap.py` never leaves the canonical source tree.
-AUX_SUBDIRS: tuple[str, ...] = ("scripts", "references", "assets")
+AUX_SUBDIRS: tuple[str, ...] = ("scripts", "assets")
+# `references/` holds the prose a SKILL.md links for progressive disclosure
+# (agent-harness#1358). A reference file is shared only when it is shared in fact:
+# it goes into the neutral base when another harness's SKILL.md links it by its
+# `references/<path>` without shipping its own copy, and otherwise into `_overrides/<harness>/references/`, so it
+# reaches only the harness whose SKILL.md uses it. First-harness-wins into the base
+# shipped Claude-only prose to every harness and would silently drop a second
+# harness's own copy of the same file.
+HARNESS_AUX_SUBDIRS: tuple[str, ...] = ("references",)
 # IF-0-CANON-1: the canonical phase-loop skill sources now live IN this repo
 # under `skills-src/<harness>/` (one tree per active harness, each holding
 # `<harness>-<skill>/` dirs). `build_bundle` consumes these to produce the
@@ -168,8 +176,8 @@ def build_bundle(
             skills_regenerated.append(skill)
             files_written.append(base_path.as_posix())
 
-        # Carry harness-agnostic auxiliary subdirs (scripts/, references/,
-        # assets/) into the neutral bundle. Source from the first harness whose
+        # Carry harness-agnostic auxiliary subdirs (scripts/, assets/) into the
+        # neutral bundle. Source from the first harness whose
         # canonical dir provides each subdir (ACTIVE_HARNESSES order), since the
         # content is shared, not harness-specific.
         for aux in AUX_SUBDIRS:
@@ -183,16 +191,43 @@ def build_bundle(
             )
             if source_aux is None:
                 continue
-            for src_file in sorted(source_aux.rglob("*")):
-                if not src_file.is_file():
-                    continue
-                if "__pycache__" in src_file.parts or src_file.suffix == ".pyc":
-                    continue
+            for src_file in _aux_files(source_aux):
                 target = skill_dir / aux / src_file.relative_to(source_aux)
                 files_written.append(target.as_posix())
                 if effective_apply:
                     target.parent.mkdir(parents=True, exist_ok=True)
                     shutil.copy2(src_file, target)
+
+        skill_texts = {harness: path.read_text(encoding="utf-8") for harness, path in canonical_paths.items()}
+        shared_refs: set[str] = set()
+        if effective_apply:
+            # Only this loop writes these dirs. Clear them so a file whose placement
+            # flips (shared <-> override) leaves no stale copy behind.
+            for aux in HARNESS_AUX_SUBDIRS:
+                for generated in [skill_dir / aux] + [skill_dir / "_overrides" / h / aux for h in ACTIVE_HARNESSES]:
+                    shutil.rmtree(generated, ignore_errors=True)
+        for harness in ACTIVE_HARNESSES:
+            for aux in HARNESS_AUX_SUBDIRS:
+                source_aux = canonical_paths[harness].parent / aux
+                for src_file in _aux_files(source_aux):
+                    rel = src_file.relative_to(source_aux).as_posix()
+                    link = f"{aux}/{rel}"
+                    # Only a harness that links the file but ships no copy of its
+                    # own needs the shared one.
+                    linked_elsewhere = any(
+                        link in text and not (canonical_paths[other].parent / link).is_file()
+                        for other, text in skill_texts.items()
+                        if other != harness
+                    )
+                    if linked_elsewhere and link not in shared_refs:
+                        shared_refs.add(link)
+                        target = skill_dir / aux / rel
+                    else:
+                        target = skill_dir / "_overrides" / harness / aux / rel
+                    files_written.append(target.as_posix())
+                    if effective_apply:
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        shutil.copy2(src_file, target)
 
         for harness in ACTIVE_HARNESSES:
             readme_path = skill_dir / "_overrides" / harness / "README.md"
@@ -230,6 +265,16 @@ def build_bundle(
         dry_run=bool(dry_run),
         applied=effective_apply,
     )
+
+
+def _aux_files(root: Path) -> list[Path]:
+    if not root.is_dir():
+        return []
+    return [
+        path
+        for path in sorted(root.rglob("*"))
+        if path.is_file() and "__pycache__" not in path.parts and path.suffix != ".pyc"
+    ]
 
 
 def _normalize_sources(

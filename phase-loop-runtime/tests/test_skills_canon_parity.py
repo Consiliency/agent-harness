@@ -406,6 +406,87 @@ class SkillsCanonParityTest(unittest.TestCase):
                 "test bug: the injected literal must not match a variant stem",
             )
 
+    def test_every_linked_reference_and_asset_ships_with_its_harness(self):
+        """agent-harness#1358: a SKILL.md that links `references/<file>` or
+        `assets/<file>` must find that file in its own packaged skill dir, for every
+        harness. Progressive disclosure is only safe if the linked file travels.
+        A link followed by "from the installed `<skill>` directory" resolves in that
+        sibling skill instead (execute-phase reads execute-detailed's pr-writing.md)."""
+        self._require_sources()
+        import re
+
+        link = re.compile(
+            r"(?<![\w-])((?:references|assets)/[\w./-]+\.md)`?(?:\s+from the installed `([\w-]+)` directory)?"
+        )
+        packaged = PKG / "src" / "phase_loop_runtime" / "skills_bundle"
+        checked = 0
+        for harness, root in SKILLS_SRC.items():
+            for skill_md in sorted(root.glob("*/SKILL.md")):
+                for rel, owner in sorted(set(link.findall(skill_md.read_text(encoding="utf-8")))):
+                    checked += 1
+                    owner = owner or skill_md.parent.name
+                    with self.subTest(skill=skill_md.parent.name, link=rel):
+                        self.assertTrue(
+                            (packaged / owner / rel).is_file(),
+                            f"{skill_md.parent.name} links {rel} but skills_bundle/{owner} does not ship it",
+                        )
+        self.assertGreater(checked, 0, "no references/ or assets/ links found; the link regex is broken")
+
+    def test_harness_only_references_do_not_leak_into_other_harnesses(self):
+        """A reference only Claude's SKILL.md links ships in the claude overlay, not
+        the shared base, so codex/gemini/opencode installs do not carry it."""
+        self._require_sources()
+        packaged = PKG / "src" / "phase_loop_runtime" / "skills_bundle"
+        self.assertTrue((packaged / "claude-plan-phase" / "references").is_dir())
+        self.assertFalse((COMMITTED_BUNDLE / "plan-phase" / "references").exists())
+        for harness in ("codex", "gemini", "opencode"):
+            with self.subTest(harness=harness):
+                self.assertFalse((packaged / f"{harness}-plan-phase" / "references").exists())
+        # A reference every harness links stays shared.
+        for harness in SKILLS_SRC:
+            with self.subTest(shared_for=harness):
+                self.assertTrue(
+                    (packaged / f"{harness}-task-contextualizer" / "references" / "task-templates.md").is_file()
+                )
+
+    def test_build_bundle_places_references_by_who_links_them(self):
+        """Fixture: claude and codex each ship their own `references/own.md`, and
+        claude ships `references/shared.md` that gemini also links. Each own.md lands
+        in its harness overlay (neither is dropped); shared.md lands in the base."""
+        with tempfile.TemporaryDirectory() as td:
+            src = Path(td) / "src"
+            for harness in SKILLS_SRC:
+                skill = src / harness / f"{harness}-plan-phase"
+                skill.mkdir(parents=True)
+                body = f"---\nname: {harness}-plan-phase\n---\n"
+                if harness in ("claude", "codex"):
+                    body += "Read `references/own.md`.\n"
+                    (skill / "references").mkdir()
+                    (skill / "references" / "own.md").write_text(f"{harness} only\n", encoding="utf-8")
+                if harness == "gemini":
+                    body += "Read `references/shared.md`.\n"
+                (skill / "SKILL.md").write_text(body, encoding="utf-8")
+            (src / "claude" / "claude-plan-phase" / "references" / "shared.md").write_text("shared\n", encoding="utf-8")
+
+            out = Path(td) / "out"
+            build_bundle({h: src / h for h in SKILLS_SRC}, out, dry_run=False, apply=True, force=True)
+            skill_out = out / "plan-phase"
+            self.assertEqual((skill_out / "_overrides" / "claude" / "references" / "own.md").read_text(), "claude only\n")
+            self.assertEqual((skill_out / "_overrides" / "codex" / "references" / "own.md").read_text(), "codex only\n")
+            self.assertEqual((skill_out / "references" / "shared.md").read_text(), "shared\n")
+            self.assertFalse((skill_out / "references" / "own.md").exists())
+
+            # Placement flips on rebuild leave no stale copy (shared -> override -> shared).
+            gemini_md = src / "gemini" / "gemini-plan-phase" / "SKILL.md"
+            gemini_md.write_text("---\nname: gemini-plan-phase\n---\n", encoding="utf-8")
+            build_bundle({h: src / h for h in SKILLS_SRC}, out, dry_run=False, apply=True, force=True)
+            self.assertFalse((skill_out / "references" / "shared.md").exists())
+            self.assertTrue((skill_out / "_overrides" / "claude" / "references" / "shared.md").is_file())
+            gemini_md.write_text("---\nname: gemini-plan-phase\n---\nRead `references/shared.md`.\n", encoding="utf-8")
+            build_bundle({h: src / h for h in SKILLS_SRC}, out, dry_run=False, apply=True, force=True)
+            self.assertTrue((skill_out / "references" / "shared.md").is_file())
+            self.assertFalse((skill_out / "_overrides" / "claude" / "references" / "shared.md").exists())
+
     def test_plan_phase_skills_publish_falsifier_grammar(self):
         from .proofgate_content_tdd_adapter import ProofgateMissingCapabilityError, guard_proofgate_nodeid, run_proofgate_contract
         nodeid = "phase-loop-runtime/tests/test_skills_canon_parity.py::SkillsCanonParityTest::test_plan_phase_skills_publish_falsifier_grammar"

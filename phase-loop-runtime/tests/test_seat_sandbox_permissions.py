@@ -200,10 +200,11 @@ def test_execfind_gate_mutation_carrying_an_unrecorded_digest_would_jail():
     assert route.jailed and refusal is None
 
 
-def test_sealed_route_carries_exactly_its_one_notice():
+def test_sealed_route_carries_exactly_its_one_code():
+    # agent-harness#1244: the sealed route is a refusal carrying exactly its one code.
     route, notices, refusal = panel_invoker._seat_route_for_spawn(
         "claude", _auth(False), eligible=True)
-    assert notices == ["seat_sandbox_not_staged"] and refusal is None
+    assert notices == [] and refusal == "seat_sandbox_not_staged"
 
 
 def test_non_production_routes_decide_nothing():

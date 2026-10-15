@@ -53,6 +53,7 @@ _DEFAULT_JSON_KEYS = {
     "notices",  # agent-harness#1132: typed seat notices, board-wide
     "seat_modes",  # agent-harness#1132 (plan amendment A1): each seat's launch mode
     "composition",  # agent-harness#1431: the composed seats and every seat left out
+    "refused_seats",  # agent-harness#1244: each seat refused before it ran, with its fix
 }
 _CANNED = PanelResult(legs=(
     PanelLegResult(leg="grok", status="OK", text="AGREE", seat_key="grok:adversarial"),

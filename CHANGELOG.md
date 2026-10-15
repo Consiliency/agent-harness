@@ -10,6 +10,72 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 - The panel's default Gemini seat, the `default`/`code-review` boards, the built-in presets and the president ladder's `gemini` rung now use `gemini-4-argon` at `medium` (agy `gemini-4-argon-medium`) instead of `gemini-3.8-flash`; `gemini-3.8-flash` stays an accepted explicit seat, and implementer/worker routing is unchanged.
 
+### Reflection filters preserve recurring friction (agent-harness#1370, agent-harness#1371)
+
+- Exact and near deduplication is limited to copies of the same recorded run.
+  Identical feedback from distinct runs counts toward readiness, including runs on
+  one branch. Repeated one-repo ledger lines and repeated one-repo lines carrying a
+  ref, path or URL are stripped from What worked and Improvements before
+  classification.
+- A repo-specific Improvements section is dropped and noted in the manifest,
+  while usable What didn't and What worked sections remain. A reflection with
+  neither friction nor an eligible proposal is still excluded.
+- A rejected repo-specific proposal with no remaining friction stays in place.
+  Ledger-labelled friction is retained; bulleted ledger proposals are dropped.
+  Copy matching preserves meaningful leading CLI and Markdown syntax.
+
+### A review seat that would run sealed is not run and not counted (agent-harness#1244)
+
+- A board seat whose route is not jailed (every `seat_jail.SEALED_FALLBACK_CODES` code, for
+  example the Gemini seat's `gemini_seat_egress_unconfined`) ran with the bundle inlined and
+  no tools, returned `OK`, and counted toward the reviewer floor and `usable`. A real-CLI
+  board showed `usable: true` with three of four seats delivered, one of them sealed.
+- Such a seat is now `DEGRADED` and not run, like a jail-eligible seat that cannot run
+  jailed: its detail and notice are its route code, with the notice table's fix, and its
+  seat mode is `degraded`. A codex or grok seat on a review with no staged tree is refused
+  the same way with `seat_sandbox_not_staged`.
+- Every count that reads a leg's usability leaves it out: the reviewer floor and `usable`,
+  the landing vote, the governed gate, the train's recorded reviewers and the president's
+  input. A board that falls below its floor because of it now names each such seat with its
+  code and fix, in the `advisor-board` text summary and in the governed pre-merge floor hold.
+- The agy qualification worker still measures its candidate image on the Gemini route; that
+  leg is admitted `qualification_candidate`, which is never a vote, and is not a review. An
+  `--advisory` run, which stages no tree on purpose and inlines its standalone document
+  whole, keeps its seats on the inline route as before.
+- `PHASE_LOOP_SANDBOX_DISABLE=1` no longer gives a bundle-only board: every brokered review
+  seat is then refused with `seat_sandbox_not_staged` (its fix now names the knob), so the
+  board is below its floor and refuses.
+- The `advisor-board --json` payload carries `refused_seats` (seat key, code, fix) for those
+  seats; the private capture board is unchanged.
+- What any seat sandbox permits is unchanged. A host whose seats cannot run jailed may now
+  get a board below its floor, which refuses; that is intended.
+
+### The skill-improvement aggregator applies eight admission gates and a ladder level (agent-harness#1321)
+
+- The aggregator had three admission gates. It now applies eight to every candidate
+  theme: durability, specificity, convergence, skill-was-used, existing-skill-first,
+  already-covered, decision-changing and structural-mechanism. A theme that fails one is
+  listed under a new `## Rejected themes` section with the gate that rejected it.
+- Every recommendation states its level on the enforcement ladder (architecture,
+  unrepresentable, check, prose) and why the level above fails. Only prose-level themes
+  become SKILL.md edits; the rest are mechanism candidates.
+- `reflection_corpus collect` also writes `rule_enforcement.md`, the shipped
+  rule→enforcer registry, and the planner passes it to the aggregator. A recurring theme
+  on a rule that already has an enforcer, or on a tracked gap, becomes a mechanism
+  candidate instead of more prose.
+- Bundles carry opaque repo/branch/run identities so convergence can distinguish
+  independent support. Every planner's final template preserves ladder levels and
+  rejected themes; missing skill-read evidence remains inconclusive.
+- Missing read evidence does not discard a cross-skill body fix. Description tuning
+  requires a reflection's What didn't to identify a missed trigger and supply the
+  complete replacement description. Every editor changes only that frontmatter value
+  and fails a tune without replacement text. Clear rules that were ignored route to
+  compliance fixes instead of duplicate prose.
+
+### grok executor: keep the background-task tools grok's terminal requires
+
+- The grok execute deny-list no longer removes the task tools (`get_task_output`/`kill_task`, formerly `get_command_or_subagent_output`/`kill_command_or_subagent`). grok 1.0.52 refuses to start a session whose terminal runs in background mode without them, so every grok execute launch failed before a model turn. The implementer still cannot spawn subagents (`spawn_subagent` and `workflow` stay denied, `--no-subagents` stays).
+
 ### FABPUB: a provider outcome on an already-ambiguous key is kept, and an observed effect is never attested not landed (agent-harness#1591)
 
 - A promotion by an older-runtime prober from the provider-entry guard's lock release
