@@ -8,10 +8,15 @@ automation:
     - uv
     - run
     - --quiet
-    - --with
-    - pytest
-    - --with-editable
-    - ./phase-loop-runtime
+    - --project
+    - phase-loop-runtime
+    - --group
+    - test
+    - --extra
+    - visual
+    - --python
+    - "3.14"
+    - --locked
     - python
     - -m
     - pytest
