@@ -46,6 +46,7 @@ If no plan path is explicit, first check the current repo and branch handoff fro
 5. For `--dry-run`, report the target files and recommendation summaries, then stop.
 6. Apply recommendations:
    - group changes per target skill to avoid conflicting edits;
+   - a change that begins `tune description: <skill>` replaces only the frontmatter `description:` value with the text it gives; leave the body untouched and mark it failed when no replacement text is given;
    - keep `SKILL.md` concise;
    - move lengthy examples into `references/`;
    - update `agents/openai.yaml` when display metadata becomes stale.
@@ -59,7 +60,8 @@ If no plan path is explicit, first check the current repo and branch handoff fro
    - run `python3 -m phase_loop_runtime.reflection_corpus archive --manifest <corpus_manifest>`, adding `--exclude <path>` for every consumed reflection supporting a failed recommendation; it moves each consumed file to `archive/` under the same repo and branch subtree;
    - if `archive` refuses, it has moved nothing: drop any `--exclude` for a path the manifest did not consume (that reflection already stays in place), fix any other cause it names, and rerun;
    - the manifest decides what is consumed: the admitted reflections of ready skills, plus reflections excluded as a duplicate (`duplicate_of`) or with no friction and no proposal (`no_friction_or_proposal`);
-   - all other reflections stay in place, including those excluded as repo-specific, capped or oversized and those of skills still below the threshold, so their friction can count in a later pass.
+   - repo-specific proposal sections are dropped without discarding usable friction; all other reflections stay in place, including capped or oversized ones and those of skills still below the threshold, so their friction can count in a later pass.
+   - a reflection with only a rejected repo-specific proposal stays in place; it is not consumed as empty.
 
 ## Failure Policy
 

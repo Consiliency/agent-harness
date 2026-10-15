@@ -80,24 +80,20 @@ Result of the 2026-09-09 scan:
 
 ### 2.1 Runtime re-pin
 
-No release tag contains the ceremony (D2, Consiliency/agent-harness#816) yet,
-and the package version string is still `0.7.14`, so `--version` cannot tell a
-v3-aware install from a pre-v3 one (claw's git-pinned install and the `v0.7.14`
-release both report `0.7.14`) — use the probe. Pin to the exact `main`
-commit that carries D4:
+The ceremony (D2, Consiliency/agent-harness#816) and D4 ship in every release
+from `v0.7.15`. The rotation retry in §8a also needs agent-harness#1296, first
+released in `v0.7.25`. Install a released runtime at or above `0.7.25`, then
+confirm it with the probe, because `--version` alone does not prove what a
+git-pinned install carries:
 
 ```bash
-uv tool install --force \
-  "git+https://github.com/Consiliency/agent-harness@c98573ebd45452451ce719406f5b28379284b4c9#subdirectory=phase-loop-runtime"
+uv tool install --force phase-loop-runtime   # or pin: phase-loop-runtime==<version >= 0.7.25>
 python3 phase-loop-runtime/scripts/fabpub_v3_probe.py   # against that interpreter; expect exit 0
 ```
 
-Known caveat (Consiliency/agent-harness#819): every install at or after
-`b09b1a47` (claw's current `463b90c3` included; the `v0.7.14` release predates it) prints `built-in closeout validator fab_gate is not importable; gate
-NOT registered` on the CLI's first import. It is a circular-import regression
-in the closeout validator registry, unrelated to the ceremony; the rotation
-verb is unaffected, but note it in the record rather than treating it as a
-failure of the pin.
+The protections described in §8a for an `attested_not_landed` decision
+(agent-harness#1313, agent-harness#1577, agent-harness#1591) are newer than
+`v0.7.26`; see §8a.
 
 ## 3. Attestation (read-only build, reviewed by hand)
 
@@ -125,6 +121,16 @@ What the builder **enforces** (exit 2, nothing written):
   inventory.)
 - an `outcome_ambiguous_blocked` row exists for the key.
 
+What the builder **reports** without refusing (agent-harness#1591): every row of
+the container's `post-ambiguity-observations.jsonl` for the key — a provider
+outcome the broker saw after the key was already blocked — and whether it binds
+this blocked row. It prints a `WARNING` when `--observed-head` or
+`--evidence-url` differs from a recorded effect, and when the file is unreadable
+(the ceremony then refuses `attested_not_landed` for every key). A human
+publication handoff with `required_disposition: observed_landed` carries a
+pre-filled builder argv (`attestation_builder_command`, generation-0 containers
+only) with these inputs; fill in `--out` and `--attested-by`.
+
 What the builder **derives**, and the reviewer must re-check:
 
 - `ambiguity_digest` is the sha256 of the **latest** `outcome_ambiguous_blocked`
@@ -133,7 +139,8 @@ What the builder **derives**, and the reviewer must re-check:
   `adapter-start-owner.json` names this effect key (either spelling —
   `effect_key` or `idempotency_key`), copied verbatim, and **omitted** when it
   does not: the adjudicator refuses both a missing value when the owner names
-  the key and a present one when it does not (`live.py:4321-4326`). The builder
+  the key and a present one when it does not (in `live.py`, the `owner_nonce` /
+  `transaction_id` check after `_rotation_owner_identity` during rotation adjudication). The builder
   prints which half it emitted.
 - a digested file that is absent digests as `sha256(b"")`, matching
   `_snapshot_predecessor`.
@@ -169,8 +176,13 @@ it can succeed (cutover-id grammar, repository snapshot, attestation
 location and readability, container receipt shape and non-ambiguity, bootstrap
 claim binding to this authority, active bootstrap, no foreign staging debris,
 no other rotation in progress, own-journal state, predecessor adjudication,
-inventory derivation, the sealed inventory on a pre-flip resume, and the
-writer-generation latch) by calling the same functions, then reports the drain
+no `attested_not_landed` entry for a key with a recorded post-ambiguity effect or
+while that side file is unreadable (`no_attested_not_landed_over_observed_effect`,
+agent-harness#1591; skipped, as by the verb, on a resume whose own journal already
+holds `INVENTORY_SEALED`, where the successor's re-admission refuses instead),
+inventory derivation, the sealed inventory on a pre-flip
+resume, and the writer-generation latch) by calling the same functions, then
+reports the drain
 facts the verb will meet *after* its first row: the armed marker, held lease
 files, and live pre-FABPUB writers. Verdicts:
 
@@ -328,7 +340,9 @@ from `build_routing_broker_client()` that a surviving holder built before the
 flip refuses every later request with `WriterGenerationBlocked` (`this broker
 client is bound to retired partition generation …`) before it reads or writes
 either generation's store. It never rebinds itself, so restart that process
-(agent-harness#1315).
+(agent-harness#1315). The refusal's type is `RoutingClientGenerationRetired`, and
+the human route answers it with next step `rebuild_broker_client_and_retry`, not
+`repair_fabpub_authority`.
 
 ## 7. Execute — STATE CHANGE, needs go
 
@@ -357,7 +371,12 @@ supplies, and *any* change to the document — a different `--attested-by`, a
 fresh `attested_at` from re-running the builder — changes its canonical digest
 and is refused with `rotation … sealed a different attestation; resume with
 the sealed one`. Keep the exact file; do not rebuild it. The preflight mirrors
-this check on both resume paths, so run it before every resume.
+this check on both resume paths, so run it before every resume. On a resume whose
+own journal already holds `INVENTORY_SEALED`, both the verb and the preflight skip
+the post-ambiguity observation check; the successor's re-admission refuses an
+observed effect instead (agent-harness#1633). If the successor then refuses a key
+with `publication_recovery_required` naming an observed effect, follow §8a: escalate
+to the maintainer and do not re-publish (agent-harness#1640).
 
 A re-run never repairs its inputs (a damaged authentication-chain link or
 writer latch after the flip is refused by every re-run until the bytes are
@@ -399,25 +418,99 @@ Runtime 0.7.24 and earlier refuse this retry after the rotation
 successor generation. Re-pin to a release that contains agent-harness#1296
 before rotating.
 
+**If the handoff says `required_disposition: observed_landed`, do not attest
+`attested_not_landed`.** The broker enters the provider only after, within one
+`admissions.lock` acquisition, the on-disk owner equalled its attempt's (nonce
+included) and was unsealed and the key's row was `provider_call_in_flight`
+(agent-harness#1577). A promotion landing at any point from that lock's release
+through the provider call (the `ADAPTER_STARTED` projection, request finalization,
+lease acquisition, the call itself) still makes one provider call, reported with
+`provider_call_made: true`. When that call returns a definite outcome the broker keeps
+it in `post-ambiguity-observations.jsonl` and every attempt and retry is answered with
+reason `effect_observed_after_ambiguity` (or `no_effect_observed_after_ambiguity`)
+and `observed_after_ambiguity` (agent-harness#1591). For an effect, the handoff keeps
+`next_step: adjudicate_publication_by_partition_rotation` and adds
+`required_disposition: observed_landed`, `forbidden_disposition:
+attested_not_landed` and `attestation_inputs` (observed head, evidence URL, effect-key
+suffix, owner nonce, transaction id); build the attestation from them (§3) and the
+retry after the rotation replays the PR as published. The ceremony, the preflight and
+the re-admission refuse `attested_not_landed` for such a key, and for every key while
+the side file is unreadable. If an older ceremony accepted one anyway, the retry is
+refused with `publication_recovery_required` naming the observed effect: escalate to
+the maintainer and do not re-publish. A no-effect observation is listed as
+`supporting_evidence` and leaves the judgement to you.
+
+**If `post-ambiguity-observations.jsonl` is unreadable** (the ceremony, the preflight or
+the retry names it; typically a torn final line from a crash mid-append), do this:
+
+1. Never truncate, edit or delete the file. It is the only record of what the provider
+   reported, and repairing it would turn the fail-closed refusal into a guess.
+2. Read the torn tail with the partition's `admissions.lock` held (for example
+   `flock <store>/admissions.lock tail -c 4096 <store>/post-ambiguity-observations.jsonl`),
+   so no writer appends while you read.
+3. If the partial line names the blocked key (its `idempotency_key`, or the effect-key
+   suffix), treat it as an effect. Confirm the pull request at the provider and rotate
+   `observed_landed` with that head and the provider-side URL (§3); never
+   `attested_not_landed`.
+   A row is written with its fields in sorted order (`ambiguity_digest`, `branch`,
+   `evidence_reference`, `head_sha`, `idempotency_key`, `observed_state`, then the
+   owner bindings), so a torn line can show the pull request URL and head without the
+   key, or name the key and stop before `observed_state` (agent-harness#1640):
+   - **The URL or head without the key.** If the branch and head are this
+     publication's, treat the line as naming it and continue as above.
+   - **The key without the outcome.** The line does not say whether the provider
+     reported an effect or no effect. Treat it as a possible effect: if the head is on
+     the remote branch or a pull request exists for it, rotate `observed_landed` as
+     above. If the provider shows neither, go to step 4; a missing `observed_state` is
+     not a no-effect observation.
+4. Otherwise escalate to the maintainer. Do not rotate `attested_not_landed` while the
+   file is unreadable: the ceremony refuses it for every key, and so does the retry.
+
+The same applies to a well-formed row this runtime cannot read, such as one carrying a
+field from a newer runtime: read it, act on what it names, and escalate if it is unclear.
+
 **Before attesting `attested_not_landed`, check which runtimes write the partition.**
-The broker enters the provider only after, within one `admissions.lock`
-acquisition, the on-disk owner equalled its attempt's (nonce included) and was
-unsealed and the key's row was `provider_call_in_flight` (agent-harness#1577).
-Together with the agent-harness#1313 liveness lock, that protects a partition only
-once every runtime that writes it is upgraded. A promotion landing at any point from
-that lock's release through the provider call (the `ADAPTER_STARTED` projection,
-request finalization, lease acquisition, the call itself) is not covered by either; it
-still makes one provider call, reported with `provider_call_made: true`
-(agent-harness#1591). Until every writer is upgraded, base the disposition on
-provider-side evidence, such as no pull request and no branch for the head at the
-provider. Absence of local evidence is not enough, and provider-side absence remains
-the operator's judgement, not proof. A blocked result with `provider_call_made: false`
+The liveness lock, the guard and the observation protect a partition only once every
+runtime that writes it, and every runtime that runs its ceremony, is upgraded. These
+protections landed on `main` after `v0.7.26`; a `v0.7.26` or older runtime counts as
+not upgraded. An
+older writer records no observation, a crash between the provider's return and the
+side-file write loses it, and an older re-admitter can still publish an effect an
+older ceremony attested not landed. Until every runtime is upgraded, base the
+disposition on provider-side evidence, such as no pull request and no branch for the
+head at the provider. Absence of local evidence is not enough, and provider-side
+absence remains the operator's judgement, not proof. A blocked result with
+`provider_call_made: false`
 means that call never entered the provider. A retry that replays an earlier block
 also reports `false`, so it says nothing about the earlier attempt's effect. A failure between the owner section and
 the provider call (`record_intent`, a checkpoint projection, a refused lease) leaves
 the owner in place, and the next attempt promotes it. That case is
 `attested_not_landed` by construction. See `docs/fabpub-pre-admission-ambiguity.md`,
 "Provider entry and failures around it".
+For a generation refusal in that window (`WriterGenerationBlocked`, raised as
+`ProviderEntryGenerationRefused`) or the guard's own "no evidence row" refusal
+(`ProviderEntryRefused`), the human route answers with next step
+`retry_once_before_partition_rotation`. Any other `PermissionError` there, such as
+EACCES or an incompatible store, keeps `repair_fabpub_authority`. Until one retry
+promotes the owner, the row is still `provider_call_in_flight`, and the rotation
+refuses with "intents without a terminal". Retry once. The retry returns the
+rotation handoff for this key. Keep the first result as the attestation's evidence
+that the provider was never entered. The ambiguous row alone cannot show that
+(agent-harness#1594 asks 1 and 5).
+The same next step can follow a refusal **after** provider entry, with
+`provider_call_made: true` (agent-harness#1628). The adapter raised, or it returned
+and its terminal record was refused (`execute_returned: true`, agent-harness#1684), and
+the generation fence (a `DRAINING` latch during a rotation ceremony, or a revoked
+lease) refused the `outcome_ambiguous_blocked` record, so no terminal was written: the
+row is still `provider_call_in_flight` and the owner unsealed. The outcome is not
+recorded, so the "by construction" reasoning above does not apply. Retry once after
+any rotation ceremony in progress has finished or rolled back (the latch is `ACTIVE`
+again), then follow the handoff the retry returns. Keep the first result: when the
+adapter returned, its `pr_url` and `head_sha` are the provider's returned pull
+request, which the retry does not repeat. In the attestation, dispose the key
+`observed_landed` with that URL and head; without one, `observed_landed` if the head
+is on the remote branch or a pull request exists for it, otherwise
+`attested_not_landed` is your judgement, and remote absence is not proof.
 
 1. Leave the worktree, branch, commit, plan file and verification artifact
    exactly as they were. Do not make an empty commit, switch branch, force
@@ -442,7 +535,9 @@ the owner in place, and the next attempt promotes it. That case is
 rotations for other keys (agent-harness#1310). The retry walks the authenticated
 receipt chain back to the disposing rotation, and records both generations in
 the recovery record (`disposing_generation`, `readmitting_generation`,
-`intervening_rotations`). It is refused, with nothing written, once any
+`intervening_rotations`). These three fields appear only when a rotation
+intervened; a same-generation record keeps the agent-harness#1296 shape
+(agent-harness#1576). It is refused, with nothing written, once any
 generation since the disposing rotation holds evidence or an adapter-start
 owner for the key, or a later receipt carries or re-adjudicates it. A
 disposition authorizes one re-admission. Retrying promptly is still best, and a
@@ -454,16 +549,33 @@ did not land either. Two ambiguous pushes are not evidence of no effect.
 
 Do not retry on a runtime without agent-harness#1296 after the rotation: it
 refuses at admission and leaves an unsealed owner that blocks the new
-generation. If the retry is refused with `publication_recovery_required`, the
+generation.
+
+**Mixed runtime versions (agent-harness#1576).** Within one generation, a retry
+on an agent-harness#1296 runtime and a retry on a current runtime write the same
+recovery record, so either may follow a crash of the other after the record and
+before the owner. An agent-harness#1296 runtime has no live-owner check
+(agent-harness#1313), so do not retry on one while another attempt may still be
+running: a retry that races a live attempt can leave the key ambiguous even after
+a real provider call (agent-harness#1629 ask 2). A runtime built from `main` after agent-harness#1550 and before this
+fix (never released) wrote the three fields even with no rotation. A current runtime
+accepts that record, but the agent-harness#1550 runtime refuses a current
+runtime's record. Retry such a refusal on a current runtime. Only a current runtime
+recovers after an intervening rotation. An older runtime refuses that retry with
+`publication_recovery_required` before it records anything.
+If a retry fails with `publication_transaction_conflicted` and the handoff names
+`conflicting_recovery_record`, that file disagrees with what this runtime
+authorizes. The file records an authorization, written before the owner. It does
+not prove that an admission happened. Compare it with the refusal detail and with
+that generation's evidence and adapter-start owner for the key before changing
+anything, and escalate to the maintainer. If the retry is refused with `publication_recovery_required`, the
 message names what did not bind and the next step for that case (no disposition, a disposition already used or
 superseded in a later generation, no transaction id, a different transaction, or a chain that does not authenticate). Nothing was written;
 fix the input and retry.
 
 ## 9. Residuals carried out of the 2026-09-09 preparation
 
-- Consiliency/agent-harness#819 — `fab_gate` circular import on `git+main`
-  installs (cosmetic for this verb; real for closeout).
 - Consiliency/agent-harness#820 — leases carry no liveness; orphan detection is
   manual (§6).
 - `leno` unscanned (offline); never held FABPUB state.
-- No release tag carries D2/D4; the re-pin is by commit SHA until one does.
+- D2/D4 ship in `v0.7.15` and later; the §8a retry needs `v0.7.25` or later (§2.1).

@@ -206,6 +206,18 @@ def egress_rules(policy: EgressPolicy | None = None, *, host_addresses=()) -> li
     return rules
 
 
+def proxy_only_rules(port: int) -> list[str]:
+    """The rules of a namespace whose only way out is one loopback port: the bridge to an
+    allowlisting proxy on the host (agent-harness#1170). There is no uplink in such a
+    namespace, so these reject what has no route anyway; they are the second wall."""
+    return [
+        f"-A OUTPUT -o lo -s 127.0.0.1 -d 127.0.0.1 -p tcp --dport {port} -j ACCEPT",
+        f"-A OUTPUT -o lo -s 127.0.0.1 -d 127.0.0.1 -p tcp --sport {port} -j ACCEPT",
+        "-A OUTPUT -j REJECT",
+        "-P OUTPUT DROP",
+    ]
+
+
 def egress_isolation_available() -> bool:
     """Can this host enforce the policy at all?
 
@@ -322,6 +334,8 @@ def isolated_network(
     timeout_s: float | None = 3600.0,
     required: bool | None = None,
     seat_uid_map: bool = False,
+    proxy_socket: str | None = None,
+    proxy_port: int = 3128,
 ):
     """Hold a filtered network namespace open and yield an argv PREFIX for it.
 
@@ -350,9 +364,16 @@ def isolated_network(
     with ``newuidmap``/``newgidmap`` (H uid 0 = the operator, 1..count = the operator's
     subordinate range). Every other route keeps the historical ``--map-root-user`` holder
     byte-for-byte.
+
+    ``proxy_socket`` (agent-harness#1170, the jailed Gemini seat, with ``seat_uid_map``) is a
+    namespace with NO uplink: no slirp4netns, :func:`proxy_only_rules`, and one bridge from
+    ``127.0.0.1:proxy_port`` inside the namespace to the proxy's unix socket on the host.
+    Its capability check is the bridge answering and a public address having no route.
     """
     if required is None:
         required = egress_required()
+    if proxy_socket is not None and not seat_uid_map:
+        raise ValueError("a proxy-only namespace is a jailed-seat namespace")
 
     def _degrade(reason: str):
         if required:
@@ -371,12 +392,18 @@ def isolated_network(
         helpers = {name: trusted_host_executable(name) for name in (
             "unshare", "slirp4netns", "iptables", "ip6tables", "bash", "mount", "touch", "sleep",
             "nsenter", "setpriv", "getent", "ip",
+            *(("socat", "python3") if proxy_socket is not None else ()),
         )}
     except (EgressUnavailable, ValueError) as exc:
         yield _degrade(str(exc))
         return
-    rules = "\n".join([*(f"{helpers['iptables']} {rule}" for rule in egress_rules(policy, host_addresses=addresses)),
-                       *(f"{helpers['ip6tables']} {rule}" for rule in ipv6_egress_rules(addresses))])
+    if proxy_socket is not None:
+        rules = "\n".join([*(f"{helpers['iptables']} {rule}" for rule in proxy_only_rules(proxy_port)),
+                           *(f"{helpers['ip6tables']} {rule}" for rule in ("-A OUTPUT -j REJECT",
+                                                                          "-P OUTPUT DROP"))])
+    else:
+        rules = "\n".join([*(f"{helpers['iptables']} {rule}" for rule in egress_rules(policy, host_addresses=addresses)),
+                           *(f"{helpers['ip6tables']} {rule}" for rule in ipv6_egress_rules(addresses))])
     with tempfile.TemporaryDirectory(prefix="pl-egress-ns-") as work:
         ready = os.path.join(work, "ready")
         pidfile = os.path.join(work, "pid")
@@ -399,6 +426,7 @@ def isolated_network(
         owner_read = owner_write = None
         holder = None
         slirp = None
+        bridge = None
         gate_read = gate_write = None
         try:
             if seat_uid_map:
@@ -460,7 +488,9 @@ def isolated_network(
                 return
             nspid = Path(pidfile).read_text(encoding="utf-8").strip()
 
-            if timeout_s is None:
+            if proxy_socket is not None:
+                pass  # no uplink: the bridge below is the namespace's only way out
+            elif timeout_s is None:
                 with _infrastructure_launch():
                     slirp = launch_provider(
                         [helpers["slirp4netns"], "--configure", "--mtu=65520", "--enable-sandbox",
@@ -475,8 +505,9 @@ def isolated_network(
                      "--disable-host-loopback", nspid, "tap0"],
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                 )
-            time.sleep(2.5)  # the tap must be configured before traffic flows
-            if slirp.poll() is not None:
+            if slirp is not None:
+                time.sleep(2.5)  # the tap must be configured before traffic flows
+            if slirp is not None and slirp.poll() is not None:
                 yield _degrade(
                     f"slirp4netns exited ({slirp.returncode}) before the uplink was "
                     "usable; the namespace has no network"
@@ -528,6 +559,23 @@ def isolated_network(
             # `_degrade` path and surfaced as an unhandled exception instead of a DEGRADED
             # leg -- a slow resolver escaped the channel built to report exactly this.
             # One name and one attempt also made a transient blip take down a whole round.
+            if proxy_socket is not None:
+                with _infrastructure_launch():
+                    bridge = launch_provider(
+                        [helpers["nsenter"], "--net", "-t", nspid, "-U", "--preserve-credentials",
+                         helpers["socat"], f"TCP4-LISTEN:{int(proxy_port)},bind=127.0.0.1,fork,reuseaddr",
+                         f"UNIX-CONNECT:{proxy_socket}"],
+                        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL, close_fds=True,
+                    )
+                if not _proxy_bridge_confines(prefix, helpers["python3"], proxy_port):
+                    yield _degrade(
+                        "the proxy-only namespace came up but its bridge does not answer, or a "
+                        "public address is reachable without it"
+                    )
+                    return
+                yield prefix
+                return
             resolved = False
             for _attempt in range(2):
                 try:
@@ -554,6 +602,13 @@ def isolated_network(
                 os.close(owner_read)
             if owner_write is not None:
                 os.close(owner_write)
+            if bridge is not None:
+                bridge.terminate()
+                try:
+                    bridge.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    bridge.kill()
+                    bridge.wait(timeout=2)
             if slirp is not None:
                 slirp.terminate()
             if holder is not None:
@@ -566,6 +621,43 @@ def isolated_network(
                         except subprocess.TimeoutExpired:
                             process.kill()
                             process.wait(timeout=2)
+
+
+# Run as the seat would be (the lockdown prefix): the bridge must answer a CONNECT with the
+# proxy's own refusal of an unauthenticated client (407), and a public address must have no
+# route. A namespace that passes only the first is not proxy-only.
+_PROXY_BRIDGE_CHECK = (
+    "import socket,sys\n"
+    "port=int(sys.argv[1])\n"
+    "for _ in range(50):\n"
+    " try:\n"
+    "  s=socket.create_connection(('127.0.0.1',port),2)\n"
+    "  break\n"
+    " except OSError:\n"
+    "  import time; time.sleep(0.1)\n"
+    "else:\n"
+    " sys.exit(3)\n"
+    "s.sendall(b'CONNECT phase-loop-bridge-check.invalid:443 HTTP/1.1\\r\\n"
+    "Host: phase-loop-bridge-check.invalid:443\\r\\n\\r\\n')\n"
+    "s.settimeout(10)\n"
+    "head=s.recv(64)\n"
+    "if not head.startswith(b'HTTP/1.1 407'):\n"
+    " sys.exit(4)\n"
+    "try:\n"
+    " socket.create_connection(('1.1.1.1',443),3).close()\n"
+    " sys.exit(5)\n"
+    "except OSError:\n"
+    " print('proxy-only')\n"
+)
+
+
+def _proxy_bridge_confines(prefix, python3: str, port: int) -> bool:
+    try:
+        done = subprocess.run([*prefix, python3, "-I", "-S", "-c", _PROXY_BRIDGE_CHECK, str(port)],
+                              capture_output=True, text=True, timeout=60)
+    except subprocess.TimeoutExpired:
+        return False
+    return done.returncode == 0 and done.stdout.strip() == "proxy-only"
 
 
 def _wait_for_new_user_namespace(process: "subprocess.Popen[bytes]", timeout_s: float = 15.0) -> None:

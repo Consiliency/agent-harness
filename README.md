@@ -30,8 +30,9 @@ phase-loop doctor --json
 
 **`run` needs a roadmap.** It executes `specs/phase-plans-v<N>.md`, so a repo without
 one exits with `no specs/phase-plans-v*.md roadmap found`. Either author that file
-yourself (see `specs/phase-plans-v1.md` in this repo for the shape, and
-`phase-loop validate-roadmap <path>` to check it), or install the workflow skills and
+yourself (see `specs/phase-plans-v1.md` in this repo for the shape; drop its
+`DELIVERED` status banner when you copy it, because a delivered roadmap cannot be
+selected, and check the result with `phase-loop validate-roadmap <path>`), or install the workflow skills and
 let the `phase-roadmap-builder` skill write it from a plan or a conversation:
 
 ```sh
@@ -211,7 +212,13 @@ phase-loop run-train --train train-roadmap.md --governed # P4: review + sequenti
 **Channel:** submodule path=vendor/repo-a
 ```
 
-Channel types: `submodule path=<path>` or `pin file=<file> key=<yaml-key>`.
+Channel types:
+
+- `submodule path=<path>`: the downstream has a git submodule of the upstream at `<path>`.
+- `pin file=<file>`: the upstream SHA is written as the whole content of `<file>`.
+- `pin file=<file> key=<dotted.json.key>`: `<file>` is JSON, and the SHA is set at that
+  nested key.
+- `order-only`: merge after the upstream; no SHA is injected.
 
 ### Safety invariants (structural, not advisory)
 
@@ -235,8 +242,9 @@ Channel types: `submodule path=<path>` or `pin file=<file> key=<yaml-key>`.
 The merged downstream PR carries the **draft-time upstream pin**, not the
 merge-commit SHA. Use expand/contract upstream contracts (additive first,
 backward-compatible) so sequential merges are safe. See
-`phase-loop-runtime/protocol/protocol.md` ("Cross-Repo Release Train") for the
-full protocol spec and ledger shape.
+`phase-loop-runtime/src/phase_loop_runtime/_contract_docs/phase-loop/protocol.md`
+("Cross-Repo Release Train") for the full protocol spec and ledger shape, and
+`docs/phase-loop/cross-repo-train-authoring.md` for authoring a train.
 
 ## License
 

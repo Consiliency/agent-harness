@@ -125,7 +125,9 @@ Per the plan's archival directive:
    Run it with `--dry-run` first and check the count. If it refuses, it has moved nothing: drop any `--exclude` for a path the manifest did not consume (that reflection already stays in place), fix any other cause it names, and rerun.
 3. Excluded paths stay in place so the next cycle can reconsider them.
 
-The manifest decides what is consumed: the admitted reflections of ready skills, plus reflections excluded as a duplicate (`duplicate_of`) or with no friction and no proposal (`no_friction_or_proposal`). All other reflections stay in place, including those excluded as repo-specific, capped or oversized and those of skills still below the threshold, so their friction can count in a later pass. An admitted reflection of a ready skill that no surviving recommendation cites is still archived; it has been considered.
+The manifest decides what is consumed: the admitted reflections of ready skills, plus reflections excluded as a duplicate (`duplicate_of`) or with no friction and no proposal (`no_friction_or_proposal`). Repo-specific proposal sections are dropped without discarding usable friction. All other reflections stay in place, including capped or oversized ones and those of skills still below the threshold, so their friction can count in a later pass. An admitted reflection of a ready skill that no surviving recommendation cites is still archived; it has been considered.
+
+A reflection with only a rejected repo-specific proposal stays in place; it is not consumed as empty.
 
 ### Step 6 — Commit + push
 
