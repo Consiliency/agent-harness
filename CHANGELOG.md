@@ -6,6 +6,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### CI: the offloaded suite runs what the hosted lanes run, event for event
+
+- While the offload was off, the hosted lanes changed and the Dagger module did not. An offloaded pull request would have run all three interpreters and the full Gate A, without the quarantine deselect. The model-id guard and `phase-loop doctor --fail-on-stale` only ran in the hosted `pytest` job, so the offload path dropped them. The module now runs the hosted pull-request set on a pull request: the py3.10 suite with `PHASE_LOOP_DESELECT_QUARANTINE=1`, and the wheel smoke instead of Gate A. Every other event keeps the three suites and Gate A. Every suite lane runs both guards. `ci/offload-gate.sh` passes the event as `--pull-request`, from `OFFLOAD_PULL_REQUEST`; unset means the full set.
+- `tests/test_ci_offload_parity.py` pins the two places together. It covers the PR lane set against the hosted matrix's `exclude`, wheel smoke against Gate A, the quarantine switch, and the event hand-off. Every hosted `pytest` step must either run in the module's suite or be listed as setup the offload job provides, with a reason.
+
 ### Fix: Gemini planning, roadmap and review launch again, on Gemini 4 Argon
 
 - Gemini `roadmap`, `plan` and `review` launches exited rc 1, because agy no longer offers the `Gemini 3.1 Pro (High)` model they selected. The Gemini executor's `roadmap`, `plan` and `review` defaults, the `planner`/`reviewer` model classes and the heavy (and ultra) tier now use `gemini-4-argon` instead of the `pro` alias and `gemini-3.1-pro-preview`. Effort is unchanged: the shipped policy's `max` clamps to Gemini's `high`, so these routes launch `gemini-4-argon-high`. The heavy cell stays marked volatile. Implementation and worker routing are unchanged, and an explicit `--model` still wins.

@@ -42,6 +42,14 @@ CHRONOLOGY_NODE = (
 CHRONOLOGY_PYTHON = "3.10"
 PYTHON_VERSIONS = ("3.10", "3.11", "3.12")
 
+# A pull request runs the same, smaller set the hosted lanes run for one
+# (agent-harness#1029): the py3.10 floor suite with the quarantined known flakes
+# deselected, and the wheel smoke in place of Gate A. Every other event runs all
+# three interpreters and Gate A with the quarantine retained. Kept in step with
+# test.yml's pytest matrix `exclude`, its wheel-smoke/cleanroom conditions and
+# PHASE_LOOP_DESELECT_QUARANTINE by tests/test_ci_offload_parity.py.
+PULL_REQUEST_PYTHON_VERSIONS = (CHRONOLOGY_PYTHON,)
+
 # The per-stage verdict roll-up, written into the exported evidence directory
 # alongside the junit. `all` returns a Directory, so this is where the roll-up
 # that used to be its stdout now lives.
@@ -239,7 +247,11 @@ unshare --user --map-root-user --net --mount sh -c 'mount --make-rprivate / && i
         )
 
     def _suite(
-        self, source: dagger.Directory, python_version: str, chronology: bool = True
+        self,
+        source: dagger.Directory,
+        python_version: str,
+        chronology: bool = True,
+        pull_request: bool = False,
     ) -> dagger.Container:
         """The standalone suite for one interpreter, with the chronology selection.
 
@@ -254,6 +266,7 @@ unshare --user --map-root-user --net --mount sh -c 'mount --make-rprivate / && i
         if not keeps_chronology:
             suite_args.append(f"--deselect={CHRONOLOGY_NODE}")
         selection = "suite_args=(" + " ".join(f'"{a}"' for a in suite_args) + ")"
+        quarantine = "1" if pull_request else "0"
         if python_version == CHRONOLOGY_PYTHON:
             # The junit must WITNESS the decision: the node present (ran, passed)
             # when retained, absent when deselected. A deselect that silently
@@ -274,6 +287,12 @@ mkdir -p /junit
 
 CHRONOLOGY_NODE="{CHRONOLOGY_NODE}"
 {selection}
+# agent-harness#1029: a pull request deselects the `quarantine`-marked known flakes;
+# every other event runs them.
+export PHASE_LOOP_DESELECT_QUARANTINE={quarantine}
+
+# The hosted lane's guard: no scattered or duplicated hardcoded model IDs.
+python3 scripts/check_model_id_sources.py
 
 # The deselect must never become a silent no-op: if the node is renamed,
 # `--deselect` matches nothing and pytest says nothing. Assert collectability
@@ -309,15 +328,39 @@ PYTHONPATH="$suite_root/tests" python -m pytest \\
   "$suite_root/tests/test_legible_roadmap_contract.py" \\
   "$suite_root/tests/test_legible_evidence.py" \\
   -m "not dotfiles_integration"
+
+# The hosted lane's WIRE-THE-DOCTOR step: fail on a stale gating BOM target. It
+# degrades to `unknown` (never fails) when a registry is unreachable.
+(cd /src && phase-loop doctor --fail-on-stale)
 """
         return self._sandbox_exec(self._base(source, python_version), script)
 
     @function
     def suite(
-        self, source: dagger.Directory, python_version: str, chronology: bool = True
+        self,
+        source: dagger.Directory,
+        python_version: str,
+        chronology: bool = True,
+        pull_request: bool = False,
     ) -> dagger.Container:
         """Run the standalone suite for one interpreter (3.10 keeps the chronology node)."""
-        return self._suite(source, python_version, chronology)
+        return self._suite(source, python_version, chronology, pull_request)
+
+    @function
+    def wheel_smoke(self, source: dagger.Directory) -> dagger.Container:
+        """The pull-request stand-in for Gate A: the clean-room script without its suite.
+
+        The same script and switch the hosted `wheel-smoke` job uses: build the wheel,
+        install it into an isolated venv, check the entry points and run the probes.
+        """
+        script = """
+set -euo pipefail
+git config --global --add safe.directory /src
+cd /src/phase-loop-runtime
+export PHASE_LOOP_SKIP_GATE_A_SUITE=1
+bash scripts/gate_a_cleanroom.sh
+"""
+        return self._sandbox_exec(self._base(source, "3.12", cache_scope="gate-a"), script)
 
     @function
     def gate_a(self, source: dagger.Directory, chronology: bool = True) -> dagger.Container:
@@ -339,8 +382,18 @@ export GATE_A_JUNIT=/junit/junit-gate-a.xml
         return self._sandbox_exec(self._base(source, "3.12", cache_scope="gate-a"), script)
 
     @function
-    async def all(self, source: dagger.Directory, chronology: bool = True) -> dagger.Directory:
-        """The full offloaded gate: object-database probe, three suites, Gate A.
+    async def all(
+        self,
+        source: dagger.Directory,
+        chronology: bool = True,
+        pull_request: bool = False,
+    ) -> dagger.Directory:
+        """The offloaded gate: object-database probe, then the event's stages.
+
+        Every event but a pull request runs the three suites and Gate A. A pull
+        request (``pull_request``) runs the py3.10 suite with the quarantine
+        deselected and the wheel smoke, which is what the hosted lanes run for one.
+        It defaults to False, so a caller that forgets to decide gets the larger set.
 
         ``chronology`` is the scope decision from ``ci/chronology-scope.sh``. It
         defaults to True so a caller that forgets to decide gets the expensive
@@ -384,6 +437,7 @@ export GATE_A_JUNIT=/junit/junit-gate-a.xml
         """
         results = [
             f"chronology: {'retained' if chronology else 'deselected'}",
+            f"stage set: {'pull_request' if pull_request else 'full'}",
             await self.git_probe(source),
         ]
 
@@ -391,16 +445,21 @@ export GATE_A_JUNIT=/junit/junit-gate-a.xml
         # chronology-retaining stages emit junit -- also when the node is
         # deselected, so the export witnesses its absence; the export names are
         # derived so they cannot drift from the lane they came from.
+        versions = PULL_REQUEST_PYTHON_VERSIONS if pull_request else PYTHON_VERSIONS
         stages: list[tuple[str, str | None, dagger.Container]] = [
             *(
                 (
                     f"suite py{v}",
                     f"py{v.replace('.', '')}" if v == CHRONOLOGY_PYTHON else None,
-                    self._suite(source, v, chronology),
+                    self._suite(source, v, chronology, pull_request),
                 )
-                for v in PYTHON_VERSIONS
+                for v in versions
             ),
-            ("gate-a", "gate-a", self.gate_a(source, chronology)),
+            (
+                ("wheel-smoke", None, self.wheel_smoke(source))
+                if pull_request
+                else ("gate-a", "gate-a", self.gate_a(source, chronology))
+            ),
         ]
         outcomes = await asyncio.gather(
             *(container.sync() for _, _, container in stages),

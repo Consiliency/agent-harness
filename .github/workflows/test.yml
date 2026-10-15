@@ -138,6 +138,9 @@ jobs:
         env:
           # Read by ci/offload-gate.sh; unset there means "retain" (fail closed).
           CHRONOLOGY: ${{ steps.scope.outputs.chronology }}
+          # Read by ci/offload-gate.sh: a pull request runs the hosted PR stage set
+          # (agent-harness#1029); unset there means the full set.
+          OFFLOAD_PULL_REQUEST: ${{ github.event_name == 'pull_request' }}
         with:
           command: "bash ci/offload-gate.sh"
           eligible: ${{ needs.elig.outputs.eligible }}

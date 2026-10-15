@@ -211,6 +211,17 @@ case "$CHRONOLOGY" in
 esac
 echo "chronology node: $([ "$CHRONOLOGY" = true ] && echo retained || echo deselected) (CHRONOLOGY=$CHRONOLOGY)"
 
+# OFFLOAD_PULL_REQUEST picks the stage set: a pull request runs what the hosted lanes
+# run for one (py3.10 with the quarantine deselected, and the wheel smoke instead of
+# Gate A). Unset means "nobody decided" and resolves to the full set -- more
+# coverage, never less.
+OFFLOAD_PULL_REQUEST="${OFFLOAD_PULL_REQUEST:-false}"
+case "$OFFLOAD_PULL_REQUEST" in
+  true|false) ;;
+  *) echo "OFFLOAD_PULL_REQUEST must be 'true' or 'false', got '$OFFLOAD_PULL_REQUEST'" >&2; exit 1 ;;
+esac
+echo "stage set: $([ "$OFFLOAD_PULL_REQUEST" = true ] && echo pull_request || echo full) (OFFLOAD_PULL_REQUEST=$OFFLOAD_PULL_REQUEST)"
+
 # ONE offloaded suite per engine host at a time. The engine on the tailnet host
 # prunes its store when a session ends (`dagql prune` + containerd GC), and that
 # prune removes the rootfs of containers a still-running sibling session is
@@ -229,7 +240,7 @@ echo "chronology node: $([ "$CHRONOLOGY" = true ] && echo retained || echo desel
 JUNIT_DIR=./junit-offload
 rm -rf "$JUNIT_DIR"
 offload_lock_acquire
-offload_lock_supervise dagger -m "$MODULE" call all --source="$SOURCE" --chronology="$CHRONOLOGY" export --path="$JUNIT_DIR"
+offload_lock_supervise dagger -m "$MODULE" call all --source="$SOURCE" --chronology="$CHRONOLOGY" --pull-request="$OFFLOAD_PULL_REQUEST" export --path="$JUNIT_DIR"
 offload_lock_release
 
 # `all`'s per-stage verdict roll-up used to be its stdout; it travels in the
