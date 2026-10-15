@@ -2093,8 +2093,6 @@ def _seat_launch_modes(
     its expiry margin). Decides only; launches nothing."""
     sp = _seat_preflight
     brokered_route = mode == "review" and review_authorization is not None
-    staged = (review_authorization is not None
-              and getattr(review_authorization, "staged_tree_sha256", None) is not None)
     timeouts = dict(timeouts_by_leg or {})
     credential: dict[float, tuple] = {}
     # Per board: whether a leg's jail was qualified just now (the first seat's outcome).
@@ -2154,11 +2152,12 @@ def _seat_launch_modes(
         if leg not in routes:
             routes[leg] = _seat_route_for_spawn(leg, review_authorization, eligible=True)
         route, _notices, refusal = routes[leg]
-        if route is None:
-            if staged and sandbox_usable_by(leg, True):
-                modes.append(_coded(sp.MODE_UNCONFINED, "seat_filesystem_unconfined"))
-            elif not staged:
+        if route is None and refusal is None:
+            if getattr(review_authorization, "staged_tree_sha256", None) is None:
+                # Only an advisory run reaches this (agent-harness#802).
                 modes.append(_coded(sp.MODE_SEALED, "seat_sandbox_not_staged"))
+            elif sandbox_usable_by(leg, True):
+                modes.append(_coded(sp.MODE_UNCONFINED, "seat_filesystem_unconfined"))
             else:
                 modes.append(sp.SeatMode(key, leg, sp.MODE_SEALED, None,
                                          "this route has no file tools", "", None, position))
@@ -2171,8 +2170,12 @@ def _seat_launch_modes(
                                      f"{why}; reason: {reason}",
                                      _seat_jail_autoqualify.fix_for(reason), None, position))
         elif refusal is not None:
+            # agent-harness#1244: every route that is not jailed lands here, sealed codes
+            # included -- degraded and not run, with its notice's fix.
             modes.append(_coded(sp.MODE_DEGRADED, refusal))
         elif not route.jailed:
+            # Only the agy qualification worker's candidate measurement and an advisory run
+            # reach this.
             modes.append(_coded(sp.MODE_SEALED, str(route.code)))
         else:
             kind, code, source, left, also = (_claude_credential(leg) if leg == "claude"
@@ -2300,6 +2303,18 @@ def attach_seat_notices(leg: PanelLegResult, codes: Sequence[str]) -> PanelLegRe
                  if type(code) is str and code in _seat_jail.NOTICE_CODES)
     object.__setattr__(leg, "_seat_notice_codes", kept)
     return leg
+
+
+def refused_seat_notices(legs: Sequence[PanelLegResult]) -> "tuple[_seat_jail.Notice, ...]":
+    """agent-harness#1244: the typed refusal of each seat that is not counted because it was
+    refused (its detail is a notice code), so a below-floor refusal names the seat and its
+    fix. Rendered only from the notice table's literals."""
+    refused = []
+    for leg in legs:
+        if leg.usable:
+            continue
+        refused.extend(notice for notice in leg.seat_notices if notice.code == leg.detail)
+    return tuple(refused)
 
 
 def attach_harden_isolation_evidence(
@@ -12331,7 +12346,15 @@ def _seat_route_for_spawn(
 ) -> "tuple[_seat_jail.SeatRoute | None, list[str], str | None]":
     """J7 steps 0-4 for one production brokered launch, plus the EC-EXECFIND-2 gate.
 
-    Returns ``(route, notices, refusal)``. A sealed route carries its one notice code.
+    Returns ``(route, notices, refusal)``.
+
+    A route that is not jailed is refused with its one notice code: a review seat is never
+    run toolless with the bundle inlined (agent-harness#1244). Two runs that are not reviews
+    keep the route with its notice: the agy qualification worker's Gemini leg, which
+    measures a candidate image and is never a vote, and an advisory run's unstaged seats,
+    whose standalone document is inlined whole (agent-harness#802). A leg with no jail route
+    (codex, grok) keeps its own route only when a staged tree was approved for it to read;
+    with none it is refused with ``seat_sandbox_not_staged``.
 
     A jailed route whose jail digest has no recorded EC-EXECFIND-2 pass is qualified on
     first use (plan amendment A2): the host's jail qualification runs once, serialized, and
@@ -12347,12 +12370,22 @@ def _seat_route_for_spawn(
         is not None,
     )
     if route is None:
+        if (getattr(review_authorization, "staged_tree_sha256", None) is None
+                and not _advisory_document_run(review_authorization)):
+            return None, [], "seat_sandbox_not_staged"
         return None, [], None
-    if not route.jailed and route.code in _seat_jail.JAIL_NOT_RUN_CODES:
-        # Plan amendment A3b: a jail-eligible seat that cannot run jailed does not run.
-        return route, [], str(route.code)
     if not route.jailed:
-        return route, [str(route.code)], None
+        if route.code == "seat_sandbox_not_staged" and _advisory_document_run(review_authorization):
+            # An advisory run (agent-harness#802) reviews a standalone document inlined whole,
+            # stages no tree on purpose, and is never a landing vote.
+            return route, [str(route.code)], None
+        if leg == "gemini" and _measuring_qualification_candidate():
+            # The agy qualification worker measures a candidate image on this route. Its
+            # leg is admitted `qualification_candidate`, never a vote; it is not a review.
+            return route, [str(route.code)], None
+        # Plan amendment A3b, for every route code: a review seat that cannot run jailed
+        # is degraded and not run, never a toolless (sealed) substitute.
+        return route, [], str(route.code)
     if pass_recorded is not None:
         refusal = _pass_refusal(_seat_jail.jail_profile_digest(leg), pass_recorded)
         return (route, [], refusal[0]) if refusal is not None else (route, [], None)
@@ -12363,6 +12396,21 @@ def _seat_route_for_spawn(
     logging.getLogger(__name__).warning(
         "seat jail not qualified on this host (%s); the %s seat will not run", outcome.reason, leg)
     return route, [], "seat_jail_qualification_failed"
+
+
+def _advisory_document_run(review_authorization: object) -> bool:
+    """Is this authorization bound to the advisory contract (agent-harness#802)? Its
+    instructions digest is a sealed field of the authorization."""
+    from .advisor_board.advisory_contract import ADVISORY_CONTRACT
+
+    digest = getattr(review_authorization, "instructions_sha256", None)
+    return digest is not None and digest == sha256(ADVISORY_CONTRACT.encode("utf-8")).hexdigest()
+
+
+def _measuring_qualification_candidate() -> bool:
+    """Is this process the agy qualification worker? Only that worker sets the heartbeat
+    module's candidate image, after proving its fd and provenance (agent-harness#1076)."""
+    return gemini_heartbeat._CANDIDATE is not None
 
 
 def _ignored_override(leg: str) -> tuple[str, ...]:

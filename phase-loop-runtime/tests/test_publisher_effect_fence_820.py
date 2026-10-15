@@ -324,8 +324,8 @@ def test_validation_lifetime_covers_complete_checks_only_for_callback(fx, monkey
     original_active = live._require_active_generation_root
     checkpoints = []
 
-    def validate(latch, lease, *, strict=True):
-        original_validate(latch, lease, strict=strict)
+    def validate(latch, lease, *, strict=True, allow_draining=False):
+        original_validate(latch, lease, strict=strict, allow_draining=allow_draining)
         checkpoints.append("lease")
         assert _lock_available(latch.lock_path) is not callback
 
@@ -416,3 +416,18 @@ def test_authenticated_receipt_refuses_missing_latch(fx):
 def test_undeclared_validation_compatibility_retains_none_result(fx):
     assert live.require_current_generation(fx.root, live.UNDECLARED_LEASE) is None
     assert live.require_current_generation(fx.root, live.UNDECLARED_LEASE, effect=lambda: 23) == 23
+
+
+@pytest.mark.parametrize("lease", ["held", "undeclared"])
+def test_draining_tolerance_is_validation_only_never_an_effect(fx, lease):
+    held = fx.lease if lease == "held" else live.UNDECLARED_LEASE
+    fx.latch.begin_draining()
+    calls = []
+    with pytest.raises(ValueError, match="allow_draining"):
+        live.require_current_generation(fx.root, held, allow_draining=True,
+                                        effect=lambda: calls.append(1))
+    assert calls == [] and _lock_available(fx.latch.lock_path)
+    assert live.require_current_generation(fx.root, held, allow_draining=True) is None
+    with pytest.raises(live.WriterGenerationBlocked, match="DRAINING"):
+        live.require_current_generation(fx.root, held, effect=lambda: calls.append(1))
+    assert calls == []

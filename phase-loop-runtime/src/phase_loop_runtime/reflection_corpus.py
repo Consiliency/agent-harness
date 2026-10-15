@@ -14,11 +14,13 @@ the filter rules can be tested and cannot silently drift between harnesses.
 CLI::
 
     python3 -m phase_loop_runtime.reflection_corpus collect --out-dir DIR [--root R ...]
+        (writes DIR/bundle.md, DIR/manifest.json and DIR/rule_enforcement.md)
     python3 -m phase_loop_runtime.reflection_corpus archive --manifest DIR/manifest.json [--root R ...] [--dry-run]
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import re
@@ -29,6 +31,7 @@ from pathlib import Path
 from typing import Iterable, Sequence
 
 from .credential_redaction import redact_text
+from .rule_enforcement import Rule, load_registry
 from .skill_paths import HARNESS_DEFAULT_SKILL_ROOTS, resolve_skill_bundle_root
 
 HARNESS_PREFIXES = tuple(HARNESS_DEFAULT_SKILL_ROOTS)
@@ -238,11 +241,14 @@ def read_reflection(root: Path, skill: str, path: Path) -> Reflection | None:
     )
 
 
-def redact(text: str) -> str:
-    """Strip closeout-ledger detail that belongs in the handoff, not a reflection."""
+def redact(text: str, *, drop_ledger: bool = True, bulleted_ledger: bool = False) -> str:
+    """Redact ledger detail; friction keeps ledger-labelled observations."""
     kept = []
     for line in text.splitlines():
-        if line.strip().lower().startswith(_LEDGER_PREFIXES):
+        head = line.strip()
+        if bulleted_ledger:
+            head = re.sub(r"^[-*+]\s+", "", head)
+        if drop_ledger and head.lower().startswith(_LEDGER_PREFIXES):
             continue
         line = _URL.sub("<url>", line)
         line = _JSON_BLOB.sub("<json>", line)
@@ -270,7 +276,7 @@ NEAR_DUPLICATE_OVERLAP = 0.8
 
 
 def _norm_line(line: str) -> str:
-    return " ".join(line.strip().lstrip("-*").split())
+    return " ".join(re.sub(r"^[-*+]\s+", "", line.strip()).split())
 
 
 def _content_lines(reflection: Reflection) -> set[str]:
@@ -282,26 +288,27 @@ def _content_lines(reflection: Reflection) -> set[str]:
 
 
 def _mark_duplicates(reflections: list[Reflection]) -> None:
-    """Collapse exact and near copies within one skill/repo/branch.
+    """Collapse exact and near copies of the same skill/repo/branch/run.
 
     A near-copy is a re-emitted reflection (same run re-closed) whose own content
     lines are at least ``NEAR_DUPLICATE_OVERLAP`` contained in an earlier kept one, so
     a newer reflection that adds friction to an older one is kept. Copies are never
-    collapsed across repos or branches: identical reports from independent runs are
+    collapsed across runs: identical reports from independent runs are
     recurring evidence, not duplicates.
     """
-    kept_by_group: dict[tuple[str, str, str], list[tuple[str, set[str]]]] = defaultdict(list)
+    kept_by_group: dict[tuple[str, str, str, str], list[tuple[str, set[str]]]] = defaultdict(list)
     for reflection in reflections:
-        if reflection.excluded:
+        if reflection.excluded or not reflection.repo_hash or not reflection.branch_slug:
             continue
+        group = (*reflection.group, reflection.run_id)
         lines = _content_lines(reflection)
-        for kept_id, kept_lines in kept_by_group[reflection.group]:
+        for kept_id, kept_lines in kept_by_group[group]:
             if lines and len(lines & kept_lines) / len(lines) >= NEAR_DUPLICATE_OVERLAP:
                 reflection.excluded = f"duplicate_of:{kept_id}"
                 break
         if reflection.excluded:
             continue
-        kept_by_group[reflection.group].append((reflection.id, lines))
+        kept_by_group[group].append((reflection.id, lines))
 
 
 def apply_quality_filter(
@@ -313,21 +320,27 @@ def apply_quality_filter(
     """Mark exclusions in place and strip boilerplate; returns the boilerplate lines removed.
 
     Order matters. Duplicates collapse first so one copied reflection cannot make
-    its own lines look like cross-run boilerplate. Boilerplate is stripped before
-    the ``Improvements`` gate so a copied repo-specific line does not reject an
-    otherwise repo-agnostic proposal, and the per-branch cap runs last so it keeps
-    the newest *usable* reflections.
+    its own lines look like cross-run boilerplate. Repeated one-repo ledger lines
+    and repeated one-repo lines carrying a ref, path or URL are stripped from What
+    worked and Improvements before classification. Repo-specific proposals are
+    dropped section by section, and the per-branch cap keeps the newest usable
+    reflections.
     """
     _mark_duplicates(reflections)
 
-    # Boilerplate is a line one repo's runs keep re-emitting (a copied ledger or
-    # template line). The same line from several repos is recurring evidence and stays.
     line_counts: Counter[str] = Counter()
     line_repos: dict[str, set[str]] = defaultdict(set)
     for reflection in reflections:
         if not reflection.excluded:
-            for line in _content_lines(reflection):
-                if len(line) >= BOILERPLATE_MIN_CHARS:
+            ledger_lines = {
+                _norm_line(line)
+                for key in ("worked", "improvements")
+                for line in reflection.sections.get(key, "").splitlines()
+            }
+            for line in ledger_lines:
+                if len(line) >= BOILERPLATE_MIN_CHARS and (
+                    line.lower().startswith(_LEDGER_PREFIXES) or classify_improvements(line) == "repo_specific"
+                ):
                     line_counts[line] += 1
                     line_repos[line].add(reflection.repo_hash)
     boilerplate = {
@@ -337,23 +350,32 @@ def apply_quality_filter(
     for reflection in reflections:
         if reflection.excluded:
             continue
+        stripped_repo_specific = False
         for key in CONTENT_KEYS:
             if key not in reflection.sections:
                 continue
             original = reflection.sections[key].splitlines()
-            kept = [line for line in original if _norm_line(line) not in boilerplate]
+            kept = original if key == "didnt" else [line for line in original if _norm_line(line) not in boilerplate]
             if len(kept) != len(original):
                 reflection.notes.append(f"boilerplate_stripped:{key}:{len(original) - len(kept)}")
+            if key == "improvements":
+                stripped_repo_specific = any(classify_improvements(line) == "repo_specific" for line in original if line not in kept)
             reflection.sections[key] = "\n".join(kept).strip()
         reflection.improvements_class = classify_improvements(reflection.sections.get("improvements", ""))
+        if stripped_repo_specific and classify_improvements(redact(reflection.sections.get("improvements", ""), bulleted_ledger=True)) in {"none", "missing"}:
+            reflection.improvements_class = "repo_specific"
         if reflection.improvements_class == "repo_specific":
-            reflection.excluded = "improvements_repo_specific"
-            continue
+            reflection.sections["improvements"] = ""
+            reflection.notes.append("improvements_repo_specific")
+            reflection.notes.append("section_dropped:improvements:repo_specific")
         for key in CONTENT_KEYS:
             if key in reflection.sections:
-                reflection.sections[key] = redact(reflection.sections[key])
-        if reflection.structured and not reflection.sections.get("didnt") and reflection.improvements_class in {"none", "missing"}:
-            reflection.excluded = "no_friction_or_proposal"
+                reflection.sections[key] = redact(
+                    reflection.sections[key], drop_ledger=key != "didnt", bulleted_ledger=key == "improvements",
+                )
+        eligible_proposal = reflection.improvements_class == "agnostic" and bool(reflection.sections.get("improvements"))
+        if reflection.structured and not reflection.sections.get("didnt") and not eligible_proposal:
+            reflection.excluded = "improvements_repo_specific" if reflection.improvements_class == "repo_specific" else "no_friction_or_proposal"
 
     groups: dict[tuple[str, str, str], list[Reflection]] = defaultdict(list)
     for reflection in reflections:
@@ -441,6 +463,10 @@ def _header_field(value: str) -> str:
     return quote_body(" ".join(redact_text(value).split()))
 
 
+def _source_token(*parts: str) -> str:
+    return hashlib.sha256(json.dumps(parts).encode()).hexdigest()[:16] if all(parts) else "unknown"
+
+
 def render_bundle(corpus: Corpus) -> str:
     """The aggregator's input: admitted reflections grouped by bare skill.
 
@@ -453,6 +479,11 @@ def render_bundle(corpus: Corpus) -> str:
         lines += [f"## {skill} ({len(items)} reflections)", ""]
         for reflection in items:
             lines.append(f"### {reflection.id} — {_header_field(reflection.skill)} — {_header_field(reflection.timestamp)}")
+            lines.append(
+                f"**Source**: repo {_source_token(reflection.repo_hash)}; "
+                f"branch {_source_token(reflection.repo_hash, reflection.branch_slug)}; "
+                f"run {_source_token(reflection.repo_hash, reflection.branch_slug, reflection.run_id)}"
+            )
             if reflection.structured:
                 for key, label in labels:
                     body = reflection.sections.get(key, "")
@@ -474,8 +505,10 @@ def consumed(corpus: Corpus) -> list[Reflection]:
     any skill, reflections excluded as a duplicate or as having no friction and no
     proposal. Every other reflection stays in place: admitted ones of a skill below
     the threshold so evidence can accumulate, and the rest of the excluded ones
-    (repo-specific Improvements, per-branch cap, oversized) because their friction
-    is still evidence (agent-harness#1371). A reflection whose real location leaves
+    (a dropped repo-specific proposal with no friction, per-branch cap, oversized)
+    because they may still be evidence.
+    Repo-specific Improvements are removed without dropping usable friction.
+    A reflection whose real location leaves
     its scan root is never consumed, because ``archive`` would refuse it.
     """
     ready = set(corpus.ready_skills())
@@ -509,13 +542,42 @@ def manifest(corpus: Corpus, boilerplate: list[str]) -> dict[str, object]:
     }
 
 
+def render_rule_registry(rules: Sequence[Rule]) -> str:
+    """agent-harness#1321 (REPORT 1.14/1.15): the shipped rule->enforcer registry as
+    the aggregator reads it. Unlike ``bundle.md`` this is trusted package data, so it
+    is a separate artifact; the aggregator's structural-mechanism gate and ladder
+    level are decided against it."""
+    lines = [
+        "# Rule enforcement registry",
+        "",
+        "Shipped skill rules and what refuses a violation of each "
+        "(`phase_loop_runtime/rule_enforcement.json`). Statuses: `enforced` (named code "
+        "refuses a violation), `unenforced/gap` (a mechanism could exist and does not "
+        "yet; `tracking` names its issue), `unenforced/judgment` (prose is the correct, "
+        "final level).",
+        "",
+    ]
+    for rule in sorted(rules, key=lambda r: r.id):
+        status = rule.status if rule.status == "enforced" else f"{rule.status}/{rule.unenforced_reason}"
+        lines.append(f"- `{rule.id}` — skill `{rule.skill}` — **{status}**")
+        lines.append(f"  - rule: {json.dumps(rule.quote, ensure_ascii=False)}")
+        for enforcer in rule.enforcers:
+            where = enforcer.module if enforcer.kind == "module" else enforcer.path
+            lines.append(f"  - enforcer: {enforcer.kind} `{where}:{enforcer.symbol}`")
+        if rule.tracking:
+            lines.append(f"  - tracking: {rule.tracking}")
+    return "\n".join(lines) + "\n"
+
+
 def write_corpus(corpus: Corpus, boilerplate: list[str], out_dir: Path) -> dict[str, Path]:
     out_dir.mkdir(parents=True, exist_ok=True)
     bundle = out_dir / "bundle.md"
     manifest_path = out_dir / "manifest.json"
+    registry = out_dir / "rule_enforcement.md"
     bundle.write_text(render_bundle(corpus), encoding="utf-8")
     manifest_path.write_text(json.dumps(manifest(corpus, boilerplate), indent=2) + "\n", encoding="utf-8")
-    return {"bundle": bundle, "manifest": manifest_path}
+    registry.write_text(render_rule_registry(load_registry()), encoding="utf-8")
+    return {"bundle": bundle, "manifest": manifest_path, "rule_registry": registry}
 
 
 def archive_target(path: Path) -> Path:
@@ -585,7 +647,7 @@ def archive(
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python3 -m phase_loop_runtime.reflection_corpus")
     sub = parser.add_subparsers(dest="command", required=True)
-    collect_cmd = sub.add_parser("collect", help="Enumerate, parse and filter reflections; write bundle.md + manifest.json.")
+    collect_cmd = sub.add_parser("collect", help="Enumerate, parse and filter reflections; write bundle.md, manifest.json and rule_enforcement.md.")
     collect_cmd.add_argument("--root", action="append", type=Path, help="Skill root to scan (repeatable). Default: every harness root.")
     collect_cmd.add_argument("--out-dir", type=Path)
     collect_cmd.add_argument("--min-reflections", type=int, default=2)

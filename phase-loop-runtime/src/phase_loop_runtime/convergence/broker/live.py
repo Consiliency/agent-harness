@@ -39,7 +39,7 @@ from phase_loop_runtime.convergence.provider_contracts import PROVIDER_COMPLETIO
 from .admission import BrokerAdmissionPolicy, LinearizableAdmissionStore
 from .credsep import ALLOWED_ORIGIN_HOSTS, GitHubBrokerAdapter
 from .evidence import BrokerEvidenceStore
-from .verbs import BrokerClient, BrokerService
+from .verbs import BrokerClient, BrokerService, ProviderEntryRefused
 
 _CANONICAL_GITHUB_BROKER_ADAPTER = GitHubBrokerAdapter
 _CANONICAL_PROVIDER_RUN = subprocess.run
@@ -85,6 +85,31 @@ class WriterGenerationBlocked(PermissionError):
 
     def __init__(self, detail: str) -> None:
         super().__init__(f"{GENERATION_BLOCKER}: {detail}")
+
+
+class RoutingClientGenerationRetired(WriterGenerationBlocked):
+    """A routing client is bound to a partition generation a rotation retired.
+
+    agent-harness#1315: the client refuses every request rather than rebind.
+    The remedy is a new client (or a restarted broker process), not an
+    authority repair or a rotation (agent-harness#1573 ask 4).
+    """
+
+
+class ProviderEntryGenerationRefused(ProviderEntryRefused, WriterGenerationBlocked):
+    """A ``WriterGenerationBlocked`` in the provider-entry window (agent-harness#1594).
+
+    Both a ``ProviderEntryRefused`` (the human route's "retry once" handoff) and
+    a ``WriterGenerationBlocked``, so callers that catch the generation refusal
+    behave as before.  The message is the original's, already prefixed, so the
+    ``GENERATION_BLOCKER`` prefix is not added again; the original is chained
+    as ``__cause__`` by the raiser.
+    """
+
+    def __init__(self, message: str, *, effect_key: str, transaction_id: str) -> None:
+        PermissionError.__init__(self, message)
+        self.effect_key = effect_key
+        self.transaction_id = transaction_id
 
 
 class FabpubConfigurationError(RuntimeError):
@@ -753,7 +778,8 @@ class WriterGenerationLatch:
             return lease
 
     def validate_lease(
-        self, lease: "WriterGenerationLease | None", *, strict: bool = True
+        self, lease: "WriterGenerationLease | None", *, strict: bool = True,
+        allow_draining: bool = False,
     ) -> None:
         """Revalidate an exact lease nonce + generation against current state.
 
@@ -771,7 +797,10 @@ class WriterGenerationLatch:
         """
         with self.exclusive():
             snapshot = self.read()
-            if snapshot.generation_state == "DRAINING":
+            if snapshot.generation_state == "DRAINING" and not allow_draining:
+                # agent-harness#1633: a post-ambiguity observation by a writer that
+                # still holds its lease may wait for admissions.lock while DRAINING;
+                # the held lease is what keeps the ceremony from draining.
                 raise WriterGenerationBlocked(
                     "the repository generation latch entered DRAINING before this write"
                 )
@@ -798,17 +827,22 @@ UNDECLARED_LEASE = object()
 
 def require_current_generation(
     store_root: Path, lease: "WriterGenerationLease | None" = None, *, strict: bool = True,
+    allow_draining: bool = False,
     effect=None,
 ):
     """Validate before an append, or hold the latch across a synchronous effect.
 
     Validation-only callers hold their store lock. Effect callbacks must not
     acquire store locks, append evidence, release leases or wait for drain.
+    ``allow_draining`` is for validation only (the agent-harness#1633
+    post-ambiguity observation); an effect never runs under a DRAINING latch.
 
     SL1-SOL-02/07: a MISSING latch is only legal where no activation authority
     exists.  If the namespace carries an authenticated receipt, an absent latch
     means the authority was removed under us, which is denial — not permission.
     """
+    if effect is not None and allow_draining:
+        raise ValueError("a synchronous effect cannot run under allow_draining")
     store_root = Path(store_root)
     if lease is UNDECLARED_LEASE:
         lease, strict = None, False
@@ -821,7 +855,7 @@ def require_current_generation(
             )
         return effect() if effect is not None else None
     with latch.exclusive() if effect is not None else contextlib.nullcontext():
-        latch.validate_lease(lease, strict=strict)
+        latch.validate_lease(lease, strict=strict, allow_draining=allow_draining)
         _require_active_generation_root(store_root)
         return effect() if effect is not None else None
 
@@ -950,6 +984,8 @@ ROTATION_DIGESTED_FILES = (
 ROTATION_STORE_FILES = ROTATION_DIGESTED_FILES + (
     "admissions.lock",
     "legacy-promotions.jsonl",
+    # agent-harness#1591: not digested; it can only add refusals.
+    "post-ambiguity-observations.jsonl",
 )
 
 
@@ -1453,6 +1489,55 @@ class RecoveryChainSuperseded(LegacyCutoverConflict):
 
 def _generation_store(container: Path, generation: int) -> Path:
     return container if generation == 0 else container / GENERATIONS_DIR / str(generation)
+
+
+def generation_store_root(store_root: Path, generation: int) -> Path:
+    """The store root of ``generation`` in ``store_root``'s partition."""
+    container, _active = _partition_layout(Path(store_root))
+    return _generation_store(container, generation)
+
+
+def post_ambiguity_effect_refusal(store_root: Path, key: str) -> str | None:
+    """Why ``key`` of ``store_root`` must not be disposed ``attested_not_landed``, or ``None``.
+
+    agent-harness#1591 (D2): the provider reported an effect for the key after
+    its row was already ambiguous, or the side file that would say so cannot be
+    read (fail closed).  A no-effect observation is supporting evidence only
+    (D4) and refuses nothing.
+    """
+    from .evidence import (
+        POST_AMBIGUITY_OBSERVATIONS_FILENAME,
+        UNREADABLE,
+        post_ambiguity_effect,
+    )
+
+    observed = post_ambiguity_effect(Path(store_root), key)
+    if observed is UNREADABLE:
+        return (
+            f"an unreadable {POST_AMBIGUITY_OBSERVATIONS_FILENAME} in {store_root} (it may hold "
+            "a provider-reported effect for the key)"
+        )
+    if observed is None:
+        return None
+    return (
+        f"a provider-reported effect for {key!r} after the key was blocked: "
+        f"{observed.evidence_reference} at head {observed.head_sha} (transaction "
+        f"{observed.transaction_id}, recorded in {POST_AMBIGUITY_OBSERVATIONS_FILENAME})"
+    )
+
+
+def _refuse_attested_not_landed_over_observations(store_root: Path, effects: dict) -> None:
+    """Refuse an ``attested_not_landed`` entry for an observed effect (agent-harness#1591, D2)."""
+    for key, entry in sorted(effects.items()):
+        if not isinstance(entry, dict) or entry.get("disposition") != DISPOSITION_ATTESTED_NOT_LANDED:
+            continue
+        why = post_ambiguity_effect_refusal(store_root, key)
+        if why is not None:
+            raise PartitionRotationRefused(
+                f"attestation disposes {key!r} attested_not_landed, but the predecessor holds {why}; "
+                "dispose it observed_landed with that observed head and evidence URL, or escalate "
+                "to the maintainer"
+            )
 
 
 def _sealed_generation_bytes(store: Path, name: str, sealed_digest: str | None, generation: int) -> bytes | None:
@@ -5073,6 +5158,13 @@ def rotate_blocked_partition(
     adjudicated = _adjudicate_rotation_predecessor(
         attestation, _snapshot_predecessor(active), generation, active_receipt, identity
     )
+    # agent-harness#1591: the early, zero-write answer; re-checked under the lock.
+    # agent-harness#1633: a ceremony whose own journal already holds
+    # INVENTORY_SEALED (an older runtime's, or one that crashed after its in-lock
+    # check) must still resume toward ACTIVE; as on the post-flip arm, the
+    # re-admission refusal guards the observed effect there.
+    if "INVENTORY_SEALED" not in states:
+        _refuse_attested_not_landed_over_observations(active, adjudicated.effects)
     digest = adjudicated.digest
     expected_digests = adjudicated.predecessor_digests
     derived = _derive_rotation_inventory(
@@ -5198,6 +5290,14 @@ def rotate_blocked_partition(
                         "the predecessor store changed between attestation and drain; re-attest over "
                         "the current bytes"
                     )
+                # agent-harness#1591: the side file is not digested; a writer that
+                # recorded an observation before the drain is caught here.
+                if "INVENTORY_SEALED" not in states:
+                    try:
+                        _refuse_attested_not_landed_over_observations(active, adjudicated.effects)
+                    except PartitionRotationRefused:
+                        latch.resume_active()
+                        raise
                 if sealed is None:
                     sealed = derived
                     _atomic_write_json(inventory_path, sealed)
@@ -5982,7 +6082,7 @@ class _RepositoryRoutingBrokerService:
             # rotation moved the ACTIVE pointer.  Refuse typed on every request
             # rather than serve the retired generation's ledger or rebind under a
             # lease the rotation's drain never saw.
-            raise WriterGenerationBlocked(
+            raise RoutingClientGenerationRetired(
                 f"this broker client is bound to retired partition generation "
                 f"{stores[1].root} of {snapshot.identity}; the ACTIVE generation is "
                 f"{snapshot.store_root}. A partition rotation completed after the client "
