@@ -367,7 +367,7 @@ phase-loop advisor-board bundle.md --pointer-brief --json
 
 `--pointer-brief` declares that the brief tells reviewers to open files in the staged tree instead of carrying their content inline.
 
-**Before launch.** Before any seat launches, the board checks each seat's route. A seat that cannot open files gets `seat_pointer_brief_unreadable`, printed on stderr. For Claude, that is a brokered seat that does not take the jailed route on this host. A Claude seat that is jailed (agent-harness#1132) or filled natively has file access. The brokered Gemini (agy) seat is also marked.
+**Before launch.** Before any seat launches, the board checks each seat's route. A seat that cannot open files gets `seat_pointer_brief_unreadable`, printed on stderr. For Claude and Gemini (agy), that is a brokered seat that does not take the jailed route on this host. A Claude or Gemini seat that is jailed (agent-harness#1132, agent-harness#1170) has file access, and so does a Claude seat filled natively.
 
 **What happens to that seat.** It still runs, but its verdict is **not source-grounded**:
 - It does not count toward the floor, the landing count or the pre-merge minimum of reviewers.
@@ -376,7 +376,7 @@ phase-loop advisor-board bundle.md --pointer-brief --json
 
 The payload adds `notices`, `legs[].notices`, `legs[].source_grounded` and `grounded_seats`, and only when the flag is set.
 
-**The fix.** Inline the referenced content, or fill the seat through a route with file access: for Claude, the jailed route or a native fill. The Gemini tool route is agent-harness#1170.
+**The fix.** Inline the referenced content, or fill the seat through a route with file access: for Claude, the jailed route or a native fill; for Gemini, the jailed route (agent-harness#1170).
 
 ### Opt-in governed web research
 
@@ -640,9 +640,10 @@ group is named after you and has no other members, and no other account uses it 
 primary group. Anything else is refused with `seat_sandbox_refused:pass_store_unsafe`. Its
 notice names the fix: `chmod go-w` on those three directories, or `chmod 0700`. Neither the
 qualification nor the gate ever changes these permissions for you. The store defends against the
-seat uid, stale records, other hosts and accidental reuse. The Gemini seat is degraded and
-does not run, with `gemini_seat_egress_unconfined`, until its jail egress is limited to agy's
-inference hosts (agent-harness#1170). Codex and grok are
+seat uid, stale records, other hosts and accidental reuse. Gemini seats are jailed with tools
+too (agent-harness#1170): the seat's egress goes through an allowlisting proxy, installed
+once per user with `phase-loop seat-egress install` (node 22.12+ and npm); without it the
+Gemini seat is degraded and does not run, with that fix. Codex and grok are
 not jailed yet (agent-harness#895) and carry `seat_filesystem_unconfined` when given a tree;
 on a review with no staged tree they are degraded and do not run (`seat_sandbox_not_staged`).
 An `--advisory` run stages no tree on purpose and keeps every seat on the inline route.

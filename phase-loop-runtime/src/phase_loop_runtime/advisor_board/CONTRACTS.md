@@ -1401,13 +1401,12 @@ are recorded on agent-harness#1132.
 - **Route (J7).** A production brokered Claude or Gemini leg decides its route once, after
   the public-entry authorization and before staging, in this order; the first failure wins
   and yields exactly one code: (0) no staged tree -> `seat_sandbox_not_staged`; (1) a
-  recorded Gemini P4/P3 stop -> its code (today `gemini_seat_egress_unconfined`: the agy
-  token carries `cloud-platform`, and the "prove then enable" containment probe found jail
-  egress not limited to agy's inference hosts; P3 was not run and the tooled profile is not
-  built); (2) host capability -> `seat_sandbox_unavailable_host`,
-  `_tiocsti`, or `_seat_uid`; (3) credential presence -> `claude_seat_token_missing` /
-  `gemini_seat_credential_missing`; (4) Gemini tooled qualification ->
-  `gemini_seat_profile_unqualified`. A seat stopped at any of steps 0-4 is DEGRADED and not
+  recorded Gemini P4/P3 stop -> its code (none today: the containment probe re-run through
+  the seat's egress layer and P3 pass, agent-harness#1170); (2) host capability ->
+  `seat_sandbox_unavailable_host`, `_tiocsti`, or `_seat_uid`; (3) credential presence ->
+  `claude_seat_token_missing` / `gemini_seat_credential_missing`; (4) the Gemini tooled
+  profile -> `gemini_seat_profile_unqualified`, then its egress layer ->
+  `gemini_seat_egress_unavailable`. A seat stopped at any of steps 0-4 is DEGRADED and not
   run, with that code as its detail and notice (agent-harness#1244, below). Codex and grok
   are not jailed (agent-harness#895) and carry `seat_filesystem_unconfined` when given a
   tree; without a staged tree they too are DEGRADED and not run, with
@@ -1455,9 +1454,9 @@ are recorded on agent-harness#1132.
   `SEALED_FALLBACK_CODES`.
 - **A sealed or toolless review seat is never run and never counted (agent-harness#1244).**
   A brokered review seat whose route is not jailed (every `SEALED_FALLBACK_CODES` code:
-  a host without the jail prerequisites, an unstaged review, the Gemini seat's recorded
-  stop), and a codex or grok seat with no staged tree, is DEGRADED and NOT RUN before
-  anything is staged. Its detail and notice are the route code, with the notice table's fix;
+  a host without the jail prerequisites, an unstaged review, a recorded Gemini stop, a
+  Gemini seat without its egress layer), and a codex or grok seat with no staged tree, is
+  DEGRADED and NOT RUN before anything is staged. Its detail and notice are the route code, with the notice table's fix;
   its seat mode is `degraded`, never `sealed`. It is therefore not a usable leg: the reviewer
   floor and `usable`, the landing vote, the governed gate, the train's recorded reviewers and
   the president's input (`unusable (DEGRADED)`) all leave it out. A board that falls below
@@ -1466,14 +1465,33 @@ are recorded on agent-harness#1132.
   code and fix. The one exception is not a
   review: the agy qualification worker process (the only one that sets the heartbeat
   module's candidate image) keeps its Gemini leg on that route, with its notice, to measure
-  the candidate; that leg is admitted `qualification_candidate`, which is never a vote. An
+  the candidate; on a host that could jail a Gemini seat that leg takes the heartbeat route
+  with `gemini_seat_qualification_candidate` instead, so it is never jailed (agent-harness#1170).
+  That leg is admitted `qualification_candidate`, which is never a vote. An
   `--advisory` run (agent-harness#802), whose authorization is bound to the advisory
   contract and stages no tree on purpose, keeps its seats on the inline route with
   `seat_sandbox_not_staged`: its standalone document is inlined whole and it is non-gating.
   Every other sealed code still refuses its seats there.
-- **The jailed route is Claude-only.** `JAILED_LEGS` is exactly `{"claude"}`. A Gemini
-  seat's route is not jailed today, so it is DEGRADED and not run with its typed notice
-  (above); a tooled Gemini seat is agent-harness#1170.
+- **The jailed route is Claude and Gemini.** `JAILED_LEGS` is exactly `{"claude",
+  "gemini"}`. The Gemini seat (agent-harness#1170) runs agy with its tools in its own jail:
+  the credential config directory (`antigravity-cli`) holds the parent-built access-token-only
+  copy and is read-only except `bin`, `cache` and `log`; its read-only ancestor `.gemini` is a
+  mount point the seat cannot rename, so the config cannot be made writable through its parent
+  (only agy's own `.gemini/config` runtime state is writable). Its cwd is an empty workspace and
+  the tree is never an `--add-dir`, so agy loads no workspace file from the tree (P3); a subagent
+  or any event P3 did not record ends the leg with `gemini_seat_subagent_or_unknown_event`. Its
+  network namespace has no uplink: one loopback port is bridged to a fail-closed front over srt's
+  TLS-terminating proxy on the host (`@anthropic-ai/sandbox-runtime`, pinned by version, integrity
+  and installed-file digest, the installed tree rejected if it holds any unexpected symlink). The
+  front forwards to srt only a positively-inspected ClientHello whose SNI is on the pinned request
+  allowlist (`seat_egress/gemini-allowlist.json`); every other first flight is refused, so no
+  Host or SNI inside a tunnel reaches a non-allowlisted service, and srt's opaque-tunnel fallback
+  is never reached. The interception CA is the host's own
+  (`$XDG_STATE_HOME/phase-loop/seat-egress-ca`, 0700, key 0600); only its certificate enters the
+  seat, as its whole trust bundle. Both credentials the leg hands the seat -- the model bearer and
+  the proxy's session credential -- are scanned out of the returned review. The leg's evidence
+  records `egress` (with `tls_inspection: true`). Without the layer the seat is DEGRADED and not
+  run with `gemini_seat_egress_unavailable`; its fix is `phase-loop seat-egress install`.
 - **EC-EXECFIND-2 gate.** A jailed route whose jail profile digest has no EC-EXECFIND-2
   falsifier pass recorded on THIS host is REFUSED before any effect with
   `seat_sandbox_refused:jail_unqualified`. The notice names the per-host qualification as
