@@ -113,33 +113,56 @@ def _fabreadmit_capability_active() -> bool:
     return getattr(module, FABREADMIT_MARKER_ATTRIBUTE, None) == FABREADMIT_MARKER_VERSION
 
 
-def _has_no_hardcoded_epoch_publishers(search_root: Path | str | None = None) -> bool:
+# Parsing every module of the package costs seconds and a train run asks up to
+# three times. One file's verdict is a pure function of its text, so it is
+# memoised by the sha256 of that text: an edited file is parsed again.
+_EPOCH_PUBLISHER_VERDICTS: dict[bytes, bool] = {}
+
+
+def _calls_hardcoded_epoch_publisher(text: str, filename: str) -> bool:
     import ast
+
+    supported_names = tuple(p.rsplit(".", 1)[-1] for p in DEFAULT_SUPPORTED_PUBLISHERS)
+    try:
+        tree = ast.parse(text, filename=filename)
+    except Exception:
+        return False
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            func = node.func
+            func_name = None
+            if isinstance(func, ast.Name):
+                func_name = func.id
+            elif isinstance(func, ast.Attribute):
+                func_name = func.attr
+
+            if func_name in supported_names:
+                for kw in node.keywords:
+                    if kw.arg == "epoch":
+                        return True
+                if len(node.args) >= 3:
+                    return True
+    return False
+
+
+def _has_no_hardcoded_epoch_publishers(search_root: Path | str | None = None) -> bool:
+    import hashlib
+
     if search_root is None:
         search_root = Path(__file__).resolve().parent
 
-    supported_names = tuple(p.rsplit(".", 1)[-1] for p in DEFAULT_SUPPORTED_PUBLISHERS)
-
     for path in Path(search_root).rglob("*.py"):
         try:
-            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            text = path.read_text(encoding="utf-8")
         except Exception:
             continue
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Call):
-                func = node.func
-                func_name = None
-                if isinstance(func, ast.Name):
-                    func_name = func.id
-                elif isinstance(func, ast.Attribute):
-                    func_name = func.attr
-
-                if func_name in supported_names:
-                    for kw in node.keywords:
-                        if kw.arg == "epoch":
-                            return False
-                    if len(node.args) >= 3:
-                        return False
+        key = hashlib.sha256(text.encode("utf-8")).digest()
+        verdict = _EPOCH_PUBLISHER_VERDICTS.get(key)
+        if verdict is None:
+            verdict = _calls_hardcoded_epoch_publisher(text, str(path))
+            _EPOCH_PUBLISHER_VERDICTS[key] = verdict
+        if verdict:
+            return False
     return True
 
 

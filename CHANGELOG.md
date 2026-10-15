@@ -6,6 +6,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Faster train runs and a shorter CI test suite
+
+- `fab_delta_shortcut_enabled` checked for hard-coded epoch publishers by parsing every
+  module of the package on every call: about 5 s, up to three times per train run. Each
+  file's verdict is now memoised by the sha256 of its text, so an unchanged file is not
+  parsed again and an edited one is. The verdict is unchanged.
+- The suite's longest xdist work units are split: the two HARDEN producer attack tables run
+  as four shard files each (every attack still runs exactly once), and the BAML v1 worker
+  fault, owner-death and client-invariant drivers have their own files. The BAML baton
+  sweeps freeze the inherited heap, so their `gc.collect()` calls no longer walk the
+  whole collected suite.
+
 ### The Gemini board seat runs jailed with tools (agent-harness#1170)
 
 - The Gemini (agy) seat now runs in its own seat jail with its tools, like the Claude seat:
