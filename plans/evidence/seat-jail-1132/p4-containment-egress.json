@@ -1,0 +1,224 @@
+{
+  "a_expired_copy_turn": "ERROR",
+  "a_holds": true,
+  "a_staged_copy": {
+    "keys": [
+      "auth_method",
+      "token",
+      "token.access_token",
+      "token.expiry",
+      "token.token_type"
+    ],
+    "remaining_lifetime_at_staging_s": 3391,
+    "secret_keys_present": [],
+    "token_value_is_nonempty_string": true
+  },
+  "a_token_refresh_endpoint": {
+    "connect_code": "403",
+    "error": "curl: (56) Received HTTP code 403 from proxy after CONNECT",
+    "http_code": "000",
+    "proxy_tag": false,
+    "real_reply": false,
+    "refused_by_proxy": true,
+    "refused_by_request_filter": false
+  },
+  "a_turn": {
+    "event_types": [
+      "init",
+      "result",
+      "step_update"
+    ],
+    "files_in_seat_writable_dirs_mentioning_a_token": 0,
+    "response": "P4-OK\n",
+    "staged_copy_unchanged": true,
+    "status": "SUCCESS"
+  },
+  "agy_version": "1.3.5",
+  "b_direct_without_proxy": {
+    "https://1.1.1.1/": {
+      "connect_code": "000",
+      "error": "curl: (7) Couldn't connect to server",
+      "http_code": "000",
+      "proxy_tag": false,
+      "real_reply": false,
+      "refused_by_proxy": false,
+      "refused_by_request_filter": false
+    },
+    "https://daily-cloudcode-pa.googleapis.com/": {
+      "connect_code": "000",
+      "error": "curl: (6) Could not resolve host: daily-cloudcode-pa.googleapis.com",
+      "http_code": "000",
+      "proxy_tag": false,
+      "real_reply": false,
+      "refused_by_proxy": false,
+      "refused_by_request_filter": false
+    }
+  },
+  "b_fail_closed_front": {
+    "attack_0x04_record_sni_storage": {
+      "reached_a_service": false,
+      "result": "UPSTREAM_BYTES 0",
+      "upstream_bytes": 0
+    },
+    "attack_standard_hello_sni_storage": {
+      "reached_a_service": false,
+      "result": "UPSTREAM_BYTES 0",
+      "upstream_bytes": 0
+    }
+  },
+  "b_forbidden_hosts": {
+    "cloudresourcemanager.googleapis.com": {
+      "connect_code": "403",
+      "error": "curl: (56) Received HTTP code 403 from proxy after CONNECT",
+      "http_code": "000",
+      "proxy_tag": false,
+      "real_reply": false,
+      "refused_by_proxy": true,
+      "refused_by_request_filter": false
+    },
+    "compute.googleapis.com": {
+      "connect_code": "403",
+      "error": "curl: (56) Received HTTP code 403 from proxy after CONNECT",
+      "http_code": "000",
+      "proxy_tag": false,
+      "real_reply": false,
+      "refused_by_proxy": true,
+      "refused_by_request_filter": false
+    },
+    "iam.googleapis.com": {
+      "connect_code": "403",
+      "error": "curl: (56) Received HTTP code 403 from proxy after CONNECT",
+      "http_code": "000",
+      "proxy_tag": false,
+      "real_reply": false,
+      "refused_by_proxy": true,
+      "refused_by_request_filter": false
+    },
+    "storage.googleapis.com": {
+      "connect_code": "403",
+      "error": "curl: (56) Received HTTP code 403 from proxy after CONNECT",
+      "http_code": "000",
+      "proxy_tag": false,
+      "real_reply": false,
+      "refused_by_proxy": true,
+      "refused_by_request_filter": false
+    }
+  },
+  "b_forbidden_paths": {
+    "https://www.googleapis.com/compute/v1/projects": {
+      "connect_code": "200",
+      "error": "",
+      "http_code": "403",
+      "proxy_tag": true,
+      "real_reply": false,
+      "refused_by_proxy": false,
+      "refused_by_request_filter": true
+    },
+    "https://www.googleapis.com/storage/v1/b": {
+      "connect_code": "200",
+      "error": "",
+      "http_code": "403",
+      "proxy_tag": true,
+      "real_reply": false,
+      "refused_by_proxy": false,
+      "refused_by_request_filter": true
+    }
+  },
+  "b_holds": true,
+  "b_inference_body_head": "{\n  \"error\": {\n    \"code\": 401,\n    \"message\": \"Request is missing required authentication credential. Expected OAuth 2 ",
+  "b_inference_host": {
+    "connect_code": "200",
+    "error": "",
+    "http_code": "401",
+    "proxy_tag": false,
+    "real_reply": true,
+    "refused_by_proxy": false,
+    "refused_by_request_filter": false
+  },
+  "b_tunnel_inner_host": {
+    "connect_code": "200",
+    "error": "",
+    "http_code": "403",
+    "proxy_tag": true,
+    "real_reply": false,
+    "refused_by_proxy": false,
+    "refused_by_request_filter": true
+  },
+  "b_tunnel_inner_sni_and_host": {
+    "connect_code": "200",
+    "error": "curl: (35) error:0A000126:SSL routines::unexpected eof while reading",
+    "http_code": "000",
+    "proxy_tag": false,
+    "real_reply": false,
+    "refused_by_proxy": true,
+    "refused_by_request_filter": false
+  },
+  "b_tunnel_inner_sni_only": {
+    "connect_code": "200",
+    "error": "curl: (35) error:0A000126:SSL routines::unexpected eof while reading",
+    "http_code": "000",
+    "proxy_tag": false,
+    "real_reply": false,
+    "refused_by_proxy": true,
+    "refused_by_request_filter": false
+  },
+  "egress": {
+    "allow": [
+      "POST https://daily-cloudcode-pa.googleapis.com/v1internal:*",
+      "GET https://www.googleapis.com/oauth2/v2/userinfo",
+      "GET https://lh3.googleusercontent.com/a/*"
+    ],
+    "ca_sha256": "68dcd17828fb7b6975ea9a7e9ead4ee95f8af42015b12a27be2be648c92960d7",
+    "direct_egress": "no route",
+    "fail_closed_front": true,
+    "inner_host_check": true,
+    "inner_sni_check": true,
+    "mechanism": "namespace without uplink; one loopback port bridged to a fail-closed front over srt's TLS-terminating proxy on the host",
+    "proxy": {
+      "integrity": "sha512-WjBmS9fbTpnQwQkM9SU+JjhM2CcXo9eWEELktY1100RMvTy/jPhP44yZ3NXhh+GHB350OgPbM3+FubE5WVRtSA==",
+      "package": "@anthropic-ai/sandbox-runtime",
+      "tree_sha256": "a5039f84e95ab8f7994ef2a4e64b9293306811ba1eb7b67a055b7c8d7ea2aeaf",
+      "version": "0.0.79"
+    },
+    "tls_inspection": true
+  },
+  "f006_config_ancestor": {
+    "config_write_refused": true,
+    "mkdir_refused": true,
+    "raw": [
+      "rename-refused",
+      "mkdir-refused",
+      "write-refused",
+      "writable:bin",
+      "writable:cache",
+      "writable:log"
+    ],
+    "rename_refused": true,
+    "writable_dirs": [
+      "bin",
+      "cache",
+      "log"
+    ]
+  },
+  "f006_holds": true,
+  "gemini_route_code": null,
+  "issue": "agent-harness#1170",
+  "recorded_at": "2026-10-14T21:06:18+00:00",
+  "result": "pass",
+  "ruling": "maintainer 'prove then enable', 2026-09-29; plan agent-harness#1244 S3/S4",
+  "s4": {
+    "ca_dir_mode": "0o700",
+    "ca_in_host_trust_store": false,
+    "ca_key_mode": "0o600",
+    "ca_key_visible_in_jail": false,
+    "proxy_env_keys": [
+      "HOME",
+      "LANG",
+      "PATH"
+    ],
+    "trust_bundle_in_jail": "/seat/egress-ca.pem"
+  },
+  "s4_holds": true,
+  "schema": "seat_jail_probe_p4_containment_egress.v1",
+  "stops": []
+}

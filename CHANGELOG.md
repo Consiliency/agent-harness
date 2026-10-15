@@ -10,6 +10,38 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 - Implementation (execute/repair and the `implementer` class) now runs on `gemini-3.8-flash` at high, `gpt-6.1-sol` at medium, `claude-sonnet-5-5` at medium (on the Agent View and print routes; the default Claude Channel route binds neither model nor effort and records them as `session_model_unbound`) and `grok-4.7` at high, on both the runner's shipped model policy and the executor defaults; the Gemini worker moves from `gemini-3.5-flash-high` to `gemini-3.8-flash-high`. A governed repair that escalates to the planner class keeps the shipped `high` effort. Planning, review, opencode and the other worker tiers are unchanged, and explicit model and effort settings still win.
 
+### The Gemini board seat runs jailed with tools (agent-harness#1170)
+
+- The Gemini (agy) seat now runs in its own seat jail with its tools, like the Claude seat:
+  it reads the staged tree and runs commands there. Until now it did not run at all
+  (degraded with `gemini_seat_egress_unconfined`, agent-harness#1244; before that it ran
+  sealed, without tools).
+- The seat's egress goes through an allowlisting proxy: srt's TLS-terminating proxy
+  (`@anthropic-ai/sandbox-runtime` 0.0.79, pinned by version, integrity and installed-file
+  digest, with the installed tree rejected if it holds an unexpected symlink), run on the
+  host outside the seat. The seat's network namespace has no other route, through a
+  fail-closed front that refuses any tunnel it cannot inspect as an allowed request, so the
+  proxy answers only the requests agy needs (measured, pinned as config). It holds no
+  credential, and the seat cannot reconfigure it.
+- The config directory's read-only parent is a mount the seat cannot rename, so the config
+  stays read-only (only its cache, log and the shell tool's bin are writable).
+- Both credentials the seat is given -- the model bearer and the proxy's session credential --
+  are scanned out of the returned review.
+- Install it once per user: `phase-loop seat-egress install` (needs node 22.12+ and npm);
+  `phase-loop seat-egress status` reports it. The proxy's CA is generated per host, owner
+  only, and only its certificate enters the seat. Without the layer the Gemini seat is
+  degraded and not run, with `gemini_seat_egress_unavailable` and that fix; it is never a
+  toolless substitute. On a host without the seat jail the Gemini seat is degraded and not
+  run, like every review seat whose route is not jailed (agent-harness#1244).
+- The agy qualification worker still measures its candidate image on the heartbeat route,
+  never in the jail: on a host that could jail a Gemini seat its leg keeps that route with
+  `gemini_seat_qualification_candidate`. It is never a review or a vote.
+- The Gemini jail is a new jail profile: it is qualified on this host on first use, like the
+  Claude jail. The Claude jail and the falsifier-run layout are unchanged.
+- Evidence: plans/evidence/seat-jail-1132/p4-containment-egress.json (the containment probe
+  re-run through the proxy, real replies) and p3-agy-tools-workspace.json (agy's tools,
+  stream events and workspace files).
+
 ### Fix: Gemini planning, roadmap and review launch again, on Gemini 4 Argon
 
 - Gemini `roadmap`, `plan` and `review` launches exited rc 1, because agy no longer offers the `Gemini 3.1 Pro (High)` model they selected. The Gemini executor's `roadmap`, `plan` and `review` defaults, the `planner`/`reviewer` model classes and the heavy (and ultra) tier now use `gemini-4-argon` instead of the `pro` alias and `gemini-3.1-pro-preview`. Effort is unchanged: the shipped policy's `max` clamps to Gemini's `high`, so these routes launch `gemini-4-argon-high`. The heavy cell stays marked volatile. Implementation and worker routing are unchanged, and an explicit `--model` still wins.
