@@ -245,6 +245,101 @@ def test_release_does_not_wait_out_a_heartbeat_interval(harness) -> None:
     assert probe.returncode == 0, "lock still held after the script exited"
 
 
+@pytest.fixture()
+def start_gate(harness, tmp_path: Path):
+    """Launch the gate in its own session, for tests that kill its MAIN shell only.
+
+    Same environment as the harness's `run`; the session lets teardown reap every
+    process the gate left behind (orphaned call, heartbeat, holder) in one kill.
+    """
+    procs: list[subprocess.Popen] = []
+
+    def start(label: str, *, wait: int = 30, extra: dict[str, str] | None = None) -> subprocess.Popen:
+        workdir = tmp_path / label
+        workdir.mkdir()
+        env = {
+            **os.environ,
+            "PATH": f"{tmp_path / 'bin'}:{os.environ['PATH']}",
+            "AGENT_DAGGER": "1",
+            "AGENT_REMOTE_HOST": "engine-host",
+            "OFFLOAD_LOCK": str(tmp_path / "engine.lock"),
+            "OFFLOAD_LOCK_WAIT_SECONDS": str(wait),
+            "STUB_LOG": str(tmp_path / f"{label}.log"),
+            "CHRONOLOGY": "false",
+            **(extra or {}),
+        }
+        proc = subprocess.Popen(
+            ["bash", str(SCRIPT)], cwd=workdir, env=env,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True,
+        )
+        procs.append(proc)
+        return proc
+
+    yield start
+    for proc in procs:
+        try:
+            os.killpg(proc.pid, 9)
+        except ProcessLookupError:
+            pass
+        proc.wait()
+
+
+def _lock_is_free(lock: Path) -> bool:
+    return subprocess.run(["flock", "-n", str(lock), "-c", "true"]).returncode == 0
+
+
+def _wait_until(predicate, timeout: float) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.1)
+    return predicate()
+
+
+def test_a_crashed_gate_holds_the_lock_for_its_orphaned_call_then_frees_it(harness, start_gate) -> None:
+    # SIGKILL only the gate's main shell mid-call. The orphaned call keeps running, so
+    # the lock must stay held for its whole life (a heartbeat tied to the main shell
+    # alone lets it expire at the idle bound under a live call) and must be freed once
+    # the call ends (a heartbeat tied to nothing keeps it forever).
+    _, _, _, lock = harness
+    gate = start_gate("crash", extra={
+        "OFFLOAD_LOCK_HEARTBEAT_SECONDS": "0.3", "OFFLOAD_LOCK_IDLE_SECONDS": "2",
+        "DAGGER_STUB_SECONDS": "8",
+    })
+    pid_file = lock.parent / "crash.log.dagger_pid"
+    assert _wait_until(pid_file.exists, 15), "the call never started"
+    call_pid = int(pid_file.read_text())
+    gate.kill()
+    gate.wait()
+    time.sleep(3.5)  # past the 2 s idle bound; the 8 s call is still running
+    assert Path(f"/proc/{call_pid}").exists(), "the orphaned call ended too early to test"
+    assert not _lock_is_free(lock), "the lock was freed under a live orphaned call"
+    assert _wait_until(lambda: not Path(f"/proc/{call_pid}").exists(), 15), "the call never ended"
+    assert _wait_until(lambda: _lock_is_free(lock), 5), "the lock outlived the orphaned call"
+
+
+def test_a_crashed_queued_gate_does_not_keep_the_lock(harness, start_gate) -> None:
+    # SIGKILL only the main shell of a gate still queued behind another holder. Its
+    # turn must not hold the lock once granted: nothing of it is left to run.
+    _, intervals, _, lock = harness
+    holder = subprocess.Popen(["flock", str(lock), "-c", "sleep 4"])
+    try:
+        assert _wait_until(lambda: not _lock_is_free(lock), 5)
+        gate = start_gate("queued", extra={
+            "OFFLOAD_LOCK_HEARTBEAT_SECONDS": "0.3", "OFFLOAD_LOCK_IDLE_SECONDS": "2",
+        })
+        time.sleep(1.0)  # queued behind the holder
+        gate.kill()
+        gate.wait()
+        holder.wait(timeout=10)
+    finally:
+        holder.kill()
+        holder.wait()
+    assert _wait_until(lambda: _lock_is_free(lock), 5), "a crashed queued gate kept the lock"
+    assert intervals("queued") == [], "the crashed gate must never have run its call"
+
+
 def test_non_ssh_engine_skips_the_lock(harness) -> None:
     run, intervals, ssh_hosts, _ = harness
     r = run("local", docker_host="unix:///var/run/docker.sock")

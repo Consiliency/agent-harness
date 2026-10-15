@@ -110,6 +110,7 @@ _lock_fifo=""
 _lock_out=""
 _lock_pid=""
 _lock_hb_pid=""
+_lock_call_pidfile=""
 _lock_host=""
 _lock_wait_started=""
 
@@ -117,8 +118,12 @@ _lock_wait_started=""
 # keep open here; closing our end (or dying: the runner kills the ssh) ends the
 # reader, `flock` exits, and the kernel releases the lock. A remote session that
 # outlives a dead runner still keeps the pipe open, so the reader also stops after
-# OFFLOAD_LOCK_IDLE_SECONDS without a heartbeat line. No state survives a crash on
-# either side for longer than that.
+# OFFLOAD_LOCK_IDLE_SECONDS without a heartbeat line. The heartbeat runs while this
+# script's main shell OR its supervised call is alive. So if the main shell crashes
+# mid-call, the lock lives as long as the orphaned call and is released when the
+# call ends; if it crashes while still queued, its turn releases the lock as soon as
+# it is granted. A dead runner whose remote session lingers holds the lock
+# for at most the idle bound.
 offload_lock_host() {
   case "${DOCKER_HOST:-}" in
     ssh://*) printf '%s\n' "${DOCKER_HOST#ssh://}" ;;
@@ -150,6 +155,7 @@ offload_lock_acquire() {
     <"$_lock_fifo" >"$_lock_out" 2>&1 &
   _lock_pid=$!
   exec 3>"$_lock_fifo"
+  _lock_call_pidfile="$(mktemp)"
   # Lines written while still waiting queue in the pipe and are drained the moment
   # the lock is taken, so the idle clock starts at acquisition. A write after the
   # ssh has gone kills this loop with SIGPIPE; release stops it otherwise. It
@@ -160,6 +166,7 @@ offload_lock_acquire() {
     _hb_sleep=""
     trap '[ -z "$_hb_sleep" ] || kill "$_hb_sleep" 2>/dev/null; exit 0' TERM
     while :; do
+      kill -0 "$$" 2>/dev/null || { _c="$(cat "$_lock_call_pidfile" 2>/dev/null)"; [ -n "$_c" ] && kill -0 "$_c" 2>/dev/null; } || exit 0
       sleep "$OFFLOAD_LOCK_HEARTBEAT_SECONDS" </dev/null >/dev/null 2>&1 3>&- &
       _hb_sleep=$!
       wait "$_hb_sleep"
@@ -198,7 +205,7 @@ offload_lock_release() {
   fi
   exec 3>&-
   wait "$_lock_pid" 2>/dev/null || true
-  rm -f "$_lock_fifo" "$_lock_out"
+  rm -f "$_lock_fifo" "$_lock_out" "$_lock_call_pidfile"
   _lock_pid=""
   echo "offload lock: released"
 }
@@ -217,6 +224,7 @@ offload_lock_holder_alive() {
 offload_lock_supervise() {
   "$@" &
   local call_pid=$!
+  [ -z "$_lock_call_pidfile" ] || echo "$call_pid" >"$_lock_call_pidfile"
   while kill -0 "$call_pid" 2>/dev/null; do
     if ! offload_lock_holder_alive; then
       echo "offload lock: lost $OFFLOAD_LOCK on $_lock_host during the call (lock holder exited); stopping the call rather than finishing unlocked" >&2
