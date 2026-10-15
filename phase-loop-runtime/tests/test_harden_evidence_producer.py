@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import ast
 import copy
+import functools
 import hashlib
 import importlib.util
 import json
@@ -83,7 +84,66 @@ RAW_JUNIT_PAIRS = (
 )
 ROLE_NAMES = ("coordinator", "author", "reviewer")
 
+# The two attack tables below (`_assemble_attack_table`, `_seal_attack_table`) each
+# drive about 1,500 independent producer CLI rejections, 12-13 min in CI. Under
+# `--dist loadfile` a test file is one unit of work, so each table runs as
+# HARDEN_ATTACK_SHARDS nodes in their own files (`_shard_module_text`). Every shard
+# walks the whole table and runs exactly the cases whose name hashes to it, so each
+# case runs in one shard; `test_harden_attack_table_shards_are_complete` checks the
+# shard files.
+HARDEN_ATTACK_SHARDS = 4
+_ATTACK_TABLES = {
+    "assemble": (
+        "test_harden_producer_assembles_only_contained_retained_evidence",
+        "_assemble_attack_table",
+    ),
+    "seal": (
+        "test_harden_producer_prepare_then_seal_binds_one_canonical_event",
+        "_seal_attack_table",
+    ),
+}
 
+
+def _attack_in_shard(name: str, shard: int) -> bool:
+    digest = hashlib.sha256(name.encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big") % HARDEN_ATTACK_SHARDS == shard
+
+
+def _shard_module_text(table: str, shard: int) -> str:
+    test_name, runner = _ATTACK_TABLES[table]
+    return (
+        f'"""Shard {shard} of {HARDEN_ATTACK_SHARDS} of the HARDEN producer {table} attack table.\n\n'
+        "The table lives in tests/test_harden_evidence_producer.py, which also checks\n"
+        "this file's exact text (see HARDEN_ATTACK_SHARDS there).\n"
+        '"""\n\n'
+        "from tests import test_harden_evidence_producer as producer\n\n\n"
+        f"def {test_name}_shard_{shard}(tmp_path):\n"
+        f"    producer.{runner}(tmp_path, shard={shard})\n"
+    )
+
+
+def _shard_module_name(table: str, shard: int) -> str:
+    return f"test_harden_evidence_producer_{table}_shard_{shard}.py"
+
+
+def test_harden_attack_table_shards_are_complete() -> None:
+    tests_dir = Path(__file__).resolve().parent
+    for table in _ATTACK_TABLES:
+        expected = [
+            _shard_module_name(table, shard) for shard in range(HARDEN_ATTACK_SHARDS)
+        ]
+        found = sorted(
+            path.name
+            for path in tests_dir.glob(f"test_harden_evidence_producer_{table}_shard_*.py")
+        )
+        assert found == sorted(expected), (table, found)
+        for shard, name in enumerate(expected):
+            assert (tests_dir / name).read_text(encoding="utf-8") == _shard_module_text(
+                table, shard
+            ), name
+
+
+@functools.lru_cache(maxsize=None)
 def _repo_root() -> Path:
     completed = subprocess.run(
         ["git", "rev-parse", "--show-toplevel"],
@@ -2508,10 +2568,9 @@ def test_harden_producer_derives_live_facts_without_historical_literals() -> Non
         )
 
 
-def test_harden_producer_assembles_only_contained_retained_evidence(
-    tmp_path: Path,
-) -> None:
+def _assemble_attack_table(tmp_path: Path, shard: int) -> None:
     _producer_module("assemble")
+    executed: list[str] = []
 
     for index, (author, red, final) in enumerate(_fixture_variants()):
         with tempfile.TemporaryDirectory(prefix="pl-") as td:
@@ -2544,6 +2603,9 @@ def test_harden_producer_assembles_only_contained_retained_evidence(
         *,
         non_biting_mutation: bool = False,
     ) -> None:
+        if not _attack_in_shard(name, shard):
+            return
+        executed.append(name)
         restore = (
             restore_non_biting_fixture if non_biting_mutation else restore_fixture
         )
@@ -4171,12 +4233,12 @@ def test_harden_producer_assembles_only_contained_retained_evidence(
         "--expected-author-session-sha256",
     ):
         assert option in prepare_help.stdout
+    assert executed, f"assemble shard {shard} ran no attack"
 
 
-def test_harden_producer_prepare_then_seal_binds_one_canonical_event(
-    tmp_path: Path,
-) -> None:
+def _seal_attack_table(tmp_path: Path, shard: int) -> None:
     _producer_module("seal")
+    executed: list[str] = []
 
     with tempfile.TemporaryDirectory(prefix="pl-") as td:
         fixture_root = Path(td) / "fixture"
@@ -4233,6 +4295,9 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event(
         mutate: Callable[[dict[str, Any], Path, dict[str, Any]], Path],
         message: str,
     ) -> None:
+        if not _attack_in_shard(name, shard):
+            return
+        executed.append(name)
         context = restore_seal_fixture()
         prepared = _prepare_command(context)
         assert prepared.returncode == 0, prepared.stderr
@@ -4643,6 +4708,7 @@ def test_harden_producer_prepare_then_seal_binds_one_canonical_event(
         "--expected-author-session-sha256",
     ):
         assert option in seal_help.stdout
+    assert executed, f"seal shard {shard} ran no attack"
 
 
 def _fixture_completion_event(verifier: Any, evidence: dict[str, Any]) -> bytes:

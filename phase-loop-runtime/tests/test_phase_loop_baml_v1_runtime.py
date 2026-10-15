@@ -1382,33 +1382,8 @@ def scenario_frame_cap_derivation():
     spy.assert_each_once()
 
 
-@pytest.mark.parametrize(
-    "name",
-    [
-        pytest.param("idle_death_sigkill", marks=needs_posix),
-        pytest.param("idle_death_sigterm", marks=needs_posix),
-        "idle_death_spawn_hook",
-        "spawn_hook_default_budget",
-        pytest.param("inflight_kill_retries_zero", marks=needs_posix),
-        pytest.param("inflight_kill_within_budget", marks=needs_posix),
-        pytest.param("retry_budget_exhaustion", marks=needs_posix),
-        pytest.param("recovery_parity_parse_closeout", marks=needs_posix),
-        pytest.param("recovery_parity_closeout_request", marks=needs_posix),
-        pytest.param("recovery_parity_evidence_request", marks=needs_posix),
-        "timeout_disposes_the_worker",
-        "blocked_write",
-        "stalled_spawn",
-        pytest.param("dead_spawner_is_recreated", marks=needs_linux),
-        "missing_interpreter_is_a_spawn_error",
-        "framing_faults",
-        "broken_source_is_an_init_fault",
-        "in_baml_panic_is_contained",
-        "frame_cap_derivation",
-    ],
-)
-def test_worker_fault_scenario(name):
-    _isolated(name)
-
+# test_worker_fault_scenario runs these scenarios from
+# tests/test_phase_loop_baml_v1_runtime_faults.py (its own xdist work unit).
 
 # ---------------------------------------------------------------------------
 # owner death, signals and concurrency (platform table; I3, I5)
@@ -2750,11 +2725,8 @@ def _owner_death_case(flow: str, owner: str, name: str, line: int) -> bool:
                 thread.join(5)
 
 
-@pytest.mark.parametrize("flow,owner,name,line", list(_terminal_cases()))
-def test_owner_death_at_every_terminal_transition_line(flow, owner, name, line):
-    if not _owner_death_case(flow, owner, name, line):
-        pytest.skip("this line is not executed by the owner in this flow")
-
+# test_owner_death_at_every_terminal_transition_line drives _owner_death_case from
+# tests/test_phase_loop_baml_v1_runtime_faults.py (its own xdist work unit).
 
 # codex round 2's two falsifiers, as filed (F001).
 
@@ -3173,6 +3145,22 @@ def test_async_exception_after_baton_put_does_not_duplicate_the_token():
 # supervisor before it starts only reduces how many reclaimers there are.
 
 
+@pytest.fixture
+def frozen_heap():
+    """Move the heap this test inherits out of the collector's reach.
+
+    A full ``gc.collect()`` walks every tracked object, and an xdist worker holds
+    the whole collected suite: about 0.2 s a collect, hundreds of times in the
+    sweeps below (230 s in CI for a sweep that takes 19 s alone). Objects the test
+    creates are still collected as before; only objects that already existed when
+    it started are frozen, and ``gc.unfreeze()`` hands them back afterwards."""
+    gc.freeze()
+    try:
+        yield
+    finally:
+        gc.unfreeze()
+
+
 def _strand_the_baton(client) -> None:
     client.baton.get_nowait()  # dropped at once: no queue and no thread holds it
     gc.collect()
@@ -3194,6 +3182,7 @@ def _supervisor_up(client) -> bool:
 
 
 @pytest.mark.parametrize("reclaimers", [2, 4, 8, 16])
+@pytest.mark.usefixtures("frozen_heap")
 def test_concurrent_reclaimers_mint_exactly_one_baton(reclaimers):
     """The sweep: N reclaimers against a stranded baton, every one of them past
     its epoch read and live-baton check before any of them tries to mint."""
@@ -3220,6 +3209,7 @@ def test_concurrent_reclaimers_mint_exactly_one_baton(reclaimers):
 
 
 
+@pytest.mark.usefixtures("frozen_heap")
 def test_an_interrupted_reclaim_never_strands_the_baton_for_good():
     """A reclaimer interrupted at any line after it won its epoch must leave the
     next reclaimer able to mint, and never leave two batons."""
@@ -3323,6 +3313,7 @@ def _interrupted_reclaim(client, index: int) -> list:
     return fired
 
 
+@pytest.mark.usefixtures("frozen_heap")
 def test_reclaim_interrupted_anywhere_once_or_twice_stays_one_baton_and_recoverable():
     """(a) never more than one baton; (b) after any interruptions the next
     uninterrupted reclaim restores exactly one.  Every interruption point of a
@@ -3351,6 +3342,7 @@ def test_reclaim_interrupted_anywhere_once_or_twice_stays_one_baton_and_recovera
             assert client.baton.qsize() == 1
 
 
+@pytest.mark.usefixtures("frozen_heap")
 def test_second_interrupt_after_an_interrupted_claim_does_not_poison_the_epoch():
     """codex's round-7 falsifier, adapted.  As filed, its second interruption
     lands on the c_return of ``baton_mints.get`` inside the old cleanup
@@ -3395,6 +3387,7 @@ def test_second_interrupt_after_an_interrupted_claim_does_not_poison_the_epoch()
     assert client.baton.qsize() == 1, "an interrupted claim left its epoch permanently claimed"
 
 
+@pytest.mark.usefixtures("frozen_heap")
 def test_two_concurrent_takers_reclaim_exactly_one_baton():
     """codex's falsifier, adapted twice.  It produced two live supervisors
     through an interrupted start (which can no longer happen: the next test),
@@ -3642,6 +3635,7 @@ def test_with_no_caller_the_supervisor_recovers_a_strand_after_an_interrupted_re
                 gen.proc.wait(5)
 
 
+@pytest.mark.usefixtures("frozen_heap")
 def test_a_killed_supervisor_and_a_strand_recover_on_the_next_call():
     """The supervisor itself interrupted at each of its lines, with the baton
     stranded: the next call takes (reclaims) the baton, succeeds, and its
@@ -4580,6 +4574,7 @@ def _paused_against_a_full_reclaim(needles: tuple[str, str]) -> int:
     return client.baton.qsize()
 
 
+@pytest.mark.usefixtures("frozen_heap")
 def test_a_reclaimer_reads_the_scan_start_before_it_checks_for_a_live_baton():
     """probes/hintorder.py: hint read, then live check.  Reversed, a reclaim
     that completes in between is missed: dead check, advanced hint, a second
@@ -4587,6 +4582,7 @@ def test_a_reclaimer_reads_the_scan_start_before_it_checks_for_a_live_baton():
     assert _paused_against_a_full_reclaim(("epoch = self.baton_epoch", "if self.baton_ref() is not None:")) == 1
 
 
+@pytest.mark.usefixtures("frozen_heap")
 def test_a_reclaimer_registers_its_baton_before_it_advances_the_scan_start():
     """probes/order.py: register, then advance the hint.  Reversed, a reclaim
     that runs in between reads the advanced hint and a dead registration, and
@@ -5250,31 +5246,8 @@ def _job_exists(name: str) -> bool:
     return False
 
 
-@pytest.mark.parametrize(
-    "name",
-    [
-        pytest.param("i2_stalled_caller_after_reply"),
-        pytest.param("i2_concurrent_abandonment"),
-        pytest.param("i2_stale_frame", marks=needs_posix),
-        pytest.param("i3_owner_killed_with_waiters"),
-        pytest.param("i3_owner_dies_before_delivery"),
-        pytest.param("i3_owner_dies_before_publication"),
-        pytest.param("i4_busy"),
-        pytest.param("i4_backlog_success"),
-        pytest.param("i4_publish_before_expiry"),
-        pytest.param("i4_post_handoff_expiries"),
-        pytest.param("i4_abandon_service"),
-        pytest.param("i6_lock_trace", marks=needs_posix),
-        pytest.param("i7_machinery_failures"),
-        pytest.param("i7_no_discard"),
-        pytest.param("i9_resources"),
-    ],
-)
-def test_client_invariant_scenario(name):
-    # I9 pays one worker cold start per dispose cycle: ~95 s on x86_64 glibc,
-    # but ~13 s per cold start on musl (verification step 6).
-    _isolated(name, timeout=2400 if name == "i9_resources" else 600)
-
+# test_client_invariant_scenario runs the scenario_i* functions above from
+# tests/test_phase_loop_baml_v1_runtime_invariants.py (its own xdist work unit).
 
 # ---------------------------------------------------------------------------
 # Windows and macOS owner death (run in the pre-merge dispatch)
