@@ -362,7 +362,7 @@ def apply_quality_filter(
                 stripped_repo_specific = any(classify_improvements(line) == "repo_specific" for line in original if line not in kept)
             reflection.sections[key] = "\n".join(kept).strip()
         reflection.improvements_class = classify_improvements(reflection.sections.get("improvements", ""))
-        if stripped_repo_specific and reflection.improvements_class in {"none", "missing"}:
+        if stripped_repo_specific and classify_improvements(redact(reflection.sections.get("improvements", ""), bulleted_ledger=True)) in {"none", "missing"}:
             reflection.improvements_class = "repo_specific"
         if reflection.improvements_class == "repo_specific":
             reflection.sections["improvements"] = ""

@@ -237,11 +237,14 @@ def test_repo_specific_proposal_without_friction_is_retained_not_unstructured(tm
     assert "Fix" not in rc.render_bundle(corpus)
 
 
-def test_a_frictionless_repeated_repo_specific_proposal_is_retained_not_archived(tmp_path):
+@pytest.mark.parametrize("remainder", ["", "None.", "Hosted CI: passed.", "- Hosted CI: passed."])
+def test_a_frictionless_repeated_repo_specific_proposal_is_retained_not_archived(tmp_path, remainder):
     root = tmp_path / "skills"
     proposal = "Fix the defect tracked in other-repo#12 before the plan is frozen."
     for index in range(3):
-        put(root, "codex-plan-phase", "repo", f"branch{index}", "run", reflection(worked="", didnt="", improvements=proposal))
+        put(root, "codex-plan-phase", "repo", f"branch{index}", "run", reflection(
+            worked="", didnt="", improvements=f"{proposal}\n{remainder}".strip(),
+        ))
 
     corpus, boilerplate = rc.collect([root], min_reflections=1)
 
