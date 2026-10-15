@@ -51,6 +51,7 @@ def _decide(leg="claude", *, staged=True, capable=None, token=True, cred=True, q
         leg, staged_tree_approved=staged, capable=capable,
         claude_token_present=_Counter(token), gemini_credential_present=_Counter(cred),
         gemini_qualified=_Counter(qualified), gemini_recorded_stop=stop,
+        gemini_egress_unavailable=lambda: None,
     )
 
 
@@ -70,7 +71,9 @@ def test_j7_step1_recorded_gemini_stop_beats_qualification():
 
 _REPO = Path(__file__).resolve().parents[2]
 _P4_EVIDENCE = ("plans/evidence/seat-jail-1132/p4-agy-d7-credential.json",
-                "plans/evidence/seat-jail-1132/p4-containment.json")
+                "plans/evidence/seat-jail-1132/p4-containment.json",
+                "plans/evidence/seat-jail-1132/p4-containment-egress.json",
+                "plans/evidence/seat-jail-1132/p3-agy-tools-workspace.json")
 
 
 def _sparse_excluded(rel: str) -> bool:
@@ -86,41 +89,42 @@ def _sparse_excluded(rel: str) -> bool:
 @pytest.mark.skipif(any(_sparse_excluded(rel) for rel in _P4_EVIDENCE),
                     reason="the P4 evidence records are sparse-excluded from this clean-room "
                            "clone (Gate A); the checkout lanes run this test")
-def test_j7_gemini_stays_sealed_on_the_recorded_p4_stop():
+def test_j7_gemini_has_no_recorded_stop_once_its_egress_is_contained():
     """P4 found scopes beyond inference; the "prove then enable" containment probe proved
-    the access-token-only copy (a) and failed host-level egress (b). The recorded stop wins
-    at step 1, and it is witnessed by the pinned evidence records."""
+    the access-token-only copy (a) and, through the namespace alone, failed host-level egress
+    (b) -- that record stays as history. Re-run through the allowlisting proxy
+    (agent-harness#1170), (a) and (b) hold, P3 passes, and there is no recorded stop."""
     evidence = _REPO / "plans" / "evidence" / "seat-jail-1132"
-    assert seat_jail.GEMINI_RECORDED_STOP == "gemini_seat_egress_unconfined"
+    assert seat_jail.GEMINI_RECORDED_STOP is None
     scope = json.loads((evidence / "p4-agy-d7-credential.json").read_text())
     assert scope["gemini_route_code"] == "gemini_seat_token_scope_excess"
-    record = json.loads((evidence / "p4-containment.json").read_text())
-    assert record["a_holds"] is True and record["b_holds"] is False
-    assert record["result"] == "stop" and record["gemini_route_code"] == seat_jail.GEMINI_RECORDED_STOP
-    assert "gemini" not in seat_jail.JAILED_LEGS
-    route = seat_jail.decide_seat_route("gemini", staged_tree_approved=True)
-    assert route == seat_jail.SeatRoute(False, "gemini_seat_egress_unconfined")
+    before = json.loads((evidence / "p4-containment.json").read_text())
+    assert before["b_holds"] is False and before["gemini_route_code"] == "gemini_seat_egress_unconfined"
+    after = json.loads((evidence / "p4-containment-egress.json").read_text())
+    assert after["a_holds"] is True and after["b_holds"] is True
+    assert after["result"] == "pass" and after["gemini_route_code"] is None
+    assert after["egress"]["tls_inspection"] is True
+    p3 = json.loads((evidence / "p3-agy-tools-workspace.json").read_text())
+    assert p3["result"] == "pass" and p3["stops"] == []
+    assert "gemini" in seat_jail.JAILED_LEGS
 
 
-def test_j7_without_a_stop_gemini_is_still_unqualified_until_l3():
-    route = _decide("gemini", stop=None, qualified=True)
-    assert route == seat_jail.SeatRoute(False, "gemini_seat_profile_unqualified")
+def test_j7_without_a_stop_a_qualified_gemini_seat_is_jailed():
+    assert _decide("gemini", stop=None, qualified=True) == seat_jail.SeatRoute(True)
 
 
 @pytest.mark.parametrize("leg", ["claude", "gemini", "codex", "grok"])
-def test_j7_the_jailed_route_is_claude_only(leg):
-    """With every route fact forced true and no recorded stop, only Claude is jailed; a
-    Gemini seat stays sealed with its typed notice (the tooled Gemini seat is
-    agent-harness#1170)."""
-    assert seat_jail.JAILED_LEGS == frozenset({"claude"})
+def test_j7_the_jailed_route_is_claude_and_gemini(leg):
+    """With every route fact forced true and no recorded stop, Claude and Gemini are jailed
+    (Gemini since agent-harness#1170); codex and grok are not decided by this plan."""
+    assert seat_jail.JAILED_LEGS == frozenset({"claude", "gemini"})
     route = seat_jail.decide_seat_route(
         leg, staged_tree_approved=True, capable=lambda: None,
         claude_token_present=lambda: True, gemini_credential_present=lambda: True,
-        gemini_qualified=lambda: True, gemini_recorded_stop=None)
-    if leg == "claude":
+        gemini_qualified=lambda: True, gemini_recorded_stop=None,
+        gemini_egress_unavailable=lambda: None)
+    if leg in ("claude", "gemini"):
         assert route == seat_jail.SeatRoute(True)
-    elif leg == "gemini":
-        assert route == seat_jail.SeatRoute(False, "gemini_seat_profile_unqualified")
     else:
         assert route is None
 
