@@ -7,8 +7,13 @@ script of its own. Installing it pulls the real engine:
 ```sh
 pip install consiliency-harness
 phase-loop --version        # provided by phase-loop-runtime (the shim adds nothing)
-phase-loop run              # autonomous by default, no subscription auth required
+phase-loop doctor --json    # what is installed and authenticated
 ```
+
+`phase-loop run` needs a roadmap (`specs/phase-plans-v<N>.md`) in the repository, and
+each executor CLI it dispatches to authenticates itself; the runtime makes no model
+calls of its own. The [agent-harness README](https://github.com/Consiliency/agent-harness#start-here)
+covers both.
 
 ## Why this package exists
 

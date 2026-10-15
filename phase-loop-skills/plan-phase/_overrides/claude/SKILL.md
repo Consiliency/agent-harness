@@ -67,60 +67,7 @@ is recorded.
 
 ## Model & Effort Tiering (right-size per lane, don't default to the ceiling)
 
-The runtime resolves one planning model per executor (`codex` → `gpt-6-astra`,
-`claude` → `claude-opus-5`), so **reasoning effort is the primary cost dial.**
-The normalized effort ladder, cheapest first, is:
-
-`minimal` < `low` < `medium` < `high` < `xhigh` < `max`
-
-Registry action defaults today are blunt — for this executor `plan`/`roadmap`/`review`
-resolve to `max` and `execute`/`repair` to `high` (`EXECUTOR_EFFORT_OVERRIDES` in
-`profiles.py` is the source; read it rather than trusting this sentence) — applied
-uniformly regardless of how hard the lane actually is. As the planner you have the complexity signal the runtime
-lacks; use it:
-
-- **Default each lane to the cheapest effort you believe will succeed**, not the
-  action default. A mechanical edit, a config bump, a docs-sweep lane, or a
-  rename rarely needs more than `low`/`minimal`.
-- **Escalate only with a stated reason.** Subtle concurrency, cross-module
-  refactors, security-sensitive logic, or ambiguous specs justify `high`/`xhigh`;
-  record *why* in the rule's `reason=`.
-- Express the choice in an `## Execution Policy` section the runtime parses
-  (selector = `default`, an action, or a lane alias):
-
-```
-## Execution Policy
-- default: effort=low, reason=most lanes are mechanical this phase
-- execute: effort=medium
-- SL-3: effort=high, reason=constant-time comparison is subtly wrong-prone
-- SL-7: effort=minimal, reason=docs sweep only
-```
-
-Two hard syntax rules the parser enforces (a malformed line fails the whole
-section, not just that line):
-
-- **Lane selectors are the numeric lane id** (`SL-3`, `P2A` → use `lane <name>:`
-  for non-numeric names). `SL-DOCS`-style names are rejected; write `SL-7` or
-  `lane SL-DOCS: …`.
-- **No commas inside a `reason=` value** — the comma separates assignments, so
-  `reason=docs sweep, no logic` breaks parsing. Keep reasons comma-free.
-
-Operator `--model`/`--effort` and CLI overrides still win, so this never blocks
-a human from forcing a tier. The goal is to stop paying `high` for a one-line
-change by default.
-
-**Model class (vendor-agnostic role).** Alongside effort, a rule may set a
-`model_class` — `planner` / `implementer` / `worker` — which resolves to a
-concrete model per executor. The shipped `model_policy` already routes planning
-to the planner class at `max` and implementation to the implementer class, so
-you rarely set this by hand; reach for it when a specific lane wants a cheaper
-worker-class model for a bounded, schema-checked subtask. The `worker` class
-must never author a final patch, and an executor that can't run at `max` (e.g.
-gemini) is never the max-effort planner of record.
-
-**Run mode is separate.** `model_policy` (what model) is independent of
-`run_mode` (autonomous default vs opt-in governed review). Planning a phase does
-not enable the governed panel; that is an operator opt-in.
+The runtime resolves one planning model per executor, so reasoning effort is the primary cost dial (`minimal` < `low` < `medium` < `high` < `xhigh` < `max`). Default each lane to the cheapest effort you believe will succeed, escalate only with a stated reason, and record the choice in an `## Execution Policy` section. Two parser rules fail the whole section when broken: lane selectors are numeric lane ids (`SL-3`, or `lane <name>:` for other names), and a `reason=` value contains no commas. The registry defaults, an example section, `model_class` and run mode are in [references/model-effort-tiering.md](references/model-effort-tiering.md).
 
 ## Planner Literal Validation
 
@@ -218,67 +165,7 @@ The main thread is an orchestrator only: brief specialists, synthesize output, e
 
 ### Step 0 — Read predecessor handoff (if present)
 
-Handoffs are keyed on the current repo so each workspace has its own slot. Resolve both candidate paths first:
-
-```bash
-REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
-if [ -z "$REPO_ROOT" ]; then
-  REPO_KEY="_no-git-$(pwd | sha1sum | cut -c1-12)"
-else
-  REPO_KEY="$(basename "$REPO_ROOT")-$(printf '%s' "$REPO_ROOT" | sha1sum | cut -c1-12)"
-fi
-ROADMAP_HANDOFF="$(python3 - <<'PYH'
-from pathlib import Path
-repo = Path.cwd().resolve()
-skill = "<harness>-phase-roadmap-builder"
-try:
-    # Primary: the installed phase_loop_runtime.skill_paths resolver.
-    from phase_loop_runtime.skill_paths import resolve_handoff_root
-    print(resolve_handoff_root(repo) / skill / "latest.md")
-except Exception:
-    # Fallback: the repo-local handoff_path.py mirror, only when the runtime is not importable.
-    from importlib import util
-    spec = util.spec_from_file_location("handoff_path", repo / "shared" / "phase-loop" / "handoff_path.py")
-    mod = util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    print(mod.resolve_handoff_path(repo, skill))
-PYH
-)"
-EXECUTE_HANDOFF="$(python3 - <<'PYH'
-from pathlib import Path
-repo = Path.cwd().resolve()
-skill = "<harness>-execute-phase"
-try:
-    # Primary: the installed phase_loop_runtime.skill_paths resolver.
-    from phase_loop_runtime.skill_paths import resolve_handoff_root
-    print(resolve_handoff_root(repo) / skill / "latest.md")
-except Exception:
-    # Fallback: the repo-local handoff_path.py mirror, only when the runtime is not importable.
-    from importlib import util
-    spec = util.spec_from_file_location("handoff_path", repo / "shared" / "phase-loop" / "handoff_path.py")
-    mod = util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    print(mod.resolve_handoff_path(repo, skill))
-PYH
-)"
-```
-
-The predecessor skill may be either:
-
-- `<harness>-phase-roadmap-builder` (first time planning a phase against a new roadmap) → `$ROADMAP_HANDOFF`
-- `<harness>-execute-phase` (planning the next phase after a prior one finished executing) → `$EXECUTE_HANDOFF`
-
-Check both paths. If both exist, pick the one with the newer `timestamp:` in its metadata header. If only one exists, use it. If neither, proceed standalone.
-
-Defense-in-depth checks (the repo-key scheme prevents the common cross-project case, but these still catch symlink-shared workspaces, manual file copies, and stale handoffs):
-
-- `from:` must match the expected predecessor.
-- Timestamp must be recent (<7 days).
-- Every `artifact:` path must resolve under `$(git rev-parse --show-toplevel)`.
-
-On any failure, flag via `AskUserQuestion` with `[use anyway, ignore, abort]`.
-
-Fold the handoff's "Open items" and "Repo-specific gotchas" into the brief given to Step 2's Explore teammates so they know what to watch for.
+The predecessor is `<harness>-phase-roadmap-builder` (first phase planned against a new roadmap) or `<harness>-execute-phase` (the next phase after one finished executing). Resolve both repo-keyed `latest.md` handoff paths (`phase_loop_runtime.skill_paths.resolve_handoff_root`, falling back to `resolve_handoff_path` in `shared/phase-loop/handoff_path.py`), use the one with the newer `timestamp:`, or proceed standalone if neither exists. Before trusting it, check that `from:` matches the predecessor, the timestamp is under 7 days old and every `artifact:` path resolves under `$(git rev-parse --show-toplevel)`; on any failure ask via `AskUserQuestion` with `[use anyway, ignore, abort]`. Fold its "Open items" and "Repo-specific gotchas" into the Step 2 briefs. The path-resolution script is in [references/interactive-workflow.md](references/interactive-workflow.md).
 
 ### Step 1 — Resolve spec path, phase, and PHASE_ID
 
@@ -303,23 +190,7 @@ Fold the handoff's "Open items" and "Repo-specific gotchas" into the brief given
 
 **Skip this reconnaissance when the context is already in session.** If the files this phase touches have already been read, the architecture was just discussed, or the caller supplied the file map, do not spawn Explore teammates to re-gather what you already have — plan directly from it. Keep reconnaissance proportional: launch one focused Explore per genuinely-unknown area, not a full three-way fan-out for a one- or two-file change.
 
-Preflight: call `TeamDelete` defensively to flush any inherited team context from a predecessor skill run, then `TeamCreate` a fresh team named for this run before dispatching any `Agent` calls. Recognize these error signatures as benign on the `TeamDelete`: `Team X does not exist` or `already leading team X`.
-
-Launch up to 3 `Agent(subagent_type: "Explore")` calls in a single message. One per major area the phase touches. Each Agent call MUST set `name:` so it can be re-addressed later via `SendMessage`.
-
-Teammate-naming template: `explore-<area>` (e.g., `explore-schema`, `explore-workers`).
-
-Each brief must include:
-
-- The phase's Objective + Exit criteria copied verbatim from the spec.
-- A scoped question: "Map existing code in `<paths>` relevant to this phase. Surface: (a) existing utilities/patterns to reuse, (b) current type/schema/interface shapes that constrain the design, (c) places that will need to change, (d) hidden coupling that would break worktree isolation."
-- A 1–2 sentence architecture context: how these paths fit the larger system.
-- Related files the teammate should know about but not rewrite (type defs, tests, shared config).
-- A preload instruction: "Load `SendMessage` via `ToolSearch(query: \"select:SendMessage\")` as your first action so you can reply without a round-trip."
-- An explicit deliverable statement: "Your deliverable is a `SendMessage` to team-lead with your findings; do not rely on text output or idle without reporting."
-- A length guideline: "Be as short as possible while citing every load-bearing file:line. No fixed word cap."
-
-Apply the `/<harness>-task-contextualizer` checklist to every brief.
+Otherwise `TeamDelete` defensively (treat `Team X does not exist` and `already leading team X` as benign), `TeamCreate` a fresh team, then launch up to 3 named `Agent(subagent_type: "Explore")` teammates (`explore-<area>`) in a single message, one per major area the phase touches. Each brief carries the phase Objective and Exit criteria verbatim, a scoped mapping question, architecture context, related files, a `SendMessage` preload and an explicit `SendMessage` deliverable; apply the `/<harness>-task-contextualizer` checklist. The full brief template is in [references/interactive-workflow.md](references/interactive-workflow.md).
 
 Block until all return. Their findings populate `## Context`.
 
@@ -329,51 +200,23 @@ If a teammate idles without a substantive reply, send one targeted `SendMessage`
 
 ### Step 3 — Architectural decisions
 
-**With `--consensus`**: Launch 2–3 `Agent(subagent_type: "Plan")` calls in a single message, each with a distinct framing:
-
-| Name | Framing |
-|---|---|
-| `arch-minimal` | Minimal change. Preserve current module boundaries. Add, don't refactor. |
-| `arch-clean` | Clean architecture. Willing to refactor to make the design right. |
-| `arch-parallel` | Maximize parallelism. Prefer more, smaller lanes over fewer, fatter lanes, even if it adds interface surface. |
-
-Each teammate's brief includes: the spec phase section, all Explore teammate findings, and its framing. Apply the `/<harness>-task-contextualizer` checklist — architecture context and related-files list carry over from the Explore briefs. Each must return: (1) proposed interface freezes, (2) proposed lane decomposition with file ownership, (3) rationale, (4) known risks.
-
-Synthesize per the Consensus mechanism below. If round 1 doesn't converge, re-address the same named teammates via `SendMessage` (not new `Agent` calls) with the specific disagreement surfaced. Max 2 rounds.
+**With `--consensus`**: launch 2–3 named `Agent(subagent_type: "Plan")` teammates in a single message, one per framing (`arch-minimal`, `arch-clean`, `arch-parallel`). Each returns proposed interface freezes, a lane decomposition with file ownership, its rationale and known risks. Synthesize by the consensus rule (unanimous, then majority with dissent recorded, then one more `SendMessage` round, then the main thread picks, biased toward `arch-parallel`). The framings, brief contents and full synthesis rule are in [references/interactive-workflow.md](references/interactive-workflow.md).
 
 **Without `--consensus`**: Launch 1 `Agent(subagent_type: "Plan", name: "arch-baseline")` for baseline architecture decisions.
-
-## Preamble lane archetype
-
-The "preamble lane" concentrates single-writer files AND freezes interface shapes on Day 1, letting all downstream lanes run in parallel without contending for the same index/config/init file.
-
-**When to use**: ≥2 parallel lanes would otherwise need to touch the same index/config/init file, OR ≥2 lanes consume the same frozen type.
-
-Template sketch:
-
-```markdown
-### SL-0 — Preamble (interface + single-writer setup)
-- **Scope**: Freeze shared types and stub the single-writer files every downstream lane will import from.
-- **Owned files**: `src/index.ts`, `src/config.ts`, `src/__init__.py` (list every shared index/config/init file)
-- **Interfaces provided**: `FooContract`, `BarRegistry`, `WorkerRouter` (frozen type names)
-- **Interfaces consumed**: (none)
-- **Parallel-safe**: no (terminal in preamble position — no downstream lane modifies SL-0's files)
-- **Tasks**: one test task pinning the frozen type shapes; one impl task adding the stubs; one verify task
-```
-
-Downstream lanes depend on `SL-0` and consume its frozen interfaces; they must not list any SL-0 owned file in their own `Owned files`.
 
 ### Step 4 — Lane decomposition (main thread)
 
 Synthesize Explore + Plan output into swim lanes. For each lane, determine:
 
 - **Scope** — one sentence.
-- **Owned files** — glob list. Must be disjoint from every other lane's globs. Before emitting the plan, scan every lane's owned files for overlap with every other lane in the same wave. If overlap is found, either (a) move the shared file into a preamble lane that all dependents consume, or (b) collapse the overlapping lanes into a single lane. Overlap surviving into the final plan triggers `overlapping_write_ownership` lane-IR diagnostic at runtime and refuses execution (Pattern B from 2026-05-25 runner failure analysis). Owned files MUST enumerate the COMPLETE set the executor will touch, not just headline sources; under-enumeration fails the closeout's `phase_owned_dirty` check (Pattern A, commit `47c772b4`). `validate_plan_doc.py` check (R) names each tracked companion (test, snapshot, lockfile, `.env.example`, migration test or glob) that no lane owns; own it or state why it stays untouched. (R) does not check generated artifacts: own those too.
+- **Owned files** — glob list, disjoint from every other lane's globs. Before emitting the plan, scan each lane's owned files for overlap with every other lane in the same wave. On overlap, either move the shared file into a preamble lane (`SL-0`, see [references/lane-templates.md](references/lane-templates.md)) that all dependents consume, or collapse the overlapping lanes into one. Overlap that survives into the final plan triggers the `overlapping_write_ownership` lane-IR diagnostic at runtime and refuses execution (Pattern B from the 2026-05-25 runner failure analysis).
+  - Owned files MUST enumerate the COMPLETE set the executor will touch, not just headline sources; under-enumeration fails the closeout's `phase_owned_dirty` check (Pattern A, commit `47c772b4`).
+  - `validate_plan_doc.py` check (R) names each tracked companion (test, snapshot, lockfile, `.env.example`, migration test or glob) that no lane owns; own it or state why it stays untouched. (R) does not check generated artifacts: own those too.
 - **Interfaces provided** — symbols, types, endpoints, migrations this lane publishes.
 - **Interfaces consumed** — symbols this lane depends on from other lanes.
 - **Parallel-safe** — `yes` / `no` / `mixed` (with explanation if not `yes`).
 
-Run the Lane validation checklist (below) before proceeding. If it fails, return to Step 3 with the failure noted.
+Run the Lane validation checklist before proceeding. If it fails, return to Step 3 with the failure noted.
 
 ### Step 5 — Task authoring (main thread)
 
@@ -385,7 +228,7 @@ For each lane, author an ordered task list:
 
 Tasks are identified `<SL-ID>.<N>`.
 
-**Every phase must include a terminal `SL-docs` lane** after the impl/verify lanes. See `## Docs-sweep lane template` below. No opt-out — force a conscious doc decision every phase, even if the lane ends up recording "no cross-cutting changes needed."
+**Every phase must include a terminal `SL-docs` lane** after the impl/verify lanes. Copy it from the docs-sweep template in [references/lane-templates.md](references/lane-templates.md). No opt-out — force a conscious doc decision every phase, even if the lane ends up recording "no cross-cutting changes needed."
 
 ### Step 6 — Emit per-lane tasks via TaskCreate
 
@@ -421,27 +264,14 @@ After the plan doc is drafted in the scratch file and before `ExitPlanMode`, cal
 
 ### Step 7.5 — External CLI review (only if `--review-external`)
 
-Run the shared review script:
-
-```bash
-python3 "$(git rev-parse --show-toplevel)/.claude/skills/_shared/review_with_cli.py" \
-  --artifact plans/phase-plan-<VERSION>-<PHASE_ALIAS>.md \
-  --prompt-file "$(git rev-parse --show-toplevel)/.claude/skills/<harness>-plan-phase/assets/review_prompt.md" \
-  --out plans/phase-plan-<VERSION>-<PHASE_ALIAS>_reviews.md
-```
-
-If the script reports the frontier-model cache is empty, it prints a discovery prompt to stderr. Surface to the user via `AskUserQuestion` with options `[run discovery now, skip review this run, abort]`.
-
-Tell the user: "Review written to `plans/phase-plan-<VERSION>-<PHASE_ALIAS>_reviews.md`. When Gemini and Codex flag the same concern, treat it as real; divergent comments are context, not verdicts."
+Run `_shared/review_with_cli.py` against the plan with this skill's `assets/review_prompt.md`, writing `plans/phase-plan-<VERSION>-<PHASE_ALIAS>_reviews.md`. The command, the empty-cache path and the message to the user are in [references/interactive-workflow.md](references/interactive-workflow.md).
 
 ### Step 8 — ExitPlanMode
 
 Call `ExitPlanMode`. The plan doc is the approval surface. After approval, execute the deferred actions in this order: Close-out "Stage artifact" (writes the project-path `plans/phase-plan-<VERSION>-<PHASE_ALIAS>.md` and stages it unless forbidden), then Step 6 `TaskCreate` invocations, then Close-out "Reflection + Handoff".
 
 ## Plan document template
-
-Use this frontmatter and these headings verbatim — the phase-loop runner trusts
-the frontmatter before it trusts the plan body:
+Copy the template in [references/plan-document-template.md](references/plan-document-template.md): its frontmatter, headings, lane task tables, ID conventions and task-type rules. The phase-loop runner trusts the frontmatter before the body, so it is exactly:
 
 ```markdown
 ---
@@ -450,159 +280,23 @@ phase: <PHASE_ALIAS>
 roadmap: <repo-relative roadmap path, e.g. specs/phase-plans-v1.md>
 roadmap_sha256: <sha256 of that roadmap file>
 ---
-
-# <PHASE_ID>: <Phase Name>
-
-## Context
-<Synthesized from Explore teammates. What exists, what constrains the design, what will change.>
-
-## Interface Freeze Gates
-- [ ] IF-0-<PHASE>-<N> — <one-line description of the frozen interface>
-- [ ] IF-0-<PHASE>-<N+1> — …
-
-## Cross-Repo Gates
-<Omit entirely if the phase only touches this repo.>
-- [ ] IF-XR-<N> — <interface that must be frozen across repo boundaries>
-
-## Lane Index & Dependencies
-
-SL-1 — <lane name>
-  Depends on: (none)
-  Blocks: SL-3, SL-4
-  Parallel-safe: yes
-
-SL-2 — <lane name>
-  Depends on: (none)
-  Blocks: SL-4
-  Parallel-safe: yes
-
-## Lanes
-
-### SL-1 — <lane name>
-- **Scope**: <one sentence>
-- **Owned files**: `path/one/**`, `path/two/*.ts` (MUST be a single-line inline bullet, comma-separated backticked globs; do NOT use nested sub-bullets — the downstream file-touch auditor expects inline form)
-- **Interfaces provided**: `FooContract`, `POST /api/bar`
-- **Interfaces consumed**: (none)
-- **Tasks**:
-
-| Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
-|---|---|---|---|---|---|
-| SL-1.1 | test | — | `path/one/__tests__/foo.test.ts` | `FooContract` shape | `pnpm test path/one/__tests__/foo.test.ts` |
-| SL-1.2 | impl | SL-1.1 | `path/one/foo.ts` | — | — |
-| SL-1.3 | verify | SL-1.2 | `path/one/**` | all SL-1 tests | `pnpm test path/one` |
-
-### SL-2 — <lane name>
-…
-
-### SL-docs — Documentation & spec reconciliation
-
-(See `## Docs-sweep lane template` earlier in this skill for the full lane spec. Copy it verbatim and set `Depends on:` to list every other SL-N in this phase.)
-
-## Execution Notes
-- <Parallelism caveats, sequencing gotchas, lanes that can't be worktree-isolated (shared migrations, shared generated files), etc.>
-- **Single-writer files**: <files multiple lanes might want to touch but only one is allowed to modify — e.g., barrel index files, generated types, nav config, worker router. List the owner lane for each. If a single-writer file is also touched by a later phase, name this phase's owner lane and have them author-at-plan-time any additions the later phase's consumer lanes will need. Re-opening the file from the later phase's lane adds a cross-phase serialization edge that shouldn't exist.>
-- **Known destructive changes**: <any deletions a lane legitimately performs, named by file path. If empty, write "none — every lane is purely additive." This is the whitelist <harness>-execute-phase's pre-merge check uses to distinguish legitimate deletions from stale-base accidents.>
-- **Expected add/add conflicts**: <if SL-0 preamble stubs a file that a later lane replaces the body of, list the file path here. The orchestrator pre-authorizes `git checkout --theirs <path>` resolution at merge time.>
-- **SL-0 re-exports**: <if the preamble adds symbols to an `__init__.py`, specify the `__getattr__` lazy pattern (not top-level imports). Eager re-exports break package load when a later lane drops or renames the symbol.>
-- **Worktree naming**: <harness>-execute-phase allocates unique worktree names via `scripts/allocate_worktree_name.sh`. Plan doc does not need to spell out lane worktree paths.
-- **Stale-base guidance** (copy verbatim): Lane teammates working in isolated worktrees do not see sibling-lane merges automatically. If a lane finds its worktree base is pre-<first upstream dependency's merge>, it MUST stop and report rather than committing — the orchestrator will re-spawn or rebase. Silent `git reset --hard` or `git checkout HEAD~N -- …` in a stale worktree produces commits that destroy peer-lane work on `--no-ff` merge.
-- (If `--consensus` was used) **Architectural choices**: <consensus summary, or unresolved disagreement with dissent recorded>
-
-## Acceptance Criteria
-- [ ] EC-<ALIAS>-<N> — proven by `<command / test>`, falsified by `<assertion / negative control>` (must target a production construction site with path-entered control)
-- [ ] EC-<ALIAS>-<M> — proven by `<command / test>`, falsified by `<assertion / negative control>` (must target a production construction site with path-entered control)
-
-## Verification
-<Concrete end-to-end commands to run after all lanes merge. pnpm, supabase, curl, playwright, etc.>
 ```
 
-## ID conventions
+Then `# <PHASE_ID>: <Phase Name>` and these headings in order: `## Context`, `## Interface Freeze Gates`, `## Cross-Repo Gates` (omit if single-repo), `## Lane Index & Dependencies`, `## Lanes`, `## Execution Notes`, `## Acceptance Criteria`, `## Verification`.
 
-| ID | Format | Example |
-|---|---|---|
-| `PHASE_ID` | Spec identifier, else `PHASE-<kebab>` | `PHASE-1-shared-semantics` |
-| Lane ID | `SL-<N>` | `SL-3` |
-| Task ID | `<LANE_ID>.<N>` | `SL-3.2` |
-| Interface freeze | `IF-0-<PHASE>-<N>` | `IF-0-P1-1` |
-| Cross-repo freeze | `IF-XR-<N>` | `IF-XR-2` |
-
-Defaults only — if the spec already uses its own identifiers (e.g., `P1-SL-AUTH-01`), adopt those verbatim.
-
-Any non-numeric lane alias (e.g., `SL-docs`) must still appear in the machine-readable `## Lane Index & Dependencies` block as `SL-<N>` for compatibility with downstream audit/validator tooling that expects `SL-\d+`. Its `Depends on:` line must be on its own line (not inlined with prose that could regex-match as a dependency). The alias (e.g., `SL-docs`) remains valid as the author-facing lane heading in `## Lanes`.
-
-## Task types & dependency rules
-
-| Type | Purpose | Rules |
-|---|---|---|
-| `test` | Write failing tests that pin down the lane's contracts. | Must precede any `impl` task in the same lane. |
-| `impl` | Write the code that makes the preceding tests pass. | Must depend on exactly one `test` task in the same lane. |
-| `verify` | Run the full lane test suite + any integration checks. | Last task in the lane. Depends on the last `impl` task. |
-| `docs` | Update cross-cutting documentation and the docs catalog. | Lives in the terminal `SL-docs` lane. Depends on every other lane's final `verify` task. |
-
-## Docs-sweep lane template
-
-Every phase plan must include this as the final lane. Copy verbatim into the `## Lanes` section, adjust `Depends on:` to list every other `SL-N` in the phase, and edit the `Scope notes` if the phase has atypical docs impact.
-
-```markdown
-### SL-docs — Documentation & spec reconciliation
-
-- **Scope**: Refresh the docs catalog, update cross-cutting documentation touched or invalidated by this phase's impl lanes, and append any post-execution amendments to phase specs whose interface freezes turned out wrong.
-- **Owned files** (read `.claude/docs-catalog.json` for the authoritative list; a minimum set is below, but the catalog is canonical):
-  - Root: `README.md`, `CHANGELOG.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`, `MIGRATION.md`, `ARCHITECTURE.md`, `DESIGN.md`, `AGENTS.md`, `CLAUDE.md`, `GEMINI.md`
-  - Agent indexes: `llm.txt`, `llms.txt`, `llms-full.txt`
-  - Service manifests: `services.json`, `openapi.yaml`/`.yml`/`.json`
-  - `docs/**`, `rfcs/**`, `adrs/**`
-  - `.claude/docs-catalog.json` (this lane maintains it)
-  - The current phase's section of `specs/phase-plans-v<N>.md` (append-only amendments)
-  - Any prior `plans/phase-plan-v<N>-<alias>.md` or prior spec phase sections whose contracts this phase invalidated (prior-phase amendments allowed)
-- **Interfaces provided**: (none)
-- **Interfaces consumed**: (none)
-- **Parallel-safe**: no (terminal)
-- **Depends on**: every other `SL-N` in this phase
-
-**Tasks**:
-
-| Task ID | Type | Depends on | Files in scope | Action |
-|---|---|---|---|---|
-| SL-docs.1 | docs | — | `.claude/docs-catalog.json` | Rescan: `python3 "$(git rev-parse --show-toplevel)/.claude/skills/_shared/scaffold_docs_catalog.py" --rescan`. Picks up any new doc files created by impl lanes; preserves `touched_by_phases` history. |
-| SL-docs.2 | docs | SL-docs.1 | per catalog | For each file in the catalog, decide: does this phase's work change it? If yes, update the file and append the current phase alias to its `touched_by_phases`. If no, leave it. Record in commit message any files intentionally skipped. |
-| SL-docs.3 | docs | SL-docs.2 | `specs/phase-plans-v<N>.md`, prior plans | Append `### Post-execution amendments` subsections to any phase section (current or prior) whose interface freeze was empirically wrong this run. Named freeze IDs + dated correction. |
-| SL-docs.4 | verify | SL-docs.3 | — | Run any repo doc linters (`markdownlint`, `vale`, `prettier --check`, Mermaid/PlantUML render check). If none configured, no-op. |
-```
-
-No opt-out. A phase with nothing to change still runs `SL-docs` and records that explicitly in its commit message — the audit trail.
-
-## Consensus mechanism (synthesis rule)
-
-Applied by the main thread after `--consensus` Step 3a:
-
-1. **Unanimous** across all teammates → accept directly.
-2. **Majority (2 of 3)** → accept the majority view; record the dissenting view under `## Execution Notes > Architectural choices > Dissent`.
-3. **No majority** → re-address the same named teammates via `SendMessage` with the specific conflict surfaced. Max 1 additional round.
-4. **Still no convergence** → main thread picks (biased toward `arch-parallel` for this skill's purpose) and records the full disagreement under `## Execution Notes > Unresolved architectural disagreements`.
+- Each lane's `Owned files` is a single-line inline bullet of comma-separated backticked globs, never nested sub-bullets.
+- Each `## Acceptance Criteria` item is `- [ ] EC-<ALIAS>-<N> — proven by <command / test>, falsified by <assertion / negative control>`, and the falsifier must target a production construction site with path-entered control.
+- The docs-sweep `SL-docs` lane comes from [references/lane-templates.md](references/lane-templates.md); non-numeric lane aliases still appear as `SL-<N>` in the Lane Index.
 
 ## Lane validation checklist
 
-Before writing the plan doc, verify:
+Walk the full checklist in [references/lane-validation-checklist.md](references/lane-validation-checklist.md) before writing the plan doc, and again by hand when `validate_plan_doc.py` is absent. The checks the validator and runtime enforce stay here:
 
 - [ ] **Disjoint file ownership** — no two lanes' `Owned files` globs intersect. For generated files, call out shared-generated status in Execution Notes.
-- [ ] **Owned files is inline, one line** — no nested bullets; comma-separated backticked concrete paths/globs only. Do not use prose entries such as "callsite wiring", "new migration file", "or equivalent", or "additions to"; resolve those to actual files before writing the plan.
 - [ ] **DAG has no cycles** — a topological sort of `Depends on:` succeeds.
-- [ ] **Every `impl` task has a preceding `test` task** in the same lane.
-- [ ] **Every acceptance criterion is a testable assertion**, not prose. "Users can log in" is not testable; "`POST /api/auth` returns 200 with a valid session cookie for a registered user" is. `validate_plan_doc.py` WARNs (check K) on a criterion that names no command/path/assertion.
-- [ ] **Reference the roadmap goal ID, don't restate it.** When the anchored roadmap phase declares `EC-<ALIAS>-<N>` exit-criterion IDs, author each acceptance item as `- [ ] EC-<ALIAS>-<N> — proven by <command>` — reference the goal by ID (the roadmap exit-criterion is the single source of truth) rather than restating the goal text, so validation always checks the plan against the original goal and a plan can never silently weaken it. Every declared EC-ID should be referenced by ≥1 acceptance item (runtime `goal-coverage` + `validate_plan_doc.py` check P). Write the ID as **plain text at the item's start** — `- [ ] EC-<ALIAS>-<N> — …` — never backticked or bolded (`` `EC-…` ``/`**EC-…**` are not recognized as leading refs), and copy the alias **verbatim** from the roadmap (a case- or digit-drifted `EC-p1-1` reads as a dangling ref). One item may reference several IDs when a single command proves them: `- [ ] EC-<ALIAS>-1, EC-<ALIAS>-2 — proven by \`<cmd>\``. Plan-internal done-conditions (no EC-ref) stay allowed. If the phase declares no EC-IDs (legacy), author testable assertions as before.
-- [ ] **Each acceptance criterion names the command that proves it.** The definition of done (canonical term: `acceptance_criteria`) and the `## Verification` commands are one contract, not two parallel lists — cite the proving command (or test file) in or beside each `- [ ]` item so done is mechanically checkable.
-- [ ] **Grep assertions are paired with tests.** Any acceptance criterion using `rg` or `grep` as its sole check must also cite a test file — grep alone is defeated by renaming a symbol to pass the regex.
-- [ ] **UI changes get a visual check.** When any lane owns UI/visual files (`*.tsx`/`*.jsx`/`*.vue`/`*.svelte`, `*.css`/`*.scss`, `components/**`), `## Verification` must include a browser/screenshot step (Playwright-via-PMCP or claude-in-chrome) and at least one acceptance criterion phrased as a visually observable outcome. `validate_plan_doc.py` WARNs (check L) when UI files change but Verification names no browser step.
-- [ ] **Interface freeze gates are concrete** — name the symbol/endpoint/migration, not a vibe.
-- [ ] **Stale-base resilience** — for each lane that isn't a DAG root, list every upstream symbol, migration number, or file path it reads under `Interfaces consumed`. This gives `<harness>-execute-phase` evidence to verify the base wasn't stale and narrows the blast radius of a mis-based commit. Execution Notes must call out "if lane teammate finds its worktree base is pre-<upstream-SL>, stop and report — do not rebase silently."
 - [ ] **Synthesis lanes are explicit reducers** — any lane that writes a docs summary, truth table, readiness matrix, release summary, or other synthesized artifact lists every producer lane under `Depends on` and every consumed finding under `Interfaces consumed`. Mark these lanes `Parallel-safe: no`.
-- [ ] **No completion-order assumptions** — the plan never relies on lane numbering, prose ordering, or "last lane" wording to sequence final artifact writes; the DAG is the only sequencing mechanism.
-- [ ] **Cross-lane file deletions called out** — if any lane legitimately deletes a file that another lane produces (rare but real: a lane replacing a stub), record it under Execution Notes' "Known destructive changes" block.
-- [ ] **Expected add/add conflicts declared** — if SL-0 preamble stubs a file that a lane replaces, add it under Execution Notes' "Expected add/add conflicts" block.
-- [ ] **SL-0 re-exports use `__getattr__` lazy form** — declared under Execution Notes' "SL-0 re-exports" block.
-- [ ] **Plan doc passes `validate_plan_doc.py`** — run the validator and confirm zero errors before calling `ExitPlanMode`. The validator catches structural issues (missing headings, duplicate lane IDs, malformed task tables) that manual review misses.
-- [ ] **Terminal `SL-docs` lane present** — every phase plan must include the docs-sweep lane from `## Docs-sweep lane template`. `Depends on:` lists every other lane in the phase. No opt-out; a phase with no doc changes still runs the lane and records that.
+
+The reference adds inline concrete `Owned files`, a `test` before every `impl`, testable acceptance items that reference their roadmap `EC-<ALIAS>-<N>` ID as plain text and name their proving command, grep-only checks paired with a test, a browser step for UI changes, stale-base `Interfaces consumed`, and the terminal `SL-docs` lane.
 
 ## Teamwork & delegation posture
 
@@ -611,9 +305,7 @@ Before writing the plan doc, verify:
 - **Name every teammate.** Set `name:` on every `Agent` call so you can re-address via `SendMessage` without losing context or paying to restart.
 - **Task list as source of truth for the lane DAG.** Step 6's per-lane `TaskCreate` is how the plan becomes actionable; each lane task is addressable by ID for `<harness>-execute-phase`.
 - **Hand-off to `<harness>-execute-phase`.** After `ExitPlanMode` approval, invoke `/<harness>-execute-phase <plan-doc-path>`. See that skill for the full execution contract (team creation, worktree isolation, merge policy). Do NOT pass `isolation: "worktree"` alongside `team_name` — the harness drops `isolation` in that combination.
-- **Manual hand-off (when `<harness>-execute-phase` is unavailable).** Run `python scripts/validate_plan_doc.py <plan-doc-path>` first. Then execute each lane in one of two ways:
-  - (a) **Standalone** — `Agent(isolation: "worktree", name: "<SL-ID>", subagent_type: "general-purpose")` without `team_name`. The `isolation` kwarg is honored in this form; loses team coordination.
-  - (b) **Teamed** — `TeamCreate` + `Agent(team_name=…, name="<SL-ID>", subagent_type="general-purpose")`, and the teammate's first tool call is `EnterWorktree` (load via `ToolSearch(query="select:EnterWorktree")`). Worktree via tool, team coordination preserved.
+- **Manual hand-off (when `<harness>-execute-phase` is unavailable).** Validate the plan with `python scripts/validate_plan_doc.py <plan-doc-path>`, then run each lane standalone or teamed as described in [references/interactive-workflow.md](references/interactive-workflow.md).
 
 ## Output contract
 
@@ -646,124 +338,12 @@ When the generated plan is ready to execute, set `Next phase: <PHASE_ALIAS> - ex
 
 ## Close-out — Reflection + Handoff
 
-After artifacts are staged or confirmed tracked, resolve paths. Treat `_shared/next_reflection_path.py` as optional-if-present: check existence, use it when available, otherwise fall back to an inline date-based filename.
+After artifacts are staged or confirmed tracked (staging comes first unless the user explicitly forbade it), the orchestrator writes two files with the Write tool:
 
-```bash
-REFLECTION_PATH=resolve_skill_bundle_root("codex")/<harness>-plan-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md
-REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
-REPO_LOCAL_HANDOFF=$(python3 - <<'PYH'
-from pathlib import Path
-repo = Path.cwd().resolve()
-skill = "<harness>-plan-phase"
-try:
-    # Primary: the installed phase_loop_runtime.skill_paths resolver.
-    from phase_loop_runtime.skill_paths import resolve_handoff_root
-    print(resolve_handoff_root(repo) / skill / "latest.md")
-except Exception:
-    # Fallback: the repo-local handoff_path.py mirror, only when the runtime is not importable.
-    from importlib import util
-    spec = util.spec_from_file_location("handoff_path", repo / "shared" / "phase-loop" / "handoff_path.py")
-    mod = util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    print(mod.resolve_handoff_path(repo, skill))
-PYH
-)
-mkdir -p "$(dirname "$REPO_LOCAL_HANDOFF")"
-SKILL_MD=resolve_skill_bundle_root("codex")/<harness>-plan-phase/SKILL.md
-```
+- FILE 1, a repo-agnostic reflection to `resolve_skill_bundle_root("codex")/<harness>-plan-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. It is about how the skill's instructions performed, and must not name this project, codebase, filenames or domain.
+- FILE 2, the repo-specific handoff at the per-repo `latest.md` slot for `<harness>-plan-phase`, which overwrites any prior handoff from this skill in the same repo. Its frontmatter carries `from`, `timestamp`, `artifact`, `artifact_state`, `next_skill`, `next_command` and `next_phase`.
 
-Primary path: the orchestrator writes BOTH files directly with the Write tool. Before writing either file, ensure the plan doc has been staged in the preceding Close-out "Stage artifact" section unless the user explicitly forbade staging.
-
-FILE 1 — REPO-AGNOSTIC reflection → `<REFLECTION_PATH>`:
-
-```markdown
-# <harness>-plan-phase reflection — <ISO timestamp>
-
-## Run context
-- Skill: <harness>-plan-phase
-- Timestamp: <ISO timestamp>
-- Repo: <repo>
-- Branch: <branch>
-- Commit: <commit>
-- Artifact: <artifact path if any, or none>
-
-## What worked
-- <bullet, about the SKILL's instructions>
-
-## What didn't
-- <bullet, about friction or gaps in the SKILL's instructions>
-
-## Improvements to SKILL.md
-- <specific, actionable change to the instructions>
-```
-
-Do NOT reference this project, codebase, filenames, or domain in FILE 1. Feedback is about how the skill's instructions performed, for a future meta-skill that digests reflections across runs.
-
-FILE 2 — REPO-SPECIFIC handoff → `<REPO_LOCAL_HANDOFF>` (per-repo slot; overwrites any prior handoff from this skill in the same repo):
-
-```markdown
-<!--
-  Consumer validation — before acting on this handoff:
-  1. Verify `from:` matches the expected predecessor skill.
-  2. Verify `timestamp:` is within the last 7 days.
-  3. Verify every `artifact:` path resolves under your current
-     `$(git rev-parse --show-toplevel)`. If any path points to a
-     different repo, stop and surface it to the user — the handoff
-     was written against a different workspace.
--->
----
-from: <harness>-plan-phase
-timestamp: <ISO>
-artifact: <absolute path to plan doc + reviews if any>
-artifact_state: <staged|tracked|modified|unstaged|blocked>
-next_skill: <<harness>-execute-phase|none>
-next_command: </<harness>-execute-phase PHASE_ALIAS|none - reason>
-next_phase: <PHASE_ALIAS - execution ready|PHASE_ALIAS - blocked: reason>
----
-
-# Handoff for <harness>-execute-phase
-
-## Summary
-<2-3 sentences: phase planned, lanes count, plan doc path.>
-
-## Key decisions made this run
-- <numbered, one line each — lane boundaries, IF-freeze signatures, consensus outcomes if --consensus was used>
-
-## Open items for <harness>-execute-phase
-- <concrete — e.g., "SL-2 depends on SL-1's StoreRegistry.get signature; ensure lane ordering in dispatch">
-
-## Repo-specific gotchas surfaced
-- <quirks of THIS codebase discovered during planning>
-
-## Planning artifacts staged this run
-- <path> @ <artifact_state>
-
-## Execute-phase's likely scope
-- <file globs from Owned files across lanes>
-```
-
-Optional alternative: when fresh-context independent review is desired, the orchestrator MAY instead spawn ONE close-out agent using the `frontier` tier with the prompt below. Use this only when the orchestrator wants a clean-context review of the transcript before writing.
-
-```
-Agent(
-  subagent_type: "general-purpose",
-  model: "<frontier-model-id>",
-  name: "<harness>-plan-phase-closeout",
-  prompt: """
-    Review the skill at <SKILL_MD> and the current execution transcript.
-    Produce the two files above (same schemas) via the Write tool to
-    <REFLECTION_PATH> and <REPO_LOCAL_HANDOFF>.
-  """
-)
-```
-
-After the files are written, print to the user:
-
-> Plan written to `<plan-doc-path>`.
-> Reflection saved to `<REFLECTION_PATH>`.
-> Handoff written to `<REPO_LOCAL_HANDOFF>`.
->
-> Recommended next step: run `/clear` to reset your context window, then invoke `/<harness>-execute-phase <alias>`. The next skill reads the handoff automatically.
+Path resolution, both templates, the optional fresh-context close-out agent and the final message to the user are in [references/closeout-reflection-handoff.md](references/closeout-reflection-handoff.md).
 
 
 Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, handoff roots, helper roots, and reflection roots.
@@ -794,7 +374,9 @@ Generated plans must contain machine-checkable verification commands and an effe
 
 ### Manifest write
 
-After the plan artifact and repo-local handoff path are known, perform a best-effort `plan-manifest append` through `phase_loop_runtime.plan_manifest.append_entry`. Append a `type=phase` entry with `status=committed`, `slug`, `file`, `created_at`, `owner_skill=<harness>-plan-phase`, `handoff_ref`, `roadmap_ref`, `phase_alias`, `if_gates_produced`, and `lanes`. Resolve paths with `phase_loop_runtime.skill_paths` helpers and keep the manifest write best-effort during the dual-mode window: failures are non-fatal, emit a ledger warning, and are mentioned in the mandatory reflection without changing the existing plan closeout result. A legacy `plans/manifest.json` using the `schema`/`entries` layout raises `unsupported manifest schema_version: 0`; treat that exact error as the expected non-fatal case (warn, do not block or migrate in place). `phase_loop_runtime` may resolve from the installed dotfiles runtime on `PYTHONPATH` even when the target repo neither vendors nor installs it — use the importable package; a missing repo-local checkout is not a blocker.
+After the plan artifact and repo-local handoff path are known, perform a best-effort `plan-manifest append` through `phase_loop_runtime.plan_manifest.append_entry`. Append a `type=phase` entry with `status=committed`, `slug`, `file`, `created_at`, `owner_skill=<harness>-plan-phase`, `handoff_ref`, `roadmap_ref`, `phase_alias`, `if_gates_produced`, and `lanes`. Resolve paths with `phase_loop_runtime.skill_paths` helpers and keep the manifest write best-effort during the dual-mode window: failures are non-fatal, emit a ledger warning, and are mentioned in the mandatory reflection without changing the existing plan closeout result.
+
+A legacy `plans/manifest.json` using the `schema`/`entries` layout raises `unsupported manifest schema_version: 0`; treat that exact error as the expected non-fatal case (warn, do not block or migrate in place). `phase_loop_runtime` may resolve from the installed dotfiles runtime on `PYTHONPATH` even when the target repo neither vendors nor installs it — use the importable package; a missing repo-local checkout is not a blocker.
 
 Closeout payload shape is defined by `EmitPhaseCloseout` in `phase_loop_runtime/baml_src/emit_phase_closeout.baml` (if that path is absent in the checkout, use the operator/prompt-supplied field contract or the installed `phase_loop_runtime` package — the missing vendored BAML source is not a blocker); keep skill text focused on value selection and handoff routing, not duplicated field ceremony.
 
