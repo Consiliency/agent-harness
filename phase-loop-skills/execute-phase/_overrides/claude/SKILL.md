@@ -167,8 +167,8 @@ The main thread reads exactly two things: the plan doc and the TaskList. It does
 
 Each step's full procedure is in a reference file. Read the file when you reach that step; it is not preloaded.
 
-- Setup (environment variables, expected helpers, deferred tool preloading), Step 0 predecessor handoff, Step 1 resolve and parse the plan, Step 2 preflight (`scripts/verify_harness.sh`), Step 2.5 baseline capture, Step 2a worktree hygiene: [references/interactive-steps.md](references/interactive-steps.md).
-- Step 3 model and thinking per lane, Step 4 TeamCreate, Step 5 dispatch loop and teammate brief, plus the lane state machine, parallelism contract, model selection quick-reference and teamwork posture: [references/lane-dispatch.md](references/lane-dispatch.md).
+- Setup (environment variables, expected helpers, deferred tool preloading), teamwork posture (hard rules), Step 0 predecessor handoff, Step 1 resolve and parse the plan, Step 2 preflight (`scripts/verify_harness.sh`), Step 2.5 baseline capture, Step 2a worktree hygiene: [references/interactive-steps.md](references/interactive-steps.md).
+- Step 3 model and thinking per lane, Step 4 TeamCreate, Step 5 dispatch loop and teammate brief, plus the lane state machine, parallelism contract, model selection quick-reference: [references/lane-dispatch.md](references/lane-dispatch.md).
 - Step 6 gate verification, Step 6.5 parent-tree leakage check, Step 7 auto-merge, Step 8 retry-once then halt, Step 9 final verification and cleanup, worktree pruning, output contract and worktree layout: [references/merge-and-verify.md](references/merge-and-verify.md).
 - Step 9.5 close-out (artifact staging, next-step routing, path resolution, reflection and handoff templates): [references/closeout-reflection-handoff.md](references/closeout-reflection-handoff.md).
 

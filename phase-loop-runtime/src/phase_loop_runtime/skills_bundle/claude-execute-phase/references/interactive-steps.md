@@ -7,6 +7,7 @@ Reference for `claude-execute-phase` (linked from its `SKILL.md`). Read it at th
 - Environment variables
 - Expected helpers
 - Deferred tool preloading
+- Teamwork posture (hard rules)
 - Step 0 — Read predecessor handoff (if present)
 - Step 1 — Resolve + parse plan doc
 - Step 2 — Preflight
@@ -42,6 +43,19 @@ Several tools this skill uses are deferred and must be registered via `ToolSearc
 ToolSearch(query: "select:TaskCreate,TaskUpdate,TaskList,TeamCreate,AskUserQuestion")
 ```
 
+
+## Teamwork posture (hard rules)
+
+- **Main thread = dispatcher.** Read plan doc + TaskList + git state. Do not Grep/Read source code during execution, except for the Step 7 destructiveness check and file-touch audit.
+- **Parallel-by-default.** Ready lanes dispatch in a single message, every round.
+- **Name every teammate via the allocator.** Bare `lane-<sl-id>` names collide in rapid dispatch.
+- **TaskCreate tasks are the source of truth for lane status.** Update them as lanes transition.
+- **No speculative refactoring.** Lane teammates must stay within their `Owned files` globs; reject their work at gate verification if they wandered. Use the file-touch audit to catch this pre-merge.
+- **Never trust a branch name.** Resolve work by `commit_sha` from the reply envelope.
+- **Never `--no-ff` merge without the destructiveness check.**
+- **Never resume a STOPped teammate with no commits.** Kill + respawn.
+- **Never override the dirty-tree preflight.** `verify_harness.sh` is the gate. Only paths forward: (a) commit as `chore:`, (b) `git stash push -u` and restore post-phase, (c) abort.
+- **Never rely on implicit shell CWD.** Every orchestrator git/script invocation MUST either wrap as `bash -c 'cd "$(git rev-parse --show-toplevel)" && <cmd>'` or pass `git -C <repo-root>`. `git worktree remove` on the shell's current CWD bricks subsequent Bash calls.
 
 ## Step 0 — Read predecessor handoff (if present)
 

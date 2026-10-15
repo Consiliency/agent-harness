@@ -47,7 +47,7 @@ STRICT = False
 ALLOWLIST: dict[tuple[str, str], int] = {
     ("skills-src/claude/claude-advisor-board/SKILL.md", "long_line"): 1530,
     # execute-phase / execute-detailed: recorded after agent-harness#1548; split in a follow-up (agent-harness#1358).
-    ("skills-src/claude/claude-execute-phase/SKILL.md", "tokens"): 6383,
+    ("skills-src/claude/claude-execute-phase/SKILL.md", "tokens"): 6386,
     ("skills-src/claude/claude-execute-phase/SKILL.md", "long_line"): 1019,
     ("skills-src/claude/claude-phase-roadmap-builder/SKILL.md", "tokens"): 6048,
     # Split in agent-harness#1358; what remains is test-pinned normative text.
