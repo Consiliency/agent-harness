@@ -85,10 +85,12 @@ skill directories, including edits inside them; back up local customizations fir
 To inspect those destinations before applying, use an already installed runtime:
 
 ```sh
-phase-loop install --harness claude --source agent-harness/phase-loop-skills --copy --dry-run --json
+phase-loop install --harness claude --source "$PWD/agent-harness/phase-loop-skills" --copy --dry-run --json
 ```
 
-That source path is for clone-then-run. After a one-liner install, use
+That source path is for clone-then-run, from the directory you cloned into. Give
+`--source` as an absolute path: a relative one is resolved against the top of the git
+checkout you run the command in, not the current directory. After a one-liner install, use
 `"$HOME/.local/share/agent-harness/phase-loop-skills"` instead, or the bundle under
 your chosen `AGENT_HARNESS_HOME`. Use a bundle matching the installed release.
 
@@ -209,7 +211,9 @@ Troubleshooting below.
 
 Use a clean disposable project for the first preview. The runner executes a roadmap;
 it does not ingest a repository and invent requirements. Author
-`specs/phase-plans-v1.md` first (see the repository's example for the format), or ask
+`specs/phase-plans-v1.md` first (copy the shape of `specs/phase-plans-v1.md` in the
+agent-harness repository, without its `DELIVERED` status banner: a delivered roadmap
+cannot be selected; check it with `phase-loop validate-roadmap`), or ask
 your harness's `phase-roadmap-builder` skill to produce one. Review the roadmap and
 its automation commands before execution.
 
@@ -305,9 +309,10 @@ how a committed `.phase-loop-publication.toml` stops it on the interactive path
   ```
 
   A bare `{ name = "phase-loop-runtime" }` upgrades normally. Anything pinned —
-  `specifier = "==0.7.13"`, or a `git+…@vX.Y.Z` URL — is re-resolved to **the same
-  version**, so `uv tool upgrade` reports success and moves nothing. That covers the
-  installer script (it installs from a tag-pinned URL) **and** a hand-run pinned install
+  `specifier = "==0.7.13"`, or a `git+…@<ref>` URL (a tag or a commit SHA) — is
+  re-resolved to **the same version**, so `uv tool upgrade` reports success and moves
+  nothing. That covers the installer script (it resolves the release to one commit and
+  installs from a commit-pinned `git+…@<sha>` URL) **and** a hand-run pinned install
   such as `uv tool install "git+…@<TAG>#subdirectory=phase-loop-runtime"`, which
   `phase-loop-runtime/README.md` documents. To advance a pinned install, re-install at the
   new ref or re-run the installer — see the two bullets above.

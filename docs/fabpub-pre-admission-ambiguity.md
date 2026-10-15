@@ -4,31 +4,31 @@ Operator note for the state Consiliency/agent-harness#789 hit: a governed FABPUB
 publication that failed **before** admission, left a durable adapter-start owner
 behind, and therefore permanently blocked its repository partition.
 
-Paths below are relative to the repository root; line numbers are for
-`phase-loop-runtime/src/phase_loop_runtime/` on the tree that carries this file.
+Code paths below are relative to `phase-loop-runtime/src/phase_loop_runtime/`; code is
+cited by symbol, not line number.
 
 ## What a pre-admission ambiguity is
 
-`BrokerService._fresh_publish` (`convergence/broker/verbs.py:518`) makes the
+`BrokerService._fresh_publish` (`convergence/broker/verbs.py`) makes the
 adapter-start owner durable **before** it allocates an admission, so that a crash
 between the two cannot be mistaken for "nothing happened". On the next attempt it
 reads that owner back and, if the owner is unsealed, asks
-`_block_unsealed_owner` (`verbs.py:530-532`, defined at `verbs.py:375`) to
+`_block_unsealed_owner` (`verbs.py`) to
 resolve it. An unsealed owner with no terminal is an **unknown provider effect**:
 the runtime cannot prove the adapter was never entered, so it durably promotes
 the effect key to `outcome_ambiguous_blocked`.
 
 That record blocks the whole repository partition:
-`BrokerEvidenceStore.epoch_blocked` (`convergence/broker/evidence.py:86-95`)
+`BrokerEvidenceStore.epoch_blocked` (`convergence/broker/evidence.py`)
 scans one store root, and `_fresh_publish` refuses on it with
-`PermissionError("epoch permanently blocked")` (`verbs.py:533-534`). The scope is
+`PermissionError("epoch permanently blocked")`. The scope is
 one repository, by construction — "each repo gets its OWN admission + evidence
 store … the stores are NOT shared" (the `_RoutingBrokerService` class docstring in
 `convergence/broker/live.py`).
 
 The block is permanent at the storage layer, not just by convention: no append
 may transition out of an `outcome_ambiguous_blocked` record, whatever the caller
-path (`evidence.py:229-230`).
+path (the append guard in `evidence.py`, `_append_locked`).
 
 ## Why it stays permanent (decision: C-keep, 2026-09-06)
 
@@ -66,6 +66,12 @@ incident hit: a sealed bootstrap inventory whose recorded worktree has since bee
 pruned no longer fails the activation barrier.
 
 ## Owner section refusals and liveness
+
+The behaviour in this section and the two after it (agent-harness#1311,
+agent-harness#1312, agent-harness#1313, agent-harness#1314, agent-harness#1315,
+agent-harness#1574, agent-harness#1577, agent-harness#1578, agent-harness#1591,
+agent-harness#1633) landed on `main` after `v0.7.26` and ships in the next release. A
+`v0.7.26` or older runtime does not have it.
 
 Two narrowings of what becomes `outcome_ambiguous_blocked`. Neither relaxes C-keep:
 an unsealed owner whose writer is gone, and that has no known terminal, is still
@@ -512,7 +518,7 @@ than in `attested_by`. The dispositions:
   writes the adapter-start owner, so a refusal of that precondition no longer leaves
   an unsealed owner that the next attempt would promote to permanent ambiguity. Every
   other refusal inside admission restores the owner path to the exact bytes it held
-  (see "Owner section refusals and liveness" below, agent-harness#1314).
+  (see "Owner section refusals and liveness" above, agent-harness#1314).
 
 A blocked key the attestation leaves undisposed, a disposition it does not know,
 digests that do not match the predecessor's bytes, or a predecessor that is not
