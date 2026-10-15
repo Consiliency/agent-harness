@@ -12,7 +12,7 @@ The normalized effort ladder, cheapest first, is:
 `minimal` < `low` < `medium` < `high` < `xhigh` < `max`
 
 Registry action defaults today are blunt — for this executor `plan`/`roadmap`/`review`
-resolve to `max` and `execute`/`repair` to `high` (`EXECUTOR_EFFORT_OVERRIDES` in
+resolve to `max` and `execute`/`repair` to `medium` (`EXECUTOR_EFFORT_OVERRIDES` in
 `profiles.py` is the source; read it rather than trusting this sentence) — applied
 uniformly regardless of how hard the lane actually is. As the planner you have the complexity signal the runtime
 lacks; use it:
