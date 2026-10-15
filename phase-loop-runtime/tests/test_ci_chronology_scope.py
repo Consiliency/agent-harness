@@ -493,12 +493,13 @@ def test_offload_requires_trust_secret_and_supported_sandbox(
     assert step["env"]["OFFLOAD_PROOF"] == (
         "${{ github.event_name == 'workflow_dispatch' && inputs.offload == true }}"
     )
-    # The engine login is repository configuration, never a literal in the workflow.
-    assert step["env"]["OFFLOAD_SSH_USER_SET"] == "${{ vars.CI_OFFLOAD_SSH_USER != '' }}"
+    # The engine login is a repository secret (masked in public logs), never a
+    # literal or a variable in the workflow.
+    assert step["env"]["OFFLOAD_SSH_USER_SET"] == "${{ secrets.CI_OFFLOAD_SSH_USER != '' }}"
     offload_step = next(
         s for s in jobs["offload"]["steps"] if "dagger-offload@" in s.get("uses", "")
     )
-    assert offload_step["with"]["ssh-user"] == "${{ vars.CI_OFFLOAD_SSH_USER }}"
+    assert offload_step["with"]["ssh-user"] == "${{ secrets.CI_OFFLOAD_SSH_USER }}"
     output = tmp_path / "outputs"
     result = subprocess.run(
         ["bash", "-c", step["run"]], capture_output=True, text=True,

@@ -82,9 +82,10 @@ jobs:
           # still refuses an engine without /dev/net/tun, so a proof run on an
           # unready engine is a red offload -- never a hosted green.
           OFFLOAD_PROOF: ${{ github.event_name == 'workflow_dispatch' && inputs.offload == true }}
-          # The engine host's docker-scoped login comes from repository configuration,
-          # never from this file: no value means the offload is not configured here.
-          OFFLOAD_SSH_USER_SET: ${{ vars.CI_OFFLOAD_SSH_USER != '' }}
+          # The engine host's docker-scoped login is a repository SECRET, never a
+          # literal here and never a variable: a secret stays masked in public run
+          # logs. No value means the offload is not configured here.
+          OFFLOAD_SSH_USER_SET: ${{ secrets.CI_OFFLOAD_SSH_USER != '' }}
         run: |
           set -euo pipefail
           trusted=false
@@ -172,8 +173,8 @@ jobs:
           eligible: ${{ needs.elig.outputs.eligible }}
           ts-oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
           ts-oauth-secret: ${{ secrets.TS_OAUTH_SECRET }}
-          # Repository configuration; elig refuses the offload when it is empty.
-          ssh-user: ${{ vars.CI_OFFLOAD_SSH_USER }}
+          # A repository secret (masked in logs); elig refuses the offload when it is empty.
+          ssh-user: ${{ secrets.CI_OFFLOAD_SSH_USER }}
       - name: Upload offloaded junit evidence
         if: always()
         uses: actions/upload-artifact@v4
