@@ -4,6 +4,14 @@ on:
   push:
     branches: [main]
   pull_request:
+  # The merge queue's run is the suite of record for a landing: GitHub tests the
+  # PR merged onto main (plus anything queued ahead of it) and pushes exactly that
+  # commit to main. Every lane rule below is spelled `== 'pull_request'` /
+  # `!= 'pull_request'`, so a merge_group run takes the push path: all three
+  # pytest lanes, quarantined nodes included, Gate A (cleanroom) instead of the
+  # wheel smoke, and the chronology node retained (ci/chronology-scope.sh).
+  merge_group:
+    types: [checks_requested]
   # The heavy CONFORM chronology node (~50 min, ~88% of a per-PR run) is scoped
   # by ci/chronology-scope.sh: every push to main and this nightly run RETAIN it
   # unconditionally; every pull_request DEFERS it to the landing push -- incl. one
@@ -79,6 +87,9 @@ jobs:
           if [ "$EVENT_NAME" = "pull_request" ] && [ "$PR_HEAD_REPO" = "$REPO" ]; then
             trusted=true
           fi
+          # A merge_group run is NOT trusted for the offload: a queued fork PR's code
+          # runs there with the repository's secrets, and the queue ref carries no
+          # head-repo field to tell it apart. It takes the hosted path (fail closed).
           # Scheduled and manually dispatched runs execute the repository's own
           # default-branch workflow with its secrets; no fork can reach either.
           if [ "$EVENT_NAME" = "schedule" ] || [ "$EVENT_NAME" = "workflow_dispatch" ]; then
@@ -555,7 +566,7 @@ jobs:
               sys.exit("chronology retention guard: push-to-main trigger is gone")
           if not triggers.get("schedule"):
               sys.exit("chronology retention guard: the nightly schedule trigger is gone")
-          for event in ("push", "schedule", "workflow_dispatch", "", "unknown_event"):
+          for event in ("push", "merge_group", "schedule", "workflow_dispatch", "", "unknown_event"):
               env = {k: v for k, v in os.environ.items() if not k.startswith("CHRONOLOGY")}
               env["GITHUB_EVENT_NAME"] = event
               out = subprocess.run(

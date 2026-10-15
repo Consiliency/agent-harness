@@ -33,6 +33,11 @@ messages, PR and issue bodies, handoffs, and closeout reports. When you
 reference an issue or PR in another repo, qualify it with that repo
 (`portal#42`, `consiliency-contract#7`), never a bare `#42`.
 
+## Changelog entries
+
+Add a `changelog.d/<number>.<type>.md` fragment; never edit `CHANGELOG.md`
+`[Unreleased]` in a pull request (see `changelog.d/README.md`).
+
 ## Plan discipline (why phases stall)
 
 The failure mode that has cost this repo the most is a plan that pins its own
