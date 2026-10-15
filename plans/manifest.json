@@ -13362,6 +13362,62 @@
       "task_summary": "Stable fresh publication body normalization preserving frozen retries",
       "type": "detailed",
       "updated_at": "2026-10-13T06:22:56Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "created_at": "2026-10-14T00:00:00Z",
+      "file": "plans/phase-plan-v11-RUNRETAIN.md",
+      "handoff_ref": null,
+      "if_gates_produced": [
+        "IF-0-RUNRETAIN-1",
+        "IF-0-RUNRETAIN-2",
+        "IF-0-RUNRETAIN-3"
+      ],
+      "lanes": [
+        "SL-0",
+        "SL-1",
+        "SL-2",
+        "SL-3",
+        "SL-4"
+      ],
+      "lifecycle": [
+        {
+          "at": "2026-10-14T00:00:00Z",
+          "by": "claude-plan-phase",
+          "transition": "committed",
+          "metadata": {
+            "issues": [
+              "Consiliency/agent-harness#1592"
+            ],
+            "planning_artifact_only": true,
+            "review_status": "pending",
+            "decisions": {
+              "decided_by": "repository owner",
+              "decided_on": "2026-10-14",
+              "resolves": [
+                "OQ-1",
+                "OQ-2",
+                "OQ-3",
+                "OQ-4",
+                "OQ-5"
+              ]
+            },
+            "cross_repo": [
+              "Consiliency/jev-assembler#37"
+            ],
+            "note": "standalone issue phase; not a declared v11 roadmap phase"
+          }
+        }
+      ],
+      "owner_skill": "claude-plan-phase",
+      "phase_alias": "RUNRETAIN",
+      "reflection_ref": null,
+      "roadmap_ref": null,
+      "slug": "run-retention-1592",
+      "status": "committed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-10-14T00:00:00Z"
     }
   ],
   "schema_version": 1
