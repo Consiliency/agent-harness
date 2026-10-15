@@ -38,6 +38,20 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   re-run through the proxy, real replies) and p3-agy-tools-workspace.json (agy's tools,
   stream events and workspace files).
 
+### Reflection filters preserve recurring friction (agent-harness#1370, agent-harness#1371)
+
+- Exact and near deduplication is limited to copies of the same recorded run.
+  Identical feedback from distinct runs counts toward readiness, including runs on
+  one branch. Repeated one-repo ledger lines and repeated one-repo lines carrying a
+  ref, path or URL are stripped from What worked and Improvements before
+  classification.
+- A repo-specific Improvements section is dropped and noted in the manifest,
+  while usable What didn't and What worked sections remain. A reflection with
+  neither friction nor an eligible proposal is still excluded.
+- A rejected repo-specific proposal with no remaining friction stays in place.
+  Ledger-labelled friction is retained; bulleted ledger proposals are dropped.
+  Copy matching preserves meaningful leading CLI and Markdown syntax.
+
 ### A review seat that would run sealed is not run and not counted (agent-harness#1244)
 
 - A board seat whose route is not jailed (every `seat_jail.SEALED_FALLBACK_CODES` code, for
