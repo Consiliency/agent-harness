@@ -1,6 +1,6 @@
 {
-  "source": "Consiliency/spec@4cc817dbe1bfc5b49cd4ccaf1c0283da88b764b8:spec-parity/schemas/ec.schema.json",
-  "source_sha256": "bbff69ea33143f11aac644bf663e0d92f5d70d888262119bb879499772ace14e",
+  "source": "Consiliency/spec@v0.7.2:spec-parity/schemas/ec.schema.json",
+  "source_sha256": "c7c7ca682042553d67acb5ecc042089addbaca644a3c4a244e3038dd96e399f2",
   "schema": {
     "$schema": "https://json-schema.org/draft/2020-12/schema",
     "type": "array",
@@ -19,7 +19,10 @@
       "properties": {
         "criterion_logical_id": {
           "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
+          "pattern": "^[0-9a-f]{64}$",
+          "not": {
+            "pattern": "\\n"
+          }
         },
         "argv": {
           "type": "array",
@@ -42,6 +45,9 @@
         "log_sha256": {
           "type": "string",
           "pattern": "^[0-9a-f]{64}$",
+          "not": {
+            "pattern": "\\n"
+          },
           "description": "SHA-256 of the command log bytes; no log payload is carried."
         },
         "pipeline_mode": {
@@ -65,7 +71,10 @@
         "authority_id": {
           "type": "string",
           "pattern": "^[a-z0-9][a-z0-9._/-]{0,127}$",
-          "description": "Optional producer-declared name of the concrete owner (for example `agent-harness` or a CI system's name). Copied into the acceptance result and bound by record_digest; spec never interprets it."
+          "not": {
+            "pattern": "\\n"
+          },
+          "description": "Optional producer-declared name of the concrete owner (for example a CI system's or an agent runtime's name). Copied into the acceptance result and bound by record_digest; spec never interprets it."
         }
       },
       "allOf": [

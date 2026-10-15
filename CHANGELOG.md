@@ -20,7 +20,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `pipeline_required` or an engaged `pipeline_optional` run; agent-harness owns it
   otherwise. A standalone pass is never reported as pipeline-certified.
 - Exported authority uses spec's merged generic roles, `producer` and `pipeline`.
-  Five mode/engagement cases are checked against the frozen merged spec schema.
+  Five mode/engagement cases are checked against the published spec v0.7.2 schema.
 - Nothing binds links automatically yet: no plan format declares criteria. Exit 0
   shows a command passed, not that it tests the criterion.
 
