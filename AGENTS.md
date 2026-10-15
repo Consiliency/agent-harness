@@ -14,6 +14,11 @@ path and report installation, provider readiness and review readiness separately
 This repository's contributor rules are not a governance policy to copy into
 the user's project.
 
+## Contributing to this repository
+
+Local checks, required CI checks, Gate A dispatch and the skill-regeneration rule are in
+`CONTRIBUTING.md`.
+
 ## Referencing issues & PRs (multi-repo)
 
 `agent-harness` is one node in a multi-repo fleet, so a bare `#123` is

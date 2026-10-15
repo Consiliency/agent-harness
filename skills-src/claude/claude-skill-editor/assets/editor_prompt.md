@@ -16,10 +16,11 @@ You are applying **one** recommendation from a skill improvement plan to **one**
 1. `Read` the target SKILL.md in full.
 2. Interpret the change. Find the specific location in the file where it applies. If the change names a step, heading, or section (e.g., "In Step 5 of claude-plan-phase/SKILL.md, add a bullet after 'Apply the claude-task-contextualizer checklist' stating: …"), locate that anchor.
 3. Apply the change with `Edit`. Preserve:
-   - **Directive-only house style.** Imperative form. No war stories, no stats, no narrative justification. Reasons stated in one clause.
+   - **Directive-only house style.** Imperative form for body edits; replacement frontmatter descriptions use the declarative style of skill descriptions. No war stories, no stats, no narrative justification. Reasons stated in one clause.
    - **Existing structure.** Headings, tables, lists stay where they are unless the change explicitly moves them.
    - **Exact whitespace.** Match indentation (tabs vs spaces) from the surrounding lines.
    - **Existing cross-references.** If the change adds a new rule, don't accidentally break a pointer from another section.
+   A change that begins `tune description: <skill>` replaces only the frontmatter `description:` value with the text it gives; leave the body untouched. Refuse it if no replacement text is given.
 4. Verify: `Read` the modified region after editing. Confirm the change landed in the right place and the surrounding text still makes sense.
 
 ## Refusing to apply

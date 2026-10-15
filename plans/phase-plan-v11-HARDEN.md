@@ -24,23 +24,19 @@ automation:
 
 ## Context
 
-Finish the carried SL-6 completion seal and EC-HARDEN-6 under v11 Phase 5.
-EC-HARDEN-0 retains its V10 definition. EC-HARDEN-1 through EC-HARDEN-4 and
-SL-5 are delivered; EC-HARDEN-5 is retired by v11. The roadmap currently declares
-no phase dependencies; completion admission is owned outside HARDEN by agent-harness#1584.
-Do not import the old FABPUB/SCHED dispatch holds or author-vendor rotation.
+Finish SL-6's completion seal and EC-HARDEN-6.
+Retain EC-HARDEN-0's V10 definition; EC-HARDEN-1 through -4 and SL-5 are delivered;
+EC-HARDEN-5 is retired. No phase dependencies; agent-harness#1584 owns admission.
+Old FABPUB/SCHED dispatch holds and author-vendor rotation do not apply.
 
-The current verifier's `manifest_plan_row` selects by alias alone;
-`verify_authority_paths`, `git_bound_review_input`, suite/ownership readers and
-the producer's `_prepare_stage` bind the v10 plan. Its `verify_broker` rejects
-tooled records through `harden5_unmet`. Historical checks remain meaningful,
-but those assumptions cannot govern v11 completion.
+Current `manifest_plan_row` selects only by alias; `verify_authority_paths`,
+`git_bound_review_input`, suite/ownership readers and `_prepare_stage` bind v10.
+`verify_broker` rejects tooled records via `harden5_unmet`.
+Retain these historical checks; they cannot govern v11 completion.
 
-Canonical `.phase-loop/` owns runner state. Its ledger holds only this planning
-run's events, none a `phase_execute` complete event; `state.json` selects HARDEN.
-Do not reconstruct state from `.codex/phase-loop/`.
-The tracked v10 HARDEN row is terminal `orphaned`. Preserve it and append
-completion only to the v11 row.
+Canonical `.phase-loop/` owns HARDEN-selected planning state; its ledger has
+no `phase_execute` completion. `.codex/phase-loop/` is not authority.
+Preserve terminal `orphaned` v10; append completion only to v11.
 
 ## External Inputs
 
@@ -80,7 +76,9 @@ completion only to the v11 row.
   sealed → `_render_broker_inline_prompt(..., staged_tree=None)`;
   sandbox-inline (codex/grok) → `_broker_review_sandbox_preamble(Path(sandbox_staged_at))`
   plus `_assemble_broker_inline_prompt`;
-  jailed pointer → `_render_broker_pointer_prompt(source_commit=<reviewed head>, staged_tree_sha256=<sandbox_snapshot_sha256>)`.
+  jailed pointer → `_render_broker_pointer_prompt(source_commit=<reviewed head>, staged_tree_sha256=<sandbox_snapshot_sha256>, model_only_network=<bound provider/profile flag>)`.
+  Derive the flag from the Git-bound provider/profile: true for jailed Gemini,
+  false for Claude. Reject profile substitution.
   `sandbox_snapshot_sha256` is authorization's `staged_tree_sha256`
   (`review_tree_manifest_sha256`), not a Git tree ID. Stage cleanup prevents
   post-hoc sandbox-inline renderer calls. A retained path/preamble mismatch or unreproducible
@@ -140,11 +138,13 @@ SL-6 — Evidence migration, docs sweep and completion reducer
     Reproduce retained provider-input digests across IF-0-HARDEN-5's sealed,
     sandbox-inline and jailed pointer routes using Git-rebuilt v2 JSON plus
     retained `provider_input_mode`, `sandbox_staged_at`, `sandbox_snapshot_sha256`
-    and reviewed head. Exercise post-cleanup assembly and reject changed framing,
+    and reviewed head. Freeze Claude/Gemini pointer positives and cross-profile
+    rejection using the bound network flag. Exercise post-cleanup assembly; reject changed framing,
     Git identities, plan path/blob or payload bytes.
   - test: Through production profile construction, authorization revalidation,
     verdict serialization and aggregate verification, prove EC-HARDEN-6 with
-    positive sealed and deliberately tooled/credentialed profiles.
+    historical sealed-profile controls and current tooled/credentialed positives.
+    Current sealed review admission must fail; renderer compatibility is not a vote.
     Inject an extra mount/environment variable/descriptor, change installed
     filter or owner argv, omit the credential/tool disclosure, and supply
     absent/forged/expired/wrong-operation authorization. Assert each injection
@@ -317,7 +317,7 @@ roadmap amendment before acceptance.
   `-k 'v11_harden_capabilities or v11_harden_authorization or v11_harden_disclosure'`
   plus the final sealed-evidence verifier command; falsified by path-entered
   profile, authorization or verdict mutations being accepted, with restored
-  sealed and intentionally tooled positive controls passing.
+  historical sealed and current tooled positives passing; refuse sealed current-review admission.
 - [ ] IF-0-HARDEN-5 and IF-0-HARDEN-6 — proven by the narrow
   `python -m pytest -q` command on `phase-loop-runtime/scripts/test_v11_harden_evidence.py`
   with all four landing-1 `-k` selections, plus prepare-side verification.

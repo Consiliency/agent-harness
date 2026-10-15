@@ -42,11 +42,11 @@ class ModelClassResolutionTest(unittest.TestCase):
         # (was the undated claude-haiku-4-5, a floating-alias shape).
         self.assertEqual(resolve_model_class("claude", "worker"), "claude-haiku-4-5-20251001")
         self.assertEqual(resolve_model_class("codex", "implementer"), "gpt-5.6-terra")
-        # Gemini keeps `pro` for planning; implementer uses the canonical agy 3.7 Flash id
-        # (newest GA, CR round-5 finding B), worker the agy 3.5 Flash id (agy has no flash-lite
-        # → the matrix's gemini-3.5-flash-lite lite cell is aspirational).
-        self.assertEqual(resolve_model_class("gemini", "planner"), "pro")
-        self.assertEqual(resolve_model_class("gemini", "reviewer"), "pro")
+        # Gemini plans and reviews on the heavy Argon id; implementer uses the canonical agy
+        # 3.8 Flash id (newest GA, CR round-5 finding B), worker the agy 3.5 Flash id (agy has
+        # no flash-lite → the matrix's gemini-3.5-flash-lite lite cell is aspirational).
+        self.assertEqual(resolve_model_class("gemini", "planner"), "gemini-4-argon")
+        self.assertEqual(resolve_model_class("gemini", "reviewer"), "gemini-4-argon")
         self.assertEqual(resolve_model_class("gemini", "implementer"), "gemini-3.8-flash")
         self.assertEqual(resolve_model_class("gemini", "worker"), "gemini-3.5-flash-high")
         self.assertIsNone(resolve_model_class("claude", "bogus"))
@@ -88,7 +88,7 @@ class ShippedPolicyTest(unittest.TestCase):
 class EffortClampTest(unittest.TestCase):
     def test_gemini_plan_max_clamps_to_high_with_shipped_policy(self):
         # The shipped policy sets fallback so gemini's effort_map maps max->high.
-        self.assertEqual(_resolve("plan", "gemini", model_policy=True), ("pro", "high"))
+        self.assertEqual(_resolve("plan", "gemini", model_policy=True), ("gemini-4-argon", "high"))
 
     def test_gemini_clamp_records_requested_and_policy_effort(self):
         resolved = _resolved("plan", "gemini", model_policy=True)
@@ -151,7 +151,7 @@ class MaxEffortPlannerGuardTest(unittest.TestCase):
         )
         model, effort = _resolve("plan", "gemini", plan_policy=plan)
         self.assertEqual(effort, "high")  # clamped via the guard, not raised
-        self.assertEqual(model, "pro")    # gemini planner alias
+        self.assertEqual(model, "gemini-4-argon")    # gemini planner (heavy tier)
 
     def test_codex_planner_max_stays_max(self):
         # codex IS max-eligible — the guard does not touch it.
@@ -185,7 +185,7 @@ class AppliedModelClassEscalationTest(unittest.TestCase):
 
     def test_codex_and_manual_map_provider_resolve_their_planner_models(self):
         self.assertEqual(self._apply("codex")[1].effective_model, "gpt-6-astra")
-        self.assertEqual(self._apply("gemini")[1].effective_model, "pro")
+        self.assertEqual(self._apply("gemini")[1].effective_model, "gemini-4-argon")
 
     def test_explicit_operator_model_is_not_overridden(self):
         policy, result = self._apply("claude", operator_model_present=True)
