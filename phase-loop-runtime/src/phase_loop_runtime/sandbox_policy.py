@@ -314,8 +314,9 @@ def sandbox_enabled() -> bool:
     exists to fix, and leaving it off by default would ship the machinery dormant -- which
     is exactly what happened before this knob existed.
 
-    ``PHASE_LOOP_SANDBOX_DISABLE=1`` turns it off for an operator who wants the historical
-    bundle-only posture, and the brokered surface is then byte-identical to before.
+    ``PHASE_LOOP_SANDBOX_DISABLE=1`` turns it off. A review seat is then never run with the
+    bundle only (agent-harness#1244): every brokered review seat is degraded and not run with
+    ``seat_sandbox_not_staged``, so the board is below its floor and refuses.
     """
     return os.environ.get("PHASE_LOOP_SANDBOX_DISABLE", "").strip() not in ("1", "true", "yes")
 
