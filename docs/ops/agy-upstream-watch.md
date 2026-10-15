@@ -119,12 +119,14 @@ Budget about a minute of real inference per catalog member per new release.
 ## Installing the timer (operator, one host)
 
 Prerequisites:
-- `phase-loop` installed, from the current release;
+- `phase-loop` installed at `~/.local/bin/phase-loop` (for example with `uv tool`), from
+  the current release. The unit's `ExecStart` uses that path; edit it if yours differs;
 - `agy` authenticated for the operator user;
 - `gh` authenticated with permission to push a branch and open a draft PR;
 - a clone of this repository at `~/code/agent-harness`.
 
 ```bash
+mkdir -p ~/.config/systemd/user
 install -m 0644 docs/ops/agy-upstream-watch/agy-upstream-watch.service ~/.config/systemd/user/
 install -m 0644 docs/ops/agy-upstream-watch/agy-upstream-watch.timer ~/.config/systemd/user/
 systemctl --user daemon-reload

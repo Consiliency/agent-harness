@@ -421,11 +421,55 @@ def test_promotion_before_provider_entry_refuses_without_call(tmp_path, monkeypa
     assert _durable_state(fx.transaction) == "BROKER_INTENT_DURABLE"
 
 
-def test_promotion_during_provider_call_is_documented_residual(tmp_path, monkeypatch):
-    """Window (a), split out to agent-harness#1591: promoted while the provider call runs.
+OBSERVED = "effect_terminal_observed"
+OBSERVATIONS = "post-ambiguity-observations.jsonl"
 
-    No guard before the call can see a promotion that happens during it.  This
-    pins today's outcome: one provider call, and the key stays ambiguous.
+
+def _assert_observed_effect(fx, key: str, result, *, calls: int = 1) -> dict:
+    """agent-harness#1591: the provider's success on an already-ambiguous row is kept.
+
+    The store stays ambiguous and the epoch blocked; the owner stays unsealed and the
+    checkpoint ``ADAPTER_STARTED``.  The PR URL is returned and durably recorded in
+    the side file, bound to the blocked row and to this attempt's owner.
+    """
+    from test_fabpub_partition_rotation_789d import _ambiguity_digest
+
+    assert result.accepted is False
+    assert result.reason == "effect_observed_after_ambiguity"
+    assert result.publish_result is None, "an ambiguous key was reported as published"
+    assert result.provider_call_made is True
+    assert result.evidence.terminal_state == AMBIGUOUS
+    observation = result.observed_after_ambiguity
+    assert observation is not None and observation.durable is True
+    assert observation.observed_state == OBSERVED
+    assert observation.evidence_reference == f"https://gh/pr/{calls}"
+    assert _key_states(fx, key) == [IN_FLIGHT, AMBIGUOUS]
+    assert fx.service.evidence_store.epoch_blocked is True
+    owner = json.loads(fx.owner.read_text(encoding="utf-8"))
+    assert owner["sealed"] is False
+    assert _durable_state(fx.transaction) == "ADAPTER_STARTED"
+    rows = _jsonl(fx.root / OBSERVATIONS)
+    assert len(rows) == 1, rows
+    row = rows[0]
+    assert row["schema"] == "PostAmbiguityObservation.v1"
+    assert row["idempotency_key"] == key
+    assert row["observed_state"] == OBSERVED
+    assert row["evidence_reference"] == observation.evidence_reference
+    assert row["ambiguity_digest"] == _ambiguity_digest(fx.evidence, key)
+    assert row["owner_nonce"] == owner["owner_nonce"]
+    assert row["transaction_id"] == owner["transaction_id"] == fx.transaction.transaction_id
+    assert row["head_sha"] == fx.request.head_sha
+    assert row["branch"] == fx.request.branch
+    assert "durable" not in row
+    return row
+
+
+def test_promotion_during_provider_call_surfaces_observed_effect(tmp_path, monkeypatch):
+    """Window (a), agent-harness#1591: promoted while the provider call runs.
+
+    No guard before the call can see a promotion that happens during it.  One
+    provider call is made; its success is kept as a post-ambiguity observation
+    and the key stays ambiguous until a rotation adjudicates it.
     """
     fx = _routed(tmp_path, name="promote-during-call-1591")
     key = fx.service._dedup_key(fx.request)
@@ -450,21 +494,17 @@ def test_promotion_during_provider_call_is_documented_residual(tmp_path, monkeyp
     assert not thread.is_alive()
     if "error" in worker:
         raise worker["error"]
-    result = worker["result"]
     assert len(parked.calls) == 1
-    assert result.accepted is False
-    assert result.evidence.terminal_state == AMBIGUOUS
-    assert _key_states(fx, key) == [IN_FLIGHT, AMBIGUOUS]
-    assert fx.service.evidence_store.epoch_blocked is True
+    _assert_observed_effect(fx, key, worker["result"])
 
 
-def test_promotion_after_guard_lock_release_is_documented_residual(tmp_path, monkeypatch):
+def test_promotion_after_guard_lock_release_surfaces_observed_effect(tmp_path, monkeypatch):
     """Window (a) starts at the guard's lock release, not at provider entry (agent-harness#1591).
 
     The guard releases ``admissions.lock`` before the ``ADAPTER_STARTED``
-    projection, request finalization, lease acquisition and the call, and nothing
-    re-checks after it.  A promotion landing in that interval still makes one
-    provider call, honestly reported with ``provider_call_made: true``.
+    projection, request finalization, lease acquisition and the call.  A
+    promotion landing in that interval still makes one provider call, honestly
+    reported with ``provider_call_made: true``, and its success is kept.
     """
     from phase_loop_runtime.publishing import PublishTransaction
 
@@ -487,11 +527,7 @@ def test_promotion_after_guard_lock_release_is_documented_residual(tmp_path, mon
 
     assert promoted == ["ADAPTER_STARTED"]
     assert len(fx.adapter.calls) == 1
-    assert result.accepted is False
-    assert result.evidence.terminal_state == AMBIGUOUS
-    assert result.provider_call_made is True
-    assert _key_states(fx, key) == [IN_FLIGHT, AMBIGUOUS]
-    assert fx.service.evidence_store.epoch_blocked is True
+    _assert_observed_effect(fx, key, result)
 
 
 # ---------------------------------------------------------------------------

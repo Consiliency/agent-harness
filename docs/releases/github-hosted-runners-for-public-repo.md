@@ -26,7 +26,8 @@ Moving off Blacksmith invalidated the stated reason for a guard, without
 invalidating the guard.
 
 `test.yml`'s `pytest` and `clean-room` jobs carry
-`if: needs.elig.outputs.eligible != 'true'`, and their comments used to explain
+`if: needs.elig.outputs.eligible != 'true'` (`clean-room` additionally skips pull
+requests, agent-harness#1029), and their comments used to explain
 that skip as avoiding Blacksmith billing for work already done on `ai`. On
 GitHub-hosted runners this repo bills nothing, so read literally the comment said
 the guard was a spend control that no longer had anything to control.

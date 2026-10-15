@@ -519,3 +519,8 @@ automation.suite_command: `cd phase-loop-runtime && PYTHONPATH=src python3 -m py
   - PR4: measure the per-spawn snapshot cost.
   - PR6 runbook: list the release-lane subscription prerequisites.
   - agent-harness#1288: codex's sandbox-refusal falsifier.
+- **Amendment (2026-10-14, agent-harness#1602).** Section (e), PR3–PR7, is re-phased by `.consiliency/plans/detailed-lkg-cli-qualification-1602-20261014-0359.md`, which adds a last-known-good store, qualification on arrival, and re-keying.
+  - That plan lists every point of this one that it supersedes.
+  - Rulings Q1, Q4 and Q5 are put back to the maintainer there as Q6, Q10 and Q11.
+  - The rulings above are unchanged until the maintainer rules.
+  - Ruled 2026-10-14: Q1, Q4 and Q5 are superseded by Q6, Q10 and Q11 of the 2026-10-14 plan; Q2 and Q3 stand.
