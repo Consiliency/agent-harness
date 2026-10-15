@@ -31,6 +31,7 @@ from pathlib import Path
 
 import pytest
 
+import phase_loop_runtime
 from _fabpub_tdd_guard import FABPUB_SKIP_REASON, fabpub_capability_active
 from test_fabpub_admission_compat_789 import _routed
 from test_fabpub_owner_section_1314_1313_1311 import (
@@ -65,6 +66,16 @@ EFFECT_REASON = "effect_observed_after_ambiguity"
 NO_EFFECT_REASON = "no_effect_observed_after_ambiguity"
 RUNTIME = Path(__file__).resolve().parents[1]
 SCRIPTS = RUNTIME / "scripts"
+
+# The rotation preflight and attestation builder are repository-source operator
+# scripts (the handoff names them by repo path); the wheel does not ship scripts/.
+# Key the skip on the layout, not on the files: the standalone Gate A tree runs
+# against the installed wheel, while a source checkout imports this tree's src/,
+# where a missing script must still fail.
+needs_repo_scripts = pytest.mark.skipif(
+    not Path(phase_loop_runtime.__file__).resolve().is_relative_to(RUNTIME / "src"),
+    reason="the rotation scripts are repository source; the standalone tree runs the installed wheel",
+)
 
 
 def _verbs():
@@ -351,6 +362,7 @@ def _run_builder(container: Path, out: Path, *, key: str, observed_head: str, ev
     return completed.stdout
 
 
+@needs_repo_scripts
 def test_ceremony_and_preflight_refuse_attested_not_landed_and_observed_landed_rotates(tmp_path, monkeypatch):
     fx, p, key, result, _adapter = _observed_partition(tmp_path, monkeypatch)
     _assert_observed_effect(p, key, result)
@@ -398,6 +410,7 @@ def test_ceremony_and_preflight_refuse_attested_not_landed_and_observed_landed_r
     assert replay.publish_result.pr_url == observation.evidence_reference
 
 
+@needs_repo_scripts
 def test_builder_warns_when_its_inputs_disagree_with_the_observation(tmp_path, monkeypatch):
     fx, p, key, result, _adapter = _observed_partition(tmp_path, monkeypatch)
     printed = _run_builder(
@@ -479,6 +492,7 @@ def test_readmission_with_only_a_no_effect_observation_is_not_refused(tmp_path, 
     assert published.accepted is True and len(calls) == 1
 
 
+@needs_repo_scripts
 def test_torn_side_file_refuses_ceremony_and_recovery(tmp_path, monkeypatch):
     from phase_loop_runtime.convergence.broker.verbs import PublicationRecoveryRequired
 
@@ -558,6 +572,7 @@ def _git_head(repo: Path) -> str:
     ).stdout.strip()
 
 
+@needs_repo_scripts
 def test_human_handoff_requires_observed_landed_and_its_builder_rotates(tmp_path, monkeypatch):
     from test_fabpub_ambiguous_handoff_1312 import ROTATION_STEP, _assert_rotation_handoff
 
@@ -873,6 +888,7 @@ def test_writer_whose_lease_was_cleared_and_generation_rotated_is_still_refused(
     assert not (box["outcome"].store_root / OBSERVATIONS).exists()
 
 
+@needs_repo_scripts
 def test_ceremony_sealed_by_an_older_runtime_resumes_and_readmission_refuses(tmp_path, monkeypatch):
     """Board F002 shape: a sealed pre-flip ceremony must still complete after the upgrade."""
     from phase_loop_runtime.convergence.broker.verbs import PublicationRecoveryRequired
@@ -932,6 +948,7 @@ def test_new_ceremony_sealed_before_a_leaseless_observation_resumes_and_readmiss
     assert calls == [] and len(adapter.calls) == 1
 
 
+@needs_repo_scripts
 def test_fresh_and_draining_only_ceremonies_are_still_refused(tmp_path, monkeypatch):
     """The exemption applies only to a journal that already holds INVENTORY_SEALED."""
     fx, p, key, result, _adapter = _observed_partition(tmp_path, monkeypatch)
