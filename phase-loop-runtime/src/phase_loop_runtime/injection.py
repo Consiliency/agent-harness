@@ -720,9 +720,23 @@ def _bundle_sha256(
                 "name": skill_name,
                 "source": _skill_source_label(repo, skill_dir),
                 "sha256": hashlib.sha256(skill_file.read_bytes()).hexdigest() if skill_file.exists() else None,
+                # agent-harness#1358: SKILL.md links detail into references/; editing one
+                # must change the bundle identity, not only edits to SKILL.md.
+                "references": _skill_references_sha256(skill_dir),
             }
         )
     return hashlib.sha256(json.dumps(manifest, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _skill_references_sha256(skill_dir: Path) -> dict[str, str]:
+    references = skill_dir / "references"
+    if not references.is_dir():
+        return {}
+    return {
+        path.relative_to(skill_dir).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(references.rglob("*"))
+        if path.is_file()
+    }
 
 
 def _skill_bundle_id(harness_target: str, action: str, expected_skill_pack: tuple[str, ...]) -> str:
