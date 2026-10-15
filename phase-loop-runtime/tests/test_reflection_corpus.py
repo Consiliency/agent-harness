@@ -84,14 +84,52 @@ def test_unstructured_headings_cannot_open_bundle_sections(tmp_path):
     assert "**Remaining work**" in bundle and "Loose notes about friction." in bundle
 
 
-def test_exact_and_near_duplicates_collapse(tmp_path):
+def test_bundle_exposes_opaque_source_identity_to_every_aggregator(tmp_path):
     root = tmp_path / "skills"
-    body = reflection(didnt="Line one of friction.\nLine two of friction.\nLine three of friction.\nLine four.")
-    put(root, "codex-execute-detailed", "h", "b", "r1", body)
-    put(root, "codex-execute-detailed", "h", "b", "r2", body)
-    put(root, "codex-execute-detailed", "h", "b", "r3", body.replace("Line four.", "Line four, amended."))
+    for repo, branch, run, skill in (
+        ("private-product", "private-branch", "run1", "codex-plan-phase"),
+        ("private-product", "private-branch", "run2", "codex-plan-phase"),
+        ("private-product", "other-branch", "run3", "codex-plan-phase"),
+        ("other-product", "private-branch", "run4", "codex-plan-phase"),
+        ("private-product", "private-branch", "run1", "claude-plan-phase"),
+    ):
+        put(root, skill, repo, branch, run, reflection(didnt=f"Friction from {run} and {skill}."))
 
     corpus, _ = rc.collect([root])
+    bundle = rc.render_bundle(corpus)
+    sources = re.findall(r"\*\*Source\*\*: repo ([0-9a-f]+); branch ([0-9a-f]+); run ([0-9a-f]+)", bundle)
+    by_id = dict(zip((r.id for r in corpus.admitted_by_skill()["plan-phase"]), sources))
+    by_source = {(r.repo_hash, r.branch_slug, r.run_id, r.harness): by_id[r.id] for r in corpus.admitted}
+    first = by_source[("private-product", "private-branch", "run1", "codex")]
+    second = by_source[("private-product", "private-branch", "run2", "codex")]
+    assert len(sources) == 5
+    assert first[:2] == second[:2] and first[2] != second[2]
+    assert first == by_source[("private-product", "private-branch", "run1", "claude")]
+    assert first[1] != by_source[("private-product", "other-branch", "run3", "codex")][1]
+    assert first[0] != by_source[("other-product", "private-branch", "run4", "codex")][0]
+    assert "private-product" not in bundle and "private-branch" not in bundle
+
+
+def test_legacy_bundle_sources_are_unknown_not_independent(tmp_path):
+    root = tmp_path / "skills"
+    path = root / "codex-plan-phase" / "reflections" / "legacy.md"
+    path.parent.mkdir(parents=True)
+    path.write_text(reflection())
+
+    bundle = rc.render_bundle(rc.collect([root], min_reflections=1)[0])
+
+    assert "**Source**: repo unknown; branch unknown; run " in bundle
+
+
+def test_exact_and_near_duplicates_collapse(tmp_path):
+    root = tmp_path / "skills"
+    copies, amended = tmp_path / "copies", tmp_path / "amended"
+    body = reflection(didnt="Line one of friction.\nLine two of friction.\nLine three of friction.\nLine four.")
+    put(root, "codex-execute-detailed", "h", "b", "r1", body)
+    put(copies, "codex-execute-detailed", "h", "b", "r1", body)
+    put(amended, "codex-execute-detailed", "h", "b", "r1", body.replace("Line four.", "Line four, amended."))
+
+    corpus, _ = rc.collect([root, copies, amended])
 
     assert len(corpus.admitted) == 1
     assert sorted(r.excluded.split(":")[0] for r in corpus.scanned if r.excluded) == ["duplicate_of", "duplicate_of"]
@@ -113,9 +151,11 @@ def test_boilerplate_is_stripped_before_the_repo_agnostic_gate(tmp_path):
 
     assert boilerplate == [copied]
     assert reasons["b0"] is None and reasons["b1"] is None and reasons["b2"] is None
-    assert "some-repo#361" not in rc.render_bundle(corpus)
-    assert reasons["b9"] == "improvements_repo_specific"
-    assert reasons["b8"] == "no_friction_or_proposal"
+    bundle = rc.render_bundle(corpus)
+    assert "some-repo#361" not in bundle
+    assert all(f"Distinct generic proposal {i}" in bundle for i in range(3))
+    assert reasons["b9"] is None
+    assert reasons["b8"] is None
 
 
 def test_identical_reports_from_independent_runs_both_count(tmp_path):
@@ -127,6 +167,153 @@ def test_identical_reports_from_independent_runs_both_count(tmp_path):
     corpus, _ = rc.collect([root])
 
     assert len(corpus.admitted) == 2 and corpus.ready_skills() == ["plan-phase"]
+
+
+def test_three_distinct_runs_on_one_branch_preserve_recurring_feedback(tmp_path):
+    root = tmp_path / "skills"
+    proposal = "Require the owner to ground the criterion before exporting acceptance evidence."
+    friction = "The collector discarded actionable feedback that repeated across independent runs."
+    for run in ("r1", "r2", "r3"):
+        put(root, "codex-plan-phase", "repo", "branch", run, reflection(didnt=friction, improvements=proposal))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=3)
+    bundle = rc.render_bundle(corpus)
+
+    assert len(corpus.admitted) == 3 and corpus.ready_skills() == ["plan-phase"]
+    assert proposal not in boilerplate and friction not in boilerplate
+    assert bundle.count(proposal) == 3 and bundle.count(friction) == 3
+
+
+def test_recurring_actionable_line_in_one_repo_is_not_boilerplate(tmp_path):
+    root = tmp_path / "skills"
+    proposal = "Check conventional companions before freezing a lane's owned-file set."
+    for index in range(3):
+        put(root, "codex-plan-phase", "repo", f"branch{index}", "run", reflection(
+            didnt=f"Distinct failure {index}.", improvements=proposal,
+        ))
+
+    corpus, boilerplate = rc.collect([root])
+
+    assert proposal not in boilerplate
+    assert rc.render_bundle(corpus).count(proposal) == 3
+
+
+@pytest.mark.parametrize("proposal", [
+    "Fix the defect tracked in agent-harness#1371.",
+    "Read /home/example/private-repo/notes.md first.",
+    "Apply the fix described at https://example.com/private-proposal.",
+])
+def test_repo_specific_proposal_does_not_discard_other_sections(tmp_path, proposal):
+    root = tmp_path / "skills"
+    for run in ("run1", "run2"):
+        put(root, "codex-plan-phase", "repo", "branch", run, reflection(
+            worked="Useful behavior was retained.",
+            didnt="FRICTION-SURVIVES despite the rejected proposal.", improvements=proposal,
+        ))
+
+    corpus, boilerplate = rc.collect([root])
+    bundle = rc.render_bundle(corpus)
+
+    assert len(corpus.admitted) == 2 and corpus.ready_skills() == ["plan-phase"]
+    assert bundle.count("FRICTION-SURVIVES") == 2
+    assert bundle.count("Useful behavior was retained.") == 2
+    assert proposal not in bundle and "**Improvements to SKILL.md**" not in bundle
+    assert all(r.improvements_class == "repo_specific" and "improvements_repo_specific" in r.notes for r in corpus.admitted)
+    assert len(rc.manifest(corpus, boilerplate)["reflections_consumed"]) == 2
+
+
+def test_repo_specific_proposal_without_friction_is_retained_not_unstructured(tmp_path):
+    root = tmp_path / "skills"
+    path = put(root, "codex-plan-phase", "repo", "branch", "run", "## Improvements to SKILL.md\nFix agent-harness#1371.\n")
+
+    corpus, boilerplate = rc.collect([root])
+
+    assert corpus.scanned[0].excluded == "improvements_repo_specific"
+    assert "section_dropped:improvements:repo_specific" in corpus.scanned[0].notes
+    artifacts = rc.write_corpus(corpus, boilerplate, tmp_path / "corpus")
+    assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == []
+    assert rc.main(["archive", "--manifest", str(artifacts["manifest"]), "--root", str(root)]) == 0
+    assert path.exists()
+    assert "Fix" not in rc.render_bundle(corpus)
+
+
+@pytest.mark.parametrize("remainder", ["", "None.", "Hosted CI: passed.", "- Hosted CI: passed."])
+def test_a_frictionless_repeated_repo_specific_proposal_is_retained_not_archived(tmp_path, remainder):
+    root = tmp_path / "skills"
+    proposal = "Fix the defect tracked in other-repo#12 before the plan is frozen."
+    for index in range(3):
+        put(root, "codex-plan-phase", "repo", f"branch{index}", "run", reflection(
+            worked="", didnt="", improvements=f"{proposal}\n{remainder}".strip(),
+        ))
+
+    corpus, boilerplate = rc.collect([root], min_reflections=1)
+
+    # Stripped as boilerplate, it is still a dropped proposal, not an absent one.
+    assert boilerplate == [proposal]
+    assert {r.excluded for r in corpus.scanned} == {"improvements_repo_specific"}
+    assert all("section_dropped:improvements:repo_specific" in r.notes for r in corpus.scanned)
+    assert rc.manifest(corpus, boilerplate)["reflections_consumed"] == []
+
+
+@pytest.mark.parametrize("marker", ["", "- ", "* ", "+ "])
+def test_ledger_syntax_in_friction_survives_but_ledger_proposals_do_not(tmp_path, marker):
+    root = tmp_path / "skills"
+    friction = f"{marker}Hosted CI: the windows lane silently skipped all verification tests."
+    for run in ("run1", "run2", "run3"):
+        put(root, "codex-plan-phase", "repo", "branch", run, reflection(
+            worked="", didnt=friction, improvements=f"{marker}Hosted CI: passed on main.",
+        ))
+
+    corpus, _ = rc.collect([root], min_reflections=3)
+    bundle = rc.render_bundle(corpus)
+
+    assert corpus.ready_skills() == ["plan-phase"]
+    assert bundle.count("the windows lane silently skipped all verification tests.") == 3
+    assert "passed on main" not in bundle
+
+
+@pytest.mark.parametrize("marker", ["", "- ", "* ", "+ "])
+def test_a_ledger_only_proposal_is_not_admitted(tmp_path, marker):
+    root = tmp_path / "skills"
+    put(root, "codex-plan-phase", "repo", "branch", "run", reflection(
+        worked="", didnt="", improvements=f"{marker}Hosted CI: passed on main.",
+    ))
+
+    corpus, _ = rc.collect([root], min_reflections=1)
+
+    assert not corpus.admitted
+    assert corpus.scanned[0].excluded == "no_friction_or_proposal"
+
+
+@pytest.mark.parametrize(("first", "second"), [
+    ("--no-verify must remain disabled during publication.", "no-verify must remain disabled during publication."),
+    ("**Important**: verify before reporting completion.", "Important**: verify before reporting completion."),
+])
+def test_same_run_copy_matching_preserves_meaningful_leading_syntax(tmp_path, first, second):
+    roots = [tmp_path / "first", tmp_path / "second"]
+    for root, proposal in zip(roots, (first, second)):
+        put(root, "codex-plan-phase", "repo", "branch", "run", reflection(
+            worked="", didnt="", improvements=proposal,
+        ))
+
+    corpus, _ = rc.collect(roots)
+    bundle = rc.render_bundle(corpus)
+
+    assert len(corpus.admitted) == 2
+    assert first in bundle and second in bundle
+
+
+def test_same_run_copy_matching_treats_a_plus_marker_like_a_dash(tmp_path):
+    roots = [tmp_path / "first", tmp_path / "second"]
+    for root, bullet in zip(roots, ("- ", "+ ")):
+        put(root, "codex-plan-phase", "repo", "branch", "run", reflection(
+            worked="", didnt=f"{bullet}The validator rejected the lane index.\n{bullet}The retry lost the draft.", improvements="None.",
+        ))
+
+    corpus, _ = rc.collect(roots)
+
+    assert len(corpus.admitted) == 1
+    assert [r.excluded.split(":")[0] for r in corpus.scanned if r.excluded] == ["duplicate_of"]
 
 
 def test_a_line_repeated_across_repos_is_evidence_not_boilerplate(tmp_path):
@@ -146,7 +333,7 @@ def test_under_threshold_skills_are_not_consumed(tmp_path):
     put(root, "codex-plan-phase", "h", "b1", "r", reflection(didnt="Ready one."))
     put(root, "codex-plan-phase", "h", "b2", "r", reflection(didnt="Ready two."))
     lone = put(root, "codex-execute-detailed", "h", "b1", "r", reflection(didnt="Only one so far."))
-    repo_specific = put(root, "codex-execute-detailed", "h", "b2", "r", reflection(didnt="Copied.", improvements="Fix other-repo#3."))
+    repo_specific = put(root, "codex-execute-phase", "h", "b2", "r", reflection(didnt="Copied.", improvements="Fix other-repo#3."))
 
     corpus, boilerplate = rc.collect([root])
     consumed = rc.manifest(corpus, boilerplate)["reflections_consumed"]
@@ -159,8 +346,9 @@ def test_under_threshold_skills_are_not_consumed(tmp_path):
 
 def test_consumption_is_ready_admitted_plus_duplicates_and_empty_reports(tmp_path):
     root = tmp_path / "skills"
+    copies = tmp_path / "copies"
     ready = [put(root, "codex-plan-phase", "h", f"b{i}", "r", reflection(didnt=f"Ready friction {i}.")) for i in (1, 2)]
-    duplicate = put(root, "codex-plan-phase", "h", "b1", "s", reflection(didnt="Ready friction 1.", stamp="2026-10-02T00:00:00Z"))
+    duplicate = put(copies, "codex-plan-phase", "h", "b1", "r", reflection(didnt="Ready friction 1.", stamp="2026-10-02T00:00:00Z"))
     empty = put(root, "codex-plan-phase", "h", "b3", "r", reflection(didnt="", improvements="None."))
     ready_repo_specific = put(root, "codex-plan-phase", "h", "b4", "r", reflection(improvements="Fix other-repo#3."))
     capped = [
@@ -168,16 +356,16 @@ def test_consumption_is_ready_admitted_plus_duplicates_and_empty_reports(tmp_pat
         for day in (1, 2)
     ]
     pending = put(root, "codex-execute-detailed", "h", "b1", "r", reflection(didnt="Pending more evidence."))
-    pending_duplicate = put(root, "codex-execute-detailed", "h", "b1", "s", reflection(didnt="Pending more evidence.", stamp="2026-10-02T00:00:00Z"))
-    pending_repo_specific = put(root, "codex-execute-detailed", "h", "b2", "r", reflection(improvements="Fix other-repo#4."))
+    pending_duplicate = put(copies, "codex-execute-detailed", "h", "b1", "r", reflection(didnt="Pending more evidence.", stamp="2026-10-02T00:00:00Z"))
+    pending_repo_specific = put(root, "codex-task-contextualizer", "h", "b2", "r", reflection(improvements="Fix other-repo#4."))
 
-    corpus, boilerplate = rc.collect([root], per_branch_cap=1)
+    corpus, boilerplate = rc.collect([root, copies], per_branch_cap=1)
     consumed = set(rc.manifest(corpus, boilerplate)["reflections_consumed"])
 
     assert corpus.ready_skills() == ["plan-phase"]
     newest_busy, oldest_busy = capped[1], capped[0]
-    assert {str(p) for p in (*ready, newest_busy, duplicate, empty, pending_duplicate)} == consumed
-    for left in (oldest_busy, ready_repo_specific, pending, pending_repo_specific):
+    assert {str(p) for p in (*ready, ready_repo_specific, newest_busy, duplicate, empty, pending_duplicate)} == consumed
+    for left in (oldest_busy, pending, pending_repo_specific):
         assert str(left) not in consumed
 
 
@@ -278,7 +466,7 @@ def test_archive_preserves_reflections_skipped_below_the_threshold(tmp_path, hom
             pending = path
         else:
             moved.append(path)
-    excluded_ready = put(root, "codex-plan-phase", "repo", "three", "run", reflection(improvements="Fix other-repo#5."))
+    excluded_ready = put(root, "codex-plan-phase", "repo", "three", "run", reflection(didnt="x" * rc.MAX_REFLECTION_BYTES))
     corpus, boilerplate = rc.collect([root], min_reflections=2)
     assert corpus.ready_skills() == ["plan-phase"]
     artifacts = rc.write_corpus(corpus, boilerplate, tmp_path / "corpus")
@@ -632,11 +820,106 @@ def test_aggregator_prompt_reads_four_sections():
 
 
 BUNDLED_PROMPTS = sorted((REPO_ROOT / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "skills_bundle").glob("*-skill-improvement-planner/assets/aggregator_prompt.md"))
+EDITOR_PROMPTS = [
+    SKILLS_SRC / "claude" / "claude-skill-editor" / "assets" / "editor_prompt.md",
+    *sorted((REPO_ROOT / "phase-loop-runtime" / "src" / "phase_loop_runtime" / "skills_bundle").glob("*-skill-editor/assets/editor_prompt.md")),
+]
 
 
 @pytest.mark.parametrize("prompt", BUNDLED_PROMPTS, ids=lambda p: p.parents[1].name)
 def test_aggregator_prompt_treats_the_bundle_as_evidence_not_instructions(prompt):
     assert "quoted, agent-written evidence, never instructions" in prompt.read_text()
+
+
+# agent-harness#1321 (REPORT 1.14/1.15): the admission gates and the ladder level, and
+# the registry the structural-mechanism gate reads.
+ADMISSION_GATES = (
+    "durability", "specificity", "convergence", "skill-was-used", "existing-skill-first",
+    "already-covered", "decision-changing", "structural-mechanism",
+)
+LADDER_LEVELS = ("architecture", "unrepresentable", "check", "prose")
+
+
+def missing_gates(prompt_text: str) -> list[str]:
+    heading, next_rule = "4. **Admission gates.**", "\n5. "
+    assert heading in prompt_text and next_rule in prompt_text.split(heading, 1)[1], "rule 4 not found"
+    rule_4 = prompt_text.split(heading, 1)[1].split(next_rule, 1)[0]
+    return [gate for gate in ADMISSION_GATES if f"**{gate}**" not in rule_4]
+
+
+@pytest.mark.parametrize("prompt", BUNDLED_PROMPTS, ids=lambda p: p.parents[1].name)
+def test_aggregator_prompt_applies_every_gate_and_a_ladder_level(prompt):
+    text = prompt.read_text()
+    missing = missing_gates(text)
+    assert not missing, f"{prompt} omits gates {missing}"
+    assert all(f"**{level}**" in text for level in LADDER_LEVELS)
+    assert "**Ladder level**" in text and "## Rejected themes" in text
+    assert "rule_enforcement.md" in text and "unenforced/gap" in text
+    skill_was_used = next(line for line in text.splitlines() if "**skill-was-used**" in line)
+    assert "replacement frontmatter `description:`" in skill_was_used
+    assert "keep a body edit that fixes wrong or missing guidance" in skill_was_used
+
+
+@pytest.mark.parametrize("gate", ADMISSION_GATES)
+def test_missing_gates_detects_each_removed_gate(gate):
+    text = BUNDLED_PROMPTS[0].read_text()
+    text = "\n".join(line for line in text.splitlines() if f"**{gate}**" not in line)
+    assert missing_gates(text) == [gate]
+
+
+@pytest.mark.parametrize("marker", ["4. **Admission gates.**", "\n5. "])
+def test_missing_gates_requires_the_rule_boundaries(marker):
+    text = BUNDLED_PROMPTS[0].read_text().replace(marker, "", 1)
+    with pytest.raises(AssertionError, match="rule 4 not found"):
+        missing_gates(text)
+
+
+@pytest.mark.parametrize("editor", EDITOR_PROMPTS, ids=lambda p: "/".join(p.parts[-4:-2]))
+def test_editor_prompt_applies_a_description_tune_to_frontmatter_only(editor):
+    text = editor.read_text()
+    assert "replaces only the frontmatter `description:` value" in text
+    assert "leave the body untouched" in text
+    assert "Refuse it if no replacement text is given" in text
+
+
+@pytest.mark.parametrize("editor", [p for p in EDITORS if not p.parent.name.startswith("claude-")], ids=lambda p: p.parent.name)
+def test_editor_skill_applies_a_description_tune_to_frontmatter_only(editor):
+    text = editor.read_text()
+    assert "replaces only the frontmatter `description:` value" in text
+    assert "mark it failed when no replacement text is given" in text
+
+
+@pytest.mark.parametrize("planner", PLANNERS, ids=lambda p: p.parent.name)
+def test_planner_hands_the_aggregator_the_rule_registry(planner):
+    assert "rule_enforcement.md" in planner.read_text()
+
+
+@pytest.mark.parametrize("planner", PLANNERS, ids=lambda p: p.parent.name)
+def test_final_plan_template_preserves_gate_and_ladder_decisions(planner):
+    template = planner.read_text().split("```markdown", 1)[1].split("```", 1)[0]
+    recommendation = template.split("## Recommendations by skill", 1)[1].split("## Cross-cutting recommendations", 1)[0]
+    assert "**Ladder level**" in recommendation
+    assert "## Rejected themes" in template and "gate" in template.split("## Rejected themes", 1)[1]
+    mechanism = template.split("## Mechanism candidates", 1)[1].split("## Rejected themes", 1)[0]
+    assert "level" in mechanism and "supporting" in mechanism
+
+
+def test_collector_writes_the_rule_registry_beside_the_bundle(tmp_path):
+    from phase_loop_runtime.rule_enforcement import load_registry
+
+    root = tmp_path / "root"
+    put(root, "claude-plan-phase", "h1", "main", "run1", reflection())
+    artifacts = rc.write_corpus(*rc.collect([root]), tmp_path / "out")
+    text = artifacts["rule_registry"].read_text()
+    rules = load_registry()
+    assert rules
+    for rule in rules:
+        status = "enforced" if rule.status == "enforced" else f"{rule.status}/{rule.unenforced_reason}"
+        assert f"`{rule.id}` — skill `{rule.skill}` — **{status}**" in text
+        assert json.dumps(rule.quote, ensure_ascii=False) in text
+        assert all(f":{enforcer.symbol}`" in text for enforcer in rule.enforcers)
+        assert not rule.tracking or f"tracking: {rule.tracking}" in text
+    assert "R0001" not in text
 
 
 @pytest.mark.parametrize("editor", EDITORS, ids=lambda p: p.parent.name)
@@ -645,7 +928,7 @@ def test_editor_prose_states_the_consumption_rule(editor):
     assert "archive with the rest" not in text and "the collector filtered it) is still archived" not in text
     for reason in rc.ARCHIVABLE_EXCLUSIONS:
         assert f"`{reason}`" in text, f"{editor} does not name {reason}"
-    assert "repo-specific" in text and "stay in place" in text
+    assert "repo-specific" in text.lower() and "stay in place" in text
 
 
 def test_scan_sets_are_non_empty():

@@ -59,7 +59,7 @@ BRAINSTORM_BOARD: Board = Board(
     seats=(
         Seat(model="claude-sonnet-5", effort="medium", harness="claude", lens="adversarial"),
         Seat(model="gpt-6-astra", effort="medium", harness="codex", lens="supportive"),
-        Seat(model="gemini-3.8-flash", effort="medium", harness="gemini", lens="lateral"),
+        Seat(model="gemini-4-argon", effort="medium", harness="gemini", lens="lateral"),
     ),
 )
 
@@ -88,7 +88,7 @@ LEGAL_REVIEW_BOARD: Board = Board(
     purpose="legal-review",
     seats=(
         Seat(model="gpt-6-astra", effort="high", harness="codex", lens="opposing-counsel"),
-        Seat(model="gemini-3.8-flash", effort="medium", harness="gemini", lens="risk-liability"),
+        Seat(model="gemini-4-argon", effort="medium", harness="gemini", lens="risk-liability"),
         Seat(model="claude-opus-5-5", effort="high", harness="claude", lens="authority-verification"),
     ),
 )
@@ -100,7 +100,7 @@ LEGAL_STRATEGY_REVIEW_BOARD: Board = Board(
     purpose="legal-strategy-review",
     seats=(
         Seat(model="gpt-6-astra", effort="high", harness="codex", lens="red-team"),
-        Seat(model="gemini-3.8-flash", effort="medium", harness="gemini", lens="alternatives"),
+        Seat(model="gemini-4-argon", effort="medium", harness="gemini", lens="alternatives"),
         Seat(model="claude-opus-5-5", effort="high", harness="claude", lens="downside-ethics"),
     ),
 )
@@ -113,7 +113,7 @@ LEGAL_BRAINSTORM_BOARD: Board = Board(
     seats=(
         Seat(model="claude-sonnet-5", effort="medium", harness="claude", lens="aggressive"),
         Seat(model="gpt-6-astra", effort="medium", harness="codex", lens="conservative"),
-        Seat(model="gemini-3.8-flash", effort="medium", harness="gemini", lens="creative"),
+        Seat(model="gemini-4-argon", effort="medium", harness="gemini", lens="creative"),
     ),
 )
 
@@ -132,7 +132,7 @@ GENERAL_BOARD: Board = Board(
     purpose="general",
     seats=(
         Seat(model="gpt-6-astra", effort="high", harness="codex", lens="adversarial"),
-        Seat(model="gemini-3.8-flash", effort="medium", harness="gemini", lens="alternative"),
+        Seat(model="gemini-4-argon", effort="medium", harness="gemini", lens="alternative"),
         Seat(model="claude-opus-5-5", effort="high", harness="claude", lens="completeness"),
     ),
 )
