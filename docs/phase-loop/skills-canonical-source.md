@@ -21,8 +21,8 @@ One tree per active harness (`claude`, `codex`, `gemini`, `opencode`), each
 holding the per-harness `<harness>-<skill>/` directories that `build_bundle`
 consumes. These roots are the values of
 `phase_loop_runtime.build_bundle.DEFAULT_SOURCES`. The tree carries only the
-build-relevant inputs — `SKILL.md` plus the harness-agnostic aux subdirs
-(`scripts/`, `references/`, `assets/`); runtime state directories (`handoffs/`,
+build-relevant inputs — `SKILL.md` plus the aux subdirs `scripts/`,
+`assets/` and `references/`; runtime state directories (`handoffs/`,
 `reflections/`, `agents/`) are intentionally NOT vendored, because `build_bundle`
 never reads them.
 
@@ -33,6 +33,21 @@ The scoped skill set is exactly the phase-loop workflow pack
 The `advisor-panel` skill is source-first in this repository and stays thin over
 `phase_loop_runtime.panel_invoker`; dotfiles may install or expose it during
 cutover, but dotfiles does not own a divergent advisor-panel implementation.
+
+## Auxiliary files
+
+`scripts/` and `assets/` are harness-agnostic: `build_bundle` copies each one
+into the shared bundle from the first harness (in `ACTIVE_HARNESSES` order) that
+provides it.
+
+`references/` holds the prose a `SKILL.md` links for progressive disclosure
+(agent-harness#1358), so placement follows who links each file. A reference file
+goes into the shared bundle when another harness's `SKILL.md` links it by its
+`references/<path>` and ships no copy of its own. Otherwise it goes into
+`_overrides/<harness>/references/` and installs only for that harness. A
+harness-only reference is copied verbatim; it is not neutralized and its
+`<harness>-` tokens are not expanded. Link reference files one level deep from
+`SKILL.md`, and open any reference file over 100 lines with a table of contents.
 
 ## The bundle pipeline
 
