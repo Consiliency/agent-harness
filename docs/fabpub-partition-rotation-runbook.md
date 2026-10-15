@@ -551,7 +551,10 @@ generation.
 **Mixed runtime versions (agent-harness#1576).** Within one generation, a retry
 on an agent-harness#1296 runtime and a retry on a current runtime write the same
 recovery record, so either may follow a crash of the other after the record and
-before the owner. A runtime built from `main` after agent-harness#1550 and before this
+before the owner. An agent-harness#1296 runtime has no live-owner check
+(agent-harness#1313), so do not retry on one while another attempt may still be
+running: a retry that races a live attempt can leave the key ambiguous even after
+a real provider call (agent-harness#1629 ask 2). A runtime built from `main` after agent-harness#1550 and before this
 fix (never released) wrote the three fields even with no rotation. A current runtime
 accepts that record, but the agent-harness#1550 runtime refuses a current
 runtime's record. Retry such a refusal on a current runtime. Only a current runtime
