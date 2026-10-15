@@ -1,0 +1,167 @@
+{
+  "_note": "agent-harness#1637 permitted golden delta: the 0.7.27 implementer roster moves only the execute model/effort fields (claude claude-sonnet-5 high -> claude-sonnet-5-5 medium, codex gpt-5.6-terra -> gpt-6.1-sol, gemini medium -> high). `current` -> `pre_1637` restores the golden as it was before; nothing else moved.",
+  "changes": [
+    {
+      "case": "claude_agent_view_solo",
+      "current": "claude-sonnet-5-5",
+      "field": "command",
+      "index": 3,
+      "pre_1637": "claude-sonnet-5"
+    },
+    {
+      "case": "claude_agent_view_solo",
+      "current": "medium",
+      "field": "command",
+      "index": 5,
+      "pre_1637": "high"
+    },
+    {
+      "case": "claude_agent_view_solo",
+      "current": "medium",
+      "field": "effective_effort",
+      "pre_1637": "high"
+    },
+    {
+      "case": "claude_agent_view_solo",
+      "current": "medium",
+      "field": "policy_effort",
+      "pre_1637": "high"
+    },
+    {
+      "case": "claude_agent_view_solo",
+      "current": "medium",
+      "field": "requested_effort",
+      "pre_1637": "high"
+    },
+    {
+      "case": "claude_agent_view_solo",
+      "current": "medium",
+      "field": "selected_effort",
+      "pre_1637": "high"
+    },
+    {
+      "case": "claude_agent_view_solo",
+      "current": "claude-sonnet-5-5",
+      "field": "selected_model",
+      "pre_1637": "claude-sonnet-5"
+    },
+    {
+      "case": "claude_channel_solo",
+      "current": "medium",
+      "field": "effective_effort",
+      "pre_1637": "high"
+    },
+    {
+      "case": "claude_channel_solo",
+      "current": "medium",
+      "field": "policy_effort",
+      "pre_1637": "high"
+    },
+    {
+      "case": "claude_channel_solo",
+      "current": "medium",
+      "field": "requested_effort",
+      "pre_1637": "high"
+    },
+    {
+      "case": "claude_channel_solo",
+      "current": "medium",
+      "field": "selected_effort",
+      "pre_1637": "high"
+    },
+    {
+      "case": "claude_channel_solo",
+      "current": "claude-sonnet-5-5",
+      "field": "selected_model",
+      "pre_1637": "claude-sonnet-5"
+    },
+    {
+      "case": "claude_print_solo",
+      "current": "claude-sonnet-5-5",
+      "field": "command",
+      "index": 22,
+      "pre_1637": "claude-sonnet-5"
+    },
+    {
+      "case": "claude_print_solo",
+      "current": "medium",
+      "field": "command",
+      "index": 24,
+      "pre_1637": "high"
+    },
+    {
+      "case": "claude_print_solo",
+      "current": "medium",
+      "field": "effective_effort",
+      "pre_1637": "high"
+    },
+    {
+      "case": "claude_print_solo",
+      "current": "medium",
+      "field": "policy_effort",
+      "pre_1637": "high"
+    },
+    {
+      "case": "claude_print_solo",
+      "current": "medium",
+      "field": "requested_effort",
+      "pre_1637": "high"
+    },
+    {
+      "case": "claude_print_solo",
+      "current": "medium",
+      "field": "selected_effort",
+      "pre_1637": "high"
+    },
+    {
+      "case": "claude_print_solo",
+      "current": "claude-sonnet-5-5",
+      "field": "selected_model",
+      "pre_1637": "claude-sonnet-5"
+    },
+    {
+      "case": "codex",
+      "current": "gpt-6.1-sol",
+      "field": "command",
+      "index": 5,
+      "pre_1637": "gpt-5.6-terra"
+    },
+    {
+      "case": "codex",
+      "current": "gpt-6.1-sol",
+      "field": "selected_model",
+      "pre_1637": "gpt-5.6-terra"
+    },
+    {
+      "case": "gemini",
+      "current": "gemini-3.8-flash-high",
+      "field": "command",
+      "index": 2,
+      "pre_1637": "gemini-3.8-flash-medium"
+    },
+    {
+      "case": "gemini",
+      "current": "high",
+      "field": "effective_effort",
+      "pre_1637": "medium"
+    },
+    {
+      "case": "gemini",
+      "current": "high",
+      "field": "policy_effort",
+      "pre_1637": "medium"
+    },
+    {
+      "case": "gemini",
+      "current": "high",
+      "field": "requested_effort",
+      "pre_1637": "medium"
+    },
+    {
+      "case": "gemini",
+      "current": "high",
+      "field": "selected_effort",
+      "pre_1637": "medium"
+    }
+  ]
+}
