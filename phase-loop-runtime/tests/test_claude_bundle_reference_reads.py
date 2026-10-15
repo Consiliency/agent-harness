@@ -7,6 +7,7 @@ bundle must carry them. Ungated: needs no dotfiles tree.
 """
 from __future__ import annotations
 
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -46,6 +47,29 @@ class ClaudeBundleReferenceReadsTest(unittest.TestCase):
                     )
                     copied = Path(result["plugin_dir"]) / "skills" / skill / "references"
                     self.assertEqual(sorted(p.name for p in copied.glob("*.md")), linked)
+
+    def test_bundle_digest_changes_when_a_linked_reference_changes(self):
+        def digest(skill_dir):
+            with patch.object(
+                injection, "_resolve_pack_skill_dirs", return_value={"claude-execute-phase": skill_dir}
+            ):
+                return injection._bundle_sha256(
+                    repo=skill_dir,
+                    harness_target="claude",
+                    action="execute",
+                    workflow_command="claude-execute-phase plan.md",
+                    body="body",
+                    expected_skill_pack=("claude-execute-phase",),
+                )
+
+        with tempfile.TemporaryDirectory() as td:
+            skill_dir = Path(td) / "claude-execute-phase"
+            shutil.copytree(PACKAGED / "claude-execute-phase", skill_dir)
+            before = digest(skill_dir)
+            self.assertEqual(digest(skill_dir), before)
+            reference = skill_dir / "references" / "merge-and-verify.md"
+            reference.write_text(reference.read_text() + "\nedited\n")
+            self.assertNotEqual(digest(skill_dir), before)
 
 
 if __name__ == "__main__":
