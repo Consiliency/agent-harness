@@ -6,13 +6,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
-## [0.7.27] - 2026-10-12
+## [0.7.27] - 2026-10-16
 
 ### Upgrade notes
 
-- **No jail pass reset from 0.7.26.** The seat jail's falsifier-run layout identity is
-  unchanged (`execfind-falsifier-layout.v1:805042ce…`), and so are the Claude and Gemini jail
-  profile digests (x86_64 and aarch64), recomputed from this tree. A host upgrading from
+- **The Claude jail pass carries forward from 0.7.26.** The seat jail's falsifier-run layout
+  identity is unchanged (`execfind-falsifier-layout.v1:805042ce…`), and so are the Claude jail
+  profile digests (x86_64 and aarch64), recomputed on the same host. The Gemini jail has a
+  new profile and qualifies on first use (agent-harness#1170). A host upgrading from
   0.7.24 or earlier (layout `c1e0b88a…`) still takes the one-time 0.7.25 reset (see
   `[0.7.25]`).
 - **No dependency change.** `[project].dependencies` is identical to 0.7.26's, and
@@ -20,7 +21,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   (Consiliency/dotfiles#77) needs only the new package's hashes.
 - **agy 1.3.2, 1.3.3, 1.3.4 and 1.3.5 are shipped members.** The qualified set is now
   1.2.11, 1.2.12, 1.2.14, 1.2.15, 1.2.16, 1.2.17, 1.3.0, 1.3.1, 1.3.2, 1.3.3, 1.3.4 and 1.3.5;
-  1.3.5 is upstream's latest release. A host on one of the four new members no longer depends
+  1.3.5 is the newest shipped member. A host on one of the four new members no longer depends
   on self-qualification for its Gemini seat; it uses the shipped record, and an earlier
   self-qualification of it is no longer consulted. 1.3.5's `--help` differs from 1.3.4's only
   in listing a new `--mode` value (`auto`), so it carries its own help digest; the seat still
@@ -87,6 +88,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   once also works, but it overwrites the old state instead of keeping it. v10's delivered
   phases stay recorded in the ledger (`plans/manifest.json`). The refusal does not yet name
   this remedy (agent-harness#1510).
+- **Review seats need working tools.** Gemini review seats now run jailed with tools;
+  install their egress layer once per user with `phase-loop seat-egress install` (node
+  22.12+ and npm). Without it the seat is `DEGRADED` and not run. A seat that would run
+  sealed or without tools is never counted, so a board below its reviewer floor now
+  refuses (agent-harness#1170, agent-harness#1244). The sandboxed grok seat can use its
+  granted shell tools (agent-harness#1652). See the corresponding entries below.
+- **Gemini planning and review use Argon.** Planning, roadmap and review defaults now use
+  Gemini 4 Argon; implementation uses Gemini 3.8 Flash high. The optional
+  `PHASE_LOOP_GEMINI_MODEL` preference moves only unpinned Gemini routes; explicit pins
+  still win (agent-harness#1695, agent-harness#1697). Re-run any in-flight board on the
+  upgraded runtime; an earlier run does not prove the new tool and model routes.
 
 ### Qualified agy set adds 1.3.2, 1.3.3, 1.3.4 and 1.3.5 (agent-harness#1542)
 
@@ -106,6 +118,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - All twelve members were requalified on the release tree (completion, cancel and owner-loss
   each, then `--validate`), because this release changes `phase_loop_runtime/**/*.py`. Each
   member has its own regenerated record.
+- A newer upstream release remains eligible for first-use self-qualification; as of
+  2026-10-16, upstream 1.3.6 is outside this shipped set.
 
 ### Roadmap v11 replaces v10 (agent-harness#1394)
 
@@ -119,6 +133,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   a registry keep their precedence. The roadmap banner parser recognises v10's supersession
   banner.
 - See the upgrade note above for a checkout whose phase-loop state still names v10.
+
 ### Gemini: a local model preference, `PHASE_LOOP_GEMINI_MODEL` (agent-harness#1604, ported from agent-harness#1615)
 
 - `PHASE_LOOP_GEMINI_MODEL` selects a registered canonical Gemini base model for the unpinned Gemini executor actions, model classes and composed/default board seats. Explicit task models, plan/roadmap model pins and configured board seats win; effort, other providers, subscription auth and sandbox admission are unchanged. Unset, the shipped defaults hold. An invalid value fails without fallback.
@@ -126,7 +141,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Implementer roster: per-executor implementation model and effort
 
-- Implementation (execute/repair and the `implementer` class) now runs on `gemini-3.8-flash` at high, `gpt-6.1-sol` at medium, `claude-sonnet-5-5` at medium (on the Agent View and print routes; the default Claude Channel route binds neither model nor effort and records them as `session_model_unbound`) and `grok-4.7` at high, on both the runner's shipped model policy and the executor defaults; the Gemini worker moves from `gemini-3.5-flash-high` to `gemini-3.8-flash-high`. A governed repair that escalates to the planner class keeps the shipped `high` effort. Planning, review, opencode and the other worker tiers are unchanged, and explicit model and effort settings still win.
+- Implementation (execute/repair and the `implementer` class) now runs on `gemini-3.8-flash` at high, `gpt-6.1-sol` at medium, `claude-sonnet-5-5` at medium (on the Agent View and print routes; the default Claude Channel route binds neither model nor effort, marks the model `session_model_unbound`, and records effort without a disclaimer) and `grok-4.7` at high, on both the runner's shipped model policy and the executor defaults; the Gemini worker moves from `gemini-3.5-flash-high` to `gemini-3.8-flash-high`. A governed repair that escalates to the planner class keeps the shipped `high` effort. Planning, review, opencode and the other worker tiers are unchanged, and explicit model and effort settings still win. Extending the Channel disclaimer to effort remains agent-harness#1710.
 
 ### The Gemini board seat runs jailed with tools (agent-harness#1170)
 
