@@ -133,6 +133,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   a registry keep their precedence. The roadmap banner parser recognises v10's supersession
   banner.
 - See the upgrade note above for a checkout whose phase-loop state still names v10.
+### Provider admission and availability evidence
+
+- Record the admitted CLI image's class and SHA256 in review evidence, and distinguish unavailable provider commands from login failures (agent-harness#1557; agent-harness#1343).
 
 ### Gemini: a local model preference, `PHASE_LOOP_GEMINI_MODEL` (agent-harness#1604, ported from agent-harness#1615)
 
