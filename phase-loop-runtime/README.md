@@ -145,6 +145,25 @@ python3 -m phase_loop_runtime.roadmap_lint specs/phase-plans-v1.md
 Both wrap `phase_loop_runtime.roadmap_lint` (the single source of truth). Exit 0 =
 clean; non-zero prints each issue on stderr.
 
+## Local Gemini model preference
+
+The shipped Gemini planning and review defaults use Gemini 4 Argon. To use that
+family for all local Gemini role defaults, add this to the environment that runs
+`phase-loop`:
+
+```sh
+export PHASE_LOOP_GEMINI_MODEL=gemini-4-argon
+```
+
+Use a registered canonical base model without an effort suffix. The runtime
+preserves action and seat effort: executor policy normalizes unsupported max
+requests to high, and the default review board keeps medium. Explicit task models,
+plan/roadmap model pins and configured board seats take precedence. Other providers,
+subscription authentication and sandbox admission retain their existing behavior.
+Invalid preferences fail without model fallback. Unsetting the variable restores
+the shipped role defaults, including regular/lite Flash routing. This setting
+does not change the standalone `agy` CLI's own local configuration.
+
 ## Attended agy canary evidence
 
 The six `phase-loop agy-canary-*` commands are an opt-in, attended evidence
