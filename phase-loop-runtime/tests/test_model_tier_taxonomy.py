@@ -26,11 +26,11 @@ class TierMatrixTest(unittest.TestCase):
         expected = {
             ("ultra", "claude"): ("claude-opus-5-5", "max", False),
             ("heavy", "claude"): ("claude-opus-5", "xhigh", False),
-            ("regular", "claude"): ("claude-sonnet-5", "medium", False),
+            ("regular", "claude"): ("claude-sonnet-5-5", "medium", False),
             ("lite", "claude"): ("claude-haiku-4-5-20251001", "low", False),
             ("ultra", "codex"): ("gpt-6-astra", "max", False),
             ("heavy", "codex"): ("gpt-6-astra", "xhigh", False),
-            ("regular", "codex"): ("gpt-5.6-terra", "medium", False),
+            ("regular", "codex"): ("gpt-6.1-sol", "medium", False),
             ("lite", "codex"): ("gpt-5.6-luna", "low", False),
             ("ultra", "gemini"): ("gemini-4-argon", "max", True),
             ("heavy", "gemini"): ("gemini-4-argon", "xhigh", True),
@@ -106,7 +106,7 @@ class RoleToTierTest(unittest.TestCase):
 
     def test_execute_target_is_regular_sonnet_on_claude(self):
         # resolve() encodes the taxonomy target end-state for implementation.
-        self.assertEqual(resolve("execute", "claude").model_id, "claude-sonnet-5")
+        self.assertEqual(resolve("execute", "claude").model_id, "claude-sonnet-5-5")
 
     def test_unknown_role_and_vendor_raise(self):
         with self.assertRaises(ValueError):
@@ -367,7 +367,7 @@ class ChannelRouteModelBindingTest(unittest.TestCase):
         # The `send` transport binds NO --model (print/agent_view routes DO).
         self.assertNotIn("--model", spec.command)
         # Provenance: selected_model is the INTENDED tier model, explicitly stamped unbound.
-        self.assertEqual(spec.selected_model, "claude-sonnet-5")
+        self.assertEqual(spec.selected_model, "claude-sonnet-5-5")
         self.assertIn(_CHANNEL_SESSION_MODEL_UNBOUND_WARNING, spec.claude_route_warnings)
 
         # CR round-6 blocker C: the stamp must reach the DURABLE record (LaunchResult
@@ -382,7 +382,7 @@ class ChannelRouteModelBindingTest(unittest.TestCase):
         base = LaunchResult(command=spec.command, returncode=0, executor="claude", claude_route_result={})
         result = _result_with_spec(base, spec)
         md = result.event_metadata()
-        self.assertEqual(md.get("selected_model"), "claude-sonnet-5")
+        self.assertEqual(md.get("selected_model"), "claude-sonnet-5-5")
         self.assertIn(_CHANNEL_SESSION_MODEL_UNBOUND_WARNING, md.get("claude_route_warnings", []))
 
     def test_channel_run_persisted_launch_json_carries_the_stamp(self):
@@ -428,7 +428,7 @@ class ChannelRouteModelBindingTest(unittest.TestCase):
                     os.environ[k] = v
 
         # The persisted artifact records selected_model AND the route + unbound caveat.
-        self.assertEqual(launch_json.get("selected_model"), "claude-sonnet-5")
+        self.assertEqual(launch_json.get("selected_model"), "claude-sonnet-5-5")
         self.assertEqual(launch_json.get("claude_route"), "claude_channel")
         self.assertIn(_CHANNEL_SESSION_MODEL_UNBOUND_WARNING, launch_json.get("claude_route_warnings", []))
 
