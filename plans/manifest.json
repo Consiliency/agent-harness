@@ -13507,6 +13507,35 @@
       "task_summary": null,
       "type": "phase",
       "updated_at": "2026-10-13T02:18:49.190750Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "created_at": "2026-10-13T02:17:04Z",
+      "file": "plans/phase-plan-v11-HARDEN.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20261013T021704Z-9cbe65.md",
+      "if_gates_produced": [
+        "IF-0-HARDEN-5",
+        "IF-0-HARDEN-6",
+        "IF-0-HARDEN-7"
+      ],
+      "lanes": [
+        "SL-6"
+      ],
+      "lifecycle": [],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "HARDEN",
+      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/8200b516/claude-v11-harden/20261013T021704Z-9cbe65.md",
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v11.md",
+        "slug": "phase-plans-v11",
+        "status": "imported",
+        "type": "phase"
+      },
+      "slug": "v11-HARDEN",
+      "status": "committed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-10-13T02:17:04Z"
     }
   ],
   "schema_version": 1
