@@ -119,7 +119,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   each, then `--validate`), because this release changes `phase_loop_runtime/**/*.py`. Each
   member has its own regenerated record.
 - A newer upstream release remains eligible for first-use self-qualification; as of
-  2026-10-16, upstream 1.3.6 is outside this shipped set.
+  2026-10-16, upstream's latest is 1.4.0 and is outside this shipped set.
 
 ### Roadmap v11 replaces v10 (agent-harness#1394)
 

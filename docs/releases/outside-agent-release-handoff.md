@@ -90,6 +90,9 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
   - the FABPUB recovery and publication changes, reflection admission gates and PR
     description upkeep listed in the `[0.7.27]` CHANGELOG. Re-run in-flight boards on the
     upgraded runtime to prove the new tool and model routes;
+  - admitted CLI image and qualification-class evidence, native wrapper-target validation,
+    and executable availability distinguished from login failures (agent-harness#1557,
+    agent-harness#1343). All twelve agy members were requalified again after this landed;
   - no dependency change (`Requires-Dist` and entry points equal `0.7.26`'s). The
     falsifier-run layout identity (`execfind-falsifier-layout.v1:805042ce…`) and the Claude
     jail profile digests are unchanged on the same host; the new Gemini jail profile
@@ -99,7 +102,7 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
     All twelve members were requalified live on this release tree (validated 3 and
     `route_qualified` true for each; all 245 source pins verified; `--route-core` passes).
     Every official archive and its `antigravity` member match the reviewed asset and
-    executable digests. Upstream 1.3.6 is outside the shipped set and eligible for first-use
+    executable digests. Upstream's latest, 1.4.0, is outside the shipped set and eligible for first-use
     self-qualification. Each series ran from a verified copy of its official release asset,
     never from the installed `agy`, and every receipt names the intended image.
 - Packaged content: compared with the hash-verified published `0.7.26` archives, the wheel
@@ -795,16 +798,16 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 ### This release: 0.7.27 (prepared)
 
 The digests below are from a pre-tag `uv build` of a `git archive` export of
-`4a5c9b7c4`, under `umask 022` (archive modes are umask-dependent,
-Consiliency/agent-harness#519). Its packaged tree is `59046305ee70076f6b4fda94a7317989d0cae30b`,
+`5f239710e`, under `umask 022` (archive modes are umask-dependent,
+Consiliency/agent-harness#519). Its packaged tree is `2f183624a3496a4361d592ca8886d1b303d78d04`,
 the runtime source used by the twelve agy qualification series. Later qualification
 records and this handoff are outside the package. This is preparation evidence, not a
 publication record: the publishing workflow rebuilds from the owner-approved tag and
 verifies `SHA256SUMS`; published digests are recorded after publication. Archive bytes
 can differ with timestamps and toolchain versions.
 
-- prepared direct-wheel sha256: `deaec33407b6f6a1bd4f8feb1e8a48e8e6fe4f614a7036b5ca99d1a1f337b898` (520 files).
-- prepared direct-sdist sha256: `1c0d641ef8f976305edf64c2a633536c01356afbab2290ac3863b5694f51c7c9` (1150 regular files).
+- prepared direct-wheel sha256: `1ebff167e26470bec5c872eac7d46bbf3904f20a407c84a433f1004afe874ced` (520 files).
+- prepared direct-sdist sha256: `d8b721d835d473cd6e063ef0da1453928eeb5eb4e47490cb72b4cc42cbc49d9e` (1150 regular files).
 - A wheel rebuilt from this sdist is byte-identical member by member to the direct wheel
   (520 files). Its archive digest is a separate measurement, not a publication hash.
 - `Requires-Dist`, Python floor and entry points equal the published `0.7.26` metadata.

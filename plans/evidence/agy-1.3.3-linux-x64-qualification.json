@@ -50,12 +50,12 @@
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
       "profile_sha256": "f15b248c8d05d9925ea165a32b920a17a6cb59de9f869800b6b49c9f7ce88d48",
-      "raw_receipt_sha256": "3c1b81bb91af23f3e409186c318561156fd31b6c93d6ff0aaac86ceb0c5277ff",
+      "raw_receipt_sha256": "39eb44964b751a8b5714e149da8cb3fb9a362cbf22d20aa91520cb234a7bee4c",
       "record_sha256": {
-        "broker": "a70a756761e89ed20e53c6df992dc8cdd14548d56df2e11b1db7e748b2138ec4",
-        "monitoring": "45dd1bc69fc8a04e426209dc0559757dd6f7cc07f3f190ef2127f07bbd3d0de3",
-        "observer": "57624e2cc5c667e5e9287c7c592c8f03b46f99ad5acaa20ff62b0d313f7cac37",
-        "result": "897e315d1b1ade218e38b6c7154f87cb2697d6072ccfd582953fed184ebead9b"
+        "broker": "a691aaabecd614fcc7ef9cab288c40172ba62cbe2df82acdd22de66ea3720e20",
+        "monitoring": "914a15055b9994bd7a250c1d91cfcd550f4d3d780b810c3fb12ec65365e9e4d3",
+        "observer": "7814319d4c710c34fec19de4c79f9f3e3d8c4ac806d611477d01dbbc9d699e4e",
+        "result": "4fd62da8c0abdab99442f21c5113c459f9b3fa8a6ab4a0925ff944cd3064541a"
       },
       "request_digests": {
         "artifact_sha256": "125bbbd021794e015483823d7231c3e9fca0715222d0617278d134f8a065a3b5",
@@ -111,11 +111,11 @@
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
       "profile_sha256": "f15b248c8d05d9925ea165a32b920a17a6cb59de9f869800b6b49c9f7ce88d48",
-      "raw_receipt_sha256": "69a5e08cde72278c6bc09c25c7850c2b816c915a2f3ded23e29274492c5f9e59",
+      "raw_receipt_sha256": "656ec292d4c96bc92d0856b05778a14b7b024955386cba9d5a3ee42ab894b082",
       "record_sha256": {
-        "broker": "9832791534b633b92b06989ca3d21d6614793d7cc7fbec68d4af7c7b7635e721",
-        "monitoring": "a8a691438fe767195a1ef6bc8dde77aa9160da57ec1bdca83b7a37c53faed85f",
-        "observer": "7956ef23c6b5d4e6c8ac9d51779ef4b4d6faeba40f4267351dd2811437fa6fe0",
+        "broker": "88629d175385a91026aebb19e5148854585f7eb762561ec461d6fa096b8c1ea6",
+        "monitoring": "6e103f85c68b387bea3de8c14b6925170cfbc21c08afe9eaf6057acb7230582e",
+        "observer": "bd7eb9c34be1be2f78496c5a4361b39a2566171f6d69e20b104a45f9faca00e3",
         "result": "38ccc6031e6520bae3694528da32ba0af366bb3cc8843dd7354bd3d71431c448"
       },
       "request_digests": {
@@ -172,11 +172,11 @@
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
       "profile_sha256": "f15b248c8d05d9925ea165a32b920a17a6cb59de9f869800b6b49c9f7ce88d48",
-      "raw_receipt_sha256": "4789412f52d50f202b036958c2b64af0e14cbf07c26215a9d1d65bba1f7c7a27",
+      "raw_receipt_sha256": "d4242e8546f6d74f9d24a0f5100a77c50ee5012e045fa59244121a526d192812",
       "record_sha256": {
         "broker": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
-        "monitoring": "f396263900f620ef51b7f5ce572193375407b6e44fff28875c0fb30b317cb323",
-        "observer": "e55b842ef35d08c92127d645e3322132409974bcb631d2cbfd3df0689d8e0c7e",
+        "monitoring": "7892a1f780d23ec4c2d0ac4abff65fd0083ed8805feccbb085c7fd222791e0c2",
+        "observer": "7a8f40eda657de6f7601befec7ea844be9d25d816c70baf9a35d79640d0d81a2",
         "result": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
       },
       "request_digests": {
@@ -221,7 +221,7 @@
     "agent_runtime_provider.py": "958e4f115369a1cc59dbc40585e03dece1be4476bd1fe03c323bf3b1fb9182a2",
     "agent_view_cleanup.py": "d68d4c88dbbb018a4e56e1f0aa7f76003f25e4df86cc32f20f8fbb670d7b4262",
     "agy_canary_evidence.py": "db195aeda93eb9934e4e87b1af8f4c5e7260264713180b47dbb693310a85b0d9",
-    "agy_integrity.py": "8df776d57341df56dfb89a4a783fb79585b8cb407cc90b3de8c78c236c475a58",
+    "agy_integrity.py": "27a2e8c40edff4298f88173900f513d84fc321f442c2f437a9a125de9b7957a9",
     "agy_provenance.py": "82aa037260125327de4b5fde80e6121484fbc11abf17482973f9a91a86cc2c6e",
     "agy_qualification.py": "8713cecd42dbb29f51ddad8afdc02902dfdedebfe3a3c90bc40bebf9bec3e4a5",
     "agy_watch.py": "ad8282028bd66c1623a45ea907b7801a539050a6e40208cf796edce410daa3df",
@@ -332,7 +332,7 @@
     "migrate_handoffs.py": "92ca4121e4376a6452b1b259fdca8a4c4d6549641247c8e12a993c9cda99fcc9",
     "models.py": "f2e4d062c2e0cb0091f851a52701ed18a87e8fb78c4d7f1de2dcf54bba185b3b",
     "observability.py": "4d4663078be68781c3e2ab65d2c9b5f428e65b3ba224ab4c91d55fb1466605fa",
-    "panel_invoker.py": "bafe1e42193419d41fd146af28d312b4393b73037faa304e3da5ce4adaa254fb",
+    "panel_invoker.py": "90dee7e1c46767cd50db5a17f70564d9ad0057075d562d2611bf629652916c1b",
     "panel_reply.py": "5622dadfee0cc8c86b763fe8a0c5ee4765d6890d32820589feb425260b745593",
     "phase_loop_drift_audit.py": "c941ae484fe5133bc2fbfd4b6b4a1621146845e8b463737e5bcf6e4b008437f1",
     "phase_worktree_executor.py": "ccc4d4682bebee0086c75b4c1fc5196b793f081400b3da96a1e1f05643c1c96f",
