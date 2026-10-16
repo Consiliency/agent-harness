@@ -55,6 +55,43 @@ def test_a_wrapped_hoisted_npm_codex_resolves_to_the_vendored_binary(tmp_path, m
     assert _source(monkeypatch, tmp_path / "release/bin", "codex") == ("codex", str(native))
 
 
+@pytest.mark.parametrize("native_shape", ["missing", "script", "interpreter_alias"])
+def test_codex_launcher_requires_a_native_vendored_provider(tmp_path, native_shape):
+    launcher = _exe(tmp_path / "codex/bin/codex.js", "#!/usr/bin/env node\n")
+    link = tmp_path / "npm/.bin/codex"
+    link.parent.mkdir(parents=True)
+    link.symlink_to(launcher)
+    machine = os.uname().machine
+    if machine not in {"x86_64", "aarch64"}:
+        pytest.skip("codex ships linux binaries for x86_64/aarch64 only")
+    native = tmp_path / f"codex/vendor/{machine}-unknown-linux-musl/bin/codex"
+    if native_shape == "script":
+        _exe(native, "#!/bin/sh\n")
+    elif native_shape == "interpreter_alias":
+        interpreter = _exe(tmp_path / "node", "\x7fELF")
+        native.parent.mkdir(parents=True)
+        native.symlink_to(interpreter)
+    wrapper = _wrapper(tmp_path / "bin", "codex", link)
+    assert pi._shell_wrapper_target(wrapper, "codex") is None
+
+
+@pytest.mark.parametrize("launcher_shape", ["directory", "fifo"])
+def test_codex_launcher_must_be_a_regular_file(tmp_path, launcher_shape):
+    launcher = tmp_path / "codex/bin/codex.js"
+    launcher.parent.mkdir(parents=True)
+    if launcher_shape == "directory":
+        launcher.mkdir()
+    else:
+        os.mkfifo(launcher)
+    machine = os.uname().machine
+    if machine not in {"x86_64", "aarch64"}:
+        pytest.skip("codex ships linux binaries for x86_64/aarch64 only")
+    _exe(tmp_path / f"codex/vendor/{machine}-unknown-linux-musl/bin/codex", "\x7fELF")
+    wrapper = _wrapper(tmp_path / "bin", "codex", launcher)
+    assert pi._shell_wrapper_target(wrapper, "codex") is None
+    assert pi._native_provider_target(launcher, "codex", resolve_launcher=True) is None
+
+
 @pytest.mark.parametrize("body", [
     '#!/bin/sh\nrm -rf "$HOME"\nexec /opt/x/grok "$@"\n',          # an extra command
     '#!/bin/bash\nexec /opt/x/grok "$@"\n',                         # another interpreter
@@ -103,9 +140,45 @@ def test_an_interpreter_or_flagged_exec_line_is_not_followed(tmp_path, line):
 
 
 def test_a_target_not_named_for_the_provider_is_not_followed(tmp_path):
-    wrapper = _exe(tmp_path / "bin/grok", '#!/bin/sh\nexec /opt/node/bin/node "$@"\n')
+    native = _exe(tmp_path / "native/node", "\x7fELF")
+    wrapper = _wrapper(tmp_path / "bin", "grok", native)
     assert pi._shell_wrapper_target(wrapper, "grok") is None
-    assert pi._shell_wrapper_target(wrapper) == Path("/opt/node/bin/node")
+    assert pi._shell_wrapper_target(wrapper) == native
+
+
+@pytest.mark.parametrize("invoked,target", [("grok", "grok-native"), ("grok-native", "grok"),
+    ("claude", "claude.exe"), ("claude.exe", "claude"), ("gemini", "agy"),
+    ("agy", "gemini"), ("opencode", "opencode.exe")])
+def test_wrapper_follows_harness_aliases(tmp_path, monkeypatch, invoked, target):
+    native = _exe(tmp_path / "native" / target, "\x7fELF")
+    wrapper = _wrapper(tmp_path / "bin", invoked, native)
+    assert pi._shell_wrapper_target(wrapper, invoked) == native
+    assert _source(monkeypatch, wrapper.parent, invoked)[1] == str(native)
+
+
+@pytest.mark.parametrize("shape", ["script", "symlink_script", "symlink_interpreter", "fifo", "missing"])
+def test_resolved_wrapper_target_must_be_a_native_provider(tmp_path, shape):
+    target = tmp_path / "native/grok"
+    target.parent.mkdir()
+    if shape == "script":
+        _exe(target, "#!/bin/sh\n")
+    elif shape.startswith("symlink"):
+        real = _exe(tmp_path / "elsewhere" / ("grok" if shape == "symlink_script" else "node"),
+                    "#!/bin/sh\n" if shape == "symlink_script" else "\x7fELF")
+        target.symlink_to(real)
+    elif shape == "fifo":
+        os.mkfifo(target)
+    wrapper = _wrapper(tmp_path / "bin", "grok", target)
+    assert pi._shell_wrapper_target(wrapper, "grok") is None
+
+
+def test_resolved_native_alias_is_followed(tmp_path):
+    native = _exe(tmp_path / "native/grok-native", "\x7fELF")
+    link = tmp_path / "alias/grok"
+    link.parent.mkdir()
+    link.symlink_to(native)
+    wrapper = _wrapper(tmp_path / "bin", "grok", link)
+    assert pi._shell_wrapper_target(wrapper, "grok") == native
 
 
 def test_a_fifo_or_symlinked_wrapper_is_read_without_blocking_or_following(tmp_path):

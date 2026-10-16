@@ -576,6 +576,7 @@
   {"count": 2, "function": "_filtered_holder_namespace", "module": "panel_invoker", "primitive": "io.stat", "role": "host-io"},
   {"count": 1, "function": "_inherited_no_new_privs", "module": "panel_invoker", "primitive": "io.read_text", "role": "host-io"},
   {"count": 1, "function": "_leg_auth_ok", "module": "panel_invoker", "primitive": "run_provider", "role": "owned"},
+  {"count": 1, "function": "_native_provider_target", "module": "panel_invoker", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "_outside_any_git_work_tree", "module": "panel_invoker", "primitive": "io.lstat", "role": "host-io"},
   {"count": 1, "function": "_precreate_seat_output", "module": "panel_invoker", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "_precreate_seat_output", "module": "panel_invoker", "primitive": "io.stat", "role": "host-io"},
