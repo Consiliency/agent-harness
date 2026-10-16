@@ -183,7 +183,7 @@ or environment values.
     phase-loop train-status --event-log PATH [--json]
 
 This mode is read-only, requires no legacy train roadmap, and is mutually
-exclusive with `--train`. It reconstructs from the ledger alone: no runner
+exclusive with `--train` and `--ledger-dir`. It reconstructs from the ledger alone: no runner
 cache, working tree, or side artifact is consulted, so identical durable events
 render identical bytes before and after a restart. Pending attempts are
 qualified by node, so two nodes sharing an attempt id stay distinguishable.
@@ -282,7 +282,9 @@ directory, the command and the settings ship in this release.
   it: with no such lease it makes no call and loads no plugin, so it is safe to run at any
   time. An entry is cleared only when the backend acknowledged a kill by that lease id and
   lists nothing for it; anything else is kept for the next run. It prints
-  `placement reap: <n> cleared, <m> kept` and exits 1 while something is kept.
+  `placement reap: <n> cleared, <m> kept` and exits 1 while something is kept. A
+  malformed sandbox root setting is refused (`placement reap: refused: …`, exit 2), and
+  an I/O failure exits 1.
 - **The settings.**
 
   | Variable | Default | Meaning |

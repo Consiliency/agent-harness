@@ -326,11 +326,18 @@ Path("terminal-written").write_text("ready")
 while True: time.sleep(.1)
 '''
 
+    # agent-harness#1636: for a terminal row the controller is only a hang guard. The leg
+    # notices the journal on its next poll (up to _CLAUDE_TUI_READ_INTERVAL_S) and then
+    # reaps the seat before its last cancel re-check, about 0.3s with no load, so a short
+    # guard let a CI scheduling hiccup turn the expected outcome into a cancel. Only the
+    # row that must wait for the cancel keeps the short window.
+    grace = .5 if expected_log == "review_operation_cancelled" else 30
+
     def cancel_if_not_returned():
         until = time.monotonic() + 5  # synthetic fixture startup only
         while (not marker.exists() or marker.stat().st_size == 0) and time.monotonic() < until:
             time.sleep(.01)
-        if not cancel.wait(.5):
+        if not cancel.wait(grace):
             controller_fired.set()
             cancel.set()
 

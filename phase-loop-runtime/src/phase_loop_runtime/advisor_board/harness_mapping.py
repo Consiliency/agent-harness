@@ -13,6 +13,7 @@ Legacy Gemini Pro display names remain supported for explicit boards.
 """
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 
@@ -123,10 +124,14 @@ _GEMINI_EMBED_RE = re.compile(r"\s*\((?:Low|Medium|High|Max)\)\s*$")
 # Canonical agy model ids embed effort as a suffix. Keep the phase-loop matrix
 # aliases here too: launcher and advisor-board seats must share one renderer so a
 # given (model, effort) pair cannot select different Gemini models by entrypoint.
+# Only ``gemini-4-argon`` is admitted without a minor version (the literal id, not a
+# family); every other id needs ``<maj>.<min>-(flash|pro)``, so an unknown or
+# malformed ``gemini-*`` id still fails loud.
 _AGY_CANONICAL_GEMINI = re.compile(
-    r"^(gemini-\d+\.\d+-(?:flash|pro))-(high|medium|low|thinking)$"
+    r"^(gemini-(?:\d+\.\d+-(?:flash|pro)|4-argon))-(high|medium|low|thinking)$"
 )
-_AGY_BASE_GEMINI = re.compile(r"^gemini-\d+\.\d+-(?:flash|pro)$")
+_AGY_BASE_GEMINI = re.compile(r"^gemini-(?:\d+\.\d+-(?:flash|pro)|4-argon)$")
+_ARGON_DISPLAY = re.compile(r"^Gemini 4 Argon(?: \((Low|Medium|High)\))?$")
 _GEMINI_MODEL_ID_ALIASES: dict[str, str] = {
     "gemini-3.1-pro-preview": "Gemini 3.1 Pro (High)",  # model-id-source: shared agy compatibility alias
     "gemini-3.5-flash-lite": "gemini-3.5-flash-high",  # model-id-source: shared agy capability fallback
@@ -138,6 +143,23 @@ def gemini_base_model(model: str) -> str:
     return _GEMINI_EMBED_RE.sub("", model or "").strip()
 
 
+def gemini_default_model(model: str, env=None) -> str:
+    """Apply the local preference only at a Gemini default-selection boundary."""
+    value = (os.environ if env is None else env).get("PHASE_LOOP_GEMINI_MODEL")
+    if value is None:
+        return model
+    candidate = value.strip()
+    from .registries import DEFAULT_MODEL_REGISTRY, UnknownModelError
+
+    try:
+        spec = DEFAULT_MODEL_REGISTRY.get(candidate)
+    except UnknownModelError:
+        raise ValueError("PHASE_LOOP_GEMINI_MODEL must name a registered Gemini base model") from None
+    if spec.vendor_family != "gemini" or not _AGY_BASE_GEMINI.fullmatch(candidate):
+        raise ValueError("PHASE_LOOP_GEMINI_MODEL must name a registered Gemini base model")
+    return candidate
+
+
 def render_agy_model(model: str, effort: str | None = None) -> str:
     """Render a Gemini model for agy's effort-in-model-name convention.
 
@@ -147,6 +169,16 @@ def render_agy_model(model: str, effort: str | None = None) -> str:
     Unknown ``gemini-*`` ids fail loud instead of silently selecting Pro.
     """
     candidate = (model or "").strip()
+    if candidate.startswith("Gemini 4 Argon"):
+        display = _ARGON_DISPLAY.fullmatch(candidate)
+        if display is None:
+            raise ValueError("Gemini 4 Argon requires low, medium, or high effort")
+        embedded = display.group(1).lower() if display.group(1) else None
+        if effort not in (None, "low", "medium", "high"):
+            raise ValueError("Gemini 4 Argon requires low, medium, or high effort")
+        if effort is not None and embedded is not None and effort != embedded:
+            raise ValueError(f"gemini model {candidate!r} conflicts with requested effort {effort!r}")
+        return render_agy_model("gemini-4-argon", effort or embedded)  # model-id-source: display alias
     if _AGY_BASE_GEMINI.match(candidate):
         rendered_effort = effort or "high"
         if rendered_effort not in {"high", "medium", "low", "thinking"}:

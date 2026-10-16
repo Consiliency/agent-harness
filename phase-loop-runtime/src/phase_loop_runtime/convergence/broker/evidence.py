@@ -1,9 +1,10 @@
 """Append-only terminal evidence for broker operations."""
 from __future__ import annotations
 
+import hashlib
 import json
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from phase_loop_runtime.convergence.broker.admission import constructor_key_mismatch
@@ -36,6 +37,20 @@ def _require_generation(root: Path, generation_lease) -> None:
         require_current_generation(root, None, strict=False)
     else:
         require_current_generation(root, generation_lease, strict=True)
+
+
+def _require_generation_tolerating_drain(root: Path, generation_lease) -> None:
+    """agent-harness#1633: a post-ambiguity observation is not refused for a DRAINING latch alone.
+
+    A revoked lease, a lease that does not bind the current generation, and a
+    superseded generation root still refuse.
+    """
+    from .live import require_current_generation
+
+    if generation_lease is _UNDECLARED:
+        require_current_generation(root, None, strict=False, allow_draining=True)
+    else:
+        require_current_generation(root, generation_lease, strict=True, allow_draining=True)
 
 
 class EvidenceStoreIncompatible(PermissionError):
@@ -279,11 +294,14 @@ class BrokerEvidenceStore:
                     ) from error
                 result[key] = record
         return result
-    def _authorize(self) -> None:
+    def _authorize(self, *, allow_draining: bool = False) -> None:
         """Authenticate BEFORE any directory creation, then create the tree."""
         from .live import is_canonical_store_root, load_partition_receipt
 
-        _require_generation(self.root, self.generation_lease)
+        if allow_draining:
+            _require_generation_tolerating_drain(self.root, self.generation_lease)
+        else:
+            _require_generation(self.root, self.generation_lease)
         canonical_store = is_canonical_store_root(self.root)
         if (
             _fabpub_active()
@@ -448,3 +466,202 @@ class BrokerEvidenceStore:
         with self.path.open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(asdict(record), sort_keys=True) + "\n"); stream.flush(); os.fsync(stream.fileno())
         return record
+
+
+# ---------------------------------------------------------------------------
+# agent-harness#1591: a provider outcome observed after the key became ambiguous
+# ---------------------------------------------------------------------------
+#
+# The evidence log cannot take a terminal row after ``outcome_ambiguous_blocked``
+# (``_append_locked`` refuses it, and a rotation refuses a key that was ever both
+# blocked and terminal-observed), and an older reader's ``replay()`` keeps the
+# last row per key, so such a row would quietly unblock the epoch.  The outcome
+# is therefore kept in a separate append-only file beside the log.  No reader of
+# any earlier version opens it, and it is not one of the files a rotation digests:
+# it can only add refusals, and its writers hold the same ``admissions.lock``.
+
+POST_AMBIGUITY_OBSERVATIONS_FILENAME = "post-ambiguity-observations.jsonl"
+POST_AMBIGUITY_OBSERVATION_SCHEMA = "PostAmbiguityObservation.v1"
+_OBSERVED_STATES = (
+    TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED.value,
+    TerminalOutcomeState.NO_EFFECT_TERMINAL_PROVEN.value,
+)
+
+
+@dataclass(frozen=True)
+class PostAmbiguityObservation:
+    """One definite provider outcome on a key whose row was already ambiguous.
+
+    Bound to the exact ambiguity (``ambiguity_digest``: sha256 of the blocked
+    row's raw line, the digest a rotation attestation binds) and to the attempt
+    that made the call (its owner's ``owner_nonce`` and ``transaction_id``).
+    ``durable`` is in-memory only: whether this row is on disk.
+    """
+
+    idempotency_key: str
+    observed_state: str
+    evidence_reference: str
+    head_sha: str
+    branch: str
+    transaction_id: str
+    owner_nonce: str
+    ambiguity_digest: str
+    schema: str = POST_AMBIGUITY_OBSERVATION_SCHEMA
+    durable: bool = field(default=False, compare=False)
+
+    @property
+    def is_effect(self) -> bool:
+        return self.observed_state == TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED.value
+
+    def row(self) -> dict:
+        body = asdict(self)
+        body.pop("durable")
+        return body
+
+
+class _Unreadable:
+    """The side file exists but cannot be read; every caller fails closed."""
+
+    def __repr__(self) -> str:
+        return "UNREADABLE"
+
+
+UNREADABLE = _Unreadable()
+
+
+def post_ambiguity_observations_path(root: Path) -> Path:
+    return Path(root) / POST_AMBIGUITY_OBSERVATIONS_FILENAME
+
+
+def _parse_post_ambiguity_observations(body: bytes):
+    if body and not body.endswith(b"\n"):
+        return UNREADABLE  # a torn final append
+    rows: dict[str, list[PostAmbiguityObservation]] = {}
+    for raw_line in body.split(b"\n")[:-1] if body else ():
+        try:
+            raw = json.loads(raw_line.decode("utf-8"))
+            if (
+                not isinstance(raw, dict)
+                or raw.get("schema") != POST_AMBIGUITY_OBSERVATION_SCHEMA
+                or raw.get("observed_state") not in _OBSERVED_STATES
+                or "durable" in raw
+            ):
+                return UNREADABLE
+            observation = PostAmbiguityObservation(**raw, durable=True)
+        except (TypeError, ValueError, RecursionError):
+            return UNREADABLE
+        if not all(
+            isinstance(getattr(observation, name), str)
+            for name in observation.row()
+        ):
+            return UNREADABLE
+        rows.setdefault(observation.idempotency_key, []).append(observation)
+    return rows
+
+
+def read_post_ambiguity_observations(root: Path):
+    """``{key: [observation, ...]}``, ``{}`` when absent, or ``UNREADABLE``.
+
+    Never raises: a torn tail, a malformed row, an unknown schema or an
+    unreadable file is ``UNREADABLE``, and every caller treats that as a
+    refusal of ``attested_not_landed`` (fail closed).
+    """
+    try:
+        body = post_ambiguity_observations_path(root).read_bytes()
+    except FileNotFoundError:
+        return {}
+    except OSError:
+        return UNREADABLE
+    return _parse_post_ambiguity_observations(body)
+
+
+def post_ambiguity_effect(root: Path, key: str):
+    """The recorded effect observation for ``key``, ``UNREADABLE``, or ``None``."""
+    observations = read_post_ambiguity_observations(root)
+    if observations is UNREADABLE:
+        return UNREADABLE
+    for observation in observations.get(key, ()):
+        if observation.is_effect:
+            return observation
+    return None
+
+
+def ambiguity_digest(root: Path, key: str) -> str | None:
+    """sha256 of the raw line of ``key``'s latest ``outcome_ambiguous_blocked`` row.
+
+    The same digest a rotation attestation binds (``_read_predecessor_ledger``
+    and the attestation builder hash the line text without its newline).
+    """
+    path = Path(root) / "evidence.jsonl"
+    if not path.exists():
+        return None
+    latest = None
+    for raw_line in path.read_bytes().split(b"\n"):
+        if not raw_line.strip():
+            continue
+        try:
+            raw = json.loads(raw_line.decode("utf-8"))
+        except ValueError:
+            continue
+        if (
+            isinstance(raw, dict)
+            and raw.get("idempotency_key") == key
+            and raw.get("state") == TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED.value
+        ):
+            latest = raw_line
+    return hashlib.sha256(latest).hexdigest() if latest is not None else None
+
+
+def append_post_ambiguity_observation(
+    root: Path,
+    observation: PostAmbiguityObservation,
+    *,
+    authorize=None,
+    lock_held: bool = False,
+) -> bool:
+    """Append one observation; return whether it is durable.
+
+    ``lock_held=True`` declares that the caller holds the exclusive
+    ``admissions.lock``.  An identical row already present is not written
+    again.  Nothing is appended after an unreadable file (a torn tail would
+    swallow the new row); the observation is then not durable.
+    """
+    import fcntl
+
+    root = Path(root)
+    path = post_ambiguity_observations_path(root)
+    body = (json.dumps(observation.row(), sort_keys=True) + "\n").encode("utf-8")
+
+    def append() -> bool:
+        if authorize is not None:
+            authorize()
+        created = not path.exists()
+        if not created:
+            existing = path.read_bytes()
+            parsed = _parse_post_ambiguity_observations(existing)
+            if parsed is UNREADABLE:
+                return False
+            if body in existing.splitlines(keepends=True):
+                return True
+        with path.open("ab") as stream:
+            stream.write(body)
+            stream.flush()
+            os.fsync(stream.fileno())
+        if created:
+            descriptor = os.open(str(root), os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
+        return True
+
+    if lock_held:
+        return append()
+    if authorize is not None:
+        authorize()
+    with (root / "admissions.lock").open("a+", encoding="utf-8") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        try:
+            return append()
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)

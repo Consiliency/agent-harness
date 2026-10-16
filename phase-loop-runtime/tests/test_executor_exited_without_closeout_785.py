@@ -54,6 +54,25 @@ def test_final_response_schema_excludes_interim_without_changing_lifecycle(tmp_p
 
 def test_golden_delta_is_only_final_schema_exclusion():
     golden = json.loads((Path(__file__).parent / "data/launchspec_golden/launchspec_golden.json").read_text())
+    # The eighth permitted delta (agent-harness#1637): the 0.7.27 implementer roster moves
+    # only execute model/effort fields. Restore their prior values first.
+    pre_1637 = json.loads((Path(__file__).parent / "data/launchspec_golden/pre_1637_implementer_roster.json").read_text())
+    for change in pre_1637["changes"]:
+        case = golden[change["case"]]
+        if change["field"] == "command":
+            assert case["command"][change["index"]] == change["current"]
+            case["command"][change["index"]] = change["pre_1637"]
+        else:
+            assert case[change["field"]] == change["current"]
+            case[change["field"]] = change["pre_1637"]
+    # The seventh permitted delta (agent-harness#1581) changes only the two
+    # injected instruction strings. Restore their frozen prior bytes before
+    # the older normalization steps; all metadata and historical checks remain.
+    pre_1581 = json.loads((Path(__file__).parent / "data/launchspec_golden/pre_1581_pr_hardening.json").read_text())
+    for change in pre_1581["command_strings"]:
+        argv = golden[change["case"]]["command"]
+        assert argv[change["index"]] == change["current"]
+        argv[change["index"]] = change["pre_1581"]
     command = golden["claude_print_solo"]["command"]
     index = command.index("--json-schema") + 1
     schema = json.loads(command[index])
@@ -93,6 +112,13 @@ def test_golden_delta_is_only_final_schema_exclusion():
     # at e7350e534e9a369be45baf34dc812eadd873e1f5. Undoing the sole permitted
     # enum exclusion must recover it, including every prompt/hash/model/argv.
     canonical = json.dumps(golden, sort_keys=True, separators=(",", ":"))
+    # The sixth permitted delta (agent-harness#1548): the execute-phase skill adds PR
+    # description upkeep inside the agent-harness#1392 span ("PR descriptions on the
+    # interactive path" and the `gh pr edit` mode bullets). Undo it first, so the
+    # agent-harness#1392 span below matches the text it was written for.
+    pre_1548 = json.loads((Path(__file__).parent / "data/launchspec_golden/pre_1548_pr_descriptions.json").read_text())
+    assert pre_1548["current"] in canonical
+    canonical = canonical.replace(pre_1548["current"], pre_1548["pre_1548"])
     # The fifth permitted delta (agent-harness#1392): the execute-phase skill gates its
     # interactive publication on `phase-loop publication-mode` (publication mode (b),
     # "Draft PR early", and a new "Interactive publication mode" section). Undo exactly

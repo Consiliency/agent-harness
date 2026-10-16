@@ -17,6 +17,7 @@ import pytest
 from phase_loop_runtime.advisor_board import backing
 from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
 from phase_loop_runtime import panel_invoker as panel
+from phase_loop_runtime import seat_jail
 
 
 @pytest.fixture(autouse=True)
@@ -1070,9 +1071,38 @@ def test_heartbeat_egress_unavailable_stays_degraded(tmp_path, monkeypatch):
     result = panel.invoke_board(supported_board(), "synthetic review material",
         monitoring_policy="heartbeat_only", stream_dir=tmp_path / "records")
     assert all(leg.status == "DEGRADED" for leg in result.legs)
-    assert all("egress isolation unavailable" in leg.detail for leg in result.legs)
+    # agent-harness#1244: a seat whose route is not jailed on this host (no jail prerequisites,
+    # e.g. a CI runner) is refused by its route before staging, so it never reaches the egress
+    # check; its detail is that route code. Every other seat is refused for egress.
+    route_refused = seat_jail.SEALED_FALLBACK_CODES | seat_jail.JAIL_NOT_RUN_CODES
+    assert all("egress isolation unavailable" in leg.detail or leg.detail in route_refused
+               for leg in result.legs), [(leg.leg, leg.detail) for leg in result.legs]
+    assert all("egress isolation unavailable" in leg.detail
+               for leg in result.legs if leg.leg in ("codex", "grok"))
     assert all(not leg.text for leg in result.legs)
     assert all(not (leg.harden_isolation_evidence or {}).get("sandbox_network_filtered") for leg in result.legs)
+
+
+def test_heartbeat_seat_refused_by_its_route_never_reaches_egress(tmp_path, monkeypatch):
+    """The same board on a host without the jail prerequisites, on every host: the Claude
+    seat is refused by its route (agent-harness#1244) with its own code, before staging and
+    before the egress check; the other seats are refused for egress as before."""
+    from phase_loop_runtime import sandbox_egress
+    monkeypatch.delenv("PHASE_LOOP_SANDBOX_DISABLE", raising=False)
+    monkeypatch.delenv("PHASE_LOOP_SANDBOX_EGRESS_OPTIONAL", raising=False)
+    monkeypatch.setattr(sandbox_egress, "egress_isolation_available", lambda: False)
+    monkeypatch.setattr(seat_jail, "decide_seat_route", lambda leg, **k: (
+        seat_jail.SeatRoute(False, "seat_sandbox_unavailable_host") if leg == "claude" else None))
+    # Not a session under Claude Code, where the Claude seat takes no seat route at all.
+    monkeypatch.setattr(panel, "_under_claude_code", lambda *a, **k: False)
+    result = panel.invoke_board(supported_board(), "synthetic review material",
+        monitoring_policy="heartbeat_only", stream_dir=tmp_path / "records")
+    by_leg = {leg.leg: leg for leg in result.legs}
+    assert (by_leg["claude"].status, by_leg["claude"].detail) == (
+        "DEGRADED", "seat_sandbox_unavailable_host")
+    assert all(by_leg[leg].status == "DEGRADED"
+               and "egress isolation unavailable" in by_leg[leg].detail for leg in ("codex", "grok"))
+    assert all(not leg.text for leg in result.legs)
 
 
 def test_bounded_broker_expiry_returns_leg_after_successful_cleanup(tmp_path, monkeypatch):

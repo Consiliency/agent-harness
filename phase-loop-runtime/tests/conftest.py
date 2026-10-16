@@ -129,6 +129,7 @@ def _isolate_host_state(monkeypatch, tmp_path):
     # Review scratch defaults to a per-user cache dir (agent-harness#1147); keep the
     # suite's rounds -- and the retention sweep they trigger -- out of the real one.
     monkeypatch.setenv("PHASE_LOOP_SANDBOX_STAGING_DIR", str(tmp_path / "sandbox-staging"))
+    monkeypatch.delenv("PHASE_LOOP_GEMINI_MODEL", raising=False)
     for name in list(os.environ):
         if name.startswith(_CUSTOMIZATION_ENV_PREFIXES) and name not in _CUSTOMIZATION_ENV_EXEMPT:
             monkeypatch.delenv(name)
@@ -241,6 +242,26 @@ def _isolate_claude_seat_host_state(request, monkeypatch, tmp_path):
         lambda: real_state_home() if os.environ.get("XDG_STATE_HOME") else state,
     )
     yield
+
+
+@pytest.fixture(autouse=True)
+def _gemini_seat_off_the_host_jail(monkeypatch):
+    """agent-harness#1170: a Gemini seat on a host that can run the seat jail takes the jailed
+    route, whose egress layer is this host's srt install and CA. The suite runs every Gemini
+    seat as on a host without the seat jail -- a route that is not jailed, so the seat is
+    DEGRADED and not run (agent-harness#1244) -- unless a test states the host capability
+    itself (``capable=``); the jailed route's tests inject its facts."""
+    from phase_loop_runtime import seat_jail
+
+    real = seat_jail.decide_seat_route
+
+    def _decide(leg, **kwargs):
+        if leg == "gemini" and "capable" not in kwargs:
+            kwargs["capable"] = lambda: "seat_sandbox_unavailable_host"
+        return real(leg, **kwargs)
+
+    _decide.real = real
+    monkeypatch.setattr(seat_jail, "decide_seat_route", _decide)
 
 
 @pytest.fixture(autouse=True)

@@ -2,7 +2,7 @@
 
 The harness-neutral **phase-loop** orchestration runtime and CLI. It drives the
 roadmap → plan → execute workflow by dispatching each phase to whatever harness you
-choose (Claude / Codex / Gemini / OpenCode); the runtime itself makes no model calls.
+choose (Claude / Codex / Gemini / Grok / OpenCode / Pi); the runtime itself makes no model calls.
 Part of the public [`agent-harness`](https://github.com/Consiliency/agent-harness)
 monorepo (Apache-2.0).
 
@@ -29,9 +29,12 @@ To pin a specific tag from source instead, substitute a tag from
 uv tool install "git+https://github.com/Consiliency/agent-harness@<TAG>#subdirectory=phase-loop-runtime"
 ```
 
-This exposes two console scripts — `phase-loop` and `codex-phase-loop` — both calling
-`phase_loop_runtime.cli:main`. The canonical protocol document ships in the wheel as
-package data and is also installed to `share/phase-loop-runtime/protocol/protocol.md`.
+This exposes four console scripts: `phase-loop` and `codex-phase-loop` (both calling
+`phase_loop_runtime.cli:main`), `phase-loop-closeout-audit` (the closeout
+ignored-output audit) and `roadmap-ownership` (the roadmap-ownership preflight). The
+canonical protocol document ships in the wheel as package data
+(from `src/phase_loop_runtime/_contract_docs/phase-loop/protocol.md`); an older copy is also
+installed to `share/phase-loop-runtime/protocol/protocol.md`.
 
 ## Contributor test environment
 
@@ -113,6 +116,20 @@ recovery against the frozen Git objects. The existing FABPUB tree binding and
 transaction identity are unchanged. Legacy and prebuilt publication do not gain
 the source exception; there is no caller-controlled path allowlist.
 
+Fresh FABPUB publication refuses unstaged or untracked workspace changes with
+`publication_workspace_invalid` before creating a transaction or advancing the
+branch. Private plan, verification and handoff files under the .dev-skills
+directory must be Git-ignored: `phase-loop init` adds the /.dev-skills/ rule to
+`.gitignore`, or a local Git info/exclude rule can keep this setup out of
+committed source. The publisher
+does not add ignore rules or suppress workspace changes itself.
+
+If a previous attempt already committed and then refused, repair the workspace
+and retry the same normal publication with its original plan and verification
+artifact. The exact committed transaction resumes without another commit.
+Conflicted transactions refuse before staging; switching to prebuilt mode does
+not repair a normal transaction. Authority and recovery checks still apply.
+
 ## Roadmap validation
 
 Lint a phase-plan roadmap spec (required headings, unique aliases, acyclic dependency
@@ -127,6 +144,25 @@ python3 -m phase_loop_runtime.roadmap_lint specs/phase-plans-v1.md
 
 Both wrap `phase_loop_runtime.roadmap_lint` (the single source of truth). Exit 0 =
 clean; non-zero prints each issue on stderr.
+
+## Local Gemini model preference
+
+The shipped Gemini planning and review defaults use Gemini 4 Argon. To use that
+family for all local Gemini role defaults, add this to the environment that runs
+`phase-loop`:
+
+```sh
+export PHASE_LOOP_GEMINI_MODEL=gemini-4-argon
+```
+
+Use a registered canonical base model without an effort suffix. The runtime
+preserves action and seat effort: executor policy normalizes unsupported max
+requests to high, and the default review board keeps medium. Explicit task models,
+plan/roadmap model pins and configured board seats take precedence. Other providers,
+subscription authentication and sandbox admission retain their existing behavior.
+Invalid preferences fail without model fallback. Unsetting the variable restores
+the shipped role defaults, including regular/lite Flash routing. This setting
+does not change the standalone `agy` CLI's own local configuration.
 
 ## Attended agy canary evidence
 

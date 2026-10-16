@@ -5,9 +5,10 @@ The runner's publication is governed by ``--closeout-mode``. The interactive pat
 on its first commit, opens a draft PR and flips it to ready at closeout. This module
 gives that path an equivalent control:
 
-* ``none``: no push, no PR. Work stays committed on the local feature branch.
-* ``draft-only``: push and open a draft PR; never flip it to ready.
-* ``ready``: push, open a draft PR, flip it to ready once verification is green.
+* ``none``: no push, PR creation, description edit, or readiness change.
+* ``draft-only``: push, open or refresh an agent-owned draft PR; never mark ready.
+* ``ready``: push, open a draft PR, refresh its description, then mark it ready
+  once verification is green. Reassess after material changes before merge.
   This is the default when nothing is configured.
 
 Two layers may set it, with the same file shape::
@@ -57,20 +58,27 @@ DEFAULT_MODE = "ready"
 ACTIONS = {
     "none": (
         "do not run git push, gh pr create or gh pr ready. Commit on the local feature "
-        "branch only, and report the branch as unpublished (publication_mode=none)."
+        "branch only, and report the branch as unpublished (publication_mode=none). "
+        "Do not edit PR descriptions (gh pr edit)."
     ),
     "draft-only": (
         "push the feature branch and open a DRAFT PR (gh pr create --draft). Never run "
-        "gh pr ready and never open a ready PR; leave the PR in draft at closeout."
+        "gh pr ready and never open a ready PR; leave the PR in draft at closeout. "
+        "Refresh agent-owned draft descriptions (gh pr edit) from the current diff "
+        "and verification evidence."
     ),
     "ready": (
-        "push the feature branch and open a draft PR on the first commit; flip it to "
-        "ready (gh pr ready) at closeout once verification is green."
+        "push the feature branch and open a draft PR on the first commit; refresh "
+        "its agent-owned description (gh pr edit) from the final diff and verification "
+        "evidence, then flip it to ready (gh pr ready) at closeout once verification "
+        "is green. A failed description update must not proceed to readiness. "
+        "Reassess the description after material changes before merge."
     ),
 }
 ERROR_ACTION = (
     "blocked: do not run git push, gh pr create or gh pr ready. Fix the publication "
-    "config named above, then run phase-loop publication-mode again."
+    "config named above, then run phase-loop publication-mode again. "
+    "Do not edit PR descriptions (gh pr edit)."
 )
 
 # Tree-entry modes of a regular file. Any other entry at the repo config path (a
