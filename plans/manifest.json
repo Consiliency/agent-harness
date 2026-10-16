@@ -13563,6 +13563,40 @@
       "task_summary": null,
       "type": "phase",
       "updated_at": "2026-10-13T02:14:50Z"
+    },
+    {
+      "acceptance_criteria_count": 5,
+      "created_at": "2026-10-16T02:26:54Z",
+      "file": "plans/detailed-codex-apparmor-canary-20261016-0227.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-detailed/20261016T022654Z.md",
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [
+        {
+          "at": "2026-10-16T02:26:54Z",
+          "by": "codex-plan-detailed",
+          "metadata": {
+            "mode": "planning_only",
+            "review_status": "in_progress",
+            "source_base": "d47b02609cb637c64e2069684032b288e399a815"
+          },
+          "transition": "committed"
+        }
+      ],
+      "owner_skill": "codex-plan-detailed",
+      "phase_alias": null,
+      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-detailed/reflections/1c5ef07a43e3/plan-codex-nested-sandbox-20261015/20261016T022654Z.md",
+      "roadmap_ref": null,
+      "slug": "codex-apparmor-canary-20261016-0227",
+      "status": "committed",
+      "task_summary": "Credential-free private AppArmor namespace canary before a scoped Codex host-policy repair",
+      "type": "detailed",
+      "updated_at": "2026-10-16T04:08:58Z",
+      "implementation_started": false,
+      "review_closed_at": "2026-10-16T04:08:58Z",
+      "review_evidence_ref": "plans/evidence/codex-apparmor-canary/review.json",
+      "review_status": "approved_by_owner_unanimity",
+      "president_requirement_waived_by_owner": true
     }
   ],
   "schema_version": 1
