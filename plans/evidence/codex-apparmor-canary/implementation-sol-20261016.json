@@ -1,0 +1,119 @@
+{
+  "schema": 1,
+  "run_id": "codex-apparmor-canary-sol-20261016",
+  "starting_head": "036a90b2f6756f7a1e715f6d1d55d470509a495d",
+  "branch": "exec/codex-apparmor-canary-sol-20261016",
+  "host": "dev0",
+  "technical_plan_unchanged": true,
+  "reviewed_policy_bytes_unchanged": true,
+  "review_json_unchanged": true,
+  "verification_status": "passed",
+  "verification_scope": "Reversible implementation and declared offline verification only",
+  "summary": "173 passed in 20.07s",
+  "verification_artifact_sha256": "7d194c9f1aac11a809d3aaa6421343e8a2e9ab5570d87d09bc6b9f47ac1fcfff",
+  "commands": [
+    {
+      "command": "uv sync --project phase-loop-runtime --python 3.12 --group test --locked --refresh",
+      "status": "passed"
+    },
+    {
+      "command": "automation.suite_command (exact four-file command in the detailed plan)",
+      "status": "passed",
+      "summary": "173 passed in 20.07s"
+    },
+    {
+      "command": "python phase-loop-runtime/tests/codex_apparmor_canary.py render --out \"$EVIDENCE_ROOT/rendered\"",
+      "status": "passed"
+    },
+    {
+      "command": "apparmor_parser -K -Q --config-file \"$EVIDENCE_ROOT/rendered/parser.conf\" --base \"$EVIDENCE_ROOT/rendered\" --Include \"$EVIDENCE_ROOT/rendered\" --policy-features \"$EVIDENCE_ROOT/rendered/features.dump\" \"$EVIDENCE_ROOT/rendered/baseline.policy\"",
+      "status": "passed"
+    },
+    {
+      "command": "apparmor_parser -K -Q --config-file \"$EVIDENCE_ROOT/rendered/parser.conf\" --base \"$EVIDENCE_ROOT/rendered\" --Include \"$EVIDENCE_ROOT/rendered\" --policy-features \"$EVIDENCE_ROOT/rendered/features.dump\" \"$EVIDENCE_ROOT/rendered/candidate.policy\"",
+      "status": "passed"
+    },
+    {
+      "command": "LOCAL_CHECK_PYTHON=<isolated Python 3.12.14> make check",
+      "status": "passed",
+      "summary": "Pinned ruff 0.15.5 passed; 130 helper tests passed in clean environment."
+    },
+    {
+      "command": "git diff --check",
+      "status": "passed"
+    },
+    {
+      "command": "Administrator root-stage checks and fixed live run",
+      "status": "not_run",
+      "reason": "Explicit live-policy authorization boundary."
+    }
+  ],
+  "runner_interpreter_note": "The root runner honors ci/dagger's >=3.14 requirement; uv executed the exact suite in the isolated Python 3.12.14 project environment, separately asserted in the sealed artifact.",
+  "kernel": "7.0.0-34-generic",
+  "boot_id": "989f21f5-fdbb-49fe-b11f-b10f2e07e4af",
+  "rendered_files": {
+    "baseline.policy": {
+      "sha256": "e7f15a673916c8a8208234e4f623da2bb12018d0a5b06fa5d5c59643ddb4710c",
+      "size": 759
+    },
+    "candidate.policy": {
+      "sha256": "48b4fb0d745b7dd46c311b460e91612a7f416d6e72eaeaac7a6e21090532d793",
+      "size": 764
+    },
+    "codex_apparmor_canary.py": {
+      "sha256": "5ba76168f6ed33762213a5bec69e9bd3a9b3e84bc0fff0707af9a804e2244f33",
+      "size": 47849
+    },
+    "features.dump": {
+      "sha256": "611413ba507a5c19522a9ae5f4b479d3f782c7a3553cc761fbff3c02cd20c927",
+      "size": 3219
+    },
+    "fixture.txt": {
+      "sha256": "f7096e77c3bdc78fc543225c8a5d42e08546b5e235509897d7dcd05089c0d986",
+      "size": 34
+    },
+    "manifest.json": {
+      "sha256": "a3dcc5558110cdb5106ed291fcfe0edfd2b2d903b7328b9aaab106e0850e6c56",
+      "size": 28858
+    },
+    "parser.conf": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    }
+  },
+  "preprocessed_sha256": {
+    "baseline.policy": "e7f15a673916c8a8208234e4f623da2bb12018d0a5b06fa5d5c59643ddb4710c",
+    "candidate.policy": "48b4fb0d745b7dd46c311b460e91612a7f416d6e72eaeaac7a6e21090532d793"
+  },
+  "acceptance": {
+    "C1": {
+      "status": "unmet",
+      "implemented_and_tested": true,
+      "reason": "Protected-byte administrator checks and live identity/map/FD metadata await explicit root authorization."
+    },
+    "C2": {
+      "status": "unmet",
+      "offline_status": "passed",
+      "reason": "Exact reviewed policies, closed inputs, preprocessing and both compile-only commands passed; no live load has bound the closure."
+    },
+    "C3": {
+      "status": "unmet",
+      "reason": "No live baseline attribution, candidate syscall return, or live host gate observations; no enforcement claim."
+    },
+    "C4": {
+      "status": "unmet",
+      "implemented_and_tested": true,
+      "reason": "Cleanup negative controls and disk/loaded-state adapters passed; live before/after policy and namespace absence proof not run."
+    },
+    "C5": {
+      "status": "satisfied",
+      "reason": "Review records preserved; four plan reviewers agreed; explicit owner waiver covered plan landing; no president ruling, implementation review, live-policy or production approval claimed."
+    }
+  },
+  "acceptance_status": "unmet_live_authorization_pending",
+  "implementation_review": "parent_owned_pending",
+  "publication_intent": "draft",
+  "doc_delta_decision": "docs_updated",
+  "no_production_repair_claimed": true,
+  "no_runtime_or_cli_changes": true
+}
