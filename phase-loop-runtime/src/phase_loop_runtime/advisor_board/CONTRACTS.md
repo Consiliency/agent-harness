@@ -208,14 +208,14 @@ the real matrix at `load_boards()` time (`tests/test_advisor_board_config.py`,
   `legal-strategy-review`) seat Opus 5.5 (`claude-opus-5-5`) on the claude lane — the
   maintainer's review default "for now" (2026-09-23), Fable (`claude-fable-5-1`)
   before that and still selectable — NOT the implementer model
-  `profiles.CLAUDE_IMPLEMENTER_MODEL` (`claude-sonnet-5`). `panel_invoker.DEFAULT_LEG_MODELS["claude"]`
+  `profiles.CLAUDE_IMPLEMENTER_MODEL` (`claude-sonnet-5-5`). `panel_invoker.DEFAULT_LEG_MODELS["claude"]`
   is the SINGLE source of truth for the panel's default claude model: the claude
   leg builders (`_claude_tui_command`, and the print route's `_run_claude_print_session`
   launch) and the Agent-View attempt all read it, so
   the *legacy* `invoke_panel` path AND the live governed gates
   (`governed_review` / `governed_premerge`, which call `invoke_panel` with no model
-  override) review on Opus 5.5. `CLAUDE_IMPLEMENTER_MODEL` is untouched — the
-  implementer stays Sonnet. The `default` board (`fixtures.DEFAULT_BOARD`) is
+  override) review on Opus 5.5. `CLAUDE_IMPLEMENTER_MODEL` is independent of it — the
+  implementer stays Sonnet (Sonnet 5.5 since the 0.7.27 implementer roster). The `default` board (`fixtures.DEFAULT_BOARD`) is
   byte-pinned to this `invoke_panel` panel on its three shared legs by the golden proof
   (`tests/test_advisor_board_golden.py`), which checks the fourth (Grok) seat
   separately; the sole sanctioned delta stays `seat_key`.
