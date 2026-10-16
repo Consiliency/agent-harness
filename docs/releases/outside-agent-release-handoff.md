@@ -1074,9 +1074,9 @@ Measured on the prepared `0.7.27` build described above.
 - Wheel artifact: `phase_loop_runtime-0.7.27-py3-none-any.whl`
 - Sdist artifact: `phase_loop_runtime-0.7.27.tar.gz`
 - Wheel top-level entries: `phase_loop_runtime`, `phase_loop_runtime-0.7.27.data`, `phase_loop_runtime-0.7.27.dist-info`
-- Wheel file count: `503`
+- Wheel file count: `520`
 - Sdist top-level entries: `MANIFEST.in`, `PKG-INFO`, `README.md`, `protocol`, `pyproject.toml`, `setup.cfg`, `src`, `tests`
-- Sdist file count: `1116` regular files (`1251` archive members including directories)
+- Sdist file count: `1150` regular files (`1290` archive members including directories)
 - Wheel console entry points: `phase-loop = phase_loop_runtime.cli:main`; `codex-phase-loop = phase_loop_runtime.cli:main`; `phase-loop-closeout-audit = phase_loop_runtime.closeout_classifier:console_main`; `roadmap-ownership = phase_loop_runtime.roadmap_ownership:console_main` (plus the `phase_loop_runtime.profile_commands` and `phase_loop_runtime.skill_sources` plugin groups)
 - Runtime plugin entry points: `dotfiles = phase_loop_runtime.dotfiles_profile_plugin:register_profile_commands`; `dotfiles = phase_loop_runtime.skill_sources_plugin:register_skill_sources`
 
