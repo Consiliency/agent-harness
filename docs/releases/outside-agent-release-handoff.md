@@ -798,16 +798,18 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 ### This release: 0.7.27 (prepared)
 
 The digests below are from a pre-tag `uv build` of a `git archive` export of
-`5f239710e`, under `umask 022` (archive modes are umask-dependent,
-Consiliency/agent-harness#519). Its packaged tree is `2f183624a3496a4361d592ca8886d1b303d78d04`,
-the runtime source used by the twelve agy qualification series. Later qualification
+`727c5330c`, under `umask 022` (archive modes are umask-dependent,
+Consiliency/agent-harness#519). Its packaged tree is `5095fa12f94b535ae220a0ab031ccb4f5c4dc749`,
+including the test-only clock repair from Consiliency/agent-harness#1735. All 245
+qualification source pins remain identical to the source used by the twelve agy
+qualification series at `5f239710e`; only an unpinned test changed. Qualification
 records and this handoff are outside the package. This is preparation evidence, not a
 publication record: the publishing workflow rebuilds from the owner-approved tag and
 verifies `SHA256SUMS`; published digests are recorded after publication. Archive bytes
 can differ with timestamps and toolchain versions.
 
-- prepared direct-wheel sha256: `1ebff167e26470bec5c872eac7d46bbf3904f20a407c84a433f1004afe874ced` (520 files).
-- prepared direct-sdist sha256: `d8b721d835d473cd6e063ef0da1453928eeb5eb4e47490cb72b4cc42cbc49d9e` (1150 regular files).
+- prepared direct-wheel sha256: `9079886f723df0c6f1dff20c09e431a63f5fa60a5f224d00cafa1226f773815a` (520 files).
+- prepared direct-sdist sha256: `dfaf0ad8981743b499bdb7780bb87dab613af5f41a4da165df269533410dade6` (1150 regular files).
 - A wheel rebuilt from this sdist is byte-identical member by member to the direct wheel
   (520 files). Its archive digest is a separate measurement, not a publication hash.
 - `Requires-Dist`, Python floor and entry points equal the published `0.7.26` metadata.
