@@ -118,6 +118,7 @@ def parse_seats(
 # caller seeds ``BoardResolver`` from ``load_boards``, never this default catalog).
 _STANDIN_CODE_REVIEW = compose_review_board(
     is_available=lambda _vendor: True, auth_ok=lambda _vendor: True,
+    gemini_model="gemini-4-argon",  # model-id-source: static catalog, excludes local preferences
 )
 
 STANDIN_BOARDS: dict[str, Board] = {
