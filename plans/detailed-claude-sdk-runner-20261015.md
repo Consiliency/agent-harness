@@ -4,7 +4,8 @@ status: planned
 owner_skill: codex-plan-detailed
 related_issues: [agent-harness#1391]
 automation:
-  suite_command: "cd phase-loop-runtime && PYTHONPATH=src:tests python -m pytest -q -m 'not dotfiles_integration' tests/test_claude_sdk_runner.py tests/test_phase_loop_claude_route_selection.py tests/test_phase_loop_claude_channel_security.py tests/test_phase_loop_claude_agent_view_dispatch_409.py tests/test_claude_seat_subscription_proof_1444.py tests/test_subscription_scrub_xai_864.py tests/test_launcher_exec_supervisor.py tests/test_launcher_liveness.py tests/test_launchspec_golden.py tests/test_phase_loop_pipeline_bridge.py tests/test_claude_transport_seam.py tests/test_panel_claude_print_route.py"
+  suite_command: >-
+    cd phase-loop-runtime && PYTHONPATH="$PWD/src:$PWD/tests" python -m pytest -q -m 'not dotfiles_integration' tests/test_claude_sdk_runner.py tests/test_phase_loop_claude_route_selection.py tests/test_phase_loop_claude_channel_security.py tests/test_phase_loop_claude_agent_view_dispatch_409.py tests/test_claude_seat_subscription_proof_1444.py tests/test_subscription_scrub_xai_864.py tests/test_launcher_exec_supervisor.py tests/test_launcher_liveness.py tests/test_launchspec_golden.py tests/test_phase_loop_pipeline_bridge.py tests/test_claude_transport_seam.py tests/test_panel_claude_print_route.py
   verification_status: not_run
 ---
 
@@ -59,8 +60,8 @@ availability without importing SDK code during module import or dry run.
 - `CLAUDE_ROUTE_ALIASES`, `resolve_claude_route`, `build_claude_launch_spec`: add
   `sdk` / `claude_sdk` aliases with reason `explicit_sdk`. Preserve unset interactive
   Channel selection, CI explicit-route refusal, invalid-route refusal and legacy
-  branches. SDK requests are solo only; reject `review`, `subagent` and `agent_team`
-  before bundle materialization, credential probes or subprocess creation.
+  branches. Reject SDK `review`, `subagent` and `agent_team` by requested mode,
+  before authoring-mode degradation, bundles, credential probes or subprocesses.
 - Build a helper command using `sys.executable -m phase_loop_runtime.claude_sdk_adapter`.
   Carry model, effort, cwd, tool lists, approval posture, bundle placeholders and
   output schema explicitly. The helper accepts only this adapter's defined flags,
@@ -71,7 +72,8 @@ availability without importing SDK code during module import or dry run.
   existing settings, plugin, agents, MCP and context. Keep the existing bundle's
   prompt instruction when context-file delivery is selected; otherwise send the
   rendered prompt on helper stdin. Remove positional prompt content from helper
-  argv. Materialized files share the existing cleanup ownership.
+  argv. For `log_path=None`, allocate temporary bundle storage before resolving
+  placeholders, pass it through the monitored launch, and clean it up afterward.
 - `launch_with_spec`: keep `run_auth_preflight`'s subscription/caller checks and
   repeat the child-context check at the SDK boundary, including direct callers
   that skipped the runner's preflight. Reject caller-supplied credentials before
@@ -103,16 +105,19 @@ availability without importing SDK code during module import or dry run.
   shape and reject API/helper/console/alternate-provider shapes. Probe output is
   parsed privately, never emitted. Preserve `HOME` / `CLAUDE_CONFIG_DIR` from the
   selected login context. Do not inject or extract an access token.
+- Before that probe, resolve and bind effective settings as amendment condition 3
+  requires. Probe and SDK use the same private snapshot; set `setting_sources=[]`
+  to prevent ambient reload and retain project instructions in the context bundle.
+  Preserve documented settings precedence and unrelated permission rules; refuse
+  uninspectable managed/dynamic sources. Stamp CLI probes with `child_scratch_env`.
 - Construct public `ClaudeAgentOptions` with the selected model/effort, cwd/add_dirs,
-  explicit `tools`, `allowed_tools`, `disallowed_tools`, generated settings/plugins,
+  explicit `tools`, `disallowed_tools`, generated settings/plugins,
   agents and MCP configuration, and `output_format` through `_claude_json_schema`.
-  Select the `claude_code` system-prompt preset and the CLI's user/project/local
-  setting sources explicitly, with the generated settings layered as before;
-  an SDK's minimal default prompt must not silently replace the coding harness.
-  Preserve the
-  existing explicit bypass option; otherwise deny permission/input requests that
-  cannot be satisfied headlessly. Do not rely on `allowed_tools` as a tool ceiling
-  or on `can_use_tool` to intercept already approved calls. Preserve generated MCP
+  Use the `claude_code` system-prompt preset. Match `build_claude_command` and
+  `_claude_permission_mode(action, bypass_approvals)`; leave `allowed_tools=[]`.
+  Authoring's `acceptEdits` must not gain implicit Bash auto-approval. Deny prompts
+  that cannot be satisfied headlessly; callbacks cannot revoke prior approvals.
+  Preserve generated MCP
   isolation and do not enable ambient connectors. Never pass `--bare`; use the
   CLI's nonpersistent-session flag and capability-check required flags.
 - Use `async with ClaudeSDKClient(...)`, `query(...)`, `receive_response()` and
@@ -142,19 +147,25 @@ completion text. The actual completion remains executor output.
 
 ### `tests/test_claude_sdk_runner.py` (create)
 
-Use SDK-client doubles for event cases and a fake executable with a fake SDK
-package for real helper-process cases. Synthetic credentials never leave the test.
+Use client doubles for message cases, plus the pinned installed SDK transport
+with a fake CLI for credential-free subprocess cases. Never replace the SDK's
+environment merge/version probe in the latter. Synthetic credentials stay private.
 Cover the production `build_launch_spec` → `launch_with_spec` → helper path:
 
-- extra absent; CLI absent; dry run offline; explicit aliases; non-solo/review
-  rejection before any subprocess; selected CLI wins over a decoy bundled CLI;
+- extra absent; CLI absent; dry run offline; aliases; requested non-solo/review
+  rejection, including authoring-plus-team before degradation or subprocesses;
+  selected CLI wins over a decoy bundled CLI;
 - parent containing synthetic forbidden credentials is rejected; scrubber unit
-  coverage plus a real child with a synthetic hostile ambient environment prove
-  the SDK inference child and SDK version probe cannot re-inherit removed keys;
+  coverage plus the real pinned `SubprocessCLITransport` observe both `-v` and
+  inference fake-CLI environments through the production helper launch; removing
+  helper scrubbing must fail this test without contacting a provider;
   a live helper uses the same config/login as the proof, and the parent environment
   remains byte-identical;
-- options parity, context/bundle cleanup, no prompt/token in argv, no widening
-  through SDK defaults, permission refusal, and explicit bypass parity;
+- hostile effective settings refuse before connection even when login/init would
+  otherwise pass; permission-only settings and project instructions are preserved;
+- options parity against runner CLI argv, no-log bundle success/cleanup, no
+  prompt/token in argv, `allowed_tools=[]`, permission/bypass parity, and helper
+  package provenance after changing cwd;
 - init none/missing/contradictory, auth/billing/organization retry events, valid
   structured result, invalid closeout, nonzero result, assistant-only EOF and
   stderr/output redaction;
@@ -181,10 +192,9 @@ snapshot as if it were its upstream source.
 
 ## Documentation impact
 
-The proposed amendment carries the normative route extension. At ratification,
-the governance owner appends the Stage 3 pointer to the earlier ruling and updates
-the carried v11 citation through its amendment/seal workflow. Frozen v10 and
-panel skills remain unchanged. Runtime operator instructions change with Stage 3a.
+The amendment carries the normative route extension; this ratification appends
+its pointer to the earlier ruling already cited by v11. Roadmap bytes/seals and
+panel skills stay unchanged. Runtime operator instructions change with Stage 3a.
 
 ## Dependencies and order
 
@@ -207,7 +217,7 @@ task**. Use an interpreter with the runtime/test dependencies and SDK extra.
 1. Run `automation.suite_command` from repository root. Existing integration skips
    do not count as exercised SDK paths; the new production-path tests must run.
 2. From `phase-loop-runtime`, run
-   `PYTHONPATH=src:tests python -m pytest -q -m 'not dotfiles_integration'`.
+   `PYTHONPATH="$PWD/src:$PWD/tests" python -m pytest -q -m 'not dotfiles_integration'`.
 3. From that directory run `python -m build`. Install the built wheel in a clean
    Python 3.10+ venv with its `claude-sdk` extra; run
    `python -m phase_loop_runtime.claude_sdk_adapter --help` from outside the checkout
@@ -216,7 +226,7 @@ task**. Use an interpreter with the runtime/test dependencies and SDK extra.
    launcher and refuse SDK cleanly. Check Python 3.10 dependency resolution.
 4. Add an opt-in `tests/test_claude_sdk_runner.py::test_live_subscription_qualification`
    gated by `PHASE_LOOP_SDK_LIVE_PROOF=1`. Invoke it with
-   `PHASE_LOOP_SDK_LIVE_PROOF=1 PYTHONPATH=src:tests python -m pytest -q tests/test_claude_sdk_runner.py::test_live_subscription_qualification`.
+   `PHASE_LOOP_SDK_LIVE_PROOF=1 PYTHONPATH="$PWD/src:$PWD/tests" python -m pytest -q tests/test_claude_sdk_runner.py::test_live_subscription_qualification`.
    It builds real runner specs against a disposable repo, completes an authoring
    turn and an execution turn with schema-valid closeout, observes cancellation,
    and writes `plans/evidence/claude-sdk-stage3/qualification.json` in the outer

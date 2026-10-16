@@ -2,7 +2,8 @@
 
 **Date:** 2026-10-15  
 **Tracking:** Consiliency/agent-harness#1391  
-**Status:** PROPOSED. This document records a candidate amendment, not a ratified ruling.  
+**Status:** CANDIDATE — effective only upon maintainer-authorized merge to `main` after review.
+
 **Predecessor:** [Stage 1 ruling and Stage 2 note](decision-claude-print-subscription-route-20261008.md).  
 **Implementation proposal:** [Stage 3a detailed plan](detailed-claude-sdk-runner-20261015.md).
 
@@ -47,7 +48,9 @@ The current frozen route statement is
 
 > Route is limited to `claude_channel`, `claude_agent_view`, or `claude_print`.
 
-This proposal adds exactly one route literal, `claude_sdk`. It adds no status,
+Upon ratification, the permitted route set is `claude_channel`,
+`claude_agent_view`, `claude_print`, or `claude_sdk`; this supersedes the quoted
+three-route restriction. This adds exactly one route literal. It adds no status,
 auth-posture or billing-posture literal. The existing envelope remains
 `{route, session_id, event_id, status, text, artifacts, auth_posture, billing_posture, trust_state, permission_state, warnings, evidence_refs}`.
 
@@ -68,14 +71,27 @@ auth-posture or billing-posture literal. The existing envelope remains
    endpoint, API-key, helper and alternate-provider configuration through that shared
    filter. Do not mutate the threaded runner's `os.environ`. SDK `options.env` is an
    overlay, not an environment replacement, including for the SDK version probe.
+   Effective settings are part of this boundary: inspect user, project, local,
+   generated and managed sources before any credential-bearing operation. Reject
+   auth helpers, endpoint/provider selectors and settings `env` entries excluded
+   by the shared subscription policy. Bind the approved effective configuration
+   into a private immutable settings snapshot used by both the auth probe and
+   inference, disabling ambient settings reload. Preserve unrelated permission
+   rules and project instructions through that snapshot and the existing context
+   bundle. If a managed or dynamic source cannot be inspected and bound, refuse
+   SDK selection. An acceptable init credential marker does not prove endpoint
+   identity and cannot replace this pre-connection check.
 4. **In-band evidence.** Require a `SystemMessage` with subtype `init` and
    `data.apiKeySource == "none"` before accepting output. Refuse missing or
    conflicting init evidence. Authentication, billing and organization-denial retry
    events interrupt and close the session and fail the run. Never request `--bare`.
-5. **Capabilities.** Carry the selected model, effort, allowed/disallowed tools,
+5. **Capabilities.** Carry the selected model, effort, tool universe and deny rules,
    generated settings, plugin, agents, MCP configuration, context, closeout schema
    and explicit approval posture across the adapter boundary. Do not inherit an
    SDK default that widens them. No fallback model or automatic transport fallback.
+   Use the existing runner CLI command and `_claude_permission_mode` as the parity
+   oracle. SDK `allowed_tools` stays empty because the runner's `--tools` list is
+   not an auto-approval list.
 6. **Lifecycle.** Keep lease authority, process ownership, cancellation, descendant
    cleanup, heartbeat and stall detection in the runner's existing launch path.
    Only real SDK messages represent agent progress; synthetic keepalives must not
@@ -92,7 +108,8 @@ auth-posture or billing-posture literal. The existing envelope remains
 
 Stage 3a is an optional SDK installation extra and an explicit runner route for
 solo authoring, execution and repair. Reject runner `review`, `subagent` and
-`agent_team` SDK requests before launch. The helper is a trusted executor child;
+`agent_team` SDK requests by their requested mode, before the existing authoring
+mode degradation or any launch. The helper is a trusted executor child;
 it is not an admitted review-seat launch profile.
 
 `PHASE_LOOP_PANEL_CLAUDE_ROUTE=sdk` continues to return
@@ -116,10 +133,12 @@ That correction must add actual print-route provenance enforcement; replacing
 1. Review this record and the implementation plan through the repository's
    governed review process. Bind findings to the reviewed artifact bytes; an
    understrength board cannot provide missing independent evidence.
-2. Maintainer ratification and landing of this record precede SDK activation,
-   consistently with EC-REVIEWTRUTH-15. Preserve the earlier ruling as history.
-   Update v11's EC-REVIEWTRUTH-18 citation to name both records using the repository's
-   roadmap amendment/seal process; do not rewrite frozen v10.
+2. Maintainer-authorized merge of this record ratifies the bounded exception.
+   Its landed authority must precede SDK activation consistently with
+   EC-REVIEWTRUTH-15. Append the companion pointer to the earlier ruling, preserving
+   its history; v11's existing carried citation reaches this dated amendment through
+   that pointer. This ratification changes neither roadmap bytes nor their seals,
+   and does not close EC-REVIEWTRUTH-18 or authorize a panel SDK path.
 3. Implement and verify Stage 3a, including installed-package and credential-free
    subprocess tests, followed by a disposable live subscription qualification.
 4. Consider default promotion and print billing correction on that evidence.
