@@ -78,21 +78,35 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
     remedy in the refusal);
   - records, plans, docs and tests only: agent-harness#1264, agent-harness#1412,
     agent-harness#1393, agent-harness#1463, agent-harness#1508 and agent-harness#1529;
-  - no dependency change (`Requires-Dist` and entry points equal `0.7.26`'s) and no seat-jail
-    pass reset: the falsifier-run layout identity (`execfind-falsifier-layout.v1:805042ce…`)
-    and the jail profile digests are unchanged;
-  - the qualified agy image set adds 1.3.2 and 1.3.3, so it is 1.2.11, 1.2.12, 1.2.14,
-    1.2.15, 1.2.16, 1.2.17, 1.3.0, 1.3.1, 1.3.2 and 1.3.3. All ten members were requalified
-    live on this release tree (validated 3 and `route_qualified` true for each; all 244
-    source pins verified; `--route-core` passes). Upstream's latest release, 1.3.3, is a
-    shipped member, and its official archive's `antigravity` member hashes to the recorded
-    image. Each series ran from a saved copy of its member's official release archive
-    member, never from the `agy` on `PATH`, and every receipt names the intended image.
-- Packaged content: a scan of every wheel and sdist member for user- or host-specific strings
-  finds nothing new in the wheel relative to the published `0.7.26` archives. The sdist adds
-  synthetic placeholder home-directory paths (including the seat's in-view home) in six new
-  or changed test files, and one host-name string that a test feeds to the CLI qualification
-  schema as a field it must refuse. No packaged evidence or pass-store file.
+  - the three review-seat fixes: Gemini runs jailed with tools after
+    `phase-loop seat-egress install` (agent-harness#1555, agent-harness#1170); a sealed or
+    toolless seat is degraded and never counted (agent-harness#1244);
+    the sandboxed grok seat can run its granted shell tools (agent-harness#1652);
+  - Gemini 4 Argon for planning, roadmap and review (agent-harness#1616,
+    agent-harness#1695), the implementer roster (agent-harness#1637), and the optional
+    unpinned Gemini model preference (agent-harness#1697). The default Claude Channel
+    route binds neither model nor effort; its `session_model_unbound` disclaimer covers
+    the model only (agent-harness#1710);
+  - the FABPUB recovery and publication changes, reflection admission gates and PR
+    description upkeep listed in the `[0.7.27]` CHANGELOG. Re-run in-flight boards on the
+    upgraded runtime to prove the new tool and model routes;
+  - no dependency change (`Requires-Dist` and entry points equal `0.7.26`'s). The
+    falsifier-run layout identity (`execfind-falsifier-layout.v1:805042ce…`) and the Claude
+    jail profile digests are unchanged on the same host; the new Gemini jail profile
+    qualifies on first use;
+  - the qualified agy image set adds 1.3.2, 1.3.3, 1.3.4 and 1.3.5, so it is 1.2.11,
+    1.2.12, 1.2.14, 1.2.15, 1.2.16, 1.2.17, 1.3.0, 1.3.1, 1.3.2, 1.3.3, 1.3.4 and 1.3.5.
+    All twelve members were requalified live on this release tree (validated 3 and
+    `route_qualified` true for each; all 245 source pins verified; `--route-core` passes).
+    Every official archive and its `antigravity` member match the reviewed asset and
+    executable digests. Upstream 1.3.6 is outside the shipped set and eligible for first-use
+    self-qualification. Each series ran from a verified copy of its official release asset,
+    never from the installed `agy`, and every receipt names the intended image.
+- Packaged content: compared with the hash-verified published `0.7.26` archives, the wheel
+  adds generic staging/worktree paths in runtime code and documentation; the sdist also
+  adds synthetic home-directory paths and host-name test canaries. These are inherited
+  source/documentation examples, not local credentials or a pass store. The repository's
+  pinned gitleaks scan and current source-digest scan pass.
 - Python 3.12 cold import: in a fresh py3.12 venv, the prepared wheel imports `0.7.27`, and
   `compileall` of the installed package succeeds under `-W error`.
 - Release tracking: agent-harness#1542; the appended plan-authority rows cite it.
@@ -780,18 +794,22 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 
 ### This release: 0.7.27 (prepared)
 
-The digests below are from the pre-tag local build of the release candidate, produced by
-`uv build` under `umask 022` (archive member modes are umask-dependent,
-`Consiliency/agent-harness#519`) from a `git archive` export of `621d3677`, the release tree
-the agy series ran on (`phase-loop-runtime/` tree `1793a10b`). Later commits touch no
-packaged file. They are a preparation measurement, not a publication record: the publishing
-workflow rebuilds from the tagged commit and verifies `SHA256SUMS`, and the published digests
-are recorded here after the tag push. As for `0.7.15`–`0.7.26`, the published digests are
-expected to differ, because archive bytes are timestamp/toolchain-dependent.
+The digests below are from a pre-tag `uv build` of a `git archive` export of
+`4a5c9b7c4`, under `umask 022` (archive modes are umask-dependent,
+Consiliency/agent-harness#519). Its packaged tree is `59046305ee70076f6b4fda94a7317989d0cae30b`,
+the runtime source used by the twelve agy qualification series. Later qualification
+records and this handoff are outside the package. This is preparation evidence, not a
+publication record: the publishing workflow rebuilds from the owner-approved tag and
+verifies `SHA256SUMS`; published digests are recorded after publication. Archive bytes
+can differ with timestamps and toolchain versions.
 
-- prepared direct-wheel sha256: `5225b99fb8246207874af9077e759c453151e00fad5980f748b5c06ee6dcacd5`
-- prepared direct-sdist sha256: `8d40c0afe68d31a856030e822f5b48ccae6445b507b8d5169e83159d9419fa50`
-- sdist-derived-wheel sha256: not claimed, for the reason recorded for `0.7.14` below.
+- prepared direct-wheel sha256: `deaec33407b6f6a1bd4f8feb1e8a48e8e6fe4f614a7036b5ca99d1a1f337b898` (520 files).
+- prepared direct-sdist sha256: `1c0d641ef8f976305edf64c2a633536c01356afbab2290ac3863b5694f51c7c9` (1150 regular files).
+- A wheel rebuilt from this sdist is byte-identical member by member to the direct wheel
+  (520 files). Its archive digest is a separate measurement, not a publication hash.
+- `Requires-Dist`, Python floor and entry points equal the published `0.7.26` metadata.
+- A fresh Python 3.12 wheel install imports `0.7.27` outside the source tree and passes
+  package `compileall` with warnings treated as errors.
 
 ### Previous release: 0.7.26 (published)
 
