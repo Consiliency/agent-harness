@@ -6,6 +6,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Codex execute-phase reads interactive procedures on demand (agent-harness#1358)
+
+- Split planning-handoff reuse, interactive publication, worktree lifecycle, and
+  worker-brief procedures into Codex-only `references/` files. Keep runner ownership,
+  governance, verification, closeout audit/evidence, and PR-description parity anchors
+  in `SKILL.md`; remove the duplicate audit explanation. Relative reference reads were
+  proven with a live, read-only Codex native-skill canary through the adapter launcher
+  before the split. The token-size exception remains for retained normative text;
+  the longest-line exception is removed.
+
 ### Context-file adapter runs get the `references/` files their skills link (agent-harness#1358)
 
 - Gemini and OpenCode launches carry each injected skill's `references/` files
