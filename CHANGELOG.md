@@ -25,6 +25,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - System retry observations use the same bounded replay tracking with closed error
   categories and shared bounded normalization; repeated categories leave diagnostics unproven.
 
+- Print observations include closed first-stop, refusal-phase, session/shape and
+  first-invalid-reason fields, plus capped relative timing samples. Group cleanup
+  requests remain distinct from exit receipts; admission and HARDEN rules are unchanged.
+
 ### skills-parity CI runs the skill size gate (agent-harness#1358)
 
 - `skills-parity.yml` runs `tests/test_skill_size_gate.py` as a warn-first step,

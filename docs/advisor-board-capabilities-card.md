@@ -211,6 +211,24 @@ A qualification must check `valid`, no truncation, exact model
 match and the expected staged-path digest with a completed Read, alongside all existing
 session, subscription, result, exit and verdict requirements. Missing diagnostics
 cannot establish these facts. The diagnostic reducer changes no admission rule.
+The same guarded receipt also records the first stop decision, first print refusal
+code and `feed`/`finish` phase, first observer invalidation reason, and observed
+init/result session equality separately from the admission latch. Result error flags
+use closed false/true/absent/null/wrong-type states; result values expose shape only.
+Stop decisions are `process_exit`, `stdout_guard`, `output_guard`, `stall`, `deadline`,
+`cancel`, `post_exit_grace`, `exception`, or `unknown`. A runtime group-termination
+request (including final reaping), the leader state at its existing pre-request poll,
+and the final reaped return code are separate facts; none identifies a signal sender.
+Relative clock samples provide effective deadline/stall bounds, reader-loop duration
+through reaping, decision offset, heartbeat age, and refusal offset, as integer
+milliseconds capped at 86,400,000 with an aggregate saturation flag. Decision times
+use the latest existing loop sample; refusal uses that sample for `feed` or runner
+completion for `finish`. They are sampled bounds, not event timestamps; unknown
+values are null, and monitor-controlled deadline/stall bounds are null. Missing result
+shapes are null and unobserved sessions are `unseen`. No event log, native prose,
+session UUID, wall-clock time or process identity is added. Diagnostics publish only
+after authoritative quiescence and both output guards; secret or fatal cleanup paths
+retain the existing suppression and resource-retention policy.
 Tooled/pointer seats remain **EC-HARDEN-5 UNMET** in `verify_harden_evidence.py`.
 
 An alternate backing reports `tui_backing_required` before gateway access. No API, SDK, Messages, direct

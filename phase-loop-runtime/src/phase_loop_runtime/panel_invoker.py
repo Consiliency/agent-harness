@@ -78,7 +78,7 @@ from .agy_canary_evidence import (
     seal_provider_launches,
 )
 from .claude_agent_view import ClaudeAgentViewAdapter
-from .claude_print_observations import ClaudePrintObservations
+from .claude_print_observations import ClaudePrintObservations, bounded_milliseconds
 from . import gemini_heartbeat
 from . import credential_redaction as _credential_redaction
 from .launcher import GROK_REVIEW_READONLY_TOOLS
@@ -8720,8 +8720,19 @@ def _write_seat_text(path: Path, text: str):
         os.close(descriptor)
 
 
+def _observe_termination_state(observed: dict[str, object] | None, running: bool) -> None:
+    # Called at the existing poll, before any termination request. This is not a
+    # signal receipt and does not establish which sender won an exit race.
+    if observed is not None:
+        try:
+            observed.setdefault("termination_leader_state", "running" if running else "finished")
+        except BaseException:
+            pass  # diagnostics cannot interfere with group cleanup
+
+
 def _terminate_process_group(
-    proc: subprocess.Popen[bytes], *, force_group: bool = False
+    proc: subprocess.Popen[bytes], *, force_group: bool = False,
+    termination_observed: dict[str, object] | None = None,
 ) -> None:
     """Terminate the leg's process group (pgid == proc.pid, launched start_new_session).
 
@@ -8734,7 +8745,9 @@ def _terminate_process_group(
     has no POSIX process-group primitive here.
     """
     if os.name == "nt":
-        _terminate_process_group_windows(proc, force_group=force_group)
+        _terminate_process_group_windows(
+            proc, force_group=force_group,
+            **({"termination_observed": termination_observed} if termination_observed is not None else {}))
         return
 
     anchored_pgid = getattr(proc, "_phase_loop_pgid", proc.pid)
@@ -8745,6 +8758,7 @@ def _terminate_process_group(
         )
     pgid = anchored_pgid
     leader_running = proc.poll() is None
+    _observe_termination_state(termination_observed, leader_running)
     if leader_running:
         try:
             observed_pgid = os.getpgid(proc.pid)
@@ -8836,9 +8850,11 @@ def _wait_for_process_group_exit(
 
 def _terminate_process_group_windows(
     proc: subprocess.Popen[bytes], *, force_group: bool,
+    termination_observed: dict[str, object] | None = None,
 ) -> None:
     """Preserve the historical Windows leader-only termination behavior."""
     leader_running = proc.poll() is None
+    _observe_termination_state(termination_observed, leader_running)
     if not leader_running and not force_group:
         return
     try:
@@ -8891,6 +8907,7 @@ def _run_leg_with_liveness(
     seat_jail: "_seat_jail.SeatJail | None" = None,
     probe_jail: "_seat_jail.SeatJail | None" = None,
     process_returncode_sink: list[int | None] | None = None,
+    stop_observed: dict[str, object] | None = None,
 ) -> "_LegRun":
     """Run a print-mode CLI leg, killing it on HEARTBEAT EXTINCTION, not a blind clock.
 
@@ -8915,6 +8932,9 @@ def _run_leg_with_liveness(
     ``seat_jail`` launches the jailed Claude or Gemini print seat through its existing
     owner and ``probe_jail``. Credential admission happens before this launch; nothing
     is awaited here. ``output_guard`` inspects both raw channels before buffering.
+    ``stop_observed`` is optional and diagnostic only. Its first decision survives
+    final reaping; publication follows authoritative quiescence. A cleanup request
+    is not a signal receipt. Timing/sink failures cannot change the primary result.
     """
     if gemini_profile is not None and review_monitor is None:
         raise ValueError("gemini_heartbeat_monitor_required")
@@ -8929,6 +8949,60 @@ def _run_leg_with_liveness(
     if slept and review_monitor is None:
         deadline_s -= slept  # a bounded leg is charged the sleep
     proc = None
+    first_decision = "unknown"
+    start = latest_clock = last_heartbeat = decision_clock = heartbeat_at_decision = None
+    termination: dict[str, object] = {}
+    termination_requested = False
+
+    def _clock():
+        nonlocal latest_clock
+        latest_clock = time.monotonic()
+        return latest_clock
+
+    def _decide(reason):
+        nonlocal first_decision, decision_clock, heartbeat_at_decision
+        if first_decision == "unknown":
+            first_decision = reason
+            decision_clock = latest_clock
+            heartbeat_at_decision = last_heartbeat
+
+    def _terminate(*, force_group=False):
+        nonlocal termination_requested
+        termination_requested = True
+        _terminate_process_group(proc, **({"force_group": True} if force_group else {}),
+                                 **({"termination_observed": termination} if stop_observed is not None else {}))
+
+    def _publish_stop():
+        if stop_observed is None:
+            return
+        try:
+            values = {}
+            saturated = False
+            # Duration includes authoritative reaping; the decision uses only the
+            # existing loop clock. Failure of this optional sample stays unknown.
+            try:
+                end = time.monotonic()
+            except BaseException:
+                end = None
+            for key, seconds in (
+                ("deadline_ms", deadline_s if review_monitor is None else None),
+                ("stall_ms", stall_threshold_s if review_monitor is None else None),
+                ("duration_ms", end - start if end is not None and start is not None else None),
+                ("decision_ms", decision_clock - start if decision_clock is not None and start is not None else None),
+                ("heartbeat_age_ms", decision_clock - heartbeat_at_decision
+                 if decision_clock is not None and heartbeat_at_decision is not None else None),
+            ):
+                values[key], capped = bounded_milliseconds(seconds)
+                saturated = saturated or capped
+            stop_observed.update({
+                "first_decision": first_decision,
+                "runtime_requested_group_termination": termination_requested,
+                "termination_leader_state": termination.get("termination_leader_state", "unknown"),
+                "process_returncode": proc.returncode if proc is not None and type(proc.returncode) is int else None,
+                **values, "timing_saturated": saturated,
+            })
+        except BaseException:
+            pass  # no diagnostic clock/value/sink failure changes the outcome
     profile_stack = contextlib.ExitStack()
 
     def _popen() -> subprocess.Popen[bytes]:
@@ -8989,7 +9063,7 @@ def _run_leg_with_liveness(
         if proc is None:
             return
         try:
-            _terminate_process_group(proc)
+            _terminate()
         finally:
             if gemini_profile is not None and gemini_profile.identity is not None:
                 try:
@@ -9036,7 +9110,7 @@ def _run_leg_with_liveness(
         err_buf = bytearray()
         fd_map = {proc.stdout.fileno(): out_buf, proc.stderr.fileno(): err_buf}
         open_fds = set(fd_map)
-        start = time.monotonic()
+        start = _clock()
         last_heartbeat = start
         last_output_progress: float | None = None
         last_cpu_sample = start
@@ -9050,13 +9124,15 @@ def _run_leg_with_liveness(
 
         while True:
             if review_monitor is not None:
-                review_monitor.observe(None if last_output_progress is None else time.monotonic() - last_output_progress)
+                review_monitor.observe(None if last_output_progress is None else _clock() - last_output_progress)
                 if review_monitor.cancel.is_set():
+                    _decide("cancel")
                     review_monitor.observe(terminal="user_cancel")
                     return _LegRun(1, "", "review_operation_cancelled")
             # (1) wall-clock backstop — should rarely fire once stall detection works.
-            if review_monitor is None and time.monotonic() - start >= deadline_s:
-                _terminate_process_group(proc)
+            if review_monitor is None and _clock() - start >= deadline_s:
+                _decide("deadline")
+                _terminate()
                 out_s, err_s = _decode()
                 raise subprocess.TimeoutExpired(
                     list(cmd), deadline_s, output=out_s, stderr=err_s,
@@ -9081,22 +9157,24 @@ def _run_leg_with_liveness(
                     # returns no provider bytes, including bytes buffered before this chunk.
                     if output_guard is not None and output_guard(
                             "stdout" if fd_map[fd] is out_buf else "stderr", chunk):
-                        _terminate_process_group(proc)
+                        _decide("output_guard")
+                        _terminate()
                         out_buf.clear()
                         err_buf.clear()
                         return _LegRun(proc.returncode or 1, "", "provider_output_refused")
                     fd_map[fd].extend(chunk)
-                    last_heartbeat = time.monotonic()
+                    last_heartbeat = _clock()
                     last_output_progress = last_heartbeat
                     if (stdout_guard is not None and fd_map[fd] is out_buf
                             and stdout_guard(chunk)):
-                        _terminate_process_group(proc)
+                        _decide("stdout_guard")
+                        _terminate()
                         out_s, err_s = _decode()
                         return _LegRun(proc.returncode or 1, out_s, err_s)
                 else:
                     open_fds.discard(fd)  # EOF on this pipe
             # (3) secondary CPU heartbeat — reset only, never a kill trigger.
-            now = time.monotonic()
+            now = _clock()
             if now - last_cpu_sample >= _LEG_LIVENESS_CPU_SAMPLE_S:
                 last_cpu_sample = now
                 ticks = group_cpu_ticks(proc.pid)
@@ -9107,6 +9185,7 @@ def _run_leg_with_liveness(
             exited = proc.poll() is not None
             if exited:
                 if not open_fds:
+                    _decide("process_exit")
                     # clean exit — both pipes drained to EOF.
                     out_s, err_s = _decode()
                     return _LegRun(
@@ -9119,8 +9198,9 @@ def _run_leg_with_liveness(
                 # flush or descendant CPU) instead of burning the wall-clock backstop.
                 # ``open_fds`` non-empty proves the group is still alive, so force the
                 # group kill even though the leader is already reaped.
-                if time.monotonic() - last_heartbeat >= _LEG_POST_EXIT_GRACE_S:
-                    _terminate_process_group(proc, force_group=True)
+                if _clock() - last_heartbeat >= _LEG_POST_EXIT_GRACE_S:
+                    _decide("post_exit_grace")
+                    _terminate(force_group=True)
                     out_s, err_s = _decode()
                     return _LegRun(
                         proc.returncode if proc.returncode is not None else 0,
@@ -9128,11 +9208,15 @@ def _run_leg_with_liveness(
                         err_s,
                     )
             # (5) stall: silent AND CPU-flat past the threshold while still running.
-            elif review_monitor is None and time.monotonic() - last_heartbeat >= stall_threshold_s:
-                _terminate_process_group(proc)
+            elif review_monitor is None and _clock() - last_heartbeat >= stall_threshold_s:
+                _decide("stall")
+                _terminate()
                 out_s, err_s = _decode()
                 marker = f"\n[leg-liveness] stalled: no output/CPU for {int(stall_threshold_s)}s"
                 return _LegRun(proc.returncode or 1, out_s, err_s + marker)
+    except BaseException:
+        _decide("exception")
+        raise
     finally:
         try:
             _reap()
@@ -9148,6 +9232,7 @@ def _run_leg_with_liveness(
             profile_stack.close()
         if quiescence_latch is not None:
             quiescence_latch.raise_if_set()
+        _publish_stop()
 
 
 # #188 — de-animation of the Claude TUI's cosmetic status line. While the model
@@ -10678,6 +10763,18 @@ class _ClaudePrintStream:
         self.result_count = 0
         self.result_sha256: str | None = None
         self.violation: str | None = None
+        self.refusal_phase = "none"
+        self.init_session_state = "unseen"
+        self.result_session_state = "unseen"
+        self.result_is_error_state: str | None = None
+        self.result_shape: str | None = None
+
+    def _session_state(self, event: dict[str, object]) -> str:
+        if "session_id" not in event:
+            return "missing"
+        if not isinstance(event["session_id"], str):
+            return "wrong_type"
+        return "match" if event["session_id"] == self.expected_session_id else "mismatch"
 
     def feed(self, chunk: bytes) -> bool:
         self._carry.extend(chunk)
@@ -10688,12 +10785,16 @@ class _ClaudePrintStream:
         del self._carry[: last + 1]
         for raw in complete.splitlines():
             self._event(raw)
+        if self.violation is not None and self.refusal_phase == "none":
+            self.refusal_phase = "feed"
         return self.violation is not None
 
     def finish(self) -> None:
         if self._carry:
             self._event(bytes(self._carry))
             self._carry.clear()
+        if self.violation is not None and self.refusal_phase == "none":
+            self.refusal_phase = "finish"
 
     def _event(self, raw: bytes) -> None:
         if self.violation is not None:
@@ -10701,26 +10802,37 @@ class _ClaudePrintStream:
         def object_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
             obj = dict(pairs)
             if len(obj) != len(pairs):
-                self.observations.malformed()
+                self.observations.malformed("duplicate_key")
             return obj
         try:
             decoded = raw.decode("utf-8")
         except UnicodeDecodeError:
-            self.observations.malformed()
+            self.observations.malformed("decode")
             # Preserve the pre-existing replacement-decoded admission behavior;
             # repaired wire bytes can never be positive diagnostic evidence.
             decoded = raw.decode("utf-8", errors="replace")
         try:
             event = json.loads(decoded, object_pairs_hook=object_pairs)
         except (json.JSONDecodeError, ValueError):
-            self.observations.malformed()
+            self.observations.malformed("json")
             return
         if not isinstance(event, dict):
             self.observations.malformed()
             return
         self.events += 1
-        self.observations.event(event)
         kind, subtype = event.get("type"), event.get("subtype")
+        if kind == "system" and subtype == "init" and self.init_session_state == "unseen":
+            self.init_session_state = self._session_state(event)
+        if kind == "result" and self.result_session_state == "unseen":
+            self.result_session_state = self._session_state(event)
+            flag, text = event.get("is_error"), event.get("result")
+            self.result_is_error_state = (
+                "absent" if "is_error" not in event else "null" if flag is None
+                else "false" if flag is False else "true" if flag is True else "wrong_type")
+            self.result_shape = (
+                "absent" if "result" not in event else "null" if text is None
+                else "string" if isinstance(text, str) else "other")
+        self.observations.event(event)
         if (self.expected_session_id is not None
                 and (kind == "result" or (kind == "system" and subtype == "init"))
                 and event.get("session_id") != self.expected_session_id):
@@ -10812,6 +10924,7 @@ def _run_claude_print_session(
             return 1, "", _HarnessCode("claude_print_session_unproven"), ""
     stream = _ClaudePrintStream(expected_session_id, requested_model)
     process_returncodes: list[int | None] = []
+    stop_observed: dict[str, object] = {}
     secret_seen = False
     secret_forms = _seat_jail.secret_encodings(seat_token) if seat_token else ()
     overlap = max((len(form) for form in secret_forms), default=1) - 1
@@ -10833,13 +10946,24 @@ def _run_claude_print_session(
         ))
 
     def _publish_observations() -> None:
-        if observed is not None:
+        if observed is None:
+            return
+        try:
             observed.update({
                 "api_key_source": stream.api_key_source,
                 "result_count": stream.result_count,
                 "result_event_sha256": stream.result_sha256,
                 "native_protocol": {
                     **stream.observations.snapshot(),
+                    "stop": stop_observed,
+                    "first_refusal_code": stream.violation,
+                    "first_refusal_phase": stream.refusal_phase,
+                    "refusal_ms": (stop_observed.get("decision_ms" if stream.refusal_phase == "feed" else "duration_ms")
+                                   if stream.violation is not None else None),
+                    "init_session_state": stream.init_session_state,
+                    "result_session_state": stream.result_session_state,
+                    "result_is_error_state": stream.result_is_error_state,
+                    "result_shape": stream.result_shape,
                     # Recorded from Popen after reaping, including cancellation or
                     # timeout. Never the session reducer's synthetic refusal code.
                     "process_returncode": process_returncodes[-1] if process_returncodes else None,
@@ -10847,6 +10971,8 @@ def _run_claude_print_session(
             })
             if expected_session_id is not None:
                 observed["session_id_matches"] = stream.session_id_matches
+        except BaseException:
+            pass
 
     try:
         run = _run_leg_with_liveness(
@@ -10854,6 +10980,7 @@ def _run_claude_print_session(
             stall_threshold_s=stall_s, input_text=prompt,
             stdout_guard=stream.feed,
             process_returncode_sink=process_returncodes,
+            **({"stop_observed": stop_observed} if observed is not None else {}),
             **({"output_guard": _guard_output, "seat_jail": seat_jail,
                 "probe_jail": probe_jail} if seat_jail is not None else {}),
             **({"quiescence_latch": quiescence_latch} if quiescence_latch is not None else {}),

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from hashlib import sha256
 import json
+import math
 import posixpath
 import re
 from typing import Callable
@@ -36,6 +37,27 @@ _SERVER_TOOLS = frozenset({
     "advisor", "web_search", "web_fetch", "code_execution", "bash_code_execution",
     "text_editor_code_execution", "tool_search_tool_regex", "tool_search_tool_bm25",
 })
+
+
+# These labels describe reducer decisions only; no native value becomes a label.
+INVALID_REASONS = frozenset({
+    "decode", "json", "duplicate_key", "frame_shape", "session", "nested_frame",
+    "uuid_shape", "uuid_replay", "ordering", "result_flag", "error_shape",
+    "retry_replay", "assistant_replay", "user_replay", "message_shape",
+    "block_shape", "tool_correlation", "bounds",
+})
+MAX_OBSERVATION_MS = 86_400_000
+
+
+def bounded_milliseconds(seconds: object) -> tuple[int | None, bool]:
+    """Closed relative duration; unavailable/backward/nonfinite clocks stay unknown."""
+    if type(seconds) not in (int, float):
+        return None, False
+    if seconds < 0 or (type(seconds) is float and not math.isfinite(seconds)):
+        return None, False
+    if seconds > MAX_OBSERVATION_MS / 1000:
+        return MAX_OBSERVATION_MS, True
+    return int(seconds * 1000), False
 
 
 def _block_shape(block: object, role: str) -> bool:
@@ -149,6 +171,7 @@ class ClaudePrintObservations:
         self.requested_model = _model(requested_model)
         self.events = 0
         self.invalid = False
+        self.first_invalid_reason: str | None = None
         self.truncated = False
         self.rejected_session_count = 0
         self.result_subtype: str | None = None
@@ -163,12 +186,15 @@ class ClaudePrintObservations:
         self._init_seen = False
         self._result_seen = False
 
-    def malformed(self) -> None:
+    def malformed(self, reason: str = "frame_shape") -> None:
         self.invalid = True
+        if self.first_invalid_reason is None:
+            self.first_invalid_reason = reason if isinstance(reason, str) and reason in INVALID_REASONS else "frame_shape"
 
     def _error(self, value: object, *, closed: bool = False) -> str:
         if self.error_count >= MAX_ERRORS:
-            self.truncated = self.invalid = True
+            self.truncated = True
+            self.malformed("bounds")
             return "unknown"
         self.error_count += 1
         category = ((value if closed else self._classify_error(value))
@@ -184,7 +210,8 @@ class ClaudePrintObservations:
         elif len(self.models[source]) < MAX_MODELS or model in self.models[source]:
             self.models[source].add(model)
         else:
-            self.truncated = self.invalid = True
+            self.truncated = True
+            self.malformed("bounds")
 
     def event(self, event: dict[str, object]) -> None:
         kind, subtype = event.get("type"), event.get("subtype")
@@ -193,33 +220,34 @@ class ClaudePrintObservations:
         if kind == "system" and subtype not in ("init", "api_retry"):
             return
         if self.events >= MAX_EVENTS:
-            self.truncated = self.invalid = True
+            self.truncated = True
+            self.malformed("bounds")
             return
         self.events += 1
         if self._session is None or event.get("session_id") != self._session:
             self.rejected_session_count += 1
-            self.invalid = True
+            self.malformed("session")
             return
         if event.get("parent_tool_use_id") is not None:
-            self.invalid = True
+            self.malformed("nested_frame")
             return
         # UUID is optional on older frames. Content replay checks below apply
         # even without it, or when it changes on an otherwise repeated frame.
         if "uuid" in event:
             key = _tool_key(event["uuid"])
             if key is None or key in self._uuids:
-                self.invalid = True
+                self.malformed("uuid_shape" if key is None else "uuid_replay")
                 return
             self._uuids.add(key)
         if kind == "system" and subtype == "init":
             if self._init_seen or self._result_seen:
-                self.invalid = True
+                self.malformed("ordering")
                 return
             self._init_seen = True
             self._observe_model("init", event.get("model"))
             return
         if not self._init_seen or self._result_seen:
-            self.invalid = True
+            self.malformed("ordering")
             return
         if kind == "result":
             self._result_seen = True
@@ -227,98 +255,103 @@ class ClaudePrintObservations:
             flag = event.get("is_error")
             self.result_is_error = flag if type(flag) is bool else None
             if self.result_is_error is None:
-                self.invalid = True
+                self.malformed("result_flag")
             errors = event.get("errors", [])
             if not isinstance(errors, list):
-                self.invalid = True
+                self.malformed("error_shape")
                 self._error(None)
             else:
                 for error in errors[:MAX_ERRORS]:
                     if not isinstance(error, str):
-                        self.invalid = True
+                        self.malformed("error_shape")
                     self._error(error)
                 if len(errors) > MAX_ERRORS:
-                    self.truncated = self.invalid = True
+                    self.truncated = True
+                    self.malformed("bounds")
             if event.get("is_error") is True and not errors:
                 self._error(None)
             return
         if kind == "system":
             error = event.get("error")
             if not isinstance(error, str):
-                self.invalid = True
+                self.malformed("error_shape")
             category = self._error(error, closed=True)
             # Retry observations participate in semantic replay detection too.
             # Use only the closed category; distinct unknown native errors are
             # conservatively ambiguous without retaining or hashing their text.
             fingerprint = _frame_fingerprint("system", "api_retry", category)
             if fingerprint is None:
-                self.truncated = self.invalid = True
+                self.truncated = True
+                self.malformed("bounds")
             elif fingerprint in self._fingerprints:
-                self.invalid = True
+                self.malformed("retry_replay")
             else:
                 self._fingerprints.add(fingerprint)
             return
         message = event.get("message")
         if not isinstance(message, dict):
-            self.invalid = True
+            self.malformed("message_shape")
             return
         if message.get("role") != kind:
-            self.invalid = True
+            self.malformed("message_shape")
             return
         if kind == "assistant":
             self._observe_model("assistant", message.get("model"))
             if event.get("error") is not None:
                 if not isinstance(event["error"], str):
-                    self.invalid = True
+                    self.malformed("error_shape")
                 self._error(event["error"], closed=True)
         content = message.get("content")
         fingerprint = _frame_fingerprint(kind, message.get("model") if kind == "assistant" else None, content)
         if fingerprint is None:
-            self.truncated = self.invalid = True
+            self.truncated = True
+            self.malformed("bounds")
             return
         if fingerprint in self._fingerprints:
-            self.invalid = True
+            self.malformed("assistant_replay" if kind == "assistant" else "user_replay")
             return
         self._fingerprints.add(fingerprint)
         if kind == "user" and isinstance(content, str):
             return  # Ordinary input is not tool evidence.
         if not isinstance(content, list):
-            self.invalid = True
+            self.malformed("message_shape")
             return
         if len(content) > MAX_BLOCKS:
-            self.truncated = self.invalid = True
+            self.truncated = True
+            self.malformed("bounds")
             return
         for block in content:
             if not _block_shape(block, kind):
-                self.invalid = True
+                self.malformed("block_shape")
                 continue
             block_kind = block.get("type")
             if block_kind == "tool_use" and kind == "assistant":
                 key = _tool_key(block.get("id"))
                 if key is None or key in self.tools:
-                    self.invalid = True
+                    self.malformed("tool_correlation")
                     continue
                 if len(self.tools) >= MAX_TOOLS:
-                    self.truncated = self.invalid = True
+                    self.truncated = True
+                    self.malformed("bounds")
                     continue
                 name = "Read" if block.get("name") == "Read" else "other"
                 inputs = block.get("input")
                 if not isinstance(inputs, dict) or not isinstance(block.get("name"), str):
-                    self.invalid = True
+                    self.malformed("block_shape")
                 path = _path_digest(inputs.get("file_path")) if isinstance(inputs, dict) and name == "Read" else None
                 self.tools[key] = {"name": name, "path_sha256": path, "result": "pending"}
             elif block_kind == "tool_result" and kind == "user":
                 key = _tool_key(block.get("tool_use_id"))
                 tool = self.tools.get(key) if key is not None else None
                 if tool is None or tool["result"] != "pending":
-                    self.invalid = True
+                    self.malformed("tool_correlation")
                     continue
                 error = block.get("is_error", False)
                 tool["result"] = "success" if error is False else "error" if error is True else "unknown"
                 if error is not False and error is not True:
-                    self.invalid = True
+                    self.malformed("block_shape")
             elif block_kind in ("tool_use", "tool_result"):
-                self.invalid = True
+                self.malformed("block_shape")
 
     def snapshot(self) -> dict[str, object]:
         init, assistant = self.models["init"], self.models["assistant"]
@@ -337,6 +370,7 @@ class ClaudePrintObservations:
         return {
             "schema": "claude-print-observations.v1",
             "valid": not self.invalid, "truncated": self.truncated,
+            "first_invalid_reason": self.first_invalid_reason,
             "event_count": self.events, "rejected_session_count": self.rejected_session_count,
             "result_subtype": self.result_subtype,
             "result_is_error": self.result_is_error,
