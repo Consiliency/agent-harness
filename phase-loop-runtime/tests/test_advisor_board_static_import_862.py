@@ -46,6 +46,7 @@ def audit(event, args):
                 "--no-replace-objects", "core.hooksPath=/dev/null", "core.fsmonitor=false"))
             caller = sys._getframe(1)
             assert caller.f_code is execute_child_code, "unexpected subprocess caller"
+            assert args[0] == argv[0], "unexpected subprocess executable"
             owner = caller.f_locals["self"]
             permitted_git_spawn = (owner, caller, args[0], tuple(argv), dict(args[3]), effects[-1])
             return
@@ -151,6 +152,8 @@ def spawn_control(attack):
                 sys.audit(event, "/bin/true", ["/bin/true"], None, env)
             else:
                 sys.audit(event)
+        elif attack == "primary-executable":
+            launch(executable="/bin/true")
         else:
             launch()
     except AssertionError as exc:
@@ -348,7 +351,7 @@ def test_static_audit_rejects_a_direct_spawn_during_an_allowed_git_probe(tmp_pat
 
 @pytest.mark.parametrize("attack", [
     "before", "after", "non-git", "closed", "forged", "stale", "missing",
-    "executable", "argv", "env", "owner", "replay", "fork-cleanup", "error-cleanup",
+    "primary-executable", "executable", "argv", "env", "owner", "replay", "fork-cleanup", "error-cleanup",
     "forbidden-subprocess.Popen", "forbidden-socket.connect", "forbidden-os.system",
     "forbidden-os.fork", "forbidden-os.forkpty", "forbidden-os.exec",
 ])
