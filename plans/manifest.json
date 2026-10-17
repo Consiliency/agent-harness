@@ -13382,6 +13382,24 @@
       "updated_at": "2026-10-14T03:59:00Z"
     },
     {
+      "acceptance_criteria_count": 4,
+      "created_at": "2026-10-15T05:26:49Z",
+      "file": ".consiliency/plans/detailed-adapter-skill-references-1358-20261015-0526.md",
+      "handoff_ref": ".dev-skills/handoffs/claude-plan-detailed/latest.md",
+      "if_gates_produced": [],
+      "lanes": [],
+      "lifecycle": [],
+      "owner_skill": "claude-plan-detailed",
+      "phase_alias": null,
+      "reflection_ref": null,
+      "roadmap_ref": null,
+      "slug": "adapter-skill-references-1358",
+      "status": "committed",
+      "task_summary": "Context-file adapter runs receive the references/ files their pack skills link, copied beside context.md (agent-harness#1358)",
+      "type": "detailed",
+      "updated_at": "2026-10-15T05:26:49Z"
+    },
+    {
       "acceptance_criteria_count": null,
       "artifact_state": "staged",
       "created_at": "2026-10-13T02:16:41Z",
