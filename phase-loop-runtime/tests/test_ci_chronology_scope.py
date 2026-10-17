@@ -153,7 +153,7 @@ def test_every_consumer_spells_the_same_node_id() -> None:
         )
 
 
-@pytest.mark.parametrize("event", ["push", "schedule", "workflow_dispatch", "", "unknown_event"])
+@pytest.mark.parametrize("event", ["push", "merge_group", "schedule", "workflow_dispatch", "", "unknown_event"])
 def test_non_pull_request_events_always_retain_the_node(event: str) -> None:
     assert _scope(env={"GITHUB_EVENT_NAME": event}) == "chronology=true"
 
@@ -475,6 +475,8 @@ def test_workflows_retain_the_node_on_main_nightly_and_release() -> None:
     ("schedule", "refs/heads/main", "", "true", True),
     ("workflow_dispatch", "refs/heads/main", "", "true", True),
     ("pull_request", "refs/pull/1/merge", "owner/repo", "false", True),
+    # The merge queue carries no head-repo field and may hold a fork's PR: hosted path.
+    ("merge_group", "refs/heads/gh-readonly-queue/main/pr-1-abc", "", "true", False),
 ])
 @pytest.mark.parametrize("sandbox_ready", ["false", "true"])
 def test_offload_requires_trust_secret_and_supported_sandbox(
@@ -523,6 +525,10 @@ def test_offload_requires_trust_secret_and_supported_sandbox(
     ("push", "success", "success", "failure", "skipped", False),
     ("push", "success", "success", "success", "success", False),
     ("schedule", "success", "success", "success", "skipped", True),
+    # The merge queue run is a landing proof: Gate A, not the wheel smoke.
+    ("merge_group", "success", "success", "success", "skipped", True),
+    ("merge_group", "success", "success", "skipped", "success", False),
+    ("merge_group", "success", "success", "skipped", "skipped", False),
     ("schedule", "success", "failure", "success", "skipped", False),
     ("pull_request", "success", "failure", "skipped", "success", False),
     ("push", "failure", "success", "success", "skipped", False),

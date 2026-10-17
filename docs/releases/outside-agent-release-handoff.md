@@ -1027,6 +1027,19 @@ merge verdict.
 - The per-release caveats above that say `--upstream-only` and the nightly upstream job
   fail until a newer agy is qualified describe the behaviour before this change.
 
+## Release Step — assemble the `changelog.d/` fragments
+
+- Pull requests add `changelog.d/<number>.<type>.md` fragments instead of editing
+  `CHANGELOG.md` `[Unreleased]` (format in `changelog.d/README.md`).
+- In the release commit, run `python scripts/assemble_changelog.py --version X.Y.Z`
+  (`--dry-run` first to read the result). It inserts `## [X.Y.Z] - <today>` under
+  `## [Unreleased]`, then the fragments ordered by type and number, then any entries
+  already written under `[Unreleased]`, and deletes the fragments it used. Write the
+  release's upgrade notes under the new heading as before.
+- `changelog.d/` must hold only `README.md` after the cut. A malformed fragment fails
+  the script before it changes anything, and fails `test_changelog_fragments.py` on the
+  pull request that adds it.
+
 ## Maintainer Dispatch Boundary
 
 - For `0.7.21`: the package was not published from this handoff; trusted workflow

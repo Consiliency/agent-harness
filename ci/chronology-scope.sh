@@ -6,8 +6,9 @@
 # pre-implementation. Measured on the offloaded suite (run 33709063249) it is
 # ~88% of the per-PR wall clock, and it runs twice per run (py3.10 lane + Gate A).
 # It proves a property of frozen HISTORY, not of the diff under review, so a
-# pull request DEFERS it: the landing push to main executes it on the exact
-# merged tree, and the nightly bounds how long a regression can stay invisible.
+# pull request DEFERS it: the merge queue run (merge_group) and the landing push to
+# main execute it on the exact merged tree, and the nightly bounds how long a
+# regression can stay invisible.
 #
 # agent-harness#1042 (maintainer ruling 2026-09-25) retired the agent-harness#746
 # exception that retained the node on a PR touching the gate's own selection
@@ -76,7 +77,9 @@ esac
 
 event="${GITHUB_EVENT_NAME:-}"
 case "$event" in
-  push|schedule|workflow_dispatch)
+  # merge_group: the merge queue tests the exact commit it then pushes to main, so
+  # it is a landing proof like the push itself.
+  push|merge_group|schedule|workflow_dispatch)
     decide true "event=$event always retains the node"; exit 0 ;;
   pull_request) ;;
   *)
