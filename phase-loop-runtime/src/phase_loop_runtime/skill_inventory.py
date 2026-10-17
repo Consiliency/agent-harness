@@ -117,10 +117,7 @@ def _iter_skill_source_roots_cached(opt_in: str) -> tuple[tuple[str, tuple[str, 
         seen.add(key)
         providers.append(provider)
 
-    try:
-        entry_points = importlib.metadata.entry_points(group="phase_loop_runtime.skill_sources")
-    except TypeError:  # pragma: no cover - py<3.10 selectable API
-        entry_points = importlib.metadata.entry_points().get("phase_loop_runtime.skill_sources", [])
+    entry_points = importlib.metadata.entry_points(group="phase_loop_runtime.skill_sources")
     for entry_point in entry_points:
         # A registered entry point that fails to load is a real bug -- fail loud.
         try:

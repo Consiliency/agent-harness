@@ -36,10 +36,7 @@ jobs:
         run: |
           python - <<'PY'
           import os, sys, re, pathlib
-          try:
-              import tomllib
-          except ModuleNotFoundError:
-              import tomli as tomllib  # py<3.11 fallback (3.12 runner has tomllib)
+          import tomllib
 
           root = pathlib.Path("phase-loop-runtime")
           pyproject_v = tomllib.loads((root / "pyproject.toml").read_text())["project"]["version"]

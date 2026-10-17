@@ -55,10 +55,7 @@ from pathlib import PurePosixPath
 from packaging.markers import default_environment
 from packaging.requirements import Requirement
 
-try:
-    import tomllib
-except ModuleNotFoundError:  # Python 3.10 floor
-    import tomli as tomllib
+import tomllib
 
 __all__ = [
     "REVIEW_STAGE_DIR_PREFIX",
