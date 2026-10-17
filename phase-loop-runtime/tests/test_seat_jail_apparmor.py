@@ -132,12 +132,14 @@ def test_codex_policy_keeps_setup_capabilities_out_of_owner_and_payload():
     assert aa.CODEX_OWNER_PATH == "/run/phase-loop-seat/codex-owner"
     assert aa.CODEX_PROVIDER_PATH == "/run/phase-loop-seat/codex-runtime/bin/codex"
     assert aa.CODEX_BWRAP_PATH == "/run/phase-loop-seat/codex-sandbox-bin/bwrap"
-    owner, setup = aa.CODEX_PROFILE_TEXT.split("profile phase_loop_codex_setup", 1)
+    owner, rest = aa.CODEX_PROFILE_TEXT.split("profile phase_loop_codex_setup", 1)
+    setup, payload = rest.split("profile phase_loop_codex_payload", 1)
     assert "allow capability" not in owner
+    assert "allow capability" not in payload
     caps = re.findall(r"allow capability (\w+),", setup)
-    assert set(caps) == {"sys_admin", "sys_chroot", "net_admin", "setuid", "setgid", "sys_ptrace"}
+    assert set(caps) == {"sys_admin", "sys_chroot", "net_admin", "setuid", "setgid", "sys_ptrace", "setpcap"}
     assert not re.search(r"^\s*(allow )?capability,", aa.CODEX_PROFILE_TEXT, re.MULTILINE)
-    assert "allow px /** -> bwrap//&unpriv_bwrap," in setup
+    assert "allow px /** -> bwrap//&unpriv_bwrap//&phase_loop_codex_payload," in setup
     assert "codex_finalize" not in aa.CODEX_PROFILE_TEXT
     rules = [line for line in aa.CODEX_LOCAL_TEXT.splitlines() if line.startswith("allow")]
     assert rules == [
@@ -161,7 +163,20 @@ def test_codex_exec_transitions_replace_the_prior_stage_and_refuse_missing_targe
     owner, setup = aa.CODEX_PROFILE_TEXT.split("profile phase_loop_codex_setup", 1)
     assert f"{aa.CODEX_BWRAP_PATH} -> bwrap//&phase_loop_codex_setup," in owner
     assert "phase_loop_codex_owner" not in setup
-    assert "-> bwrap//&unpriv_bwrap," in setup
+    assert "-> bwrap//&unpriv_bwrap//&phase_loop_codex_payload," in setup
+
+
+def test_codex_payload_denies_new_user_namespaces_and_keeps_the_denial_after_exec():
+    profiles = dict(re.findall(r"^profile (\w+) flags=\([^\n]+\) \{\n(.*?)^\}",
+                               aa.CODEX_PROFILE_TEXT, re.MULTILINE | re.DOTALL))
+    assert set(profiles) == {"phase_loop_codex_owner", "phase_loop_codex_setup", "phase_loop_codex_payload"}
+    payload = profiles["phase_loop_codex_payload"]
+    assert "deny userns," in payload and "allow userns," not in payload
+    assert "allow capability" not in payload
+    target = "allow px /** -> bwrap//&unpriv_bwrap//&phase_loop_codex_payload,"
+    for profile in profiles.values():
+        assert target in profile
+    assert [line.strip() for line in payload.splitlines() if " -> " in line] == [target]
 
 
 def test_codex_install_and_revert_preserve_the_claude_override_and_admin_rules(tmp_path):

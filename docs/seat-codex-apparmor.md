@@ -1,9 +1,9 @@
 # Codex nested sandbox candidate (agent-harness#1335)
 
-Status: revised after failed, separately approved dev0 trials of `7681770e` and
-`4bf693b5` on 2026-10-14. Both temporary policies were removed and the original denial
-reproduced. The current runtime revision is not installed or qualified. Installation
-changes host security policy and
+Status: revised after three separately approved dev0 trials on 2026-10-14. The third,
+`2b64b6c2`, passed startup but failed payload qualification. All three temporary policies
+were removed and the original denial reproduced. The new policy revision has only offline
+validation; it is not installed or qualified. Installation changes host security policy and
 requires separate administrator approval. This does not complete the required review board
 or authorize a merge.
 
@@ -28,16 +28,22 @@ or staged-tree write boundary changes. Read-only, admin, script and unknown-layo
 do not receive the Codex aliases. The existing no-inference probe still decides whether
 the seat can run tools; a failed launcher remains DEGRADED before inference.
 
-The candidate adds two named profiles, without attachment paths, and three specific named
+The candidate adds three named profiles, without attachment paths, and three specific named
 exec transitions in the shipped profile's local include. Each target explicitly retains
 `bwrap` while replacing the previous stage; `px` refuses a missing named target. The owner
 profile permits no capabilities. Only the inner bubblewrap setup profile permits `sys_admin`, `sys_chroot`,
 `net_admin`, `setuid`, `setgid` and `sys_ptrace`, the six capabilities in
-[bubblewrap 0.11.1's setup set](https://github.com/containers/bubblewrap/blob/v0.11.1/bubblewrap.c).
+[bubblewrap 0.11.1's setup set](https://github.com/containers/bubblewrap/blob/v0.11.1/bubblewrap.c),
+plus `setpcap` so `PR_CAPBSET_DROP` can clear the bounding set before exec. This is one
+additional proposed setup permission relative to `2b64b6c2`, requiring fresh review and
+separate host-trial approval; no `dac_override` grant is proposed.
 Linux must continue to deny them over the ancestor egress namespace. Every exec from setup
-replaces setup with `bwrap//&unpriv_bwrap`, including
+replaces setup with `bwrap//&unpriv_bwrap//&phase_loop_codex_payload`, including
 [Codex's final seccomp stage](https://github.com/openai/codex/blob/rust-v0.162.1/codex-rs/linux-sandbox/src/linux_run_main.rs),
 which explicitly checks empty effective/permitted sets before running the payload.
+The payload profile denies new user namespaces, permits no capabilities, and sends every
+exec back to that same denying stack. Ordinary execs from the owner use it too. The three
+fixed-path entry rules are unchanged; no entry directly selects the payload profile.
 
 The paths identify the runtime's route, not the identity of an arbitrary binary. An operator
 able to construct a different bubblewrap view can reproduce them. This host-wide exception
@@ -52,8 +58,9 @@ checks transitions against the label saved when no-new-privs is first observed, 
 Python set intersection of the immediately preceding profiles. The candidate depends on
 the first saved label being `bwrap` and on all three specific transitions being selected
 in each stacked component. Compilation does not prove this: actual labels and denials
-must be measured during a separately approved trial. Failure must not trigger a broader
-grant, removal of no-new-privs, inner-sandbox bypass or a reviewer substitution.
+must be measured during a separately approved trial. An installed trial must not be
+broadened after a failure, or remove no-new-privs, bypass the inner sandbox or substitute a
+reviewer.
 
 ## Failed trials and revisions
 
@@ -102,6 +109,30 @@ and retain empty capability sets, no-new-privs, seccomp and keyctl denial. A mis
 cwd retains the existing handoff. These are runtime controls without model calls or host
 policy installation; the revised native Codex route still needs separately approved
 host qualification. Neither earlier diagnostic AGREE establishes that qualification.
+
+The third, separately approved trial of `2b64b6c2` passed the native `true` probe. Its
+provider had `bwrap//&phase_loop_codex_owner`, all five capability sets empty, no-new-privs
+1 and seccomp 2. The controlled payload ran under `bwrap//&unpriv_bwrap`; staged read/write,
+sibling-output/host-file/protected-git write denials, keyring denials, operator-network-join
+denial and setup-alias re-exec denial held. However, `CapBnd` was `000001ffffffffff`, and
+`unshare(CLONE_NEWUSER)` succeeded. Alias re-exec retained the nonzero bounding set. These
+failed the declared qualification postconditions, without demonstrating ancestor-namespace
+authority. Kernel audit recorded setup-profile `setpcap` and `dac_override` denials. The
+trial stopped, rollback preserved the three original policy files and existing Claude
+profile, no candidate profiles/timer/trial-owned processes remained, and the fresh
+no-policy control reproduced the original startup denial. No model calls were made.
+
+Offline diagnosis identified two independent mechanisms. Bubblewrap's `prctl_caps` ignores
+`EPERM` from `PR_CAPBSET_DROP`; the previous policy denied the `setpcap` operation it needs.
+Disposable local user-namespace controls reproduced a nonzero bounding set when that
+capability was unavailable and a zero bounding set when it was available. Even after all
+five sets were cleared, creating another user namespace restored capabilities there.
+Codex 0.162.1's network seccomp filter does not forbid that operation. The revised setup
+permission addresses the first mechanism; the persistent payload userns denial addresses
+the second. These controls do not load AppArmor policy or prove the revised transitions
+work under no-new-privs. Payload capability and namespace assertions remain unchanged for
+the next separately approved trial. The previous `dac_override` audit is not a reason to
+broaden filesystem permissions.
 
 ## Review and offline checks
 

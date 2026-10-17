@@ -97,7 +97,7 @@ profile phase_loop_codex_owner flags=(attach_disconnected,mediate_deleted) {{
   allow px {CODEX_OWNER_PATH} -> bwrap//&phase_loop_codex_owner,
   allow px {CODEX_PROVIDER_PATH} -> bwrap//&phase_loop_codex_owner,
   allow px {CODEX_BWRAP_PATH} -> bwrap//&phase_loop_codex_setup,
-  allow px /** -> bwrap//&unpriv_bwrap,
+  allow px /** -> bwrap//&unpriv_bwrap//&phase_loop_codex_payload,
 }}
 
 profile phase_loop_codex_setup flags=(attach_disconnected,mediate_deleted) {{
@@ -108,6 +108,8 @@ profile phase_loop_codex_setup flags=(attach_disconnected,mediate_deleted) {{
   allow capability setuid,
   allow capability setgid,
   allow capability sys_ptrace,
+  # PR_CAPBSET_DROP needs setpcap; bubblewrap ignores EPERM from that operation.
+  allow capability setpcap,
   allow file rwlkm /{{**,}},
   allow network,
   allow unix,
@@ -121,7 +123,24 @@ profile phase_loop_codex_setup flags=(attach_disconnected,mediate_deleted) {{
   allow pivot_root,
   allow dbus,
   # Includes Codex's post-bwrap seccomp stage: no arbitrary payload keeps setup rights.
-  allow px /** -> bwrap//&unpriv_bwrap,
+  allow px /** -> bwrap//&unpriv_bwrap//&phase_loop_codex_payload,
+}}
+
+profile phase_loop_codex_payload flags=(attach_disconnected,mediate_deleted) {{
+  allow file rwlkm /{{**,}},
+  allow network,
+  allow unix,
+  allow ptrace,
+  allow signal,
+  allow mqueue,
+  allow io_uring,
+  deny userns,
+  allow mount,
+  allow umount,
+  allow pivot_root,
+  allow dbus,
+  # Keep the userns denial and shipped capability denial across every payload exec.
+  allow px /** -> bwrap//&unpriv_bwrap//&phase_loop_codex_payload,
 }}
 """
 CODEX_LOCAL_TEXT = f"""\
