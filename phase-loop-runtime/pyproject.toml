@@ -107,6 +107,7 @@ codex-phase-loop = "phase_loop_runtime.cli:main"
 # reads that import failure (exit 1) as "unknown ignored outputs"
 # (agent-harness#670).
 phase-loop-closeout-audit = "phase_loop_runtime.closeout_classifier:console_main"
+phase-loop-skill-eval = "phase_loop_runtime.skill_eval:console_main"
 # Roadmap-ownership preflight. Same reason as the audit above: under
 # `uv tool install` isolation the module form fails to import and exits 1 --
 # which `--preflight` defines as "claimed by another phase", i.e. a phantom

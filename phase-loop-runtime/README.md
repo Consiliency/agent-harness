@@ -29,9 +29,11 @@ To pin a specific tag from source instead, substitute a tag from
 uv tool install "git+https://github.com/Consiliency/agent-harness@<TAG>#subdirectory=phase-loop-runtime"
 ```
 
-This exposes four console scripts: `phase-loop` and `codex-phase-loop` (both calling
+This exposes five console scripts: `phase-loop` and `codex-phase-loop` (both calling
 `phase_loop_runtime.cli:main`), `phase-loop-closeout-audit` (the closeout
-ignored-output audit) and `roadmap-ownership` (the roadmap-ownership preflight). The
+ignored-output audit), `phase-loop-skill-eval` (the opt-in diagnostic planning
+evaluator; see [the guide](https://github.com/Consiliency/agent-harness/blob/main/docs/phase-loop/skill-eval.md)) and
+`roadmap-ownership` (the roadmap-ownership preflight). The
 canonical protocol document ships in the wheel as package data
 (from `src/phase_loop_runtime/_contract_docs/phase-loop/protocol.md`); an older copy is also
 installed to `share/phase-loop-runtime/protocol/protocol.md`.

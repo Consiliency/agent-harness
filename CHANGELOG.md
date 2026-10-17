@@ -6,6 +6,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Diagnostic planning skill evaluation (agent-harness#1321)
+
+- Add the opt-in `phase-loop-skill-eval` command for frozen, independent planning
+  comparisons, owned Linux execution with access evidence, blinded human packets,
+  one-shot scorer calibration, and exact Boolean pair reduction. Live pilot
+  qualification and editor gating remain pending; no skill is automatically adopted.
+
 ### skills-parity CI runs the skill size gate (agent-harness#1358)
 
 - `skills-parity.yml` runs `tests/test_skill_size_gate.py` as a warn-first step,

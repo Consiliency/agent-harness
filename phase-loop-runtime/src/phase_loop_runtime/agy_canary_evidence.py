@@ -7078,6 +7078,10 @@ _CANONICAL_CONSOLE_SCRIPTS = [
         "target": "phase_loop_runtime.closeout_classifier:console_main",
     },
     {
+        "name": "phase-loop-skill-eval",
+        "target": "phase_loop_runtime.skill_eval:console_main",
+    },
+    {
         "name": "roadmap-ownership",
         "target": "phase_loop_runtime.roadmap_ownership:console_main",
     },
