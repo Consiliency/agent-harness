@@ -656,8 +656,64 @@ def _skill_bodies(repo: Path, harness_target: str, expected_skill_pack: tuple[st
         skill_file = skill_dir / "SKILL.md"
         if not skill_file.exists():
             continue
-        blocks.append(f"## Skill: {skill_name}\n\n{skill_file.read_text(encoding='utf-8').strip()}")
+        block = f"## Skill: {skill_name}\n\n{skill_file.read_text(encoding='utf-8').strip()}"
+        if _skill_reference_sources(skill_dir, harness_target):
+            # agent-harness#1358: the launcher copies these beside context.md
+            # (materialize_skill_references); a skill without references adds no line.
+            block += (
+                f"\n\nThis skill's linked `references/` files are copied beside this context file "
+                f"under `skills/{skill_name}/references/`; read one at the step that links it."
+            )
+        blocks.append(block)
     return "\n\n".join(blocks)
+
+
+def _skill_reference_sources(skill_dir: Path, harness_target: str) -> tuple[tuple[str, Path], ...]:
+    """A skill's linked reference files as ``(path under references/, source)``.
+
+    An assembled skill dir keeps them in ``references/``; a canonical
+    ``phase-loop-skills/<skill>`` dir keeps harness-only ones in
+    ``_overrides/<harness>/references/``, which reach only that harness.
+    """
+    found: dict[str, Path] = {}
+    for references in (skill_dir / "references", skill_dir / "_overrides" / harness_target / "references"):
+        if not references.is_dir():
+            continue
+        for path in references.rglob("*"):
+            if path.is_file():
+                found[path.relative_to(references).as_posix()] = path
+    return tuple(sorted(found.items()))
+
+
+def skill_reference_files(
+    repo: Path, harness_target: str, expected_skill_pack: tuple[str, ...]
+) -> tuple[tuple[str, Path], ...]:
+    """Every pack skill's reference file as ``(destination, source)``.
+
+    The destination ``skills/<skill>/references/<rel>`` is relative to the directory
+    holding ``context.md``; the context-file launch branches copy each source there.
+    """
+    files: list[tuple[str, Path]] = []
+    resolved_skill_dirs = _resolve_pack_skill_dirs(repo, harness_target, expected_skill_pack)
+    for skill_name in expected_skill_pack:
+        skill_dir = resolved_skill_dirs.get(skill_name)
+        if skill_dir is None:
+            continue
+        for rel, source in _skill_reference_sources(skill_dir, harness_target):
+            files.append((f"skills/{skill_name}/references/{rel}", source))
+    return tuple(sorted(files))
+
+
+def materialize_skill_references(
+    *, repo: Path, harness_target: str, context_dir: Path, prompt_bundle: PromptBundle
+) -> list[str]:
+    copied: list[str] = []
+    for dest, source in skill_reference_files(repo, harness_target, prompt_bundle.expected_skill_pack):
+        target = context_dir / dest
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, target)
+        copied.append(str(target))
+    return copied
 
 
 def _claude_bundle_manifest(action: str, expected_skill_pack: tuple[str, ...]) -> str:
@@ -722,20 +778,17 @@ def _bundle_sha256(
                 "sha256": hashlib.sha256(skill_file.read_bytes()).hexdigest() if skill_file.exists() else None,
                 # agent-harness#1358: SKILL.md links detail into references/; editing one
                 # must change the bundle identity, not only edits to SKILL.md.
-                "references": _skill_references_sha256(skill_dir),
+                "references": _skill_references_sha256(skill_dir, harness_target),
             }
         )
     return hashlib.sha256(json.dumps(manifest, sort_keys=True).encode("utf-8")).hexdigest()
 
 
-def _skill_references_sha256(skill_dir: Path) -> dict[str, str]:
-    references = skill_dir / "references"
-    if not references.is_dir():
-        return {}
+def _skill_references_sha256(skill_dir: Path, harness_target: str) -> dict[str, str]:
+    # Same file list the context-file launch copies (_skill_reference_sources).
     return {
-        path.relative_to(skill_dir).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
-        for path in sorted(references.rglob("*"))
-        if path.is_file()
+        source.relative_to(skill_dir).as_posix(): hashlib.sha256(source.read_bytes()).hexdigest()
+        for _rel, source in _skill_reference_sources(skill_dir, harness_target)
     }
 
 
