@@ -6,6 +6,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### `gemini-execute-phase` drops under the skill size limit (agent-harness#1358)
+
+- Interactive-only procedure moves into three linked `references/` files:
+  `interactive-path.md` (plan handoff reuse, publication mode (b), the
+  `phase-loop publication-mode` check, the early draft PR), `worktree-pruning.md` and
+  `worker-fanout.md`. `SKILL.md` goes from about 6,900 tokens to under 5,000, and its
+  longest line is under 1,000 characters. Runner-relevant rules and every phrase the
+  tests pin stay in `SKILL.md`; gemini runner launches get the references beside
+  `context.md`. The duplicate closeout-audit block in Core Rules now points to Closeout.
+
 ### Context-file adapter runs get the `references/` files their skills link (agent-harness#1358)
 
 - Gemini and OpenCode launches carry each injected skill's `references/` files
