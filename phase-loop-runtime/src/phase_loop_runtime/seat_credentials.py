@@ -82,10 +82,27 @@ class LoginToken:
 # The login store, per platform.
 # --------------------------------------------------------------------------------------
 
-def claude_config_dir(env: Mapping[str, str] | None = None) -> Path:
-    env = os.environ if env is None else env
-    configured = env.get("CLAUDE_CONFIG_DIR")
-    return Path(configured) if configured else Path.home() / ".claude"
+def _claude_login_paths(env: Mapping[str, str] | None) -> tuple[Path | None, Path | None]:
+    """Resolve a login location without changing the CLI's configured-directory semantics.
+
+    Only an omitted environment may use the process home. Explicit mappings must name
+    their own HOME or config directory, including for platform secure storage.
+    """
+    selected = os.environ if env is None else env
+    configured = selected.get("CLAUDE_CONFIG_DIR", "")
+    home = selected.get("HOME", "")
+    if configured.strip():
+        directory = Path(configured)
+        return directory, directory / ".claude.json"
+    if home.strip():
+        return Path(home) / ".claude", Path(home) / ".claude.json"
+    if env is None:
+        return Path.home() / ".claude", Path.home() / ".claude.json"
+    return None, None
+
+
+def claude_config_dir(env: Mapping[str, str] | None = None) -> Path | None:
+    return _claude_login_paths(env)[0]
 
 
 def keychain_service(env: Mapping[str, str] | None = None) -> str:
@@ -155,10 +172,13 @@ def read_login_store(*, platform: str | None = None, env: Mapping[str, str] | No
                      ) -> bytes | None:
     """The raw store for this platform, or ``None``. Its content is never logged."""
     platform = platform or sys.platform
+    directory = claude_config_dir(env)
+    if directory is None:
+        return None
     env = os.environ if env is None else env
     if platform == "darwin":
         return _read_store_keychain(env, run)
-    return _read_store_file(claude_config_dir(env) / ".credentials.json")
+    return _read_store_file(directory / ".credentials.json")
 
 
 def _login_oauth(raw: bytes | None) -> dict | None:
@@ -298,7 +318,7 @@ class SeatCredentialAdapter(Protocol):
         """The account and organization the launching session is logged in to, or ``None``
         when either is unknown."""
 
-    def account_source(self) -> Path:
+    def account_source(self) -> Path | None:
         """The file :meth:`current_identity` reads (named in a store refusal)."""
 
 
@@ -404,6 +424,8 @@ class ClaudeCredentialAdapter:
         return legacy.with_name(legacy.name + ".override.json")
 
     def override_present(self) -> bool:
+        if claude_config_dir(self._env) is None:
+            return False
         return os.path.lexists(self.record_path()) or os.path.lexists(self.legacy_path())
 
     def read_override(self) -> OverrideRecord | None:
@@ -430,17 +452,15 @@ class ClaudeCredentialAdapter:
             raise UnsafeOverride("too large")
         return parse_override_record(raw)
 
-    def account_source(self) -> Path:
-        env = os.environ if self._env is None else self._env
-        directory = env.get("CLAUDE_CONFIG_DIR")
-        if directory:
-            return Path(directory) / ".claude.json"
-        home = env.get("HOME")
-        return (Path(home) if home else Path.home()) / ".claude.json"
+    def account_source(self) -> Path | None:
+        return _claude_login_paths(self._env)[1]
 
     def current_identity(self) -> Identity | None:
         # Both from the SAME read of the same file: the CLI's oauthAccount.
-        raw = _read_owner_only(self.account_source(), _ACCOUNT_FILE_CAP_BYTES, private_dir=False)
+        source = self.account_source()
+        if source is None:
+            return None
+        raw = _read_owner_only(source, _ACCOUNT_FILE_CAP_BYTES, private_dir=False)
         try:
             config = json.loads(raw) if raw else None
         except (ValueError, UnicodeError, RecursionError):
@@ -576,7 +596,7 @@ def store_override(token: bytes, adapter: SeatCredentialAdapter | None = None) -
     identity = adapter.current_identity()
     if identity is None:
         source = adapter.account_source()
-        if os.path.lexists(source):
+        if source is not None and os.path.lexists(source):
             raise StoreRefused(f"{source} names no account and organization this tool can "
                                "trust: it must be a regular file you own that only you can "
                                "write (not a link), with a login in it")
@@ -648,6 +668,8 @@ def override_present(env: Mapping[str, str] | None = None) -> bool:
     """Whether the launch's credential is settled by the stored override: it is used (bound
     to the launching session's account) or its record is unsafe (the launch refuses). An
     unbound override is not "present" to the callers: they take the login."""
+    if claude_config_dir(env) is None:
+        return False
     decision = override_decision(None if env is None else ClaudeCredentialAdapter(_session_env(env)))
     return decision.applies or decision.refusal is not None
 
@@ -658,6 +680,8 @@ def claude_seat_credential_present(
 ) -> bool:
     """J7 step 3: a seat-token override exists, or a Claude login is found. Presence only;
     the expiry margin is checked at launch."""
+    if claude_config_dir(env) is None:
+        return False
     has_override = override_present() if env is None else override_present(env=env)
     if has_override:
         return True
@@ -666,10 +690,7 @@ def claude_seat_credential_present(
 
 
 def _session_env(env: Mapping[str, str] | None) -> Mapping[str, str] | None:
-    """``env`` (default: the process environment) names the session whose login and account
-    decide: its CLAUDE_CONFIG_DIR, else $HOME/.claude."""
-    if env is not None and not env.get("CLAUDE_CONFIG_DIR") and env.get("HOME"):
-        return {**env, "CLAUDE_CONFIG_DIR": str(Path(env["HOME"]) / ".claude")}
+    """Keep the selected environment's configuredness intact."""
     return env
 
 
@@ -691,6 +712,8 @@ def login_subscription_proven(
     subscription from. Nothing is run and only the boolean is returned; an absent, unsafe or
     malformed store, or one that shows no subscription, is ``False``."""
     env = _session_env(env)
+    if claude_config_dir(env) is None:
+        return False
     raw = read_store() if read_store is not None else (
         read_login_store() if env is None else read_login_store(env=env))
     oauth = _login_oauth(raw)
@@ -713,6 +736,8 @@ def resolve_claude_seat_credential(
     (a login with less than ``margin_s`` left; nothing is run to renew it)."""
     now = now or time.time
     env = _session_env(env)
+    if claude_config_dir(env) is None:
+        raise seat_jail.SeatSandboxRefused("claude_seat_token_missing")
     read_login = read_login or (read_login_token if env is None else
                                 (lambda: read_login_token(env=env)))
     decision = override_decision(ClaudeCredentialAdapter(env))
@@ -771,6 +796,8 @@ def login_seconds_left(margin_s: float, *, now: Callable[[], float] | None = Non
                        ) -> float | None:
     """Read-only preflight: the seconds left on a login that is SHORT of ``margin_s``, or
     ``None`` when the seat needs no wait (an override, no login, no expiry, or enough)."""
+    if claude_config_dir(env) is None:
+        return None
     has_override = override_present() if env is None else override_present(env=env)
     if has_override:
         return None
@@ -801,6 +828,8 @@ def await_login_margin(
     """Wait for the login to clear ``margin_s``, reading the store read-only and running
     nothing. ``wait(seconds)`` sleeps and returns True when the wait was cancelled, which
     raises :class:`LoginWaitCancelled`. Returns the outcome and the seconds waited."""
+    if claude_config_dir(env) is None:
+        return LoginWait(LOGIN_MISSING, 0.0)
     now = now or time.time
     monotonic = monotonic or time.monotonic
     read_login = read_login or (read_login_token if env is None else

@@ -62,8 +62,9 @@ def test_the_file_store_yields_only_the_access_token_and_expiry(tmp_path, platfo
 
 def test_the_file_store_defaults_to_the_home_claude_directory(monkeypatch, tmp_path):
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
     _write_store(tmp_path / ".claude", _store())
-    assert sc.read_login_token(platform="linux", env={}).token == ACCESS.encode()
+    assert sc.read_login_token(platform="linux").token == ACCESS.encode()
 
 
 @pytest.mark.parametrize("shape", ["group-writable", "symlink", "directory", "absent"])
@@ -91,7 +92,7 @@ class _FakeSecurity:
 
 def test_the_macos_keychain_is_read_by_service_and_account():
     fake = _FakeSecurity(_store())
-    login = sc.read_login_token(platform="darwin", env={"USER": "alice"}, run=fake)
+    login = sc.read_login_token(platform="darwin", env={"USER": "alice", "HOME": "/synthetic/alice"}, run=fake)
     assert login.token == ACCESS.encode()
     assert fake.argv[1:] == ["find-generic-password", "-a", "alice",
                              "-s", "Claude Code-credentials", "-w"]
@@ -106,7 +107,7 @@ def test_a_custom_config_dir_suffixes_the_keychain_service():
 
 
 def test_a_missing_keychain_item_is_no_login():
-    assert sc.read_login_token(platform="darwin", env={"USER": "alice"},
+    assert sc.read_login_token(platform="darwin", env={"USER": "alice", "HOME": "/synthetic/alice"},
                                run=_FakeSecurity(b"", returncode=44)) is None
 
 

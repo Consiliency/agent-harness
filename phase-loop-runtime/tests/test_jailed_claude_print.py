@@ -6,6 +6,7 @@ request is made, and these tests do not qualify tooled seats as sealed HARDEN ev
 from __future__ import annotations
 
 import contextlib
+from hashlib import sha256
 import json
 import os
 import shutil
@@ -82,7 +83,9 @@ def test_default_print_uses_jail_and_retains_only_observed_stream_evidence(fake_
 
     def run(command, **kw):
         seen.update(command=command, **kw)
-        data = json.dumps(INIT).encode() + b"\n" + json.dumps(RESULT).encode() + b"\n"
+        session = command[command.index("--session-id") + 1]
+        data = b"".join(json.dumps({**event, "session_id": session}).encode() + b"\n"
+                        for event in (INIT, RESULT))
         assert not kw["output_guard"]("stdout", data)
         assert not kw["stdout_guard"](data)
         return pi._LegRun(0, data.decode(), "")
@@ -100,7 +103,12 @@ def test_default_print_uses_jail_and_retains_only_observed_stream_evidence(fake_
     assert seen["input_text"].startswith(pi._BROKER_CLAUDE_DIRECT_REQUEST)
     assert evidence["claude_route"] == "print"
     assert evidence["claude_api_key_source"] == "none" and evidence["claude_result_count"] == 1
-    assert len(evidence["claude_result_event_sha256"]) == 64
+    session = command[command.index("--session-id") + 1]
+    assert evidence["claude_session_id_sha256"] == sha256(session.encode()).hexdigest()
+    assert evidence["claude_result_event_sha256"] == sha256(
+        json.dumps({**RESULT, "session_id": session}).encode()).hexdigest()
+    assert evidence["claude_session_id_matches"] is True
+    assert command[command.index("--session-id") + 1] not in repr(evidence)
     assert evidence["provider_input_inline"] is False
     assert evidence["provider_cwd_class"] == "seat_jail_tree"
     assert evidence["provider_prompt_transport"] == "stdin"
@@ -146,6 +154,8 @@ def executable_standin(tmp_path_factory):
 #include <unistd.h>
 int main(int argc, char **argv) {
     const char *mode = "success";
+    const char *session = "";
+    for (int i=1; i+1<argc; i++) if (!strcmp(argv[i], "--session-id")) session=argv[i+1];
     for (int i=1; i+1<argc; i++) if (!strcmp(argv[i], "--name")) mode=argv[i+1];
     const char *auth_mode = "good";
     if (argc == 4 && !strcmp(argv[1], "auth") && !strcmp(argv[2], "status") && !strcmp(argv[3], "--json")) {
@@ -176,13 +186,13 @@ int main(int argc, char **argv) {
     f=fopen("/seat/tree/disposable.txt","w"); if(!f) return 32; fputs("clone scratch",f); fclose(f);
     f=fopen("/seat/out/work.txt","w"); if(!f) return 33; fputs("scratch",f); fclose(f);
     char buf[1024]; while(fread(buf,1,sizeof(buf),stdin)) {}
-    puts("{\"type\":\"system\",\"subtype\":\"init\",\"apiKeySource\":\"none\"}"); fflush(stdout);
+    printf("{\"session_id\":\"%s\",\"type\":\"system\",\"subtype\":\"init\",\"apiKeySource\":\"none\"}\n",session); fflush(stdout);
     if (!strcmp(mode,"cancel") || !strcmp(mode,"timeout")) { while(1) pause(); }
     if (!strcmp(mode,"missing")) { puts("{\"type\":\"assistant\",\"content\":\"AGREE\"}"); return 0; }
     if (!strcmp(mode,"auth")) { puts("{\"type\":\"system\",\"subtype\":\"api_retry\",\"error\":\"billing_error\"}"); fflush(stdout); while(1) pause(); }
-    if (!strcmp(mode,"bad-result")) { puts("{\"type\":\"result\",\"subtype\":\"error_during_execution\",\"result\":\"AGREE\"}"); return 0; }
-    if (!strcmp(mode,"no-verdict")) { puts("{\"type\":\"result\",\"subtype\":\"success\",\"result\":\"Reviewed the artifact.\"}"); return 0; }
-    puts("{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"Reviewed.\\nAGREE\"}"); fflush(stdout);
+    if (!strcmp(mode,"bad-result")) { printf("{\"session_id\":\"%s\",\"type\":\"result\",\"subtype\":\"error_during_execution\",\"result\":\"AGREE\"}\n",session); return 0; }
+    if (!strcmp(mode,"no-verdict")) { printf("{\"session_id\":\"%s\",\"type\":\"result\",\"subtype\":\"success\",\"result\":\"Reviewed the artifact.\"}\n",session); return 0; }
+    printf("{\"session_id\":\"%s\",\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"Reviewed.\\nAGREE\"}\n",session); fflush(stdout);
     if (!strncmp(mode,"secret-",7)) {
         int fd=!strcmp(mode,"secret-stderr") ? 2:1;
         const char *secret="SEAT-JAIL-SENTINEL-print-compatibility";
@@ -224,7 +234,7 @@ def live_seat(tmp_path, monkeypatch, executable, *, login_env=None, synthetic=Tr
         try:
             seat = pi._prepare_jailed_claude(review, tmp_path / "seat", auth, n,
                                             seat_uid.holder_pid_from_prefix(prefix), ("bundle", "brief"), timeout_s=5,
-                                            env={} if login_env is None else login_env)
+                                            env={"HOME": str(tmp_path / "synthetic-home")} if login_env is None else login_env)
             yield seat
         finally:
             pi._EGRESS_LAUNCH_PREFIX.reset(token)
@@ -315,7 +325,9 @@ def test_bounded_print_reclaims_native_wait(tmp_path, monkeypatch, executable_st
 def test_retained_streams_are_checked_before_result_or_tail(fake_seat, monkeypatch, channel):
     seat, removed = fake_seat
     def run(command, **kw):
-        data = json.dumps(INIT).encode() + b"\n" + json.dumps(RESULT).encode() + b"\n"
+        session = command[command.index("--session-id") + 1]
+        data = b"".join(json.dumps({**event, "session_id": session}).encode() + b"\n"
+                        for event in (INIT, RESULT))
         kw["stdout_guard"](data)
         # A retained-only stand-in intentionally does not call the chunk guard. Put the
         # sentinel before a long suffix so a tail-only check would not cover it.
@@ -453,7 +465,7 @@ def test_selected_login_context_controls_metadata_and_actual_descriptor(
     real_read = pi._seat_credentials.read_login_store
 
     def read(**kw):
-        reads.append(kw["env"]["CLAUDE_CONFIG_DIR"])
+        reads.append(str(pi._seat_credentials.claude_config_dir(kw["env"])))
         return real_read(**kw)
 
     monkeypatch.setattr(pi._seat_credentials, "read_login_store", read)
@@ -489,7 +501,7 @@ def test_login_wait_reads_only_the_explicit_login_context(tmp_path, monkeypatch,
     real_read = sc.read_login_store
 
     def read(**kw):
-        reads.append(kw["env"]["CLAUDE_CONFIG_DIR"])
+        reads.append(str(pi._seat_credentials.claude_config_dir(kw["env"])))
         return real_read(**kw)
 
     monkeypatch.setattr(sc, "read_login_store", read)

@@ -3023,7 +3023,8 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "under_claude_code", "native_adapter_required", "native_fill", "unavailable",
     # the headless print route (Stage 1b)
     "claude_print_result", "claude_print_subscription_unproven", "claude_print_auth_drift",
-    "claude_print_stalled", "claude_print_result_unproven", "panel_claude_route_invalid",
+    "claude_print_stalled", "claude_print_result_unproven", "claude_print_session_unproven",
+    "panel_claude_route_invalid",
     # the transport seam (Stage 2): `sdk` is named but not admitted (EC-REVIEWTRUTH-18)
     "panel_claude_transport_not_admitted",
     # route / authorization refusals
@@ -10657,7 +10658,9 @@ class _ClaudePrintStream:
     the process group. Lines are assembled across chunk boundaries before parsing.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, expected_session_id: str | None = None) -> None:
+        self.expected_session_id = expected_session_id
+        self.session_id_matches = False
         self._carry = bytearray()
         self.events = 0
         self.init_seen = False
@@ -10694,6 +10697,11 @@ class _ClaudePrintStream:
             return
         self.events += 1
         kind, subtype = event.get("type"), event.get("subtype")
+        if (self.expected_session_id is not None
+                and (kind == "result" or (kind == "system" and subtype == "init"))
+                and event.get("session_id") != self.expected_session_id):
+            self.violation = "claude_print_session_unproven"
+            return
         if kind == "system" and subtype == "init":
             if self.init_seen:
                 self.violation = _CLAUDE_PRINT_SUBSCRIPTION_UNPROVEN
@@ -10715,6 +10723,7 @@ class _ClaudePrintStream:
                   or event.get("is_error", False) is not False or not isinstance(text, str)):
                 self.violation = "claude_print_result_unproven"
             else:
+                self.session_id_matches = self.expected_session_id is not None
                 self.result_text = text
                 self.result_sha256 = sha256(raw).hexdigest()
 
@@ -10758,7 +10767,16 @@ def _run_claude_print_session(
     else:
         backstop_s = max(1, int(backstop_s))
     stall_s = _LEG_STALL_THRESHOLD_S if stall_s is None else max(0.01, float(stall_s))
-    stream = _ClaudePrintStream()
+    expected_session_id = None
+    if seat_jail is not None:
+        try:
+            value = command[command.index("--session-id") + 1]
+            if str(uuid.UUID(value)) != value:
+                raise ValueError("noncanonical session")
+            expected_session_id = value
+        except (ValueError, IndexError, AttributeError, TypeError):
+            return 1, "", _HarnessCode("claude_print_session_unproven"), ""
+    stream = _ClaudePrintStream(expected_session_id)
     secret_seen = False
     secret_forms = _seat_jail.secret_encodings(seat_token) if seat_token else ()
     overlap = max((len(form) for form in secret_forms), default=1) - 1
@@ -10794,6 +10812,8 @@ def _run_claude_print_session(
         observed["api_key_source"] = stream.api_key_source
         observed["result_count"] = stream.result_count
         observed["result_event_sha256"] = stream.result_sha256
+        if expected_session_id is not None:
+            observed["session_id_matches"] = stream.session_id_matches
     stderr = run.stderr or ""
     tail = " ".join(_redact_seat_credentials(stderr[-2000:]).split())[-600:]
     if stream.violation is not None:
@@ -11382,8 +11402,6 @@ def _prepare_jailed_claude(
     # One explicit context and one store read for the login token and its subscription
     # metadata. Override resolution still returns the exact record whose binding it checked.
     login_env = dict(os.environ if env is None else env)
-    if not login_env.get("CLAUDE_CONFIG_DIR") and login_env.get("HOME"):
-        login_env["CLAUDE_CONFIG_DIR"] = str(Path(login_env["HOME"]) / ".claude")
     raw_login = _seat_credentials.read_login_store(env=login_env)
     subscription_proven = (
         not _claude_caller_supplied_credential(login_env)
@@ -11474,6 +11492,32 @@ def _build_claude_auth_jail(seat: _JailedSeat, directory: Path, token: bytes) ->
         return jail
 
 
+def _cleanup_claude_private_roots(
+    seat: _JailedSeat, roots: Sequence[Path], *, quiescence_failed: bool,
+) -> None:
+    """Retain launch roots under fatal authority until group absence is proven."""
+    retained = []
+    for root in roots:
+        if quiescence_failed:
+            # These are the same subordinate-owned children teardown_in_h removes.
+            # Recording their parent would not name a target the existing reaper accepts.
+            retained.extend(root / name for name in _seat_uid.SEAT_DIR_NAMES)
+        else:
+            retained.extend(root / name for name in
+                            _seat_uid.teardown_in_h(seat.holder_pid, str(root)))
+    for path in retained:
+        if quiescence_failed:
+            # A recording failure must not replace the primary process-group error.
+            try:
+                _seat_uid.record_retention(path)
+            except Exception:
+                pass
+        else:
+            _seat_uid.record_retention(path)
+    if retained:
+        seat.notices.append("seat_sandbox_retained_after_teardown")
+
+
 def _jailed_claude_subscription_auth_ok(
     seat: _JailedSeat, *, timeout_s: float = 15,
     quiescence_latch: _ProviderQuiescenceLatch | None = None,
@@ -11487,6 +11531,7 @@ def _jailed_claude_subscription_auth_ok(
         return False
     directories = (seat.seat_dir / "seat-auth", seat.seat_dir / "seat-auth-probe")
     jails = []
+    quiescence_failed = False
     forms = _seat_jail.secret_encodings(seat.token)
     overlap = max(map(len, forms), default=1) - 1
     carries = {"stdout": b"", "stderr": b""}
@@ -11524,17 +11569,15 @@ def _jailed_claude_subscription_auth_ok(
         return (isinstance(status, dict) and status.get("loggedIn") is True
                 and status.get("authMethod") == "oauth_token"
                 and status.get("apiProvider") == "firstParty" and "apiKeySource" not in status)
+    except ProviderProcessGroupQuiescenceError:
+        quiescence_failed = True
+        raise
     except (OSError, subprocess.SubprocessError, ValueError, RecursionError):
         return False
     finally:
         for jail in jails:
             _seat_jail.close_jail_fds(jail)
-        for directory in directories:
-            retained = _seat_uid.teardown_in_h(seat.holder_pid, str(directory))
-            for name in retained:
-                _seat_uid.record_retention(directory / name)
-            if retained:
-                seat.notices.append("seat_sandbox_retained_after_teardown")
+        _cleanup_claude_private_roots(seat, directories, quiescence_failed=quiescence_failed)
 
 
 def _exec_jailed_claude_print_leg(
@@ -11553,6 +11596,7 @@ def _exec_jailed_claude_print_leg(
     evidence: EC-HARDEN-5 remains UNMET for tooled/pointer seats.
     """
     jail = seat.jail
+    quiescence_failed = False
     try:
         if refusal is not None:
             return "UNAVAILABLE", refusal
@@ -11633,14 +11677,17 @@ def _exec_jailed_claude_print_leg(
             broker_evidence.update({
                 "claude_api_key_source": observed.get("api_key_source"),
                 "claude_result_count": observed.get("result_count", 0),
+                "claude_session_id_matches": observed.get("session_id_matches", False),
                 "claude_result_event_sha256": observed.get("result_event_sha256"),
             })
-        if log in (_CLAUDE_PRINT_SUBSCRIPTION_UNPROVEN, _CLAUDE_PRINT_AUTH_DRIFT):
+        if log in (_CLAUDE_PRINT_SUBSCRIPTION_UNPROVEN, _CLAUDE_PRINT_AUTH_DRIFT,
+                   "claude_print_session_unproven"):
             return "UNAVAILABLE", str(log)
         if log == "claude_seat_token_in_output":
             return _jailed_failure(str(log), failure_detail_sink)
         # Require the stream’s subscription and single-result observations before classification.
-        admitted = (observed.get("api_key_source") == "none"
+        admitted = (observed.get("session_id_matches") is True
+                    and observed.get("api_key_source") == "none"
                     and observed.get("result_count") == 1
                     and isinstance(observed.get("result_event_sha256"), str))
         if not admitted or log != "claude_print_result" or rc != 0:
@@ -11655,18 +11702,16 @@ def _exec_jailed_claude_print_leg(
             return ("TIMEOUT" if rc == 124 else "DEGRADED"), ""
         status = _classify_leg(rc, text, str(log), "review")
         return status, text
+    except ProviderProcessGroupQuiescenceError:
+        quiescence_failed = True
+        raise
     finally:
         _seat_jail.close_jail_fds(jail)
         _seat_jail.close_jail_fds(seat.probe_jail)
-        retained = [
-            parent / name
-            for parent in (seat.review_dir, seat.seat_dir, seat.seat_dir / _JAIL_PROBE_DIRNAME)
-            for name in _seat_uid.teardown_in_h(seat.holder_pid, str(parent))
-        ]
-        for path in retained:
-            _seat_uid.record_retention(path)
-        if retained:
-            seat.notices.append("seat_sandbox_retained_after_teardown")
+        _cleanup_claude_private_roots(
+            seat, (seat.review_dir, seat.seat_dir, seat.seat_dir / _JAIL_PROBE_DIRNAME),
+            quiescence_failed=quiescence_failed,
+        )
 
 
 def _exec_jailed_claude_leg(
@@ -11700,6 +11745,7 @@ def _exec_jailed_claude_leg(
             review_monitor=review_monitor, session_name=session_name, refusal=refusal,
         )
     jail = seat.jail
+    quiescence_failed = False
     session_id = str(uuid.uuid4())
     command = _broker_claude_tui_command(model=model, effort=effort, session_id=session_id,
                                          sandboxed=jail, env=env, session_name=session_name)
@@ -11793,20 +11839,23 @@ def _exec_jailed_claude_leg(
         )
         _refresh_transcript()
         kept = transcript_snapshot.read_bytes()
+    except ProviderProcessGroupQuiescenceError:
+        quiescence_failed = True
+        raise
     finally:
         _seat_jail.close_jail_fds(jail)
         _seat_jail.close_jail_fds(seat.probe_jail)
-        retained = [
-            parent / name
-            for parent in (seat.review_dir, seat.seat_dir, seat.seat_dir / _JAIL_PROBE_DIRNAME)
-            for name in _seat_uid.teardown_in_h(seat.holder_pid, str(parent))
-        ]
-        for path in retained:
-            # Under the leg's own mkdtemp scratch dir: operator-owned and 0700 (F020).
-            _seat_uid.record_retention(path)
-        if retained:
-            seat.notices.append("seat_sandbox_retained_after_teardown")
-        shutil.rmtree(snapshots, ignore_errors=True)
+        _cleanup_claude_private_roots(
+            seat, (seat.review_dir, seat.seat_dir, seat.seat_dir / _JAIL_PROBE_DIRNAME),
+            quiescence_failed=quiescence_failed,
+        )
+        if quiescence_failed:
+            try:
+                _seat_uid.record_retention(snapshots)
+            except Exception:
+                pass  # Preserve the primary process-group error and the private snapshot.
+        else:
+            shutil.rmtree(snapshots, ignore_errors=True)
     if unsafe:
         return _jailed_failure("seat_sandbox_refused:output_unsafe", failure_detail_sink)
     pty_tail = str(pty_tail or "")

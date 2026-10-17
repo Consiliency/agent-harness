@@ -12,7 +12,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   default tool set, exact model, staged tree, private scratch and jail lifecycle.
   `PHASE_LOOP_PANEL_CLAUDE_ROUTE=tui` retains the explicit TUI route. Managed Claude
   launchers resolve to their native image for jailed execution. Tooled/pointer seats
-  remain outside sealed HARDEN evidence (EC-HARDEN-5 UNMET).
+  remain outside sealed HARDEN evidence (EC-HARDEN-5 UNMET). Login contexts preserve
+  default and configured account locations; print receipts correlate session events, and
+  private launch data follows process-group lifecycle handling.
 
 ### skills-parity CI runs the skill size gate (agent-harness#1358)
 
