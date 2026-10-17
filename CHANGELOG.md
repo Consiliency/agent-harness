@@ -29,6 +29,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   first-invalid-reason fields, plus capped relative timing samples. Group cleanup
   requests remain distinct from exit receipts; admission and HARDEN rules are unchanged.
 
+### Context-file adapter runs get the `references/` files their skills link (agent-harness#1358)
+
+- Gemini and OpenCode launches carry each injected skill's `references/` files
+  beside the delivered `context.md` under `skills/<skill>/references/`, and the
+  context says where they are. Gemini uses its workspace mirror. Skills without
+  references are unchanged, so every current Gemini and OpenCode context is
+  byte-identical. The bundle digest and delivered files use the same captured
+  bytes, including a canonical `_overrides/<harness>/references/` file. This unblocks
+  splitting the codex, gemini and opencode plan and execute skills; codex reads its
+  installed skills and is not changed.
+
 ### skills-parity CI runs the skill size gate (agent-harness#1358)
 
 - `skills-parity.yml` runs `tests/test_skill_size_gate.py` as a warn-first step,
