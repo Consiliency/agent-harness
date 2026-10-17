@@ -34,10 +34,7 @@ import re
 import subprocess
 from typing import Any, Callable
 
-try:  # Python 3.11+
-    import tomllib  # type: ignore[import-not-found]
-except ModuleNotFoundError:  # Python 3.10 — the requires-python floor
-    import tomli as tomllib  # type: ignore[no-redef]
+import tomllib
 
 from .validation import SeatValidationError, validate_board
 from . import composition
