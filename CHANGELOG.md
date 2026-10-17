@@ -19,6 +19,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   and error labels, the reaped process exit code, requested versus observed models,
   and session-correlated tool receipts with hashed staged Read paths. Missing or
   contradictory observations remain unproven; diagnostics do not admit a result.
+- Native observation diagnostics validate supported content-block shapes and strict
+  UTF-8, and detect repeated content independently of envelope UUIDs. Unsupported or
+  ambiguous frames leave model/Read claims unproven without changing result admission.
 
 ### skills-parity CI runs the skill size gate (agent-harness#1358)
 

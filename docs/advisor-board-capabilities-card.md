@@ -180,7 +180,27 @@ tool-result status. They contain no tool input/output or transcript. A
 it does not approve a review or prove file contents. Malformed, foreign, duplicate, nested or excess relevant
 frames invalidate positive observation claims. Limits are 512 relevant events,
 64 tool uses, four models per source, 128 blocks per frame and 32 error entries;
-truncation is explicit. A qualification must check `valid`, no truncation, exact model
+truncation is explicit. The diagnostic block compatibility subset is closed: text
+requires string `text`; assistant thinking requires string `thinking` and `signature`;
+assistant tool uses require bounded IDs, string names and object inputs. Server tool
+uses accept only the pinned decoder's eight server-tool names. User tool results
+require a bounded correlation ID, an omitted or boolean `is_error`, and omitted/null,
+string, or at most 128 text-only content blocks. Blocks accept only those fields
+plus their discriminator; unsupported variants, extra block fields and other nested
+result shapes make diagnostics unproven. Tool inputs remain opaque objects. This
+conservative subset does not claim support for every native output variant.
+Strict UTF-8 failure also invalidates diagnostics; a correctly encoded U+FFFD is valid.
+Optional envelope UUIDs are checked for duplicates. Independently, at most 512 private
+SHA-256 fingerprints detect repeated same-role/model/content assistant or user frames,
+including UUID-less frames and repeats with changed UUIDs, message IDs or usage.
+Fingerprints use canonical JSON with a 65,536-byte budget per frame; a preflight
+also caps aggregate nodes/container entries/string characters at 65,536 and nesting
+at 64 levels to bound encoder work. Exceeding a budget sets truncation and invalidity.
+Fingerprints are never exported. Distinct completed native
+blocks may share a message ID; identical repeated content is conservatively ambiguous
+even if native partial-message delivery could explain it. Native `stream_event` deltas
+are ignored and supply no proof. No raw event or content reference is retained.
+A qualification must check `valid`, no truncation, exact model
 match and the expected staged-path digest with a completed Read, alongside all existing
 session, subscription, result, exit and verdict requirements. Missing diagnostics
 cannot establish these facts. The diagnostic reducer changes no admission rule.

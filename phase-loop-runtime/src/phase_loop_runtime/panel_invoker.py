@@ -10704,7 +10704,14 @@ class _ClaudePrintStream:
                 self.observations.malformed()
             return obj
         try:
-            event = json.loads(raw.decode("utf-8", errors="replace"), object_pairs_hook=object_pairs)
+            decoded = raw.decode("utf-8")
+        except UnicodeDecodeError:
+            self.observations.malformed()
+            # Preserve the pre-existing replacement-decoded admission behavior;
+            # repaired wire bytes can never be positive diagnostic evidence.
+            decoded = raw.decode("utf-8", errors="replace")
+        try:
+            event = json.loads(decoded, object_pairs_hook=object_pairs)
         except (json.JSONDecodeError, ValueError):
             self.observations.malformed()
             return

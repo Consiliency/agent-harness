@@ -8,6 +8,7 @@ No SDK dependency or transport is used.
 from __future__ import annotations
 
 from hashlib import sha256
+import json
 import posixpath
 import re
 from typing import Callable
@@ -29,6 +30,88 @@ MAX_TOOLS = 64
 MAX_MODELS = 4
 MAX_ERRORS = 32
 MAX_BLOCKS = 128
+MAX_FINGERPRINT_BYTES = 65536
+MAX_FINGERPRINT_DEPTH = 64
+_SERVER_TOOLS = frozenset({
+    "advisor", "web_search", "web_fetch", "code_execution", "bash_code_execution",
+    "text_editor_code_execution", "tool_search_tool_regex", "tool_search_tool_bm25",
+})
+
+
+def _block_shape(block: object, role: str) -> bool:
+    # Closed diagnostic compatibility subset of the pinned decoder. Extra block
+    # fields and unsupported variants are unproven, never silently discarded.
+    # Tool inputs remain opaque dictionaries; only Read.file_path is observed.
+    if not isinstance(block, dict):
+        return False
+    kind = block.get("type")
+    if kind == "text":
+        return block.keys() == {"type", "text"} and isinstance(block["text"], str)
+    if kind == "thinking" and role == "assistant":
+        return (block.keys() == {"type", "thinking", "signature"}
+                and isinstance(block["thinking"], str) and isinstance(block["signature"], str))
+    if kind in ("tool_use", "server_tool_use") and role == "assistant":
+        return (block.keys() == {"type", "id", "name", "input"}
+                and _tool_key(block["id"]) is not None
+                and isinstance(block["name"], str)
+                and (kind == "tool_use" or block["name"] in _SERVER_TOOLS)
+                and isinstance(block["input"], dict))
+    if kind == "tool_result" and role == "user":
+        if (not {"type", "tool_use_id"} <= block.keys()
+                or block.keys() - {"type", "tool_use_id", "content", "is_error"}
+                or _tool_key(block["tool_use_id"]) is None
+                or type(block.get("is_error", False)) is not bool):
+            return False
+        content = block.get("content")
+        # The pinned decoder leaves nested dicts opaque. Our supported nested
+        # subset is text only, with no recursion; images/documents/new variants
+        # need an explicit compatibility review before they can prove a Read.
+        return (content is None or isinstance(content, str)
+                or isinstance(content, list) and len(content) <= MAX_BLOCKS
+                and all(isinstance(part, dict) and part.keys() == {"type", "text"}
+                        and part.get("type") == "text" and isinstance(part["text"], str)
+                        for part in content))
+    return False
+
+
+def _fingerprint_budget(value: object, budget: list[int], depth: int = 0) -> bool:
+    # Bound encoder work/temporary allocations too: iterencode alone can allocate
+    # one arbitrarily large escaped string or sorted dictionary-key list.
+    if depth > MAX_FINGERPRINT_DEPTH:
+        return False
+    budget[0] -= 1 + (len(value) if isinstance(value, (str, list, dict)) else 0)
+    if budget[0] < 0:
+        return False
+    if isinstance(value, dict):
+        return all(isinstance(key, str) and _fingerprint_budget(key, budget, depth + 1)
+                   and _fingerprint_budget(item, budget, depth + 1)
+                   for key, item in value.items())
+    if isinstance(value, list):
+        return all(_fingerprint_budget(item, budget, depth + 1) for item in value)
+    if type(value) is int:
+        return value.bit_length() <= MAX_FINGERPRINT_BYTES
+    return value is None or isinstance(value, (str, int, float, bool))
+
+
+def _frame_fingerprint(kind: str, model: object, content: object) -> bytes | None:
+    # Semantic replay identity excludes UUIDs, message IDs and other envelope
+    # metadata. Native split assistant blocks may share an ID: distinct content
+    # is accepted; repeated same-role/model content is conservatively ambiguous.
+    # No frame, content, or fingerprint is exported or kept by reference.
+    if not _fingerprint_budget([kind, model, content], [MAX_FINGERPRINT_BYTES]):
+        return None
+    digest = sha256()
+    remaining = MAX_FINGERPRINT_BYTES
+    try:
+        for chunk in json.JSONEncoder(sort_keys=True, ensure_ascii=True, allow_nan=False).iterencode(
+                (kind, model, content)):
+            if len(chunk) > remaining:
+                return None
+            remaining -= len(chunk)
+            digest.update(chunk.encode("ascii"))
+    except (ValueError, TypeError, RecursionError):
+        return None
+    return digest.digest()
 
 
 def _model(value: object) -> str | None:
@@ -76,6 +159,7 @@ class ClaudePrintObservations:
         self.model_unknown = False
         self.tools: dict[str, dict[str, object]] = {}
         self._uuids: set[str] = set()
+        self._fingerprints: set[bytes] = set()
         self._init_seen = False
         self._result_seen = False
 
@@ -117,8 +201,8 @@ class ClaudePrintObservations:
         if event.get("parent_tool_use_id") is not None:
             self.invalid = True
             return
-        # UUID is optional on older frames. When present it must be a bounded
-        # opaque identifier, and replays must not create additional observations.
+        # UUID is optional on older frames. Content replay checks below apply
+        # even without it, or when it changes on an otherwise repeated frame.
         if "uuid" in event:
             key = _tool_key(event["uuid"])
             if key is None or key in self._uuids:
@@ -175,6 +259,14 @@ class ClaudePrintObservations:
                     self.invalid = True
                 self._error(event["error"], closed=True)
         content = message.get("content")
+        fingerprint = _frame_fingerprint(kind, message.get("model") if kind == "assistant" else None, content)
+        if fingerprint is None:
+            self.truncated = self.invalid = True
+            return
+        if fingerprint in self._fingerprints:
+            self.invalid = True
+            return
+        self._fingerprints.add(fingerprint)
         if kind == "user" and isinstance(content, str):
             return  # Ordinary input is not tool evidence.
         if not isinstance(content, list):
@@ -184,7 +276,7 @@ class ClaudePrintObservations:
             self.truncated = self.invalid = True
             return
         for block in content:
-            if not isinstance(block, dict):
+            if not _block_shape(block, kind):
                 self.invalid = True
                 continue
             block_kind = block.get("type")
@@ -203,10 +295,6 @@ class ClaudePrintObservations:
                 path = _path_digest(inputs.get("file_path")) if isinstance(inputs, dict) and name == "Read" else None
                 self.tools[key] = {"name": name, "path_sha256": path, "result": "pending"}
             elif block_kind == "tool_result" and kind == "user":
-                content = block.get("content")
-                if (content is not None and not isinstance(content, (str, list))
-                        or isinstance(content, list) and not all(isinstance(part, dict) for part in content)):
-                    self.invalid = True
                 key = _tool_key(block.get("tool_use_id"))
                 tool = self.tools.get(key) if key is not None else None
                 if tool is None or tool["result"] != "pending":
