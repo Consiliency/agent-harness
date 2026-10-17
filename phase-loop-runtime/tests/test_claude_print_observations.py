@@ -618,3 +618,49 @@ def test_real_process_returncode_is_recorded_after_reap(tmp_path, timeout):
     else:
         result = pi._run_leg_with_liveness(command, **kwargs)
         assert result.returncode == 17 and sink == [17]
+
+
+@pytest.mark.parametrize("uuid_mode", ["absent", "changed", "same"])
+@pytest.mark.parametrize("errors", [
+    ["server_error", "server_error"],
+    ["private-first@example.invalid", "private-second@example.invalid"],
+])
+def test_production_repeated_retry_categories_are_nonpositive(fake_seat, monkeypatch, uuid_mode, errors):
+    seat, removed = fake_seat
+    events = frames()
+    retries = [{"type": "system", "subtype": "api_retry", "session_id": SESSION,
+                "error": error} for error in errors]
+    if uuid_mode != "absent":
+        retries[0]["uuid"] = "retry-first"
+        retries[1]["uuid"] = "retry-first" if uuid_mode == "same" else "retry-second"
+    events[1:1] = retries
+    inject(monkeypatch, events)
+    evidence = {}
+    status, text = _exec(seat, evidence)
+    diagnostic = evidence["claude_native_protocol"]
+    assert status == "OK" and text == "Reviewed.\nAGREE"
+    assert len(removed) == 3
+    assert diagnostic["valid"] is False and diagnostic["truncated"] is False
+    assert diagnostic["model_status"] == "unproven"
+    assert not any(tool["read_completed"] for tool in diagnostic["tools"])
+    assert "private-first" not in repr(diagnostic) and "private-second" not in repr(diagnostic)
+
+
+@pytest.mark.parametrize("errors", [
+    [], ["server_error"], ["private-first@example.invalid"], ["server_error", "rate_limit"],
+])
+def test_production_distinct_retry_categories_remain_diagnostic(fake_seat, monkeypatch, errors):
+    seat, _ = fake_seat
+    events = frames()
+    events[1:1] = [{"type": "system", "subtype": "api_retry", "session_id": SESSION,
+                   "error": error} for error in errors]
+    inject(monkeypatch, events)
+    evidence = {}
+    status, text = _exec(seat, evidence)
+    diagnostic = evidence["claude_native_protocol"]
+    assert status == "OK" and text == "Reviewed.\nAGREE"
+    assert diagnostic["valid"] is True and diagnostic["truncated"] is False
+    assert diagnostic["model_status"] == "match"
+    assert diagnostic["tools"][0]["read_completed"] is True
+    assert diagnostic["error_count"] == len(errors)
+    assert "private-first" not in repr(diagnostic)

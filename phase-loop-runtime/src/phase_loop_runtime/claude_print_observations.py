@@ -241,9 +241,21 @@ class ClaudePrintObservations:
                 self._error(None)
             return
         if kind == "system":
-            if not isinstance(event.get("error"), str):
+            error = event.get("error")
+            if not isinstance(error, str):
                 self.invalid = True
-            self._error(event.get("error"), closed=True)
+            self._error(error, closed=True)
+            # Retry observations participate in semantic replay detection too.
+            # Use only the closed category; distinct unknown native errors are
+            # conservatively ambiguous without retaining or hashing their text.
+            category = error if isinstance(error, str) and error in ERROR_CATEGORIES else "unknown"
+            fingerprint = _frame_fingerprint("system", "api_retry", category)
+            if fingerprint is None:
+                self.truncated = self.invalid = True
+            elif fingerprint in self._fingerprints:
+                self.invalid = True
+            else:
+                self._fingerprints.add(fingerprint)
             return
         message = event.get("message")
         if not isinstance(message, dict):

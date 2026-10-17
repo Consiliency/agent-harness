@@ -200,6 +200,11 @@ Fingerprints are never exported. Distinct completed native
 blocks may share a message ID; identical repeated content is conservatively ambiguous
 even if native partial-message delivery could explain it. Native `stream_event` deltas
 are ignored and supply no proof. No raw event or content reference is retained.
+Accepted `system/api_retry` observations share the bounded fingerprint set and use
+their closed error category as replay identity, independently of envelope UUIDs.
+Repeated categories are conservatively ambiguous, including distinct unknown errors;
+native retry text is neither retained nor hashed. A single retry or distinct known
+categories can remain valid diagnostics without changing result admission.
 A qualification must check `valid`, no truncation, exact model
 match and the expected staged-path digest with a completed Read, alongside all existing
 session, subscription, result, exit and verdict requirements. Missing diagnostics
