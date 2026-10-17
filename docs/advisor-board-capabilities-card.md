@@ -168,6 +168,22 @@ conforming final verdict counts. Assistant turns, output files and session trans
 not supply a print-route verdict. Broker fields record the actual stdin transport, jail
 profile, observed auth source and result-event digest; print does not claim TUI transcript
 receipts. Heartbeat-only keeps the existing cancellation and quiescence behavior.
+The `claude_native_protocol` broker field provides bounded compatibility diagnostics
+after the output secret guards pass. It records a closed result subtype/error category
+and count, the process return code after reaping (null when unavailable), and separately
+validated requested, init and assistant model names. `model_status: match` requires both
+native model sources to equal the requested canonical name; unknown aliases remain
+unproven. Tool receipts contain a hashed tool-use ID, a closed `Read`/`other` name,
+a SHA-256 of a canonical absolute `/seat/tree/` path for Read, and a correlated native
+tool-result status. They contain no tool input/output or transcript. A
+`read_completed` receipt requires a native Read/result pair and matching native models;
+it does not approve a review or prove file contents. Malformed, foreign, duplicate, nested or excess relevant
+frames invalidate positive observation claims. Limits are 512 relevant events,
+64 tool uses, four models per source, 128 blocks per frame and 32 error entries;
+truncation is explicit. A qualification must check `valid`, no truncation, exact model
+match and the expected staged-path digest with a completed Read, alongside all existing
+session, subscription, result, exit and verdict requirements. Missing diagnostics
+cannot establish these facts. The diagnostic reducer changes no admission rule.
 Tooled/pointer seats remain **EC-HARDEN-5 UNMET** in `verify_harden_evidence.py`.
 
 An alternate backing reports `tui_backing_required` before gateway access. No API, SDK, Messages, direct

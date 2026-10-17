@@ -78,6 +78,7 @@ from .agy_canary_evidence import (
     seal_provider_launches,
 )
 from .claude_agent_view import ClaudeAgentViewAdapter
+from .claude_print_observations import ClaudePrintObservations
 from . import gemini_heartbeat
 from . import credential_redaction as _credential_redaction
 from .launcher import GROK_REVIEW_READONLY_TOOLS
@@ -8889,6 +8890,7 @@ def _run_leg_with_liveness(
     broker_evidence: dict[str, object] | None = None,
     seat_jail: "_seat_jail.SeatJail | None" = None,
     probe_jail: "_seat_jail.SeatJail | None" = None,
+    process_returncode_sink: list[int | None] | None = None,
 ) -> "_LegRun":
     """Run a print-mode CLI leg, killing it on HEARTBEAT EXTINCTION, not a blind clock.
 
@@ -9134,6 +9136,8 @@ def _run_leg_with_liveness(
     finally:
         try:
             _reap()
+            if process_returncode_sink is not None:
+                process_returncode_sink.append(proc.returncode)
         finally:
             for pipe in (proc.stdout, proc.stderr, *((proc.stdin,) if gemini_profile is not None and gemini_profile.quiescent else ())):
                 try:
@@ -10658,8 +10662,13 @@ class _ClaudePrintStream:
     the process group. Lines are assembled across chunk boundaries before parsing.
     """
 
-    def __init__(self, expected_session_id: str | None = None) -> None:
+    def __init__(self, expected_session_id: str | None = None,
+                 requested_model: str | None = None) -> None:
         self.expected_session_id = expected_session_id
+        self.observations = ClaudePrintObservations(
+            expected_session_id, requested_model,
+            lambda error: _leg_failure_kind(None, "", error),
+        )
         self.session_id_matches = False
         self._carry = bytearray()
         self.events = 0
@@ -10689,13 +10698,21 @@ class _ClaudePrintStream:
     def _event(self, raw: bytes) -> None:
         if self.violation is not None:
             return
+        def object_pairs(pairs: list[tuple[str, object]]) -> dict[str, object]:
+            obj = dict(pairs)
+            if len(obj) != len(pairs):
+                self.observations.malformed()
+            return obj
         try:
-            event = json.loads(raw.decode("utf-8", errors="replace"))
+            event = json.loads(raw.decode("utf-8", errors="replace"), object_pairs_hook=object_pairs)
         except (json.JSONDecodeError, ValueError):
+            self.observations.malformed()
             return
         if not isinstance(event, dict):
+            self.observations.malformed()
             return
         self.events += 1
+        self.observations.event(event)
         kind, subtype = event.get("type"), event.get("subtype")
         if (self.expected_session_id is not None
                 and (kind == "result" or (kind == "system" and subtype == "init"))
@@ -10708,11 +10725,19 @@ class _ClaudePrintStream:
                 return
             self.init_seen = True
             source = event.get("apiKeySource")
-            self.api_key_source = source if isinstance(source, str) else None
+            # The observation channel never copies arbitrary native metadata.
+            self.api_key_source = (source if source in (
+                "none", "ANTHROPIC_API_KEY", "apiKeyHelper", "/login managed key",
+            ) else "unknown" if isinstance(source, str) else None)
             if source != "none":
                 self.violation = _CLAUDE_PRINT_SUBSCRIPTION_UNPROVEN
         elif kind == "system" and subtype == "api_retry":
-            if event.get("error") in _CLAUDE_PRINT_AUTH_DRIFT_ERRORS:
+            error = event.get("error")
+            if isinstance(error, (dict, list)):
+                # These malformed categories previously raised at set membership;
+                # keep them refused rather than widening admission while observing.
+                self.violation = "claude_print_result_unproven"
+            elif error in _CLAUDE_PRINT_AUTH_DRIFT_ERRORS:
                 self.violation = _CLAUDE_PRINT_AUTH_DRIFT
         elif kind == "result":
             self.result_count += 1
@@ -10744,6 +10769,7 @@ def _run_claude_print_session(
     seat_jail: "_seat_jail.SeatJail | None" = None,
     probe_jail: "_seat_jail.SeatJail | None" = None,
     seat_token: bytes | None = None,
+    requested_model: str | None = None,
 ) -> tuple[int, str, str, str]:
     """Run a headless ``claude -p --output-format stream-json`` seat; the same
     ``(rc, text, log, tail)`` shape as ``_run_claude_tui_session``.
@@ -10756,7 +10782,8 @@ def _run_claude_print_session(
     governs. There is no animated screen, so the TUI's spinner problem (agent-harness#188)
     cannot arise. ``env`` is the caller's subscription env (``scrub_subscription_env``).
     The text is the ``result`` event's only; a run without one has empty text.
-    ``observed`` receives ``api_key_source``.
+    ``observed`` receives closed, bounded protocol diagnostics after both secret
+    guards pass. These observations never supply a verdict or change admission.
 
     ``mode`` is accepted for parity with the TUI session; completion is judged by the
     caller's classifier on the returned text.
@@ -10776,7 +10803,8 @@ def _run_claude_print_session(
             expected_session_id = value
         except (ValueError, IndexError, AttributeError, TypeError):
             return 1, "", _HarnessCode("claude_print_session_unproven"), ""
-    stream = _ClaudePrintStream(expected_session_id)
+    stream = _ClaudePrintStream(expected_session_id, requested_model)
+    process_returncodes: list[int | None] = []
     secret_seen = False
     secret_forms = _seat_jail.secret_encodings(seat_token) if seat_token else ()
     overlap = max((len(form) for form in secret_forms), default=1) - 1
@@ -10789,31 +10817,53 @@ def _run_claude_print_session(
         carries[channel] = data[-overlap:] if overlap else b""
         return secret_seen
 
+    def _retained_secret(*values: str | bytes | None) -> bool:
+        return secret_seen or bool(seat_token and any(
+            _seat_jail.contains_secret(
+                value if isinstance(value, bytes) else (value or "").encode("utf-8", errors="replace"),
+                seat_token,
+            ) for value in values
+        ))
+
+    def _publish_observations() -> None:
+        if observed is not None:
+            observed.update({
+                "api_key_source": stream.api_key_source,
+                "result_count": stream.result_count,
+                "result_event_sha256": stream.result_sha256,
+                "native_protocol": {
+                    **stream.observations.snapshot(),
+                    # Recorded from Popen after reaping, including cancellation or
+                    # timeout. Never the session reducer's synthetic refusal code.
+                    "process_returncode": process_returncodes[-1] if process_returncodes else None,
+                },
+            })
+            if expected_session_id is not None:
+                observed["session_id_matches"] = stream.session_id_matches
+
     try:
         run = _run_leg_with_liveness(
             list(command), cwd=cwd, env=env, deadline_s=float(backstop_s),
             stall_threshold_s=stall_s, input_text=prompt,
             stdout_guard=stream.feed,
+            process_returncode_sink=process_returncodes,
             **({"output_guard": _guard_output, "seat_jail": seat_jail,
                 "probe_jail": probe_jail} if seat_jail is not None else {}),
             **({"quiescence_latch": quiescence_latch} if quiescence_latch is not None else {}),
             **({"review_monitor": review_monitor} if review_monitor is not None else {}),
         )
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as exc:
+        if _retained_secret(exc.output, exc.stderr):
+            return 1, "", _HarnessCode("claude_seat_token_in_output"), ""
+        stream.finish()
+        _publish_observations()
         return 124, "", _HarnessCode(f"timeout after {backstop_s}s"), ""
     # Also inspect all retained output, before tails, result text or diagnostics are
     # copied. This covers injected runners and the final buffered output as well.
-    if secret_seen or (seat_token and any(
-            _seat_jail.contains_secret(data.encode("utf-8", errors="replace"), seat_token)
-            for data in (run.stdout or "", run.stderr or ""))):
+    if _retained_secret(run.stdout, run.stderr):
         return 1, "", _HarnessCode("claude_seat_token_in_output"), ""
     stream.finish()
-    if observed is not None:
-        observed["api_key_source"] = stream.api_key_source
-        observed["result_count"] = stream.result_count
-        observed["result_event_sha256"] = stream.result_sha256
-        if expected_session_id is not None:
-            observed["session_id_matches"] = stream.session_id_matches
+    _publish_observations()
     stderr = run.stderr or ""
     tail = " ".join(_redact_seat_credentials(stderr[-2000:]).split())[-600:]
     if stream.violation is not None:
@@ -11663,6 +11713,7 @@ def _exec_jailed_claude_print_leg(
             timeout_s=timeout_s, backstop_s=backstop_s, stall_s=stall_s,
             quiescence_latch=quiescence_latch, review_monitor=review_monitor,
             observed=observed, seat_jail=jail, probe_jail=seat.probe_jail, seat_token=seat.token,
+            requested_model=model or HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["claude"],
         )
         if quiescence_latch is not None:
             quiescence_latch.raise_if_set()
@@ -11679,6 +11730,7 @@ def _exec_jailed_claude_print_leg(
                 "claude_result_count": observed.get("result_count", 0),
                 "claude_session_id_matches": observed.get("session_id_matches", False),
                 "claude_result_event_sha256": observed.get("result_event_sha256"),
+                "claude_native_protocol": observed.get("native_protocol"),
             })
         if log in (_CLAUDE_PRINT_SUBSCRIPTION_UNPROVEN, _CLAUDE_PRINT_AUTH_DRIFT,
                    "claude_print_session_unproven"):

@@ -15,6 +15,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   remain outside sealed HARDEN evidence (EC-HARDEN-5 UNMET). Login contexts preserve
   default and configured account locations; print receipts correlate session events, and
   private launch data follows process-group lifecycle handling.
+- Print broker evidence includes bounded native protocol observations: closed result
+  and error labels, the reaped process exit code, requested versus observed models,
+  and session-correlated tool receipts with hashed staged Read paths. Missing or
+  contradictory observations remain unproven; diagnostics do not admit a result.
 
 ### skills-parity CI runs the skill size gate (agent-harness#1358)
 
