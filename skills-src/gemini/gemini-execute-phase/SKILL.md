@@ -44,7 +44,7 @@ non-human blocker instead of silently downgrading.
 - `--dry-run`: parse and print the lane schedule without editing.
 - `--parallel`: allowed only when the user explicitly requests parallel worker execution.
 
-If no plan path is explicit, reuse the `gemini-plan-phase` handoff as [references/interactive-path.md](references/interactive-path.md) describes.
+Interactive only: before execution read [references/interactive-path.md](references/interactive-path.md) for handoff reuse (no explicit plan), first-commit drafts and per-push/PR publication-mode checks.
 
 ## Preflight
 
@@ -215,4 +215,4 @@ and broker-owned descriptions remain with their publication owner.
 
 ## Worktree pruning
 
-At closeout, prune merged, clean sibling worktrees per [references/worktree-pruning.md](references/worktree-pruning.md).
+At phase start and closeout, prune merged, clean sibling worktrees per [references/worktree-pruning.md](references/worktree-pruning.md).

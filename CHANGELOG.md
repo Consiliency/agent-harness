@@ -32,12 +32,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### `gemini-execute-phase` drops under the skill size limit (agent-harness#1358)
 
-- Interactive-only procedure moves into three linked `references/` files:
-  `interactive-path.md` (plan handoff reuse, publication mode (b), the
-  `phase-loop publication-mode` check, the early draft PR), `worktree-pruning.md` and
-  `worker-fanout.md`. `SKILL.md` goes from about 6,900 tokens to under 5,000, and its
-  longest line is under 1,000 characters. Runner-relevant rules and every phrase the
-  tests pin stay in `SKILL.md`; gemini runner launches get the references beside
+- Move procedures into three linked `references/` files. Inputs loads
+  `interactive-path.md` before execution on interactive runs, with or without an
+  explicit plan, for handoff reuse, publication-mode checks and first-commit drafts.
+  Worktree pruning links `worktree-pruning.md` at phase start and closeout as a standing
+  rule for every path; Optional Worker Fanout links `worker-fanout.md` before briefing
+  authorized workers. `SKILL.md` stays under 5,000 tokens with no line over 1,000
+  characters. Runner publication ownership and test-pinned phrases stay inline;
+  gemini runner launches get the references beside
   `context.md`. The duplicate closeout-audit block in Core Rules now points to Closeout.
 
 ### Context-file adapter runs get the `references/` files their skills link (agent-harness#1358)
