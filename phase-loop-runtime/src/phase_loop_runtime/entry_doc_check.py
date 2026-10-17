@@ -39,6 +39,7 @@ import json
 import re
 import subprocess
 import sys
+import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Set, Tuple
@@ -404,15 +405,8 @@ def normalize_dist_name(name: str) -> str:
 
 
 def _parse_pyproject(text: str) -> Dict[str, str]:
-    """Extract the ``[project]`` scalars this check needs.
-
-    ``tomllib`` is 3.11+ and ``requires-python`` is 3.10, so fall back to a
-    narrow scan of the ``[project]`` table. Only ``name``/``version``/``readme``
-    are read, all of which are plain quoted strings in every pyproject here.
-    """
+    """Extract the ``[project]`` scalars this check needs (``name``/``version``/``readme``)."""
     try:
-        import tomllib  # Python 3.11+
-
         data = tomllib.loads(text)
         project = data.get("project", {}) or {}
         readme = project.get("readme", "")
@@ -423,24 +417,8 @@ def _parse_pyproject(text: str) -> Dict[str, str]:
             "version": str(project.get("version", "")),
             "readme": str(readme or ""),
         }
-    except ModuleNotFoundError:
-        pass
     except Exception:
         return {}
-
-    out: Dict[str, str] = {"name": "", "version": "", "readme": ""}
-    in_project = False
-    for line in text.splitlines():
-        stripped = line.strip()
-        if stripped.startswith("["):
-            in_project = stripped.split("#", 1)[0].strip() == "[project]"
-            continue
-        if not in_project:
-            continue
-        match = re.match(r"(name|version|readme)\s*=\s*[\"']([^\"']*)[\"']", stripped)
-        if match:
-            out[match.group(1)] = match.group(2)
-    return out
 
 
 def _discover_packages(repo: Path) -> Dict[str, PackageInfo]:

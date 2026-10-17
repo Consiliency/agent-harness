@@ -302,10 +302,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping, Sequence
 
-try:
-    import tomllib  # type: ignore[import-not-found]
-except ModuleNotFoundError:  # Python 3.10 floor (matches advisor_board/config.py's shim)
-    import tomli as tomllib  # type: ignore[no-redef]
+import tomllib
 
 from .convergence.broker.credsep import GitHubBrokerAdapter
 from .fab_canonical import (

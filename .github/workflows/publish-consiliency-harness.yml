@@ -47,10 +47,7 @@ jobs:
         run: |
           python - <<'PY'
           import os, sys
-          try:
-              import tomllib
-          except ModuleNotFoundError:
-              import tomli as tomllib
+          import tomllib
           ver = tomllib.load(open("consiliency-harness/pyproject.toml", "rb"))["project"]["version"]
           tag = os.environ.get("TAG_NAME", "")
           tag_v = tag[len("consiliency-harness-v"):] if tag.startswith("consiliency-harness-v") else tag

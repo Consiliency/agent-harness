@@ -51,7 +51,7 @@ PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests phase-loop-runtime/.v
 The test group supplies pytest and package build/install tools, including pip;
 the visual extra supplies Pillow for image decoding. Both are opt-in. The native
 repository-wide interpreter guard includes the dagger subproject's Python 3.14
-floor, which is separate from this runtime package's Python 3.10 minimum and CI's
+floor, which is separate from this runtime package's Python 3.12 minimum and CI's
 interpreter matrix. These commands verify the two selected files; they do not
 establish complete CI equivalence, behavior without Pillow, full-suite acceptance
 or production readiness.
