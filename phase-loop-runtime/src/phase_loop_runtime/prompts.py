@@ -395,6 +395,7 @@ def _with_delegation_guidance(
         installed_skill_roots=bundle.installed_skill_roots,
         installed_skill_warnings=bundle.installed_skill_warnings,
         bridge_skill_inventory=bundle.bridge_skill_inventory,
+        skill_reference_files=bundle.skill_reference_files,
     )
 
 

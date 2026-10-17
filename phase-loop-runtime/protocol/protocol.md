@@ -1740,6 +1740,10 @@ Observed launches reduce into these shared artifacts:
   beside `launch.json` and contain the same repo-sourced workflow bundle the
   adapter receives: workflow command, action-specific instructions, injected
   skill bodies, delegation guidance when present, and closeout requirements.
+  Context-file adapters carry an injected skill's linked `references/` files
+  beside the context delivered to the adapter under `skills/<skill>/references/`;
+  Gemini uses its workspace mirror. The files use the bytes captured with the
+  bundle digest, and the skill's body says where they are.
 - `terminal-summary.json` records the shared child-exit reduction used by
   closeout, repair, and monitor flows.
 
