@@ -667,8 +667,10 @@ def _claude_bundle_manifest(action: str, expected_skill_pack: tuple[str, ...]) -
         "The repo-owned Claude plugin bundle is the source of truth for workflow skills in this run. "
         "The launch already materializes the bundle beside `launch.json` and passes it through Claude's "
         "plugin, settings, agents, and MCP config flags, so do not re-enumerate or restate raw `SKILL.md` bodies here. "
-        "Do not list or read `claude-bundle/plugin/skills/**`, bundled `SKILL.md`, `references/`, `assets/`, "
-        "or `reflections/` during the launch; the bundle is already loaded and rereading it wastes the launch budget.\n\n"
+        "Do not list or read `claude-bundle/plugin/skills/**`, bundled `SKILL.md`, `assets/`, "
+        "or `reflections/` during the launch; the bundle is already loaded and rereading it wastes the launch budget. "
+        "The one exception is a `references/` file that the active skill's `SKILL.md` links by relative path: "
+        "it is not preloaded, so read it from the skill's directory at the step that points to it.\n\n"
         f"- bundle id: `{_claude_plugin_bundle_name(action)}`\n"
         "- bundle provenance: repo-owned `claude-bundle/` artifacts recorded in `launch.json`\n"
         f"- expected skill pack count: `{len(expected_skill_pack)}`\n"
@@ -718,9 +720,23 @@ def _bundle_sha256(
                 "name": skill_name,
                 "source": _skill_source_label(repo, skill_dir),
                 "sha256": hashlib.sha256(skill_file.read_bytes()).hexdigest() if skill_file.exists() else None,
+                # agent-harness#1358: SKILL.md links detail into references/; editing one
+                # must change the bundle identity, not only edits to SKILL.md.
+                "references": _skill_references_sha256(skill_dir),
             }
         )
     return hashlib.sha256(json.dumps(manifest, sort_keys=True).encode("utf-8")).hexdigest()
+
+
+def _skill_references_sha256(skill_dir: Path) -> dict[str, str]:
+    references = skill_dir / "references"
+    if not references.is_dir():
+        return {}
+    return {
+        path.relative_to(skill_dir).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+        for path in sorted(references.rglob("*"))
+        if path.is_file()
+    }
 
 
 def _skill_bundle_id(harness_target: str, action: str, expected_skill_pack: tuple[str, ...]) -> str:

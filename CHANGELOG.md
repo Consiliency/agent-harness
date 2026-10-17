@@ -30,6 +30,284 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   the runtime and end in `error`. That is fail-closed: such a node is never counted red or
   green, and its finding stays a blocking receipt.
 
+### skills-parity CI runs the skill size gate (agent-harness#1358)
+
+- `skills-parity.yml` runs `tests/test_skill_size_gate.py` as a warn-first step,
+  with `-rw`, so the job log lists every skill body over the size guidance. The
+  step fails only where the test does: a stale allowlist entry, or, once `STRICT`
+  is on, a new or grown offender. Changing the test now triggers the workflow.
+
+### Provider admission and availability evidence
+
+- Record the admitted CLI image's class and SHA256 in review evidence, and distinguish unavailable provider commands from login failures (agent-harness#1557; agent-harness#1343).
+
+### Gemini: a local model preference, `PHASE_LOOP_GEMINI_MODEL` (agent-harness#1604, ported from agent-harness#1615)
+
+- `PHASE_LOOP_GEMINI_MODEL` selects a registered canonical Gemini base model for the unpinned Gemini executor actions, model classes and composed/default board seats. Explicit task models, plan/roadmap model pins and configured board seats win; effort, other providers, subscription auth and sandbox admission are unchanged. Unset, the shipped defaults hold. An invalid value fails without fallback.
+- Register the `Gemini 4 Argon` display alias and render its low/medium/high variants to the canonical `gemini-4-argon-*` ids; an unsupported or conflicting effort is rejected.
+
+### Implementer roster: per-executor implementation model and effort
+
+- Implementation (execute/repair and the `implementer` class) now runs on `gemini-3.8-flash` at high, `gpt-6.1-sol` at medium, `claude-sonnet-5-5` at medium (on the Agent View and print routes; the default Claude Channel route binds neither model nor effort and records them as `session_model_unbound`) and `grok-4.7` at high, on both the runner's shipped model policy and the executor defaults; the Gemini worker moves from `gemini-3.5-flash-high` to `gemini-3.8-flash-high`. A governed repair that escalates to the planner class keeps the shipped `high` effort. Planning, review, opencode and the other worker tiers are unchanged, and explicit model and effort settings still win.
+
+### The Gemini board seat runs jailed with tools (agent-harness#1170)
+
+- The Gemini (agy) seat now runs in its own seat jail with its tools, like the Claude seat:
+  it reads the staged tree and runs commands there. Until now it did not run at all
+  (degraded with `gemini_seat_egress_unconfined`, agent-harness#1244; before that it ran
+  sealed, without tools).
+- The seat's egress goes through an allowlisting proxy: srt's TLS-terminating proxy
+  (`@anthropic-ai/sandbox-runtime` 0.0.79, pinned by version, integrity and installed-file
+  digest, with the installed tree rejected if it holds an unexpected symlink), run on the
+  host outside the seat. The seat's network namespace has no other route, through a
+  fail-closed front that refuses any tunnel it cannot inspect as an allowed request, so the
+  proxy answers only the requests agy needs (measured, pinned as config). It holds no
+  credential, and the seat cannot reconfigure it.
+- The config directory's read-only parent is a mount the seat cannot rename, so the config
+  stays read-only (only its cache, log and the shell tool's bin are writable).
+- Both credentials the seat is given -- the model bearer and the proxy's session credential --
+  are scanned out of the returned review.
+- Install it once per user: `phase-loop seat-egress install` (needs node 22.12+ and npm);
+  `phase-loop seat-egress status` reports it. The proxy's CA is generated per host, owner
+  only, and only its certificate enters the seat. Without the layer the Gemini seat is
+  degraded and not run, with `gemini_seat_egress_unavailable` and that fix; it is never a
+  toolless substitute. On a host without the seat jail the Gemini seat is degraded and not
+  run, like every review seat whose route is not jailed (agent-harness#1244).
+- The agy qualification worker still measures its candidate image on the heartbeat route,
+  never in the jail: on a host that could jail a Gemini seat its leg keeps that route with
+  `gemini_seat_qualification_candidate`. It is never a review or a vote.
+- The Gemini jail is a new jail profile: it is qualified on this host on first use, like the
+  Claude jail. The Claude jail and the falsifier-run layout are unchanged.
+- Evidence: plans/evidence/seat-jail-1132/p4-containment-egress.json (the containment probe
+  re-run through the proxy, real replies) and p3-agy-tools-workspace.json (agy's tools,
+  stream events and workspace files).
+
+### Fix: Gemini planning, roadmap and review launch again, on Gemini 4 Argon
+
+- Gemini `roadmap`, `plan` and `review` launches exited rc 1, because agy no longer offers the `Gemini 3.1 Pro (High)` model they selected. The Gemini executor's `roadmap`, `plan` and `review` defaults, the `planner`/`reviewer` model classes and the heavy (and ultra) tier now use `gemini-4-argon` instead of the `pro` alias and `gemini-3.1-pro-preview`. Effort is unchanged: the shipped policy's `max` clamps to Gemini's `high`, so these routes launch `gemini-4-argon-high`. The heavy cell stays marked volatile. Implementation and worker routing are unchanged, and an explicit `--model` still wins.
+
+### Board: the sandboxed grok seat can run the tools it is granted
+
+- In a board the sandboxed grok seat ended `DEGRADED` (rc 0) after one preamble line. Its
+  argv paired `--permission-mode plan` with an allow-list granting `run_terminal_command`,
+  `write` and `search_replace`. Headless grok 1.0.52 sends those calls to an approver it
+  does not have, cancels them, and ends the turn. The earlier finding that headless grok
+  auto-approves regardless of `--permission-mode` (agent-harness#147) no longer holds.
+- The sandboxed brokered route now runs `--permission-mode bypassPermissions` and passes
+  `--disallowed-tools` for the twelve built-ins `--tools` leaves in place, so the seat holds
+  exactly `GROK_SANDBOX_TOOLS`. The seat sandbox and the allow-list are unchanged, and the
+  recorded tool controls follow the argv. The unsandboxed brokered route (`plan`, empty
+  allow-list) and the read-only `-p` route are unchanged. The grok seat's tree stays
+  read-only, so `write` and `search_replace` return a read-only-filesystem error; only codex
+  gets a writable tree (agent-harness#1470), and writable-tree parity for grok is
+  agent-harness#1686.
+
+### Advisor board: Gemini 4 Argon is the default Gemini seat
+
+- The panel's default Gemini seat, the `default`/`code-review` boards, the built-in presets and the president ladder's `gemini` rung now use `gemini-4-argon` at `medium` (agy `gemini-4-argon-medium`) instead of `gemini-3.8-flash`; `gemini-3.8-flash` stays an accepted explicit seat, and implementer/worker routing is unchanged.
+
+### FABPUB: a generation refusal after provider entry gets "retry once", not "repair authority" (agent-harness#1628, agent-harness#1640)
+
+- When, after provider entry, the adapter raised or it returned and its terminal
+  record was refused, and the generation fence (a `DRAINING` writer latch, a revoked
+  shared lease) then refused the `outcome_ambiguous_blocked` record, the refusal
+  escaped as a plain `PermissionError` and the human route answered
+  `repair_fabpub_authority`. The broker now raises
+  `ProviderEffectGenerationRefused` (a `WriterGenerationBlocked`, never a
+  `ProviderEntryRefused`; same message, the write refusal chained) and writes no
+  terminal: the row stays `provider_call_in_flight` and the owner unsealed. The
+  refusal records `execute_returned` and, when the adapter returned, its `pr_url`,
+  `head_sha` and `branch`, which the result and the handoff carry (agent-harness#1684).
+- The human route answers it with `retry_once_before_partition_rotation` and
+  `provider_call_made: true`. The handoff says the provider was entered and the adapter
+  failed (or, when it returned, that the provider returned the pull request but its
+  terminal record was refused, so the outcome is not recorded), retries once after any
+  rotation ceremony in progress has finished or rolled back, and leaves the disposition
+  to the operator (`observed_landed` if the head is on the remote branch or a pull
+  request exists; with a returned `pr_url`, `observed_landed` with that URL). `provider_call_made` is now set per
+  typed refusal; every pre-entry refusal still reports `false`. A successful ambiguity
+  record and every other error from that write are unchanged. The planned
+  agent-harness#820 effect fence inherits the route.
+- `WriterGenerationLatch.validate_lease` refuses a declared absent lease
+  (`generation_lease=None`, strict) under `DRAINING` as well as `ACTIVE`; an undeclared
+  lease is unchanged (agent-harness#1640 ask 2).
+- New tests pin the generation half of the lease binding on the strict and
+  `allow_draining` paths, and a terminal that lands after a lock-holding ceremony
+  aborts (agent-harness#1640 asks 1 and 3).
+- Runbook: §8a covers a torn observation line that names the key but not the outcome,
+  §7 points to §8a for the key the successor refuses after a sealed resume, and the
+  `retry_once` paragraph covers the post-entry variant (agent-harness#1640 ask 4).
+  Design note: `phase-loop-runtime/plans/fabpub-post-entry-refusal-1628.md`.
+
+### Reflection filters preserve recurring friction (agent-harness#1370, agent-harness#1371)
+
+- Exact and near deduplication is limited to copies of the same recorded run.
+  Identical feedback from distinct runs counts toward readiness, including runs on
+  one branch. Repeated one-repo ledger lines and repeated one-repo lines carrying a
+  ref, path or URL are stripped from What worked and Improvements before
+  classification.
+- A repo-specific Improvements section is dropped and noted in the manifest,
+  while usable What didn't and What worked sections remain. A reflection with
+  neither friction nor an eligible proposal is still excluded.
+- A rejected repo-specific proposal with no remaining friction stays in place.
+  Ledger-labelled friction is retained; bulleted ledger proposals are dropped.
+  Copy matching preserves meaningful leading CLI and Markdown syntax.
+
+### A review seat that would run sealed is not run and not counted (agent-harness#1244)
+
+- A board seat whose route is not jailed (every `seat_jail.SEALED_FALLBACK_CODES` code, for
+  example the Gemini seat's `gemini_seat_egress_unconfined`) ran with the bundle inlined and
+  no tools, returned `OK`, and counted toward the reviewer floor and `usable`. A real-CLI
+  board showed `usable: true` with three of four seats delivered, one of them sealed.
+- Such a seat is now `DEGRADED` and not run, like a jail-eligible seat that cannot run
+  jailed: its detail and notice are its route code, with the notice table's fix, and its
+  seat mode is `degraded`. A codex or grok seat on a review with no staged tree is refused
+  the same way with `seat_sandbox_not_staged`.
+- Every count that reads a leg's usability leaves it out: the reviewer floor and `usable`,
+  the landing vote, the governed gate, the train's recorded reviewers and the president's
+  input. A board that falls below its floor because of it now names each such seat with its
+  code and fix, in the `advisor-board` text summary and in the governed pre-merge floor hold.
+- The agy qualification worker still measures its candidate image on the Gemini route; that
+  leg is admitted `qualification_candidate`, which is never a vote, and is not a review. An
+  `--advisory` run, which stages no tree on purpose and inlines its standalone document
+  whole, keeps its seats on the inline route as before.
+- `PHASE_LOOP_SANDBOX_DISABLE=1` no longer gives a bundle-only board: every brokered review
+  seat is then refused with `seat_sandbox_not_staged` (its fix now names the knob), so the
+  board is below its floor and refuses.
+- The `advisor-board --json` payload carries `refused_seats` (seat key, code, fix) for those
+  seats; the private capture board is unchanged.
+- What any seat sandbox permits is unchanged. A host whose seats cannot run jailed may now
+  get a board below its floor, which refuses; that is intended.
+
+### The skill-improvement aggregator applies eight admission gates and a ladder level (agent-harness#1321)
+
+- The aggregator had three admission gates. It now applies eight to every candidate
+  theme: durability, specificity, convergence, skill-was-used, existing-skill-first,
+  already-covered, decision-changing and structural-mechanism. A theme that fails one is
+  listed under a new `## Rejected themes` section with the gate that rejected it.
+- Every recommendation states its level on the enforcement ladder (architecture,
+  unrepresentable, check, prose) and why the level above fails. Only prose-level themes
+  become SKILL.md edits; the rest are mechanism candidates.
+- `reflection_corpus collect` also writes `rule_enforcement.md`, the shipped
+  rule→enforcer registry, and the planner passes it to the aggregator. A recurring theme
+  on a rule that already has an enforcer, or on a tracked gap, becomes a mechanism
+  candidate instead of more prose.
+- Bundles carry opaque repo/branch/run identities so convergence can distinguish
+  independent support. Every planner's final template preserves ladder levels and
+  rejected themes; missing skill-read evidence remains inconclusive.
+- Missing read evidence does not discard a cross-skill body fix. Description tuning
+  requires a reflection's What didn't to identify a missed trigger and supply the
+  complete replacement description. Every editor changes only that frontmatter value
+  and fails a tune without replacement text. Clear rules that were ignored route to
+  compliance fixes instead of duplicate prose.
+
+### grok executor: keep the background-task tools grok's terminal requires
+
+- The grok execute deny-list no longer removes the task tools (`get_task_output`/`kill_task`, formerly `get_command_or_subagent_output`/`kill_command_or_subagent`). grok 1.0.52 refuses to start a session whose terminal runs in background mode without them, so every grok execute launch failed before a model turn. The implementer still cannot spawn subagents (`spawn_subagent` and `workflow` stay denied, `--no-subagents` stays).
+
+### FABPUB: a provider outcome on an already-ambiguous key is kept, and an observed effect is never attested not landed (agent-harness#1591)
+
+- A promotion by an older-runtime prober from the provider-entry guard's lock release
+  through the provider call still makes one provider call. When that call reported
+  success, the broker could not record it over the ambiguous row and dropped the PR
+  URL, so an operator with no local evidence could attest `attested_not_landed` and
+  the recovery would publish twice. The broker now appends the outcome to a new
+  append-only `post-ambiguity-observations.jsonl` beside the evidence log
+  (`PostAmbiguityObservation.v1`), bound to the blocked row's `ambiguity_digest` and
+  to this attempt's owner (`owner_nonce`, `transaction_id`), under the same
+  `admissions.lock` acquisition and generation check. It is written only while the
+  owner is still this attempt's; otherwise the result says `durable: false`.
+- The store stays ambiguous, the epoch blocked, the owner unsealed and the checkpoint
+  `ADAPTER_STARTED`. The result is not accepted and has no `publish_result`; its
+  `reason` is `effect_observed_after_ambiguity` or `no_effect_observed_after_ambiguity`
+  and `BrokerExecutionResult.observed_after_ambiguity` carries the observation. Every
+  retry replays it with `provider_call_made: false`. The evidence log, owner and
+  admission schemas are unchanged, no rotation digest covers the new file, and older
+  readers never open it.
+- The terminal (or the observation) is now recorded before the service-generation
+  lease is released, and a failed lease release after a successful call is no longer
+  recorded as ambiguity. A rotation that starts during the call holds
+  `admissions.lock` across its drain: the observation waits on the lock (a `DRAINING`
+  latch alone does not refuse it), the writer's held lease makes the ceremony refuse
+  "predecessor writers did not drain", and the ceremony is retried. Only a writer
+  with no held lease, or a cleared one, loses the observation (agent-harness#1633).
+- New runtimes refuse to dispose a key with a recorded effect, or any key while the
+  side file is unreadable, `attested_not_landed`: the rotation ceremony (zero-write,
+  and again under the predecessor's lock before `INVENTORY_SEALED`), the read-only
+  preflight, and the re-admission (`PublicationRecoveryRequired`, escalate to the
+  maintainer). A ceremony whose own journal already holds `INVENTORY_SEALED` is not
+  refused on resume; its successor's re-admission refuses instead (agent-harness#1633).
+  A no-effect observation is supporting evidence only.
+- The human route keeps `next_step: adjudicate_publication_by_partition_rotation` and,
+  for an effect, adds `required_disposition: observed_landed`,
+  `forbidden_disposition: attested_not_landed`, `attestation_inputs` and, for a
+  generation-0 container, a pre-filled `attestation_builder_command`. The plain
+  agent-harness#1312 handoff is unchanged. The attestation builder prints the
+  observation and warns when its inputs disagree with it.
+- Two broker crash seams (`after_provider_return_before_terminal`,
+  `after_post_ambiguity_observation`). Still open: an older writer records nothing,
+  and a crash between the provider's return and the side-file write loses the URL
+  (documented in `docs/fabpub-pre-admission-ambiguity.md` and runbook §8a).
+
+### FABPUB: the human publication route picks its handoff by the broker refusal's type (agent-harness#1573, agent-harness#1578, agent-harness#1594, agent-harness#1574)
+
+- `publish_human_invoked_from_worktree` used to answer every broker
+  `PermissionError` with `next_step="repair_fabpub_authority"`. It now chooses the
+  handoff by exception type, never by message text. Any other `PermissionError`
+  keeps `repair_fabpub_authority`. The typed refusals add `provider_call_made: false`
+  to the result.
+  - A routing client built before a rotation now raises
+    `RoutingClientGenerationRetired`, a `WriterGenerationBlocked`. Its next step is
+    `rebuild_broker_client_and_retry` (agent-harness#1573 ask 4).
+  - `AdapterStartOwnerLive` and the new `AdapterStartOwnerContended` (the owner
+    section was contended twice) get `retry_after_inflight_publication`
+    (agent-harness#1578 ask 5).
+  - The unsealed-owner refusal and `epoch permanently blocked` are now typed as
+    `UnsealedOwnerBlocksPartition` and `PartitionEpochBlocked`. Both get the
+    partition-rotation handoff, which names the blocking key in
+    `blocking_effect_keys`, plus `blocking_transaction_id` for an owner. An epoch
+    block that names no key in the store, which is legacy carried ambiguity, keeps
+    `repair_fabpub_authority`.
+  - After the admission is durable and before provider entry, a
+    `WriterGenerationBlocked` from `record_intent`, `_authorize` or the
+    service-generation lease is re-raised with the same message as
+    `ProviderEntryGenerationRefused`. That type is both a `ProviderEntryRefused` and
+    a `WriterGenerationBlocked`. The guard's own "no evidence row" refusal is now a
+    `ProviderEntryRefused`. Any other `PermissionError` in that window propagates
+    unchanged and keeps `repair_fabpub_authority`; that includes EACCES and an
+    incompatible store. Its next step is
+    `retry_once_before_partition_rotation`. One retry promotes the owner, and the
+    retry returns the rotation handoff for this key. Without that retry, the rotation
+    refuses with "intents without a terminal" (agent-harness#1594 ask 1).
+- Every new type subclasses `PermissionError`, and the messages are unchanged.
+- Every rotation handoff now cites runbook §§1, 3, 4, 6, 7 and 8a. It names the
+  authority root the rotation must use, says where the `transaction_id` comes from,
+  and repeats the warning against a second `attested_not_landed` without new
+  evidence (agent-harness#1574 ask 2).
+- New `tests/test_fabpub_typed_handoffs.py` drives each refusal through the human
+  route. Documented in `docs/fabpub-pre-admission-ambiguity.md` ("Human-route
+  handoffs for broker refusals") and runbook §6 and §8a. The plan is
+  `phase-loop-runtime/plans/fabpub-typed-handoffs.md`.
+
+### FABPUB: the recovery record no longer conflicts across runtime versions within one generation (agent-harness#1576)
+
+- Since agent-harness#1550, the `<transaction_id>.recovery.<generation>.json` record always
+  carried `disposing_generation`, `readmitting_generation` and `intervening_rotations`.
+  A record written by one runtime version, followed by a retry on another version in the
+  same generation, raised `PublishTransactionConflict` before any owner write or
+  provider call. This happened in both directions, and the key waited for an unrelated
+  rotation or for the record to be removed by hand.
+- The three fields are now written only when a rotation intervened. With none, the
+  record is byte-identical to the agent-harness#1296 record, so a retry on either
+  version in the same generation recovers once. A reader also accepts a record that
+  carries the fields with their no-rotation values, the shape written by `main` since
+  agent-harness#1550. Any other difference still refuses.
+- A recovery-record refusal is now `RecoveryRecordConflict`, a
+  `PublishTransactionConflict` that carries `record_path`. The human handoff names it
+  as `conflicting_recovery_record`.
+- New regressions in `test_fabpub_recovery_record_compat_1576.py`. They run the
+  historical runtimes in a subprocess from a `git archive` of their pinned commits.
+
 ### FABPUB: the provider is entered only after an in-lock check that the key is still this attempt's in-flight record (agent-harness#1577, agent-harness#1574, agent-harness#1578, agent-harness#1576)
 
 - An older-runtime prober could promote a live writer's owner to

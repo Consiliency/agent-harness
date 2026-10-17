@@ -144,9 +144,10 @@ def test_build_grok_launch_spec_write_action_argv():
     assert cmd[cmd.index("--cwd") + 1] == str(_REPO)
     assert cmd[cmd.index("-m") + 1] == GROK_DEFAULT_MODEL
     # effort reaches grok's --reasoning-effort clamped to a valid CLI token (ah#224);
-    # the default execute effort ('medium') is already valid, so it is unchanged here.
+    # the default execute effort ('high', the 0.7.27 implementer roster) is already
+    # valid, so it is unchanged here.
     assert cmd[cmd.index("--reasoning-effort") + 1] == launcher._grok_cli_effort(spec.selected_effort)
-    assert cmd[cmd.index("--reasoning-effort") + 1] == "medium"
+    assert cmd[cmd.index("--reasoning-effort") + 1] == "high"
     # write action auto-approves.
     assert cmd[cmd.index("--permission-mode") + 1] == "bypassPermissions"
     # context-file delivery: the prompt points at the staged bundle placeholder.
@@ -203,6 +204,36 @@ def test_build_grok_launch_spec_execute_carries_disallowed_tools_deny_list():
     # Coding built-ins are NEVER denied — execute must retain read/write/edit/terminal.
     for coding_tool in ("read_file", "write", "search_replace", "run_terminal_command", "grep", "list_dir", "search_tool"):
         assert coding_tool not in denied, f"{coding_tool!r} must stay available to grok execute"
+
+
+# grok 1.0.52 refuses to START a session whose terminal tool runs in background mode
+# without the task tools that observe and cancel those tasks:
+#   "GrokBuild:run_terminal_cmd enabled_background=true requires
+#    GrokBuild:get_task_output and GrokBuild:kill_task"
+# Denying them (under their legacy names or the current ones) aborts every execute
+# launch before a model turn, at any effort. Measured live on claw, 2026-10-14.
+_GROK_BACKGROUND_TASK_TOOLS = (
+    "get_task_output",
+    "kill_task",
+    "get_command_or_subagent_output",
+    "kill_command_or_subagent",
+)
+
+
+def test_grok_execute_deny_list_keeps_the_background_task_tools():
+    denied = set(launcher.GROK_EXECUTE_DISALLOWED_TOOLS.split(","))
+    for tool in _GROK_BACKGROUND_TASK_TOOLS:
+        assert tool not in denied, f"{tool!r} is required by grok's background terminal; denying it aborts the session"
+
+
+def test_grok_execute_implementer_cannot_spawn_subagents():
+    # The implementer cannot spawn subagents: `spawn_subagent` and `workflow` are denied
+    # (grok documents workflows as running subagents), and `--no-subagents` is passed.
+    denied = set(launcher.GROK_EXECUTE_DISALLOWED_TOOLS.split(","))
+    assert {"spawn_subagent", "workflow"} <= denied
+    spec = build_launch_spec(_request("execute"))
+    assert "--no-subagents" in spec.command
+    assert spec.command[spec.command.index("--disallowed-tools") + 1] == launcher.GROK_EXECUTE_DISALLOWED_TOOLS
 
 
 def test_build_grok_launch_spec_repair_keeps_unrestricted_write_branch():

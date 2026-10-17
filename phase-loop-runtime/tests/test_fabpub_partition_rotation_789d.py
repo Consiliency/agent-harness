@@ -819,6 +819,11 @@ A0_ALLOW_LIST = (
     ("live.py", "_derive_rotation_inventory", "target_namespace"),
     ("live.py", "rotate_blocked_partition", "store_root"),
     ("live.py", "run_legacy_broker_cutover", "parent.parent"),
+    # agent-harness#1591: the post-ambiguity side-file checks read the store
+    # root they are handed; ``generation_store_root`` names an explicit generation.
+    ("live.py", "_refuse_attested_not_landed_over_observations", "store_root"),
+    ("live.py", "generation_store_root", "store_root"),
+    ("live.py", "post_ambiguity_effect_refusal", "store_root"),
 )
 
 #: Plan classification of the 40 sites (by qualname).  ``resolver`` sites must
@@ -860,6 +865,7 @@ A0_CLASSIFICATION = {
         "_rotation_receipt_from_partition",
         "_target_store_lock_paths",
         "bootstrap_zero_history_authority",
+        "generation_store_root",
     },
     "inert": {
         "LegacyBrokerCutoverTransaction.receipt_for",
@@ -871,6 +877,8 @@ A0_CLASSIFICATION = {
         "_rotation_base_receipt",
         "_snapshot_predecessor",
         "run_legacy_broker_cutover",
+        "_refuse_attested_not_landed_over_observations",
+        "post_ambiguity_effect_refusal",
     },
 }
 

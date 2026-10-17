@@ -1,6 +1,8 @@
 """The sole provider-agnostic mutation boundary."""
 from __future__ import annotations
 
+import functools
+
 import hashlib
 import json
 import os
@@ -26,7 +28,7 @@ from phase_loop_runtime.convergence.provider_contracts import (
     validate_terminal_transition,
 )
 from . import evidence as evidence_module
-from .evidence import BrokerEvidenceStore, EvidenceRecord
+from .evidence import BrokerEvidenceStore, EvidenceRecord, PostAmbiguityObservation
 
 
 class BrokerProviderAdapter(Protocol):
@@ -48,6 +50,23 @@ class BrokerExecutionResult:
     #: agent-harness#1577 (D3): whether THIS call entered the provider adapter.
     #: A replay of stored evidence, or a refusal before provider entry, is False.
     provider_call_made: bool = False
+    #: agent-harness#1591: a definite provider outcome on a key whose row was
+    #: already ``outcome_ambiguous_blocked``.  In memory only; its ``durable``
+    #: says whether the side file holds it.  Never makes the result accepted.
+    observed_after_ambiguity: PostAmbiguityObservation | None = None
+
+
+#: agent-harness#1591: ``BrokerExecutionResult.reason`` for an observation.
+EFFECT_OBSERVED_AFTER_AMBIGUITY = "effect_observed_after_ambiguity"
+NO_EFFECT_OBSERVED_AFTER_AMBIGUITY = "no_effect_observed_after_ambiguity"
+
+
+def _observed_after_ambiguity_reason(observation: PostAmbiguityObservation) -> str:
+    return (
+        EFFECT_OBSERVED_AFTER_AMBIGUITY
+        if observation.is_effect
+        else NO_EFFECT_OBSERVED_AFTER_AMBIGUITY
+    )
 
 
 class PublicationRecoveryRequired(PermissionError):
@@ -138,6 +157,57 @@ class AdapterStartOwnerLive(PermissionError):
     advisory ``flock`` on the owner file's inode from the owner write until its
     attempt ends; the kernel releases it when the process dies.
     """
+
+
+class AdapterStartOwnerContended(PermissionError):
+    """The owner section was lost to another live publisher twice in one publish.
+
+    Retryable contention, like :class:`AdapterStartOwnerLive`: nothing was
+    written and no provider call was made.
+    """
+
+
+class UnsealedOwnerBlocksPartition(PermissionError):
+    """An unsealed adapter-start owner was promoted to ``outcome_ambiguous_blocked``.
+
+    The partition is now blocked by that owner's effect key until a partition
+    rotation adjudicates it.  ``effect_key`` and ``transaction_id`` are the
+    observed owner's: the key to dispose and the transaction to bind.
+    """
+
+    def __init__(self, message: str, *, effect_key: str, transaction_id: str) -> None:
+        super().__init__(message)
+        self.effect_key = effect_key
+        self.transaction_id = transaction_id
+
+
+class PartitionEpochBlocked(PermissionError):
+    """The partition's generation is permanently blocked by ambiguity.
+
+    ``blocking_keys`` are the effect keys whose evidence in this generation is
+    ``outcome_ambiguous_blocked``.  It is empty when the block is carried by the
+    partition receipt (legacy archived ambiguity) rather than by a key here.
+    """
+
+    def __init__(self, message: str, *, blocking_keys: tuple[str, ...] = ()) -> None:
+        super().__init__(message)
+        self.blocking_keys = tuple(blocking_keys)
+
+
+class ProviderEntryRefused(PermissionError):
+    """A refusal after this attempt's admission became durable and before provider entry.
+
+    The attempt's unsealed owner (and its ``provider_call_in_flight`` intent,
+    when recorded) stays, as agent-harness#1578 option (i) requires.  A direct
+    rotation refuses an intent without a terminal; the next attempt promotes the
+    owner to ``outcome_ambiguous_blocked``, which a rotation then adjudicates.
+    The message is the original refusal's, which is chained as ``__cause__``.
+    """
+
+    def __init__(self, message: str, *, effect_key: str, transaction_id: str) -> None:
+        super().__init__(message)
+        self.effect_key = effect_key
+        self.transaction_id = transaction_id
 
 
 def _hold_owner_liveness(root: Path) -> int:
@@ -324,6 +394,54 @@ def _advance_transaction(transaction, state: str) -> None:
         transaction.project(state)
 
 
+def _unsealed_owner_refusal(owner: AdapterStartOwnership) -> UnsealedOwnerBlocksPartition:
+    return UnsealedOwnerBlocksPartition(
+        "unsealed adapter-start owner blocks fresh provider effect",
+        effect_key=owner.effect_key,
+        transaction_id=owner.transaction_id,
+    )
+
+
+def _provider_entry_refusal(error: PermissionError, key: str, envelope) -> ProviderEntryRefused:
+    """Type a ``WriterGenerationBlocked`` in the provider-entry window (board round 1).
+
+    The result is ``ProviderEntryGenerationRefused``: still a
+    ``WriterGenerationBlocked`` for callers that catch it, with the same message.
+    Only generation refusals are passed here; every other ``PermissionError``
+    in the window propagates unchanged.
+    """
+    from .live import ProviderEntryGenerationRefused
+
+    return ProviderEntryGenerationRefused(
+        str(error), effect_key=key, transaction_id=envelope.transaction_id
+    )
+
+
+def _provider_effect_refusal(
+    error: PermissionError, key: str, envelope, *, execute_returned: bool, result=None
+):
+    """Type a ``WriterGenerationBlocked`` that refused the ambiguity record after entry.
+
+    agent-harness#1628: the result is ``ProviderEffectGenerationRefused``, still
+    a ``WriterGenerationBlocked`` with the same message, and never a
+    ``ProviderEntryRefused``: the provider was entered.  agent-harness#1684:
+    ``execute_returned`` says whether the adapter returned (its terminal record
+    was then refused) or raised; a returned result's PR URL, head and branch are
+    carried, never discarded.
+    """
+    from .live import ProviderEffectGenerationRefused
+
+    return ProviderEffectGenerationRefused(
+        str(error),
+        effect_key=key,
+        transaction_id=envelope.transaction_id,
+        execute_returned=execute_returned,
+        pr_url=getattr(result, "pr_url", None),
+        head_sha=getattr(result, "head_sha", None),
+        branch=getattr(result, "branch", None),
+    )
+
+
 class BrokerService:
     def __init__(self, admission_store, evidence_store: BrokerEvidenceStore, adapter: BrokerProviderAdapter, contracts=PROVIDER_COMPLETION_CLASSIFICATIONS) -> None:
         self.admission_store = admission_store
@@ -379,12 +497,48 @@ class BrokerService:
             if observed and request.verb is BrokerVerb.PUBLISH_COMMITTED_BRANCH
             else None
         )
+        observation = (
+            self._stored_post_ambiguity_observation(key)
+            if current.state is TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED
+            and request.verb is BrokerVerb.PUBLISH_COMMITTED_BRANCH
+            else None
+        )
+        if observation is not None:
+            # agent-harness#1591: every retry gets the same observed handoff.
+            return BrokerExecutionResult(
+                False,
+                BrokerTerminalEvidence(key, current.state.value, current.evidence_reference),
+                None,
+                reason=_observed_after_ambiguity_reason(observation),
+                provider_call_made=False,
+                observed_after_ambiguity=observation,
+            )
         return BrokerExecutionResult(
             observed,
             BrokerTerminalEvidence(key, current.state.value, current.evidence_reference),
             result,
             provider_call_made=False,
         )
+
+    def _stored_post_ambiguity_observation(self, key: str) -> PostAmbiguityObservation | None:
+        """The observation bound to ``key``'s current ambiguity, read-only (agent-harness#1591).
+
+        An effect wins over a no-effect.  An unreadable side file yields ``None``
+        here (the plain ambiguity); the ceremony and the re-admission refuse it.
+        """
+        observations = evidence_module.read_post_ambiguity_observations(self.evidence_store.root)
+        if observations is evidence_module.UNREADABLE:
+            return None
+        digest = evidence_module.ambiguity_digest(self.evidence_store.root, key)
+        bound = [
+            observation
+            for observation in observations.get(key, ())
+            if observation.ambiguity_digest == digest
+        ]
+        for observation in bound:
+            if observation.is_effect:
+                return observation
+        return bound[-1] if bound else None
 
     def _legacy_terminal_replay(self, request: BrokerRequest, key: str) -> BrokerExecutionResult | None:
         """Promote only a receipt-authenticated exact historical key."""
@@ -488,6 +642,22 @@ class BrokerService:
         )
 
 
+    def _epoch_blocked_refusal(self) -> PartitionEpochBlocked:
+        """``epoch permanently blocked``, naming the keys that block it (agent-harness#1573)."""
+        try:
+            stored = self.evidence_store.replay()
+        except (OSError, PermissionError, ValueError):
+            # The refusal stands; it only loses the names of the blocking keys.
+            stored = {}
+        blocking = tuple(
+            sorted(
+                key
+                for key, record in stored.items()
+                if record.state is TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED
+            )
+        )
+        return PartitionEpochBlocked("epoch permanently blocked", blocking_keys=blocking)
+
     def _block_unsealed_owner(self, owner: AdapterStartOwnership) -> bool:
         """Resolve one observed owner under the repository evidence lock.
 
@@ -562,18 +732,40 @@ class BrokerService:
         self,
         owner: AdapterStartOwnership,
         record: EvidenceRecord,
-    ) -> EvidenceRecord:
-        """Linearize a known terminal and owner retirement under one lock."""
+        *,
+        branch: str = "",
+    ) -> tuple[EvidenceRecord, PostAmbiguityObservation | None]:
+        """Linearize a known terminal and owner retirement under one lock.
+
+        agent-harness#1591: when the key's row is already
+        ``outcome_ambiguous_blocked`` and ``record`` is a definite outcome
+        (effect or no-effect), nothing is appended to the evidence log and the
+        owner is not sealed.  The outcome is returned as an observation and,
+        when the on-disk owner is still exactly ``owner`` (nonce included) and
+        unsealed, appended to the side file under this same acquisition.
+        Returns ``(stored_row, observation_or_None)``.
+        """
         import fcntl
 
-        self.evidence_store._authorize()
+        # agent-harness#1633: a DRAINING latch alone does not refuse here.  A
+        # rotation holds admissions.lock across its drain, so this writer waits on
+        # the lock while its held lease keeps the ceremony from draining; a revoked
+        # or stale lease and a superseded generation root still refuse.  The
+        # ordinary terminal append and owner seal re-authorize strictly below.
+        self.evidence_store._authorize(allow_draining=True)
         with self.evidence_store.lock_path.open("a+", encoding="utf-8") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             try:
-                self.evidence_store._authorize()
+                self.evidence_store._authorize(allow_draining=True)
                 current = self.evidence_store.replay().get(record.idempotency_key)
                 if current is None:
                     raise ValueError("intent must precede evidence")
+                if current.state is TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED and record.state in (
+                    TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED,
+                    TerminalOutcomeState.NO_EFFECT_TERMINAL_PROVEN,
+                ):
+                    return current, self._post_ambiguity_observation_locked(owner, record, branch)
+                self.evidence_store._authorize()
                 if current == record:
                     terminal = current
                 else:
@@ -590,9 +782,45 @@ class BrokerService:
                         authorize=self.evidence_store._authorize,
                         lock_held=True,
                     )
-                return terminal
+                return terminal, None
             finally:
                 fcntl.flock(lock, fcntl.LOCK_UN)
+
+    def _post_ambiguity_observation_locked(
+        self,
+        owner: AdapterStartOwnership,
+        record: EvidenceRecord,
+        branch: str,
+    ) -> PostAmbiguityObservation:
+        """Bind ``record`` to the blocked row and this attempt's owner; append if still ours.
+
+        Caller holds ``admissions.lock`` and has run ``_authorize()``.  Never
+        raises for a lost binding: a different or sealed owner, or a side file
+        that cannot take a row, returns the observation with ``durable=False``.
+        """
+        root = self.evidence_store.root
+        observation = PostAmbiguityObservation(
+            idempotency_key=record.idempotency_key,
+            observed_state=record.state.value,
+            evidence_reference=record.evidence_reference,
+            head_sha=owner.committed_head,
+            branch=branch,
+            transaction_id=owner.transaction_id,
+            owner_nonce=owner.owner_nonce,
+            ambiguity_digest=evidence_module.ambiguity_digest(root, record.idempotency_key) or "",
+        )
+        current_owner = evidence_module.read_adapter_start_owner(
+            root, repository_identity=owner.repository_identity
+        )
+        if current_owner != owner or current_owner.sealed or not observation.ambiguity_digest:
+            return observation
+        durable = evidence_module.append_post_ambiguity_observation(
+            root,
+            observation,
+            authorize=functools.partial(self.evidence_store._authorize, allow_draining=True),
+            lock_held=True,
+        )
+        return PostAmbiguityObservation(**observation.row(), durable=durable)
 
     def _owner_and_admission_under_one_lock(
         self,
@@ -747,9 +975,11 @@ class BrokerService:
                 if stored is None:
                     # record_intent ran in this generation; no row means the store
                     # is not the one this attempt wrote.  Fail closed, typed.
-                    raise PermissionError(
+                    raise ProviderEntryRefused(
                         f"effect key {key!r} has no evidence row before provider entry; "
-                        "no provider call was made and nothing was written"
+                        "no provider call was made and nothing was written",
+                        effect_key=key,
+                        transaction_id=recorded_owner.transaction_id,
                     )
                 if (
                     current_owner == recorded_owner
@@ -822,9 +1052,17 @@ class BrokerService:
         ``transaction_id``).  agent-harness#1310: that rotation may be earlier
         than the active generation, provided no generation since holds evidence
         for the key (``attested_not_landed_recovery`` walks the authenticated
-        chain).  Nothing is written here.
+        chain).  agent-harness#1591: the disposition authorizes nothing when the
+        generation it adjudicated recorded a post-ambiguity effect for the key, or
+        its side file is unreadable; that escalates to the maintainer.  Nothing is
+        written here.
         """
-        from .live import RecoveryChainSuperseded, attested_not_landed_recovery
+        from .live import (
+            RecoveryChainSuperseded,
+            attested_not_landed_recovery,
+            generation_store_root,
+            post_ambiguity_effect_refusal,
+        )
 
         tid = envelope.transaction_id
 
@@ -865,6 +1103,18 @@ class BrokerService:
                 "a rotation cannot help here, because an attestation only disposes keys that are "
                 "blocked in the active generation; inspect the publish checkpoint and the broker "
                 "evidence with the maintainer",
+            )
+        observed = post_ambiguity_effect_refusal(
+            generation_store_root(self.evidence_store.root, recovery["predecessor_generation"]), key
+        )
+        if observed is not None:
+            # agent-harness#1591 (D2): a ceremony without the side-file refusal (an
+            # older runtime) disposed an effect the provider reported as landed.
+            raise refuse(
+                f"rotation {recovery['cutover_id']!r} disposes the key attested_not_landed, but "
+                f"generation {recovery['predecessor_generation']} recorded {observed}",
+                "escalate to the maintainer; do not re-publish. The provider reported this "
+                "effect after the key was blocked, so a re-admission could publish it twice",
             )
         if recovery["transaction_id"] is None:
             raise refuse(
@@ -925,9 +1175,9 @@ class BrokerService:
         )
         if existing_owner is not None and not existing_owner.sealed:
             if self._block_unsealed_owner(existing_owner):
-                raise PermissionError("unsealed adapter-start owner blocks fresh provider effect")
+                raise _unsealed_owner_refusal(existing_owner)
         if self.evidence_store.epoch_blocked:
-            raise PermissionError("epoch permanently blocked")
+            raise self._epoch_blocked_refusal()
         # agent-harness#1296: a transaction already admitted in some generation
         # (a failed outcome leaves it there) is re-admitted only under an
         # authenticated attested_not_landed rotation, and refused typed before
@@ -992,11 +1242,13 @@ class BrokerService:
                 if foreign_owner is None:
                     break
                 if self._block_unsealed_owner(foreign_owner):
-                    raise PermissionError("unsealed adapter-start owner blocks fresh provider effect")
+                    raise _unsealed_owner_refusal(foreign_owner)
             else:
                 # A retired owner was replaced by another live publisher between the
                 # two entries: a retryable contention loss, not permanent ambiguity.
-                raise PermissionError("unsealed adapter-start owner contended twice in one publish; retry")
+                raise AdapterStartOwnerContended(
+                    "unsealed adapter-start owner contended twice in one publish; retry"
+                )
             try:
                 advance("ADMISSION_DURABLE")
             except Exception as error:
@@ -1011,13 +1263,25 @@ class BrokerService:
             # call (``record_intent``, the checkpoint projections, the guard's own
             # authorization, a refused service-generation lease) leaves the owner
             # and the admitted checkpoint as they are.  The next attempt promotes the
-            # owner, and an ``attested_not_landed`` rotation recovers it.
-            self.evidence_store.record_intent(key)
-            advance("BROKER_INTENT_DURABLE")
-            from phase_loop_runtime.publishing import _crash_at
+            # owner, and an ``attested_not_landed`` rotation recovers it.  Only a
+            # ``WriterGenerationBlocked`` in this window is re-raised, as
+            # ``ProviderEntryGenerationRefused`` (still a ``WriterGenerationBlocked``;
+            # same message, cause chained), and the guard raises its own
+            # ``ProviderEntryRefused``, so the caller can say "retry once, then
+            # rotate" (agent-harness#1594 ask 1).  Every other ``PermissionError``
+            # (an errno-bearing ``OSError``, ``*StoreIncompatible``) propagates
+            # unchanged.
+            from .live import WriterGenerationBlocked
 
-            _crash_at("after_broker_intent_before_adapter_started")
-            stored = self._provider_entry_guard(key, recorded_owner)
+            try:
+                self.evidence_store.record_intent(key)
+                advance("BROKER_INTENT_DURABLE")
+                from phase_loop_runtime.publishing import _crash_at
+
+                _crash_at("after_broker_intent_before_adapter_started")
+                stored = self._provider_entry_guard(key, recorded_owner)
+            except WriterGenerationBlocked as error:
+                raise _provider_entry_refusal(error, key, envelope) from error
             if stored is not None:
                 # agent-harness#1577: the key is no longer this attempt's in-flight
                 # record (an older prober promoted the owner after the section).
@@ -1043,7 +1307,11 @@ class BrokerService:
             # failure before it (the service-generation lease, which a DRAINING
             # latch refuses) never reached the provider and is not ambiguity.
             provider_entered = False
+            # agent-harness#1684: set once ``adapter.execute`` returns, so a
+            # refused terminal record is not reported as an adapter failure.
+            provider_returned = False
             result = None
+            observation: PostAmbiguityObservation | None = None
             try:
                 acquire_lease = getattr(self.adapter, "_acquire_service_generation_lease", None)
                 temporary_lease = (
@@ -1052,15 +1320,27 @@ class BrokerService:
                 try:
                     provider_entered = True
                     result, evidence = self.adapter.execute(adapter_request)
+                    provider_returned = True
+                    _crash_at("after_provider_return_before_terminal")
+                    state = TerminalOutcomeState(evidence.terminal_state)
+                    reference = result.pr_url if result is not None else evidence.evidence_reference
+                    # agent-harness#1591 (D3), agent-harness#1633: recorded while this
+                    # writer still holds its generation lease.  A rotation that started
+                    # during the call holds admissions.lock across its drain: the write
+                    # waits on that lock, the held lease makes the ceremony refuse
+                    # "predecessor writers did not drain" (it is retried), and only a
+                    # writer with no held lease, or a cleared one, loses the observation.
+                    terminal, observation = self._record_terminal_and_seal_owner(
+                        recorded_owner, EvidenceRecord(key, state, reference), branch=request.branch
+                    )
+                    if observation is not None and observation.durable:
+                        _crash_at("after_post_ambiguity_observation")
                 finally:
                     release_lease = getattr(self.adapter, "_release_service_generation_lease", None)
                     if release_lease is not None:
                         release_lease(temporary_lease)
-                state = TerminalOutcomeState(evidence.terminal_state)
-                reference = result.pr_url if result is not None else evidence.evidence_reference
-                terminal = self._record_terminal_and_seal_owner(
-                    recorded_owner, EvidenceRecord(key, state, reference)
-                )
+                if observation is not None:
+                    return self._observed_after_ambiguity_result(key, terminal, observation)
                 advance("TERMINAL_SEALED")
                 return BrokerExecutionResult(state is TerminalOutcomeState.EFFECT_TERMINAL_OBSERVED, BrokerTerminalEvidence(key, terminal.state.value, terminal.evidence_reference), result, provider_call_made=True)
             except Exception as error:
@@ -1071,7 +1351,16 @@ class BrokerService:
                 if not provider_entered:
                     # Nothing to record: the owner and the in-flight row stay as on
                     # any other pre-provider failure (agent-harness#1578, option i).
+                    if isinstance(error, WriterGenerationBlocked):
+                        raise _provider_entry_refusal(error, key, envelope) from error
                     raise
+                if observation is not None:
+                    # The observation was handled before a later step (the lease
+                    # release) failed; report it, not a fresh ambiguity.
+                    stored = self.evidence_store.replay().get(key) or EvidenceRecord(
+                        key, TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED
+                    )
+                    return self._observed_after_ambiguity_result(key, stored, observation)
                 # The broker returns the state the store holds and never invents one.
                 current = self.evidence_store.replay().get(key)
                 if current is not None and current.state in (
@@ -1089,11 +1378,25 @@ class BrokerService:
                         result if replayed.accepted and result is not None else replayed.publish_result,
                         provider_call_made=True,
                     )
-                if current is None:
-                    self.evidence_store.record_intent(key)
-                    current = self.evidence_store.replay().get(key)
-                if current is not None and current.state is TerminalOutcomeState.PROVIDER_CALL_IN_FLIGHT:
-                    current = self.evidence_store.record_terminal(EvidenceRecord(key, TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED, "adapter-exception"))
+                # agent-harness#1628: both writes are generation-fenced.  A
+                # ``WriterGenerationBlocked`` here (a DRAINING latch, a revoked
+                # shared lease) is re-raised as ``ProviderEffectGenerationRefused``
+                # with no terminal written: the row stays ``provider_call_in_flight``
+                # and the owner unsealed, so the caller can say "retry once" (the
+                # retry's ``_block_unsealed_owner`` promotes it).  It records
+                # whether the adapter returned (its terminal record was refused)
+                # and carries the returned result (agent-harness#1684).  Every
+                # other error from these writes propagates unchanged.
+                try:
+                    if current is None:
+                        self.evidence_store.record_intent(key)
+                        current = self.evidence_store.replay().get(key)
+                    if current is not None and current.state is TerminalOutcomeState.PROVIDER_CALL_IN_FLIGHT:
+                        current = self.evidence_store.record_terminal(EvidenceRecord(key, TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED, "adapter-exception"))
+                except WriterGenerationBlocked as refused:
+                    raise _provider_effect_refusal(
+                        refused, key, envelope, execute_returned=provider_returned, result=result
+                    ) from refused
                 if current is None:
                     # Unreachable after record_intent; never fabricate a row.
                     raise RuntimeError(
@@ -1103,6 +1406,20 @@ class BrokerService:
         finally:
             for descriptor in liveness:
                 os.close(descriptor)
+
+    @staticmethod
+    def _observed_after_ambiguity_result(
+        key: str, stored: EvidenceRecord, observation: PostAmbiguityObservation
+    ) -> BrokerExecutionResult:
+        """agent-harness#1591: the store stays ambiguous; the outcome is reported, never accepted."""
+        return BrokerExecutionResult(
+            False,
+            BrokerTerminalEvidence(key, stored.state.value, stored.evidence_reference),
+            None,
+            reason=_observed_after_ambiguity_reason(observation),
+            provider_call_made=True,
+            observed_after_ambiguity=observation,
+        )
 
     def execute(self, request: BrokerRequest) -> BrokerExecutionResult:
         key = self._dedup_key(request)
@@ -1118,7 +1435,7 @@ class BrokerService:
             and not isinstance(request.admission, PreAdmissionEnvelope)
             and self.evidence_store.epoch_blocked
         ):
-            raise PermissionError("epoch permanently blocked")
+            raise self._epoch_blocked_refusal()
         if _fabpub_active() and request.verb is BrokerVerb.PUBLISH_COMMITTED_BRANCH:
             return self._fresh_publish(request, key)
         if _fabpub_active() and isinstance(request.admission, PreAdmissionEnvelope):
@@ -1133,7 +1450,7 @@ class BrokerService:
                 evidence = EvidenceRecord(key, TerminalOutcomeState.REJECTED_BEFORE_START, "provider-classification")
             return BrokerExecutionResult(False, BrokerTerminalEvidence(key, evidence.state.value, evidence.evidence_reference), reason="provider_not_supported")
         if self.evidence_store.epoch_blocked:
-            raise PermissionError("epoch permanently blocked")
+            raise self._epoch_blocked_refusal()
         try:
             self.admission_store.admit(request.admission)
             self.evidence_store.record_intent(key)

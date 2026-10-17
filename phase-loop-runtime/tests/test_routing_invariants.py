@@ -24,7 +24,7 @@ from phase_loop_runtime.runner import governed_premerge_for_run
 
 def _resolve(action, executor, *, model_policy=False):
     selection = resolve_profile_for_executor(action=action, executor=executor)
-    rule = shipped_model_policy_rule(action) if model_policy else None
+    rule = shipped_model_policy_rule(action, executor) if model_policy else None
     rp = resolve_execution_policy(
         action=action, executor=executor, model_selection=selection, model_policy_rule=rule
     )
@@ -39,8 +39,9 @@ class RoutingInvariantsTest(unittest.TestCase):
     def test_empty_policy_resolution_unchanged(self):
         self.assertEqual(_resolve("plan", "codex"), ("gpt-6-astra", "high"))
         # design-model-tier-taxonomy.md (operator-ratified): claude implementation
-        # uses the regular tier (sonnet-5); the executor-default path now agrees.
-        self.assertEqual(_resolve("execute", "claude"), ("claude-sonnet-5", "high"))
+        # uses the regular tier (sonnet-5-5 at medium since the 0.7.27 roster); the
+        # executor-default path agrees.
+        self.assertEqual(_resolve("execute", "claude"), ("claude-sonnet-5-5", "medium"))
 
     # 2 — the worker class never authors a final patch.
     def test_worker_never_authors_a_patch(self):

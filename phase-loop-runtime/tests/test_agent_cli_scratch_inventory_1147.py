@@ -193,6 +193,16 @@ INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
     ("review_stage.py", "_run_bounded_falsifier_node"): (NOT_AGENT, "bwrap + pytest falsifier"),
     ("runner.py", "_run_legible_operational_attestation"): (NOT_AGENT, "python -m pytest"),
     ("sandbox_egress.py", "isolated_network"): (NOT_AGENT, "unshare / slirp4netns / nsenter"),
+    # agent-harness#1170: the jailed Gemini seat's egress layer. Node runs srt's proxy and its
+    # CA generator on the host, outside the seat; npm installs the pinned lockfile with no
+    # install scripts; python3 checks the proxy-only namespace's bridge as the seat would.
+    ("sandbox_egress.py", "_proxy_bridge_confines"): (
+        NOT_AGENT, "python3 bridge check inside the proxy-only namespace"),
+    ("seat_egress_proxy.py", "_node"): (NOT_AGENT, "node --version"),
+    ("seat_egress_proxy.py", "ensure_ca"): (NOT_AGENT, "node: srt's CA generator"),
+    ("seat_egress_proxy.py", "install"): (
+        NOT_AGENT, "npm ci --ignore-scripts of the shipped srt lockfile"),
+    ("seat_egress_proxy.py", "start_proxy"): (NOT_AGENT, "node: srt's egress proxy, on the host"),
     ("tdd_receipts.py", "record_content_tdd_receipt"): (NOT_AGENT, "pytest / git"),
     # agent-harness#1132 seat jail helpers: each runs or execs the argv its caller hands it
     # (the jail chain launched through launch_provider, with that launch's decided env).

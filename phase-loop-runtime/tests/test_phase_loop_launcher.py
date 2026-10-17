@@ -51,9 +51,10 @@ class PhaseLoopLauncherTest(unittest.TestCase):
         self.assertEqual(selection.model, "claude-opus-5")
         self.assertEqual(selection.effort, "max")
         execute_selection = resolve_profile_for_executor(action="execute", executor="claude")
-        # design-model-tier-taxonomy.md (operator-ratified): implementation → regular (sonnet-5).
-        self.assertEqual(execute_selection.model, "claude-sonnet-5")
-        self.assertEqual(execute_selection.effort, "high")
+        # design-model-tier-taxonomy.md (operator-ratified): implementation → regular
+        # (sonnet-5-5 at medium since the 0.7.27 implementer roster).
+        self.assertEqual(execute_selection.model, "claude-sonnet-5-5")
+        self.assertEqual(execute_selection.effort, "medium")
         self.assertEqual(selection.source, "claude_default")
 
     def test_opencode_executor_uses_provider_qualified_model_alias(self):
@@ -1231,8 +1232,8 @@ class PhaseLoopLauncherTest(unittest.TestCase):
         self.assertIn("--model", spec.command)
 
     def test_gemini_executor_builds_live_launch_spec(self):
-        # Use the gemini executor profile (model alias "pro" → agy "Gemini 3.1 Pro
-        # (High)"); a generic default like gpt-5.6-sol is no longer silently coerced.
+        # Use the gemini executor profile (heavy `gemini-4-argon` at high → agy
+        # `gemini-4-argon-high`); a generic default like gpt-5.6-sol is no longer silently coerced.
         selection = resolve_profile_for_executor(action="plan", executor="gemini")
         request = build_launch_request(
             executor="gemini",
@@ -1257,7 +1258,7 @@ class PhaseLoopLauncherTest(unittest.TestCase):
         # v46 EXEC: the gemini executor drives agy (headless skip-permissions + add-dir).
         self.assertEqual(
             spec.command[:6],
-            ["agy", "--model", "Gemini 3.1 Pro (High)", "--dangerously-skip-permissions", "--add-dir", "/repo"],
+            ["agy", "--model", "gemini-4-argon-high", "--dangerously-skip-permissions", "--add-dir", "/repo"],
         )
         self.assertEqual(spec.command[6], "-p")
         self.assertIn("__PHASE_LOOP_CONTEXT_FILE__", spec.command[-1])
@@ -1505,10 +1506,10 @@ class PhaseLoopLauncherTest(unittest.TestCase):
             bypass_approvals=False,
         )
         spec = build_launch_spec(request)
-        self.assertEqual(spec.selected_model, "pro")
+        self.assertEqual(spec.selected_model, "gemini-4-argon")
         self.assertIn("--model", spec.command)
-        # v46 EXEC: the "pro" routing alias maps onto agy's fixed model name.
-        self.assertIn("Gemini 3.1 Pro (High)", spec.command)
+        # The heavy planning id carries the selected effort in agy's canonical id.
+        self.assertIn("gemini-4-argon-high", spec.command)
 
     def test_gemini_executor_includes_default_execution_model_routing_alias(self):
         selection = resolve_profile_for_executor(action="execute", executor="gemini")
@@ -1533,7 +1534,7 @@ class PhaseLoopLauncherTest(unittest.TestCase):
         spec = build_launch_spec(request)
         self.assertEqual(spec.selected_model, "gemini-3.8-flash")
         self.assertIn("--model", spec.command)
-        self.assertIn("gemini-3.8-flash-medium", spec.command)
+        self.assertIn("gemini-3.8-flash-high", spec.command)
 
     def test_launch_metadata_records_policy_and_adapter_effort(self):
         roadmap = Path("/repo/specs/phase-plans-v1.md")

@@ -6,7 +6,7 @@ its MAX thinking and each carrying a DISTINCT review lens:
     grok    grok-4.7         max   lens=adversarial
     claude  claude-opus-5-5  max   lens=correctness
     codex   gpt-6-astra      max   lens=red-team
-    gemini  Gemini 3.8 Flash high  lens=alternative-approach   (high == its ceiling)
+    gemini  gemini-4-argon   medium lens=alternative-approach
 
 The load-bearing behavior is the **availability-aware fallback**: a panel must
 NEVER collapse to one or two reviewers just because one or two vendors are down.
@@ -96,7 +96,7 @@ _VENDOR_SEAT: dict[str, dict[str, str]] = {
     "grok": {"model": "grok-4.7", "harness": "grok", "effort": "high", "lens": "adversarial"},
     "claude": {"model": "claude-opus-5-5", "harness": "claude", "effort": "high", "lens": "correctness"},
     "codex": {"model": "gpt-6-astra", "harness": "codex", "effort": "high", "lens": "red-team"},
-    "gemini": {"model": "gemini-3.8-flash", "harness": "gemini", "effort": "medium", "lens": "alternative-approach"},
+    "gemini": {"model": "gemini-4-argon", "harness": "gemini", "effort": "medium", "lens": "alternative-approach"},
 }
 
 # Distinct lenses the backfill cycles through (each vendor's primary lens is drawn
@@ -116,9 +116,10 @@ DEFAULT_TARGET_SEATS = 4
 FLOOR_SEATS = 3
 
 
-def _seat_for(vendor: str, lens: str) -> Seat:
+def _seat_for(vendor: str, lens: str, gemini_model: str | None = None) -> Seat:
     spec = _VENDOR_SEAT[vendor]
-    return Seat(model=spec["model"], effort=spec["effort"], harness=spec["harness"], lens=lens)
+    model = gemini_model if vendor == "gemini" and gemini_model is not None else spec["model"]
+    return Seat(model=model, effort=spec["effort"], harness=spec["harness"], lens=lens)
 
 
 # --- excluded seats (agent-harness#1431) -------------------------------------------------
@@ -286,13 +287,14 @@ def compose_review_board(
     floor: int = FLOOR_SEATS,
     name: str = "code-review",
     purpose: str = "code-review",
+    gemini_model: str | None = None,
 ) -> Board:
     """Compose the availability-aware review board (``compose_review_board_report().board``).
 
     The seats it left out, and why, are ``composition_exclusions(board)``."""
     return compose_review_board_report(
         is_available=is_available, auth_ok=auth_ok, target=target, floor=floor,
-        name=name, purpose=purpose,
+        name=name, purpose=purpose, gemini_model=gemini_model,
     ).board
 
 
@@ -304,6 +306,7 @@ def compose_review_board_report(
     floor: int = FLOOR_SEATS,
     name: str = "code-review",
     purpose: str = "code-review",
+    gemini_model: str | None = None,
 ) -> ReviewComposition:
     """Compose the availability-aware review board, with every seat it left out.
 
@@ -345,6 +348,10 @@ def compose_review_board_report(
     """
     if target < floor:
         raise ValueError(f"target {target} is below the floor {floor}")
+    if gemini_model is None:
+        from .harness_mapping import gemini_default_model
+
+        gemini_model = gemini_default_model(_VENDOR_SEAT["gemini"]["model"])
     # A bare production composition executes availability and subscription-auth
     # probes. Bind and validate one operation before either probe can run. Injected
     # static probes remain pure configuration controls and require no authority.
@@ -386,7 +393,10 @@ def compose_review_board_report(
     def _composed(seats: tuple[Seat, ...], backfilled: tuple[Seat, ...] = ()) -> ReviewComposition:
         # The i-th excluded vendor is paired with the i-th backfilled seat.
         paired = tuple(
-            replace(seat, replaced_by=backfilled[i].seat_key if i < len(backfilled) else None)
+            replace(seat,
+                    seat_key=_seat_for("gemini", _VENDOR_SEAT["gemini"]["lens"], gemini_model).seat_key
+                    if seat.vendor == "gemini" else seat.seat_key,
+                    replaced_by=backfilled[i].seat_key if i < len(backfilled) else None)
             for i, seat in enumerate(excluded))
         composed = ReviewComposition(Board(name=name, purpose=purpose, seats=seats), paired)
         _LAST_COMPOSITION.set(composed)
@@ -407,7 +417,7 @@ def compose_review_board_report(
         key = (vendor, spec["model"], lens)
         if key in used_keys:
             return False
-        seats.append(_seat_for(vendor, lens))
+        seats.append(_seat_for(vendor, lens, gemini_model))
         used_keys.add(key)
         used_lenses[vendor].add(lens)
         return True

@@ -1,0 +1,377 @@
+{
+  "run_id": "20261016T022654Z",
+  "recorded_at": "2026-10-16T04:08:58Z",
+  "repo": "Consiliency/agent-harness",
+  "source_base": "d47b02609cb637c64e2069684032b288e399a815",
+  "plan_path": "plans/detailed-codex-apparmor-canary-20261016-0227.md",
+  "status": "approved_for_plan_landing_by_owner_unanimity",
+  "production_or_root_execution_approved": false,
+  "first_substantive_round": {
+    "legs": [
+      {
+        "seat_key": "grok:grok-4.7:high:adversarial",
+        "status": "OK",
+        "verdict": "PARTIALLY AGREE",
+        "artifact_path": "/home/viperjuice/workspace/evidence/codex-apparmor-plan-20261016/plan-stream-4/leg-0000-grok_grok-4.7_high_adversarial.verdict.json",
+        "artifact_sha256": "c688b8d46a572e462aeac733d65fe9a83091b733f6a209d334d2541488a0e758"
+      },
+      {
+        "seat_key": "claude:claude-opus-5-5:high:correctness",
+        "status": "UNAVAILABLE",
+        "verdict": null,
+        "artifact_path": "/home/viperjuice/workspace/evidence/codex-apparmor-plan-20261016/plan-stream-4/leg-0001-claude_claude-opus-5-5_high_correctness.verdict.json",
+        "artifact_sha256": "9b6236323ba3d832589eec217a765b27e3e9da18564785917526d454d0df7ac4"
+      },
+      {
+        "seat_key": "codex:gpt-6-astra:high:red-team",
+        "status": "OK",
+        "verdict": "PARTIALLY AGREE",
+        "artifact_path": "/home/viperjuice/workspace/evidence/codex-apparmor-plan-20261016/plan-stream-4/leg-0002-codex_gpt-6-astra_high_red-team.verdict.json",
+        "artifact_sha256": "142e6e47fd3bece22a3e8d445968528bbaa141e93c626a9848ac2f6cce27ccff"
+      },
+      {
+        "seat_key": "gemini:gemini-3.8-flash:medium:alternative-approach",
+        "status": "OK",
+        "verdict": "AGREE",
+        "artifact_path": "/home/viperjuice/workspace/evidence/codex-apparmor-plan-20261016/plan-stream-4/leg-0003-gemini_gemini-3.8-flash_medium_alternative-approach.verdict.json",
+        "artifact_sha256": "17588de456cf55ad529caf437ce4a432d0800dd2a6d02720d81863e829e64b56"
+      }
+    ],
+    "ruling_schema": "president.ruling.v1",
+    "authorization_identity": "public_board_president.v1",
+    "model_id": "claude-opus-5-5",
+    "ruling_path": "/home/viperjuice/workspace/evidence/codex-apparmor-plan-20261016/plan-stream-4/president.ruling.json",
+    "ruling_sha256": "681ff3af194ff99a179c21738e58d991d281aaa1fd1fe5bd68a38d5b94b2dcfe",
+    "blocking_findings": [
+      "F004",
+      "F005",
+      "F006",
+      "F007",
+      "F008",
+      "F015",
+      "F016",
+      "F017",
+      "F019"
+    ],
+    "outcome": "changes_requested"
+  },
+  "revised_plan_responses": {
+    "F004/F019": "direct-host-bwrap fixture; observed host identity map chain; no production topology equivalence claim",
+    "F005": "no includes or ABI directives; explicit empty config and staged feature input; full closure digest",
+    "F006": "disk and loaded root policy digests; exact namespace absence",
+    "F007": "pre-drop fd closure, verified identity drop and restricted mounts",
+    "F008/F015": "complete enforce-mode parent/child permission recipe and sole candidate rule change",
+    "F016": "exact task/start/boot/audit denial attribution; no candidate without baseline",
+    "F017": "administrator-verified bytes and protected single-link root staging before invocation"
+  },
+  "formal_source_attempt": {
+    "runtime_label": "unreleased_source_candidate",
+    "runtime_commit": "d47b02609cb637c64e2069684032b288e399a815",
+    "requested_seats": 4,
+    "delivered_seats": 0,
+    "all_terminal_codes": [
+      "seat_sandbox_not_staged",
+      "seat_sandbox_not_staged",
+      "seat_sandbox_not_staged",
+      "seat_sandbox_not_staged"
+    ],
+    "outcome": "not_approved",
+    "reason": "Unstaged plan-tier requests cannot use advisory inline-only exceptions."
+  },
+  "operational_prerequisites": {
+    "claude_host_subscription_proven": true,
+    "candidate_owned_subscription_proven": true,
+    "candidate_auth_module_sha256": "bafe1e42193419d41fd146af28d312b4393b73037faa304e3da5ce4adaa254fb",
+    "gemini_admission_class": "locally_qualified",
+    "gemini_image_sha256": "e14253aa79d4e910cbf8bcb40b68e80f9e85476725e130ed085122c98face92b",
+    "gemini_help_sha256": "a12355e8fc064b330eeb25ba52de596406582752442e293083bcda6388a63b78",
+    "first_gemini_attempt": "transient owner-loss incomplete admission observation",
+    "one_supported_retry": "locally_qualified",
+    "socket_address_repair": "short private TMPDIR/staging roots; no policy change",
+    "advisory_invocation_repair": "Run the supported CLI from outside any git repository; preserve advisory contract and non-gating labels."
+  },
+  "identity_mapping_probe": {
+    "recorded_at": "2026-10-16T02:58:44.752502+00:00",
+    "operator_uid": 1000,
+    "operator_gid": 1000,
+    "exit_code": 0,
+    "policy_changed": false,
+    "no_inference": true,
+    "observed": {
+      "uid": 1000,
+      "gid": 1000,
+      "uid_map": "1000          0          1",
+      "gid_map": "1000          0          1",
+      "label": "bwrap//&unpriv_bwrap (enforce)",
+      "status": {
+        "CapPrm": "0000000000000000",
+        "CapEff": "0000000000000000",
+        "CapBnd": "0000000000000000",
+        "NoNewPrivs": "1"
+      }
+    }
+  },
+  "implementation_tests": "not_run",
+  "root_policy_canary": "not_run",
+  "host_policy_changed": false,
+  "production_source_changed": false,
+  "shared_tooling_changed_by_this_run": false,
+  "doc_delta_decision": "no_doc_delta",
+  "doc_delta_reason": "Planning/evidence only; no runtime CLI or capability surface changed.",
+  "pre_existing_unrelated_primary_paths": [
+    ".pmcp/logs/gateway.log",
+    "CONTINUE-CLAUDE-20261015.md"
+  ],
+  "artifact_root": "/home/viperjuice/workspace/evidence/codex-apparmor-plan-20261016",
+  "review_scope": "The revised root-helper design only; advisory cannot satisfy a landing/president gate or authorize a policy load.",
+  "advisory_re_review": {
+    "mode": "advisory",
+    "gating": false,
+    "usable": true,
+    "requested": 4,
+    "delivered": 3,
+    "artifact_path": "/home/viperjuice/workspace/evidence/codex-apparmor-plan-20261016/round3/board.json",
+    "artifact_sha256": "fbfd63a61e71ccedb25638b6c89306084148a3a6745554cf11680e1d96198aed",
+    "standing_verdicts": [
+      {
+        "seat_key": "grok:grok-4.7:high:adversarial",
+        "status": "OK",
+        "verdict": "PARTIALLY AGREE"
+      },
+      {
+        "seat_key": "claude:claude-opus-5-5:high:correctness",
+        "status": "DEGRADED",
+        "verdict": null
+      },
+      {
+        "seat_key": "codex:gpt-6-astra:high:red-team",
+        "status": "OK",
+        "verdict": "PARTIALLY AGREE"
+      },
+      {
+        "seat_key": "gemini:gemini-4-argon:medium:alternative-approach",
+        "status": "OK",
+        "verdict": "PARTIALLY AGREE"
+      }
+    ]
+  },
+  "second_revision_responses": [
+    "full exact policy input files, not fragments",
+    "single CLONE_NEWNS operation and positive syscall-return evidence",
+    "pre-execution controller gate for both arms",
+    "aa-exec consumes on-exec selection in protected identity-drop trampoline before bwrap",
+    "kernel feature dump via measured aa-features-abi interface",
+    "fixed deadlines/output limits; protected namespace FD closure"
+  ],
+  "prototype_inputs": {
+    "baseline.policy": {
+      "path": "plans/evidence/codex-apparmor-canary/baseline.policy",
+      "sha256": "e7f15a673916c8a8208234e4f623da2bb12018d0a5b06fa5d5c59643ddb4710c",
+      "compiled": false,
+      "loaded": false
+    },
+    "candidate.policy": {
+      "path": "plans/evidence/codex-apparmor-canary/candidate.policy",
+      "sha256": "48b4fb0d745b7dd46c311b460e91612a7f416d6e72eaeaac7a6e21090532d793",
+      "compiled": false,
+      "loaded": false
+    }
+  },
+  "claw_operational_readiness": {
+    "host": "claw",
+    "source_commit": "d47b02609cb637c64e2069684032b288e399a815",
+    "codex_actual_probe_exit": 0,
+    "claude_subscription_proven": true,
+    "gemini_egress_available": true,
+    "gemini_egress_version": "0.0.79",
+    "gemini_admission_class": "locally_qualified",
+    "gemini_image_sha256": "e14253aa79d4e910cbf8bcb40b68e80f9e85476725e130ed085122c98face92b",
+    "review_worktree": "/mnt/workspace/worktrees/agent-harness-review-codex-canary-20261016",
+    "evidence_root": "/mnt/workspace/e/aa16r",
+    "foreign_primary_dirty_count": 337,
+    "foreign_primary_preserved_on_creation": true
+  },
+  "access_attempts": [
+    {
+      "target": "dev0",
+      "operation": "Claude host auth metadata and source-candidate owned proof",
+      "status": "passed",
+      "secret_values_retained": false
+    },
+    {
+      "target": "dev0",
+      "operation": "normal Gemini image self-qualification",
+      "status": "locally_qualified_after_one_diagnosed_retry",
+      "secret_values_retained": false
+    },
+    {
+      "target": "claw",
+      "operation": "BatchMode SSH and isolated source worktree",
+      "status": "passed",
+      "foreign_checkout_modified": false
+    },
+    {
+      "target": "claw",
+      "operation": "actual production-built Codex sandbox probe",
+      "status": "passed_exit_0"
+    },
+    {
+      "target": "claw",
+      "operation": "normal candidate Gemini self-qualification from owned Git cwd",
+      "status": "locally_qualified",
+      "forced_or_cleared": false
+    }
+  ],
+  "final_formal_review": {
+    "host": "claw",
+    "tier": "plan",
+    "substantive_round": 3,
+    "runtime_label": "unreleased_source_candidate",
+    "runtime_commit": "d47b02609cb637c64e2069684032b288e399a815",
+    "canonical_seats": [
+      {
+        "seat_key": "grok:grok-4.7:high:adversarial",
+        "status": "OK",
+        "verdict": "AGREE",
+        "path": "/home/viperjuice/workspace/evidence/codex-apparmor-plan-20261016/leg-0000-grok_grok-4.7_high_adversarial.verdict.json",
+        "sha256": "58cfc1ae7abf2a2b53d3b614ea6cfbc8fbc1e4cb3c7c54052dc9a298d0af065e"
+      },
+      {
+        "seat_key": "claude:claude-opus-5-5:high:correctness",
+        "status": "OK",
+        "verdict": "AGREE",
+        "path": "/home/viperjuice/workspace/evidence/codex-apparmor-plan-20261016/leg-0001-claude_claude-opus-5-5_high_correctness.verdict.json",
+        "sha256": "3b7fef94292bf4573c70bffba8ef58e8ab567d565b3f6f0d1f2132abd6dea4dd"
+      },
+      {
+        "seat_key": "codex:gpt-6-astra:high:red-team",
+        "status": "OK",
+        "verdict": "AGREE",
+        "path": "/home/viperjuice/workspace/evidence/codex-apparmor-plan-20261016/leg-0002-codex_gpt-6-astra_high_red-team.verdict.json",
+        "sha256": "162e2d4d20ee1b2af54a8b1e405c2b1cb60974e9e9a9da775914ca6c1d3ae4d0"
+      },
+      {
+        "seat_key": "gemini:gemini-4-argon:medium:alternative-approach",
+        "status": "OK",
+        "verdict": "AGREE",
+        "path": "/home/viperjuice/workspace/evidence/codex-apparmor-plan-20261016/leg-0003-gemini_gemini-4-argon_medium_alternative-approach.verdict.json",
+        "sha256": "75648073f0117ae4ca647e965960ac813f65cda1ffe2960e1297e9a7a96bfc7c"
+      }
+    ],
+    "formal_result": {
+      "usable": false,
+      "delivered_seats": 0,
+      "exit_code": 1,
+      "refusal": "president_ruling_missing:president_invocation_failed",
+      "path": "/home/viperjuice/workspace/evidence/codex-apparmor-plan-20261016/claw-board.json",
+      "sha256": "fc73a9a012d407a0a445b5294a5639e102a942d4eeecad72181d83bcb6e423dd"
+    },
+    "bundle": {
+      "path": "/home/viperjuice/workspace/evidence/codex-apparmor-plan-20261016/claw-review-bundle.md",
+      "sha256": "58a356beb8e135baba767540eb71becd9e06b5f3f72380541123ef223d518a42"
+    },
+    "reviewed_inputs": {
+      "plans/detailed-codex-apparmor-canary-20261016-0227.md": {
+        "sha256": "853635201c07c369d8800b5fa03f827265cbd395af0044f1109d88c5aa3f861c",
+        "bundle_contains_exact_stripped_text": true
+      },
+      "plans/evidence/codex-apparmor-canary/baseline.policy": {
+        "sha256": "e7f15a673916c8a8208234e4f623da2bb12018d0a5b06fa5d5c59643ddb4710c",
+        "bundle_contains_exact_stripped_text": true
+      },
+      "plans/evidence/codex-apparmor-canary/candidate.policy": {
+        "sha256": "48b4fb0d745b7dd46c311b460e91612a7f416d6e72eaeaac7a6e21090532d793",
+        "bundle_contains_exact_stripped_text": true
+      }
+    },
+    "president": {
+      "ruling_present": false,
+      "attempt_details_persisted_by_cli": false,
+      "subcause": "unknown_from_allowlisted_canonical_outputs",
+      "finding_count": 30,
+      "rederived_brief_digest": "7f4cf5af95fdd74f9a0db530fd75364881b1f93b3f6d83340ca9a3fbd415f600",
+      "rederived_findings_digest": "96a9461e64e16578bc782a1ac3714704a45dbfcea58a0b24b5ece20bbe9ebefc",
+      "binding_validation": "input_digests_rederived; no_ruling_exists_to_validate",
+      "fallback_permitted": false,
+      "fallback_reason": "Only typed president_unavailable permits ladder descent; president_invocation_failed does not."
+    },
+    "outcome": "reviewers_unanimous_but_formal_approval_blocked"
+  },
+  "blocker_stamp": {
+    "stamped_at": "2026-10-16T04:01:36Z",
+    "code": "president_ruling_missing:president_invocation_failed",
+    "owner": "agent-harness president runtime",
+    "scope": "The canary is unimplemented and not formally approved.",
+    "no_implementation_or_host_policy_change": true,
+    "substantive_round_cap": 3,
+    "scope_not_waived": true,
+    "next_steps": [
+      {
+        "order": 1,
+        "action": "Bound a president-route diagnostic repair in agent-harness, preserving the exact source/input/seat-output digests recorded here.",
+        "targets": [
+          "phase-loop-runtime/src/phase_loop_runtime/cli.py:_advisor_board_command",
+          "phase-loop-runtime/src/phase_loop_runtime/president_adapter.py:PresidentInvoke.attempts"
+        ],
+        "reason": "The CLI constructs the attempt-recording seam but its failed board JSON exposes only the aggregate refusal, losing the route's typed attempt details."
+      },
+      {
+        "order": 2,
+        "action": "Persist sanitized attempt metadata through the supported CLI failure path, test failure/unavailable/format handling, and diagnose the actual TUI failure. Keep subscription and isolation requirements unchanged.",
+        "restriction": "No raw credential/transcript reads, custom native fills, forced fallback, or promotion of the four raw votes."
+      },
+      {
+        "order": 3,
+        "action": "After the route repair is independently validated, obtain an explicitly bounded, input-bound formal ruling through the supported president operation; if another board round is required, record the new recovery scope before launching.",
+        "restriction": "The three-round canary design loop is stopped; no silent cap extension."
+      },
+      {
+        "order": 4,
+        "action": "Only after formal review clears, implement/test the three declared helper/test/docs files. Then present concrete staged digests and cleanup for administrator authorization before any live policy load."
+      }
+    ],
+    "access_attempts_summary": "BatchMode SSH, actual Codex sandbox probe, Claude subscription proof, egress readiness and normal Gemini qualification all passed on claw; four review legs completed OK/AGREE. The president invocation still failed.",
+    "superseded_for_this_landing_by": "owner_decision",
+    "runtime_defect_resolved": false
+  },
+  "owner_decision": {
+    "recorded_at": "2026-10-16T04:08:58Z",
+    "authority": "Explicit owner instruction in this thread",
+    "instruction": "If the panel is all agree there's no need for a president you can go ahead and merge for in the work tree and reconcile any related issues",
+    "basis": "All four canonical reviewers in the final staged plan-tier round returned OK/AGREE on the same plan and policy inputs.",
+    "scope": "Land this reviewed plan and its evidence only. The helper, tests and runtime fixes remain unimplemented.",
+    "president_requirement_waived_for_this_landing": true,
+    "president_ruling_claimed": false,
+    "runtime_result_rewritten": false,
+    "global_runtime_policy_changed": false,
+    "root_policy_load_authorized": false,
+    "related_policy_issue": "Consiliency/agent-harness#1039",
+    "reviewed_plan_sha256": "853635201c07c369d8800b5fa03f827265cbd395af0044f1109d88c5aa3f861c",
+    "landing_plan_sha256": "47fbdc0f2e62604fc86c4729917ca308a0d2df58a1e537485e4cc701437764dd",
+    "post_review_plan_delta": "Only frontmatter review status and decision-reference metadata; technical body and both policy inputs unchanged."
+  },
+  "current_next_steps": [
+    "Land this plan-only change after required CI, using the explicit owner waiver rather than claiming a president ruling.",
+    "Implement the three planned helper/test/docs files in an owned execution worktree; run the declared verification.",
+    "Present concrete staged bytes, digests and cleanup for administrator authorization before any live policy load.",
+    "Track the unanimous-review runtime policy and president diagnostics separately in Consiliency/agent-harness#1039 and Consiliency/agent-harness#1643; keep the sandbox defects open."
+  ],
+  "landing_validation": {
+    "scope": "Plan-only publication checks; no helper implementation or live kernel acceptance is claimed.",
+    "local_check": {
+      "command": "LOCAL_CHECK_PYTHON=/opt/consiliency/tooling/current/python/bin/python make check",
+      "status": "passed",
+      "summary": "Pinned ruff check passed; change selector found five planning files and selected no executable tests."
+    },
+    "evidence_integrity": {
+      "status": "passed",
+      "summary": "Four original canonical OK/AGREE records and hashes verified; technical plan body and both policy hashes unchanged; sole policy-rule delta verified; typed manifest row readable and all existing rows preserved."
+    },
+    "diff_check": {
+      "command": "git diff --check",
+      "status": "passed"
+    },
+    "implementation_acceptance": "C1-C4 unmet: helper is unimplemented, parser commands and live canary not run. C5 records the owner waiver without claiming a ruling.",
+    "ci": "pending"
+  }
+}

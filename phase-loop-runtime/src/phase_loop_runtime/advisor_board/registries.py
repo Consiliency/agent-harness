@@ -271,7 +271,9 @@ _MODEL_DEFS: tuple[tuple[str, str, str], ...] = (
     ("claude-fable-5-1", "claude", "max"),
     ("claude-fable-5", "claude", "max"),
     ("Gemini 3.1 Pro", "gemini", "max"),
-    ("gemini-3.8-flash", "gemini", "high"),
+    ("gemini-4-argon", "gemini", "high"),  # panel default seat since 2026-10-14
+    ("Gemini 4 Argon", "gemini", "high"),  # display alias; renders to the gemini-4-argon ids
+    ("gemini-3.8-flash", "gemini", "high"),  # explicit seat (the prior panel default)
     ("gemini-3.7-flash", "gemini", "high"),
     ("gemini-3.6-flash", "gemini", "high"),
     ("grok-4.7", "grok", "max"),
