@@ -105,13 +105,65 @@ def test_canonical_override_references_are_found(tmp_path):
 
 @pytest.mark.parametrize("harness", ["gemini", "opencode"])
 def test_skills_without_references_leave_context_unchanged(tmp_path, monkeypatch, harness):
-    # The shipped gemini/opencode packs link no references/ yet: no note, no copies.
+    # The OpenCode execute/repair pack now links its interactive procedures.
     def resolve(_repo, harness_target, pack):
         return {name: PACKAGED / name for name in pack}
 
     monkeypatch.setattr(injection, "_resolve_pack_skill_dirs", resolve)
     for action, pack in injection.HARNESS_ACTION_SKILLS[harness].items():
+        if harness == "opencode" and "opencode-execute-phase" in pack:
+            continue
         context = injection._skill_bodies(tmp_path, harness, pack)
         assert context, (harness, action)
         assert NOTE not in context, (harness, action)
         assert injection.skill_reference_files(tmp_path, harness, pack) == (), (harness, action)
+
+
+@pytest.mark.parametrize("action", ["execute", "repair"])
+def test_packaged_opencode_execute_references_reach_context(tmp_path, monkeypatch, action):
+    skill = "opencode-execute-phase"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setattr(injection, "_resolve_pack_skill_dirs", lambda root, target, pack: {
+        name: PACKAGED / name for name in pack
+    })
+    bundle = _bundle(repo, "opencode", skill, action, monkeypatch)
+    assert f"{NOTE} under `skills/{skill}/references/`" in bundle.render_context()
+    expected = {
+        f"skills/{skill}/references/{name}": (PACKAGED / skill / "references" / name).read_bytes()
+        for name in ("interactive-publication.md", "worktree-pruning.md")
+    }
+    assert dict(bundle.skill_reference_files) == expected
+    request = launcher.build_launch_request(
+        executor="opencode", action=action, repo=repo,
+        roadmap=repo / "roadmap.md", phase="REFERENCES", plan=None,
+        model_selection=ModelSelection(profile=action, effort="high", model="openai/gpt-6-astra"),
+        prompt_bundle=bundle, json_output=True, bypass_approvals=False,
+    )
+    spec = launcher.build_launch_spec(request)
+    log_path = tmp_path / "run" / "launch.log"
+    log_path.parent.mkdir()
+    launcher._resolve_command_context(spec, log_path, dry_run=True)
+    contexts = list(log_path.parent.rglob("context.md"))
+    assert len(contexts) == 1
+    for relative_path, content in expected.items():
+        assert (contexts[0].parent / relative_path).read_bytes() == content
+
+
+@pytest.mark.parametrize("harness", ["claude", "codex", "gemini", "opencode"])
+def test_opencode_execute_references_install_only_for_opencode(tmp_path, harness):
+    from phase_loop_runtime.skill_install import install_skills
+
+    source = Path(__file__).resolve().parents[2] / "phase-loop-skills"
+    if not source.is_dir():
+        pytest.skip("committed bundle absent (from-wheel layout)")
+    destination = tmp_path / harness
+    install_skills(harness=harness, source=source, destination=destination, mode="copy", apply=True)
+    for name in ("interactive-publication.md", "worktree-pruning.md"):
+        installed = destination / f"{harness}-execute-phase" / "references" / name
+        packaged = PACKAGED / f"{harness}-execute-phase" / "references" / name
+        if harness == "opencode":
+            assert installed.read_bytes() == packaged.read_bytes()
+        else:
+            assert not installed.exists()
+            assert not packaged.exists()
