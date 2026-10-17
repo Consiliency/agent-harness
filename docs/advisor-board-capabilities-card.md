@@ -133,7 +133,7 @@ boards retain their declared seats.
 Claude panel launches default to 128,000 output tokens. Set
 `CLAUDE_CODE_MAX_OUTPUT_TOKENS` in the panel launch environment (or its explicit
 `base_env`) to override this default. Only that value is copied into run-specific
-`--settings`, so it reaches ordinary, brokered and jailed TUI launches while
+`--settings`, so it reaches ordinary, brokered and jailed print/TUI launches while
 settings sources remain disabled and credentials remain filtered. Claude Code
 clamps the requested budget to the selected model's cap. Codex, Antigravity and
 Grok retain their CLI-managed output budgets: their current adapter interfaces
@@ -152,9 +152,24 @@ can't even be constructed holding an api-key seat without opting in.
 **Claude execution is subscription-CLI-only (amended 2026-10-08; formerly TUI-only).** Fable and Opus require the homebrew backing and
 run through the subscription-proven Claude CLI adapter with the exact requested model:
 `PHASE_LOOP_PANEL_CLAUDE_ROUTE` selects `print` (the default: `claude -p --output-format stream-json`,
-never `--bare`, with `--no-session-persistence`, launched only after a `claude auth status` preflight, with an env-scrubbed launch and
+never `--bare`, with `--no-session-persistence`, subscription metadata and actual-seat auth-status admission, an env-scrubbed launch and
 `system/init.apiKeySource == "none"` asserted in-band) or `tui` (the existing Claude Code self-PTY
 adapter, now an opt-in fallback). See the 2026-10-08 `claude -p` ruling (`plans/decision-claude-print-subscription-route-20261008.md`, agent-harness#1391).
+The tooled/pointer Claude seat uses the same print selection inside its existing
+subordinate-UID jail, seccomp filter, filtered network and keyring boundary. It keeps the canonical jail’s disposable staged clone and writable private home/output
+scratch; the live repository is not mounted. The subscription is admitted
+from the same login-store read that selects the seat credential, using the explicit
+login context throughout the read-only wait and admission. Before review launch, a
+separate single-use auth jail proves the exact selected token as logged-in first-party
+`oauth_token` auth with no `apiKeySource`; raw status and identity are not retained.
+The stream additionally must
+report `system/init.apiKeySource == "none"`. Only one successful `result` event with a
+conforming final verdict counts. Assistant turns, output files and session transcripts do
+not supply a print-route verdict. Broker fields record the actual stdin transport, jail
+profile, observed auth source and result-event digest; print does not claim TUI transcript
+receipts. Heartbeat-only keeps the existing cancellation and quiescence behavior.
+Tooled/pointer seats remain **EC-HARDEN-5 UNMET** in `verify_harden_evidence.py`.
+
 An alternate backing reports `tui_backing_required` before gateway access. No API, SDK, Messages, direct
 HTTP path may fulfill those seats. Under Claude Code the seat defers as
 `under_claude_code` with a native-fill request the driving session fills natively

@@ -644,20 +644,25 @@ def ignored_override_notices(adapter: SeatCredentialAdapter | None = None) -> tu
     return (decision.notice,) if decision.notice else ()
 
 
-def override_present() -> bool:
+def override_present(env: Mapping[str, str] | None = None) -> bool:
     """Whether the launch's credential is settled by the stored override: it is used (bound
     to the launching session's account) or its record is unsafe (the launch refuses). An
     unbound override is not "present" to the callers: they take the login."""
-    decision = override_decision()
+    decision = override_decision(None if env is None else ClaudeCredentialAdapter(_session_env(env)))
     return decision.applies or decision.refusal is not None
 
 
 def claude_seat_credential_present(
     *, read_login: Callable[[], LoginToken | None] | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> bool:
     """J7 step 3: a seat-token override exists, or a Claude login is found. Presence only;
     the expiry margin is checked at launch."""
-    return override_present() or (read_login or read_login_token)() is not None
+    has_override = override_present() if env is None else override_present(env=env)
+    if has_override:
+        return True
+    return (read_login or (read_login_token if env is None else
+                          lambda: read_login_token(env=_session_env(env))))() is not None
 
 
 def _session_env(env: Mapping[str, str] | None) -> Mapping[str, str] | None:
@@ -762,12 +767,15 @@ def login_refresh_poll_s(env: Mapping[str, str] | None = None) -> float:
 
 def login_seconds_left(margin_s: float, *, now: Callable[[], float] | None = None,
                        read_login: Callable[[], LoginToken | None] | None = None,
+                       env: Mapping[str, str] | None = None,
                        ) -> float | None:
     """Read-only preflight: the seconds left on a login that is SHORT of ``margin_s``, or
     ``None`` when the seat needs no wait (an override, no login, no expiry, or enough)."""
-    if override_present():
+    has_override = override_present() if env is None else override_present(env=env)
+    if has_override:
         return None
-    login = (read_login or read_login_token)()
+    login = (read_login or (read_login_token if env is None else
+                           lambda: read_login_token(env=_session_env(env))))()
     if login is None or login.expires_at is None:
         return None
     left = login.expires_at - (now or time.time)()
@@ -788,14 +796,17 @@ def await_login_margin(
     now: Callable[[], float] | None = None,
     monotonic: Callable[[], float] | None = None,
     read_login: Callable[[], LoginToken | None] | None = None,
+    env: Mapping[str, str] | None = None,
 ) -> LoginWait:
     """Wait for the login to clear ``margin_s``, reading the store read-only and running
     nothing. ``wait(seconds)`` sleeps and returns True when the wait was cancelled, which
     raises :class:`LoginWaitCancelled`. Returns the outcome and the seconds waited."""
     now = now or time.time
     monotonic = monotonic or time.monotonic
-    read_login = read_login or read_login_token
-    if override_present():
+    read_login = read_login or (read_login_token if env is None else
+                               lambda: read_login_token(env=_session_env(env)))
+    has_override = override_present() if env is None else override_present(env=env)
+    if has_override:
         return LoginWait(LOGIN_READY, 0.0)
     start = monotonic()
     waited = False

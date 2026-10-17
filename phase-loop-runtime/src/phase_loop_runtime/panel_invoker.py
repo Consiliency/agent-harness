@@ -1760,7 +1760,7 @@ _PROCESS_GROUP_POLL_S = 0.05
 _CLAUDE_CODE_MIN_VERSION = (2, 1, 197)
 _CLAUDE_CODE_MIN_VERSION_TEXT = "2.1.197"
 # The headless print route (Stage 1b of the graduated Claude route): `claude -p
-# --output-format stream-json` is the default for non-jailed Claude panel and president
+# --output-format stream-json` is the default for Claude panel and president
 # seats, and the PTY TUI adapter is the explicit fallback (`tui`). Anthropic confirmed
 # (2026-10-07) that `claude -p` draws on the Claude subscription. The panel has its own
 # selector; `PHASE_LOOP_CLAUDE_ROUTE` belongs to the runner. An unknown value fails
@@ -2063,7 +2063,7 @@ def _publish_seat_preflight(
         if leg is not None and leg not in jailed_by_leg:
             jailed_by_leg[leg] = _seat_jailed_at_launch(
                 leg, review_authorization, brokered=brokered,
-                timeout_s=(timeouts_by_leg or {}).get(leg))
+                timeout_s=(timeouts_by_leg or {}).get(leg), env=base_env)
         return sandbox_usable_by(leg, brokered, jailed=bool(leg and jailed_by_leg[leg]))
 
     notices = _seat_preflight.pointer_brief_preflight(
@@ -2112,10 +2112,11 @@ def _seat_launch_modes(
         margin = _claude_seat_login_margin_s(timeouts.get(leg))
         if margin not in credential:
             cred = _seat_credentials
-            decision = cred.override_decision()
+            decision = cred.override_decision(
+                None if base_env is None else cred.ClaudeCredentialAdapter(cred._session_env(base_env)))
             if decision.applies or decision.refusal is not None:
                 try:
-                    cred.resolve_claude_seat_credential(margin)
+                    cred.resolve_claude_seat_credential(margin, **({"env": base_env} if base_env is not None else {}))
                     credential[margin] = (sp.MODE_JAILED, None, cred.SOURCE_OVERRIDE, None, ())
                 except _seat_jail.SeatSandboxRefused as exc:
                     credential[margin] = (sp.MODE_DEGRADED, exc.code, None, None, exc.also)
@@ -2123,7 +2124,7 @@ def _seat_launch_modes(
                 # An override bound to another subscription is ignored, loudly, whatever
                 # the login's own state (plan amendment A4).
                 ignored = (decision.notice,) if decision.notice else ()
-                left = cred.login_seconds_left(margin)
+                left = cred.login_seconds_left(margin, **({"env": base_env} if base_env is not None else {}))
                 if left is None:
                     credential[margin] = (sp.MODE_JAILED, None, cred.SOURCE_LOGIN, None, ignored)
                 elif cred.login_refresh_wait_s() > 0:
@@ -2153,7 +2154,7 @@ def _seat_launch_modes(
                                      "", None, position))
             continue
         if leg not in routes:
-            routes[leg] = _seat_route_for_spawn(leg, review_authorization, eligible=True)
+            routes[leg] = _seat_route_for_spawn(leg, review_authorization, eligible=True, env=base_env)
         route, _notices, refusal = routes[leg]
         if route is None and refusal is None:
             if getattr(review_authorization, "staged_tree_sha256", None) is None:
@@ -2215,7 +2216,7 @@ def _seat_launch_modes(
     # agent-harness#1253 round 1: every Claude seat's mode says when a stored override was
     # ignored -- above all when the seat does not run -- as a sibling notice, never as a
     # second refusal code.
-    ignored = _ignored_override("claude") if any(m.leg == "claude" for m in modes) else ()
+    ignored = _ignored_override("claude", base_env) if any(m.leg == "claude" for m in modes) else ()
     if ignored:
         modes = [replace(m, also=(*m.also, *ignored))
                  if (m.leg == "claude" and m.mode in (sp.MODE_JAILED, sp.MODE_DEGRADED)
@@ -3022,7 +3023,7 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "under_claude_code", "native_adapter_required", "native_fill", "unavailable",
     # the headless print route (Stage 1b)
     "claude_print_result", "claude_print_subscription_unproven", "claude_print_auth_drift",
-    "claude_print_stalled", "panel_claude_route_invalid",
+    "claude_print_stalled", "claude_print_result_unproven", "panel_claude_route_invalid",
     # the transport seam (Stage 2): `sdk` is named but not admitted (EC-REVIEWTRUTH-18)
     "panel_claude_transport_not_admitted",
     # route / authorization refusals
@@ -7585,8 +7586,9 @@ def _claude_subscription_auth_ok(
       what it was handed: API-key, helper, console and third-party shapes, and a
       ``claude.ai`` login the owner's private config dir cannot contain.
 
-    This is the one subscription proof for every Claude CLI route that launches through the
-    owner, the print route and the TUI alike; the print route still asserts
+    This proves the profile-owned print and TUI routes. The tooled/pointer jail uses
+    ``_jailed_claude_subscription_auth_ok`` on its already selected credential bytes.
+    Each print route still asserts
     ``system/init.apiKeySource == "none"`` in-band itself.
     """
     unproven = (False, "subscription_auth_unproven")
@@ -8880,6 +8882,7 @@ def _run_leg_with_liveness(
     retain_caps: "Sequence[str]" = (),
     child_scratch: str | None = None,
     stdout_guard: Callable[[bytes], bool] | None = None,
+    output_guard: Callable[[str, bytes], bool] | None = None,
     writable_tree: "Path | None" = None,
     writable_tree_checked: bool = False,
     broker_evidence: dict[str, object] | None = None,
@@ -8906,9 +8909,9 @@ def _run_leg_with_liveness(
     stdout chunk as it arrives; when it returns True the whole process group is
     terminated at once and the run returns ``rc or 1``. The guard records its own reason.
 
-    ``seat_jail`` (agent-harness#1170, the jailed Gemini seat) launches ``cmd`` inside that
-    jail, probed through ``probe_jail``, exactly as the jailed Claude seat launches; its
-    login was checked when its credential copy was made, so nothing is awaited here.
+    ``seat_jail`` launches the jailed Claude or Gemini print seat through its existing
+    owner and ``probe_jail``. Credential admission happens before this launch; nothing
+    is awaited here. ``output_guard`` inspects both raw channels before buffering.
     """
     if gemini_profile is not None and review_monitor is None:
         raise ValueError("gemini_heartbeat_monitor_required")
@@ -9071,6 +9074,14 @@ def _run_leg_with_liveness(
                 except OSError:
                     chunk = b""
                 if chunk:
+                    # Inspect both raw channels before buffering or decoding them. A refusal
+                    # returns no provider bytes, including bytes buffered before this chunk.
+                    if output_guard is not None and output_guard(
+                            "stdout" if fd_map[fd] is out_buf else "stderr", chunk):
+                        _terminate_process_group(proc)
+                        out_buf.clear()
+                        err_buf.clear()
+                        return _LegRun(proc.returncode or 1, "", "provider_output_refused")
                     fd_map[fd].extend(chunk)
                     last_heartbeat = time.monotonic()
                     last_output_progress = last_heartbeat
@@ -10652,6 +10663,8 @@ class _ClaudePrintStream:
         self.init_seen = False
         self.api_key_source: str | None = None
         self.result_text: str | None = None
+        self.result_count = 0
+        self.result_sha256: str | None = None
         self.violation: str | None = None
 
     def feed(self, chunk: bytes) -> bool:
@@ -10681,7 +10694,10 @@ class _ClaudePrintStream:
             return
         self.events += 1
         kind, subtype = event.get("type"), event.get("subtype")
-        if kind == "system" and subtype == "init" and not self.init_seen:
+        if kind == "system" and subtype == "init":
+            if self.init_seen:
+                self.violation = _CLAUDE_PRINT_SUBSCRIPTION_UNPROVEN
+                return
             self.init_seen = True
             source = event.get("apiKeySource")
             self.api_key_source = source if isinstance(source, str) else None
@@ -10691,9 +10707,16 @@ class _ClaudePrintStream:
             if event.get("error") in _CLAUDE_PRINT_AUTH_DRIFT_ERRORS:
                 self.violation = _CLAUDE_PRINT_AUTH_DRIFT
         elif kind == "result":
+            self.result_count += 1
             text = event.get("result")
-            if isinstance(text, str):
+            if not self.init_seen:
+                self.violation = _CLAUDE_PRINT_SUBSCRIPTION_UNPROVEN
+            elif (self.result_count != 1 or subtype != "success"
+                  or event.get("is_error", False) is not False or not isinstance(text, str)):
+                self.violation = "claude_print_result_unproven"
+            else:
                 self.result_text = text
+                self.result_sha256 = sha256(raw).hexdigest()
 
 
 def _run_claude_print_session(
@@ -10709,6 +10732,9 @@ def _run_claude_print_session(
     quiescence_latch: _ProviderQuiescenceLatch | None = None,
     review_monitor: _ReviewMonitor | None = None,
     observed: dict[str, object] | None = None,
+    seat_jail: "_seat_jail.SeatJail | None" = None,
+    probe_jail: "_seat_jail.SeatJail | None" = None,
+    seat_token: bytes | None = None,
 ) -> tuple[int, str, str, str]:
     """Run a headless ``claude -p --output-format stream-json`` seat; the same
     ``(rc, text, log, tail)`` shape as ``_run_claude_tui_session``.
@@ -10733,19 +10759,41 @@ def _run_claude_print_session(
         backstop_s = max(1, int(backstop_s))
     stall_s = _LEG_STALL_THRESHOLD_S if stall_s is None else max(0.01, float(stall_s))
     stream = _ClaudePrintStream()
+    secret_seen = False
+    secret_forms = _seat_jail.secret_encodings(seat_token) if seat_token else ()
+    overlap = max((len(form) for form in secret_forms), default=1) - 1
+    carries = {"stdout": b"", "stderr": b""}
+
+    def _guard_output(channel: str, chunk: bytes) -> bool:
+        nonlocal secret_seen
+        data = carries[channel] + chunk
+        secret_seen = secret_seen or any(form in data for form in secret_forms)
+        carries[channel] = data[-overlap:] if overlap else b""
+        return secret_seen
+
     try:
         run = _run_leg_with_liveness(
             list(command), cwd=cwd, env=env, deadline_s=float(backstop_s),
             stall_threshold_s=stall_s, input_text=prompt,
             stdout_guard=stream.feed,
+            **({"output_guard": _guard_output, "seat_jail": seat_jail,
+                "probe_jail": probe_jail} if seat_jail is not None else {}),
             **({"quiescence_latch": quiescence_latch} if quiescence_latch is not None else {}),
             **({"review_monitor": review_monitor} if review_monitor is not None else {}),
         )
     except subprocess.TimeoutExpired:
         return 124, "", _HarnessCode(f"timeout after {backstop_s}s"), ""
+    # Also inspect all retained output, before tails, result text or diagnostics are
+    # copied. This covers injected runners and the final buffered output as well.
+    if secret_seen or (seat_token and any(
+            _seat_jail.contains_secret(data.encode("utf-8", errors="replace"), seat_token)
+            for data in (run.stdout or "", run.stderr or ""))):
+        return 1, "", _HarnessCode("claude_seat_token_in_output"), ""
     stream.finish()
     if observed is not None:
         observed["api_key_source"] = stream.api_key_source
+        observed["result_count"] = stream.result_count
+        observed["result_event_sha256"] = stream.result_sha256
     stderr = run.stderr or ""
     tail = " ".join(_redact_seat_credentials(stderr[-2000:]).split())[-600:]
     if stream.violation is not None:
@@ -10763,7 +10811,7 @@ def _run_claude_print_session(
     return (
         run.returncode,
         _redact_seat_credentials(text.strip()),
-        _HarnessCode("claude_print_result") if run.returncode == 0 else "",
+        _HarnessCode("claude_print_result") if run.returncode == 0 and stream.result_text is not None else "",
         "" if run.returncode == 0 else tail,
     )
 
@@ -11260,19 +11308,48 @@ class _JailedSeat:
     #: The jailed Gemini seat's admitted agy image (agent-harness#1170).
     image_sha256: str | None = None
     admission_class: str | None = None
+    #: Boolean only, from the same login-store read used to select the Claude token.
+    claude_subscription_proven: bool = False
 
 
 def _resolve_claude_executable() -> Path:
     found = shutil.which("claude", path="/usr/local/bin:/usr/bin:/bin:" + os.environ.get("PATH", ""))
     if found is None:
         raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build"), "claude not found")
-    return Path(os.path.realpath(found))
+    executable = Path(os.path.realpath(found))
+    try:
+        with executable.open("rb") as handle:
+            header = handle.read(4)
+            if header == b"\x7fELF":
+                return executable
+            launcher = (header + handle.read()).decode("utf-8", errors="replace")
+        root = executable.parent.parent
+        match = re.fullmatch(
+            r"#!/bin/sh\nexport PATH=" + re.escape(str(root))
+            + r'/node-v\d+\.\d+\.\d+-linux-(?P<arch>x64|arm64)/bin:"\$PATH"\n'
+            + r"export DISABLE_AUTOUPDATER=1\nexec " + re.escape(str(root))
+            + r'/npm/node_modules/@anthropic-ai/claude-code-linux-(?P=arch)/claude "\$@"\n',
+            launcher,
+        )
+        if match is None:
+            return executable
+        payload = root / f"npm/node_modules/@anthropic-ai/claude-code-linux-{match['arch']}/claude"
+        if not os.access(payload, os.X_OK):
+            raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build"),
+                                               "claude native image is not executable")
+        with payload.open("rb") as handle:
+            if handle.read(4) != b"\x7fELF":
+                raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build"),
+                                                   "claude native image is not ELF")
+        return payload.resolve()
+    except OSError as exc:
+        raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build")) from exc
 
 
 def _prepare_jailed_claude(
     review_dir: Path, seat_dir: Path, review_authorization: "ReviewIsolationAuthorization",
     seat_id: int, holder_pid: int, prompt_parts: tuple[str, str],
-    *, timeout_s: int | None = None,
+    *, timeout_s: int | None = None, env: Mapping[str, str] | None = None,
 ) -> _JailedSeat:
     """J7 step 5, in order: the pre-exec tree re-hash, the token read, the jail build (the
     seccomp filter included), the pre-seed and the probe jail. The first failure raises
@@ -11302,8 +11379,19 @@ def _prepare_jailed_claude(
     # Read afresh for THIS launch: the override if present, else the current login's access
     # token with at least the leg's margin of lifetime left (plan amendment A1). The margin is
     # the one the pre-launch seat mode checked: `_claude_seat_login_margin_s(timeout_s)`.
+    # One explicit context and one store read for the login token and its subscription
+    # metadata. Override resolution still returns the exact record whose binding it checked.
+    login_env = dict(os.environ if env is None else env)
+    if not login_env.get("CLAUDE_CONFIG_DIR") and login_env.get("HOME"):
+        login_env["CLAUDE_CONFIG_DIR"] = str(Path(login_env["HOME"]) / ".claude")
+    raw_login = _seat_credentials.read_login_store(env=login_env)
+    subscription_proven = (
+        not _claude_caller_supplied_credential(login_env)
+        and _seat_credentials.login_subscription_proven(login_env, read_store=lambda: raw_login)
+    )
     credential = _seat_credentials.resolve_claude_seat_credential(
-        _claude_seat_login_margin_s(timeout_s))
+        _claude_seat_login_margin_s(timeout_s), env=login_env,
+        read_login=lambda: _seat_credentials.parse_login_token(raw_login))
     # agent-harness#1253 round 2: a refusal after the credential is resolved (the jail
     # build, the pre-seed, the probe jail) still says when a stored override was ignored --
     # the credential's notices as siblings of its one refusal code.
@@ -11349,12 +11437,236 @@ def _prepare_jailed_claude(
             raise
         return _JailedSeat(jail=jail, probe_jail=probe, holder_pid=holder_pid, token=token,
                            review_dir=review_dir, seat_dir=seat_dir, source=credential.source,
-                           expires_at=credential.expires_at, notices=list(credential.notices))
+                           expires_at=credential.expires_at, notices=list(credential.notices),
+                           claude_subscription_proven=subscription_proven)
     except _seat_jail.SeatSandboxRefused as exc:
         if not credential.notices:
             raise
         raise _seat_jail.SeatSandboxRefused(
             exc.code, str(exc), also=_dedupe((*exc.also, *credential.notices))) from exc
+
+
+def _build_claude_auth_jail(seat: _JailedSeat, directory: Path, token: bytes) -> "_seat_jail.SeatJail":
+    """Fresh single-use descriptors and the review seat's exact image/profile/UIDs."""
+    (directory / _seat_jail.HOST_TREE_DIRNAME).mkdir(mode=0o700, parents=True)
+    with contextlib.ExitStack() as stack:
+        def owned(fd: int) -> int:
+            stack.callback(os.close, fd)
+            return fd
+
+        jail = _seat_jail.build_seat_jail(
+            "claude", directory, Path(seat.jail.provider_path),
+            bundle_memfd=owned(_seat_jail.memfd_with("auth-bundle", b"")),
+            instructions_memfd=owned(_seat_jail.memfd_with("auth-instructions", b"")),
+            token_fd=owned(_seat_jail.token_pipe(token)), seat_ids=seat.jail.seat_ids,
+        )
+        stack.callback(os.close, jail.seccomp_fd)
+        if _seat_jail.CLAUDE_PRESEED:
+            home = _seat_jail.open_dir_nofollow(directory / _seat_jail.HOST_HOME_DIRNAME)
+            try:
+                _seat_jail.write_new_file_at(
+                    home, ".claude/.claude.json",
+                    json.dumps(dict(_seat_jail.CLAUDE_PRESEED), sort_keys=True).encode(),
+                )
+            finally:
+                os.close(home)
+        stack.pop_all()
+        return jail
+
+
+def _jailed_claude_subscription_auth_ok(
+    seat: _JailedSeat, *, timeout_s: float = 15,
+    quiescence_latch: _ProviderQuiescenceLatch | None = None,
+) -> bool:
+    """Private status proof on the exact selected bytes, never a credential re-resolution.
+
+    Auth and identity each get a new jail; neither consumes the review descriptors.
+    Raw status, stderr, metadata and identity are never evidence or diagnostics.
+    """
+    if not seat.claude_subscription_proven:
+        return False
+    directories = (seat.seat_dir / "seat-auth", seat.seat_dir / "seat-auth-probe")
+    jails = []
+    forms = _seat_jail.secret_encodings(seat.token)
+    overlap = max(map(len, forms), default=1) - 1
+    carries = {"stdout": b"", "stderr": b""}
+    total = 0
+    refused = False
+
+    def guard(channel: str, chunk: bytes) -> bool:
+        nonlocal total, refused
+        total += len(chunk)
+        window = carries[channel] + chunk
+        refused = refused or total > 65536 or any(form in window for form in forms)
+        carries[channel] = window[-overlap:] if overlap else b""
+        return refused
+
+    try:
+        auth = _build_claude_auth_jail(seat, directories[0], seat.token)
+        jails.append(auth)
+        probe = _build_claude_auth_jail(seat, directories[1], b"probe")
+        jails.append(probe)
+        if (auth.profile_digest != seat.jail.profile_digest
+                or auth.filter_digest != seat.jail.filter_digest):
+            return False
+        run = _run_leg_with_liveness(
+            [auth.provider_argv0, "auth", "status", "--json"],
+            cwd=Path(_seat_jail.SEAT_TREE), env=dict(auth.env),
+            deadline_s=timeout_s, stall_threshold_s=timeout_s,
+            seat_jail=auth, probe_jail=probe, output_guard=guard,
+            quiescence_latch=quiescence_latch,
+        )
+        if (refused or run.returncode != 0 or any(
+                _seat_jail.contains_secret(value.encode(), seat.token)
+                for value in (run.stdout or "", run.stderr or ""))):
+            return False
+        status = json.loads(run.stdout or "")
+        return (isinstance(status, dict) and status.get("loggedIn") is True
+                and status.get("authMethod") == "oauth_token"
+                and status.get("apiProvider") == "firstParty" and "apiKeySource" not in status)
+    except (OSError, subprocess.SubprocessError, ValueError, RecursionError):
+        return False
+    finally:
+        for jail in jails:
+            _seat_jail.close_jail_fds(jail)
+        for directory in directories:
+            retained = _seat_uid.teardown_in_h(seat.holder_pid, str(directory))
+            for name in retained:
+                _seat_uid.record_retention(directory / name)
+            if retained:
+                seat.notices.append("seat_sandbox_retained_after_teardown")
+
+
+def _exec_jailed_claude_print_leg(
+    seat: _JailedSeat, *, timeout_s: int, backstop_s: int,
+    model: str | None, effort: str | None, prompt: str,
+    broker_evidence: dict[str, object] | None, env: Mapping[str, str] | None,
+    failure_detail_sink: list[_LegFailure] | None,
+    quiescence_latch: _ProviderQuiescenceLatch | None,
+    review_monitor: _ReviewMonitor | None, session_name: str | None,
+    refusal: str | None = None,
+) -> tuple[str, str]:
+    """Print transport for the existing full-tools pointer seat, with the same jail.
+
+    Only a successful, subscription-admitted result event supplies the answer. There
+    is no output-file or transcript reader on this route. This is not sealed HARDEN
+    evidence: EC-HARDEN-5 remains UNMET for tooled/pointer seats.
+    """
+    jail = seat.jail
+    try:
+        if refusal is not None:
+            return "UNAVAILABLE", refusal
+        if review_monitor is not None and review_monitor.cancel.is_set():
+            return "UNAVAILABLE", "review_operation_cancelled"
+        supported, detail = _claude_code_support_status(min_version=_CLAUDE_PRINT_MIN_VERSION)
+        if not supported:
+            return "UNAVAILABLE", detail
+        if not _jailed_claude_subscription_auth_ok(
+                seat, timeout_s=min(15, backstop_s), quiescence_latch=quiescence_latch):
+            return "UNAVAILABLE", "subscription_auth_unproven"
+        if review_monitor is not None and review_monitor.cancel.is_set():
+            return "UNAVAILABLE", "review_operation_cancelled"
+        # Keep the jailed TUI's exact tool/configuration surface. Only the transport
+        # changes; authentication was admitted by the seat credential resolver.
+        session_id = str(uuid.uuid4())
+        command = _broker_claude_tui_command(
+            model=model, effort=effort, session_id=session_id, sandboxed=jail,
+            env=env, session_name=session_name,
+        )
+        command.remove("--ax-screen-reader")
+        command[1:1] = ["-p", "--verbose", "--output-format", "stream-json",
+                        "--input-format", "text", "--no-session-persistence"]
+        transport = _BROKER_CLAUDE_DIRECT_REQUEST + prompt
+        stall_s = _broker_claude_stall_threshold(prompt, backstop_s)
+        _record_broker_provider_evidence(
+            broker_evidence, harness="claude",
+            model=model or HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["claude"],
+            command=command, prompt=prompt, cwd=Path(_seat_jail.SEAT_TREE),
+            env={key: (_seat_jail.TOKEN_FD_PLACEHOLDER
+                       if key == _seat_jail.CLAUDE_TOKEN_FD_ENV else value)
+                 for key, value in jail.env.items()},
+            prompt_transport="stdin", stdin_prompt=True,
+            no_tool_controls=_JAILED_CLAUDE_TOOL_CONTROLS, transport_payload=transport,
+            transport_metadata={
+                "provider_task_request_delivery": "plain_text_before_stdin_prompt",
+                "provider_task_request_sha256": sha256(_BROKER_CLAUDE_DIRECT_REQUEST.encode()).hexdigest(),
+                "provider_task_request_bytes": len(_BROKER_CLAUDE_DIRECT_REQUEST.encode()),
+            },
+            redacted_argv_values={session_id: "<CLAUDE_SESSION_ID>",
+                                  **({session_name: "<CLAUDE_SESSION_NAME>"} if session_name else {})},
+        )
+        if broker_evidence is not None:
+            broker_evidence.update({
+                "provider_input_mode": "pointer", "provider_input_inline": False,
+                "provider_cwd_class": "seat_jail_tree",
+                "provider_cwd_sha256": sha256(
+                    f"{_seat_jail.SEAT_TREE}\0{jail.profile_digest}".encode()).hexdigest(),
+                "sandbox_filesystem_confined": True,
+                "seat_jail_profile_id": jail.profile_id,
+                "seat_jail_profile_digest": jail.profile_digest,
+                "seat_jail_filter_sha256": jail.filter_digest,
+                "seat_jail_owner_argv_shape": tuple(jail.redacted_owner()),
+                "claude_route": _PANEL_CLAUDE_ROUTE_PRINT,
+                "claude_session_id_sha256": sha256(session_id.encode()).hexdigest(),
+                "claude_session_resume_forbidden": True, "claude_session_persistence": False,
+                "provider_liveness_profile": _BROKER_CLAUDE_STALL_PROFILE,
+                "provider_liveness_stall_threshold_s": stall_s,
+                "provider_liveness_prompt_bytes": len(prompt.encode()),
+            })
+        observed: dict[str, object] = {}
+        rc, text, log, tail = _run_claude_print_session(
+            command, transport, env=dict(jail.env), cwd=Path(_seat_jail.SEAT_TREE),
+            timeout_s=timeout_s, backstop_s=backstop_s, stall_s=stall_s,
+            quiescence_latch=quiescence_latch, review_monitor=review_monitor,
+            observed=observed, seat_jail=jail, probe_jail=seat.probe_jail, seat_token=seat.token,
+        )
+        if quiescence_latch is not None:
+            quiescence_latch.raise_if_set()
+        if review_monitor is not None and review_monitor.cancel.is_set():
+            return "UNAVAILABLE", "review_operation_cancelled"
+        # No parent log or result receives the exact credential, even with an injected
+        # session. The raw-channel guard in the production runner precedes decoding.
+        if any(_seat_jail.contains_secret(str(value).encode(), seat.token)
+               for value in (text, log, tail)):
+            return _jailed_failure("claude_seat_token_in_output", failure_detail_sink)
+        if broker_evidence is not None:
+            broker_evidence.update({
+                "claude_api_key_source": observed.get("api_key_source"),
+                "claude_result_count": observed.get("result_count", 0),
+                "claude_result_event_sha256": observed.get("result_event_sha256"),
+            })
+        if log in (_CLAUDE_PRINT_SUBSCRIPTION_UNPROVEN, _CLAUDE_PRINT_AUTH_DRIFT):
+            return "UNAVAILABLE", str(log)
+        if log == "claude_seat_token_in_output":
+            return _jailed_failure(str(log), failure_detail_sink)
+        # Require the stream’s subscription and single-result observations before classification.
+        admitted = (observed.get("api_key_source") == "none"
+                    and observed.get("result_count") == 1
+                    and isinstance(observed.get("result_event_sha256"), str))
+        if not admitted or log != "claude_print_result" or rc != 0:
+            failure = _claude_leg_failure("DEGRADED", rc, "", log, tail)
+            if failure_detail_sink is not None:
+                if failure is None:
+                    failure = _LegFailure(template=(str(log) if log and _is_harness_code(str(log))
+                                                    else "claude_print_result_unproven"))
+                elif failure.unknown and log and _is_harness_code(str(log)):
+                    failure = replace(failure, prefix=_HarnessCode(str(log)))
+                failure_detail_sink.append(failure)
+            return ("TIMEOUT" if rc == 124 else "DEGRADED"), ""
+        status = _classify_leg(rc, text, str(log), "review")
+        return status, text
+    finally:
+        _seat_jail.close_jail_fds(jail)
+        _seat_jail.close_jail_fds(seat.probe_jail)
+        retained = [
+            parent / name
+            for parent in (seat.review_dir, seat.seat_dir, seat.seat_dir / _JAIL_PROBE_DIRNAME)
+            for name in _seat_uid.teardown_in_h(seat.holder_pid, str(parent))
+        ]
+        for path in retained:
+            _seat_uid.record_retention(path)
+        if retained:
+            seat.notices.append("seat_sandbox_retained_after_teardown")
 
 
 def _exec_jailed_claude_leg(
@@ -11375,12 +11687,18 @@ def _exec_jailed_claude_leg(
 ) -> tuple[str, str]:
     """The Claude seat inside its per-seat jail (agent-harness#1132).
 
-    Every parent read of a seat-writable object -- the transcript and the output -- goes
-    through the J10 reader, run in H as H-root. The token is scanned for in everything
+    Print uses admitted stream events; explicit TUI uses the J10 reader in H as H-root
+    for its transcript and output objects. The token is scanned for in everything
     the parent keeps. The seat directories are torn down in H before H exits; a failed
     teardown retains them and adds `seat_sandbox_retained_after_teardown`."""
-    if review_monitor is not None and review_monitor.cancel.is_set():
-        return "UNAVAILABLE", "review_operation_cancelled"
+    route, refusal = _resolve_claude_transport()
+    if route != _PANEL_CLAUDE_ROUTE_TUI:
+        return _exec_jailed_claude_print_leg(
+            seat, timeout_s=timeout_s, backstop_s=backstop_s, model=model, effort=effort,
+            prompt=prompt, broker_evidence=broker_evidence, env=env,
+            failure_detail_sink=failure_detail_sink, quiescence_latch=quiescence_latch,
+            review_monitor=review_monitor, session_name=session_name, refusal=refusal,
+        )
     jail = seat.jail
     session_id = str(uuid.uuid4())
     command = _broker_claude_tui_command(model=model, effort=effort, session_id=session_id,
@@ -11455,6 +11773,13 @@ def _exec_jailed_claude_leg(
             "seat_jail_owner_argv_shape": tuple(jail.redacted_owner()),
         })
     try:
+        if review_monitor is not None and review_monitor.cancel.is_set():
+            return "UNAVAILABLE", "review_operation_cancelled"
+        if not _jailed_claude_subscription_auth_ok(
+                seat, timeout_s=min(15, backstop_s), quiescence_latch=quiescence_latch):
+            return "UNAVAILABLE", "subscription_auth_unproven"
+        if review_monitor is not None and review_monitor.cancel.is_set():
+            return "UNAVAILABLE", "review_operation_cancelled"
         rc, review_text, log_text, pty_tail = _run_claude_tui_session(
             command=command, cwd=Path(_seat_jail.SEAT_TREE), prompt=prompt,
             output_file=output_snapshot, timeout_s=timeout_s, env=dict(jail.env),
@@ -11512,7 +11837,8 @@ def _exec_jailed_claude_leg(
         # failure, and our own session code stands when the tail names nothing.
         failure = _claude_leg_failure(status, rc, review_text, log_text, pty_tail)
         if (failure is None or failure.unknown) and log_text and _is_harness_code(str(log_text)):
-            failure = _LegFailure(template=str(log_text))
+            failure = (replace(failure, prefix=_HarnessCode(str(log_text)))
+                       if failure is not None else _LegFailure(template=str(log_text)))
         if failure is not None:
             login = seat.source == _seat_credentials.SOURCE_LOGIN
             # A capped subscription is not a broken jail: the credential's own notice says
@@ -11894,6 +12220,7 @@ def _minutes(seconds: float | None) -> int:
 def _await_claude_login(
     timeout_s: int | None, review_monitor: "_ReviewMonitor | None",
     quiescence_latch: "_ProviderQuiescenceLatch | None" = None,
+    *, env: Mapping[str, str] | None = None,
 ) -> "_seat_credentials.LoginWait":
     """Plan amendment A3: before a jailed Claude seat is staged, wait -- reading the login
     store read-only and running nothing -- for a login short of the launch margin to be
@@ -11903,7 +12230,8 @@ def _await_claude_login(
     it. Cancellation (the monitor's event or the quiescence latch) ends it at once."""
     cred = _seat_credentials
     margin = _claude_seat_login_margin_s(timeout_s)
-    left = cred.login_seconds_left(margin)
+    context = {} if env is None else {"env": env}
+    left = cred.login_seconds_left(margin, **context)
     if left is None:
         return cred.LoginWait(cred.LOGIN_READY, 0.0)
     max_wait = cred.login_refresh_wait_s()
@@ -11937,7 +12265,7 @@ def _await_claude_login(
     result = cred.LoginWait(cred.LOGIN_TIMEOUT, 0.0)
     try:
         result = cred.await_login_margin(margin, max_wait_s=max_wait,
-                                         poll_s=cred.login_refresh_poll_s(), wait=_wait)
+                                         poll_s=cred.login_refresh_poll_s(), wait=_wait, **context)
     finally:
         if review_monitor is not None:
             review_monitor.started = time.monotonic()  # the stall clock starts after the wait
@@ -12788,6 +13116,7 @@ class _BrokeredSpawnResult(tuple):
 
 def _seat_route_for_spawn(
     leg: str, review_authorization: "ReviewIsolationAuthorization | None", *, eligible: bool,
+    env: Mapping[str, str] | None = None,
     decide: "Callable[..., _seat_jail.SeatRoute | None] | None" = None,
     pass_recorded: "Callable[[str], bool] | None" = None,
     qualify_on_first_use: "Callable[[str], _seat_jail_autoqualify.Outcome] | None" = None,
@@ -12816,6 +13145,8 @@ def _seat_route_for_spawn(
     route = (decide or _seat_jail.decide_seat_route)(
         leg, staged_tree_approved=getattr(review_authorization, "staged_tree_sha256", None)
         is not None,
+        **({"claude_token_present": lambda: _seat_credentials.claude_seat_credential_present(env=env)}
+           if leg == "claude" and env is not None else {}),
     )
     if route is None:
         if (getattr(review_authorization, "staged_tree_sha256", None) is None
@@ -12871,26 +13202,31 @@ def _measuring_qualification_candidate() -> bool:
     return gemini_heartbeat._CANDIDATE is not None
 
 
-def _ignored_override(leg: str) -> tuple[str, ...]:
+def _ignored_override(leg: str, env: Mapping[str, str] | None = None) -> tuple[str, ...]:
     """agent-harness#1253 round 1: a Claude seat that does not run still says when a stored
     seat-token override was ignored (a sibling notice beside its refusal code)."""
-    return _seat_credentials.ignored_override_notices() if leg == "claude" else ()
+    return (_seat_credentials.ignored_override_notices(
+        None if env is None else _seat_credentials.ClaudeCredentialAdapter(_seat_credentials._session_env(env)))
+        if leg == "claude" else ())
 
 
 def _seat_jailed_at_launch(leg: str, review_authorization: "ReviewIsolationAuthorization | None",
-                           *, brokered: bool, timeout_s: int | None = None) -> bool:
+                           *, brokered: bool, timeout_s: int | None = None,
+                           env: Mapping[str, str] | None = None) -> bool:
     """Will this seat's production brokered launch take the jailed route? The same J7
     decision and EC-EXECFIND-2 gate ``_default_spawn`` applies; a jail that would be refused
     is not jailed (that seat does not launch at all)."""
     if not brokered:
         return False
-    route, _notices, refusal = _seat_route_for_spawn(leg, review_authorization, eligible=True)
+    route, _notices, refusal = _seat_route_for_spawn(leg, review_authorization, eligible=True, env=env)
     if route is None or not route.jailed or refusal is not None:
         return False
     # Plan amendment A3/A3b: a short login with no wait allowed does not run. (With a wait,
     # the seat is counted jailed: it does not run only if the login is not renewed in time.)
     return not (leg == "claude" and _seat_credentials.login_refresh_wait_s() == 0
-                and _seat_credentials.login_seconds_left(_claude_seat_login_margin_s(timeout_s))
+                and _seat_credentials.login_seconds_left(
+                    _claude_seat_login_margin_s(timeout_s),
+                    **({"env": env} if env is not None else {}))
                 is not None)
 
 
@@ -13077,8 +13413,10 @@ def _default_spawn(
     # agent-harness#1132, J7 steps 0-4: decided once, after the public-entry authorization
     # (validated above) and BEFORE staging. `None` for a leg this plan does not jail, and
     # for every non-production route (an injected seam, the native-host deferral).
+    if leg == "claude":
+        env = dict(os.environ if env is None else env)
     seat_route, seat_notices, seat_refusal = _seat_route_for_spawn(
-        leg, review_authorization,
+        leg, review_authorization, env=env,
         eligible=(
             mode == "review"
             and review_authorization is not None
@@ -13091,7 +13429,7 @@ def _default_spawn(
         if base is not None:
             shutil.rmtree(base, ignore_errors=True)
         return _BrokeredSpawnResult("DEGRADED", "", _HarnessCode(seat_refusal),
-                                    seat_notices=(seat_refusal, *_ignored_override(leg)))
+                                    seat_notices=(seat_refusal, *_ignored_override(leg, env)))
     jailed = seat_route is not None and seat_route.jailed
     # Plan amendment A3: a jailed Claude seat whose login is short of the launch margin
     # waits, read-only, for it to be renewed -- before staging, so no seat id or namespace is
@@ -13100,7 +13438,7 @@ def _default_spawn(
     login_wait: "_seat_credentials.LoginWait | None" = None
     if jailed and leg == "claude":
         try:
-            login_wait = _await_claude_login(timeout_s, review_monitor, quiescence_latch)
+            login_wait = _await_claude_login(timeout_s, review_monitor, quiescence_latch, env=env)
         except BaseException as exc:
             if base is not None:
                 shutil.rmtree(base, ignore_errors=True)
@@ -13118,7 +13456,7 @@ def _default_spawn(
             if base is not None:
                 shutil.rmtree(base, ignore_errors=True)
             return _BrokeredSpawnResult("DEGRADED", "", _HarnessCode(code),
-                                        seat_notices=(code, *_ignored_override(leg)))
+                                        seat_notices=(code, *_ignored_override(leg, env)))
         elif login_wait.outcome == _seat_credentials.LOGIN_REFRESHED:
             logging.getLogger(__name__).info(
                 "seat claude: jailed (login refreshed) after %d s", int(login_wait.waited_s))
@@ -13469,7 +13807,7 @@ def _default_spawn(
                                 review_dir, base / "seat", review_authorization, seat_id,
                                 _seat_uid.holder_pid_from_prefix(_EGRESS_LAUNCH_PREFIX.get()),
                                 (staged_bundle, staged_instructions),
-                                timeout_s=timeout_s,
+                                timeout_s=timeout_s, env=env,
                             )
                         except _seat_jail.SeatSandboxRefused as exc:
                             leg_detail = _LegFailure(template=exc.code)
@@ -13707,7 +14045,7 @@ def _default_spawn(
             # agent-harness#1253 round 2: a jailed Claude seat that fails here (e.g. its
             # namespace) still says when a stored override was ignored -- the decision's
             # notice only, beside the one refusal.
-            seat_notices.extend(n for n in _ignored_override(leg) if n not in seat_notices)
+            seat_notices.extend(n for n in _ignored_override(leg, env) if n not in seat_notices)
         #
         # A placement that happened reaches the leg record on EVERY exit, monitor or not,
         # broker or not (agent-harness#896). It travels on its own attribute: a non-empty

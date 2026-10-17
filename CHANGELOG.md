@@ -6,6 +6,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Claude board transport compatibility
+
+- The existing jailed Claude board seat supports subscription print transport with its
+  default tool set, exact model, staged tree, private scratch and jail lifecycle.
+  `PHASE_LOOP_PANEL_CLAUDE_ROUTE=tui` retains the explicit TUI route. Managed Claude
+  launchers resolve to their native image for jailed execution. Tooled/pointer seats
+  remain outside sealed HARDEN evidence (EC-HARDEN-5 UNMET).
+
 ### Provider admission and availability evidence
 
 - Record the admitted CLI image's class and SHA256 in review evidence, and distinguish unavailable provider commands from login failures (agent-harness#1557; agent-harness#1343).
