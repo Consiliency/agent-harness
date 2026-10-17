@@ -30,6 +30,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   the runtime and end in `error`. That is fail-closed: such a node is never counted red or
   green, and its finding stays a blocking receipt.
 
+### OpenCode execute-phase loads interactive procedures on demand (agent-harness#1358)
+
+- Move interactive publication and worktree-pruning procedures into linked references,
+  keeping lane execution, runner closeout and PR-description requirements in `SKILL.md`.
+  The OpenCode skill now fits all three size limits; its references install only for
+  OpenCode and accompany adapter context delivery through agent-harness#1738.
+
 ### Context-file adapter runs get the `references/` files their skills link (agent-harness#1358)
 
 - Gemini and OpenCode launches carry each injected skill's `references/` files
