@@ -120,9 +120,9 @@ auth-posture or billing-posture literal. The existing envelope remains
 ## 4. First implementation and preserved boundaries
 
 Stage 3a is an optional SDK installation extra and an explicit runner route for
-personal Pro/Max solo authoring, execution and repair. Reject runner `review`, `subagent` and
-`agent_team` SDK requests by their requested mode, before the existing authoring
-mode degradation or any launch. The helper is a trusted executor child;
+personal Pro/Max solo authoring, execution and repair. Reject SDK requests where
+`request.action == "review"` or the requested mode is `subagent` or `agent_team`,
+before authoring-mode degradation or any launch. The helper is a trusted executor child;
 it is not an admitted review-seat launch profile.
 
 `PHASE_LOOP_PANEL_CLAUDE_ROUTE=sdk` continues to return

@@ -25,8 +25,8 @@ remain outside this unit.
 
 ## Research summary
 
-At input `0b8444e820aba08a27e68cb1ad0d2c9a0efe2d92`, `launcher.py` owns runner
-selection, preflight, bundles, supervision and output; `claude_channel_sidecar.py`
+At input `0b8444e820aba08a27e68cb1ad0d2c9a0efe2d92`, `launcher.py` owns selection,
+preflight, bundles, supervision/output; `claude_channel_sidecar.py`
 owns route vocabulary. `runner.py` consumes `LaunchResult`; PANELSPLIT/PANEL owns
 panel transports.
 
@@ -45,19 +45,20 @@ or the runner's global environment. The SDK CLI remains that helper's descendant
 
 Paths below are relative to `phase-loop-runtime/` unless stated otherwise.
 
-### `pyproject.toml` (modify)
+### `pyproject.toml` and `uv.lock` (modify)
 
 Add optional extra `claude-sdk = ["claude-agent-sdk==0.2.167"]`. Ordinary installs
-and non-SDK routes must work without it. The implementation must verify package
-availability without importing SDK code during module import or dry run.
+and non-SDK routes must work without it. Verify package availability without
+importing SDK code during module import or dry run.
+Regenerate `uv.lock` with `uv lock`; verify locked synchronization with the extra.
 
 ### `src/phase_loop_runtime/launcher.py` (modify)
 
 - `CLAUDE_ROUTE_ALIASES`, `resolve_claude_route`, `build_claude_launch_spec`: add
   `sdk` / `claude_sdk` aliases with reason `explicit_sdk`. Preserve unset interactive
   Channel selection, CI explicit-route refusal, invalid-route refusal and legacy
-  branches. Reject SDK `review`, `subagent` and `agent_team` by requested mode,
-  before authoring-mode degradation, bundles, credential probes or subprocesses.
+  branches. Reject SDK `request.action == "review"` or requested mode in
+  `{"subagent", "agent_team"}` before degradation, bundles, credential probes or subprocesses.
 - Build a helper command using `sys.executable -m phase_loop_runtime.claude_sdk_adapter`.
   Carry model, effort, cwd, tool lists, approval posture, bundle placeholders and
   output schema explicitly. The helper accepts only this adapter's defined flags,
@@ -155,8 +156,9 @@ with a fake CLI for credential-free subprocess cases. Never replace the SDK's
 environment merge/version probe in the latter. Synthetic credentials stay private.
 Cover the production `build_launch_spec` → `launch_with_spec` → helper path:
 
-- extra absent; CLI absent; dry run offline; aliases; requested non-solo/review
-  rejection, including authoring-plus-team before degradation or subprocesses;
+- extra absent; CLI absent; dry run offline; aliases; action/mode rejection,
+  including `action="review"` with `claude_execution_mode="solo"` and authoring-plus-team
+  before degradation or subprocesses;
   selected CLI wins over a decoy bundled CLI;
 - parent containing synthetic forbidden credentials is rejected; scrubber unit
   coverage plus the real pinned `SubprocessCLITransport` observe both `-v` and
@@ -199,9 +201,8 @@ snapshot as if it were its upstream source.
 
 ## Documentation impact
 
-The amendment carries the normative route extension; this ratification appends
-its pointer to the earlier ruling already cited by v11. Roadmap bytes/seals and
-panel skills stay unchanged. Runtime operator instructions change with Stage 3a.
+Ratification appends the amendment pointer to v11's cited ruling, preserving
+roadmap bytes/seals and panel skills. Stage 3a updates runtime operator instructions.
 
 ## Dependencies and order
 
@@ -221,8 +222,9 @@ panel skills stay unchanged. Runtime operator instructions change with Stage 3a.
 Commands below are prescribed for implementation, **not run during this planning
 task**. Use an interpreter with the runtime/test dependencies and SDK extra.
 
-1. Run `automation.suite_command` from repository root. Existing integration skips
-   do not count as exercised SDK paths; the new production-path tests must run.
+1. From `phase-loop-runtime`, run `uv lock --check` and
+   `uv sync --group test --extra claude-sdk --locked`. Run `automation.suite_command`
+   from repository root. Integration skips do not exercise SDK production paths.
 2. From `phase-loop-runtime`, run
    `PYTHONPATH="$PWD/src:$PWD/tests" python -m pytest -q -m 'not dotfiles_integration'`.
 3. From that directory run `python -m build`. Install the built wheel in a clean
