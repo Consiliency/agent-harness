@@ -13,6 +13,19 @@ a custom board**. It is derived from the live registries / install code so it
 cannot drift; a `pytest` smoke (`phase-loop-runtime/tests/test_advisor_board_alias_install.py`,
 `phase-loop-runtime/tests/test_advisor_board_integration.py`) keeps the skill names and matrix honest.
 
+For the 0.7.27 candidate, the runtime requires Python 3.12+ (agent-harness#1549).
+Context-file adapter launches now carry their skills' linked `references/` files
+(agent-harness#1738; plan agent-harness#1690), and skills-parity runs the warn-first
+size gate (agent-harness#1691). Earlier agy qualification and real-CLI smoke receipts
+are historical: final source/package, compatibility, live agy, I1, CI and evidence
+binding remain pending. Historical runtime CLI failures and unverified panel
+behavior remain disclosed; this card does not establish runtime PASS.
+
+The owner authorized a temporary T3 delegated cross-vendor review board with a
+separate president for this release. That review route does not turn historical
+runtime smoke failures into passes or waive final product verification. See the
+[release handoff](releases/outside-agent-release-handoff.md).
+
 ---
 
 ## Skill names — the `<harness>-advisor-board` rule
@@ -691,7 +704,12 @@ run, with `seat_sandbox_unavailable_seat_uid`. The host must also have `dev.tty.
 The runtime's own environment must also contain `pytest`: qualification runs a real falsifier run
 whose wrapper imports it (agent-harness#1357). Releases after 0.7.25 depend on it, and on the
 backports it needs when `/usr/bin/python3` is older than 3.11 (`exceptiongroup`, `tomli`,
-`typing-extensions`), so a normal install has them. Without it, qualification fails with the typed reason `prerequisite_missing` and
+`typing-extensions`), so a normal install has them. These support the separate host
+helper contract, which remains 3.10-compatible; they do not make the 0.7.27 runtime
+importable below 3.12. A governed-review falsifier running this repository's own
+runtime-importing test node under an older host interpreter ends in `error`, is
+never counted red or green, and remains a blocking receipt (agent-harness#1549).
+Without pytest, qualification fails with the typed reason `prerequisite_missing` and
 the exact install command, and `phase-loop doctor` shows `seat_jail_prerequisites[]` with
 `status: missing` and the same command in `fix`.
 

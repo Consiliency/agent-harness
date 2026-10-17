@@ -10,15 +10,28 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Upgrade notes
 
+- **Breaking: 0.7.27 requires Python 3.12+ (agent-harness#1549; agent-harness#1546).**
+  Upgrade the runtime interpreter before installing this release. The host helper
+  interpreter contract remains 3.10-compatible; a governed-review falsifier node that
+  imports this runtime under an older host interpreter ends in `error`, fails closed,
+  and remains a blocking receipt. See the detailed breaking-change entry below.
+- **Final candidate verification is pending.** The earlier agy qualification, package
+  comparison and Python 3.12 cold-wheel results predate the integration of
+  agent-harness#1738 and agent-harness#1549. Final source/package and compatibility
+  checks, all twelve agy members' 36 live operations, final I1, CI and rebound evidence
+  must be completed against the final candidate before a release cut. Historical
+  real-CLI smoke failures and unverified runtime panel behavior remain disclosed in
+  the release handoff; they are not a runtime PASS.
 - **The Claude jail pass carries forward from 0.7.26.** The seat jail's falsifier-run layout
   identity is unchanged (`execfind-falsifier-layout.v1:805042ce…`), and so are the Claude jail
   profile digests (x86_64 and aarch64), recomputed on the same host. The Gemini jail has a
   new profile and qualifies on first use (agent-harness#1170). A host upgrading from
   0.7.24 or earlier (layout `c1e0b88a…`) still takes the one-time 0.7.25 reset (see
   `[0.7.25]`).
-- **No dependency change.** `[project].dependencies` is identical to 0.7.26's, and
-  `uv.lock` differs only in the package's own version. A hash-locked deployment
-  (Consiliency/dotfiles#77) needs only the new package's hashes.
+- **No runtime dependency declaration change.** `[project].dependencies` is identical
+  to 0.7.26's. The Python floor and interpreter classifiers change, and `uv.lock` is
+  refreshed for Python 3.12+. A hash-locked deployment (Consiliency/dotfiles#77) must
+  resolve and verify its lock and new package hashes under a supported interpreter.
 - **agy 1.3.2, 1.3.3, 1.3.4 and 1.3.5 are shipped members.** The qualified set is now
   1.2.11, 1.2.12, 1.2.14, 1.2.15, 1.2.16, 1.2.17, 1.3.0, 1.3.1, 1.3.2, 1.3.3, 1.3.4 and 1.3.5;
   1.3.5 is the newest shipped member. A host on one of the four new members no longer depends
@@ -115,9 +128,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `007a5a44…`). 1.3.5's help digest is new (`a12355e8…`): its `--help` adds the `--mode`
   value `auto`, which the route does not use. The route core needed only the four new
   entries.
-- All twelve members were requalified on the release tree (completion, cancel and owner-loss
-  each, then `--validate`), because this release changes `phase_loop_runtime/**/*.py`. Each
-  member has its own regenerated record.
+- All twelve members were requalified on the earlier release tree (completion, cancel
+  and owner-loss each, then `--validate`). Those records are historical after the
+  agent-harness#1738 and agent-harness#1549 integration: all twelve require renewed
+  qualification and source binding on the final candidate. Each member retains its
+  own record; existing source pins do not prove this revised tree.
 - A newer upstream release remains eligible for first-use self-qualification; as of
   2026-10-16, upstream's latest is 1.4.0 and is outside this shipped set.
 
@@ -133,12 +148,15 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   a registry keep their precedence. The roadmap banner parser recognises v10's supersession
   banner.
 - See the upgrade note above for a checkout whose phase-loop state still names v10.
-### BREAKING: Python 3.12 is the minimum (agent-harness#1546)
 
-- `phase-loop-runtime` and `consiliency-harness` now declare `requires-python = ">=3.12"`
-  (was `>=3.10`); the 3.10/3.11 classifiers are gone and 3.13/3.14 are listed. pip and uv
-  skip this release on an older interpreter and keep resolving the last 3.10-compatible
-  one, so existing pins keep working. `install-agent-harness.sh` installs through
+### BREAKING: Python 3.12 is the minimum (agent-harness#1549; agent-harness#1546)
+
+- `phase-loop-runtime` and the checked-in `consiliency-harness` metadata now declare
+  `requires-python = ">=3.12"` (was `>=3.10`). The shim stays at 0.6.1 and is not being
+  separately published in this release. The 3.10/3.11 classifiers are gone and
+  3.13/3.14 are listed. On an older interpreter, unpinned pip and uv resolution can
+  select an earlier compatible release; an exact 0.7.27 pin requires Python 3.12+.
+  Existing pins to older compatible releases keep working. `install-agent-harness.sh` installs through
   `uv tool install`, which selects a 3.12+ interpreter itself.
 - CI: the hosted pytest matrix is one 3.12 lane on every event (was 3.10/3.11/3.12 on
   push and 3.10 on pull requests). The CONFORM chronology node and its junit artifact
@@ -157,7 +175,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   the runtime and end in `error`. That is fail-closed: such a node is never counted red or
   green, and its finding stays a blocking receipt.
 
-### Context-file adapter runs get the `references/` files their skills link (agent-harness#1358)
+### Context-file adapter runs get the `references/` files their skills link (agent-harness#1738; plan agent-harness#1690; agent-harness#1358)
 
 - Gemini and OpenCode launches carry each injected skill's `references/` files
   beside the delivered `context.md` under `skills/<skill>/references/`, and the
@@ -168,7 +186,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   splitting the codex, gemini and opencode plan and execute skills; codex reads its
   installed skills and is not changed.
 
-### skills-parity CI runs the skill size gate (agent-harness#1358)
+### skills-parity CI runs the skill size gate (agent-harness#1691; agent-harness#1358)
 
 - `skills-parity.yml` runs `tests/test_skill_size_gate.py` as a warn-first step,
   with `-rw`, so the job log lists every skill body over the size guidance. The

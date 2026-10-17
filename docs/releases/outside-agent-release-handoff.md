@@ -49,6 +49,30 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 ## Release-Check Evidence
 
 - `publication_status=prepared`
+- **Revised candidate, final verification pending.** The integrated 0.7.27 includes
+  agent-harness#1738 (linked skill references; plan agent-harness#1690), the
+  skills-parity size gate from agent-harness#1691, and the breaking Python 3.12+
+  runtime floor from agent-harness#1549 (agent-harness#1546). Earlier preparation
+  results below are historical and do not qualify this revised source.
+- Final source/package checks and builds, Python 3.12+ compatibility verification,
+  a fresh cold-wheel import/compile, all twelve agy members' completion/cancel/owner-loss
+  operations (36 total), final I1, exact-candidate CI and rebound evidence remain
+  pending. Existing qualification source pins and package hashes must be regenerated
+  and verified by the release owner against final bytes; they are not current proof.
+- Historical real-CLI smoke attempts include failures/degraded results and do not
+  establish a successful tools-enabled four-CLI runtime panel. Runtime-owned panel
+  behavior remains unverified. The owner has authorized a temporary T3 delegated
+  cross-vendor release board with a separate president; that review is distinct from
+  product verification and cannot relabel historical runtime failures as PASS.
+  Requiring the unavailable runtime panel transport to approve its own release is
+  not a separate gate under that authorization. Final board/president review and
+  explicit owner approval of the concrete verified tag/publication cut remain pending.
+- Runtime installation requires Python 3.12+. The host helper boundary remains
+  3.10-compatible, with unconditional pytest backports retained. A governed-review
+  falsifier running this repository's runtime-importing node under an older host
+  interpreter ends in `error`, is never counted red or green, and remains a blocking
+  receipt. The checked-in shim metadata also has the new floor, but
+  `consiliency-harness` stays at 0.6.1 and is not separately published here.
 - `0.7.27` is an interim maintenance release. It does not claim `EC-RELEASE-1`,
   `EC-RELEASE-5` or `EC-RELEASE-6`: no pilot trains are claimed, and the RELEASE phase is
   carried, not started, in roadmap v11. It does not declare `production-ready`.
@@ -90,17 +114,22 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
   - the FABPUB recovery and publication changes, reflection admission gates and PR
     description upkeep listed in the `[0.7.27]` CHANGELOG. Re-run in-flight boards on the
     upgraded runtime to prove the new tool and model routes;
+  - linked `references/` files delivered beside context-file adapter skills
+    (agent-harness#1738; plan agent-harness#1690), and the warn-first skills-parity
+    size gate (agent-harness#1691);
   - admitted CLI image and qualification-class evidence, native wrapper-target validation,
     and executable availability distinguished from login failures (agent-harness#1557,
-    agent-harness#1343). All twelve agy members were requalified again after this landed;
+    agent-harness#1343). All twelve agy members were requalified on the earlier
+    candidate after this landed;
   - no dependency change (`Requires-Dist` and entry points equal `0.7.26`'s). The
     falsifier-run layout identity (`execfind-falsifier-layout.v1:805042ce…`) and the Claude
     jail profile digests are unchanged on the same host; the new Gemini jail profile
     qualifies on first use;
   - the qualified agy image set adds 1.3.2, 1.3.3, 1.3.4 and 1.3.5, so it is 1.2.11,
     1.2.12, 1.2.14, 1.2.15, 1.2.16, 1.2.17, 1.3.0, 1.3.1, 1.3.2, 1.3.3, 1.3.4 and 1.3.5.
-    All twelve members were requalified live on this release tree (validated 3 and
-    `route_qualified` true for each; all 245 source pins verified; `--route-core` passes).
+    All twelve members were requalified live on the earlier release tree (validated 3 and
+    `route_qualified` true for each; all 245 source pins verified; `--route-core` passed
+    on that earlier tree). These receipts require renewal after this integration.
     Every official archive and its `antigravity` member match the reviewed asset and
     executable digests. Upstream's latest, 1.4.0, is outside the shipped set and eligible for first-use
     self-qualification. Each series ran from a verified copy of its official release asset,
@@ -108,10 +137,11 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 - Packaged content: compared with the hash-verified published `0.7.26` archives, the wheel
   adds generic staging/worktree paths in runtime code and documentation; the sdist also
   adds synthetic home-directory paths and host-name test canaries. These are inherited
-  source/documentation examples, not local credentials or a pass store. The repository's
-  pinned gitleaks scan and current source-digest scan pass.
-- Python 3.12 cold import: in a fresh py3.12 venv, the prepared wheel imports `0.7.27`, and
-  `compileall` of the installed package succeeds under `-W error`.
+  source/documentation examples, not local credentials or a pass store. The earlier candidate's
+  pinned gitleaks scan and source-digest scan passed; final-tree checks remain pending.
+- Historical Python 3.12 cold import: in a fresh py3.12 venv, the earlier prepared wheel
+  imported `0.7.27`, and `compileall` succeeded under `-W error`. Repeat against the
+  final candidate wheel; this result predates the revised source.
 - Release tracking: agent-harness#1542; the appended plan-authority rows cite it.
 - Tag: not yet created. The signed `v0.7.27` tag push, which publishes to PyPI, is
   maintainer-gated.
@@ -797,6 +827,12 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 
 ### This release: 0.7.27 (prepared)
 
+**Historical preparation only:** the following hashes, source-pin equivalence,
+metadata comparison and cold-wheel results predate agent-harness#1738 and
+agent-harness#1549. They are retained as measurements of the named earlier source,
+not as final candidate evidence. The revised runtime floor is Python 3.12+;
+final artifacts and compatibility checks remain pending.
+
 The digests below are from a pre-tag `uv build` of a `git archive` export of
 `727c5330c`, under `umask 022` (archive modes are umask-dependent,
 Consiliency/agent-harness#519). Its packaged tree is `5095fa12f94b535ae220a0ab031ccb4f5c4dc749`,
@@ -1071,7 +1107,9 @@ this metadata document.
 
 ## Package Surface Inventory
 
-Measured on the prepared `0.7.27` build described above.
+Measured on the historical prepared `0.7.27` build described above. Final candidate
+package inventory must be remeasured after the source integration; these counts
+are not a claim about that pending build.
 
 - Wheel artifact: `phase_loop_runtime-0.7.27-py3-none-any.whl`
 - Sdist artifact: `phase_loop_runtime-0.7.27.tar.gz`
