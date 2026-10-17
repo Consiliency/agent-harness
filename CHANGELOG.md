@@ -13,6 +13,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   one-shot scorer calibration, and exact Boolean pair reduction. Live pilot
   qualification and editor gating remain pending; no skill is automatically adopted.
 
+### skills-parity CI runs the skill size gate (agent-harness#1358)
+
+- `skills-parity.yml` runs `tests/test_skill_size_gate.py` as a warn-first step,
+  with `-rw`, so the job log lists every skill body over the size guidance. The
+  step fails only where the test does: a stale allowlist entry, or, once `STRICT`
+  is on, a new or grown offender. Changing the test now triggers the workflow.
+
 ### Provider admission and availability evidence
 
 - Record the admitted CLI image's class and SHA256 in review evidence, and distinguish unavailable provider commands from login failures (agent-harness#1557; agent-harness#1343).
