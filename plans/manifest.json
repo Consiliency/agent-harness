@@ -13451,7 +13451,6 @@
       "updated_at": "2026-10-13T02:13:35Z"
     },
     {
-      "acceptance_criteria_count": 6,
       "created_at": "2026-10-13T02:17:02.049511Z",
       "file": "plans/phase-plan-v11-PARSCHED.md",
       "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20261013T020808Z-01-parsched-plan.md",
@@ -13477,7 +13476,6 @@
       },
       "slug": "v11-PARSCHED",
       "status": "committed",
-      "task_summary": "Plan readiness-driven concurrent dispatch, pairwise ownership exclusion, roadmap overlap lint, and manual closeout preservation.",
       "type": "phase",
       "updated_at": "2026-10-13T02:17:02.049511Z"
     },

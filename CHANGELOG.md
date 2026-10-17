@@ -13,6 +13,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   one-shot scorer calibration, and exact Boolean pair reduction. Live pilot
   qualification and editor gating remain pending; no skill is automatically adopted.
 
+### Provider admission and availability evidence
+
+- Record the admitted CLI image's class and SHA256 in review evidence, and distinguish unavailable provider commands from login failures (agent-harness#1557; agent-harness#1343).
+
 ### Gemini: a local model preference, `PHASE_LOOP_GEMINI_MODEL` (agent-harness#1604, ported from agent-harness#1615)
 
 - `PHASE_LOOP_GEMINI_MODEL` selects a registered canonical Gemini base model for the unpinned Gemini executor actions, model classes and composed/default board seats. Explicit task models, plan/roadmap model pins and configured board seats win; effort, other providers, subscription auth and sandbox admission are unchanged. Unset, the shipped defaults hold. An invalid value fails without fallback.

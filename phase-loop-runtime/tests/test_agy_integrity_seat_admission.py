@@ -305,9 +305,9 @@ def _spy_admit(monkeypatch):
     calls = []
     real = agy_integrity.admit_for_seat
 
-    def spy(path, env):
+    def spy(path, env, **kwargs):
         calls.append((str(path), dict(env)))
-        return real(path, env)
+        return real(path, env, **kwargs)
 
     monkeypatch.setattr(agy_integrity, "admit_for_seat", spy)
     return calls
@@ -332,6 +332,47 @@ def test_the_owned_non_heartbeat_seat_admits_a_locally_qualified_image(world, mo
         assert os.pread(_bound_provider(profile), 1 << 20, 0) == world.image
     assert [path for path, _env in calls] == [str(world.agy)]
     assert calls[0][1]["HOME"] == str(world.home)
+
+
+@pytest.mark.parametrize("admission_class", ["release_qualified", "locally_qualified"])
+def test_seat_and_probe_record_the_admitted_image(world, monkeypatch, admission_class):
+    if admission_class == "release_qualified":
+        monkeypatch.setitem(gh.QUALIFIED_IMAGES, world.digest, "e" * 64)
+    else:
+        _seed(world)
+    expected = {"provider_admission_class": admission_class,
+                "provider_image_sha256": world.digest}
+    evidence = {}
+    image = agy_integrity.check(world.agy, world.env, evidence=evidence)
+    try:
+        assert evidence == expected
+        assert image.sha256 == evidence["provider_image_sha256"]
+    finally:
+        image.close()
+    cwd = world.tmp / "out"
+    cwd.mkdir()
+    with pi.seat_profile(harness="gemini", executable=str(world.agy), env=world.env,
+                         cwd=cwd) as (_, profile):
+        assert profile.evidence == expected
+        assert sha256(os.pread(_bound_provider(profile), 1 << 20, 0)).hexdigest() == world.digest
+    monkeypatch.setattr(pi, "_seat_provider_source", lambda *a: ("gemini", str(world.agy)))
+
+    def launch(command, **kwargs):
+        assert kwargs["profile"].evidence == expected
+        raise _LaunchReached
+
+    monkeypatch.setattr(pi, "launch_owned", launch)
+    broker_evidence = {}
+    egress = pi._EGRESS_LAUNCH_PREFIX.set(("synthetic-filtered-namespace",))
+    try:
+        with pytest.raises(_LaunchReached):
+            pi._exec_leg("gemini", cwd, cwd, timeout_s=20, artifact="synthetic review",
+                model=pi.harden_subscription_model("gemini", "gemini-3.8-flash", "medium"),
+                effort="medium", env=world.env, broker_prompt="synthetic review",
+                broker_evidence=broker_evidence)
+    finally:
+        pi._EGRESS_LAUNCH_PREFIX.reset(egress)
+    assert {key: broker_evidence.get(key) for key in expected} == expected
 
 
 def test_the_credential_refresh_admits_a_locally_qualified_image(world, monkeypatch):
@@ -430,6 +471,57 @@ def test_lookup_help_measurement_never_reenters_seat_admission(world, monkeypatc
     assert "--ro-bind-data" in launched[0][1]
     assert refreshed == []
     assert token.exists()
+
+
+def test_lookup_under_the_global_help_lock_never_recurses_into_check(world, monkeypatch):
+    _seed(world)
+    real_check = agy_integrity.check
+    checked = []
+
+    def guarded_check(*args, **kwargs):
+        assert not q._HELP_LOCK.locked(), "check recursed under the global help lock"
+        checked.append(args)
+        return real_check(*args, **kwargs)
+
+    monkeypatch.setattr(agy_integrity, "check", guarded_check)
+    monkeypatch.setattr(q, "_run_help", _REAL_HELP)
+
+    @contextmanager
+    def owned_profile(env, *, settings_bytes, credential_path, admission):
+        assert q._HELP_LOCK.locked()
+        settings = os.memfd_create("synthetic-settings", os.MFD_CLOEXEC)
+        try:
+            config = gh.PRIVATE_HOME + "/.gemini/antigravity-cli"
+            yield SimpleNamespace(executable=gh.PRIVATE_HOME + "/agy", env=env,
+                image_fd=admission.image.fd, settings_fd=settings,
+                pass_fds=(admission.image.fd, settings),
+                mount_args=["--symlink", str(credential_path.absolute()), config + "/antigravity-oauth-token"],
+                evidence={"provider_image_sha256": admission.image.sha256})
+        finally:
+            os.close(settings)
+
+    launched = []
+
+    def launch(command, **kwargs):
+        assert q._HELP_LOCK.locked()
+        assert command[1:] == ["--help"]
+        launched.append(command)
+        raise _LaunchReached
+
+    monkeypatch.setattr(gh, "owned_profile", owned_profile)
+    monkeypatch.setattr(pi, "launch_owned", launch)
+    monkeypatch.setattr(pi, "_seat_provider_source", lambda *a: ("gemini", str(world.agy)))
+    egress = pi._EGRESS_LAUNCH_PREFIX.set(("synthetic-filtered-namespace",))
+    before = _open_fds()
+    try:
+        with pytest.raises(_LaunchReached):
+            agy_integrity.check(world.agy, world.env)
+    finally:
+        pi._EGRESS_LAUNCH_PREFIX.reset(egress)
+    assert len(checked) == 1
+    assert len(launched) == 1
+    assert _open_fds() == before
+    assert not q._HELP_LOCK.locked()
 
 
 # ------------------------------------------- check stays release-only, per caller
