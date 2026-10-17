@@ -91,6 +91,10 @@ INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
     # (the provider interface), so they hold no raw launch of their own.
     ("lease_supervisor.py", "_exec_executor"): (
         RELOCATED, "launcher.py:launch:child_executor_env"),
+    ("claude_sdk_adapter.py", "_probe"): (
+        RELOCATED, "claude_sdk_adapter.py:_probe:child_scratch_env"),
+    ("claude_sdk_adapter.py", "auth_preflight"): (
+        RELOCATED, "claude_sdk_adapter.py:auth_preflight:child_scratch_env"),
     # agent-harness#1132: the jailed seat's helper chain (probe and launch, one decided
     # env object).
     ("panel_invoker.py", "_require_jailed_seat_identity"): (

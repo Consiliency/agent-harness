@@ -24,6 +24,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   step fails only where the test does: a stale allowlist entry, or, once `STRICT`
   is on, a new or grown offender. Changing the test now triggers the workflow.
 
+### Optional solo Claude SDK runner (agent-harness#1391)
+
+- Add the optional `claude-sdk` extra and explicit `PHASE_LOOP_CLAUDE_ROUTE=sdk` selection for supported personal Claude Code solo contexts. Existing defaults and panel routing are unchanged; unsupported contexts refuse without fallback. Live qualification remains required before landing.
+
 ### Provider admission and availability evidence
 
 - Record the admitted CLI image's class and SHA256 in review evidence, and distinguish unavailable provider commands from login failures (agent-harness#1557; agent-harness#1343).

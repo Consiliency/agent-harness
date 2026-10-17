@@ -87,6 +87,8 @@ CLAUDE_ROUTE_ALIASES = {
     "claude_agent_view": "claude_agent_view",
     "print": "claude_print",
     "claude_print": "claude_print",
+    "sdk": "claude_sdk",
+    "claude_sdk": "claude_sdk",
 }
 CLAUDE_CHANNEL_SIDECAR_URL_ENV = "PHASE_LOOP_CLAUDE_CHANNEL_URL"
 # Single source of truth for the default loopback sidecar URL (#66 CR): the
@@ -857,6 +859,8 @@ def resolve_claude_route(value: str | None = None, *, env: dict[str, str] | None
         )
     if route == "claude_agent_view":
         return ClaudeRouteSelection(route=route, reason="explicit_agent_view")
+    if route == "claude_sdk":
+        return ClaudeRouteSelection(route=route, reason="explicit_sdk")
     return ClaudeRouteSelection(
         route=route,
         reason="explicit_print_compatibility",
@@ -1265,6 +1269,16 @@ def build_claude_launch_spec(request: LaunchRequest, record: ExecutorCapabilityR
     delivery_mode = "context_file" if _claude_uses_context_file(prompt_bundle) else injection_metadata.injection_mode
     route_selection = resolve_claude_route()
     requested_mode = request.claude_execution_mode or capability.default_claude_execution_mode or "solo"
+    if route_selection.route == "claude_sdk" and (request.action == "review" or requested_mode != "solo"):
+        return LaunchSpec(
+            executor="claude", command=[], prompt_bundle=prompt_bundle,
+            injection_metadata=injection_metadata, delivery_mode=delivery_mode,
+            dispatch_decision=request.dispatch_decision, available=False,
+            reason="sdk_solo_runner_only", claude_route="claude_sdk",
+            claude_route_reason="sdk_solo_runner_only", claude_execution_mode=requested_mode,
+            wrapped_cwd=str(request.repo), selected_model=request.model_selection.model,
+            selected_effort=request.model_selection.effort,
+        )
     requested_policy = request.claude_team_policy or _claude_policy_for_mode(capability, requested_mode)
     # #153 authoring auto-degrade: a claude `subagent`/`agent_team` run whose
     # sub-step is an authoring action (`plan`/`roadmap`/`maintain-skills` — exactly
@@ -1482,9 +1496,7 @@ def build_claude_launch_spec(request: LaunchRequest, record: ExecutorCapabilityR
             claude_route=route_selection.route,
             claude_route_reason=route_selection.reason,
         )
-    return LaunchSpec(
-        executor="claude",
-        command=build_claude_command(
+    command = build_claude_command(
             request.repo,
             request.model_selection,
             CLAUDE_CONTEXT_PLACEHOLDER if delivery_mode == "context_file" else prompt_bundle.render_context(),
@@ -1493,7 +1505,18 @@ def build_claude_launch_spec(request: LaunchRequest, record: ExecutorCapabilityR
             disallowed_tools=",".join(claude_policy.disallowed_tools) if claude_policy.disallowed_tools else CLAUDE_ADAPTER_DISALLOWED_TOOLS,
             bypass_approvals=request.bypass_approvals,
             closeout_schema=closeout_schema,
-        ),
+        )
+    if route_selection.route == "claude_sdk":
+        # Reuse the CLI policy oracle; the helper accepts only these fixed flags.
+        prompt = command[-1]
+        command = [sys.executable, "-m", "phase_loop_runtime.claude_sdk_adapter",
+                   "--cwd", str(request.repo), *command[5:-1]]
+        # command[5:] starts after --output-format stream-json; --verbose is omitted.
+        if delivery_mode == "context_file":
+            command += ["--context-prompt", prompt]
+    return LaunchSpec(
+        executor="claude",
+        command=command,
         prompt_bundle=prompt_bundle,
         injection_metadata=injection_metadata,
         delivery_mode=delivery_mode,
@@ -1964,6 +1987,17 @@ def _render_command_template(template: str, request: LaunchRequest) -> list[str]
 
 
 def run_auth_preflight(spec: LaunchSpec) -> AuthPreflightResult:
+    if spec.executor == "claude" and getattr(spec, "claude_route", None) == "claude_sdk":
+        from .claude_sdk_adapter import SDKRefused, auth_preflight
+        try:
+            ok = auth_preflight(Path(spec.wrapped_cwd or "."), os.environ)
+        except (SDKRefused, OSError, subprocess.SubprocessError):
+            ok = False
+        return AuthPreflightResult(
+            ok=ok, metadata={"executor": "claude", "subscription_present": ok, "route": "claude_sdk"},
+            blocker_class=None if ok else "account_or_billing_setup",
+            blocker_summary=None if ok else "SDK subscription context could not be admitted and bound.",
+        )
     if spec.auth_preflight_mode != "metadata_only":
         return AuthPreflightResult(ok=True, metadata={})
 
@@ -2145,6 +2179,13 @@ def launch_with_spec(
     if not spec.available and not dry_run:
         raise ValueError("live launch requested for unavailable executor")
     action = spec.prompt_bundle.product_action or "execute"
+    if spec.executor == "claude" and spec.claude_route == "claude_sdk" and not dry_run:
+        return _result_with_spec(_launch_claude_sdk(
+            spec, log_path=log_path, stream_output=stream_output,
+            heartbeat_path=heartbeat_path, heartbeat_interval_seconds=heartbeat_interval_seconds,
+            quiet_warning_seconds=quiet_warning_seconds, quiet_blocker_seconds=quiet_blocker_seconds,
+            caller_run_id=caller_run_id, lease_authority=lease_authority,
+        ), spec)
     if action == "review" and not dry_run and spec.claude_route in {"claude_channel", "claude_agent_view"}:
         from .sandbox_egress import SeatIdentityUnverified
         raise SeatIdentityUnverified("executor_review_route_unsupported")
@@ -2246,6 +2287,51 @@ def launch_with_spec(
             },
         )
     return _result_with_spec(result, spec)
+
+
+def _launch_claude_sdk(spec: LaunchSpec, **launch_options) -> LaunchResult:
+    from .claude_sdk_adapter import SDKRefused, bound_command, _receipt
+
+    action = spec.prompt_bundle.product_action or "execute"
+    if action == "review" or spec.claude_execution_mode != "solo":
+        raise ValueError("sdk_solo_runner_only")
+    log_path = launch_options.pop("log_path")
+    with contextlib.ExitStack() as stack:
+        bundle_log = log_path
+        if bundle_log is None:
+            bundle_log = Path(stack.enter_context(tempfile.TemporaryDirectory(prefix="sdk-bundle-"))) / "output.log"
+        command, cleanup = _resolve_command_context(spec, bundle_log)
+        stdin_text = spec.delivery_payload()
+        if "--context-prompt" in command:
+            index = command.index("--context-prompt")
+            stdin_text = command[index + 1]
+            command = command[:index] + command[index + 2:]
+            command += ["--context-dir", str(bundle_log.parent)]
+        try:
+            with bound_command(command, Path(spec.wrapped_cwd), os.environ) as (bound, env):
+                result = launch(
+                    bound, action=action, env={**env, "AGENT_DETACHED_WORK": "1"},
+                    stdin_text=stdin_text, log_path=log_path, cwd=spec.wrapped_cwd,
+                    timeout_seconds=spec.launch_timeout_seconds, ephemeral_monitor=log_path is None,
+                    **launch_options,
+                )
+        except SDKRefused as exc:
+            return LaunchResult(command=spec.command, returncode=1, claude_route_result=_receipt("blocked", str(exc)))
+        finally:
+            _cleanup_paths(cleanup)
+        receipt = None
+        terminal = False
+        for line in result.output.splitlines():
+            event = _parse_json_object(line) or {}
+            if event.get("type") == "phase_loop_claude_route_result":
+                receipt = event.get("receipt")
+            if event.get("type") == "result" and event.get("subtype") == "success" and event.get("is_error") is False:
+                terminal = isinstance(event.get("result"), str) and bool(event["result"].strip())
+        if not isinstance(receipt, dict) or receipt.get("route") != "claude_sdk":
+            receipt = _receipt("error", "sdk_result_missing")
+        success = terminal and receipt.get("status") == "done"
+        return replace(result, command=command, claude_route_result=receipt,
+                       returncode=result.returncode if success or result.returncode else 1)
 
 
 def _launch_claude_channel(spec: LaunchSpec, *, log_path: Path | None) -> LaunchResult:
