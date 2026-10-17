@@ -2124,7 +2124,148 @@
       "status": "completed",
       "task_summary": "Repair static board imports without weakening live review admission (agent-harness#862)",
       "type": "detailed",
-      "updated_at": "2026-09-16T16:34:27Z"
+      "updated_at": "2026-09-16T16:34:27Z",
+      "test_compatibility_repairs": [
+        {
+          "after_blob": "f104904ad0d8008eb23b45245912a4bcc3ae230a",
+          "after_sha256": "da6fbf726842af867ccc3f243eae16d8af0c0cd2af985c1ef35926c459c994e2",
+          "at": "2026-10-17T21:52:09.767429+00:00",
+          "base_main": "a776e681b24f2f019c9908f91a0e97caf99ab5d6",
+          "before_blob": "8e4d1b36ecae92dc25c7e5e102340ccdba9a75cc",
+          "before_sha256": "62be532b3058abc8bf3818588bb0b3666df15f5d42c63e30ee52537468318cbd",
+          "blocking_pull_request": "agent-harness#1570",
+          "by": "codex",
+          "evidence": [
+            {
+              "path": "/mnt/workspace/users/viperjuice/agent-evidence/static-audit-20261017-r1/main-static-audit-repro.log",
+              "sha256": "8276962bfe63e217dc1680fc0ceddb34eb08e346b62f3bf8326848cd140081dd"
+            },
+            {
+              "path": "/mnt/workspace/users/viperjuice/agent-evidence/static-audit-20261017-r1/main-static-audit-repro.xml",
+              "sha256": "7f207f0d15d2631e2e500bf12841f78a93016951e9f8e2f41b58bf431db027c2"
+            },
+            {
+              "path": "/mnt/workspace/users/viperjuice/agent-evidence/static-audit-20261017-r1/static-audit-tests-first.log",
+              "sha256": "e22b128f206a53a787a20a16028ef48d6b2b5b77afd24d8244145639b88dee05"
+            },
+            {
+              "path": "/mnt/workspace/users/viperjuice/agent-evidence/static-audit-20261017-r1/static-audit-tests-first.xml",
+              "sha256": "5e292364167ee2e47ee45db4510a1c59a7c75bfac6aa4d3ccb08872c26f7e305"
+            },
+            {
+              "path": "/mnt/workspace/users/viperjuice/agent-evidence/static-audit-20261017-r1/static-audit-controls.log",
+              "sha256": "673de6c238fa54dadfd5b9b5e0ab8140325fdebe48da497ba7db2f3ac2dae98c"
+            },
+            {
+              "path": "/mnt/workspace/users/viperjuice/agent-evidence/static-audit-20261017-r1/static-audit-controls.xml",
+              "sha256": "78d546c190ae9799ed82f75fcd6be3acc590aa49acee39377df8bdf08e66d6e7"
+            },
+            {
+              "path": "/mnt/workspace/users/viperjuice/agent-evidence/static-audit-20261017-r1/static-audit-py312.log",
+              "sha256": "1f30861fdaec18ae41b01d3905c8aa6bdafa26406b995dd5a029e8fe5eb6c2af"
+            },
+            {
+              "path": "/mnt/workspace/users/viperjuice/agent-evidence/static-audit-20261017-r1/static-audit-py312.xml",
+              "sha256": "abb1dc7ba2a4737a6918627825dd0f126d14dd162febec1136b2ffc501a9f0a5"
+            },
+            {
+              "path": "/mnt/workspace/users/viperjuice/agent-evidence/static-audit-20261017-r1/static-audit-regression.log",
+              "sha256": "631cee7bb9913f5e3a686763b19f4712ff8a4cf8ca57869dad8c40c90803be53"
+            },
+            {
+              "path": "/mnt/workspace/users/viperjuice/agent-evidence/static-audit-20261017-r1/static-audit-regression.xml",
+              "sha256": "994ac8c17e43e473b72cf22d494a0eaf1153014e7443102f224c85699e4ccf06"
+            },
+            {
+              "path": "/mnt/workspace/users/viperjuice/agent-evidence/static-audit-20261017-r1/static-audit-mutations.json",
+              "sha256": "6186e3361a0b031347155d48c3a0c9c1c73b5b28af1fbc994290d404753a458b"
+            },
+            {
+              "path": "/mnt/workspace/users/viperjuice/agent-evidence/static-audit-20261017-r1/static-audit-repair-design-review.md",
+              "sha256": "2d2e5a5320f467221a806398cd4f30b228e9b813fef761c0d1b7dcfe28ebbe62"
+            }
+          ],
+          "file": "phase-loop-runtime/tests/test_advisor_board_static_import_862.py",
+          "historical_approvals_and_completion_preserved": true,
+          "lost_receipt_recovered": false,
+          "phase_acceptance": false,
+          "production_changed": false,
+          "repair_id": "static-audit-python314-20261017-r1",
+          "scope": "Correlate the already-permitted Git Popen launch with its one-use Python 3.14 posix_spawn backend event; preserve the primary predicate, static purity, live refusal and forbidden-process/network controls. Add discriminating negative and cleanup controls.",
+          "verification": {
+            "final_independent_patch_review": "pending; design approval is not implementation approval",
+            "python_3_12_module": "30 passed",
+            "python_3_14_module": "30 passed",
+            "regression_packet": "156 passed on RUNTIME candidate 767384ef59a5672a7d47c910044cb554761e8431 with only this test overlaid; final repair-head run still required",
+            "selective_mutants": "11 killed, 0 survived"
+          },
+          "whole_suite_claim": false
+        },
+        {
+          "after_blob": "604598315a9bd36655123ce6fd6bb8ddaf7151b1",
+          "after_sha256": "c388180a7d312abe7b31e128db0d276b193c7e2446c740c40e999ce992deb644",
+          "at": "2026-10-17T22:02:57.814086+00:00",
+          "base_candidate": "c5e5429983dd31b91c536c726aaae928b9f49542",
+          "before_blob": "f104904ad0d8008eb23b45245912a4bcc3ae230a",
+          "before_sha256": "da6fbf726842af867ccc3f243eae16d8af0c0cd2af985c1ef35926c459c994e2",
+          "blocking_pull_request": "agent-harness#1570",
+          "by": "codex",
+          "evidence": [
+            {
+              "path": "/mnt/workspace/users/viperjuice/agent-evidence/static-audit-20261017-r3/static-audit-primary-red.log",
+              "sha256": "38eb97a1e0fce8e4f5b277f3b49f19e2660b9ddfbe5c4d3212db05c93afc9ef8"
+            },
+            {
+              "path": "/mnt/workspace/users/viperjuice/agent-evidence/static-audit-20261017-r3/static-audit-primary-red.xml",
+              "sha256": "4f99fb6424c0dcbeb6b460ab3f2721f3ea52fba9b1bfe81ebfeb7b816c4d199b"
+            },
+            {
+              "path": "/mnt/workspace/users/viperjuice/agent-evidence/static-audit-20261017-r3/static-audit-primary-green.log",
+              "sha256": "47969b47eca51c7fab6bf4d2d9d34fc5694edd2ebe1ac85ac8594d18e7c6860c"
+            },
+            {
+              "path": "/mnt/workspace/users/viperjuice/agent-evidence/static-audit-20261017-r3/static-audit-primary-green.xml",
+              "sha256": "1aac07c1c1cb1c8a22ed0baf299dd9c85ce2410282606c6b3d54d8a044bf71fa"
+            },
+            {
+              "path": "/mnt/workspace/users/viperjuice/agent-evidence/static-audit-20261017-r3/static-audit-primary-py312.log",
+              "sha256": "aa1a3aa2151dfe5c12500ce166616a86a1a82beb6108f4b61d8e0004011fa66e"
+            },
+            {
+              "path": "/mnt/workspace/users/viperjuice/agent-evidence/static-audit-20261017-r3/static-audit-primary-py312.xml",
+              "sha256": "1007211ad144ffbf01a1cc440b8b9f1944b4cbf25ccd94f1c33d5ec799baadae"
+            },
+            {
+              "path": "/mnt/workspace/users/viperjuice/agent-evidence/static-audit-20261017-r3/static-audit-mutations-r3.json",
+              "sha256": "b0770f1cbce6d4b376517e448d9ddcbb493a6b9a222e6af1986864be88b48ead"
+            },
+            {
+              "path": "/mnt/workspace/users/viperjuice/agent-evidence/static-audit-20261017-r3/static-audit-r3-lint.log",
+              "sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18"
+            },
+            {
+              "path": "/mnt/workspace/users/viperjuice/agent-evidence/static-audit-20261017-r3/repair-inline-comments.json",
+              "sha256": "947dc3e7414e987a8264da4f088e13d461415e0460b9574726eddc2de00222af"
+            }
+          ],
+          "file": "phase-loop-runtime/tests/test_advisor_board_static_import_862.py",
+          "lost_receipt_recovered": false,
+          "phase_acceptance": false,
+          "production_changed": false,
+          "pull_request": "agent-harness#1747",
+          "repair_id": "static-audit-python314-20261017-r3",
+          "review_finding": "https://github.com/Consiliency/agent-harness/pull/1747#discussion_r4304677795",
+          "scope": "Require the primary audited executable to equal the validated absolute Git argv path before arming backend correlation; add the explicit-executable regression control. Preserve every previous repair/provenance record.",
+          "verification": {
+            "final_head_packet_and_delta_review": "pending; previous exact-head approval does not approve this delta",
+            "python_3_12_module": "31 passed",
+            "python_3_14_module": "31 passed",
+            "regression_red": "1 failed (primary-executable), 30 passed",
+            "selective_mutants": "12 killed, 0 survived, including removal of primary executable binding"
+          },
+          "whole_suite_claim": false
+        }
+      ]
     },
     {
       "acceptance_criteria_count": 5,
