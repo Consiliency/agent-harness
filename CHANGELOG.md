@@ -15,11 +15,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   interpreter contract remains 3.10-compatible; a governed-review falsifier node that
   imports this runtime under an older host interpreter ends in `error`, fails closed,
   and remains a blocking receipt. See the detailed breaking-change entry below.
-- **Final candidate verification is pending.** The earlier agy qualification, package
-  comparison and Python 3.12 cold-wheel results predate the integration of
-  agent-harness#1738 and agent-harness#1549. Final source/package and compatibility
-  checks, all twelve agy members' 36 live operations, final I1, CI and rebound evidence
-  must be completed against the final candidate before a release cut. Historical
+- **Live agy qualification has been renewed.** After integrating agent-harness#1738
+  and agent-harness#1549, all twelve members passed completion, cancellation and
+  owner-loss checks (36 successful operations), with all 245 source pins verified.
+  The evidence retains an earlier local staging failure and the diagnosed operational
+  correction before the remaining checks. Exact-candidate package and compatibility
+  verification, final I1, CI and review remain release-cut gates. Historical
   real-CLI smoke failures and unverified runtime panel behavior remain disclosed in
   the release handoff; they are not a runtime PASS.
 - **The Claude jail pass carries forward from 0.7.26.** The seat jail's falsifier-run layout
@@ -128,11 +129,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `007a5a44…`). 1.3.5's help digest is new (`a12355e8…`): its `--help` adds the `--mode`
   value `auto`, which the route does not use. The route core needed only the four new
   entries.
-- All twelve members were requalified on the earlier release tree (completion, cancel
-  and owner-loss each, then `--validate`). Those records are historical after the
-  agent-harness#1738 and agent-harness#1549 integration: all twelve require renewed
-  qualification and source binding on the final candidate. Each member retains its
-  own record; existing source pins do not prove this revised tree.
+- All twelve members were requalified after the agent-harness#1738 and
+  agent-harness#1549 integration (completion, cancel and owner-loss each, then
+  `--validate`). Each member retains its own record; all 245 source pins and the
+  route core match the revised source. The retained evidence distinguishes the
+  original staging failure from the successful checks after its operational correction.
 - A newer upstream release remains eligible for first-use self-qualification; as of
   2026-10-16, upstream's latest is 1.4.0 and is outside this shipped set.
 

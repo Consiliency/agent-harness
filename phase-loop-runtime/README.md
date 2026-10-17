@@ -11,8 +11,9 @@ monorepo (Apache-2.0).
 Version 0.7.27 requires Python 3.12+ (agent-harness#1549). The host-side jail helpers
 remain 3.10-compatible, but a governed-review falsifier node importing the runtime
 under an older host interpreter ends in `error` and remains a blocking receipt.
-Final candidate package, compatibility and live qualification evidence is pending;
-earlier cold-wheel and agy results do not qualify the revised source. See the
+All twelve shipped agy members have renewed live qualification on the revised
+source. Exact-candidate package and compatibility checks remain release-cut gates;
+qualification evidence and historical runtime smoke limitations are recorded in the
 [release handoff](https://github.com/Consiliency/agent-harness/blob/main/docs/releases/outside-agent-release-handoff.md).
 
 Most users should use the repo's installer (it also installs the workflow skills):

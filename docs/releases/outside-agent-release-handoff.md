@@ -49,16 +49,23 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 ## Release-Check Evidence
 
 - `publication_status=prepared`
-- **Revised candidate, final verification pending.** The integrated 0.7.27 includes
+- **Revised candidate, live agy qualification renewed.** The integrated 0.7.27 includes
   agent-harness#1738 (linked skill references; plan agent-harness#1690), the
   skills-parity size gate from agent-harness#1691, and the breaking Python 3.12+
   runtime floor from agent-harness#1549 (agent-harness#1546). Earlier preparation
   results below are historical and do not qualify this revised source.
-- Final source/package checks and builds, Python 3.12+ compatibility verification,
-  a fresh cold-wheel import/compile, all twelve agy members' completion/cancel/owner-loss
-  operations (36 total), final I1, exact-candidate CI and rebound evidence remain
-  pending. Existing qualification source pins and package hashes must be regenerated
-  and verified by the release owner against final bytes; they are not current proof.
+- All twelve shipped agy members passed completion, cancellation and owner-loss
+  checks (36 successful operations). Every series validated three operations with
+  `route_qualified=true`; all 245 source pins, official archive/image/help identities
+  and the route core were verified against the revised source. The private evidence
+  explicitly combines eight successful series from the initial batch and four from
+  the corrected batch. An original local Git staging failure occurred before provider
+  invocation, remains failed and retained, and was diagnosed before a measured
+  operational correction with identical code and source pins. It is not counted among
+  the 36 successes. Final board/president review must assess that complete history.
+- Final package builds, Python 3.12+ compatibility verification, cold-wheel
+  import/compile, full I1, exact-candidate CI and artifact binding remain release-cut
+  gates. Historical package hashes below do not identify the revised final artifacts.
 - Historical real-CLI smoke attempts include failures/degraded results and do not
   establish a successful tools-enabled four-CLI runtime panel. Runtime-owned panel
   behavior remains unverified. The owner has authorized a temporary T3 delegated
@@ -119,17 +126,18 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
     size gate (agent-harness#1691);
   - admitted CLI image and qualification-class evidence, native wrapper-target validation,
     and executable availability distinguished from login failures (agent-harness#1557,
-    agent-harness#1343). All twelve agy members were requalified on the earlier
-    candidate after this landed;
+    agent-harness#1343). All twelve agy members were requalified again after the
+    linked-reference and Python-floor integration;
   - no dependency change (`Requires-Dist` and entry points equal `0.7.26`'s). The
     falsifier-run layout identity (`execfind-falsifier-layout.v1:805042ce…`) and the Claude
     jail profile digests are unchanged on the same host; the new Gemini jail profile
     qualifies on first use;
   - the qualified agy image set adds 1.3.2, 1.3.3, 1.3.4 and 1.3.5, so it is 1.2.11,
     1.2.12, 1.2.14, 1.2.15, 1.2.16, 1.2.17, 1.3.0, 1.3.1, 1.3.2, 1.3.3, 1.3.4 and 1.3.5.
-    All twelve members were requalified live on the earlier release tree (validated 3 and
-    `route_qualified` true for each; all 245 source pins verified; `--route-core` passed
-    on that earlier tree). These receipts require renewal after this integration.
+    All twelve members were requalified live on the revised source (validated 3 and
+    `route_qualified` true for each; all 245 source pins verified; `--route-core` passed).
+    The initial staging failure and subsequent operational correction remain separately
+    retained as described above.
     Every official archive and its `antigravity` member match the reviewed asset and
     executable digests. Upstream's latest, 1.4.0, is outside the shipped set and eligible for first-use
     self-qualification. Each series ran from a verified copy of its official release asset,
