@@ -23,7 +23,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   UTF-8, and detect repeated content independently of envelope UUIDs. Unsupported or
   ambiguous frames leave model/Read claims unproven without changing result admission.
 - System retry observations use the same bounded replay tracking with closed error
-  categories; repeated categories leave diagnostics unproven.
+  categories and shared bounded normalization; repeated categories leave diagnostics unproven.
 
 ### skills-parity CI runs the skill size gate (agent-harness#1358)
 

@@ -203,7 +203,9 @@ are ignored and supply no proof. No raw event or content reference is retained.
 Accepted `system/api_retry` observations share the bounded fingerprint set and use
 their closed error category as replay identity, independently of envelope UUIDs.
 Repeated categories are conservatively ambiguous, including distinct unknown errors;
-native retry text is neither retained nor hashed. A single retry or distinct known
+raw retry text is neither retained nor used as fingerprint input. Error accounting
+and retry identity share normalization with the existing 4,096-character limit.
+A single retry or distinct known
 categories can remain valid diagnostics without changing result admission.
 A qualification must check `valid`, no truncation, exact model
 match and the expected staged-path digest with a completed Read, alongside all existing

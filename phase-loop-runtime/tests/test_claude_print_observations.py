@@ -664,3 +664,38 @@ def test_production_distinct_retry_categories_remain_diagnostic(fake_seat, monke
     assert diagnostic["tools"][0]["read_completed"] is True
     assert diagnostic["error_count"] == len(errors)
     assert "private-first" not in repr(diagnostic)
+
+
+def test_production_retry_normalization_bounds_raw_error_work(fake_seat, monkeypatch):
+    seat, _ = fake_seat
+    original_categories = co.ERROR_CATEGORIES
+    category_lengths, fingerprint_inputs = [], []
+
+    class BoundedCategories:
+        def __contains__(self, value):
+            category_lengths.append(len(value))
+            return value in original_categories
+
+    original_fingerprint = co._frame_fingerprint
+
+    def fingerprint(kind, model, content):
+        if kind == "system":
+            fingerprint_inputs.append(content)
+        return original_fingerprint(kind, model, content)
+
+    monkeypatch.setattr(co, "ERROR_CATEGORIES", BoundedCategories())
+    monkeypatch.setattr(co, "_frame_fingerprint", fingerprint)
+    raw_error = "private-" + "x" * 8192
+    events = frames()
+    events.insert(1, {"type": "system", "subtype": "api_retry", "session_id": SESSION,
+                      "error": raw_error})
+    inject(monkeypatch, events)
+    evidence = {}
+    status, text = _exec(seat, evidence)
+    diagnostic = evidence["claude_native_protocol"]
+    assert status == "OK" and text == "Reviewed.\nAGREE"
+    assert diagnostic["valid"] and diagnostic["tools"][0]["read_completed"]
+    assert diagnostic["error_categories"] == ["unknown"]
+    assert category_lengths and max(category_lengths) <= 4096
+    assert fingerprint_inputs == ["unknown"]
+    assert raw_error not in repr(evidence)

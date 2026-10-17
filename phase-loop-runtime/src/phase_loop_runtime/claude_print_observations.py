@@ -166,14 +166,16 @@ class ClaudePrintObservations:
     def malformed(self) -> None:
         self.invalid = True
 
-    def _error(self, value: object, *, closed: bool = False) -> None:
+    def _error(self, value: object, *, closed: bool = False) -> str:
         if self.error_count >= MAX_ERRORS:
             self.truncated = self.invalid = True
-            return
+            return "unknown"
         self.error_count += 1
         category = ((value if closed else self._classify_error(value))
                     if isinstance(value, str) and len(value) <= 4096 else "unknown")
-        self.error_categories.add(category if category in ERROR_CATEGORIES else "unknown")
+        category = category if category in ERROR_CATEGORIES else "unknown"
+        self.error_categories.add(category)
+        return category
 
     def _observe_model(self, source: str, value: object) -> None:
         model = _model(value)
@@ -244,11 +246,10 @@ class ClaudePrintObservations:
             error = event.get("error")
             if not isinstance(error, str):
                 self.invalid = True
-            self._error(error, closed=True)
+            category = self._error(error, closed=True)
             # Retry observations participate in semantic replay detection too.
             # Use only the closed category; distinct unknown native errors are
             # conservatively ambiguous without retaining or hashing their text.
-            category = error if isinstance(error, str) and error in ERROR_CATEGORIES else "unknown"
             fingerprint = _frame_fingerprint("system", "api_retry", category)
             if fingerprint is None:
                 self.truncated = self.invalid = True
