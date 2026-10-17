@@ -38,6 +38,8 @@ def candidate(tmp_path):
     repo = tmp_path / "node"
     repo.mkdir()
     git(repo, "init", "-q", "-b", "main")
+    git(repo, "config", "gc.auto", "0")
+    git(repo, "config", "maintenance.auto", "false")
     (repo / "code.py").write_text("old = 1\n")
     (repo / "gone.py").write_text("deleted = 1\n")
     (repo / "tool").write_text("echo test\n")

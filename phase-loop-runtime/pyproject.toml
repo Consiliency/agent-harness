@@ -162,6 +162,8 @@ phase_loop_runtime = [
     "advisor_board/fixtures/*.toml",
     "advisor_board/CONTRACTS.md",
     "conformance/_contract/**",
+    # The pinned egress proxy of a jailed Gemini seat (agent-harness#1170).
+    "seat_egress/*",
 ]
 
 # TESTDECOUPLE SL-0: the dotfiles_integration marker. Integration-bucket tests

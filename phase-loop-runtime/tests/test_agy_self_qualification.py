@@ -891,18 +891,31 @@ _CHILD = textwrap.dedent('''
     gh.QUALIFIED_IMAGES = {"f" * 64: "e" * 64}
     image = (tmp / "bin" / "agy").read_bytes()
     class T:
-        def open(self, url, *, accept):
+        def __init__(self):
             import io, tarfile
             buf = io.BytesIO()
             with tarfile.open(fileobj=buf, mode="w:gz") as b:
                 info = tarfile.TarInfo("antigravity"); info.size = len(image); b.addfile(info, io.BytesIO(image))
-            archive = buf.getvalue()
+            self.archive = buf.getvalue()
+        def open(self, url, *, accept):
+            import io
+            archive = self.archive
             if "api.github.com" in url:
                 return io.BytesIO(json.dumps([{"tag_name": "1.2.99", "draft": False, "prerelease": False,
                     "assets": [{"name": prov.HostPlatform("linux","x64","glibc").asset,
                                 "browser_download_url": prov.DOWNLOAD_PREFIX + "1.2.99/agy_cli_linux_x64.tar.gz",
                                 "digest": "sha256:" + sha256(archive).hexdigest()}]}]).encode())
             return io.BytesIO(archive)
+    if mode == "archive-stability":
+        from unittest.mock import patch
+        transport = T()
+        with patch("gzip.time.time", return_value=1700000000):
+            listing = json.load(transport.open("https://api.github.com/releases", accept="application/json"))
+        with patch("gzip.time.time", return_value=1700000001):
+            archive = transport.open("https://github.com/release.tar.gz", accept="application/octet-stream").read()
+        assert listing[0]["assets"][0]["digest"] == "sha256:" + sha256(archive).hexdigest()
+        print("stable_archive", flush=True)
+        sys.exit(0)
     q._run_help = lambda image, env: b"help\\n"
     def qualify(image, help_bytes, **_):
         with open(tmp / "qualifications", "a") as f:
@@ -946,6 +959,13 @@ def test_two_racing_processes_qualify_once_and_both_are_admitted(world):
     outs = [p.communicate(timeout=60) for p in (first, second)]
     assert [o[0].strip() for o in outs] == ["locally_qualified", "locally_qualified"], outs
     assert len((world.tmp / "qualifications").read_text().split()) == 1
+
+
+def test_concurrency_fixture_archive_matches_its_digest_across_clock_ticks(world):
+    child = _child(world, "archive-stability")
+    out, err = child.communicate(timeout=60)
+    assert child.returncode == 0, err
+    assert out.strip() == "stable_archive"
 
 
 def test_killing_the_lock_holder_hands_off_and_leaves_no_orphan_worker(world):

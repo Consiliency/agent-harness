@@ -20,7 +20,7 @@ from phase_loop_runtime.profiles import (
 def _resolved(action, executor, *, model_policy=False, plan_policy=None,
               operator_model=None, operator_effort=None):
     selection = resolve_profile_for_executor(action=action, executor=executor)
-    rule = shipped_model_policy_rule(action) if model_policy else None
+    rule = shipped_model_policy_rule(action, executor) if model_policy else None
     return resolve_execution_policy(
         action=action, executor=executor, model_selection=selection,
         plan_policy=plan_policy, model_policy_rule=rule,
@@ -37,18 +37,19 @@ class ModelClassResolutionTest(unittest.TestCase):
     def test_class_to_model_per_executor(self):
         self.assertEqual(resolve_model_class("claude", "planner"), "claude-opus-5")
         self.assertEqual(resolve_model_class("claude", "reviewer"), "claude-opus-5-5")
-        self.assertEqual(resolve_model_class("claude", "implementer"), "claude-sonnet-5")
+        self.assertEqual(resolve_model_class("claude", "implementer"), "claude-sonnet-5-5")
         # design-model-tier-taxonomy.md: worker class → the lite tier's DATED pin
         # (was the undated claude-haiku-4-5, a floating-alias shape).
         self.assertEqual(resolve_model_class("claude", "worker"), "claude-haiku-4-5-20251001")
-        self.assertEqual(resolve_model_class("codex", "implementer"), "gpt-5.6-terra")
-        # Gemini keeps `pro` for planning; implementer uses the canonical agy 3.7 Flash id
-        # (newest GA, CR round-5 finding B), worker the agy 3.5 Flash id (agy has no flash-lite
-        # → the matrix's gemini-3.5-flash-lite lite cell is aspirational).
-        self.assertEqual(resolve_model_class("gemini", "planner"), "pro")
-        self.assertEqual(resolve_model_class("gemini", "reviewer"), "pro")
+        self.assertEqual(resolve_model_class("codex", "implementer"), "gpt-6.1-sol")
+        # Gemini plans and reviews on the heavy Argon id; implementer uses the canonical agy
+        # 3.8 Flash id (newest GA, CR round-5 finding B), worker the agy 3.8 Flash high id
+        # since the 0.7.27 roster (agy has no flash-lite → the matrix's gemini-3.5-flash-lite
+        # lite cell is aspirational).
+        self.assertEqual(resolve_model_class("gemini", "planner"), "gemini-4-argon")
+        self.assertEqual(resolve_model_class("gemini", "reviewer"), "gemini-4-argon")
         self.assertEqual(resolve_model_class("gemini", "implementer"), "gemini-3.8-flash")
-        self.assertEqual(resolve_model_class("gemini", "worker"), "gemini-3.5-flash-high")
+        self.assertEqual(resolve_model_class("gemini", "worker"), "gemini-3.8-flash-high")
         self.assertIsNone(resolve_model_class("claude", "bogus"))
 
     def test_model_class_field_validates(self):
@@ -64,9 +65,9 @@ class EmptyPolicyBackCompatTest(unittest.TestCase):
 
     def test_execute_claude_unchanged(self):
         # design-model-tier-taxonomy.md (operator-ratified): claude execute uses the
-        # regular tier (sonnet-5) on the empty-policy path too — the executor-default
-        # and tier/class paths agree (opus-4-8 → sonnet-5).
-        self.assertEqual(_resolve("execute", "claude", model_policy=False), ("claude-sonnet-5", "high"))
+        # regular tier (sonnet-5-5 since the 0.7.27 roster, at medium) on the
+        # empty-policy path too — the executor-default and tier/class paths agree.
+        self.assertEqual(_resolve("execute", "claude", model_policy=False), ("claude-sonnet-5-5", "medium"))
 
 
 class ShippedPolicyTest(unittest.TestCase):
@@ -77,7 +78,7 @@ class ShippedPolicyTest(unittest.TestCase):
         self.assertEqual(_resolve("roadmap", "codex", model_policy=True)[1], "max")
 
     def test_execute_claude_becomes_sonnet_high(self):
-        self.assertEqual(_resolve("execute", "claude", model_policy=True), ("claude-sonnet-5", "high"))
+        self.assertEqual(_resolve("execute", "claude", model_policy=True), ("claude-sonnet-5-5", "medium"))
 
     def test_review_claude_uses_reviewer_ultra(self):
         resolved = _resolved("review", "claude", model_policy=True)
@@ -88,7 +89,7 @@ class ShippedPolicyTest(unittest.TestCase):
 class EffortClampTest(unittest.TestCase):
     def test_gemini_plan_max_clamps_to_high_with_shipped_policy(self):
         # The shipped policy sets fallback so gemini's effort_map maps max->high.
-        self.assertEqual(_resolve("plan", "gemini", model_policy=True), ("pro", "high"))
+        self.assertEqual(_resolve("plan", "gemini", model_policy=True), ("gemini-4-argon", "high"))
 
     def test_gemini_clamp_records_requested_and_policy_effort(self):
         resolved = _resolved("plan", "gemini", model_policy=True)
@@ -133,13 +134,13 @@ class PrecedenceTest(unittest.TestCase):
         # to the registry heavy model.
         plan = ExecutionPolicyRule(selector="execute", action="execute", effort="low", source="phase-plan policy")
         model, effort = _resolve("execute", "claude", model_policy=True, plan_policy=plan)
-        self.assertEqual(model, "claude-sonnet-5")  # implementer, from model_policy
+        self.assertEqual(model, "claude-sonnet-5-5")  # implementer, from model_policy
         self.assertEqual(effort, "low")               # plan's effort wins
 
     def test_plan_policy_executor_only_inherits_shipped_model_class(self):
         plan = ExecutionPolicyRule(selector="execute", action="execute", executor="claude", source="phase-plan policy")
         model, _effort = _resolve("execute", "claude", model_policy=True, plan_policy=plan)
-        self.assertEqual(model, "claude-sonnet-5")  # implementer still applied
+        self.assertEqual(model, "claude-sonnet-5-5")  # implementer still applied
 
 
 class MaxEffortPlannerGuardTest(unittest.TestCase):
@@ -151,7 +152,7 @@ class MaxEffortPlannerGuardTest(unittest.TestCase):
         )
         model, effort = _resolve("plan", "gemini", plan_policy=plan)
         self.assertEqual(effort, "high")  # clamped via the guard, not raised
-        self.assertEqual(model, "pro")    # gemini planner alias
+        self.assertEqual(model, "gemini-4-argon")    # gemini planner (heavy tier)
 
     def test_codex_planner_max_stays_max(self):
         # codex IS max-eligible — the guard does not touch it.
@@ -185,7 +186,7 @@ class AppliedModelClassEscalationTest(unittest.TestCase):
 
     def test_codex_and_manual_map_provider_resolve_their_planner_models(self):
         self.assertEqual(self._apply("codex")[1].effective_model, "gpt-6-astra")
-        self.assertEqual(self._apply("gemini")[1].effective_model, "pro")
+        self.assertEqual(self._apply("gemini")[1].effective_model, "gemini-4-argon")
 
     def test_explicit_operator_model_is_not_overridden(self):
         policy, result = self._apply("claude", operator_model_present=True)

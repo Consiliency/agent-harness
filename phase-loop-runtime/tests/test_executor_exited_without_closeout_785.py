@@ -54,6 +54,17 @@ def test_final_response_schema_excludes_interim_without_changing_lifecycle(tmp_p
 
 def test_golden_delta_is_only_final_schema_exclusion():
     golden = json.loads((Path(__file__).parent / "data/launchspec_golden/launchspec_golden.json").read_text())
+    # The eighth permitted delta (agent-harness#1637): the 0.7.27 implementer roster moves
+    # only execute model/effort fields. Restore their prior values first.
+    pre_1637 = json.loads((Path(__file__).parent / "data/launchspec_golden/pre_1637_implementer_roster.json").read_text())
+    for change in pre_1637["changes"]:
+        case = golden[change["case"]]
+        if change["field"] == "command":
+            assert case["command"][change["index"]] == change["current"]
+            case["command"][change["index"]] = change["pre_1637"]
+        else:
+            assert case[change["field"]] == change["current"]
+            case[change["field"]] = change["pre_1637"]
     # The seventh permitted delta (agent-harness#1581) changes only the two
     # injected instruction strings. Restore their frozen prior bytes before
     # the older normalization steps; all metadata and historical checks remain.

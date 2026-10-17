@@ -2815,7 +2815,7 @@ automation:
             self.assertEqual(event["model"], "claude-opus-5")
             escalation = event["metadata"]["repair_loop_guard"]["model_class_escalation"]
             self.assertTrue(escalation["applied"])
-            self.assertEqual(escalation["from_model"], "claude-sonnet-5")
+            self.assertEqual(escalation["from_model"], "claude-sonnet-5-5")
             self.assertEqual(escalation["effective_model"], "claude-opus-5")
             self.assertEqual(event["metadata"]["execution_policy"]["model_source"], "runtime model-class escalation")
 

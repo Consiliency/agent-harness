@@ -80,24 +80,20 @@ Result of the 2026-09-09 scan:
 
 ### 2.1 Runtime re-pin
 
-No release tag contains the ceremony (D2, Consiliency/agent-harness#816) yet,
-and the package version string is still `0.7.14`, so `--version` cannot tell a
-v3-aware install from a pre-v3 one (claw's git-pinned install and the `v0.7.14`
-release both report `0.7.14`) — use the probe. Pin to the exact `main`
-commit that carries D4:
+The ceremony (D2, Consiliency/agent-harness#816) and D4 ship in every release
+from `v0.7.15`. The rotation retry in §8a also needs agent-harness#1296, first
+released in `v0.7.25`. Install a released runtime at or above `0.7.25`, then
+confirm it with the probe, because `--version` alone does not prove what a
+git-pinned install carries:
 
 ```bash
-uv tool install --force \
-  "git+https://github.com/Consiliency/agent-harness@c98573ebd45452451ce719406f5b28379284b4c9#subdirectory=phase-loop-runtime"
+uv tool install --force phase-loop-runtime   # or pin: phase-loop-runtime==<version >= 0.7.25>
 python3 phase-loop-runtime/scripts/fabpub_v3_probe.py   # against that interpreter; expect exit 0
 ```
 
-Known caveat (Consiliency/agent-harness#819): every install at or after
-`b09b1a47` (claw's current `463b90c3` included; the `v0.7.14` release predates it) prints `built-in closeout validator fab_gate is not importable; gate
-NOT registered` on the CLI's first import. It is a circular-import regression
-in the closeout validator registry, unrelated to the ceremony; the rotation
-verb is unaffected, but note it in the record rather than treating it as a
-failure of the pin.
+The protections described in §8a for an `attested_not_landed` decision
+(agent-harness#1313, agent-harness#1577, agent-harness#1591) are newer than
+`v0.7.26`; see §8a.
 
 ## 3. Attestation (read-only build, reviewed by hand)
 
@@ -143,7 +139,8 @@ What the builder **derives**, and the reviewer must re-check:
   `adapter-start-owner.json` names this effect key (either spelling —
   `effect_key` or `idempotency_key`), copied verbatim, and **omitted** when it
   does not: the adjudicator refuses both a missing value when the owner names
-  the key and a present one when it does not (`live.py:4321-4326`). The builder
+  the key and a present one when it does not (in `live.py`, the `owner_nonce` /
+  `transaction_id` check after `_rotation_owner_identity` during rotation adjudication). The builder
   prints which half it emitted.
 - a digested file that is absent digests as `sha256(b"")`, matching
   `_snapshot_predecessor`.
@@ -377,7 +374,9 @@ the sealed one`. Keep the exact file; do not rebuild it. The preflight mirrors
 this check on both resume paths, so run it before every resume. On a resume whose
 own journal already holds `INVENTORY_SEALED`, both the verb and the preflight skip
 the post-ambiguity observation check; the successor's re-admission refuses an
-observed effect instead (agent-harness#1633).
+observed effect instead (agent-harness#1633). If the successor then refuses a key
+with `publication_recovery_required` naming an observed effect, follow §8a: escalate
+to the maintainer and do not re-publish (agent-harness#1640).
 
 A re-run never repairs its inputs (a damaged authentication-chain link or
 writer latch after the flip is refused by every re-run until the bytes are
@@ -453,6 +452,17 @@ the retry names it; typically a torn final line from a crash mid-append), do thi
    suffix), treat it as an effect. Confirm the pull request at the provider and rotate
    `observed_landed` with that head and the provider-side URL (§3); never
    `attested_not_landed`.
+   A row is written with its fields in sorted order (`ambiguity_digest`, `branch`,
+   `evidence_reference`, `head_sha`, `idempotency_key`, `observed_state`, then the
+   owner bindings), so a torn line can show the pull request URL and head without the
+   key, or name the key and stop before `observed_state` (agent-harness#1640):
+   - **The URL or head without the key.** If the branch and head are this
+     publication's, treat the line as naming it and continue as above.
+   - **The key without the outcome.** The line does not say whether the provider
+     reported an effect or no effect. Treat it as a possible effect: if the head is on
+     the remote branch or a pull request exists for it, rotate `observed_landed` as
+     above. If the provider shows neither, go to step 4; a missing `observed_state` is
+     not a no-effect observation.
 4. Otherwise escalate to the maintainer. Do not rotate `attested_not_landed` while the
    file is unreadable: the ceremony refuses it for every key, and so does the retry.
 
@@ -461,7 +471,9 @@ field from a newer runtime: read it, act on what it names, and escalate if it is
 
 **Before attesting `attested_not_landed`, check which runtimes write the partition.**
 The liveness lock, the guard and the observation protect a partition only once every
-runtime that writes it, and every runtime that runs its ceremony, is upgraded. An
+runtime that writes it, and every runtime that runs its ceremony, is upgraded. These
+protections landed on `main` after `v0.7.26`; a `v0.7.26` or older runtime counts as
+not upgraded. An
 older writer records no observation, a crash between the provider's return and the
 side-file write loses it, and an older re-admitter can still publish an effect an
 older ceremony attested not landed. Until every runtime is upgraded, base the
@@ -485,6 +497,20 @@ refuses with "intents without a terminal". Retry once. The retry returns the
 rotation handoff for this key. Keep the first result as the attestation's evidence
 that the provider was never entered. The ambiguous row alone cannot show that
 (agent-harness#1594 asks 1 and 5).
+The same next step can follow a refusal **after** provider entry, with
+`provider_call_made: true` (agent-harness#1628). The adapter raised, or it returned
+and its terminal record was refused (`execute_returned: true`, agent-harness#1684), and
+the generation fence (a `DRAINING` latch during a rotation ceremony, or a revoked
+lease) refused the `outcome_ambiguous_blocked` record, so no terminal was written: the
+row is still `provider_call_in_flight` and the owner unsealed. The outcome is not
+recorded, so the "by construction" reasoning above does not apply. Retry once after
+any rotation ceremony in progress has finished or rolled back (the latch is `ACTIVE`
+again), then follow the handoff the retry returns. Keep the first result: when the
+adapter returned, its `pr_url` and `head_sha` are the provider's returned pull
+request, which the retry does not repeat. In the attestation, dispose the key
+`observed_landed` with that URL and head; without one, `observed_landed` if the head
+is on the remote branch or a pull request exists for it, otherwise
+`attested_not_landed` is your judgement, and remote absence is not proof.
 
 1. Leave the worktree, branch, commit, plan file and verification artifact
    exactly as they were. Do not make an empty commit, switch branch, force
@@ -528,7 +554,10 @@ generation.
 **Mixed runtime versions (agent-harness#1576).** Within one generation, a retry
 on an agent-harness#1296 runtime and a retry on a current runtime write the same
 recovery record, so either may follow a crash of the other after the record and
-before the owner. A runtime built from `main` after agent-harness#1550 and before this
+before the owner. An agent-harness#1296 runtime has no live-owner check
+(agent-harness#1313), so do not retry on one while another attempt may still be
+running: a retry that races a live attempt can leave the key ambiguous even after
+a real provider call (agent-harness#1629 ask 2). A runtime built from `main` after agent-harness#1550 and before this
 fix (never released) wrote the three fields even with no rotation. A current runtime
 accepts that record, but the agent-harness#1550 runtime refuses a current
 runtime's record. Retry such a refusal on a current runtime. Only a current runtime
@@ -546,9 +575,7 @@ fix the input and retry.
 
 ## 9. Residuals carried out of the 2026-09-09 preparation
 
-- Consiliency/agent-harness#819 — `fab_gate` circular import on `git+main`
-  installs (cosmetic for this verb; real for closeout).
 - Consiliency/agent-harness#820 — leases carry no liveness; orphan detection is
   manual (§6).
 - `leno` unscanned (offline); never held FABPUB state.
-- No release tag carries D2/D4; the re-pin is by commit SHA until one does.
+- D2/D4 ship in `v0.7.15` and later; the §8a retry needs `v0.7.25` or later (§2.1).
