@@ -78,3 +78,12 @@ EC-REVIEWTRUTH-18 is amended to admit it (Stage 3).
 ## 7. Open questions
 
 Tracked on Consiliency/agent-harness#1391.
+
+## 8. Stage 3 companion ruling, 2026-10-16
+
+[The Stage 3 record](decision-claude-sdk-subscription-route-20261015.md) becomes
+effective upon its maintainer-authorized merge after review. It adds only the
+bounded official-SDK exception and explicit solo-runner rollout defined there.
+Its conditions supersede this record's SDK exclusion for that scope only;
+the panel `sdk` selector remains refused. Until that ratification, section 6
+continues to apply without an SDK exception.
