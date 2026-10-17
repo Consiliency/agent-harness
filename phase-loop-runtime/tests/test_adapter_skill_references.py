@@ -8,14 +8,14 @@ says so for each skill that has any. Ungated: needs no dotfiles tree.
 from __future__ import annotations
 
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 
-from phase_loop_runtime import injection, launcher
-from phase_loop_runtime.models import PromptBundle
+from phase_loop_runtime import injection, launcher, prompts
+from phase_loop_runtime.models import ModelSelection
+from phase_loop_runtime.skill_inventory import SkillParity
 
-REPO_ROOT = Path(injection.__file__).resolve().parents[3]
+PACKAGED = Path(injection.__file__).resolve().parent / "skills_bundle"
 NOTE = "This skill's linked `references/` files are copied beside this context file"
 
 
@@ -27,48 +27,64 @@ def _skill(root: Path, name: str) -> Path:
     return skill_dir
 
 
-def _bundle(repo: Path, harness: str, skill: str) -> PromptBundle:
-    return PromptBundle(
-        workflow_command=f"{skill} plan.md",
-        body="",
-        injection_mode="context_file",
-        context_body=injection._render_context_body(
-            repo=repo,
-            harness_target=harness,
-            action="plan",
-            body="",
-            expected_skill_pack=(skill,),
-            injection_mode="context_file",
-        ),
-        expected_skill_pack=(skill,),
-        product_action="plan",
+def _bundle(repo: Path, harness: str, skill: str, action: str, monkeypatch):
+    monkeypatch.setitem(injection.HARNESS_ACTION_SKILLS, harness, {action: (skill,)})
+    monkeypatch.setattr(prompts, "_roadmap_repo_root", lambda _: repo)
+    monkeypatch.setattr(injection, "_render_baml_closeout_instruction", lambda **_: "Fixture closeout.")
+    monkeypatch.setattr(injection, "inspect_skill_parity", lambda *_: SkillParity(
+        recommended_installed_roots=(), installed_skill_roots=(), installed_skill_warnings=(),
+    ))
+    return prompts.build_prompt(
+        action, roadmap=repo / "specs" / "phase-plans-v1.md", phase="REFERENCES",
+        harness_target=harness,
     )
 
 
 @pytest.mark.parametrize("harness", ["gemini", "opencode"])
-def test_context_file_harnesses_get_linked_references(tmp_path, monkeypatch, harness):
-    skill = f"{harness}-plan-phase"
-    skill_dir = _skill(tmp_path / "src", skill)
-    monkeypatch.setattr(injection, "_resolve_pack_skill_dirs", lambda *_: {skill: skill_dir})
+@pytest.mark.parametrize("action", ["plan", "execute", "review"])
+def test_context_file_harnesses_get_linked_references(tmp_path, monkeypatch, harness, action):
+    skill = f"{harness}-{action}-phase"
     monkeypatch.setattr(launcher.Path, "home", classmethod(lambda cls: tmp_path / "home"))
     repo = tmp_path / "repo"
     repo.mkdir()
-    bundle = _bundle(repo, harness, skill)
+    skill_dir = _skill(repo / "skills-src" / harness, skill)
+    binary = skill_dir / "references" / "nested" / "data.bin"
+    binary.parent.mkdir()
+    binary.write_bytes(bytes(range(256)))
+    expected = {"a.md": (skill_dir / "references" / "a.md").read_bytes(),
+                "nested/data.bin": binary.read_bytes()}
+    launch_repo = tmp_path / "worktree"
+    launch_repo.mkdir()
+    other = _skill(launch_repo / "skills-src" / harness, skill)
+    (other / "references" / "a.md").write_bytes(b"Different worktree bytes\n")
+    monkeypatch.setattr(injection, "_resolve_pack_skill_dirs", lambda root, target, pack: {
+        name: root / "skills-src" / target / name for name in pack
+    })
+    bundle = _bundle(repo, harness, skill, action, monkeypatch)
     assert f"{NOTE} under `skills/{skill}/references/`" in bundle.render_context()
-
-    if harness == "gemini":
-        command = ["agy", "--add-dir", str(repo), "-p", f"read {launcher.GEMINI_CONTEXT_PLACEHOLDER}"]
-    else:
-        command = ["opencode", "run", f"read {launcher.OPENCODE_CONTEXT_PLACEHOLDER}"]
-    spec = SimpleNamespace(executor=harness, command=command, prompt_bundle=bundle, wrapped_cwd=str(repo))
+    (skill_dir / "references" / "a.md").write_bytes(b"Edited after the prompt was built\n")
+    assert _bundle(repo, harness, skill, action, monkeypatch).skill_bundle_sha256 != bundle.skill_bundle_sha256
+    request = launcher.build_launch_request(
+        executor=harness, action=action, repo=launch_repo,
+        roadmap=launch_repo / "specs" / "phase-plans-v1.md", phase="REFERENCES", plan=None,
+        model_selection=ModelSelection(profile="plan", effort="high",
+                                       model="gemini-4-argon" if harness == "gemini" else "openai/gpt-6-astra"),
+        prompt_bundle=bundle, json_output=True, bypass_approvals=False,
+    )
+    spec = launcher.build_launch_spec(request)
+    assert spec.wrapped_cwd is None
+    before = spec.to_json()
+    assert "skill_reference_files" not in bundle.to_json()
     log_path = tmp_path / "run" / "launch.log"
     log_path.parent.mkdir()
-    launcher._resolve_command_context(spec, log_path)
+    launcher._resolve_command_context(spec, log_path, dry_run=True)
 
     context_files = list((tmp_path / ("home" if harness == "gemini" else "run")).rglob("context.md"))
     assert len(context_files) == 1
-    copied = context_files[0].parent / "skills" / skill / "references" / "a.md"
-    assert copied.read_bytes() == (skill_dir / "references" / "a.md").read_bytes()
+    for rel, content in expected.items():
+        copied = context_files[0].parent / "skills" / skill / "references" / rel
+        assert copied.read_bytes() == content
+    assert spec.to_json() == before
 
 
 def test_canonical_override_references_are_found(tmp_path):
@@ -91,11 +107,11 @@ def test_canonical_override_references_are_found(tmp_path):
 def test_skills_without_references_leave_context_unchanged(tmp_path, monkeypatch, harness):
     # The shipped gemini/opencode packs link no references/ yet: no note, no copies.
     def resolve(_repo, harness_target, pack):
-        return {name: REPO_ROOT / "skills-src" / harness_target / name for name in pack}
+        return {name: PACKAGED / name for name in pack}
 
     monkeypatch.setattr(injection, "_resolve_pack_skill_dirs", resolve)
     for action, pack in injection.HARNESS_ACTION_SKILLS[harness].items():
-        context = injection._skill_bodies(REPO_ROOT, harness, pack)
+        context = injection._skill_bodies(tmp_path, harness, pack)
         assert context, (harness, action)
         assert NOTE not in context, (harness, action)
-        assert injection.skill_reference_files(REPO_ROOT, harness, pack) == (), (harness, action)
+        assert injection.skill_reference_files(tmp_path, harness, pack) == (), (harness, action)

@@ -8,14 +8,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Context-file adapter runs get the `references/` files their skills link (agent-harness#1358)
 
-- gemini, grok, opencode and `command` launches copy each injected skill's
-  `references/` files beside `context.md` under `skills/<skill>/references/`, and that
-  skill's body in `context.md` says where they are. Skills without references are
-  unchanged, so every current gemini and opencode context is byte-identical. The
-  bundle digest and the copy use the same file list, including a canonical
-  `_overrides/<harness>/references/` file. This unblocks splitting the codex, gemini
-  and opencode plan and execute skills; codex reads its installed skills and is not
-  changed.
+- Gemini and OpenCode launches carry each injected skill's `references/` files
+  beside the delivered `context.md` under `skills/<skill>/references/`, and the
+  context says where they are. Gemini uses its workspace mirror. Skills without
+  references are unchanged, so every current Gemini and OpenCode context is
+  byte-identical. The bundle digest and delivered files use the same captured
+  bytes, including a canonical `_overrides/<harness>/references/` file. This unblocks
+  splitting the codex, gemini and opencode plan and execute skills; codex reads its
+  installed skills and is not changed.
 
 ### Provider admission and availability evidence
 

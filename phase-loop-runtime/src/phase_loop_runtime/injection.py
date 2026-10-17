@@ -269,6 +269,7 @@ def build_prompt_bundle(
         include_schema_description=action in {"execute", "repair", "review"},
     )
     bundle_body = "\n\n".join(part for part in (body.strip(), closeout_instruction) if part)
+    reference_files = [] if harness_target in {"gemini", "grok", "opencode", "command"} else None
     bundle_sha = _bundle_sha256(
         repo=repo,
         harness_target=harness_target,
@@ -276,6 +277,7 @@ def build_prompt_bundle(
         workflow_command=workflow_command,
         body=bundle_body,
         expected_skill_pack=expected_skill_pack,
+        reference_files=reference_files,
     )
     return PromptBundle(
         workflow_command=workflow_command,
@@ -287,6 +289,10 @@ def build_prompt_bundle(
             body=bundle_body,
             expected_skill_pack=expected_skill_pack,
             injection_mode=injection_mode,
+            reference_skills=(
+                frozenset(dest.split("/")[1] for dest, _ in reference_files)
+                if reference_files is not None else None
+            ),
         ),
         injection_mode=injection_mode,
         expected_skill_pack=expected_skill_pack,
@@ -298,6 +304,7 @@ def build_prompt_bundle(
         installed_skill_roots=parity.installed_skill_roots,
         installed_skill_warnings=parity.installed_skill_warnings,
         bridge_skill_inventory=parity.bridge_skill_inventory,
+        skill_reference_files=tuple(reference_files or ()),
     )
 
 
@@ -516,6 +523,7 @@ def _render_context_body(
     body: str,
     expected_skill_pack: tuple[str, ...],
     injection_mode: str,
+    reference_skills: frozenset[str] | None = None,
 ) -> str:
     if harness_target == "claude" and expected_skill_pack:
         return _render_claude_compact_context_body(
@@ -530,7 +538,7 @@ def _render_context_body(
             body=body,
             expected_skill_pack=expected_skill_pack,
         )
-    skills = _skill_bodies(repo, harness_target, expected_skill_pack)
+    skills = _skill_bodies(repo, harness_target, expected_skill_pack, reference_skills=reference_skills)
     sections: list[str] = []
     adapter_preamble = _adapter_context_preamble(harness_target, action)
     if adapter_preamble:
@@ -646,7 +654,10 @@ def claude_hook_guardrail_inventory() -> tuple[str, ...]:
     return CLAUDE_TASKLEDGER_HOOK_EVENTS
 
 
-def _skill_bodies(repo: Path, harness_target: str, expected_skill_pack: tuple[str, ...]) -> str:
+def _skill_bodies(
+    repo: Path, harness_target: str, expected_skill_pack: tuple[str, ...],
+    *, reference_skills: frozenset[str] | None = None,
+) -> str:
     blocks: list[str] = []
     resolved_skill_dirs = _resolve_pack_skill_dirs(repo, harness_target, expected_skill_pack)
     for skill_name in expected_skill_pack:
@@ -657,7 +668,11 @@ def _skill_bodies(repo: Path, harness_target: str, expected_skill_pack: tuple[st
         if not skill_file.exists():
             continue
         block = f"## Skill: {skill_name}\n\n{skill_file.read_text(encoding='utf-8').strip()}"
-        if _skill_reference_sources(skill_dir, harness_target):
+        has_references = (
+            skill_name in reference_skills if reference_skills is not None
+            else bool(_skill_reference_sources(skill_dir, harness_target))
+        )
+        if has_references:
             # agent-harness#1358: the launcher copies these beside context.md
             # (materialize_skill_references); a skill without references adds no line.
             block += (
@@ -705,13 +720,14 @@ def skill_reference_files(
 
 
 def materialize_skill_references(
-    *, repo: Path, harness_target: str, context_dir: Path, prompt_bundle: PromptBundle
+    *, context_dir: Path, prompt_bundle: PromptBundle
 ) -> list[str]:
+    """Write the reference bytes captured with the prompt's bundle digest."""
     copied: list[str] = []
-    for dest, source in skill_reference_files(repo, harness_target, prompt_bundle.expected_skill_pack):
+    for dest, content in prompt_bundle.skill_reference_files:
         target = context_dir / dest
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, target)
+        target.write_bytes(content)
         copied.append(str(target))
     return copied
 
@@ -745,6 +761,7 @@ def _bundle_sha256(
     workflow_command: str,
     body: str,
     expected_skill_pack: tuple[str, ...],
+    reference_files: list[tuple[str, bytes]] | None = None,
 ) -> str:
     manifest = {
         "harness_target": harness_target,
@@ -771,6 +788,10 @@ def _bundle_sha256(
             manifest["skills"].append({"name": skill_name, "source": None, "sha256": None})
             continue
         skill_file = skill_dir / "SKILL.md"
+        payloads = [] if reference_files is not None else None
+        references = _skill_references_sha256(skill_dir, harness_target, payloads=payloads)
+        if reference_files is not None:
+            reference_files.extend((f"skills/{skill_name}/references/{rel}", content) for rel, content in payloads)
         manifest["skills"].append(
             {
                 "name": skill_name,
@@ -778,18 +799,22 @@ def _bundle_sha256(
                 "sha256": hashlib.sha256(skill_file.read_bytes()).hexdigest() if skill_file.exists() else None,
                 # agent-harness#1358: SKILL.md links detail into references/; editing one
                 # must change the bundle identity, not only edits to SKILL.md.
-                "references": _skill_references_sha256(skill_dir, harness_target),
+                "references": references,
             }
         )
     return hashlib.sha256(json.dumps(manifest, sort_keys=True).encode("utf-8")).hexdigest()
 
 
-def _skill_references_sha256(skill_dir: Path, harness_target: str) -> dict[str, str]:
-    # Same file list the context-file launch copies (_skill_reference_sources).
-    return {
-        source.relative_to(skill_dir).as_posix(): hashlib.sha256(source.read_bytes()).hexdigest()
-        for _rel, source in _skill_reference_sources(skill_dir, harness_target)
-    }
+def _skill_references_sha256(
+    skill_dir: Path, harness_target: str, *, payloads: list[tuple[str, bytes]] | None = None,
+) -> dict[str, str]:
+    references = {}
+    for rel, source in _skill_reference_sources(skill_dir, harness_target):
+        content = source.read_bytes()
+        references[source.relative_to(skill_dir).as_posix()] = hashlib.sha256(content).hexdigest()
+        if payloads is not None:
+            payloads.append((rel, content))
+    return references
 
 
 def _skill_bundle_id(harness_target: str, action: str, expected_skill_pack: tuple[str, ...]) -> str:

@@ -3592,11 +3592,7 @@ def _copy_skill_references(spec: LaunchSpec, context_path: str) -> None:
     agent-harness#1358: `_skill_bodies` inlines only SKILL.md and tells the adapter
     these copies sit under `skills/<skill>/references/` next to the context file.
     """
-    if spec.wrapped_cwd is None:
-        return
     materialize_skill_references(
-        repo=Path(spec.wrapped_cwd),
-        harness_target=spec.executor,
         context_dir=Path(context_path).parent,
         prompt_bundle=spec.prompt_bundle,
     )
