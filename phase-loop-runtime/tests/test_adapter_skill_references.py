@@ -115,3 +115,49 @@ def test_skills_without_references_leave_context_unchanged(tmp_path, monkeypatch
         assert context, (harness, action)
         assert NOTE not in context, (harness, action)
         assert injection.skill_reference_files(tmp_path, harness, pack) == (), (harness, action)
+
+
+def test_codex_native_execute_references_install_without_cross_harness_leakage(tmp_path):
+    """The prompt-only Codex path reads native installed files, not context-file copies."""
+    from phase_loop_runtime.skill_install import install_skills
+
+    canonical = Path(__file__).resolve().parents[2] / "phase-loop-skills"
+    if not (canonical / "execute-phase" / "SKILL.md").is_file():
+        pytest.skip("canonical source absent in wheel-only layout")
+    references = ("interactive-path.md", "worker-fanout.md")
+    authored = canonical / "execute-phase" / "_overrides" / "codex" / "references"
+    for harness in ("codex", "claude", "gemini", "opencode"):
+        destination = tmp_path / harness / "skills"
+        install_skills(harness=harness, source=canonical, destination=destination,
+                       mode="copy", apply=True)
+        installed = destination / f"{harness}-execute-phase"
+        for name in references:
+            expected = (authored / name).read_bytes()
+            target = installed / "references" / name
+            packaged = PACKAGED / f"{harness}-execute-phase" / "references" / name
+            if harness == "codex":
+                assert target.read_bytes() == packaged.read_bytes() == expected
+                assert f"(references/{name})" in (installed / "SKILL.md").read_text()
+                assert not (canonical / "execute-phase" / "references" / name).exists()
+            else:
+                # Another provider may later author its own file with the same name.
+                assert not target.exists() or target.read_bytes() != expected
+                assert not packaged.exists() or packaged.read_bytes() != expected
+
+
+def test_codex_reference_bytes_participate_in_the_skill_digest(tmp_path):
+    canonical = Path(__file__).resolve().parents[2] / "phase-loop-skills" / "execute-phase"
+    if not (canonical / "SKILL.md").is_file():
+        pytest.skip("canonical source absent in wheel-only layout")
+    import shutil
+
+    skill = tmp_path / "execute-phase"
+    shutil.copytree(canonical, skill)
+    before = injection._skill_references_sha256(skill, "codex")
+    other_before = injection._skill_references_sha256(skill, "opencode")
+    reference = skill / "_overrides" / "codex" / "references" / "worker-fanout.md"
+    reference.write_bytes(reference.read_bytes() + b"\nSynthetic digest mutation.\n")
+    after = injection._skill_references_sha256(skill, "codex")
+    assert before.keys() == after.keys()
+    assert before != after
+    assert injection._skill_references_sha256(skill, "opencode") == other_before
