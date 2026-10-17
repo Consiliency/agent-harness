@@ -6,6 +6,57 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### BREAKING: Python 3.12 is the minimum (agent-harness#1546)
+
+- `phase-loop-runtime` and `consiliency-harness` now declare `requires-python = ">=3.12"`
+  (was `>=3.10`); the 3.10/3.11 classifiers are gone and 3.13/3.14 are listed. pip and uv
+  skip this release on an older interpreter and keep resolving the last 3.10-compatible
+  one, so existing pins keep working. `install-agent-harness.sh` installs through
+  `uv tool install`, which selects a 3.12+ interpreter itself.
+- CI: the hosted pytest matrix is one 3.12 lane on every event (was 3.10/3.11/3.12 on
+  push and 3.10 on pull requests). The CONFORM chronology node and its junit artifact
+  (`chronology-junit-py312`) moved with it from the 3.10 lane, so the node still runs
+  in that lane and Gate A on push, the nightly, and a dispatch with `chronology=true`.
+  The separate 3.12 I1 subset step in the BAML job is gone because the pytest lane now
+  runs it. `baml-i1-sweep.yml` and the Dagger offload module run 3.12 only.
+- The `tomllib`/`tomli` import fallbacks and the pre-3.10 `entry_points` fallback are
+  removed from the runtime. `exceptiongroup`, `tomli` and `typing-extensions` stay
+  unconditional dependencies: the falsifier run uses the host's `/usr/bin/python3`, which
+  can be older than 3.12 (3.10 on Ubuntu 22.04), and pytest needs them there
+  (agent-harness#1361). The programs the runtime runs under that interpreter stay
+  3.10-compatible, and a new test compiles them with it. The governed-review falsifier is
+  different: it runs the reviewed tree's own test node under that interpreter, so on a host
+  whose `/usr/bin/python3` is older than 3.12, falsifier nodes of this repository cannot load
+  the runtime and end in `error`. That is fail-closed: such a node is never counted red or
+  green, and its finding stays a blocking receipt.
+
+### Context-file adapter runs get the `references/` files their skills link (agent-harness#1358)
+
+- Gemini and OpenCode launches carry each injected skill's `references/` files
+  beside the delivered `context.md` under `skills/<skill>/references/`, and the
+  context says where they are. Gemini uses its workspace mirror. Skills without
+  references are unchanged, so every current Gemini and OpenCode context is
+  byte-identical. The bundle digest and delivered files use the same captured
+  bytes, including a canonical `_overrides/<harness>/references/` file. This unblocks
+  splitting the codex, gemini and opencode plan and execute skills; codex reads its
+  installed skills and is not changed.
+
+### skills-parity CI runs the skill size gate (agent-harness#1358)
+
+- `skills-parity.yml` runs `tests/test_skill_size_gate.py` as a warn-first step,
+  with `-rw`, so the job log lists every skill body over the size guidance. The
+  step fails only where the test does: a stale allowlist entry, or, once `STRICT`
+  is on, a new or grown offender. Changing the test now triggers the workflow.
+
+### Provider admission and availability evidence
+
+- Record the admitted CLI image's class and SHA256 in review evidence, and distinguish unavailable provider commands from login failures (agent-harness#1557; agent-harness#1343).
+
+### Gemini: a local model preference, `PHASE_LOOP_GEMINI_MODEL` (agent-harness#1604, ported from agent-harness#1615)
+
+- `PHASE_LOOP_GEMINI_MODEL` selects a registered canonical Gemini base model for the unpinned Gemini executor actions, model classes and composed/default board seats. Explicit task models, plan/roadmap model pins and configured board seats win; effort, other providers, subscription auth and sandbox admission are unchanged. Unset, the shipped defaults hold. An invalid value fails without fallback.
+- Register the `Gemini 4 Argon` display alias and render its low/medium/high variants to the canonical `gemini-4-argon-*` ids; an unsupported or conflicting effort is rejected.
+
 ### Implementer roster: per-executor implementation model and effort
 
 - Implementation (execute/repair and the `implementer` class) now runs on `gemini-3.8-flash` at high, `gpt-6.1-sol` at medium, `claude-sonnet-5-5` at medium (on the Agent View and print routes; the default Claude Channel route binds neither model nor effort and records them as `session_model_unbound`) and `grok-4.7` at high, on both the runner's shipped model policy and the executor defaults; the Gemini worker moves from `gemini-3.5-flash-high` to `gemini-3.8-flash-high`. A governed repair that escalates to the planner class keeps the shipped `high` effort. Planning, review, opencode and the other worker tiers are unchanged, and explicit model and effort settings still win.

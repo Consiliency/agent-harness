@@ -28,16 +28,13 @@ order is resolved by ``load_president_ladder``: built-in ``PRESIDENT_LADDER`` < 
 from __future__ import annotations
 
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 import re
 import subprocess
 from typing import Any, Callable
 
-try:  # Python 3.11+
-    import tomllib  # type: ignore[import-not-found]
-except ModuleNotFoundError:  # Python 3.10 — the requires-python floor
-    import tomli as tomllib  # type: ignore[no-redef]
+import tomllib
 
 from .validation import SeatValidationError, validate_board
 from . import composition
@@ -430,6 +427,14 @@ def load_boards(
     """
     boards: dict[str, Board] = dict(PRESETS)
     default_board = DEFAULT_BOARD_NAME
+    from .harness_mapping import gemini_default_model
+
+    preferred_gemini = gemini_default_model(composition._VENDOR_SEAT["gemini"]["model"], env)
+    for name, board in boards.items():
+        seats = tuple(replace(seat, model=preferred_gemini) if seat.harness == "gemini" else seat
+                      for seat in board.seats)
+        if seats != board.seats:
+            boards[name] = replace(board, seats=seats)
 
     # Availability-aware code-review (before the user overlay so a user override wins).
     compose_probe = is_available
@@ -456,7 +461,7 @@ def load_boards(
             composition_authorization
         )
         composed_review = compose_review_board(
-            is_available=compose_probe, auth_ok=compose_auth
+            is_available=compose_probe, auth_ok=compose_auth, gemini_model=preferred_gemini
         )
     finally:
         composition._clear_composition_authorization()

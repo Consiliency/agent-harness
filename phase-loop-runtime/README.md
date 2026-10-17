@@ -49,7 +49,7 @@ PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests phase-loop-runtime/.v
 The test group supplies pytest and package build/install tools, including pip;
 the visual extra supplies Pillow for image decoding. Both are opt-in. The native
 repository-wide interpreter guard includes the dagger subproject's Python 3.14
-floor, which is separate from this runtime package's Python 3.10 minimum and CI's
+floor, which is separate from this runtime package's Python 3.12 minimum and CI's
 interpreter matrix. These commands verify the two selected files; they do not
 establish complete CI equivalence, behavior without Pillow, full-suite acceptance
 or production readiness.
@@ -144,6 +144,25 @@ python3 -m phase_loop_runtime.roadmap_lint specs/phase-plans-v1.md
 
 Both wrap `phase_loop_runtime.roadmap_lint` (the single source of truth). Exit 0 =
 clean; non-zero prints each issue on stderr.
+
+## Local Gemini model preference
+
+The shipped Gemini planning and review defaults use Gemini 4 Argon. To use that
+family for all local Gemini role defaults, add this to the environment that runs
+`phase-loop`:
+
+```sh
+export PHASE_LOOP_GEMINI_MODEL=gemini-4-argon
+```
+
+Use a registered canonical base model without an effort suffix. The runtime
+preserves action and seat effort: executor policy normalizes unsupported max
+requests to high, and the default review board keeps medium. Explicit task models,
+plan/roadmap model pins and configured board seats take precedence. Other providers,
+subscription authentication and sandbox admission retain their existing behavior.
+Invalid preferences fail without model fallback. Unsetting the variable restores
+the shipped role defaults, including regular/lite Flash routing. This setting
+does not change the standalone `agy` CLI's own local configuration.
 
 ## Attended agy canary evidence
 

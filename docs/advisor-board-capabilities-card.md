@@ -119,6 +119,17 @@ The default and availability-composed code-review boards use `high` for Claude,
 Codex and Grok, and `medium` for Gemini. Explicit per-seat `effort` remains authoritative;
 the invocation mappings still support the full effort scale.
 
+Set `PHASE_LOOP_GEMINI_MODEL=gemini-4-argon` in your local shell or service
+environment to select Argon for Gemini executor/class defaults and composed
+review boards. The value must be a registered canonical base model; do not append
+an effort suffix. This preference keeps each action or seat's existing effort,
+subscription authentication and sandbox admission. Explicit task `--model`,
+plan/roadmap model pins and configured board seats remain authoritative. Other
+providers are unaffected. Invalid preferences fail instead of choosing another
+model. Unset the variable to restore the shipped role defaults, including the
+separate regular/lite Flash tiers. Exact capture boards and explicitly constructed
+boards retain their declared seats.
+
 Claude panel launches default to 128,000 output tokens. Set
 `CLAUDE_CODE_MAX_OUTPUT_TOKENS` in the panel launch environment (or its explicit
 `base_env`) to override this default. Only that value is copied into run-specific

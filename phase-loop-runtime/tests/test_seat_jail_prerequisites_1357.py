@@ -373,8 +373,10 @@ def test_pytest_is_a_runtime_dependency_and_not_only_a_test_dependency():
 # The falsifier run's interpreter is /usr/bin/python3; the runtime's own can be newer. pytest picks
 # its backports by markers, and an install evaluates them for the runtime's interpreter, so any
 # backport the system interpreter needs must be declared without a marker (agent-harness#1361).
-SYSTEM_INTERPRETER_FLOOR = "3.10"                               # requires-python's floor
-RUNTIME_MINORS = ("3.10", "3.11", "3.12", "3.13", "3.14")
+# The oldest host system interpreter (Ubuntu 22.04's), not requires-python: the run's
+# interpreter is the host's, and agent-harness#1546 raised only the runtime's floor.
+SYSTEM_INTERPRETER_FLOOR = "3.10"
+RUNTIME_MINORS = ("3.12", "3.13", "3.14")                       # requires-python >=3.12
 
 
 def _selected_at(requirement: Requirement, minor: str) -> bool:
