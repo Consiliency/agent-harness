@@ -18,6 +18,7 @@ Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, h
 - Keep lane ownership boundaries. If implementation requires touching another lane's files, stop and revise the plan or ask the user.
 - Do not run destructive git commands such as `git reset --hard` or `git checkout -- <path>` unless the user explicitly requested that operation.
 - Do not commit, push, or merge unless the user asked for those git actions. PR text follows [PR descriptions on the interactive path](#pr-descriptions-on-the-interactive-path).
+- Interactive runs read [references/interactive-publication.md](references/interactive-publication.md) before the first commit or push.
 
 ## Runner-Owned Lane Work Units
 
