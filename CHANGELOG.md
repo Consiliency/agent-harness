@@ -6,6 +6,29 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Claude board transport compatibility
+
+- The existing jailed Claude board seat supports subscription print transport with its
+  default tool set, exact model, staged tree, private scratch and jail lifecycle.
+  `PHASE_LOOP_PANEL_CLAUDE_ROUTE=tui` retains the explicit TUI route. Managed Claude
+  launchers resolve to their native image for jailed execution. Tooled/pointer seats
+  remain outside sealed HARDEN evidence (EC-HARDEN-5 UNMET). Login contexts preserve
+  default and configured account locations; print receipts correlate session events, and
+  private launch data follows process-group lifecycle handling.
+- Print broker evidence includes bounded native protocol observations: closed result
+  and error labels, the reaped process exit code, requested versus observed models,
+  and session-correlated tool receipts with hashed staged Read paths. Missing or
+  contradictory observations remain unproven; diagnostics do not admit a result.
+- Native observation diagnostics validate supported content-block shapes and strict
+  UTF-8, and detect repeated content independently of envelope UUIDs. Unsupported or
+  ambiguous frames leave model/Read claims unproven without changing result admission.
+- System retry observations use the same bounded replay tracking with closed error
+  categories and shared bounded normalization; repeated categories leave diagnostics unproven.
+
+- Print observations include closed first-stop, refusal-phase, session/shape and
+  first-invalid-reason fields, plus capped relative timing samples. Group cleanup
+  requests remain distinct from exit receipts; admission and HARDEN rules are unchanged.
+
 ### Context-file adapter runs get the `references/` files their skills link (agent-harness#1358)
 
 - Gemini and OpenCode launches carry each injected skill's `references/` files

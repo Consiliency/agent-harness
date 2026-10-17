@@ -36,11 +36,11 @@ def test_login_wait_preserves_board_context(monkeypatch, tmp_path, case):
     monkeypatch.setenv(sc.WAIT_ENV, "0" if case == "pointer_timeout" else "2")
     monkeypatch.setenv(sc.POLL_ENV, "2")
     monkeypatch.delenv(sc.MARGIN_ENV, raising=False)
-    monkeypatch.setattr(sc, "override_present", lambda: False)
+    monkeypatch.setattr(sc, "override_present", lambda **kw: False)
     monkeypatch.setattr(sc, "time", types.SimpleNamespace(
         time=lambda: 1000.0, monotonic=time.monotonic))
     monkeypatch.setattr(sc, "read_login_token",
-                        lambda: sc.LoginToken(b"fake-access-token", 1600.0))
+                        lambda **kw: sc.LoginToken(b"fake-access-token", 1600.0))
     monkeypatch.setattr(pi, "_under_claude_code", lambda *a: False)
     monkeypatch.setattr(pi, "_claude_code_support_status", lambda *a, **k: (True, "supported"))
     monkeypatch.setattr(seat_jail, "decide_seat_route",
@@ -94,12 +94,12 @@ def _short_login(monkeypatch):
     monkeypatch.setenv(sc.WAIT_ENV, "30")
     monkeypatch.setenv(sc.POLL_ENV, "30")
     monkeypatch.delenv(sc.MARGIN_ENV, raising=False)
-    monkeypatch.setattr(sc, "override_present", lambda: False)
+    monkeypatch.setattr(sc, "override_present", lambda **kw: False)
     monkeypatch.setattr(sc, "time", types.SimpleNamespace(
         time=lambda: 1000.0, monotonic=time.monotonic))
     # 100 s left: short of any leg's margin, so the wait starts.
     monkeypatch.setattr(sc, "read_login_token",
-                        lambda: sc.LoginToken(b"fake-access-token", 1100.0))
+                        lambda **kw: sc.LoginToken(b"fake-access-token", 1100.0))
 
 
 @pytest.mark.parametrize("how", ["cancel", "trip"])
@@ -143,11 +143,11 @@ def test_the_board_pointer_preflight_uses_the_legs_timeout(monkeypatch, tmp_path
     # left is launchable and jailed, so the pointer preflight must not mark it ungrounded.
     monkeypatch.setenv(sc.WAIT_ENV, "0")
     monkeypatch.delenv(sc.MARGIN_ENV, raising=False)
-    monkeypatch.setattr(sc, "override_present", lambda: False)
+    monkeypatch.setattr(sc, "override_present", lambda **kw: False)
     monkeypatch.setattr(sc, "time", types.SimpleNamespace(
         time=lambda: 1000.0, monotonic=time.monotonic))
     monkeypatch.setattr(sc, "read_login_token",
-                        lambda: sc.LoginToken(b"fake-access-token", 1600.0))
+                        lambda **kw: sc.LoginToken(b"fake-access-token", 1600.0))
     monkeypatch.setattr(pi, "_under_claude_code", lambda *a: False)
     monkeypatch.setattr(pi, "_claude_code_support_status", lambda *a, **k: (True, "supported"))
     monkeypatch.setattr(seat_jail, "decide_seat_route",

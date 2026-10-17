@@ -95,8 +95,15 @@ equivalence is proven by a test (not asserted in prose).
   must carry no credential of its own, the login the seat's credential is drawn
   from must show a first-party `claude.ai` subscription, and
   `claude auth status --json` inside the seat must report a logged-in first-party
-  session on the token it was handed (one check for both routes,
-  `_claude_subscription_auth_ok`; agent-harness#1444). The seat's own answer is
+  session on the token it was handed (both routes,
+  `_claude_subscription_auth_ok` / `_jailed_claude_subscription_auth_ok`;
+  agent-harness#1444). The tooled/pointer jail uses a separate single-use auth jail
+  and identity-probe jail with the exact selected credential bytes, image, profile and
+  seat IDs. It requires `loggedIn: true`, `authMethod: oauth_token`,
+  `apiProvider: firstParty` and no `apiKeySource`. Subscription metadata and login-token
+  selection share one store read in the explicit login context used for the wait; the
+  existing override-record account/organization binding remains required. Raw status,
+  metadata, identity and token are never retained. The seat's own answer is
   never the proof of a subscription. The print route
   (`_run_claude_print_session`, `claude -p --output-format stream-json --no-session-persistence`, never `--bare`)
   additionally asserts `system/init.apiKeySource == "none"` in-band and fails as
@@ -1472,6 +1479,17 @@ are recorded on agent-harness#1132.
   contract and stages no tree on purpose, keeps its seats on the inline route with
   `seat_sandbox_not_staged`: its standalone document is inlined whole and it is non-gating.
   Every other sealed code still refuses its seats there.
+- **Jailed Claude transport.** The existing tooled/pointer seat follows
+  `PHASE_LOOP_PANEL_CLAUDE_ROUTE`: print by default, TUI when explicitly selected.
+  Print keeps the same full default tool surface and jail owner, uses stdin and no session
+  persistence, and requires subscription login metadata, actual jailed auth status
+  on the selected token, plus in-band
+  `system/init.apiKeySource == "none"`. Only a single successful result event can supply
+  the final review verdict; there is no transcript or file-output salvage. Evidence records
+  `claude_route`, `claude_api_key_source`, `claude_result_count` and
+  `claude_result_event_sha256` alongside the actual jail/transport fields, with no TUI
+  transcript receipts. Tooled/pointer seats remain EC-HARDEN-5 UNMET; this transport does
+  not admit them as sealed HARDEN evidence.
 - **The jailed route is Claude and Gemini.** `JAILED_LEGS` is exactly `{"claude",
   "gemini"}`. The Gemini seat (agent-harness#1170) runs agy with its tools in its own jail:
   the credential config directory (`antigravity-cli`) holds the parent-built access-token-only
