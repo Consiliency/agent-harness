@@ -19,22 +19,18 @@ The [proposed Stage 3 amendment](decision-claude-sdk-subscription-route-20261015
 defines admission and rollout. This plan prepares implementation; it does not
 ratify that amendment or change runtime behavior.
 
-Use one bounded implementation for the explicit route. Default promotion and
-print billing correction are a later unit, so their route-contract changes cannot
-hide inside SDK integration. Preserve Channel/Agent View/print and the panel TUI
-fallback. Do not activate SDK panels, rename panel functions, or delete Channel.
+Default promotion and print billing correction are separate. Preserve Channel,
+Agent View, print and the panel TUI fallback; panel SDK activation and refactoring
+remain outside this unit.
 
 ## Research summary
 
-At input `0b8444e820aba08a27e68cb1ad0d2c9a0efe2d92`, `launcher.py` owns route
-selection, launch specs, auth preflight, generated Claude bundles, output parsing
-and the synchronous supervised launch boundary. `claude_channel_sidecar.py` owns
-the route-result vocabulary. `runner.py` consumes `LaunchResult`; it needs no new
-agent loop. Panel transport ownership is separate and remains with PANELSPLIT/PANEL.
+At input `0b8444e820aba08a27e68cb1ad0d2c9a0efe2d92`, `launcher.py` owns runner
+selection, preflight, bundles, supervision and output; `claude_channel_sidecar.py`
+owns route vocabulary. `runner.py` consumes `LaunchResult`; PANELSPLIT/PANEL owns
+panel transports.
 
-The [Python SDK reference](https://code.claude.com/docs/en/agent-sdk/python)
-provides explicit CLI selection, configuration, permissions, typed messages and
-interrupts. Pin the optional dependency to the inspected release
+Pin the optional dependency to the inspected release
 `claude-agent-sdk==0.2.167`, upstream commit
 `c10b52c674e5c709c7263544b38e8a5dad10e01d`; its Python floor matches the runtime's
 3.10 floor. Dependency installation must still prove compatibility.
@@ -82,6 +78,8 @@ availability without importing SDK code during module import or dry run.
   cwd, heartbeat, quiet/stall thresholds, stream flag, caller ID and lease authority.
   No custom unsupervised process manager. Enable the existing ephemeral monitor
   when no persistent log was requested.
+  For SDK, share the helper's offline context-admission check with
+  `run_auth_preflight` before its probe loop; a parent probe must not precede it.
 - Feed the helper's normalized stream into the existing Claude output/closeout
   extraction. Require a successful terminal result independently of assistant
   text and exit code. Preserve structured-output validation, timeout/interruption
@@ -105,11 +103,15 @@ availability without importing SDK code during module import or dry run.
   shape and reject API/helper/console/alternate-provider shapes. Probe output is
   parsed privately, never emitted. Preserve `HOME` / `CLAUDE_CONFIG_DIR` from the
   selected login context. Do not inject or extract an access token.
+  Establish personal Pro/Max class from local credential metadata before any
+  credential-bearing CLI operation; the subscription boolean alone is insufficient.
+  Reject Team/Enterprise, profile-based, remote-policy-eligible or unknown contexts.
 - Before that probe, resolve and bind effective settings as amendment condition 3
-  requires. Probe and SDK use the same private snapshot; set `setting_sources=[]`
-  to prevent ambient reload and retain project instructions in the context bundle.
-  Preserve documented settings precedence and unrelated permission rules; refuse
-  uninspectable managed/dynamic sources. Stamp CLI probes with `child_scratch_env`.
+  requires, including the always-read global config and host/cached managed inputs.
+  Probe and SDK use the same bound private context; `setting_sources=[]` disables
+  only user/project/local loading. Refuse unbindable sources rather than treating
+  one read or local-file absence as proof. Preserve permission precedence and
+  project instructions. Stamp CLI probes with `child_scratch_env`.
 - Construct public `ClaudeAgentOptions` with the selected model/effort, cwd/add_dirs,
   explicit `tools`, `disallowed_tools`, generated settings/plugins,
   agents and MCP configuration, and `output_format` through `_claude_json_schema`.
@@ -117,9 +119,10 @@ availability without importing SDK code during module import or dry run.
   `_claude_permission_mode(action, bypass_approvals)`; leave `allowed_tools=[]`.
   Authoring's `acceptEdits` must not gain implicit Bash auto-approval. Deny prompts
   that cannot be satisfied headlessly; callbacks cannot revoke prior approvals.
-  Preserve generated MCP
-  isolation and do not enable ambient connectors. Never pass `--bare`; use the
-  CLI's nonpersistent-session flag and capability-check required flags.
+  Set `strict_mcp_config=True` and stamp `CLAUDE_CODE_DISABLE_AUTO_MEMORY=1` in the
+  helper environment; an empty MCP map is insufficient. Use public `extra_args`
+  for `--no-session-persistence` and bypass-only flags the existing oracle emits.
+  Never pass `--bare`; capability-check the required flags.
 - Use `async with ClaudeSDKClient(...)`, `query(...)`, `receive_response()` and
   `interrupt()`. Validate init via `SystemMessage.data`; apply the amendment's
   missing/conflicting-init and auth-drift rules. Emit selected, redacted JSON-lines
@@ -161,8 +164,12 @@ Cover the production `build_launch_spec` → `launch_with_spec` → helper path:
   helper scrubbing must fail this test without contacting a provider;
   a live helper uses the same config/login as the proof, and the parent environment
   remains byte-identical;
-- hostile effective settings refuse before connection even when login/init would
-  otherwise pass; permission-only settings and project instructions are preserved;
+- hostile supported settings/global-source cases and changed/unbound inputs refuse
+  before the credential-bearing probe/connection, even if login/init would pass;
+  remote-policy-eligible/unknown local metadata refuses; a personal-context positive
+  control succeeds. Verify connector/memory controls with the pinned transport and
+  preserve unrelated permissions/instructions. Do not assume arbitrary global keys
+  are effective settings without CLI evidence;
 - options parity against runner CLI argv, no-log bundle success/cleanup, no
   prompt/token in argv, `allowed_tools=[]`, permission/bypass parity, and helper
   package provenance after changing cwd;

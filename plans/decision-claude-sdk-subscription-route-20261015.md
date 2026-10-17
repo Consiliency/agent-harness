@@ -66,11 +66,17 @@ auth-posture or billing-posture literal. The existing envelope remains
    SDK child will actually use as well; an unrelated seat's successful auth probe
    cannot establish that child's identity. Retain the CLI's own credential loading;
    do not copy a token into SDK options, argv or evidence.
+   Stage 3a supports only locally established personal Pro/Max login contexts.
+   Determine that class from the same privately read credential metadata before
+   any credential-bearing CLI operation, not from the subscription boolean alone.
+   Defer Team/Enterprise, profile-based, remote-policy-eligible and unknown contexts;
+   reject them before authentication rather than fetching policy to qualify them.
 3. **Process environment.** Start the SDK helper with an environment filtered by
    `scrub_subscription_env`, before importing or connecting the SDK. Remove inherited
    endpoint, API-key, helper and alternate-provider configuration through that shared
-   filter. Do not mutate the threaded runner's `os.environ`. SDK `options.env` is an
-   overlay, not an environment replacement, including for the SDK version probe.
+   filter. Do not mutate the threaded runner's `os.environ`. SDK `options.env`
+   overlays inference; the SDK version probe inherits the helper environment
+   directly. Both require the already-scrubbed helper process.
    Effective settings are part of this boundary: inspect user, project, local,
    generated and managed sources before any credential-bearing operation. Reject
    auth helpers, endpoint/provider selectors and settings `env` entries excluded
@@ -81,6 +87,13 @@ auth-posture or billing-posture literal. The existing envelope remains
    bundle. If a managed or dynamic source cannot be inspected and bound, refuse
    SDK selection. An acceptable init credential marker does not prove endpoint
    identity and cannot replace this pre-connection check.
+   `setting_sources=[]` disables user/project/local sources only. Include the
+   effective global configuration at the selected login directory and host/cached
+   managed inputs in the binding/refusal requirement; one read is not binding.
+   Remote-policy absence cannot be inferred from a missing local managed file.
+   Use `strict_mcp_config=True` and the explicit documented auto-memory disable;
+   an empty MCP map does not suppress subscription connectors. These controls do
+   not bypass organization policy or establish the absence of managed inputs.
 4. **In-band evidence.** Require a `SystemMessage` with subtype `init` and
    `data.apiKeySource == "none"` before accepting output. Refuse missing or
    conflicting init evidence. Authentication, billing and organization-denial retry
@@ -107,7 +120,7 @@ auth-posture or billing-posture literal. The existing envelope remains
 ## 4. First implementation and preserved boundaries
 
 Stage 3a is an optional SDK installation extra and an explicit runner route for
-solo authoring, execution and repair. Reject runner `review`, `subagent` and
+personal Pro/Max solo authoring, execution and repair. Reject runner `review`, `subagent` and
 `agent_team` SDK requests by their requested mode, before the existing authoring
 mode degradation or any launch. The helper is a trusted executor child;
 it is not an admitted review-seat launch profile.
