@@ -14,6 +14,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   launchers resolve to their native image for jailed execution. Tooled/pointer seats
   remain outside sealed HARDEN evidence (EC-HARDEN-5 UNMET).
 
+### skills-parity CI runs the skill size gate (agent-harness#1358)
+
+- `skills-parity.yml` runs `tests/test_skill_size_gate.py` as a warn-first step,
+  with `-rw`, so the job log lists every skill body over the size guidance. The
+  step fails only where the test does: a stale allowlist entry, or, once `STRICT`
+  is on, a new or grown offender. Changing the test now triggers the workflow.
+
 ### Provider admission and availability evidence
 
 - Record the admitted CLI image's class and SHA256 in review evidence, and distinguish unavailable provider commands from login failures (agent-harness#1557; agent-harness#1343).
