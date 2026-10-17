@@ -6,6 +6,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Codex sandbox policy preparation (agent-harness#1335)
+
+- Add `--codex` policy/script output and launch preparation for administrator-reviewed
+  sandbox trials. The candidate remains unqualified and is never installed automatically.
+
 ### skills-parity CI runs the skill size gate (agent-harness#1358)
 
 - `skills-parity.yml` runs `tests/test_skill_size_gate.py` as a warn-first step,
