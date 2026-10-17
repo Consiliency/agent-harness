@@ -7,6 +7,7 @@ says so for each skill that has any. Ungated: needs no dotfiles tree.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -104,8 +105,9 @@ def test_canonical_override_references_are_found(tmp_path):
 
 
 @pytest.mark.parametrize("harness", ["gemini", "opencode"])
-def test_skills_without_references_leave_context_unchanged(tmp_path, monkeypatch, harness):
-    # The shipped gemini/opencode packs link no references/ yet: no note, no copies.
+def test_shipped_packs_note_and_copy_exactly_their_references(tmp_path, monkeypatch, harness):
+    # A shipped pack skill gets the note and copies only when it ships references/;
+    # one without references adds no line and copies nothing.
     def resolve(_repo, harness_target, pack):
         return {name: PACKAGED / name for name in pack}
 
@@ -113,5 +115,20 @@ def test_skills_without_references_leave_context_unchanged(tmp_path, monkeypatch
     for action, pack in injection.HARNESS_ACTION_SKILLS[harness].items():
         context = injection._skill_bodies(tmp_path, harness, pack)
         assert context, (harness, action)
-        assert NOTE not in context, (harness, action)
-        assert injection.skill_reference_files(tmp_path, harness, pack) == (), (harness, action)
+        files = injection.skill_reference_files(tmp_path, harness, pack)
+        for skill in pack:
+            shipped = sorted(
+                f"skills/{skill}/references/{path.relative_to(PACKAGED / skill / 'references').as_posix()}"
+                for path in (PACKAGED / skill / "references").rglob("*") if path.is_file()
+            )
+            assert sorted(dest for dest, _ in files if dest.startswith(f"skills/{skill}/")) == shipped
+            note = f"{NOTE} under `skills/{skill}/references/`"
+            assert (note in context) == bool(shipped), (harness, action, skill)
+
+
+def test_gemini_execute_phase_links_resolve_to_shipped_references():
+    skill = PACKAGED / "gemini-execute-phase"
+    linked = set(re.findall(r"\]\((references/[^)#]+)", (skill / "SKILL.md").read_text(encoding="utf-8")))
+    assert linked
+    for rel in linked:
+        assert (skill / rel).is_file(), rel
