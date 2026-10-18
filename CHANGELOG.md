@@ -6,6 +6,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- Preserve trailing executor output queued during the existing bounded reader join
+  in captured output, run logs and optional live streaming.
 - Human publication checks already-committed companion paths before creating a
   commit. Incomplete ownership now produces a repairable scope-precheck result.
 - Add `PublishScopeCorrection.v1` for an exact sealed local ownership-scope

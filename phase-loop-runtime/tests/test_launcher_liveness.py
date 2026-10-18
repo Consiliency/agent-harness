@@ -3,6 +3,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
@@ -10,6 +11,85 @@ from phase_loop_runtime.launcher import launch
 
 
 class LauncherLivenessTest(unittest.TestCase):
+    def test_observed_launch_preserves_queued_tail_after_exit(self):
+        for stream in (False, True):
+            for tail_on_join in (False, True):
+                with self.subTest(stream=stream, tail_on_join=tail_on_join):
+                    initial = "REVIEW START synthetic-output-token\n"
+                    tail = "REVIEW END synthetic-output-token\n"
+                    expected = (initial + tail).replace("synthetic-output-token", "[credential redacted]")
+                    events = []
+                    profile = object()
+
+                    class FakeProcess:
+                        pid = 12345
+
+                        def __init__(self):
+                            self.stdout = io.StringIO()
+
+                        def poll(self):
+                            return 0
+
+                        def wait(self):
+                            events.append("wait")
+                            return 0
+
+                    class FakeThread:
+                        def __init__(self, *, target, args, daemon):
+                            self.queue = args[1]
+
+                        def enqueue_tail(self):
+                            self.queue.put(tail)
+                            self.queue.put(None)
+
+                        def start(self):
+                            events.append("start")
+                            self.queue.put(initial)
+                            if not tail_on_join:
+                                self.enqueue_tail()
+
+                        def join(self, timeout):
+                            events.append(("join", timeout))
+                            if tail_on_join:
+                                self.enqueue_tail()
+
+                    process = FakeProcess()
+                    streamed = io.StringIO()
+                    with tempfile.TemporaryDirectory() as td:
+                        log_path = Path(td) / "output.log"
+                        with (
+                            patch("phase_loop_runtime.launcher.child_executor_env", return_value={}),
+                            patch("phase_loop_runtime.launcher.child_scratch_env", return_value={}),
+                            patch("phase_loop_runtime.launcher._worktree_change_snapshot", return_value=None),
+                            patch("phase_loop_runtime.launcher._process_group_id", return_value=None),
+                            patch("phase_loop_runtime.launcher._utc_now", return_value="2026-10-18T00:00:00Z"),
+                            patch("phase_loop_runtime.launcher.time.monotonic", return_value=1.0),
+                            patch("phase_loop_runtime.launcher.run_heartbeat_summary", return_value={"quiet_level": "active"}),
+                            patch("phase_loop_runtime.launcher.write_run_heartbeat"),
+                            patch("phase_loop_runtime.launcher._cleanup_process_group", side_effect=AssertionError("unexpected cleanup")),
+                            patch("phase_loop_runtime.launcher.threading.Thread", FakeThread),
+                            patch("phase_loop_runtime.panel_invoker.SeatProfile", return_value=profile),
+                            patch("phase_loop_runtime.panel_invoker.launch_owned", return_value=process) as owned,
+                            patch("phase_loop_runtime.panel_invoker._redact_seat_credentials",
+                                  side_effect=lambda text: text.replace("synthetic-output-token", "[credential redacted]")) as redact,
+                            redirect_stdout(streamed),
+                        ):
+                            result = launch(
+                                ["example-cli"], action="review", _review_profile=profile,
+                                log_path=log_path, stream_output=stream, env={},
+                            )
+                        logged = log_path.read_text(encoding="utf-8")
+
+                    self.assertEqual(result.returncode, 0)
+                    self.assertEqual(result.output, expected)
+                    self.assertEqual(logged, expected)
+                    self.assertEqual(streamed.getvalue(), expected if stream else "")
+                    self.assertEqual([call.args[0] for call in redact.call_args_list], [initial, tail])
+                    self.assertEqual(events, ["start", "wait", ("join", 1)])
+                    self.assertTrue(process.stdout.closed)
+                    owned.assert_called_once()
+                    self.assertIs(owned.call_args.kwargs["profile"], profile)
+
     def test_launch_without_log_closes_stdin_when_no_payload(self):
         class Completed:
             returncode = 0
