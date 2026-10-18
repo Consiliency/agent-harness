@@ -57,15 +57,19 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 - All twelve shipped agy members passed completion, cancellation and owner-loss
   checks (36 successful operations). Every series validated three operations with
   `route_qualified=true`; all 245 source pins, official archive/image/help identities
-  and the route core were verified against the revised source. The private evidence
-  explicitly combines eight successful series from the initial batch and four from
-  the corrected batch. An original local Git staging failure occurred before provider
-  invocation, remains failed and retained, and was diagnosed before a measured
-  operational correction with identical code and source pins. It is not counted among
-  the 36 successes. Final board/president review must assess that complete history.
-- Final package builds, Python 3.12+ compatibility verification, cold-wheel
-  import/compile, full I1, exact-candidate CI and artifact binding remain release-cut
-  gates. Historical package hashes below do not identify the revised final artifacts.
+  and the route core were verified against the revised source. These 36 successes
+  belong to one complete batch after the latest main integration, including
+  agent-harness#1748. Earlier successful batches remain separate historical evidence.
+  An original local Git staging failure occurred before provider invocation and
+  remains failed and retained, along with its diagnosed operational correction.
+  That earlier failure and correction are not part of the current 36 successes.
+  Final board/president review must assess that complete history.
+- Revised package builds, Python 3.12 compatibility, cold-wheel import/compile
+  and actual Python 3.10 installation refusal passed for the current prepared
+  artifacts identified under "This release: 0.7.27" below. The record and
+  documentation updates preserve the complete runtime package tree. Full I1,
+  exact-candidate CI and final review remain release-cut gates; earlier package
+  measurements are explicitly labeled historical.
 - Historical real-CLI smoke attempts include failures/degraded results and do not
   establish a successful tools-enabled four-CLI runtime panel. Runtime-owned panel
   behavior remains unverified. The owner has authorized a temporary T3 delegated
