@@ -261,10 +261,16 @@ class Lease:
         self._update(confirmed_killed_at=time.time())
 
     def _unlock(self) -> None:
-        with self._lock:
+        if self._pid != os.getpid():
+            # A mutex held at fork may never unlock in the child.
             fd, self._fd = self._fd, None
+        else:
+            with self._lock:
+                fd, self._fd = self._fd, None
         if fd is not None:
-            os.close(fd)  # closing the descriptor releases the flock
+            # Never LOCK_UN: an inherited fd shares the parent's flock. Close only
+            # this copy; the lock lasts until the last copy is closed.
+            os.close(fd)
 
     def abandon(self) -> None:
         """Leave a rung without a confirmed release: mark the entry, KEEP it, and give the
@@ -280,6 +286,9 @@ class Lease:
     def clear(self) -> None:
         """Remove the entry: nothing is held for this lease. If the entry cannot be removed
         it stays with a free lock, which only sends a reaper to confirm it again."""
+        if not self.held:
+            self._unlock()
+            return
         try:
             os.unlink(self.path)
             fd = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
@@ -375,6 +384,9 @@ def recover_lease(lease_id: str) -> Lease:
     fd = os.open(path, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC)
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        locked, named = os.fstat(fd), os.stat(path, follow_symlinks=False)
+        if locked.st_nlink == 0 or (locked.st_dev, locked.st_ino) != (named.st_dev, named.st_ino):
+            raise FileNotFoundError(errno.ENOENT, "lease entry was removed before it was locked")
         entry = _read_entry(fd)
         if not _valid_entry(entry, lease_id):
             raise ValueError("invalid lease journal")

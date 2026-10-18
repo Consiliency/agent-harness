@@ -221,8 +221,11 @@ creates an in-memory fresh capability. `recover_lease` acquires the existing
 nonblocking exclusive flock and always creates an observation/cancellation-only
 handle, including for legacy entries without markers. A second attachment,
 concurrent recovery, an unlocked handle or an inherited handle in a forked
-process cannot grant dispatch. The lock is held on the existing inode; no rename
-of a live entry bypasses it. No age-based stale-writer takeover is used.
+process cannot grant dispatch. Recovery checks the locked descriptor's device,
+inode and positive link count against the path without following symlinks before
+returning a handle. Inherited or released handles cannot clear an entry. Child
+cleanup closes only its descriptor, without explicitly unlocking the shared flock
+or waiting on an inherited mutex. No age-based stale-writer takeover is used.
 
 `create_sent_at` and `execute_sent_at` are conservative attempt markers, fsynced
 before calling the transport. They are never proof that a network send occurred.
@@ -254,3 +257,9 @@ but not wheel-hash-pinned dependencies), and N3 (future production channel facto
 retries-off/receive-limit qualification) remain open. The r13 generated scratch
 is reused read-only for tests; no new generator or supply-chain qualification is
 claimed. R12-L3 raw exception chains and r10 L3–L6 above remain open.
+
+R16 L-a–d remain future work: untouched inherited descriptors retain locks until
+closed; reaper hook routing uses duck typing; driver reference writes can bypass
+the transport no-replacement guard; synchronous fsync/loop-thread contention,
+same-loop reaper calls, CLI loop injection and reaper directory fsync remain
+unqualified. Backend wiring must address these boundaries before use.
