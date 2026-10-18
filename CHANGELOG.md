@@ -6,6 +6,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Mapped-seat resolver setup (agent-harness#1570)
+
+- Prepare the mapped seat's resolver through the trusted parent before releasing
+  its namespace holder, preserving setup refusal and cleanup on failure.
+
 ### Fixed
 
 - The LEGIBLE live transition probe accepts the launcher's optional diagnostic
