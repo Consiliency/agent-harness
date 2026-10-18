@@ -1060,12 +1060,52 @@ def test_a_seat_refused_for_no_credential_says_its_override_was_ignored(monkeypa
 
     _override_bound_elsewhere(monkeypatch, tmp_path)
     monkeypatch.setattr(sc, "read_login_token", lambda: None)            # no login either
-    monkeypatch.setattr(pi._seat_jail, "seat_sandbox_capable", lambda: None)
+    real_decide = pi._seat_jail.decide_seat_route
+    calls = []
+
+    def decide(leg, **kwargs):
+        calls.append(leg)
+        return real_decide(leg, capable=lambda: None, **kwargs)
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("a credential-refused seat must not qualify or prepare a jail")
+
+    monkeypatch.setattr(pi._seat_jail, "decide_seat_route", decide)
+    monkeypatch.setattr(pi._seat_jail_autoqualify, "ensure_qualified", forbidden)
+    monkeypatch.setattr(pi, "_prepare_jailed_claude", forbidden)
     spawned = _brokered(monkeypatch, tmp_path, "claude", "a" * 64)
+    assert calls == ["claude"] and _FakeBroker.invoked == 0
     assert tuple(spawned)[0] == "DEGRADED"
     assert spawned.seat_notices[0] == "claude_seat_token_missing"
     assert _IGNORED in spawned.seat_notices[1:]
     assert pi._finalize_leg_detail(tuple(spawned)[-1]) == "claude_seat_token_missing"
+
+
+@pytest.mark.parametrize("host, tiocsti, seat_uid_available, code", [
+    (False, True, True, "seat_sandbox_unavailable_host"),
+    (True, False, True, "seat_sandbox_unavailable_tiocsti"),
+    (True, True, False, "seat_sandbox_unavailable_seat_uid"),
+])
+def test_real_prerequisite_refusal_precedes_credentials_and_qualification(
+    host, tiocsti, seat_uid_available, code,
+):
+    def forbidden(*args, **kwargs):
+        pytest.fail("a prerequisite-refused seat must not inspect credentials or qualify")
+
+    def decide(leg, **kwargs):
+        return seat_jail.decide_seat_route(
+            leg, capable=lambda: seat_jail.seat_sandbox_capable(
+                host_capable=lambda: host, tiocsti=lambda: tiocsti,
+                seat_uid_available=lambda: seat_uid_available,
+            ), claude_token_present=forbidden, **kwargs,
+        )
+
+    route, notices, refusal = pi._seat_route_for_spawn(
+        "claude", types.SimpleNamespace(staged_tree_sha256="a" * 64), eligible=True,
+        decide=decide, qualify_on_first_use=forbidden,
+    )
+    assert not route.jailed and route.code == code
+    assert notices == [] and refusal == code
 
 
 @pytest.mark.parametrize("outcome, code", [

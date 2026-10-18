@@ -20,6 +20,13 @@ whether you use one machine or a fleet, inside or outside a tailnet. Agents shou
 start there too: establish the user's executor, governance needs and publishing
 authority before the first real run.
 
+The 0.7.27 runtime requires Python 3.12+ (agent-harness#1549); older runtime
+interpreters must be upgraded. Host-side jail helpers retain their separate
+3.10-compatible contract. Governed falsifier nodes importing this runtime under an
+older host interpreter fail closed and remain blocking receipts. See the
+[release handoff](docs/releases/outside-agent-release-handoff.md) for qualification
+evidence, release-cut gates and historical runtime smoke limitations.
+
 With `uv` already installed (otherwise use the installer below):
 
 ```sh
