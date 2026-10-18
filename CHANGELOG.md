@@ -6,6 +6,24 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Codex execute-phase reads interactive procedures on demand (agent-harness#1358)
+
+- Split planning-handoff reuse, interactive publication, worktree lifecycle, and
+  worker-brief procedures into Codex-only `references/` files. Keep runner ownership,
+  governance, verification, closeout audit/evidence, and PR-description parity anchors
+  in `SKILL.md`; remove the duplicate audit explanation. Relative reference reads were
+  proven with a live, read-only Codex native-skill canary through the adapter launcher
+  before the split. The token-size exception remains for retained normative text;
+  the longest-line exception is removed.
+
+- Human publication checks already-committed companion paths before creating a
+  commit. Incomplete ownership now produces a repairable scope-precheck result.
+- Add `PublishScopeCorrection.v1` for an exact sealed local ownership-scope
+  refusal. The supported SDK can bind a corrected ownership superset to the
+  existing commit and one broker-reserved successor, preserving the original
+  terminal and checkpoint. Ordinary replay and ambiguous-outcome recovery retain
+  their existing behavior; see the FABPUB recovery runbook section 8b.
+
 ### OpenCode execute-phase loads interactive procedures on demand (agent-harness#1358)
 
 - Move interactive publication and worktree-pruning procedures into linked references,

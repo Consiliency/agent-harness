@@ -1455,6 +1455,18 @@ def _human_publication_handoff(
         repository_common_dir=str(snapshot.common_dir),
         resume="retry publish_human_invoked_from_worktree with the same plan and verification artifact",
     )
+    if next_step in ("inspect_scope_correction_predecessor", "review_scope_correction_outcome"):
+        handoff.update(
+            recovery_procedure="docs/fabpub-partition-rotation-runbook.md section 8b",
+            resume=(
+                "preserve the original and successor checkpoints and broker evidence; "
+                "review the successor outcome before any further provider attempt. "
+                "PublishScopeCorrection.v1 authenticates its predecessor only in the "
+                "active generation and does not support rotate-then-retry recovery. "
+                "A later generation requires supported predecessor-chain recovery; "
+                "do not replace receipts or infer no effect from remote absence."
+            ),
+        )
     if next_step == "resolve_publication_recovery_refusal":
         handoff.update(
             recovery_procedure="docs/fabpub-partition-rotation-runbook.md section 8a",
@@ -1845,9 +1857,41 @@ def _typed_refusal_handoffs() -> tuple[tuple[Any, Any], ...]:
 
 
 def _typed_refusal_handoff(error: BaseException) -> tuple[str, dict[str, Any]] | None:
+    from .publish_scope_correction import ScopeCorrectionPredecessorUnavailable
+
+    if isinstance(error, ScopeCorrectionPredecessorUnavailable):
+        return "inspect_scope_correction_predecessor", {}
     for types, handler in _typed_refusal_handoffs():
         if isinstance(error, types):
             return handler(error)
+    return None
+
+
+def _human_publication_scope_precheck(
+    repo: Path, owned_paths: Sequence[str], *, base: str, branch: str,
+) -> str | None:
+    """Catch omitted committed companion paths before creating a new commit.
+
+    The broker still checks the final branch independently. This early check
+    cannot authorize publication; it avoids creating a sticky rejected head
+    when a human caller supplies only its currently dirty paths.
+    """
+    from .convergence.broker.credsep import GitHubBrokerAdapter
+
+    if GitHubBrokerAdapter._base_invalid(base, branch):
+        return "owned-scope-invalid-base"
+    changed = _git_bytes(
+        repo, "diff", "--name-only", "-z", "--no-renames", f"origin/{base}...HEAD",
+    )
+    if changed is None:
+        return "owned-scope-diff-failed"
+    uncovered = sorted(
+        os.fsdecode(path) for path in changed.split(b"\0") if path
+        and not GitHubBrokerAdapter._covered_by_owned(os.fsdecode(path), owned_paths)
+    )
+    if uncovered:
+        return "owned-scope-exceeded:" + ",".join(uncovered[:20])
+    # An empty committed diff is normal before the first staged publication.
     return None
 
 
@@ -1863,6 +1907,7 @@ def publish_human_invoked_from_worktree(
     protected_branches: frozenset[str] = PROTECTED_BRANCHES,
     prebuilt: bool = False,
     base: str = "main",
+    scope_correction_from: tuple[Path, str] | None = None,
 ) -> dict[str, Any]:
     """Publish a human-invoked detailed-plan run through authenticated FABPUB.
 
@@ -1961,6 +2006,16 @@ def publish_human_invoked_from_worktree(
         )
         return result
 
+    scope_error = _human_publication_scope_precheck(
+        repo, owned_paths, base=base, branch=branch,
+    )
+    if scope_error is not None:
+        result = _blocked("publication_scope_precheck_failed", scope_error)
+        result["handoff"] = _human_publication_handoff(
+            repo, next_step="repair_publication_scope_and_retry"
+        )
+        return result
+
     try:
         plan_sha256 = _sha256(artifacts["plan_path"].read_bytes())
         verification_sha256 = _sha256(
@@ -2021,6 +2076,7 @@ def publish_human_invoked_from_worktree(
             topology=topology,
             protected_branches=protected_branches,
             prebuilt=prebuilt,
+            scope_correction_from=scope_correction_from,
             broker_client=broker_client,
             base=base,
             publish_authority=authority,
@@ -2037,7 +2093,9 @@ def publish_human_invoked_from_worktree(
             result["handoff"] = _human_publication_handoff(
                 repo,
                 next_step=(
-                    "adjudicate_publication_by_partition_rotation"
+                    "review_scope_correction_outcome"
+                    if ambiguous and scope_correction_from is not None
+                    else "adjudicate_publication_by_partition_rotation"
                     if ambiguous
                     else "repair_publication_precheck_and_retry"
                 ),
@@ -2078,6 +2136,10 @@ def publish_human_invoked_from_worktree(
             )
         else:
             next_step, refusal = typed
+            if scope_correction_from is not None and next_step in (
+                "adjudicate_publication_by_partition_rotation", "retry_once_before_partition_rotation",
+            ):
+                next_step = "review_scope_correction_outcome"
             result["handoff"] = _human_publication_handoff(
                 repo, next_step=next_step, refusal=refusal
             )
@@ -2136,6 +2198,7 @@ def publish_from_worktree(
     broker_client: BrokerClient | None = None,
     admission: AdmissionRequest | None = None,
     base: str = "main",
+    scope_correction_from: tuple[Path, str] | None = None,
     publish_authority: PublishAuthorityPreimages | None = None,
     checkpoint_root: Path | None = None,
 ) -> dict[str, Any]:
@@ -2200,12 +2263,14 @@ def publish_from_worktree(
             )
     if candidate.transaction is not None and candidate.state == PublishTransactionState.CONFLICTED:
         raise PublishTransactionConflict("active publish transaction is conflicted")
+    if prebuilt and scope_correction_from is not None:
+        return _blocked("scope_correction_prebuilt_conflict", "scope correction is a distinct operation")
     if not prebuilt and not owned_paths:
         return _blocked("no_owned_paths", "No owned paths to stage; nothing to publish")
-    if not prebuilt and not resuming and _git(repo, "add", "--", *owned_paths).returncode:
+    if not prebuilt and not resuming and scope_correction_from is None and _git(repo, "add", "--", *owned_paths).returncode:
         return _blocked("stage_failed", "git add -- <owned_paths> failed")
     publication_audit = {} if active and authority is not None else None
-    audit = None if prebuilt or resuming else _audit_staged_diff(repo, owned_paths, evidence=publication_audit)
+    audit = None if prebuilt or resuming or scope_correction_from is not None else _audit_staged_diff(repo, owned_paths, evidence=publication_audit)
     if audit is not None:
         return audit
     if broker_client is None:
@@ -2222,6 +2287,8 @@ def publish_from_worktree(
             )
 
     if not active:
+        if scope_correction_from is not None:
+            return _blocked("scope_correction_requires_fabpub", "scope correction requires active FABPUB")
         if admission is None:
             return _blocked("broker_required", "publish mutation requires an admitted broker client")
         if not prebuilt and _git(repo, "commit", "-m", commit_message or "chore: publish plan changes").returncode:
@@ -2236,7 +2303,16 @@ def publish_from_worktree(
         authority = publish_authority.envelope_authority_preimage
         if Path(checkpoint_root).resolve() != Path(publish_authority.checkpoint_root).resolve():
             return _blocked("checkpoint_root_mismatch", "checkpoint_root must equal the authority handoff root")
-        if candidate.transaction is not None and not sealed_prior:
+        if scope_correction_from is not None:
+            from .publish_scope_correction import prepare
+
+            transaction = prepare(
+                Path(repo), original_checkpoint_root=scope_correction_from[0],
+                original_node_id=scope_correction_from[1], checkpoint_root=Path(checkpoint_root),
+                owned_paths=owned_paths, branch=branch, authority=authority,
+                base=base, draft=draft, pr_body=pr_body or "",
+            )
+        elif candidate.transaction is not None and not sealed_prior:
             transaction = candidate.transaction
             if (
                 transaction.envelope_authority_preimage != authority
@@ -2255,7 +2331,7 @@ def publish_from_worktree(
         transaction.resume()
         _crash_at("after_committed_checkpoint_before_broker_execute")
         envelope = _envelope_from_transaction(transaction, authority, repo)
-        execution = broker_client.execute(BrokerRequest(BrokerVerb.PUBLISH_COMMITTED_BRANCH, envelope, transaction.canonical_repository_identity, branch, transaction.committed_head_sha, transaction.owned_paths, base=base, draft=draft, pr_body=transaction.pr_body, adapter_worktree=str(Path(repo).resolve())))
+        execution = broker_client.execute(BrokerRequest(BrokerVerb.PUBLISH_COMMITTED_BRANCH, envelope, transaction.canonical_repository_identity, branch, transaction.committed_head_sha, transaction.owned_paths, base=base, draft=draft, pr_body=transaction.pr_body, adapter_worktree=str(Path(repo).resolve()), scope_correction_of=transaction._payload.get("scope_correction", {}).get("predecessor_id", "")))
         if execution.accepted:
             candidate = inspect_publish_resume_candidate(
                 repo,
