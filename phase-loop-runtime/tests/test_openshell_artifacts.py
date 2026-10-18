@@ -154,7 +154,7 @@ def test_forged_identity_refused(bundle, tmp_path, bound, field):
     b"new file mode 160000 100644", b"new file mode 120000 100644",
     b"index a..b 160000 x", b"index a..b 120000 x",
     b"index a..b 100644 x", b"index a..b 100664", b"index a..b ",
-    b"index", b"index a", b"index a..z", b"index a..b 0100644",
+    b"index ", b"index a", b"index a..z", b"index a..b 0100644",
 ] + [prefix + suffix for prefix in
      (b"new file mode", b"deleted file mode", b"old mode", b"new mode")
      for suffix in (b"", b" 100644 x", b" 100664", b" 0100644", b" 100644 ")])
@@ -211,6 +211,57 @@ def test_transfer_headers_refused(bundle, tmp_path, bound, kind):
     with pytest.raises(Refused, match="patch_transfer_unsupported"):
         validate_result(identity_for(bundle), canonical(result(bundle, patch)),
                         bundle, tmp_path / "q", bound)
+
+
+@pytest.mark.parametrize("src", ["owned.txt", "other.txt"])
+@pytest.mark.parametrize("headers", [("old", "new"), ("old", "to"), ("from", "new")])
+def test_legacy_rename_headers_refused(bundle, tmp_path, bound, monkeypatch, src, headers):
+    import phase_loop_runtime.openshell_artifacts as artifacts
+    patch = (f"diff --git a/{src} b/new.bin\nsimilarity index 100%\n"
+             f"rename {headers[0]} {src}\nrename {headers[1]} new.bin\n").encode()
+    def forbidden_git(*args, **kwargs):
+        pytest.fail("transfer header reached Git")
+    monkeypatch.setattr(artifacts, "git", forbidden_git)
+    with pytest.raises(Refused, match="patch_transfer_unsupported"):
+        validate_result(identity_for(bundle), canonical(result(bundle, patch)),
+                        bundle, tmp_path / "q", bound)
+    assert not (tmp_path / "q").exists()
+
+
+def test_binary_literal_data_starting_index(bundle, tmp_path, bound):
+    content = bytearray(range(76))
+    content[45:49] = base64.b85decode(b"ndexA")
+    content = bytes(content)
+    size = len(content)
+    compressed = (b"\x78\x01\x01" + size.to_bytes(2, "little") +
+                  (size ^ 0xFFFF).to_bytes(2, "little") + content +
+                  zlib.adler32(content).to_bytes(4, "big"))
+    assert zlib.decompress(compressed) == content and len(compressed) == 87
+    lines = []
+    for i in range(0, len(compressed), 52):
+        chunk = compressed[i:i + 52]
+        length = len(chunk)
+        prefix = bytes([64 + length if length <= 26 else 70 + length])
+        lines.append(prefix + base64.b85encode(chunk + b"\0" * (-length % 4)))
+    assert lines[-1].startswith(b"index")
+    root = tmp_path / "gitcheck"
+    init_tree(root, bundle, bound)
+    oid = git(root, "hash-object", "--stdin", data=content,
+              bound=bound, cap=bundle.limits.output_bytes).decode().strip()
+    patch = (f"diff --git a/new.bin b/new.bin\nnew file mode 100644\n"
+             f"index {'0' * 40}..{oid}\nGIT binary patch\nliteral {size}\n").encode()
+    patch += b"\n".join(lines) + b"\n\nliteral 0\nHcmV?d00001\n\n"
+    git(root, "apply", "--check", "--index", "--binary", "-", data=patch,
+        bound=bound, cap=bundle.limits.output_bytes)
+    git(root, "apply", "--index", "--binary", "-", data=patch,
+        bound=bound, cap=bundle.limits.output_bytes)
+    assert (root / "new.bin").read_bytes() == content
+    receipt = validate_result(identity_for(bundle), canonical(result(bundle, patch)),
+                              bundle, tmp_path / "q", bound)
+    assert receipt.path.read_bytes() == patch
+    assert receipt.sha256 == digest(patch)
+    assert receipt.path.stat().st_mode & 0o777 == 0o600
+    assert receipt.required_next_step == "isolated_same_base_retest_and_owner_acceptance"
 
 
 @pytest.mark.parametrize("reason", ["cancelled", "end_reached"])

@@ -512,10 +512,11 @@ def validate_result(identity: Identity, envelope: bytes, bundle: SourceBundle,
         if line.startswith((b"new file mode", b"deleted file mode", b"old mode", b"new mode")):
             if not re.fullmatch(rb"(?:new file mode|deleted file mode|old mode|new mode) (100644|100755)", line):
                 raise Refused("patch_mode_unsupported")
-        if line.startswith(b"index"):
+        if line.startswith(b"index "):
             if not re.fullmatch(rb"index [0-9a-f]{1,40}\.\.[0-9a-f]{1,40}(?: (100644|100755))?", line):
                 raise Refused("patch_mode_unsupported")
-        if line.startswith((b"copy from ", b"copy to ", b"rename from ", b"rename to ")):
+        if line.startswith((b"copy from ", b"copy to ", b"rename from ", b"rename to ",
+                            b"rename old ", b"rename new ")):
             raise Refused("patch_transfer_unsupported")
     # Git parses the binary patch; never interpret its prose/commands. All effects
     # stay in a new disposable same-tree index and worktree with no repo config.
