@@ -256,9 +256,10 @@ existing user/repository overrides. End-to-end bounded reaping with an actual
 server remains unqualified. No full ExecutingBackend, physical barrier,
 credential path or worker refusal qualification follows from these tests.
 
-R14 N1 (recorded digests not checked by the generation recipe), N2 (version-pinned
-but not wheel-hash-pinned dependencies), and N3 (future production channel factory
-retries-off/receive-limit qualification) remain open. The r13 generated scratch
+R14 N1 (recorded digests not checked by the generation recipe) and N2 (version-pinned
+but not wheel-hash-pinned dependencies) remain open. N3 has an implementation in
+the unregistered factory below, but shutdown verification remains incomplete.
+Arbitrary injected stubs retain N3. The r13 generated scratch
 is reused read-only for tests; no new generator or supply-chain qualification is
 claimed. R12-L3 raw exception chains and r10 L3–L6 above remain open.
 
@@ -316,3 +317,84 @@ construction and native completion are still required before a full executing
 backend/CLI can be implemented and qualified. Actual-server CREATE/EXEC remains
 closed. Local model and SDK tests never substitute for live acceptance or physical
 destruction/restart/bypass falsifiers. No earlier qualification obligation is waived.
+
+## Authenticated channel boundary (r23 recovered in r27, unregistered)
+
+`openshell_channel.authenticated_channel(ChannelConfig(...), generated_service)`
+is an async context manager yielding a scoped stub for `LeaseSession` or the
+cleanup bridge. Nothing constructs it at a launch site or registers a backend.
+It implements only the pinned SDK's direct HTTPS plus OIDC bearer pattern
+(`crates/openshell-sdk/src/{transport,auth}.rs`). It omits the SDK's anonymous,
+plaintext, insecure-verification and edge-tunnel branches. No auth policy is
+inferred from owner text. The Rust cancellation ingress authorizes the workspace,
+binds the authenticated principal to the owner and requires existing enrollment;
+ENROLL separately requires admin access and an empty dedicated workspace. This
+factory never enrolls, acquires tokens, decodes claims or proves enrollment.
+Enrollment is permanent: changing the authenticated principal cannot adopt an
+old owner by reusing its text identifier. Issuer trust and rotation policy remain
+the caller/server's responsibility, not a consequence of TLS readiness.
+
+Supply explicit CA PEM bytes and a bearer token in memory, a canonical HTTPS
+endpoint, workspace and the current `placement_lease.owner_id()`. Both secrets
+are excluded from config repr. Empty/malformed trust, credentials, endpoint,
+scope or limits refuse before channel construction. No system-root fallback,
+TLS name override, arbitrary options, interceptor or ambient HTTP proxy is used.
+The endpoint hostname is the TLS identity. TLS readiness is not bearer acceptance:
+only server RPC authorization establishes principal/workspace/enrollment validity.
+The scoped stub checks current local owner, request workspace/owner, PID, running
+loop and finite positive RPC timeout before dispatch. It does not inspect worker
+payloads, establish membership, or substitute for server authorization.
+
+The immutable config has no operational defaults. Resolve settings once through
+`load_placement_driver_settings`, preserving packaged defaults, user/repository
+overrides, environment aliases and `review_base=True` for trusted-base reviews;
+pass the applicable remaining connection allowance explicitly. Do not copy the
+SDK's connect/keepalive constants. Harness currently has **no authoritative
+OpenShell receive-limit, endpoint, CA or token setting**. These remain required
+injected inputs; this increment adds no settings key, credential discovery or
+default trust policy. The receive limit is a positive signed-32-bit byte count,
+not an output cap, and must be budgeted by the eventual caller. Generated modules
+are still explicitly supplied and their provenance remains the caller's obligation.
+
+The factory implements R14 N3's required options: retries are disabled,
+resolver service config is disabled, no retry service config is supplied, and a
+finite per-message receive limit is always passed. Tests assert the exact option
+set, refuse option injection, exercise one handler entry on RPC failures even
+with an adversarial retry policy, and require RESOURCE_EXHAUSTED for an oversized
+message. Mutating retries on makes the policy test observe repeated calls;
+mutating the receive limit to unlimited defeats the oversized-message test.
+Synthetic loopback TLS tests
+require the supplied CA, matching DNS name and bearer delivery; wrong roots,
+wrong hostname and plaintext cannot yield a stub. A rejected bearer fails the
+RPC even after TLS readiness. These do not qualify a deployed
+channel, real issuer or the Rust server. Existing arbitrary injected stubs retain
+their caller-owned channel obligations.
+
+Construction and use belong to one running asyncio loop. Connection readiness is
+bounded by the supplied timeout and outer cancellation. Context exit cancels
+outstanding RPCs immediately (no graceful drain), closes the channel and refuses
+further calls. Keep the loop alive through exit; a synchronous cleanup bridge must
+run outside it and finish before exit. This supplies no dedicated CLI loop/thread
+manager or end-to-end latency bound under loop starvation. Reconnection uses the
+same verified TLS credentials; application RPC retries remain disabled. Credentials
+are a fixed snapshot: expiry/rotation requires closing and reconstructing with
+explicit new inputs, with no replay or automatic enrollment. Python/gRPC memory
+zeroization, token lifetime qualification and logging remain open.
+
+The r27 local runs encountered intermittent stalls inside gRPC 1.84.0's
+synthetic TLS server shutdown. The r35 recovery reproduced the stall with zero
+grace in both combined and channel-only runs; zero grace is not a fix. A bounded
+debugger-launched reproducer captured the main thread waiting inside native
+`cygrpc` shutdown. The Python traces stop at `grpc.aio.Server.stop`; these traces
+do not establish the native root cause or exclude a production lifecycle defect.
+Earlier separate channel and transport/journal passes do not resolve this failure.
+Retained timeout traces are not successful qualification. No bounded shutdown
+guarantee for that runtime or actual-server readiness follows from these tests.
+
+N1/N2 artifact/wheel verification and R12-L3 raw exception context remain open;
+the scoped stub's raw RPC errors still go through `LeaseSession` for typed mapping.
+The execution/staging/collection, immutable commit-reference, fixed-end, rotation,
+reaper, physical and live qualification obligations above are unchanged. Pending
+cancellation still permits previously claimed execution; confirmation still needs
+exact destruction and settled obligations. Production CREATE/EXEC and
+`_NONLOCAL_EXECUTION_DRIVER` remain closed.
