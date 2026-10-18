@@ -6,6 +6,15 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Claude execute-phase drops under the skill size limit (agent-harness#1358)
+
+- Move interactive publication (mode (b), the publication-mode check, draft PR early),
+  model-class and governed-mode detail, and browser verification into
+  `claude-execute-phase` references. An interactive-only pointer reads them before the
+  first commit. Adapter mode, runner closeout, the closeout audit, the `/clear` rules and
+  PR-description requirements stay in `SKILL.md`. Both size-gate exceptions for the skill
+  are removed.
+
 ### Codex execute-phase reads interactive procedures on demand (agent-harness#1358)
 
 - Split planning-handoff reuse, interactive publication, worktree lifecycle, and

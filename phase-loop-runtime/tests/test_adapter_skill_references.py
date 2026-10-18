@@ -126,8 +126,9 @@ def test_shipped_packs_note_and_copy_exactly_their_references(tmp_path, monkeypa
             assert (note in context) == bool(shipped), (harness, action, skill)
 
 
-def test_gemini_execute_phase_links_resolve_to_shipped_references():
-    skill = PACKAGED / "gemini-execute-phase"
+@pytest.mark.parametrize("harness", ["gemini", "claude"])
+def test_execute_phase_links_resolve_to_shipped_references(harness):
+    skill = PACKAGED / f"{harness}-execute-phase"
     linked = set(re.findall(r"\]\((references/[^)#]+)", (skill / "SKILL.md").read_text(encoding="utf-8")))
     assert linked
     for rel in linked:
@@ -163,8 +164,9 @@ def _linking(skill: Path, rel: str) -> list[tuple[str, str]]:
 @pytest.mark.parametrize("needle", [
     "On the FIRST commit of a phase", "immediately before each `git push`",
 ])
-def test_gemini_publication_rules_reachable_before_first_commit(explicit_plan, needle):
-    skill = PACKAGED / "gemini-execute-phase"
+@pytest.mark.parametrize("harness", ["gemini", "claude"])
+def test_publication_rules_reachable_before_first_commit(harness, explicit_plan, needle):
+    skill = PACKAGED / f"{harness}-execute-phase"
     rel = _home(skill, needle)
     if rel is None:
         return
