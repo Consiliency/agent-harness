@@ -15,12 +15,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   interpreter contract remains 3.10-compatible; a governed-review falsifier node that
   imports this runtime under an older host interpreter ends in `error`, fails closed,
   and remains a blocking receipt. See the detailed breaking-change entry below.
-- **Live agy qualification has been renewed.** After the latest main integration,
-  including agent-harness#1748, all twelve members passed completion, cancellation
-  and owner-loss checks (36 successful operations), with all 245 source pins verified.
-  Earlier candidate evidence, including a retained local staging failure and its
-  diagnosed operational correction, is preserved separately. Package and compatibility
-  verification passed for the revised package; final I1, CI and review remain release-cut gates. Historical
+- **Final-source agy qualification is pending after agent-harness#1750.** The
+  preceding candidate, including agent-harness#1748, passed all twelve members'
+  completion, cancellation and owner-loss checks (36 operations). The latest main
+  integration changes another pinned source file, so those successes and package
+  measurements remain historical until renewed qualification, package verification,
+  final I1, CI and review establish the revised candidate. The original staging
+  failure and its diagnosed operational correction remain separate historical evidence.
+  Historical
   real-CLI smoke failures and unverified runtime panel behavior remain disclosed in
   the release handoff; they are not a runtime PASS.
 - **The Claude jail pass carries forward from 0.7.26.** The seat jail's falsifier-run layout
@@ -113,6 +115,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `PHASE_LOOP_GEMINI_MODEL` preference moves only unpinned Gemini routes; explicit pins
   still win (agent-harness#1695, agent-harness#1697). Re-run any in-flight board on the
   upgraded runtime; an earlier run does not prove the new tool and model routes.
+### Mapped-seat resolver setup (agent-harness#1570)
+
+- Prepare the mapped seat's resolver through the trusted parent before releasing
+  its namespace holder, preserving setup refusal and cleanup on failure.
 
 ### Fixed
 
@@ -134,11 +140,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `007a5a44…`). 1.3.5's help digest is new (`a12355e8…`): its `--help` adds the `--mode`
   value `auto`, which the route does not use. The route core needed only the four new
   entries.
-- All twelve members were requalified after the latest main integration, including
-  agent-harness#1748 (completion, cancel and owner-loss each, then `--validate`).
-  Each member retains its own current record; all 245 source pins and the route
-  core match the revised source. Earlier candidate successes and the original
-  staging failure remain separate from this batch's 36 successful operations.
+- All twelve members passed a complete batch after agent-harness#1748. Their
+  records require renewal after the later agent-harness#1750 source change;
+  current-source qualification is pending. Earlier successful batches and the
+  original staging failure remain historical evidence.
 - A newer upstream release remains eligible for first-use self-qualification; as of
   2026-10-16, upstream's latest is 1.4.0 and is outside this shipped set.
 

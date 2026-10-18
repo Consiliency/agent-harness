@@ -431,7 +431,7 @@ def isolated_network(
         try:
             if seat_uid_map:
                 from . import seat_uid
-                from .panel_invoker import _infrastructure_launch, launch_provider
+                from .panel_invoker import _infrastructure_launch, launch_provider, run_provider
 
                 # Unmapped holder: the gate is read BEFORE anything that needs the map.
                 gate_read, gate_write = os.pipe()
@@ -444,7 +444,6 @@ def isolated_network(
                     holder = launch_provider(
                         [helpers["unshare"], "--user", "--net", "--mount", helpers["bash"], "-c",
                          f'read -r _gate <&{gate_read} || exit 8; '
-                         f'{helpers["mount"]} --bind {resolv} /etc/resolv.conf || exit 9; '
                          f'echo $$ > {pidfile}; {helpers["touch"]} {ready}; {lifetime}'],
                         pass_fds=(gate_read,) if owner_read is None else (gate_read, owner_read),
                         close_fds=True,
@@ -456,6 +455,16 @@ def isolated_network(
                     # namespace; `Popen` returns before `unshare` has made the call.
                     _wait_for_new_user_namespace(holder)
                     seat_uid.map_holder(holder.pid)
+                    # The unmapped shell's exec loses its namespace capabilities under
+                    # no_new_privs. Bind as the trusted parent admin after mapping, while
+                    # the holder is still gated, rather than asking that shell to mount.
+                    with _infrastructure_launch():
+                        run_provider(
+                            [helpers["nsenter"], "--net", "--mount", "-t", str(holder.pid),
+                             "-U", "--preserve-credentials", helpers["mount"], "--bind",
+                             resolv, "/etc/resolv.conf"],
+                            capture_output=True, timeout=15, check=True,
+                        )
                 except (OSError, subprocess.SubprocessError, ValueError):
                     yield _degrade("network namespace did not come up; launch is UNISOLATED")
                     return

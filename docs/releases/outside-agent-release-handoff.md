@@ -49,25 +49,26 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 ## Release-Check Evidence
 
 - `publication_status=prepared`
-- **Revised candidate, live agy qualification renewed.** The integrated 0.7.27 includes
+- **Revised candidate, qualification pending after agent-harness#1750.** The integrated 0.7.27 includes
   agent-harness#1738 (linked skill references; plan agent-harness#1690), the
   skills-parity size gate from agent-harness#1691, and the breaking Python 3.12+
   runtime floor from agent-harness#1549 (agent-harness#1546). Earlier preparation
   results below are historical and do not qualify this revised source.
-- All twelve shipped agy members passed completion, cancellation and owner-loss
+- On the preceding candidate, all twelve shipped agy members passed completion, cancellation and owner-loss
   checks (36 successful operations). Every series validated three operations with
   `route_qualified=true`; all 245 source pins, official archive/image/help identities
-  and the route core were verified against the revised source. These 36 successes
-  belong to one complete batch after the latest main integration, including
-  agent-harness#1748. Earlier successful batches remain separate historical evidence.
+  and the route core were verified against that source. These 36 successes
+  belong to one complete batch after agent-harness#1748. The later
+  agent-harness#1750 change requires a new source-bound batch; it is pending.
+  Earlier successful batches remain separate historical evidence.
   An original local Git staging failure occurred before provider invocation and
   remains failed and retained, along with its diagnosed operational correction.
   That earlier failure and correction are not part of the current 36 successes.
   Final board/president review must assess that complete history.
 - Revised package builds, Python 3.12 compatibility, cold-wheel import/compile
-  and actual Python 3.10 installation refusal passed for the current prepared
-  artifacts identified under "This release: 0.7.27" below. The record and
-  documentation updates preserve the complete runtime package tree. Full I1,
+  and actual Python 3.10 installation refusal passed for the preceding prepared
+  artifacts identified under "This release: 0.7.27" below. The latest main merge
+  changes package bytes, so renewed package verification is pending. Full I1,
   exact-candidate CI and final review remain release-cut gates; earlier package
   measurements are explicitly labeled historical.
 - Historical real-CLI smoke attempts include failures/degraded results and do not
@@ -138,8 +139,9 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
     qualifies on first use;
   - the qualified agy image set adds 1.3.2, 1.3.3, 1.3.4 and 1.3.5, so it is 1.2.11,
     1.2.12, 1.2.14, 1.2.15, 1.2.16, 1.2.17, 1.3.0, 1.3.1, 1.3.2, 1.3.3, 1.3.4 and 1.3.5.
-    All twelve members were requalified live on the revised source (validated 3 and
+    All twelve members were requalified live before agent-harness#1750 (validated 3 and
     `route_qualified` true for each; all 245 source pins verified; `--route-core` passed).
+    Renewed qualification is pending for the later source change.
     The initial staging failure and subsequent operational correction remain separately
     retained as described above.
     Every official archive and its `antigravity` member match the reviewed asset and
@@ -839,12 +841,14 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 
 ### This release: 0.7.27 (prepared)
 
-The current prepared package was built from a `git archive` export of
+The preceding prepared package was built from a `git archive` export of
 `3d0a8f2d8be49d683fa3e2001e43795308bd853e`, after the latest main integration,
 including agent-harness#1748. Its runtime package tree is
 `44d79615f63d30782c7c1d51113849d88d6f5cb7`. The twelve agy members passed all
-36 qualification operations on that source; current records verify all 245 source
-pins. Earlier successful batches and the retained staging failure remain historical
+36 qualification operations on that source; those records verify its 245 source
+pins. The later agent-harness#1750 integration changes package bytes and requires
+renewed qualification and package measurements, which are pending.
+Earlier successful batches and the retained staging failure remain historical
 evidence, separate from this complete current-source batch.
 
 - Prepared direct wheel: SHA-256 `0ea4a7ba74707d92337763e5021f231179da3fd4eaa73abcc1d56073dc8908ad`, 520 regular files.
@@ -1144,7 +1148,8 @@ this metadata document.
 
 ## Package Surface Inventory
 
-Measured on the current prepared `0.7.27` package from `3d0a8f2d` described above.
+Measured on the preceding prepared `0.7.27` package from `3d0a8f2d` described above;
+the later agent-harness#1750 integration requires renewed measurements.
 The historical build's separate counts remain in its preparation record.
 
 - Wheel artifact: `phase_loop_runtime-0.7.27-py3-none-any.whl`

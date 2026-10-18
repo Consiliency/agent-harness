@@ -16,9 +16,10 @@ cannot drift; a `pytest` smoke (`phase-loop-runtime/tests/test_advisor_board_ali
 For the 0.7.27 candidate, the runtime requires Python 3.12+ (agent-harness#1549).
 Context-file adapter launches now carry their skills' linked `references/` files
 (agent-harness#1738; plan agent-harness#1690), and skills-parity runs the warn-first
-size gate (agent-harness#1691). All twelve shipped agy members have renewed live
-qualification with 36 successful operations and 245 verified source pins. Final
-package, compatibility, I1, CI and evidence binding remain release-cut gates.
+size gate (agent-harness#1691). The preceding candidate passed 36 live agy operations.
+The later agent-harness#1750 source change requires renewed qualification and all
+245 source pins to match; that work is pending. Final package, compatibility, I1,
+CI and evidence binding remain release-cut gates.
 Historical runtime CLI failures and unverified panel
 behavior remain disclosed; this card does not establish runtime PASS.
 
