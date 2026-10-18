@@ -8,6 +8,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 - Preserve trailing executor output queued during the existing bounded reader join
   in captured output, run logs and optional live streaming.
+
+### Codex execute-phase reads interactive procedures on demand (agent-harness#1358)
+
+- Split planning-handoff reuse, interactive publication, worktree lifecycle, and
+  worker-brief procedures into Codex-only `references/` files. Keep runner ownership,
+  governance, verification, closeout audit/evidence, and PR-description parity anchors
+  in `SKILL.md`; remove the duplicate audit explanation. Relative reference reads were
+  proven with a live, read-only Codex native-skill canary through the adapter launcher
+  before the split. The token-size exception remains for retained normative text;
+  the longest-line exception is removed.
+
 - Human publication checks already-committed companion paths before creating a
   commit. Incomplete ownership now produces a repairable scope-precheck result.
 - Add `PublishScopeCorrection.v1` for an exact sealed local ownership-scope
