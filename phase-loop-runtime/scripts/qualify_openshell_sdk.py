@@ -9,6 +9,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import tempfile
 import urllib.request
 import zipfile
 
@@ -41,13 +42,44 @@ def wheel_payload(wheels, manifest):
         verify(wheels, {wheel['filename']: wheel['sha256']})
         with zipfile.ZipFile(wheels / wheel['filename']) as archive:
             for entry in archive.infolist():
-                if entry.is_dir() or entry.filename.endswith('.dist-info/RECORD'):
+                if entry.is_dir() or len(Path(entry.filename).parts) == 2 and entry.filename.endswith('.dist-info/RECORD'):
                     continue  # uv rewrites RECORD during installation.
                 name = entry.filename
                 if Path(name).is_absolute() or '..' in Path(name).parts or '.data' in name.split('/'):
                     raise ValueError(f'unsupported wheel layout: {name}')
                 expected[name] = hashlib.sha256(archive.read(entry)).hexdigest()
     return expected
+
+
+def installed_tree(directory, payload, snapshot=None):
+    # Only installer-owned additions may supplement the verified wheel payload.
+    allowed = {'.lock'}
+    for name in payload:
+        parts = Path(name).parts
+        if len(parts) == 2 and parts[0].endswith('.dist-info'):
+            allowed.update(f'{parts[0]}/{leaf}' for leaf in
+                           ('RECORD', 'INSTALLER', 'REQUESTED', 'uv_cache.json'))
+    if 'grpc_tools/protoc.py' in payload:
+        allowed.add('bin/python-grpc-tools-protoc')
+    names = set(payload) | allowed if snapshot is None else set(snapshot)
+    directories = {str(parent) for name in names for parent in Path(name).parents
+                   if str(parent) != '.'}
+    observed = {}
+    if directory.is_symlink():
+        raise ValueError('symlinked qualification directory')
+    for path in directory.rglob('*'):
+        name = str(path.relative_to(directory))
+        if path.is_symlink():
+            raise ValueError(f'symlinked qualification input: {name}')
+        if path.is_dir() and name in directories:
+            continue
+        if not path.is_file() or name not in names:
+            raise ValueError(f'unexpected qualification input: {name}')
+        observed[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+    verify(directory, payload)
+    if snapshot is not None and observed != snapshot:
+        raise ValueError('installed qualification file set or bytes changed')
+    return observed
 
 
 def source_identity(env):
@@ -59,10 +91,11 @@ def source_identity(env):
     return dict(commit=git('rev-parse', 'HEAD'), tree=git('rev-parse', 'HEAD^{tree}'))
 
 
-def python_command(paths, module):
+def python_command(paths, module, work):
     # -I excludes caller CWD/PYTHON* and user site; shared interpreter site remains
     # an explicit prerequisite. Add only this stage's controlled import paths.
-    return [sys.executable, '-I', '-B', '-c',
+    cache = tempfile.mkdtemp(prefix='pycache-', dir=work)
+    return [sys.executable, '-I', '-B', '-X', f'pycache_prefix={cache}', '-c',
             f'import runpy, sys; sys.path[:0] = {list(map(str, paths))!r}; '
             f'runpy.run_module({module!r}, run_name="__main__")']
 
@@ -111,9 +144,9 @@ def main():
                     '--require-hashes', '--only-binary=:all:', '--python', sys.executable,
                     '--target', str(deps), '-r', str(lock)], env=env, cwd=work,
                    check=True, timeout=TIMEOUTS['uv'])
-    verify(deps, expected)
+    installed = installed_tree(deps, expected)
     hashes['generator'] = verify(deps, manifest['generator_inputs'])
-    subprocess.run(python_command([deps], 'grpc_tools.protoc') + ['-I', str(proto),
+    subprocess.run(python_command([deps], 'grpc_tools.protoc', work) + ['-I', str(proto),
                     f'--python_out={generated}', f'--grpc_python_out={generated}',
                     f'--descriptor_set_out={generated / "openshell.desc"}', '--include_imports',
                     *map(str, sorted(proto.glob('*.proto')))], cwd=work, env=env,
@@ -122,8 +155,9 @@ def main():
     env.update(OPENSHELL_GENERATED_DIR=str(generated), OPENSHELL_SDK_QUALIFICATION='1',
                OPENSHELL_TEST_RESULTS=str(work / 'test-results.json'),
                PYTEST_DISABLE_PLUGIN_AUTOLOAD='1')
+    hashes['installed_tree'] = installed_tree(deps, expected, installed)
     hashes['installed'] = verify(deps, expected)
-    subprocess.run(python_command([deps, ROOT / 'src', ROOT / 'tests'], 'pytest') +
+    subprocess.run(python_command([deps, ROOT / 'src', ROOT / 'tests'], 'pytest', work) +
                    ['-q', '-p', 'no:cacheprovider',
                     '-p', '_openshell_qualification',
                     'tests/test_openshell_transport.py', 'tests/test_openshell_transport_grpc.py',

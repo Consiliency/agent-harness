@@ -6,6 +6,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- Bind bounded SDK qualification receipts to the complete installed file inventory
+  and use fresh per-command bytecode cache locations.
+
 ### Placement driver bounds and settings (agent-harness#1504)
 
 - Bound sealing with caller context and the remaining walk budget; validate result caps

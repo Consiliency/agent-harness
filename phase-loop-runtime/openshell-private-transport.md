@@ -172,17 +172,26 @@ pinned wheel downloads. From a clean committed `phase-loop-runtime` checkout:
 The work directory must not exist. The command reads the immutable server commit's
 Git objects, so a separate evolving server checkout need not be reset or changed.
 It writes only its new private directory, installs dependencies into that directory,
-and disables bytecode and pytest caches. Allow about 100 MiB. Missing prerequisites,
+and disables bytecode writes and pytest result caches. Allow about 100 MiB. Missing prerequisites,
 input/output hash mismatches, skipped/xfail/xpass tests, or a failed narrow test run refuse
 qualification. `qualification-receipt.json` is written only after success, recording
 the actual clean harness commit/tree, interpreter and uv versions, computed input,
 installed payload and output hashes, test counts/outcome, bounds and completion time.
 Generator and pytest startup exclude the caller's working directory and Python
 environment injection; pytest loads only explicitly selected external plugins.
-Installed payload bytes are checked against the verified wheels again immediately
-before pytest. Git, uv, protoc, download and pytest bounds are centralized in the
+Installed payload bytes are checked against the verified wheels immediately after
+installation and again before pytest. The complete installed file set and bytes
+are also captured after installation and must match before pytest; only named
+installer metadata and the known protoc launcher may supplement wheel payloads.
+Unexpected entries and symlinks refuse qualification. The receipt includes both
+wheel-derived payload hashes and the complete installed-tree hashes.
+Each generator/test child uses a separate freshly allocated bytecode-cache prefix,
+so existing source caches and predictable work-directory caches are not reused. Git, uv, protoc, download and pytest bounds are centralized in the
 recipe's `TIMEOUTS` configuration. The interpreter and its installed test dependencies
-remain trusted caller prerequisites: this is not a fully hermetic environment.
+remain trusted caller prerequisites, along with PATH tools and source checkout
+contents other than redirected bytecode caches. This is not a fully hermetic
+environment or protection against concurrent mutation of the private work directory
+or trusted interpreter. Git identity does not attest arbitrary ignored source files.
 The narrow run includes transport, local gRPC and subprocess TLS channel tests. The opt-in
 `_openshell_qualification` pytest plugin also rejects missing/mismatched SDK bytes,
 extra entries and symlinked SDK files/directories before collection;
