@@ -79,6 +79,8 @@ class LeaseSession:
         self._kill_requested = False
         self._generation = None
         self._observation = None
+        self._poisoned = False
+        self._reservation = False
         if expected_generation is not None:
             self._bind(expected_generation)
 
@@ -89,8 +91,8 @@ class LeaseSession:
     transfer = commit = collect = renew = unsupported
 
     def _request(self, bound, operation=None):
-        if (isinstance(bound.timeout_s, bool) or not math.isfinite(bound.timeout_s)
-                or bound.timeout_s <= 0 or bound.timeout_s >= 315576000000):
+        if (type(bound.timeout_s) not in (int, float)
+                or not 0 < bound.timeout_s < 315576000000 or not math.isfinite(bound.timeout_s)):
             raise TransportError("invalid_bound")
         if bound.cancelled.is_set():
             raise TransportError("sandbox_placement_operation_timeout")
@@ -120,8 +122,13 @@ class LeaseSession:
             raise
         except Exception as exc:
             # grpc status only, never details(), repr(request), or exception prose.
-            code = getattr(exc, "code", lambda: None)()
-            name = getattr(code, "name", "UNAVAILABLE")
+            try:
+                code = getattr(exc, "code", None)
+                name = getattr(code(), "name", None) if callable(code) else None
+                if type(name) is not str:
+                    name = None
+            except Exception:
+                name = None
             mapped = {
                 "DEADLINE_EXCEEDED": "sandbox_placement_operation_timeout",
                 "PERMISSION_DENIED": "owner_workspace_refused",
@@ -147,6 +154,13 @@ class LeaseSession:
         await self._control(self._request(bound, 1), bound)
 
     def _bind(self, reference):
+        self._validate_reference(reference)
+        if reference == f"reservation:{self._lease}":
+            self._reservation = True
+        else:
+            self._generation = reference
+
+    def _validate_reference(self, reference):
         if reference == f"reservation:{self._lease}" and self._generation is None:
             return
         try:
@@ -155,32 +169,43 @@ class LeaseSession:
             raise TransportError("invalid_generation", uncertain=True) from None
         if parsed.int == 0 or str(parsed) != reference:
             raise TransportError("invalid_generation", uncertain=True)
-        if self._generation is not None and self._generation != reference:
+        if self._reservation or self._generation is not None and self._generation != reference:
             raise TransportError("generation_mismatch", uncertain=True)
-        self._generation = reference
 
     async def status(self, bound: OperationBound) -> Observation:
-        response = await self._control(self._request(bound, 5), bound)
+        response = None
+        try:
+            response = await self._control(self._request(bound, 5), bound)
+            return self._observe(response)
+        except TransportError:
+            self._poisoned = True
+            if response is not None and response.fenced:
+                self._kill_requested = True
+            raise
+
+    def _observe(self, response):
         if not response.HasField("lease") or response.lease.lease_id != self._lease:
             raise TransportError("lease_mismatch", uncertain=True)
-        self._bind(response.lease.sandbox_ref)
+        self._validate_reference(response.lease.sandbox_ref)
         result = Observation(response.lease.sandbox_ref, **{
             key: getattr(response, key) for key in Observation.__dataclass_fields__
             if key != "sandbox_ref"
         })
+        has_generation = result.sandbox_ref != f"reservation:{self._lease}"
         if (result.admission_ready and (not result.create_settled or result.fenced
-                                       or result.execution_claimed or self._generation is None)
+                                       or result.execution_claimed or not has_generation)
                 or result.barrier_confirmed and (not result.fenced or not result.create_settled
                                                 or result.cleanup_pending
-                                                or self._generation is not None
+                                                or has_generation
                                                 and not result.destruction_observed)
                 or result.cleanup_pending == result.barrier_confirmed):
             raise TransportError("invalid_observation", uncertain=True)
         previous = self._observation
         if previous and any(getattr(previous, key) and not getattr(result, key)
-                            for key in ("fenced", "execution_claimed", "destruction_observed",
+                            for key in ("create_settled", "fenced", "execution_claimed", "destruction_observed",
                                         "barrier_confirmed")):
             raise TransportError("observation_regressed", uncertain=True)
+        self._bind(result.sandbox_ref)
         self._observation = result
         if result.fenced:
             self._kill_requested = True
@@ -222,7 +247,7 @@ class LeaseSession:
         No host launch site calls this. Fixed-end/credential/worker qualification
         remains owed. One bound covers stream collection too, not just dispatch.
         """
-        if (self._exec_attempted or self._kill_requested or self._observation is None
+        if (self._exec_attempted or self._kill_requested or self._poisoned or self._observation is None
                 or not self._observation.admission_ready):
             raise TransportError("execute_not_permitted")
         if type(output_cap_bytes) is not int or output_cap_bytes < 0:
@@ -288,9 +313,10 @@ class LeaseSession:
                     valid = False
                 if not valid:
                     raise TransportError("invalid_inventory", uncertain=True)
-            if lease == self._lease:
-                self._bind(ref)
             pairs.append((ref, lease))
             leases.add(lease)
             refs.add(ref)
+        for ref, lease in pairs:
+            if lease == self._lease:
+                self._bind(ref)
         return tuple(pairs)

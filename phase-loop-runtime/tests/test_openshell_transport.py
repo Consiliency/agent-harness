@@ -392,7 +392,7 @@ def test_baseline_exact_spelling_and_access_not_promoted():
     run(scenario())
 
 
-@pytest.mark.parametrize("seconds", [0, -1, True, float("nan"), float("inf")])
+@pytest.mark.parametrize("seconds", [0, -1, True, float("nan"), float("inf"), "1", None, 1j, 10**400])
 def test_invalid_bounds_never_dispatch(seconds):
     stub = Stub()
     with pytest.raises(ot.TransportError, match="invalid_bound"):
@@ -496,3 +496,186 @@ def test_noninert_create_refused_without_dispatch(mutation):
     with pytest.raises(ot.TransportError, match="invalid_create"):
         run(session(stub, fresh=True).create(req, bound()))
     assert not stub.calls
+
+
+@pytest.mark.parametrize("changes,code", [
+    ({"lease": {"lease_id": "lease", "sandbox_ref": str(uuid4())}}, "generation_mismatch"),
+    ({"fenced": True}, "invalid_observation"),
+    ({"lease": {"lease_id": "other", "sandbox_ref": GEN}}, "lease_mismatch"),
+])
+def test_r10_rejected_status_permanently_prevents_exec_but_allows_recovery(changes, code):
+    async def scenario():
+        stub = Stub()
+        client = session(stub, fresh=True)
+        stub.responses[5] = observation()
+        await client.status(bound())
+        stub.responses[5] = observation(**changes)
+        with pytest.raises(ot.TransportError, match=code):
+            await client.status(bound())
+        if changes.get("fenced"):
+            assert client._kill_requested
+        with pytest.raises(ot.TransportError, match="execute_not_permitted"):
+            await client.execute(P.ExecSandboxRequest(), bound(), output_cap_bytes=0)
+        stub.responses[5] = observation()
+        await client.status(bound())
+        with pytest.raises(ot.TransportError, match="execute_not_permitted"):
+            await client.execute(P.ExecSandboxRequest(), bound(), output_cap_bytes=0)
+        stub.responses[3] = P.ControlCancellationLeaseResponse(barrier_confirmed=True)
+        stub.responses[5] = observation(admission_ready=False, fenced=True, destruction_observed=True,
+                                        cleanup_pending=False, barrier_confirmed=True)
+        await client.kill(bound())
+        assert not any(call[0] == "exec" for call in stub.calls)
+    run(scenario())
+
+
+def test_r10_invalid_status_does_not_bind_identity():
+    async def scenario():
+        stub = Stub()
+        client = session(stub)
+        stub.responses[5] = observation(create_settled=False)
+        with pytest.raises(ot.TransportError, match="invalid_observation"):
+            await client.status(bound())
+        assert client._generation is None
+        other = str(uuid4())
+        stub.responses[5] = observation(lease={"lease_id": "lease", "sandbox_ref": other})
+        assert (await client.status(bound())).sandbox_ref == other
+    run(scenario())
+
+
+@pytest.mark.parametrize("reference", [GEN, "reservation:lease"])
+def test_r10_invalid_inventory_does_not_bind_identity(reference):
+    async def scenario():
+        stub = Stub()
+        client = session(stub)
+        stub.responses[4] = P.ControlCancellationLeaseResponse(entries=[
+            {"lease_id": "lease", "sandbox_ref": reference},
+            {"lease_id": "other", "sandbox_ref": "bad"}])
+        with pytest.raises(ot.TransportError, match="invalid_inventory"):
+            await client.list_owned(bound())
+        assert client._generation is None
+        other = str(uuid4())
+        stub.responses[5] = observation(lease={"lease_id": "lease", "sandbox_ref": other})
+        assert (await client.status(bound())).sandbox_ref == other
+    run(scenario())
+
+
+@pytest.mark.parametrize("source", ["status", "list_owned"])
+@pytest.mark.parametrize("destination", ["status", "list_owned", "create"])
+def test_reservation_cannot_transition_to_uuid(source, destination):
+    async def scenario():
+        stub = Stub()
+        client = session(stub, fresh=True)
+        stub.responses[5] = observation(lease={"lease_id": "lease", "sandbox_ref": "reservation:lease"},
+                                        admission_ready=False, fenced=True,
+                                        cleanup_pending=False, barrier_confirmed=True)
+        stub.responses[4] = P.ControlCancellationLeaseResponse(entries=[
+            {"lease_id": "lease", "sandbox_ref": "reservation:lease"}])
+        await getattr(client, source)(bound())
+        stub.responses[5] = observation(admission_ready=False, fenced=True,
+                                        destruction_observed=True, cleanup_pending=False, barrier_confirmed=True)
+        stub.responses[4] = P.ControlCancellationLeaseResponse(entries=[
+            {"lease_id": "lease", "sandbox_ref": GEN}])
+        stub.responses[2] = P.ControlCancellationLeaseResponse(
+            sandbox={"metadata": {"id": GEN, "workspace": "dedicated"}})
+        with pytest.raises(ot.TransportError):
+            if destination == "create":
+                await client.create(create_request(), bound())
+            else:
+                await getattr(client, destination)(bound())
+        assert client._generation is None
+    run(scenario())
+
+
+def test_r10_create_settled_cannot_regress():
+    async def scenario():
+        stub = Stub()
+        client = session(stub)
+        stub.responses[5] = observation(admission_ready=False)
+        await client.status(bound())
+        stub.responses[5] = observation(admission_ready=False, create_settled=False)
+        with pytest.raises(ot.TransportError, match="observation_regressed"):
+            await client.status(bound())
+    run(scenario())
+
+
+@pytest.mark.parametrize("mode", ["noncallable", "raises", "property", "unhashable"])
+def test_r10_remote_error_mapping_is_total_and_sanitized(mode):
+    import traceback
+
+    class WrapperFailure(Exception):
+        @property
+        def code(self):
+            if mode == "property":
+                raise ValueError("SECRET property")
+            if mode == "noncallable":
+                return 503
+            def code():
+                if mode == "raises":
+                    raise ValueError("SECRET code")
+                return SimpleNamespace(name=[])
+            return code
+
+    stub = Stub()
+    stub.responses[5] = WrapperFailure("SECRET remote prose")
+    with pytest.raises(ot.TransportError, match="authority_unavailable") as err:
+        run(session(stub).status(bound()))
+    assert err.value.uncertain
+    assert err.value.__cause__ is None and err.value.__suppress_context__
+    assert "SECRET" not in "".join(traceback.format_exception(err.value))
+
+
+def test_r10_outer_cancellation_cancels_create_without_replay():
+    async def scenario():
+        stub = Stub()
+        client = session(stub, fresh=True)
+        entered, cancelled = asyncio.Event(), asyncio.Event()
+        async def stall(request):
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                cancelled.set()
+        stub.responses[2] = stall
+        task = asyncio.create_task(client.create(create_request(), bound()))
+        await entered.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        await asyncio.wait_for(cancelled.wait(), 1)
+        with pytest.raises(ot.TransportError, match="create_not_repeatable"):
+            await client.create(create_request(), bound())
+        assert [call[0] for call in stub.calls] == [2]
+    run(scenario())
+
+
+def test_r10_kill_status_shares_remaining_bound():
+    async def scenario():
+        stub = Stub()
+        async def slow(request):
+            await asyncio.sleep(0.02)
+            return P.ControlCancellationLeaseResponse(barrier_confirmed=True)
+        stub.responses[3] = slow
+        stub.responses[5] = observation(admission_ready=False, fenced=True, destruction_observed=True,
+                                        cleanup_pending=False, barrier_confirmed=True)
+        await session(stub).kill(bound())
+        kill, status = stub.calls
+        assert status[2] <= kill[2] - 0.02
+        assert status[1].bound.seconds + status[1].bound.nanos / 1e9 == pytest.approx(status[2])
+    run(scenario())
+
+
+def test_status_rpc_refusal_also_permanently_prevents_exec():
+    async def scenario():
+        stub = Stub()
+        client = session(stub, fresh=True)
+        stub.responses[5] = observation()
+        await client.status(bound())
+        stub.responses[5] = RpcFailure("FAILED_PRECONDITION")
+        with pytest.raises(ot.TransportError, match="transition_refused"):
+            await client.status(bound())
+        stub.responses[5] = observation()
+        await client.status(bound())
+        with pytest.raises(ot.TransportError, match="execute_not_permitted"):
+            await client.execute(P.ExecSandboxRequest(), bound(), output_cap_bytes=0)
+        assert not any(call[0] == "exec" for call in stub.calls)
+    run(scenario())

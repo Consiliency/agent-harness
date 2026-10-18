@@ -30,6 +30,10 @@ are checked. Pass `expected_generation` when recovering a journaled UUID. An
 unbound recovery session learns its UUID from the authenticated observation, not
 from a name supplied by task output. LIST is one all-or-error RPC: server-side
 pagination must be complete. No partial results or failed inventory become empty.
+STATUS and the complete LIST inventory are validated before binding identity.
+An accepted `reservation:<lease>` can never transition to a UUID: the pinned
+server creates lease rows with `MustCreate`, and unseen fences have no create.
+`create_settled`, fence, claim, destruction and barrier observations are monotonic.
 
 Allocate and fsync a new lease before using `fresh=True`. Attempt bits are set
 before scheduling CREATE/EXEC and are not cleared on cancellation, refusal,
@@ -56,6 +60,9 @@ argv/environment. This transport does not itself implement the worker boundary.
   and `create_settled` do not imply readiness. STATUS never grants replay.
 - EXEC uncertainty is final for dispatch. Observe or cancel the same lease; no
   second EXEC, no other rung, no local fallback, no credential replay.
+- A rejected STATUS permanently prevents EXEC through this session, even after
+  later valid ready observations. A malformed fenced response also records local
+  kill intent. Safe STATUS/KILL recovery remains available; this is not proof of K2.
 - KILL deadline can precede durable K2. The client stops dispatch locally but
   does not claim a durable remote fence. Safe KILL/STATUS may be called again.
 - KILL succeeds only with its positive barrier reply followed, within the same
@@ -92,6 +99,26 @@ never adds paths, normalizes spellings, or promotes access modes. This check is
 not C5 isolation qualification.
 
 ## Remaining qualification
+
+The r10 L3–L6 integration obligations remain open:
+
+- **L3 barrier coupling:** the client requires destruction evidence for any bound
+  UUID. The pinned server currently settles creates only with `Some(id)`; its
+  underlying barrier also permits settled `generation=None`. A future terminal
+  reconciliation path using `None` requires revisiting this client rule against
+  that server change. No such reconciliation is implemented here.
+- **L4 channel bounds:** the output cap bounds accumulation, not decoding of each
+  message. Per-message buffering is bounded by the injected channel's receive
+  limit, which must be explicitly qualified/configured by the integration.
+- **L5 separate bounds:** this client conservatively shares one bound across
+  dispatch, the RPC deadline and stream collection. The server documents the EXEC
+  field as a dispatch bound and has a 15-second relay-open wait. Splitting dispatch
+  and collection bounds remains backend integration work.
+- **L6 worker inputs:** the compact fixture omits `environment`, `workdir`,
+  `execution_timeout` and `no_login_shell`. The future worker/backend must refuse
+  nonempty environment and absent execution timeout, define runtime-owned workdir
+  and login-shell behavior, and qualify fixed ends. These checks are not supplied
+  by this transport increment.
 
 Tests exercise client handling of applicable falsifiers 1–5 and 7–10; falsifier
 6 is explicitly unsupported. They do not demonstrate a physical launch cutoff,
