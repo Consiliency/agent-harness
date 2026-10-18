@@ -486,6 +486,9 @@ class MemoryLease:
 class InlineCalls:
     """`_Calls` without its worker thread: the scripted backends always return at once."""
 
+    def ready(self) -> None:
+        pass
+
     def run(self, call, timeout_s, cancelled=None):
         return call()
 
@@ -669,7 +672,7 @@ class Harness:
         self._open_connection = sp._open_connection
         patch.setattr(sp, "_open_connection", self._connect)
         bounded = sp._Calls
-        patch.setattr(sp, "_Calls", lambda: bounded() if self.world.real else InlineCalls())
+        patch.setattr(sp, "_Calls", lambda **kwargs: bounded(**kwargs) if self.world.real else InlineCalls())
         self._settings: dict[str, str | None] = {}
         self._leases = 0
 

@@ -18,11 +18,60 @@ and each has a way of going wrong that these tests pin:
 from __future__ import annotations
 
 import time
+import threading
 from pathlib import Path
 
 import pytest
 
 from phase_loop_runtime import sandbox_policy
+
+
+@pytest.mark.parametrize("value,expected", [
+    (0, 0), (-3, 0), (" -0000 ", 0), ("+00023", 23),
+    ("9" * 5000, int(threading.TIMEOUT_MAX // 2)),
+    ("-" + "9" * 5000, 0), ("0" * 5000 + "23", 23),
+])
+def test_driver_duration_normalization(value, expected, tmp_path):
+    path = tmp_path / "settings.toml"
+    literal = repr(value) if isinstance(value, str) else str(value)
+    path.write_text(f"[sandbox.driver]\nadmit_wait_s = {literal}\n")
+    settings = sandbox_policy.placement_driver_settings(path=path, env={})
+    assert settings.admit_wait_s == expected
+    assert float(settings.admit_wait_s + settings.transfer_allowance_s) <= threading.TIMEOUT_MAX
+
+
+@pytest.mark.parametrize("value", ["true", "1.2", '"1e3"', '"1_000"', '"NaN"', '"∞"', '"１２"', "[]", "{}"])
+def test_invalid_driver_duration_is_input_free(value, tmp_path):
+    import traceback
+    path = tmp_path / "settings.toml"
+    path.write_text(f"[sandbox.driver]\nadmit_wait_s = {value}\n")
+    with pytest.raises(sandbox_policy.SandboxConfigError, match="^sandbox_config_invalid$") as caught:
+        sandbox_policy.placement_driver_settings(path=path, env={})
+    assert "During handling" not in "".join(traceback.format_exception(caught.value))
+    assert caught.value.__suppress_context__
+
+
+@pytest.mark.parametrize("value", ["0", "-1", "true", "1.5", '"9' + '9' * 5000 + '"'])
+def test_invalid_driver_worker_limit(value, tmp_path):
+    path = tmp_path / "settings.toml"
+    path.write_text(f"[sandbox.driver]\nmax_live_workers = {value}\n")
+    with pytest.raises(sandbox_policy.SandboxConfigError, match="^sandbox_config_invalid$"):
+        sandbox_policy.placement_driver_settings(path=path, env={})
+
+
+def test_driver_snapshot_is_frozen_and_both_durations_are_wait_safe():
+    from dataclasses import FrozenInstanceError
+    import math
+    import sys
+
+    settings = sandbox_policy.PlacementDriverSettings(10 ** 5000, "9" * 5000, sys.maxsize)
+    assert settings.admit_wait_s == settings.transfer_allowance_s == int(threading.TIMEOUT_MAX // 2)
+    total = float(settings.admit_wait_s) + float(settings.transfer_allowance_s)
+    assert math.isfinite(total) and total <= threading.TIMEOUT_MAX
+    with pytest.raises(FrozenInstanceError):
+        settings.max_live_workers = 1
+    with pytest.raises(sandbox_policy.SandboxConfigError):
+        sandbox_policy.PlacementDriverSettings(0, 0, sys.maxsize + 1)
 
 
 class TestZeroConfig:

@@ -8,9 +8,14 @@ example fixture round-trips.
 from __future__ import annotations
 
 import unittest
+import pytest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
+
+from phase_loop_runtime import sandbox_policy
+from phase_loop_runtime.advisor_board import config
+
 
 from phase_loop_runtime.advisor_board import (
     DEFAULT_BOARD,
@@ -406,6 +411,150 @@ class ShippedExampleFixtureTests(unittest.TestCase):
         # the example defines default + code-review; presets fill the rest.
         self.assertIn("default", cfg.names())
         self.assertIn("code-review", cfg.names())
+
+
+def test_driver_settings_layers_are_per_key_and_environment_is_authoritative(tmp_path, monkeypatch):
+    user = tmp_path / "user.toml"
+    user.write_text('[sandbox.driver]\nadmit_wait_s = 17\ntransfer_allowance_s = 19\nmax_live_workers = 2\n')
+    repo = tmp_path / "repo"
+    path = config.repo_board_config_path(repo)
+    path.parent.mkdir(parents=True)
+    path.write_text('[sandbox.driver]\nadmit_wait_s = 23\ntransfer_allowance_s = " "\n')
+    monkeypatch.setenv("PHASE_LOOP_SANDBOX_ADMIT_WAIT_S", "invalid ambient")
+    settings = sandbox_policy.placement_driver_settings(repo, path=user, env={})
+    assert (settings.admit_wait_s, settings.transfer_allowance_s, settings.max_live_workers) == (23, 19, 2)
+    assert sandbox_policy.placement_driver_settings(path=user, env={}).admit_wait_s == 17
+    assert sandbox_policy.placement_driver_settings(repo, path=user, env={
+        "PHASE_LOOP_SANDBOX_ADMIT_WAIT_S": "29",
+        "PHASE_LOOP_SANDBOX_TRANSFER_ALLOWANCE_S": " ",
+    }).admit_wait_s == 29
+    monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.chdir(repo)
+    assert sandbox_policy.placement_driver_settings(env={}) == sandbox_policy.placement_driver_settings(
+        env={"PHASE_LOOP_SANDBOX_ADMIT_WAIT_S": " ", "PHASE_LOOP_SANDBOX_TRANSFER_ALLOWANCE_S": ""},
+    )
+    user.write_text('[sandbox.driver]\nadmit_wait_s = "invalid shadowed"\n')
+    with pytest.raises(sandbox_policy.SandboxConfigError):
+        sandbox_policy.placement_driver_settings(repo, path=user, env={"PHASE_LOOP_SANDBOX_ADMIT_WAIT_S": "31"})
+
+
+@pytest.mark.parametrize("body", [
+    '[sandbox]\nroots = {}', '[sandbox]\norder = []', '[sandbox]\nenabled = true',
+    '[sandbox.driver]\nendpoint = "private"', '[sandbox]\ndriver = []',
+    '[sandbox.driver]\nlast_rung = "local"', '[boards]',
+])
+def test_driver_repository_authority_stays_narrow(tmp_path, body):
+    path = config.repo_board_config_path(tmp_path)
+    path.parent.mkdir()
+    path.write_text(body)
+    with pytest.raises(sandbox_policy.SandboxConfigError):
+        sandbox_policy.placement_driver_settings(tmp_path, env={})
+    with pytest.raises(BoardConfigError):
+        config.load_president_ladder(tmp_path, env={})
+
+
+def test_packaged_driver_settings_are_the_authority(tmp_path, monkeypatch):
+    import threading
+    from phase_loop_runtime import sandbox_placement as sp
+
+    resource = tmp_path / "fixtures" / "placement-driver.defaults.toml"
+    resource.parent.mkdir()
+    resource.write_text('[sandbox.driver]\nadmit_wait_s = 37\ntransfer_allowance_s = 41\nmax_live_workers = 2\n')
+    monkeypatch.setattr(config.resources, "files", lambda package: tmp_path)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "absent"))
+    for name in ("ADMIT_WAIT_S", "TRANSFER_ALLOWANCE_S"):
+        monkeypatch.delenv("PHASE_LOOP_SANDBOX_" + name, raising=False)
+    assert sandbox_policy.admit_wait_s() == 37
+    assert sandbox_policy.transfer_allowance_s() == 41
+    assert sp.lifetime_sufficient(78, 0) and not sp.lifetime_sufficient(77, 0)
+    calls = sp._Calls()
+    release = threading.Event()
+    workers = []
+    def hang():
+        workers.append(threading.current_thread())
+        release.wait(5)
+    try:
+        for _ in range(2):
+            with pytest.raises(sp.PlacementUnavailable):
+                calls.run(hang, 0.03)
+        with pytest.raises(sp.PlacementUnavailable):
+            calls.run(lambda: pytest.fail("default cap ignored"), 1)
+        assert len(workers) == 2
+    finally:
+        release.set()
+        calls.close()
+        for worker in workers:
+            worker.join(2)
+    resource.unlink()
+    with pytest.raises(sandbox_policy.SandboxConfigError):
+        sandbox_policy.placement_driver_settings(env={})
+    resource.write_text('invalid packaged TOML =')
+    with pytest.raises(sandbox_policy.SandboxConfigError):
+        sandbox_policy.placement_driver_settings(env={})
+
+
+def test_driver_settings_trusted_base_and_unavailable_base(tmp_path):
+    import subprocess
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    def git(*args):
+        subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True)
+    git("init", "-b", "main")
+    path = config.repo_board_config_path(repo)
+    path.parent.mkdir()
+    path.write_text('[sandbox.driver]\nadmit_wait_s = 43\n')
+    # No base commit: candidate is ignored.
+    assert sandbox_policy.placement_driver_settings(repo, env={}, review_base=True) == sandbox_policy.placement_driver_settings(env={})
+    git("add", ".")
+    git("-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "base")
+    path.write_text('[sandbox.driver]\nadmit_wait_s = 47\n')
+    git("add", ".")
+    assert sandbox_policy.placement_driver_settings(repo, env={}, review_base=True).admit_wait_s == 43
+    assert sandbox_policy.placement_driver_settings(repo, env={}).admit_wait_s == 47
+
+
+def test_valid_driver_subsection_is_accepted_by_shared_loaders(tmp_path):
+    path = _write(str(tmp_path), '[sandbox.driver]\nadmit_wait_s = 53\n')
+    assert config.load_sandbox_roots(path=path) == ()
+    assert config.load_president_ladder(path=path, env={})
+    assert load_boards(path, matrix=_MATRIX).names()
+
+
+def test_driver_defaults_have_no_code_or_current_prose_duplicates():
+    import ast
+    import inspect
+    import re
+    from phase_loop_runtime import sandbox_placement as sp
+
+    keys = r"(?:admit_wait_s|transfer_allowance_s|max_live_workers)"
+    for module in (sandbox_policy, sp, config):
+        source = inspect.getsource(module)
+        assert not re.search(r"_DEFAULT_(?:ADMIT_WAIT_S|TRANSFER_ALLOWANCE_S|MAX_LIVE_WORKERS)", source)
+        for node in ast.walk(ast.parse(source)):
+            if isinstance(node, (ast.Assign, ast.AnnAssign)):
+                targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+                if node.value is not None and any(re.search(keys, ast.unparse(target), re.I) for target in targets):
+                    assert not any(isinstance(child, ast.Constant) and type(child.value) is int
+                                   and child.value > 0 for child in ast.walk(node.value)), ast.unparse(node)
+    for function in (sandbox_policy.admit_wait_s, sandbox_policy.transfer_allowance_s,
+                     config.load_placement_driver_settings, sp._Calls.__init__):
+        import textwrap
+        tree = ast.parse(textwrap.dedent(inspect.getsource(function)))
+        assert not any(isinstance(node, ast.Constant) and type(node.value) is int
+                       and node.value > 0 for node in ast.walk(tree))
+
+    root = Path(__file__).resolve().parents[2]
+    documents = [
+        root / "docs/phase-loop/convergence-runtime.md",
+        Path(config.__file__).with_name("CONTRACTS.md"),
+        Path(config.__file__).parent / "fixtures/advisor-boards.example.toml",
+        root / "CHANGELOG.md",
+    ]
+    for document in documents:
+        text = document.read_text()
+        if document.name == "CHANGELOG.md":
+            text = text.split("## [Unreleased]", 1)[1].split("\n## [", 1)[0]
+        assert not re.search(keys + r"[^\n]{0,50}(?:default\s+|=\s*|\|\s*`)[0-9]+", text, re.I), document
 
 
 if __name__ == "__main__":

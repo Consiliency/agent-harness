@@ -290,8 +290,26 @@ directory, the command and the settings ship in this release.
   | Variable | Default | Meaning |
   |---|---|---|
   | `PHASE_LOOP_SANDBOX_LAST_RUNG` | `local` | Where a seat ends up when no remote root takes it: `local` (this machine) or `none` (the seat is not run). Any other value is `sandbox_config_invalid`. `PHASE_LOOP_SANDBOX_REMOTE_REQUIRED` forces `none`. |
-  | `PHASE_LOOP_SANDBOX_ADMIT_WAIT_S` | `600` | Seconds a seat may wait in all for a slot on remote machines that answer "full". A seat that was told "full" is never moved to this machine: when the wait runs out it is not run. |
-  | `PHASE_LOOP_SANDBOX_TRANSFER_ALLOWANCE_S` | `300` | Seconds allowed on top of that for sending the staged tree and sealing the request. The two together are the whole time a seat may spend being placed. |
+  | `PHASE_LOOP_SANDBOX_ADMIT_WAIT_S` | Packaged `sandbox.driver.admit_wait_s` | Seconds a seat may wait in all for a slot on remote machines that answer "full". A seat that was told "full" is never moved to this machine: when the wait runs out it is not run. |
+  | `PHASE_LOOP_SANDBOX_TRANSFER_ALLOWANCE_S` | Packaged `sandbox.driver.transfer_allowance_s` | Seconds allowed on top of that for sending the staged tree and sealing the request. The two together are the whole time a seat may spend being placed. |
+
+  Driver defaults live only in packaged `advisor_board/fixtures/placement-driver.defaults.toml`.
+  The user `advisor-boards.toml`, then an explicitly supplied repository's
+  `.agent-harness/advisor-boards.toml`, may override `[sandbox.driver]` keys
+  `admit_wait_s`, `transfer_allowance_s`, and `max_live_workers`. The two duration aliases
+  above take final precedence. Blank overrides inherit; malformed values now refuse with
+  `sandbox_config_invalid` instead of silently defaulting. Negative durations clamp to zero;
+  positive magnitudes saturate at half the platform thread timeout maximum. No worker
+  environment alias exists. Repository controls cannot set roots, order, endpoints or
+  enablement; review-base loading reads trusted committed controls.
+
+  Callers share one immutable settings snapshot between lifetime preflight and placement.
+  The worker cap counts all live workers per walk/wait/renewal group, including abandoned
+  jobs until actual exit. It is not a process-wide quota. Readiness failure is a local
+  refusal before probe/lease, preserving normal ladder fallback and the capacity bar.
+  Seal gets the whole remaining budget and each submission's context; late results cannot
+  launch. Result bytes are checked against the request cap before parsing. Unconfirmed
+  cleanup retains fenced evidence for the reaper. The nonlocal leg driver remains disabled.
 
   A login used by a placed seat must outlast the floor its caller sets plus both numbers,
   so raising either raises that requirement.

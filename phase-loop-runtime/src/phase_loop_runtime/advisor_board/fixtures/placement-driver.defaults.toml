@@ -1,0 +1,4 @@
+[sandbox.driver]
+admit_wait_s = 600
+transfer_allowance_s = 300
+max_live_workers = 4
