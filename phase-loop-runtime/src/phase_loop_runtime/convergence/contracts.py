@@ -152,6 +152,10 @@ class BrokerRequest:
     # keys and must resolve back to `repo` (CanonicalRepositoryIdentity.v1)
     # before any effect.  `None` stays accepted only while FABPUB is inactive.
     adapter_worktree: str | None = None
+    # Explicit PublishScopeCorrection.v1 operation. Ordinary requests leave this
+    # empty and retain canonical (repo, branch, head) replay. The broker validates
+    # the predecessor and reserves one successor before admitting this operation.
+    scope_correction_of: str = ""
 
 
 @dataclass(frozen=True)
