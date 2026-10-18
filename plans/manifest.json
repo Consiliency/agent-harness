@@ -2931,7 +2931,83 @@
       "status": "completed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-13T01:15:00+00:00"
+      "updated_at": "2026-08-13T01:15:00+00:00",
+      "sl0_repairs": [
+        {
+          "authority": {
+            "authority_scope_review_sha256": "e7b7eba6707ecbc7b19161f28bca6da6f39b7be145aa9af97df64ee208d73323",
+            "roadmap": "specs/phase-plans-v11.md:41-47",
+            "task": "Consiliency/agent-harness#1570"
+          },
+          "evidence": {
+            "diagnostic_package_comparison": "/mnt/workspace/users/viperjuice/agent-evidence/heavy-package-compare-20261018-r1/comparison.json",
+            "regression_red": {
+              "errors": 0,
+              "failures": 6,
+              "id_only_correction_sha256": "8a16ef8db59a9bffd080df692693f328dfa815100d0b0064ec22fd1c7b34076c",
+              "junit_sha256": "bd27fc8df107a5253331d9d42c31bfe268f5bba587e397d881e0b21e98ee05b9",
+              "passed": 14,
+              "skips": 0,
+              "source_binding_sha256": "b26ce01c26c7d5235780bbe28a6149f89c4771b6b4907cf16f0c63731706973e"
+            },
+            "root": "/mnt/workspace/users/viperjuice/agent-evidence/conform-tar-metadata-20261018-r1",
+            "verification": [
+              {
+                "command_record_sha256": "13bbd7267f49a9d8b8678470f0c1a951677d6d6e5f12df66f0549e6cb47a7385",
+                "errors": 0,
+                "failures": 0,
+                "junit_sha256": "81df830bf10ef27abcae48d35919348b9297e59ca1712f1a1191b4fdcaa50019",
+                "passed": 30,
+                "python": "3.14",
+                "skips": 0
+              },
+              {
+                "command_record_sha256": "13bbd7267f49a9d8b8678470f0c1a951677d6d6e5f12df66f0549e6cb47a7385",
+                "errors": 0,
+                "failures": 0,
+                "junit_sha256": "7a4d89c7e83bee071388ef487b7b500f865e5e6343476720c9a9dbd5e0864b6f",
+                "passed": 30,
+                "python": "3.12",
+                "skips": 0
+              }
+            ]
+          },
+          "files": [
+            {
+              "absent_before": false,
+              "after_sha256": "14b03d490c37ee05d24c996b6574ba314e0676feacb5204c51ce4d1f265f0419",
+              "before_sha256": "7a1a2b029ba428d145b761d4320893316d91a2fac6b857d1fb760cdd609baed9",
+              "path": "phase-loop-runtime/tests/_outside_agent_canonical.py"
+            },
+            {
+              "absent_before": false,
+              "after_sha256": "0c2ba46e90188c4cb4cd14920efe12c023047b4ae1dd8a3cb3df2954a66279ca",
+              "before_sha256": "e68b3319a6a2382ea8bf25cbc42974bcdea2f7242b453ef36d95ef3bc4f79dc9",
+              "path": "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py"
+            },
+            {
+              "absent_before": true,
+              "after_sha256": "2f4f4ebd5a123d996b15defcf10e251ef3e4df91251f6cfc0b31358a070c5b97",
+              "before_sha256": null,
+              "path": "phase-loop-runtime/tests/test_conform_tar_metadata.py"
+            }
+          ],
+          "issue": "Consiliency/agent-harness#1570",
+          "kind": "post_completion_test_compatibility",
+          "limits": "New maintenance regression only. Historical lifecycle, seals, receipts, corpus, assertions and expected package/A2 hashes are unchanged. Exact-patch review, patched historical package/heavy proof and the independent actual-candidate RUNTIME full gate remain required.",
+          "reason": "Python 3.14 changes tarfile default extraction permissions, altering genuine historical package/archive A2 digests despite identical contents. Preserve validated trusted archive metadata explicitly as in the supported Python 3.12 baseline.",
+          "record_id": "CONFORM-TAR-METADATA-20261018",
+          "recorded_at": "2026-10-18T03:13:12.865713+00:00",
+          "scope": {
+            "audit": "Only this CONFORM extension; no lifecycle or authority transition.",
+            "companion": "phase-loop-runtime/tests/test_conform_tar_metadata.py",
+            "symbols": [
+              "phase-loop-runtime/tests/_outside_agent_canonical.py::_extract_tar_archive",
+              "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py::_extract_tar_archive"
+            ]
+          }
+        }
+      ]
     },
     {
       "acceptance_criteria_count": null,
