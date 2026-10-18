@@ -282,8 +282,8 @@ continues to use `JournalSession`. No cleanup call can grant CREATE/EXEC replay.
 Journal-aware reaping requires nominal `JournalReapingBackend` inheritance;
 an unrelated method named `kill_journaled` does not opt a backend in. Reaper
 reference writes also use `record_transport_ref`, never the driver's
-`record_sandbox_ref`. The latter is untouched: connecting OpenShell to the full
-execution driver remains a separate dependency requiring immutable commit wiring.
+`record_sandbox_ref`. Legacy driver backends retain that path; nominal live-lease
+backends use immutable commit confirmation as described below.
 
 The bridge rejects any calling thread with a running event loop, stopped/closed
 injected loops, and fork-inherited bridge instances before waiting. Reaping checks
@@ -316,3 +316,30 @@ construction and native completion are still required before a full executing
 backend/CLI can be implemented and qualified. Actual-server CREATE/EXEC remains
 closed. Local model and SDK tests never substitute for live acceptance or physical
 destruction/restart/bypass falsifiers. No earlier qualification obligation is waived.
+
+## Nominal live-lease driver binding (r37)
+
+`placement_lease.LiveLeaseBackend` is an explicit opt-in contract. Before admission,
+the driver calls `bind_live_lease(lease)` once on that rung's original, locked Lease.
+The hook must perform no remote effects and return the adapter attached to that
+handle. For OpenShell this is one `JournalSession`, retained through admission,
+commit, execution and live kill; live kill must not recover a second handle.
+An unrelated duck-typed hook is ignored. This adds no executing backend or registry
+entry, and existing non-opt-in backends retain their previous behavior.
+
+CREATE records its accepted generation through that session. At commit, the driver
+uses `confirm_commit_ref(adapter, sandbox_ref)` to compare and fsync that generation,
+never install the commit result's reference. Missing CREATE, a substituted reference
+or adapter, a fenced/released handle, or a recovered handle refuses confirmation.
+Session construction failure consumes the attachment and fences the handle. A late
+commit cannot write through an abandoned handle after recovery; recovered sessions
+cannot dispatch CREATE or EXEC. Cancellation suppresses acceptance, without changing
+the server's permission for previously claimed work to start while cancel is pending.
+
+This closes only the live binding and immutable driver commit prerequisite. Tests
+use synthetic backends and compact/generated protocol fixtures. A real backend must
+still integrate source publication, one-shot worker sealing, distinct dispatch and
+collection bounds, result quarantine and same-session live cleanup. KILL plus STATUS
+destruction/settled-obligation barrier and complete LIST absence remain necessary
+before journal removal. The execution flag and production CREATE/EXEC gate remain
+closed; all carried qualification and synchronous I/O limitations above remain.

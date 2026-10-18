@@ -1154,6 +1154,7 @@ class _Rung:
     #: What the backend declared it can enforce, read once by the local checks.
     capabilities: frozenset[str] = frozenset()
     lease: object = None
+    live_adapter: object = None
     placement: "LegPlacement | None" = None
     spec: ExecSpec | None = None
     #: The code that sent the rung to "releasing".
@@ -1382,11 +1383,17 @@ class _Walk:
         return "connected", None
 
     def _admitting(self, rung: _Rung) -> tuple[str | None, str | None]:
+        from .placement_lease import LiveLeaseBackend
+
         if self._budget_spent():
             return "budget_spent", _BUDGET_SPENT
         bound = _bound(min(ANSWER_BOUND_S, self._budget_left()), self.cancelled)
         backend, request = rung.backend, rung.request
         try:
+            if isinstance(backend, LiveLeaseBackend) and rung.live_adapter is None:
+                adapter = backend.bind_live_lease(rung.lease)
+                rung.lease.validate_live_binding(adapter)
+                rung.live_adapter = adapter
             self.calls.run(lambda: backend.admit(request, bound), bound.timeout_s, self.cancelled)  # type: ignore[attr-defined]
         except _CallCancelled:
             return None, None
@@ -1463,7 +1470,13 @@ class _Walk:
             return failed, _REFUSED
         try:
             sandbox_ref, receipts, verified = _commit_claims(rung.capabilities, result, prepared)
-            rung.lease.record_sandbox_ref(sandbox_ref)  # type: ignore[attr-defined]
+            if rung.live_adapter is not None:
+                if self.cancelled.is_set():
+                    rung.lease.fence()
+                    return None, None
+                rung.lease.confirm_commit_ref(rung.live_adapter, sandbox_ref)
+            else:
+                rung.lease.record_sandbox_ref(sandbox_ref)  # type: ignore[attr-defined]
         except PlacementUnavailable as exc:
             return failed, exc.code
         except Exception:

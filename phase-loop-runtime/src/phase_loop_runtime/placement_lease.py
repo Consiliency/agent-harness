@@ -178,6 +178,18 @@ def _valid_entry(entry: dict[str, object] | None, lease_id: str) -> bool:
                for value in (entry.get(key),))
 
 
+class LiveLeaseBackend(ABC):
+    """Nominal opt-in to the driver's original live journal, before admission."""
+
+    @abstractmethod
+    def bind_live_lease(self, lease: Lease) -> object:
+        """Attach once, without remote effects, and return the attached adapter.
+
+        Admission and live kill must use this handle, never recover a second one.
+        Commit must return the generation already accepted by that adapter.
+        """
+
+
 class JournalReapingBackend(ABC):
     """Explicit opt-in to cleanup using a locked journal snapshot."""
 
@@ -264,6 +276,34 @@ class Lease:
 
     def fence(self) -> None:
         self.fenced = True
+
+    def validate_live_binding(self, adapter: object) -> None:
+        if self._pid != os.getpid():
+            raise ValueError("live lease not owned")
+        with self._lock:
+            self._require_live_binding(adapter)
+
+    def _require_live_binding(self, adapter: object) -> None:
+        if (not self.held or self.fenced or not self._newly_opened
+                or adapter is None or self._adapter is not adapter):
+            self.fenced = True
+            raise ValueError("live lease not owned")
+
+    def confirm_commit_ref(self, adapter: object, sandbox_ref: str) -> None:
+        """Compare and fsync the accepted generation; never install a commit's ref."""
+        if self._pid != os.getpid():
+            raise ValueError("live lease not owned")
+        with self._lock:
+            self._require_live_binding(adapter)
+            if (not sandbox_ref or self._entry["sandbox_ref"] != sandbox_ref
+                    or self._entry.get("create_sent_at") is None):
+                self.fenced = True
+                raise ValueError("lease generation changed")
+            try:
+                _write_entry(self._fd, self._entry)
+            except BaseException:
+                self.fenced = True
+                raise
 
     def _update(self, **fields: object) -> None:
         if self._pid != os.getpid():

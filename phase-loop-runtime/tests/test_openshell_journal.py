@@ -541,3 +541,194 @@ def test_opted_in_reaper_cannot_replace_reference():
 
     assert journal.reap(lambda _: WrongReference(), model.bound())["cleared"] == ()
     assert entry(lease)["sandbox_ref"] == model.GEN
+
+
+@pytest.mark.parametrize("case", ["same", "swap", "fenced", "recovered", "wrong_adapter", "missing"])
+def test_live_commit_compares_existing_generation(proto, monkeypatch, case):
+    lease, stub, client = setup(proto)
+    if case != "missing":
+        asyncio.run(client.create(model.create_request(), model.bound()))
+    if case == "fenced":
+        lease.fence()
+    if case == "recovered":
+        lease.abandon()
+        lease = journal.recover_lease(lease.lease_id)
+        _, _, client = setup(proto, lease)
+    before = lease.path.read_bytes()
+    synced = []
+    real = journal._fsync
+    monkeypatch.setattr(journal, "_fsync", lambda fd: (synced.append(fd), real(fd)))
+    try:
+        if case == "same":
+            lease.confirm_commit_ref(client, model.GEN)
+            assert synced == [lease._fd]
+            assert lease.path.read_bytes() == before
+        else:
+            with pytest.raises(ValueError):
+                lease.confirm_commit_ref(object() if case == "wrong_adapter" else client,
+                                         "other" if case == "swap" else model.GEN)
+            assert lease.fenced and lease.path.read_bytes() == before and synced == []
+    finally:
+        lease.abandon()
+
+
+def test_failed_session_construction_consumes_attachment(proto, monkeypatch):
+    lease = opened()
+    def fail(*args, **kwargs):
+        raise ValueError("construction failed")
+    monkeypatch.setattr(oj, "LeaseSession", fail)
+    with pytest.raises(ValueError, match="construction failed"):
+        oj.JournalSession(lease, proto, model.Stub(), workspace="dedicated")
+    assert lease.fenced
+    with pytest.raises(ValueError, match="already attached"):
+        lease.attach_transport(object())
+    lease.abandon()
+
+
+@pytest.mark.parametrize("case", ["success", "swap", "attach_failure", "second_attach", "unattached"])
+def test_driver_uses_original_journal_session(proto, monkeypatch, case):
+    from phase_loop_runtime import sandbox_placement as sp
+    from test_placement_driver import FarSide, walk, rungs
+
+    class BoundBackend(FarSide, journal.LiveLeaseBackend):
+        def bind_live_lease(self, lease):
+            self.lease = lease
+            self.fd = lease._fd
+            if case == "unattached":
+                return object()
+            _, self.stub, self.client = setup(proto, lease)
+            if case == "attach_failure":
+                raise ValueError("failed after attachment")
+            if case == "second_attach":
+                setup(proto, lease)
+            return self.client
+
+        def check_lock(self):
+            assert self.lease._fd == self.fd
+            with pytest.raises(BlockingIOError):
+                journal.recover_lease(self.lease.lease_id)
+
+        def admit(self, request, bound):
+            self.check_lock()
+            assert request.lease_id == self.lease.lease_id
+            asyncio.run(self.client.create(model.create_request(), bound))
+            asyncio.run(self.client.status(bound))
+            super().admit(request, bound)
+
+        def commit(self, prepared, request, bound):
+            self.check_lock()
+            return sp.PlacedSandbox(
+                backend="drv", sandbox_ref="other" if case == "swap" else model.GEN,
+                staged_at="test", receipts=(sp.PlacementReceipt.from_backend(
+                    sp.BackendReceipt("committed", "other" if case == "swap" else model.GEN,
+                                      prepared.snapshot_sha256)),),
+                verified={name: "backend_attested" for name in self.verify})
+
+        def execute(self, sandbox_ref, spec, bound):
+            self.check_lock()
+            assert entry(self.lease)["sandbox_ref"] == sandbox_ref == model.GEN
+            asyncio.run(self.client.execute(proto.ExecSandboxRequest(), bound, output_cap_bytes=0))
+            return super().execute(sandbox_ref, spec, bound)
+
+        def kill(self, lease_id, bound):
+            self.check_lock()
+            raise sp.PlacementUnavailable(sp._TIMEOUT)
+
+    backend = BoundBackend("drv", None)
+    monkeypatch.setitem(sp._REGISTRY, "drv", backend)
+    decision = walk(rungs("drv"), last_rung="none", deadline_s=10)
+    if case == "success":
+        assert decision.outcome == "placed"
+        assert backend.client.lease is backend.lease is decision.placement._lease
+        assert entry(backend.lease)["execute_sent_at"] is not None
+        assert backend.lease.path.exists()
+        backend.lease.abandon()
+    else:
+        assert decision.outcome == "not_run"
+        assert backend.lease.fenced and not backend.lease.held
+        assert entry(backend.lease)["sandbox_ref"] == (model.GEN if case == "swap" else None)
+        if hasattr(backend, "stub"):
+            assert "exec" not in [call[0] for call in backend.stub.calls]
+
+
+def test_driver_ignores_ducktyped_live_hook(monkeypatch):
+    from phase_loop_runtime import sandbox_placement as sp
+    from test_placement_driver import FarSide, walk, rungs
+    backend = FarSide("drv", None)
+    backend.bind_live_lease = lambda *_: pytest.fail("must explicitly opt in")
+    monkeypatch.setitem(sp._REGISTRY, "drv", backend)
+    decision = walk(rungs("drv"), deadline_s=10)
+    assert decision.outcome == "placed"
+    decision.placement._lease.abandon()
+
+
+@pytest.mark.parametrize("late_ref", [model.GEN, "other"])
+def test_driver_discards_commit_after_cancel_and_recovery(proto, monkeypatch, late_ref):
+    from phase_loop_runtime import sandbox_placement as sp
+    from test_placement_driver import FarSide, walk, rungs
+    entered, finish, finished = threading.Event(), threading.Event(), threading.Event()
+    cancelled = threading.Event()
+
+    class BoundBackend(FarSide, journal.LiveLeaseBackend):
+        def bind_live_lease(self, lease):
+            self.lease, _, self.client = setup(proto, lease)
+            return self.client
+
+        def admit(self, request, bound):
+            asyncio.run(self.client.create(model.create_request(), bound))
+
+        def commit(self, prepared, request, bound):
+            entered.set()
+            assert finish.wait(5)
+            try:
+                # Even a backend attempting its own late acceptance cannot write.
+                with pytest.raises(ValueError):
+                    self.lease.confirm_commit_ref(self.client, late_ref)
+                return sp.BackendReceipt("committed", late_ref, prepared.snapshot_sha256)
+            finally:
+                finished.set()
+
+        def kill(self, lease_id, bound):
+            raise sp.PlacementUnavailable(sp._TIMEOUT)
+
+    backend = BoundBackend("drv", None)
+    monkeypatch.setitem(sp._REGISTRY, "drv", backend)
+    outcomes = []
+    def run():
+        try:
+            outcomes.append(walk(rungs("drv"), last_rung="none", cancelled=cancelled))
+        except sp.PlacementCancelled as exc:
+            outcomes.append(exc)
+    thread = threading.Thread(target=run)
+    thread.start()
+    try:
+        assert entered.wait(3)
+        cancelled.set()
+        thread.join(3)
+        assert not thread.is_alive()
+        assert len(outcomes) == 1 and isinstance(outcomes[0], sp.PlacementCancelled)
+        recovered = journal.recover_lease(backend.lease.lease_id)
+        try:
+            before = recovered.path.read_bytes()
+            finish.set()
+            assert finished.wait(3)
+            assert recovered.path.read_bytes() == before
+            assert entry(recovered)["sandbox_ref"] == model.GEN
+            assert entry(recovered)["execute_sent_at"] is None
+        finally:
+            recovered.abandon()
+    finally:
+        finish.set()
+        thread.join(3)
+
+
+def test_commit_sync_failure_fences_without_changing_generation(proto, monkeypatch):
+    lease, _, client = setup(proto)
+    asyncio.run(client.create(model.create_request(), model.bound()))
+    def fail(fd):
+        raise OSError("sync failure")
+    monkeypatch.setattr(journal, "_fsync", fail)
+    with pytest.raises(OSError):
+        lease.confirm_commit_ref(client, model.GEN)
+    assert lease.fenced and entry(lease)["sandbox_ref"] == model.GEN
+    lease.abandon()

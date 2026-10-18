@@ -17,9 +17,13 @@ class JournalSession:
     def __init__(self, lease: Lease, proto, stub, *, workspace: str):
         self.lease = lease
         fresh, reference = lease.attach_transport(self)
-        self._session = LeaseSession(proto, stub, workspace=workspace,
-                                     owner_id=lease.owner_id, lease_id=lease.lease_id,
-                                     fresh=fresh, expected_generation=reference)
+        try:
+            self._session = LeaseSession(proto, stub, workspace=workspace,
+                                         owner_id=lease.owner_id, lease_id=lease.lease_id,
+                                         fresh=fresh, expected_generation=reference)
+        except BaseException:
+            lease.fence()
+            raise
 
     async def create(self, request, bound):
         self.lease.mark_dispatch(self, "create")
