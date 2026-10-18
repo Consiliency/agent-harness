@@ -6,6 +6,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Mapped-seat resolver setup (agent-harness#1570)
+
+- Prepare the mapped seat's resolver through the trusted parent before releasing
+  its namespace holder, preserving setup refusal and cleanup on failure.
+
+### Fixed
+
+- The LEGIBLE live transition probe accepts the launcher's optional diagnostic
+  field, preserving typed deferrals instead of raising an unpacking error.
+
 ### BREAKING: Python 3.12 is the minimum (agent-harness#1546)
 
 - `phase-loop-runtime` and `consiliency-harness` now declare `requires-python = ">=3.12"`
