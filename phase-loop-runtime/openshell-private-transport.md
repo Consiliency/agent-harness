@@ -161,10 +161,11 @@ metadata and freshly downloaded content; installation uses `--require-hashes`,
 `--no-index` and only those wheels. Versions have one authority in the manifest.
 
 Use the manifest's interpreter/platform with repository test dependencies already
-installed, plus `git`, `uv` and `openssl`. From `phase-loop-runtime`:
+installed, plus `git`, `uv` and `openssl`, and PyPI content reachability for the
+pinned wheel downloads. From a clean committed `phase-loop-runtime` checkout:
 
 ```sh
-"$PYTHON" -B scripts/qualify_openshell_sdk.py \
+"$PYTHON" -I -B scripts/qualify_openshell_sdk.py \
   --server "$SERVER" --work "$NEW_PRIVATE_QUALIFICATION_DIRECTORY"
 ```
 
@@ -172,11 +173,20 @@ The work directory must not exist. The command reads the immutable server commit
 Git objects, so a separate evolving server checkout need not be reset or changed.
 It writes only its new private directory, installs dependencies into that directory,
 and disables bytecode and pytest caches. Allow about 100 MiB. Missing prerequisites,
-input/output hash mismatches, skipped/xfail tests, or a failed narrow test run refuse
-qualification. `verified-manifest.json` is written only after success. The narrow
-run includes transport, local gRPC and subprocess TLS channel tests. The opt-in
-`_openshell_qualification` pytest plugin also rejects missing/mismatched SDK bytes
-before collection; ordinary optional developer runs retain their skip behavior.
+input/output hash mismatches, skipped/xfail/xpass tests, or a failed narrow test run refuse
+qualification. `qualification-receipt.json` is written only after success, recording
+the actual clean harness commit/tree, interpreter and uv versions, computed input,
+installed payload and output hashes, test counts/outcome, bounds and completion time.
+Generator and pytest startup exclude the caller's working directory and Python
+environment injection; pytest loads only explicitly selected external plugins.
+Installed payload bytes are checked against the verified wheels again immediately
+before pytest. Git, uv, protoc, download and pytest bounds are centralized in the
+recipe's `TIMEOUTS` configuration. The interpreter and its installed test dependencies
+remain trusted caller prerequisites: this is not a fully hermetic environment.
+The narrow run includes transport, local gRPC and subprocess TLS channel tests. The opt-in
+`_openshell_qualification` pytest plugin also rejects missing/mismatched SDK bytes,
+extra entries and symlinked SDK files/directories before collection;
+ordinary optional developer runs retain their skip behavior.
 Main CI workflow integration remains outstanding; ordinary CI is not qualification.
 
 These pins support the **existing reviewed wire** only. They do not supply bindings
