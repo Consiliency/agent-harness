@@ -44,6 +44,31 @@ runtime that is v3-aware — §2):
   (including its two resume paths) and the drain facts, and prints the verdict
   the verb would reach.
 
+### Unadmitted prebuilt transactions
+
+An unused-base prebuilt checkpoint that refused before admission is separate
+from an admitted publication with an ambiguous provider outcome. The human
+publication adapter accepts `abandon_unadmitted_prebuilt="<exact transaction ID>"`
+with the original plan, verification artifact, worktree, branch, owned paths,
+base, draft intent and body. Omit `prebuilt` when publishing staged source.
+
+The adapter authenticates the original context and partition, checks all
+transaction and effect witnesses, and retires only an unadmitted unused-base
+prebuilt checkpoint. It preserves the checkpoint and an ABANDONED tombstone,
+then runs normal publication. Repeating the same option completes interrupted
+retirement or recognizes its completed history without changing a replacement
+transaction. Completed replay can proceed after an unrelated partition rotation;
+retirement writes require generation 0, no generations tree, active writer
+authority, an unblocked zero-source receipt and no unsealed owner.
+
+An admission, effect or other relevant witness, unreadable history, changed
+context, or partition rotation prevents retirement writes. Escalate an unrelated
+dead owner before rotating, because rotation prevents retirement writes. Keep
+that history intact and use the existing typed handoff. This option supplies no
+disposition for admitted ambiguity and does not replace the reviewed rotation
+procedure. Never delete or edit a checkpoint, tombstone, receipt or journal to
+retry.
+
 ## 1. Preconditions (plan Lane D5, Dependencies item 3)
 
 - (a) The runtime that will run the verb, and every runtime that will *read* the

@@ -9921,7 +9921,35 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-25T16:25:15Z"
+      "updated_at": "2026-08-25T16:25:15Z",
+      "sl0_repairs": [
+        {
+          "record_id": "runtime_v11_plan_registration_repair",
+          "authorization": "specs/phase-plans-v11.md, RUNTIME scope notes; plan-board president F007-F011 and FORCING DECISION; owner-requested amendment",
+          "reason": "Registering v11-RUNTIME breaks the frozen global-singleton assertions; selection must be unique within each roadmap.",
+          "scope": "Only the roadmap-scoped selection helper and its tests in test_convergence_runtime_imports.py; retain v10 grounding/history and vergence orphan checks, cover v10/v11 production discovery and duplicate/retired controls. No production or other frozen-test changes.",
+          "files": [
+            {
+              "path": "phase-loop-runtime/tests/test_convergence_runtime_imports.py",
+              "before_sha256": "95fc96cb4d7311130ee96691b1b6b53a3214225869ae91cb0c5f6785696b8ccd",
+              "after_sha256": "6bf1d848a424a3596c10527af845bc365fddae197e533df47a0f95545fc6224c"
+            }
+          ],
+          "review_evidence": [
+            {
+              "path": "/tmp/v11-board/runtime/president-text.md",
+              "sha256": "959b4d2e575da82ddba110cb1ed4cb76af819e5eacb8507a11fcab93ed672b38"
+            },
+            {
+              "path": "/tmp/v11-board/runtime/native-fill/0be1ab63-bf15-4e70-80e1-ef27b30c81e6/review.md",
+              "sha256": "3ba24eb3bdff36fa84cf0f1a9723d9851bd04585470659518c3a367932a7ba8c"
+            }
+          ],
+          "verification_command": "uv run --quiet --with pytest --with-editable ./phase-loop-runtime python -m pytest phase-loop-runtime/tests/test_convergence_runtime_imports.py -q",
+          "baseline_result": "2 failed, 14 passed: test_runtime_v10_reground_record_is_present_and_ancestral and test_only_one_runtime_row_may_be_selectable; reproduced before this repair.",
+          "evidence_note": "Review artifacts are local scratch inputs, not committed receipts. This records the registration repair only; EC-RUNTIME-0 remains open and no historical RED receipt is recovered or replaced."
+        }
+      ]
     },
     {
       "acceptance_criteria_count": null,
@@ -13990,6 +14018,33 @@
       "task_summary": "Stage 3a: explicit subscription-proven Claude Agent SDK runner route, with proposed admission amendment; no default or panel activation.",
       "type": "detailed",
       "updated_at": "2026-10-17T17:45:11Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "created_at": "2026-10-13T02:11:38Z",
+      "file": "plans/phase-plan-v11-RUNTIME.md",
+      "handoff_ref": null,
+      "if_gates_produced": [],
+      "lanes": [
+        "SL-0",
+        "SL-1",
+        "SL-2"
+      ],
+      "lifecycle": [],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "RUNTIME",
+      "reflection_ref": null,
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v11.md",
+        "slug": "phase-plans-v11",
+        "status": "imported",
+        "type": "phase"
+      },
+      "slug": "v11-RUNTIME",
+      "status": "imported",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-10-13T02:11:38Z"
     }
   ],
   "schema_version": 1

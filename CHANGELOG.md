@@ -6,6 +6,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Codex execute-phase reads interactive procedures on demand (agent-harness#1358)
+
+- Split planning-handoff reuse, interactive publication, worktree lifecycle, and
+  worker-brief procedures into Codex-only `references/` files. Keep runner ownership,
+  governance, verification, closeout audit/evidence, and PR-description parity anchors
+  in `SKILL.md`; remove the duplicate audit explanation. Relative reference reads were
+  proven with a live, read-only Codex native-skill canary through the adapter launcher
+  before the split. The token-size exception remains for retained normative text;
+  the longest-line exception is removed.
+
 - Human publication checks already-committed companion paths before creating a
   commit. Incomplete ownership now produces a repairable scope-precheck result.
 - Add `PublishScopeCorrection.v1` for an exact sealed local ownership-scope
@@ -40,6 +50,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   characters. Runner publication ownership and test-pinned phrases stay inline;
   gemini runner launches get the references beside
   `context.md`. The duplicate closeout-audit block in Core Rules now points to Closeout.
+
+### Unadmitted prebuilt publication recovery (agent-harness#1758)
+
+- Human publication supports exact-ID retirement of an unused, unadmitted
+  prebuilt transaction through `abandon_unadmitted_prebuilt`, preserving its
+  history before ordinary publication. Fresh prebuilt publication refuses a
+  nonempty staged index before checkpoint preparation (agent-harness#1758).
 
 ## [0.7.27] - 2026-10-18
 

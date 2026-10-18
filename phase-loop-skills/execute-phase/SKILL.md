@@ -18,12 +18,7 @@ Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, h
 - Before asking the user for credentials, account setup, infrastructure state, admin action, or another access blocker, inspect repo-local docs/config and safe read-only or metadata-only state from available CLIs: `op`, `gh`, `vercel`/`npx vercel`, `supabase`/`npx supabase`, `gcloud`, `wrangler`, `cloudflared`, and `gam`. Never record secret values.
 - Keep lane ownership boundaries. If implementation requires touching another lane's files, stop and revise the plan or ask the user.
 - Treat ignored, private, raw-data, credential, and evidence-source files as read-protected unless the phase plan or source bundle explicitly allowlists the exact path or glob for read access. Do not infer permission from nearby owned output paths, old memory, or prior phases.
-- Before final closeout, compare `git status --short` dirty paths against the active plan's owned files and control artifacts. If any generated path is unowned or derived from unauthorized raw/private inputs, stop with `dirty_worktree_conflict`. For IGNORED paths do not judge by hand: run the closeout audit, `phase-loop-closeout-audit --repo . --record-outputs --phase "<ALIAS>"` (module form `python -m phase_loop_runtime.closeout_classifier --repo . --record-outputs --phase "<ALIAS>"` only when the package is on the ACTIVE python's path); replace `<ALIAS>` with the alias of the phase you are executing, exactly as your plan and runner prompt name it. Pasted unchanged it is still valid shell; `--phase` matters only in a repo that commits `.phase-loop-generated-outputs.json`, and there an unsubstituted `<ALIAS>` records and accepts nothing, so the closeout audit blocks.
-  The closeout audit's last output line (`action: exit N ... -> ...`) states the required action; follow it. A runtime that predates that line gets the same mapping from its exit code:
-    - exit 0 (every ignored path was produced by the runner or its own toolchain -- `.phase-loop/**`, pytest/Ruff caches, `__pycache__`, egg-info, `.venv` -- is a harness handoff, or was written by a producer the committed `.phase-loop-generated-outputs.json` declares, re-run and recorded by `--record-outputs`, agent-harness#1139): ignored paths are not a blocker and must never block a verified owned diff (agent-harness#670); the rest of closeout still decides the terminal status.
-    - exit 1 (unknown ignored outputs): stop with `dirty_worktree_conflict`.
-    - exit 2 (probe failed): stop with `dirty_worktree_conflict`.
-    - any failure to run the audit at all (command not found on a pinned runtime that predates it, non-zero for any other reason): stop with `dirty_worktree_conflict` -- inability to measure is never evidence of a clean tree.
+- Before final closeout, compare `git status --short` dirty paths against the active plan's owned files and control artifacts. If any generated path is unowned or derived from unauthorized raw/private inputs, stop with `dirty_worktree_conflict`. For IGNORED paths do not judge by hand: run the closeout audit as "Closeout" below describes, and follow its required action.
 - For Pipeline-aware plans, recompute `source_bundle_sha256` from source bundle bytes before implementation or child work; treat `freshness.source_bundle_hash` as Pipeline-owned metadata unless it is a sha256 digest. For pipeline_required execution, validate protected-source hashes and stop before child launch on missing, stale, malformed, or mismatched source bundles.
 - Refuse protected Pipeline writes, including `.pipeline/**`, `pipeline.definition.json`, governed-pipeline specs, Portal contracts, Greenfield authority files, private evidence, raw data, raw evidence, credentials, provider-supplied payloads, or legacy `.codex/phase-loop/` state unless the source-bundle write policy and phase-plan owned files both explicitly authorize the output path. The active plan and source bundle explicitly own the exact path or glob before these inputs or outputs may be read or written.
 - Preserve standalone execution behavior for local phase plans without Pipeline metadata; governed-pipeline, Portal, Greenfield, `.pipeline/**`, and source bundles are not mandatory for manual dotfiles use.
@@ -53,7 +48,7 @@ externalized as a typed `DelegationRequest`.
 - `--dry-run`: parse and print the lane schedule without editing.
 - `--parallel`: allowed only when the user explicitly requests parallel worker execution.
 
-If no plan path is explicit, first check the current repo and branch handoff from `<harness>-plan-phase` using `<harness>-config/shared/runtime-state.md`: read the repo-local handoff resolver target `.dev-skills/handoffs/<harness>-plan-phase/latest.md`, validate `from`, `repo`, `repo_root`, `branch`, `branch_slug`, `commit`, and `artifact`, then use the artifact only if it exists under the current repo root. Ignore missing or mismatched handoffs unless the user explicitly asks to reuse cross-branch state.
+If no plan path is explicit, read [references/interactive-path.md](references/interactive-path.md) for safe reuse of the `<harness>-plan-phase` handoff.
 
 ## Preflight
 
@@ -123,16 +118,7 @@ If no plan path is explicit, first check the current repo and branch handoff fro
 
 Use worker subagents only when the user explicitly authorizes parallel agent work and the DAG-ready lanes are disjoint.
 
-For every worker brief:
-
-- State that they are not alone in the codebase.
-- Assign exact owned files or globs.
-- List files they may read but not edit.
-- Tell them not to revert unrelated changes.
-- Require a final response with changed paths, tests run, failures, and blockers.
-- Do not give two workers overlapping write ownership.
-
-The main thread remains responsible for integrating results, reviewing diffs, running final verification, and resolving conflicts.
+Before briefing workers, read [references/worker-fanout.md](references/worker-fanout.md). The main thread remains responsible for integration, diff review, final verification, and conflicts.
 
 ## Failure Policy
 
@@ -165,7 +151,8 @@ Before final closeout, choose exactly one `spec_delta_closeout.v1` decision: `no
 
 ### Manifest lifecycle
 
-After plan validation and before lane execution, perform a best-effort `plan-manifest append` lifecycle update through `phase_loop_runtime.plan_manifest.update_lifecycle` to mark the matching `type=phase` entry `executing` with run metadata. During closeout, update the same entry to `completed` or `failed` with verification metadata, reflection metadata, produced-gate metadata, `if_gates_produced`, and dirty-worktree summary fields as available. A `completed` phase update must also include explicit `issue_inventory` and matching `issue_dispositions` arrays, including explicit empty arrays when no issues were enrolled. `if_gates_produced` must list only the IF gates the active phase produces per its own plan; never carry a prior phase's gate forward into this phase's closeout. Manifest lifecycle failures are non-fatal during the dual-mode window: emit a ledger warning, mention the warning in the mandatory reflection, and preserve the existing phase closeout JSON, verification, and dirty-worktree behavior.
+After plan validation and before lane execution, perform a best-effort `plan-manifest append` lifecycle update through `phase_loop_runtime.plan_manifest.update_lifecycle` to mark the matching `type=phase` entry `executing` with run metadata. During closeout, update the same entry to `completed` or `failed` with verification metadata, reflection metadata, produced-gate metadata, `if_gates_produced`, and dirty-worktree summary fields as available. A `completed` phase update must also include explicit `issue_inventory` and matching `issue_dispositions` arrays, including explicit empty arrays when no issues were enrolled. `if_gates_produced` must list only the IF gates the active phase produces per its own plan; never carry a prior phase's gate forward into this phase's closeout.
+Manifest lifecycle failures are non-fatal during the dual-mode window: emit a ledger warning, mention the warning in the mandatory reflection, and preserve the existing phase closeout JSON, verification, and dirty-worktree behavior.
 
 Before final closeout, run `git status --short -- <plan_path> <roadmap_path>` for every consumed or updated planning artifact. If any planning artifact is untracked or modified and the user did not explicitly forbid staging, run `git add <path>` for each artifact. Rerun status and report `Artifact state: staged|tracked|modified|unstaged|blocked` for each artifact. Do not commit unless requested. Repo-local handoff files are operational state: do not `git add` an ignored handoff alongside the plan artifact unless the plan's owned-files/allowlist explicitly includes the handoff directory; leave ignored handoffs ignored and exclude them from artifact-state reporting.
 
@@ -192,9 +179,11 @@ Add a machine-readable automation handoff that agrees with the human-readable ne
 
 Before final response, write a reflection for every non-trivial run. Write it to `resolve_skill_bundle_root("codex")/<harness>-execute-phase/reflections/<repo_hash>/<branch_slug>/<run_id>.md`. The reflection must include `## Run context` with skill name, ISO timestamp, repo, branch, commit, and artifact path if any, followed by `## What worked`, `## What didn't`, and `## Improvements to SKILL.md`. skip only when no artifact was produced AND no decision was made AND the run was pure inspection.
 
-Set `automation.status=complete`, `verification_status=passed`, and `human_required=false` only when acceptance criteria and required verification are satisfied. Set `automation.status=executed` when implementation ran but acceptance reduction, artifact tracking, or a required verification remains unresolved. Use the consumed phase plan as the handoff `artifact`; the autonomous phase loop trusts phase status handoffs only when that plan's phase-loop frontmatter still matches the selected roadmap. For repairable plan gaps such as malformed dependencies or missing lane interfaces, set `automation.status=blocked`, `next_skill=<harness>-plan-phase`, `next_command=<harness>-plan-phase <roadmap_path> <current_alias>`, `next_model_hint=plan`, `next_effort_hint=high`, and `human_required=false`. For true human blockers, set `human_required=true`, a frozen `blocker_class`, a redacted `blocker_summary`, non-secret `required_human_inputs`, and redacted `access_attempts` when access was involved. Never include secret values.
+Set `automation.status=complete`, `verification_status=passed`, and `human_required=false` only when acceptance criteria and required verification are satisfied. Set `automation.status=executed` when implementation ran but acceptance reduction, artifact tracking, or a required verification remains unresolved. Use the consumed phase plan as the handoff `artifact`; the autonomous phase loop trusts phase status handoffs only when that plan's phase-loop frontmatter still matches the selected roadmap. For repairable plan gaps such as malformed dependencies or missing lane interfaces, set `automation.status=blocked`, `next_skill=<harness>-plan-phase`, `next_command=<harness>-plan-phase <roadmap_path> <current_alias>`, `next_model_hint=plan`, `next_effort_hint=high`, and `human_required=false`.
+For true human blockers, set `human_required=true`, a frozen `blocker_class`, a redacted `blocker_summary`, non-secret `required_human_inputs`, and redacted `access_attempts` when access was involved. Never include secret values.
 
-Manual TUI runs remain valid without the outer phase loop. When `.phase-loop/` exists, treat it as the authoritative runner state; legacy `.codex/phase-loop/` files are compatibility artifacts only and must not block or supersede canonical `.phase-loop/` state. When canonical `.phase-loop/state.json` or `tui-handoff.md` lags behind the newer `.phase-loop/events.jsonl` plus live git topology, reconcile current phase state from the ledger and `git status --short`/HEAD and cite that reconciliation; stale handoff text is not blocking. Only append a legacy `manual` source event to `.codex/phase-loop/events.jsonl` for standalone manual compatibility when no canonical `.phase-loop/` runtime exists, using the same `automation.status`, `next_skill`, `next_command`, `next_model_hint`, `next_effort_hint`, `human_required`, `blocker_class`, `blocker_summary`, `required_human_inputs`, `verification_status`, `artifact`, and `artifact_state` values. This manual event import must preserve the same machine-readable closeout contract. If execution amended the roadmap downstream, compute `roadmap_sha256` and `phase_sha256` from the amended roadmap for the completed current phase before appending the event; do not reuse stale plan frontmatter, next-phase hashes, or pre-amendment roadmap hashes.
+Manual TUI runs remain valid without the outer phase loop. When `.phase-loop/` exists, treat it as the authoritative runner state; legacy `.codex/phase-loop/` files are compatibility artifacts only and must not block or supersede canonical `.phase-loop/` state. When canonical `.phase-loop/state.json` or `tui-handoff.md` lags behind the newer `.phase-loop/events.jsonl` plus live git topology, reconcile current phase state from the ledger and `git status --short`/HEAD and cite that reconciliation; stale handoff text is not blocking. Only append a legacy `manual` source event to `.codex/phase-loop/events.jsonl` for standalone manual compatibility when no canonical `.phase-loop/` runtime exists, using the same `automation.status`, `next_skill`, `next_command`, `next_model_hint`, `next_effort_hint`, `human_required`, `blocker_class`, `blocker_summary`, `required_human_inputs`, `verification_status`, `artifact`, and `artifact_state` values.
+This manual event import must preserve the same machine-readable closeout contract. If execution amended the roadmap downstream, compute `roadmap_sha256` and `phase_sha256` from the amended roadmap for the completed current phase before appending the event; do not reuse stale plan frontmatter, next-phase hashes, or pre-amendment roadmap hashes.
 
 Report:
 
@@ -231,19 +220,11 @@ clear interactive signal is present** — a run missing BOTH the adapter prompt 
   interactive signal is clearly present, the RUNNER owns closeout and commit. Do NOT
   independently publish — defer entirely to runner closeout (`awaiting_phase_closeout` /
   runner commit). Publishing here would bypass the governed pre-merge review panel.
-- (b) Interactive orchestrator on a clean, non-protected feature branch (a clear
-  interactive signal, and the merge target passed the merge-target safety gate). After the
-  Step-9 clean-tree state, run `phase-loop publication-mode --repo .` and do what its
-  `PUBLICATION_ACTION:` line says (see "Interactive publication mode" below). With `ready`,
-  push the merge-target branch and open a PR (`gh pr create`, `--draft` if dependencies
-  remain or verification was partial/skipped, else ready) instead of leaving the lane merge
-  only local. Before readiness, follow [PR descriptions on the interactive path](#pr-descriptions-on-the-interactive-path).
-  With `draft-only`, push and open or keep a DRAFT PR; never flip it to ready.
-  With `none`, do not push and do not open a PR: the work stays committed on the local
-  feature branch, and the final report names that branch as unpublished.
-- (c) Merge target is `main` or a protected branch. Already STOPPED at the merge-target
-  safety gate before any lane merge — never merge lanes onto `main`/protected. Re-target a
-  feature branch or take explicit instruction.
+- (b) For a clearly interactive orchestrator on a clean, non-protected feature branch,
+  read [references/interactive-path.md](references/interactive-path.md) before publication.
+  Before readiness, follow [PR descriptions on the interactive path](#pr-descriptions-on-the-interactive-path).
+- (c) A merge target of `main` or a protected branch stops at the merge-target safety
+  gate before any lane merge; re-target a feature branch or take explicit instruction.
 
 This applies only to interactive (non-runner) completion; it never overrides
 `awaiting_phase_closeout`, the runner's deliberate non-complete terminal. Allowed runner
@@ -253,12 +234,9 @@ unmerged work.
 
 ## Draft PR early — push on first commit (visibility)
 
-Use [PR descriptions on the interactive path](#pr-descriptions-on-the-interactive-path)
+On the interactive path, read [references/interactive-path.md](references/interactive-path.md)
+for first-commit publication. Use [PR descriptions on the interactive path](#pr-descriptions-on-the-interactive-path)
 for pending-work draft text and the final description refresh before readiness.
-
-Do not let a phase branch accumulate commits only locally — that is how lanes drift 70–100 commits ahead of `origin` and in-flight work stays invisible. On the FIRST commit of a phase, unless the interactive publication mode below is `none`, push the branch to `origin` and open a DRAFT PR (`gh pr create --draft`); keep pushing as the phase progresses, and flip the PR to ready at closeout once verification is green. The early draft PR is the visibility contract, not a request to merge.
-
-Respect the publication ownership above: in runner-managed / governed mode the RUNNER owns publication, so the runner performs the early push and draft-PR — do not independently publish or bypass the governed pre-merge review panel. In the interactive-orchestrator path you perform the early push + draft PR yourself on the first commit, as the interactive publication mode allows.
 
 ## PR descriptions on the interactive path
 
@@ -286,22 +264,8 @@ and broker-owned descriptions remain with their publication owner.
 
 On the interactive path, run `phase-loop publication-mode --repo .` immediately before each `git push`, `gh pr create`, `gh pr edit`, or `gh pr ready`, including the closeout publication in mode (b). Module form, only when the package is on the ACTIVE python's path: `python -m phase_loop_runtime.publication_mode --repo .`. It prints `publication_mode=<none|draft-only|ready>` and exactly one `PUBLICATION_ACTION:` line. Do what that line says. Never choose the mode yourself, and never read the config files by hand.
 
-- `ready` (the default when nothing is configured): push on the first commit, open a draft PR, refresh its description at closeout, and flip it to ready once verification is green.
-- `draft-only`: push and open or refresh an agent-owned draft PR. Never run `gh pr ready`, and never open a ready PR.
-- `none`: no `git push`, no `gh pr create`, no `gh pr edit`, no `gh pr ready`. The phase still completes: lanes merge locally and closeout runs. The final report names the local branch and says publication was withheld by the publication mode.
-- A non-zero exit, `publication_mode=error`, or a missing command: publish nothing and report the error. Finish the phase locally as under `none`; never fall back to `ready`.
-
-The mode comes from the repo's committed `.phase-loop-publication.toml` and the user's `agent-harness/publication.toml`; the most restrictive wins. It governs only this interactive path. Runner-managed closeout (mode (a)) stays under `--closeout-mode`.
+Read [references/interactive-path.md](references/interactive-path.md) for each mode's required action, including fail-closed handling of `publication_mode=error`. Runner-managed closeout stays under `--closeout-mode`.
 
 ## Worktree lifecycle — prune after merge (standing rule)
 
-**Prune a worktree — and delete its now-dead branch — as soon as its PR merges. Never leave merged or abandoned worktrees behind.** Forced removal of the run's own lane worktrees at merge time is already allowed runner hygiene; this rule additionally covers the **sibling worktrees under the shared workspace volume** (`/mnt/workspace/worktrees/<project>-<branch>`, or the repo-sibling `../<project>-<branch>` fallback on hosts without it) that outlive a single run. Left unpruned they accumulate without bound — the shared volume has reached thousands of stale merged worktrees because nothing swept them.
-
-This is a **sweep**, not "delete the tree you are standing in." At closeout the current run's own branch/worktree is still unmerged, so it is KEPT by the criterion below — which is exactly right. Run the sweep at closeout (and, cheaply, at phase start).
-
-For each sibling worktree from `git worktree list` (excluding the primary checkout and this run's own worktree), classify:
-
-- **SAFE to prune** — the branch is MERGED **and** the tree is CLEAN. MERGED means either `git merge-base --is-ancestor <branch> origin/main` (fetch first) OR `gh pr view <branch> --json state -q .state` reports `MERGED` (catches squash/rebase merges that are not ancestors). CLEAN means `git -C <path> status --porcelain` is empty. Then `git worktree remove --force <path>` and `git branch -D <branch>` — the ref is dead once its PR merged to `origin`, so deleting it is correct regardless of the branch's naming.
-- **KEEP** — unmerged (work not on `origin/main` and no merged PR) OR dirty (`--porcelain` non-empty). Leave it and log one line. This preserves the current run's own worktree and any in-flight peer work.
-
-**Permission-locked fallback (gotcha).** A worktree whose `node_modules` (or other build output) was installed under a **different uid** — e.g. CI-offload / rootless-docker runs — is permission-locked. `git worktree remove --force` and a plain `rm -rf` will FAIL with `Permission denied`. When removal fails on permissions, fall back to `sudo rm -rf <path>` (or re-run the cleanup as the installing uid), then `git worktree prune` to drop the dangling administrative entry, then `git branch -D <branch>`. A permission-denied removal is still SAFE — do not reclassify it as KEEP.
+At phase start and closeout, read [references/interactive-path.md](references/interactive-path.md) for the worktree sweep, clean/merged classification, and permission-locked fallback.
