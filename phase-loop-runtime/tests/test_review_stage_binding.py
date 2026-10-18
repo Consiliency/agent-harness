@@ -391,6 +391,13 @@ def test_falsifier_cleanup_residue_is_an_error(tmp_path, monkeypatch):
 
 def _authenticated_falsifier_report(tmp_path, monkeypatch, payload):
     original_popen = subprocess.Popen
+    original_is_file = Path.is_file
+
+    def launcher_is_file(path):
+        return str(path) == "/usr/bin/bwrap" or original_is_file(path)
+
+    # Only the emitter runs; supply its unused launcher's prerequisite in this fixture.
+    monkeypatch.setattr(Path, "is_file", launcher_is_file)
     emitter = (
         "import hashlib,hmac,sys\n"
         "key=sys.stdin.buffer.readline().rstrip(b'\\n')\n"
