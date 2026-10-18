@@ -278,8 +278,10 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "cleanup not confirmed",
         "the runtime could not confirm that what it reserved on the remote machine was "
         "removed",
-        "run `phase-loop placement reap` when the remote machine answers again; the lease "
-        "is fenced, so nothing can start under it"),
+        "if execute was sent, the cancelled workload may have started or still be running "
+        "and using its delivered credential until release is confirmed; nothing was retried; "
+        "the lease is kept for the reaper. Run `phase-loop placement reap` when the remote "
+        "machine answers again"),
     "sandbox_placement_lost_after_launch": (
         "seat lost",
         "the seat was started on the remote machine and its result did not come back",
