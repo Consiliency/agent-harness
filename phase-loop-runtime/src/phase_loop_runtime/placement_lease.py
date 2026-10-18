@@ -20,6 +20,7 @@ records request or result bytes.
 
 from __future__ import annotations
 
+from abc import ABC, abstractmethod
 import errno
 import json
 import os
@@ -177,6 +178,18 @@ def _valid_entry(entry: dict[str, object] | None, lease_id: str) -> bool:
                for value in (entry.get(key),))
 
 
+class JournalReapingBackend(ABC):
+    """Explicit opt-in to cleanup using a locked journal snapshot."""
+
+    @abstractmethod
+    def validate_reaper_context(self) -> None:
+        """Reject invalid calling contexts before the reaper starts worker waits."""
+
+    @abstractmethod
+    def kill_journaled(self, owner_id, lease_id, entry, bound):
+        """Return the immutable reference after a validated destruction barrier."""
+
+
 class Lease:
     """One rung's lease, held under ``flock`` by this process until it is cleared or
     abandoned."""
@@ -285,28 +298,41 @@ class Lease:
         lock up at once so that any reaper, this process's own included, may act on it. An
         abandoned lease is fenced for good."""
         self.fenced = True
-        try:
-            self._update(abandoned=True)
-        except OSError:
-            pass
-        self._unlock()
-
-    def clear(self) -> None:
-        """Remove the entry: nothing is held for this lease. If the entry cannot be removed
-        it stays with a free lock, which only sends a reaper to confirm it again."""
-        if not self.held:
+        if self._pid != os.getpid():
             self._unlock()
             return
-        try:
-            os.unlink(self.path)
-            fd = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+        with self._lock:
+            if self._fd is None:
+                return
+            fd, self._fd = self._fd, None
             try:
-                _fsync(fd)
+                self._entry["abandoned"] = True
+                _write_entry(fd, self._entry)
+            except OSError:
+                pass
             finally:
                 os.close(fd)
-        except OSError:
-            pass
-        self._unlock()
+
+    def clear(self) -> None:
+        """Remove an owned entry, serialized with abandonment and lock release."""
+        if self._pid != os.getpid():
+            self._unlock()
+            return
+        with self._lock:
+            if self._fd is None:
+                return
+            fd, self._fd = self._fd, None
+            try:
+                os.unlink(self.path)
+                dir_fd = os.open(self.path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+                try:
+                    _fsync(dir_fd)
+                finally:
+                    os.close(dir_fd)
+            except OSError:
+                pass
+            finally:
+                os.close(fd)
 
     def heartbeat(self, renew: Callable[[], object], interval_s: float) -> Callable[[], None]:
         """Renew on an interval for as long as this process holds the lease lock, and stop
@@ -447,6 +473,15 @@ def reap(
             except OSError:
                 os.close(fd)  # held: a live lease
                 continue
+            try:
+                locked, named = os.fstat(fd), os.stat(directory / name, follow_symlinks=False)
+                if (locked.st_nlink == 0
+                        or (locked.st_dev, locked.st_ino) != (named.st_dev, named.st_ino)):
+                    raise FileNotFoundError(errno.ENOENT, "lease entry changed before locking")
+            except OSError:
+                os.close(fd)
+                kept.append(match.group(1))
+                continue
             if name.startswith("."):
                 # Never renamed into place, so nothing was ever sent for it.
                 try:
@@ -471,6 +506,8 @@ def reap(
             if backend is None or bound.cancelled.is_set():
                 kept.extend(lease_id for lease_id, _fd, _path, _entry in group)
                 continue
+            if isinstance(backend, JournalReapingBackend):
+                backend.validate_reaper_context()
             done = _reap_backend(backend, group, bound)
             cleared.extend(done)
             kept.extend(lease_id for lease_id, _fd, _path, _entry in group if lease_id not in done)
@@ -504,7 +541,8 @@ def _reap_backend(
         killed: set[str] = set()
         for lease_id, fd, _path, entry in group:
             try:
-                journaled = getattr(backend, "kill_journaled", None)
+                journaled = (backend.kill_journaled
+                             if isinstance(backend, JournalReapingBackend) else None)
                 reference = calls.run(
                     lambda lease_id=lease_id, entry=dict(entry), journaled=journaled: (
                         journaled(owner, lease_id, entry, bound) if journaled is not None
@@ -514,8 +552,9 @@ def _reap_backend(
                 if journaled is not None:
                     if not isinstance(reference, str) or not reference:
                         raise ValueError("missing journal kill reference")
-                    entry["sandbox_ref"] = reference
-                    _write_entry(fd, entry)
+                    lease = Lease(lease_id=lease_id, owner=owner, path=_path, fd=fd, entry=entry)
+                    lease.attach_transport(backend)
+                    lease.record_transport_ref(backend, reference)
                 killed.add(lease_id)
             except Exception:
                 continue

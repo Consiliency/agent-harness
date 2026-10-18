@@ -214,7 +214,8 @@ def test_poison_never_restores_execute_and_kill_remains_available(proto, poison)
 
 @pytest.mark.parametrize("case", ["clean", "pending", "listed", "list_failure", "wrong_generation", "false_status",
                                   "timeout", "malformed_list", "wrong_owner"])
-def test_existing_reaper_requires_barrier_status_and_complete_absence(proto, case):
+@pytest.mark.parametrize("backend_class", [oj.ReaperAdapter, oj.OpenShellBackend])
+def test_existing_reaper_requires_barrier_status_and_complete_absence(proto, case, backend_class):
     lease, stub, _ = setup(proto)
     lease.record_sandbox_ref(model.GEN)
     lease.abandon()
@@ -235,7 +236,7 @@ def test_existing_reaper_requires_barrier_status_and_complete_absence(proto, cas
                                  if case == "listed" else []))
         if case == "malformed_list":
             stub.responses[4] = proto.ControlCancellationLeaseResponse(entries=[{"lease_id": "unknown", "sandbox_ref": "bad"}])
-        adapter = oj.ReaperAdapter(proto, stub, loop=loop, workspace="dedicated",
+        adapter = backend_class(proto, stub, loop=loop, workspace="dedicated",
                                    owner_id="wrong" if case == "wrong_owner" else lease.owner_id)
         outcome = journal.reap(lambda _: adapter, model.bound())
         assert outcome == {"cleared": (lease.lease_id,) if case == "clean" else (),
@@ -362,3 +363,181 @@ def test_uncertain_dispatch_is_never_repeated(proto, operation):
         assert [c[0] for c in stub.calls].count("exec") == (operation == "execute")
         lease.abandon()
     asyncio.run(scenario())
+
+
+@pytest.fixture
+def running_loop():
+    loop = asyncio.new_event_loop()
+    ready = threading.Event()
+    loop.call_soon(ready.set)
+    thread = threading.Thread(target=loop.run_forever)
+    thread.start()
+    assert ready.wait(2)
+    try:
+        yield loop
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(2)
+        assert not thread.is_alive()
+        loop.close()
+
+
+def cleanup_backend(proto, loop, case="clean"):
+    lease, stub, client = setup(proto)
+    lease.record_transport_ref(client, model.GEN)
+    lease.abandon()
+    stub.responses[3] = proto.ControlCancellationLeaseResponse(barrier_confirmed=case != "pending")
+    stub.responses[5] = model.observation(
+        lease={"lease_id": "wrong" if case == "identity" else lease.lease_id,
+               "sandbox_ref": "11111111-1111-4111-8111-111111111111"
+               if case == "generation" else model.GEN},
+        admission_ready=False, fenced=True, destruction_observed=True,
+        cleanup_pending=False, barrier_confirmed=True)
+    stub.responses[4] = proto.ControlCancellationLeaseResponse()
+    backend = oj.OpenShellBackend(proto, stub, loop=loop, workspace="dedicated",
+                                  owner_id=lease.owner_id)
+    return lease, stub, backend
+
+
+@pytest.mark.parametrize("case", ["clean", "pending", "identity", "generation"])
+def test_cleanup_backend_kill_retains_until_reap(proto, running_loop, case):
+    lease, stub, backend = cleanup_backend(proto, running_loop, case)
+    if case == "clean":
+        backend.kill(lease.lease_id, model.bound())
+        assert entry(lease)["confirmed_killed_at"] is not None
+    else:
+        with pytest.raises(oj.PlacementUnavailable):
+            backend.kill(lease.lease_id, model.bound())
+        assert entry(lease)["confirmed_killed_at"] is None
+    assert lease.path.exists()
+    assert entry(lease)["sandbox_ref"] == model.GEN
+    assert entry(lease)["abandoned"]
+    result = journal.reap(lambda _: backend, model.bound())
+    assert result["cleared"] == ((lease.lease_id,) if case == "clean" else ())
+    assert all(call[0] in (3, 4, 5) for call in stub.calls)
+    from phase_loop_runtime.sandbox_placement import ExecutingBackend
+    assert not isinstance(backend, ExecutingBackend)
+    assert not hasattr(backend, "execute")
+
+
+def test_cleanup_backend_exclusive_lock(proto, running_loop):
+    lease, stub, backend = cleanup_backend(proto, running_loop)
+    recovered = journal.recover_lease(lease.lease_id)
+    try:
+        with pytest.raises(BlockingIOError):
+            backend.kill(lease.lease_id, model.bound())
+        assert journal.reap(lambda _: backend, model.bound())["cleared"] == ()
+        assert stub.calls == []
+    finally:
+        recovered.abandon()
+
+
+@pytest.mark.parametrize("operation", ["kill", "list", "reap"])
+def test_bridge_rejects_loop_thread_before_wait(proto, operation):
+    async def scenario():
+        lease, stub, backend = cleanup_backend(proto, asyncio.get_running_loop())
+        with pytest.raises(ValueError, match="external thread"):
+            if operation == "kill":
+                backend.kill(lease.lease_id, model.bound())
+            elif operation == "list":
+                backend.list_owned(lease.owner_id, model.bound())
+            else:
+                journal.reap(lambda _: backend, model.bound())
+        assert stub.calls == []
+        recovered = journal.recover_lease(lease.lease_id)
+        recovered.abandon()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("closed", [False, True])
+def test_bridge_rejects_stopped_loop(proto, closed):
+    loop = asyncio.new_event_loop()
+    if closed:
+        loop.close()
+    try:
+        lease, stub, backend = cleanup_backend(proto, loop)
+        with pytest.raises(ValueError, match="running loop"):
+            backend.list_owned(lease.owner_id, model.bound())
+        assert stub.calls == []
+    finally:
+        loop.close()
+
+
+@pytest.mark.parametrize("operation", ["kill", "reap"])
+def test_late_cleanup_completion_cannot_write_recovered_journal(proto, running_loop, monkeypatch, operation):
+    lease, _, backend = cleanup_backend(proto, running_loop)
+    entered, finished = threading.Event(), threading.Event()
+    release = asyncio.Event()
+
+    class LateSession:
+        _observation = type("Observation", (), {"sandbox_ref": model.GEN})()
+
+        async def kill(self, bound):
+            entered.set()
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                await release.wait()
+            finished.set()
+
+        async def list_owned(self, bound):
+            return ()
+
+    monkeypatch.setattr(backend, "_session", lambda *args: LateSession())
+    if operation == "kill":
+        with pytest.raises(oj.PlacementUnavailable):
+            backend.kill(lease.lease_id, model.bound(.05))
+    else:
+        assert journal.reap(lambda _: backend, model.bound(.05))["cleared"] == ()
+    assert entered.wait(2)
+    recovered = journal.recover_lease(lease.lease_id)
+    try:
+        before = lease.path.read_bytes()
+        running_loop.call_soon_threadsafe(release.set)
+        assert finished.wait(2)
+        # Drain callbacks, including completion of the discarded bridge future.
+        asyncio.run_coroutine_threadsafe(asyncio.sleep(0), running_loop).result(2)
+        assert lease.path.read_bytes() == before
+        assert entry(lease)["confirmed_killed_at"] is None
+    finally:
+        recovered.abandon()
+
+
+def test_reaper_requires_explicit_journal_opt_in():
+    lease = opened()
+    lease.abandon()
+    calls = []
+
+    class Unrelated:
+        def kill_journaled(self, *args):
+            pytest.fail("duck-typed hook must not run")
+
+        def kill(self, lease_id, bound):
+            calls.append(lease_id)
+
+        def list_owned(self, owner_id, bound):
+            return ()
+
+    assert journal.reap(lambda _: Unrelated(), model.bound())["cleared"] == (lease.lease_id,)
+    assert calls == [lease.lease_id]
+
+
+def test_opted_in_reaper_cannot_replace_reference():
+    lease = opened()
+    token = object()
+    lease.attach_transport(token)
+    lease.record_transport_ref(token, model.GEN)
+    lease.abandon()
+
+    class WrongReference(journal.JournalReapingBackend):
+        def validate_reaper_context(self):
+            pass
+
+        def kill_journaled(self, *args):
+            return "11111111-1111-4111-8111-111111111111"
+
+        def list_owned(self, *args):
+            return ()
+
+    assert journal.reap(lambda _: WrongReference(), model.bound())["cleared"] == ()
+    assert entry(lease)["sandbox_ref"] == model.GEN

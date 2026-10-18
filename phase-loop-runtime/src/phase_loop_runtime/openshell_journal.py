@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from concurrent.futures import TimeoutError
 
 from .openshell_transport import LeaseSession, TransportError
-from .placement_lease import Lease, _valid_entry
+from .placement_lease import JournalReapingBackend, Lease, _valid_entry, recover_lease
 from .sandbox_placement import PlacementUnavailable, _TIMEOUT
 
 
@@ -58,7 +59,7 @@ class JournalSession:
         return await self._session.list_owned(bound)
 
 
-class ReaperAdapter:
+class ReaperAdapter(JournalReapingBackend):
     """Synchronous existing-reaper bridge to an injected, running aio loop.
 
     Call reap from outside that loop. The reaper owns the file locks and writes;
@@ -68,6 +69,16 @@ class ReaperAdapter:
     def __init__(self, proto, stub, *, loop, workspace: str, owner_id: str):
         self._proto, self._stub, self._loop = proto, stub, loop
         self._workspace, self._owner = workspace, owner_id
+        self._pid = os.getpid()
+
+    def validate_reaper_context(self):
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if (running is not None or self._pid != os.getpid()
+                or self._loop.is_closed() or not self._loop.is_running()):
+            raise ValueError("journal bridge requires an external thread and a running loop")
 
     def _session(self, lease_id, reference=None):
         return LeaseSession(self._proto, self._stub, workspace=self._workspace,
@@ -75,7 +86,12 @@ class ReaperAdapter:
                             expected_generation=reference)
 
     def _run(self, coroutine, bound):
-        future = asyncio.run_coroutine_threadsafe(coroutine, self._loop)
+        try:
+            self.validate_reaper_context()
+            future = asyncio.run_coroutine_threadsafe(coroutine, self._loop)
+        except BaseException:
+            coroutine.close()
+            raise
         try:
             return future.result(timeout=bound.timeout_s)
         except TimeoutError:
@@ -99,3 +115,22 @@ class ReaperAdapter:
         if owner_id != self._owner:
             raise ValueError("journal owner mismatch")
         return self._run(self._session("inventory").list_owned(bound), bound)
+
+
+class OpenShellBackend(ReaperAdapter):
+    """Unregistered cleanup-only connection; deliberately not an ExecutingBackend.
+
+    Direct kill recovers an existing journal exclusively and retains it for reap's
+    complete LIST check. RPC tasks never receive the journal handle.
+    """
+
+    def kill(self, lease_id, bound):
+        self.validate_reaper_context()
+        lease = recover_lease(lease_id)
+        try:
+            lease.attach_transport(self)
+            reference = self.kill_journaled(lease.owner_id, lease_id, dict(lease._entry), bound)
+            lease.record_transport_ref(self, reference)
+            lease.note_killed()
+        finally:
+            lease.abandon()

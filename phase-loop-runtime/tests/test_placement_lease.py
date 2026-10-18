@@ -826,3 +826,74 @@ def test_execute_marker_requires_create_and_reference_without_write(monkeypatch,
         assert lease._entry["execute_sent_at"] is None
     finally:
         lease._unlock()
+
+
+def test_clear_serializes_abandon_and_recovery(monkeypatch):
+    lease = placement_lease.open_lease("remote", _root())
+    entered, release, abandoned = threading.Event(), threading.Event(), threading.Event()
+    unlink = os.unlink
+
+    def paused(path, *args, **kwargs):
+        if path == lease.path:
+            entered.set()
+            assert release.wait(2)
+        return unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", paused)
+    clearing = threading.Thread(target=lease.clear)
+    clearing.start()
+    assert entered.wait(2)
+
+    def abandon():
+        lease.abandon()
+        abandoned.set()
+
+    abandoning = threading.Thread(target=abandon)
+    abandoning.start()
+    try:
+        assert not abandoned.wait(.05)
+        with pytest.raises(BlockingIOError):
+            placement_lease.recover_lease(lease.lease_id)
+    finally:
+        release.set()
+        clearing.join(2)
+        abandoning.join(2)
+    assert not clearing.is_alive() and not abandoning.is_alive()
+    assert not lease.path.exists()
+
+
+@pytest.mark.parametrize("pending", [False, True])
+@pytest.mark.parametrize("race", ["removed", "replaced", "symlink"])
+def test_reaper_checks_inode_after_lock(monkeypatch, pending, race):
+    lease = placement_lease.open_lease("remote", _root())
+    lease.abandon()
+    path = lease.path
+    if pending:
+        path = path.with_name(f".{lease.lease_id}.pending")
+        lease.path.rename(path)
+    content = path.read_bytes()
+    flock = fcntl.flock
+    changed = False
+
+    def race_lock(fd, mode):
+        nonlocal changed
+        if not changed:
+            changed = True
+            path.unlink()
+            if race == "replaced":
+                path.write_bytes(content)
+            elif race == "symlink":
+                target = path.with_name("replacement")
+                target.write_bytes(content)
+                path.symlink_to(target)
+        return flock(fd, mode)
+
+    monkeypatch.setattr(fcntl, "flock", race_lock)
+
+    def forbidden(scheme):
+        pytest.fail("detached inode must not contact backend")
+
+    result = placement_lease.reap(forbidden, sp.OperationBound(1, threading.Event()))
+    assert result == {"cleared": (), "kept": (lease.lease_id,)}
+    if race != "removed":
+        assert path.read_bytes() == content

@@ -239,8 +239,9 @@ No request body, credential or result is journaled. Legacy fields are accepted;
 unknown fields and malformed markers are retained without contacting a backend.
 
 `ReaperAdapter` is injected with the same owner, workspace, stub and running aio
-loop. Run the synchronous reaper outside that loop. Its optional `kill_journaled`
-hook receives the locked entry's snapshot so KILL binds the recorded generation.
+loop. Run the synchronous reaper outside that loop. Its explicitly opted-in
+`JournalReapingBackend.kill_journaled` hook receives the locked entry's snapshot
+so KILL binds the recorded generation.
 It never writes through a borrowed file descriptor: a late RPC completion cannot
 write after the reaper releases the lock. KILL requires barrier plus STATUS;
 complete LIST must also omit the lease before the existing reaper clears it.
@@ -261,15 +262,57 @@ retries-off/receive-limit qualification) remain open. The r13 generated scratch
 is reused read-only for tests; no new generator or supply-chain qualification is
 claimed. R12-L3 raw exception chains and r10 L3–L6 above remain open.
 
-R16 L-a–d remain future work: untouched inherited descriptors retain locks until
-closed; reaper hook routing uses duck typing; driver reference writes can bypass
-the transport no-replacement guard; synchronous fsync/loop-thread contention,
-same-loop reaper calls, CLI loop injection and reaper directory fsync remain
-unqualified. Backend wiring must address these boundaries before use.
+## Unregistered lifecycle connection (r21)
 
-R18 L-a also covers descriptor reuse: workers must exec or close inherited lease
-descriptors instead of calling Lease methods after closing/reusing fd numbers.
-R18 L-e–g remain with the wiring owner: do not call `clear` and `abandon`
-concurrently on the same handle; clear recovered entries only through `reap` or
-an equivalent KILL/STATUS/LIST-absence barrier; the reaper lacks recovery's
-post-flock identity check and can issue a redundant kill after an open/clear race.
+`openshell_journal.OpenShellBackend` exposes only synchronous `kill(lease_id,
+bound)` and `list_owned(owner_id, bound)`, inheriting the journal-aware reaper
+bridge. It is deliberately not an `ExecutingBackend` and cannot be registered as
+one. It has no CREATE, EXEC, admission, staging, collection, credential or channel
+factory methods. There is no CLI construction path or launch-site import; the
+nonlocal execution flag remains false.
+
+Direct `kill` exclusively recovers an existing journal, binds its immutable
+reference, and calls KILL plus validated STATUS through `ReaperAdapter`. Only the
+synchronous owner writes the returned reference with `record_transport_ref` and
+records the kill. Success and failure both abandon the retained entry; direct
+kill never clears it. `reap` must independently confirm KILL/STATUS and complete
+LIST absence before removal. A held lease cannot be recovered; its live owner
+continues to use `JournalSession`. No cleanup call can grant CREATE/EXEC replay.
+
+Journal-aware reaping requires nominal `JournalReapingBackend` inheritance;
+an unrelated method named `kill_journaled` does not opt a backend in. Reaper
+reference writes also use `record_transport_ref`, never the driver's
+`record_sandbox_ref`. The latter is untouched: connecting OpenShell to the full
+execution driver remains a separate dependency requiring immutable commit wiring.
+
+The bridge rejects any calling thread with a running event loop, stopped/closed
+injected loops, and fork-inherited bridge instances before waiting. Reaping checks
+this on its caller thread before starting workers, so the worker wrapper cannot
+hide a same-loop call. An injected loop must remain running on another thread
+throughout use. Timed-out RPCs are cancelled; even a cancellation-resistant late
+completion has no journal handle and cannot write after ownership is released.
+
+`clear`, `abandon` and `_unlock` serialize ownership changes using the lease
+mutex. Fork guards remain before mutex acquisition, and inherited cleanup closes
+only its descriptor without `LOCK_UN`. Reaping now checks descriptor/path device,
+inode and link count after flock, for final and pending entries alike, before any
+remote cleanup or pending unlink. Recovery's existing check is retained.
+
+R16/R18 L-b, L-c and L-e–g are addressed for this lifecycle-only path. L-f is a
+caller constraint: arbitrary direct use of `Lease.clear` on recovered handles is
+still not a barrier API. L-d is narrowed by loop misuse rejection, not closed:
+synchronous journal I/O, event-loop contention, dedicated CLI loop ownership and
+reaper directory fsync after unlink remain obligations. No new timeout, worker
+cap or operational setting is introduced; supplied `OperationBound` and existing
+reaper settings defaults/overrides remain authoritative.
+
+R18 L-a remains: inherited descriptors retain locks until closed, and closing and
+reusing their numbers before calling Lease methods can close an unrelated fd.
+Workers must exec or close inherited descriptors without subsequently reusing the
+old Lease handle. Production channel retries-off/receive limits, generated
+artifact and wheel digest enforcement, raw exception context, worker inputs and
+fixed ends, authenticated enrollment/rotation, stage/collect/auth/one-shot channel
+construction and native completion are still required before a full executing
+backend/CLI can be implemented and qualified. Actual-server CREATE/EXEC remains
+closed. Local model and SDK tests never substitute for live acceptance or physical
+destruction/restart/bypass falsifiers. No earlier qualification obligation is waived.
