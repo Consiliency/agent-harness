@@ -94,6 +94,8 @@ P = bindings()
 
 def generated_bindings():
     path = os.environ.get("OPENSHELL_GENERATED_DIR")
+    if not path and os.environ.get("OPENSHELL_SDK_QUALIFICATION") == "1":
+        pytest.fail("qualification requires OPENSHELL_GENERATED_DIR")
     if not path:
         pytest.skip("generated SDK qualification requires OPENSHELL_GENERATED_DIR; see transport doc")
     # An explicitly requested SDK must import successfully, never silently skip.

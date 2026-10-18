@@ -153,44 +153,37 @@ Source tests authorize no activation, deployment, or live workload.
 
 ## Reproduce the bounded generated-binding qualification
 
-Use a Python 3.13.15 interpreter with the repository test dependencies installed.
-The r13 run used grpcio-tools **1.84.0**, grpcio **1.84.0**, protobuf **7.36.2**,
-setuptools **84.0.0** and typing-extensions **4.16.0**, installed only in scratch.
-The generator distribution requires protobuf `>=7.35.1,<8.0.0` and grpcio
-`>=1.84.0`; its generated Python code validates protobuf 7.35.1 compatibility at
-import. These versions were resolved and imported successfully, not inferred from
-a proposed version number. They are qualification dependencies, not new runtime
-package requirements.
+The explicit CI-ready entrypoint uses the frozen
+[`scripts/openshell-sdk-manifest.json`](scripts/openshell-sdk-manifest.json).
+It verifies all 11 proto inputs, bundled generator inputs, 23 generated outputs,
+and five approved wheel artifacts. Wheel pins were checked against PyPI release
+metadata and freshly downloaded content; installation uses `--require-hashes`,
+`--no-index` and only those wheels. Versions have one authority in the manifest.
 
-From `phase-loop-runtime`, set `PYTHON` to that interpreter and `SERVER` to the
-read-only pinned OpenShell checkout. This recipe writes only to a new private
-scratch directory. Keep it and its hash manifests with the qualification evidence;
-do not commit generated modules. No shared cache copy is needed.
+Use the manifest's interpreter/platform with repository test dependencies already
+installed, plus `git`, `uv` and `openssl`. From `phase-loop-runtime`:
 
 ```sh
-set -eu
-: "${PYTHON:?set the test interpreter}" "${SERVER:?set the pinned server checkout}"
-test "$(git -C "$SERVER" rev-parse HEAD)" = d16558327be26766f57882b081c7de2333505909
-test -z "$(git -C "$SERVER" status --porcelain)"
-QUAL_SCRATCH=$(mktemp -d /tmp/openshell-sdk-XXXXXXXX)
-mkdir "$QUAL_SCRATCH/generated"
-uv pip install --no-cache --link-mode=copy --python "$PYTHON" \
-  --target "$QUAL_SCRATCH/deps" grpcio-tools==1.84.0 grpcio==1.84.0 \
-  protobuf==7.36.2 setuptools==84.0.0 typing-extensions==4.16.0
-export PYTHONDONTWRITEBYTECODE=1
-export PYTHONPATH="$QUAL_SCRATCH/deps:$PWD/src:$PWD/tests"
-"$PYTHON" -m grpc_tools.protoc --version
-"$PYTHON" -m grpc_tools.protoc -I "$SERVER/proto" \
-  --python_out="$QUAL_SCRATCH/generated" \
-  --grpc_python_out="$QUAL_SCRATCH/generated" \
-  --descriptor_set_out="$QUAL_SCRATCH/generated/openshell.desc" --include_imports \
-  "$SERVER"/proto/*.proto
-(cd "$SERVER/proto" && sha256sum *.proto) > "$QUAL_SCRATCH/proto.sha256"
-(cd "$QUAL_SCRATCH/generated" && sha256sum *.py *.desc) > "$QUAL_SCRATCH/generated.sha256"
-export OPENSHELL_GENERATED_DIR="$QUAL_SCRATCH/generated"
-"$PYTHON" -m pytest -q -p no:cacheprovider \
-  tests/test_openshell_transport.py tests/test_openshell_transport_grpc.py
+"$PYTHON" -B scripts/qualify_openshell_sdk.py \
+  --server "$SERVER" --work "$NEW_PRIVATE_QUALIFICATION_DIRECTORY"
 ```
+
+The work directory must not exist. The command reads the immutable server commit's
+Git objects, so a separate evolving server checkout need not be reset or changed.
+It writes only its new private directory, installs dependencies into that directory,
+and disables bytecode and pytest caches. Allow about 100 MiB. Missing prerequisites,
+input/output hash mismatches, skipped/xfail tests, or a failed narrow test run refuse
+qualification. `verified-manifest.json` is written only after success. The narrow
+run includes transport, local gRPC and subprocess TLS channel tests. The opt-in
+`_openshell_qualification` pytest plugin also rejects missing/mismatched SDK bytes
+before collection; ordinary optional developer runs retain their skip behavior.
+Main CI workflow integration remains outstanding; ordinary CI is not qualification.
+
+These pins support the **existing reviewed wire** only. They do not supply bindings
+for new server RPCs. After new wire review, regenerate and review the input/output
+manifest together. Byte hash enforcement establishes identity, not cross-platform
+reproducibility or live proof; a fresh generation matching retained r13 output is
+bounded evidence for this interpreter/generator/platform only.
 
 With the environment variable set, missing or incompatible generated modules fail
 rather than silently falling back. Without it, generated cases explicitly skip;
