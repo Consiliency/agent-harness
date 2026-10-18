@@ -92,3 +92,20 @@ its comment is not a child-side execution witness.
 
 Harness tests cover matching C6 copies and the rendered pending-risk notice,
 alongside existing placement/lease/launchspec regressions as recorded in REPORT.md.
+
+## Harness journal adapter increment r15
+
+The r2 sections above describe the historical server foundation, not current-server
+qualification. Harness now integrates that exact approved C6/notice patch and an
+unregistered journal adapter against the pinned private transport. Tests in
+`test_openshell_journal.py` cover durable dispatch ordering, sync failures, actual
+client-process exits around markers/references, exclusive ownership, legacy and
+malformed journals, uncertainty/poison refusal, and the existing reaper's requirement
+for matching KILL/STATUS barrier plus complete LIST absence. The local generated-gRPC
+model retains a fenced lease in LIST until its barrier is confirmed.
+
+These are client/model evidence for portions of falsifiers 4, 7, 8, 9 and 10.
+They do not qualify the Rust authority, physical launch/destruction or actual-server
+recovery. No backend is registered and no execution flag is enabled. R14's digest,
+wheel provenance and channel-factory lows, R12 raw exception-chain limits, and r10
+L3–L6 remain documented in `phase-loop-runtime/openshell-private-transport.md`.

@@ -10,9 +10,8 @@ The wire authority is OpenShell `d16558327be26766f57882b081c7de2333505909`:
 `crates/openshell-server/README.md` (Private cancellation lease API). Production
 CREATE/EXEC remain gated there. The owner-approved destruction barrier is in the
 private cancellation amendment r4; Harness foundation
-`ad7937169e4e5578da525251e796a796224df075` has been inspected but is **not integrated**
-into this driver-based branch. Integrating its two C6 copies and notice wording
-remains necessary before a usable backend can ship.
+`ad7937169e4e5578da525251e796a796224df075` is integrated by a provenance-preserving cherry-pick, including both C6 copies,
+the pending-release notice and foundational conformance document.
 
 ## Caller boundary
 
@@ -42,7 +41,8 @@ before scheduling CREATE/EXEC and are not cleared on cancellation, refusal,
 transport failure, or malformed responses. They are local duplicate protection,
 not durable fencing. A new session defaults to recovery mode: STATUS/KILL/LIST
 are available, CREATE/EXEC are prohibited. Never recover by passing `fresh=True`.
-The journal/reaper integration and durable dispatch recording are still owed.
+The unregistered `openshell_journal` adapter supplies durable dispatch recording
+and a bridge to the existing reaper; it is not a complete backend.
 
 The methods map ENROLL=1, CREATE=2, KILL=3, LIST=4, STATUS=5 to
 `ControlCancellationLease`; EXEC uses `ExecCancellationLease` exactly once.
@@ -142,7 +142,7 @@ Tests exercise client handling of applicable falsifiers 1–5 and 7–10; falsif
 VMM destruction, service restart persistence, direct-operation bypass prevention,
 or real authenticated ownership. The private recovery report maps each test.
 Still required: authenticated production-channel qualification, cancellation
-foundation integration, backend/journal/worker integration, fixed ends and endpoint
+backend/worker integration, fixed ends and endpoint
 bounds, transfer/publication/collection/renewal, terminal remote-create and orphan
 reconciliation, authority/store-loss detection, independent bounded reaping,
 enrollment resource-class completeness, issuer rotation, memory-only credential
@@ -212,3 +212,45 @@ Synthetic payloads are used throughout. There is no external endpoint, TLS,
 provider, VM, production retry configuration, or physical cancellation evidence.
 The complete generated SDK cannot substitute for actual-server qualification or
 physical falsifiers. The remaining gates above stay open; offload stays disabled.
+
+
+## Durable journal adapter (bounded r15 increment)
+
+`JournalSession` attaches once to a `placement_lease.Lease`. Only `open_lease`
+creates an in-memory fresh capability. `recover_lease` acquires the existing
+nonblocking exclusive flock and always creates an observation/cancellation-only
+handle, including for legacy entries without markers. A second attachment,
+concurrent recovery, an unlocked handle or an inherited handle in a forked
+process cannot grant dispatch. The lock is held on the existing inode; no rename
+of a live entry bypasses it. No age-based stale-writer takeover is used.
+
+`create_sent_at` and `execute_sent_at` are conservative attempt markers, fsynced
+before calling the transport. They are never proof that a network send occurred.
+An error or crash after a marker cannot authorize another send. Reference writes
+from validated CREATE/STATUS are also fsynced. A failed sync fences the live
+handle; a truncated/malformed entry remains an obligation, never a fresh lease.
+No request body, credential or result is journaled. Legacy fields are accepted;
+unknown fields and malformed markers are retained without contacting a backend.
+
+`ReaperAdapter` is injected with the same owner, workspace, stub and running aio
+loop. Run the synchronous reaper outside that loop. Its optional `kill_journaled`
+hook receives the locked entry's snapshot so KILL binds the recorded generation.
+It never writes through a borrowed file descriptor: a late RPC completion cannot
+write after the reaper releases the lock. KILL requires barrier plus STATUS;
+complete LIST must also omit the lease before the existing reaper clears it.
+Pending, timeout, invalid identity, failed LIST, or continued presence retains the
+entry. `JournalSession.kill` abandons on failure, retaining the existing
+`sandbox_placement_release_unconfirmed` notice semantics. The local gRPC model
+now excludes a lease from LIST on barrier confirmation, not merely fencing.
+
+This adapter has no enrollment, channel creation, registration, driver activation
+or new settings. Callers supply resolved bounds/caps from packaged settings with
+existing user/repository overrides. End-to-end bounded reaping with an actual
+server remains unqualified. No full ExecutingBackend, physical barrier,
+credential path or worker refusal qualification follows from these tests.
+
+R14 N1 (recorded digests not checked by the generation recipe), N2 (version-pinned
+but not wheel-hash-pinned dependencies), and N3 (future production channel factory
+retries-off/receive-limit qualification) remain open. The r13 generated scratch
+is reused read-only for tests; no new generator or supply-chain qualification is
+claimed. R12-L3 raw exception chains and r10 L3–L6 above remain open.

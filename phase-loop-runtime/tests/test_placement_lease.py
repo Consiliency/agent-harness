@@ -181,7 +181,7 @@ def test_a_lease_is_one_private_file_synced_with_its_directory_before_it_is_retu
     entry = _entry(lease.path)
     assert set(entry) == {
         "lease_id", "backend", "root", "sandbox_ref", "created_at", "confirmed_killed_at",
-        "abandoned",
+        "abandoned", "create_sent_at", "execute_sent_at",
     }
     assert (entry["lease_id"], entry["backend"], entry["root"]) == (lease.lease_id, "stage", ROOT)
     assert (entry["sandbox_ref"], entry["confirmed_killed_at"], entry["abandoned"]) == (None, None, False)

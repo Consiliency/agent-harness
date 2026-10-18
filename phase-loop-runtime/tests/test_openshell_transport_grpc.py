@@ -25,7 +25,7 @@ def sdk():
 async def local_server(sdk):
     p, grpc = sdk.proto, sdk.grpc
     state = SimpleNamespace(calls=[], paths=[], hold=None, failure=None, created=False,
-                            fenced=False, entered=asyncio.Event(), stopped=asyncio.Event())
+                            fenced=False, barrier=False, destruction_pending=False, entered=asyncio.Event(), stopped=asyncio.Event())
 
     class Paths(grpc.aio.ServerInterceptor):
         async def intercept_service(self, continuation, details):
@@ -52,9 +52,10 @@ async def local_server(sdk):
                     sandbox={"metadata": {"id": model.GEN, "workspace": "dedicated"}})
             if request.operation == 3:
                 state.fenced = True
-                return p.ControlCancellationLeaseResponse(barrier_confirmed=True)
+                state.barrier = not state.destruction_pending
+                return p.ControlCancellationLeaseResponse(barrier_confirmed=state.barrier)
             if request.operation == 4:
-                return p.ControlCancellationLeaseResponse(entries=[] if state.fenced else [
+                return p.ControlCancellationLeaseResponse(entries=[] if state.barrier else [
                     {"lease_id": "lease", "sandbox_ref": model.GEN}])
             if request.operation == 5:
                 if not state.created and not state.fenced:
@@ -62,8 +63,8 @@ async def local_server(sdk):
                 return p.ControlCancellationLeaseResponse(
                     lease={"lease_id": "lease", "sandbox_ref": model.GEN if state.created else "reservation:lease"},
                     admission_ready=not state.fenced, create_settled=True,
-                    fenced=state.fenced, destruction_observed=state.fenced and state.created,
-                    cleanup_pending=not state.fenced, barrier_confirmed=state.fenced)
+                    fenced=state.fenced, destruction_observed=state.barrier and state.created,
+                    cleanup_pending=not state.barrier, barrier_confirmed=state.barrier)
             return p.ControlCancellationLeaseResponse()
 
         async def ExecCancellationLease(self, request, context):
@@ -268,3 +269,19 @@ def test_status_before_create_refusal_stays_poisoned_with_cleanup(sdk):
             assert await client.list_owned(model.bound()) == ()
             assert [op for op, _ in state.calls] == [5, 2, 5, 3, 5, 4]
     model.run(scenario())
+
+
+def test_pending_fence_stays_in_list_until_barrier(sdk):
+    async def scenario():
+        async with local_server(sdk) as (client, state):
+            await ready(client, sdk.proto)
+            state.destruction_pending = True
+            with pytest.raises(ot.TransportError, match="operation_timeout"):
+                await client.kill(model.bound())
+            assert state.fenced and not state.barrier
+            assert await client.list_owned(model.bound()) == ((model.GEN, "lease"),)
+            state.destruction_pending = False
+            await client.kill(model.bound())
+            assert state.barrier
+            assert await client.list_owned(model.bound()) == ()
+    asyncio.run(scenario())

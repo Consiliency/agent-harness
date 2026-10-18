@@ -147,7 +147,8 @@ def _write_entry(fd: int, entry: dict[str, object]) -> None:
     # One line, written in one call from offset 0: a reader takes the first line only, so a
     # crash between the write and the truncate still leaves a complete entry.
     data = (json.dumps(entry, sort_keys=True) + "\n").encode("utf-8")
-    os.pwrite(fd, data, 0)
+    if os.pwrite(fd, data, 0) != len(data):
+        raise OSError(errno.EIO, "short placement journal write")
     os.ftruncate(fd, len(data))
     _fsync(fd)
 
@@ -160,12 +161,29 @@ def _read_entry(fd: int) -> dict[str, object] | None:
     return entry if isinstance(entry, dict) else None
 
 
+def _valid_entry(entry: dict[str, object] | None, lease_id: str) -> bool:
+    """Accept the legacy schema and optional dispatch markers, never unknown obligations."""
+    required = {"lease_id", "backend", "root", "sandbox_ref", "created_at",
+                "confirmed_killed_at", "abandoned"}
+    markers = {"create_sent_at", "execute_sent_at"}
+    if (entry is None or not required <= entry.keys() or entry.keys() - required - markers
+            or entry["lease_id"] != lease_id or type(entry["abandoned"]) is not bool
+            or any(type(entry[key]) is not str for key in ("backend", "root"))
+            or entry["sandbox_ref"] is not None and not isinstance(entry["sandbox_ref"], str)):
+        return False
+    return all(value is None and key != "created_at"
+               or type(value) in (int, float) and 0 <= value < float("inf")
+               for key in ("created_at", "confirmed_killed_at", *markers)
+               for value in (entry.get(key),))
+
+
 class Lease:
     """One rung's lease, held under ``flock`` by this process until it is cleared or
     abandoned."""
 
     def __init__(
         self, *, lease_id: str, owner: str, path: Path, fd: int, entry: dict[str, object],
+        newly_opened: bool = False,
     ) -> None:
         self.lease_id = lease_id
         self.owner_id = owner
@@ -175,18 +193,62 @@ class Lease:
         self._fd: int | None = fd
         self._entry = entry
         self._lock = threading.Lock()
+        self._pid = os.getpid()
+        self._newly_opened = newly_opened
+        self._adapter = None
 
     @property
     def held(self) -> bool:
         """Does this process still hold the lease lock?"""
-        return self._fd is not None
+        return self._fd is not None and self._pid == os.getpid()
+
+    def attach_transport(self, adapter: object) -> tuple[bool, str | None]:
+        with self._lock:
+            if not self.held or self._adapter is not None:
+                raise ValueError("lease transport already attached or not owned")
+            self._adapter = adapter
+            fresh = (self._newly_opened and not self.fenced and not self._entry["abandoned"]
+                     and all(self._entry.get(k) is None for k in
+                             ("create_sent_at", "execute_sent_at", "sandbox_ref", "confirmed_killed_at")))
+            return fresh, self._entry["sandbox_ref"]
+
+    def mark_dispatch(self, adapter: object, operation: str) -> None:
+        with self._lock:
+            key = {"create": "create_sent_at", "execute": "execute_sent_at"}[operation]
+            if (not self.held or self.fenced or not self._newly_opened
+                    or self._adapter is not adapter or self._entry.get(key) is not None):
+                raise ValueError("lease dispatch forbidden")
+            if operation == "execute" and (self._entry.get("create_sent_at") is None
+                                            or self._entry["sandbox_ref"] is None):
+                raise ValueError("lease create not recorded")
+            self._entry[key] = time.time()
+            try:
+                _write_entry(self._fd, self._entry)
+            except BaseException:
+                self.fenced = True
+                raise
+
+    def record_transport_ref(self, adapter: object, sandbox_ref: str) -> None:
+        with self._lock:
+            if not self.held or self._adapter is not adapter:
+                raise ValueError("lease transport not owned")
+            previous = self._entry["sandbox_ref"]
+            if previous is not None and previous != sandbox_ref:
+                self.fenced = True
+                raise ValueError("lease generation changed")
+            self._entry["sandbox_ref"] = sandbox_ref
+            try:
+                _write_entry(self._fd, self._entry)
+            except BaseException:
+                self.fenced = True
+                raise
 
     def fence(self) -> None:
         self.fenced = True
 
     def _update(self, **fields: object) -> None:
         with self._lock:
-            if self._fd is None:
+            if not self.held:
                 return
             self._entry.update(fields)
             _write_entry(self._fd, self._entry)
@@ -282,6 +344,8 @@ def open_lease(backend_name: str | None, root: object) -> Lease:
                 "sandbox_ref": None,
                 "created_at": time.time(),
                 "confirmed_killed_at": None,
+                "create_sent_at": None,
+                "execute_sent_at": None,
                 "abandoned": False,
             }
             _write_entry(fd, entry)
@@ -297,7 +361,27 @@ def open_lease(backend_name: str | None, root: object) -> Lease:
             raise
     finally:
         os.close(dir_fd)
-    return Lease(lease_id=lease_id, owner=owner, path=directory / final, fd=fd, entry=entry)
+    return Lease(lease_id=lease_id, owner=owner, path=directory / final, fd=fd, entry=entry,
+                 newly_opened=True)
+
+
+def recover_lease(lease_id: str) -> Lease:
+    """Lock an existing entry for observation/cancellation only, even without markers."""
+    import fcntl
+
+    if not _ID.fullmatch(lease_id):
+        raise ValueError("invalid lease id")
+    path = _lease_dir() / f"{lease_id}.json"
+    fd = os.open(path, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        entry = _read_entry(fd)
+        if not _valid_entry(entry, lease_id):
+            raise ValueError("invalid lease journal")
+        return Lease(lease_id=lease_id, owner=owner_id(), path=path, fd=fd, entry=entry)
+    except BaseException:
+        os.close(fd)
+        raise
 
 
 def reap(
@@ -355,7 +439,7 @@ def reap(
         by_scheme: dict[str, list[tuple[str, int, Path, dict[str, object]]]] = {}
         for lease_id, fd, path, entry in free:
             scheme = sandbox_policy.parse_location(str((entry or {}).get("root", ""))).scheme
-            if entry is None or not sandbox_placement._SCHEME.fullmatch(scheme):
+            if not _valid_entry(entry, lease_id) or not sandbox_placement._SCHEME.fullmatch(scheme):
                 kept.append(lease_id)  # unreadable: never guessed at
                 continue
             by_scheme.setdefault(scheme, []).append((lease_id, fd, path, entry))
@@ -398,12 +482,20 @@ def _reap_backend(
 
     try:
         killed: set[str] = set()
-        for lease_id in [lease_id for lease_id, _fd, _path, _entry in group]:
+        for lease_id, fd, _path, entry in group:
             try:
-                calls.run(
-                    lambda lease_id=lease_id: backend.kill(lease_id, bound),  # type: ignore[attr-defined]
+                journaled = getattr(backend, "kill_journaled", None)
+                reference = calls.run(
+                    lambda lease_id=lease_id, entry=dict(entry), journaled=journaled: (
+                        journaled(owner, lease_id, entry, bound) if journaled is not None
+                        else backend.kill(lease_id, bound)),  # type: ignore[attr-defined]
                     bound.timeout_s, bound.cancelled,
                 )
+                if journaled is not None:
+                    if not isinstance(reference, str) or not reference:
+                        raise ValueError("missing journal kill reference")
+                    entry["sandbox_ref"] = reference
+                    _write_entry(fd, entry)
                 killed.add(lease_id)
             except Exception:
                 continue
