@@ -508,13 +508,15 @@ def validate_result(identity: Identity, envelope: bytes, bundle: SourceBundle,
         raise Refused("artifact_mismatch")
     native_witness(native)
     check_binary_literals(patch, bundle.limits, bound)
-    for line in patch.splitlines():
-        if line.startswith((b"new file mode ", b"deleted file mode ", b"old mode ", b"new mode ")):
-            if line.split()[-1] not in (b"100644", b"100755"):
+    for line in patch.split(b"\n"):
+        if line.startswith((b"new file mode", b"deleted file mode", b"old mode", b"new mode")):
+            if not re.fullmatch(rb"(?:new file mode|deleted file mode|old mode|new mode) (100644|100755)", line):
                 raise Refused("patch_mode_unsupported")
-        if line.startswith(b"index ") and len(line.split()) == 3:
-            if line.split()[-1] not in (b"100644", b"100755"):
+        if line.startswith(b"index"):
+            if not re.fullmatch(rb"index [0-9a-f]{1,40}\.\.[0-9a-f]{1,40}(?: (100644|100755))?", line):
                 raise Refused("patch_mode_unsupported")
+        if line.startswith((b"copy from ", b"copy to ", b"rename from ", b"rename to ")):
+            raise Refused("patch_transfer_unsupported")
     # Git parses the binary patch; never interpret its prose/commands. All effects
     # stay in a new disposable same-tree index and worktree with no repo config.
     with tempfile.TemporaryDirectory(prefix="worker-check-") as temp:
@@ -535,8 +537,28 @@ def validate_result(identity: Identity, envelope: bytes, bundle: SourceBundle,
                 data=patch, bound=bound, cap=bundle.limits.output_bytes)
             git(root, "apply", "--index", "--binary", "-", data=patch,
                 bound=bound, cap=bundle.limits.output_bytes)
+        listing = git(root, "ls-files", "--stage", "-z", bound=bound, cap=bundle.limits.output_bytes)
+        seen = set()
+        for row in listing.split(b"\0"):
+            if not row:
+                continue
+            bound.check()
+            entry = re.fullmatch(rb"(100644|100755) ([0-9a-f]{40}) 0\t([^\0]+)", row)
+            if entry is None:
+                raise Refused("index_entry_unsupported")
+            try:
+                name = safe_path(entry[3].decode("ascii"))
+            except UnicodeError:
+                raise Refused("path_unsupported") from None
+            if name in seen or len(seen) >= bundle.limits.files:
+                raise Refused("index_entry_unsupported")
+            seen.add(name)
+        index_tree = git(root, "write-tree", bound=bound, cap=bundle.limits.output_bytes)
         after = scan(root, bundle.limits, bound)
         SourceBundle(bundle.base, bundle.tree, after, bundle.owned_paths, bundle.limits).validate()
+        stage_files(root, after, bundle.limits, bound)
+        if git(root, "write-tree", bound=bound, cap=bundle.limits.output_bytes) != index_tree:
+            raise Refused("index_tree_mismatch")
         before_map = {f.path: f for f in bundle.files}
         after_map = {f.path: f for f in after}
         if any(before_map.get(p) != after_map.get(p) and p not in bundle.owned_paths
@@ -546,8 +568,25 @@ def validate_result(identity: Identity, envelope: bytes, bundle: SourceBundle,
     # Caller provides a NEW quarantine directory under its private runtime root.
     quarantine.mkdir(mode=0o700)
     path = quarantine / "untrusted.patch"
-    with path.open("xb") as stream:
-        os.chmod(path, 0o600)
-        stream.write(patch)
-    bound.check()
+    created = None
+    try:
+        with path.open("xb") as stream:
+            created = os.fstat(stream.fileno())
+            os.fchmod(stream.fileno(), 0o600)
+            stream.write(patch)
+        bound.check()
+    except BaseException:
+        # Only remove our own file; never recursively delete caller/user content.
+        if created is not None:
+            try:
+                current = path.lstat()
+                if (current.st_dev, current.st_ino) == (created.st_dev, created.st_ino):
+                    path.unlink()
+            except FileNotFoundError:
+                pass
+        try:
+            quarantine.rmdir()
+        except OSError:
+            pass
+        raise
     return QuarantinedPatch(identity, path, digest(patch))

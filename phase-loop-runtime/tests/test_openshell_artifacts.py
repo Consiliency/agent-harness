@@ -150,6 +150,104 @@ def test_forged_identity_refused(bundle, tmp_path, bound, field):
     assert not (tmp_path / "q").exists()
 
 
+@pytest.mark.parametrize("header", [
+    b"new file mode 160000 100644", b"new file mode 120000 100644",
+    b"index a..b 160000 x", b"index a..b 120000 x",
+    b"index a..b 100644 x", b"index a..b 100664", b"index a..b ",
+    b"index", b"index a", b"index a..z", b"index a..b 0100644",
+] + [prefix + suffix for prefix in
+     (b"new file mode", b"deleted file mode", b"old mode", b"new mode")
+     for suffix in (b"", b" 100644 x", b" 100664", b" 0100644", b" 100644 ")])
+def test_mode_header_grammar(bundle, tmp_path, bound, monkeypatch, header):
+    import phase_loop_runtime.openshell_artifacts as artifacts
+    def forbidden_git(*args, **kwargs):
+        pytest.fail("invalid header reached Git")
+    monkeypatch.setattr(artifacts, "git", forbidden_git)
+    with pytest.raises(Refused, match="patch_mode_unsupported"):
+        validate_result(identity_for(bundle), canonical(result(bundle, header + b"\n")),
+                        bundle, tmp_path / "q", bound)
+
+
+@pytest.mark.parametrize("form", ["mode", "index"])
+def test_nonregular_patch_refused(bundle, tmp_path, bound, form):
+    oid = "a" * 40
+    mode = "new file mode 160000 100644" if form == "mode" else "new file mode 100644"
+    index_mode = "" if form == "mode" else " 160000 x"
+    patch = (f"diff --git a/new.bin b/new.bin\n{mode}\n"
+             f"index {'0' * 40}..{oid}{index_mode}\n"
+             f"--- /dev/null\n+++ b/new.bin\n@@ -0,0 +1 @@\n"
+             f"+Subproject commit {oid}\n").encode()
+    with pytest.raises(Refused):
+        validate_result(identity_for(bundle), canonical(result(bundle, patch)),
+                        bundle, tmp_path / "q", bound)
+    assert not (tmp_path / "q").exists()
+
+
+@pytest.mark.parametrize("kind", ["gitlink", "symlink", "stage", "path", "content", "mode"])
+def test_index_independently_checked(bundle, tmp_path, bound, monkeypatch, kind):
+    import phase_loop_runtime.openshell_artifacts as artifacts
+    original = artifacts.init_tree
+    def altered(root, bundle, bound):
+        original(root, bundle, bound)
+        data = (root / "other.txt").read_bytes() if kind == "mode" else b"different"
+        oid = git(root, "hash-object", "-w", "--stdin", data=data,
+                  bound=bound, cap=bundle.limits.output_bytes).decode().strip()
+        mode = {"gitlink": "160000", "symlink": "120000", "mode": "100755"}.get(kind, "100644")
+        path = ".gitattributes" if kind == "path" else "other.txt"
+        stage = "2" if kind == "stage" else "0"
+        git(root, "update-index", "--index-info", data=f"{mode} {oid} {stage}\t{path}\n".encode(),
+            bound=bound, cap=bundle.limits.output_bytes)
+    monkeypatch.setattr(artifacts, "init_tree", altered)
+    with pytest.raises(Refused, match="index_|path_unsupported"):
+        validate_result(identity_for(bundle), canonical(result(bundle, b"")),
+                        bundle, tmp_path / "q", bound)
+    assert not (tmp_path / "q").exists()
+
+
+@pytest.mark.parametrize("kind", ["copy", "rename"])
+def test_transfer_headers_refused(bundle, tmp_path, bound, kind):
+    patch = (f"diff --git a/other.txt b/new.bin\nsimilarity index 100%\n"
+             f"{kind} from other.txt\n{kind} to new.bin\n").encode()
+    with pytest.raises(Refused, match="patch_transfer_unsupported"):
+        validate_result(identity_for(bundle), canonical(result(bundle, patch)),
+                        bundle, tmp_path / "q", bound)
+
+
+@pytest.mark.parametrize("reason", ["cancelled", "end_reached"])
+def test_late_refusal_removes_quarantine(bundle, tmp_path, reason):
+    q = tmp_path / "q"
+    class LateBound:
+        end = time.monotonic() + 20
+        def check(self):
+            if (q / "untrusted.patch").exists():
+                raise Refused(reason)
+            return self.end - time.monotonic()
+    with pytest.raises(Refused, match=reason):
+        validate_result(identity_for(bundle), canonical(result(bundle, b"")), bundle, q, LateBound())
+    assert not q.exists()
+
+
+def test_existing_quarantine_preserved(bundle, tmp_path, bound):
+    q = tmp_path / "q"
+    q.mkdir()
+    (q / "untrusted.patch").write_bytes(b"user data")
+    with pytest.raises(FileExistsError):
+        validate_result(identity_for(bundle), canonical(result(bundle, b"")), bundle, q, bound)
+    assert (q / "untrusted.patch").read_bytes() == b"user data"
+
+
+@pytest.mark.parametrize("kind", ["text", "executable", "mode-only", "delete"])
+def test_supported_file_changes(bundle, tmp_path, bound, kind):
+    files = tuple(replace(f, data=f.data if kind == "mode-only" else b"after\n",
+                          mode=0o100755 if kind in ("executable", "mode-only") else f.mode)
+                  if f.path == "owned.txt" else f for f in bundle.files
+                  if kind != "delete" or f.path != "owned.txt")
+    patch = patch_for(bundle, tmp_path, bound, files)
+    receipt = validate_result(identity_for(bundle), canonical(result(bundle, patch)),
+                              bundle, tmp_path / "q", bound)
+    assert receipt.path.read_bytes() == patch
+
+
 @pytest.mark.parametrize("field,value", [("patch_sha256", "0" * 64), ("patch_size", 4),
                                         ("truncated", True), ("test_claim", "not_run"),
                                         ("exit_status", False), ("command", "touch /tmp/no")])
