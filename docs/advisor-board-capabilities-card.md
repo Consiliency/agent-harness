@@ -13,6 +13,21 @@ a custom board**. It is derived from the live registries / install code so it
 cannot drift; a `pytest` smoke (`phase-loop-runtime/tests/test_advisor_board_alias_install.py`,
 `phase-loop-runtime/tests/test_advisor_board_integration.py`) keeps the skill names and matrix honest.
 
+For the 0.7.27 candidate, the runtime requires Python 3.12+ (agent-harness#1549).
+Context-file adapter launches now carry their skills' linked `references/` files
+(agent-harness#1738; plan agent-harness#1690), and skills-parity runs the warn-first
+size gate (agent-harness#1691). After agent-harness#1750, all twelve agy members
+passed 36 live qualification operations with all 245 source pins verified. Revised
+package and compatibility checks passed; final I1, CI and review remain release-cut
+gates.
+Historical runtime CLI failures and unverified panel
+behavior remain disclosed; this card does not establish runtime PASS.
+
+The owner authorized a temporary T3 delegated cross-vendor review board with a
+separate president for this release. That review route does not turn historical
+runtime smoke failures into passes or waive final product verification. See the
+[release handoff](releases/outside-agent-release-handoff.md).
+
 ---
 
 ## Skill names — the `<harness>-advisor-board` rule
@@ -533,8 +548,12 @@ The Gemini extension (agent-harness#905) admits only a closed set of qualified
 1.2.15 (SHA256 `5f9c16b286895f8f7fdecd423883ca256a85077b8acf9a6bc1111761d34df164`),
 1.2.16 (SHA256 `a759ce7c7a235d9b6c281a25ead97cbbf2e92314a3ffd224e2f9144f3fae7a86`),
 1.2.17 (SHA256 `c54ef90651a8646ae67334d39212c81f5946feec373ad6aa335f9ef401662bc5`),
-1.3.0 (SHA256 `19be6af38f7beeaa0db415df9297e314ab3d33fdd6f853434d49f88819bc68e4`)
-and 1.3.1 (SHA256 `ce1bdaed3201bb84f35d69d2773caec4f18af52af00e8c25f6cace07e4359615`),
+1.3.0 (SHA256 `19be6af38f7beeaa0db415df9297e314ab3d33fdd6f853434d49f88819bc68e4`),
+1.3.1 (SHA256 `ce1bdaed3201bb84f35d69d2773caec4f18af52af00e8c25f6cace07e4359615`),
+1.3.2 (SHA256 `32f9478e47d1d456e090f7ed0a297fcde2fa45ec10839904f03ea1ba00645e49`),
+1.3.3 (SHA256 `d97edcf90eda1799cd6cedc92616ef402f23c9752a723e8b8ae3e8f062ce458b`),
+1.3.4 (SHA256 `5b93565c5f04ea4f7b79d49d5c3237449bf6ce47b6779e8cf46c1fae97957c98`)
+and 1.3.5 (SHA256 `b5385638174a5e720e904f3a2678752534fb8414d10c2c302fa16daf56cbcfc9`),
 so a host that has not yet auto-updated keeps its Gemini seat (agent-harness#1008).
 It requires sealed memfd/pidfd support in the running Python/kernel. It uses
 literal `--print-timeout 0`, stdin input (one event when the sealed prompt fits one
@@ -687,7 +706,12 @@ run, with `seat_sandbox_unavailable_seat_uid`. The host must also have `dev.tty.
 The runtime's own environment must also contain `pytest`: qualification runs a real falsifier run
 whose wrapper imports it (agent-harness#1357). Releases after 0.7.25 depend on it, and on the
 backports it needs when `/usr/bin/python3` is older than 3.11 (`exceptiongroup`, `tomli`,
-`typing-extensions`), so a normal install has them. Without it, qualification fails with the typed reason `prerequisite_missing` and
+`typing-extensions`), so a normal install has them. These support the separate host
+helper contract, which remains 3.10-compatible; they do not make the 0.7.27 runtime
+importable below 3.12. A governed-review falsifier running this repository's own
+runtime-importing test node under an older host interpreter ends in `error`, is
+never counted red or green, and remains a blocking receipt (agent-harness#1549).
+Without pytest, qualification fails with the typed reason `prerequisite_missing` and
 the exact install command, and `phase-loop doctor` shows `seat_jail_prerequisites[]` with
 `status: missing` and the same command in `fix`.
 
