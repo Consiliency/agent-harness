@@ -1095,3 +1095,93 @@ def test_split_invalid_limits_never_dispatch(lifetime, messages):
                                   output_cap_bytes=0, message_cap=messages)
         assert "exec" not in [c[0] for c in stub.calls]
     run(scenario())
+
+
+def stall_execute_poll(monkeypatch):
+    """Advance the clock between wait's successful check and remaining-time read."""
+    original_wait = ot.ExecStream.wait
+
+    async def wait(handle, wait_s):
+        loop = asyncio.get_running_loop()
+        original_check = handle._check
+        with monkeypatch.context() as patch:
+            def check():
+                original_check()
+                patch.setattr(loop, "time", lambda: handle._end + wait_s + 1)
+            patch.setattr(handle, "_check", check)
+            result = await original_wait(handle, wait_s)
+            assert result is None
+            return result
+
+    monkeypatch.setattr(ot.ExecStream, "wait", wait)
+
+
+def test_execute_poll_expiry_cancels_and_refuses(monkeypatch):
+    stall_execute_poll(monkeypatch)
+
+    async def scenario():
+        stub = Stub()
+        client = session(stub, fresh=True)
+        stub.responses[5] = observation()
+        await client.status(bound())
+        with pytest.raises(ot.TransportError, match="operation_timeout") as error:
+            await client.execute(P.ExecSandboxRequest(), bound(), output_cap_bytes=0)
+        assert error.value.uncertain
+        assert stub.stream.cancelled
+        with pytest.raises(asyncio.CancelledError):
+            await client._exec_stream._task
+        with pytest.raises(ot.TransportError, match="execute_not_permitted"):
+            await client.dispatch(P.ExecSandboxRequest(), bound(), stream_bound=bound(),
+                                  output_cap_bytes=0, message_cap=1)
+        assert [c[0] for c in stub.calls].count("exec") == 1
+    run(scenario())
+
+
+@pytest.mark.parametrize("message_cap", [1, 2])
+def test_split_message_cap_counts_exit(message_cap):
+    async def scenario():
+        stub = Stub()
+        client = session(stub, fresh=True)
+        stub.responses[5] = observation()
+        await client.status(bound())
+        stub.events = [P.ExecSandboxEvent(stdout={}), P.ExecSandboxEvent(exit={})]
+        handle = await client.dispatch(P.ExecSandboxRequest(), bound(), stream_bound=bound(),
+                                       output_cap_bytes=0, message_cap=message_cap)
+        if message_cap == 1:
+            with pytest.raises(ot.TransportError, match="message_limit") as error:
+                await handle.wait(.2)
+            assert error.value.uncertain
+        else:
+            assert (await handle.wait(.2)).exit_code == 0
+        assert [c[0] for c in stub.calls].count("exec") == 1
+    run(scenario())
+
+
+def test_split_live_kill_stops_collector():
+    async def scenario():
+        stub = Stub()
+        client = session(stub, fresh=True)
+        stub.responses[5] = observation()
+        await client.status(bound())
+        entered, stopped = asyncio.Event(), asyncio.Event()
+
+        async def pending():
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                stopped.set()
+
+        stub.events = [pending]
+        handle = await client.dispatch(P.ExecSandboxRequest(), bound(), stream_bound=bound(30),
+                                       output_cap_bytes=0, message_cap=1)
+        await asyncio.wait_for(entered.wait(), 1)
+        with pytest.raises(ot.TransportError, match="operation_timeout"):
+            await client.kill(bound())  # pending barrier still stops local collection
+        # Check before wait(), whose refusal would otherwise cancel the collector.
+        assert stub.stream.cancelled
+        await asyncio.wait_for(stopped.wait(), 1)
+        with pytest.raises(asyncio.CancelledError):
+            await handle._task
+        assert [c[0] for c in stub.calls].count("exec") == 1
+    run(scenario())

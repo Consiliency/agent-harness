@@ -368,7 +368,11 @@ class LeaseSession:
         message_cap = output_cap_bytes + 1 if type(output_cap_bytes) is int else 1
         handle = await self.dispatch(execute, bound, stream_bound=bound,
                                      output_cap_bytes=output_cap_bytes, message_cap=message_cap)
-        return await handle.wait(bound.timeout_s)
+        result = await handle.wait(bound.timeout_s)
+        if result is None:
+            handle.cancel()
+            raise TransportError("sandbox_placement_operation_timeout", uncertain=True)
+        return result
 
     async def kill(self, bound: OperationBound) -> None:
         self._kill_requested = True

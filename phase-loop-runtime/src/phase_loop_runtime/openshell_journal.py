@@ -63,7 +63,11 @@ class JournalSession:
         handle = await self.dispatch(request, bound, stream_bound=bound,
                                      output_cap_bytes=output_cap_bytes, message_cap=message_cap)
         try:
-            return await handle.wait(bound.timeout_s)
+            result = await handle.wait(bound.timeout_s)
+            if result is None:
+                handle.cancel()
+                raise TransportError("sandbox_placement_operation_timeout", uncertain=True)
+            return result
         except BaseException:
             self.lease.fence()
             raise

@@ -799,3 +799,31 @@ def test_split_no_deadline_refused_before_marker(proto):
         assert "exec" not in [c[0] for c in stub.calls]
         lease.abandon()
     asyncio.run(scenario())
+
+
+def test_execute_poll_expiry_fences_original_lease(proto, monkeypatch):
+    model.stall_execute_poll(monkeypatch)
+
+    async def scenario():
+        lease, stub, client = setup(proto)
+        try:
+            await client.create(model.create_request(), model.bound())
+            await client.status(model.bound())
+            with pytest.raises(ot.TransportError, match="operation_timeout") as error:
+                await client.execute(proto.ExecSandboxRequest(), model.bound(), output_cap_bytes=0)
+            assert error.value.uncertain
+            assert lease.held and lease.fenced and lease.path.exists()
+            assert entry(lease)["execute_sent_at"] is not None
+            assert entry(lease)["confirmed_killed_at"] is None
+            before = lease.path.read_bytes()
+            assert stub.stream.cancelled
+            with pytest.raises(asyncio.CancelledError):
+                await client._session._exec_stream._task
+            with pytest.raises(ValueError, match="lease dispatch forbidden"):
+                await client.dispatch(proto.ExecSandboxRequest(), model.bound(),
+                                      stream_bound=model.bound(), output_cap_bytes=0, message_cap=1)
+            assert lease.path.read_bytes() == before
+            assert [c[0] for c in stub.calls].count("exec") == 1
+        finally:
+            lease.abandon()
+    asyncio.run(scenario())

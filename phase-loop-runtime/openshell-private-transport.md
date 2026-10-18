@@ -393,6 +393,10 @@ The existing async `execute(request, bound, output_cap_bytes=...)` remains a
 whole-stream convenience wrapper using the same bound for both phases. Its finite
 message cap is derived as output-cap + one terminal event (so excessive empty
 chunks now refuse); integrations needing independent caps use `dispatch`.
+If its collection poll expires without a result, the wrapper cancels the stream
+and raises an uncertain operation timeout; the journal wrapper also fences the
+original lease. It never returns `None` or authorizes redispatch. Caller-task
+cancellation still propagates. This does not change split `wait` poll semantics.
 `transfer`, `commit`, `collect` and `renew` remain unsupported. Neither execution
 gate changes. Source publication, worker sealing, native witness/quarantine,
 actual-server expiry, same-session backend routing and all live/physical/channel
