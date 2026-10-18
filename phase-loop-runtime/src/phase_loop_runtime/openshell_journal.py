@@ -40,10 +40,30 @@ class JournalSession:
         self.lease.record_transport_ref(self, observed.sandbox_ref)
         return observed
 
-    async def execute(self, request, bound, *, output_cap_bytes):
+    async def dispatch(self, request, bound, *, stream_bound, output_cap_bytes, message_cap):
+        # Refuse indefinite execution before writing the durable attempt marker.
+        if stream_bound is None:
+            self._session.unsupported()
         self.lease.mark_dispatch(self, "execute")
+        handle = None
         try:
-            return await self._session.execute(request, bound, output_cap_bytes=output_cap_bytes)
+            handle = await self._session.dispatch(request, bound, stream_bound=stream_bound,
+                                                  output_cap_bytes=output_cap_bytes, message_cap=message_cap)
+            handle._is_owned = lambda: self.lease.held and not self.lease.fenced
+            self.lease.validate_live_binding(self)
+            return handle
+        except BaseException:
+            if handle is not None:
+                handle.cancel()
+            self.lease.fence()
+            raise
+
+    async def execute(self, request, bound, *, output_cap_bytes):
+        message_cap = output_cap_bytes + 1 if type(output_cap_bytes) is int else 1
+        handle = await self.dispatch(request, bound, stream_bound=bound,
+                                     output_cap_bytes=output_cap_bytes, message_cap=message_cap)
+        try:
+            return await handle.wait(bound.timeout_s)
         except BaseException:
             self.lease.fence()
             raise

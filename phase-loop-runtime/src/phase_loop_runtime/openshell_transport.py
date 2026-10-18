@@ -57,6 +57,80 @@ class StreamResult:
     stderr: bytes = field(repr=False)
 
 
+class ExecStream:
+    """One local collector; wait never performs an RPC or extends its fixed end."""
+
+    def __init__(self, session, stream, bound, end, output_cap_bytes, message_cap):
+        self._session, self._stream, self._bound = session, stream, bound
+        self._end = end
+        self._cancelled = False
+        self._is_owned = lambda: True
+        self._task = asyncio.create_task(self._collect(output_cap_bytes, message_cap))
+        self._task.add_done_callback(lambda t: None if t.cancelled() else t.exception())
+
+    def cancel(self):
+        """Discard locally; this is never a remote destruction acknowledgement."""
+        self._cancelled = True
+        self._stream.cancel()
+        self._task.cancel()
+
+    def _check(self):
+        if (self._cancelled or self._session._kill_requested or not self._is_owned()
+                or self._bound.cancelled.is_set()
+                or asyncio.get_running_loop().time() >= self._end):
+            self.cancel()
+            raise TransportError("sandbox_placement_operation_timeout", uncertain=True)
+
+    async def _collect(self, output_cap_bytes, message_cap):
+        async def run():
+            out, err = bytearray(), bytearray()
+            exit_code, count = None, 0
+            async for event in self._stream:
+                self._check()
+                count += 1
+                if count > message_cap:
+                    raise TransportError("message_limit", uncertain=True)
+                kind = event.WhichOneof("payload")
+                if exit_code is not None or kind not in ("stdout", "stderr", "exit"):
+                    raise TransportError("invalid_exec_stream", uncertain=True)
+                if kind == "exit":
+                    exit_code = event.exit.exit_code
+                else:
+                    data = getattr(event, kind).data
+                    if len(out) + len(err) + len(data) > output_cap_bytes:
+                        raise TransportError("output_limit", uncertain=True)
+                    (out if kind == "stdout" else err).extend(data)
+            self._check()
+            if exit_code is None:
+                raise TransportError("missing_exec_exit", uncertain=True)
+            return StreamResult(exit_code, bytes(out), bytes(err))
+
+        try:
+            self._check()
+            remaining = self._end - asyncio.get_running_loop().time()
+            return await self._session._bounded(run, OperationBound(remaining, self._bound.cancelled))
+        finally:
+            self._stream.cancel()
+
+    async def wait(self, wait_s: float) -> StreamResult | None:
+        """Return None on poll expiry, or the raw terminal exit plus EOF."""
+        if type(wait_s) not in (int, float) or not math.isfinite(wait_s) or wait_s < 0:
+            raise TransportError("invalid_bound")
+        end = asyncio.get_running_loop().time() + wait_s
+        try:
+            while True:
+                self._check()
+                if self._task.done():
+                    return self._task.result()
+                left = end - asyncio.get_running_loop().time()
+                if left <= 0:
+                    return None
+                await asyncio.wait((self._task,), timeout=min(left, 0.05))
+        except asyncio.CancelledError:
+            self.cancel()
+            raise
+
+
 class LeaseSession:
     """One authenticated workspace/owner/lease, confined to one asyncio loop.
 
@@ -81,6 +155,7 @@ class LeaseSession:
         self._observation = None
         self._poisoned = False
         self._reservation = False
+        self._exec_stream = None
         if expected_generation is not None:
             self._bind(expected_generation)
 
@@ -117,6 +192,8 @@ class LeaseSession:
                     raise TransportError("sandbox_placement_operation_timeout", uncertain=True)
                 done, _ = await asyncio.wait((task,), timeout=min(left, 0.05))
                 if done:
+                    if bound.cancelled.is_set() or asyncio.get_running_loop().time() >= end:
+                        raise TransportError("sandbox_placement_operation_timeout", uncertain=True)
                     return task.result()
         except (TransportError, asyncio.CancelledError):
             raise
@@ -241,17 +318,20 @@ class LeaseSession:
         self._bind(response.sandbox.metadata.id)
         return self._generation
 
-    async def execute(self, execute: Message, bound: OperationBound, *, output_cap_bytes: int) -> StreamResult:
-        """Low-level protocol mapping only; callers supply a packaged-worker request.
-
-        No host launch site calls this. Fixed-end/credential/worker qualification
-        remains owed. One bound covers stream collection too, not just dispatch.
-        """
+    async def dispatch(self, execute: Message, bound: OperationBound, *, stream_bound: OperationBound,
+                       output_cap_bytes: int, message_cap: int) -> ExecStream:
+        """Start exactly one RPC, without waiting for headers, output, or remote acceptance."""
         if (self._exec_attempted or self._kill_requested or self._poisoned or self._observation is None
                 or not self._observation.admission_ready):
             raise TransportError("execute_not_permitted")
         if type(output_cap_bytes) is not int or output_cap_bytes < 0:
             raise TransportError("invalid_output_cap")
+        if type(message_cap) is not int or message_cap <= 0:
+            raise TransportError("invalid_message_cap")
+        if stream_bound is None:
+            raise UnsupportedCapability()
+        self._request(stream_bound)  # finite lifetime required before any effect
+        end = asyncio.get_running_loop().time() + stream_bound.timeout_s
         request = self._request(bound)
         request.exec.CopyFrom(execute)
         if request.exec.tty:
@@ -259,32 +339,41 @@ class LeaseSession:
         request.exec.workspace_scope.workspace = self._workspace
         request.exec.sandbox = self._generation
         self._exec_attempted = True
+        stream = None
 
-        async def run():
-            stream = self._stub.ExecCancellationLease(request, timeout=bound.timeout_s)
-            out, err = bytearray(), bytearray()
-            exit_code = None
-            try:
-                async for event in stream:
-                    kind = event.WhichOneof("payload")
-                    if exit_code is not None or kind not in ("stdout", "stderr", "exit"):
-                        raise TransportError("invalid_exec_stream", uncertain=True)
-                    if kind == "exit":
-                        exit_code = event.exit.exit_code
-                    else:
-                        data = getattr(event, kind).data
-                        if len(out) + len(err) + len(data) > output_cap_bytes:
-                            raise TransportError("output_limit", uncertain=True)
-                        (out if kind == "stdout" else err).extend(data)
-                if exit_code is None:
-                    raise TransportError("missing_exec_exit", uncertain=True)
-                return StreamResult(exit_code, bytes(out), bytes(err))
-            finally:
+        async def start():
+            nonlocal stream
+            # grpc.aio's call constructor is nonblocking. Its deadline covers the
+            # whole stream; the private request field bounds server dispatch only.
+            stream = self._stub.ExecCancellationLease(request, timeout=stream_bound.timeout_s)
+
+        try:
+            await self._bounded(start, bound)
+            self._exec_stream = ExecStream(self, stream, stream_bound, end, output_cap_bytes, message_cap)
+            self._exec_stream._check()
+            return self._exec_stream
+        except BaseException:
+            if self._exec_stream is not None:
+                self._exec_stream.cancel()
+            elif stream is not None:
                 stream.cancel()
-        return await self._bounded(run, bound)
+            raise
+
+    async def execute(self, execute: Message, bound: OperationBound, *, output_cap_bytes: int) -> StreamResult:
+        """Compatibility wrapper: one bound for dispatch and full collection.
+
+        New integrations use dispatch with an explicit message cap. The legacy
+        cap permits one one-byte event per output byte plus the terminal event.
+        """
+        message_cap = output_cap_bytes + 1 if type(output_cap_bytes) is int else 1
+        handle = await self.dispatch(execute, bound, stream_bound=bound,
+                                     output_cap_bytes=output_cap_bytes, message_cap=message_cap)
+        return await handle.wait(bound.timeout_s)
 
     async def kill(self, bound: OperationBound) -> None:
         self._kill_requested = True
+        if self._exec_stream is not None:
+            self._exec_stream.cancel()
         # A deadline can occur BEFORE durable K2. Only STATUS proves a fence.
         started = asyncio.get_running_loop().time()
         response = await self._control(self._request(bound, 3), bound)

@@ -285,3 +285,20 @@ def test_pending_fence_stays_in_list_until_barrier(sdk):
             assert state.barrier
             assert await client.list_owned(model.bound()) == ()
     asyncio.run(scenario())
+
+
+def test_split_dispatch_real_stream_outlives_dispatch_budget(sdk):
+    async def scenario():
+        async with local_server(sdk) as (client, state):
+            await ready(client, sdk.proto)
+            state.hold = "exec"
+            handle = await client.dispatch(sdk.proto.ExecSandboxRequest(), model.bound(.05),
+                                           stream_bound=model.bound(1), output_cap_bytes=6, message_cap=3)
+            await asyncio.wait_for(state.entered.wait(), .5)
+            assert await handle.wait(.08) is None
+            assert len([op for op, _ in state.calls if op == "exec"]) == 1
+            handle.cancel()
+            with pytest.raises(ot.TransportError, match="operation_timeout"):
+                await handle.wait(0)
+            await asyncio.wait_for(state.stopped.wait(), .5)
+    asyncio.run(scenario())

@@ -47,10 +47,11 @@ and a bridge to the existing reaper; it is not a complete backend.
 The methods map ENROLL=1, CREATE=2, KILL=3, LIST=4, STATUS=5 to
 `ControlCancellationLease`; EXEC uses `ExecCancellationLease` exactly once.
 Control and exec messages include explicit workspace, owner, lease, and a
-positive protobuf Duration from the caller's `OperationBound`. The aio call has
-the same deadline; local cancellation/deadline cancels the pending call. No RPC
-retry or fallback is performed. A stream is bounded by that same entire-operation
-deadline and a caller-supplied combined stdout/stderr byte cap. It requires one
+positive protobuf Duration from the caller's `OperationBound`. Control RPCs use
+that deadline; EXEC dispatch uses it in the request and a separate finite
+`stream_bound` for the aio RPC deadline and local collector lifetime. Local
+cancellation/deadline cancels the pending call. No RPC retry or fallback is
+performed. A stream has explicit combined stdout/stderr byte and message caps. It requires one
 exit event and EOF; this is a raw protocol exit, not native provider completion
 evidence or a verified result. The transport accepts protobuf worker requests;
 a future backend must construct them from runtime-owned workloads, never host
@@ -126,10 +127,10 @@ The r10 L3–L6 integration obligations remain open:
 - **L4 channel bounds:** the output cap bounds accumulation, not decoding of each
   message. Per-message buffering is bounded by the injected channel's receive
   limit, which must be explicitly qualified/configured by the integration.
-- **L5 separate bounds:** this client conservatively shares one bound across
-  dispatch, the RPC deadline and stream collection. The server documents the EXEC
-  field as a dispatch bound and has a 15-second relay-open wait. Splitting dispatch
-  and collection bounds remains backend integration work.
+- **L5 separate bounds:** the local client now separates dispatch and collection
+  as described below. The server documents the EXEC field as a dispatch bound and
+  has a 15-second relay-open wait. Actual-server timing, fixed-end enforcement and
+  backend receipt mapping remain integration obligations.
 - **L6 worker inputs:** generated and compact fixtures now include `environment`,
   `workdir`, `execution_timeout` and `no_login_shell`; the local wire test checks
   their unchanged pass-through. The future worker/backend must refuse
@@ -343,3 +344,56 @@ collection bounds, result quarantine and same-session live cleanup. KILL plus ST
 destruction/settled-obligation barrier and complete LIST absence remain necessary
 before journal removal. The execution flag and production CREATE/EXEC gate remain
 closed; all carried qualification and synchronous I/O limitations above remain.
+
+
+## One-shot dispatch and local stream collection (r44)
+
+The finite-run interface is `JournalSession.dispatch(request, dispatch_bound,
+stream_bound=..., output_cap_bytes=..., message_cap=...) -> ExecStream`.
+Use the original attached live session. It fsyncs the existing EXEC attempt marker
+before constructing the one and only RPC. `stream_bound=None` is unsupported and
+refused before the marker. Other invalid bounds/caps refuse without an RPC; a
+journaled attempt stays consumed. Bounds and caps come from the caller's resolved
+settings/finite workload end; no operational defaults or settings loader are added.
+
+`LeaseSession.dispatch` returns after the nonblocking grpc.aio call constructor,
+without waiting for headers, first output or EOF. This proves only local dispatch,
+not server acceptance or readiness. The request's bound is the dispatch budget;
+the RPC deadline is the finite overall stream budget, measured from dispatch and
+never renewed by polling. The supplied stub must have a nonblocking constructor.
+A future backend must map dispatch uncertainty conservatively, retain the handle,
+and bridge its dedicated loop to driver `wait`; no driver contract changes or
+backend registration are supplied here.
+
+`await handle.wait(wait_s)` returns `None` for a poll with no terminal result,
+or `StreamResult` only after one exit and clean EOF. It never dispatches, reads a
+second stream, recovers a lease, resumes collection, or replays credentials. All
+messages count, including empty output and the exit. Output accumulation is capped
+across stdout/stderr; channel receive/decode bounds remain the channel owner's
+obligation. Malformed/post-exit messages, overflow and stream loss permanently
+fail this collector. Raw exit is not native completion or artifact acceptance.
+
+Cancellation/deadline is checked before returning even a completed result. Cancelling
+a waiter or calling `handle.cancel()` discards the collector; poll expiry alone
+does not cancel it. The JournalSession handle also refuses after lease fencing or
+ownership release. Collection callbacks never write the journal; late events cannot
+alter recovered ownership or become accepted output. The loop must stay alive for
+the finite collection lifetime, and the eventual backend must cancel the handle
+when releasing ownership. A stalled stream otherwise remains bounded by its fixed
+end. This does not solve synchronous fsync/loop contention limits.
+
+Live KILL uses `JournalSession.kill` on that same attachment and stops local
+collection first. Local stream cancellation is not a destruction barrier. Claimed
+EXEC may still start remotely while KILL is pending; cancelled output is refused.
+Only exact destruction plus settled obligations, validated through KILL/STATUS,
+and complete-LIST absence permit journal removal. Failed/pending KILL retains the
+journal. Never route live cleanup through recovery of the already held lease.
+
+The existing async `execute(request, bound, output_cap_bytes=...)` remains a
+whole-stream convenience wrapper using the same bound for both phases. Its finite
+message cap is derived as output-cap + one terminal event (so excessive empty
+chunks now refuse); integrations needing independent caps use `dispatch`.
+`transfer`, `commit`, `collect` and `renew` remain unsupported. Neither execution
+gate changes. Source publication, worker sealing, native witness/quarantine,
+actual-server expiry, same-session backend routing and all live/physical/channel
+qualification remain owed; this increment is only the local stream boundary.

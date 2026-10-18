@@ -298,7 +298,9 @@ def test_f2_claim_before_kill_remains_pending_until_barrier():
         assert (await client.status(bound())).cleanup_pending
         assert await client.list_owned(bound()) == ((GEN, "lease"),)
         release.set()
-        await task  # Already claimed work may complete while cancellation is pending.
+        # The server may still run claimed work, but local cancellation refuses it.
+        with pytest.raises(ot.TransportError, match="operation_timeout"):
+            await task
         assert (await client.status(bound())).cleanup_pending
     run(scenario())
 
@@ -936,3 +938,160 @@ def test_pass_cancel_during_exec_propagates_one_shot():
         with pytest.raises(ot.TransportError, match="execute_not_permitted"):
             await c.execute(P.ExecSandboxRequest(), bound(), output_cap_bytes=0)
     run(s())
+
+
+def test_split_dispatch_delayed_output_and_terminal_eof():
+    async def scenario():
+        stub = Stub()
+        client = session(stub, fresh=True)
+        stub.responses[5] = observation()
+        await client.status(bound())
+        release, eof = asyncio.Event(), asyncio.Event()
+
+        async def delayed():
+            await release.wait()
+            return P.ExecSandboxEvent(exit={"exit_code": 0})
+
+        async def delayed_eof():
+            await eof.wait()
+            raise StopAsyncIteration
+
+        stub.events = [delayed, delayed_eof]
+        handle = await client.dispatch(P.ExecSandboxRequest(), bound(.02), stream_bound=bound(1),
+                                       output_cap_bytes=0, message_cap=1)
+        assert await handle.wait(.04) is None  # past dispatch budget, no first event
+        release.set()
+        assert await handle.wait(.01) is None  # terminal exit alone is insufficient
+        eof.set()
+        assert (await handle.wait(.5)).exit_code == 0
+        assert (await handle.wait(0)).exit_code == 0
+        calls = [c for c in stub.calls if c[0] == "exec"]
+        assert len(calls) == 1
+        assert calls[0][1].bound.nanos == 20_000_000 and calls[0][2] == 1
+        with pytest.raises(ot.TransportError, match="execute_not_permitted"):
+            await client.dispatch(P.ExecSandboxRequest(), bound(), stream_bound=bound(),
+                                  output_cap_bytes=0, message_cap=1)
+    run(scenario())
+
+
+@pytest.mark.parametrize("stop", ["bound", "cancel", "outer", "deadline"])
+def test_split_stream_stop_wins_terminal_race(stop):
+    async def scenario():
+        stub = Stub()
+        client = session(stub, fresh=True)
+        stub.responses[5] = observation()
+        await client.status(bound())
+        lifetime = bound(.04 if stop == "deadline" else 1)
+        release = asyncio.Event()
+
+        async def terminal():
+            await release.wait()
+            if stop == "bound":
+                lifetime.cancelled.set()
+            return P.ExecSandboxEvent(exit={})
+
+        stub.events = [terminal]
+        handle = await client.dispatch(P.ExecSandboxRequest(), bound(), stream_bound=lifetime,
+                                       output_cap_bytes=0, message_cap=1)
+        if stop == "cancel":
+            handle.cancel()
+        elif stop == "outer":
+            task = asyncio.create_task(handle.wait(1))
+            await asyncio.sleep(0)
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        elif stop == "deadline":
+            await asyncio.sleep(.06)
+        release.set()
+        with pytest.raises(ot.TransportError, match="operation_timeout"):
+            await handle.wait(.2)
+        assert stub.stream.cancelled
+        assert [c[0] for c in stub.calls].count("exec") == 1
+    run(scenario())
+
+
+@pytest.mark.parametrize("events,byte_cap,msg_cap,code", [
+    ([{"stdout": {"data": b"xx"}}], 1, 2, "output_limit"),
+    ([{"stdout": {}}, {"stdout": {}}], 0, 1, "message_limit"),
+    ([], 0, 1, "missing_exec_exit"),
+    ([{"exit": {}}, {"stdout": {}}], 1, 3, "invalid_exec_stream"),
+    (["lost"], 0, 1, "authority_unavailable"),
+])
+def test_split_stream_fault_is_sticky_without_redispatch(events, byte_cap, msg_cap, code):
+    async def scenario():
+        stub = Stub()
+        client = session(stub, fresh=True)
+        stub.responses[5] = observation()
+        await client.status(bound())
+        stub.events = [RpcFailure("UNAVAILABLE") if e == "lost" else P.ExecSandboxEvent(**e) for e in events]
+        handle = await client.dispatch(P.ExecSandboxRequest(), bound(), stream_bound=bound(),
+                                       output_cap_bytes=byte_cap, message_cap=msg_cap)
+        for _ in range(2):
+            with pytest.raises(ot.TransportError, match=code) as error:
+                await handle.wait(.2)
+            assert error.value.uncertain
+        assert stub.stream.cancelled
+        assert [c[0] for c in stub.calls].count("exec") == 1
+    run(scenario())
+
+
+def test_split_dispatch_cancel_races_created_call():
+    async def scenario():
+        stub = Stub()
+        client = session(stub, fresh=True)
+        stub.responses[5] = observation()
+        await client.status(bound())
+        dispatch_bound = bound()
+        real = stub.ExecCancellationLease
+
+        def cancelled(*args, **kwargs):
+            stream = real(*args, **kwargs)
+            dispatch_bound.cancelled.set()
+            return stream
+
+        stub.ExecCancellationLease = cancelled
+        with pytest.raises(ot.TransportError, match="operation_timeout"):
+            await client.dispatch(P.ExecSandboxRequest(), dispatch_bound, stream_bound=bound(),
+                                  output_cap_bytes=0, message_cap=1)
+        assert stub.stream.cancelled
+        with pytest.raises(ot.TransportError, match="execute_not_permitted"):
+            await client.execute(P.ExecSandboxRequest(), bound(), output_cap_bytes=0)
+        assert [c[0] for c in stub.calls].count("exec") == 1
+    run(scenario())
+
+
+@pytest.mark.parametrize("stop", ["cancel", "deadline"])
+def test_split_completed_result_cannot_escape_later_stop(stop):
+    async def scenario():
+        stub = Stub()
+        client = session(stub, fresh=True)
+        stub.responses[5] = observation()
+        await client.status(bound())
+        lifetime = bound(.04 if stop == "deadline" else 1)
+        handle = await client.dispatch(P.ExecSandboxRequest(), bound(), stream_bound=lifetime,
+                                       output_cap_bytes=0, message_cap=1)
+        assert (await handle.wait(.02)).exit_code == 0
+        if stop == "cancel":
+            lifetime.cancelled.set()
+        else:
+            await asyncio.sleep(.05)
+        with pytest.raises(ot.TransportError, match="operation_timeout"):
+            await handle.wait(0)
+        assert [c[0] for c in stub.calls].count("exec") == 1
+    run(scenario())
+
+
+@pytest.mark.parametrize("lifetime,messages", [(None, 1), (float("inf"), 1), (0, 1), (1, 0), (1, True)])
+def test_split_invalid_limits_never_dispatch(lifetime, messages):
+    async def scenario():
+        stub = Stub()
+        client = session(stub, fresh=True)
+        stub.responses[5] = observation()
+        await client.status(bound())
+        with pytest.raises(ot.TransportError):
+            await client.dispatch(P.ExecSandboxRequest(), bound(),
+                                  stream_bound=None if lifetime is None else bound(lifetime),
+                                  output_cap_bytes=0, message_cap=messages)
+        assert "exec" not in [c[0] for c in stub.calls]
+    run(scenario())

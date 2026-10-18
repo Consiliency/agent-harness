@@ -732,3 +732,70 @@ def test_commit_sync_failure_fences_without_changing_generation(proto, monkeypat
         lease.confirm_commit_ref(client, model.GEN)
     assert lease.fenced and entry(lease)["sandbox_ref"] == model.GEN
     lease.abandon()
+
+
+@pytest.mark.parametrize("release_ownership", [False, True])
+def test_split_live_session_cleanup_and_late_stream(proto, release_ownership):
+    async def scenario():
+        lease, stub, client = setup(proto)
+        await client.create(model.create_request(), model.bound())
+        await client.status(model.bound())
+        entered, release = asyncio.Event(), asyncio.Event()
+
+        async def late():
+            entered.set()
+            try:
+                await release.wait()
+            except asyncio.CancelledError:
+                await release.wait()  # model a late completion after local cancellation
+            return proto.ExecSandboxEvent(exit={})
+
+        stub.events = [late]
+        handle = await client.dispatch(proto.ExecSandboxRequest(), model.bound(.02),
+                                       stream_bound=model.bound(1), output_cap_bytes=0, message_cap=1)
+        await entered.wait()
+        assert entry(lease)["execute_sent_at"] is not None
+        with pytest.raises(BlockingIOError):
+            journal.recover_lease(lease.lease_id)
+        if release_ownership:
+            lease.abandon()
+            recovered = journal.recover_lease(lease.lease_id)
+            before = lease.path.read_bytes()
+            with pytest.raises(ot.TransportError, match="operation_timeout"):
+                await handle.wait(0)
+            release.set()
+            await asyncio.sleep(.01)
+            assert lease.path.read_bytes() == before
+            assert entry(recovered)["confirmed_killed_at"] is None
+            recovered.abandon()
+        else:
+            stub.responses[3] = proto.ControlCancellationLeaseResponse(barrier_confirmed=True)
+            stub.responses[5] = model.observation(
+                lease={"lease_id": lease.lease_id, "sandbox_ref": model.GEN},
+                admission_ready=False, fenced=True, execution_claimed=True,
+                destruction_observed=True, cleanup_pending=False, barrier_confirmed=True)
+            await client.kill(model.bound())  # original attachment, no recover_lease
+            with pytest.raises(ot.TransportError, match="operation_timeout"):
+                await handle.wait(0)
+            release.set()
+            assert lease.held and lease.path.exists()
+            assert entry(lease)["confirmed_killed_at"] is not None
+            # Even confirmed live KILL does not clear without complete LIST.
+            lease.abandon()
+        assert [c[0] for c in stub.calls].count("exec") == 1
+    asyncio.run(scenario())
+
+
+def test_split_no_deadline_refused_before_marker(proto):
+    async def scenario():
+        lease, stub, client = setup(proto)
+        await client.create(model.create_request(), model.bound())
+        await client.status(model.bound())
+        before = lease.path.read_bytes()
+        with pytest.raises(ot.UnsupportedCapability):
+            await client.dispatch(proto.ExecSandboxRequest(), model.bound(), stream_bound=None,
+                                  output_cap_bytes=0, message_cap=1)
+        assert lease.path.read_bytes() == before
+        assert "exec" not in [c[0] for c in stub.calls]
+        lease.abandon()
+    asyncio.run(scenario())
