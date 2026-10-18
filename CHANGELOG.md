@@ -29,6 +29,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   first-invalid-reason fields, plus capped relative timing samples. Group cleanup
   requests remain distinct from exit receipts; admission and HARDEN rules are unchanged.
 
+### Mapped-seat resolver setup (agent-harness#1570)
+
+- Prepare the mapped seat's resolver through the trusted parent before releasing
+  its namespace holder, preserving setup refusal and cleanup on failure.
+
+
 ### Fixed
 
 - The LEGIBLE live transition probe accepts the launcher's optional diagnostic
