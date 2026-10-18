@@ -191,3 +191,81 @@ def test_gemini_worktree_sweep_triggered_at_phase_start_and_closeout():
         return
     assert any("phase start" in b and "closeout" in b and "interactive" not in b.lower()
                for _, b in _linking(skill, rel))
+
+
+@pytest.mark.parametrize("action", ["execute", "repair"])
+def test_packaged_opencode_execute_references_reach_context(tmp_path, monkeypatch, action):
+    skill = "opencode-execute-phase"
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    monkeypatch.setattr(injection, "_resolve_pack_skill_dirs", lambda root, target, pack: {
+        name: PACKAGED / name for name in pack
+    })
+    bundle = _bundle(repo, "opencode", skill, action, monkeypatch)
+    assert f"{NOTE} under `skills/{skill}/references/`" in bundle.render_context()
+    expected = {
+        f"skills/{skill}/references/{name}": (PACKAGED / skill / "references" / name).read_bytes()
+        for name in ("interactive-publication.md", "worktree-pruning.md")
+    }
+    assert dict(bundle.skill_reference_files) == expected
+    request = launcher.build_launch_request(
+        executor="opencode", action=action, repo=repo,
+        roadmap=repo / "roadmap.md", phase="REFERENCES", plan=None,
+        model_selection=ModelSelection(profile=action, effort="high", model="openai/gpt-6-astra"),
+        prompt_bundle=bundle, json_output=True, bypass_approvals=False,
+    )
+    spec = launcher.build_launch_spec(request)
+    log_path = tmp_path / "run" / "launch.log"
+    log_path.parent.mkdir()
+    launcher._resolve_command_context(spec, log_path, dry_run=True)
+    contexts = list(log_path.parent.rglob("context.md"))
+    assert len(contexts) == 1
+    for relative_path, content in expected.items():
+        assert (contexts[0].parent / relative_path).read_bytes() == content
+
+
+@pytest.mark.parametrize("harness", ["claude", "codex", "gemini", "opencode"])
+def test_opencode_execute_references_install_only_for_opencode(tmp_path, harness):
+    from phase_loop_runtime.skill_install import install_skills
+
+    source = Path(__file__).resolve().parents[2] / "phase-loop-skills"
+    if not source.is_dir():
+        pytest.skip("committed bundle absent (from-wheel layout)")
+    destination = tmp_path / harness
+    install_skills(harness=harness, source=source, destination=destination, mode="copy", apply=True)
+    for name in ("interactive-publication.md", "worktree-pruning.md"):
+        installed = destination / f"{harness}-execute-phase" / "references" / name
+        packaged = PACKAGED / f"{harness}-execute-phase" / "references" / name
+        if harness == "opencode":
+            assert installed.read_bytes() == packaged.read_bytes()
+        else:
+            expected = (PACKAGED / "opencode-execute-phase" / "references" / name).read_bytes()
+            # Siblings may own a reference with the same name, but not OpenCode's bytes.
+            for sibling in (installed, packaged):
+                if sibling.exists():
+                    assert sibling.read_bytes() != expected
+
+
+@pytest.mark.parametrize("explicit_plan", [False, True])
+@pytest.mark.parametrize("needle", [
+    "On the FIRST commit of a phase", "immediately before each `git push`",
+])
+def test_opencode_publication_rules_reachable_before_first_commit(explicit_plan, needle):
+    skill = PACKAGED / "opencode-execute-phase"
+    rel = _home(skill, needle)
+    if rel is None:
+        return
+    early = [b for h, b in _linking(skill, rel)
+             if h != "Publication mode"
+             and (not explicit_plan or "If no plan path is explicit" not in b)
+             and re.search(r"first[- ]commit|before (each|every|any) [^.]*push|before execution",
+                           f"{h} {b}", re.I)]
+    assert early, f"{needle!r} in {rel} needs a trigger before the first commit"
+    # Reading interactive publication must never become a runner/governed instruction.
+    assert all("interactive" in b.lower() for b in early)
+    text = (skill / "SKILL.md").read_text(encoding="utf-8")
+    runner = text.split("- (a) Runner-managed closeout", 1)[1].split("- (b)", 1)[0]
+    assert "OR ambiguous mode" in runner
+    assert "the RUNNER owns closeout and commit" in runner
+    assert "Do NOT" in runner and "independently publish" in runner
+    assert f"]({rel}" not in runner

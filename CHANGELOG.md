@@ -14,6 +14,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   terminal and checkpoint. Ordinary replay and ambiguous-outcome recovery retain
   their existing behavior; see the FABPUB recovery runbook section 8b.
 
+### OpenCode execute-phase loads interactive procedures on demand (agent-harness#1358)
+
+- Move interactive publication and worktree-pruning procedures into linked references,
+  keeping lane execution, runner closeout and PR-description requirements in `SKILL.md`.
+  Core Rules loads interactive publication before the first commit or push, with or
+  without an explicit plan. Worktree pruning remains a standing rule for every path,
+  linked at phase start and closeout.
+  The OpenCode skill now fits all three size limits; its references install only for
+  OpenCode and accompany adapter context delivery through agent-harness#1738.
+
 ### `gemini-execute-phase` drops under the skill size limit (agent-harness#1358)
 
 - Move procedures into three linked `references/` files. Inputs loads
