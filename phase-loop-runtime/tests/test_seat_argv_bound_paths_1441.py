@@ -119,21 +119,39 @@ def _captured_launches(monkeypatch, leg: str, review_dir: Path, out_dir: Path):
 
 @pytest.mark.parametrize("leg", ["codex", "grok"])
 @pytest.mark.parametrize("sandboxed", [True, False], ids=["staged-tree", "no-tree"])
+@pytest.mark.parametrize("spaces", [False, True], ids=["plain-path", "path-with-spaces"])
 def test_a_brokered_seat_can_see_every_host_path_its_launch_argv_names(tmp_path, monkeypatch,
-                                                                       leg, sandboxed):
+                                                                       leg, sandboxed, spaces):
+    stage_root = tmp_path / ("stage with spaces" if spaces else "stage")
+    stage_root.mkdir()
     if sandboxed:
-        tree = _staged_tree(tmp_path)
+        tree = _staged_tree(stage_root)
         review_dir = tree.parent
     else:
         tree, review_dir = None, tmp_path / "sealed-review"
         review_dir.mkdir()
-    for argv, cwd in _captured_launches(monkeypatch, leg, review_dir, tmp_path / f"out-{leg}"):
+    out_dir = tmp_path / f"out-{leg}"
+    for argv, cwd in _captured_launches(monkeypatch, leg, review_dir, out_dir):
         assert argv[0] == leg
+        assert cwd == out_dir
         named = _assert_every_named_path_is_bound(argv, cwd=cwd, root=tmp_path)
         if tree is not None:
             # The instrument's own check: it does find the staged tree in this argv, so a
             # pass above is a statement about that path and not about an empty list.
             assert tree in [path for _flag, path in named], (leg, argv)
+        if leg == "grok":
+            assert argv.count("--cwd") == 1
+            assert argv[argv.index("--cwd") + 1] == str(tree if sandboxed else out_dir)
+            with pi._seat_command_profile(
+                    _stand_in(argv, tmp_path), env={"PATH": "/usr/bin:/bin"}, cwd=cwd,
+                    role=pi.SeatLaunchRole.PROVIDER_ADMIN) as (_owned, profile):
+                assert not profile.writable_trees
+                if tree is not None:
+                    assert tree != cwd
+                    assert tree in profile.readonly_paths
+                    assert tree not in profile.outputs
+                else:
+                    assert not profile.readonly_paths
 
 
 # --- the builders the other seats are launched from ------------------------------------------

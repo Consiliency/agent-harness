@@ -853,6 +853,65 @@ def test_legacy_fable_observation_without_external_status_remains_pending(tmp_pa
     assert record.state == "pending"
 
 
+@pytest.mark.parametrize(
+    ("marker_values", "external_values"),
+    [
+        (("UNAVAILABLE", "under_claude_code"), None),
+        (("UNAVAILABLE", "under_claude_code", "PRIVATE_DIAGNOSTIC"), None),
+        (("DEGRADED", "marker_refused", "PRIVATE_DIAGNOSTIC"), ("DEGRADED", "")),
+        (("DEGRADED", "marker_refused", "PRIVATE_DIAGNOSTIC"), ("OK", "external response")),
+        (("DEGRADED", "marker_refused"), ("OK", "external response", "PRIVATE_DIAGNOSTIC")),
+        (("OK", "", "PRIVATE_DIAGNOSTIC"), ("DEGRADED", "", "PRIVATE_DIAGNOSTIC")),
+    ],
+)
+def test_fable_adapter_preserves_marker_results_with_optional_diagnostics(
+    tmp_path, monkeypatch, marker_values, external_values,
+):
+    from phase_loop_runtime import panel_invoker
+
+    authorization = object()
+    closed = []
+    launches = []
+    monkeypatch.setattr(
+        legible_evidence, "prepare_review_isolation_authorization", lambda *a, **k: authorization,
+    )
+    monkeypatch.setattr(legible_evidence, "activate_review_isolation_authorization", lambda *a, **k: None)
+    monkeypatch.setattr(legible_evidence, "close_review_isolation_authorization", closed.append)
+    monkeypatch.setattr(
+        legible_evidence, "subprocess",
+        SimpleNamespace(run=lambda *a, **k: SimpleNamespace(returncode=0, stdout='{"state":"OPEN"}')),
+    )
+    monkeypatch.setattr(panel_invoker, "_subscription_env", lambda: {})
+    monkeypatch.setattr(panel_invoker, "_claude_subscription_auth_ok", lambda env: (True, ""))
+
+    def spawn(leg, artifact, **kwargs):
+        assert kwargs["review_authorization"] is authorization
+        assert kwargs["canonical_repo_authority"] == tmp_path
+        launches.append(kwargs["env"])
+        values = marker_values if len(launches) == 1 else external_values
+        assert values is not None, "a deferred marker must not launch the external leg"
+        return panel_invoker._BrokeredSpawnResult(*values)
+
+    monkeypatch.setattr(panel_invoker, "_default_spawn", spawn)
+    raw = legible_evidence._invoke_reviewtruth_fable_adapter(
+        {"repository": "Consiliency/agent-harness", "issue": 396,
+         "model": "claude-fable-5", "source_anchor": "fixture"},
+        repo=tmp_path,
+    )
+
+    assert closed == [authorization]
+    assert launches[0] == {"CLAUDECODE": "1"}
+    assert "PRIVATE_DIAGNOSTIC" not in json.dumps(raw)
+    if external_values is None:
+        assert len(launches) == 1
+        assert raw["incomplete"] == "native_fill_not_observable_on_host"
+    else:
+        assert launches == [{"CLAUDECODE": "1"}, {}]
+        assert raw["leg"]["status"] == marker_values[0]
+        assert raw["leg"]["external_status"] == external_values[0]
+        assert raw["response"]["text"] == (external_values[1] if external_values[0] == "OK" else "")
+
+
 def test_manifest_check_rejects_extra_registered_plan(tmp_path):
     repo = make_repo(tmp_path)
     canonical = _commit_plan(repo)

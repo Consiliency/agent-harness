@@ -43,6 +43,18 @@ QUALIFIED_IMAGES = {
     # agy 1.3.1
     "ce1bdaed3201bb84f35d69d2773caec4f18af52af00e8c25f6cace07e4359615":
         "8fcf40227fe84704f7f8155b3b5ebcee79dfdc5208fde6e8b07569c24425f976",
+    # agy 1.3.2
+    "32f9478e47d1d456e090f7ed0a297fcde2fa45ec10839904f03ea1ba00645e49":
+        "8fcf40227fe84704f7f8155b3b5ebcee79dfdc5208fde6e8b07569c24425f976",
+    # agy 1.3.3
+    "d97edcf90eda1799cd6cedc92616ef402f23c9752a723e8b8ae3e8f062ce458b":
+        "8fcf40227fe84704f7f8155b3b5ebcee79dfdc5208fde6e8b07569c24425f976",
+    # agy 1.3.4
+    "5b93565c5f04ea4f7b79d49d5c3237449bf6ce47b6779e8cf46c1fae97957c98":
+        "8fcf40227fe84704f7f8155b3b5ebcee79dfdc5208fde6e8b07569c24425f976",
+    # agy 1.3.5
+    "b5385638174a5e720e904f3a2678752534fb8414d10c2c302fa16daf56cbcfc9":
+        "a12355e8fc064b330eeb25ba52de596406582752442e293083bcda6388a63b78",
 }
 PROFILE_ID = "agy_memfd_home_deny_all_v1"
 PRIVATE_HOME = "/dev/phase-loop-agy"

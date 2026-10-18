@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: HARDEN
 roadmap: specs/phase-plans-v10.md
-roadmap_sha256: 36654e211670ba02da87650677adba957cfc7e1c8cd4a907abf0fd59194f3d10
+roadmap_sha256: d3e25ffbf0ef92ba4581f4ea679e7fda2a87245b6c1ea591da0514f1f8dc3246
 automation:
   suite_command:
     - bash

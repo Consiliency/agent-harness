@@ -104,30 +104,41 @@ def test_an_owned_seat_runs_below_a_linked_workspace(tmp_path):
 
 @needs_owner
 @pytest.mark.parametrize("flag", ["--cd", "--cwd"])
-def test_a_working_directory_named_only_in_the_argv_is_in_the_seat_view(tmp_path, flag):
+@pytest.mark.parametrize("linked", [False, True], ids=["ordinary-stage", "trusted-parent-link"])
+def test_a_working_directory_named_only_in_the_argv_is_in_the_seat_view(tmp_path, flag, linked):
     """A brokered seat launches in its empty output directory and names the staged tree in
     its argv: codex as ``--cd``, grok as ``--cwd``. Either must exist inside the seat, at
     the path the argv names (agent-harness#1336: grok's did not)."""
     out_dir = tmp_path / "out"
-    tree = tmp_path / "review" / "reviewed-tree"
+    stage_root = _linked_workspace(tmp_path)[1] / "work" if linked else tmp_path
+    tree = stage_root / "review with spaces" / "reviewed-tree"
     out_dir.mkdir()
     tree.mkdir(parents=True)
     (tree / "source.txt").write_text("TREE-CONTENT\n")
+    before = {path.name: path.read_bytes() for path in tree.iterdir()}
     output = out_dir / "out.txt"
-    command = ["/bin/sh", "-c", 'cat "$2/source.txt" > "$3"', "sh", flag, str(tree), str(output)]
+    script = ('cat "$2/source.txt" > "$3" || exit 3; '
+              'if (printf MUTATED > "$2/source.txt"); then exit 4; fi; '
+              'if (printf CREATED > "$2/new.txt"); then exit 5; fi; '
+              'printf "WRITE-DENIED\\n"')
+    command = ["/bin/sh", "-c", script, "sh", flag, str(tree), str(output)]
     with pi._seat_command_profile(command, env={"PATH": "/usr/bin:/bin"}, cwd=out_dir,
                                   outputs=(output,),
                                   role=pi.SeatLaunchRole.PROVIDER_ADMIN) as (owned, profile):
         assert tree in profile.readonly_paths
+        assert not profile.writable_trees
+        assert tree not in profile.outputs
         process = pi.launch_owned(owned, role=pi.SeatLaunchRole.PROVIDER_ADMIN, profile=profile,
                                   cwd=str(out_dir), stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                   start_new_session=True)
         try:
-            _out, err = process.communicate(timeout=60)
+            out, err = process.communicate(timeout=60)
         finally:
             pi._terminate_process_group(process)
     assert process.returncode == 0, err
+    assert out == b"WRITE-DENIED\n"
     assert pi._read_seat_text(output) == "TREE-CONTENT\n"
+    assert {path.name: path.read_bytes() for path in tree.iterdir()} == before
 
 
 @pytest.mark.skipif(os.getuid() == 0, reason="root reads a search-only directory anyway")
