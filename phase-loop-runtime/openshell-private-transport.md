@@ -164,12 +164,14 @@ Use the manifest's interpreter/platform with repository test dependencies alread
 installed, plus `git`, `uv` and `openssl`, and PyPI content reachability for the
 pinned wheel downloads. From a clean committed `phase-loop-runtime` checkout:
 
-Use a dedicated clean qualification worktree: `src`, `tests` and `scripts` must
-contain no changed, untracked or ignored files, including `__pycache__` directories
+Use a dedicated clean qualification worktree: the whole `phase-loop-runtime` tree
+must contain no changed, untracked or ignored files, including root modules,
+pytest configuration, in-tree virtual environments and `__pycache__` directories
 and standalone sourceless `.pyc` modules. Global Git ignores and `info/exclude`
 do not exempt files. The recipe checks at startup, after generation before pytest,
 and at completion; it refuses without deleting files. Keep local environments and
-qualification output outside these import-bearing directories.
+qualification output outside the runtime tree; use an external environment. The
+recipe never deletes user files to make a checkout qualify.
 
 ```sh
 "$PYTHON" -I -B scripts/qualify_openshell_sdk.py \
@@ -186,6 +188,10 @@ the actual clean harness commit/tree, interpreter and uv versions, computed inpu
 installed payload and output hashes, test counts/outcome, bounds and completion time.
 Generator and pytest startup exclude the caller's working directory and Python
 environment injection; pytest loads only explicitly selected external plugins.
+Pytest uses the tracked `pyproject.toml` explicitly, fixes its root to the runtime
+tree and limits conftest discovery to `tests`. Importlib mode avoids adding test
+package ancestors to `sys.path`; runtime-root and ancestor config/conftest files
+are not discovered. The existing test helpers remain on explicit import paths.
 Installed payload bytes are checked against the verified wheels immediately after
 installation and again before pytest. The complete installed file set and bytes
 are also captured after installation and must match before pytest; only named
@@ -198,7 +204,9 @@ recipe's `TIMEOUTS` configuration. The interpreter and its installed test depend
 remain trusted caller prerequisites, along with PATH tools and committed source.
 This is not a fully hermetic environment or protection against concurrent mutation
 of the checkout, private work directory or trusted interpreter. The ignored-file
-refusal covers only the import-bearing `src`, `tests` and `scripts` directories.
+refusal covers the entire runtime tree at all three checkpoints. Interpreter/venv
+site files (including `.pth` files) and PATH tools remain trusted; this does not
+protect against arbitrary concurrent same-user modification.
 The narrow run includes transport, local gRPC and subprocess TLS channel tests. The opt-in
 `_openshell_qualification` pytest plugin also rejects missing/mismatched SDK bytes,
 extra entries and symlinked SDK files/directories before collection;

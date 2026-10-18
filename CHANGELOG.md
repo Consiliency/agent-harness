@@ -6,8 +6,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
-- Refuse SDK qualification with changed, untracked or ignored import-path files,
-  including sourceless bytecode planted during generation.
+- Refuse SDK qualification with changed, untracked or ignored files anywhere in
+  the runtime tree, including sourceless bytecode planted during generation;
+  bound pytest configuration, conftest discovery and package import paths.
 
 - Bind bounded SDK qualification receipts to the complete installed file inventory
   and use fresh per-command bytecode cache locations.

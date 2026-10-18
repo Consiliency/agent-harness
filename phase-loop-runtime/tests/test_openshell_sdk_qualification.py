@@ -81,6 +81,7 @@ def qualification_run(tmp_path, monkeypatch):
         Path(__file__).with_name('_openshell_qualification.py').read_bytes())
     (root / 'scripts' / 'qualify_openshell_sdk.py').write_bytes(SCRIPT.read_bytes())
     (root / 'tests' / 'test_case.py').write_text('def test_ok(): pass\n')
+    (root / 'pyproject.toml').write_text('[tool.pytest.ini_options]\n')
     generator = '''import pathlib, sys
 out = pathlib.Path(next(a.split('=', 1)[1] for a in sys.argv if a.startswith('--python_out=')))
 (out / 'sdk.py').write_bytes(b'sdk')
@@ -200,6 +201,34 @@ def test_dirty_source_refuses_receipt(qualification_run):
     assert not (work / 'qualification-receipt.json').exists()
 
 
+@pytest.mark.parametrize('level', [0, 1, 2])
+@pytest.mark.parametrize('name', ['conftest.py', 'pytest.ini', '.pytest.ini', 'tox.ini', 'setup.cfg'])
+def test_pytest_discovery_is_bounded(qualification_run, level, name):
+    _, work, root = qualification_run
+    ancestor = [root, root.parent, root.parent.parent][level]
+    marker = work.parent / 'ancestor-ran'
+    payload = f'from pathlib import Path; Path({str(marker)!r}).touch(); raise RuntimeError("ancestor loaded")\n'
+    if name == 'conftest.py':
+        content = payload
+    else:
+        (ancestor / 'ancestor_plugin.py').write_text(payload)
+        section = 'tool:pytest' if name == 'setup.cfg' else 'pytest'
+        content = f'[{section}]\npythonpath = {ancestor}\naddopts = -p ancestor_plugin\n'
+    (ancestor / name).write_text(content)
+    # Model the real packaged tests, including a potentially importable parent.
+    (root / 'tests' / '__init__.py').write_text('')
+    (root / '__init__.py').write_text(payload)
+    (root / 'tests' / 'conftest.py').write_text(
+        'import pytest\n@pytest.fixture\ndef bounded_fixture(): return 42\n')
+    (root / 'tests' / 'test_case.py').write_text(
+        'import sys\ndef test_ok(bounded_fixture):\n'
+        '    assert bounded_fixture == 42\n'
+        f'    assert not set({[str(root), str(root.parent), str(root.parent.parent)]!r}) & set(sys.path)\n')
+    recipe.main()
+    assert (work / 'qualification-receipt.json').is_file()
+    assert not marker.exists()
+
+
 @pytest.fixture
 def qualification_git(qualification_run):
     state, work, root = qualification_run
@@ -216,12 +245,15 @@ def qualification_git(qualification_run):
 
 
 @pytest.mark.parametrize('stage', ['start', 'generation', 'end'])
-@pytest.mark.parametrize('directory', ['src', 'tests', 'scripts'])
-@pytest.mark.parametrize('ignore', ['repository', 'global', 'info'])
-def test_ignored_import_files_refuse_receipt(qualification_git, monkeypatch, stage, directory, ignore):
+@pytest.mark.parametrize('relative,ignore', [
+    (f'{directory}/pytest.pyc' if ignore == 'repository' else f'{directory}/pytest.py', ignore)
+    for directory in ('src', 'tests', 'scripts')
+    for ignore in ('repository', 'global', 'info')
+] + [('_quarantine.pyc', 'repository'), ('conftest.py', 'global'), ('pytest.ini', 'global')])
+def test_ignored_import_files_refuse_receipt(qualification_git, monkeypatch, stage, relative, ignore):
     import marshal
     state, work, root = qualification_git
-    target = root / directory / ('pytest.pyc' if ignore == 'repository' else 'pytest.py')
+    target = root / relative
     marker = root.parent / 'shadow-ran'
     payload = (f'from pathlib import Path; Path({str(marker)!r}).touch()\n'
                'import json, os\n'
@@ -233,7 +265,7 @@ def test_ignored_import_files_refuse_receipt(qualification_git, monkeypatch, sta
     else:
         content = payload.encode()
         excludes = root.parent / ('.git/info/exclude' if ignore == 'info' else 'global-ignore')
-        excludes.write_text('pytest.py\n')
+        excludes.write_text(f'/phase-loop-runtime/{relative}\n')
         if ignore == 'global':
             excludes.rename(work.parent / 'global-ignore')
             home = work.parent / 'home'

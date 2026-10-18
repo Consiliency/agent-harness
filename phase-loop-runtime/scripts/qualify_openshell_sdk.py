@@ -89,8 +89,8 @@ def source_identity(env):
     if git('status', '--porcelain', '--untracked-files=all'):
         raise ValueError('dirty qualification source; commit changes before qualification')
     if git('status', '--porcelain', '--ignored', '--untracked-files=all',
-           '--', 'src', 'tests', 'scripts'):
-        raise ValueError('dirty qualification import paths; use a clean worktree without ignored files in src, tests or scripts')
+           '--', '.'):
+        raise ValueError('dirty qualification import paths; use a clean worktree without ignored files in phase-loop-runtime')
     return dict(commit=git('rev-parse', 'HEAD'), tree=git('rev-parse', 'HEAD^{tree}'))
 
 
@@ -163,7 +163,9 @@ def main():
     if source_identity(env) != source:
         raise ValueError('qualification source changed during generation')
     subprocess.run(python_command([deps, ROOT / 'src', ROOT / 'tests'], 'pytest', work) +
-                   ['-q', '-p', 'no:cacheprovider',
+                   ['-q', '-c', str(ROOT / 'pyproject.toml'), '--rootdir', str(ROOT),
+                    '--confcutdir', str(ROOT / 'tests'), '--import-mode=importlib',
+                    '-p', 'no:cacheprovider',
                     '-p', '_openshell_qualification',
                     'tests/test_openshell_transport.py', 'tests/test_openshell_transport_grpc.py',
                     'tests/test_openshell_channel.py'], cwd=ROOT, env=env, check=True, timeout=TIMEOUTS['pytest'])
