@@ -1496,7 +1496,7 @@ class _Walk:
         except _CallCancelled:
             return None, None
         except PlacementUnavailable as exc:
-            if exc.code == _TIMEOUT:
+            if exc.code == _TIMEOUT and self._budget_spent():
                 return "budget_spent", _BUDGET_SPENT
             return "seal_failed", _REFUSED
         except Exception:
@@ -1752,7 +1752,8 @@ def run_placed(
                         on_progress(got)
             elif (
                 isinstance(got, ExecResult) and got.sandbox_ref == sandbox_ref
-                and isinstance(got.result, bytes) and len(got.result) <= spec.output_cap_bytes
+                and type(got.result) is bytes and got.truncated is False
+                and len(got.result) <= spec.output_cap_bytes
                 and _echoes(got.result, spec.request)
             ):
                 result = got

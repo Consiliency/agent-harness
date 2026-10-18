@@ -15,6 +15,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   repository overrides and the existing duration aliases. Malformed durations now raise
   `sandbox_config_invalid` instead of silently defaulting; blank inheritance, zero and
   negative clamping remain supported. The nonlocal leg driver remains disabled.
+- Shared sandbox validation also applies to president-ladder resolution: malformed
+  user roots, order or driver settings now refuse that resolution.
 
 ### Codex execute-phase reads interactive procedures on demand (agent-harness#1358)
 

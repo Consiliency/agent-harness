@@ -24,6 +24,11 @@ committed controls. Every participating layer is validated, including shadowed
 values; blank overrides inherit. Missing or corrupt packaged defaults and
 malformed overrides fail with input-free `sandbox_config_invalid`.
 
+Before future review launch-site activation, any caller resolving settings with
+the reviewed candidate as `repo_dir` must pass `review_base=True`, so the candidate
+cannot tune its own review durations or worker bound. This is an obligation for
+the activation/workload lane; no launch-site wiring or activation is added here.
+
 Durations accept non-bool integers and signed ASCII decimal strings, clamp
 negatives to zero, and saturate positive magnitudes lexically at half the platform
 thread timeout maximum. Worker limits are positive non-bool integers within

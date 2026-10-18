@@ -1219,13 +1219,16 @@ def test_seal_is_bounded_and_late_spec_is_discarded(far, monkeypatch, cancel):
     monkeypatch.setenv("PHASE_LOOP_SANDBOX_ADMIT_WAIT_S", "0")
     monkeypatch.setenv("PHASE_LOOP_SANDBOX_TRANSFER_ALLOWANCE_S", "1")
     entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    returned = threading.Event()
     cancelled = threading.Event()
     outcomes = []
 
     def seal(request):
         entered.set()
         release.wait(5)
-        return exec_spec(request)
+        spec = exec_spec(request)
+        returned.set()
+        return spec
 
     def run():
         try:
@@ -1251,7 +1254,15 @@ def test_seal_is_bounded_and_late_spec_is_discarded(far, monkeypatch, cancel):
     finally:
         release.set()
         thread.join(3)
+    assert returned.wait(2)
     assert "execute" not in far.calls
+
+
+def test_seal_timeout_with_remaining_budget_is_refused(far):
+    decision = walk(rungs("drv"), seal=raises(TIMEOUT))
+    assert summary(decision.trail) == [("r1", "refused", REFUSED)]
+    assert "execute" not in far.calls
+    assert "kill" in far.calls and lease_files() == []
 
 
 def test_each_call_captures_its_own_context():
@@ -1427,15 +1438,23 @@ def test_invalid_output_cap_refuses_before_dispatch(far, cap):
     assert "execute" not in far.calls and lease_files() == []
 
 
-@pytest.mark.parametrize("kind", ["exact", "over", "text", "bytearray", "zero"])
+@pytest.mark.parametrize("kind", [
+    "exact", "over", "text", "bytearray", "zero", "truncated", "falsey_truncated", "subclass",
+])
 def test_result_cap_precedes_digest_parsing(far, monkeypatch, kind):
     body = json.dumps({"request_sha256": sha256(b"sealed request").hexdigest()}).encode()
-    cap = len(body) if kind == "exact" else len(body) - 1
+    cap = len(body) - 1 if kind in ("over", "subclass") else len(body)
     if kind == "zero":
         cap = 0
     payload = body.decode() if kind == "text" else bytearray(body) if kind == "bytearray" else body
+    if kind == "subclass":
+        class UnderreportedBytes(bytes):
+            def __len__(self):
+                return 0
+        payload = UnderreportedBytes(body)
+    truncated = True if kind == "truncated" else 0 if kind == "falsey_truncated" else False
     placement = _placed(far, seal=lambda request: replace(exec_spec(request), output_cap_bytes=cap))
-    far.behave["wait"] = lambda ref, wait: sp.ExecResult(ref, 0, payload, False)
+    far.behave["wait"] = lambda ref, wait: sp.ExecResult(ref, 0, payload, truncated)
     parsed = []
     echoes = sp._echoes
     monkeypatch.setattr(sp, "_echoes", lambda *args: parsed.append(args) or echoes(*args))
