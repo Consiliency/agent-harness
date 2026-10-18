@@ -5,7 +5,8 @@ from contextlib import asynccontextmanager
 from dataclasses import FrozenInstanceError, replace
 import json
 import subprocess
-from types import SimpleNamespace
+from pathlib import Path
+import sys
 
 import pytest
 
@@ -23,7 +24,7 @@ def certificates(tmp_path_factory):
             "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
             "-keyout", str(key), "-out", str(cert), "-days", "1",
             "-subj", "/CN=localhost", "-addext", "subjectAltName=DNS:localhost",
-        ], check=True, capture_output=True)
+        ], check=True, capture_output=True, timeout=10)
         result.append((key.read_bytes(), cert.read_bytes()))
     return result
 
@@ -35,52 +36,89 @@ def config(certificates, monkeypatch):
                             certificates[0][1], "synthetic-token", 1024, 0.5)
 
 
+class ServerState:
+    def __init__(self, process):
+        self.process = process
+
+    async def command(self, **command):
+        async with asyncio.timeout(10):
+            self.process.stdin.write(json.dumps(command).encode() + b"\n")
+            await self.process.stdin.drain()
+            line = await self.process.stdout.readline()
+            assert line, f"TLS fixture exited: {self.process.returncode}"
+            return json.loads(line)
+
+
 @asynccontextmanager
 async def tls_server(sdk, certificates, config, *, plaintext=False):
-    grpc, p = sdk.grpc, sdk.proto
-    state = SimpleNamespace(calls=[], failure=None, size=0, hold=False,
-                            entered=asyncio.Event(), stopped=asyncio.Event())
-
-    async def receive(request, context):
-        state.calls.append(request)
-        metadata = dict(context.invocation_metadata())
-        if metadata.get("authorization") != "Bearer synthetic-token":
-            await context.abort(grpc.StatusCode.UNAUTHENTICATED, "refused")
-        if state.failure:
-            await context.abort(state.failure, "refused")
-        if state.hold:
-            state.entered.set()
-            try:
-                await asyncio.Event().wait()
-            finally:
-                state.stopped.set()
-
-    class Service(sdk.service.OpenShellServicer):
-        async def ControlCancellationLease(self, request, context):
-            await receive(request, context)
-            return p.ControlCancellationLeaseResponse()
-
-        async def ExecCancellationLease(self, request, context):
-            await receive(request, context)
-            yield p.ExecSandboxEvent(stdout={"data": b"x" * state.size})
-
-    server = grpc.aio.server()
-    sdk.service.add_OpenShellServicer_to_server(Service(), server)
-    if plaintext:
-        port = server.add_insecure_port("127.0.0.1:0")
-    else:
-        port = server.add_secure_port("127.0.0.1:0", grpc.ssl_server_credentials([certificates[0]]))
-    assert port
-    await server.start()
+    # A separate interpreter keeps aio server shutdown out of the client's
+    # Python credential-plugin/GIL lifecycle (r38). Pass the loaded SDK paths.
+    paths = [str(Path(module.__file__).resolve().parent)
+             for module in (sdk.proto, sdk.service)]
+    paths.append(str(Path(sdk.grpc.__file__).resolve().parent.parent))
+    helper = Path(__file__).with_name("_openshell_channel_server.py")
+    process = await asyncio.create_subprocess_exec(
+        sys.executable, "-I", "-B", "-c",
+        "import runpy,sys; sys.path[:0] = " + repr(paths)
+        + "; runpy.run_path(sys.argv[1], run_name='__main__')", str(helper),
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE,
+    )
+    state = ServerState(process)
     try:
-        yield replace(config, endpoint=f"https://localhost:{port}"), state
+        ready = await state.command(key=certificates[0][0].decode(),
+                                    cert=certificates[0][1].decode(), plaintext=plaintext)
+        yield replace(config, endpoint=f"https://localhost:{ready['port']}"), state
     finally:
-        await server.stop(None)
+        process.stdin.close()  # EOF requests stop, including setup/assertion failures.
+        try:
+            await asyncio.wait_for(process.wait(), 10)
+        finally:
+            if process.returncode is None:
+                process.kill()
+                await asyncio.wait_for(process.wait(), 5)
+        assert process.returncode == 0, f"TLS fixture exited: {process.returncode}"
 
 
 def request(sdk, *, stream=False, **kwargs):
     cls = sdk.proto.ExecCancellationLeaseRequest if stream else sdk.proto.ControlCancellationLeaseRequest
     return cls(owner_id="owner", workspace_scope={"workspace": "dedicated"}, **kwargs)
+
+
+def test_server_reaped_after_body_failure(config, sdk, certificates):
+    async def run():
+        with pytest.raises(RuntimeError, match="body failure"):
+            async with tls_server(sdk, certificates, config) as (_, state):
+                raise RuntimeError("body failure")
+        assert state.process.returncode == 0
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize("failure", ["startup", "shutdown", "exit"])
+def test_server_failure_is_reported_and_reaped(config, sdk, certificates, monkeypatch, failure):
+    spawn = asyncio.create_subprocess_exec
+    children = []
+
+    async def faulty_server(*args, **kwargs):
+        code = "import asyncio,sys; sys.stdin.readline(); "
+        if failure == "exit":
+            code += "sys.exit(7)"
+        else:
+            if failure == "shutdown":
+                code += "print('{\"port\": 1}', flush=True); "
+            code += "asyncio.run(asyncio.Event().wait())"
+        child = await spawn(sys.executable, "-I", "-B", "-c", code, **kwargs)
+        children.append(child)
+        return child
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", faulty_server)
+
+    async def run():
+        with pytest.raises(AssertionError if failure == "exit" else TimeoutError):
+            async with tls_server(sdk, certificates, config):
+                assert failure == "shutdown"
+        assert len(children) == 1
+        assert children[0].returncode == (7 if failure == "exit" else -9)
+    asyncio.run(run())
 
 
 @pytest.mark.parametrize("endpoint", [
@@ -139,7 +177,7 @@ def test_fixed_options_and_no_override(config, sdk, certificates, monkeypatch):
         async with tls_server(sdk, certificates, config) as (cfg, state):
             async with oc.authenticated_channel(cfg, sdk.service) as stub:
                 await stub.ControlCancellationLease(request(sdk), timeout=1)
-            assert len(state.calls) == 1
+            assert (await state.command())["calls"] == 1
         assert len(calls) == 1
     asyncio.run(run())
     with pytest.raises(TypeError):
@@ -151,27 +189,27 @@ def test_fixed_options_and_no_override(config, sdk, certificates, monkeypatch):
 def test_authenticated_rpc_never_retries(config, sdk, certificates, stream, status):
     async def run():
         async with tls_server(sdk, certificates, config) as (cfg, state):
-            state.failure = getattr(sdk.grpc.StatusCode, status)
+            await state.command(failure=status)
             async with oc.authenticated_channel(cfg, sdk.service) as stub:
                 with pytest.raises(sdk.grpc.aio.AioRpcError) as error:
                     if stream:
                         await stub.ExecCancellationLease(request(sdk, stream=True), timeout=1).read()
                     else:
                         await stub.ControlCancellationLease(request(sdk), timeout=1)
-                assert error.value.code() == state.failure
-                assert len(state.calls) == 1
+                assert error.value.code().name == (await state.command())["failure"]
+                assert (await state.command())["calls"] == 1
     asyncio.run(run())
 
 
 def test_receive_limit_enforced(config, sdk, certificates):
     async def run():
         async with tls_server(sdk, certificates, config) as (cfg, state):
-            state.size = cfg.receive_limit_bytes + 1
+            await state.command(size=cfg.receive_limit_bytes + 1)
             async with oc.authenticated_channel(cfg, sdk.service) as stub:
                 with pytest.raises(sdk.grpc.aio.AioRpcError) as error:
                     await stub.ExecCancellationLease(request(sdk, stream=True), timeout=1).read()
                 assert error.value.code() == sdk.grpc.StatusCode.RESOURCE_EXHAUSTED
-                assert len(state.calls) == 1
+                assert (await state.command())["calls"] == 1
     asyncio.run(run())
 
 
@@ -192,15 +230,15 @@ def test_retry_policy_cannot_enable_retries(config, sdk, certificates, monkeypat
 
     async def run():
         async with tls_server(sdk, certificates, config) as (cfg, state):
-            state.failure = sdk.grpc.StatusCode.UNAVAILABLE
+            await state.command(failure="UNAVAILABLE")
             async with oc.authenticated_channel(cfg, sdk.service) as stub:
                 with pytest.raises(sdk.grpc.aio.AioRpcError) as error:
                     if stream:
                         await stub.ExecCancellationLease(request(sdk, stream=True), timeout=1).read()
                     else:
                         await stub.ControlCancellationLease(request(sdk), timeout=1)
-                assert error.value.code() == state.failure
-                assert len(state.calls) == 1
+                assert error.value.code().name == (await state.command())["failure"]
+                assert (await state.command())["calls"] == 1
     asyncio.run(run())
 
 
@@ -208,11 +246,11 @@ def test_tls_ready_does_not_authorize_bearer(config, sdk, certificates):
     async def run():
         async with tls_server(sdk, certificates, config) as (cfg, state):
             async with oc.authenticated_channel(replace(cfg, bearer_token="rejected"), sdk.service) as stub:
-                assert state.calls == []
+                assert (await state.command())["calls"] == 0
                 with pytest.raises(sdk.grpc.aio.AioRpcError) as error:
                     await stub.ControlCancellationLease(request(sdk), timeout=1)
                 assert error.value.code() == sdk.grpc.StatusCode.UNAUTHENTICATED
-                assert len(state.calls) == 1
+                assert (await state.command())["calls"] == 1
     asyncio.run(run())
 
 
@@ -255,7 +293,7 @@ def test_tls_fails_closed(config, sdk, certificates, failure):
             with pytest.raises(oc.TransportError, match="channel_connect_timeout"):
                 async with oc.authenticated_channel(cfg, sdk.service):
                     pytest.fail("untrusted connection accepted")
-            assert state.calls == []
+            assert (await state.command())["calls"] == 0
     asyncio.run(run())
 
 
@@ -288,12 +326,12 @@ def test_scope_lifetime_and_cancel(config, sdk, certificates, monkeypatch):
                             stub.ControlCancellationLease(request(sdk), timeout=1)
                     asyncio.run(call())
                 await asyncio.to_thread(other_loop)
-                assert state.calls == []
-                state.hold = True
+                assert (await state.command())["calls"] == 0
+                await state.command(hold=True)
                 call = stub.ControlCancellationLease(request(sdk), timeout=10)
-                await asyncio.wait_for(state.entered.wait(), 1)
+                await state.command(wait="entered")
             assert call.cancelled()
-            await asyncio.wait_for(state.stopped.wait(), 1)
+            await state.command(wait="stopped")
             with pytest.raises(oc.TransportError, match="context"):
                 stub.ControlCancellationLease(request(sdk), timeout=1)
     asyncio.run(run())
