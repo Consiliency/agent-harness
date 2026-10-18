@@ -6,12 +6,15 @@ generated bindings from the reviewed server revision, not this test fixture.
 """
 
 import asyncio
+import importlib
+import os
+import sys
 from types import SimpleNamespace
 import threading
 from uuid import uuid4
 
 from google.protobuf import descriptor_pb2, descriptor_pool, message_factory
-from google.protobuf import duration_pb2
+from google.protobuf import duration_pb2, struct_pb2
 import pytest
 
 from phase_loop_runtime import openshell_transport as ot
@@ -20,16 +23,20 @@ from phase_loop_runtime.sandbox_placement import OperationBound
 
 def bindings():
     file = descriptor_pb2.FileDescriptorProto(name="private_fixture.proto", package="openshell.v1", syntax="proto3")
-    file.dependency.append("google/protobuf/duration.proto")
+    file.dependency.extend(["google/protobuf/duration.proto", "google/protobuf/struct.proto"])
     # name, field number, scalar type/message name, repeated
     schemas = {
         "Workspace": [("workspace", 1, "string", False)],
         "Meta": [("id", 1, "string", False), ("workspace", 7, "string", False)],
         "Filesystem": [("read_only", 2, "string", True), ("read_write", 3, "string", True)],
-        "Policy": [("filesystem", 2, "Filesystem", False), ("network_policies", 5, "string", True)],
-        "Template": [("agent_socket", 3, "string", False), ("environment", 6, "string", True),
-                     ("driver_config", 11, "Meta", False)],
-        "Spec": [("environment", 5, "string", True), ("template", 6, "Template", False),
+        "Policy": [("filesystem", 2, "Filesystem", False), ("network_policies", 5, "NetworkPoliciesEntry", True)],
+        "NetworkPolicyRule": [("name", 1, "string", False)],
+        "NetworkPoliciesEntry": [("key", 1, "string", False), ("value", 2, "NetworkPolicyRule", False)],
+        "EnvironmentEntry": [("key", 1, "string", False), ("value", 2, "string", False)],
+        "ServiceExposure": [("service", 1, "string", False), ("target_port", 2, "uint32", False)],
+        "Template": [("agent_socket", 3, "string", False), ("environment", 6, "EnvironmentEntry", True),
+                     ("driver_config", 11, "Struct", False)],
+        "Spec": [("environment", 5, "EnvironmentEntry", True), ("template", 6, "Template", False),
                  ("policy", 7, "Policy", False), ("providers", 8, "string", True),
                  ("command", 12, "string", True), ("restart_policy", 15, "int32", False)],
         "Sandbox": [("metadata", 1, "Meta", False), ("spec", 2, "Spec", False)],
@@ -37,8 +44,10 @@ def bindings():
                                  ("await_main_process_attachment", 5, "bool", False),
                                  ("workload_template", 6, "string", False),
                                  ("workspace_scope", 7, "Workspace", False),
-                                 ("request_id", 8, "string", False), ("service_exposures", 9, "string", True)],
+                                 ("request_id", 8, "string", False), ("service_exposures", 9, "ServiceExposure", True)],
         "ExecSandboxRequest": [("sandbox", 1, "string", False), ("command", 2, "string", True),
+                               ("workdir", 3, "string", False), ("environment", 4, "EnvironmentEntry", True),
+                               ("execution_timeout", 105, "Duration", False), ("no_login_shell", 10, "bool", False),
                                ("stdin", 6, "bytes", False), ("tty", 7, "bool", False),
                                ("request_id", 11, "string", False), ("workspace_scope", 12, "Workspace", False)],
         "CancellationLeaseEntry": [("lease_id", 1, "string", False), ("sandbox_ref", 2, "string", False)],
@@ -58,26 +67,47 @@ def bindings():
         "Exit": [("exit_code", 1, "int32", False)],
         "ExecSandboxEvent": [("stdout", 1, "Output", False), ("stderr", 2, "Output", False), ("exit", 3, "Exit", False)],
     }
-    types = {"string": 9, "bytes": 12, "bool": 8, "int32": 5}
+    types = {"string": 9, "bytes": 12, "bool": 8, "int32": 5, "uint32": 13}
     for name, fields in schemas.items():
         msg = file.message_type.add(name=name)
+        if name in ("NetworkPoliciesEntry", "EnvironmentEntry"):
+            msg.options.map_entry = True
         if name == "ExecSandboxEvent":
             msg.oneof_decl.add(name="payload")
         for key, number, kind, repeated in fields:
             f = msg.field.add(name=key, number=number, label=3 if repeated else 1,
                               type=types.get(kind, 11))
             if kind not in types:
-                f.type_name = ".google.protobuf.Duration" if kind == "Duration" else f".openshell.v1.{kind}"
+                f.type_name = f".google.protobuf.{kind}" if kind in ("Duration", "Struct") else f".openshell.v1.{kind}"
             if name == "ExecSandboxEvent":
                 f.oneof_index = 0
     pool = descriptor_pool.DescriptorPool()
     pool.AddSerializedFile(duration_pb2.DESCRIPTOR.serialized_pb)
+    pool.AddSerializedFile(struct_pb2.DESCRIPTOR.serialized_pb)
     pool.Add(file)
     return SimpleNamespace(**{name: message_factory.GetMessageClass(pool.FindMessageTypeByName(f"openshell.v1.{name}"))
                               for name in schemas})
 
 
 P = bindings()
+
+
+def generated_bindings():
+    path = os.environ.get("OPENSHELL_GENERATED_DIR")
+    if not path:
+        pytest.skip("generated SDK qualification requires OPENSHELL_GENERATED_DIR; see transport doc")
+    # An explicitly requested SDK must import successfully, never silently skip.
+    if path not in sys.path:
+        sys.path.insert(0, path)
+    return importlib.import_module("openshell_pb2")
+
+
+@pytest.fixture(params=["compact", "generated"], autouse=True)
+def transport_bindings(request, monkeypatch):
+    proto = bindings() if request.param == "compact" else generated_bindings()
+    monkeypatch.setattr(sys.modules[__name__], "P", proto)
+    return proto
+
 GEN = str(uuid4())
 
 
@@ -357,16 +387,16 @@ def test_f8_local_deadline_cancellation_and_late_response():
 
 
 @pytest.mark.parametrize("events,cap,code", [([], 1, "missing_exec_exit"),
-    ([P.ExecSandboxEvent(stdout={"data": b"xx"})], 1, "output_limit"),
-    ([P.ExecSandboxEvent()], 1, "invalid_exec_stream"),
-    ([P.ExecSandboxEvent(exit={}), P.ExecSandboxEvent(exit={})], 1, "invalid_exec_stream")])
+    ([{"stdout": {"data": b"xx"}}], 1, "output_limit"),
+    ([{}], 1, "invalid_exec_stream"),
+    ([{"exit": {}}, {"exit": {}}], 1, "invalid_exec_stream")])
 def test_stream_faults_never_complete_or_retry(events, cap, code):
     async def scenario():
         stub = Stub()
         client = session(stub, fresh=True)
         stub.responses[5] = observation()
         await client.status(bound())
-        stub.events = events
+        stub.events = [P.ExecSandboxEvent(**event) for event in events]
         with pytest.raises(ot.TransportError, match=code):
             await client.execute(P.ExecSandboxRequest(), bound(), output_cap_bytes=cap)
         assert stub.stream.cancelled
@@ -378,7 +408,7 @@ def test_baseline_exact_spelling_and_access_not_promoted():
         stub = Stub()
         client = session(stub, fresh=True)
         req = create_request()
-        req.spec.policy.network_policies.append("model-endpoint-rule")
+        req.spec.policy.network_policies["model-endpoint-rule"].name = "model-endpoint-rule"
         paths = ot.PROXY_BASELINE_READ_ONLY + ot.PROXY_BASELINE_READ_WRITE
         req.spec.policy.filesystem.read_only.extend(paths)
         req.spec.policy.filesystem.read_only[3] = "/app/"
@@ -679,3 +709,230 @@ def test_status_rpc_refusal_also_permanently_prevents_exec():
             await client.execute(P.ExecSandboxRequest(), bound(), output_cap_bytes=0)
         assert not any(call[0] == "exec" for call in stub.calls)
     run(scenario())
+
+
+def created_response():
+    return P.ControlCancellationLeaseResponse(sandbox={"metadata": {"id": GEN, "workspace": "dedicated"}})
+BARRIER = dict(admission_ready=False, fenced=True, destruction_observed=True, cleanup_pending=False, barrier_confirmed=True)
+
+
+def test_pass_honest_progression_not_ready_then_ready_still_executes():
+    async def s():
+        stub = Stub()
+        c = session(stub, fresh=True)
+        stub.responses[2] = created_response()
+        await c.create(create_request(), bound())
+        stub.responses[5] = observation(admission_ready=False)
+        await c.status(bound())
+        stub.responses[5] = observation()
+        await c.status(bound())
+        assert (await c.execute(P.ExecSandboxRequest(), bound(), output_cap_bytes=0)).exit_code == 0
+        assert [x[0] for x in stub.calls] == [2, 5, 5, "exec"]
+    run(s())
+
+
+@pytest.mark.parametrize("failure", ["UNAVAILABLE", "DEADLINE_EXCEEDED", "local_deadline", "invalid_bound", "precancelled"])
+def test_limit_any_status_failure_poisons_exec_liveness_cost(failure):
+    async def s():
+        stub = Stub()
+        c = session(stub, fresh=True)
+        stub.responses[2] = created_response()
+        await c.create(create_request(), bound())
+        stub.responses[5] = observation()
+        await c.status(bound())
+        b = bound()
+        if failure in ("UNAVAILABLE", "DEADLINE_EXCEEDED"):
+            stub.responses[5] = RpcFailure(failure)
+        elif failure == "local_deadline":
+            async def slow(req):
+                await asyncio.Event().wait()
+            stub.responses[5] = slow
+            b = bound(0.05)
+        elif failure == "invalid_bound":
+            b = bound(0)
+        else:
+            b.cancelled.set()
+        with pytest.raises(ot.TransportError):
+            await c.status(b)
+        stub.responses[5] = observation()
+        await c.status(bound())
+        with pytest.raises(ot.TransportError, match="execute_not_permitted"):
+            await c.execute(P.ExecSandboxRequest(), bound(), output_cap_bytes=0)
+        # honest cleanup still available
+        stub.responses[3] = P.ControlCancellationLeaseResponse(barrier_confirmed=True)
+        stub.responses[5] = observation(**BARRIER)
+        await c.kill(bound())
+        assert not any(x[0] == "exec" for x in stub.calls)
+    run(s())
+
+
+def test_limit_status_before_create_on_fresh_lease_poisons_exec():
+    # Pinned server: STATUS on an unreserved lease -> Error::Refused -> FAILED_PRECONDITION.
+    async def s():
+        stub = Stub()
+        c = session(stub, fresh=True)
+        stub.responses[5] = RpcFailure("FAILED_PRECONDITION")
+        with pytest.raises(ot.TransportError, match="transition_refused"):
+            await c.status(bound())
+        stub.responses[2] = created_response()
+        await c.create(create_request(), bound())
+        stub.responses[5] = observation()
+        await c.status(bound())
+        with pytest.raises(ot.TransportError, match="execute_not_permitted"):
+            await c.execute(P.ExecSandboxRequest(), bound(), output_cap_bytes=0)
+    run(s())
+
+
+def test_pass_outer_cancellation_of_status_propagates_and_is_not_poison():
+    async def s():
+        stub = Stub()
+        c = session(stub, fresh=True)
+        stub.responses[2] = created_response()
+        await c.create(create_request(), bound())
+        stub.responses[5] = observation()
+        await c.status(bound())
+        entered = asyncio.Event()
+        async def stall(req):
+            entered.set()
+            await asyncio.Event().wait()
+        stub.responses[5] = stall
+        t = asyncio.create_task(c.status(bound()))
+        await entered.wait()
+        t.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await t
+        assert not c._poisoned
+        # Asymmetry: unlike a deadline, outer cancellation leaves prior ready obs usable.
+        assert (await c.execute(P.ExecSandboxRequest(), bound(), output_cap_bytes=0)).exit_code == 0
+    run(s())
+
+
+def test_pass_kill_before_create_reservation_barrier_and_create_refused():
+    async def s():
+        stub = Stub()
+        c = session(stub, fresh=True)
+        stub.responses[3] = P.ControlCancellationLeaseResponse(barrier_confirmed=True)
+        stub.responses[5] = observation(lease={"lease_id": "lease", "sandbox_ref": "reservation:lease"},
+                                        admission_ready=False, fenced=True, cleanup_pending=False,
+                                        barrier_confirmed=True)
+        await c.kill(bound())
+        with pytest.raises(ot.TransportError, match="create_not_repeatable"):
+            await c.create(create_request(), bound())
+        assert [x[0] for x in stub.calls] == [3, 5]
+    run(s())
+
+
+def test_pass_concurrent_status_out_of_order_regression_poisons():
+    async def s():
+        stub = Stub()
+        c = session(stub, fresh=True)
+        stub.responses[2] = created_response()
+        await c.create(create_request(), bound())
+        gate, entered = asyncio.Event(), asyncio.Event()
+        async def first(req):
+            entered.set()
+            await gate.wait()
+            return observation()  # older, ready
+        stub.responses[5] = first
+        t1 = asyncio.create_task(c.status(bound()))
+        await entered.wait()
+        stub.responses[5] = observation(admission_ready=False, fenced=True)  # newer, fenced
+        await c.status(bound())
+        gate.set()
+        with pytest.raises(ot.TransportError, match="observation_regressed"):
+            await t1
+        with pytest.raises(ot.TransportError, match="execute_not_permitted"):
+            await c.execute(P.ExecSandboxRequest(), bound(), output_cap_bytes=0)
+    run(s())
+
+
+def test_r12_list_generation_mismatch_permanently_poisons_exec():
+    async def s():
+        stub = Stub()
+        c = session(stub, fresh=True)
+        stub.responses[2] = created_response()
+        await c.create(create_request(), bound())
+        stub.responses[5] = observation()
+        await c.status(bound())
+        other = "00000000-0000-4000-8000-000000000001"
+        stub.responses[4] = P.ControlCancellationLeaseResponse(entries=[{"lease_id": "lease", "sandbox_ref": other}])
+        with pytest.raises(ot.TransportError, match="generation_mismatch"):
+            await c.list_owned(bound())
+        assert c._generation == GEN
+        with pytest.raises(ot.TransportError, match="execute_not_permitted"):
+            await c.execute(P.ExecSandboxRequest(), bound(), output_cap_bytes=0)
+        stub.responses[5] = observation()
+        await c.status(bound())
+        with pytest.raises(ot.TransportError, match="execute_not_permitted"):
+            await c.execute(P.ExecSandboxRequest(), bound(), output_cap_bytes=0)
+        stub.responses[3] = P.ControlCancellationLeaseResponse(barrier_confirmed=True)
+        stub.responses[5] = observation(**BARRIER)
+        await c.kill(bound())
+        assert not any(x[0] == "exec" for x in stub.calls)
+    run(s())
+
+
+def test_limit_impossible_uuid_to_reservation_wedges_kill_fail_closed():
+    async def s():
+        stub = Stub()
+        c = session(stub, fresh=True)
+        stub.responses[2] = created_response()
+        await c.create(create_request(), bound())
+        stub.responses[3] = P.ControlCancellationLeaseResponse(barrier_confirmed=True)
+        stub.responses[5] = observation(lease={"lease_id": "lease", "sandbox_ref": "reservation:lease"},
+                                        admission_ready=False, fenced=True, cleanup_pending=False,
+                                        barrier_confirmed=True)
+        with pytest.raises(ot.TransportError, match="invalid_generation"):
+            await c.kill(bound())
+        assert c._kill_requested and c._poisoned
+    run(s())
+
+
+def test_limit_context_object_retained_but_suppressed():
+    import traceback
+
+    stub = Stub()
+    stub.responses[5] = RpcFailure("UNAVAILABLE")
+    with pytest.raises(ot.TransportError) as e:
+        run(session(stub).status(bound()))
+    assert e.value.__suppress_context__ and e.value.__cause__ is None
+    assert e.value.__context__ is not None  # raw object reachable programmatically
+    assert "SECRET" not in "".join(traceback.format_exception(e.value))
+
+
+def test_pass_rejected_fenced_mismatch_sets_local_kill_and_blocks_create():
+    async def s():
+        stub = Stub()
+        c = session(stub, fresh=True)
+        stub.responses[5] = observation(lease={"lease_id": "other", "sandbox_ref": GEN}, fenced=True, admission_ready=False)
+        with pytest.raises(ot.TransportError, match="lease_mismatch"):
+            await c.status(bound())
+        with pytest.raises(ot.TransportError, match="create_not_repeatable"):
+            await c.create(create_request(), bound())
+        assert [x[0] for x in stub.calls] == [5]
+    run(s())
+
+
+def test_pass_cancel_during_exec_propagates_one_shot():
+    async def s():
+        stub = Stub()
+        c = session(stub, fresh=True)
+        stub.responses[2] = created_response()
+        await c.create(create_request(), bound())
+        stub.responses[5] = observation()
+        await c.status(bound())
+        entered = asyncio.Event()
+        async def hang():
+            entered.set()
+            await asyncio.Event().wait()
+        stub.events = [hang]
+        t = asyncio.create_task(c.execute(P.ExecSandboxRequest(), bound(), output_cap_bytes=0))
+        await entered.wait()
+        t.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await t
+        await asyncio.sleep(0)
+        assert stub.stream.cancelled
+        with pytest.raises(ot.TransportError, match="execute_not_permitted"):
+            await c.execute(P.ExecSandboxRequest(), bound(), output_cap_bytes=0)
+    run(s())

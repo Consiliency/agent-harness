@@ -318,5 +318,9 @@ class LeaseSession:
             refs.add(ref)
         for ref, lease in pairs:
             if lease == self._lease:
-                self._bind(ref)
+                try:
+                    self._bind(ref)
+                except TransportError:
+                    self._poisoned = True
+                    raise
         return tuple(pairs)

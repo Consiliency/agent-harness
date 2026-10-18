@@ -20,8 +20,10 @@ Inject full generated protobuf bindings from that revision and an authenticated
 `grpc.aio` OpenShell stub. The module neither creates a channel nor supplies TLS,
 issuer pinning, credentials, retry interceptors, or generated bindings. The stub
 must have retries disabled, must cooperate with cancellation, and must never log
-payloads. The test stub and compact protobuf descriptor are modeled fixtures;
-they do not qualify a generated client/server connection or authentication.
+payloads. The compact descriptor and in-process server are test fixtures. Tests also run
+against full generated bindings and actual `grpc.aio` calls over a private Unix
+socket. This qualifies that local SDK/channel combination, not the Rust server,
+authentication, or a deployed channel.
 
 A `LeaseSession` binds one explicit workspace, owner, and lease. Only the server's
 authenticated enrollment establishes ownership; owner text is never authority.
@@ -60,9 +62,19 @@ argv/environment. This transport does not itself implement the worker boundary.
   and `create_settled` do not imply readiness. STATUS never grants replay.
 - EXEC uncertainty is final for dispatch. Observe or cancel the same lease; no
   second EXEC, no other rung, no local fallback, no credential replay.
-- A rejected STATUS permanently prevents EXEC through this session, even after
-  later valid ready observations. A malformed fenced response also records local
-  kill intent. Safe STATUS/KILL recovery remains available; this is not proof of K2.
+- **R12-L1:** any STATUS `TransportError` permanently prevents EXEC through this
+  session, including remote refusals, transient UNAVAILABLE, RPC/local deadlines,
+  pre-cancelled bounds and local invalid bounds before dispatch. Later valid ready
+  observations cannot clear this poison. Do not STATUS a fresh lease before CREATE:
+  the pinned server refuses an unreserved lease, poisoning any subsequent EXEC even
+  if CREATE later succeeds. After a polling failure, retain the cleanup obligation,
+  KILL this lease and allocate a new durably journaled lease for new work. Outer-task
+  `CancelledError` propagates without poisoning STATUS, unlike a bound cancellation
+  or deadline. A malformed fenced response also records local kill intent.
+- **R12-L2:** a failed current-lease LIST identity bind also permanently poisons
+  EXEC, without changing the accepted identity. This does not widen poison to every
+  LIST RPC or inventory-validation failure. Safe STATUS/KILL recovery remains
+  available after either poison; poison itself is not proof of K2.
 - KILL deadline can precede durable K2. The client stops dispatch locally but
   does not claim a durable remote fence. Safe KILL/STATUS may be called again.
 - KILL succeeds only with its positive barrier reply followed, within the same
@@ -77,7 +89,11 @@ argv/environment. This transport does not itself implement the worker boundary.
   work. Only the destruction barrier establishes the no-start/no-running cutoff.
 
 Protocol failures use input-free typed `TransportError` values; remote prose and
-credential payloads are not included. `DEADLINE_EXCEEDED` maps to
+credential payloads are not included in their message or formatted traceback.
+**R12-L3 remains:** `from None` suppresses formatted context, but `__context__`
+still holds the raw RPC exception, including remote details. Log only the typed
+code/uncertainty; do not walk or serialize raw exception chains. Tests retain this
+limit explicitly, including actual `AioRpcError` instances. `DEADLINE_EXCEEDED` maps to
 `sandbox_placement_operation_timeout`. Other typed protocol errors are internal
 to this unregistered client, not additions to the Harness detail-code registry.
 `transfer`, `commit`, `collect`, and `renew` raise `UnsupportedCapability` without
@@ -114,8 +130,9 @@ The r10 L3–L6 integration obligations remain open:
   dispatch, the RPC deadline and stream collection. The server documents the EXEC
   field as a dispatch bound and has a 15-second relay-open wait. Splitting dispatch
   and collection bounds remains backend integration work.
-- **L6 worker inputs:** the compact fixture omits `environment`, `workdir`,
-  `execution_timeout` and `no_login_shell`. The future worker/backend must refuse
+- **L6 worker inputs:** generated and compact fixtures now include `environment`,
+  `workdir`, `execution_timeout` and `no_login_shell`; the local wire test checks
+  their unchanged pass-through. The future worker/backend must refuse
   nonempty environment and absent execution timeout, define runtime-owned workdir
   and login-shell behavior, and qualify fixed ends. These checks are not supplied
   by this transport increment.
@@ -124,7 +141,7 @@ Tests exercise client handling of applicable falsifiers 1–5 and 7–10; falsif
 6 is explicitly unsupported. They do not demonstrate a physical launch cutoff,
 VMM destruction, service restart persistence, direct-operation bypass prevention,
 or real authenticated ownership. The private recovery report maps each test.
-Still required: full generated-binding/channel qualification, cancellation
+Still required: authenticated production-channel qualification, cancellation
 foundation integration, backend/journal/worker integration, fixed ends and endpoint
 bounds, transfer/publication/collection/renewal, terminal remote-create and orphan
 reconciliation, authority/store-loss detection, independent bounded reaping,
@@ -132,3 +149,66 @@ enrollment resource-class completeness, issuer rotation, memory-only credential
 delivery and logging checks, C5 isolation, importer/native completion evidence,
 PostgreSQL multi-replica qualification, physical falsifiers and live acceptance.
 Source tests authorize no activation, deployment, or live workload.
+
+
+## Reproduce the bounded generated-binding qualification
+
+Use a Python 3.13.15 interpreter with the repository test dependencies installed.
+The r13 run used grpcio-tools **1.84.0**, grpcio **1.84.0**, protobuf **7.36.2**,
+setuptools **84.0.0** and typing-extensions **4.16.0**, installed only in scratch.
+The generator distribution requires protobuf `>=7.35.1,<8.0.0` and grpcio
+`>=1.84.0`; its generated Python code validates protobuf 7.35.1 compatibility at
+import. These versions were resolved and imported successfully, not inferred from
+a proposed version number. They are qualification dependencies, not new runtime
+package requirements.
+
+From `phase-loop-runtime`, set `PYTHON` to that interpreter and `SERVER` to the
+read-only pinned OpenShell checkout. This recipe writes only to a new private
+scratch directory. Keep it and its hash manifests with the qualification evidence;
+do not commit generated modules. No shared cache copy is needed.
+
+```sh
+set -eu
+: "${PYTHON:?set the test interpreter}" "${SERVER:?set the pinned server checkout}"
+test "$(git -C "$SERVER" rev-parse HEAD)" = d16558327be26766f57882b081c7de2333505909
+test -z "$(git -C "$SERVER" status --porcelain)"
+QUAL_SCRATCH=$(mktemp -d /tmp/openshell-sdk-XXXXXXXX)
+mkdir "$QUAL_SCRATCH/generated"
+uv pip install --no-cache --link-mode=copy --python "$PYTHON" \
+  --target "$QUAL_SCRATCH/deps" grpcio-tools==1.84.0 grpcio==1.84.0 \
+  protobuf==7.36.2 setuptools==84.0.0 typing-extensions==4.16.0
+export PYTHONDONTWRITEBYTECODE=1
+export PYTHONPATH="$QUAL_SCRATCH/deps:$PWD/src:$PWD/tests"
+"$PYTHON" -m grpc_tools.protoc --version
+"$PYTHON" -m grpc_tools.protoc -I "$SERVER/proto" \
+  --python_out="$QUAL_SCRATCH/generated" \
+  --grpc_python_out="$QUAL_SCRATCH/generated" \
+  --descriptor_set_out="$QUAL_SCRATCH/generated/openshell.desc" --include_imports \
+  "$SERVER"/proto/*.proto
+(cd "$SERVER/proto" && sha256sum *.proto) > "$QUAL_SCRATCH/proto.sha256"
+(cd "$QUAL_SCRATCH/generated" && sha256sum *.py *.desc) > "$QUAL_SCRATCH/generated.sha256"
+export OPENSHELL_GENERATED_DIR="$QUAL_SCRATCH/generated"
+"$PYTHON" -m pytest -q -p no:cacheprovider \
+  tests/test_openshell_transport.py tests/test_openshell_transport_grpc.py
+```
+
+With the environment variable set, missing or incompatible generated modules fail
+rather than silently falling back. Without it, generated cases explicitly skip;
+that run is not SDK qualification. All original 68 cases and the 15 r12 probes
+run with both binding variants. The r12 LIST probe now asserts permanent refusal
+and successful cleanup. Public map/message fixtures use the actual field shapes;
+stream parameters instantiate messages after choosing the binding variant.
+The descriptor test recursively compares every represented field's number,
+cardinality and type, with explicit int32 substitutes for two compact enums.
+
+The local server registers the generated OpenShell servicer and uses its generated
+stub, `grpc.enable_retries=0`, and no service config. Tests assert both full RPC
+paths, complete serialized requests (including worker fields), real status-code
+mapping, and exactly one handler entry for each control operation and EXEC under
+RPC deadline, bound cancellation and outer-task cancellation. Handler-entry and
+cancellation events synchronize the tests. STATUS-before-CREATE models the pinned
+server's FAILED_PRECONDITION and verifies cleanup after the resulting poison.
+Synthetic payloads are used throughout. There is no external endpoint, TLS,
+provider, VM, production retry configuration, or physical cancellation evidence.
+The complete generated SDK cannot substitute for actual-server qualification or
+physical falsifiers. The remaining gates above stay open; offload stays disabled.
