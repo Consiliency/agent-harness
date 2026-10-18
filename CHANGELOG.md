@@ -14,6 +14,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   terminal and checkpoint. Ordinary replay and ambiguous-outcome recovery retain
   their existing behavior; see the FABPUB recovery runbook section 8b.
 
+### `gemini-execute-phase` drops under the skill size limit (agent-harness#1358)
+
+- Move procedures into three linked `references/` files. Inputs loads
+  `interactive-path.md` before execution on interactive runs, with or without an
+  explicit plan, for handoff reuse, publication-mode checks and first-commit drafts.
+  Worktree pruning links `worktree-pruning.md` at phase start and closeout as a standing
+  rule for every path; Optional Worker Fanout links `worker-fanout.md` before briefing
+  authorized workers. `SKILL.md` stays under 5,000 tokens with no line over 1,000
+  characters. Runner publication ownership and test-pinned phrases stay inline;
+  gemini runner launches get the references beside
+  `context.md`. The duplicate closeout-audit block in Core Rules now points to Closeout.
+
 ## [0.7.27] - 2026-10-18
 
 ### Upgrade notes

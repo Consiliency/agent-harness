@@ -7,6 +7,7 @@ says so for each skill that has any. Ungated: needs no dotfiles tree.
 """
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import pytest
@@ -104,8 +105,9 @@ def test_canonical_override_references_are_found(tmp_path):
 
 
 @pytest.mark.parametrize("harness", ["gemini", "opencode"])
-def test_skills_without_references_leave_context_unchanged(tmp_path, monkeypatch, harness):
-    # The shipped gemini/opencode packs link no references/ yet: no note, no copies.
+def test_shipped_packs_note_and_copy_exactly_their_references(tmp_path, monkeypatch, harness):
+    # A shipped pack skill gets the note and copies only when it ships references/;
+    # one without references adds no line and copies nothing.
     def resolve(_repo, harness_target, pack):
         return {name: PACKAGED / name for name in pack}
 
@@ -113,5 +115,79 @@ def test_skills_without_references_leave_context_unchanged(tmp_path, monkeypatch
     for action, pack in injection.HARNESS_ACTION_SKILLS[harness].items():
         context = injection._skill_bodies(tmp_path, harness, pack)
         assert context, (harness, action)
-        assert NOTE not in context, (harness, action)
-        assert injection.skill_reference_files(tmp_path, harness, pack) == (), (harness, action)
+        files = injection.skill_reference_files(tmp_path, harness, pack)
+        for skill in pack:
+            shipped = sorted(
+                f"skills/{skill}/references/{path.relative_to(PACKAGED / skill / 'references').as_posix()}"
+                for path in (PACKAGED / skill / "references").rglob("*") if path.is_file()
+            )
+            assert sorted(dest for dest, _ in files if dest.startswith(f"skills/{skill}/")) == shipped
+            note = f"{NOTE} under `skills/{skill}/references/`"
+            assert (note in context) == bool(shipped), (harness, action, skill)
+
+
+def test_gemini_execute_phase_links_resolve_to_shipped_references():
+    skill = PACKAGED / "gemini-execute-phase"
+    linked = set(re.findall(r"\]\((references/[^)#]+)", (skill / "SKILL.md").read_text(encoding="utf-8")))
+    assert linked
+    for rel in linked:
+        assert (skill / rel).is_file(), rel
+
+
+# References are read at their linking step, not preloaded with the entrypoint.
+def _blocks(text: str) -> list[tuple[str, str]]:
+    heading, out = "", []
+    for block in re.split(r"\n\s*\n", text):
+        for line in block.splitlines():
+            if line.startswith("#"):
+                heading = line.lstrip("# ").strip()
+        out.append((heading, " ".join(block.split())))
+    return out
+
+
+def _home(skill: Path, needle: str) -> str | None:
+    if needle in (skill / "SKILL.md").read_text(encoding="utf-8"):
+        return None
+    homes = [p.relative_to(skill).as_posix() for p in sorted((skill / "references").glob("*.md"))
+             if needle in p.read_text(encoding="utf-8")]
+    assert len(homes) == 1, (needle, homes)
+    return homes[0]
+
+
+def _linking(skill: Path, rel: str) -> list[tuple[str, str]]:
+    text = (skill / "SKILL.md").read_text(encoding="utf-8")
+    return [(h, b) for h, b in _blocks(text) if f"]({rel}" in b]
+
+
+@pytest.mark.parametrize("explicit_plan", [False, True])
+@pytest.mark.parametrize("needle", [
+    "On the FIRST commit of a phase", "immediately before each `git push`",
+])
+def test_gemini_publication_rules_reachable_before_first_commit(explicit_plan, needle):
+    skill = PACKAGED / "gemini-execute-phase"
+    rel = _home(skill, needle)
+    if rel is None:
+        return
+    early = [b for h, b in _linking(skill, rel)
+             if h != "Publication mode"
+             and (not explicit_plan or "If no plan path is explicit" not in b)
+             and re.search(r"first[- ]commit|before (each|every|any) [^.]*push|before execution",
+                           f"{h} {b}", re.I)]
+    assert early, f"{needle!r} in {rel} needs a trigger before the first commit"
+    # Reading interactive publication must never become a runner/governed instruction.
+    assert all("interactive" in b.lower() for b in early)
+    text = (skill / "SKILL.md").read_text(encoding="utf-8")
+    runner = text.split("- (a) Runner-managed closeout", 1)[1].split("- (b)", 1)[0]
+    assert "OR ambiguous mode" in runner
+    assert "the RUNNER owns closeout and commit" in runner
+    assert "Do NOT" in runner and "independently publish" in runner
+    assert f"]({rel}" not in runner
+
+
+def test_gemini_worktree_sweep_triggered_at_phase_start_and_closeout():
+    skill = PACKAGED / "gemini-execute-phase"
+    rel = _home(skill, "Run the sweep at closeout (and, cheaply, at phase start)")
+    if rel is None:
+        return
+    assert any("phase start" in b and "closeout" in b and "interactive" not in b.lower()
+               for _, b in _linking(skill, rel))
