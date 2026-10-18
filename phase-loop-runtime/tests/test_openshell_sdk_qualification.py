@@ -74,7 +74,7 @@ def qualification_run(tmp_path, monkeypatch):
     import io
     import json
     import zipfile
-    root = tmp_path / 'source'
+    root = tmp_path / 'source' / 'phase-loop-runtime'
     (root / 'scripts').mkdir(parents=True)
     (root / 'tests').mkdir()
     (root / 'tests' / '_openshell_qualification.py').write_bytes(
@@ -103,11 +103,14 @@ out = pathlib.Path(next(a.split('=', 1)[1] for a in sys.argv if a.startswith('--
     monkeypatch.setattr(recipe, 'MANIFEST', manifest_path)
     monkeypatch.setattr(recipe.urllib.request, 'urlopen', lambda *a, **kw: io.BytesIO(wheel.getvalue()))
     real_run = subprocess.run
+    real_output = subprocess.check_output
     state = {'tamper': False, 'pytest_called': False, 'dirty': False}
 
     def output(argv, **kwargs):
         if 'show' in argv:
             return b'proto'
+        if argv[0] == 'git' and state.get('real_git'):
+            return real_output(argv, **kwargs)
         if 'status' in argv:
             return b' M tracked.py' if state['dirty'] else b''
         if '--version' in argv:
@@ -124,6 +127,8 @@ out = pathlib.Path(next(a.split('=', 1)[1] for a in sys.argv if a.startswith('--
             state['pytest_called'] = True
             argv = argv[:-3] + ['tests/test_case.py']
         result = real_run(argv, **kwargs)
+        if 'tests/test_case.py' in argv and state.get('after_pytest'):
+            state['after_pytest']()
         if any('grpc_tools.protoc' in str(arg) for arg in argv):
             if state['tamper']:
                 (work / 'deps' / 'runtime.py').write_bytes(b'changed')
@@ -192,6 +197,84 @@ def test_dirty_source_refuses_receipt(qualification_run):
     state['dirty'] = True
     with pytest.raises(ValueError, match='dirty'):
         recipe.main()
+    assert not (work / 'qualification-receipt.json').exists()
+
+
+@pytest.fixture
+def qualification_git(qualification_run):
+    state, work, root = qualification_run
+    (root / 'src').mkdir()
+    (root / 'src' / 'tracked.py').write_text('')
+    (root.parent / '.gitignore').write_text('*.py[cod]\n')
+    for args in (['init'], ['add', '.'],
+                 ['-c', 'user.name=Test', '-c', 'user.email=test@example.invalid',
+                  'commit', '-m', 'fixture']):
+        subprocess.run(['git', '-C', str(root.parent), *args], check=True,
+                       capture_output=True, timeout=20)
+    state['real_git'] = True
+    return state, work, root
+
+
+@pytest.mark.parametrize('stage', ['start', 'generation', 'end'])
+@pytest.mark.parametrize('directory', ['src', 'tests', 'scripts'])
+@pytest.mark.parametrize('ignore', ['repository', 'global', 'info'])
+def test_ignored_import_files_refuse_receipt(qualification_git, monkeypatch, stage, directory, ignore):
+    import marshal
+    state, work, root = qualification_git
+    target = root / directory / ('pytest.pyc' if ignore == 'repository' else 'pytest.py')
+    marker = root.parent / 'shadow-ran'
+    payload = (f'from pathlib import Path; Path({str(marker)!r}).touch()\n'
+               'import json, os\n'
+               'Path(os.environ["OPENSHELL_TEST_RESULTS"]).write_text(json.dumps('
+               'dict(collected=265, passed=265, exitstatus=0)))\n')
+    if ignore == 'repository':
+        content = (importlib.util.MAGIC_NUMBER + b'\0' * 12 +
+                   marshal.dumps(compile(payload, str(target), 'exec')))
+    else:
+        content = payload.encode()
+        excludes = root.parent / ('.git/info/exclude' if ignore == 'info' else 'global-ignore')
+        excludes.write_text('pytest.py\n')
+        if ignore == 'global':
+            excludes.rename(work.parent / 'global-ignore')
+            home = work.parent / 'home'
+            home.mkdir()
+            monkeypatch.setenv('HOME', str(home))
+            monkeypatch.setenv('GIT_CONFIG_GLOBAL', str(home / '.gitconfig'))
+            subprocess.run(['git', '-C', str(root), 'config', '--global', 'core.excludesFile',
+                            str(work.parent / 'global-ignore')], check=True, timeout=20)
+
+    def plant(*args):
+        target.write_bytes(content)
+        assert not subprocess.check_output(
+            ['git', '-C', str(root), 'status', '--porcelain', '--untracked-files=all'])
+
+    if stage == 'start':
+        plant()
+    else:
+        state['after_generation' if stage == 'generation' else 'after_pytest'] = plant
+    with pytest.raises(ValueError, match='dirty qualification import paths'):
+        recipe.main()
+    assert state['pytest_called'] == (stage == 'end')
+    assert not (work / 'qualification-receipt.json').exists()
+    assert not marker.exists()
+    assert target.read_bytes() == content  # Refusal must not delete user files.
+
+
+@pytest.mark.parametrize('stage', ['start', 'generation', 'end'])
+@pytest.mark.parametrize('name', ['tracked.py', 'untracked.py'])
+def test_changed_import_files_refuse_receipt(qualification_git, stage, name):
+    state, work, root = qualification_git
+
+    def plant(*args):
+        (root / 'src' / name).write_text('changed = True\n')
+
+    if stage == 'start':
+        plant()
+    else:
+        state['after_generation' if stage == 'generation' else 'after_pytest'] = plant
+    with pytest.raises(ValueError, match='dirty qualification source'):
+        recipe.main()
+    assert state['pytest_called'] == (stage == 'end')
     assert not (work / 'qualification-receipt.json').exists()
 
 

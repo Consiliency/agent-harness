@@ -164,6 +164,13 @@ Use the manifest's interpreter/platform with repository test dependencies alread
 installed, plus `git`, `uv` and `openssl`, and PyPI content reachability for the
 pinned wheel downloads. From a clean committed `phase-loop-runtime` checkout:
 
+Use a dedicated clean qualification worktree: `src`, `tests` and `scripts` must
+contain no changed, untracked or ignored files, including `__pycache__` directories
+and standalone sourceless `.pyc` modules. Global Git ignores and `info/exclude`
+do not exempt files. The recipe checks at startup, after generation before pytest,
+and at completion; it refuses without deleting files. Keep local environments and
+qualification output outside these import-bearing directories.
+
 ```sh
 "$PYTHON" -I -B scripts/qualify_openshell_sdk.py \
   --server "$SERVER" --work "$NEW_PRIVATE_QUALIFICATION_DIRECTORY"
@@ -188,10 +195,10 @@ wheel-derived payload hashes and the complete installed-tree hashes.
 Each generator/test child uses a separate freshly allocated bytecode-cache prefix,
 so existing source caches and predictable work-directory caches are not reused. Git, uv, protoc, download and pytest bounds are centralized in the
 recipe's `TIMEOUTS` configuration. The interpreter and its installed test dependencies
-remain trusted caller prerequisites, along with PATH tools and source checkout
-contents other than redirected bytecode caches. This is not a fully hermetic
-environment or protection against concurrent mutation of the private work directory
-or trusted interpreter. Git identity does not attest arbitrary ignored source files.
+remain trusted caller prerequisites, along with PATH tools and committed source.
+This is not a fully hermetic environment or protection against concurrent mutation
+of the checkout, private work directory or trusted interpreter. The ignored-file
+refusal covers only the import-bearing `src`, `tests` and `scripts` directories.
 The narrow run includes transport, local gRPC and subprocess TLS channel tests. The opt-in
 `_openshell_qualification` pytest plugin also rejects missing/mismatched SDK bytes,
 extra entries and symlinked SDK files/directories before collection;
