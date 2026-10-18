@@ -38,6 +38,7 @@ and released by lease id; ``execute`` is reached from one state and ends the wal
 
 from __future__ import annotations
 
+import contextvars
 from dataclasses import dataclass, field, replace
 import hashlib
 import json
@@ -408,6 +409,8 @@ class ExecSpec:
             raise ValueError(f"unknown workload {self.workload!r}")
         if not isinstance(self.request, bytes):
             raise TypeError("an ExecSpec request is bytes")
+        if type(self.output_cap_bytes) is not int or self.output_cap_bytes < 0:
+            raise ValueError("invalid output cap")
 
 
 @dataclass(frozen=True)
@@ -1024,12 +1027,13 @@ def _serve(jobs: "queue.SimpleQueue[object]") -> None:
         job = jobs.get()
         if job is None:
             return
-        call, box, done = job  # type: ignore[misc]
+        call, context, box, done = job  # type: ignore[misc]
         try:
-            box.append((True, call()))
+            box.append((True, context.run(call)))
         except BaseException as exc:  # handed to the caller, which re-raises it
             box.append((False, exc))
         done.release()
+        del job, call, context, box, done
 
 
 class _Calls:
@@ -1054,7 +1058,7 @@ class _Calls:
         box: list[tuple[bool, object]] = []
         done = threading.Lock()  # released by the worker when the call has returned
         done.acquire()
-        self._jobs.put((call, box, done))
+        self._jobs.put((call, contextvars.copy_context(), box, done))
         deadline = time.monotonic() + max(0.0, timeout_s)
         while not done.acquire(timeout=min(_POLL_S, max(0.0, deadline - time.monotonic()))):
             if cancelled is not None and cancelled.is_set():
@@ -1252,6 +1256,12 @@ class _Walk:
                 rung.reason = code
                 rung.lease.fence()  # type: ignore[attr-defined]
             elif target == "execute":
+                if self.cancelled.is_set() or self._budget_spent():
+                    rung.cancel = self.cancelled.is_set()
+                    rung.reason = _BUDGET_SPENT
+                    rung.lease.fence()  # type: ignore[attr-defined]
+                    state = "releasing"
+                    continue
                 return self._execute(rung)
             elif target.startswith("left:"):
                 if rung.lease is not None:
@@ -1447,12 +1457,21 @@ class _Walk:
             return "budget_spent", _BUDGET_SPENT
         request = rung.request
         try:
-            spec = self.seal(request)  # type: ignore[arg-type]
+            spec = self.calls.run(
+                lambda: self.seal(request), self._budget_left(), self.cancelled,
+            )
+        except _CallCancelled:
+            return None, None
+        except PlacementUnavailable as exc:
+            if exc.code == _TIMEOUT:
+                return "budget_spent", _BUDGET_SPENT
+            return "seal_failed", _REFUSED
         except Exception:
             return "seal_failed", _REFUSED
         if (
             not isinstance(spec, ExecSpec) or spec.workload != request.workload  # type: ignore[union-attr]
             or not _end_is_fixed(spec)
+            or type(spec.output_cap_bytes) is not int or spec.output_cap_bytes < 0
         ):
             return "seal_failed", _REFUSED
         if self._budget_spent():
@@ -1697,6 +1716,7 @@ def run_placed(
                         on_progress(got)
             elif (
                 isinstance(got, ExecResult) and got.sandbox_ref == sandbox_ref
+                and isinstance(got.result, bytes) and len(got.result) <= spec.output_cap_bytes
                 and _echoes(got.result, spec.request)
             ):
                 result = got

@@ -13,6 +13,8 @@ real. `place` and `run_placed` are driven directly; the launch site is not invol
 
 from __future__ import annotations
 
+import contextvars
+from dataclasses import replace
 from hashlib import sha256
 import json
 import logging
@@ -1208,3 +1210,124 @@ def test_a_backend_time_out_before_the_fixed_end_is_a_lost_leg(monkeypatch):
 
     assert calls == ["cancel", "fence", "kill", "clear"]
     assert caught.value.code == "sandbox_placement_lost_after_launch"
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_seal_is_bounded_and_late_spec_is_discarded(far, monkeypatch, cancel):
+    monkeypatch.setenv("PHASE_LOOP_SANDBOX_ADMIT_WAIT_S", "0")
+    monkeypatch.setenv("PHASE_LOOP_SANDBOX_TRANSFER_ALLOWANCE_S", "1")
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    cancelled = threading.Event()
+    outcomes = []
+
+    def seal(request):
+        entered.set()
+        release.wait(5)
+        return exec_spec(request)
+
+    def run():
+        try:
+            outcomes.append(walk(rungs("drv"), seal=seal, cancelled=cancelled))
+        except sp.PlacementCancelled as exc:
+            outcomes.append(exc)
+        finally:
+            finished.set()
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    try:
+        assert entered.wait(2)
+        if cancel:
+            cancelled.set()
+        assert finished.wait(2)
+        assert "execute" not in far.calls
+        assert "kill" in far.calls and lease_files() == []
+        if cancel:
+            assert isinstance(outcomes[0], sp.PlacementCancelled)
+        else:
+            assert summary(outcomes[0].trail) == [("r1", "refused", BUDGET)]
+    finally:
+        release.set()
+        thread.join(3)
+    assert "execute" not in far.calls
+
+
+def test_each_call_captures_its_own_context():
+    value = contextvars.ContextVar("submission", default="missing")
+    calls = sp._Calls()
+    threads = []
+    try:
+        for expected in ("first", "second"):
+            token = value.set(expected)
+            try:
+                def job():
+                    threads.append(threading.get_ident())
+                    got = value.get()
+                    value.set("worker mutation")
+                    return got
+                assert calls.run(job, 1) == expected
+                assert value.get() == expected
+            finally:
+                value.reset(token)
+        assert threads[0] == threads[1]
+    finally:
+        calls.close()
+
+
+@pytest.mark.parametrize("remaining", [0, 0.25, 40])
+def test_seal_uses_whole_budget_and_execute_only_the_remainder(far, monkeypatch, remaining):
+    clock = [0.0]
+    monkeypatch.setattr(sp, "_monotonic", lambda: clock[0])
+    monkeypatch.setenv("PHASE_LOOP_SANDBOX_ADMIT_WAIT_S", "60")
+    monkeypatch.setenv("PHASE_LOOP_SANDBOX_TRANSFER_ALLOWANCE_S", "60")
+    bounds = []
+    run = sp._Calls.run
+
+    def record(self, call, timeout_s, cancelled=None):
+        bounds.append(timeout_s)
+        return run(self, call, timeout_s, cancelled)
+
+    monkeypatch.setattr(sp._Calls, "run", record)
+
+    def seal(request):
+        assert bounds[-1] == 120
+        clock[0] = 120 - remaining
+        return exec_spec(request)
+
+    decision = walk(rungs("drv"), seal=seal)
+    if remaining == 0:
+        assert decision.outcome == "launching_host" and "execute" not in far.calls
+    else:
+        assert decision.outcome == "placed"
+        assert far.seen["execute"][0][2].timeout_s == min(sp.ANSWER_BOUND_S, remaining)
+        sp.run_placed(decision.placement, on_progress=None, cancelled=threading.Event())
+
+
+@pytest.mark.parametrize("cap", [True, False, -1, 1.5, "1024", None])
+def test_invalid_output_cap_refuses_before_dispatch(far, cap):
+    decision = walk(rungs("drv"), seal=lambda request: replace(exec_spec(request), output_cap_bytes=cap))
+    assert decision.outcome == "launching_host"
+    assert "execute" not in far.calls and lease_files() == []
+
+
+@pytest.mark.parametrize("kind", ["exact", "over", "text", "bytearray", "zero"])
+def test_result_cap_precedes_digest_parsing(far, monkeypatch, kind):
+    body = json.dumps({"request_sha256": sha256(b"sealed request").hexdigest()}).encode()
+    cap = len(body) if kind == "exact" else len(body) - 1
+    if kind == "zero":
+        cap = 0
+    payload = body.decode() if kind == "text" else bytearray(body) if kind == "bytearray" else body
+    placement = _placed(far, seal=lambda request: replace(exec_spec(request), output_cap_bytes=cap))
+    far.behave["wait"] = lambda ref, wait: sp.ExecResult(ref, 0, payload, False)
+    parsed = []
+    echoes = sp._echoes
+    monkeypatch.setattr(sp, "_echoes", lambda *args: parsed.append(args) or echoes(*args))
+    if kind == "exact":
+        assert sp.run_placed(placement, on_progress=None, cancelled=threading.Event()).result == body
+        assert len(parsed) == 1
+    else:
+        with pytest.raises(sp.PlacementUnavailable, match=LOST):
+            sp.run_placed(placement, on_progress=None, cancelled=threading.Event())
+        assert parsed == []
+        assert "completed" not in placement._observed
+    assert lease_files() == []
