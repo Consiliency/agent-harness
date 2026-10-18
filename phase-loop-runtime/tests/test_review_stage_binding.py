@@ -389,30 +389,119 @@ def test_falsifier_cleanup_residue_is_an_error(tmp_path, monkeypatch):
             original_remove(staged)
 
 
-def test_deep_authenticated_report_does_not_crash_parent(tmp_path, monkeypatch):
-    if not Path("/usr/bin/bwrap").is_file():
-        pytest.skip("canonical falsifier launcher absent")
+def _authenticated_falsifier_report(tmp_path, monkeypatch, payload):
     original_popen = subprocess.Popen
+    original_is_file = Path.is_file
+
+    def launcher_is_file(path):
+        return str(path) == "/usr/bin/bwrap" or original_is_file(path)
+
+    # Only the emitter runs; supply its unused launcher's prerequisite in this fixture.
+    monkeypatch.setattr(Path, "is_file", launcher_is_file)
     emitter = (
         "import hashlib,hmac,sys\n"
         "key=sys.stdin.buffer.readline().rstrip(b'\\n')\n"
-        "payload=(b'{\"schema\":\"falsifier_pytest_report.v1\",\"deep\":'"
-        "+b'['*10000+b'0'+b']'*10000+b'}')\n"
+        f"payload=bytes.fromhex({payload.hex()!r})\n"
         "signature=hmac.new(key,payload,hashlib.sha256).hexdigest().encode()\n"
         "sys.stdout.buffer.write(b'\\nFALSIFIER_RESULT::'+sys.argv[1].encode()"
         "+b':'+signature+b':'+payload+b'\\n')\n"
     )
 
     def launch(_argv, *args, **kwargs):
-        return original_popen(["/usr/bin/python3", "-c", emitter, _argv[-1]], *args, **kwargs)
+        assert _argv[0] == "/usr/bin/bwrap"
+        return original_popen([sys.executable, "-c", emitter, _argv[-1]], *args, **kwargs)
 
     monkeypatch.setattr(review_stage.subprocess, "Popen", launch)
-    code, _stdout, _stderr, failure, report = review_stage._run_bounded_falsifier_node(
+    return review_stage._run_bounded_falsifier_node(
         staged=tmp_path, dependencies=tmp_path, nodeid="test_finding_F001.py::test_trigger",
         wall_clock_s=5, output_cap_bytes=65536,
     )
+
+
+def test_deep_authenticated_report_does_not_crash_parent(tmp_path, monkeypatch):
+    if not Path("/usr/bin/bwrap").is_file():
+        pytest.skip("canonical falsifier launcher absent")
+    from phase_loop_runtime import falsifier
+
+    payload = (b'{"schema":"falsifier_pytest_report.v1","deep":'
+               + b'[' * 10000 + b'0' + b']' * 10000 + b'}')
+    with monkeypatch.context() as transport:
+        bounded = _authenticated_falsifier_report(tmp_path, transport, payload)
+    code, _stdout, stderr, failure, report = bounded
     assert code == 0 and failure is None
+    assert stderr == b""
+    # A decoder may accept this depth; the object still lacks the required report fields.
+    if report is not None:
+        assert report["schema"] == "falsifier_pytest_report.v1"
+        value = report["deep"]
+        depth = 0
+        while isinstance(value, list):
+            assert len(value) == 1
+            depth += 1
+            value = value[0]
+        assert depth == 10000 and value == 0
+    assert falsifier._outcome_from_report(report, "test_finding_F001.py::test_trigger", code) == "error"
+
+    repo = _git_repo(tmp_path / "repo")
+    entry = _falsifier_entry("def test_trigger():\n    assert True\n")
+    calls = []
+
+    def return_report(**kwargs):
+        calls.append(kwargs["nodeid"])
+        return bounded
+
+    monkeypatch.setattr(review_stage, "run_bounded_falsifier_node", return_report)
+    result = _run_real_falsifier(repo, entry)
+    assert calls == [entry.expected_nodeid]
+    assert result.outcome == result.record["outcome"] == "error"
+    assert result.red_output_digest is None and result.record["red_output_digest"] is None
+    assert result.junit_path is None
+    assert not (repo / entry.new_test_path).exists()
+
+
+def test_authenticated_report_decoder_recursion_is_caught(tmp_path, monkeypatch):
+    import json
+
+    from phase_loop_runtime import falsifier
+
+    payload = b'{"schema":"falsifier_pytest_report.v1"}'
+    real_loads = json.loads
+    calls = []
+
+    def overflow(value, *args, **kwargs):
+        if value == payload:
+            calls.append(value)
+            raise RecursionError("authenticated decoder overflow")
+        return real_loads(value, *args, **kwargs)
+
+    monkeypatch.setattr(review_stage.json, "loads", overflow)
+    assert json.loads('{"unrelated":true}') == {"unrelated": True}
+    code, _stdout, stderr, failure, report = _authenticated_falsifier_report(
+        tmp_path, monkeypatch, payload,
+    )
+    assert calls == [payload]
+    assert code == 0 and failure is None and stderr == b""
     assert report is None
+    assert falsifier._outcome_from_report(report, "test_finding_F001.py::test_trigger", code) == "error"
+
+
+@pytest.mark.parametrize("outcome, expected", [("passed", "green_on_head"), ("failed", "red_on_head")])
+def test_authenticated_report_retains_exact_call_outcome(tmp_path, monkeypatch, outcome, expected):
+    import json
+
+    from phase_loop_runtime import falsifier
+
+    nodeid = "test_finding_F001.py::test_trigger"
+    payload = json.dumps({
+        "schema": "falsifier_pytest_report.v1", "exit": 0 if outcome == "passed" else 1,
+        "calls": [{"nodeid": nodeid, "outcome": outcome, "wasxfail": False}],
+        "selection_exact": True,
+    }).encode()
+    code, _stdout, stderr, failure, report = _authenticated_falsifier_report(
+        tmp_path, monkeypatch, payload,
+    )
+    assert code == 0 and failure is None and stderr == b""
+    assert falsifier._outcome_from_report(report, nodeid, code) == expected
 
 
 def test_falsifier_records_parent_recursion_as_error(tmp_path, monkeypatch):
