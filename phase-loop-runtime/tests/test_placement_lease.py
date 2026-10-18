@@ -644,11 +644,19 @@ class _Protocol:
 
 
 @pytest.mark.parametrize("mutex_held", [False, True])
-def test_inherited_clear_preserves_parent_entry_and_lock(mutex_held):
+@pytest.mark.parametrize("operation", [
+    "clear", "_unlock", "abandon", "note_killed", "record_sandbox_ref", "fence",
+    "attach_transport", "mark_create", "mark_execute", "record_transport_ref",
+])
+def test_inherited_mutators_preserve_parent_entry_and_lock(mutex_held, operation):
     lease = placement_lease.open_lease("stage", _root())
     adapter = object()
-    lease.attach_transport(adapter)
-    lease.mark_dispatch(adapter, "create")
+    if operation != "attach_transport":
+        lease.attach_transport(adapter)
+        if operation != "mark_create":
+            lease.mark_dispatch(adapter, "create")
+    if operation == "mark_execute":
+        lease.record_transport_ref(adapter, "sbx-parent")
     before = lease.path.read_bytes()
     if mutex_held:
         lease._lock.acquire()
@@ -657,15 +665,30 @@ def test_inherited_clear_preserves_parent_entry_and_lock(mutex_held):
         signal.alarm(5)
         try:
             assert not lease.held
-            lease.clear()
-            assert lease._fd is None
+            if operation == "attach_transport":
+                with pytest.raises(ValueError, match="^lease transport already attached or not owned$"):
+                    lease.attach_transport(adapter)
+            elif operation in ("mark_create", "mark_execute"):
+                with pytest.raises(ValueError, match="^lease dispatch forbidden$"):
+                    lease.mark_dispatch(adapter, operation.removeprefix("mark_"))
+            elif operation == "record_transport_ref":
+                with pytest.raises(ValueError, match="^lease transport not owned$"):
+                    lease.record_transport_ref(adapter, "sbx-child")
+            elif operation == "record_sandbox_ref":
+                lease.record_sandbox_ref("sbx-child")
+            else:
+                getattr(lease, operation)()
+            if operation in ("clear", "_unlock", "abandon"):
+                assert lease._fd is None
+            if operation in ("abandon", "fence"):
+                assert lease.fenced
             os._exit(0)
         except BaseException:
             os._exit(1)
     if mutex_held:
         lease._lock.release()
     try:
-        assert os.waitpid(pid, 0)[1] == 0
+        status = os.waitpid(pid, 0)[1]
         assert lease.held and lease.path.read_bytes() == before
         src = str(Path(placement_lease.__file__).resolve().parents[1])
         probe = """
@@ -689,6 +712,7 @@ else:
         lease._unlock()
         assert recover_elsewhere() == "recovered"
         assert lease.path.read_bytes() == before
+        assert status == 0, f"child status {status} (SIGALRM means inherited mutex deadlock)"
     finally:
         lease._unlock()
 

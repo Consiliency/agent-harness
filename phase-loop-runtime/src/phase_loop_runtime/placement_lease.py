@@ -203,6 +203,8 @@ class Lease:
         return self._fd is not None and self._pid == os.getpid()
 
     def attach_transport(self, adapter: object) -> tuple[bool, str | None]:
+        if self._pid != os.getpid():
+            raise ValueError("lease transport already attached or not owned")
         with self._lock:
             if not self.held or self._adapter is not None:
                 raise ValueError("lease transport already attached or not owned")
@@ -213,6 +215,8 @@ class Lease:
             return fresh, self._entry["sandbox_ref"]
 
     def mark_dispatch(self, adapter: object, operation: str) -> None:
+        if self._pid != os.getpid():
+            raise ValueError("lease dispatch forbidden")
         with self._lock:
             key = {"create": "create_sent_at", "execute": "execute_sent_at"}[operation]
             if (not self.held or self.fenced or not self._newly_opened
@@ -229,6 +233,8 @@ class Lease:
                 raise
 
     def record_transport_ref(self, adapter: object, sandbox_ref: str) -> None:
+        if self._pid != os.getpid():
+            raise ValueError("lease transport not owned")
         with self._lock:
             if not self.held or self._adapter is not adapter:
                 raise ValueError("lease transport not owned")
@@ -247,6 +253,8 @@ class Lease:
         self.fenced = True
 
     def _update(self, **fields: object) -> None:
+        if self._pid != os.getpid():
+            return  # inherited: never write or wait on a mutex held at fork
         with self._lock:
             if not self.held:
                 return
