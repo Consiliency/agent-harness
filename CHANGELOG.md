@@ -15,14 +15,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   interpreter contract remains 3.10-compatible; a governed-review falsifier node that
   imports this runtime under an older host interpreter ends in `error`, fails closed,
   and remains a blocking receipt. See the detailed breaking-change entry below.
-- **Live agy qualification is being refreshed.** After integrating agent-harness#1738
-  and agent-harness#1549, all twelve members passed completion, cancellation and
-  owner-loss checks (36 successful operations) on that earlier candidate. The later
-  agent-harness#1748 integration changes one source pin, so the merged candidate
-  requires renewed checks before acceptance.
-  The evidence retains an earlier local staging failure and the diagnosed operational
-  correction before the remaining checks. Exact-candidate package and compatibility
-  verification, final I1, CI and review remain release-cut gates. Historical
+- **Live agy qualification has been renewed.** After the latest main integration,
+  including agent-harness#1748, all twelve members passed completion, cancellation
+  and owner-loss checks (36 successful operations), with all 245 source pins verified.
+  Earlier candidate evidence, including a retained local staging failure and its
+  diagnosed operational correction, is preserved separately. Package and compatibility
+  verification passed for the revised package; final I1, CI and review remain release-cut gates. Historical
   real-CLI smoke failures and unverified runtime panel behavior remain disclosed in
   the release handoff; they are not a runtime PASS.
 - **The Claude jail pass carries forward from 0.7.26.** The seat jail's falsifier-run layout
@@ -136,11 +134,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `007a5a44…`). 1.3.5's help digest is new (`a12355e8…`): its `--help` adds the `--mode`
   value `auto`, which the route does not use. The route core needed only the four new
   entries.
-- All twelve members were requalified after the agent-harness#1738 and
-  agent-harness#1549 integration (completion, cancel and owner-loss each, then
-  `--validate`). Each member retains its earlier record; the source-pin refresh
-  after agent-harness#1748 is pending. The retained evidence distinguishes the
-  original staging failure from the successful checks after its operational correction.
+- All twelve members were requalified after the latest main integration, including
+  agent-harness#1748 (completion, cancel and owner-loss each, then `--validate`).
+  Each member retains its own current record; all 245 source pins and the route
+  core match the revised source. Earlier candidate successes and the original
+  staging failure remain separate from this batch's 36 successful operations.
 - A newer upstream release remains eligible for first-use self-qualification; as of
   2026-10-16, upstream's latest is 1.4.0 and is outside this shipped set.
 

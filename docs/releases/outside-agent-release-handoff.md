@@ -835,11 +835,36 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 
 ### This release: 0.7.27 (prepared)
 
+The current prepared package was built from a `git archive` export of
+`3d0a8f2d8be49d683fa3e2001e43795308bd853e`, after the latest main integration,
+including agent-harness#1748. Its runtime package tree is
+`44d79615f63d30782c7c1d51113849d88d6f5cb7`. The twelve agy members passed all
+36 qualification operations on that source; current records verify all 245 source
+pins. Earlier successful batches and the retained staging failure remain historical
+evidence, separate from this complete current-source batch.
+
+- Prepared direct wheel: SHA-256 `0ea4a7ba74707d92337763e5021f231179da3fd4eaa73abcc1d56073dc8908ad`, 520 regular files.
+- Prepared sdist: SHA-256 `5d190e9a1dba86235457eb2c019ace627ebfc28df8aadc608d8a2eaa95d5305e`, 1152 regular files.
+- The sdist-derived wheel has identical member payloads, names and modes. Five ZIP
+  timestamps differ, so its archive digest differs from the direct wheel.
+- A fresh Python 3.12.14 install imports the installed package in isolation and
+  passes warnings-as-errors compilation. Real Python 3.10.21 refuses the same wheel.
+  The runtime floor is `>=3.12`; dependency and entry-point metadata remain unchanged
+  from hash-verified published 0.7.26.
+
+These are prepared measurements, not promised publication hashes. The publishing
+workflow rebuilds from the owner-approved tag. Final candidate CI, full I1 and
+release review remain required; historical real-CLI smoke failures are not passed
+by these offline checks. Later outside-package record and documentation updates
+may carry these measurements only after package-byte identity is verified.
+
+#### Earlier preparation
+
 **Historical preparation only:** the following hashes, source-pin equivalence,
 metadata comparison and cold-wheel results predate agent-harness#1738 and
 agent-harness#1549. They are retained as measurements of the named earlier source,
 not as final candidate evidence. The revised runtime floor is Python 3.12+;
-final artifacts and compatibility checks remain pending.
+use the current prepared measurements above for that floor.
 
 The digests below are from a pre-tag `uv build` of a `git archive` export of
 `727c5330c`, under `umask 022` (archive modes are umask-dependent,
@@ -1115,17 +1140,16 @@ this metadata document.
 
 ## Package Surface Inventory
 
-Measured on the historical prepared `0.7.27` build described above. Final candidate
-package inventory must be remeasured after the source integration; these counts
-are not a claim about that pending build.
+Measured on the current prepared `0.7.27` package from `3d0a8f2d` described above.
+The historical build's separate counts remain in its preparation record.
 
 - Wheel artifact: `phase_loop_runtime-0.7.27-py3-none-any.whl`
 - Sdist artifact: `phase_loop_runtime-0.7.27.tar.gz`
 - Wheel top-level entries: `phase_loop_runtime`, `phase_loop_runtime-0.7.27.data`, `phase_loop_runtime-0.7.27.dist-info`
 - Wheel file count: `520`
 - Sdist top-level entries: `MANIFEST.in`, `PKG-INFO`, `README.md`, `protocol`, `pyproject.toml`, `setup.cfg`, `src`, `tests`
-- Sdist file count: `1150` regular files (`1290` archive members including directories)
-- Wheel console entry points: `phase-loop = phase_loop_runtime.cli:main`; `codex-phase-loop = phase_loop_runtime.cli:main`; `phase-loop-closeout-audit = phase_loop_runtime.closeout_classifier:console_main`; `roadmap-ownership = phase_loop_runtime.roadmap_ownership:console_main` (plus the `phase_loop_runtime.profile_commands` and `phase_loop_runtime.skill_sources` plugin groups)
+- Sdist file count: `1152` regular files (`1292` archive members including directories)
+- Core wheel console entry points: `phase-loop = phase_loop_runtime.cli:main`; `codex-phase-loop = phase_loop_runtime.cli:main`; `phase-loop-closeout-audit = phase_loop_runtime.closeout_classifier:console_main`; `roadmap-ownership = phase_loop_runtime.roadmap_ownership:console_main`. The complete console-script metadata is unchanged from published 0.7.26 (plus the `phase_loop_runtime.profile_commands` and `phase_loop_runtime.skill_sources` plugin groups).
 - Runtime plugin entry points: `dotfiles = phase_loop_runtime.dotfiles_profile_plugin:register_profile_commands`; `dotfiles = phase_loop_runtime.skill_sources_plugin:register_skill_sources`
 
 ## Governed-Pipeline Pinning
