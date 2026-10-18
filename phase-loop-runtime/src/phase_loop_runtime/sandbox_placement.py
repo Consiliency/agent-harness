@@ -124,7 +124,7 @@ EGRESS_RESIDUAL_KINDS: frozenset[str] = frozenset({
 RECEIPT_STEPS: tuple[str, ...] = ("prepared", "committed", "launched", "completed")
 _ATTESTERS = frozenset({"runtime", "backend"})
 #: What a request asks a backend to run (C1, C10). Never an argv.
-_WORKLOADS = frozenset({"leg", "qualification"})
+_WORKLOADS = frozenset({"leg", "qualification", "implementation"})
 _LAST_RUNGS = frozenset({"local", "none"})
 
 _CAPACITY = "sandbox_placement_at_capacity"
@@ -261,7 +261,7 @@ class PlacementRequest:
     egress_needs: EgressNeeds
     #: The decided CD1 channel: the same one-shot channel as the local route.
     one_shot_secret: bool = True
-    #: ``leg`` or ``qualification`` (C10). Visible to the driver and to ``admit``.
+    #: ``leg``, ``implementation`` or ``qualification``. Only qualification is gate-exempt.
     workload: str = "leg"
     #: What the backend must declare, and verify after ``commit`` (C5).
     required_capabilities: frozenset[str] = frozenset()
@@ -1308,7 +1308,7 @@ class _Walk:
             return failed, _REFUSED
         # The root travels with the request; a placed seat has no private endpoint (C5, C6).
         request = replace(request, root=rung.root, egress_needs=EgressNeeds())  # type: ignore[arg-type]
-        if request.workload == "leg" and not self.driver_enabled:
+        if request.workload != "qualification" and not self.driver_enabled:
             # The execution gate (C10), before the backend is looked up or called.
             return failed, _DRIVER_UNAVAILABLE
         try:
@@ -1707,7 +1707,7 @@ def run_placed(
     calls, renewals = _Calls(settings=settings), _Calls(settings=settings)
     result: ExecResult | None = None
     failure = _LOST_AFTER_LAUNCH if placement._launch_failed else None
-    was_cancelled = False
+    was_cancelled = cancelled.is_set()
     stop_renewing: Callable[[], None] = lambda: None  # noqa: E731
     try:
         if failure is None and spec.deadline_s is None:
@@ -1758,6 +1758,9 @@ def run_placed(
             except Exception:
                 failure = _LOST_AFTER_LAUNCH
                 break
+            if cancelled.is_set():
+                was_cancelled = True
+                break
             if isinstance(got, ExecProgress) and got.sandbox_ref == sandbox_ref:
                 if isinstance(got.seq, int) and got.seq > seq:
                     seq = got.seq
@@ -1776,6 +1779,7 @@ def run_placed(
                 # `wait` returns only a result or progress (C12, before the reconnect plan).
                 failure = _LOST_AFTER_LAUNCH
         if result is None:
+            was_cancelled = was_cancelled or cancelled.is_set()
             try:
                 calls.run(lambda: backend.cancel(sandbox_ref, _bound(ANSWER_BOUND_S)), ANSWER_BOUND_S)  # type: ignore[attr-defined]
             except Exception:

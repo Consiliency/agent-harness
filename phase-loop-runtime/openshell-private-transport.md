@@ -401,3 +401,99 @@ cancellation still propagates. This does not change split `wait` poll semantics.
 gate changes. Source publication, worker sealing, native witness/quarantine,
 actual-server expiry, same-session backend routing and all live/physical/channel
 qualification remain owed; this increment is only the local stream boundary.
+
+## Finite implementation driver integration (r54, model-only)
+
+`openshell_backend.OpenShellBackend` now connects `place` / `run_placed` to the
+original `JournalSession`, an injected source-stage adapter and the existing
+one-shot worker/artifact boundary. It is single-use and **unregistered**. Its
+constructor refuses production use (`production_adapters_unqualified`); tests
+must explicitly pass `model_only=True`. This is lifecycle integration, not a
+claim of physical `ExecutingBackend` conformance. There is no CLI/entrypoint,
+channel import, enrollment, server RPC implementation or activation. Production
+CREATE/EXEC and the launch-site flag remain closed.
+
+The driver accepts a distinct `implementation` workload. It is subject to the
+same closed gate as `leg`; only `qualification` remains exempt. This narrowly
+extends the original C1/C10 workload vocabulary without disguising edits as
+qualification. No existing ordinary backend is opted into live binding. The
+post-wait cancellation check makes cancellation win a simultaneous result, and
+cancellation also wins an already-failed launch. No completion receipt follows
+those cancellations. Original C1–C12 semantics otherwise remain in force.
+
+Runtime callers supply a `prepare_source` bundle from an immutable clean commit,
+a `Prepared` and `PlacementRequest` with that bundle's digest, resolved caps,
+trusted task/test IDs and login snapshot reader, a NEW private quarantine path,
+and authenticated stub/bindings on an externally owned dedicated running loop.
+The model tests substitute an in-process endpoint, not a channel or actual RPC.
+The reviewed channel branch is not imported or merged here; SDK repair r53 is
+not a dependency. Channel lifetime must surround backend and recovery use.
+
+Injected interfaces, unavailable in production here:
+
+- `StageAdapter.validate_configuration()` refuses unusable runtime configuration;
+  async `commit(StageBinding, SourceBundle, OperationBound)` must publish verified
+  source under lease-owned cleanup obligations. It returns exactly the same
+  workspace, owner, lease, generation and recomputed source digest. This is an
+  adapter seam, **not** an assertion that any existing staging RPC implements it.
+  The local fixture actually materializes and scans a disposable source tree;
+  its worker consumes that staged bundle. It cannot establish server atomic
+  publication, cleanup obligations or endpoint lifetime.
+- `WorkerAdapter.validate_configuration()`, `create_request()`,
+  `exec_request(wire, remaining_end_s)` and `validate_native(identity, envelope,
+  Bound)` are trusted runtime hooks. Image digest and native validation come
+  from this injected runtime, never returned worker claims. The EXEC mapping
+  must preserve stdin, set a positive timeout at or before the remaining end,
+  use a runtime-owned absolute workdir/program, no environment and no login shell.
+  No real image/isolation/native-attestation adapter is supplied. The model uses
+  the existing synthetic provider and its declared content check, with synthetic
+  credentials only; its witness and test success remain untrusted claims.
+
+Binding happens once before admission. Admission journal-marks CREATE before
+sending it, then polls readiness without a pre-CREATE STATUS. Commit is attempted
+once, checks all StageBinding fields and confirms the original generation without
+replacing it. Late returns after cancellation or lost ownership are discarded.
+Seal runs once, binds a fresh nonce to the generation/source/task/image/limits,
+and requires a finite subscription token lasting the workload. The backend
+refuses indefinite deadlines locally, before lease allocation/CREATE in the driver.
+Renew explicitly raises unsupported; it never returns a fabricated success.
+
+EXEC journal-marks once and returns after dispatch. The separate collector uses
+the fixed remaining end, byte/message caps, and observes cancellation or lease
+ownership loss even without output. `wait` polls that same stream; it never
+reconnects, relaunches, reseals or refreshes credentials. Stream loss is terminal.
+The bridge observes late task exceptions without logging exception chains. It
+bounds cooperative calls but does not qualify synchronous fsync, event-loop stalls
+or a noncooperative C extension; production bounded shutdown remains owed.
+
+The identity domains are intentionally different:
+`Identity.request_sha256` hashes the worker's canonical credential-free metadata;
+C9's `request_sha256` hashes the exact `ExecSpec.request` bytes. After trusted
+native validation and `validate_result`, the backend returns a small driver
+result containing both digests, the quarantine path/hash, and
+`isolated_same_base_retest_and_owner_acceptance`. It does not copy a worker digest
+into C9 or use a result echo as native evidence. Quarantine is still untrusted;
+there is no owner acceptance, isolated client retest or apply-to-user-tree.
+A quarantine created before cancellation wins at the driver's delivery boundary
+may remain as untrusted evidence, but earns no completed receipt.
+
+Live KILL uses the same attached session while the journal is held; it never
+recovers another handle. KILL plus exact-generation destruction/settled-obligation
+STATUS and complete LIST absence are required by the driver before clear. Pending
+KILL or continued LIST presence retains the journal and release-unconfirmed
+notice. Already-claimed EXEC may start while cancellation is pending; no local
+stream cancellation is destruction proof. Recovery remains the separate
+`openshell_journal.ReaperAdapter` / cleanup-only `OpenShellBackend` path. Neither
+successful work nor a quarantine patch can clear a cleanup obligation.
+
+Capabilities are empty and commit returns only a backend claim: no qualification
+receipts are synthesized. Required C5 capabilities therefore refuse before any
+effects. Still owed: real authenticated materializer and atomic source publication,
+worker/endpoint expiry surviving client loss, exact-generation VM destruction,
+C5 descriptor/HOME/build/tmp/network/supervisor isolation, immutable image and
+nonce attestation, trusted native completion, same-base client retest, artifact
+and SDK/wheel provenance enforcement, auth/enrollment/issuer rotation, credential
+logging/zeroization, bounded production channel shutdown, terminal-create/orphan
+and store-loss reconciliation, PostgreSQL restart/multi-replica and bypass/physical
+falsifiers, contract-floor verification and live acceptance. No local model result
+waives these blockers or qualifies the separately active server lane.

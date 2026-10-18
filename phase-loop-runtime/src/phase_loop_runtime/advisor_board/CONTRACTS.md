@@ -467,6 +467,14 @@ the caller passes a PATH and the runtime reads it.
     with `user:…@` or a query (`sandbox_root_unrecognised`) are refused without a probe and
     rendered as a placeholder. No warning, reason, recorded path or probe argument is built
     from the configured text; all use the parsed form.
+  - **Finite implementation supplement (r54).** The unregistered model integration
+    also accepts `implementation` as a runtime-owned C1 workload. C10 gates it exactly
+    like `leg`: only `qualification` is exempt. It returns validated, untrusted quarantine
+    evidence, never owner acceptance or application to a user's tree. Production
+    construction and registration remain closed; no physical backend conformance or C5
+    capability follows from model fixtures. The adapter interfaces and remaining gates
+    are in `phase-loop-runtime/openshell-private-transport.md`, section "Finite
+    implementation driver integration". The historical C1–C12 text below is preserved.
   - **Execution driver (agent-harness#896): amendments C1–C12.** `sandbox_placement.place`
     walks the configured remote rungs and `sandbox_placement.run_placed` is everything
     after `execute`; `placement_lease` is the lease journal and its reaper. The launch
