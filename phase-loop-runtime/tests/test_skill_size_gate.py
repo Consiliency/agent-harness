@@ -56,11 +56,7 @@ ALLOWLIST: dict[tuple[str, str], int] = {
     ("skills-src/codex/codex-execute-phase/SKILL.md", "long_line"): 1295,
     ("skills-src/codex/codex-plan-phase/SKILL.md", "tokens"): 6675,
     ("skills-src/codex/codex-plan-phase/SKILL.md", "long_line"): 1065,
-    ("skills-src/gemini/gemini-execute-phase/SKILL.md", "tokens"): 6943,
-    ("skills-src/gemini/gemini-execute-phase/SKILL.md", "long_line"): 1062,
     ("skills-src/gemini/gemini-plan-phase/SKILL.md", "long_line"): 1066,
-    ("skills-src/opencode/opencode-execute-phase/SKILL.md", "tokens"): 5678,
-    ("skills-src/opencode/opencode-execute-phase/SKILL.md", "long_line"): 1032,
     ("skills-src/opencode/opencode-plan-phase/SKILL.md", "long_line"): 1068,
 }
 

@@ -843,6 +843,7 @@
   {"count": 1, "function": "isolated_network", "module": "sandbox_egress", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "isolated_network", "module": "sandbox_egress", "primitive": "io.read_text", "role": "host-io"},
   {"count": 4, "function": "isolated_network", "module": "sandbox_egress", "primitive": "launch_provider", "role": "host-helper"},
+  {"count": 1, "function": "isolated_network", "module": "sandbox_egress", "primitive": "run_provider", "role": "host-helper"},
   {"count": 2, "function": "isolated_network", "module": "sandbox_egress", "primitive": "subprocess.Popen", "role": "host-helper"},
   {"count": 2, "function": "isolated_network", "module": "sandbox_egress", "primitive": "subprocess.run", "role": "host-helper"},
   {"count": 1, "function": "_free_bytes_at", "module": "sandbox_policy", "primitive": "subprocess.run", "role": "operator-out-of-scope"},

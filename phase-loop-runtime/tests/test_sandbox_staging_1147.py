@@ -971,6 +971,8 @@ class TestRound3Coverage:
 
         cache = tmp_path / "cache"
         monkeypatch.setenv("XDG_CACHE_HOME", str(cache))
+        monkeypatch.delenv("TMPDIR", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_TMPDIR", raising=False)
         _slash_tmp_is_ram(monkeypatch)
         calls = []
         real = panel_invoker.run_provider
@@ -990,6 +992,31 @@ class TestRound3Coverage:
         # the trusted executor role, never a review seat): on the host, scratch relocated.
         assert seen.read_text(encoding="utf-8").splitlines() == [
             str(cache / "phase-loop" / "tmp")] * 2
+
+    def test_the_agent_view_executor_preserves_explicit_caller_scratch(self, tmp_path, monkeypatch):
+        from phase_loop_runtime import panel_invoker
+        from phase_loop_runtime.claude_agent_view import ClaudeAgentViewAdapter
+
+        monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
+        _slash_tmp_is_ram(monkeypatch)
+        expected = [str(tmp_path / "caller-tmp"), str(tmp_path / "caller-claude")]
+        monkeypatch.setenv("TMPDIR", expected[0])
+        monkeypatch.setenv("CLAUDE_CODE_TMPDIR", expected[1])
+        calls = []
+        real = panel_invoker.run_provider
+
+        def _spy(argv, **kwargs):
+            calls.append(kwargs.get("executor"))
+            return real(argv, **kwargs)
+
+        monkeypatch.setattr(panel_invoker, "run_provider", _spy)
+        seen = tmp_path / "seen.txt"
+        result = ClaudeAgentViewAdapter()._runner(
+            _record_scratch_script(seen), cwd=str(tmp_path), text=True,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, check=False,
+        )
+        assert result.returncode == 0 and calls == [True]
+        assert seen.read_text(encoding="utf-8").splitlines() == expected
 
     def test_the_print_executor_route_relocates_at_the_launch(self, tmp_path, monkeypatch):
         from phase_loop_runtime import launcher

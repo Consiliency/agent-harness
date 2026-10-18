@@ -8,6 +8,14 @@ monorepo (Apache-2.0).
 
 ## Install
 
+Version 0.7.27 requires Python 3.12+ (agent-harness#1549). The host-side jail helpers
+remain 3.10-compatible, but a governed-review falsifier node importing the runtime
+under an older host interpreter ends in `error` and remains a blocking receipt.
+All twelve shipped agy members have renewed live qualification on the revised
+source. Exact-candidate package and compatibility checks remain release-cut gates;
+qualification evidence and historical runtime smoke limitations are recorded in the
+[release handoff](https://github.com/Consiliency/agent-harness/blob/main/docs/releases/outside-agent-release-handoff.md).
+
 Most users should use the repo's installer (it also installs the workflow skills):
 
 ```sh
@@ -19,7 +27,7 @@ To install just this runtime package directly:
 
 ```sh
 pip install phase-loop-runtime              # latest compatible release
-pip install phase-loop-runtime==0.7.26      # …or pin an exact version
+pip install phase-loop-runtime==0.7.27      # …or pin an exact version
 ```
 
 To pin a specific tag from source instead, substitute a tag from

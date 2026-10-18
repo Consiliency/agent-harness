@@ -297,6 +297,83 @@ class TestItFailsClosed:
             with sandbox_egress.isolated_network(timeout_s=1.0):
                 pytest.fail("the body must never run unisolated")
 
+    @pytest.mark.parametrize("timeout_s", [None, 120.0])
+    @pytest.mark.parametrize("failure", ["nonzero", "exec", "timeout"])
+    def test_mapped_resolver_setup_refuses_and_cleans_up(self, monkeypatch, timeout_s, failure):
+        import errno
+        import os
+        import subprocess as sp
+        from phase_loop_runtime import panel_invoker, seat_uid
+
+        events, descriptors, workdirs = [], [], []
+        real_pipe = os.pipe
+
+        class _Holder:
+            pid = 12345
+
+            def terminate(self):
+                events.append("terminate")
+
+            def wait(self, **kwargs):
+                events.append("wait")
+
+        def pipe():
+            pair = real_pipe()
+            descriptors.extend(pair)
+            return pair
+
+        def launch(argv, **kwargs):
+            assert panel_invoker._INFRASTRUCTURE_LAUNCH.get()
+            assert panel_invoker._EGRESS_LAUNCH_PREFIX.get() == ()
+            events.append("holder")
+            return _Holder()
+
+        def bind(argv, **kwargs):
+            assert events == ["holder", "namespace", "mapped"]
+            assert panel_invoker._INFRASTRUCTURE_LAUNCH.get()
+            assert panel_invoker._EGRESS_LAUNCH_PREFIX.get() == ()
+            assert [Path(argv[0]).name, *argv[1:8]] == [
+                "nsenter", "--net", "--mount", "-t", "12345", "-U",
+                "--preserve-credentials", sandbox_egress.trusted_host_executable("mount"),
+            ]
+            assert argv[8] == "--bind" and argv[10] == "/etc/resolv.conf"
+            workdirs.append(Path(argv[9]).parent)
+            assert Path(argv[9]).is_file()
+            assert kwargs["check"] and kwargs["timeout"] == 15
+            events.append("bind")
+            if failure == "nonzero":
+                raise sp.CalledProcessError(1, argv)
+            if failure == "exec":
+                raise OSError("nsenter unavailable")
+            raise sp.TimeoutExpired(argv, 15)
+
+        monkeypatch.setattr(sandbox_egress, "egress_isolation_available", lambda: True)
+        monkeypatch.setattr(sandbox_egress, "host_addresses", lambda: ())
+        monkeypatch.setattr(sandbox_egress, "trusted_host_executable", lambda name: "/usr/bin/" + name)
+        monkeypatch.setattr(sandbox_egress, "_wait_for_new_user_namespace",
+                            lambda holder: events.append("namespace"))
+        monkeypatch.setattr(seat_uid, "map_holder", lambda pid: events.append("mapped"))
+        monkeypatch.setattr(panel_invoker, "launch_provider", launch)
+        monkeypatch.setattr(panel_invoker, "run_provider", bind)
+        monkeypatch.setattr(os, "pipe", pipe)
+        monkeypatch.setattr(os, "write", lambda *a: pytest.fail("holder gate released"))
+        token = panel_invoker._EGRESS_LAUNCH_PREFIX.set(("existing-prefix",))
+        try:
+            with pytest.raises(sandbox_egress.EgressUnavailable, match="did not come up"):
+                with sandbox_egress.isolated_network(timeout_s=timeout_s, required=True,
+                                                     seat_uid_map=True):
+                    pytest.fail("resolver setup did not finish")
+            assert panel_invoker._EGRESS_LAUNCH_PREFIX.get() == ("existing-prefix",)
+        finally:
+            panel_invoker._EGRESS_LAUNCH_PREFIX.reset(token)
+        assert events == ["holder", "namespace", "mapped", "bind", "terminate"] + (
+            ["wait"] if timeout_s is None else [])
+        assert workdirs and all(not work.exists() for work in workdirs)
+        for descriptor in descriptors:
+            with pytest.raises(OSError) as closed:
+                os.fstat(descriptor)
+            assert closed.value.errno == errno.EBADF
+
     def test_rules_that_fail_to_install_refuse(self, monkeypatch):
         """Failure three, and the worst: the namespace is up, so everything LOOKS
         isolated while specific denies are missing.
