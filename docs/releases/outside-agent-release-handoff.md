@@ -79,9 +79,8 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
   not a separate gate under that authorization. The separate president agreed to the
   concrete cut, satisfying the owner's conditional tag/publication authorization; all
   pre-tag gates closed before the push. No runtime-panel PASS is claimed.
-  O-A: the mapped-holder resolver repair in agent-harness#1750 does not establish a
-  working jailed runtime panel; with production setuid `newuidmap`, it changed no
-  outcome on the qualification host.
+  O-A: the mapped-holder resolver repair in agent-harness#1750 has not demonstrated
+  a working jailed runtime panel.
 - Runtime installation requires Python 3.12+. The host helper boundary remains
   3.10-compatible, with unconditional pytest backports retained. A governed-review
   falsifier running this repository's runtime-importing node under an older host
@@ -154,7 +153,8 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
   adds generic staging/worktree paths in runtime code and documentation; the sdist also
   adds synthetic home-directory paths and host-name test canaries. These are inherited
   source/documentation examples, not local credentials or a pass store. The earlier candidate's
-  pinned gitleaks scan and source-digest scan passed; required final-cut checks also passed.
+  pinned gitleaks scan and source-digest scan passed; required checks on the cut,
+  including gitleaks, also passed.
 - Python 3.12 cold import: in a fresh Python 3.12.14 environment, the pre-tag
   prepared wheel imported `0.7.27` in isolation and passed `compileall` under
   `-W error`. Actual Python 3.10.21 refused that same wheel for its `>=3.12` floor.
@@ -166,10 +166,10 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
   GOOD for ViperJuice's SSH ED25519 key
   `SHA256:o8JRU4RzNzsZJixYdZMUp2qf7KPH3OZR9+o7EqHJEbo`. GitHub reports
   `verified=false`, `reason=unknown_key`; no GitHub Verified badge is claimed.
-  agent-harness#1547 merged at `cb46ff83`; subsequent agent-harness#1741 and
-  agent-harness#1742 landings and pending agent-harness#1743 are outside this immutable cut.
+  agent-harness#1547 merged at `cb46ff83`; the optional skill splits agent-harness#1741,
+  agent-harness#1742 and agent-harness#1743 are outside this immutable cut.
 - Publication: [trusted-publish run `39105812347`](https://github.com/Consiliency/agent-harness/actions/runs/39105812347),
-  attempt 1, event `push`, branch `v0.7.27`, exact head `12849712c5ba094f611ffa31e2ed815265bb44bc`,
+  attempt 1, event `push`, ref `v0.7.27`, exact head `12849712c5ba094f611ffa31e2ed815265bb44bc`,
   workflow `.github/workflows/publish-pypi.yml`, completed SUCCESS at 2026-10-18T08:47:04Z.
   Build/verify job `117611286246` and trusted-publish job `117632158309` both succeeded;
   publication was not skipped. Source-pin verification (245 pins), tag/version match,
@@ -179,10 +179,11 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 - Publication Gate A: literal `== Gate A PASSED ==`; `13454 passed, 1090 skipped,
   602 deselected, 1 xfailed` in 6535.08s. The executed chronology witness establishes
   `tests/test_outside_agent_conform_evidence.py::test_mutation_definitions_are_frozen_but_not_executed_preimplementation`
-  passed. Quiet logs do not expose the second heavy node's individual outcome; no
-  separate PASS is inferred. No JUnit artifact was produced or required by this workflow.
+  passed. Other individual node outcomes are not exposed by the quiet log; no
+  separate PASS is inferred. No JUnit artifact was uploaded or required by this workflow.
 - Pre-tag gates: main-landing CI `39099176280` and dedicated pre-cut CI `39090869876`
-  succeeded; both heavy cases actually passed in the dedicated run. Full I1
+  succeeded; in the dedicated run, both retained JUnit artifacts (Python 3.12 and
+  Gate A) show the heavy chronology node above executed and passed. Full I1
   `39090871160` passed all 12 cases with 0 skipped. These are retained release-cut results,
   not checks rerun for this post-publication record.
 - [PyPI `0.7.27`](https://pypi.org/project/phase-loop-runtime/0.7.27/): workflow
