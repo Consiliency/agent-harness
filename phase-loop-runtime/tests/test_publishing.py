@@ -92,6 +92,7 @@ def _make_repo(tmp_path: Path) -> Path:
     (repo / "README.md").write_text("fixture\n", encoding="utf-8")
     _git(repo, "add", "README.md")
     _git(repo, "commit", "-m", "fixture base")
+    _git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
     # Move to a safe working branch (not main/protected).
     _git(repo, "checkout", "-b", "feat/p1-test")
     return repo
@@ -703,6 +704,66 @@ def human_gh_auth(monkeypatch):
 
     monkeypatch.setattr(publishing, "_check_gh_auth", lambda: None)
     monkeypatch.setattr(publishing, "_check_publish_origin", lambda _repo: None)
+
+
+def test_human_scope_preflight_preserves_head_and_index_until_scope_corrected(
+    tmp_path, monkeypatch, human_gh_auth
+):
+    from phase_loop_runtime.convergence.broker import live
+
+    repo = _make_repo(tmp_path)
+    _write_and_stage(repo, "earlier.py", "earlier = True\n")
+    _git(repo, "commit", "-m", "earlier companion change")
+    _write_and_stage(repo, "current.py", "current = True\n")
+    before = (_git(repo, "rev-parse", "HEAD").stdout, _git(repo, "write-tree").stdout)
+    plan, verification = _human_publish_artifacts(tmp_path)
+    monkeypatch.setattr(live, "fabpub_capability_active", lambda: True)
+    calls = []
+    monkeypatch.setattr(live, "fabpub_activation_barrier", lambda worktrees: calls.append(worktrees) or {"repositories": [], "leases": []})
+    monkeypatch.setattr(live, "release_barrier_leases", lambda report: None)
+    result = publish_human_invoked_from_worktree(
+        repo, ["current.py"], plan_path=plan, verification_artifact_path=verification,
+    )
+    assert result["reason"] == "publication_scope_precheck_failed"
+    assert result["detail"] == "owned-scope-exceeded:earlier.py"
+    assert not calls
+    assert not (repo / ".git/phase-loop-human-publication-v1").exists()
+    assert (_git(repo, "rev-parse", "HEAD").stdout, _git(repo, "write-tree").stdout) == before
+    result = publish_human_invoked_from_worktree(
+        repo, ["current.py", "earlier.py"], plan_path=plan, verification_artifact_path=verification,
+    )
+    assert result["reason"] == "repository_publication_authority_required"
+    assert len(calls) == 1
+    assert (_git(repo, "rev-parse", "HEAD").stdout, _git(repo, "write-tree").stdout) == before
+
+
+@pytest.mark.parametrize("base", ["missing", "main~1", "feat/p1-test"])
+def test_human_scope_preflight_refuses_unavailable_or_invalid_base(tmp_path, monkeypatch, human_gh_auth, base):
+    from phase_loop_runtime.convergence.broker import live
+    repo = _make_repo(tmp_path)
+    plan, verification = _human_publish_artifacts(tmp_path)
+    monkeypatch.setattr(live, "fabpub_capability_active", lambda: True)
+    monkeypatch.setattr(live, "fabpub_activation_barrier", lambda _: pytest.fail("scope must refuse before authority"))
+    result = publish_human_invoked_from_worktree(repo, ["owned.py"], plan_path=plan, verification_artifact_path=verification, base=base)
+    assert result["reason"] == "publication_scope_precheck_failed"
+
+
+def test_human_scope_preflight_keeps_both_rename_endpoints_and_exact_paths(tmp_path):
+    import os
+    from phase_loop_runtime import publishing
+    repo = _make_repo(tmp_path)
+    (repo / "old").mkdir()
+    unusual = os.fsdecode(b"old/space \r\n\xff.py")
+    _write_and_stage(repo, unusual, "retained\n")
+    _git(repo, "commit", "-m", "base file")
+    _git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    (repo / "new").mkdir()
+    _git(repo, "mv", unusual, "new/destination.py")
+    _git(repo, "commit", "-m", "rename")
+    check = publishing._human_publication_scope_precheck
+    assert check(repo, ["new/"], base="main", branch="feat/p1-test").startswith("owned-scope-exceeded:")
+    assert check(repo, ["new/", unusual], base="main", branch="feat/p1-test") is None
+    assert check(repo, ["new/", "old/"], base="main", branch="feat/p1-test") is None
 
 
 def test_human_publish_requires_plan_and_verification_context(
