@@ -92,6 +92,11 @@ AUTOMATED_PROVIDER_VERBS = frozenset(
 # Exhaustion remains ambiguous, never inferred as no-effect or fabricated as
 # success. No mutation retry or terminal recovery is permitted. ``BrokerService``
 # de-dups on the canonical ``(repo, branch, head_sha)`` triple with idempotent replay recovery.
+# PublishScopeCorrection.v1 is an explicit, separate operation: only a sealed
+# local owned-scope-exceeded refusal can reserve one successor effect key. It
+# preserves the original terminal and exact commit, admits a strict ownership
+# extension, and uses the ordinary generation/provider fences for the successor.
+# Ordinary replay, provider rejection and ambiguous-outcome recovery are unchanged.
 _SUPPORTED_GITHUB_PUBLISH = ProviderCompletionContract(
     verb="publish_committed_branch",
     provider="github",
