@@ -29,6 +29,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   first-invalid-reason fields, plus capped relative timing samples. Group cleanup
   requests remain distinct from exit receipts; admission and HARDEN rules are unchanged.
 
+### Fixed
+
+- The LEGIBLE live transition probe accepts the launcher's optional diagnostic
+  field, preserving typed deferrals instead of raising an unpacking error.
+
+
 ### BREAKING: Python 3.12 is the minimum (agent-harness#1546)
 
 - `phase-loop-runtime` and `consiliency-harness` now declare `requires-python = ">=3.12"`
