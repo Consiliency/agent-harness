@@ -6,6 +6,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- Human publication checks already-committed companion paths before creating a
+  commit. Incomplete ownership now produces a repairable scope-precheck result.
+- Add `PublishScopeCorrection.v1` for an exact sealed local ownership-scope
+  refusal. The supported SDK can bind a corrected ownership superset to the
+  existing commit and one broker-reserved successor, preserving the original
+  terminal and checkpoint. Ordinary replay and ambiguous-outcome recovery retain
+  their existing behavior; see the FABPUB recovery runbook section 8b.
+
 ### OpenCode execute-phase loads interactive procedures on demand (agent-harness#1358)
 
 - Move interactive publication and worktree-pruning procedures into linked references,
