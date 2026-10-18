@@ -151,9 +151,9 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
   adds synthetic home-directory paths and host-name test canaries. These are inherited
   source/documentation examples, not local credentials or a pass store. The earlier candidate's
   pinned gitleaks scan and source-digest scan passed; final-tree checks remain pending.
-- Historical Python 3.12 cold import: in a fresh py3.12 venv, the earlier prepared wheel
-  imported `0.7.27`, and `compileall` succeeded under `-W error`. Repeat against the
-  final candidate wheel; this result predates the revised source.
+- Python 3.12 cold import: in a fresh Python 3.12.14 environment, the current
+  prepared wheel imported `0.7.27` in isolation and passed `compileall` under
+  `-W error`. Actual Python 3.10.21 refused that same wheel for its `>=3.12` floor.
 - Release tracking: agent-harness#1542; the appended plan-authority rows cite it.
 - Tag: not yet created. The signed `v0.7.27` tag push, which publishes to PyPI, is
   maintainer-gated.
@@ -840,18 +840,22 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 ### This release: 0.7.27 (prepared)
 
 The current prepared package was built from a `git archive` export of
-`001190401773b5008b3dde97f8aeaacfd3b51462`, after the latest main integration,
-including agent-harness#1750. Its runtime package tree is
-`970641dbcc46d7d8f5ea72895babfb2426022dd5`. The twelve agy members passed all
-36 qualification operations on that source; current records verify all 245 source
-pins. Package and compatibility verification passed on those exact package bytes.
+`d629809135b9027d0cf320c1c3321e642ef11a34`, after the latest main integration,
+including agent-harness#1750 and the test-only agent-harness#1751. Its runtime package
+tree is `359b899c31b6e08f864a3f28b6e7c7f13742d90d`. The twelve agy members passed all
+36 qualification operations on `001190401773b5008b3dde97f8aeaacfd3b51462`;
+all 245 source pins remain byte-identical in this prepared source and verify against
+the current records. Package and compatibility verification passed on these exact
+package bytes. The wheel payload is unchanged by agent-harness#1751; the sdist
+changes only its three test files.
 Earlier successful batches and the retained staging failure remain historical
 evidence, separate from this complete current-source batch.
 
-- Prepared direct wheel: SHA-256 `84afbb8eee1363e5871de7eddd7ad01465e1bd9057237263f3fc8b6841b23a04`, 520 regular files.
-- Prepared sdist: SHA-256 `89a100519f05d76c13dd205c234b14a94a9aea4a67a69edf1bc3e83ed4a52992`, 1152 regular files.
-- The sdist-derived wheel has identical member payloads, names and modes. This
-  prepared build also has identical archive bytes; no later rebuild identity is promised.
+- Prepared direct wheel: SHA-256 `06b5cda8df729d40f21d0ffed68fa7ee46cd839e771a732ffd1a0491c2524b19`, 520 regular files.
+- Prepared sdist: SHA-256 `4252e9efc3956506561a47635ad687258f3d17dfa68349b2db3cf531358ee4ad`, 1152 regular files.
+- The sdist-derived wheel, SHA-256 `b445ea08c2bd102b808c26b13b78290c7aecf80c2d2feac28fada8da7e0726b5`,
+  has identical member payloads, names, modes and RECORD. Its archive bytes differ
+  in four generated dist-info members' ZIP timestamps; no rebuild identity is promised.
 - A fresh Python 3.12.14 install imports the installed package in isolation and
   passes warnings-as-errors compilation. Real Python 3.10.21 refuses the same wheel.
   The runtime floor is `>=3.12`; dependency and entry-point metadata remain unchanged
@@ -1145,8 +1149,8 @@ this metadata document.
 
 ## Package Surface Inventory
 
-Measured on the current prepared `0.7.27` package from `00119040` described above,
-after agent-harness#1750.
+Measured on the current prepared `0.7.27` package from `d6298091` described above,
+after agent-harness#1750 and the test-only agent-harness#1751.
 The historical build's separate counts remain in its preparation record.
 
 - Wheel artifact: `phase_loop_runtime-0.7.27-py3-none-any.whl`
