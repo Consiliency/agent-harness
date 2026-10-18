@@ -115,7 +115,7 @@ def test_suite_guard_supports_a_disabled_cache_provider(tmp_path):
     result = subprocess.run(
         [sys.executable, '-m', 'pytest', '-q', '-p', 'no:cacheprovider',
          str(Path(__file__)) + '::test_provider_detection_accepts_known_names_and_content_hashes'],
-        env=env, capture_output=True, text=True,
+        cwd=tmp_path, env=env, capture_output=True, text=True,
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert '1 passed' in result.stdout
