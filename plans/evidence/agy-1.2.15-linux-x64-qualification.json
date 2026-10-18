@@ -50,12 +50,12 @@
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
       "profile_sha256": "35d0644ff287917ef801582667c9b5c2fc979d5c3074c68ba4ea6bf7edd9084d",
-      "raw_receipt_sha256": "da1cb2ef144fc75a91bf5180857ba8bbe8bf8b031f517599014f2925c09d2ed7",
+      "raw_receipt_sha256": "693f145f42b1b3598a0e5a9c58bcb6e36beb326df3618366e24ef8f93394389a",
       "record_sha256": {
-        "broker": "fdb47343c4cd264ea4c23b135fb71bd092855a6cf99c73bd65d8eef78750fcb7",
-        "monitoring": "edaaa6235a6fa52b0ded072fb9b2eba9332b7fdbdf95734f81132da70590e6e7",
-        "observer": "b344a20596e2e2a11f7f9f254512054c42d658d1ea0aacc92b5fa0b597c033d0",
-        "result": "4b08102d0ffb7c033ba70700bd823f0d95074e9903b433ea6a3438fcb4a29cfa"
+        "broker": "4b3d77ed9608aba0bf40997606a85a367b27b32acc8ad892f56e4c2992761ed3",
+        "monitoring": "63ac0b250892b8a797c2f7de15c9f3913309ac1e268f83156766f4048d411f9f",
+        "observer": "3aba41b0ec42f8281b95dc4f057ea729cc309c69445b2d95a098df6867dbefb9",
+        "result": "78374503bf1eb1208fb28d527c945013aec4844cb7c6dee77ecddcb28d7980d6"
       },
       "request_digests": {
         "artifact_sha256": "125bbbd021794e015483823d7231c3e9fca0715222d0617278d134f8a065a3b5",
@@ -111,11 +111,11 @@
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
       "profile_sha256": "35d0644ff287917ef801582667c9b5c2fc979d5c3074c68ba4ea6bf7edd9084d",
-      "raw_receipt_sha256": "59a6d93aae73ab77fa290197b47b20355d0c81e60075381c99a0158619495854",
+      "raw_receipt_sha256": "82df211bfba4004046b65dcb3ed5e493487c17401a33a4000e63d999fba5d4fe",
       "record_sha256": {
-        "broker": "628321827445ee757666ac1a320d541a2d7c051a8fd70d7326b00e1ab7fde7ab",
-        "monitoring": "b5c0acec4d88ec42e9e1ac1a28c9b69bc6214efdc2bf0c48e0cf72fc3c34fb97",
-        "observer": "095d164a7a8cb463ff456a0d725383a9dced445a7d2642d942506d305cd80431",
+        "broker": "c5339592727610c64949ed66a15282a8d42dc1cf4ab992ead3bee8c7cd2e19db",
+        "monitoring": "971b3500041bef226cd0c1d534a8ed27783c17e0d135ac14afc9769c5a38125a",
+        "observer": "deacdc466549c86e751033778cc11bec83e0327824c4eaf1e41b287f253f6a5f",
         "result": "38ccc6031e6520bae3694528da32ba0af366bb3cc8843dd7354bd3d71431c448"
       },
       "request_digests": {
@@ -172,11 +172,11 @@
         "settings_sha256": "5cb57385b5d96a89f2ca6c050b4178985c1566ca7643605b903d3ccfedf2ac76"
       },
       "profile_sha256": "35d0644ff287917ef801582667c9b5c2fc979d5c3074c68ba4ea6bf7edd9084d",
-      "raw_receipt_sha256": "0a3d98b5969f352fcded0f781d11e6f78c31db9a3744a2fef97c1b30f97aee14",
+      "raw_receipt_sha256": "da1f97dd6d29afa28d40b8d3791386f159dc1bb39d8e8e409edbce5ab3a18dda",
       "record_sha256": {
         "broker": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b",
-        "monitoring": "5d826a2393aa52b16237572a6c501092615d763da01462af54b82faf24430612",
-        "observer": "64686c1345cd1c0d0780e2cc99376710f04836306772a719116cc43efab7fb84",
+        "monitoring": "5783fbda9f701b97293325bd38e0207f2b484bdbe93b2e45003f9d3ebca18c29",
+        "observer": "2d8fd90bea3901fe682cf9e8a3728c85c8417d19461a22ac0be97062c16bf881",
         "result": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
       },
       "request_digests": {
@@ -327,7 +327,7 @@
     "launcher.py": "0fcb8dd03f74c089b6cdfbf5856f3cd51b798406fdd09fde3eda2efa11bd9e6c",
     "lease_store.py": "49bd83b910cba984a38abab030d516070fb24cc6f74a308ad6e0ccad40e32666",
     "lease_supervisor.py": "69f8d460f43ca765a3c8298d805ce3517caba89a678cdf647ba74b5f365011d4",
-    "legible_evidence.py": "30fee3483fdc76cd02d024828af90d9bdea0520e59111ab669a1d99d675ba4e4",
+    "legible_evidence.py": "1228bf1db0fcae4b31cba8997769a5f1e09e51300d9469de8ce7bae1d19ce6b5",
     "maintenance.py": "dbb3fe97c24d15303d74fed7727b781f3ae437e48218792662aaa6730bff96e7",
     "migrate_handoffs.py": "92ca4121e4376a6452b1b259fdca8a4c4d6549641247c8e12a993c9cda99fcc9",
     "models.py": "e9ea7b1d68cacace8e17a1a645afdb2fe2ccee0f53c09e0490ece458fd6e5d40",
