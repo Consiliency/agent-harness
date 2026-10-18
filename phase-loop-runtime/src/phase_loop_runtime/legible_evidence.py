@@ -856,7 +856,7 @@ def _invoke_reviewtruth_fable_adapter(subject: Mapping[str, Any], *, repo: Path 
         # while the subscription route itself succeeds.
         marker_env = dict(env)
         marker_env["CLAUDECODE"] = "1"
-        marker_status, marker_text = panel_invoker._default_spawn(
+        marker_result = panel_invoker._default_spawn(
             "claude",
             _REVIEWTRUTH_PROBE_ARTIFACT,
             repo_dir=repo,
@@ -866,6 +866,7 @@ def _invoke_reviewtruth_fable_adapter(subject: Mapping[str, Any], *, repo: Path 
             review_authorization=authorization,
             canonical_repo_authority=repo,
         )
+        marker_status, marker_text = marker_result[0], marker_result[1]
         if marker_status == "UNAVAILABLE" and str(marker_text).strip() == panel_invoker._CLAUDE_LEG_DEFERRED_UNDER_CLAUDE_CODE:
             # REVIEWTRUTH early slice (D5): the routing in force defers the claude seat to a
             # driving Claude Code session. A non-native host cannot bind a native fill, so the
