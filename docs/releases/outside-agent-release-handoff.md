@@ -10,7 +10,7 @@ or make production merge enforcement live.
 - Package: `phase-loop-runtime`
 - Version: `0.7.27`
 - Runtime `phase_loop_runtime.__version__`: `0.7.27`
-- Version pin prepared for downstream pinning: `phase-loop-runtime==0.7.27`
+- Published version pin available for downstream pinning: `phase-loop-runtime==0.7.27`
 - Console scripts: `phase-loop`, `codex-phase-loop`, `phase-loop-closeout-audit`, `roadmap-ownership`
 
 ## Validator Identity
@@ -48,7 +48,7 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 
 ## Release-Check Evidence
 
-- `publication_status=prepared`
+- `publication_status=published`
 - **Revised candidate, live agy qualification renewed after agent-harness#1750.** The integrated 0.7.27 includes
   agent-harness#1738 (linked skill references; plan agent-harness#1690), the
   skills-parity size gate from agent-harness#1691, and the breaking Python 3.12+
@@ -63,21 +63,25 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
   Earlier staging failures occurred before provider invocation and remain failed
   and retained, along with their diagnosed operational corrections. Those failures
   are not part of the current 36 successes.
-  Final board/president review must assess that complete history.
+  Final board/president review assessed that complete history and approved the cut.
 - Revised package builds, Python 3.12 compatibility, cold-wheel import/compile
-  and actual Python 3.10 installation refusal passed for the current prepared
+  and actual Python 3.10 installation refusal passed for the pre-tag prepared
   artifacts identified under "This release: 0.7.27" below. Later record and
-  documentation updates preserve the complete runtime package tree. Full I1,
-  exact-candidate CI and final review remain release-cut gates; earlier package
-  measurements are explicitly labeled historical.
+  documentation updates preserved the complete runtime package tree. Full I1,
+  exact-candidate CI and final review closed before the tag push; earlier package
+  measurements remain explicitly labeled historical.
 - Historical real-CLI smoke attempts include failures/degraded results and do not
   establish a successful tools-enabled four-CLI runtime panel. Runtime-owned panel
   behavior remains unverified. The owner has authorized a temporary T3 delegated
   cross-vendor release board with a separate president; that review is distinct from
   product verification and cannot relabel historical runtime failures as PASS.
   Requiring the unavailable runtime panel transport to approve its own release is
-  not a separate gate under that authorization. Final board/president review and
-  explicit owner approval of the concrete verified tag/publication cut remain pending.
+  not a separate gate under that authorization. The separate president agreed to the
+  concrete cut, satisfying the owner's conditional tag/publication authorization; all
+  pre-tag gates closed before the push. No runtime-panel PASS is claimed.
+  O-A: the mapped-holder resolver repair in agent-harness#1750 does not establish a
+  working jailed runtime panel; with production setuid `newuidmap`, it changed no
+  outcome on the qualification host.
 - Runtime installation requires Python 3.12+. The host helper boundary remains
   3.10-compatible, with unconditional pytest backports retained. A governed-review
   falsifier running this repository's runtime-importing node under an older host
@@ -150,13 +154,41 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
   adds generic staging/worktree paths in runtime code and documentation; the sdist also
   adds synthetic home-directory paths and host-name test canaries. These are inherited
   source/documentation examples, not local credentials or a pass store. The earlier candidate's
-  pinned gitleaks scan and source-digest scan passed; final-tree checks remain pending.
-- Python 3.12 cold import: in a fresh Python 3.12.14 environment, the current
+  pinned gitleaks scan and source-digest scan passed; required final-cut checks also passed.
+- Python 3.12 cold import: in a fresh Python 3.12.14 environment, the pre-tag
   prepared wheel imported `0.7.27` in isolation and passed `compileall` under
   `-W error`. Actual Python 3.10.21 refused that same wheel for its `>=3.12` floor.
 - Release tracking: agent-harness#1542; the appended plan-authority rows cite it.
-- Tag: not yet created. The signed `v0.7.27` tag push, which publishes to PyPI, is
-  maintainer-gated.
+- Tag: signed `v0.7.27`, object `bc41b3d9990b850ef0a9322d89a9416993888dc7`, created
+  2026-10-18T06:56:02Z → approved cut `12849712c5ba094f611ffa31e2ed815265bb44bc`
+  (root tree `dfc27b9a163aa53905b61fd869c3e7fccb9f1d83`, runtime package tree
+  `359b899c31b6e08f864a3f28b6e7c7f13742d90d`). Local cryptographic verification was
+  GOOD for ViperJuice's SSH ED25519 key
+  `SHA256:o8JRU4RzNzsZJixYdZMUp2qf7KPH3OZR9+o7EqHJEbo`. GitHub reports
+  `verified=false`, `reason=unknown_key`; no GitHub Verified badge is claimed.
+  agent-harness#1547 merged at `cb46ff83`; subsequent agent-harness#1741 and
+  agent-harness#1742 landings and pending agent-harness#1743 are outside this immutable cut.
+- Publication: [trusted-publish run `39105812347`](https://github.com/Consiliency/agent-harness/actions/runs/39105812347),
+  attempt 1, event `push`, branch `v0.7.27`, exact head `12849712c5ba094f611ffa31e2ed815265bb44bc`,
+  workflow `.github/workflows/publish-pypi.yml`, completed SUCCESS at 2026-10-18T08:47:04Z.
+  Build/verify job `117611286246` and trusted-publish job `117632158309` both succeeded;
+  publication was not skipped. Source-pin verification (245 pins), tag/version match,
+  build, standalone-wheel verification, checksum upload/download and trusted publishing
+  succeeded. [Tag-consistency run `39105812323`](https://github.com/Consiliency/agent-harness/actions/runs/39105812323)
+  also succeeded on the same push, head and tag.
+- Publication Gate A: literal `== Gate A PASSED ==`; `13454 passed, 1090 skipped,
+  602 deselected, 1 xfailed` in 6535.08s. The executed chronology witness establishes
+  `tests/test_outside_agent_conform_evidence.py::test_mutation_definitions_are_frozen_but_not_executed_preimplementation`
+  passed. Quiet logs do not expose the second heavy node's individual outcome; no
+  separate PASS is inferred. No JUnit artifact was produced or required by this workflow.
+- Pre-tag gates: main-landing CI `39099176280` and dedicated pre-cut CI `39090869876`
+  succeeded; both heavy cases actually passed in the dedicated run. Full I1
+  `39090871160` passed all 12 cases with 0 skipped. These are retained release-cut results,
+  not checks rerun for this post-publication record.
+- [PyPI `0.7.27`](https://pypi.org/project/phase-loop-runtime/0.7.27/): workflow
+  `release/SHA256SUMS`, version-specific PyPI metadata and independently downloaded
+  `files.pythonhosted.org` bytes match the published tuples below. Metadata confirms
+  `Requires-Python: >=3.12`. This records PyPI/tag publication; no GitHub Release is claimed.
 
 ### Previous release: 0.7.26 (published)
 
@@ -837,9 +869,24 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
 
 ## Sealed Implementation Evidence
 
-### This release: 0.7.27 (prepared)
+### This release: 0.7.27 (published)
 
-The current prepared package was built from a `git archive` export of
+The published digests are the `release/SHA256SUMS` tuples from trusted-publish workflow
+`39105812347`, built from tagged commit `12849712c5ba094f611ffa31e2ed815265bb44bc`.
+Both PyPI's version metadata and independently downloaded distribution bytes match:
+
+- Published direct-wheel: `phase_loop_runtime-0.7.27-py3-none-any.whl`, SHA-256
+  `f4a8fe247f085c90a59904e6554da3a3c3489e0b4e15d3eeef0735f284223592`, 2998371 bytes.
+- Published direct-sdist: `phase_loop_runtime-0.7.27.tar.gz`, SHA-256
+  `9e0fc6e0e3ff2d9aa99bb1b32d1e8e36541817ed199c349c37931775f7734331`, 5492091 bytes.
+
+The prepared archive hashes below differ from the published hashes. No member-by-member
+prepared/published comparison is claimed; archive hash differences alone establish no
+content equivalence. Recording these checksums after publication is not a release gate.
+
+#### Pre-tag preparation (historical)
+
+The prepared package was built from a `git archive` export of
 `d629809135b9027d0cf320c1c3321e642ef11a34`, after the latest main integration,
 including agent-harness#1750 and the test-only agent-harness#1751. Its runtime package
 tree is `359b899c31b6e08f864a3f28b6e7c7f13742d90d`. The twelve agy members passed all
@@ -861,11 +908,10 @@ evidence, separate from this complete current-source batch.
   The runtime floor is `>=3.12`; dependency and entry-point metadata remain unchanged
   from hash-verified published 0.7.26.
 
-These are prepared measurements, not promised publication hashes. The publishing
-workflow rebuilds from the owner-approved tag. Final candidate CI, full I1 and
-release review remain required; historical real-CLI smoke failures are not passed
-by these offline checks. Later outside-package record and documentation updates
-may carry these measurements only after package-byte identity is verified.
+These remain preparation measurements, not published hashes. The publishing
+workflow rebuilt from the owner-approved tag; final candidate CI, full I1 and
+release review subsequently closed. Historical real-CLI smoke failures are not passed
+by these offline checks. The published tuples above bind the actual distributions.
 
 #### Earlier preparation
 
@@ -873,7 +919,7 @@ may carry these measurements only after package-byte identity is verified.
 metadata comparison and cold-wheel results predate agent-harness#1738 and
 agent-harness#1549. They are retained as measurements of the named earlier source,
 not as final candidate evidence. The revised runtime floor is Python 3.12+;
-use the current prepared measurements above for that floor.
+use the later prepared measurements above for that floor.
 
 The digests below are from a pre-tag `uv build` of a `git archive` export of
 `727c5330c`, under `umask 022` (archive modes are umask-dependent,
@@ -1149,9 +1195,10 @@ this metadata document.
 
 ## Package Surface Inventory
 
-Measured on the current prepared `0.7.27` package from `d6298091` described above,
+Measured on the pre-tag prepared `0.7.27` package from `d6298091` described above,
 after agent-harness#1750 and the test-only agent-harness#1751.
-The historical build's separate counts remain in its preparation record.
+These counts were not remeasured on the published distributions.
+The earlier build's separate counts remain in its preparation record.
 
 - Wheel artifact: `phase_loop_runtime-0.7.27-py3-none-any.whl`
 - Sdist artifact: `phase_loop_runtime-0.7.27.tar.gz`
@@ -1164,10 +1211,11 @@ The historical build's separate counts remain in its preparation record.
 
 ## Governed-Pipeline Pinning
 
-`0.7.26` is published (PyPI, trusted-publish workflow `37969872285`), so governed-pipeline
-may consume it as an authoritative validator by pinning `phase-loop-runtime==0.7.26`. Once
-`0.7.27` is published (tag push → PyPI; this document records it as `prepared` until then),
-the pin may move to `phase-loop-runtime==0.7.27`. In either case, call:
+`0.7.27` is published on PyPI by trusted-publish workflow `39105812347`, with the
+verified distribution tuples above. Governed-pipeline may now pin
+`phase-loop-runtime==0.7.27` as an authoritative validator, using Python 3.12+.
+Downstream adoption and production enforcement remain maintainer-owned and are not
+claimed by this record. Call:
 
 ```bash
 phase-loop outside-agent-validate path/to/outside-agent-submission.json \
@@ -1228,6 +1276,10 @@ merge verdict.
 
 ## Maintainer Dispatch Boundary
 
+- For `0.7.27`: the owner-authorized signed tag push triggered trusted-publish workflow
+  `39105812347`, which succeeded after the president agreed and the pre-tag gates closed.
+  This later documentation commit records publication; it creates no new release cut and
+  does not retarget `v0.7.27`.
 - For `0.7.21`: the package was not published from this handoff; trusted workflow
   `36524847790` published it from the signed `v0.7.21` tag (verified tag object
   `94e6955a2a91e6120801967b7b6947ad93ede6f0`, signed with the maintainer's key).
