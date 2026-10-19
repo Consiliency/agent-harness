@@ -275,6 +275,37 @@ def test_generation_mismatch_no_execute(pipeline):
     assert not backend._committed
 
 
+@pytest.mark.parametrize('receipt_kind', ['foreign', 'subclass', 'digest'])
+def test_stage_receipt_must_be_exact_binding(pipeline, receipt_kind):
+    backend, endpoint, stage, _, place, leases, *_ = pipeline
+
+    class LyingReceipt:
+        def __ne__(self, other):
+            return False
+
+    class BindingSubclass(ob.StageBinding):
+        def __ne__(self, other):
+            return False
+
+    original = stage.commit
+
+    async def commit(binding, bundle, bound):
+        await original(binding, bundle, bound)
+        if receipt_kind == 'digest':
+            return replace(binding, source_sha256='0' * 64)
+        receipt = (LyingReceipt() if receipt_kind == 'foreign' else
+                   BindingSubclass(**vars(binding)))
+        if receipt_kind == 'foreign':
+            receipt.generation = binding.generation
+            receipt.source_sha256 = binding.source_sha256
+        return receipt
+
+    stage.commit = commit
+    assert place().outcome == 'not_run'
+    assert not backend._committed and 'exec' not in endpoint.calls
+    assert backend._session.lease._entry['sandbox_ref'] == model.GEN
+
+
 @pytest.mark.parametrize('failure', ['lost', 'corrupt', 'native_bad', 'native_refuse'])
 def test_untrusted_or_lost_result_refused_no_replay(pipeline, failure):
     backend, endpoint, _, worker, place, leases, *_ = pipeline

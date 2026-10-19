@@ -154,44 +154,73 @@ Source tests authorize no activation, deployment, or live workload.
 
 ## Reproduce the bounded generated-binding qualification
 
-Use a Python 3.13.15 interpreter with the repository test dependencies installed.
-The r13 run used grpcio-tools **1.84.0**, grpcio **1.84.0**, protobuf **7.36.2**,
-setuptools **84.0.0** and typing-extensions **4.16.0**, installed only in scratch.
-The generator distribution requires protobuf `>=7.35.1,<8.0.0` and grpcio
-`>=1.84.0`; its generated Python code validates protobuf 7.35.1 compatibility at
-import. These versions were resolved and imported successfully, not inferred from
-a proposed version number. They are qualification dependencies, not new runtime
-package requirements.
+The explicit CI-ready entrypoint uses the frozen
+[`scripts/openshell-sdk-manifest.json`](scripts/openshell-sdk-manifest.json).
+It verifies all 11 proto inputs, bundled generator inputs, 23 generated outputs,
+and five approved wheel artifacts. Wheel pins were checked against PyPI release
+metadata and freshly downloaded content; installation uses `--require-hashes`,
+`--no-index` and only those wheels. Versions have one authority in the manifest.
 
-From `phase-loop-runtime`, set `PYTHON` to that interpreter and `SERVER` to the
-read-only pinned OpenShell checkout. This recipe writes only to a new private
-scratch directory. Keep it and its hash manifests with the qualification evidence;
-do not commit generated modules. No shared cache copy is needed.
+Use the manifest's interpreter/platform with repository test dependencies already
+installed, plus `git`, `uv` and `openssl`, and PyPI content reachability for the
+pinned wheel downloads. From a clean committed `phase-loop-runtime` checkout:
+
+Use a dedicated clean qualification worktree: the whole `phase-loop-runtime` tree
+must contain no changed, untracked or ignored files, including root modules,
+pytest configuration, in-tree virtual environments and `__pycache__` directories
+and standalone sourceless `.pyc` modules. Global Git ignores and `info/exclude`
+do not exempt files. The recipe checks at startup, after generation before pytest,
+and at completion; it refuses without deleting files. Keep local environments and
+qualification output outside the runtime tree; use an external environment. The
+recipe never deletes user files to make a checkout qualify.
 
 ```sh
-set -eu
-: "${PYTHON:?set the test interpreter}" "${SERVER:?set the pinned server checkout}"
-test "$(git -C "$SERVER" rev-parse HEAD)" = d16558327be26766f57882b081c7de2333505909
-test -z "$(git -C "$SERVER" status --porcelain)"
-QUAL_SCRATCH=$(mktemp -d /tmp/openshell-sdk-XXXXXXXX)
-mkdir "$QUAL_SCRATCH/generated"
-uv pip install --no-cache --link-mode=copy --python "$PYTHON" \
-  --target "$QUAL_SCRATCH/deps" grpcio-tools==1.84.0 grpcio==1.84.0 \
-  protobuf==7.36.2 setuptools==84.0.0 typing-extensions==4.16.0
-export PYTHONDONTWRITEBYTECODE=1
-export PYTHONPATH="$QUAL_SCRATCH/deps:$PWD/src:$PWD/tests"
-"$PYTHON" -m grpc_tools.protoc --version
-"$PYTHON" -m grpc_tools.protoc -I "$SERVER/proto" \
-  --python_out="$QUAL_SCRATCH/generated" \
-  --grpc_python_out="$QUAL_SCRATCH/generated" \
-  --descriptor_set_out="$QUAL_SCRATCH/generated/openshell.desc" --include_imports \
-  "$SERVER"/proto/*.proto
-(cd "$SERVER/proto" && sha256sum *.proto) > "$QUAL_SCRATCH/proto.sha256"
-(cd "$QUAL_SCRATCH/generated" && sha256sum *.py *.desc) > "$QUAL_SCRATCH/generated.sha256"
-export OPENSHELL_GENERATED_DIR="$QUAL_SCRATCH/generated"
-"$PYTHON" -m pytest -q -p no:cacheprovider \
-  tests/test_openshell_transport.py tests/test_openshell_transport_grpc.py
+"$PYTHON" -I -B scripts/qualify_openshell_sdk.py \
+  --server "$SERVER" --work "$NEW_PRIVATE_QUALIFICATION_DIRECTORY"
 ```
+
+The work directory must not exist. The command reads the immutable server commit's
+Git objects, so a separate evolving server checkout need not be reset or changed.
+It writes only its new private directory, installs dependencies into that directory,
+and disables bytecode writes and pytest result caches. Allow about 100 MiB. Missing prerequisites,
+input/output hash mismatches, skipped/xfail/xpass tests, or a failed narrow test run refuse
+qualification. `qualification-receipt.json` is written only after success, recording
+the actual clean harness commit/tree, interpreter and uv versions, computed input,
+installed payload and output hashes, test counts/outcome, bounds and completion time.
+Generator and pytest startup exclude the caller's working directory and Python
+environment injection; pytest loads only explicitly selected external plugins.
+Pytest uses the tracked `pyproject.toml` explicitly, fixes its root to the runtime
+tree and limits conftest discovery to `tests`. Importlib mode avoids adding test
+package ancestors to `sys.path`; runtime-root and ancestor config/conftest files
+are not discovered. The existing test helpers remain on explicit import paths.
+Installed payload bytes are checked against the verified wheels immediately after
+installation and again before pytest. The complete installed file set and bytes
+are also captured after installation and must match before pytest; only named
+installer metadata and the known protoc launcher may supplement wheel payloads.
+Unexpected entries and symlinks refuse qualification. The receipt includes both
+wheel-derived payload hashes and the complete installed-tree hashes.
+Each generator/test child uses a separate freshly allocated bytecode-cache prefix,
+so existing source caches and predictable work-directory caches are not reused. Git, uv, protoc, download and pytest bounds are centralized in the
+recipe's `TIMEOUTS` configuration. The interpreter and its installed test dependencies
+remain trusted caller prerequisites, along with PATH tools and committed source.
+Git index flags (including skip-worktree and assume-unchanged), configuration and
+repository metadata are trusted; status checks do not defend against their manipulation.
+This is not a fully hermetic environment or protection against concurrent mutation
+of the checkout, private work directory or trusted interpreter. The ignored-file
+refusal covers the entire runtime tree at all three checkpoints. Interpreter/venv
+site files (including `.pth` files) and PATH tools remain trusted; this does not
+protect against arbitrary concurrent same-user modification.
+The narrow run includes transport, local gRPC and subprocess TLS channel tests. The opt-in
+`_openshell_qualification` pytest plugin also rejects missing/mismatched SDK bytes,
+extra entries and symlinked SDK files/directories before collection;
+ordinary optional developer runs retain their skip behavior.
+Main CI workflow integration remains outstanding; ordinary CI is not qualification.
+
+These pins support the **existing reviewed wire** only. They do not supply bindings
+for new server RPCs. After new wire review, regenerate and review the input/output
+manifest together. Byte hash enforcement establishes identity, not cross-platform
+reproducibility or live proof; a fresh generation matching retained r13 output is
+bounded evidence for this interpreter/generator/platform only.
 
 With the environment variable set, missing or incompatible generated modules fail
 rather than silently falling back. Without it, generated cases explicitly skip;
@@ -257,9 +286,10 @@ existing user/repository overrides. End-to-end bounded reaping with an actual
 server remains unqualified. No full ExecutingBackend, physical barrier,
 credential path or worker refusal qualification follows from these tests.
 
-R14 N1 (recorded digests not checked by the generation recipe), N2 (version-pinned
-but not wheel-hash-pinned dependencies), and N3 (future production channel factory
-retries-off/receive-limit qualification) remain open. The r13 generated scratch
+R14 N1 (recorded digests not checked by the generation recipe) and N2 (version-pinned
+but not wheel-hash-pinned dependencies) remain open. N3 has an implementation in
+the unregistered factory below, but shutdown verification remains incomplete.
+Arbitrary injected stubs retain N3. The r13 generated scratch
 is reused read-only for tests; no new generator or supply-chain qualification is
 claimed. R12-L3 raw exception chains and r10 L3–L6 above remain open.
 
@@ -426,8 +456,9 @@ a `Prepared` and `PlacementRequest` with that bundle's digest, resolved caps,
 trusted task/test IDs and login snapshot reader, a NEW private quarantine path,
 and authenticated stub/bindings on an externally owned dedicated running loop.
 The model tests substitute an in-process endpoint, not a channel or actual RPC.
-The reviewed channel branch is not imported or merged here; SDK repair r53 is
-not a dependency. Channel lifetime must surround backend and recovery use.
+The reviewed channel and SDK qualification line is now merged alongside this model.
+The backend does not construct a channel or integrate a stage RPC. Channel lifetime
+must surround backend and recovery use.
 
 Injected interfaces, unavailable in production here:
 
@@ -451,7 +482,7 @@ Injected interfaces, unavailable in production here:
 
 Binding happens once before admission. Admission journal-marks CREATE before
 sending it, then polls readiness without a pre-CREATE STATUS. Commit is attempted
-once, checks all StageBinding fields and confirms the original generation without
+once, requires the exact StageBinding type, checks all its fields and confirms the original generation without
 replacing it. Late returns after cancellation or lost ownership are discarded.
 Seal runs once, binds a fresh nonce to the generation/source/task/image/limits,
 and requires a finite subscription token lasting the workload. The backend
@@ -497,3 +528,84 @@ logging/zeroization, bounded production channel shutdown, terminal-create/orphan
 and store-loss reconciliation, PostgreSQL restart/multi-replica and bypass/physical
 falsifiers, contract-floor verification and live acceptance. No local model result
 waives these blockers or qualifies the separately active server lane.
+
+## Authenticated channel boundary (r23 recovered in r27, unregistered)
+
+`openshell_channel.authenticated_channel(ChannelConfig(...), generated_service)`
+is an async context manager yielding a scoped stub for `LeaseSession` or the
+cleanup bridge. Nothing constructs it at a launch site or registers a backend.
+It implements only the pinned SDK's direct HTTPS plus OIDC bearer pattern
+(`crates/openshell-sdk/src/{transport,auth}.rs`). It omits the SDK's anonymous,
+plaintext, insecure-verification and edge-tunnel branches. No auth policy is
+inferred from owner text. The Rust cancellation ingress authorizes the workspace,
+binds the authenticated principal to the owner and requires existing enrollment;
+ENROLL separately requires admin access and an empty dedicated workspace. This
+factory never enrolls, acquires tokens, decodes claims or proves enrollment.
+Enrollment is permanent: changing the authenticated principal cannot adopt an
+old owner by reusing its text identifier. Issuer trust and rotation policy remain
+the caller/server's responsibility, not a consequence of TLS readiness.
+
+Supply explicit CA PEM bytes and a bearer token in memory, a canonical HTTPS
+endpoint, workspace and the current `placement_lease.owner_id()`. Both secrets
+are excluded from config repr. Empty/malformed trust, credentials, endpoint,
+scope or limits refuse before channel construction. No system-root fallback,
+TLS name override, arbitrary options, interceptor or ambient HTTP proxy is used.
+The endpoint hostname is the TLS identity. TLS readiness is not bearer acceptance:
+only server RPC authorization establishes principal/workspace/enrollment validity.
+The scoped stub checks current local owner, request workspace/owner, PID, running
+loop and finite positive RPC timeout before dispatch. It does not inspect worker
+payloads, establish membership, or substitute for server authorization.
+
+The immutable config has no operational defaults. Resolve settings once through
+`load_placement_driver_settings`, preserving packaged defaults, user/repository
+overrides, environment aliases and `review_base=True` for trusted-base reviews;
+pass the applicable remaining connection allowance explicitly. Do not copy the
+SDK's connect/keepalive constants. Harness currently has **no authoritative
+OpenShell receive-limit, endpoint, CA or token setting**. These remain required
+injected inputs; this increment adds no settings key, credential discovery or
+default trust policy. The receive limit is a positive signed-32-bit byte count,
+not an output cap, and must be budgeted by the eventual caller. Generated modules
+are still explicitly supplied and their provenance remains the caller's obligation.
+
+The factory implements R14 N3's required options: retries are disabled,
+resolver service config is disabled, no retry service config is supplied, and a
+finite per-message receive limit is always passed. Tests assert the exact option
+set, refuse option injection, exercise one handler entry on RPC failures even
+with an adversarial retry policy, and require RESOURCE_EXHAUSTED for an oversized
+message. Mutating retries on makes the policy test observe repeated calls;
+mutating the receive limit to unlimited defeats the oversized-message test.
+Synthetic loopback TLS tests
+require the supplied CA, matching DNS name and bearer delivery; wrong roots,
+wrong hostname and plaintext cannot yield a stub. A rejected bearer fails the
+RPC even after TLS readiness. These do not qualify a deployed
+channel, real issuer or the Rust server. Existing arbitrary injected stubs retain
+their caller-owned channel obligations.
+
+Construction and use belong to one running asyncio loop. Connection readiness is
+bounded by the supplied timeout and outer cancellation. Context exit cancels
+outstanding RPCs immediately (no graceful drain), closes the channel and refuses
+further calls. Keep the loop alive through exit; a synchronous cleanup bridge must
+run outside it and finish before exit. This supplies no dedicated CLI loop/thread
+manager or end-to-end latency bound under loop starvation. Reconnection uses the
+same verified TLS credentials; application RPC retries remain disabled. Credentials
+are a fixed snapshot: expiry/rotation requires closing and reconstructing with
+explicit new inputs, with no replay or automatic enrollment. Python/gRPC memory
+zeroization, token lifetime qualification and logging remain open.
+
+The r27 local runs encountered intermittent stalls inside gRPC 1.84.0's
+synthetic TLS server shutdown. The r35 recovery reproduced the stall with zero
+grace in both combined and channel-only runs; zero grace is not a fix. A bounded
+debugger-launched reproducer captured the main thread waiting inside native
+`cygrpc` shutdown. The Python traces stop at `grpc.aio.Server.stop`; these traces
+do not establish the native root cause or exclude a production lifecycle defect.
+Earlier separate channel and transport/journal passes do not resolve this failure.
+Retained timeout traces are not successful qualification. No bounded shutdown
+guarantee for that runtime or actual-server readiness follows from these tests.
+
+N1/N2 artifact/wheel verification and R12-L3 raw exception context remain open;
+the scoped stub's raw RPC errors still go through `LeaseSession` for typed mapping.
+The execution/staging/collection, immutable commit-reference, fixed-end, rotation,
+reaper, physical and live qualification obligations above are unchanged. Pending
+cancellation still permits previously claimed execution; confirmation still needs
+exact destruction and settled obligations. Production CREATE/EXEC and
+`_NONLOCAL_EXECUTION_DRIVER` remain closed.

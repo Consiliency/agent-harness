@@ -695,7 +695,7 @@ def applied_rule(
             "(agent-harness#896)"
         )
     if any(r.workload != "leg" for r in receipts):
-        return False, "a qualification workload is never an applied placement"
+        return False, "a non-leg workload is never an applied placement"
     runtime = {r.step: r for r in receipts if r.attested_by == "runtime"}
     committed, completed = runtime.get("committed"), runtime.get("completed")
     if committed is None or completed is None:
@@ -823,7 +823,7 @@ LADDER_TABLE = _Ladder(
                 "a local check fails: no backend is registered for the root's scheme or its "
                 "plugin does not load, `available()` is false, `endpoint` raises, a required "
                 "capability is not declared, the deadline exceeds the backend's maximum "
-                "lifetime, a `leg` workload while the driver flag is false"
+                "lifetime, a `leg` or `implementation` workload while the driver flag is false"
             ),
             "Nothing was sent",
         ),

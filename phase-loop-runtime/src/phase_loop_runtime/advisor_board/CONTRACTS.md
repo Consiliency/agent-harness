@@ -474,7 +474,12 @@ the caller passes a PATH and the runtime reads it.
     construction and registration remain closed; no physical backend conformance or C5
     capability follows from model fixtures. The adapter interfaces and remaining gates
     are in `phase-loop-runtime/openshell-private-transport.md`, section "Finite
-    implementation driver integration". The historical C1–C12 text below is preserved.
+    implementation driver integration". The C7 local-check row also covers
+    `implementation` while the driver flag is false. For all backends, cancellation
+    observed after `wait` wins a simultaneous result or error, and cancellation wins
+    an already-failed launch; none earns a completed receipt. This does not confirm
+    remote destruction or settle cleanup obligations. The historical C1–C12 text
+    below is preserved.
   - **Execution driver (agent-harness#896): amendments C1–C12.** `sandbox_placement.place`
     walks the configured remote rungs and `sandbox_placement.run_placed` is everything
     after `execute`; `placement_lease` is the lease journal and its reaper. The launch

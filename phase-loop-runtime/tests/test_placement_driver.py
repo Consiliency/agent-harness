@@ -1039,6 +1039,14 @@ def test_run_placed_takes_only_a_launched_placement(far):
 # Qualification is exempt from the gate, and never counts as applied (C10).
 # --------------------------------------------------------------------------------------
 
+def test_implementation_is_gated_and_never_applied(far):
+    decision = walk(rungs("drv"), workload="implementation", driver_enabled=False)
+    assert summary(decision.trail) == [("r1", "failed_locally", DRIVER)] and far.calls == []
+    placement = _placed(far, workload="implementation", driver_enabled=True)
+    sp.run_placed(placement, on_progress=None, cancelled=threading.Event())
+    assert _applied(placement) == (False, "a non-leg workload is never an applied placement")
+
+
 def test_a_qualification_request_is_driven_while_the_flag_is_false(far):
     """Its receipts are marked and `applied_rule` is false for them. Mutation: count them
     as applied. A `leg` on the same rung, same flag, is refused before the backend is
@@ -1051,7 +1059,7 @@ def test_a_qualification_request_is_driven_while_the_flag_is_false(far):
     assert [r.step for r in runtime] == ["committed", "launched", "completed"]
     assert all(r.workload == "qualification" and r.to_dict()["workload"] == "qualification"
                for r in runtime)
-    assert _applied(placement) == (False, "a qualification workload is never an applied placement")
+    assert _applied(placement) == (False, "a non-leg workload is never an applied placement")
 
     far.calls.clear()
     decision = walk(rungs("drv"), workload="leg", driver_enabled=False)
