@@ -20,9 +20,11 @@ Use only `/home/viperjuice/workspace/worktrees/agent-harness-typed-review-spec-2
 on `codex/typed-review-spec-20261019`; never parent SDK/VM worktrees or
 agent-harness#1744. Serial ownership; no concurrent source writers. Existing
 draft agent-harness#1770 remains the publication target. RCONTRACT local EC/IF
-evidence is complete, but its post-publication CI readiness is held pending
-Daybreak-only scrub diagnosis. Planning and independent review may proceed;
-RT3 implementation requires that hold resolved and both upstream gates confirmed.
+evidence and post-publication CI readiness are accepted for serial consumption.
+The parent recorded actual corrected-head pytest and suite-gate success in the
+phase ledger after preserving the earlier failed run. Both upstream gates are
+confirmed; independent plan review is COMPLETE / AGREE in round 2. No production
+activation or downstream live-route qualification is implied.
 
 Frozen request → durable dispatch intent → trusted host's actual T3 tool calls
 → original terminal-item recovery → RCONTRACT acceptance → current usable result.
@@ -108,12 +110,19 @@ These decisions refine IF-0-RT3-1 before implementation; they are not new T3 API
 
 Parent-serialized control reads/writes: this plan and `plans/reviews/typed-review-RT3_reviews.md`,
 `plans/evidence/typed-review/ledger.json`, `plans/manifest.json`,
+`phase-loop-runtime/tests/data/seat_launch_references.json`,
 `.phase-loop/typed-review/RT3/**`, `.phase-loop/evidence/typed-reviews/RT3.json`,
 `.dev-skills/handoffs/codex-plan-phase/**`, `.dev-skills/handoffs/codex-execute-phase/**`.
 Explicit private read/write allowance: `.phase-loop/typed-review/private/RT3/**`.
 RCONTRACT frozen API/evidence at `.phase-loop/typed-review/RCONTRACT/**` are read-only
 inputs; raw unrelated/private/auth inputs are excluded. Never force-stage private
 observations, bodies or reports. Reflection paths use skill_paths resolvers.
+
+The parent alone updates the launch-reference inventory after each source lane,
+classifying actual new host I/O without changing scanner/assertions. This is a
+serialized reduction control, not permission for child inventory writes; the
+frozen BAML caller inventory remains read-only. Retain both global inventory and
+canonical manifest checks in final verification to catch cross-repository guards.
 
 Both lanes are serial in the owned checkout; validate lane IR disjointness/DAG.
 SL-0 exclusively owns cli.py. Existing tests, `review_contract.py`, `baml_modular.py`, `_baml_worker.py`,

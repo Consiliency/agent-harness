@@ -407,6 +407,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Explicitly bypass the cross-phase dirty start gate. Requires a non-empty operator reason.",
     )
     subparsers = parser.add_subparsers(dest="command")
+    typed_review = subparsers.add_parser(
+        "typed-review", help="Local non-gating T3 review preparation and intake; never dispatches.", allow_abbrev=False,
+    )
+    typed_operations = typed_review.add_subparsers(dest="typed_review_operation", required=True)
+    for operation in ("request", "prepare", "register", "intake", "resume", "correction"):
+        command_parser = typed_operations.add_parser(operation, allow_abbrev=False)
+        command_parser.add_argument("--state", required=True, help="Private state directory outside the dispatched checkout.")
+        command_parser.add_argument("--parent-thread", required=True)
+        command_parser.add_argument("--checkout", required=True)
+        if operation != "request":
+            command_parser.add_argument("--binding", required=True)
+        command_parser.add_argument("--input", required=operation in ("request", "prepare", "register", "intake", "correction"),
+                                    help="Private JSON input file (same UID, mode 0600).")
     agy_qual_sub = subparsers.add_parser(
         "agy-qualification",
         help="First-use self-qualification of a genuine upstream agy release (agent-harness#1076)",
@@ -1288,6 +1301,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     command = args.command or ("dry-run" if args.dry_run else "run")
+    if command == "typed-review":
+        from .review_gateway import cli_main as typed_review_main
+
+        return typed_review_main(args)
     if command == "agy-qualification":
         from .agy_qualification import cli_main as _agy_qualification_main
 

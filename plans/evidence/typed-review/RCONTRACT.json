@@ -208,7 +208,7 @@
     "readiness": "Required CI confirmation remains pending; earlier local EC/IF results unchanged."
   },
   "verified_plan_path": "plans/phase-plan-typed-review-RCONTRACT.md",
-  "ci_readiness": "corrected_head_publication_pending_ci_suite",
+  "ci_readiness": "accepted_at_exact_corrected_head",
   "ci_repair": {
     "failure": {
       "head": "37be33608fafde41ef8dd31acd746de24b5aa2f5",
@@ -301,5 +301,49 @@
       }
     }
   },
-  "verified_plan_note": "verified_plan_sha256 binds verified_plan_path at historical commit 68095b9292d2ab05c0904a6ce14115e5ad4cab2d; current plan is the canonical successor and has subsequent ownership/evidence-only amendments."
+  "verified_plan_note": "verified_plan_sha256 binds verified_plan_path at historical commit 68095b9292d2ab05c0904a6ce14115e5ad4cab2d; current plan is the canonical successor and has subsequent ownership/evidence-only amendments.",
+  "ci_acceptance": {
+    "head": "6b2b2d3f966bdfc50ecd6fe3c8c098de3e05a0df",
+    "run_id": 39332069820,
+    "run_url": "https://github.com/Consiliency/agent-harness/actions/runs/39332069820",
+    "status": "completed",
+    "conclusion": "success",
+    "jobs": [
+      {
+        "databaseId": 118332446031,
+        "name": "BAML sources (pinned baml-cli fmt + check)",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/Consiliency/agent-harness/actions/runs/39332069820/job/118332446031"
+      },
+      {
+        "databaseId": 118332475248,
+        "name": "pytest (py3.12)",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/Consiliency/agent-harness/actions/runs/39332069820/job/118332475248"
+      },
+      {
+        "databaseId": 118346317727,
+        "name": "suite (hosted fallback)",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/Consiliency/agent-harness/actions/runs/39332069820/job/118346317727"
+      },
+      {
+        "databaseId": 118346348515,
+        "name": "suite gate",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/Consiliency/agent-harness/actions/runs/39332069820/job/118346348515"
+      }
+    ],
+    "observed_at": "2026-10-19T22:41:10.000396+00:00",
+    "metadata": {
+      "path": ".phase-loop/typed-review/RT3/upstream-ci-readiness-39332069820.json",
+      "sha256": "f2dbd65dbba7d8f7ae683461591e87491505465736827e30000bab83c1e61143"
+    },
+    "required_checks": "Root verified all six SUCCESS: suite gate, gitleaks, chronology, lint, docs-freshness, release check.",
+    "scope": "Accepted RCONTRACT serial-consumption prerequisite; PR remains draft; no production/live-route/merge authority."
+  }
 }

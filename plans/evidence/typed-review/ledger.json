@@ -1,12 +1,12 @@
 {
   "schema": "typed_review_execution_ledger.v1",
-  "updated_at": "2026-10-19T22:02:12.503990+00:00",
+  "updated_at": "2026-10-19T22:57:04.114038+00:00",
   "roadmap": "docs/proposals/typed-review-roadmap.md",
-  "plan": "plans/phase-plan-v1-typed-review-RCONTRACT.md",
+  "plan": "plans/phase-plan-v1-typed-review-RT3.md",
   "head": "bcc9b7eac6cc19de82b9fb0334fdaafe65c6b86e",
-  "phase": "RCONTRACT",
+  "phase": "RT3",
   "status": "executing",
-  "verification_status": "blocked",
+  "verification_status": "pending",
   "proposal_sha256": {
     "docs/proposals/typed-review-contract.md": "b72df16dd3a52349f78dc53268526d492383ac11ec1dc9e97ff5a7bfe7f392f9",
     "docs/proposals/typed-review-roadmap.md": "45b6faac632fcdf47fc5605389826d256126ab6f4c2a2b44859f2a3088f2e3e8",
@@ -14,18 +14,18 @@
   },
   "phases": {
     "RCONTRACT": {
-      "status": "ci_repair_reviewed_local_checks_pass_pending_remote_suite",
+      "status": "complete_local_and_ci_accepted_for_serial_consumption",
       "produced_if_gates": [
         "IF-0-RCONTRACT-1",
         "IF-0-RCONTRACT-2"
       ],
       "evidence": {
         "path": "plans/evidence/typed-review/RCONTRACT.json",
-        "sha256": "5c27ccf44e7ff1ac753d441627272878c4f48a72320cc0ed2b19b68ea59ddce8"
+        "sha256": "72fc756857be1fdd0671f2be77c2045b421f5c81de4b36effc205ee1982fcb6b"
       }
     },
     "RT3": {
-      "status": "plan_review_accepted_upstream_ci_hold",
+      "status": "sl0_accepted_sl1_dispatch_ready",
       "produced_if_gates": [],
       "plan": "plans/phase-plan-v1-typed-review-RT3.md",
       "plan_review": {
@@ -38,9 +38,13 @@
         "evidence_class": "manual independent T3 review; not BAML accepted",
         "author_refinements": "All three nonblocking R2 recommendations applied after review and structurally validated; not independently re-reviewed."
       },
-      "plan_sha256": "58ef9a31f235295e461f35032838208f68b9042af36366e2e67e7d7a27b1746c",
+      "plan_sha256": "6169583cba2e2157c47809959514010215bd8921e6a8a9ad208d28b4dcfab97e",
       "prepared_implementation_brief": ".phase-loop/typed-review/RT3/sl0-delegation-brief.md",
-      "implementation_dispatched": false
+      "implementation_dispatched": true,
+      "sl0_acceptance": {
+        "path": ".phase-loop/typed-review/RT3/sl0/parent-acceptance.json",
+        "sha256": "89b9d32ed901f2569dbf2ae9cd3ea533b0f7e1a12c4f85a5ef1b2f7391b8e778"
+      }
     },
     "RPANEL": {
       "status": "read_only_reconnaissance_complete_implementation_gated",
@@ -276,6 +280,25 @@
       "model": "claude-opus-5-5",
       "reasoning_effort": "medium",
       "round": 1
+    },
+    {
+      "taskId": "node:delegated-task:command%3Amcp%3A79122b9e-4125-43be-be52-a74709d61846%3Adelegate-task%3Atyped-review-rt3-sl0-implementation-20261019-02",
+      "phase": "RT3",
+      "lane": "SL-0",
+      "role": "implementation",
+      "status": "completed",
+      "providerInstanceId": "t3-codex-consiliency",
+      "model": "gpt-6-astra",
+      "reasoning_effort": "high",
+      "source_head": "6b2b2d3f966bdfc50ecd6fe3c8c098de3e05a0df",
+      "brief": ".phase-loop/typed-review/RT3/sl0-delegation-brief.md",
+      "owned_paths": [
+        "phase-loop-runtime/src/phase_loop_runtime/review_t3.py",
+        "phase-loop-runtime/src/phase_loop_runtime/review_gateway.py",
+        "phase-loop-runtime/src/phase_loop_runtime/cli.py",
+        "phase-loop-runtime/tests/test_review_t3.py"
+      ],
+      "output_directory": ".phase-loop/typed-review/RT3/sl0"
     }
   ],
   "governance_intake": {
@@ -286,7 +309,7 @@
     "sol_ablation": "not applicable to Astra authorship; no ablation claimed"
   },
   "pending_plan_corrections": [],
-  "plan_sha256": "125af0652e4884ba18aff01ac491218b6d82317adf8ba455d30a5e8e2d6f892c",
+  "plan_sha256": "6169583cba2e2157c47809959514010215bd8921e6a8a9ad208d28b4dcfab97e",
   "review_round": 2,
   "plan_findings": {
     "RC-PLAN-F1": {
@@ -346,7 +369,7 @@
     "repair_owner": "SL-0; fixture-only confinement in already-owned test; no runtime/root permission change",
     "proof_cost_finding": "Baseline >5min; preserve required lifetime controls and use targeted repair before rerunning full suite."
   },
-  "current_head": "ff2cc728184b67ed67bd7c69bb0119c4073d155e",
+  "current_head": "6b2b2d3f966bdfc50ecd6fe3c8c098de3e05a0df",
   "plan_execution_clarifications": {
     "RC-PLAN-N1": "Include v22_principles; preserve bare-class OpenAI-dialect-clean export without editing that test.",
     "RC-PLAN-N2": "Normal snapshot switches consume no failure/retry/extra attempt; test beyond retry count under finite budgets.",
@@ -388,10 +411,9 @@
     "ownership_recheck": "Live old thread is failed with no active run or pending question. Native agent listing for this run contains only /root; T3 SL-1 thread search is empty. Phase IR has no diagnostics. Live agent-harness#1443 remains OPEN/unmerged. Current tree contains no SL-1 implementation files.",
     "ledger_reconciliation": "A late uncommitted historical ledger entry claimed /root/rcontract_sl1 running and recorded parent_not_active. Preserve that claim and failure, but do not count it as active or completed work. Recovery brief reports no SL-1 dispatched before the failure; current probes find none.",
     "resume_head": "68095b9292d2ab05c0904a6ce14115e5ad4cab2d",
-    "status": "awaiting_corrected_head_ci",
+    "status": "waiting_for_children",
     "private_handoff": ".phase-loop/typed-review/private/RCONTRACT/recovery-20261019-02.md",
     "remaining": [
-      "RCONTRACT current-head CI suite readiness",
       "RT3",
       "RPANEL",
       "RENFORCE"
@@ -504,36 +526,48 @@
     "failure_preservation": "Initial docs audit failure retained; changed comparison HEAD justified rerun. Unknown ignored toolchain outputs retained/cleaned before passing audit."
   },
   "ci_observation_current": {
-    "head": "37be33608fafde41ef8dd31acd746de24b5aa2f5",
-    "run_url": "https://github.com/Consiliency/agent-harness/actions/runs/39325236763",
-    "gitleaks": "passed on GitHub after exact-value synthetic-digest exception",
-    "docs_audit": "passed",
-    "entry_docs": "passed",
-    "release_consistency": "passed",
-    "other_checks": "pytest (py3.12) in progress at observation; other completed checks passed or expected skip; suite gate not yet observed",
-    "readiness": "RT3 held until corrected-head actual pytest/suite success; scoped canonical-registration and host-io inventory repair in progress.",
-    "scope": "Safe metadata only; local verification evidence retained, not all CI green.",
-    "diagnosis": "Daybreak confirmed non-secret deterministic synthetic SHA256 at canonical vector field; predecessor scan clean; exact-value ephemeral exception clears pinned scan.",
-    "remediation": "Exact-value exception published and GitHub gitleaks passed; no unresolved scrub failure on current head.",
-    "remediation_evidence": {
-      "path": ".phase-loop/typed-review/private/RCONTRACT/scrub-daybreak-fix-20261019-02/handoff.json",
-      "sha256": "1053c17005294c44087d595851875020963769f79088125355f593d1806fdf9e"
-    },
-    "scan_scope": "20371e84 full ancestor history, 2854 commits; CI uses its checkout history, so local result is not CI confirmation.",
-    "watch_owner": "root thread d8238af5-72f9-42f1-9c57-40dbd12e63ee",
-    "latest_source": "Root relay: all5requiredpassed wake, but pytest job118309519045 remains IN_PROGRESS with completedAt zero; suite gate absent.",
-    "required_reported_success": [
-      "lint",
-      "chronology",
-      "release-consistency check",
-      "docs-freshness",
-      "gitleaks"
+    "head": "6b2b2d3f966bdfc50ecd6fe3c8c098de3e05a0df",
+    "run_id": 39332069820,
+    "run_url": "https://github.com/Consiliency/agent-harness/actions/runs/39332069820",
+    "status": "completed",
+    "conclusion": "success",
+    "jobs": [
+      {
+        "databaseId": 118332446031,
+        "name": "BAML sources (pinned baml-cli fmt + check)",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/Consiliency/agent-harness/actions/runs/39332069820/job/118332446031"
+      },
+      {
+        "databaseId": 118332475248,
+        "name": "pytest (py3.12)",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/Consiliency/agent-harness/actions/runs/39332069820/job/118332475248"
+      },
+      {
+        "databaseId": 118346317727,
+        "name": "suite (hosted fallback)",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/Consiliency/agent-harness/actions/runs/39332069820/job/118346317727"
+      },
+      {
+        "databaseId": 118346348515,
+        "name": "suite gate",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/Consiliency/agent-harness/actions/runs/39332069820/job/118346348515"
+      }
     ],
-    "pytest_job": 118309519045,
-    "pytest_status": "FAILURE",
-    "suite_gate": "FAILURE",
-    "pr_state": "OPEN/DRAFT",
-    "prior_cancelled_run": "39323511879 remains cancelled, never passing"
+    "observed_at": "2026-10-19T22:41:10.000396+00:00",
+    "metadata": {
+      "path": ".phase-loop/typed-review/RT3/upstream-ci-readiness-39332069820.json",
+      "sha256": "f2dbd65dbba7d8f7ae683461591e87491505465736827e30000bab83c1e61143"
+    },
+    "required_checks": "Root verified all six SUCCESS: suite gate, gitleaks, chronology, lint, docs-freshness, release check.",
+    "scope": "Accepted RCONTRACT serial-consumption prerequisite; PR remains draft; no production/live-route/merge authority."
   },
   "ci_failures": [
     {
@@ -601,5 +635,39 @@
       "author_factual_clarification": "Review report states underscore is outside PLAN_RE alias class; actual [A-Za-z0-9._-] includes it. Original unversioned review sibling is noncanonical; a versioned sibling would be classified as a phase plan. Relocating review records under plans/reviews correctly keeps non-plan records outside root phase discovery. Original report is preserved unchanged."
     },
     "publication": "ready for authorized draft push; corrected-head CI still required"
-  }
+  },
+  "ci_observation_history": [
+    {
+      "head": "37be33608fafde41ef8dd31acd746de24b5aa2f5",
+      "run_url": "https://github.com/Consiliency/agent-harness/actions/runs/39325236763",
+      "gitleaks": "passed on GitHub after exact-value synthetic-digest exception",
+      "docs_audit": "passed",
+      "entry_docs": "passed",
+      "release_consistency": "passed",
+      "other_checks": "pytest (py3.12) in progress at observation; other completed checks passed or expected skip; suite gate not yet observed",
+      "readiness": "RT3 held until corrected-head actual pytest/suite success; scoped canonical-registration and host-io inventory repair in progress.",
+      "scope": "Safe metadata only; local verification evidence retained, not all CI green.",
+      "diagnosis": "Daybreak confirmed non-secret deterministic synthetic SHA256 at canonical vector field; predecessor scan clean; exact-value ephemeral exception clears pinned scan.",
+      "remediation": "Exact-value exception published and GitHub gitleaks passed; no unresolved scrub failure on current head.",
+      "remediation_evidence": {
+        "path": ".phase-loop/typed-review/private/RCONTRACT/scrub-daybreak-fix-20261019-02/handoff.json",
+        "sha256": "1053c17005294c44087d595851875020963769f79088125355f593d1806fdf9e"
+      },
+      "scan_scope": "20371e84 full ancestor history, 2854 commits; CI uses its checkout history, so local result is not CI confirmation.",
+      "watch_owner": "root thread d8238af5-72f9-42f1-9c57-40dbd12e63ee",
+      "latest_source": "Root relay: all5requiredpassed wake, but pytest job118309519045 remains IN_PROGRESS with completedAt zero; suite gate absent.",
+      "required_reported_success": [
+        "lint",
+        "chronology",
+        "release-consistency check",
+        "docs-freshness",
+        "gitleaks"
+      ],
+      "pytest_job": 118309519045,
+      "pytest_status": "FAILURE",
+      "suite_gate": "FAILURE",
+      "pr_state": "OPEN/DRAFT",
+      "prior_cancelled_run": "39323511879 remains cancelled, never passing"
+    }
+  ]
 }
