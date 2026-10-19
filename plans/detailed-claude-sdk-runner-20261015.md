@@ -382,6 +382,14 @@ these controls do not replace it or grant live, activation or merge authority.
 
 ## Documentation impact
 
+### Gate A test environment correction — 2026-10-19
+
+Include `phase-loop-runtime/scripts/gate_a_cleanroom.sh`: after its existing
+base-install probes, install the same wheel's `claude-sdk` extra for the full
+standalone suite. Gate A run 39292281085 exposed missing optional parser
+dependencies in that test environment. Preserve the base probes, test selection
+and runtime dependency declarations; rerun the complete Gate A after correction.
+
 Ratification appends the amendment pointer to v11's cited ruling, preserving
 roadmap bytes/seals and panel skills. Stage 3a updates runtime operator instructions.
 
