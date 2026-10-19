@@ -208,7 +208,7 @@
     "readiness": "Required CI confirmation remains pending; earlier local EC/IF results unchanged."
   },
   "verified_plan_path": "plans/phase-plan-typed-review-RCONTRACT.md",
-  "ci_readiness": "failed_pending_corrected_head_suite",
+  "ci_readiness": "corrected_head_publication_pending_ci_suite",
   "ci_repair": {
     "failure": {
       "head": "37be33608fafde41ef8dd31acd746de24b5aa2f5",
@@ -257,6 +257,49 @@
       "basis": "os.open creates the private reviews.sqlite3 file with O_CREAT|O_RDWR and O_NOFOLLOW; it does not launch a process."
     },
     "runtime_sources_changed": false,
-    "guard_tests_changed": false
-  }
+    "guard_tests_changed": false,
+    "review": {
+      "coverage": "COMPLETE",
+      "verdict": "AGREE",
+      "blockers": [],
+      "report": {
+        "path": ".phase-loop/typed-review/private/RCONTRACT/ci-repair-review-r1/report.md",
+        "sha256": "5c20cdb2b1a321162e9c96677ba6336a4f25eeb518bc069ca7b9e43d95f0ad99"
+      },
+      "evidence_class": "manual independent scoped CI-repair review; not BAML accepted",
+      "nonblocking_disposition": {
+        "RCR-R1-N1": "Resolved by same four-module selection on Python3.12: 38 passed, 1 skipped, 0 failed in 21.52s. Earlier Python3.14 environment failure remains preserved. Reviewer saw the earlier result; later local verification supplies this resolution.",
+        "RCR-R1-N2": "Clarified explicitly: verified_plan_sha256 binds verified_plan_path at historical commit68095b9292d2ab05c0904a6ce14115e5ad4cab2d, not current canonical path/bytes.",
+        "RCR-R1-N3": "Retained additive inventory row; ordering has no semantics and minimizes changes to existing classifications."
+      },
+      "author_factual_clarification": "Review report states underscore is outside PLAN_RE alias class; actual [A-Za-z0-9._-] includes it. Original unversioned review sibling is noncanonical; a versioned sibling would be classified as a phase plan. Relocating review records under plans/reviews correctly keeps non-plan records outside root phase discovery. Original report is preserved unchanged."
+    },
+    "local_verification": {
+      "path": ".phase-loop/typed-review/RCONTRACT/ci-repair-39325236763/verification.json",
+      "sha256": "5012b11f1cca3222ea98642bfa57a7862b9538de113f458c1b2a60404aa1e478",
+      "counts": {
+        "passed": 38,
+        "skipped": 1,
+        "failed": 0,
+        "duration_seconds": 21.52,
+        "selection": "Same full four test modules as failed Python3.14 run; no extra deselection. Includes both original CI failures and launch isolation test."
+      },
+      "prior_environment_failure": {
+        "passed": 37,
+        "skipped": 1,
+        "failed": 1,
+        "failure": "unchanged test_review_launch_stays_owned_at_each_site: Python3.14.5 lacks os.memfd_create; seat_filter_unavailable"
+      },
+      "checks": {
+        "plan_literals": "passed",
+        "lane_ir": "no diagnostics",
+        "plan_docs": "passed; existing nonblocking release-shaped heuristic warning",
+        "ruff_0_15_5": "passed",
+        "entry_docs": "8 clean",
+        "docs_audit": "passed",
+        "diff_check": "passed"
+      }
+    }
+  },
+  "verified_plan_note": "verified_plan_sha256 binds verified_plan_path at historical commit 68095b9292d2ab05c0904a6ce14115e5ad4cab2d; current plan is the canonical successor and has subsequent ownership/evidence-only amendments."
 }

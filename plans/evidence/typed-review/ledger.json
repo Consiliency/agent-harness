@@ -1,6 +1,6 @@
 {
   "schema": "typed_review_execution_ledger.v1",
-  "updated_at": "2026-10-19T21:57:40.287432+00:00",
+  "updated_at": "2026-10-19T22:02:12.503990+00:00",
   "roadmap": "docs/proposals/typed-review-roadmap.md",
   "plan": "plans/phase-plan-v1-typed-review-RCONTRACT.md",
   "head": "bcc9b7eac6cc19de82b9fb0334fdaafe65c6b86e",
@@ -14,14 +14,14 @@
   },
   "phases": {
     "RCONTRACT": {
-      "status": "ci_failed_scoped_repair_validation_pending",
+      "status": "ci_repair_reviewed_local_checks_pass_pending_remote_suite",
       "produced_if_gates": [
         "IF-0-RCONTRACT-1",
         "IF-0-RCONTRACT-2"
       ],
       "evidence": {
         "path": "plans/evidence/typed-review/RCONTRACT.json",
-        "sha256": "34c1a8f00c0e1791c280fe49b7a149a12c1fd0ebb1f76abb8699714eab0e5fcd"
+        "sha256": "5c27ccf44e7ff1ac753d441627272878c4f48a72320cc0ed2b19b68ea59ddce8"
       }
     },
     "RT3": {
@@ -265,6 +265,17 @@
       "reasoning_effort": "high",
       "output": ".phase-loop/typed-review/RPANEL/recon-20261019-02.md",
       "scope": "Read-only ownership and governed-gate reconnaissance; no source/test/control writes."
+    },
+    {
+      "taskId": "node:delegated-task:command%3Amcp%3A79122b9e-4125-43be-be52-a74709d61846%3Adelegate-task%3Atyped-review-ci-canonical-inventory-review-r1-20261019-02",
+      "phase": "RCONTRACT",
+      "role": "review",
+      "status": "completed",
+      "scope": "CI canonical-plan registration and host-io inventory correction only; no runtime re-review",
+      "providerInstanceId": "t3-claude-regenesis",
+      "model": "claude-opus-5-5",
+      "reasoning_effort": "medium",
+      "round": 1
     }
   ],
   "governance_intake": {
@@ -335,7 +346,7 @@
     "repair_owner": "SL-0; fixture-only confinement in already-owned test; no runtime/root permission change",
     "proof_cost_finding": "Baseline >5min; preserve required lifetime controls and use targeted repair before rerunning full suite."
   },
-  "current_head": "37be33608fafde41ef8dd31acd746de24b5aa2f5",
+  "current_head": "ff2cc728184b67ed67bd7c69bb0119c4073d155e",
   "plan_execution_clarifications": {
     "RC-PLAN-N1": "Include v22_principles; preserve bare-class OpenAI-dialect-clean export without editing that test.",
     "RC-PLAN-N2": "Normal snapshot switches consume no failure/retry/extra attempt; test beyond retry count under finite budgets.",
@@ -377,7 +388,7 @@
     "ownership_recheck": "Live old thread is failed with no active run or pending question. Native agent listing for this run contains only /root; T3 SL-1 thread search is empty. Phase IR has no diagnostics. Live agent-harness#1443 remains OPEN/unmerged. Current tree contains no SL-1 implementation files.",
     "ledger_reconciliation": "A late uncommitted historical ledger entry claimed /root/rcontract_sl1 running and recorded parent_not_active. Preserve that claim and failure, but do not count it as active or completed work. Recovery brief reports no SL-1 dispatched before the failure; current probes find none.",
     "resume_head": "68095b9292d2ab05c0904a6ce14115e5ad4cab2d",
-    "status": "ci_repair_validation",
+    "status": "awaiting_corrected_head_ci",
     "private_handoff": ".phase-loop/typed-review/private/RCONTRACT/recovery-20261019-02.md",
     "remaining": [
       "RCONTRACT current-head CI suite readiness",
@@ -567,5 +578,28 @@
       "plans/phase-plan-typed-review-RT3_reviews.md": "plans/reviews/typed-review-RT3_reviews.md"
     },
     "reason": "Use existing PLAN_RE without weakening discovery/manifest guards. Review reports are non-plan artifacts under plans/reviews. Stable slugs, goal IDs, roadmap selection and lifecycle history preserved. Historical path references and seals remain evidence of their original inputs."
+  },
+  "ci_repair_validation": {
+    "head": "ff2cc728184b67ed67bd7c69bb0119c4073d155e",
+    "path": ".phase-loop/typed-review/RCONTRACT/ci-repair-39325236763/verification.json",
+    "sha256": "5012b11f1cca3222ea98642bfa57a7862b9538de113f458c1b2a60404aa1e478",
+    "result": "38 passed, 1 skipped under Python3.12; original local Python3.14 environment failure retained",
+    "review": {
+      "coverage": "COMPLETE",
+      "verdict": "AGREE",
+      "blockers": [],
+      "report": {
+        "path": ".phase-loop/typed-review/private/RCONTRACT/ci-repair-review-r1/report.md",
+        "sha256": "5c20cdb2b1a321162e9c96677ba6336a4f25eeb518bc069ca7b9e43d95f0ad99"
+      },
+      "evidence_class": "manual independent scoped CI-repair review; not BAML accepted",
+      "nonblocking_disposition": {
+        "RCR-R1-N1": "Resolved by same four-module selection on Python3.12: 38 passed, 1 skipped, 0 failed in 21.52s. Earlier Python3.14 environment failure remains preserved. Reviewer saw the earlier result; later local verification supplies this resolution.",
+        "RCR-R1-N2": "Clarified explicitly: verified_plan_sha256 binds verified_plan_path at historical commit68095b9292d2ab05c0904a6ce14115e5ad4cab2d, not current canonical path/bytes.",
+        "RCR-R1-N3": "Retained additive inventory row; ordering has no semantics and minimizes changes to existing classifications."
+      },
+      "author_factual_clarification": "Review report states underscore is outside PLAN_RE alias class; actual [A-Za-z0-9._-] includes it. Original unversioned review sibling is noncanonical; a versioned sibling would be classified as a phase plan. Relocating review records under plans/reviews correctly keeps non-plan records outside root phase discovery. Original report is preserved unchanged."
+    },
+    "publication": "ready for authorized draft push; corrected-head CI still required"
   }
 }
