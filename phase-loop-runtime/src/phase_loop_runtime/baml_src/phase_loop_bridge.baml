@@ -2,6 +2,34 @@
 // map<string, string> with exactly one key (ok, error or request), so the
 // worker needs no generated typemap.
 
+function phase_loop_parse_review_reply(raw: string) -> map<string, string> {
+    let v = EmitReviewReply@spec(request_json = "").parse(raw) catch (e) {
+        baml.errors.ParseError => {
+            return { "error": "review parse failed" };
+        }
+    };
+    { "ok": baml.json.to_string(v) }
+}
+
+function phase_loop_parse_review_decision(raw: string) -> map<string, string> {
+    let v = EmitReviewDecision@spec(request_json = "").parse(raw) catch (e) {
+        baml.errors.ParseError => {
+            return { "error": "review parse failed" };
+        }
+    };
+    { "ok": baml.json.to_string(v) }
+}
+
+function phase_loop_review_reply_request(request_json: string) -> map<string, string> {
+    let r = EmitReviewReply@spec(request_json = request_json).build_request();
+    { "request": baml.json.to_string(r) }
+}
+
+function phase_loop_review_decision_request(request_json: string) -> map<string, string> {
+    let r = EmitReviewDecision@spec(request_json = request_json).build_request();
+    { "request": baml.json.to_string(r) }
+}
+
 function phase_loop_parse_closeout(raw: string) -> map<string, string> {
     let v = EmitPhaseCloseout@spec(phase_alias = "", plan_produces = [], plan_owned_files = [], closeout_commit_sha = null)
         .parse(raw) catch (e) {

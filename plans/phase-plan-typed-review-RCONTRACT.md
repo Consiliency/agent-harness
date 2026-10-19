@@ -4,7 +4,7 @@ phase: RCONTRACT
 roadmap: docs/proposals/typed-review-roadmap.md
 roadmap_sha256: 45b6faac632fcdf47fc5605389826d256126ab6f4c2a2b44859f2a3088f2e3e8
 automation:
-  suite_command: ["uv", "run", "--quiet", "--project", "phase-loop-runtime", "--group", "test", "--extra", "visual", "--locked", "python", "-m", "pytest", "phase-loop-runtime/tests", "-q", "-k", "review_contract or phase_loop_baml or export_schema or phase_loop_skill_baml_closeout or phase_loop_terminal_summary_mirrors_baml_closeout or phase_loop_closeout_schema or phase_loop_schema_flow or pkg_layout_freeze or launchspec_golden"]
+  suite_command: ["uv", "run", "--quiet", "--project", "phase-loop-runtime", "--group", "test", "--extra", "visual", "--locked", "python", "-m", "pytest", "phase-loop-runtime/tests", "-q", "-k", "review_contract or phase_loop_baml or export_schema or phase_loop_skill_baml_closeout or phase_loop_terminal_summary_mirrors_baml_closeout or phase_loop_closeout_schema or phase_loop_schema_flow or pkg_layout_freeze or launchspec_golden or v22_principles"]
 ---
 
 # RCONTRACT: Freeze BAML review contracts and gateway
@@ -66,9 +66,9 @@ SL-1 — Acceptance, conformance and docs reduction
 - **Tasks**:
   - test: Add real-worker review and president parse/request controls, exact original-text and IPC reply recording, class-name/schema-only bypass and echo-input mutation failures; retain closeout, process lifetime and environment coverage.
   - impl: Add native BAML enums and explicit required-null review fields, class-qualified export without Python review enum authority, declared-function `.parse(raw)` and `.build_request()` bridge operations; never execute inference through placeholder clients.
-  - impl: Expose saved full rendered-file maps and snapshot-specific worker/schema calls. Preserve the existing canonical fingerprint, isolate parser state per snapshot without global mutable swaps, reject unavailable/unsupported snapshots, and expose metadata only after checking the actual matched reply. Keep existing operation names and closeout APIs compatible. Route each request by its saved fingerprint; never reuse a mismatched generation. Retire and reap the old generation before respawning, preserving the existing single-owner lifetime and bounded recovery guarantees. Snapshot-specific export must not read the global enum cache or current snapshot. Test alternating current and historical maps in one process, with reply fingerprints checked against each request and lifetime/environment/shutdown regressions retained.
+  - impl: Expose saved full rendered-file maps and snapshot-specific worker/schema calls. Preserve the existing canonical fingerprint, isolate parser state per snapshot without global mutable swaps, reject unavailable/unsupported snapshots, and expose metadata only after checking the actual matched reply. Keep existing operation names and closeout APIs compatible. Route each request by its saved fingerprint; never reuse a mismatched generation. Retire and reap the old generation before respawning, preserving the existing single-owner lifetime and bounded recovery guarantees. Snapshot-specific export must not read the global enum cache or current snapshot. A normal snapshot-switch retirement is not a failure, retry or extra request attempt; retain finite existing budgets. Test more consecutive switches than the configured retry limit, all succeeding. Test alternating current and historical maps in one process, with reply fingerprints checked against each request and lifetime/environment/shutdown regressions retained.
   - impl: Change only the two BAML source-count assertions in `.github/workflows/test.yml` to match the actual packaged file count; preserve the required job and its pinned toolchain.
-  - verify: Run checksum-verified baml-cli 0.20.1 fmt on owned BAML sources and assert an idempotent second pass; check raw and rendered sources in temporary projects, requiring the actual packaged file count. Record these results and the CI guard checks triggered by the workflow edit. Preserve the legacy closeout schema golden; test native review-field/enum mutations in saved maps without changing current-snapshot acceptance.
+  - verify: Run checksum-verified baml-cli 0.20.1 fmt on owned BAML sources and assert an idempotent second pass; check raw and rendered sources in temporary projects, requiring the actual packaged file count. Record these results and the CI guard checks triggered by the workflow edit. Review declarations must remain OpenAI-dialect-clean through the existing bare-class export path; run `test_phase_loop_v22_principles.py` without changing its contract. Preserve the legacy closeout schema golden; test native review-field/enum mutations in saved maps without changing current-snapshot acceptance.
   - verify: Run the two existing BAML test modules with the new controls, including an actual parse failure. Review the exact API before downstream edits and freeze it in the lane handoff.
 
 ### SL-1 — Acceptance, conformance and docs reduction
@@ -146,7 +146,9 @@ The roadmap evidence file references that exact sealed artifact path and SHA256,
 its log path/digest, and actual EC/IF disposition; it cannot restate success without
 those bindings. Baseline artifacts remain distinct and cannot close new criteria.
 
-- `uv run --quiet --project phase-loop-runtime --group test --extra visual --locked python -m pytest phase-loop-runtime/tests -q -k 'review_contract or phase_loop_baml or export_schema or phase_loop_skill_baml_closeout or phase_loop_terminal_summary_mirrors_baml_closeout or phase_loop_closeout_schema or phase_loop_schema_flow or pkg_layout_freeze or launchspec_golden'`
+The complete test selection runs once through `automation.suite_command`; the
+additional command list below does not repeat it.
+
 - `git diff --check`
 
 ## Acceptance Criteria

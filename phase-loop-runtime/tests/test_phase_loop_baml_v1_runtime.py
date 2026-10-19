@@ -476,9 +476,227 @@ def test_schema_dump_equals_step_0(client):
     text = "\n".join(m._read_baml_files().values())
     classes = sorted(set(re.findall(r"\bclass\s+([A-Za-z_]\w*)\s*\{", text)))
     functions = sorted(set(re.findall(r"\bfunction\s+([A-Z]\w*)\s*\(", text)))
-    assert {c: [list(f) for f in m._class_fields(text, c)] for c in classes} == golden["class_fields"]
-    assert {n: m.export_function_schema(n) for n in [*classes, *functions]} == golden["export_function_schema"]
+    assert set(golden["class_fields"]) <= set(classes)
+    assert set(golden["export_function_schema"]) <= set(classes + functions)
+    assert {c: [list(f) for f in m._class_fields(text, c)] for c in golden["class_fields"]} == golden["class_fields"]
+    assert {n: m.export_function_schema(n) for n in golden["export_function_schema"]} == golden["export_function_schema"]
     assert {k: list(v) for k, v in sorted(m._enum_literal_map().items())} == golden["enum_literal_map"]
+
+
+def _review_payload(function_name="EmitReviewReply"):
+    common = {
+        "schema_version": "review_reply.v1" if function_name == "EmitReviewReply" else "review_decision.v1",
+        "request_binding": "a" * 64, "review_status": "COMPLETE",
+        "summary": "Inspected café 🐈", "limitations": [],
+    }
+    if function_name == "EmitReviewDecision":
+        return {**common, "decision": "ACCEPT", "dispositions": [
+            {"finding_key": "seat-1:F1", "status": "RESOLVED", "rationale": "Observed correction",
+             "evidence": [{"basis": "OBSERVED", "description": "Test passed", "reference": None}]},
+        ]}
+    return {**common, "verdict": "PARTIALLY_AGREE", "scope_reviewed": ["contract"], "findings": [
+        {"id": "F1", "severity": "NON_BLOCKING", "title": "Clarify", "explanation": "Needs detail",
+         "requested_change": "Document it", "obligation_refs": [], "falsifier": None,
+         "evidence": [{"basis": "REASONED", "description": "From the contract", "reference": None}]},
+    ], "coverage": [{"question_id": "Q1", "status": "ANSWERED", "answer": "Inspected", "finding_ids": ["F1"]}]}
+
+
+@pytest.mark.parametrize("function_name", ["EmitReviewReply", "EmitReviewDecision"])
+def test_review_real_worker_records_original_text_and_consumed_reply(client, monkeypatch, function_name):
+    source = m.snapshot_baml_sources()
+    payload = _review_payload(function_name)
+    raw = "\n  " + json.dumps(payload, ensure_ascii=False, indent=2) + "\n"
+    sent, received = [], []
+    send, receive = m._Client._send_op, m._Client._on_frame
+
+    def record_send(self, gen, req):
+        send(self, gen, req)
+        if req.op.startswith("parse_review"):
+            sent.append((gen.pending_id, req.op, json.loads(req.body)["raw"], req.fp))
+
+    def record_receive(self, gen, line):
+        frame = json.loads(line)
+        if frame.get("operation", "").startswith("parse_review"):
+            received.append(frame)
+        receive(self, gen, line)
+
+    monkeypatch.setattr(m._Client, "_send_op", record_send)
+    monkeypatch.setattr(m._Client, "_on_frame", record_receive)
+    result = m.parse_review_response(function_name, raw, source_snapshot=source)
+    assert len(sent) == len(received) == 1
+    rid, op, original, fp = sent[0]
+    frame = received[0]
+    assert original == raw and original.encode("utf-8") == raw.encode("utf-8")
+    assert op == {"EmitReviewReply": "parse_review_reply", "EmitReviewDecision": "parse_review_decision"}[function_name]
+    assert result.request_id == frame["id"] == rid
+    assert result.operation == frame["operation"] == op
+    assert result.function_name == frame["function_name"] == function_name
+    assert result.fingerprint == frame["fingerprint"] == fp == source.fingerprint
+    assert result.runtime_version == frame["runtime_version"] == m._CLIENT.gen.runtime_version
+    assert result.value == json.loads(frame["ok"]) == payload
+    print(json.dumps({"function": function_name, "operation": op, "ipc_id": rid, "fingerprint": fp,
+                      "runtime_version": result.runtime_version, "raw_sha256": hashlib.sha256(raw.encode()).hexdigest(),
+                      "value_sha256": hashlib.sha256(json.dumps(result.value, sort_keys=True).encode()).hexdigest()}))
+    request = m.build_baml_request(function_name, {"request_json": '{"binding":"frozen"}'}, source_snapshot=source)
+    assert '{"binding":"frozen"}' in request.prompt
+    assert "request_binding" in request.prompt
+    assert "example.invalid" in request.url
+
+
+def test_review_snapshot_switches_are_reaped_without_retries(client, monkeypatch):
+    current = m.snapshot_baml_sources()
+    files = dict(current.files)
+    files["review_reply.baml"] = files["review_reply.baml"].replace("    PARTIALLY_AGREE", "    HISTORICAL_AGREE").replace(
+        "    summary: string,", "    historical_summary: string,",
+    )
+    historical = m.snapshot_baml_sources(files)
+    spawn = m._spawn_popen
+    generations, attempts = [], []
+    send = m._Client._send_op
+
+    def single_owner_spawn(*args, **kwargs):
+        assert all(_reaped(gen) for gen in generations)
+        return spawn(*args, **kwargs)
+
+    def count_attempts(self, gen, req):
+        attempts.append(req.attempts)
+        send(self, gen, req)
+
+    monkeypatch.setattr(m, "_spawn_popen", single_owner_spawn)
+    monkeypatch.setattr(m._Client, "_send_op", count_attempts)
+    # Exceed even the default retry allowance, with no retry budget available.
+    m._CLIENT.retries = 0
+    for i in range(2 * (m._MAX_RETRIES + 2)):
+        source = current if i % 2 == 0 else historical
+        value = _review_payload()
+        if i % 2:
+            value["verdict"] = "HISTORICAL_AGREE"
+            value["historical_summary"] = value.pop("summary")
+        parsed = m.parse_review_response("EmitReviewReply", json.dumps(value), source_snapshot=source)
+        assert parsed.value == value
+        assert parsed.fingerprint == source.fingerprint
+        generations.append(m._CLIENT.gen)
+    assert attempts == [1] * len(attempts)
+    assert _log() == []
+    assert m.snapshot_baml_sources().fingerprint == current.fingerprint
+    assert len(m._CLIENT.generations) == 1
+
+
+def test_review_class_and_echo_bypasses_cannot_return_parse_record(client, monkeypatch):
+    source = m.snapshot_baml_sources()
+    raw = json.dumps(_review_payload())
+    with pytest.raises(BamlValidationError):
+        m.parse_review_response("ReviewReplyV1", raw, source_snapshot=source)
+    with monkeypatch.context() as patcher:
+        patcher.setattr(m._CLIENT, "call", lambda *a, **k: ("ok", json.loads(raw)))
+        with pytest.raises(BamlWorkerError):
+            m.parse_review_response("EmitReviewReply", raw, source_snapshot=source)
+    monkeypatch.setattr(m, "_spawn_popen", _peer_spawn("review_echo_without_op"))
+    m._CLIENT.retries = 0
+    with pytest.raises(BamlWorkerError):
+        m.parse_review_response("EmitReviewReply", raw, source_snapshot=source)
+
+
+def test_review_snapshot_switch_reaps_a_prior_worker_already_marked_dying(client, monkeypatch):
+    source = m.snapshot_baml_sources()
+    raw = json.dumps(_review_payload())
+    m.parse_review_response("EmitReviewReply", raw, source_snapshot=source)
+    old = m._CLIENT.gen
+    files = dict(source.files)
+    files["review_reply.baml"] += "\n// historical source snapshot\n"
+    historical = m.snapshot_baml_sources(files)
+    start, spawn = m._Client._start, m._spawn_popen
+    seen = []
+
+    def eof_before_attempt(self, req):
+        if self.gen is old:
+            # Exercise the reader EOF transition while the real process still
+            # needs disposal/reaping; an EOF alone does not prove process exit.
+            self._on_eof(old, False)
+        start(self, req)
+
+    def reap_before_spawn(*args, **kwargs):
+        assert _reaped(old)
+        seen.append(old.pid)
+        return spawn(*args, **kwargs)
+
+    monkeypatch.setattr(m._Client, "_start", eof_before_attempt)
+    monkeypatch.setattr(m, "_spawn_popen", reap_before_spawn)
+    m._CLIENT.retries = 0
+    result = m.parse_review_response("EmitReviewReply", raw, source_snapshot=historical)
+    assert seen == [old.pid]
+    assert result.value == json.loads(raw)
+    assert result.fingerprint == historical.fingerprint
+
+
+def test_review_saved_source_parse_never_reads_the_current_package(client, monkeypatch):
+    source = m.snapshot_baml_sources()
+    m._reset_worker_for_tests(test_mode=True)
+    with monkeypatch.context() as patcher:
+        patcher.setattr(m, "_read_baml_files", lambda: pytest.fail("current package read"))
+        patcher.setattr(m, "_enum_literal_map", lambda: pytest.fail("current enum cache read"))
+        result = m.parse_review_response("EmitReviewReply", json.dumps(_review_payload()), source_snapshot=source)
+        request = m.build_baml_request("EmitReviewReply", {"request_json": "{}"}, source_snapshot=source)
+    assert result.fingerprint == source.fingerprint
+    assert "request_binding" in request.prompt
+
+
+@pytest.mark.parametrize("mode,kind", [("wrong_id", "desync"), ("wrong_fingerprint", "fingerprint"),
+                                     ("review_wrong_op", "framing"), ("review_wrong_version", "framing")])
+def test_review_refuses_unmatched_worker_metadata(client, monkeypatch, mode, kind):
+    monkeypatch.setattr(m, "_spawn_popen", _peer_spawn(mode))
+    m._CLIENT.retries = 0
+    with pytest.raises(BamlWorkerError) as exc:
+        m.parse_review_response("EmitReviewReply", json.dumps(_review_payload()), source_snapshot=m.snapshot_baml_sources())
+    assert exc.value.kind == kind
+
+
+def test_review_actual_parse_error_and_real_worker_fault(client):
+    source = m.snapshot_baml_sources()
+    with pytest.raises(BamlValidationError) as exc:
+        m.parse_review_response("EmitReviewReply", "not JSON PRIVATE_SENTINEL", source_snapshot=source)
+    assert type(exc.value) is BamlValidationError
+    assert "PRIVATE_SENTINEL" not in str(exc.value)
+    files = dict(source.files)
+    files["phase_loop_bridge.baml"] = _bridge_with(
+        "phase_loop_parse_review_reply", 'throw baml.errors.Io { message: "PRIVATE_SENTINEL" };',
+    )
+    with pytest.raises(BamlWorkerError) as exc:
+        m.parse_review_response("EmitReviewReply", json.dumps(_review_payload()), source_snapshot=m.snapshot_baml_sources(files))
+    assert exc.value.kind == "fault"
+    assert "PRIVATE_SENTINEL" not in str(exc.value)
+
+
+def test_review_result_consumes_worker_value_not_decoded_original(client, monkeypatch):
+    receive = m._Client._on_frame
+    observed = []
+
+    def changed_reply(self, gen, line):
+        frame = json.loads(line)
+        if frame.get("operation") == "parse_review_reply":
+            value = json.loads(frame["ok"])
+            value["summary"] = "DIFFERENT WORKER VALUE"
+            frame["ok"] = json.dumps(value)
+            line = json.dumps(frame).encode()
+            observed.append(value)
+        receive(self, gen, line)
+
+    monkeypatch.setattr(m._Client, "_on_frame", changed_reply)
+    original = _review_payload()
+    result = m.parse_review_response("EmitReviewReply", json.dumps(original), source_snapshot=m.snapshot_baml_sources())
+    assert len(observed) == 1 and result.value == observed[0]
+    assert result.value != original  # the SL-1 equality gate must reject this result
+
+
+def test_review_missing_runtime_declaration_cannot_fall_back_to_current(client):
+    current = m.snapshot_baml_sources()
+    files = dict(current.files)
+    del files["review_reply.baml"]
+    with pytest.raises(BamlWorkerError) as exc:
+        m.parse_review_response("EmitReviewReply", json.dumps(_review_payload()), source_snapshot=m.snapshot_baml_sources(files))
+    assert exc.value.kind == "init_fault"
+    result = m.parse_review_response("EmitReviewReply", json.dumps(_review_payload()), source_snapshot=current)
+    assert result.fingerprint == current.fingerprint
 
 
 def test_payload_filtering_requirements_and_normalization(client):
@@ -525,7 +743,7 @@ def test_d3_field_syntax_stays_strict():
 
 
 def test_adoption_bundle_excludes_the_bridge(tmp_path):
-    """#26: schema refs are the 8 schema files; editing the bridge changes nothing."""
+    """Schema refs include the review schema; editing the bridge changes nothing."""
     from phase_loop_runtime import adoption_bundle
 
     root = tmp_path / adoption_bundle.BAML_SCHEMA_ROOT
@@ -533,7 +751,7 @@ def test_adoption_bundle_excludes_the_bridge(tmp_path):
     for path in (PKG / "baml_src").glob("*.baml"):
         (root / path.name).write_bytes(path.read_bytes())
     refs = adoption_bundle._schema_refs(tmp_path)
-    assert len(refs) == 8
+    assert len(refs) == 9
     assert all(not ref["source_path"].endswith("phase_loop_bridge.baml") for ref in refs)
     (root / "phase_loop_bridge.baml").write_text("// edited\n", encoding="utf-8")
     assert adoption_bundle._schema_refs(tmp_path) == refs
@@ -562,7 +780,7 @@ def test_adoption_bundle_refresh_and_check_end_to_end(tmp_path):
     assert adoption_bundle.adoption_bundle_status(tmp_path)["status"] == "stale"
     assert adoption_bundle.refresh_adoption_bundle(tmp_path)["refreshed"] is True
     bundle = json.loads((tmp_path / adoption_bundle.ADOPTION_BUNDLE_PATH).read_text(encoding="utf-8"))
-    assert len(bundle["schema_refs"]) == 8
+    assert len(bundle["schema_refs"]) == 9
     assert not any(ref["source_path"].endswith("phase_loop_bridge.baml") for ref in bundle["schema_refs"])
     assert adoption_bundle.adoption_bundle_status(tmp_path)["status"] == "fresh"
     (root / "phase_loop_bridge.baml").write_text("// host glue edited\n", encoding="utf-8")
@@ -820,6 +1038,8 @@ def test_worker_protocol_rejects_ops_before_init_and_a_second_init():
         assert "fault" in env_without_test_mode
         good = send({"id": 5, "op": "parse_closeout", "args": {"raw": OK}})
         assert set(good) == {"id", "fingerprint", "ok"}
+        malformed = send({"id": 6, "op": [], "args": {}})
+        assert set(malformed) == {"id", "fingerprint", "fault"}
         proc.stdin.close()
         assert proc.wait(10) == 0  # stdin EOF is the graceful exit
     finally:

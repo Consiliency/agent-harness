@@ -10,6 +10,19 @@ BAML_SOURCE = BAML_SRC_DIR / "emit_phase_closeout.baml"
 
 
 class PhaseLoopBamlSchemaSourceTest(unittest.TestCase):
+    def test_review_contract_uses_declared_functions_and_native_enums(self):
+        text = (BAML_SRC_DIR / "review_reply.baml").read_text(encoding="utf-8")
+        bridge = (BAML_SRC_DIR / "phase_loop_bridge.baml").read_text(encoding="utf-8")
+        for name in ("EmitReviewReply", "EmitReviewDecision"):
+            self.assertIn(f"function {name}(request_json: string)", text)
+            self.assertIn(f'{name}@spec(request_json = "")', bridge)
+            self.assertIn(f"{name}@spec(request_json = request_json)", bridge)
+        self.assertIn("enum ReviewVerdictV1", text)
+        self.assertIn("verdict: ReviewVerdictV1?", text)
+        self.assertIn("falsifier: ReviewFalsifierV1?", text)
+        self.assertIn("reference: string?", text)
+        self.assertEqual(len(tuple(BAML_SRC_DIR.glob("*.baml"))), 10)
+
     def test_emit_phase_closeout_contract_is_declared(self):
         text = BAML_SOURCE.read_text(encoding="utf-8")
         self.assertIn("function EmitPhaseCloseout(", text)

@@ -22,6 +22,8 @@ import _thread
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from types import MappingProxyType
+from collections.abc import Mapping
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, ValidationError, field_validator
@@ -95,7 +97,73 @@ class ParsedResponse:
     value: Any
 
 
-def build_baml_request(function_name: str, payload: dict[str, Any] | None = None) -> BamlRequest:
+@dataclass(frozen=True)
+class BamlSourceSnapshot:
+    """A copied, immutable full rendered source map, suitable for durable replay."""
+
+    files: Mapping[str, str]
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.files, Mapping):
+            raise BamlValidationError("BAML snapshot must be a source map")
+        files = dict(self.files)
+        if not files or not all(
+            isinstance(k, str) and re.fullmatch(r"[A-Za-z0-9_.-]+\.baml", k)
+            and isinstance(v, str) and "{{" not in v and "{%" not in v
+            for k, v in files.items()
+        ):
+            raise BamlValidationError("BAML snapshot must contain rendered source files")
+        _reject_lone_surrogates(files)
+        object.__setattr__(self, "files", MappingProxyType(files))
+
+    @property
+    def fingerprint(self) -> str:
+        return _fingerprint(dict(self.files))
+
+
+def snapshot_baml_sources(files: Mapping[str, str] | None = None) -> BamlSourceSnapshot:
+    """Capture current sources, or restore saved rendered files without package reads."""
+    return BamlSourceSnapshot(_snapshot_files() if files is None else files)
+
+
+@dataclass(frozen=True)
+class ReviewParseResult:
+    """Matched real-worker parse reply. This is not semantic acceptance."""
+
+    function_name: str
+    operation: str
+    request_id: int
+    fingerprint: str
+    runtime_version: str
+    value: dict[str, Any]
+
+
+def parse_review_response(
+    function_name: str, raw_text: str, *, source_snapshot: BamlSourceSnapshot,
+) -> ReviewParseResult:
+    """Parse exact original text with a declared function in the bound worker.
+
+    The caller must precheck the original JSON against the bound export, compare
+    the consumed value strictly, and enforce binding/semantics before acceptance.
+    Class names deliberately cannot enter this API.
+    """
+    op = _REVIEW_PARSE_OPS.get(function_name)
+    if op is None or not isinstance(raw_text, str):
+        raise BamlValidationError("review parse requires a declared review function and text")
+    if not isinstance(source_snapshot, BamlSourceSnapshot):
+        raise BamlValidationError("review parse requires a source snapshot")
+    outcome, value = _CLIENT.call(op, {"raw": raw_text}, source_snapshot=source_snapshot)
+    if outcome == "error":
+        raise BamlValidationError("BAML review parse failed")
+    if not isinstance(value, ReviewParseResult):
+        raise BamlWorkerError("framing", "review parse reply lacks matched worker metadata")
+    return value
+
+
+def build_baml_request(
+    function_name: str, payload: dict[str, Any] | None = None, *,
+    source_snapshot: BamlSourceSnapshot | None = None,
+) -> BamlRequest:
     if os.getpid() != _CLIENT.owner_pid:
         raise BamlWorkerError("forked", "BAML is not usable in a forked child that has not exec'd")
     bridge = _BRIDGE_TABLE.get(function_name)
@@ -103,7 +171,10 @@ def build_baml_request(function_name: str, payload: dict[str, Any] | None = None
         raise BamlValidationError(f"BAML function not found: {function_name}")
     op, params = bridge
     args = _bridge_args(function_name, params, payload or {})
-    outcome, request = _worker_call(op, args)
+    if source_snapshot is None:
+        outcome, request = _worker_call(op, args)
+    else:
+        outcome, request = _CLIENT.call(op, args, source_snapshot=source_snapshot)
     with _client_boundary():
         return _build_from_reply(function_name, request)
 
@@ -202,12 +273,17 @@ def _bridge_args(function_name: str, params: tuple[str, ...], payload: dict[str,
     return args
 
 
-def export_function_schema(function_name: str) -> dict[str, Any]:
-    baml_files = _snapshot_files()
+def export_function_schema(
+    function_name: str, *, source_snapshot: BamlSourceSnapshot | None = None,
+) -> dict[str, Any]:
+    """Export from exactly the supplied saved map, or the legacy current snapshot."""
+    if source_snapshot is not None and not isinstance(source_snapshot, BamlSourceSnapshot):
+        raise BamlValidationError("BAML export requires a source snapshot")
+    baml_files = _snapshot_files() if source_snapshot is None else source_snapshot.files
     baml_text = "\n".join(baml_files.values())
     return_type = _export_target_type(baml_text, function_name)
     fields = _class_fields(baml_text, return_type)
-    enum_literals = _enum_literal_map()
+    enum_literals = _enum_literal_map() if source_snapshot is None else _comment_enum_literals(baml_text)
     required = _required_fields(return_type, fields)
     properties = {
         field_name: _schema_for_baml_field(baml_text, field_name, field_type, optional, enum_literals, seen=(return_type,))
@@ -366,6 +442,17 @@ def _class_fields(baml_text: str, class_name: str) -> list[tuple[str, str, bool]
 @lru_cache(maxsize=1)
 def _enum_literal_map() -> dict[str, tuple[str, ...]]:
     baml_text = "\n".join(_snapshot_files().values())
+    result = _comment_enum_literals(baml_text)
+    from . import models
+
+    result["terminal_status"] = tuple(models.PHASE_STATUSES)
+    result["verification_status"] = ("not_run", "passed", "failed", "blocked")
+    result["blocker_class"] = (*models.BLOCKER_CLASSES, "none")
+    return result
+
+
+def _comment_enum_literals(baml_text: str) -> dict[str, tuple[str, ...]]:
+    """Legacy comment enums, read from these bytes only; no Python overrides."""
     result: dict[str, list[str]] = {}
     current: str | None = None
     for raw_line in baml_text.splitlines():
@@ -385,12 +472,24 @@ def _enum_literal_map() -> dict[str, tuple[str, ...]]:
             continue
         if current and line and not line.startswith("//"):
             current = None
-    from . import models
-
-    result["terminal_status"] = list(models.PHASE_STATUSES)
-    result["verification_status"] = ["not_run", "passed", "failed", "blocked"]
-    result["blocker_class"] = [*models.BLOCKER_CLASSES, "none"]
     return {key: tuple(values) for key, values in result.items()}
+
+
+def _native_enum_literals(baml_text: str, name: str) -> tuple[str, ...] | None:
+    match = re.search(rf"\benum\s+{re.escape(name)}\s*\{{(.*?)\n\}}", baml_text, re.DOTALL)
+    if match is None:
+        return None
+    values = []
+    for raw_line in match.group(1).splitlines():
+        line = raw_line.split("//", 1)[0].strip().rstrip(",")
+        if not line:
+            continue
+        if not re.fullmatch(r"[A-Za-z_]\w*", line):
+            raise BamlValidationError("unsupported native BAML enum syntax")
+        values.append(line)
+    if not values or len(values) != len(set(values)):
+        raise BamlValidationError("invalid native BAML enum")
+    return tuple(values)
 
 
 def _extend_enum_literals(values: list[str], text: str) -> None:
@@ -417,6 +516,7 @@ def _schema_for_baml_field(
     seen: tuple[str, ...],
 ) -> dict[str, Any]:
     array_item_type = field_type[:-2] if field_type.endswith("[]") else None
+    native_enum = _native_enum_literals(baml_text, array_item_type or field_type)
     if field_type == "string":
         schema: dict[str, Any] = {"type": ["string", "null"] if optional else "string"}
     elif field_type == "bool":
@@ -436,6 +536,15 @@ def _schema_for_baml_field(
             schema = {"type": ["array", "null"], "items": item_schema}
         else:
             schema = {"type": "array", "items": item_schema}
+    elif native_enum is not None:
+        enum_schema = {"type": "string", "enum": list(native_enum)}
+        if array_item_type:
+            schema = {"type": ["array", "null"] if optional else "array", "items": enum_schema}
+        else:
+            schema = {
+                "type": ["string", "null"] if optional else "string",
+                "enum": [*native_enum, None] if optional else list(native_enum),
+            }
     elif _class_exists(baml_text, field_type):
         object_schema = _schema_for_baml_class(baml_text, field_type, enum_literals, seen=seen)
         if optional:
@@ -444,12 +553,15 @@ def _schema_for_baml_field(
             schema = object_schema
     else:
         raise BamlValidationError(f"unsupported BAML field type for schema export: {field_type}")
-    if field_name in enum_literals:
+    # Review classes use native declaration types only. A field named "status"
+    # must never inherit a different class's global legacy comment enum.
+    review_class = seen[-1].startswith("Review")
+    if not review_class and native_enum is None and field_name in enum_literals:
         enum_values: list[str | None] = list(enum_literals[field_name])
         if optional:
             enum_values.append(None)
         schema["enum"] = enum_values
-    description = _FIELD_DESCRIPTIONS.get(field_name)
+    description = None if review_class else _FIELD_DESCRIPTIONS.get(field_name)
     if description:
         schema["description"] = description
     return schema
@@ -485,7 +597,7 @@ def _schema_for_baml_class(
 
 
 def _required_fields(class_name: str, fields: list[tuple[str, str, bool]]) -> list[str]:
-    if class_name == "PhaseLoopCloseoutV1":
+    if class_name == "PhaseLoopCloseoutV1" or class_name.startswith("Review"):
         return [field_name for field_name, _field_type, _optional in fields]
     return [field_name for field_name, _field_type, optional in fields if not optional]
 
@@ -711,11 +823,18 @@ _WORKER_LOADER_KEYS = {
 
 # Bridge table (#23): the only functions that reach the worker.
 _BRIDGE_TABLE: dict[str, tuple[str, tuple[str, ...]]] = {
+    "EmitReviewReply": ("review_reply_request", ("request_json",)),
+    "EmitReviewDecision": ("review_decision_request", ("request_json",)),
     "EmitPhaseCloseout": ("closeout_request", ("phase_alias", "plan_produces", "plan_owned_files", "closeout_commit_sha")),
     "EvaluateSuspectedFakeEvidence": (
         "evidence_request",
         ("tier2_signal_summary", "sample_artifact_content", "expected_artifact_characteristics"),
     ),
+}
+
+_REVIEW_PARSE_OPS = {
+    "EmitReviewReply": "parse_review_reply",
+    "EmitReviewDecision": "parse_review_decision",
 }
 
 
@@ -749,7 +868,7 @@ def worker_fault_log() -> list[dict[str, Any]]:
 class _Request:
     __slots__ = (
         "op", "body", "files", "fp", "reply", "enqueued_at", "started_at", "heartbeat",
-        "attempts", "attempt_deadline", "done", "consumed", "gen", "spawn", "outcome",
+        "attempts", "attempt_deadline", "done", "consumed", "gen", "spawn", "outcome", "retiring",
     )
 
     def __init__(self, op: str, body: bytes, files: dict[str, str], fp: str) -> None:
@@ -769,6 +888,7 @@ class _Request:
         self.outcome: tuple[str, Any] | None = None
         self.gen: _Gen | None = None
         self.spawn: _Spawn | None = None
+        self.retiring: _Gen | None = None
 
 
 class _Spawn:
@@ -811,6 +931,7 @@ class _Gen:
         self.eof_partial = False
         self.overdue = False
         self.log_entry: dict[str, Any] | None = None
+        self.runtime_version: str | None = None
 
 
 _STDERR_TAIL_BYTES = 2048
@@ -1076,7 +1197,10 @@ class _Client:
         return snap
 
     # -- calling thread ------------------------------------------------------
-    def call(self, op: str, args: dict[str, Any]) -> tuple[str, str]:
+    def call(
+        self, op: str, args: dict[str, Any], *,
+        source_snapshot: BamlSourceSnapshot | None = None,
+    ) -> tuple[str, Any]:
         if os.getpid() != self.owner_pid:
             raise BamlWorkerError("forked", "BAML is not usable in a forked child that has not exec'd")
         try:
@@ -1084,7 +1208,12 @@ class _Client:
             if self.closing:
                 raise BamlWorkerError("shutdown", "BAML worker client is shutting down")
             body = _serialize_args(args)
-            files, fp = self.files()
+            if source_snapshot is None:
+                files, fp = self.files()
+            elif isinstance(source_snapshot, BamlSourceSnapshot):
+                files, fp = dict(source_snapshot.files), source_snapshot.fingerprint
+            else:
+                raise BamlValidationError("BAML call requires a source snapshot")
             req = _Request(op, body, files, fp)
         except BamlValidationError:
             raise  # content errors stay plain; BamlWorkerError passes through
@@ -1104,7 +1233,7 @@ class _Client:
                 raise BamlWorkerError("fault", f"BAML client failure: {_sanitize_error(exc)}") from exc
             raise
 
-    def _wait(self, req: _Request) -> tuple[str, str]:
+    def _wait(self, req: _Request) -> tuple[str, Any]:
         # An independent bound, derived from the request's own budgets: however
         # the owner fails, the caller never waits past queue + execution budget
         # plus the abandonment and reap bounds.
@@ -1391,6 +1520,10 @@ class _Client:
         if self.active is None and self.backlog and not self.closing:
             self._start(self.backlog.popleft())
         self._reap(now)
+        active = self.active
+        if active is not None and active.retiring is not None and active.retiring not in self.generations:
+            active.retiring = None
+            self._request_spawn(active)
         if self.stop_acks:
             self._continue_stop(now)
         if (
@@ -1410,7 +1543,19 @@ class _Client:
     def _attempt(self, req: _Request) -> None:
         req.attempts += 1
         req.attempt_deadline = time.monotonic() + self.deadline_s
+        if req.retiring is not None and req.retiring in self.generations:
+            return  # still bounded by this attempt's existing deadline
+        req.retiring = None
         gen = self.gen
+        if gen is not None and gen.fp != req.fp and gen.state in ("idle", "dying"):
+            # A source switch never spends an extra attempt. Even a worker
+            # whose stdout has already closed must be reaped before replacement.
+            was_dying = gen.state == "dying"
+            if gen in self.dying:
+                self.dying.remove(gen)
+            req.retiring = gen
+            self._dispose(gen, "died" if was_dying else "snapshot_switch", phase="idle", log=was_dying)
+            return
         if gen is not None and gen.state == "idle":
             if not _exiting(gen.proc):
                 self._send_op(gen, req)
@@ -1645,17 +1790,23 @@ class _Client:
         if not isinstance(frame, dict):
             self._fail(gen, "framing", "worker frame is not a JSON object")
             return
-        outcome_keys = set(frame) - {"id", "fingerprint"}
+        req = gen.request
+        review_function = next(
+            (name for name, op in _REVIEW_PARSE_OPS.items() if req is not None and req.op == op), None,
+        ) if gen.state == "busy" else None
+        metadata_keys = {"operation", "function_name", "runtime_version"} if review_function else set()
+        outcome_keys = set(frame) - {"id", "fingerprint"} - metadata_keys
         if "id" not in frame or "fingerprint" not in frame or len(outcome_keys) != 1 or not outcome_keys <= {"ok", "error", "request", "fault"}:
             self._fail(gen, "framing", "worker frame has unexpected keys")
             return
-        if gen.state == "idle" or frame["id"] != gen.pending_id:
+        if gen.state == "idle" or type(frame["id"]) is not int or frame["id"] != gen.pending_id:
             self._fail(gen, "desync", "worker frame id does not match the request")
             return
         (outcome,) = outcome_keys
         value = frame[outcome]
         if outcome == "fault":
-            self._fail(gen, "init_fault" if gen.state == "init" else "fault", f"worker fault: {value}")
+            message = "review worker fault" if review_function else f"worker fault: {value}"
+            self._fail(gen, "init_fault" if gen.state == "init" else "fault", message)
             return
         if frame["fingerprint"] != gen.fp:
             self._fail(gen, "fingerprint", "worker fingerprint does not match the source snapshot")
@@ -1664,6 +1815,8 @@ class _Client:
             if outcome != "ok":
                 self._fail(gen, "framing", "worker init reply is not ok")
                 return
+            if isinstance(value, dict) and isinstance(value.get("version"), str):
+                gen.runtime_version = value["version"]
             gen.state = "idle"
             gen.pending_id = None
             req = gen.request
@@ -1672,8 +1825,23 @@ class _Client:
                 self._send_op(gen, req)
             return
         req = gen.request
+        if review_function and (
+            frame.get("operation") != req.op or frame.get("function_name") != review_function
+            or not gen.runtime_version or frame.get("runtime_version") != gen.runtime_version
+            or frame["fingerprint"] != req.fp
+        ):
+            self._fail(gen, "framing", "review reply metadata does not match the initialized invocation")
+            return
         try:
             decoded = _decode_outcome(req.op if req is not None else "", outcome, value)
+            if review_function and outcome == "ok":
+                if not isinstance(decoded, dict):
+                    raise ValueError("review parse result is not an object")
+                decoded = ReviewParseResult(
+                    function_name=frame["function_name"], operation=frame["operation"],
+                    request_id=frame["id"], fingerprint=frame["fingerprint"],
+                    runtime_version=frame["runtime_version"], value=decoded,
+                )
         except ValueError as exc:
             self._fail(gen, "framing", str(exc))
             return
@@ -1756,7 +1924,7 @@ class _Client:
         self.active = None
 
     # -- disposal -------------------------------------------------------------
-    def _dispose(self, gen: _Gen, kind: str, *, phase: str, rc: int | None = None) -> None:
+    def _dispose(self, gen: _Gen, kind: str, *, phase: str, rc: int | None = None, log: bool = True) -> None:
         # Effects before flags: until ``state`` reads "disposed", recovery treats
         # the generation as live and disposes of it again.
         if gen.state == "disposed":
@@ -1764,7 +1932,8 @@ class _Client:
         self._kill(gen)
         if gen not in self.late:
             self.late.append(gen)
-        self._log(kind, gen, phase=phase, rc=rc if rc is not None else gen.proc.returncode)
+        if log:
+            self._log(kind, gen, phase=phase, rc=rc if rc is not None else gen.proc.returncode)
         gen.request = None
         gen.state = "disposed"
         if gen is self.gen:
@@ -2120,6 +2289,10 @@ class _Client:
 
 
 _OUTCOMES_BY_OP = {
+    "parse_review_reply": ("ok", "error"),
+    "parse_review_decision": ("ok", "error"),
+    "review_reply_request": ("request",),
+    "review_decision_request": ("request",),
     "parse_closeout": ("ok", "error"),
     "closeout_request": ("request",),
     "evidence_request": ("request",),

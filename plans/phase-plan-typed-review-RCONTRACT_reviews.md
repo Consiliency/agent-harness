@@ -38,3 +38,20 @@ the phase performs no release dispatch. No criterion or interface gate is closed
 
 Fresh Claude delta review requested against the corrected plan, original brief,
 full prior findings, responses and unresolved blocker. No verdict is assumed.
+
+Completed result: COMPLETE / AGREE. RC-PLAN-F1 is RESOLVED; F2–F6 are
+ACCEPTED. No blocker remains. The full original report is retained privately.
+
+Two new NON_BLOCKING findings explicitly require no additional plan round:
+
+- RC-PLAN-N1: include `v22_principles` in the suite and preserve dialect-clean
+  review schemas through the existing bare-class export path. Applied as an
+  execution clarification; the existing test remains unchanged.
+- RC-PLAN-N2: planned snapshot switches are not failures/retries/extra attempts;
+  alternating-map tests exceed the configured retry limit and retain finite
+  budgets. Applied as an execution clarification.
+
+Independent phase-plan review is satisfied for manual execution. This does not
+claim BAML-accepted content, operational qualification, or full-board/president
+landing ratification. Implementation review and all phase EC/IF evidence remain
+required.
