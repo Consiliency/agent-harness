@@ -4,7 +4,7 @@ phase: RCONTRACT
 roadmap: docs/proposals/typed-review-roadmap.md
 roadmap_sha256: 45b6faac632fcdf47fc5605389826d256126ab6f4c2a2b44859f2a3088f2e3e8
 automation:
-  suite_command: ["uv", "run", "--quiet", "--project", "phase-loop-runtime", "--group", "test", "--extra", "visual", "--locked", "python", "-m", "pytest", "phase-loop-runtime/tests", "-q", "-k", "review_contract or phase_loop_baml or export_schema"]
+  suite_command: ["uv", "run", "--quiet", "--project", "phase-loop-runtime", "--group", "test", "--extra", "visual", "--locked", "python", "-m", "pytest", "phase-loop-runtime/tests", "-q", "-k", "review_contract or phase_loop_baml or export_schema or phase_loop_skill_baml_closeout or phase_loop_terminal_summary_mirrors_baml_closeout or phase_loop_closeout_schema or phase_loop_schema_flow or pkg_layout_freeze or launchspec_golden"]
 ---
 
 # RCONTRACT: Freeze BAML review contracts and gateway
@@ -59,14 +59,16 @@ SL-1 — Acceptance, conformance and docs reduction
 ### SL-0 — BAML types, worker and exporter
 
 - **Scope**: Extend the isolated local BAML worker and source-derived exporter without changing closeout behavior.
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/baml_src/review_reply.baml`, `phase-loop-runtime/src/phase_loop_runtime/baml_src/phase_loop_bridge.baml`, `phase-loop-runtime/src/phase_loop_runtime/_baml_worker.py`, `phase-loop-runtime/src/phase_loop_runtime/baml_modular.py`, `phase-loop-runtime/tests/test_phase_loop_baml_v1_runtime.py`, `phase-loop-runtime/tests/test_phase_loop_baml_schema_export.py`, `phase-loop-runtime/tests/test_phase_loop_baml_schema_source.py`, `phase-loop-runtime/tests/test_phase_loop_baml_v1_callers.py`, `phase-loop-runtime/tests/fixtures/baml_worker_peers.py`, `phase-loop-runtime/tests/data/baml_call_sites.json`
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/baml_src/review_reply.baml`, `phase-loop-runtime/src/phase_loop_runtime/baml_src/phase_loop_bridge.baml`, `phase-loop-runtime/src/phase_loop_runtime/_baml_worker.py`, `phase-loop-runtime/src/phase_loop_runtime/baml_modular.py`, `phase-loop-runtime/tests/test_phase_loop_baml_v1_runtime.py`, `phase-loop-runtime/tests/test_phase_loop_baml_schema_export.py`, `phase-loop-runtime/tests/test_phase_loop_baml_schema_source.py`, `phase-loop-runtime/tests/test_phase_loop_baml_v1_callers.py`, `phase-loop-runtime/tests/fixtures/baml_worker_peers.py`, `phase-loop-runtime/tests/data/baml_call_sites.json`, `.github/workflows/test.yml`
 - **Interfaces provided**: `IF-0-RCONTRACT-1`
 - **Interfaces consumed**: worker framing and fingerprint (pre-existing), finite recovery and shutdown (pre-existing), closeout APIs (pre-existing)
 - **Parallel-safe**: no
 - **Tasks**:
   - test: Add real-worker review and president parse/request controls, exact original-text and IPC reply recording, class-name/schema-only bypass and echo-input mutation failures; retain closeout, process lifetime and environment coverage.
   - impl: Add native BAML enums and explicit required-null review fields, class-qualified export without Python review enum authority, declared-function `.parse(raw)` and `.build_request()` bridge operations; never execute inference through placeholder clients.
-  - impl: Expose saved full rendered-file maps and snapshot-specific worker/schema calls. Preserve the existing canonical fingerprint, isolate parser state per snapshot without global mutable swaps, reject unavailable/unsupported snapshots, and expose metadata only after checking the actual matched reply. Keep existing operation names and closeout APIs compatible.
+  - impl: Expose saved full rendered-file maps and snapshot-specific worker/schema calls. Preserve the existing canonical fingerprint, isolate parser state per snapshot without global mutable swaps, reject unavailable/unsupported snapshots, and expose metadata only after checking the actual matched reply. Keep existing operation names and closeout APIs compatible. Route each request by its saved fingerprint; never reuse a mismatched generation. Retire and reap the old generation before respawning, preserving the existing single-owner lifetime and bounded recovery guarantees. Snapshot-specific export must not read the global enum cache or current snapshot. Test alternating current and historical maps in one process, with reply fingerprints checked against each request and lifetime/environment/shutdown regressions retained.
+  - impl: Change only the two BAML source-count assertions in `.github/workflows/test.yml` to match the actual packaged file count; preserve the required job and its pinned toolchain.
+  - verify: Run checksum-verified baml-cli 0.20.1 fmt on owned BAML sources and assert an idempotent second pass; check raw and rendered sources in temporary projects, requiring the actual packaged file count. Record these results and the CI guard checks triggered by the workflow edit. Preserve the legacy closeout schema golden; test native review-field/enum mutations in saved maps without changing current-snapshot acceptance.
   - verify: Run the two existing BAML test modules with the new controls, including an actual parse failure. Review the exact API before downstream edits and freeze it in the lane handoff.
 
 ### SL-1 — Acceptance, conformance and docs reduction
@@ -78,7 +80,7 @@ SL-1 — Acceptance, conformance and docs reduction
 - **Parallel-safe**: no
 - **Tasks**:
   - test: Freeze canonical request/receipt vectors, source snapshot replay, strict original-byte/type/equality controls, request/evidence/coverage bindings, semantic verdicts, dissent, lens-free/advisory controls, president ledger membership and contradictions. Exercise byte, nesting, list and code-point limits at their boundaries.
-  - impl: Accept one bounded original UTF-8 JSON object, rejecting duplicate keys, suffixes, unknown/missing fields, nonfinite values and coercion. Call the real declared-function worker with original text, verify IPC/snapshot metadata and strict tree equality before semantics and record minting. Never accept a class-name-only parse or reviewer-authored authority claims.
+  - impl: Accept one bounded original UTF-8 JSON object, rejecting duplicate keys, suffixes, unknown/missing fields, nonfinite values and coercion. The strict precheck consumes only the IF-0-RCONTRACT-1 schema exported from the request-bound saved map, never a handwritten review field/enum schema. A saved-map declared-field/enum mutation must change strict acceptance for that snapshot alone. Call the real declared-function worker with original text, verify IPC/snapshot metadata and strict tree equality before semantics and record minting. Never accept a class-name-only parse or reviewer-authored authority claims.
   - impl: Implement full frozen request/attempt/lineage/source identity, durable content-addressed BAML source maps, transport registration and metadata-only content records, private original bytes and parsed bodies, atomic idempotent same-delivery intake and different-delivery conflict. Revalidate historical bytes using their saved map. Purpose, usable vote and governed eligibility remain distinct; HOST_ATTESTED never acquires eligibility without existing admission.
   - impl: Reserve at most one correction per original lineage durably before dispatch. Freeze invalid-original → invalid-correction → refused-again, including resume and new attempt IDs. Never retry valid dissent; preserve original failure and replacement identity. This gateway vector is carried to EC-RT3-2 and EC-RPANEL-1 for adapter proof.
   - impl: Apply N9-R3: falsifier identifier/path/node/diff structural validity belongs to the governed gate, not acceptance semantics. NON_BLOCKING-with-falsifier is the only falsifier semantic rejection. Do not execute attachments or fetch evidence references.
@@ -115,6 +117,10 @@ commits are authorized, protected merges/releases are not.
 
 ## Spec Closeout Plan
 
+The proposal contract remains a preserved design input; the new canonical contract
+carries the frozen executable interface. This explicitly locates the roadmap
+contract closeout in the canonical successor and is recorded in the phase ledger.
+
 - schema: `spec_delta_closeout.v1`
 - decision: `canonical_spec_update`
 - target surfaces: `docs/phase-loop/typed-review-contract.md`, `phase-loop-runtime/src/phase_loop_runtime/baml_src/review_reply.baml`
@@ -127,11 +133,20 @@ commits are authorized, protected merges/releases are not.
 Run from the owned repository root with absolute source/test PYTHONPATH. Refresh
 locked dependencies using `uv sync --project phase-loop-runtime --group test --extra visual --locked`.
 The automation suite is the complete RCONTRACT suite. Run source-scoped repository
-checks with `make check`; keep their failures distinct from phase acceptance.
-Runner `run_verification` produces the required sealed verification artifact under
-`.phase-loop/typed-review/RCONTRACT/`; validate it rather than hand-authoring success.
+checks with `make check`; record their results separately, but closeout preservation
+and required CI regressions block lane handoff and phase closeout.
+Resolve `suite, findings = resolve_suite_command_doc(repo, roadmap, plan)` and require
+a nonempty suite and no findings. Invoke the supported public producer as
+`run_verification(repo, run_dir, commands, suite, env_refresh, 1200, phase_alias="RCONTRACT")`,
+where `commands, exemptions = verification_commands_from_plan(plan)`,
+`env_refresh` contains the locked uv-sync argv above (never a fabricated exit code),
+and `run_dir` is a fresh `.phase-loop/typed-review/RCONTRACT/verify-<run_id>` directory.
+Require `validate_verification_artifact(run_dir / "verification.json").ok`.
+The roadmap evidence file references that exact sealed artifact path and SHA256,
+its log path/digest, and actual EC/IF disposition; it cannot restate success without
+those bindings. Baseline artifacts remain distinct and cannot close new criteria.
 
-- `uv run --quiet --project phase-loop-runtime --group test --extra visual --locked python -m pytest phase-loop-runtime/tests -q -k 'review_contract or phase_loop_baml or export_schema'`
+- `uv run --quiet --project phase-loop-runtime --group test --extra visual --locked python -m pytest phase-loop-runtime/tests -q -k 'review_contract or phase_loop_baml or export_schema or phase_loop_skill_baml_closeout or phase_loop_terminal_summary_mirrors_baml_closeout or phase_loop_closeout_schema or phase_loop_schema_flow or pkg_layout_freeze or launchspec_golden'`
 - `git diff --check`
 
 ## Acceptance Criteria

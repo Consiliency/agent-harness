@@ -1,6 +1,6 @@
 {
   "schema": "typed_review_execution_ledger.v1",
-  "updated_at": "2026-10-19T18:35:33.261489+00:00",
+  "updated_at": "2026-10-19T18:41:53.868651+00:00",
   "roadmap": "docs/proposals/typed-review-roadmap.md",
   "plan": "plans/phase-plan-typed-review-RCONTRACT.md",
   "head": "bcc9b7eac6cc19de82b9fb0334fdaafe65c6b86e",
@@ -33,7 +33,8 @@
   "manifest_warning": null,
   "review_round_cap": 3,
   "review_tasks": [
-    "typed-review-rcontract-plan-claude-r1-20261019"
+    "typed-review-rcontract-plan-claude-r1-20261019",
+    "typed-review-rcontract-plan-claude-r2-20261019"
   ],
   "ownership": {
     "global_active_roadmap": "specs/phase-plans-v11.md",
@@ -51,6 +52,81 @@
   "publication": {
     "mode": "ready",
     "observed": "2026-10-19T18:35:33.261489+00:00",
-    "pr_url": null
+    "pr_url": "https://github.com/Consiliency/agent-harness/pull/1770",
+    "title": "Implement BAML typed-review contracts and governed intake",
+    "agent_body_sha256": "55ccfd05dda315c3ff8d2bd140cf08e6d8ed3ab2b2e5703e3288517380687f50"
+  },
+  "checkpoint_head": "77966530",
+  "delegated_tasks": [
+    {
+      "taskId": "node:delegated-task:command%3Amcp%3Aa653908d-c633-4622-9ad0-ae4de56deaa5%3Adelegate-task%3Atyped-review-rcontract-runtime-map-20261019-01",
+      "role": "research",
+      "status": "completed"
+    },
+    {
+      "taskId": "node:delegated-task:command%3Amcp%3Aa653908d-c633-4622-9ad0-ae4de56deaa5%3Adelegate-task%3Atyped-review-rcontract-governance-map-20261019-01",
+      "role": "research",
+      "status": "completed"
+    },
+    {
+      "taskId": "node:delegated-task:command%3Amcp%3Aa653908d-c633-4622-9ad0-ae4de56deaa5%3Adelegate-task%3Atyped-review-rcontract-plan-claude-r1-20261019",
+      "role": "review",
+      "status": "completed"
+    },
+    {
+      "taskId": "node:delegated-task:command%3Amcp%3Aa653908d-c633-4622-9ad0-ae4de56deaa5%3Adelegate-task%3Atyped-review-rcontract-plan-claude-r2-20261019",
+      "role": "review",
+      "status": "running"
+    }
+  ],
+  "governance_intake": {
+    "execution_mode": "explicit manual phase skills plus supported verification API",
+    "reason": "outer runner registry requires one active roadmap; v11 stays selected",
+    "planning_review": "independent non-author vendor; Claude requested",
+    "landing_review": "full board plus president remains required; no landing authorized",
+    "sol_ablation": "not applicable to Astra authorship; no ablation claimed"
+  },
+  "pending_plan_corrections": [
+    {
+      "id": "INTAKE-CI-1",
+      "path": ".github/workflows/test.yml",
+      "reason": "BAML source check hard-codes existing nine files; new review source needs scoped assertion and SL-0 ownership."
+    }
+  ],
+  "plan_sha256": "5e24ff2e8db4429608d5fe7879f44edb43333da5abae88e9164d83e3210b94d3",
+  "review_round": 2,
+  "plan_findings": {
+    "RC-PLAN-F1": {
+      "severity": "BLOCKING",
+      "disposition": "author_addressed_pending_review"
+    },
+    "RC-PLAN-F2": {
+      "severity": "NON_BLOCKING",
+      "disposition": "author_addressed_pending_review"
+    },
+    "RC-PLAN-F3": {
+      "severity": "NON_BLOCKING",
+      "disposition": "author_addressed_pending_review"
+    },
+    "RC-PLAN-F4": {
+      "severity": "NON_BLOCKING",
+      "disposition": "author_addressed_pending_review"
+    },
+    "RC-PLAN-F5": {
+      "severity": "NON_BLOCKING",
+      "disposition": "author_addressed_pending_review"
+    },
+    "RC-PLAN-F6": {
+      "severity": "NON_BLOCKING",
+      "disposition": "author_addressed_pending_review"
+    }
+  },
+  "spec_closeout_decision": "Preserve proposal contract bytes; canonical successor docs/phase-loop/typed-review-contract.md carries the frozen executable interface.",
+  "baml_cli": {
+    "version": "0.20.1",
+    "archive_sha256": "6067729f14483eca4ab61bfcd3c1921818e9ecc66da035bc64fbbfeb850e2795",
+    "checksum_verified": true,
+    "ambient_version": "0.226.2",
+    "ambient_used": false
   }
 }
