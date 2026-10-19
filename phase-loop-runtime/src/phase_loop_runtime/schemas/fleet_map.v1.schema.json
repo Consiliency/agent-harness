@@ -135,11 +135,14 @@
           "minimum": 1
         },
         "default_branch": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "minLength": 1
+          "anyOf": [
+            {
+              "$ref": "#/$defs/git_ref"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "head_sha": {
           "anyOf": [
@@ -232,11 +235,14 @@
           "minimum": 1
         },
         "default_branch": {
-          "type": [
-            "string",
-            "null"
-          ],
-          "minLength": 1
+          "anyOf": [
+            {
+              "$ref": "#/$defs/git_ref"
+            },
+            {
+              "type": "null"
+            }
+          ]
         },
         "head_sha": {
           "anyOf": [
@@ -386,11 +392,15 @@
         },
         "target_hint": {
           "type": "string",
-          "pattern": "^[A-Za-z0-9_.-]+$"
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9_.-]+$",
+          "not": {
+            "pattern": "[\\r\\n]"
+          }
         },
         "pinned_ref": {
-          "type": "string",
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$"
+          "$ref": "#/$defs/git_ref"
         },
         "resolved_pin_sha": {
           "type": "string",
@@ -552,8 +562,7 @@
           }
         },
         "effective_ref": {
-          "type": "string",
-          "pattern": "^[A-Za-z0-9][A-Za-z0-9._/-]{0,255}$"
+          "$ref": "#/$defs/git_ref"
         },
         "resolved_pin_sha": {
           "anyOf": [
@@ -702,6 +711,22 @@
         "producer_version",
         "generated_at"
       ]
+    },
+    "git_ref": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^(?![-/])(?!.*\\.\\.)(?!.*//)(?!.*@\\{)(?!.*(?:^|/)\\.)(?!.*\\.lock(?:/|$))(?!.*[/.]$)[^\\x00-\\x20\\x7f~^:?*\\[\\\\]+$",
+      "not": {
+        "anyOf": [
+          {
+            "pattern": "[\\x00-\\x20\\x7f]"
+          },
+          {
+            "const": "@"
+          }
+        ]
+      }
     }
   }
 }

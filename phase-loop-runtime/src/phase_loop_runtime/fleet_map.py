@@ -147,7 +147,7 @@ def build_fleet_map(
     strict: bool = False,
 ) -> FleetMapResult:
     """Extract the realized-edge fleet map over `repos` (see module docstring)."""
-    resolved, repo_names, setup_diagnostics = _resolve_repos(repos, identity_adapter)
+    resolved, repo_names, setup_diagnostics = _resolve_repos(repos, identity_adapter, strict=strict)
     if strict:
         from .fleet_map_artifact import _build_strict_fleet_map
         return _build_strict_fleet_map(resolved, setup_diagnostics)
@@ -189,13 +189,15 @@ def run_lockfile_baseline_scan(repos: Iterable[str | Path]) -> tuple[FleetEdge, 
 
 def _resolve_repos(
     repos: Iterable[str | Path], identity_adapter: Callable[[Path], str] | None = None,
+    *, strict: bool = False,
 ) -> tuple[dict[str, Path], set[str], list[SetupDiagnostic]]:
     resolved: dict[str, Path] = {}
     diagnostics: list[SetupDiagnostic] = []
     for repo_input in repos:
-        repo = Path(repo_input).expanduser().resolve()
+        path = Path(repo_input).expanduser()
+        repo = path.absolute() if strict else path.resolve()
         label = str(repo)
-        if not repo.exists() or not repo.is_dir():
+        if not strict and (not repo.exists() or not repo.is_dir()):
             diagnostics.append(SetupDiagnostic(repo=label, message="repo path is missing or not a directory"))
             continue
         resolved[identity_adapter(repo) if identity_adapter else repo.name] = repo

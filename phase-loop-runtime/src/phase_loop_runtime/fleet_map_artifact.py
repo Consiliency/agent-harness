@@ -24,7 +24,8 @@ from .fleet_map import (
 
 _SHA = re.compile(r"[0-9a-f]{40}\Z")
 _NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+\Z")
-_REF = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,255}\Z")
+_REF = re.compile(r"^(?![-/])(?!.*\.\.)(?!.*//)(?!.*@\{)(?!.*(?:^|/)\.)(?!.*\.lock(?:/|$))(?!.*[/.]$)[^\x00-\x20\x7f~^:?*\[\\]+$")
+_HINT = re.compile(r"[A-Za-z0-9_.-]{1,256}\Z")
 
 
 class ArtifactError(ValueError):
@@ -53,7 +54,7 @@ def _relative(value: str) -> str:
 
 
 def _safe_ref(value: Any) -> str:
-    if not isinstance(value, str) or not _REF.fullmatch(value) or ".." in value or value.endswith("/"):
+    if not isinstance(value, str) or not 1 <= len(value) <= 256 or value == "@" or not _REF.fullmatch(value):
         raise ArtifactError("invalid pin declaration")
     return value
 
@@ -83,6 +84,22 @@ def _is_pin(path: PurePosixPath) -> bool:
     return (path.parent.name == "tools" and path.name in {
         "agent-harness.pin.json", "fleet-map-producer.pin.json",
     }) or path.name.endswith("greenfield-contract.lock.json")
+
+
+def _open_directory(path: Path) -> int:
+    flags = os.O_DIRECTORY | os.O_NOFOLLOW
+    traversal = getattr(os, "O_PATH", os.O_RDONLY)
+    fd = os.open(path.anchor, flags | (traversal if len(path.parts) > 1 else os.O_RDONLY))
+    try:
+        for index, part in enumerate(path.parts[1:], 1):
+            mode = os.O_RDONLY if index == len(path.parts) - 1 else traversal
+            child = os.open(part, flags | mode, dir_fd=fd)
+            os.close(fd)
+            fd = child
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
 
 
 def _walk(directory_fd: int, prefix: str = ""):
@@ -158,7 +175,7 @@ def _build_strict_fleet_map(resolved: dict[str, Path], diagnostics: list[SetupDi
         local_edges = []
         local_copies = []
         try:
-            fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            fd = _open_directory(root)
             try:
                 for relative, data, pin, contract in _walk(fd):
                     path = PurePosixPath(relative)
@@ -179,7 +196,10 @@ def _build_strict_fleet_map(resolved: dict[str, Path], diagnostics: list[SetupDi
                                         fields["immutable_pin"] = ref
                                     local_edges.append(FleetEdge(name, target, "pin", evidence, "presence-only", fields))
                             for match in _HOST_PATH_RE.finditer(text):
-                                local_edges.append(FleetEdge(name, match.group(1), "host-path", evidence, "presence-only"))
+                                hint = match.group(1)
+                                if not _HINT.fullmatch(hint):
+                                    raise ArtifactError("repository scan incomplete")
+                                local_edges.append(FleetEdge(name, hint, "host-path", evidence, "presence-only"))
             finally:
                 os.close(fd)
             declarations = {}
@@ -197,7 +217,8 @@ def _build_strict_fleet_map(resolved: dict[str, Path], diagnostics: list[SetupDi
         for basename, relative, digest in local_copies:
             copies.setdefault(basename, []).append((name, relative, digest))
     for occurrences in copies.values():
-        for (left, left_path, left_hash), (right, right_path, right_hash) in itertools.combinations(sorted(occurrences), 2):
+        ordered = sorted(occurrences, key=lambda item: (item[0].casefold(), item[1], item[2]))
+        for (left, left_path, left_hash), (right, right_path, right_hash) in itertools.combinations(ordered, 2):
             if left != right and left_hash != right_hash:
                 edges.append(FleetEdge(left, right, "copied-literal", f"{left_path}:1", "hash-checked",
                                        {"paired_evidence_path": f"{right_path}:1"}))
@@ -238,9 +259,11 @@ def _target(raw: str, repos: dict[str, dict[str, Any]]) -> tuple[str | None, str
             state = "not_found_or_inaccessible" if found.get("failure_code") == "not_found_or_inaccessible" else "known"
             return found["full_name"], state, None
         return raw, "outside_scope", None
-    candidates = [row["full_name"] for row in repos.values() if row["full_name"].split("/")[1].casefold() == raw.casefold()]
+    candidates = [row for row in repos.values() if row["full_name"].split("/")[1].casefold() == raw.casefold()]
     if len(candidates) == 1:
-        return candidates[0], "known", None
+        found = candidates[0]
+        state = "not_found_or_inaccessible" if found.get("failure_code") == "not_found_or_inaccessible" else "known"
+        return found["full_name"], state, None
     return None, "ambiguous" if candidates else "unmatched", raw
 
 
@@ -261,8 +284,12 @@ def _comparison(edge: FleetEdge, target: dict[str, Any] | None, observation: dic
             raise ArtifactError("pin observation does not match declaration")
         if resolved:
             result["resolved_pin_sha"] = resolved
-        if immutable and fields.get("declared_ref") and observation.get("declared_ref_sha") != immutable:
-            return result
+        declared = fields.get("declared_ref")
+        if declared and _SHA.fullmatch(declared) and observation.get("declared_ref_sha") not in (None, declared):
+            raise ArtifactError("pin observation does not match declaration")
+        if immutable and declared:
+            if (_SHA.fullmatch(declared) and declared != immutable) or observation.get("declared_ref_sha") != immutable:
+                return result
         relation = observation["relation"]
         if relation != "unresolvable":
             if not resolved or not head or ((relation == "equal") != (resolved == head)):
@@ -289,6 +316,9 @@ def build_artifact(manifest: Any, producer_commit: str, generated_at: str) -> di
     except (ValueError, AttributeError):
         raise ArtifactError("invalid observation time") from None
     rows = manifest["repositories"]
+    for row in rows:
+        if row["default_branch"] is not None:
+            _safe_ref(row["default_branch"])
     ids = [row["github_repository_id"] for row in rows]
     names = [row["full_name"].casefold() for row in rows]
     scope = manifest["scope"]

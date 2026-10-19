@@ -309,3 +309,95 @@ def test_qualified_non_enumerated_target_is_outside_scope(fleet):
     assert edge["to"] == "Elsewhere/target"
     assert edge["target_state"] == "outside_scope"
     assert edge["comparison"] == "unresolvable"
+
+
+@pytest.mark.parametrize("locator", [False, True])
+@pytest.mark.parametrize("declared", [PIN, HEAD])
+def test_literal_ref_observations_preserve_declared_identity(fleet, locator, declared):
+    root, manifest = fleet
+    fields = {"url": f"https://github.com/Example/target@{declared}"} if locator else {"ref": declared}
+    pin(root, sha=PIN, **fields)
+    observation(manifest, declared_ref_sha=declared)
+    expected = "behind" if declared == PIN else "unresolvable"
+    assert artifact(fleet)["edges"][0]["comparison"] == expected
+    if declared != PIN:
+        observation(manifest, declared_ref_sha=PIN)
+        with pytest.raises(ArtifactError):
+            artifact(fleet)
+
+
+def test_target_collection_state_is_independent_of_locator_kind(fleet):
+    root, manifest = fleet
+    manifest["repositories"][0].update(scan_state="clone_failed", failure_code="not_found_or_inaccessible", local_path=None, head_sha=None)
+    put(root, 2, "script.py", 'x="/home/example/code/source/src"')
+    put(root, 2, "tools/agent-harness.pin.json", json.dumps({"repo": "Example/source", "sha": PIN}))
+    edges = artifact(fleet)["edges"]
+    assert {edge["kind"] for edge in edges} == {"pin", "host-path"}
+    assert all(edge["target_state"] == "not_found_or_inaccessible" for edge in edges)
+    assert all(edge["maturity_label"] == "presence-only" for edge in edges)
+
+
+@pytest.mark.parametrize("value", ["https://example.invalid/sample", "/sample/path", "main\n", "a\\b", "a..b", "a/", "a//b", ".hidden", "a/.hidden", "a.lock", "a.lock/b", "a@{b", "@", "-option", "a b", "x" * 257])
+def test_branch_and_ref_schema_boundaries_preserve_cli_output(fleet, tmp_path, capsys, value):
+    root, manifest = fleet
+    schema = json.loads(files("phase_loop_runtime").joinpath("schemas/fleet_map.v1.schema.json").read_text())
+    definitions = schema["$defs"]
+    assert not Draft202012Validator({"$ref": "#/$defs/git_ref", "$defs": definitions}).is_valid(value)
+    manifest["repositories"][0]["default_branch"] = value
+    source, output = tmp_path / "input.json", tmp_path / "output.json"
+    source.write_text(json.dumps(manifest))
+    output.write_text("previous")
+    assert main(["fleet-map", "--manifest", str(source), "--producer-commit", PRODUCER,
+                 "--generated-at", TIME, "--output", str(output)]) == 2
+    assert output.read_text() == "previous"
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert value not in captured.err
+    manifest["repositories"][0]["default_branch"] = "main"
+    pin(root, ref=value)
+    assert "Example/source" not in artifact(fleet)["scanned_repos"]
+
+
+@pytest.mark.parametrize("value", ["main", "feature/map-v1", "v1.2.3", "équipe/carte"])
+def test_supported_branch_refs_round_trip(fleet, value):
+    root, manifest = fleet
+    manifest["repositories"][0]["default_branch"] = value
+    pin(root, ref=value)
+    result = artifact(fleet)
+    assert result["repositories"][0]["default_branch"] == value
+    assert result["edges"][0]["pinned_ref"] == value
+
+
+def test_unsupported_host_identity_is_repository_local(fleet):
+    root, _ = fleet
+    pin(root, sha=PIN)
+    put(root, 1, "source.py", 'x="/home/example/code/café/src"')
+    put(root, 2, "source.py", 'x="/home/example/code/absent/src"')
+    result = artifact(fleet)
+    assert result["scanned_repos"] == ["Example/target", "Other/target"]
+    assert result["repositories"][0]["failure_code"] == "scan_failed"
+    assert len(result["edges"]) == 1
+    assert result["edges"][0]["target_hint"] == "absent"
+    assert "café" not in json.dumps(result, ensure_ascii=False)
+
+
+def test_directory_component_changes_keep_scan_boundary(fleet, tmp_path, monkeypatch):
+    import phase_loop_runtime.fleet_map_artifact as module
+    root, manifest = fleet
+    parent = root / "nested"
+    parent.mkdir()
+    (root / "1").rename(parent / "repo")
+    manifest["repositories"][0]["local_path"] = "nested/repo"
+    outside = tmp_path / "outside"
+    (outside / "repo").mkdir(parents=True)
+    put(outside, "repo", "source.py", 'x="/home/example/code/absent/src"')
+    original = module.build_fleet_map
+    def changed(*args, **kwargs):
+        parent.rename(root / "saved")
+        parent.symlink_to(outside, target_is_directory=True)
+        return original(*args, **kwargs)
+    monkeypatch.setattr(module, "build_fleet_map", changed)
+    result = artifact(fleet)
+    assert result["repositories"][0]["failure_code"] == "scan_failed"
+    assert result["scanned_repos"] == ["Example/target", "Other/target"]
+    assert result["edges"] == []

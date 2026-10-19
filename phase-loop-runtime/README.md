@@ -72,6 +72,12 @@ unresolved comparisons remain explicit. Local paths and source lines are not
 output. The caller owns collection, dependency installation, credential handling,
 freshness policy and reviewed artifact adoption; this command performs none of
 those operations. Artifact mode requires descriptor-based no-follow file access.
+The identity adapter is intended for this strict artifact path. Scanning omits
+VCS, dependency and build directories named `.git`, `node_modules`, `__pycache__`,
+`.venv`, `venv`, `.mypy_cache`, `.pytest_cache`, `dist` and `build`; coverage applies
+to the supported file kinds outside those directories. Unsupported host-path
+identities fail that repository's scan. Branch names and pin refs must satisfy
+the bounded Git-ref rules in the packaged schema.
 
 ## Contributor test environment
 
