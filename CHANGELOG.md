@@ -6,6 +6,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Skill long lines rewrapped under the size limit (agent-harness#1358)
+
+- Rewrapped the one line over 1,000 characters in each of `claude-advisor-board`,
+  `codex-plan-phase`, `gemini-plan-phase` and `opencode-plan-phase` at sentence
+  boundaries. The wording is unchanged. The four `long_line` entries are removed
+  from the skill size gate allowlist.
+
 ### Codex execute-phase reads interactive procedures on demand (agent-harness#1358)
 
 - Split planning-handoff reuse, interactive publication, worktree lifecycle, and
