@@ -326,6 +326,30 @@ def test_literal_ref_observations_preserve_declared_identity(fleet, locator, dec
             artifact(fleet)
 
 
+@pytest.mark.parametrize("kind", ["ref", "url", "script", "sha", "source_commit"])
+@pytest.mark.parametrize("target_head", [PIN, HEAD])
+@pytest.mark.parametrize("declared", [None, PIN, HEAD])
+def test_literal_only_declarations_bind_optional_observations(fleet, kind, target_head, declared):
+    root, manifest = fleet
+    evidence = "tools/agent-harness.pin.json:1"
+    if kind == "script":
+        put(root, 1, "bootstrap.sh", f'echo "git+https://github.com/Example/target@{PIN}"')
+        evidence = "bootstrap.sh:1"
+    elif kind == "url":
+        pin(root, url=f"https://github.com/Example/target@{PIN}")
+    else:
+        pin(root, **{kind: PIN})
+    manifest["repositories"][1]["head_sha"] = target_head
+    assert artifact(fleet)["edges"][0]["comparison"] == ("up_to_date" if target_head == PIN else "unresolvable")
+    observation(manifest, evidence_path=evidence, target_head_sha=target_head,
+                relation="equal" if target_head == PIN else "ancestor", declared_ref_sha=declared)
+    if declared not in (None, PIN):
+        with pytest.raises(ArtifactError):
+            artifact(fleet)
+    else:
+        assert artifact(fleet)["edges"][0]["comparison"] == ("up_to_date" if target_head == PIN else "behind")
+
+
 def test_target_collection_state_is_independent_of_locator_kind(fleet):
     root, manifest = fleet
     manifest["repositories"][0].update(scan_state="clone_failed", failure_code="not_found_or_inaccessible", local_path=None, head_sha=None)

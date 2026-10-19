@@ -285,7 +285,8 @@ def _comparison(edge: FleetEdge, target: dict[str, Any] | None, observation: dic
         if resolved:
             result["resolved_pin_sha"] = resolved
         declared = fields.get("declared_ref")
-        if declared and _SHA.fullmatch(declared) and observation.get("declared_ref_sha") not in (None, declared):
+        literal = fields.get("pinned_ref")
+        if literal and _SHA.fullmatch(literal) and observation.get("declared_ref_sha") not in (None, literal):
             raise ArtifactError("pin observation does not match declaration")
         if immutable and declared:
             if (_SHA.fullmatch(declared) and declared != immutable) or observation.get("declared_ref_sha") != immutable:
