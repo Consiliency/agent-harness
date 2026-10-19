@@ -122,9 +122,9 @@ Model IDs appear only in this table. All model-routing logic in the workflow ref
 | fast      | claude-haiku-4-5-20251001 | mechanical wiring, small components against frozen types |
 
 This skill's retry-tier ladder is `fast → strong → frontier`. The default `run_mode` is `autonomous`: no panel and
-no `human_required`. How tiers map to runtime model classes is in [references/lane-dispatch.md](references/lane-dispatch.md).
-Governed mode (`--governed` / `PHASE_LOOP_RUN_MODE=governed`) runs a pre-merge panel review loop; its rules
-are in the same reference. Never merge with a blocker waived.
+no `human_required`. Tier-to-model-class mapping and the governed (`--governed` / `PHASE_LOOP_RUN_MODE=governed`) pre-merge
+panel loop: [references/lane-dispatch.md](references/lane-dispatch.md#model-classes-and-governed-mode);
+governed runs read it before each panel round. Never merge with a blocker waived.
 
 ## Inputs
 

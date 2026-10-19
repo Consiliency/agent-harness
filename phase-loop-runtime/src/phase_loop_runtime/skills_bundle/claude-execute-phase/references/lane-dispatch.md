@@ -123,14 +123,14 @@ Resolve tier names to model IDs via the Model tiers table in `SKILL.md`.
 
 ## Model classes and governed mode
 
-These map to the runtime `model_class` axis: implementer = strong, worker = fast.
+The tiers in [Model tiers](../SKILL.md#model-tiers-edit-on-anthropic-releases) map to the runtime `model_class` axis: implementer = strong, worker = fast.
 (The planner class routes to the heavy model `claude-opus-5` — the same model as
 `frontier`. The reviewer class routes to the ULTRA model `claude-opus-5-5`, a
-review-tier model ABOVE this execute table.) The shipped `model_policy` dispatches **implementation at the
+review-tier model above that execute table.) The shipped `model_policy` dispatches **implementation at the
 implementer class**. The runtime's `model_class`-escalation bookkeeping is
 runner-internal and is NOT applied to the launched model — see
 `governed_premerge.next_escalation` / `runner.py` for its current status. This
-skill's own retry-tier ladder is `fast → strong → frontier` (below).
+skill's own retry-tier ladder is `fast → strong → frontier`.
 The default `run_mode` is `autonomous` — no panel,
 no `human_required`; every governed escalation terminal is a non-human
 `review_gate_block` surfaced in the run-end summary, never a synchronous human
