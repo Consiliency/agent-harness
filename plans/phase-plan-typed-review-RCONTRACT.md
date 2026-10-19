@@ -74,7 +74,7 @@ SL-1 — Acceptance, conformance and docs reduction
 ### SL-1 — Acceptance, conformance and docs reduction
 
 - **Scope**: Implement coordinator acceptance and durable request/receipt/lineage state, then reduce verified results into the contract and phase ledger.
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/review_contract.py`, `phase-loop-runtime/tests/test_review_contract.py`, `phase-loop-runtime/tests/data/typed_review_contract_vectors.json`, `docs/phase-loop/typed-review-contract.md`, `CHANGELOG.md`, `plans/evidence/typed-review/RCONTRACT.json`, `plans/evidence/typed-review/ledger.json`, `plans/manifest.json`
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/review_contract.py`, `phase-loop-runtime/tests/test_review_contract.py`, `phase-loop-runtime/tests/data/typed_review_contract_vectors.json`, `docs/phase-loop/typed-review-contract.md`, `.gitleaks.toml`, `CHANGELOG.md`, `plans/evidence/typed-review/RCONTRACT.json`, `plans/evidence/typed-review/ledger.json`, `plans/manifest.json`
 - **Interfaces provided**: `IF-0-RCONTRACT-2`
 - **Interfaces consumed**: `IF-0-RCONTRACT-1`, frozen proposal inputs (pre-existing), policy admission and coordinator authority (pre-existing)
 - **Parallel-safe**: no
@@ -114,6 +114,15 @@ never retroactively BAML-accepted receipts. The selected author is Astra, not So
 do not invent Sol-specific ablation completion. Follow actual applicable policy.
 Publication follows the supported mode command and runner ownership; scoped feature
 commits are authorized, protected merges/releases are not.
+
+Post-publication CI repair: SL-1 owns `.gitleaks.toml` solely to add an exact-value
+exception for the canonical vector digest independently recomputed and confirmed
+non-secret by Daybreak. Daybreak alone handles the flagged value. Preserve all
+existing rules and exceptions; no path-wide allowance, scan-range reduction or
+rule disabling. Verify with pinned gitleaks 8.21.2 against history and retain the
+redacted baseline/control/remediation evidence privately. No runtime, test-vector
+or BAML source changes are authorized by this repair; their sealed suite remains
+applicable. Final CI readiness stays held until the required checks pass.
 
 ## Spec Closeout Plan
 
@@ -159,8 +168,10 @@ additional command list below does not repeat it.
 
 Completed criteria and interfaces are bound to the sealed verification artifact,
 source hashes and required-check results in `plans/evidence/typed-review/RCONTRACT.json`.
-Only completion markers and this evidence pointer changed after the verified plan;
-the suite, ownership, tasks and acceptance predicates are unchanged.
+After the verified plan, completion markers and this evidence pointer were added;
+the subsequent scoped `.gitleaks.toml` CI repair is recorded above. Runtime suite
+and acceptance predicates are unchanged; post-publication readiness is tracked
+in the ledger separately from the local EC/IF evidence.
 Next dependency-ready phases are RT3 and RPANEL, each requiring its own planned
 ownership and review. RENFORCE additionally requires actual route evidence; no
 RCONTRACT test closes that operational obligation.

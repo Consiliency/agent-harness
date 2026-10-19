@@ -185,5 +185,26 @@
     "Six supervisor teardown thread warnings in each suite retained in logs; test commands exited zero.",
     "Historical baseline, development, ownership overlap, provider startup and docs-audit failures retained separately.",
     "Existing draft agent-harness#1770 is not landing ratification. No merge, release or production activation."
-  ]
+  ],
+  "post_publication_ci_repair": {
+    "status": "locally_verified_ci_pending",
+    "owned_file": ".gitleaks.toml",
+    "config_sha256": "df64e76661e5ccc1af7589dde80222d4f9993a84f4df08e740660247bde8fb86",
+    "handler": "Daybreak; exclusive flagged-content handling",
+    "classification": "Confirmed non-secret deterministic canonical-vector digest, independently recomputed",
+    "change": "One exact-value regex and descriptive rationale only; all prior rules/paths/exceptions preserved",
+    "verification": {
+      "pinned_gitleaks": "v8.21.2",
+      "history": "20371e84 ancestry",
+      "commits_scanned": 2854,
+      "exit_code": 0,
+      "findings": 0,
+      "sealed_source_hashes_unchanged": 16
+    },
+    "handoff": {
+      "path": ".phase-loop/typed-review/private/RCONTRACT/scrub-daybreak-fix-20261019-02/handoff.json",
+      "sha256": "1053c17005294c44087d595851875020963769f79088125355f593d1806fdf9e"
+    },
+    "readiness": "Required CI confirmation remains pending; earlier local EC/IF results unchanged."
+  }
 }
