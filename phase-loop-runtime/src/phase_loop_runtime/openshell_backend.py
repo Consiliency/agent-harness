@@ -239,12 +239,15 @@ class OpenShellBackend(LiveLeaseBackend):
             receipt = await self._stage.commit(self._binding, self._bundle, bound)
             self._live()
             if (bound.cancelled.is_set() or type(receipt) is not StageBinding or
+                    any(type(value) is not str for value in (
+                        receipt.workspace, receipt.owner_id, receipt.lease_id,
+                        receipt.generation, receipt.source_sha256)) or
                     self._binding != receipt):
                 session.lease.fence()
                 raise Refused("stage_binding_mismatch")
-            session.lease.confirm_commit_ref(session, receipt.generation)
+            session.lease.confirm_commit_ref(session, self._binding.generation)
             self._committed = True
-            return BackendReceipt("committed", receipt.generation, receipt.source_sha256)
+            return BackendReceipt("committed", self._binding.generation, self._binding.source_sha256)
 
         return self._run(commit(), bound)
 

@@ -306,6 +306,46 @@ def test_stage_receipt_must_be_exact_binding(pipeline, receipt_kind):
     assert backend._session.lease._entry['sandbox_ref'] == model.GEN
 
 
+@pytest.mark.parametrize('field', ['generation', 'source_sha256', 'lease_id', 'owner_id', 'workspace', None])
+def test_stage_binding_fields_must_be_plain_strings(pipeline, field):
+    backend, endpoint, stage, _, place, leases, *_ = pipeline
+
+    class ForgedStr(str):
+        def __eq__(self, other):
+            return True
+
+        def __ne__(self, other):
+            return False
+
+    original = stage.commit
+
+    async def commit(binding, bundle, bound):
+        await original(binding, bundle, bound)
+        if field is None:
+            return replace(binding)
+        return replace(binding, **{field: ForgedStr('f' * 64 if field == 'source_sha256' else 'forged')})
+
+    stage.commit = commit
+    decision = place()
+    if field is not None:
+        assert decision.outcome == 'not_run'
+        assert not backend._committed and 'exec' not in endpoint.calls
+        assert backend._session.lease.fenced
+        assert backend._session.lease._entry['sandbox_ref'] == model.GEN
+        return
+
+    assert decision.outcome == 'placed'
+    result = run(decision.placement)
+    assert result.exit_status == 0
+    assert type(result.sandbox_ref) is str and result.sandbox_ref == model.GEN
+    receipts = [r for r in decision.placement.receipts if r.step in ('committed', 'launched', 'completed')]
+    assert {r.step for r in receipts if r.attested_by == 'runtime'} == {'committed', 'launched', 'completed'}
+    for receipt in receipts:
+        assert type(receipt.sandbox_ref) is str and receipt.sandbox_ref == model.GEN
+        assert type(receipt.snapshot_sha256) is str
+        assert receipt.snapshot_sha256 == backend._binding.source_sha256
+
+
 @pytest.mark.parametrize('failure', ['lost', 'corrupt', 'native_bad', 'native_refuse'])
 def test_untrusted_or_lost_result_refused_no_replay(pipeline, failure):
     backend, endpoint, _, worker, place, leases, *_ = pipeline
