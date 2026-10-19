@@ -1,0 +1,56 @@
+{
+  "schema": "typed_review_execution_ledger.v1",
+  "updated_at": "2026-10-19T18:35:33.261489+00:00",
+  "roadmap": "docs/proposals/typed-review-roadmap.md",
+  "plan": "plans/phase-plan-typed-review-RCONTRACT.md",
+  "head": "bcc9b7eac6cc19de82b9fb0334fdaafe65c6b86e",
+  "phase": "RCONTRACT",
+  "status": "planned_review_pending",
+  "verification_status": "not_run",
+  "proposal_sha256": {
+    "docs/proposals/typed-review-contract.md": "b72df16dd3a52349f78dc53268526d492383ac11ec1dc9e97ff5a7bfe7f392f9",
+    "docs/proposals/typed-review-roadmap.md": "45b6faac632fcdf47fc5605389826d256126ab6f4c2a2b44859f2a3088f2e3e8",
+    "docs/proposals/typed-review-roadmap_reviews.md": "aa7087e050b3f293be4186dcaf97a4249dca6ee2698a801ec20f08ed6f5b52b1"
+  },
+  "phases": {
+    "RCONTRACT": {
+      "status": "planned_review_pending",
+      "produced_if_gates": []
+    },
+    "RT3": {
+      "status": "pending",
+      "produced_if_gates": []
+    },
+    "RPANEL": {
+      "status": "pending",
+      "produced_if_gates": []
+    },
+    "RENFORCE": {
+      "status": "pending",
+      "produced_if_gates": []
+    }
+  },
+  "manifest_warning": null,
+  "review_round_cap": 3,
+  "review_tasks": [
+    "typed-review-rcontract-plan-claude-r1-20261019"
+  ],
+  "ownership": {
+    "global_active_roadmap": "specs/phase-plans-v11.md",
+    "panelsplit_map_present": false,
+    "agent-harness#1443": "OPEN, unmerged; inspected live",
+    "agent-harness#1744": "reserved parent; untouched"
+  },
+  "carried_findings": {
+    "N9-R3": "RCONTRACT",
+    "N8-R3": "RPANEL",
+    "PRES-S1": "RPANEL",
+    "PRES-S2": "RPANEL",
+    "PRES-S3": "RPANEL"
+  },
+  "publication": {
+    "mode": "ready",
+    "observed": "2026-10-19T18:35:33.261489+00:00",
+    "pr_url": null
+  }
+}
