@@ -6,6 +6,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Offline repository-map artifact mode
+
+- Add a manifest-driven `phase-loop fleet-map` mode with qualified repository
+  identities, explicit scan coverage, paired contract drift, and as-of-scan pin
+  comparisons. Ship the closed input/output schema with the package; preserve
+  existing `--repo` JSON and text output.
+
 ### Codex execute-phase reads interactive procedures on demand (agent-harness#1358)
 
 - Split planning-handoff reuse, interactive publication, worktree lifecycle, and

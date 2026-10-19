@@ -44,6 +44,35 @@ canonical protocol document ships in the wheel as package data
 (from `src/phase_loop_runtime/_contract_docs/phase-loop/protocol.md`); an older copy is also
 installed to `share/phase-loop-runtime/protocol/protocol.md`.
 
+## Offline repository-map artifacts
+
+Legacy `phase-loop fleet-map --repo <path> --json` output remains unchanged.
+Artifact mode accepts a closed `fleet_scan_input.v1` manifest and explicit
+provenance:
+
+```sh
+phase-loop fleet-map --manifest scan-input.json \
+  --producer-commit <producer-source-sha> --generated-at <UTC-timestamp> \
+  --output fleet-map.json
+```
+
+The packaged [artifact schema](https://github.com/Consiliency/agent-harness/blob/main/phase-loop-runtime/src/phase_loop_runtime/schemas/fleet_map.v1.schema.json) defines the output and the input
+and source-pin `$defs`. Input repository entries use qualified identities such
+as Example/source, numeric provider IDs, captured default-branch SHAs,
+collection states and paths relative to an absolute clone root. Account counts
+must describe the complete declared enumeration. Failed collection or file
+inspection stays explicit and never becomes covered zero relationships.
+
+The extractor runs offline, reads regular files through a no-follow boundary,
+and executes no repository code. It emits pin presence, undirected paired-file
+drift and host-path observations. Supplied pin observations must bind the exact
+declaration and captured target SHA; unequal SHAs alone never prove ancestry.
+Versions are as of the supplied scan timestamp. Missing/ambiguous targets and
+unresolved comparisons remain explicit. Local paths and source lines are not
+output. The caller owns collection, dependency installation, credential handling,
+freshness policy and reviewed artifact adoption; this command performs none of
+those operations. Artifact mode requires descriptor-based no-follow file access.
+
 ## Contributor test environment
 
 From the repository root, install the declared test tools and visual extra, then
