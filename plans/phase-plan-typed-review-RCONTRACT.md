@@ -39,8 +39,8 @@ to RPANEL. RCONTRACT does not write those panel/governed surfaces.
 
 ## Interface Freeze Gates
 
-- [ ] IF-0-RCONTRACT-1 — `review_reply.baml` declares `EmitReviewReply`, `EmitReviewDecision` and every nested review field/enum; snapshot-aware schema export and worker request/parse APIs use those declarations. The parse result exposes matched IPC operation, request ID, worker fingerprint, runtime version and consumed value. Real-worker recording tests freeze this interface before SL-1 consumes it.
-- [ ] IF-0-RCONTRACT-2 — `review_contract.py` freezes coordinator request/transport-registration/content-record and saved-source interfaces, domain-separated canonical digests, strict acceptance, metadata-only rejection mapping, durable idempotence/conflict and lineage reservation. `docs/phase-loop/typed-review-contract.md` documents the exact callable interface and trusted-host policy boundary for downstream adapters.
+- [x] IF-0-RCONTRACT-1 — `review_reply.baml` declares `EmitReviewReply`, `EmitReviewDecision` and every nested review field/enum; snapshot-aware schema export and worker request/parse APIs use those declarations. The parse result exposes matched IPC operation, request ID, worker fingerprint, runtime version and consumed value. Real-worker recording tests freeze this interface before SL-1 consumes it.
+- [x] IF-0-RCONTRACT-2 — `review_contract.py` freezes coordinator request/transport-registration/content-record and saved-source interfaces, domain-separated canonical digests, strict acceptance, metadata-only rejection mapping, durable idempotence/conflict and lineage reservation. `docs/phase-loop/typed-review-contract.md` documents the exact callable interface and trusted-host policy boundary for downstream adapters.
 
 ## Lane Index & Dependencies
 
@@ -153,11 +153,14 @@ additional command list below does not repeat it.
 
 ## Acceptance Criteria
 
-- [ ] EC-RCONTRACT-1 — proven by `test_phase_loop_baml_v1_runtime.py` and `test_review_contract.py`; falsified by a production parse-review bypass that echoes the input or drops matched IPC metadata while the recording control still passes.
-- [ ] EC-RCONTRACT-2 — proven by `test_review_contract.py` and `test_phase_loop_baml_schema_export.py`; falsified by accepting any named strict/semantic/limit negative vector at the production acceptance constructor.
-- [ ] EC-RCONTRACT-3 — proven by `test_review_contract.py`; falsified by changed canonical vectors, replay under current rather than saved BAML sources, identity-conflicting delivery accepted, private body leaked into metadata, or a second correction after restart.
+- [x] EC-RCONTRACT-1 — proven by `test_phase_loop_baml_v1_runtime.py` and `test_review_contract.py`; falsified by a production parse-review bypass that echoes the input or drops matched IPC metadata while the recording control still passes.
+- [x] EC-RCONTRACT-2 — proven by `test_review_contract.py` and `test_phase_loop_baml_schema_export.py`; falsified by accepting any named strict/semantic/limit negative vector at the production acceptance constructor.
+- [x] EC-RCONTRACT-3 — proven by `test_review_contract.py`; falsified by changed canonical vectors, replay under current rather than saved BAML sources, identity-conflicting delivery accepted, private body leaked into metadata, or a second correction after restart.
 
-Required criteria remain unchecked until their tests and runner evidence pass.
+Completed criteria and interfaces are bound to the sealed verification artifact,
+source hashes and required-check results in `plans/evidence/typed-review/RCONTRACT.json`.
+Only completion markers and this evidence pointer changed after the verified plan;
+the suite, ownership, tasks and acceptance predicates are unchanged.
 Next dependency-ready phases are RT3 and RPANEL, each requiring its own planned
 ownership and review. RENFORCE additionally requires actual route evidence; no
 RCONTRACT test closes that operational obligation.

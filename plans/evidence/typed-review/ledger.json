@@ -1,12 +1,12 @@
 {
   "schema": "typed_review_execution_ledger.v1",
-  "updated_at": "2026-10-19T19:15:00Z",
+  "updated_at": "2026-10-19T20:54:28.494862+00:00",
   "roadmap": "docs/proposals/typed-review-roadmap.md",
   "plan": "plans/phase-plan-typed-review-RCONTRACT.md",
   "head": "bcc9b7eac6cc19de82b9fb0334fdaafe65c6b86e",
-  "phase": "RCONTRACT",
+  "phase": "RT3",
   "status": "executing",
-  "verification_status": "not_run",
+  "verification_status": "passed",
   "proposal_sha256": {
     "docs/proposals/typed-review-contract.md": "b72df16dd3a52349f78dc53268526d492383ac11ec1dc9e97ff5a7bfe7f392f9",
     "docs/proposals/typed-review-roadmap.md": "45b6faac632fcdf47fc5605389826d256126ab6f4c2a2b44859f2a3088f2e3e8",
@@ -14,8 +14,15 @@
   },
   "phases": {
     "RCONTRACT": {
-      "status": "executing",
-      "produced_if_gates": []
+      "status": "complete",
+      "produced_if_gates": [
+        "IF-0-RCONTRACT-1",
+        "IF-0-RCONTRACT-2"
+      ],
+      "evidence": {
+        "path": "plans/evidence/typed-review/RCONTRACT.json",
+        "sha256": "3d613ad4489b70882d4792e894a87d264edff97015d011b6c7c53f92ee259b41"
+      }
     },
     "RT3": {
       "status": "pending",
@@ -61,7 +68,7 @@
     {
       "taskId": "node:delegated-task:command%3Amcp%3A79122b9e-4125-43be-be52-a74709d61846%3Adelegate-task%3Atyped-review-rcontract-final-verification-recovery-20261019-02",
       "role": "test",
-      "status": "running",
+      "status": "completed",
       "phase": "RCONTRACT",
       "providerInstanceId": "t3-codex-consiliency",
       "model": "gpt-6-astra",
@@ -171,6 +178,16 @@
       "reasoning_effort": "medium",
       "source_manifest": ".phase-loop/typed-review/RCONTRACT/implementation-review-r3-inputs.json",
       "evidence_class": "manual independent implementation review; not BAML accepted"
+    },
+    {
+      "taskId": "node:delegated-task:command%3Amcp%3A79122b9e-4125-43be-be52-a74709d61846%3Adelegate-task%3Atyped-review-rt3-recon-recovery-20261019-02",
+      "role": "research",
+      "phase": "RT3",
+      "status": "running",
+      "providerInstanceId": "t3-codex-consiliency",
+      "model": "gpt-6-astra",
+      "reasoning_effort": "high",
+      "output": ".phase-loop/typed-review/RT3/recon-20261019-02.md"
     }
   ],
   "governance_intake": {
@@ -241,7 +258,7 @@
     "repair_owner": "SL-0; fixture-only confinement in already-owned test; no runtime/root permission change",
     "proof_cost_finding": "Baseline >5min; preserve required lifetime controls and use targeted repair before rerunning full suite."
   },
-  "current_head": "68095b9292d2ab05c0904a6ce14115e5ad4cab2d",
+  "current_head": "bbb3bb8b5a1b4e7a119021ec6449fd8fcb2c7eae",
   "plan_execution_clarifications": {
     "RC-PLAN-N1": "Include v22_principles; preserve bare-class OpenAI-dialect-clean export without editing that test.",
     "RC-PLAN-N2": "Normal snapshot switches consume no failure/retry/extra attempt; test beyond retry count under finite budgets.",
@@ -285,7 +302,11 @@
     "resume_head": "68095b9292d2ab05c0904a6ce14115e5ad4cab2d",
     "status": "waiting_for_children",
     "private_handoff": ".phase-loop/typed-review/private/RCONTRACT/recovery-20261019-02.md",
-    "remaining": ["sealed RCONTRACT verification and closeout", "RT3", "RPANEL", "RENFORCE"]
+    "remaining": [
+      "RT3",
+      "RPANEL",
+      "RENFORCE"
+    ]
   },
   "delegation_failure": {
     "requested_clientRequestId": "typed-review-rcontract-sl1-impl-20261019-01",
@@ -296,7 +317,7 @@
     "independent_review": "Still required; same-provider implementation is not independent review."
   },
   "sl1_observation": {
-    "status": "implementation_review_agree_sealed_verification_pending",
+    "status": "verified_phase_complete",
     "handoff": ".phase-loop/typed-review/RCONTRACT/sl1/handoff.json",
     "source_hashes": ".phase-loop/typed-review/RCONTRACT/sl1/final-inputs.json",
     "source_hashes_rechecked": true,
@@ -304,7 +325,7 @@
     "compatibility_tests": "15 passed, 12 skipped",
     "caller_integration": "Original 1 failed / 1 passed preserved; parent added both new call sites serially, rerun 2 passed / 25 deselected",
     "caller_integration_evidence": ".phase-loop/typed-review/RCONTRACT/integration-20261019-02/caller-integration.json",
-    "phase_complete": false,
+    "phase_complete": true,
     "native_conflict_reconciliation": "New evidence confirms an overlapping native SL-1 draft despite recovery probes finding no child. Its writer recorded writes_stopped=true and preserved failed test/source snapshots in sl1/native-ownership-conflict.json. Earlier no-active-child observations remain historical, not proof no orphan existed. Current T3 worker is completed with no pending children; all five final file hashes match its handoff. Conflict evidence is retained, not used as passing tests."
   },
   "implementation_review": {
@@ -336,7 +357,7 @@
     "final_correction_hashes_verified": true,
     "final_correction_tests": "186 passed: 173 gateway plus 13 worker controls; caller guards, pinned lint and whitespace passed. Source and evidence SHA256 verified by parent.",
     "review_round3_transport_observation": "Two thread-read calls failed with HTTP request transport error to local T3 MCP endpoint. A bounded capabilities recheck and subsequent original-brief read succeeded. No review dispatch occurred before recovery, no account/auth change, and one round-3 task was then accepted running.",
-    "remaining": ["sealed phase verification", "required checks and closeout"],
+    "remaining": [],
     "unresolved_blockers": [],
     "post_review_resolution": {
       "finding": "RC-IMPL-R3-F1",
@@ -364,5 +385,33 @@
       "roadmap ownership (advisory)"
     ],
     "completion_claim": false
+  },
+  "final_verification": {
+    "artifact": {
+      "path": "/mnt/workspace/worktrees/viperjuice/agent-harness-typed-review-spec-20261019/.phase-loop/typed-review/RCONTRACT/verify-20261019T202735210288Z/verification.json",
+      "sha256": "b05aaabe6e7b2419ff44415a596f4c68e12a60541a6df301a036f10fbc5ff7c2"
+    },
+    "phase_suite": {
+      "passed": 670,
+      "skipped": 194,
+      "deselected": 14828,
+      "xfailed": 1,
+      "warnings": 6
+    },
+    "make_check": {
+      "passed": 843,
+      "skipped": 157,
+      "xfailed": 1,
+      "warnings": 6
+    },
+    "docs_audit": {
+      "path": ".phase-loop/typed-review/RCONTRACT/docs-audit-after-checkpoint/result.json",
+      "sha256": "9bca9be22de9041cf29e5166163c926583b2e1db2a5fd8d1e54443e3ec9d8d79"
+    },
+    "closeout_audit": {
+      "path": ".phase-loop/typed-review/RCONTRACT/closeout-audit-final.log",
+      "sha256": "2e8e77cf5c34b1eb7adf90baa17ab5e252f0e3def823cd63abe03d87e3c7eada"
+    },
+    "failure_preservation": "Initial docs audit failure retained; changed comparison HEAD justified rerun. Unknown ignored toolchain outputs retained/cleaned before passing audit."
   }
 }
