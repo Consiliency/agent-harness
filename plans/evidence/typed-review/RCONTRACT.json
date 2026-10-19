@@ -5,7 +5,7 @@
   "timestamp": "2026-10-19T20:54:28.494862+00:00",
   "roadmap": "docs/proposals/typed-review-roadmap.md",
   "roadmap_sha256": "45b6faac632fcdf47fc5605389826d256126ab6f4c2a2b44859f2a3088f2e3e8",
-  "plan": "plans/phase-plan-typed-review-RCONTRACT.md",
+  "plan": "plans/phase-plan-v1-typed-review-RCONTRACT.md",
   "verified_plan_sha256": "125af0652e4884ba18aff01ac491218b6d82317adf8ba455d30a5e8e2d6f892c",
   "implementation_head": "bbb3bb8b5a1b4e7a119021ec6449fd8fcb2c7eae",
   "lanes_completed": [
@@ -206,5 +206,57 @@
       "sha256": "1053c17005294c44087d595851875020963769f79088125355f593d1806fdf9e"
     },
     "readiness": "Required CI confirmation remains pending; earlier local EC/IF results unchanged."
+  },
+  "verified_plan_path": "plans/phase-plan-typed-review-RCONTRACT.md",
+  "ci_readiness": "failed_pending_corrected_head_suite",
+  "ci_repair": {
+    "failure": {
+      "head": "37be33608fafde41ef8dd31acd746de24b5aa2f5",
+      "run_id": 39325236763,
+      "pytest_job": 118309519045,
+      "status": "FAILURE",
+      "counts": {
+        "failed": 2,
+        "passed": 14344,
+        "skipped": 662,
+        "xfailed": 1,
+        "warnings": 32
+      },
+      "duration_seconds": 2526.17,
+      "failed_at": "2026-10-19T21:52:39Z",
+      "failed_nodes": [
+        "tests/test_convergence_runtime_imports.py::test_runtime_v10_reground_record_is_present_and_ancestral",
+        "tests/test_seat_reference_inventory.py::test_runtime_launch_references_match_the_classified_inventory"
+      ],
+      "aggregate_failure_jobs": [
+        118328444753,
+        118328488220
+      ],
+      "aggregate_note": "Fallback and suite gate aggregate the failed pytest result; not separate test runs.",
+      "ci_log": {
+        "path": ".phase-loop/typed-review/RCONTRACT/ci-pytest-39325236763.log",
+        "sha256": "234a305dfbc35714b1e438c00e1ab7b291f6a4777219deacad217a5a1e461258"
+      },
+      "local_reproduction": {
+        "path": ".phase-loop/typed-review/RCONTRACT/ci-reproduce-39325236763.log",
+        "sha256": "d57011525d9c311e34b785e08fd68f74906d99a76656f295cabc8859978fec3a"
+      }
+    },
+    "canonical_path_mapping": {
+      "plans/phase-plan-typed-review-RCONTRACT.md": "plans/phase-plan-v1-typed-review-RCONTRACT.md",
+      "plans/phase-plan-typed-review-RCONTRACT_reviews.md": "plans/reviews/typed-review-RCONTRACT_reviews.md",
+      "plans/phase-plan-typed-review-RT3.md": "plans/phase-plan-v1-typed-review-RT3.md",
+      "plans/phase-plan-typed-review-RT3_reviews.md": "plans/reviews/typed-review-RT3_reviews.md"
+    },
+    "classification": {
+      "module": "review_contract",
+      "function": "ReviewCoordinator.__init__",
+      "primitive": "io.open",
+      "count": 1,
+      "role": "host-io",
+      "basis": "os.open creates the private reviews.sqlite3 file with O_CREAT|O_RDWR and O_NOFOLLOW; it does not launch a process."
+    },
+    "runtime_sources_changed": false,
+    "guard_tests_changed": false
   }
 }

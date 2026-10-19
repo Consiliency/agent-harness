@@ -1115,5 +1115,6 @@
   {"count": 1, "function": "install", "module": "seat_egress_proxy", "primitive": "subprocess.run", "role": "host-helper"},
   {"count": 1, "function": "start_proxy", "module": "seat_egress_proxy", "primitive": "subprocess.Popen", "role": "host-helper"},
   {"count": 1, "function": "tree_sha256", "module": "seat_egress_proxy", "primitive": "io.read_bytes", "role": "host-io"},
-  {"count": 3, "function": "verify_install", "module": "seat_egress_proxy", "primitive": "io.read_text", "role": "host-io"}
+  {"count": 3, "function": "verify_install", "module": "seat_egress_proxy", "primitive": "io.read_text", "role": "host-io"},
+  {"count": 1, "function": "ReviewCoordinator.__init__", "module": "review_contract", "primitive": "io.open", "role": "host-io"}
 ]

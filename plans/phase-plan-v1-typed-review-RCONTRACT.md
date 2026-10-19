@@ -74,7 +74,7 @@ SL-1 — Acceptance, conformance and docs reduction
 ### SL-1 — Acceptance, conformance and docs reduction
 
 - **Scope**: Implement coordinator acceptance and durable request/receipt/lineage state, then reduce verified results into the contract and phase ledger.
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/review_contract.py`, `phase-loop-runtime/tests/test_review_contract.py`, `phase-loop-runtime/tests/data/typed_review_contract_vectors.json`, `docs/phase-loop/typed-review-contract.md`, `.gitleaks.toml`, `CHANGELOG.md`, `plans/evidence/typed-review/RCONTRACT.json`, `plans/evidence/typed-review/ledger.json`, `plans/manifest.json`
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/review_contract.py`, `phase-loop-runtime/tests/test_review_contract.py`, `phase-loop-runtime/tests/data/seat_launch_references.json`, `phase-loop-runtime/tests/data/typed_review_contract_vectors.json`, `docs/phase-loop/typed-review-contract.md`, `.gitleaks.toml`, `CHANGELOG.md`, `plans/evidence/typed-review/RCONTRACT.json`, `plans/evidence/typed-review/ledger.json`, `plans/manifest.json`
 - **Interfaces provided**: `IF-0-RCONTRACT-2`
 - **Interfaces consumed**: `IF-0-RCONTRACT-1`, frozen proposal inputs (pre-existing), policy admission and coordinator authority (pre-existing)
 - **Parallel-safe**: no
@@ -89,7 +89,7 @@ SL-1 — Acceptance, conformance and docs reduction
 
 ## Execution Notes
 
-Read/write control artifacts: this plan and its `_reviews.md` sibling,
+Read/write control artifacts: this plan and `plans/reviews/typed-review-RCONTRACT_reviews.md`,
 `.phase-loop/evidence/typed-reviews/RCONTRACT.json`, `.phase-loop/typed-review/**`,
 `.dev-skills/handoffs/codex-plan-phase/**`, `.dev-skills/handoffs/codex-execute-phase/**`.
 Private task-owned evidence at `.phase-loop/typed-review/private/RCONTRACT/**` is explicitly
@@ -123,6 +123,16 @@ rule disabling. Verify with pinned gitleaks 8.21.2 against history and retain th
 redacted baseline/control/remediation evidence privately. No runtime, test-vector
 or BAML source changes are authorized by this repair; their sealed suite remains
 applicable. Final CI readiness stays held until the required checks pass.
+
+Post-publication full-suite repair: retain all tests and guard code unchanged.
+The parent moves this plan and the prepared RT3 plan to canonical versioned
+filenames, moves review records under `plans/reviews/`, and updates only their
+manifest registrations/current pointers while preserving lifecycle and original
+evidence. SL-1 classifies the coordinator SQLite-file open as `host-io` in the
+owned launch-reference inventory. Preserve the failed CI run and reproduce both
+failed nodes before repair; verify them and relevant manifest/inventory checks
+after the rename checkpoint, because the guard audits HEAD as well as disk/index.
+RT3 implementation remains held for corrected-head pytest and suite-gate success.
 
 ## Spec Closeout Plan
 

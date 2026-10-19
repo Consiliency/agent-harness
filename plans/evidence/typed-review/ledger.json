@@ -1,8 +1,8 @@
 {
   "schema": "typed_review_execution_ledger.v1",
-  "updated_at": "2026-10-19T21:09:11.768746+00:00",
+  "updated_at": "2026-10-19T21:57:40.287432+00:00",
   "roadmap": "docs/proposals/typed-review-roadmap.md",
-  "plan": "plans/phase-plan-typed-review-RCONTRACT.md",
+  "plan": "plans/phase-plan-v1-typed-review-RCONTRACT.md",
   "head": "bcc9b7eac6cc19de82b9fb0334fdaafe65c6b86e",
   "phase": "RCONTRACT",
   "status": "executing",
@@ -14,24 +14,42 @@
   },
   "phases": {
     "RCONTRACT": {
-      "status": "local_verification_complete_ci_scrub_pending",
+      "status": "ci_failed_scoped_repair_validation_pending",
       "produced_if_gates": [
         "IF-0-RCONTRACT-1",
         "IF-0-RCONTRACT-2"
       ],
       "evidence": {
         "path": "plans/evidence/typed-review/RCONTRACT.json",
-        "sha256": "e4eaf0f89c4a1cd30ae52ba496ebc21b1ba54a4f933a62c1ca17a584fd1270d7"
+        "sha256": "34c1a8f00c0e1791c280fe49b7a149a12c1fd0ebb1f76abb8699714eab0e5fcd"
       }
     },
     "RT3": {
-      "status": "plan_review_pending_upstream_ci_hold",
+      "status": "plan_review_accepted_upstream_ci_hold",
       "produced_if_gates": [],
-      "plan": "plans/phase-plan-typed-review-RT3.md"
+      "plan": "plans/phase-plan-v1-typed-review-RT3.md",
+      "plan_review": {
+        "round": 2,
+        "status": "COMPLETE",
+        "verdict": "AGREE",
+        "blockers": [],
+        "resolved_blocker": "RC-RT3-PLAN-R1-F1",
+        "private_report": ".phase-loop/typed-review/private/RT3/plan-review-r2/report.md",
+        "evidence_class": "manual independent T3 review; not BAML accepted",
+        "author_refinements": "All three nonblocking R2 recommendations applied after review and structurally validated; not independently re-reviewed."
+      },
+      "plan_sha256": "58ef9a31f235295e461f35032838208f68b9042af36366e2e67e7d7a27b1746c",
+      "prepared_implementation_brief": ".phase-loop/typed-review/RT3/sl0-delegation-brief.md",
+      "implementation_dispatched": false
     },
     "RPANEL": {
-      "status": "pending",
-      "produced_if_gates": []
+      "status": "read_only_reconnaissance_complete_implementation_gated",
+      "produced_if_gates": [],
+      "reconnaissance": {
+        "path": ".phase-loop/typed-review/RPANEL/recon-20261019-02.md",
+        "sha256": "6518bd6ee6f1eea6ca8ef3a415fae255760d2ff8f3aca67fbefde9eed5271fac",
+        "findings": "Live agent-harness#1443 OPEN; PANELSPLIT extraction/module map absent; existing panel/native/president routes do not consume coordinator records. Ownership and governed-gate seams documented; no implementation or live qualification."
+      }
     },
     "RENFORCE": {
       "status": "pending",
@@ -203,7 +221,7 @@
     {
       "taskId": "node:delegated-task:command%3Amcp%3A79122b9e-4125-43be-be52-a74709d61846%3Adelegate-task%3Atyped-review-rt3-plan-claude-r1-recovery-20261019-02",
       "role": "review",
-      "status": "running",
+      "status": "completed",
       "phase": "RT3",
       "round": 1,
       "providerInstanceId": "t3-claude-regenesis",
@@ -224,6 +242,29 @@
         ".gitleaks.toml"
       ],
       "scope": "Exact-value allowance for independently recomputed synthetic canonical-vector digest; no source/fixture/rule-range change."
+    },
+    {
+      "taskId": "node:delegated-task:command%3Amcp%3A79122b9e-4125-43be-be52-a74709d61846%3Adelegate-task%3Atyped-review-rt3-plan-claude-r2-recovery-20261019-02",
+      "role": "review",
+      "status": "completed",
+      "phase": "RT3",
+      "round": 2,
+      "providerInstanceId": "t3-claude-regenesis",
+      "model": "claude-opus-5-5",
+      "reasoning_effort": "medium",
+      "source_manifest": ".phase-loop/typed-review/RT3/plan-review-r2-inputs.json",
+      "evidence_class": "manual independent plan review; not BAML accepted"
+    },
+    {
+      "taskId": "node:delegated-task:command%3Amcp%3A79122b9e-4125-43be-be52-a74709d61846%3Adelegate-task%3Atyped-review-rpanel-recon-recovery-20261019-02",
+      "role": "research",
+      "phase": "RPANEL",
+      "status": "completed",
+      "providerInstanceId": "t3-codex-consiliency",
+      "model": "gpt-6-astra",
+      "reasoning_effort": "high",
+      "output": ".phase-loop/typed-review/RPANEL/recon-20261019-02.md",
+      "scope": "Read-only ownership and governed-gate reconnaissance; no source/test/control writes."
     }
   ],
   "governance_intake": {
@@ -294,7 +335,7 @@
     "repair_owner": "SL-0; fixture-only confinement in already-owned test; no runtime/root permission change",
     "proof_cost_finding": "Baseline >5min; preserve required lifetime controls and use targeted repair before rerunning full suite."
   },
-  "current_head": "20371e840828778ec0348388bd79b133ffe9bafc",
+  "current_head": "37be33608fafde41ef8dd31acd746de24b5aa2f5",
   "plan_execution_clarifications": {
     "RC-PLAN-N1": "Include v22_principles; preserve bare-class OpenAI-dialect-clean export without editing that test.",
     "RC-PLAN-N2": "Normal snapshot switches consume no failure/retry/extra attempt; test beyond retry count under finite budgets.",
@@ -336,10 +377,10 @@
     "ownership_recheck": "Live old thread is failed with no active run or pending question. Native agent listing for this run contains only /root; T3 SL-1 thread search is empty. Phase IR has no diagnostics. Live agent-harness#1443 remains OPEN/unmerged. Current tree contains no SL-1 implementation files.",
     "ledger_reconciliation": "A late uncommitted historical ledger entry claimed /root/rcontract_sl1 running and recorded parent_not_active. Preserve that claim and failure, but do not count it as active or completed work. Recovery brief reports no SL-1 dispatched before the failure; current probes find none.",
     "resume_head": "68095b9292d2ab05c0904a6ce14115e5ad4cab2d",
-    "status": "waiting_for_children",
+    "status": "ci_repair_validation",
     "private_handoff": ".phase-loop/typed-review/private/RCONTRACT/recovery-20261019-02.md",
     "remaining": [
-      "RCONTRACT CI scrub diagnosis/remediation",
+      "RCONTRACT current-head CI suite readiness",
       "RT3",
       "RPANEL",
       "RENFORCE"
@@ -452,21 +493,79 @@
     "failure_preservation": "Initial docs audit failure retained; changed comparison HEAD justified rerun. Unknown ignored toolchain outputs retained/cleaned before passing audit."
   },
   "ci_observation_current": {
-    "head": "20371e840828778ec0348388bd79b133ffe9bafc",
-    "run_url": "https://github.com/Consiliency/agent-harness/actions/runs/39323511917",
-    "gitleaks": "failure: 1 finding; diagnosis delegated exclusively to Daybreak",
+    "head": "37be33608fafde41ef8dd31acd746de24b5aa2f5",
+    "run_url": "https://github.com/Consiliency/agent-harness/actions/runs/39325236763",
+    "gitleaks": "passed on GitHub after exact-value synthetic-digest exception",
     "docs_audit": "passed",
     "entry_docs": "passed",
     "release_consistency": "passed",
-    "other_checks": "pending at observation",
-    "readiness": "held; no main merge or ready conversion",
+    "other_checks": "pytest (py3.12) in progress at observation; other completed checks passed or expected skip; suite gate not yet observed",
+    "readiness": "RT3 held until corrected-head actual pytest/suite success; scoped canonical-registration and host-io inventory repair in progress.",
     "scope": "Safe metadata only; local verification evidence retained, not all CI green.",
     "diagnosis": "Daybreak confirmed non-secret deterministic synthetic SHA256 at canonical vector field; predecessor scan clean; exact-value ephemeral exception clears pinned scan.",
-    "remediation": "Applied by Daybreak; pinned v8.21.2 HEAD-ancestry scan passed with zero findings; config parse/delta and source hashes verified. CI confirmation pending after publication.",
+    "remediation": "Exact-value exception published and GitHub gitleaks passed; no unresolved scrub failure on current head.",
     "remediation_evidence": {
       "path": ".phase-loop/typed-review/private/RCONTRACT/scrub-daybreak-fix-20261019-02/handoff.json",
       "sha256": "1053c17005294c44087d595851875020963769f79088125355f593d1806fdf9e"
     },
-    "scan_scope": "20371e84 full ancestor history, 2854 commits; CI uses its checkout history, so local result is not CI confirmation."
+    "scan_scope": "20371e84 full ancestor history, 2854 commits; CI uses its checkout history, so local result is not CI confirmation.",
+    "watch_owner": "root thread d8238af5-72f9-42f1-9c57-40dbd12e63ee",
+    "latest_source": "Root relay: all5requiredpassed wake, but pytest job118309519045 remains IN_PROGRESS with completedAt zero; suite gate absent.",
+    "required_reported_success": [
+      "lint",
+      "chronology",
+      "release-consistency check",
+      "docs-freshness",
+      "gitleaks"
+    ],
+    "pytest_job": 118309519045,
+    "pytest_status": "FAILURE",
+    "suite_gate": "FAILURE",
+    "pr_state": "OPEN/DRAFT",
+    "prior_cancelled_run": "39323511879 remains cancelled, never passing"
+  },
+  "ci_failures": [
+    {
+      "head": "37be33608fafde41ef8dd31acd746de24b5aa2f5",
+      "run_id": 39325236763,
+      "pytest_job": 118309519045,
+      "status": "FAILURE",
+      "counts": {
+        "failed": 2,
+        "passed": 14344,
+        "skipped": 662,
+        "xfailed": 1,
+        "warnings": 32
+      },
+      "duration_seconds": 2526.17,
+      "failed_at": "2026-10-19T21:52:39Z",
+      "failed_nodes": [
+        "tests/test_convergence_runtime_imports.py::test_runtime_v10_reground_record_is_present_and_ancestral",
+        "tests/test_seat_reference_inventory.py::test_runtime_launch_references_match_the_classified_inventory"
+      ],
+      "aggregate_failure_jobs": [
+        118328444753,
+        118328488220
+      ],
+      "aggregate_note": "Fallback and suite gate aggregate the failed pytest result; not separate test runs.",
+      "ci_log": {
+        "path": ".phase-loop/typed-review/RCONTRACT/ci-pytest-39325236763.log",
+        "sha256": "234a305dfbc35714b1e438c00e1ab7b291f6a4777219deacad217a5a1e461258"
+      },
+      "local_reproduction": {
+        "path": ".phase-loop/typed-review/RCONTRACT/ci-reproduce-39325236763.log",
+        "sha256": "d57011525d9c311e34b785e08fd68f74906d99a76656f295cabc8859978fec3a"
+      }
+    }
+  ],
+  "canonical_path_repair": {
+    "timestamp": "2026-10-19T21:57:40.287432+00:00",
+    "mapping": {
+      "plans/phase-plan-typed-review-RCONTRACT.md": "plans/phase-plan-v1-typed-review-RCONTRACT.md",
+      "plans/phase-plan-typed-review-RCONTRACT_reviews.md": "plans/reviews/typed-review-RCONTRACT_reviews.md",
+      "plans/phase-plan-typed-review-RT3.md": "plans/phase-plan-v1-typed-review-RT3.md",
+      "plans/phase-plan-typed-review-RT3_reviews.md": "plans/reviews/typed-review-RT3_reviews.md"
+    },
+    "reason": "Use existing PLAN_RE without weakening discovery/manifest guards. Review reports are non-plan artifacts under plans/reviews. Stable slugs, goal IDs, roadmap selection and lifecycle history preserved. Historical path references and seals remain evidence of their original inputs."
   }
 }
