@@ -125,6 +125,10 @@ class _ScopedStub:
         self._check(request, timeout)
         return self._stub.ExecCancellationLease(request, timeout=timeout, wait_for_ready=False)
 
+    def SourceCancellationLease(self, request, *, timeout):
+        self._check(request, timeout)
+        return self._stub.SourceCancellationLease(request, timeout=timeout, wait_for_ready=False)
+
 
 @asynccontextmanager
 async def authenticated_channel(config: ChannelConfig, service):

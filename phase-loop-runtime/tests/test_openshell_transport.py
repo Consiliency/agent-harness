@@ -64,22 +64,37 @@ def bindings():
                                          ("owner_id", 2, "string", False), ("lease_id", 3, "string", False),
                                          ("bound", 4, "Duration", False), ("exec", 5, "ExecSandboxRequest", False)],
         "Output": [("data", 1, "bytes", False)],
+        "CancellationSourceFile": [("path", 1, "string", False), ("size", 2, "uint64", False),
+                                   ("sha256", 3, "bytes", False), ("executable", 4, "bool", False)],
+        "CancellationSourceManifest": [("files", 1, "CancellationSourceFile", True), ("digest", 2, "bytes", False)],
+        "CancellationSourceChunk": [("file", 1, "uint32", False), ("offset", 2, "uint64", False),
+                                    ("data", 3, "bytes", False)],
+        "SourceCancellationLeaseRequest": [("workspace_scope", 1, "Workspace", False),
+                                           ("owner_id", 2, "string", False), ("lease_id", 3, "string", False),
+                                           ("generation", 4, "string", False),
+                                           ("begin", 5, "CancellationSourceManifest", False),
+                                           ("chunk", 6, "CancellationSourceChunk", False), ("commit", 7, "bool", False)],
+        "SourceCancellationLeaseResponse": [("generation", 1, "string", False), ("digest", 2, "bytes", False)],
         "Exit": [("exit_code", 1, "int32", False)],
         "ExecSandboxEvent": [("stdout", 1, "Output", False), ("stderr", 2, "Output", False), ("exit", 3, "Exit", False)],
     }
-    types = {"string": 9, "bytes": 12, "bool": 8, "int32": 5, "uint32": 13}
+    types = {"string": 9, "bytes": 12, "bool": 8, "int32": 5, "uint32": 13, "uint64": 4}
     for name, fields in schemas.items():
         msg = file.message_type.add(name=name)
         if name in ("NetworkPoliciesEntry", "EnvironmentEntry"):
             msg.options.map_entry = True
         if name == "ExecSandboxEvent":
             msg.oneof_decl.add(name="payload")
+        if name == "SourceCancellationLeaseRequest":
+            msg.oneof_decl.add(name="operation")
         for key, number, kind, repeated in fields:
             f = msg.field.add(name=key, number=number, label=3 if repeated else 1,
                               type=types.get(kind, 11))
             if kind not in types:
                 f.type_name = f".google.protobuf.{kind}" if kind in ("Duration", "Struct") else f".openshell.v1.{kind}"
             if name == "ExecSandboxEvent":
+                f.oneof_index = 0
+            if name == "SourceCancellationLeaseRequest" and number >= 5:
                 f.oneof_index = 0
     pool = descriptor_pool.DescriptorPool()
     pool.AddSerializedFile(duration_pb2.DESCRIPTOR.serialized_pb)
