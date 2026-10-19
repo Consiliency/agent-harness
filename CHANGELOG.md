@@ -6,6 +6,28 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Typed review coordinator contract
+
+- Add strict review and president intake through the declared BAML worker,
+  with immutable request/source bindings, saved-map replay, private durable
+  delivery records and one correction reservation per original lineage.
+- Keep valid and invalid-content record, finding and status identities stable across local revalidation,
+  retain actual invocation history, and require successful current validation
+  after outages. Stale president ledgers cannot consume reviewer corrections.
+- Refuse malformed host evidence before delivery. Oversized reviewer bodies
+  atomically consume the attempt with digest-only invalid-content records;
+  oversized corrections exhaust the allowance. Envelope-only overflow permits
+  host repair with the authentic original body. The envelope limit allows sixfold
+  JSON escaping plus bounded host framing. Correction prompts explicitly identify
+  absent over-limit originals by digest and length. Governed provenance now
+  requires an explicit policy set, empty by default. Publish executable lineage
+  replay vectors and document the SQLite parsing lock's 60-second busy timeout.
+- Separate typed usability, host provenance and existing governed eligibility;
+  preserve dissent and globally keyed president dispositions. The new
+  [coordinator contract](docs/phase-loop/typed-review-contract.md) documents the
+  adapter boundary. Transport integration and live-route qualification remain
+  downstream work.
+
 ### Codex execute-phase reads interactive procedures on demand (agent-harness#1358)
 
 - Split planning-handoff reuse, interactive publication, worktree lifecycle, and

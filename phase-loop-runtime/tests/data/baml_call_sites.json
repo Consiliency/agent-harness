@@ -13,7 +13,8 @@
     "prompt-chain": "prompt helpers that only forward to the rows above (build_prompt -> build_prompt_bundle -> injection._render_baml_closeout_instruction -> build_baml_request); no handler of their own (#22).",
     "discovery-chain": "discovery helpers that only forward to the closeout-parse row.",
     "evidence-chain": "evaluate_suspected_fake_evidence's own calls: BamlWorkerError is re-raised before its content-error handler.",
-    "class-name": "parse_baml_response with a CLASS name: the regex-only branch; never reaches the worker."
+    "class-name": "parse_baml_response with a CLASS name: the regex-only branch; never reaches the worker.",
+    "typed-review": "ReviewCoordinator.build_request maps worker/build failure to redacted baml_unavailable; ReviewCoordinator._validate catches BamlWorkerError before BamlValidationError, retains private original bytes and mints only a non-content-valid failure record. No provider dispatch occurs."
   },
   "sites": {
     "adoption_bundle.py::generate_adoption_bundle::parse_baml_response": "class-name",
@@ -38,6 +39,8 @@
     "runner.py::launch_harness_lane_work_unit::build_prompt": "lane",
     "runner.py::_parse_native_closeout_status::parse_closeout_payload_doc": "closeout-parse",
     "runner.py::_trusted_failed_launch_closeout::_parsed_child_automation": "finalize",
-    "runner.py::_launch_contract_blocker::_parsed_child_automation": "finalize"
+    "runner.py::_launch_contract_blocker::_parsed_child_automation": "finalize",
+    "review_contract.py::_validate::parse_review_response": "typed-review",
+    "review_contract.py::build_request::build_baml_request": "typed-review"
   }
 }

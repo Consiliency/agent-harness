@@ -55,3 +55,70 @@ Independent phase-plan review is satisfied for manual execution. This does not
 claim BAML-accepted content, operational qualification, or full-board/president
 landing ratification. Implementation review and all phase EC/IF evidence remain
 required.
+
+## Implementation round 1
+
+Independent Claude Opus 5.5 / Regenesis result: COMPLETE / PARTIALLY_AGREE.
+This is manual implementation evidence, not a BAML-accepted receipt or landing
+ratification. All 16 implementation-input hashes and three original proposal
+hashes matched before and after review. The complete report and two real-worker
+reproductions are retained under the allowlisted private RCONTRACT evidence root.
+
+RC-IMPL-R1-F1 is BLOCKING; RC-IMPL-R1-F2 through RC-IMPL-R1-F6 are NON_BLOCKING.
+The combined response accepts F1/F2/F3/F5/F6 for correction before interface
+freeze. F4 takes the reviewer's documented bounded-contention alternative;
+the existing atomic serialization remains intentional for this phase.
+No finding is marked resolved before its implementation and focused verification.
+Round 2 must include the original brief, full findings, responses, unresolved
+objections and the final source manifest. Review cap remains three rounds.
+Sealed phase verification, required repository checks and EC/IF closeout remain
+pending. Prior planning rulings and historical failures above remain unchanged.
+
+## Implementation round 2
+
+Combined correction supplied for F1/F2/F3/F5/F6; F4's accepted documented
+contention alternative is explicit. Parent checked the corrected five owned
+file hashes, handoff digest, unchanged SL-0/integration files and proposal bytes.
+Final focused results: 161 passed (148 gateway plus 13 worker controls), both
+caller guards passed, pinned lint and whitespace passed. These are lane evidence,
+not the pending sealed full-phase verification.
+
+A fresh Claude Opus 5.5 / Regenesis task received the complete original brief,
+prior findings, author responses and unresolved objections. Review round 2 is
+pending; round 1's COMPLETE / PARTIALLY_AGREE remains the standing verdict.
+No finding resolution or interface completion is assumed from author claims.
+
+Completed round 2: COMPLETE / PARTIALLY_AGREE. RC-IMPL-R1-F2/F5/F6 are
+resolved; F3's storage concern is resolved; F4 is an accepted documented
+limitation. F1 is partially resolved with its remainder carried as
+RC-IMPL-R2-F1; RC-IMPL-R2-F2 records a regression from the prior correction.
+Both round-2 findings are BLOCKING. Full original report and reproductions
+remain private; reviewer acknowledged their earlier wording contributed to F2.
+
+## Implementation round 3 preparation
+
+The combined final correction supplies both round-2 fixes in the five original
+SL-1 paths. Focused final tests: 186 passed (173 gateway plus 13 worker controls),
+both caller guards, pinned lint and whitespace passed. Parent rehashed final
+source/proposal files and all recorded correction evidence. Round-3 input
+manifest is retained privately. The round-2 verdict remains standing pending
+independent assessment; the implementation review cap remains three rounds.
+No sealed full-phase result or IF completion is claimed.
+
+## Implementation round 3 result
+
+Claude Opus 5.5 / Regenesis returned COMPLETE / AGREE. Both round-2 blockers
+are resolved; prior round-1 findings remain resolved or, for F4, accepted as a
+documented contention limitation. The 16 source and three proposal hashes matched
+before and after review. This remains manual independent evidence, not a
+BAML-accepted review or landing ratification. Full reports and reproductions
+remain in the allowlisted private RCONTRACT evidence root.
+
+For new NON_BLOCKING RC-IMPL-R3-F1, the owner selected the reviewer's option (a):
+allow sixfold JSON escaping of the bounded body plus 65,536 bytes of framing.
+The production cap is now 6,356,992 bytes; docs and executable vectors state the
+admitted framing bound and adapter preflight obligation. This five-file change
+follows the reviewed manifest and is not represented as independently re-reviewed.
+Focused regression checks passed: 9 passed, 165 deselected. No fourth review
+round is needed for the explicitly proposed nonblocking resolution. Sealed
+phase verification, required repository checks and EC/IF closeout remain pending.

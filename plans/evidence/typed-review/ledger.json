@@ -1,6 +1,6 @@
 {
   "schema": "typed_review_execution_ledger.v1",
-  "updated_at": "2026-10-19T19:10:49.473502+00:00",
+  "updated_at": "2026-10-19T19:15:00Z",
   "roadmap": "docs/proposals/typed-review-roadmap.md",
   "plan": "plans/phase-plan-typed-review-RCONTRACT.md",
   "head": "bcc9b7eac6cc19de82b9fb0334fdaafe65c6b86e",
@@ -59,6 +59,17 @@
   "checkpoint_head": "77966530",
   "delegated_tasks": [
     {
+      "taskId": "node:delegated-task:command%3Amcp%3A79122b9e-4125-43be-be52-a74709d61846%3Adelegate-task%3Atyped-review-rcontract-final-verification-recovery-20261019-02",
+      "role": "test",
+      "status": "running",
+      "phase": "RCONTRACT",
+      "providerInstanceId": "t3-codex-consiliency",
+      "model": "gpt-6-astra",
+      "reasoning_effort": "high",
+      "output_directory": ".phase-loop/typed-review/RCONTRACT/final-verification-20261019-02",
+      "scope": "Supported sealed phase verification, make check and docs checks; no source writes, publication or phase completion authority."
+    },
+    {
       "taskId": "node:delegated-task:command%3Amcp%3Aa653908d-c633-4622-9ad0-ae4de56deaa5%3Adelegate-task%3Atyped-review-rcontract-runtime-map-20261019-01",
       "role": "research",
       "status": "completed"
@@ -83,6 +94,83 @@
       "role": "implementation",
       "lane": "SL-0",
       "status": "completed"
+    },
+    {
+      "taskId": "/root/rcontract_sl1",
+      "role": "implementation",
+      "lane": "SL-1",
+      "status": "unverified_historical_claim_not_active_in_recovery",
+      "orchestrator": "native same-provider",
+      "model": "gpt-6-astra",
+      "reasoning_effort": "high"
+    },
+    {
+      "taskId": "node:delegated-task:command%3Amcp%3A22a5b0b4-b5dd-435e-91ae-af19d744e12f%3Adelegate-task%3Atyped-review-rcontract-sl1-impl-recovery-20261019-02",
+      "childThreadId": "thread:delegated-task:command%3Amcp%3A22a5b0b4-b5dd-435e-91ae-af19d744e12f%3Adelegate-task%3Atyped-review-rcontract-sl1-impl-recovery-20261019-02",
+      "role": "implementation",
+      "lane": "SL-1",
+      "status": "completed",
+      "orchestrator": "T3 recovery task 02; serial shared checkout with explicit owned cwd",
+      "providerInstanceId": "t3-codex-consiliency",
+      "model": "gpt-6-astra",
+      "reasoning_effort": "high"
+    },
+    {
+      "taskId": "node:delegated-task:command%3Amcp%3A22a5b0b4-b5dd-435e-91ae-af19d744e12f%3Adelegate-task%3Atyped-review-rcontract-implementation-claude-r1-recovery-20261019-02",
+      "role": "review",
+      "status": "completed",
+      "phase": "RCONTRACT",
+      "round": 1,
+      "providerInstanceId": "t3-claude-regenesis",
+      "model": "claude-opus-5-5",
+      "reasoning_effort": "medium",
+      "source_manifest": ".phase-loop/typed-review/RCONTRACT/implementation-review-r1-inputs.json",
+      "evidence_class": "manual independent implementation review; not BAML accepted"
+    },
+    {
+      "taskId": "node:delegated-task:command%3Amcp%3A22a5b0b4-b5dd-435e-91ae-af19d744e12f%3Adelegate-task%3Atyped-review-rcontract-sl1-correction-r1-recovery-20261019-02",
+      "role": "implementation",
+      "status": "completed",
+      "lane": "SL-1",
+      "providerInstanceId": "t3-codex-consiliency",
+      "model": "gpt-6-astra",
+      "reasoning_effort": "high",
+      "brief": ".phase-loop/typed-review/RCONTRACT/sl1-review-correction-brief.md"
+    },
+    {
+      "taskId": "node:delegated-task:command%3Amcp%3A22a5b0b4-b5dd-435e-91ae-af19d744e12f%3Adelegate-task%3Atyped-review-rcontract-implementation-claude-r2-recovery-20261019-02",
+      "role": "review",
+      "status": "completed",
+      "phase": "RCONTRACT",
+      "round": 2,
+      "providerInstanceId": "t3-claude-regenesis",
+      "model": "claude-opus-5-5",
+      "reasoning_effort": "medium",
+      "source_manifest": ".phase-loop/typed-review/RCONTRACT/implementation-review-r2-inputs.json",
+      "evidence_class": "manual independent implementation review; not BAML accepted"
+    },
+    {
+      "taskId": "node:delegated-task:command%3Amcp%3A22d70711-028a-450a-88c3-a9c3d12a0569%3Adelegate-task%3Atyped-review-rcontract-sl1-correction-r2-recovery-20261019-02",
+      "role": "implementation",
+      "status": "completed",
+      "lane": "SL-1",
+      "providerInstanceId": "t3-codex-consiliency",
+      "model": "gpt-6-astra",
+      "reasoning_effort": "high",
+      "brief": ".phase-loop/typed-review/RCONTRACT/sl1-review-correction-r2-brief.md",
+      "handoff": ".phase-loop/typed-review/RCONTRACT/sl1-correction-r2/api-handoff.md"
+    },
+    {
+      "taskId": "node:delegated-task:command%3Amcp%3A79122b9e-4125-43be-be52-a74709d61846%3Adelegate-task%3Atyped-review-rcontract-implementation-claude-r3-recovery-20261019-02",
+      "role": "review",
+      "status": "completed",
+      "phase": "RCONTRACT",
+      "round": 3,
+      "providerInstanceId": "t3-claude-regenesis",
+      "model": "claude-opus-5-5",
+      "reasoning_effort": "medium",
+      "source_manifest": ".phase-loop/typed-review/RCONTRACT/implementation-review-r3-inputs.json",
+      "evidence_class": "manual independent implementation review; not BAML accepted"
     }
   ],
   "governance_intake": {
@@ -153,7 +241,7 @@
     "repair_owner": "SL-0; fixture-only confinement in already-owned test; no runtime/root permission change",
     "proof_cost_finding": "Baseline >5min; preserve required lifetime controls and use targeted repair before rerunning full suite."
   },
-  "current_head": "5519db0fbdac62e7ae030c94fb027c62b6fdd56c",
+  "current_head": "68095b9292d2ab05c0904a6ce14115e5ad4cab2d",
   "plan_execution_clarifications": {
     "RC-PLAN-N1": "Include v22_principles; preserve bare-class OpenAI-dialect-clean export without editing that test.",
     "RC-PLAN-N2": "Normal snapshot switches consume no failure/retry/extra attempt; test beyond retry count under finite budgets.",
@@ -185,5 +273,96 @@
       "phase-loop-runtime/tests/fixtures/baml_worker_peers.py": "2168b1f4819c4de2bd9bea291297ff735479ad6a46397ae6d0ee5ced5d4aea0c",
       "phase-loop-runtime/tests/data/baml_call_sites.json": "a437b463c846b91d12351740ed5345cc6554ae05d365aa5788224ae78e23842e"
     }
+  },
+  "recovery": {
+    "timestamp": "2026-10-19T19:14:48Z",
+    "taskId": "node:delegated-task:command%3Amcp%3A37c638c0-3578-4205-91f1-fb1d4d4ba43e%3Adelegate-task%3Atyped-review-roadmap-execution-20261019-02",
+    "threadId": "thread:delegated-task:command%3Amcp%3A37c638c0-3578-4205-91f1-fb1d4d4ba43e%3Adelegate-task%3Atyped-review-roadmap-execution-20261019-02",
+    "prior_taskId": "node:delegated-task:command%3Amcp%3A10202219-4e41-4ec6-8295-ed93cc470c52%3Adelegate-task%3Atyped-review-roadmap-execution-20261019-01",
+    "incident": "T3 restarted twice at 19:12Z; ordinal 1 cancelled after push, ordinals 2 and 3 cancelled, ordinal 4 provider could not start. All used t3-codex-consiliency/gpt-6-astra. No cause inferred; no authentication or credential inspection and no account fallback.",
+    "ownership_recheck": "Live old thread is failed with no active run or pending question. Native agent listing for this run contains only /root; T3 SL-1 thread search is empty. Phase IR has no diagnostics. Live agent-harness#1443 remains OPEN/unmerged. Current tree contains no SL-1 implementation files.",
+    "ledger_reconciliation": "A late uncommitted historical ledger entry claimed /root/rcontract_sl1 running and recorded parent_not_active. Preserve that claim and failure, but do not count it as active or completed work. Recovery brief reports no SL-1 dispatched before the failure; current probes find none.",
+    "resume_head": "68095b9292d2ab05c0904a6ce14115e5ad4cab2d",
+    "status": "waiting_for_children",
+    "private_handoff": ".phase-loop/typed-review/private/RCONTRACT/recovery-20261019-02.md",
+    "remaining": ["sealed RCONTRACT verification and closeout", "RT3", "RPANEL", "RENFORCE"]
+  },
+  "delegation_failure": {
+    "requested_clientRequestId": "typed-review-rcontract-sl1-impl-20261019-01",
+    "code": "parent_not_active",
+    "message": "The calling provider no longer owns an active thread run.",
+    "reconciliation": "Requested T3 child thread read returned thread_not_found. No SL-1 T3 child exists.",
+    "fallback": "User-authorized native same-provider delegate with supported gpt-6-astra/high; live catalog inherited provider t3-codex-consiliency.",
+    "independent_review": "Still required; same-provider implementation is not independent review."
+  },
+  "sl1_observation": {
+    "status": "implementation_review_agree_sealed_verification_pending",
+    "handoff": ".phase-loop/typed-review/RCONTRACT/sl1/handoff.json",
+    "source_hashes": ".phase-loop/typed-review/RCONTRACT/sl1/final-inputs.json",
+    "source_hashes_rechecked": true,
+    "focused_tests": "126 passed: 113 gateway tests plus 13 worker controls; final source bytes",
+    "compatibility_tests": "15 passed, 12 skipped",
+    "caller_integration": "Original 1 failed / 1 passed preserved; parent added both new call sites serially, rerun 2 passed / 25 deselected",
+    "caller_integration_evidence": ".phase-loop/typed-review/RCONTRACT/integration-20261019-02/caller-integration.json",
+    "phase_complete": false,
+    "native_conflict_reconciliation": "New evidence confirms an overlapping native SL-1 draft despite recovery probes finding no child. Its writer recorded writes_stopped=true and preserved failed test/source snapshots in sl1/native-ownership-conflict.json. Earlier no-active-child observations remain historical, not proof no orphan existed. Current T3 worker is completed with no pending children; all five final file hashes match its handoff. Conflict evidence is retained, not used as passing tests."
+  },
+  "implementation_review": {
+    "round": 3,
+    "status": "COMPLETE",
+    "verdict": "AGREE",
+    "evidence_class": "manual independent implementation review; not BAML accepted",
+    "private_report": ".phase-loop/typed-review/private/RCONTRACT/implementation-review-r3/report.md",
+    "prior_round2_report": ".phase-loop/typed-review/private/RCONTRACT/implementation-review-r2/report.md",
+    "prior_round1_report": ".phase-loop/typed-review/private/RCONTRACT/implementation-review-r1/claude-impl-review-r1.md",
+    "source_manifest_matched": true,
+    "findings": {
+      "RC-IMPL-R1-F1": "BLOCKING; resolved by independent round 3 with RC-IMPL-R2-F1",
+      "RC-IMPL-R1-F2": "NON_BLOCKING; resolved by independent round 2",
+      "RC-IMPL-R1-F3": "NON_BLOCKING; storage concern and RC-IMPL-R2-F2 regression resolved by independent round 3",
+      "RC-IMPL-R1-F4": "NON_BLOCKING; documented contention limitation accepted by independent round 2",
+      "RC-IMPL-R1-F5": "NON_BLOCKING; resolved by independent round 2",
+      "RC-IMPL-R1-F6": "NON_BLOCKING; executable vector resolved; identity expectation carried as RC-IMPL-R2-F1",
+      "RC-IMPL-R2-F1": "BLOCKING; resolved by independent round 3",
+      "RC-IMPL-R2-F2": "BLOCKING; resolved by independent round 3",
+      "RC-IMPL-R3-F1": "NON_BLOCKING; owner selected reviewer option (a): sixfold JSON escaping plus 65536 bytes framing. Applied after reviewed manifest; regression vectors and focused checks passed. Sealed verification pending."
+    },
+    "correction_handoff": ".phase-loop/typed-review/RCONTRACT/sl1-correction-r1/handoff.json",
+    "correction_hashes_rechecked": true,
+    "correction_focused_tests": "161 passed: 148 gateway plus 13 worker controls; final Python bytes. Caller guards 2 passed, pinned lint and whitespace passed.",
+    "correction_disposition": "F1/F2/F3/F5/F6 implemented; F4 documented alternative. Independent resolutions pending round 2, original verdict remains standing.",
+    "final_correction_handoff": ".phase-loop/typed-review/RCONTRACT/sl1-correction-r2/api-handoff.md",
+    "final_correction_source_manifest": ".phase-loop/typed-review/RCONTRACT/implementation-review-r3-inputs.json",
+    "final_correction_hashes_verified": true,
+    "final_correction_tests": "186 passed: 173 gateway plus 13 worker controls; caller guards, pinned lint and whitespace passed. Source and evidence SHA256 verified by parent.",
+    "review_round3_transport_observation": "Two thread-read calls failed with HTTP request transport error to local T3 MCP endpoint. A bounded capabilities recheck and subsequent original-brief read succeeded. No review dispatch occurred before recovery, no account/auth change, and one round-3 task was then accepted running.",
+    "remaining": ["sealed phase verification", "required checks and closeout"],
+    "unresolved_blockers": [],
+    "post_review_resolution": {
+      "finding": "RC-IMPL-R3-F1",
+      "option": "a",
+      "max_transport_bytes": 6356992,
+      "focused_evidence": ".phase-loop/typed-review/RCONTRACT/round3-envelope-resolution/focused.json",
+      "focused_result": "9 passed, 165 deselected",
+      "review_scope": "Round 3 AGREE applies to its saved 16-file manifest. Subsequent five-file cap/docs/vector adjustment is the owner implementation of reviewer-proposed nonblocking option (a); no fourth review or BAML acceptance claimed."
+    }
+  },
+  "ci_observation": {
+    "head": "68095b9292d2ab05c0904a6ce14115e5ad4cab2d",
+    "docs_audit": "failed",
+    "code": "release_docs_unsatisfied",
+    "required_surface": "CHANGELOG* or docs/release* for .github/workflows/test.yml change",
+    "repair": "Already-owned SL-1 CHANGELOG.md meaningful typed-review/CI entry; delegated, pending rerun",
+    "log_path": ".phase-loop/typed-review/RCONTRACT/ci-docs-audit-68095b92.log",
+    "log_sha256": "684e7ca8745d233b14c76d2688642ff598e9c6cd43435869c2a15c106efbbc35",
+    "observed_passes": [
+      "BAML sources (pinned baml-cli fmt + check)",
+      "lint (pyflakes)",
+      "build + verify wheel + sdist",
+      "wheel smoke",
+      "release-consistency",
+      "roadmap ownership (advisory)"
+    ],
+    "completion_claim": false
   }
 }
