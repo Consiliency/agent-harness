@@ -6,6 +6,20 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Local T3 typed review host bridge
+
+- Add local request, prepare, register, intake, resume and correction operations
+  around the frozen review coordinator. Host actions are data for the driving
+  host; commands do not dispatch providers. Bind original task/thread/run,
+  recover complete terminal text with bounded UTF-16 pagination, and replay
+  saved bytes and BAML sources after interruption.
+- Document the NON_GATING/HOST_ATTESTED policy, shared pre-bound checkout,
+  private state requirements, unresolved offered dispatch and one frozen-charter
+  correction allowance in the [host integration guide](docs/phase-loop/typed-reviews.md).
+  Add synthetic host fault and standalone CLI conformance coverage. Independent
+  implementation review and final sealed verification remain pending; no live
+  route, governed admission or deployment qualification is claimed.
+
 ### Typed review coordinator contract
 
 - Add strict review and president intake through the declared BAML worker,

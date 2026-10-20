@@ -167,7 +167,22 @@ class T3ReviewService:
         return row, payload
 
     def prepare(self, binding: str, *, target: dict, capabilities: dict) -> t.HostAction:
-        self._request(binding)
+        request = self._request(binding)
+        original_binding = None
+        if request.value["replaces_record_id"] is not None:
+            # Public coordinator lineage/context APIs remain the authority, even
+            # after a reservation commit with no correction intent yet.
+            context = self.coordinator.correction_context(binding)
+            original_binding = context["failure"]["request_binding"]
+            original = self._request(original_binding)
+            reserved = self.coordinator.correction_request(original_binding)
+            t.require(original.value["replaces_record_id"] is None and
+                      original.lineage_id == request.lineage_id and
+                      reserved is not None and reserved.binding == binding)
+            with self._transaction() as db:
+                original_row, original_payload = self._intent(db, original_binding)
+                t.require(canonical_json(target) == canonical_json(original_payload["target"]))
+                self._same_runtime_mode(original_row, capabilities)
         prompt = self.coordinator.build_request(binding).prompt
         payload = t.dispatch_payload(binding, prompt, target, capabilities)
         encoded = canonical_json(payload)
@@ -177,8 +192,13 @@ class T3ReviewService:
                 db.execute("INSERT INTO intents VALUES (?, ?, ?, ?, ?, 'prepared', NULL, NULL)",
                            (binding, encoded, t.sha(encoded), t.relay_json(capabilities), t.PROFILE_VERSION))
             else:
+                self._same_runtime_mode(row, capabilities)
                 t.require(row["payload"] == encoded, "delivery_conflict")
         return self._offer(binding)
+
+    @staticmethod
+    def _same_runtime_mode(row, capabilities):
+        t.require(t.runtime_mode(json.loads(row["capabilities"])) == t.runtime_mode(capabilities))
 
     def _offer(self, binding):
         with self._transaction() as db:
@@ -213,6 +233,11 @@ class T3ReviewService:
             t.require(args == (payload if wrapper["tool"] == "delegate_task" else {"taskId": identity["taskId"]}))
             encoded = canonical_json(identity)
             t.require(row["registration"] is None or row["registration"] == encoded, "delivery_conflict")
+            # Serialize first registration across bindings under BEGIN IMMEDIATE.
+            # A fresh delegated review must not reuse another task, thread or run.
+            for other in db.execute("SELECT registration FROM intents WHERE binding != ? AND registration IS NOT NULL", (binding,)):
+                saved = json.loads(other["registration"])
+                t.require(all(identity[k] != saved[k] for k in t.IDENTITY_KEYS), "delivery_conflict")
             # Commit the immutable original identity before coordinator registration;
             # any interrupted coordinator call is repaired idempotently on intake.
             if row["registration"] is None:
@@ -286,6 +311,7 @@ class T3ReviewService:
             row, payload = self._intent(db, original_binding)
         # Fresh host-observed capabilities must support the unchanged target.
         t.dispatch_payload(original_binding, "capability preflight", payload["target"], capabilities)
+        self._same_runtime_mode(row, capabilities)
         correction = self.coordinator.correction_request(original_binding)
         if correction is None:
             current = self.coordinator.revalidate(original_binding)
@@ -395,7 +421,10 @@ def cli_main(args) -> int:
         return 0
     except ReviewRefused as exc:
         code = exc.code
-    except (OSError, ValueError, TypeError, KeyError, RecursionError):
+    except Exception:
+        # Adapter boundary: ordinary local/coordinator failures expose no body
+        # or traceback and never authorize a provider retry. Process control
+        # exceptions (SystemExit, KeyboardInterrupt) deliberately propagate.
         code = "result_unavailable"
     print(json.dumps({"schema": "t3_cli_result.v1", "ok": False, "rejection_code": code}, sort_keys=True))
     return 1

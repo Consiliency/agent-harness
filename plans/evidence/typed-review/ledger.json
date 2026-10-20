@@ -1,12 +1,12 @@
 {
   "schema": "typed_review_execution_ledger.v1",
-  "updated_at": "2026-10-19T22:57:04.114038+00:00",
+  "updated_at": "2026-10-20T01:33:24.995797+00:00",
   "roadmap": "docs/proposals/typed-review-roadmap.md",
   "plan": "plans/phase-plan-v1-typed-review-RT3.md",
   "head": "bcc9b7eac6cc19de82b9fb0334fdaafe65c6b86e",
   "phase": "RT3",
-  "status": "executing",
-  "verification_status": "pending",
+  "status": "RT3 bounded portability/finalizer repairs reviewed; required repository verification and external prerequisites remain open",
+  "verification_status": "failed",
   "proposal_sha256": {
     "docs/proposals/typed-review-contract.md": "b72df16dd3a52349f78dc53268526d492383ac11ec1dc9e97ff5a7bfe7f392f9",
     "docs/proposals/typed-review-roadmap.md": "45b6faac632fcdf47fc5605389826d256126ab6f4c2a2b44859f2a3088f2e3e8",
@@ -25,26 +25,580 @@
       }
     },
     "RT3": {
-      "status": "sl0_accepted_sl1_dispatch_ready",
+      "status": "reviewed_bounded_repairs_complete_required_repository_and_external_gates_open",
       "produced_if_gates": [],
       "plan": "plans/phase-plan-v1-typed-review-RT3.md",
       "plan_review": {
-        "round": 2,
+        "round": 3,
         "status": "COMPLETE",
         "verdict": "AGREE",
         "blockers": [],
-        "resolved_blocker": "RC-RT3-PLAN-R1-F1",
-        "private_report": ".phase-loop/typed-review/private/RT3/plan-review-r2/report.md",
-        "evidence_class": "manual independent T3 review; not BAML accepted",
-        "author_refinements": "All three nonblocking R2 recommendations applied after review and structurally validated; not independently re-reviewed."
+        "nonblocking": [
+          "RT3-PLAN-R3-F1",
+          "RT3-PLAN-R3-F2",
+          "RT3-PLAN-R3-F3",
+          "RT3-PLAN-R3-F4"
+        ],
+        "report": ".phase-loop/typed-review/private/RT3/plan-review-r3/report.md",
+        "report_sha256": "ed6cf6ce4ed964e2309e7ee4f0e0dfbfccf8fc7495cf8f539c6ac20fc4178f54",
+        "evidence_class": "manual independent plan-amendment review; not BAML accepted",
+        "scope": "Additional three-test-path SL-2 only; adapter design unchanged",
+        "author_refinements": "All four nonblocking findings folded into canonical plan as worker obligations, literal/IR/plan-doc validated; not independently re-reviewed."
       },
-      "plan_sha256": "6169583cba2e2157c47809959514010215bd8921e6a8a9ad208d28b4dcfab97e",
+      "plan_sha256": "4d10366188c0f7a7862074a1252fb6fae01f52bcaef7557b554fac352c811169",
       "prepared_implementation_brief": ".phase-loop/typed-review/RT3/sl0-delegation-brief.md",
       "implementation_dispatched": true,
       "sl0_acceptance": {
         "path": ".phase-loop/typed-review/RT3/sl0/parent-acceptance.json",
         "sha256": "89b9d32ed901f2569dbf2ae9cd3ea533b0f7e1a12c4f85a5ef1b2f7391b8e778"
-      }
+      },
+      "sl1_intake": {
+        "path": ".phase-loop/typed-review/RT3/sl1/parent-intake.json",
+        "sha256": "be046aa2525fb36063eed7eb0f4d47cd8d7c5a6e3f5c68d3d27602b8bb4e38b8"
+      },
+      "implementation_review": {
+        "round": 2,
+        "status": "COMPLETE",
+        "source_head": "8585a9aed728159fd245447ed146918cdb132c99",
+        "scope": "SL-0 plus completed SL-1 and serial correction, 58 frozen review inputs",
+        "prior_verdict": "COMPLETE/PARTIALLY_AGREE round 1",
+        "prior_blocking": [
+          "RT3-IMPL-R1-F1"
+        ],
+        "author_response": ".phase-loop/typed-review/RT3/correction-r1/response.md",
+        "source_manifest": ".phase-loop/typed-review/RT3/implementation-review-r2-inputs.json",
+        "verdict": "AGREE",
+        "blocking": [],
+        "new_findings": [],
+        "resolved_findings": [
+          "RT3-IMPL-R1-F1",
+          "RT3-IMPL-R1-F2",
+          "RT3-IMPL-R1-F3",
+          "RT3-IMPL-R1-F4",
+          "RT3-IMPL-R1-F5"
+        ],
+        "report": ".phase-loop/typed-review/private/RT3/implementation-review-r2/report.md",
+        "report_sha256": "ffc35717eb967089aee768a4e437807bb6e4ab0dfc2b1299f6e2e091c5ff6e6c",
+        "evidence_class": "manual independent implementation review; not BAML accepted",
+        "parent_verified_inputs": 58,
+        "residual_limitations": [
+          "Status-only association remains a trusted-host assertion; unrelated unused task could spend correction on binding mismatch.",
+          "Effective child permission and host mode after prepare or at resume remain unattested.",
+          "RENFORCE must establish root-child worktreePath, explicit final nextTextOffset null and acknowledgement updatedAt behavior."
+        ]
+      },
+      "correction_r1_intake": {
+        "path": ".phase-loop/typed-review/RT3/correction-r1/parent-intake.json",
+        "sha256": "54ce4576273703aa8ea65ebad561f4f72459cb66e249001638b5ed82177b4155"
+      },
+      "implementation_review_history": [
+        {
+          "round": 1,
+          "status": "COMPLETE",
+          "source_head": "8585a9aed728159fd245447ed146918cdb132c99",
+          "scope": "Complete SL0 committed plus six SL1 working-tree paths sealed in review-input manifest",
+          "verdict": "PARTIALLY_AGREE",
+          "blocking": [
+            "RT3-IMPL-R1-F1"
+          ],
+          "nonblocking": [
+            "RT3-IMPL-R1-F2",
+            "RT3-IMPL-R1-F3",
+            "RT3-IMPL-R1-F4",
+            "RT3-IMPL-R1-F5"
+          ],
+          "report": ".phase-loop/typed-review/private/RT3/implementation-review-r1/report.md"
+        }
+      ],
+      "sl0_checkpoint_ci": {
+        "head": "8585a9aed728159fd245447ed146918cdb132c99",
+        "run_id": 39338465600,
+        "run_url": "https://github.com/Consiliency/agent-harness/actions/runs/39338465600",
+        "status": "completed",
+        "conclusion": "success",
+        "jobs": [
+          {
+            "databaseId": 118353819782,
+            "name": "pytest (py3.12)",
+            "status": "completed",
+            "conclusion": "success",
+            "url": "https://github.com/Consiliency/agent-harness/actions/runs/39338465600/job/118353819782"
+          },
+          {
+            "databaseId": 118369002287,
+            "name": "suite (hosted fallback)",
+            "status": "completed",
+            "conclusion": "success",
+            "url": "https://github.com/Consiliency/agent-harness/actions/runs/39338465600/job/118369002287"
+          },
+          {
+            "databaseId": 118369035475,
+            "name": "suite gate",
+            "status": "completed",
+            "conclusion": "success",
+            "url": "https://github.com/Consiliency/agent-harness/actions/runs/39338465600/job/118369035475"
+          },
+          {
+            "databaseId": 118353792867,
+            "name": "BAML sources",
+            "status": "completed",
+            "conclusion": "success",
+            "url": "https://github.com/Consiliency/agent-harness/actions/runs/39338465600/job/118353792867"
+          }
+        ],
+        "observed_at": "2026-10-19T23:42:52.431525+00:00",
+        "source": "Root live GitHub verification relayed in this conversation; no duplicate child CI polling.",
+        "pr": {
+          "url": "https://github.com/Consiliency/agent-harness/pull/1770",
+          "state": "OPEN",
+          "isDraft": true
+        },
+        "scope": "Pushed RT3 SL-0 checkpoint only. Does not cover unpushed SL-1 or correction bytes; does not satisfy final corrected-head RT3 CI. Hosted fallback and suite gate are aggregate results, not separate pytest runs.",
+        "final_corrected_head_ci": "pending publication and actual CI success",
+        "metadata": {
+          "path": ".phase-loop/typed-review/RT3/sl0-ci-readiness-39338465600.json",
+          "sha256": "3243a62fcfa5608ab1e36a1ca15dc6d98575b3fdcb42cce01e4417c18600c7b6"
+        }
+      },
+      "final_corrected_head_ci": "pending; checkpoint run39338465600 excludes unpushed SL-1 and corrections",
+      "final_verification": {
+        "schema": "rt3_final_verification_parent_intake.v1",
+        "at": "2026-10-20T00:20:02.630867+00:00",
+        "result_sha256": "821ea79ba121edd2e70ec071ed28e81c2aef0a4020b9a3118996a523fd5e8313",
+        "output_artifacts_verified": 24,
+        "sealed_artifact": ".phase-loop/typed-review/RT3/verify-20261019T233947572588Z/verification.json",
+        "sealed_artifact_sha256": "4f5c2aa7bc96fa8f73f334a4b2ae73d442202696063ba57b96e83e4ae1588686",
+        "sealed_validation_ok": true,
+        "suite_summary": "603 passed in 135.01s (0:02:15)",
+        "required_repository_check": "failed: 4 failed, 5641 passed, 506 skipped, 146 deselected, 1 xfailed, 6 warnings, 278 errors; companion 64 passed",
+        "global_guards": "2 passed",
+        "post_review_doc_repair": {
+          "phase-loop-runtime/README.md": {
+            "verified": "6ffa591f387b67171b54de541e6bc3fa0ed953624e6362a10a51bdc569548e31",
+            "current": "4e1b96114b9206760075259afe71824580602a95037e6fcba0957d60ed288a1e"
+          }
+        },
+        "entry_doc_repair": {
+          "exit_code": 0,
+          "log": ".phase-loop/typed-review/RT3/entry-doc-link-repair.log",
+          "sha256": "7dc2d17d59965785aabdbfce52465e1a42349a4dcc67692fef8b613110713558",
+          "summary": "entry_doc_check: OK \u2014 8 entry doc(s) clean"
+        },
+        "phase_status": "not closed; repository-check diagnosis active; no new CI or push"
+      },
+      "prerequisite_tracks": {
+        "source": "Root coordination relays in this conversation",
+        "test_only_repairs": "Accepted SL-2 repair implemented; first independent review COMPLETE/AGREE. Subsequent three-line canonical correction: two affected nodes passed; second narrow review running. Full affected run remains failed.",
+        "helper": {
+          "status": "Existing owner retains source freeze; no qualified runtime dependency handoff",
+          "source": "Root metadata-only coordination relay",
+          "v11_owner_thread": "b5684b98-f9ee-471b-b56f-ea3b4d64bd04",
+          "unassigned_paths": [
+            "phase-loop-runtime/src/phase_loop_runtime/seat_keyring_exec.py",
+            "phase-loop-runtime/tests/test_seat_keyring.py",
+            "phase-loop-runtime/tests/test_review_monitor_policy.py"
+          ],
+          "unassigned_paths_note": "No current writer reported; absence is not assignment to RT3.",
+          "existing_writer": {
+            "name": "Jev Assembler",
+            "thread": "b8939fdb-8841-4296-ae32-2a53a1918688",
+            "worktree": "/mnt/workspace/worktrees/viperjuice/agent-harness-publish-merge-parent-preservation",
+            "branch": "fix/publish-merge-parent-preservation",
+            "observed_head": "bcc9b7eac6cc19de82b9fb0334fdaafe65c6b86e",
+            "observed_dirty": true,
+            "overlap": "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py",
+            "plan_scope": "Explicit post-bubblewrap parent-death rearming",
+            "panel_sha256": "7d6d525597614c4482d938b2bc674acd2e182aa05ed5f7b50e2e8dafe04a1b24",
+            "source_domain_sha256": "896d220963cdd006a7cb134c075de35c495ab86bd9ff0fea818653ccafaa36c3",
+            "panel_writing_task_active": false,
+            "writer_ownership_retained": true
+          },
+          "pending_evidence": [
+            "qualified runtime dependency handoff from retained owner"
+          ],
+          "rt3_source_edit_authority": false,
+          "duplicate_repair_or_review_authority": false,
+          "flagged_content": "Daybreak-only; ordinary RT3 handling restricted to safe metadata",
+          "invariant": "dev0 exec-transition PDEATHSIG failure remains unresolved until actual qualified repair evidence; remote success cannot waive it",
+          "observation_policy": "Root coordinates and relays; no polling",
+          "owner_evidence": {
+            "source": "Root relay of sanitized Jev metadata only; no candidate/review body inspected",
+            "replacement": "Daybreak R24 applied",
+            "independent_static_review": "R25 NO_FINDINGS, explicitly RUNTIME_HOLD",
+            "runtime_dependency_handoff_ready": false,
+            "latest_collector": "ACTUAL_NONQUALIFIED_FAILURE; stopped on disk-growth guard",
+            "pending_runtime_gates": [
+              "native post-LSM signal rearm",
+              "fd-closer/final-bound-exec signal and identity",
+              "parent-loss race/refusal",
+              "detached-descendant reaping",
+              "affected suites"
+            ],
+            "separate_unqualified_gates": [
+              "namespace positives",
+              "filterless sensitivity"
+            ],
+            "ineligible_substitutes": [
+              "application receipts",
+              "BAML-only results"
+            ],
+            "root_record": "/home/viperjuice/.codex/tmp/typed-review-spec-20261019/root-rt3-prerequisite-coordination-20261020.json"
+          },
+          "prohibitions": [
+            "inspect flagged bodies outside Daybreak",
+            "copy candidate",
+            "commission helper/panel edits",
+            "reuse host approvals",
+            "duplicate qualification dispatch"
+          ]
+        },
+        "host_policy": {
+          "candidate": "Consiliency/agent-harness#1644",
+          "head": "448a722ae92d233c79c507084d97c4768a48a2d4",
+          "state": "OPEN/DRAFT unqualified; all trial approvals consumed",
+          "reuse_or_trial_authority": false
+        },
+        "qualified_venue": {
+          "status": "unavailable",
+          "owner_thread": "1e91771b-eb10-4724-82c9-700e88a788e4",
+          "reference": "Consiliency/agent-harness#859",
+          "guest_qualification": null,
+          "reported_failure": "finite native relay T01 after client SHUT_WR and formal cleanup verification failed; separate zero-process observations are not qualification",
+          "missing": [
+            "qualified frozen-checkout transfer",
+            "dependency closure/make-check environment",
+            "RT3 nested namespace/final-exec proof"
+          ],
+          "execution_or_allocation_authority": false,
+          "root_record": "/home/viperjuice/.codex/tmp/typed-review-spec-20261019/root-rt3-prerequisite-coordination-20261020.json"
+        },
+        "namespace": {
+          "status": "Separate administrator-owned prerequisite unresolved",
+          "host_change_or_broad_retry_authority": false,
+          "historical_R10_Python314_Docker": "Neither available RT3 venue nor permission to rerun"
+        },
+        "finalizer": {
+          "status": "Bounded reviewed non-root implementation accepted; broader policy/follow-ups remain open and unqualified",
+          "production_source": "phase-loop-runtime/src/phase_loop_runtime/agy_canary_evidence.py",
+          "overlapping_pr": "Consiliency/agent-harness#1733",
+          "owner_thread": "d728e352-b317-4d3e-9f8e-ea4dfe07a821",
+          "source": "Root metadata-only205-worktree scan and open PR file metadata",
+          "root_scan": "No uncommitted production-module edits; canary test dirty in RT3 and Jev checkout",
+          "rt3_production_write_authority": "Exactly two production symbols and five additive finalizer tests, conditional inherited-state baseline reproduction",
+          "further_diagnostic_authority": false,
+          "altered_umask_pass": "diagnostic only; cannot replace inherited-state acceptance or waive exact-mode guard",
+          "owner_replies": {
+            "source": "Root metadata-only relay; no other worktree or flagged body inspected",
+            "agent-harness#1733": {
+              "head": "cad52665afefde67286147178857be7febf19740",
+              "clean": true,
+              "active_writer": false,
+              "scope": "console-script registration and wheel/entrypoint tests only; no finalizer fix/control"
+            },
+            "Jev": {
+              "production_clean": true,
+              "production_sha256": "db195aeda93eb9934e4e87b1af8f4c5e7260264713180b47dbb693310a85b0d9",
+              "test_sha256": "db5705463b0b42b9279ac2bd98d54d82f237a5710afd4479d897ed22e699ae59",
+              "test_scope": "14 insertions / 4 deletions, frozen fixture and owned-workspace portability; static-ready/native-pending",
+              "finalizer_writer_or_repair": false
+            },
+            "disposition": "No automatic production ownership assignment. Explicit hunk-level test integration reconciliation required."
+          },
+          "proposed_scope": {
+            "path": ".phase-loop/typed-review/RT3/sl2-correction-r1/finalizer-scope-proposal.md",
+            "sha256": "74fed22c6045a13ea1d00787ed77489179bd5c6a71e2d1d25d743f1f31963c8f",
+            "status": "proposal only; not assigned or dispatched"
+          },
+          "designation": {
+            "owner": "existing RT3 coordinator",
+            "source": "Root explicit designation and subsequent hunk reconciliation",
+            "scope": "_exclusive_write_at exact_mode default false and finalizer opt-in; additive finalizer-only tests",
+            "hunk_reconciliation": ".phase-loop/typed-review/RT3/finalizer-amendment/controls.md",
+            "other_owners_preserved": true
+          },
+          "scope_review_exception": {
+            "id": "RT3-FINALIZER-SCOPE-EXCEPTION-20261020",
+            "decision": "ACCEPT_ONE_SUPPLEMENTAL_INDEPENDENT_SCOPE_REVIEW",
+            "owner": "root thread d8238af5-72f9-42f1-9c57-40dbd12e63ee",
+            "implementing_coordinator": "typed-review-roadmap-execution-20261019-02",
+            "rule": "docs/agent-phase-convergence.md section 8 item 4: three-round cap ends in descope/operator escalation; canonical RT3 plan rounds 1-3 exhausted",
+            "exception_basis": "Same document Exceptions, and how to take one: name rule, reason, owner, record where reviewed",
+            "reason": "Reviewed fixture portability work exposed a pre-existing finalizer mode failure; paired child-umask diagnostic establishes one-node sensitivity. Newly designated two-hunk production prerequisite requires independent scope review. Removing it leaves repository verification failed; original adapter plan is not being relitigated.",
+            "allowance": "Exactly ONE supplemental independent review of the concrete finalizer scope/ownership amendment; distinct prerequisite identifier, full prior history and findings retained",
+            "not_authorized": [
+              "fresh three-round plan budget",
+              "erasing or restarting original rounds 1-3",
+              "implementation on material scope dissent",
+              "automatic further scope review round",
+              "gate waiver",
+              "host/policy/namespace/rearm changes",
+              "new broad suite or publication/merge authority"
+            ],
+            "on_material_objection": "Return to root for explicit descope or disposition; no automatic restart",
+            "implementation_preconditions": "Only after accepted scope review, exact hunk-boundary preservation, recorded ownership amendment and ordinary scoped execution gates; independent production implementation/security review still separately required",
+            "review_record_requirement": "Mirror this decision beside prepared review-cap-disposition and in review ledger before dispatch; retain input hashes as provenance, not pins on future outputs",
+            "prepared_input_sha256": {
+              "phase-plan-v1-typed-review-RT3.md": "f4b41ded95da8747a6c8f45adf6e03408a76d057edbb24ebcd711e9878db506a",
+              "controls.md": "abcb2b235222866a19eb23f6b6187b49191906f166ccc6d1baca3700eddd27b8",
+              "plan-amendment.patch": "327011ccca87824e8143745541662bca73fd66a1cb346279f0dfd588826652f0",
+              "review-cap-disposition.md": "cc0f6560efc7977913e0d54963cd8f60acbc9088b9edc0dcd8788c5dd95c025c"
+            },
+            "mirror": ".phase-loop/typed-review/RT3/finalizer-amendment/scope-exception-accepted.json",
+            "root_record_sha256": "6c83c543230577ed0e04254cc357343ce6807f29f4ec00c582a0d86f78eb40e2",
+            "dispatches_used": 1,
+            "taskId": "node:delegated-task:command%3Amcp%3A79122b9e-4125-43be-be52-a74709d61846%3Adelegate-task%3Atyped-review-rt3-finalizer-scope-exception-20261020-02",
+            "status": "completed"
+          },
+          "dispatch_prevalidation": ".phase-loop/typed-review/RT3/finalizer-amendment/dispatch-prevalidation.json",
+          "scope_review": {
+            "coverage": "COMPLETE",
+            "vote": "AGREE",
+            "blocking": [],
+            "nonblocking": [
+              "RT3-FINALIZER-SCOPE-F1",
+              "RT3-FINALIZER-SCOPE-F2",
+              "RT3-FINALIZER-SCOPE-F3",
+              "RT3-FINALIZER-SCOPE-F4"
+            ],
+            "report": ".phase-loop/typed-review/private/RT3/finalizer-scope-review/report.md",
+            "report_sha256": "3f07c0dab18600deed1e08d1a577dd74897f123a40e0cc5c2b071c10b5c20e49",
+            "input_hashes_matched": 127,
+            "evidence_class": "manual scope acceptance only; independent implementation/security review remains required"
+          },
+          "accepted_controls": {
+            "path": ".phase-loop/typed-review/RT3/finalizer-amendment/controls-accepted.md",
+            "sha256": "7355f5224b075cbd80878c8651176337a0ef9753f907e20db03f9d9f763ec241",
+            "response": "F1-F3 mandatory worker obligations; F4 carried security question, no scope expansion"
+          },
+          "implementation_inputs": ".phase-loop/typed-review/RT3/finalizer-implementation/inputs.json",
+          "implementation_task": "node:delegated-task:command%3Amcp%3A79122b9e-4125-43be-be52-a74709d61846%3Adelegate-task%3Atyped-review-rt3-finalizer-implementation-20261020-02",
+          "implementation_security_review": {
+            "status": "completed",
+            "round_cap": 3,
+            "separate_from": "original plan loop and one supplemental scope review; neither reset",
+            "flagged_handling": "Daybreak only",
+            "round": 1,
+            "taskId": "node:delegated-task:command%3Amcp%3A79122b9e-4125-43be-be52-a74709d61846%3Adelegate-task%3Atyped-review-rt3-finalizer-implementation-claude-r1-20261020-02",
+            "scope_findings_carried": [
+              "RT3-FINALIZER-SCOPE-F4",
+              "RT3-FINALIZER-SCOPE-F3"
+            ],
+            "report": ".phase-loop/typed-review/private/RT3/finalizer-implementation-review-r1/report.md",
+            "coverage": "COMPLETE",
+            "vote": "AGREE",
+            "blocking": [],
+            "nonblocking": [
+              "RT3-FINALIZER-IMPL-R1-F1",
+              "RT3-FINALIZER-IMPL-R1-F2",
+              "RT3-FINALIZER-IMPL-R1-F3"
+            ],
+            "report_sha256": "2beeb082e5cd391bc908bb55831e0de11d45c22c4474b9070496a1f1959ee728",
+            "matched_inputs": 193,
+            "evidence_class": "manual independent implementation/security review; not BAML acceptance",
+            "response": ".phase-loop/typed-review/RT3/finalizer-implementation/review-r1-response.md",
+            "root_disposition": ".phase-loop/typed-review/private/RT3/finalizer-followups/root-disposition.json",
+            "root_disposition_sha256": "7d8464382286ebdde0ced179024159138494e0f04eeb17e48f93458e2ca8eac9",
+            "no_round_2_required": true
+          },
+          "implementation_intake": {
+            "path": ".phase-loop/typed-review/RT3/finalizer-implementation/parent-intake.json",
+            "sha256": "75db3b79d6c16d7e9b93f405907893651919c8d3eb92836a7aa9a4fd3825bbd5",
+            "final_inputs_matched": 135,
+            "unchanged_consumed_inputs": 133,
+            "artifact_hashes_matched": 56,
+            "raw_junit_checks": {
+              "pre-edit": {
+                "passed": 0,
+                "failed": 1,
+                "skipped": 0,
+                "errors": 0,
+                "exit_code": 1,
+                "inherited_umask": "0077",
+                "source_binding_count": 2101
+              },
+              "new-controls": {
+                "passed": 13,
+                "failed": 0,
+                "skipped": 0,
+                "errors": 0,
+                "exit_code": 0,
+                "inherited_umask": "0077",
+                "source_binding_count": 2101
+              },
+              "former-eight": {
+                "passed": 8,
+                "failed": 0,
+                "skipped": 0,
+                "errors": 0,
+                "exit_code": 0,
+                "inherited_umask": "0077",
+                "source_binding_count": 2101
+              },
+              "affected-module": {
+                "passed": 290,
+                "failed": 0,
+                "skipped": 4,
+                "errors": 0,
+                "exit_code": 0,
+                "inherited_umask": "0077",
+                "source_binding_count": 2101
+              }
+            },
+            "source_scope_verified": true,
+            "source_bindings": {
+              "phase-loop-runtime/src/phase_loop_runtime/agy_canary_evidence.py": {
+                "before": "db195aeda93eb9934e4e87b1af8f4c5e7260264713180b47dbb693310a85b0d9",
+                "after": "1a1c258e7e22dee98d2355a296ced3955e2f76615b4c8fc48514b5cc4264d534"
+              },
+              "phase-loop-runtime/tests/test_agy_canary_evidence.py": {
+                "before": "053b7747169cab8d4dd2036f143af16cfad4555f381622d0b46eff2b36ca2f70",
+                "after": "1d8ba7b77655d3e0e9d7d1c909bdaf34c5b5d545dda9e36c506c9db7a263c911"
+              }
+            },
+            "phase_completion": false
+          },
+          "qualification": {
+            "accepted_scope": "reviewed non-root exact captured-mode semantics",
+            "empirically_tested_modes": [
+              "0600",
+              "0640"
+            ],
+            "restriction_is_runtime_guard": false,
+            "broader_policy": "OPEN/UNQUALIFIED, root-owned; no capture rejection implemented"
+          },
+          "followup_preparation": {
+            "index": ".phase-loop/typed-review/private/RT3/finalizer-followups/index.json",
+            "index_sha256": "26fe5b7e9841961a1e39aefa232c3b14142674ac7f1ba9bd429e6ec9bc838670",
+            "owner": "root thread d8238af5-72f9-42f1-9c57-40dbd12e63ee",
+            "findings": [
+              "RT3-FINALIZER-IMPL-R1-F1",
+              "RT3-FINALIZER-IMPL-R1-F2"
+            ],
+            "state": "private drafts, UNFILED",
+            "filed_references": [],
+            "filing_obligation_satisfied": false
+          },
+          "evidence_labels": {
+            "discriminating": [
+              "0077 x 0640 transaction matrix cell",
+              "inherited0077 original-node pre-edit failure / post-edit pass"
+            ],
+            "other_three_cells": "compatibility/positive controls",
+            "descriptor_closure": "close event ordering primary; EBADF corroborating"
+          }
+        }
+      },
+      "plan_review_history": [
+        {
+          "round": 2,
+          "status": "COMPLETE",
+          "verdict": "AGREE",
+          "blockers": [],
+          "resolved_blocker": "RC-RT3-PLAN-R1-F1",
+          "private_report": ".phase-loop/typed-review/private/RT3/plan-review-r2/report.md",
+          "evidence_class": "manual independent T3 review; not BAML accepted",
+          "author_refinements": "All three nonblocking R2 recommendations applied after review and structurally validated; not independently re-reviewed."
+        }
+      ],
+      "owner_requested_rerun": {
+        "at": "2026-10-20T00:39:34.080309+00:00",
+        "source": "Root relay, independently rehashed four named artifacts locally; root parsed raw JUnit counts and all declared hashes",
+        "evidence_directory": "/mnt/workspace/users/viperjuice/agent-evidence/rt3-owner-requested-failed-node-rerun-20261020-r1",
+        "artifact_sha256": {
+          "result.json": "fc1d6dbc29dd55a4d3f424a6bfc7b59ccfe14e51e2b233468953ba768a14c8fc",
+          "failed-nodes.xml": "1da6b391db2a2835b666f4b0829772b3bdc4df278579fa69f7cb45d3930e75c4",
+          "source-before.json": "88512b768eb3f7098c5ead870f33951f97d338adce552fa885d03edce3289aa5",
+          "source-after.json": "88512b768eb3f7098c5ead870f33951f97d338adce552fa885d03edce3289aa5"
+        },
+        "head": "8585a9aed728159fd245447ed146918cdb132c99",
+        "python": "3.12.14",
+        "pytest_exit_code": 1,
+        "wrapper_exit_code": 0,
+        "passed": 0,
+        "failed": 4,
+        "setup_errors": 278,
+        "skipped": 0,
+        "duration_seconds": 27.48,
+        "tracked_entries": 2013,
+        "source_snapshots_byte_identical": true,
+        "binding_disposition": "Earlier plan/manifest edits do not invalidate matched capture; no pass or phase clearance",
+        "temporary_exclusion": "released by root; resume only accepted SL-2 three-test-path work"
+      },
+      "sl2_owned_paths": [
+        "phase-loop-runtime/tests/test_agy_canary_evidence.py",
+        "phase-loop-runtime/tests/test_seat_host_git.py",
+        "phase-loop-runtime/tests/test_gemini_heartbeat_bootstrap.py"
+      ],
+      "sl2_intake": {
+        "path": ".phase-loop/typed-review/RT3/sl2/parent-intake.json",
+        "sha256": "4ce27eb7a2789600a9027e5733b043934e745993a867a055850f997eb6f15563",
+        "counts": {
+          "total": 281,
+          "failed": 10,
+          "errors": 0,
+          "skipped": 4,
+          "passed": 267
+        },
+        "verification_status": "failed",
+        "required_review": "running"
+      },
+      "sl2_implementation_review": {
+        "round": 2,
+        "status": "COMPLETE",
+        "verdict": "AGREE",
+        "blocking": [],
+        "nonblocking": [
+          "RT3-SL2-IMPL-R2-F1"
+        ],
+        "report": ".phase-loop/typed-review/private/RT3/sl2-implementation-review-r2/report.md",
+        "sha256": "8d99b48a78801b258d53a927a86eebc6194c0f9b33848f3498734a237daf0cd6",
+        "matched_inputs": 109,
+        "evidence_class": "manual independent test-only review; repository verification remains FAILED",
+        "response": ".phase-loop/typed-review/RT3/sl2-correction-r1/review-r2-response.md"
+      },
+      "sl2_correction": {
+        "path": ".phase-loop/typed-review/RT3/sl2-correction-r1/response.md",
+        "changes": "three test-only canonical-path lines",
+        "targeted_result": "2passed",
+        "diagnostic": "identical finalizer node0077 fails;0022 passes; child-local umask sensitivity confirmed, not acceptance",
+        "full_module_result_unchanged": {
+          "passed": 267,
+          "failed": 10,
+          "skipped": 4,
+          "setup_errors": 0
+        },
+        "review_round_2": {
+          "taskId": "node:delegated-task:command%3Amcp%3A79122b9e-4125-43be-be52-a74709d61846%3Adelegate-task%3Atyped-review-rt3-sl2-implementation-claude-r2-20261020-02",
+          "phase": "RT3",
+          "lane": "SL-2",
+          "role": "review",
+          "round": 2,
+          "loop": "narrow SL-2 implementation",
+          "status": "completed",
+          "providerInstanceId": "t3-claude-regenesis",
+          "model": "claude-opus-5-5",
+          "reasoning_effort": "medium",
+          "brief": ".phase-loop/typed-review/RT3/sl2-correction-r1/review-r2-brief.md",
+          "input_manifest": ".phase-loop/typed-review/RT3/sl2-correction-r1/review-r2-inputs.json",
+          "evidence_class": "manual independent test-only correction review; not BAML accepted"
+        }
+      },
+      "sl2_implementation_review_history": [
+        {
+          "round": 1,
+          "status": "COMPLETE",
+          "verdict": "AGREE",
+          "blocking": [],
+          "nonblocking": [
+            "RT3-SL2-IMPL-R1-F1",
+            "RT3-SL2-IMPL-R1-F2",
+            "RT3-SL2-IMPL-R1-F3"
+          ],
+          "report": ".phase-loop/typed-review/private/RT3/sl2-implementation-review-r1/report.md",
+          "sha256": "e812120d7c50010995a3b1075ee81e4e2ff3c39e42ecd8b057bf7476221ea1e4",
+          "evidence_class": "manual independent test-only review; repository verification remains FAILED"
+        }
+      ]
     },
     "RPANEL": {
       "status": "read_only_reconnaissance_complete_implementation_gated",
@@ -299,6 +853,207 @@
         "phase-loop-runtime/tests/test_review_t3.py"
       ],
       "output_directory": ".phase-loop/typed-review/RT3/sl0"
+    },
+    {
+      "taskId": "node:delegated-task:command%3Amcp%3A79122b9e-4125-43be-be52-a74709d61846%3Adelegate-task%3Atyped-review-rt3-sl1-conformance-20261019-02",
+      "phase": "RT3",
+      "lane": "SL-1",
+      "role": "implementation",
+      "status": "completed",
+      "providerInstanceId": "t3-codex-consiliency",
+      "model": "gpt-6-astra",
+      "reasoning_effort": "high",
+      "source_head": "8585a9aed728159fd245447ed146918cdb132c99",
+      "brief": ".phase-loop/typed-review/RT3/sl1-delegation-brief.md",
+      "output_directory": ".phase-loop/typed-review/RT3/sl1"
+    },
+    {
+      "taskId": "node:delegated-task:command%3Amcp%3A79122b9e-4125-43be-be52-a74709d61846%3Adelegate-task%3Atyped-review-rt3-implementation-claude-r1-20261019-02",
+      "phase": "RT3",
+      "role": "review",
+      "round": 1,
+      "status": "completed",
+      "providerInstanceId": "t3-claude-regenesis",
+      "model": "claude-opus-5-5",
+      "reasoning_effort": "medium",
+      "source_manifest": ".phase-loop/typed-review/RT3/implementation-review-r1-inputs.json",
+      "original_brief": ".phase-loop/typed-review/RT3/implementation-review-original-brief.md",
+      "evidence_class": "manual independent implementation review; not BAML accepted"
+    },
+    {
+      "taskId": "node:delegated-task:command%3Amcp%3A79122b9e-4125-43be-be52-a74709d61846%3Adelegate-task%3Atyped-review-rt3-correction-r1-20261019-02",
+      "childThreadId": "thread:delegated-task:command%3Amcp%3A79122b9e-4125-43be-be52-a74709d61846%3Adelegate-task%3Atyped-review-rt3-correction-r1-20261019-02",
+      "phase": "RT3",
+      "role": "implementation",
+      "status": "completed",
+      "providerInstanceId": "t3-codex-consiliency",
+      "model": "gpt-6-astra",
+      "reasoning_effort": "high",
+      "source_head": "8585a9aed728159fd245447ed146918cdb132c99",
+      "brief": ".phase-loop/typed-review/RT3/correction-r1-brief.md",
+      "owned_paths": [
+        "phase-loop-runtime/src/phase_loop_runtime/review_gateway.py",
+        "phase-loop-runtime/src/phase_loop_runtime/review_t3.py",
+        "phase-loop-runtime/tests/test_review_t3.py",
+        "phase-loop-runtime/tests/test_review_t3_faults.py",
+        "phase-loop-runtime/tests/test_review_t3_cli.py",
+        "docs/phase-loop/typed-reviews.md"
+      ],
+      "output_directory": ".phase-loop/typed-review/RT3/correction-r1",
+      "ownership_transfer": "Serial transfer of affected SL-1 tests/docs to correction owner after both lanes and reviewer completed; parent retains ledger, inventory and phase evidence."
+    },
+    {
+      "taskId": "node:delegated-task:command%3Amcp%3A79122b9e-4125-43be-be52-a74709d61846%3Adelegate-task%3Atyped-review-rt3-implementation-claude-r2-20261019-02",
+      "childThreadId": "thread:delegated-task:command%3Amcp%3A79122b9e-4125-43be-be52-a74709d61846%3Adelegate-task%3Atyped-review-rt3-implementation-claude-r2-20261019-02",
+      "phase": "RT3",
+      "role": "review",
+      "round": 2,
+      "status": "completed",
+      "providerInstanceId": "t3-claude-regenesis",
+      "model": "claude-opus-5-5",
+      "reasoning_effort": "medium",
+      "source_manifest": ".phase-loop/typed-review/RT3/implementation-review-r2-inputs.json",
+      "brief": ".phase-loop/typed-review/RT3/implementation-review-r2-brief.md",
+      "evidence_class": "manual independent implementation review; not BAML accepted"
+    },
+    {
+      "taskId": "node:delegated-task:command%3Amcp%3A79122b9e-4125-43be-be52-a74709d61846%3Adelegate-task%3Atyped-review-rt3-final-verification-20261019-02",
+      "childThreadId": "thread:delegated-task:command%3Amcp%3A79122b9e-4125-43be-be52-a74709d61846%3Adelegate-task%3Atyped-review-rt3-final-verification-20261019-02",
+      "phase": "RT3",
+      "role": "test",
+      "status": "completed",
+      "providerInstanceId": "t3-codex-consiliency",
+      "model": "gpt-6-astra",
+      "reasoning_effort": "high",
+      "brief": ".phase-loop/typed-review/RT3/final-verification-brief.md",
+      "scope": "Supported sealed nine-module phase verification, literal make check, entry docs and global inventory/canonical guards; evidence only, no source/control edits. Parent retains post-checkpoint docs audit, closeout and publication."
+    },
+    {
+      "taskId": "node:delegated-task:command%3Amcp%3A79122b9e-4125-43be-be52-a74709d61846%3Adelegate-task%3Atyped-review-rt3-check-failure-diagnosis-20261020-02",
+      "phase": "RT3",
+      "role": "research",
+      "status": "completed",
+      "providerInstanceId": "t3-codex-consiliency",
+      "model": "gpt-6-astra",
+      "reasoning_effort": "high",
+      "brief": ".phase-loop/typed-review/RT3/check-failure-diagnosis-brief.md",
+      "scope": "Read-only failure diagnosis and bounded representative reproductions; no source edits, global changes or full-suite retry."
+    },
+    {
+      "taskId": "node:delegated-task:command%3Amcp%3A79122b9e-4125-43be-be52-a74709d61846%3Adelegate-task%3Atyped-review-rt3-plan-amendment-claude-r3-20261020-02",
+      "phase": "RT3",
+      "role": "review",
+      "round": 3,
+      "loop": "plan",
+      "status": "completed",
+      "providerInstanceId": "t3-claude-regenesis",
+      "model": "claude-opus-5-5",
+      "reasoning_effort": "medium",
+      "scope": "Narrow test-only ownership amendment; accepted adapter design unchanged",
+      "brief": ".phase-loop/typed-review/RT3/portability-amendment/review-r3-brief.md",
+      "source_manifest": ".phase-loop/typed-review/RT3/portability-amendment/review-r3-inputs.json",
+      "evidence_class": "manual independent plan-amendment review; not BAML accepted"
+    },
+    {
+      "taskId": "node:delegated-task:command%3Amcp%3A79122b9e-4125-43be-be52-a74709d61846%3Adelegate-task%3Atyped-review-rt3-sl2-portability-repair-20261020-02",
+      "childThreadId": "thread:delegated-task:command%3Amcp%3A79122b9e-4125-43be-be52-a74709d61846%3Adelegate-task%3Atyped-review-rt3-sl2-portability-repair-20261020-02",
+      "phase": "RT3",
+      "lane": "SL-2",
+      "role": "implementation",
+      "status": "completed",
+      "providerInstanceId": "t3-codex-consiliency",
+      "model": "gpt-6-astra",
+      "reasoning_effort": "high",
+      "brief": ".phase-loop/typed-review/RT3/sl2-delegation-brief.md",
+      "input_manifest": ".phase-loop/typed-review/RT3/sl2-inputs.json",
+      "owned_paths": [
+        "phase-loop-runtime/tests/test_agy_canary_evidence.py",
+        "phase-loop-runtime/tests/test_seat_host_git.py",
+        "phase-loop-runtime/tests/test_gemini_heartbeat_bootstrap.py"
+      ],
+      "output_directory": ".phase-loop/typed-review/RT3/sl2",
+      "limits": "No production/helper/host edits; no namespace rerun or broad suite; whole affected canary module and frozen-search control only."
+    },
+    {
+      "taskId": "node:delegated-task:command%3Amcp%3A79122b9e-4125-43be-be52-a74709d61846%3Adelegate-task%3Atyped-review-rt3-sl2-implementation-claude-r1-20261020-02",
+      "phase": "RT3",
+      "lane": "SL-2",
+      "role": "review",
+      "round": 1,
+      "loop": "narrow SL-2 implementation",
+      "status": "completed",
+      "providerInstanceId": "t3-claude-regenesis",
+      "model": "claude-opus-5-5",
+      "reasoning_effort": "medium",
+      "brief": ".phase-loop/typed-review/RT3/sl2/implementation-review-original-brief.md",
+      "input_manifest": ".phase-loop/typed-review/RT3/sl2/implementation-review-r1-inputs.json",
+      "evidence_class": "manual independent test-only implementation review; not BAML accepted"
+    },
+    {
+      "taskId": "node:delegated-task:command%3Amcp%3A79122b9e-4125-43be-be52-a74709d61846%3Adelegate-task%3Atyped-review-rt3-sl2-implementation-claude-r2-20261020-02",
+      "phase": "RT3",
+      "lane": "SL-2",
+      "role": "review",
+      "round": 2,
+      "loop": "narrow SL-2 implementation",
+      "status": "completed",
+      "providerInstanceId": "t3-claude-regenesis",
+      "model": "claude-opus-5-5",
+      "reasoning_effort": "medium",
+      "brief": ".phase-loop/typed-review/RT3/sl2-correction-r1/review-r2-brief.md",
+      "input_manifest": ".phase-loop/typed-review/RT3/sl2-correction-r1/review-r2-inputs.json",
+      "evidence_class": "manual independent test-only correction review; not BAML accepted"
+    },
+    {
+      "taskId": "node:delegated-task:command%3Amcp%3A79122b9e-4125-43be-be52-a74709d61846%3Adelegate-task%3Atyped-review-rt3-finalizer-scope-exception-20261020-02",
+      "phase": "RT3",
+      "role": "review",
+      "status": "completed",
+      "prerequisite_id": "RT3-FINALIZER-SCOPE-EXCEPTION-20261020",
+      "scope_review_ordinal": 1,
+      "scope_review_limit": 1,
+      "original_plan_rounds_preserved": 3,
+      "providerInstanceId": "t3-claude-regenesis",
+      "model": "claude-opus-5-5",
+      "reasoning_effort": "medium",
+      "brief": ".phase-loop/typed-review/RT3/finalizer-amendment/review-brief.md",
+      "input_manifest": ".phase-loop/typed-review/RT3/finalizer-amendment/review-inputs.json",
+      "evidence_class": "manual independent scope review, not production implementation/security acceptance"
+    },
+    {
+      "taskId": "node:delegated-task:command%3Amcp%3A79122b9e-4125-43be-be52-a74709d61846%3Adelegate-task%3Atyped-review-rt3-finalizer-implementation-20261020-02",
+      "phase": "RT3",
+      "lane": "SL-2",
+      "role": "implementation",
+      "status": "completed",
+      "scope": "bounded finalizer prerequisite",
+      "providerInstanceId": "t3-codex-consiliency",
+      "model": "gpt-6-astra",
+      "reasoning_effort": "high",
+      "brief": ".phase-loop/typed-review/RT3/finalizer-implementation-brief.md",
+      "input_manifest": ".phase-loop/typed-review/RT3/finalizer-implementation/inputs.json",
+      "input_count": 135,
+      "source_owned_paths": [
+        "phase-loop-runtime/src/phase_loop_runtime/agy_canary_evidence.py",
+        "phase-loop-runtime/tests/test_agy_canary_evidence.py"
+      ],
+      "symbol_restrictions": "Only two production functions; finalizer call keyword only; five additive tests, all prior bodies and aliases frozen"
+    },
+    {
+      "taskId": "node:delegated-task:command%3Amcp%3A79122b9e-4125-43be-be52-a74709d61846%3Adelegate-task%3Atyped-review-rt3-finalizer-implementation-claude-r1-20261020-02",
+      "phase": "RT3",
+      "role": "review",
+      "loop": "bounded finalizer implementation/security",
+      "round": 1,
+      "round_cap": 3,
+      "status": "completed",
+      "providerInstanceId": "t3-claude-regenesis",
+      "model": "claude-opus-5-5",
+      "reasoning_effort": "medium",
+      "brief": ".phase-loop/typed-review/RT3/finalizer-implementation/review-r1-brief.md",
+      "input_manifest": ".phase-loop/typed-review/RT3/finalizer-implementation/review-r1-inputs.json",
+      "input_count": 193,
+      "evidence_class": "manual independent implementation/security review; no BAML acceptance"
     }
   ],
   "governance_intake": {
@@ -369,7 +1124,7 @@
     "repair_owner": "SL-0; fixture-only confinement in already-owned test; no runtime/root permission change",
     "proof_cost_finding": "Baseline >5min; preserve required lifetime controls and use targeted repair before rerunning full suite."
   },
-  "current_head": "6b2b2d3f966bdfc50ecd6fe3c8c098de3e05a0df",
+  "current_head": "8585a9aed728159fd245447ed146918cdb132c99",
   "plan_execution_clarifications": {
     "RC-PLAN-N1": "Include v22_principles; preserve bare-class OpenAI-dialect-clean export without editing that test.",
     "RC-PLAN-N2": "Normal snapshot switches consume no failure/retry/extra attempt; test beyond retry count under finite budgets.",
@@ -526,48 +1281,54 @@
     "failure_preservation": "Initial docs audit failure retained; changed comparison HEAD justified rerun. Unknown ignored toolchain outputs retained/cleaned before passing audit."
   },
   "ci_observation_current": {
-    "head": "6b2b2d3f966bdfc50ecd6fe3c8c098de3e05a0df",
-    "run_id": 39332069820,
-    "run_url": "https://github.com/Consiliency/agent-harness/actions/runs/39332069820",
+    "head": "8585a9aed728159fd245447ed146918cdb132c99",
+    "run_id": 39338465600,
+    "run_url": "https://github.com/Consiliency/agent-harness/actions/runs/39338465600",
     "status": "completed",
     "conclusion": "success",
     "jobs": [
       {
-        "databaseId": 118332446031,
-        "name": "BAML sources (pinned baml-cli fmt + check)",
-        "status": "completed",
-        "conclusion": "success",
-        "url": "https://github.com/Consiliency/agent-harness/actions/runs/39332069820/job/118332446031"
-      },
-      {
-        "databaseId": 118332475248,
+        "databaseId": 118353819782,
         "name": "pytest (py3.12)",
         "status": "completed",
         "conclusion": "success",
-        "url": "https://github.com/Consiliency/agent-harness/actions/runs/39332069820/job/118332475248"
+        "url": "https://github.com/Consiliency/agent-harness/actions/runs/39338465600/job/118353819782"
       },
       {
-        "databaseId": 118346317727,
+        "databaseId": 118369002287,
         "name": "suite (hosted fallback)",
         "status": "completed",
         "conclusion": "success",
-        "url": "https://github.com/Consiliency/agent-harness/actions/runs/39332069820/job/118346317727"
+        "url": "https://github.com/Consiliency/agent-harness/actions/runs/39338465600/job/118369002287"
       },
       {
-        "databaseId": 118346348515,
+        "databaseId": 118369035475,
         "name": "suite gate",
         "status": "completed",
         "conclusion": "success",
-        "url": "https://github.com/Consiliency/agent-harness/actions/runs/39332069820/job/118346348515"
+        "url": "https://github.com/Consiliency/agent-harness/actions/runs/39338465600/job/118369035475"
+      },
+      {
+        "databaseId": 118353792867,
+        "name": "BAML sources",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/Consiliency/agent-harness/actions/runs/39338465600/job/118353792867"
       }
     ],
-    "observed_at": "2026-10-19T22:41:10.000396+00:00",
-    "metadata": {
-      "path": ".phase-loop/typed-review/RT3/upstream-ci-readiness-39332069820.json",
-      "sha256": "f2dbd65dbba7d8f7ae683461591e87491505465736827e30000bab83c1e61143"
+    "observed_at": "2026-10-19T23:42:52.431525+00:00",
+    "source": "Root live GitHub verification relayed in this conversation; no duplicate child CI polling.",
+    "pr": {
+      "url": "https://github.com/Consiliency/agent-harness/pull/1770",
+      "state": "OPEN",
+      "isDraft": true
     },
-    "required_checks": "Root verified all six SUCCESS: suite gate, gitleaks, chronology, lint, docs-freshness, release check.",
-    "scope": "Accepted RCONTRACT serial-consumption prerequisite; PR remains draft; no production/live-route/merge authority."
+    "scope": "Pushed RT3 SL-0 checkpoint only. Does not cover unpushed SL-1 or correction bytes; does not satisfy final corrected-head RT3 CI. Hosted fallback and suite gate are aggregate results, not separate pytest runs.",
+    "final_corrected_head_ci": "pending publication and actual CI success",
+    "metadata": {
+      "path": ".phase-loop/typed-review/RT3/sl0-ci-readiness-39338465600.json",
+      "sha256": "3243a62fcfa5608ab1e36a1ca15dc6d98575b3fdcb42cce01e4417c18600c7b6"
+    }
   },
   "ci_failures": [
     {
@@ -668,6 +1429,50 @@
       "suite_gate": "FAILURE",
       "pr_state": "OPEN/DRAFT",
       "prior_cancelled_run": "39323511879 remains cancelled, never passing"
+    },
+    {
+      "head": "6b2b2d3f966bdfc50ecd6fe3c8c098de3e05a0df",
+      "run_id": 39332069820,
+      "run_url": "https://github.com/Consiliency/agent-harness/actions/runs/39332069820",
+      "status": "completed",
+      "conclusion": "success",
+      "jobs": [
+        {
+          "databaseId": 118332446031,
+          "name": "BAML sources (pinned baml-cli fmt + check)",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/Consiliency/agent-harness/actions/runs/39332069820/job/118332446031"
+        },
+        {
+          "databaseId": 118332475248,
+          "name": "pytest (py3.12)",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/Consiliency/agent-harness/actions/runs/39332069820/job/118332475248"
+        },
+        {
+          "databaseId": 118346317727,
+          "name": "suite (hosted fallback)",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/Consiliency/agent-harness/actions/runs/39332069820/job/118346317727"
+        },
+        {
+          "databaseId": 118346348515,
+          "name": "suite gate",
+          "status": "completed",
+          "conclusion": "success",
+          "url": "https://github.com/Consiliency/agent-harness/actions/runs/39332069820/job/118346348515"
+        }
+      ],
+      "observed_at": "2026-10-19T22:41:10.000396+00:00",
+      "metadata": {
+        "path": ".phase-loop/typed-review/RT3/upstream-ci-readiness-39332069820.json",
+        "sha256": "f2dbd65dbba7d8f7ae683461591e87491505465736827e30000bab83c1e61143"
+      },
+      "required_checks": "Root verified all six SUCCESS: suite gate, gitleaks, chronology, lint, docs-freshness, release check.",
+      "scope": "Accepted RCONTRACT serial-consumption prerequisite; PR remains draft; no production/live-route/merge authority."
     }
   ]
 }

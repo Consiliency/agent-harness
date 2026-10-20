@@ -44,6 +44,23 @@ canonical protocol document ships in the wheel as package data
 (from `src/phase_loop_runtime/_contract_docs/phase-loop/protocol.md`); an older copy is also
 installed to `share/phase-loop-runtime/protocol/protocol.md`.
 
+## Local T3 typed reviews
+
+`phase-loop typed-review` provides local `request`, `prepare`, `register`,
+`intake`, `resume` and `correction` commands. It returns private host-action
+files for a trusted driving host to execute, and validates complete original
+results through the saved-source BAML coordinator. Commands never dispatch a
+provider. The shipped policy is NON_GATING/HOST_ATTESTED; no caller JSON or
+environment setting grants governed eligibility or production redispatch.
+
+Use private state outside the pre-bound shared checkout. Same-UID reviewer
+exclusion is the host's responsibility; owner-only files alone cannot enforce
+it. Unknown offered dispatch remains unresolved, and at most one frozen-charter
+correction is available per lineage. See the [T3 host integration guide](https://github.com/Consiliency/agent-harness/blob/main/docs/phase-loop/typed-reviews.md)
+for exact grammar, observation schemas, recovery limits and trust assumptions.
+Synthetic conformance tests do not establish live-route qualification. Existing
+executor closeout and legacy advisory acceptance remain unchanged.
+
 ## Contributor test environment
 
 From the repository root, install the declared test tools and visual extra, then

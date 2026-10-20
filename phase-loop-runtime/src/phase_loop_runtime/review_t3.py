@@ -115,6 +115,13 @@ class HostAction:
         return {**self.metadata(), "arguments": self.arguments}
 
 
+def runtime_mode(capabilities: dict) -> str:
+    """Observed host posture only; the inherited child's permissions are not attested."""
+    require(type(capabilities) is dict and capabilities.get("runtimeMode") in
+            ("approval-required", "auto-accept-edits", "auto", "full-access"), "result_unavailable")
+    return capabilities["runtimeMode"]
+
+
 @closed_observation_errors
 def dispatch_payload(binding: str, prompt: str, target: dict, capabilities: dict) -> dict:
     """Only arguments present in the inspected live T3 schema are emitted."""
@@ -123,6 +130,7 @@ def dispatch_payload(binding: str, prompt: str, target: dict, capabilities: dict
     features = capabilities.get("features", {})
     require(type(features) is dict and all(features.get(k) is True for k in REQUIRED_FEATURES), "result_unavailable")
     require(capabilities.get("interactionMode") == "default", "result_unavailable")
+    runtime_mode(capabilities)
     require(type(target) is dict and set(target) <= {"providerInstanceId", "model", "options"})
     require(text_id(target.get("providerInstanceId")) and text_id(target.get("model")))
     providers = capabilities.get("providers")
@@ -139,7 +147,9 @@ def dispatch_payload(binding: str, prompt: str, target: dict, capabilities: dict
     require(len(models) == 1, "result_unavailable")
     options = target.get("options", {})
     require(type(options) is dict)
-    declared = models[0].get("options") or []
+    declared = models[0].get("options")
+    if declared is None:  # Optional/null in the exposed model schema.
+        declared = []
     require(type(declared) is list, "result_unavailable")
     # Omitting a declared option inherits mutable host settings. This profile
     # requires explicit choices so a correction preserves the requested options.
@@ -150,9 +160,14 @@ def dispatch_payload(binding: str, prompt: str, target: dict, capabilities: dict
         declarations = [o for o in declared if o.get("id") == name]
         require(len(declarations) == 1, "result_unavailable")
         opt = declarations[0]
+        if opt.get("type") == "select":
+            choices = opt.get("options")
+            require(type(choices) is list and all(type(v) is dict and text_id(v.get("id")) for v in choices),
+                    "result_unavailable")
+            require(len({v["id"] for v in choices}) == len(choices), "result_unavailable")
         require((opt.get("type") == "boolean" and type(value) is bool) or
                 (opt.get("type") == "select" and type(value) is str and
-                 value in [v.get("id") for v in opt.get("options", [])]), "result_unavailable")
+                 value in [v["id"] for v in choices]), "result_unavailable")
     require(type(prompt) is str and len(prompt.encode("utf-8")) <= MAX_PROMPT_BYTES, "result_unavailable")
     return {"task": prompt, "target": json.loads(canonical_json(target)), "mode": "async",
             "role": "review", "isolation": "shared", "interactionMode": "default",

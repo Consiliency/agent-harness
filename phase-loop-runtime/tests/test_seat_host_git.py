@@ -138,7 +138,7 @@ def test_review_provider_lookup_uses_the_frozen_host_search(tmp_path, monkeypatc
                         lambda name, path: '/usr/bin/true' if path == search else str(planted))
     harness, source = panel_invoker._seat_provider_source('claude', {'PATH': str(tmp_path)})
     assert harness == 'claude'
-    assert source == '/usr/bin/true'
+    assert source == str(Path('/usr/bin/true').resolve(strict=True))
 
 
 def test_review_authority_uses_the_base_manifest(tmp_path):

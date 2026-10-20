@@ -47,12 +47,17 @@ Fake-host integration proves this phase's contract, never RENFORCE live routes.
 
 SL-0 — Host adapter, durable service and CLI
   Depends on: (none)
-  Blocks: SL-1
+  Blocks: SL-1, SL-2
   Parallel-safe: no
 
 SL-1 — Fault conformance and documentation reduction
-  Depends on: SL-0
+  Depends on: SL-0, SL-2
   Blocks: (none)
+  Parallel-safe: no
+
+SL-2 — Repository portability and bounded finalizer prerequisite
+  Depends on: SL-0
+  Blocks: SL-1
   Parallel-safe: no
 
 ## Lanes
@@ -92,6 +97,24 @@ SL-1 — Fault conformance and documentation reduction
   - impl: Document actual CLI grammar and supported profile, same-UID host deployment/private-state prerequisites, provenance/eligibility separation, limits and failure/recovery matrix. Explain unavailable governed admission, unresolved launch outcomes and unknown terminal completeness honestly. Mark fake-host tests versus actual route evidence. Preserve N9-R3 governed attachment ownership in RPANEL and carried EC-EXECFIND-2.
   - verify: Last, run the complete phase suite via supported sealed producer, required repository/docs checks and closeout audit. Reduce exact EC/IF dispositions, source/log hashes and manual review status into metadata-only phase evidence; no operational qualification claim.
 
+### SL-2 — Repository portability and bounded finalizer prerequisite
+
+- **Scope**: Repair confirmed test portability assumptions and the separately designated finalizer prerequisite; preserve existing assertions and unresolved host prerequisites.
+- **Owned files**: `phase-loop-runtime/tests/test_agy_canary_evidence.py`, `phase-loop-runtime/tests/test_seat_host_git.py`, `phase-loop-runtime/tests/test_gemini_heartbeat_bootstrap.py`, `phase-loop-runtime/src/phase_loop_runtime/agy_canary_evidence.py`
+- **Interfaces provided**: none; repository verification repairs only
+- **Interfaces consumed**: `.phase-loop/typed-review/RT3/check-failure-diagnosis/report.md` (pre-existing)
+- **Parallel-safe**: no
+- **Tasks**:
+  - test: Preserve historical failure records and logs unmodified. The hermetic default intentionally exercises workspace policy; retain at least one end-to-end default-path home-policy control. Capture the real workspace constant and authority function at module import; assert the committed default and its bound signature, explicit-root forwarding and negative authority checks. Keep real kernel lease and signal assertions.
+  - impl: Confine synthetic account-home and workspace authority to test-owned temporary roots. Forward omitted workspace arguments to the fixture root through the real validator, preserving explicit arguments and adversarial tests. Remove real workspace ownership/chown dependence and the hard-coded evidence-root parent. Canonicalize expected true/sleep executables while retaining hostile-search, descendant, namespace and identity assertions.
+  - verify: Run the entire test_agy_canary_evidence.py module and frozen-search node on Python3.12; compare counts with the 278-setup-error baseline and report every body failure. Repairs outside the exact finalizer symbols and test additions require a new ownership amendment. Label the sleep-path repair unexecuted pending prerequisite; run its nested-helper control only when qualified. Obtain independent review of the narrow repair. Rerun the original failing make check only after justified repairs and qualified execution prerequisites; never substitute targeted passes, skip nodes or waive failures.
+
+  - test: For the bounded finalizer prerequisite, preserve all existing test bodies and fixtures; add only the names/boundaries and controls frozen in `.phase-loop/typed-review/RT3/finalizer-amendment/controls-accepted.md`. Exercise inherited state, child-local 0077/0022 crossed with 0640/0600, unchanged default behavior, and fchmod failure for EACH staged target before exchange. Retain original bytes, mode, identity, rollback, collision and race checks.
+  - impl: Only `_exclusive_write_at` gains keyword-only `exact_mode=False`; only `_finalize_targets_transactionally` opts in using captured original mode. When opted in, fchmod the already-open exclusive descriptor after writes and before existing fsync. Preserve flags, default callers, error propagation and cleanup; no global umask or ownership change.
+  - verify: Follow the frozen finite sequence and input binding in `controls-accepted.md`; no broad make check, namespace/provider/rearm tests or host changes. Root-designated ownership is conditional on exact Jev hunk reconciliation and independent scope review. The original three plan-review rounds remain intact; cap-exception disposition must be recorded before additional scope review. Require independent production/security implementation review and closeout.
+
+SL-1 conformance and documentation already exist; its pending final reduction now waits for SL-2. The new dependency does not require reimplementing completed SL-1 work. The parent reduces final evidence after SL-2. This amendment does not reopen the accepted adapter design or change EC/IF IDs. Root designated the finalizer prerequisite only; module-wide ownership is not transferred. Nested namespace AppArmor denials and the observed exec-transition PDEATHSIG reset remain unresolved; host policy and runtime helper changes require separate owner reconciliation and reviewed scope before edits. No host policy change, helper ownership, test skip or verification waiver is granted here. The phase remains incomplete until required checks and corrected-head CI pass. Diagnosis and original sealed suite remain historical evidence.
+
 ## Bound host profile and recovery decisions
 
 These decisions refine IF-0-RT3-1 before implementation; they are not new T3 API fields.
@@ -124,8 +147,8 @@ serialized reduction control, not permission for child inventory writes; the
 frozen BAML caller inventory remains read-only. Retain both global inventory and
 canonical manifest checks in final verification to catch cross-repository guards.
 
-Both lanes are serial in the owned checkout; validate lane IR disjointness/DAG.
-SL-0 exclusively owns cli.py. Existing tests, `review_contract.py`, `baml_modular.py`, `_baml_worker.py`,
+All lanes are serial in the owned checkout; validate lane IR disjointness/DAG.
+SL-0 exclusively owns cli.py. Existing tests except the three explicit SL-2 paths, `review_contract.py`, `baml_modular.py`, `_baml_worker.py`,
 `baml_src/**`, `tests/data/baml_call_sites.json`, lockfiles and generated skills, SDK transport/roster/auth and panel/governed/falsifier consumers
 remain untouched: new tests use the existing coordinator boundary. Amend ownership
 before any necessary additional edit. Do not transfer shared files by implication.

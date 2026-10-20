@@ -55,3 +55,52 @@ review result. RCONTRACT's actual suite completion remains a separate hold:
 the five-required-check notification does not establish full-suite readiness
 while pytest job 118309519045 in run 39325236763 is in progress. RT3 source
 implementation and tests have not started.
+
+## Round 3: repository-test ownership amendment
+
+After adapter implementation review round 2 COMPLETE/AGREE and sealed phase
+verification (603 passed), required repository verification exposed fixture,
+canonical-path and separate host/helper failures. The original failed make check
+and subsequent exact-node reproductions remain failed evidence. An additional
+three-test-path SL-2 ownership amendment was independently reviewed; this did not
+restart the accepted adapter design or implementation review.
+
+Round 3 returned COMPLETE/AGREE, zero blockers and four nonblocking findings.
+All 18 frozen review inputs matched before and after. The full manual report is
+preserved privately; it is not BAML-accepted evidence. The parent incorporated
+F1 home-policy end-to-end coverage, F2 real production-default and explicit-root
+parity controls, F3 whole-canary verification and an unexecuted prerequisite label
+for the nested sleep control, and F4 historical-failure wording. These author
+refinements were structurally validated, not independently re-reviewed.
+
+The canonical plan now owns only the three additional existing test paths. Its
+literal validation and lane IR pass; plan-document validation passes with three
+serial disjoint lanes and the standing nonblocking release heuristic warning.
+Completed SL-1 implementation is retained; its final reduction waits for SL-2.
+Helper ownership remains with the existing external lane, namespace prerequisites
+remain administrator-owned, and no qualified remote venue is available. No helper
+edit, host trial, broad retry or failed-gate waiver follows from this amendment.
+Corrected-head CI and required repository verification remain pending.
+
+## Supplemental finalizer prerequisite scope review
+
+Root recorded `RT3-FINALIZER-SCOPE-EXCEPTION-20261020`: exactly one supplemental
+independent scope review for a newly exposed prerequisite, preserving original
+plan rounds 1–3 and their exhausted cap. No new three-round plan budget or
+reopening of the accepted adapter design was authorized. Owner reconciliation
+established exact additive test boundaries and designated the existing RT3
+coordinator for two production symbols only.
+
+The supplemental manual review returned COMPLETE/AGREE, zero blocking and four
+nonblocking findings. All 127 frozen inputs and the report hash matched on parent
+intake. The parent recorded F1 mechanical function-boundary verification,
+F2 inherited-state observation and pre-edit reproduction, F3 unchanged failure
+propagation/control boundaries, and F4 a carried implementation/security-review
+question in the private accepted-controls artifact. These obligations do not
+expand the approved write set; the original reviewed artifacts remain preserved.
+
+The canonical plan now includes this narrowly bounded prerequisite within serial
+SL-2 ownership. Independent implementation/security review and actual verification
+remain required. Scope approval is neither production acceptance nor BAML
+acceptance. Original failed checks, external execution prerequisites, and pending
+corrected-head CI remain open. No publication readiness or merge is authorized.

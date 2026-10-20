@@ -4,7 +4,9 @@ These fixtures assert a trusted relay, never live T3 route qualification.
 """
 from copy import deepcopy
 from dataclasses import replace
+import ast
 import hashlib
+import inspect
 import json
 import sqlite3
 
@@ -26,7 +28,7 @@ def real_worker():
 
 def capabilities():
     return {"features": {k: True for k in t.REQUIRED_FEATURES},
-            "inheritedProviderInstanceId": "provider", "interactionMode": "default",
+            "inheritedProviderInstanceId": "provider", "interactionMode": "default", "runtimeMode": "full-access",
             "providers": [{"providerInstanceId": "provider", "canRunChildTask": True,
                            "canRunCrossProviderChildTask": True, "constraints": [],
                            "models": [{"id": "model", "options": []}]}]}
@@ -185,6 +187,27 @@ def test_policy_refuses_governed_before_persistence(setup):
         assert db.execute("SELECT COUNT(*) FROM requests").fetchone()[0] == 1
 
 
+def skip_completion_run_comparison():
+    """Test-only AST mutation: omit exactly the completion childRunId comparison.
+
+    Keep every other production check and the caller's entire candidate. A
+    removed/changed source gate must fail this mutation's structural assertion.
+    """
+    tree = ast.parse(inspect.getsource(t.recover))
+    matched = []
+    class Mutation(ast.NodeTransformer):
+        def visit_Compare(self, node):
+            if ast.unparse(node) == "completion.get(k) == v":
+                matched.append(node)
+                return ast.copy_location(ast.parse('k == "childRunId" or completion.get(k) == v', mode="eval").body, node)
+            return self.generic_visit(node)
+    tree = Mutation().visit(tree)
+    assert len(matched) == 1, "completion identity gate changed or was removed"
+    namespace = dict(vars(t))
+    exec(compile(ast.fix_missing_locations(tree), "<test-only completion gate mutation>", "exec"), namespace)
+    return namespace["recover"]
+
+
 @pytest.mark.parametrize("fault", ["original_run", "incomplete"])
 def test_recovery_bypass_mutation_is_detected(setup, monkeypatch, fault):
     service, req, action = setup
@@ -193,18 +216,30 @@ def test_recovery_bypass_mutation_is_detected(setup, monkeypatch, fault):
     bad = deepcopy(good)
     item = bad["timeline"][0]["result"]["items"][0]
     if fault == "original_run":
-        item["runId"] = "later-run"
+        bad["completion"]["result"]["childRunId"] = "later-run"
     else:
         item["textTruncated"] = True
         item["nextTextOffset"] = t.utf16_length(item["text"])
     with pytest.raises(c.ReviewRefused):
         service.intake(req.binding, bad)
-    recover = t.recover
-    monkeypatch.setattr(t, "recover", lambda binding, identity, scope, package: recover(binding, identity, scope, good))
-    # Removing this boundary makes the matching negative assertion fail.
+    if fault == "original_run":
+        monkeypatch.setattr(t, "recover", skip_completion_run_comparison())
+        unrelated = deepcopy(good)
+        unrelated["timeline"][0]["result"].update(hasMore=True, nextPosition=7)
+    else:
+        chunk = t._chunk
+        monkeypatch.setattr(t, "_chunk", lambda item, offset: (chunk(item, offset)[0], None))
+        unrelated = deepcopy(good)
+        unrelated["completion"]["result"]["childRunId"] = "later-run"
+    with pytest.raises(c.ReviewRefused, match="result_unavailable"):
+        service.intake(req.binding, unrelated)
+    sent, received = observe_worker(monkeypatch)
+    # Only the named gate is bypassed; real parsing still consumes bad's bytes.
     with pytest.raises(pytest.fail.Exception, match="DID NOT RAISE"):
         with pytest.raises(c.ReviewRefused):
-            service.intake(req.binding, bad)
+            result = service.intake(req.binding, bad)
+    assert_real_parse(result, sent, received, raw(payload(req)), b.snapshot_baml_sources(),
+                      service.coordinator.private_body(result.record_id))
 
 
 def split_item(package, first_units):
