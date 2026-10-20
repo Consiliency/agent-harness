@@ -467,7 +467,7 @@ def _run_bound_child_bytes(command: list[str], *, cwd: Path) -> subprocess.Compl
 
 
 def _extract_tar_archive(archive: tarfile.TarFile, destination: Path) -> None:
-    """Apply the data-filter invariants on every supported Python version."""
+    """Validate trusted fixture members before preserving archive metadata."""
     members = archive.getmembers()
     assert all(
         not Path(member.name).is_absolute()
@@ -475,7 +475,10 @@ def _extract_tar_archive(archive: tarfile.TarFile, destination: Path) -> None:
         and (member.isfile() or member.isdir())
         for member in members
     )
-    archive.extractall(destination)
+    if hasattr(tarfile, "fully_trusted_filter"):
+        archive.extractall(destination, filter="fully_trusted")
+    else:
+        archive.extractall(destination)
 
 
 def _repo_candidate_identity() -> dict[str, object]:

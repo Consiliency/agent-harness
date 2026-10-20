@@ -268,11 +268,12 @@ def _manifest_rows() -> dict[str, dict]:
     return {row["slug"]: row for row in payload["plans"] if "slug" in row}
 
 
-def _selectable_runtime_slugs(rows: dict[str, dict]) -> list[str]:
+def _selectable_runtime_slugs(rows: dict[str, dict], roadmap: str) -> list[str]:
     return [
         slug
         for slug, row in rows.items()
         if row.get("phase_alias") == "RUNTIME" and row.get("status") != "orphaned"
+        and row.get("roadmap_ref", {}).get("file") == roadmap
     ]
 
 
@@ -363,7 +364,7 @@ def test_runtime_v10_reground_record_is_present_and_ancestral():
     assert superseded["file"] == "plans/phase-plan-vergence-v1-RUNTIME.md"
     assert superseded["lifecycle"][-1]["transition"] == "orphaned"
 
-    assert _selectable_runtime_slugs(rows) == ["v10-RUNTIME"], "the v10 plan must resolve uniquely"
+    assert _selectable_runtime_slugs(rows, "specs/phase-plans-v10.md") == ["v10-RUNTIME"], "the v10 plan must resolve uniquely"
 
 
 def _diverged_repo(tmp_path: Path) -> tuple[Path, str, str, str]:
@@ -482,18 +483,28 @@ def test_the_reground_falsifier_rejects_absent_malformed_and_orphaned_authority(
         )
 
 
-def test_only_one_runtime_row_may_be_selectable():
-    """The provenance-only row becoming selectable is still a falsifier."""
-    rows = _manifest_rows()
-    assert _selectable_runtime_slugs(rows) == ["v10-RUNTIME"]
+@pytest.mark.parametrize("version", ["v10", "v11"])
+def test_only_one_runtime_row_may_be_selectable(version):
+    """Each roadmap selects its own RUNTIME row; duplicates still falsify it."""
+    from phase_loop_runtime.discovery import find_plan_artifact, manifest_plan_artifact
 
-    unorphaned = copy.deepcopy(rows)
-    unorphaned["vergence-v1-RUNTIME"]["status"] = "committed"
-    assert _selectable_runtime_slugs(unorphaned) != ["v10-RUNTIME"]
+    root = repo_root()
+    rows = _manifest_rows()
+    roadmap = f"specs/phase-plans-{version}.md"
+    slug = f"{version}-RUNTIME"
+    assert _selectable_runtime_slugs(rows, roadmap) == [slug]
+
+    plan = (root / rows[slug]["file"]).resolve()
+    assert manifest_plan_artifact(root, "RUNTIME", roadmap=root / roadmap) == (plan, None)
+    assert find_plan_artifact(root, "RUNTIME", roadmap=root / roadmap) == plan
+
+    duplicated = copy.deepcopy(rows)
+    duplicated[f"{slug}-duplicate"] = dict(rows[slug], slug=f"{slug}-duplicate")
+    assert _selectable_runtime_slugs(duplicated, roadmap) != [slug]
 
     retired = copy.deepcopy(rows)
-    retired["v10-RUNTIME"]["status"] = "orphaned"
-    assert _selectable_runtime_slugs(retired) == []
+    retired[slug]["status"] = "orphaned"
+    assert _selectable_runtime_slugs(retired, roadmap) == []
 
 
 def test_superseded_runtime_plan_is_not_selectable_for_v10():
@@ -502,3 +513,9 @@ def test_superseded_runtime_plan_is_not_selectable_for_v10():
     assert superseded["roadmap_ref"]["file"] == "specs/phase-plans-convergence-v1.md"
     assert superseded["roadmap_ref"]["file"] != "specs/phase-plans-v10.md"
     assert Path(superseded["file"]).name != "phase-plan-v10-RUNTIME.md"
+
+    roadmap = superseded["roadmap_ref"]["file"]
+    assert _selectable_runtime_slugs(rows, roadmap) == []
+    unorphaned = copy.deepcopy(rows)
+    unorphaned["vergence-v1-RUNTIME"]["status"] = "committed"
+    assert _selectable_runtime_slugs(unorphaned, roadmap) == ["vergence-v1-RUNTIME"]

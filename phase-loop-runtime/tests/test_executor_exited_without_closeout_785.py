@@ -54,6 +54,13 @@ def test_final_response_schema_excludes_interim_without_changing_lifecycle(tmp_p
 
 def test_golden_delta_is_only_final_schema_exclusion():
     golden = json.loads((Path(__file__).parent / "data/launchspec_golden/launchspec_golden.json").read_text())
+    # The ninth permitted delta (agent-harness#1358): the Codex execute-phase split
+    # changes only two injected instruction strings. Preserve the earlier records.
+    pre_1358 = json.loads((Path(__file__).parent / "data/launchspec_golden/pre_1358_codex_execute_split.json").read_text())
+    for change in pre_1358["command_strings"]:
+        argv = golden[change["case"]]["command"]
+        assert argv[change["index"]] == change["current"]
+        argv[change["index"]] = change["pre_1358"]
     # The eighth permitted delta (agent-harness#1637): the 0.7.27 implementer roster moves
     # only execute model/effort fields. Restore their prior values first.
     pre_1637 = json.loads((Path(__file__).parent / "data/launchspec_golden/pre_1637_implementer_roster.json").read_text())

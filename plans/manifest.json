@@ -2918,6 +2918,12 @@
           "roadmap_sha256": "36654e211670ba02da87650677adba957cfc7e1c8cd4a907abf0fd59194f3d10",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1394"
+        },
+        {
+          "plan_sha256": "4661bd07417ed5855f7f95c68c2f7f1e1f12b7e0ff6ce2ff49c410ccc29c7012",
+          "roadmap_sha256": "d3e25ffbf0ef92ba4581f4ea679e7fda2a87245b6c1ea591da0514f1f8dc3246",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1542"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/99e37ba2/codex-v10-plan-conform/20260730T041108Z-65fd85.md",
@@ -2931,7 +2937,83 @@
       "status": "completed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-13T01:15:00+00:00"
+      "updated_at": "2026-08-13T01:15:00+00:00",
+      "sl0_repairs": [
+        {
+          "authority": {
+            "authority_scope_review_sha256": "e7b7eba6707ecbc7b19161f28bca6da6f39b7be145aa9af97df64ee208d73323",
+            "roadmap": "specs/phase-plans-v11.md:41-47",
+            "task": "Consiliency/agent-harness#1570"
+          },
+          "evidence": {
+            "diagnostic_package_comparison": "/mnt/workspace/users/viperjuice/agent-evidence/heavy-package-compare-20261018-r1/comparison.json",
+            "regression_red": {
+              "errors": 0,
+              "failures": 6,
+              "id_only_correction_sha256": "8a16ef8db59a9bffd080df692693f328dfa815100d0b0064ec22fd1c7b34076c",
+              "junit_sha256": "bd27fc8df107a5253331d9d42c31bfe268f5bba587e397d881e0b21e98ee05b9",
+              "passed": 14,
+              "skips": 0,
+              "source_binding_sha256": "b26ce01c26c7d5235780bbe28a6149f89c4771b6b4907cf16f0c63731706973e"
+            },
+            "root": "/mnt/workspace/users/viperjuice/agent-evidence/conform-tar-metadata-20261018-r1",
+            "verification": [
+              {
+                "command_record_sha256": "13bbd7267f49a9d8b8678470f0c1a951677d6d6e5f12df66f0549e6cb47a7385",
+                "errors": 0,
+                "failures": 0,
+                "junit_sha256": "81df830bf10ef27abcae48d35919348b9297e59ca1712f1a1191b4fdcaa50019",
+                "passed": 30,
+                "python": "3.14",
+                "skips": 0
+              },
+              {
+                "command_record_sha256": "13bbd7267f49a9d8b8678470f0c1a951677d6d6e5f12df66f0549e6cb47a7385",
+                "errors": 0,
+                "failures": 0,
+                "junit_sha256": "7a4d89c7e83bee071388ef487b7b500f865e5e6343476720c9a9dbd5e0864b6f",
+                "passed": 30,
+                "python": "3.12",
+                "skips": 0
+              }
+            ]
+          },
+          "files": [
+            {
+              "absent_before": false,
+              "after_sha256": "14b03d490c37ee05d24c996b6574ba314e0676feacb5204c51ce4d1f265f0419",
+              "before_sha256": "7a1a2b029ba428d145b761d4320893316d91a2fac6b857d1fb760cdd609baed9",
+              "path": "phase-loop-runtime/tests/_outside_agent_canonical.py"
+            },
+            {
+              "absent_before": false,
+              "after_sha256": "0c2ba46e90188c4cb4cd14920efe12c023047b4ae1dd8a3cb3df2954a66279ca",
+              "before_sha256": "e68b3319a6a2382ea8bf25cbc42974bcdea2f7242b453ef36d95ef3bc4f79dc9",
+              "path": "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py"
+            },
+            {
+              "absent_before": true,
+              "after_sha256": "2f4f4ebd5a123d996b15defcf10e251ef3e4df91251f6cfc0b31358a070c5b97",
+              "before_sha256": null,
+              "path": "phase-loop-runtime/tests/test_conform_tar_metadata.py"
+            }
+          ],
+          "issue": "Consiliency/agent-harness#1570",
+          "kind": "post_completion_test_compatibility",
+          "limits": "New maintenance regression only. Historical lifecycle, seals, receipts, corpus, assertions and expected package/A2 hashes are unchanged. Exact-patch review, patched historical package/heavy proof and the independent actual-candidate RUNTIME full gate remain required.",
+          "reason": "Python 3.14 changes tarfile default extraction permissions, altering genuine historical package/archive A2 digests despite identical contents. Preserve validated trusted archive metadata explicitly as in the supported Python 3.12 baseline.",
+          "record_id": "CONFORM-TAR-METADATA-20261018",
+          "recorded_at": "2026-10-18T03:13:12.865713+00:00",
+          "scope": {
+            "audit": "Only this CONFORM extension; no lifecycle or authority transition.",
+            "companion": "phase-loop-runtime/tests/test_conform_tar_metadata.py",
+            "symbols": [
+              "phase-loop-runtime/tests/_outside_agent_canonical.py::_extract_tar_archive",
+              "phase-loop-runtime/tests/test_outside_agent_conform_evidence.py::_extract_tar_archive"
+            ]
+          }
+        }
+      ]
     },
     {
       "acceptance_criteria_count": null,
@@ -3635,6 +3717,12 @@
           "roadmap_sha256": "36654e211670ba02da87650677adba957cfc7e1c8cd4a907abf0fd59194f3d10",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1394"
+        },
+        {
+          "plan_sha256": "bd2e5e8e8f821c8d2c912043ccb3cb18d3eb2210125aeeeadddfc45227bcd0c4",
+          "roadmap_sha256": "d3e25ffbf0ef92ba4581f4ea679e7fda2a87245b6c1ea591da0514f1f8dc3246",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1542"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/4b9cf157/codex-v10-plan-fabpub/20260730T035716Z-01-fabpub-plan.md",
@@ -5873,6 +5961,12 @@
           "roadmap_sha256": "36654e211670ba02da87650677adba957cfc7e1c8cd4a907abf0fd59194f3d10",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1394"
+        },
+        {
+          "plan_sha256": "044ad5d5b5d9a45ad9e0c6d85d04c24dd1984d3a5fbc7d529cd274557b09b5d9",
+          "roadmap_sha256": "d3e25ffbf0ef92ba4581f4ea679e7fda2a87245b6c1ea591da0514f1f8dc3246",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1542"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/fdaed78f/codex-v10-plan-harden/20260730T035939Z-01-harden-plan.md",
@@ -6526,6 +6620,12 @@
           "roadmap_sha256": "36654e211670ba02da87650677adba957cfc7e1c8cd4a907abf0fd59194f3d10",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1394"
+        },
+        {
+          "plan_sha256": "d0d82d023e0b753103c1083299cbcf823dcf004c06b95bf91106421789aac78f",
+          "roadmap_sha256": "d3e25ffbf0ef92ba4581f4ea679e7fda2a87245b6c1ea591da0514f1f8dc3246",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1542"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/6a8f043f/codex-v10-plan-legible/20260730T040717Z-01-legible-plan.md",
@@ -6816,6 +6916,12 @@
           "roadmap_sha256": "36654e211670ba02da87650677adba957cfc7e1c8cd4a907abf0fd59194f3d10",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1394"
+        },
+        {
+          "plan_sha256": "45614648e5e69931be408bfbd08a0279a61d8a390d1baf7113944b759d15fb84",
+          "roadmap_sha256": "d3e25ffbf0ef92ba4581f4ea679e7fda2a87245b6c1ea591da0514f1f8dc3246",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1542"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/7ae6c600/codex-v10-leglife-plan/20260825T151729Z-01-leglife-plan.md",
@@ -7013,6 +7119,12 @@
           "roadmap_sha256": "36654e211670ba02da87650677adba957cfc7e1c8cd4a907abf0fd59194f3d10",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1394"
+        },
+        {
+          "plan_sha256": "93723a4fc0e5105fd769ef176f1c524caa84f6449c4bffd54f0ed7f30a58f9ed",
+          "roadmap_sha256": "d3e25ffbf0ef92ba4581f4ea679e7fda2a87245b6c1ea591da0514f1f8dc3246",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1542"
         }
       ],
       "reflection_ref": null,
@@ -8020,6 +8132,12 @@
           "roadmap_sha256": "36654e211670ba02da87650677adba957cfc7e1c8cd4a907abf0fd59194f3d10",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1394"
+        },
+        {
+          "plan_sha256": "664f6516884039f8724cb55732c58906b6a976e27a9b5e789b634d043e9745e7",
+          "roadmap_sha256": "d3e25ffbf0ef92ba4581f4ea679e7fda2a87245b6c1ea591da0514f1f8dc3246",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1542"
         }
       ],
       "reflection_ref": null,
@@ -8292,6 +8410,12 @@
           "roadmap_sha256": "36654e211670ba02da87650677adba957cfc7e1c8cd4a907abf0fd59194f3d10",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1394"
+        },
+        {
+          "plan_sha256": "1d474ef41c536deff7234e6449d14fc11fc434a199ac0dd49409c3a3c9c14aca",
+          "roadmap_sha256": "d3e25ffbf0ef92ba4581f4ea679e7fda2a87245b6c1ea591da0514f1f8dc3246",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1542"
         }
       ],
       "reflection_ref": null,
@@ -8553,6 +8677,12 @@
           "roadmap_sha256": "36654e211670ba02da87650677adba957cfc7e1c8cd4a907abf0fd59194f3d10",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1394"
+        },
+        {
+          "plan_sha256": "bae605d434cd09d9c1f52e990b609c9c254ecaf6591afd861025377d94ef9cbd",
+          "roadmap_sha256": "d3e25ffbf0ef92ba4581f4ea679e7fda2a87245b6c1ea591da0514f1f8dc3246",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1542"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/a27a6f9a/codex-v10-residual-plan/20260825T112801Z-01-residual-plan.md",
@@ -9448,6 +9578,12 @@
           "roadmap_sha256": "36654e211670ba02da87650677adba957cfc7e1c8cd4a907abf0fd59194f3d10",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1394"
+        },
+        {
+          "plan_sha256": "f626ca937dc294732df008c946e204ca030c5953b86dd6fd0cb6380a2b3c8c7b",
+          "roadmap_sha256": "d3e25ffbf0ef92ba4581f4ea679e7fda2a87245b6c1ea591da0514f1f8dc3246",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1542"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/05b770de/codex-v10-reviewtruth-plan-repair/20260904T072245Z-01-reviewtruth-plan.md",
@@ -9766,6 +9902,12 @@
           "roadmap_sha256": "36654e211670ba02da87650677adba957cfc7e1c8cd4a907abf0fd59194f3d10",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1394"
+        },
+        {
+          "plan_sha256": "c4b16ef78f2f3c4e31fa0ee637e3a74f8eb4b735382606520f659c7ededadd33",
+          "roadmap_sha256": "d3e25ffbf0ef92ba4581f4ea679e7fda2a87245b6c1ea591da0514f1f8dc3246",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1542"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/84b1ecde/codex-v10-runtime-plan/20260825T144913Z-01-runtime-plan.md",
@@ -9779,7 +9921,35 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-08-25T16:25:15Z"
+      "updated_at": "2026-08-25T16:25:15Z",
+      "sl0_repairs": [
+        {
+          "record_id": "runtime_v11_plan_registration_repair",
+          "authorization": "specs/phase-plans-v11.md, RUNTIME scope notes; plan-board president F007-F011 and FORCING DECISION; owner-requested amendment",
+          "reason": "Registering v11-RUNTIME breaks the frozen global-singleton assertions; selection must be unique within each roadmap.",
+          "scope": "Only the roadmap-scoped selection helper and its tests in test_convergence_runtime_imports.py; retain v10 grounding/history and vergence orphan checks, cover v10/v11 production discovery and duplicate/retired controls. No production or other frozen-test changes.",
+          "files": [
+            {
+              "path": "phase-loop-runtime/tests/test_convergence_runtime_imports.py",
+              "before_sha256": "95fc96cb4d7311130ee96691b1b6b53a3214225869ae91cb0c5f6785696b8ccd",
+              "after_sha256": "6bf1d848a424a3596c10527af845bc365fddae197e533df47a0f95545fc6224c"
+            }
+          ],
+          "review_evidence": [
+            {
+              "path": "/tmp/v11-board/runtime/president-text.md",
+              "sha256": "959b4d2e575da82ddba110cb1ed4cb76af819e5eacb8507a11fcab93ed672b38"
+            },
+            {
+              "path": "/tmp/v11-board/runtime/native-fill/0be1ab63-bf15-4e70-80e1-ef27b30c81e6/review.md",
+              "sha256": "3ba24eb3bdff36fa84cf0f1a9723d9851bd04585470659518c3a367932a7ba8c"
+            }
+          ],
+          "verification_command": "uv run --quiet --with pytest --with-editable ./phase-loop-runtime python -m pytest phase-loop-runtime/tests/test_convergence_runtime_imports.py -q",
+          "baseline_result": "2 failed, 14 passed: test_runtime_v10_reground_record_is_present_and_ancestral and test_only_one_runtime_row_may_be_selectable; reproduced before this repair.",
+          "evidence_note": "Review artifacts are local scratch inputs, not committed receipts. This records the registration repair only; EC-RUNTIME-0 remains open and no historical RED receipt is recovered or replaced."
+        }
+      ]
     },
     {
       "acceptance_criteria_count": null,
@@ -10421,6 +10591,12 @@
           "roadmap_sha256": "36654e211670ba02da87650677adba957cfc7e1c8cd4a907abf0fd59194f3d10",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1394"
+        },
+        {
+          "plan_sha256": "93865389155adc61a293d5a77ee4410f8e7e94f9fb0983808fe02c4f7f9a225c",
+          "roadmap_sha256": "d3e25ffbf0ef92ba4581f4ea679e7fda2a87245b6c1ea591da0514f1f8dc3246",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1542"
         }
       ],
       "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/ea0bef92/codex-v10-sched-plan/20260820T003600Z-01-sched-plan.md",
@@ -12077,6 +12253,12 @@
           "roadmap_sha256": "36654e211670ba02da87650677adba957cfc7e1c8cd4a907abf0fd59194f3d10",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1394"
+        },
+        {
+          "plan_sha256": "a27f01ec66b1106128d19e89c82c26a73124028e374a30e5501f123b384ffb1b",
+          "roadmap_sha256": "d3e25ffbf0ef92ba4581f4ea679e7fda2a87245b6c1ea591da0514f1f8dc3246",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1542"
         }
       ],
       "reflection_ref": null,
@@ -12724,6 +12906,12 @@
           "roadmap_sha256": "36654e211670ba02da87650677adba957cfc7e1c8cd4a907abf0fd59194f3d10",
           "schema": "plan_current_authority.v1",
           "source": "Consiliency/agent-harness#1394"
+        },
+        {
+          "plan_sha256": "8308611fc4c56eb470ac1f38fcfc58a54463019345009abba7756301074b0c1c",
+          "roadmap_sha256": "d3e25ffbf0ef92ba4581f4ea679e7fda2a87245b6c1ea591da0514f1f8dc3246",
+          "schema": "plan_current_authority.v1",
+          "source": "Consiliency/agent-harness#1542"
         }
       ],
       "reflection_ref": null,
@@ -13865,6 +14053,33 @@
       "task_summary": "Bounded blinded diagnostic skill evaluation",
       "type": "detailed",
       "updated_at": "2026-10-16T07:35:18Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "created_at": "2026-10-13T02:11:38Z",
+      "file": "plans/phase-plan-v11-RUNTIME.md",
+      "handoff_ref": null,
+      "if_gates_produced": [],
+      "lanes": [
+        "SL-0",
+        "SL-1",
+        "SL-2"
+      ],
+      "lifecycle": [],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "RUNTIME",
+      "reflection_ref": null,
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v11.md",
+        "slug": "phase-plans-v11",
+        "status": "imported",
+        "type": "phase"
+      },
+      "slug": "v11-RUNTIME",
+      "status": "imported",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-10-13T02:11:38Z"
     }
   ],
   "schema_version": 1

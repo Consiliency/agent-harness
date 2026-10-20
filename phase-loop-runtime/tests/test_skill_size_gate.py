@@ -52,15 +52,11 @@ ALLOWLIST: dict[tuple[str, str], int] = {
     ("skills-src/claude/claude-phase-roadmap-builder/SKILL.md", "tokens"): 6048,
     # Split in agent-harness#1358; what remains is test-pinned normative text.
     ("skills-src/claude/claude-plan-phase/SKILL.md", "tokens"): 7783,
-    ("skills-src/codex/codex-execute-phase/SKILL.md", "tokens"): 9632,
-    ("skills-src/codex/codex-execute-phase/SKILL.md", "long_line"): 1295,
+    # Interactive procedures split; runner/governance/closeout and pinned text stay inline.
+    ("skills-src/codex/codex-execute-phase/SKILL.md", "tokens"): 8023,
     ("skills-src/codex/codex-plan-phase/SKILL.md", "tokens"): 6675,
     ("skills-src/codex/codex-plan-phase/SKILL.md", "long_line"): 1065,
-    ("skills-src/gemini/gemini-execute-phase/SKILL.md", "tokens"): 6943,
-    ("skills-src/gemini/gemini-execute-phase/SKILL.md", "long_line"): 1062,
     ("skills-src/gemini/gemini-plan-phase/SKILL.md", "long_line"): 1066,
-    ("skills-src/opencode/opencode-execute-phase/SKILL.md", "tokens"): 5678,
-    ("skills-src/opencode/opencode-execute-phase/SKILL.md", "long_line"): 1032,
     ("skills-src/opencode/opencode-plan-phase/SKILL.md", "long_line"): 1068,
 }
 

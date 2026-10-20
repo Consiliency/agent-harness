@@ -6125,7 +6125,7 @@ class _RepositoryRoutingBrokerService:
             )
         return stores
 
-    def _service_for(self, request_or_worktree) -> BrokerService:
+    def _service_for(self, request_or_worktree, *, snapshot: RepositorySnapshot | None = None) -> BrokerService:
         if isinstance(request_or_worktree, (str, Path)):
             worktree = str(request_or_worktree)
             request_repo = None
@@ -6144,7 +6144,8 @@ class _RepositoryRoutingBrokerService:
                 "A relative path resolves against whatever CWD the broker happens to "
                 "run under, which is exactly the ambiguity FABPUB removes."
             )
-        snapshot = repository_snapshot(worktree)
+        if snapshot is None:
+            snapshot = repository_snapshot(worktree)
         if request_repo and request_repo != snapshot.identity:
             raise LegacyCutoverConflict(
                 f"BrokerRequest.repo {request_repo!r} is not the canonical repository "
@@ -6179,6 +6180,28 @@ class _RepositoryRoutingBrokerService:
 
     def readmit_advanced_head(self, auth: DeltaReadmitAuthority) -> DeltaReadmitReceipt | None:
         return self._service_for(auth).readmit_advanced_head(auth)
+
+    def abandon_unadmitted_prebuilt(self, worktree, transaction_id, **context):
+        from .verbs import unadmitted_prebuilt_done, capture_unadmitted_prebuilt_history, AdapterStartOwnerLive
+        from phase_loop_runtime.publishing import UnadmittedPrebuiltConflict, PublishCrashInjected
+
+        try:
+            if (
+                not isinstance(transaction_id, str) or len(transaction_id) != 64
+                or any(character not in "0123456789abcdef" for character in transaction_id)
+            ):
+                raise UnadmittedPrebuiltConflict("retirement requires one exact lowercase transaction ID")
+            snapshot = repository_snapshot(worktree)
+            if unadmitted_prebuilt_done(snapshot, transaction_id, **context):
+                return
+            capture_unadmitted_prebuilt_history(active_store_root(snapshot.container))
+            self._service_for(str(snapshot.worktree), snapshot=snapshot).abandon_unadmitted_prebuilt(
+                snapshot, transaction_id, **context,
+            )
+        except (UnadmittedPrebuiltConflict, AdapterStartOwnerLive, PublishCrashInjected):
+            raise
+        except Exception as error:
+            raise UnadmittedPrebuiltConflict("unused prebuilt retirement could not select authenticated stores") from error
 
 
     def close(self) -> None:

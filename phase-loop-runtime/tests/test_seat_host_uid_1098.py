@@ -160,8 +160,11 @@ _STATUS = "id -u; id -g; grep -E '^(CapPrm|CapEff|CapBnd|NoNewPrivs):' /proc/sel
 
 @needs_egress
 def test_every_route_runs_the_seat_as_the_operator(tmp_path):
+    parent_status = dict(line.split(":", 1) for line in Path("/proc/self/status").read_text().splitlines())
+    parent_nnp = parent_status["NoNewPrivs"].strip()
+    assert parent_nnp in ("0", "1"), parent_nnp
     routes = {
-        "plain": ({}, "0000000000000000", "0"),
+        "plain": ({}, "0000000000000000", parent_nnp),
         "codex": ({"process_owner": _owner(tmp_path), "retain_caps": ("setfcap",)},
                   "0000000000000000", "1"),
         "owned": ({"process_owner": _owner(tmp_path)}, "0000000000000000", "1"),
@@ -244,12 +247,22 @@ def test_an_owned_bwrap_launch_without_a_namespace_is_switched_and_probed(tmp_pa
 # Runs in a CHILD process so the caller's state can be varied: `setpriv --no-new-privs`
 # gives it an inherited no-new-privs, and an outer user namespace makes it uid 0.
 _STATE_DRIVER = textwrap.dedent("""
-    import subprocess, sys, tempfile, threading
+    import ctypes, errno, subprocess, sys, tempfile, threading
     from pathlib import Path
     from phase_loop_runtime import panel_invoker, sandbox_egress
+    def parent_nnp():
+        status = dict(line.split(":", 1) for line in Path("/proc/self/status").read_text().splitlines())
+        return status["NoNewPrivs"].strip()
+    assert parent_nnp() == "1"
+    print("parent_nnp", parent_nnp())
+    libc = ctypes.CDLL(None, use_errno=True)
+    assert libc.prctl(38, 0, 0, 0, 0) == -1  # PR_SET_NO_NEW_PRIVS cannot clear the inherited bit.
+    assert ctypes.get_errno() == errno.EINVAL
+    assert parent_nnp() == "1"
+    print("cannot_clear_nnp", parent_nnp())
     base = Path(tempfile.mkdtemp())
     routes = {"plain": False, "codex": True, "owned": True}
-    status = "id -u; grep -E '^(CapPrm|CapEff|CapBnd|NoNewPrivs):' /proc/self/status"
+    status = "id -u; id -g; grep -E '^(CapPrm|CapEff|CapBnd|NoNewPrivs):' /proc/self/status"
     with sandbox_egress.isolated_network(timeout_s=None) as prefix:
         token = panel_invoker._EGRESS_LAUNCH_PREFIX.set(tuple(prefix))
         try:
@@ -283,9 +296,10 @@ def _run_state_driver(*wrapper: str) -> dict[str, str]:
 @needs_egress
 def test_an_inherited_no_new_privs_is_expected_not_refused():
     seen = _run_state_driver("setpriv", "--no-new-privs", "--")
+    assert seen["parent_nnp"] == seen["cannot_clear_nnp"] == "1"
     for route, bounding in (("plain", "0000000000000000"), ("codex", "0000000000000000"),
                             ("owned", "0000000000000000")):
-        assert seen[route] == (f"{UID}|CapPrm:|0000000000000000|CapEff:|0000000000000000|"
+        assert seen[route] == (f"{UID}|{GID}|CapPrm:|0000000000000000|CapEff:|0000000000000000|"
                                f"CapBnd:|{bounding}|NoNewPrivs:|1"), (route, seen[route])
 
 
