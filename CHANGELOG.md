@@ -9,6 +9,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - Preserve trailing executor output queued during the existing bounded reader join
   in captured output, run logs and optional live streaming.
 
+### TypeScript publication source classification (agent-harness#1765)
+
+- Normal publication can classify new or existing regular TypeScript implementation
+  modules with names caught by the secret-path guard under `src`, `test` or `tests`
+  through frozen-object syntax/body checks and
+  the existing detector scan. Declaration files and detector findings remain refused;
+  the Python policy is unchanged. Adds pinned `tree-sitter==0.25.2` and
+  `tree-sitter-typescript==0.23.2` dependencies. See the package README's publication
+  source audit section for scope and limitations.
+
 ### Codex execute-phase reads interactive procedures on demand (agent-harness#1358)
 
 - Split planning-handoff reuse, interactive publication, worktree lifecycle, and
@@ -73,6 +83,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   characters. Runner publication ownership and test-pinned phrases stay inline;
   gemini runner launches get the references beside
   `context.md`. The duplicate closeout-audit block in Core Rules now points to Closeout.
+
+### Unadmitted prebuilt publication recovery (agent-harness#1758)
+
+- Human publication supports exact-ID retirement of an unused, unadmitted
+  prebuilt transaction through `abandon_unadmitted_prebuilt`, preserving its
+  history before ordinary publication. Fresh prebuilt publication refuses a
+  nonempty staged index before checkpoint preparation (agent-harness#1758).
 
 ## [0.7.27] - 2026-10-18
 

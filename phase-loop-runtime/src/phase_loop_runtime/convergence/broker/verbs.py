@@ -18,6 +18,7 @@ from phase_loop_runtime.convergence.contracts import (
     DeltaReadmitAuthority,
     DeltaReadmitReceipt,
     PreAdmissionEnvelope,
+    ReadmitAdmissionBinding,
     PublishCommittedBranchResult,
     publish_committed_branch_idempotency_key,
 )
@@ -442,12 +443,294 @@ def _provider_effect_refusal(
     )
 
 
+def _unadmitted_sidecars(transaction) -> None:
+    from phase_loop_runtime.publishing import _read_json_nofollow, UnadmittedPrebuiltConflict
+
+    for path in transaction.store.root.glob(f"{transaction.transaction_id}.recovery.*.json"):
+        _read_json_nofollow(path)
+        raise UnadmittedPrebuiltConflict("transaction has recovery provenance")
+
+
+def _unadmitted_journal_witnesses(root: Path, transaction, files: dict):
+    from .admission import LinearizableAdmissionStore
+    from . import live
+    from phase_loop_runtime.publishing import publish_attempt_id, UnadmittedPrebuiltConflict
+
+    identity = transaction.canonical_repository_identity
+    head = transaction.expected_commit_oid
+    transaction_id = transaction.transaction_id
+    key = f"{BrokerVerb.PUBLISH_COMMITTED_BRANCH.value}\0{publish_committed_branch_idempotency_key(identity, transaction.branch, head)}"
+    attempt = publish_attempt_id(identity, transaction.branch, head)
+
+    def refuse():
+        raise UnadmittedPrebuiltConflict("publication history does not establish an unadmitted transaction")
+
+    for name in ("admissions.jsonl", "evidence.jsonl", "legacy-promotions.jsonl"):
+        live._parse_strict_jsonl((files[name] or b"").decode("utf-8"), label=name, path=root / name)
+    # Parsing captured bytes must never construct a store (which can mkdir in
+    # the inactive compatibility mode) or invoke its authorization path.
+    admissions = object.__new__(LinearizableAdmissionStore)
+    admissions.path = root / "admissions.jsonl"
+    for record in admissions._records(files["admissions.jsonl"] or b""):
+        request = record.request
+        if isinstance(request, AdmissionRequest):
+            if request.fence_token == transaction_id or request.attempt_id == attempt or request.idempotency_key == key:
+                refuse()
+        elif isinstance(request, PreAdmissionEnvelope):
+            if request.transaction_id == transaction_id or request.idempotency_key == key:
+                refuse()
+        elif isinstance(request, DeltaReadmitAuthority):
+            if request.repository == identity and request.branch == transaction.branch and head in (request.prior_head_sha, request.proposed_head_sha):
+                refuse()
+        else:
+            refuse()
+        binding = record.binding
+        if binding is not None:
+            if not isinstance(binding, ReadmitAdmissionBinding):
+                refuse()
+            if head in (binding.prior_head_sha, binding.proposed_head_sha) or binding.attempt_identity == attempt:
+                refuse()
+    evidence = object.__new__(BrokerEvidenceStore)
+    evidence.path = root / "evidence.jsonl"
+    if key in evidence.replay(files["evidence.jsonl"] or b""):
+        refuse()
+    owner = None
+    if files["adapter-start-owner.json"] is not None:
+        raw = json.loads(files["adapter-start-owner.json"])
+        owner = AdapterStartOwnership(**raw)
+        if (
+            owner.repository_identity != identity or not isinstance(owner.sealed, bool)
+            or not all(isinstance(value, str) and value for name, value in raw.items() if name != "sealed")
+        ):
+            refuse()
+        if owner.transaction_id == transaction_id or owner.attempt_id == attempt or key in (owner.effect_key, owner.idempotency_key):
+            refuse()
+    observations = evidence_module._parse_post_ambiguity_observations(files["post-ambiguity-observations.jsonl"] or b"")
+    if observations is evidence_module.UNREADABLE:
+        refuse()
+    for observed_key, rows in observations.items():
+        if observed_key == key or any(row.transaction_id == transaction_id for row in rows):
+            refuse()
+    for _line, row in live._parse_strict_jsonl(
+        (files["legacy-promotions.jsonl"] or b"").decode("utf-8"),
+        label="legacy promotions", path=root / "legacy-promotions.jsonl",
+    ):
+        if set(row) != {"idempotency_key", "promotion_provenance"} or not isinstance(row["promotion_provenance"], dict):
+            refuse()
+        if row["idempotency_key"] == key:
+            refuse()
+    return key, owner
+
+
+def capture_unadmitted_prebuilt_history(root: Path):
+    """Refuse nonregular history before any recursive receipt loader runs."""
+    from . import live
+    from phase_loop_runtime.publishing import _read_bytes_nofollow, UnadmittedPrebuiltConflict
+
+    try:
+        container, generation = live._partition_layout(root)
+        captures = {}
+        for number in range(generation, -1, -1):
+            current = root if number == generation else live._generation_store(container, number)
+            captures[number] = (current, {name: _read_bytes_nofollow(current / name) for name in (
+                live.RECEIPT_FILENAME, "admissions.jsonl", "evidence.jsonl", "adapter-start-owner.json",
+                "post-ambiguity-observations.jsonl", "legacy-promotions.jsonl",
+            )})
+        if captures[generation][1][live.RECEIPT_FILENAME] is None:
+            raise UnadmittedPrebuiltConflict("retirement requires a partition receipt")
+        return captures
+    except UnadmittedPrebuiltConflict:
+        raise
+    except Exception as error:
+        raise UnadmittedPrebuiltConflict("publication history could not be captured") from error
+
+
+def require_unadmitted_prebuilt_witnesses(root: Path, transaction):
+    """Read-only witness check over authenticated, exact captured bytes."""
+    from . import live
+    from phase_loop_runtime.publishing import UnadmittedPrebuiltConflict
+
+    try:
+        _unadmitted_sidecars(transaction)
+        captures = capture_unadmitted_prebuilt_history(root)
+        generation = max(captures)
+        successor = None
+        active_receipt = active_owner = None
+        while True:
+            current, files = captures[generation]
+            digests = {name: hashlib.sha256(files[name] if files[name] is not None else b"").hexdigest() for name in live.ROTATION_DIGESTED_FILES}
+            if successor is not None and digests != successor.predecessor_digests:
+                raise UnadmittedPrebuiltConflict("predecessor journal bytes differ from sealed history")
+            receipt = live.load_partition_receipt(current)
+            if receipt is None or receipt.canonical_repository_identity != transaction.canonical_repository_identity:
+                raise UnadmittedPrebuiltConflict("publication partition has no matching authenticated receipt")
+            live._require_receipt_is_snapshot(receipt, live._PredecessorSnapshot(current, files, digests), generation)
+            key, owner = _unadmitted_journal_witnesses(current, transaction, files)
+            inherited = live.sealed_partition_effects(receipt)
+            keys = set(receipt.legacy_completed_effect_keys) | set(inherited)
+            for inherited_key, provenance in inherited.items():
+                serialized = provenance.get("serialized_repository")
+                if serialized:
+                    legacy_key = f"{BrokerVerb.PUBLISH_COMMITTED_BRANCH.value}\0{publish_committed_branch_idempotency_key(serialized, transaction.branch, transaction.expected_commit_oid)}"
+                    if inherited_key == legacy_key:
+                        raise UnadmittedPrebuiltConflict("publication has inherited legacy history")
+            if key in keys or key in getattr(receipt, "adjudicated_effect_dispositions", {}):
+                raise UnadmittedPrebuiltConflict("publication has inherited or adjudicated history")
+            if active_receipt is None:
+                active_receipt, active_owner = receipt, owner
+            if generation == 0:
+                break
+            if not isinstance(receipt, live.RotatedPartitionReceipt) or receipt.generation != generation or receipt.predecessor_generation != generation - 1:
+                raise UnadmittedPrebuiltConflict("publication receipt chain is incomplete")
+            successor = receipt
+            generation -= 1
+        return active_receipt, active_owner
+    except UnadmittedPrebuiltConflict:
+        raise
+    except Exception as error:
+        raise UnadmittedPrebuiltConflict("publication witness history could not be authenticated") from error
+
+
+def _unadmitted_prebuilt_context(transaction, *, authority, branch, owned_paths, base, draft, pr_body):
+    from phase_loop_runtime.publishing import UnadmittedPrebuiltConflict
+
+    if (
+        transaction.envelope_authority_preimage != authority or transaction.branch != branch
+        or tuple(transaction.owned_paths) != tuple(owned_paths) or transaction.base != base
+        or transaction.draft != draft or transaction.pr_body != pr_body
+    ):
+        raise UnadmittedPrebuiltConflict("retirement differs from the original publication context")
+
+
+def unadmitted_prebuilt_done(snapshot, transaction_id, *, checkpoint_root, node_id, **context):
+    from . import live
+    from phase_loop_runtime.publishing import PublishTransactionStore, _read_json_nofollow, _unused_prebuilt_transaction, UnadmittedPrebuiltConflict
+
+    try:
+        store = PublishTransactionStore(checkpoint_root, node_id)
+        payload = _read_json_nofollow(store.checkpoint_path(transaction_id))
+        if payload is None or payload.get("state") != "ABANDONED":
+            return False
+        transaction = _unused_prebuilt_transaction(snapshot.worktree, store, transaction_id, snapshot.identity)
+        _unadmitted_prebuilt_context(transaction, **context)
+        pointer = _read_json_nofollow(store.active_pointer_path)
+        if pointer is not None:
+            _unadmitted_pointer(store, pointer, transaction)
+            if pointer["transaction_id"] == transaction_id:
+                raise UnadmittedPrebuiltConflict("completed retirement still has its old pointer")
+        require_unadmitted_prebuilt_witnesses(live.active_store_root(snapshot.container), transaction)
+        return True
+    except UnadmittedPrebuiltConflict:
+        raise
+    except Exception as error:
+        raise UnadmittedPrebuiltConflict("completed retirement could not be authenticated") from error
+
+
+def _unadmitted_pointer(store, pointer, transaction):
+    from phase_loop_runtime.publishing import PublishTransaction, _read_json_nofollow, UnadmittedPrebuiltConflict
+
+    if (
+        set(pointer) != {"schema", "transaction_id", "node_id"}
+        or pointer.get("schema") != "PublishTransactionPointer.v1" or pointer.get("node_id") != store.node_id
+        or not isinstance(pointer.get("transaction_id"), str) or len(pointer["transaction_id"]) != 64
+        or any(c not in "0123456789abcdef" for c in pointer["transaction_id"])
+    ):
+        raise UnadmittedPrebuiltConflict("publication pointer is not exact")
+    payload = _read_json_nofollow(store.checkpoint_path(pointer["transaction_id"]))
+    if payload is None or payload.get("schema") != "PublishCheckpoint.v1" or payload.get("transaction_id") != pointer["transaction_id"]:
+        raise UnadmittedPrebuiltConflict("publication pointer has no matching checkpoint")
+    replacement = PublishTransaction(transaction.repo, store, payload)
+    if (
+        replacement.canonical_repository_identity != transaction.canonical_repository_identity
+        or replacement.recorded_repo != transaction.repo
+        or replacement.checkpoint_root.resolve() != transaction.checkpoint_root.resolve()
+        or payload.get("node_id", store.node_id) != store.node_id
+        or payload.get("repository", replacement.canonical_repository_identity) != replacement.canonical_repository_identity
+    ):
+        raise UnadmittedPrebuiltConflict("publication pointer checkpoint has mismatched bindings")
+
+
 class BrokerService:
     def __init__(self, admission_store, evidence_store: BrokerEvidenceStore, adapter: BrokerProviderAdapter, contracts=PROVIDER_COMPLETION_CLASSIFICATIONS) -> None:
         self.admission_store = admission_store
         self.evidence_store = evidence_store
         self.adapter = adapter
         self.contracts = contracts
+
+    def abandon_unadmitted_prebuilt(self, snapshot, transaction_id, *, checkpoint_root, node_id, **context):
+        import fcntl
+        from . import live
+        from phase_loop_runtime.publishing import (
+            PublishTransactionStore, PublishTransactionState, UnadmittedPrebuiltConflict,
+            PublishCrashInjected, _read_json_nofollow, _unused_prebuilt_transaction,
+            _git_output,
+        )
+
+        root = self.evidence_store.root
+        store = PublishTransactionStore(checkpoint_root, node_id)
+
+        def recheck():
+            if not _fabpub_active():
+                raise UnadmittedPrebuiltConflict("retirement requires active publication authority")
+            transaction = _unused_prebuilt_transaction(snapshot.worktree, store, transaction_id, snapshot.identity, complete=False)
+            _unadmitted_prebuilt_context(transaction, **context)
+            pointer = _read_json_nofollow(store.active_pointer_path)
+            if pointer is not None:
+                _unadmitted_pointer(store, pointer, transaction)
+                if pointer["transaction_id"] != transaction_id:
+                    raise UnadmittedPrebuiltConflict("retirement cannot clear another publication pointer")
+            elif _read_json_nofollow(transaction.tombstone_path) is None:
+                raise UnadmittedPrebuiltConflict("fresh retirement requires the old pointer")
+            _unadmitted_sidecars(transaction)
+            lease = self.evidence_store.generation_lease
+            if not isinstance(lease, live.WriterGenerationLease):
+                raise UnadmittedPrebuiltConflict("retirement requires a declared writer lease")
+            live.require_current_generation(root, lease)
+            latch = live.WriterGenerationLatch.for_store_root(root)
+            if latch.read().generation_state != "ACTIVE":
+                raise UnadmittedPrebuiltConflict("retirement requires ACTIVE writer authority")
+            container, generation = live._partition_layout(root)
+            if generation != 0 or os.path.lexists(container / live.GENERATIONS_DIR):
+                raise UnadmittedPrebuiltConflict("retirement writes require an unrotated partition")
+            receipt, owner = require_unadmitted_prebuilt_witnesses(root, transaction)
+            if (
+                not receipt.zero_source or receipt.legacy_epoch_high_water != 0
+                or receipt.legacy_completed_effect_keys or receipt.ambiguous
+                or live.partition_is_ambiguity_blocked(root) or self.evidence_store.epoch_blocked
+            ):
+                raise UnadmittedPrebuiltConflict("retirement writes require an unblocked zero-source partition")
+            if owner is not None and not owner.sealed:
+                if _owner_writer_alive(root):
+                    raise AdapterStartOwnerLive("a publication adapter-start owner is still live")
+                raise UnadmittedPrebuiltConflict("an unsealed owner blocks retirement writes")
+            if (
+                _git_output(snapshot.worktree, "symbolic-ref", "-q", "HEAD") != transaction.exact_ref
+                or _git_output(snapshot.worktree, "rev-parse", "HEAD") != transaction.expected_commit_oid
+            ):
+                raise UnadmittedPrebuiltConflict("retirement requires the original unused branch head")
+            return transaction, pointer
+
+        try:
+            with self.admission_store.lock_path.open("a+", encoding="utf-8") as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                try:
+                    with store.exclusive():
+                        transaction, pointer = recheck()
+                        if _read_json_nofollow(transaction.tombstone_path) is None:
+                            transaction.write_tombstone(PublishTransactionState.ABANDONED)
+                        transaction, pointer = recheck()
+                        if pointer is not None:
+                            store.active_pointer_path.unlink()
+                            _fsync_directory(store.root)
+                        transaction, _pointer = recheck()
+                        transaction.state = PublishTransactionState.ABANDONED
+                        transaction._write()
+                finally:
+                    fcntl.flock(lock, fcntl.LOCK_UN)
+        except (UnadmittedPrebuiltConflict, AdapterStartOwnerLive, PublishCrashInjected):
+            raise
+        except Exception as error:
+            raise UnadmittedPrebuiltConflict("unused prebuilt retirement refused before publication") from error
 
     def readmit_advanced_head(self, auth: DeltaReadmitAuthority) -> DeltaReadmitReceipt | None:
         from phase_loop_runtime.convergence.broker.live import canonical_repository_identity

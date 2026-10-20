@@ -249,10 +249,11 @@ class LinearizableAdmissionStore:
                 cause=error,
             ) from error
 
-    def _records(self) -> list[AdmissionRecord]:
-        if not self.path.exists(): return []
+    def _records(self, raw_bytes: bytes | None = None) -> list[AdmissionRecord]:
+        if raw_bytes is None and not self.path.exists(): return []
         records = []
-        for number, line in enumerate(self.path.read_text(encoding="utf-8").splitlines(), start=1):
+        body = self.path.read_text(encoding="utf-8") if raw_bytes is None else raw_bytes.decode("utf-8")
+        for number, line in enumerate(body.splitlines(), start=1):
             if not line.strip(): continue
             raw = json.loads(line)
             sequence = raw.get("sequence") if isinstance(raw.get("sequence"), int) else None
