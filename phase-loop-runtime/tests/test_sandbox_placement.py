@@ -183,6 +183,9 @@ def _equivalence_record(tmp_path_factory, monkeypatch) -> dict[str, object]:
     record: dict[str, object] = {}
     for leg in ("codex", "claude"):
         with monkeypatch.context() as patch:
+            # Keep advisory legacy cleanup inside this test's owned roots too.
+            legacy = tmp_path_factory.mktemp(f"{leg}-legacy")
+            patch.setattr(sandbox_policy, "legacy_staging_root", lambda: legacy)
             rec, result = _drive(tmp_path_factory.mktemp(leg), patch, leg)
             record[leg] = {
                 "result": [result[0], result[1]],
@@ -205,6 +208,23 @@ def test_local_equivalence_matches_the_base_golden(tmp_path_factory, monkeypatch
         GOLDEN.parent.mkdir(parents=True, exist_ok=True)
         GOLDEN.write_text(json.dumps(record, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     assert record == json.loads(GOLDEN.read_text(encoding="utf-8"))
+
+
+def test_local_equivalence_isolates_unrelated_legacy_cleanup(tmp_path, tmp_path_factory, monkeypatch):
+    legacy = tmp_path / "unrelated-legacy"
+    leftover = legacy / "pl-egress-ns-unready"
+    leftover.mkdir(parents=True)
+    (leftover / sandbox_egress.EGRESS_WORK_MARKER).touch()
+    os.utime(leftover, (1_000_000_000, 1_000_000_000))
+    monkeypatch.setattr(sandbox_policy, "legacy_staging_root", lambda: legacy)
+
+    record = _equivalence_record(tmp_path_factory, monkeypatch)
+
+    assert leftover.is_dir(), "local-equivalence swept an unrelated legacy root"
+    assert record == json.loads(GOLDEN.read_text(encoding="utf-8"))
+    assert sandbox_policy.legacy_staging_root() == legacy
+    panel_invoker._gc_stale_panel_scratch(root=legacy)
+    assert not leftover.exists(), "the real sweep must still reclaim a stale unready holder"
 
 
 # --- shared helpers for the falsifiers below -------------------------------------------
