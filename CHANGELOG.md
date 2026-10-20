@@ -18,6 +18,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - Shared sandbox validation also applies to president-ladder resolution: malformed
   user roots, order or driver settings now refuse that resolution.
 
+### Gitleaks synthetic fixture classification
+
+- Add an exact full-secret allowlist match for the synthetic typed-review digest
+  fixture introduced by agent-harness#1770, leaving other detections unchanged.
+
 ### TypeScript publication source classification (agent-harness#1765)
 
 - Normal publication can classify new or existing regular TypeScript implementation
