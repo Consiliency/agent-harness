@@ -148,7 +148,7 @@ boards retain their declared seats.
 Claude panel launches default to 128,000 output tokens. Set
 `CLAUDE_CODE_MAX_OUTPUT_TOKENS` in the panel launch environment (or its explicit
 `base_env`) to override this default. Only that value is copied into run-specific
-`--settings`, so it reaches ordinary, brokered and jailed TUI launches while
+`--settings`, so it reaches ordinary, brokered and jailed print/TUI launches while
 settings sources remain disabled and credentials remain filtered. Claude Code
 clamps the requested budget to the selected model's cap. Codex, Antigravity and
 Grok retain their CLI-managed output budgets: their current adapter interfaces
@@ -167,9 +167,85 @@ can't even be constructed holding an api-key seat without opting in.
 **Claude execution is subscription-CLI-only (amended 2026-10-08; formerly TUI-only).** Fable and Opus require the homebrew backing and
 run through the subscription-proven Claude CLI adapter with the exact requested model:
 `PHASE_LOOP_PANEL_CLAUDE_ROUTE` selects `print` (the default: `claude -p --output-format stream-json`,
-never `--bare`, with `--no-session-persistence`, launched only after a `claude auth status` preflight, with an env-scrubbed launch and
+never `--bare`, with `--no-session-persistence`, subscription metadata and actual-seat auth-status admission, an env-scrubbed launch and
 `system/init.apiKeySource == "none"` asserted in-band) or `tui` (the existing Claude Code self-PTY
 adapter, now an opt-in fallback). See the 2026-10-08 `claude -p` ruling (`plans/decision-claude-print-subscription-route-20261008.md`, agent-harness#1391).
+The tooled/pointer Claude seat uses the same print selection inside its existing
+subordinate-UID jail, seccomp filter, filtered network and keyring boundary. It keeps the canonical jail’s disposable staged clone and writable private home/output
+scratch; the live repository is not mounted. The subscription is admitted
+from the same login-store read that selects the seat credential, using the explicit
+login context throughout the read-only wait and admission. Before review launch, a
+separate single-use auth jail proves the exact selected token as logged-in first-party
+`oauth_token` auth with no `apiKeySource`; raw status and identity are not retained.
+The stream additionally must
+report `system/init.apiKeySource == "none"`. Only one successful `result` event with a
+conforming final verdict counts. Assistant turns, output files and session transcripts do
+not supply a print-route verdict. Broker fields record the actual stdin transport, jail
+profile, observed auth source and result-event digest; print does not claim TUI transcript
+receipts. Heartbeat-only keeps the existing cancellation and quiescence behavior.
+The `claude_native_protocol` broker field provides bounded compatibility diagnostics
+after the output secret guards pass. It records a closed result subtype/error category
+and count, the process return code after reaping (null when unavailable), and separately
+validated requested, init and assistant model names. `model_status: match` requires both
+native model sources to equal the requested canonical name; unknown aliases remain
+unproven. Tool receipts contain a hashed tool-use ID, a closed `Read`/`other` name,
+a SHA-256 of a canonical absolute `/seat/tree/` path for Read, and a correlated native
+tool-result status. They contain no tool input/output or transcript. A
+`read_completed` receipt requires a native Read/result pair and matching native models;
+it does not approve a review or prove file contents. Malformed, foreign, duplicate, nested or excess relevant
+frames invalidate positive observation claims. Limits are 512 relevant events,
+64 tool uses, four models per source, 128 blocks per frame and 32 error entries;
+truncation is explicit. The diagnostic block compatibility subset is closed: text
+requires string `text`; assistant thinking requires string `thinking` and `signature`;
+assistant tool uses require bounded IDs, string names and object inputs. Server tool
+uses accept only the pinned decoder's eight server-tool names. User tool results
+require a bounded correlation ID, an omitted or boolean `is_error`, and omitted/null,
+string, or at most 128 text-only content blocks. Blocks accept only those fields
+plus their discriminator; unsupported variants, extra block fields and other nested
+result shapes make diagnostics unproven. Tool inputs remain opaque objects. This
+conservative subset does not claim support for every native output variant.
+Strict UTF-8 failure also invalidates diagnostics; a correctly encoded U+FFFD is valid.
+Optional envelope UUIDs are checked for duplicates. Independently, at most 512 private
+SHA-256 fingerprints detect repeated same-role/model/content assistant or user frames,
+including UUID-less frames and repeats with changed UUIDs, message IDs or usage.
+Fingerprints use canonical JSON with a 65,536-byte budget per frame; a preflight
+also caps aggregate nodes/container entries/string characters at 65,536 and nesting
+at 64 levels to bound encoder work. Exceeding a budget sets truncation and invalidity.
+Fingerprints are never exported. Distinct completed native
+blocks may share a message ID; identical repeated content is conservatively ambiguous
+even if native partial-message delivery could explain it. Native `stream_event` deltas
+are ignored and supply no proof. No raw event or content reference is retained.
+Accepted `system/api_retry` observations share the bounded fingerprint set and use
+their closed error category as replay identity, independently of envelope UUIDs.
+Repeated categories are conservatively ambiguous, including distinct unknown errors;
+raw retry text is neither retained nor used as fingerprint input. Error accounting
+and retry identity share normalization with the existing 4,096-character limit.
+A single retry or distinct known
+categories can remain valid diagnostics without changing result admission.
+A qualification must check `valid`, no truncation, exact model
+match and the expected staged-path digest with a completed Read, alongside all existing
+session, subscription, result, exit and verdict requirements. Missing diagnostics
+cannot establish these facts. The diagnostic reducer changes no admission rule.
+The same guarded receipt also records the first stop decision, first print refusal
+code and `feed`/`finish` phase, first observer invalidation reason, and observed
+init/result session equality separately from the admission latch. Result error flags
+use closed false/true/absent/null/wrong-type states; result values expose shape only.
+Stop decisions are `process_exit`, `stdout_guard`, `output_guard`, `stall`, `deadline`,
+`cancel`, `post_exit_grace`, `exception`, or `unknown`. A runtime group-termination
+request (including final reaping), the leader state at its existing pre-request poll,
+and the final reaped return code are separate facts; none identifies a signal sender.
+Relative clock samples provide effective deadline/stall bounds, reader-loop duration
+through reaping, decision offset, heartbeat age, and refusal offset, as integer
+milliseconds capped at 86,400,000 with an aggregate saturation flag. Decision times
+use the latest existing loop sample; refusal uses that sample for `feed` or runner
+completion for `finish`. They are sampled bounds, not event timestamps; unknown
+values are null, and monitor-controlled deadline/stall bounds are null. Missing result
+shapes are null and unobserved sessions are `unseen`. No event log, native prose,
+session UUID, wall-clock time or process identity is added. Diagnostics publish only
+after authoritative quiescence and both output guards; secret or fatal cleanup paths
+retain the existing suppression and resource-retention policy.
+Tooled/pointer seats remain **EC-HARDEN-5 UNMET** in `verify_harden_evidence.py`.
+
 An alternate backing reports `tui_backing_required` before gateway access. No API, SDK, Messages, direct
 HTTP path may fulfill those seats. Under Claude Code the seat defers as
 `under_claude_code` with a native-fill request the driving session fills natively

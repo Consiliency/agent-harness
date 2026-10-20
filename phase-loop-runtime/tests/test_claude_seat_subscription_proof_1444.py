@@ -242,7 +242,7 @@ def test_keychain_login_is_judged_by_the_same_parser(tmp_path):
     def proven():
         return sc.login_subscription_proven(
             {"HOME": str(tmp_path)},
-            read_store=lambda: sc.read_login_store(platform="darwin", env={"USER": "someone"},
+            read_store=lambda: sc.read_login_store(platform="darwin", env={"USER": "someone", "HOME": str(tmp_path)},
                                                    run=security))
 
     security.raw = login_store()

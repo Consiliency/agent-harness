@@ -217,7 +217,7 @@ def _spawn(monkeypatch, tmp_path, outcome, *, review_monitor=None, waited=30.0, 
         (tree / ".git" / "phase-loop-source-commit").write_text("c" * 40)
         return tree
 
-    def _wait(timeout_s, monitor, latch=None):
+    def _wait(timeout_s, monitor, latch=None, **kw):
         if isinstance(outcome, BaseException):
             raise outcome
         return sc.LoginWait(outcome, waited)
@@ -310,7 +310,7 @@ def test_the_spawn_waits_before_staging_or_holding_a_seat(monkeypatch, tmp_path)
     order: list[str] = []
     real_wait = sc.LoginWait
 
-    def _wait(timeout_s, monitor, latch=None):
+    def _wait(timeout_s, monitor, latch=None, **kw):
         order.append("wait")
         return real_wait(sc.LOGIN_REFRESHED, 1.0)
 

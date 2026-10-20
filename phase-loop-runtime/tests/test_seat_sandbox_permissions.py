@@ -1028,8 +1028,10 @@ def test_a_seat_launched_with_an_override_bound_elsewhere_uses_the_login(monkeyp
         os.chmod(cfg / ".claude.json", 0o600)
         if account == "acct-B":
             sc.store_override(b"TOKEN-OVERRIDE-SUBSCRIPTION-B")
-    monkeypatch.setattr(sc, "read_login_token",
-                        lambda: sc.LoginToken(b"TOKEN-LOGIN-SUBSCRIPTION-A", None))
+    # Preparation reads token and subscription metadata from the same record.
+    (cfg / ".credentials.json").write_text(json.dumps({"claudeAiOauth": {
+        "accessToken": "TOKEN-LOGIN-SUBSCRIPTION-A"}}))
+    (cfg / ".credentials.json").chmod(0o600)
     delivered: list[bytes] = []
 
     def _build(leg, seat_dir, executable, *, token_fd, **_kw):

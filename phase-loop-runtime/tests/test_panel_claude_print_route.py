@@ -475,7 +475,7 @@ def subscription_login(tmp_path, monkeypatch):
     store.chmod(0o600)
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.delenv("CLAUDE_CONFIG_DIR", raising=False)
-    return {"CLAUDE_CONFIG_DIR": str(store.parent)}
+    return {"HOME": str(home), "CLAUDE_CONFIG_DIR": str(store.parent)}
 
 
 def _seat_probes(monkeypatch, status: dict | str = _IN_SEAT_STATUS) -> list:
@@ -508,7 +508,7 @@ def test_president_print_route_launches_on_the_seat_profile_credential(
 
     with patch.object(pi, "_run_claude_print_session", spy_print):
         seam = president_adapter.build_president_invoke(
-            DEFAULT_BOARD, repo_dir=str(tmp_path), base_env={}
+            DEFAULT_BOARD, repo_dir=str(tmp_path), base_env=subscription_login
         )
         response = seam("fable", "F001: [fable] the dispatch lock is never released")
     assert calls, response
@@ -529,7 +529,7 @@ def test_panel_print_leg_launches_on_the_seat_profile_credential(
     )
     for broker_prompt in (None, "SEALED"):
         assert pi._exec_claude_tui_leg(
-            review_dir, out_dir, 60, "bundle", env={}, broker_prompt=broker_prompt,
+            review_dir, out_dir, 60, "bundle", env=subscription_login, broker_prompt=broker_prompt,
         ) == ("OK", "Sound.\nAGREE")
 
 

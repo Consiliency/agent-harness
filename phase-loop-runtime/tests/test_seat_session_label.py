@@ -153,10 +153,13 @@ def test_a_default_name_is_none_so_every_existing_caller_is_unchanged(tmp_path):
 
 def _drive_jailed_leg(monkeypatch, tmp_path, *, session_name):
     """Run the real jailed leg with the jail, the PTY session and the in-H readers faked."""
+    monkeypatch.setenv("PHASE_LOOP_PANEL_CLAUDE_ROUTE", "tui")
     jail = types.SimpleNamespace(
         leg="claude", provider_argv0="/seat/bin/claude", env={"HOME": "/seat/home"},
         profile_digest="d" * 64, profile_id="jail", filter_digest="f" * 64,
         redacted_owner=lambda: ["bwrap", "--"], seccomp_fd=-1)
+    # Label control: subscription admission is a separate synthetic seam.
+    monkeypatch.setattr(pi, "_jailed_claude_subscription_auth_ok", lambda *a, **k: True)
     seat = types.SimpleNamespace(
         jail=jail, probe_jail=jail, seat_dir=tmp_path / "seat", review_dir=tmp_path / "review",
         holder_pid=1, token=b"TOKEN", notices=[])

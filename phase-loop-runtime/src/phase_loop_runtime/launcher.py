@@ -2965,18 +2965,6 @@ def launch(
                         cleanup_evidence = _cleanup_process_group(process, process_group_id, reason="timeout")
                         cleanup_evidence["salvage_snapshot"] = salvage
                     if process.poll() is not None:
-                        while True:
-                            try:
-                                line = line_queue.get_nowait()
-                            except Empty:
-                                break
-                            if line:
-                                line = redact_seat(line)
-                                output_parts.append(line)
-                                log.write(line)
-                                log.flush()
-                                if stream_output:
-                                    print(line, end="", flush=True)
                         break
                 except KeyboardInterrupt:
                     interrupted = True
@@ -2984,6 +2972,20 @@ def launch(
                     break
             returncode = process.wait()
             reader.join(timeout=1)
+            # Include lines queued during the bounded join; the reader may still
+            # be alive if another writer keeps stdout open.
+            while True:
+                try:
+                    line = line_queue.get_nowait()
+                except Empty:
+                    break
+                if line:
+                    line = redact_seat(line)
+                    output_parts.append(line)
+                    log.write(line)
+                    log.flush()
+                    if stream_output:
+                        print(line, end="", flush=True)
             try:
                 process.stdout.close()
             except OSError:

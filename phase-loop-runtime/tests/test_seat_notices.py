@@ -427,6 +427,65 @@ def test_codex_r1_a_jailed_launch_refusal_keeps_its_code(monkeypatch, tmp_path):
     assert pi._finalize_leg_detail(log) == "seat_sandbox_refused:identity"
 
 
+def _tooling_claude_launcher(tmp_path):
+    root = tmp_path / "release"
+    launcher = root / "bin" / "claude"
+    payload = root / "npm/node_modules/@anthropic-ai/claude-code-linux-x64/claude"
+    launcher.parent.mkdir(parents=True)
+    payload.parent.mkdir(parents=True)
+    payload.write_bytes(Path("/usr/bin/true").read_bytes())
+    payload.chmod(0o755)
+    launcher.write_text(
+        f'#!/bin/sh\nexport PATH={root}/node-v24.21.0-linux-x64/bin:"$PATH"\n'
+        f'export DISABLE_AUTOUPDATER=1\nexec {payload} "$@"\n')
+    launcher.chmod(0o755)
+    return launcher, payload
+
+
+@pytest.mark.parametrize("kind", ["native", "symlink", "managed-launcher"])
+def test_the_jailed_claude_resolver_selects_the_native_image(monkeypatch, tmp_path, kind):
+    launcher, payload = _tooling_claude_launcher(tmp_path)
+    selected = payload if kind == "native" else launcher
+    if kind == "symlink":
+        selected = tmp_path / "claude-link"
+        selected.symlink_to(payload)
+    monkeypatch.setattr(pi.shutil, "which", lambda *a, **k: str(selected))
+    assert pi._resolve_claude_executable() == payload.resolve()
+
+
+@pytest.mark.parametrize("kind", ["missing", "script", "not-executable"])
+def test_a_managed_claude_launcher_with_no_executable_native_image_is_refused(
+        monkeypatch, tmp_path, kind):
+    launcher, payload = _tooling_claude_launcher(tmp_path)
+    if kind == "missing":
+        payload.unlink()
+    elif kind == "script":
+        payload.write_text("#!/bin/sh\nexit 0\n")
+    else:
+        payload.chmod(0o600)
+    monkeypatch.setattr(pi.shutil, "which", lambda *a, **k: str(launcher))
+    with pytest.raises(seat_jail.SeatSandboxRefused) as caught:
+        pi._resolve_claude_executable()
+    assert caught.value.code == "seat_sandbox_refused:jail_build"
+
+
+@pytest.mark.parametrize("kind", ["extra-export", "extra-argument", "different-architecture"])
+def test_an_unrecognised_claude_wrapper_is_not_replaced_by_an_adjacent_payload(
+        monkeypatch, tmp_path, kind):
+    launcher, _payload = _tooling_claude_launcher(tmp_path)
+    original = launcher.read_text()
+    if kind == "extra-export":
+        altered = original.replace(
+            "export DISABLE_AUTOUPDATER=1\n", "export DISABLE_AUTOUPDATER=1\nexport EXTRA=1\n")
+    elif kind == "extra-argument":
+        altered = original.replace('"$@"', '--extra "$@"')
+    else:
+        altered = original.replace("node-v24.21.0-linux-x64", "node-v24.21.0-linux-arm64")
+    launcher.write_text(altered)
+    monkeypatch.setattr(pi.shutil, "which", lambda *a, **k: str(launcher))
+    assert pi._resolve_claude_executable() == launcher.resolve()
+
+
 class _FakeSeat:
     def __init__(self, tmp_path):
         self.jail = types.SimpleNamespace(
@@ -444,6 +503,9 @@ class _FakeSeat:
 
 
 def test_codex_r1_no_parent_snapshot_ever_holds_the_token(monkeypatch, tmp_path):
+    monkeypatch.setenv("PHASE_LOOP_PANEL_CLAUDE_ROUTE", "tui")
+    # Transcript/failure control: subscription admission is an explicit synthetic seam.
+    monkeypatch.setattr(pi, "_jailed_claude_subscription_auth_ok", lambda *a, **k: True)
     seat = _FakeSeat(tmp_path)
     leaked = b'{"type":"assistant","message":{"role":"assistant","content":"' + seat.token + b'"}}\n'
     monkeypatch.setattr(pi._seat_uid, "read_in_h", lambda *a, **k: leaked)
@@ -497,6 +559,9 @@ def test_codex_r1_panel_invoker_imports_without_posix_open_flags():
 
 def _jailed_leg_ending_with(monkeypatch, tmp_path, *, rc, review_text, log_text, tail,
                             source="seat_token", expires_at=None):
+    monkeypatch.setenv("PHASE_LOOP_PANEL_CLAUDE_ROUTE", "tui")
+    # Transcript/failure control: subscription admission is an explicit synthetic seam.
+    monkeypatch.setattr(pi, "_jailed_claude_subscription_auth_ok", lambda *a, **k: True)
     seat = _FakeSeat(tmp_path)
     seat.source, seat.expires_at = source, expires_at
     monkeypatch.setattr(pi._seat_uid, "read_in_h", lambda *a, **k: b"")
@@ -510,6 +575,35 @@ def _jailed_leg_ending_with(monkeypatch, tmp_path, *, rc, review_text, log_text,
         seat, timeout_s=5, backstop_s=5, model=None, effort=None, prompt="p",
         broker_evidence={}, failure_detail_sink=sink)
     return seat, status, text, sink
+
+
+def test_a_jailed_startup_failure_keeps_its_private_diagnostic_and_public_marker(
+        monkeypatch, tmp_path):
+    tail = "local bootstrap signal JAIL-STARTUP-SENTINEL"
+    _seat, status, text, sink = _jailed_leg_ending_with(
+        monkeypatch, tmp_path, rc=17, review_text="",
+        log_text=pi._HarnessCode("claude_tui_missing_canonical_output"), tail=tail)
+    assert status == "DEGRADED" and text == ""
+    assert len(sink) == 1 and sink[0].unknown
+    detail = pi._resolve_leg_detail(sink[0], tmp_path, "claude:startup")
+    leg = pi.PanelLegResult(leg="claude", status=status, text=text, detail=detail)
+    assert leg.detail.startswith("claude_tui_missing_canonical_output: unknown failure (exit 17)")
+    assert tail not in leg.detail
+    logs = list((tmp_path / "leg-logs").glob("*.log"))
+    assert len(logs) == 1 and tail in logs[0].read_text()
+    assert logs[0].stat().st_mode & 0o777 == 0o600
+
+
+def test_a_jailed_startup_tail_with_the_seat_token_is_never_retained(monkeypatch, tmp_path):
+    token = _FakeSeat(tmp_path).token.decode()
+    _seat, status, text, sink = _jailed_leg_ending_with(
+        monkeypatch, tmp_path, rc=17, review_text="",
+        log_text=pi._HarnessCode("claude_tui_missing_canonical_output"), tail=token)
+    assert status == "DEGRADED" and text == ""
+    assert len(sink) == 1 and sink[0].template == "claude_seat_token_in_output"
+    detail = pi._resolve_leg_detail(sink[0], tmp_path, "claude:startup")
+    assert token not in str(detail)
+    assert not (tmp_path / "leg-logs").exists()
 
 
 @pytest.mark.parametrize("tail, detail", [
@@ -549,11 +643,16 @@ def test_a_leg_whose_tail_names_no_limit_carries_no_token_notice(monkeypatch, tm
         monkeypatch, tmp_path, rc=1, review_text="",
         log_text=pi._HarnessCode("claude_tui_pty_eof_no_output"), tail="something else broke")
     assert status == "DEGRADED"
-    assert [f.template for f in sink] == ["claude_tui_pty_eof_no_output"]
+    assert len(sink) == 1 and sink[0].unknown
+    assert sink[0].prefix == "claude_tui_pty_eof_no_output"
+    assert sink[0].raw == "something else broke"
     assert seat.notices == []
 
 
 def test_the_pty_tail_is_scanned_for_the_seat_token(monkeypatch, tmp_path):
+    monkeypatch.setenv("PHASE_LOOP_PANEL_CLAUDE_ROUTE", "tui")
+    # Transcript/failure control: subscription admission is an explicit synthetic seam.
+    monkeypatch.setattr(pi, "_jailed_claude_subscription_auth_ok", lambda *a, **k: True)
     seat = _FakeSeat(tmp_path)
     _seat, status, _text, sink = _jailed_leg_ending_with(
         monkeypatch, tmp_path, rc=1, review_text="",
@@ -864,7 +963,7 @@ def test_the_seat_mode_and_the_launch_agree_on_the_login_margin(monkeypatch, tmp
     timeouts = {} if timeout_s is None else {"claude": timeout_s}
     (claude,) = pi._seat_launch_modes(
         board, mode="review", review_authorization=types.SimpleNamespace(staged_tree_sha256="a" * 64),
-        base_env={}, timeouts_by_leg=timeouts)
+        base_env={"CLAUDE_CONFIG_DIR": str(tmp_path / "claude-config")}, timeouts_by_leg=timeouts)
     refused = _launch_outcome(monkeypatch, tmp_path, timeout_s)
     if refused is None:
         assert (claude.mode, claude.code) == ("jailed", None)
@@ -1031,7 +1130,8 @@ def test_a_short_login_keeps_the_ignored_override_notice_on_its_mode_line(monkey
     assert sc.override_decision() == sc.OverrideDecision(False, sc.OVERRIDE_OTHER_SUBSCRIPTION)
     assert sc.login_seconds_left(900) is not None
     modes = pi._seat_launch_modes(
-        _mode_board(), mode="review", base_env={},
+        _mode_board(), mode="review",
+        base_env={"CLAUDE_CONFIG_DIR": str(tmp_path / "claude-config")},
         review_authorization=types.SimpleNamespace(staged_tree_sha256="a" * 64))
     claude = next(mode for mode in modes if mode.leg == "claude")
     assert claude.mode == "jailed" and claude.credential == sc.SOURCE_LOGIN
@@ -1059,7 +1159,7 @@ def test_a_seat_refused_for_no_credential_says_its_override_was_ignored(monkeypa
     from phase_loop_runtime import seat_credentials as sc
 
     _override_bound_elsewhere(monkeypatch, tmp_path)
-    monkeypatch.setattr(sc, "read_login_token", lambda: None)            # no login either
+    monkeypatch.setattr(sc, "read_login_token", lambda **kw: None)            # no login either
     real_decide = pi._seat_jail.decide_seat_route
     calls = []
 
@@ -1160,7 +1260,7 @@ def test_a_degraded_mode_line_says_the_override_was_ignored(monkeypatch, tmp_pat
     _override_bound_elsewhere(monkeypatch, tmp_path)
     monkeypatch.setenv(sc.WAIT_ENV, "0")
     if login_left is None:
-        monkeypatch.setattr(sc, "read_login_token", lambda: None)
+        monkeypatch.setattr(sc, "read_login_token", lambda **kw: None)
         route = seat_jail.SeatRoute(False, code)
         refusal = code
     else:
@@ -1172,7 +1272,8 @@ def test_a_degraded_mode_line_says_the_override_was_ignored(monkeypatch, tmp_pat
     monkeypatch.setattr(pi, "_seat_route_for_spawn",
                         lambda *a, **k: (route, [], refusal))
     modes = pi._seat_launch_modes(
-        _mode_board(), mode="review", base_env={},
+        _mode_board(), mode="review",
+        base_env={"CLAUDE_CONFIG_DIR": str(tmp_path / "claude-config")},
         review_authorization=types.SimpleNamespace(staged_tree_sha256="a" * 64))
     claude = next(mode for mode in modes if mode.leg == "claude")
     assert claude.mode == "degraded" and claude.code == code
@@ -1192,7 +1293,10 @@ def test_degraded_spawn_keeps_the_ignored_override(monkeypatch, tmp_path, bounda
     from .test_seat_credentials import _store_override
 
     _store_override(monkeypatch, tmp_path, bound_to="acct-B", session="acct-A")
-    monkeypatch.setattr(sc, "read_login_token", lambda: sc.LoginToken(b"fake-login-A", None))
+    monkeypatch.setattr(sc, "read_login_token", lambda **kw: sc.LoginToken(b"fake-login-A", None))
+    # Preparation binds metadata and token selection to a single synthetic store read.
+    monkeypatch.setattr(sc, "read_login_store", lambda **kw: json.dumps({
+        "claudeAiOauth": {"accessToken": "fake-login-A"}}).encode())
     monkeypatch.setattr(pi, "_seat_route_for_spawn",
                         lambda *a, **k: (seat_jail.SeatRoute(True), [], None))
 
