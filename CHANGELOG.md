@@ -8,8 +8,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Gitleaks synthetic fixture classification
 
-- Add an exact-value allowlist entry for the synthetic typed-review digest fixture
-  introduced by agent-harness#1770, without changing scan coverage.
+- Add an exact full-secret allowlist match for the synthetic typed-review digest
+  fixture introduced by agent-harness#1770, leaving other detections unchanged.
 
 ### TypeScript publication source classification (agent-harness#1765)
 
