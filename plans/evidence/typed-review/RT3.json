@@ -639,6 +639,104 @@
     ],
     "ec_if_completion_claimed": false,
     "production_activation_authorized": false,
-    "publication": "Existing agent-harness#1770 remains draft; no new commit or push in this reduction"
+    "publication": "Existing agent-harness#1770 remains draft; no new commit or push in this reduction",
+    "integrated_scoped_verification_20261020": {
+      "id": "RT3-INTEGRATED-SCOPED-VERIFICATION-20261020",
+      "recorded_at": "2026-10-20T04:49:01.769094+00:00",
+      "verified_head": "be9edf64fb3e5d06f06ce4fa100b64c5d550b92f",
+      "main_input": "da360f44d5b1646389f8801662ee5c638f9de5c1",
+      "scope": "Separate integrated scoped checks; not a single aggregate suite pass, repository verification or phase acceptance",
+      "evidence_storage": "Private frontier-conflict-recovery-20261020-r1 artifacts; metadata and digests only",
+      "runs": [
+        {
+          "selection": "canonical nine-module RT3 selection plus full canary",
+          "result": {
+            "passed": 889,
+            "failed": 3,
+            "skipped": 4
+          },
+          "rt3_nine_module_subtotal": {
+            "passed": 603,
+            "failed": 0
+          },
+          "canary_subtotal": {
+            "passed": 286,
+            "failed": 3,
+            "skipped": 4
+          },
+          "failure": "Three socket setup failures from inherited long temporary paths; retained, not erased",
+          "result_record": {
+            "private_record": "integrated-verification/result.json",
+            "sha256": "f12c4e07ec75365a4f5d4d280e808de78490c69c84ed13ca20b5d0a85930ac5c"
+          },
+          "junit": {
+            "private_record": "integrated-verification/scoped-tests.junit.xml",
+            "sha256": "2f80c9222c9f0baf9e53bda5d191ca8c849e7c90a1723fcd09e773046ae7c278"
+          }
+        },
+        {
+          "selection": "One full canary-only rerun; nine-module603 pass not repeated",
+          "result": {
+            "passed": 289,
+            "failed": 0,
+            "skipped": 4
+          },
+          "correction": "Explicit short /tmp task root, TMPDIR=/tmp and short pytest basetemp; inherited umask0077 read without mutation",
+          "existing_skip_limits": [
+            "root-runner ownership seam",
+            "root-runner lease seam",
+            "root-only minimal-home seam",
+            "real uv launcher-install prerequisite"
+          ],
+          "result_record": {
+            "private_record": "integrated-verification-short-tmp/result.json",
+            "sha256": "123494f386f9aab06aad3b4d52a8ba00d38728c726602f34cecaeab4187ccfec"
+          },
+          "junit": {
+            "private_record": "integrated-verification-short-tmp/canary-rerun.junit.xml",
+            "sha256": "3fbb2c7132298d5c46e732e3179967b3878acaf5cc01cff71e35c6e053c3fa41"
+          }
+        }
+      ],
+      "other_checks": {
+        "ruff_0_15_5": "passed",
+        "entry_docs": "passed; 8 docs",
+        "canonical_plan": "passed; 3 lanes; one N warning retained for post-dispatch evidence-reducer lane",
+        "canonical_manifest": "passed;48canonical/48registered/0unregistered",
+        "inventory_and_ancestry": "2passed",
+        "docs_audit": "passed; no findings; explicit integrated main base",
+        "diff_check": "passed"
+      },
+      "binding": {
+        "tracked_files": 2022,
+        "tracked_before_after_equal": true,
+        "private_metadata_before_after_equal": true,
+        "source_snapshot": {
+          "private_record": "integrated-verification-short-tmp/after.json",
+          "sha256": "c5819b0ef00ee17dc66a27d6850636adf8125f67cc8624ab10315ea8ffefae56"
+        },
+        "artifact_manifest": {
+          "private_record": "integrated-verification-short-tmp/artifact-sha256.json",
+          "sha256": "82e837366fa6d96379c6596494bba978330e1e14b711b5010edc30d16438d1e2"
+        }
+      },
+      "verification_status": "failed",
+      "phase_status": "FAILED/open; required repository and external gates unresolved",
+      "produced_if_gates": [],
+      "ec_if_completion_claimed": false,
+      "prior_repository_failures": "Original make check and verified282-node reproduction remain failed; scoped checks do not replace them",
+      "private_followups": "F1/F2 remain private UNFILED and root-owned; no payload or disposition change",
+      "review_history": "All original reviews, input hashes, failures and exhausted caps retained; no new review round",
+      "publication_status_at_reduction": "Remote8585a9a CI historical; corrected published-head CI pending; draft-only, no ready/merge/activation",
+      "remaining_gates": [
+        "required repository verification",
+        "Jev/helper native runtime handoff",
+        "administrator-owned namespace prerequisite",
+        "qualified venue unavailable",
+        "corrected published-head CI",
+        "final ignored-output/spec/EC/IF closeout",
+        "private follow-up filing obligation"
+      ]
+    }
   }
 }
