@@ -6,6 +6,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Gitleaks synthetic fixture classification
+
+- Add an exact-value allowlist entry for the synthetic typed-review digest fixture
+  introduced by agent-harness#1770, without changing scan coverage.
+
 ### TypeScript publication source classification (agent-harness#1765)
 
 - Normal publication can classify new or existing regular TypeScript implementation
