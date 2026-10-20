@@ -13,6 +13,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   boundaries. The wording is unchanged. The four `long_line` entries are removed
   from the skill size gate allowlist.
 
+### Gitleaks synthetic fixture classification
+
+- Add an exact full-secret allowlist match for the synthetic typed-review digest
+  fixture introduced by agent-harness#1770, leaving other detections unchanged.
+
 ### TypeScript publication source classification (agent-harness#1765)
 
 - Normal publication can classify new or existing regular TypeScript implementation
