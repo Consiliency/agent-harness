@@ -41,6 +41,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   [coordinator contract](docs/phase-loop/typed-review-contract.md) documents the
   adapter boundary. Transport integration and live-route qualification remain
   downstream work.
+
+### Skill long lines rewrapped under the size limit (agent-harness#1358)
+
+- Rewrapped the one line over 1,000 characters in each of `claude-advisor-board`,
+  `codex-plan-phase`, `gemini-plan-phase` and `opencode-plan-phase` at sentence
+  boundaries. The wording is unchanged. The four `long_line` entries are removed
+  from the skill size gate allowlist.
+
 ### Gitleaks synthetic fixture classification
 
 - Add an exact full-secret allowlist match for the synthetic typed-review digest
