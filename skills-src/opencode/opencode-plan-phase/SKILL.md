@@ -186,7 +186,10 @@ Generated plans must contain machine-checkable verification commands and an effe
 
 ### Manifest write
 
-After the plan artifact and repo-local handoff path are known, perform a best-effort `plan-manifest append` through `phase_loop_runtime.plan_manifest.append_entry`. Append a `type=phase` entry with `status=committed`, `slug`, `file`, `created_at`, `owner_skill=opencode-plan-phase`, `handoff_ref`, `roadmap_ref`, `phase_alias`, `if_gates_produced`, and `lanes`. Resolve paths with `phase_loop_runtime.skill_paths` helpers and keep the manifest write best-effort during the dual-mode window: failures are non-fatal, emit a ledger warning, and are mentioned in the mandatory reflection without changing the existing plan closeout result. A legacy `plans/manifest.json` using the `schema`/`entries` layout raises `unsupported manifest schema_version: 0`; treat that exact error as the expected non-fatal case (warn, do not block or migrate in place). `phase_loop_runtime` may resolve from the installed dotfiles runtime on `PYTHONPATH` even when the target repo neither vendors nor installs it — use the importable package; a missing repo-local checkout is not a blocker.
+After the plan artifact and repo-local handoff path are known, perform a best-effort `plan-manifest append` through `phase_loop_runtime.plan_manifest.append_entry`. Append a `type=phase` entry with `status=committed`, `slug`, `file`, `created_at`, `owner_skill=opencode-plan-phase`, `handoff_ref`, `roadmap_ref`, `phase_alias`, `if_gates_produced`, and `lanes`.
+Resolve paths with `phase_loop_runtime.skill_paths` helpers and keep the manifest write best-effort during the dual-mode window: failures are non-fatal, emit a ledger warning, and are mentioned in the mandatory reflection without changing the existing plan closeout result.
+A legacy `plans/manifest.json` using the `schema`/`entries` layout raises `unsupported manifest schema_version: 0`; treat that exact error as the expected non-fatal case (warn, do not block or migrate in place).
+`phase_loop_runtime` may resolve from the installed dotfiles runtime on `PYTHONPATH` even when the target repo neither vendors nor installs it — use the importable package; a missing repo-local checkout is not a blocker.
 
 In Default mode, validate the complete draft with
 `validate_plan_dispatch_hints`, write the plan with the active session's
