@@ -6,6 +6,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Offline repository-map artifact mode
+
+- Add a manifest-driven `phase-loop fleet-map` mode with qualified repository
+  identities, explicit scan coverage, paired contract drift, and as-of-scan pin
+  comparisons. Ship the closed input/output schema with the package; preserve
+  existing `--repo` JSON and text output.
+
 ### Skill long lines rewrapped under the size limit (agent-harness#1358)
 
 - Rewrapped the one line over 1,000 characters in each of `claude-advisor-board`,
