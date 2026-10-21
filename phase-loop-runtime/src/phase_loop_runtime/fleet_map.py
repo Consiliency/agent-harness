@@ -38,7 +38,7 @@ import itertools
 import json
 from pathlib import Path
 import re
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 
 EDGE_KINDS = ("pin", "copied-literal", "host-path", "lockfile-dep")
@@ -75,6 +75,7 @@ class FleetEdge:
     kind: str
     evidence: str
     maturity_label: str
+    artifact_fields: dict[str, Any] = field(default_factory=dict, compare=False)
 
     def key(self) -> tuple[str, str, str, str]:
         return (self.from_repo, self.to_repo, self.kind, self.evidence)
@@ -140,9 +141,16 @@ class FleetMapResult:
         return "\n".join(lines)
 
 
-def build_fleet_map(repos: Iterable[str | Path]) -> FleetMapResult:
+def build_fleet_map(
+    repos: Iterable[str | Path], *,
+    identity_adapter: Callable[[Path], str] | None = None,
+    strict: bool = False,
+) -> FleetMapResult:
     """Extract the realized-edge fleet map over `repos` (see module docstring)."""
-    resolved, repo_names, setup_diagnostics = _resolve_repos(repos)
+    resolved, repo_names, setup_diagnostics = _resolve_repos(repos, identity_adapter, strict=strict)
+    if strict:
+        from .fleet_map_artifact import _build_strict_fleet_map
+        return _build_strict_fleet_map(resolved, setup_diagnostics)
 
     edges: list[FleetEdge] = []
     for repo_name, repo_path in resolved.items():
@@ -179,16 +187,20 @@ def run_lockfile_baseline_scan(repos: Iterable[str | Path]) -> tuple[FleetEdge, 
 # --------------------------------------------------------------------------
 
 
-def _resolve_repos(repos: Iterable[str | Path]) -> tuple[dict[str, Path], set[str], list[SetupDiagnostic]]:
+def _resolve_repos(
+    repos: Iterable[str | Path], identity_adapter: Callable[[Path], str] | None = None,
+    *, strict: bool = False,
+) -> tuple[dict[str, Path], set[str], list[SetupDiagnostic]]:
     resolved: dict[str, Path] = {}
     diagnostics: list[SetupDiagnostic] = []
     for repo_input in repos:
-        repo = Path(repo_input).expanduser().resolve()
+        path = Path(repo_input).expanduser()
+        repo = path.absolute() if strict else path.resolve()
         label = str(repo)
-        if not repo.exists() or not repo.is_dir():
+        if not strict and (not repo.exists() or not repo.is_dir()):
             diagnostics.append(SetupDiagnostic(repo=label, message="repo path is missing or not a directory"))
             continue
-        resolved[repo.name] = repo
+        resolved[identity_adapter(repo) if identity_adapter else repo.name] = repo
     return resolved, set(resolved), diagnostics
 
 
@@ -420,7 +432,7 @@ def _run_lockfile_baseline(resolved: dict[str, Path], known_repos: set[str]) -> 
 
 
 def _dedupe_and_sort(edges: Iterable[FleetEdge]) -> tuple[FleetEdge, ...]:
-    seen: dict[tuple[str, str, str, str], FleetEdge] = {}
+    seen: dict[tuple[tuple[str, str, str, str], str], FleetEdge] = {}
     for edge in edges:
-        seen[edge.key()] = edge
-    return tuple(sorted(seen.values(), key=lambda edge: edge.key()))
+        seen[(edge.key(), json.dumps(edge.artifact_fields, sort_keys=True))] = edge
+    return tuple(seen[key] for key in sorted(seen))
