@@ -13,6 +13,28 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   comparisons. Ship the closed input/output schema with the package; preserve
   existing `--repo` JSON and text output.
 
+### Skill long lines rewrapped under the size limit (agent-harness#1358)
+
+- Rewrapped the one line over 1,000 characters in each of `claude-advisor-board`,
+  `codex-plan-phase`, `gemini-plan-phase` and `opencode-plan-phase` at sentence
+  boundaries. The wording is unchanged. The four `long_line` entries are removed
+  from the skill size gate allowlist.
+
+### Gitleaks synthetic fixture classification
+
+- Add an exact full-secret allowlist match for the synthetic typed-review digest
+  fixture introduced by agent-harness#1770, leaving other detections unchanged.
+
+### TypeScript publication source classification (agent-harness#1765)
+
+- Normal publication can classify new or existing regular TypeScript implementation
+  modules with names caught by the secret-path guard under `src`, `test` or `tests`
+  through frozen-object syntax/body checks and
+  the existing detector scan. Declaration files and detector findings remain refused;
+  the Python policy is unchanged. Adds pinned `tree-sitter==0.25.2` and
+  `tree-sitter-typescript==0.23.2` dependencies. See the package README's publication
+  source audit section for scope and limitations.
+
 ### Codex execute-phase reads interactive procedures on demand (agent-harness#1358)
 
 - Split planning-handoff reuse, interactive publication, worktree lifecycle, and
