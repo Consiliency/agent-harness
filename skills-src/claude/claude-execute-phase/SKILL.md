@@ -108,7 +108,7 @@ Follow-on executor for `/claude-plan-phase`. Consumes the plan doc + TaskCreate'
 ## When NOT to use
 
 - Plan doc has never been produced → run `/claude-plan-phase` first.
-- You want human checkpoints between lanes → execute lanes manually, one worktree-isolated `Agent` per lane.
+- You want human checkpoints between lanes → execute lanes manually (`Agent(isolation: "worktree", name: "<SL-ID>")` with the lane's section pasted in).
 - The plan doc's DAG has cycles or a lane's owned files overlap another lane's → fix the plan first.
 
 ## Model tiers (edit on Anthropic releases)
@@ -134,17 +134,19 @@ governed runs read it before each panel round. Never merge with a blocker waived
 | `--dry-run` | no | Parse + validate, print the dispatch schedule with per-lane model assignments, do not spawn teammates. |
 | `--resume` | no | Continue a partially executed plan: skip lanes already merged (their merge commit is on the target branch and their produced gates are closed). |
 
+Both modes: if a test needs a browser (Playwright, `claude-in-chrome`), read [browser setup](references/merge-and-verify.md#browser-verification) at plan intake, before implementation or lane dispatch; brief affected lanes on it.
+
 ## Workflow (orchestrator-only main thread)
 
 The main thread reads exactly two things: the plan doc and the TaskList. It does not Grep/Read repo source — lane teammates own their files. If the main thread is reaching for Grep or Read on source files, the teammate brief was incomplete; re-brief via `SendMessage`.
 
 ### Interactive steps
 
-Read each step's reference when you reach that step; none is preloaded.
+Read each step's reference at that step; none is preloaded.
 
 - Setup (environment variables, expected helpers, deferred tool preloading), teamwork posture (hard rules), Step 0 predecessor handoff, Step 1 resolve and parse the plan, Step 2 preflight (`scripts/verify_harness.sh`), Step 2.5 baseline capture, Step 2a worktree hygiene: [references/interactive-steps.md](references/interactive-steps.md).
 - Step 3 model and thinking per lane, Step 4 TeamCreate, Step 5 dispatch loop and teammate brief, plus the lane state machine, parallelism contract, model selection quick-reference: [references/lane-dispatch.md](references/lane-dispatch.md).
-- Step 6 gate verification, Step 6.5 parent-tree leakage check, Step 7 auto-merge, Step 8 retry-once then halt, Step 9 final verification and cleanup, worktree pruning, output contract, worktree layout, and browser verification (Playwright, CDP, `claude-in-chrome`): [references/merge-and-verify.md](references/merge-and-verify.md).
+- Steps 6–9 (gates, leakage check, auto-merge, retry-once, final verification), pruning, output contract, layout: [merge-and-verify](references/merge-and-verify.md).
 - Interactive only, before the first commit: early draft PR and the publication-mode check before each push or PR command, [references/interactive-path.md](references/interactive-path.md); PR text, [PR descriptions on the interactive path](#pr-descriptions-on-the-interactive-path).
 - Step 9.5 close-out (artifact staging, next-step routing, path resolution, reflection and handoff templates): [references/closeout-reflection-handoff.md](references/closeout-reflection-handoff.md).
 

@@ -136,13 +136,15 @@ def test_execute_phase_links_resolve_to_shipped_references(harness):
 
 
 # References are read at their linking step, not preloaded with the entrypoint.
+# Each list item is its own block, so a sibling bullet cannot satisfy another's trigger.
 def _blocks(text: str) -> list[tuple[str, str]]:
     heading, out = "", []
     for block in re.split(r"\n\s*\n", text):
-        for line in block.splitlines():
-            if line.startswith("#"):
-                heading = line.lstrip("# ").strip()
-        out.append((heading, " ".join(block.split())))
+        for item in re.split(r"\n(?=[ \t]*- )", block):
+            for line in item.splitlines():
+                if line.startswith("#"):
+                    heading = line.lstrip("# ").strip()
+            out.append((heading, " ".join(item.split())))
     return out
 
 
@@ -155,8 +157,8 @@ def _home(skill: Path, needle: str) -> str | None:
     return homes[0]
 
 
-def _linking(skill: Path, rel: str) -> list[tuple[str, str]]:
-    text = (skill / "SKILL.md").read_text(encoding="utf-8")
+def _linking(skill: Path, rel: str, text: str | None = None) -> list[tuple[str, str]]:
+    text = (skill / "SKILL.md").read_text(encoding="utf-8") if text is None else text
     return [(h, b) for h, b in _blocks(text) if f"]({rel}" in b]
 
 
@@ -184,6 +186,51 @@ def test_publication_rules_reachable_before_first_commit(harness, explicit_plan,
     assert "the RUNNER owns closeout and commit" in runner
     assert "Do NOT" in runner and "independently publish" in runner
     assert f"]({rel}" not in runner
+
+
+CLAUDE_EXECUTE = PACKAGED / "claude-execute-phase"
+BROWSER_RULE = "If the repo lacks a Playwright config, add one in the lane"
+
+
+def _sections(text: str, title: str) -> set[str]:
+    """Headings of the level-2 section ``title`` and everything nested under it."""
+    names, inside = set(), False
+    for line in text.splitlines():
+        if line.startswith("## "):
+            inside = line[3:].strip() == title
+        if inside and line.startswith("#"):
+            names.add(line.lstrip("# ").strip())
+    return names
+
+
+def _intake_triggers(text: str) -> list[str]:
+    rel = _home(CLAUDE_EXECUTE, BROWSER_RULE)
+    assert rel == "references/merge-and-verify.md"
+    # Adapter mode overrides the interactive workflow, and the adapter section is adapter-only.
+    excluded = (_sections(text, "Workflow (orchestrator-only main thread)")
+                | _sections(text, "Phase-Loop Adapter Mode"))
+    return [b for h, b in _linking(CLAUDE_EXECUTE, f"{rel}#browser-verification", text)
+            if h not in excluded and "both modes" in b.lower() and "plan intake" in b
+            and "before implementation or lane dispatch" in b]
+
+
+def test_claude_browser_setup_reachable_at_plan_intake_in_both_modes():
+    text = (CLAUDE_EXECUTE / "SKILL.md").read_text(encoding="utf-8")
+    trigger, = _intake_triggers(text)
+    assert "claude-in-chrome" in trigger and "lane" in trigger
+    brief = (CLAUDE_EXECUTE / "references" / "lane-dispatch.md").read_text(encoding="utf-8")
+    assert "](merge-and-verify.md#browser-verification)" in brief.split("**Teammate brief**", 1)[1]
+    line, = (line for line in text.splitlines() if "#browser-verification)" in line)
+    assert " ".join(line.split()) == trigger
+    without = text.replace(line + "\n", "")
+    # Negative controls: no trigger; the trigger only on the interactive path; its words
+    # in a sibling bullet beside an unrelated link.
+    assert _intake_triggers(without) == []
+    marker = "### Interactive steps\n"
+    assert _intake_triggers(without.replace(marker, f"{marker}\n{line}\n")) == []
+    link = re.search(r"\[[^]]*\]\([^)]*\)", line).group(0)
+    sibling = f"## Sibling\n\n- {line.replace(link, 'browser setup')}\n- See {link}.\n"
+    assert _intake_triggers(without + "\n" + sibling) == []
 
 
 def test_gemini_worktree_sweep_triggered_at_phase_start_and_closeout():

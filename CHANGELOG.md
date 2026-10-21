@@ -10,8 +10,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 - Move interactive publication (mode (b), the publication-mode check, draft PR early),
   model-class and governed-mode detail, and browser verification into
-  `claude-execute-phase` references. An interactive-only pointer reads them before the
-  first commit. Adapter mode, runner closeout, the closeout audit, the `/clear` rules and
+  `claude-execute-phase` references. Interactive publication is read before the first
+  commit and governed-mode detail before each panel round. Browser verification is read
+  at plan intake in both modes, before implementation or lane dispatch, and lane briefs
+  carry its setup. Adapter mode, runner closeout, the closeout audit, the `/clear` rules and
   PR-description requirements stay in `SKILL.md`. Both size-gate exceptions for the skill
   are removed.
 
