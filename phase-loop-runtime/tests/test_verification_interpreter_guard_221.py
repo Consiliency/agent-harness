@@ -108,7 +108,8 @@ class ResolveSuiteInterpreterShadowTest(unittest.TestCase):
             _write_pyproject(repo, SATISFIED_SPEC)
             run_path = repo / "run"
             run_path.mkdir()
-            si, names = _shim_names(run_path, repo)
+            with mock.patch.object(ve, "_interpreter_path", side_effect=lambda name: Path(sys.executable) if name in {"python", "python3"} else None):
+                si, names = _shim_names(run_path, repo)
             self.assertIsNotNone(si.shim_dir)
             self.assertIn(SHADOW, names)  # python3.8 (below floor) shadowed
             self.assertNotIn("python3.9", names)  # satisfying, not shadowed
@@ -126,7 +127,8 @@ class ResolveSuiteInterpreterShadowTest(unittest.TestCase):
     def test_shadow_names_helper_is_host_independent(self):
         # advisor: an upper bound makes higher minors unsupported too — test the pure helper
         # directly so the assertion is not vacuous on CI lanes where sys.executable differs.
-        names = set(_nonsatisfying_shadow_names([">=3.9,<3.11"]))
+        with mock.patch.object(ve, "_interpreter_path", return_value=None):
+            names = set(_nonsatisfying_shadow_names([">=3.9,<3.11"]))
         self.assertIn("python3.8", names)  # below the floor
         self.assertIn("python3.12", names)  # above the upper bound
         self.assertIn("python3.7", names)  # old minor outside the host-probe range

@@ -44,6 +44,85 @@ canonical protocol document ships in the wheel as package data
 (from `src/phase_loop_runtime/_contract_docs/phase-loop/protocol.md`); an older copy is also
 installed to `share/phase-loop-runtime/protocol/protocol.md`.
 
+## Optional Claude SDK runner
+
+Install `phase-loop-runtime[claude-sdk]` and explicitly select
+`PHASE_LOOP_CLAUDE_ROUTE=sdk` to use the official Python SDK with your installed
+Claude Code CLI. Current defaults and the Channel, Agent View, print and panel TUI
+routes remain available. Select one of those existing routes to roll back.
+
+The initial SDK route supports Linux with working unprivileged Bubblewrap
+namespaces and a locally stored personal Pro/Max Claude Code login. Review actions,
+team execution, Team/Enterprise, profiles, cached remote policy and unknown login
+contexts are refused before authentication. SDK panel selection remains refused.
+Missing CLI capability, dependency or provenance produces a refusal with no
+automatic fallback. The helper preserves CLI loading of the selected login.
+
+Configuration is inspected before connecting and frozen in private read-only
+mounts shared by the auth probe and inference. Project settings currently support
+permission rules and hooks; project allow rules and hooks require stored project
+trust. Other project keys require a different route. User
+settings and inspectable host-managed policy are preserved. Initial instruction
+snapshots support plain instruction files and flat, unconditional rules. The selected
+user `CLAUDE.md` may be linked and may explicitly import user files, including a
+linked `AGENTS.md`, to four import edges. Capture is limited to 32 MiB of total
+reads and 256 visits, including repeats, on known local filesystems. These files
+are included once as private,
+immutable UTF-8 instructions. Relative imports through links require the logical
+and resolved parent paths to identify the same file. Simple unquoted paths are
+supported, with `~/` bound to the selected HOME. Quote-wrapped paths stay literal;
+escaped spaces and ambiguous import or cross-block code-span syntax refuse the route.
+Canonical inline `@path` examples remain literal. Fenced or indented code containing
+import candidates, and inline spans containing whitespace before `@`, refuse.
+Backtick blocks
+containing an import candidate combined with escaped backticks, HTML, brackets,
+indentation, pipes or possible URLs refuse before probes. Underscore-adjacent and
+escaped `@` candidates also refuse before dependency reads.
+The optional extra pins `markdown-it-py==4.2.0` for CommonMark block source maps,
+including container fences and HTML boundaries. Scanning uses original source
+ranges with CR/LF line normalization, retaining reference definitions and entity
+spellings. It never discovers imports from rendered text. In candidate-bearing
+files, raw fence syntax mixed with HTML blocks, line-start HTML-like syntax or
+reference markers refuses. Fences require both a parser-proven explicit closing
+line and a compatible raw closer with trailing spaces only; native-like interior
+closers refuse. Candidate-bearing inline blocks with backticks inside a code span
+or any multiline span also refuse, even when the candidate is outside that span.
+Candidate-free multiline examples remain supported; separate paragraphs may import
+files normally. For inline ambiguity checks, a candidate anywhere in the enclosing
+run of non-blank lines applies to every parsed block in that run. Only lines made
+of spaces and tabs separate runs; raw list and quote prefixes remain non-blank.
+A run containing a candidate and any backtick refuses if it also contains `<`,
+`[` or `]`, including in an initial HTML block or a different parsed block.
+This conservative boundary avoids native link/title carriers across block joins.
+Separate unrelated link/HTML examples from imports with a real blank line.
+Fenced code and supported
+inline spans are masked with spaces, preserving separators; ordinary inline
+matching stays within one parsed block. Unmatched backticks and ambiguous inline
+contexts refuse. This remains a bounded subset; CommonMark parsing alone does not
+establish equivalence with native Claude.
+Native CLI inspection shows dialect differences and tight-list import behavior
+that conflict with some documented code exclusions. The guards define a bounded
+supported subset, rather than complete native Markdown compatibility.
+The existing raw HTML/reference handling and complete-byte snapshots do not emulate
+native comment or frontmatter stripping.
+The complete snapshot, including project files and rules, must fit 64 KiB of UTF-8
+without embedded NUL characters for the SDK's command-line argument. Changed files
+or aliases during capture refuse rather than mixing versions. Project imports,
+path-scoped rules, descendant instructions, project or ancestor AGENTS.md contexts,
+and linked project instruction trees require an existing route. An explicitly imported
+AGENTS.md in the selected user configuration remains user context when HOME is a project ancestor;
+unreferenced config files gain no exception. The SDK route refuses unsupported layouts
+before connecting. Email addresses and ordinary Markdown separators
+remain literal instruction content.
+Uninspectable policy refuses the route. Memory and subscription MCP
+connectors are disabled, and the existing permission and supervisor policies apply.
+Route metadata reports subscription provenance, rather than an account charge.
+
+The [ratified Stage 3a plan](https://github.com/Consiliency/agent-harness/blob/main/plans/detailed-claude-sdk-runner-20261015.md)
+requires synthetic transport and installed-package checks plus a non-skipped live
+qualification receipt before activation is considered qualified. The dependency
+extra is optional for every other route.
+
 ## Contributor test environment
 
 From the repository root, install the declared test tools and visual extra, then
@@ -54,8 +133,10 @@ uv sync --project phase-loop-runtime --group test --extra visual --python 3.14 -
 PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests phase-loop-runtime/.venv/bin/python -m pytest -q phase-loop-runtime/tests/test_outside_agent_contract_drift.py phase-loop-runtime/tests/test_visual_avatar_evidence_validator.py
 ```
 
-The test group supplies pytest and package build/install tools, including pip;
-the visual extra supplies Pillow for image decoding. Both are opt-in. The native
+The test group supplies package build/install tools and the pinned SDK for
+credential-free transport tests; pytest is a runtime dependency. Ordinary installs
+without the SDK extra do not install the SDK. The visual extra supplies Pillow
+for image decoding. Both are opt-in. The native
 repository-wide interpreter guard includes the dagger subproject's Python 3.14
 floor, which is separate from this runtime package's Python 3.12 minimum and CI's
 interpreter matrix. These commands verify the two selected files; they do not

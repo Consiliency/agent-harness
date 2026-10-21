@@ -1073,6 +1073,8 @@ class TestRound3Coverage:
         )
         from phase_loop_runtime.convergence.contracts import AdmissionRequest
 
+        monkeypatch.delenv("TMPDIR", raising=False)
+        monkeypatch.delenv("CLAUDE_CODE_TMPDIR", raising=False)
         monkeypatch.setenv("PHASE_LOOP_SANDBOX_REFUSE_RAM", "1")
         monkeypatch.setattr(sandbox_policy, "_mount_fstype", lambda p: "tmpfs")
         monkeypatch.setattr(sandbox_policy, "_RAM_FALLBACK_WARNED", set())
