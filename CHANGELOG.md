@@ -18,6 +18,20 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - Shared sandbox validation also applies to president-ladder resolution: malformed
   user roots, order or driver settings now refuse that resolution.
 
+### Diagnostic planning skill evaluation (agent-harness#1321)
+
+- Add the opt-in `phase-loop-skill-eval` command for frozen, independent planning
+  comparisons, owned Linux execution with access evidence, blinded human packets,
+  one-shot scorer calibration, and exact Boolean pair reduction. Live pilot
+  qualification and editor gating remain pending; no skill is automatically adopted.
+- Require single-turn stream ordering, refuse identity-bearing packet inputs, and
+  report malformed score documents through the CLI refusal path while retaining
+  failed one-shot calibration evidence.
+- Stop the batch on returned launcher cancellation, retaining invalid trial
+  receipts and the launcher's cleanup evidence before propagating interruption.
+- Reject duplicate gold output texts across the calibration pack before
+  preparation, preserving an unambiguous annotation mapping (agent-harness#1733).
+
 ### Offline repository-map artifact mode
 
 - Add a manifest-driven `phase-loop fleet-map` mode with qualified repository
