@@ -85,6 +85,15 @@ def test_the_user_ladder_overrides_the_built_in(tmp_path):
     assert load_president_ladder(_repo(tmp_path, None), path=user) == ("grok", "sol")
 
 
+def test_repository_driver_settings_do_not_change_ladder_precedence(tmp_path):
+    user = _user_cfg(tmp_path, '[president]\nladder = ["grok", "sol"]\n')
+    repo = _repo(tmp_path, '[sandbox.driver]\nmax_live_workers = 2\n')
+    assert load_president_ladder(repo, path=user) == ("grok", "sol")
+    (repo / ".agent-harness/advisor-boards.toml").write_text(
+        '[sandbox.driver]\nadmit_wait_s = 17\n[president]\nladder = ["sol"]\n')
+    assert load_president_ladder(repo, path=user) == ("sol",)
+
+
 def test_the_repo_ladder_overrides_the_user(tmp_path):
     user = _user_cfg(tmp_path, '[president]\nladder = ["grok", "sol"]\n')
     repo = _repo(tmp_path, '[president]\nladder = ["gemini", "fable"]\n')

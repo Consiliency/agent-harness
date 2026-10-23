@@ -13,6 +13,8 @@ real. `place` and `run_placed` are driven directly; the launch site is not invol
 
 from __future__ import annotations
 
+import contextvars
+from dataclasses import replace
 from hashlib import sha256
 import json
 import logging
@@ -190,7 +192,7 @@ def rungs(*schemes: str):
 
 def walk(roots, *, last_rung="local", workload="leg", deadline_s=None, required=REQUIRED,
          preflight=lambda: None, seal=None, driver_enabled=True, cancelled=None, prepared=None,
-         open_lease=placement_lease.open_lease):
+         open_lease=placement_lease.open_lease, settings=None):
     prepared = prepared if prepared is not None else prepared_stage(Path("/nonexistent/stage"))
 
     def request_for(root):
@@ -206,6 +208,7 @@ def walk(roots, *, last_rung="local", workload="leg", deadline_s=None, required=
         roots, last_rung, prepared, request_for, open_lease, preflight=preflight,
         seal=seal if seal is not None else exec_spec, driver_enabled=driver_enabled,
         cancelled=cancelled if cancelled is not None else threading.Event(),
+        settings=settings,
     )
 
 
@@ -640,7 +643,8 @@ def test_lifetime_arithmetic(monkeypatch):
     monkeypatch.setenv("PHASE_LOOP_SANDBOX_TRANSFER_ALLOWANCE_S", "0")
     assert sp.lifetime_sufficient(1900.0, floor) and not sp.lifetime_sufficient(1899.0, floor)
     monkeypatch.setenv("PHASE_LOOP_SANDBOX_ADMIT_WAIT_S", "not a number")
-    assert sandbox_policy.admit_wait_s() == 600
+    with pytest.raises(sandbox_policy.SandboxConfigError, match="sandbox_config_invalid"):
+        sandbox_policy.admit_wait_s()
     monkeypatch.setenv("PHASE_LOOP_SANDBOX_ADMIT_WAIT_S", "-5")
     assert sandbox_policy.admit_wait_s() == 0
 
@@ -1200,7 +1204,7 @@ def test_a_backend_time_out_before_the_fixed_end_is_a_lost_leg(monkeypatch):
         backend=backend, sandbox_ref="sbx-early-timeout",
         _spec=sp.ExecSpec("leg", b"sealed", 10.0, 10.0, 1024),
         _lease=lease, _launched_at=0.0, _launch_failed=False,
-        _trail=(), notices=[],
+        _trail=(), notices=[], _driver_settings=None,
     )
 
     with pytest.raises(sp.PlacementUnavailable) as caught:
@@ -1208,3 +1212,258 @@ def test_a_backend_time_out_before_the_fixed_end_is_a_lost_leg(monkeypatch):
 
     assert calls == ["cancel", "fence", "kill", "clear"]
     assert caught.value.code == "sandbox_placement_lost_after_launch"
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_seal_is_bounded_and_late_spec_is_discarded(far, monkeypatch, cancel):
+    monkeypatch.setenv("PHASE_LOOP_SANDBOX_ADMIT_WAIT_S", "0")
+    monkeypatch.setenv("PHASE_LOOP_SANDBOX_TRANSFER_ALLOWANCE_S", "1")
+    entered, release, finished = threading.Event(), threading.Event(), threading.Event()
+    returned = threading.Event()
+    cancelled = threading.Event()
+    outcomes = []
+
+    def seal(request):
+        entered.set()
+        release.wait(5)
+        spec = exec_spec(request)
+        returned.set()
+        return spec
+
+    def run():
+        try:
+            outcomes.append(walk(rungs("drv"), seal=seal, cancelled=cancelled))
+        except sp.PlacementCancelled as exc:
+            outcomes.append(exc)
+        finally:
+            finished.set()
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    try:
+        assert entered.wait(2)
+        if cancel:
+            cancelled.set()
+        assert finished.wait(2)
+        assert "execute" not in far.calls
+        assert "kill" in far.calls and lease_files() == []
+        if cancel:
+            assert isinstance(outcomes[0], sp.PlacementCancelled)
+        else:
+            assert summary(outcomes[0].trail) == [("r1", "refused", BUDGET)]
+    finally:
+        release.set()
+        thread.join(3)
+    assert returned.wait(2)
+    assert "execute" not in far.calls
+
+
+def test_seal_timeout_with_remaining_budget_is_refused(far):
+    decision = walk(rungs("drv"), seal=raises(TIMEOUT))
+    assert summary(decision.trail) == [("r1", "refused", REFUSED)]
+    assert "execute" not in far.calls
+    assert "kill" in far.calls and lease_files() == []
+
+
+def test_each_call_captures_its_own_context():
+    value = contextvars.ContextVar("submission", default="missing")
+    calls = sp._Calls()
+    threads = []
+    try:
+        for expected in ("first", "second"):
+            token = value.set(expected)
+            try:
+                def job():
+                    threads.append(threading.get_ident())
+                    got = value.get()
+                    value.set("worker mutation")
+                    return got
+                assert calls.run(job, 1) == expected
+                assert value.get() == expected
+            finally:
+                value.reset(token)
+        assert threads[0] == threads[1]
+    finally:
+        calls.close()
+
+
+def test_live_worker_permit_lasts_until_exit_and_startup_rolls_back(monkeypatch):
+    settings = sandbox_policy.PlacementDriverSettings(11, 13, 1)
+    calls = sp._Calls(settings=settings)
+    release = threading.Event()
+    threads = []
+    start = threading.Thread.start
+
+    def record(thread):
+        threads.append(thread)
+        start(thread)
+
+    monkeypatch.setattr(threading.Thread, "start", record)
+    try:
+        with pytest.raises(sp.PlacementUnavailable, match=TIMEOUT):
+            calls.run(lambda: release.wait(5), 0.02)
+        for _ in range(3):
+            with pytest.raises(sp.PlacementUnavailable, match=TIMEOUT):
+                calls.run(lambda: pytest.fail("queued behind abandoned worker"), 1)
+        assert len(threads) == 1
+        release.set()
+        threads[0].join(2)
+        assert not threads[0].is_alive()
+        assert calls.run(lambda: "recovered", 1) == "recovered"
+        calls.close()
+        threads[-1].join(2)
+        with monkeypatch.context() as patch:
+            patch.setattr(threading.Thread, "start", lambda self: (_ for _ in ()).throw(RuntimeError()))
+            with pytest.raises(sp.PlacementUnavailable, match=TIMEOUT):
+                calls.run(lambda: None, 1)
+        assert calls.run(lambda: "rollback", 1) == "rollback"
+    finally:
+        release.set()
+        calls.close()
+        for thread in threads:
+            thread.join(2)
+
+
+@pytest.mark.parametrize("last_rung", ["local", "none"])
+@pytest.mark.parametrize("capacity", [False, True])
+def test_worker_exhaustion_preserves_ladder_and_fenced_evidence(far, second, monkeypatch, last_rung, capacity):
+    monkeypatch.setattr(sp, "ANSWER_BOUND_S", 0.03)
+    release = threading.Event()
+    threads = []
+
+    def hang(*args):
+        threads.append(threading.current_thread())
+        release.wait(5)
+
+    if capacity:
+        far.behave["commit"] = raises(CAPACITY)
+    else:
+        far.behave["admit"] = hang
+    far.behave["kill"] = hang
+    settings = sandbox_policy.PlacementDriverSettings(11, 13, 1 if capacity else 2)
+    try:
+        decision = walk(rungs("drv", "drw"), settings=settings, last_rung=last_rung)
+        assert summary(decision.trail)[-1] == ("r2", "failed_locally", REFUSED)
+        assert "admit" not in second.calls
+        assert not any(row["code"] == UNREACHABLE for row in decision.trail)
+        assert len(lease_files()) == 1
+        assert entry_of(lease_files()[0])["abandoned"] is True
+        assert decision.outcome == ("not_run" if capacity or last_rung == "none" else "launching_host")
+        if capacity and last_rung == "local":
+            assert decision.code == EXHAUSTED
+    finally:
+        release.set()
+        for thread in threads:
+            thread.join(2)
+    far.behave.clear()
+    result = placement_lease.reap(sp.backend_for_scheme, sp._bound(1))
+    assert result["kept"] == () and lease_files() == []
+
+
+@pytest.mark.parametrize("cancel", [False, True])
+def test_readiness_failure_precedes_probe_and_lease(far, monkeypatch, cancel):
+    cancelled = threading.Event()
+    def fail(self):
+        if cancel:
+            cancelled.set()
+        raise sp.PlacementUnavailable(TIMEOUT)
+    monkeypatch.setattr(sp._Calls, "ready", fail)
+    monkeypatch.setattr(sp, "_open_connection", lambda *args: pytest.fail("probe before readiness"))
+    if cancel:
+        with pytest.raises(sp.PlacementCancelled):
+            walk(rungs("drv"), cancelled=cancelled)
+    else:
+        decision = walk(rungs("drv"))
+        assert summary(decision.trail) == [("r1", "failed_locally", REFUSED)]
+    assert lease_files() == [] and "admit" not in far.calls
+
+
+def test_invalid_driver_configuration_has_no_effects(far, monkeypatch):
+    monkeypatch.setenv("PHASE_LOOP_SANDBOX_ADMIT_WAIT_S", "private-invalid-input")
+    with pytest.raises(sandbox_policy.SandboxConfigError, match="^sandbox_config_invalid$"):
+        walk(rungs("drv"), preflight=lambda: pytest.fail("preflight with invalid settings"))
+    assert far.calls == [] and lease_files() == []
+
+
+def test_placement_keeps_one_settings_snapshot(far, monkeypatch):
+    settings = sandbox_policy.PlacementDriverSettings(17, 19, 1)
+    placement = walk(rungs("drv"), settings=settings).placement
+    assert placement._driver_settings is settings
+    monkeypatch.setenv("PHASE_LOOP_SANDBOX_ADMIT_WAIT_S", "invalid after placement")
+    assert sp.lifetime_sufficient(36, 0, settings=settings)
+    assert not sp.lifetime_sufficient(35, 0, settings=settings)
+    groups = []
+    calls = sp._Calls
+    def record(**kwargs):
+        groups.append(kwargs["settings"])
+        return calls(**kwargs)
+    monkeypatch.setattr(sp, "_Calls", record)
+    assert sp.run_placed(placement, on_progress=None, cancelled=threading.Event())
+    assert len(groups) == 2 and all(snapshot is settings for snapshot in groups)
+
+
+@pytest.mark.parametrize("remaining", [0, 0.25, 40])
+def test_seal_uses_whole_budget_and_execute_only_the_remainder(far, monkeypatch, remaining):
+    clock = [0.0]
+    monkeypatch.setattr(sp, "_monotonic", lambda: clock[0])
+    monkeypatch.setenv("PHASE_LOOP_SANDBOX_ADMIT_WAIT_S", "60")
+    monkeypatch.setenv("PHASE_LOOP_SANDBOX_TRANSFER_ALLOWANCE_S", "60")
+    bounds = []
+    run = sp._Calls.run
+
+    def record(self, call, timeout_s, cancelled=None):
+        bounds.append(timeout_s)
+        return run(self, call, timeout_s, cancelled)
+
+    monkeypatch.setattr(sp._Calls, "run", record)
+
+    def seal(request):
+        assert bounds[-1] == 120
+        clock[0] = 120 - remaining
+        return exec_spec(request)
+
+    decision = walk(rungs("drv"), seal=seal)
+    if remaining == 0:
+        assert decision.outcome == "launching_host" and "execute" not in far.calls
+    else:
+        assert decision.outcome == "placed"
+        assert far.seen["execute"][0][2].timeout_s == min(sp.ANSWER_BOUND_S, remaining)
+        sp.run_placed(decision.placement, on_progress=None, cancelled=threading.Event())
+
+
+@pytest.mark.parametrize("cap", [True, False, -1, 1.5, "1024", None])
+def test_invalid_output_cap_refuses_before_dispatch(far, cap):
+    decision = walk(rungs("drv"), seal=lambda request: replace(exec_spec(request), output_cap_bytes=cap))
+    assert decision.outcome == "launching_host"
+    assert "execute" not in far.calls and lease_files() == []
+
+
+@pytest.mark.parametrize("kind", [
+    "exact", "over", "text", "bytearray", "zero", "truncated", "falsey_truncated", "subclass",
+])
+def test_result_cap_precedes_digest_parsing(far, monkeypatch, kind):
+    body = json.dumps({"request_sha256": sha256(b"sealed request").hexdigest()}).encode()
+    cap = len(body) - 1 if kind in ("over", "subclass") else len(body)
+    if kind == "zero":
+        cap = 0
+    payload = body.decode() if kind == "text" else bytearray(body) if kind == "bytearray" else body
+    if kind == "subclass":
+        class UnderreportedBytes(bytes):
+            def __len__(self):
+                return 0
+        payload = UnderreportedBytes(body)
+    truncated = True if kind == "truncated" else 0 if kind == "falsey_truncated" else False
+    placement = _placed(far, seal=lambda request: replace(exec_spec(request), output_cap_bytes=cap))
+    far.behave["wait"] = lambda ref, wait: sp.ExecResult(ref, 0, payload, truncated)
+    parsed = []
+    echoes = sp._echoes
+    monkeypatch.setattr(sp, "_echoes", lambda *args: parsed.append(args) or echoes(*args))
+    if kind == "exact":
+        assert sp.run_placed(placement, on_progress=None, cancelled=threading.Event()).result == body
+        assert len(parsed) == 1
+    else:
+        with pytest.raises(sp.PlacementUnavailable, match=LOST):
+            sp.run_placed(placement, on_progress=None, cancelled=threading.Event())
+        assert parsed == []
+        assert "completed" not in placement._observed
+    assert lease_files() == []

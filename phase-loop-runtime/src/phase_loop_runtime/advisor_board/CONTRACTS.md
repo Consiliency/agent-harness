@@ -438,8 +438,29 @@ the caller passes a PATH and the runtime reads it.
     (`order`, default `["self-hosted", "e2b"]`; named roots it omits follow in file order).
     The single root is an alias for one backend and, when set, the only candidate. A
     malformed table or unknown key raises `sandbox_config_invalid`; a repository file cannot
-    carry `[sandbox]`. Candidates are tried in order and the first usable one is chosen;
+    carry roots or order. Its only sandbox permission is `[sandbox.driver]`, with
+    `admit_wait_s`, `transfer_allowance_s` and `max_live_workers`; unknown keys and malformed
+    tables are refused. This grants no endpoint, authentication, egress, enablement or
+    last-rung authority. Candidates are tried in order and the first usable one is chosen;
     each one passed over adds `<name>: <reason>` to `sandbox_root_reason`.
+  - **Driver settings authority.** Packaged `advisor_board/fixtures/placement-driver.defaults.toml`
+    is the sole default source. Per-key precedence is packaged < user < explicit repository
+    < `PHASE_LOOP_SANDBOX_ADMIT_WAIT_S` / `PHASE_LOOP_SANDBOX_TRANSFER_ALLOWANCE_S`.
+    There is no worker environment alias. Missing/blank overrides inherit; all participating
+    layers, including shadowed values, are validated. Malformed duration aliases now raise
+    input-free `SandboxConfigError("sandbox_config_invalid")` instead of silently defaulting.
+    Whole non-bool integers and signed ASCII decimal strings are accepted; negatives clamp
+    to zero and positive durations saturate lexically at `floor(threading.TIMEOUT_MAX / 2)`.
+    The summed budget remains finite and wait-safe. Worker limits must be positive non-bool
+    integers within `sys.maxsize`. Missing/corrupt packaged defaults fail without fallback.
+    `placement_driver_settings(repo_dir=None, *, env=None, path=None, review_base=False)`
+    returns an immutable snapshot. Repository context is explicit, never inferred from CWD;
+    `review_base=True` uses committed trusted-base controls. An explicit environment is
+    authoritative, with no ambient HOME fallback. Callers resolve once and pass `settings=`
+    to both `lifetime_sufficient` and `place`; the placement carries it into result/renewal
+    groups. Existing call forms remain supported; this adds no launch-site activation.
+    Direct internal call groups without a placement snapshot use packaged settings, so
+    independent reaping does not inherit malformed placement overrides.
   - **Root parsing.** A value is stripped; anything containing `://` is a URL and keeps only
     scheme, host, port and path. A malformed scheme (`sandbox_root_scheme_invalid`), a
     built-in scheme written as a URL (`sandbox_root_scheme_builtin`), and a non-URL value
@@ -504,7 +525,16 @@ the caller passes a PATH and the runtime reads it.
       `PlacementRequest`) has a default, because the launch site and the flag-off tests still
       call them in today's form. These bounds are separate from a seat's thinking time: `wait(sandbox_ref, wait_s)` returns an `ExecResult`, or an
       `ExecProgress(sandbox_ref, seq)` whose rising `seq` is a liveness claim for the review
-      monitor and nothing else.
+      monitor and nothing else. Sealing runs within the whole positive remaining walk
+      budget and caller cancellation; each submission captures its caller's context,
+      including jobs on a reused worker. Late results from abandoned jobs are discarded.
+      All live workers, including idle and abandoned workers, count against
+      `sandbox.driver.max_live_workers` per call group (walk, result wait, renewal), not
+      process-wide. Permits return only at actual worker exit; startup failure rolls back.
+      The final local readiness check refuses before probe or lease allocation with
+      `local_check_failed` / `sandbox_placement_refused`; cancellation wins. Normal next-rung
+      and last-rung resolution and the capacity bar remain unchanged. Cleanup has no extra
+      worker allowance: unconfirmed cleanup leaves fenced evidence for independent reaping.
     - **C5 Required capabilities, and no private endpoint for a placed seat.**
       `PlacementRequest.required_capabilities` for a review leg is `inbound_closed`,
       `one_shot_secret_channel` and `private_ranges_unreachable`. `egress_needs` is **empty**
@@ -554,8 +584,8 @@ the caller passes a PATH and the runtime reads it.
         already has. If it fails, no remote rung is tried and the walk resolves the last rung
         at once with the preflight's code.
       - **The budget.** When the preflight passes the walk gets one budget of time: the
-        admission wait (`PHASE_LOOP_SANDBOX_ADMIT_WAIT_S`, default 600) plus the transfer
-        allowance (`PHASE_LOOP_SANDBOX_TRANSFER_ALLOWANCE_S`, default 300). Two events come
+        admission wait (`sandbox.driver.admit_wait_s`) plus the transfer
+        allowance (`sandbox.driver.transfer_allowance_s`). Two events come
         from it. **Wait spent:** the time spent waiting at capacity, summed over all rungs,
         has reached the admission wait; it stays true once reached. **Budget spent:** the time
         since the walk began has reached the whole budget. Every call on a rung is bounded by
@@ -663,11 +693,20 @@ the caller passes a PATH and the runtime reads it.
       caller gives `place` a seal step: it applies the caller's guard on fresh numbers and
       returns the request. `place` calls it in the sealing state and then calls `execute`
       itself. There is therefore no moment at which a caller holds an admitted slot and has
-      not launched.
+      not launched. Seal is serialization/guard-only: no remote effects or durable secret
+      writes. Immediately before dispatch, cancellation, remaining budget, spec, fixed end
+      and output cap are checked. Equality consumes the budget and releases without execute;
+      a positive remainder bounds execute by `min(ANSWER_BOUND_S, remainder)`. No additional
+      execute or credential reserve is introduced. Launch uncertainty remains final.
     - **C9 Runtime receipts.** The driver, which lives in `sandbox_placement` beside the seal,
       builds `committed` when `commit` returned for the digest the runtime computed, `launched`
       when it called `execute`, and `completed` when it received a terminal `ExecResult` for
       the same `sandbox_ref` whose result echoes the digest of the request the runtime sent.
+      `ExecSpec.output_cap_bytes` must be a non-bool nonnegative integer before dispatch;
+      zero is valid. Results must be bytes and no larger than that cap before digest/JSON
+      parsing or `completed`. Rejection follows lost-after-launch cleanup, without truncation
+      into success. An accepted bounded result survives unconfirmed cleanup. Adapter capture
+      and allocation bounds remain backend obligations.
       `sandbox_root_applied=true` for a placed leg therefore means: the runtime sent this leg to
       that backend and received its result on the same sandbox. It does not mean the runtime
       observed the seat's confinement; that is `sandbox_placement_verified`, and every entry
@@ -1056,8 +1095,8 @@ never through — the review operation `public_board_review.v1`. Frozen falsifie
   order; the effective order is `advisor_board.config.load_president_ladder(repo_dir, *,
   env, path)`: built-in < the user file's `[president] ladder`
   (`$XDG_CONFIG_HOME/agent-harness/advisor-boards.toml`) < the repository's
-  `<repo>/.agent-harness/advisor-boards.toml` (`[president]` only; `[[boards]]` there is
-  refused). A ladder is a non-empty list of distinct seat aliases or alias-table model ids
+  `<repo>/.agent-harness/advisor-boards.toml` (`[president]` and the narrow
+  `[sandbox.driver]` tunables only; `[[boards]]`, sandbox roots and order remain refused). A ladder is a non-empty list of distinct seat aliases or alias-table model ids
   (`validate_president_ladder`); a malformed one or an unknown key is `BoardConfigError`,
   never a silent fall-back. The seam carries it (`build_president_invoke(..., ladder=)`,
   `PresidentInvoke.ladder`); `invoke_president` walks `effective_president_ladder(invoke)`

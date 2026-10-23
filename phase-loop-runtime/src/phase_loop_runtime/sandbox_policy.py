@@ -82,6 +82,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 from urllib.parse import urlsplit
 import warnings
 import weakref
@@ -96,6 +97,8 @@ __all__ = [
     "configured_roots",
     "candidate_roots",
     "last_rung",
+    "PlacementDriverSettings",
+    "placement_driver_settings",
     "admit_wait_s",
     "transfer_allowance_s",
     "SandboxConfigError",
@@ -420,11 +423,6 @@ def candidate_roots(
 
 
 _LAST_RUNG_ENV = "PHASE_LOOP_SANDBOX_LAST_RUNG"
-# How long a seat waits in all for a slot on hosts that answer "full" (ten minutes: long
-# enough for a running review to finish and free one, short against a review's own length),
-# and how long the transfer of the staged tree and the sealing may take on top of that.
-_DEFAULT_ADMIT_WAIT_S = 600
-_DEFAULT_TRANSFER_ALLOWANCE_S = 300
 
 
 def last_rung() -> str:
@@ -441,17 +439,73 @@ def last_rung() -> str:
     raise SandboxConfigError("sandbox_config_invalid")
 
 
+def _driver_value(key: str, value: object) -> int | None:
+    """Validate before conversion, including values beyond Python's decimal digit limit."""
+    limit = sys.maxsize if key == "max_live_workers" else int(threading.TIMEOUT_MAX // 2)
+    if type(value) is int:
+        if key == "max_live_workers":
+            if not 0 < value <= limit:
+                raise SandboxConfigError("sandbox_config_invalid") from None
+            return value
+        return min(limit, max(0, value))
+    if not isinstance(value, str):
+        raise SandboxConfigError("sandbox_config_invalid") from None
+    text = value.strip()
+    if not text:
+        return None
+    if not re.fullmatch(r"[+-]?[0-9]+", text):
+        raise SandboxConfigError("sandbox_config_invalid") from None
+    negative = text.startswith("-")
+    digits = text.lstrip("+-").lstrip("0") or "0"
+    maximum = str(limit)
+    oversized = (len(digits), digits) > (len(maximum), maximum)
+    if key == "max_live_workers":
+        if negative or digits == "0" or oversized:
+            raise SandboxConfigError("sandbox_config_invalid") from None
+    elif negative:
+        return 0
+    elif oversized:
+        return limit
+    return int(digits)
+
+
+@dataclass(frozen=True)
+class PlacementDriverSettings:
+    admit_wait_s: int
+    transfer_allowance_s: int
+    max_live_workers: int
+
+    def __post_init__(self) -> None:
+        for key in ("admit_wait_s", "transfer_allowance_s", "max_live_workers"):
+            value = _driver_value(key, getattr(self, key))
+            if value is None:
+                raise SandboxConfigError("sandbox_config_invalid") from None
+            object.__setattr__(self, key, value)
+
+
+def placement_driver_settings(
+    repo_dir: Path | str | None = None, *, env: Mapping[str, str] | None = None,
+    path: Path | None = None, review_base: bool = False,
+) -> PlacementDriverSettings:
+    from .advisor_board.config import load_placement_driver_settings
+
+    try:
+        return PlacementDriverSettings(**load_placement_driver_settings(
+            repo_dir, env=env, path=path, review_base=review_base,
+        ))
+    except (ValueError, TypeError, OSError):
+        raise SandboxConfigError("sandbox_config_invalid") from None
+
+
 def admit_wait_s() -> int:
     """Seconds a seat may spend waiting at capacity, summed over all rungs."""
-    return max(0, _env_int("PHASE_LOOP_SANDBOX_ADMIT_WAIT_S", _DEFAULT_ADMIT_WAIT_S))
+    return placement_driver_settings().admit_wait_s
 
 
 def transfer_allowance_s() -> int:
     """Seconds allowed on top of the admission wait for the transfer and the sealing. The
     two together are the walk's whole budget."""
-    return max(0, _env_int(
-        "PHASE_LOOP_SANDBOX_TRANSFER_ALLOWANCE_S", _DEFAULT_TRANSFER_ALLOWANCE_S,
-    ))
+    return placement_driver_settings().transfer_allowance_s
 
 
 def archive_destination() -> str | None:

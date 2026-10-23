@@ -38,6 +38,7 @@ and released by lease id; ``execute`` is reached from one state and ends the wal
 
 from __future__ import annotations
 
+import contextvars
 from dataclasses import dataclass, field, replace
 import hashlib
 import json
@@ -408,6 +409,8 @@ class ExecSpec:
             raise ValueError(f"unknown workload {self.workload!r}")
         if not isinstance(self.request, bytes):
             raise TypeError("an ExecSpec request is bytes")
+        if type(self.output_cap_bytes) is not int or self.output_cap_bytes < 0:
+            raise ValueError("invalid output cap")
 
 
 @dataclass(frozen=True)
@@ -736,6 +739,7 @@ class LegPlacement:
         self._observed: set[str] = set()
         self._lease: object = None
         self._spec: ExecSpec | None = None
+        self._driver_settings: sandbox_policy.PlacementDriverSettings | None = None
         self._launched_at: float | None = None
         self._launch_failed = False
         self._trail: tuple[Mapping[str, object], ...] = ()
@@ -984,12 +988,16 @@ def _open_connection(host: str, port: int, timeout_s: float) -> None:
     socket.create_connection((host, port), timeout=max(timeout_s, 0.001)).close()
 
 
-def lifetime_sufficient(remaining_s: float, floor_s: float) -> bool:
+def lifetime_sufficient(
+    remaining_s: float, floor_s: float, *,
+    settings: sandbox_policy.PlacementDriverSettings | None = None,
+) -> bool:
     """The preflight's comparison, used ONCE, before the walk: is what is left of a
     credential's life at least the floor plus the WHOLE budget (the admission wait and the
     transfer allowance)? Because the walk cannot outlast the budget, a credential that
     passes here still passes :func:`lifetime_at_floor` on whichever rung seals."""
-    budget = sandbox_policy.admit_wait_s() + sandbox_policy.transfer_allowance_s()
+    settings = settings if settings is not None else sandbox_policy.placement_driver_settings()
+    budget = settings.admit_wait_s + settings.transfer_allowance_s
     return remaining_s >= floor_s + budget
 
 
@@ -1019,42 +1027,62 @@ class _CallCancelled(Exception):
     """The caller cancelled while a bounded call was in flight."""
 
 
-def _serve(jobs: "queue.SimpleQueue[object]") -> None:
-    while True:
-        job = jobs.get()
-        if job is None:
-            return
-        call, box, done = job  # type: ignore[misc]
-        try:
-            box.append((True, call()))
-        except BaseException as exc:  # handed to the caller, which re-raises it
-            box.append((False, exc))
-        done.release()
+def _serve(jobs: "queue.SimpleQueue[object]", permits: threading.BoundedSemaphore) -> None:
+    try:
+        while True:
+            job = jobs.get()
+            if job is None:
+                return
+            call, context, box, done = job  # type: ignore[misc]
+            try:
+                box.append((True, context.run(call)))
+            except BaseException as exc:  # handed to the caller, which re-raises it
+                box.append((False, exc))
+            done.release()
+            del job, call, context, box, done
+    finally:
+        permits.release()
 
 
 class _Calls:
     """Runs a call so that it can outlast neither its bound nor a cancel (C4).
 
     One worker thread serves the calls of one walk in turn. A call that does not return in
-    time is abandoned together with its worker, and the next call gets a new one, so a
-    backend that never returns costs its bound and nothing more."""
+    time is abandoned together with its queue. All live workers (idle, active and
+    abandoned) hold permits until actual exit. The settings cap is per group: the walk,
+    result wait and renewal each own a group, not a process-wide quota."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, settings: sandbox_policy.PlacementDriverSettings | None = None) -> None:
+        settings = settings if settings is not None else sandbox_policy.placement_driver_settings(env={})
+        self._permits = threading.BoundedSemaphore(settings.max_live_workers)
         self._jobs: "queue.SimpleQueue[object] | None" = None
+
+    def ready(self) -> None:
+        if self._jobs is not None:
+            return
+        if not self._permits.acquire(blocking=False):
+            raise PlacementUnavailable(_TIMEOUT)
+        jobs: queue.SimpleQueue[object] = queue.SimpleQueue()
+        try:
+            threading.Thread(
+                target=_serve, args=(jobs, self._permits), name="placement-call", daemon=True,
+            ).start()
+        except Exception:
+            self._permits.release()
+            raise PlacementUnavailable(_TIMEOUT) from None
+        self._jobs = jobs
 
     def run(
         self, call: Callable[[], object], timeout_s: float,
         cancelled: threading.Event | None = None,
     ) -> object:
-        if self._jobs is None:
-            self._jobs = queue.SimpleQueue()
-            threading.Thread(
-                target=_serve, args=(self._jobs,), name="placement-call", daemon=True,
-            ).start()
+        if cancelled is not None and cancelled.is_set():
+            raise _CallCancelled()
+        self.ready()
         box: list[tuple[bool, object]] = []
         done = threading.Lock()  # released by the worker when the call has returned
         done.acquire()
-        self._jobs.put((call, box, done))
+        self._jobs.put((call, contextvars.copy_context(), box, done))
         deadline = time.monotonic() + max(0.0, timeout_s)
         while not done.acquire(timeout=min(_POLL_S, max(0.0, deadline - time.monotonic()))):
             if cancelled is not None and cancelled.is_set():
@@ -1142,6 +1170,7 @@ class _Walk:
         open_lease: Callable[[str | None, object], object],
         seal: Callable[[PlacementRequest], "ExecSpec | None"],
         driver_enabled: bool, cancelled: threading.Event,
+        settings: sandbox_policy.PlacementDriverSettings,
     ) -> None:
         self.prepared = prepared
         self.request_for = request_for
@@ -1149,13 +1178,14 @@ class _Walk:
         self.seal = seal
         self.driver_enabled = driver_enabled
         self.cancelled = cancelled
-        self.calls = _Calls()
+        self.settings = settings
+        self.calls = _Calls(settings=settings)
         self.trail: list[Mapping[str, object]] = []
         self.notices: list[str] = []
         #: Set by the first capacity answer on any rung; nothing clears it.
         self.capacity_bar = False
-        self.admit_wait_s = float(sandbox_policy.admit_wait_s())
-        self.budget_s = self.admit_wait_s + float(sandbox_policy.transfer_allowance_s())
+        self.admit_wait_s = float(settings.admit_wait_s)
+        self.budget_s = self.admit_wait_s + float(settings.transfer_allowance_s)
         self.waited_s = 0.0
         self.started = _monotonic()
 
@@ -1252,6 +1282,12 @@ class _Walk:
                 rung.reason = code
                 rung.lease.fence()  # type: ignore[attr-defined]
             elif target == "execute":
+                if self.cancelled.is_set() or self._budget_spent():
+                    rung.cancel = self.cancelled.is_set()
+                    rung.reason = _BUDGET_SPENT
+                    rung.lease.fence()  # type: ignore[attr-defined]
+                    state = "releasing"
+                    continue
                 return self._execute(rung)
             elif target.startswith("left:"):
                 if rung.lease is not None:
@@ -1298,6 +1334,12 @@ class _Walk:
             if request.deadline_s is not None and limit is not None and request.deadline_s > limit:
                 return failed, _REFUSED
         except Exception:
+            return failed, _REFUSED
+        try:
+            self.calls.ready()
+        except PlacementUnavailable:
+            if self.cancelled.is_set():
+                return None, None
             return failed, _REFUSED
         rung.backend, rung.request, rung.endpoint = backend, request, endpoint
         rung.capabilities = declared
@@ -1437,6 +1479,7 @@ class _Walk:
         placement.receipts.extend(receipts)
         placement.verified.update(verified)
         placement._lease = rung.lease
+        placement._driver_settings = self.settings
         placement._observed.add("committed")
         placement.record_runtime("committed")
         rung.placement = placement
@@ -1447,12 +1490,21 @@ class _Walk:
             return "budget_spent", _BUDGET_SPENT
         request = rung.request
         try:
-            spec = self.seal(request)  # type: ignore[arg-type]
+            spec = self.calls.run(
+                lambda: self.seal(request), self._budget_left(), self.cancelled,
+            )
+        except _CallCancelled:
+            return None, None
+        except PlacementUnavailable as exc:
+            if exc.code == _TIMEOUT and self._budget_spent():
+                return "budget_spent", _BUDGET_SPENT
+            return "seal_failed", _REFUSED
         except Exception:
             return "seal_failed", _REFUSED
         if (
             not isinstance(spec, ExecSpec) or spec.workload != request.workload  # type: ignore[union-attr]
             or not _end_is_fixed(spec)
+            or type(spec.output_cap_bytes) is not int or spec.output_cap_bytes < 0
         ):
             return "seal_failed", _REFUSED
         if self._budget_spent():
@@ -1560,6 +1612,7 @@ def place(
     seal: Callable[[PlacementRequest], "ExecSpec | None"],
     driver_enabled: bool,
     cancelled: threading.Event,
+    settings: sandbox_policy.PlacementDriverSettings | None = None,
 ) -> PlacementDecision:
     """Decide where a candidate seat runs, and launch it there if a remote rung takes it.
 
@@ -1590,8 +1643,9 @@ def place(
     """
     if last_rung not in _LAST_RUNGS:
         raise ValueError(f"unknown last rung {last_rung!r}")
+    settings = settings if settings is not None else sandbox_policy.placement_driver_settings()
     refusal = preflight()
-    walk = _Walk(prepared, request_for, open_lease, seal, bool(driver_enabled), cancelled)
+    walk = _Walk(prepared, request_for, open_lease, seal, bool(driver_enabled), cancelled, settings)
     try:
         if refusal is not None:
             return walk._end(walk._after_left(False, last_rung), str(refusal))
@@ -1636,7 +1690,8 @@ def run_placed(
     if is_local(placement.backend) or spec is None or lease is None or launched_at is None:
         raise ValueError("run_placed takes a placement that place() launched")
     backend, sandbox_ref = placement.backend, placement.sandbox_ref
-    calls, renewals = _Calls(), _Calls()
+    settings = placement._driver_settings
+    calls, renewals = _Calls(settings=settings), _Calls(settings=settings)
     result: ExecResult | None = None
     failure = _LOST_AFTER_LAUNCH if placement._launch_failed else None
     was_cancelled = False
@@ -1697,6 +1752,8 @@ def run_placed(
                         on_progress(got)
             elif (
                 isinstance(got, ExecResult) and got.sandbox_ref == sandbox_ref
+                and type(got.result) is bytes and got.truncated is False
+                and len(got.result) <= spec.output_cap_bytes
                 and _echoes(got.result, spec.request)
             ):
                 result = got
