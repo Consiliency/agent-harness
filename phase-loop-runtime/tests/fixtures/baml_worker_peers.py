@@ -77,6 +77,17 @@ def main(mode: str) -> None:
                     time.sleep(3600)
             continue
         rid = req.get("id")
+        if mode.startswith("review_"):
+            frame = {"id": rid, "fingerprint": fp, "ok": req["args"]["raw"],
+                     "operation": req["op"], "function_name": "EmitReviewReply", "runtime_version": "peer"}
+            if mode == "review_echo_without_op":
+                del frame["operation"]
+            elif mode == "review_wrong_op":
+                frame["operation"] = "parse_closeout"
+            elif mode == "review_wrong_version":
+                frame["runtime_version"] = "uninitialized"
+            _write(_frame(frame))
+            continue
         if mode == "echo":
             _write(_frame({"id": rid, "fingerprint": fp, "ok": OK_CLOSEOUT}))
         elif mode == "slow_echo":

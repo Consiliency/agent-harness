@@ -1,0 +1,902 @@
+{
+  "schema": "typed_review_vectors.v1",
+  "transport_limits": {
+    "body_bytes": 1048576,
+    "json_escape_expansion": 6,
+    "framing_bytes": 65536,
+    "envelope_bytes": 6356992,
+    "cases": [
+      {"character": "\u0001", "repeat": 1048576},
+      {"character": "é", "repeat": 400000}
+    ]
+  },
+  "note": "Synthetic canonical encoding examples, not acceptance or live-route evidence. Arrays retain order; Unicode is not normalized.",
+  "canonical": [
+    {
+      "domain": "request",
+      "value": {
+        "admission": {
+          "correction_allowed": true,
+          "eligibility": "NON_GATING",
+          "permitted_provenance": [
+            "HOST_ATTESTED",
+            "TRANSPORT_CAPTURED"
+          ],
+          "unusable_seat_blocks": true,
+          "governed_provenance": []
+        },
+        "attempt_id": "22222222222222222222222222222222",
+        "brief_digest": "e27a5af9fea7d773233cd1d15754f9c7efeaaab9de107a1d9893106797af84b2",
+        "byte_limit": 1048576,
+        "contract_fingerprint": "3f37d1002d7127110b024468604daaa98ce4918e30cef28c635f6f8a707ec1fc",
+        "contract_version": "typed_review.v1",
+        "deferred_authorized_keys": [],
+        "evidence": [
+          {
+            "handle": "E1",
+            "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          }
+        ],
+        "function": "EmitReviewReply",
+        "ledger": null,
+        "lens": null,
+        "lineage_id": "33333333333333333333333333333333",
+        "policy_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "purpose": "review",
+        "questions": [
+          {
+            "id": "Q1",
+            "text": "Inspect café 🐈"
+          }
+        ],
+        "replaces_record_id": null,
+        "request_id": "11111111111111111111111111111111",
+        "runtime_version": "0.20.1",
+        "seat": "seat-A",
+        "subjects": [
+          {
+            "kind": "document",
+            "paths": [
+              "contract.md"
+            ],
+            "revision": null,
+            "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          }
+        ],
+        "validator_version": "review_validator.v1",
+        "coordinator_key_digest": "e78ee814cca68f048093d6bb0b29f585a7542573c4cef6e362a8fefab4124b85",
+        "ledger_digest": null
+      },
+      "canonical_utf8": "{\"admission\":{\"correction_allowed\":true,\"eligibility\":\"NON_GATING\",\"governed_provenance\":[],\"permitted_provenance\":[\"HOST_ATTESTED\",\"TRANSPORT_CAPTURED\"],\"unusable_seat_blocks\":true},\"attempt_id\":\"22222222222222222222222222222222\",\"brief_digest\":\"e27a5af9fea7d773233cd1d15754f9c7efeaaab9de107a1d9893106797af84b2\",\"byte_limit\":1048576,\"contract_fingerprint\":\"3f37d1002d7127110b024468604daaa98ce4918e30cef28c635f6f8a707ec1fc\",\"contract_version\":\"typed_review.v1\",\"coordinator_key_digest\":\"e78ee814cca68f048093d6bb0b29f585a7542573c4cef6e362a8fefab4124b85\",\"deferred_authorized_keys\":[],\"evidence\":[{\"handle\":\"E1\",\"sha256\":\"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc\"}],\"function\":\"EmitReviewReply\",\"ledger\":null,\"ledger_digest\":null,\"lens\":null,\"lineage_id\":\"33333333333333333333333333333333\",\"policy_digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"purpose\":\"review\",\"questions\":[{\"id\":\"Q1\",\"text\":\"Inspect café 🐈\"}],\"replaces_record_id\":null,\"request_id\":\"11111111111111111111111111111111\",\"runtime_version\":\"0.20.1\",\"seat\":\"seat-A\",\"subjects\":[{\"kind\":\"document\",\"paths\":[\"contract.md\"],\"revision\":null,\"sha256\":\"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\"}],\"validator_version\":\"review_validator.v1\"}",
+      "sha256": "2d33cef43dfa541b3c830830ca2d2671fa331fee94981f40c3e6fbd202aea905"
+    },
+    {
+      "domain": "receipt",
+      "value": {
+        "request_binding": "2d33cef43dfa541b3c830830ca2d2671fa331fee94981f40c3e6fbd202aea905",
+        "attempt_id": "22222222222222222222222222222222",
+        "lineage_id": "33333333333333333333333333333333",
+        "source_manifest_digest": "1e282fed8cb4debc262e319cbbea181cde6804966bbcfafe81d8a5b4a5ca60b3",
+        "contract_fingerprint": "3f37d1002d7127110b024468604daaa98ce4918e30cef28c635f6f8a707ec1fc",
+        "contract_version": "typed_review.v1",
+        "validator_version": "review_validator.v1",
+        "runtime_version": "0.20.1",
+        "operation": "parse_review_reply",
+        "ipc_id": 7,
+        "registration_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "transport_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+        "body_digest": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "parsed_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+        "provenance": "HOST_ATTESTED",
+        "host_digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "outcome": "usable_review",
+        "rejection_code": null,
+        "content_valid": true,
+        "usable": true,
+        "governed_eligible": false,
+        "finding_count": 0,
+        "unverified_evidence_count": 0,
+        "replaces_record_id": null
+      },
+      "canonical_utf8": "{\"attempt_id\":\"22222222222222222222222222222222\",\"body_digest\":\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\",\"content_valid\":true,\"contract_fingerprint\":\"3f37d1002d7127110b024468604daaa98ce4918e30cef28c635f6f8a707ec1fc\",\"contract_version\":\"typed_review.v1\",\"finding_count\":0,\"governed_eligible\":false,\"host_digest\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"ipc_id\":7,\"lineage_id\":\"33333333333333333333333333333333\",\"operation\":\"parse_review_reply\",\"outcome\":\"usable_review\",\"parsed_digest\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"provenance\":\"HOST_ATTESTED\",\"registration_digest\":\"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\",\"rejection_code\":null,\"replaces_record_id\":null,\"request_binding\":\"2d33cef43dfa541b3c830830ca2d2671fa331fee94981f40c3e6fbd202aea905\",\"runtime_version\":\"0.20.1\",\"source_manifest_digest\":\"1e282fed8cb4debc262e319cbbea181cde6804966bbcfafe81d8a5b4a5ca60b3\",\"transport_digest\":\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\",\"unverified_evidence_count\":0,\"usable\":true,\"validator_version\":\"review_validator.v1\"}",
+      "sha256": "9a2a1a4f5bc92f5ae914593f4d68c23679c9279c5c3ea7413649d64b02280794"
+    }
+  ],
+  "lineage": {
+    "schema": "typed_review_lineage_replay.v1",
+    "symbols": "$name.field resolves a saved result field; create/reserve/recover expose binding, attempt_id, lineage_id and replaces_record_id. record_id values are bound at execution, never precomputed.",
+    "environment": {
+      "source": "real supported saved BAML snapshot",
+      "policy": {
+        "eligibility": "NON_GATING",
+        "permitted_provenance": [
+          "HOST_ATTESTED",
+          "TRANSPORT_CAPTURED"
+        ],
+        "governed_provenance": [],
+        "correction_allowed": true,
+        "unusable_seat_blocks": true
+      },
+      "host_identity": "test-coordinator",
+      "provenance": "HOST_ATTESTED",
+      "transport_identity": "adapter-owned actual attempt ID; gateway test uses operationId=attempt_id"
+    },
+    "operations": {
+      "create": "Freeze inputs, encoding brief_utf8 as UTF-8 with the environment source.",
+      "ingest": "Register this attempt once with the admitted transport; encode body_json as compact UTF-8 JSON without suffixes, envelope_utf8 separately. Never dispatch from this replay driver. Optional body_suffix_spaces appends exactly that many ASCII spaces to the original JSON bytes to exercise byte exhaustion without a huge fixture.",
+      "reserve": "Reserve one correction; its fresh attempt_id must differ from original; no second allowance.",
+      "recover": "Recover reserved correction after unknown dispatch outcome without allocating another attempt.",
+      "restart": "Reopen the same durable coordinator storage; keep symbolic bindings.",
+      "revalidate": "Locally reparse retained bytes or recheck a digest-only limit rejection without parsing; never provider redispatch; unchanged outcomes preserve record identity."
+    },
+    "assertions": "expect contains exact fields or refused code; a field ending _not requires inequality. standing is the sole current record for original.lineage_id, or null while no standing exists. Refusal leaves state unchanged. Adapters must preserve these assertions across their own durable restart.",
+    "scenarios": [
+      {
+        "name": "invalid_original_invalid_correction_exhausted",
+        "steps": [
+          {
+            "op": "create",
+            "inputs": {
+              "coordinator_key": "vector/round-1/seat-A",
+              "brief_utf8": "Inspect the frozen contract",
+              "subjects": [
+                {
+                  "kind": "document",
+                  "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "paths": [
+                    "contract.md"
+                  ],
+                  "revision": null
+                }
+              ],
+              "seat": "seat-A"
+            },
+            "expect": {},
+            "save": "original",
+            "standing": null
+          },
+          {
+            "op": "ingest",
+            "inputs": {
+              "binding": "$original.binding",
+              "body_json": {
+                "schema_version": "review_reply.v1",
+                "request_binding": "$original.binding",
+                "review_status": "COMPLETE",
+                "verdict": "DISAGREE",
+                "summary": "Inspected contract",
+                "scope_reviewed": [
+                  "frozen contract"
+                ],
+                "findings": [],
+                "coverage": [],
+                "limitations": []
+              },
+              "envelope_utf8": "vector terminal envelope",
+              "evidence_digests": {}
+            },
+            "expect": {
+              "rejection_code": "semantic_mismatch",
+              "content_valid": false,
+              "usable_vote": false,
+              "replaces_record_id": null
+            },
+            "save": "failed",
+            "standing": "$failed.record_id"
+          },
+          {
+            "op": "reserve",
+            "inputs": {
+              "binding": "$original.binding"
+            },
+            "expect": {
+              "lineage_id": "$original.lineage_id",
+              "replaces_record_id": "$failed.record_id",
+              "attempt_id_not": "$original.attempt_id",
+              "binding_not": "$original.binding"
+            },
+            "save": "correction",
+            "standing": null
+          },
+          {
+            "op": "restart",
+            "inputs": {},
+            "expect": {},
+            "standing": null
+          },
+          {
+            "op": "recover",
+            "inputs": {
+              "binding": "$original.binding"
+            },
+            "expect": {
+              "binding": "$correction.binding",
+              "attempt_id": "$correction.attempt_id"
+            },
+            "save": "recovered",
+            "standing": null
+          },
+          {
+            "op": "create",
+            "inputs": {
+              "coordinator_key": "vector/round-1/seat-A",
+              "brief_utf8": "Inspect the frozen contract",
+              "subjects": [
+                {
+                  "kind": "document",
+                  "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "paths": [
+                    "contract.md"
+                  ],
+                  "revision": null
+                }
+              ],
+              "seat": "seat-A"
+            },
+            "expect": {
+              "binding": "$original.binding",
+              "attempt_id": "$original.attempt_id"
+            },
+            "save": "same_original",
+            "standing": null
+          },
+          {
+            "op": "reserve",
+            "inputs": {
+              "binding": "$same_original.binding"
+            },
+            "expect": {
+              "refused": "result_unavailable"
+            },
+            "standing": null
+          },
+          {
+            "op": "ingest",
+            "inputs": {
+              "binding": "$correction.binding",
+              "body_json": {
+                "schema_version": "review_reply.v1",
+                "request_binding": "$correction.binding",
+                "review_status": "COMPLETE",
+                "verdict": "DISAGREE",
+                "summary": "Inspected contract",
+                "scope_reviewed": [
+                  "frozen contract"
+                ],
+                "findings": [],
+                "coverage": [],
+                "limitations": []
+              },
+              "envelope_utf8": "vector terminal envelope",
+              "evidence_digests": {}
+            },
+            "expect": {
+              "rejection_code": "semantic_mismatch",
+              "content_valid": false,
+              "usable_vote": false,
+              "replaces_record_id": "$failed.record_id"
+            },
+            "save": "second",
+            "standing": "$second.record_id"
+          },
+          {
+            "op": "restart",
+            "inputs": {},
+            "expect": {},
+            "standing": "$second.record_id"
+          },
+          {
+            "op": "recover",
+            "inputs": {
+              "binding": "$original.binding"
+            },
+            "expect": {
+              "binding": "$correction.binding",
+              "attempt_id": "$correction.attempt_id"
+            },
+            "standing": "$second.record_id"
+          },
+          {
+            "op": "revalidate",
+            "inputs": {
+              "binding": "$correction.binding"
+            },
+            "expect": {
+              "rejection_code": "semantic_mismatch",
+              "content_valid": false,
+              "usable_vote": false,
+              "replaces_record_id": "$failed.record_id",
+              "record_id": "$second.record_id"
+            },
+            "save": "revalidated",
+            "standing": "$second.record_id"
+          },
+          {
+            "op": "reserve",
+            "inputs": {
+              "binding": "$original.binding"
+            },
+            "expect": {
+              "refused": "result_unavailable"
+            },
+            "standing": "$second.record_id"
+          },
+          {
+            "op": "reserve",
+            "inputs": {
+              "binding": "$correction.binding"
+            },
+            "expect": {
+              "refused": "result_unavailable"
+            },
+            "standing": "$second.record_id"
+          }
+        ]
+      },
+      {
+        "name": "valid_substantive_replacement",
+        "steps": [
+          {
+            "op": "create",
+            "inputs": {
+              "coordinator_key": "vector/round-1/seat-A",
+              "brief_utf8": "Inspect the frozen contract",
+              "subjects": [
+                {
+                  "kind": "document",
+                  "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "paths": [
+                    "contract.md"
+                  ],
+                  "revision": null
+                }
+              ],
+              "seat": "seat-A"
+            },
+            "expect": {},
+            "save": "original",
+            "standing": null
+          },
+          {
+            "op": "ingest",
+            "inputs": {
+              "binding": "$original.binding",
+              "body_json": {
+                "schema_version": "review_reply.v1",
+                "request_binding": "$original.binding",
+                "review_status": "COMPLETE",
+                "verdict": "DISAGREE",
+                "summary": "Inspected contract",
+                "scope_reviewed": [
+                  "frozen contract"
+                ],
+                "findings": [],
+                "coverage": [],
+                "limitations": []
+              },
+              "envelope_utf8": "vector terminal envelope",
+              "evidence_digests": {}
+            },
+            "expect": {
+              "rejection_code": "semantic_mismatch",
+              "content_valid": false,
+              "usable_vote": false,
+              "replaces_record_id": null
+            },
+            "save": "failed",
+            "standing": "$failed.record_id"
+          },
+          {
+            "op": "reserve",
+            "inputs": {
+              "binding": "$original.binding"
+            },
+            "expect": {
+              "lineage_id": "$original.lineage_id",
+              "replaces_record_id": "$failed.record_id",
+              "attempt_id_not": "$original.attempt_id",
+              "binding_not": "$original.binding"
+            },
+            "save": "correction",
+            "standing": null
+          },
+          {
+            "op": "restart",
+            "inputs": {},
+            "expect": {},
+            "standing": null
+          },
+          {
+            "op": "recover",
+            "inputs": {
+              "binding": "$original.binding"
+            },
+            "expect": {
+              "binding": "$correction.binding",
+              "attempt_id": "$correction.attempt_id"
+            },
+            "save": "recovered",
+            "standing": null
+          },
+          {
+            "op": "create",
+            "inputs": {
+              "coordinator_key": "vector/round-1/seat-A",
+              "brief_utf8": "Inspect the frozen contract",
+              "subjects": [
+                {
+                  "kind": "document",
+                  "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "paths": [
+                    "contract.md"
+                  ],
+                  "revision": null
+                }
+              ],
+              "seat": "seat-A"
+            },
+            "expect": {
+              "binding": "$original.binding",
+              "attempt_id": "$original.attempt_id"
+            },
+            "save": "same_original",
+            "standing": null
+          },
+          {
+            "op": "ingest",
+            "inputs": {
+              "binding": "$correction.binding",
+              "body_json": {
+                "schema_version": "review_reply.v1",
+                "request_binding": "$correction.binding",
+                "review_status": "COMPLETE",
+                "verdict": "DISAGREE",
+                "summary": "Inspected contract",
+                "scope_reviewed": [
+                  "frozen contract"
+                ],
+                "findings": [
+                  {
+                    "id": "F1",
+                    "severity": "BLOCKING",
+                    "title": "Concern",
+                    "explanation": "Observed invariant gap",
+                    "requested_change": "Repair gap",
+                    "obligation_refs": [
+                      "contract invariant"
+                    ],
+                    "evidence": [],
+                    "falsifier": null
+                  }
+                ],
+                "coverage": [],
+                "limitations": []
+              },
+              "envelope_utf8": "vector terminal envelope",
+              "evidence_digests": {}
+            },
+            "expect": {
+              "rejection_code": null,
+              "content_valid": true,
+              "usable_vote": true,
+              "replaces_record_id": "$failed.record_id"
+            },
+            "save": "replacement",
+            "standing": "$replacement.record_id"
+          },
+          {
+            "op": "restart",
+            "inputs": {},
+            "expect": {},
+            "standing": "$replacement.record_id"
+          },
+          {
+            "op": "revalidate",
+            "inputs": {
+              "binding": "$correction.binding"
+            },
+            "expect": {
+              "rejection_code": null,
+              "content_valid": true,
+              "usable_vote": true,
+              "replaces_record_id": "$failed.record_id",
+              "record_id": "$replacement.record_id"
+            },
+            "save": "revalidated",
+            "standing": "$replacement.record_id"
+          },
+          {
+            "op": "reserve",
+            "inputs": {
+              "binding": "$original.binding"
+            },
+            "expect": {
+              "refused": "result_unavailable"
+            },
+            "standing": "$replacement.record_id"
+          },
+          {
+            "op": "reserve",
+            "inputs": {
+              "binding": "$correction.binding"
+            },
+            "expect": {
+              "refused": "result_unavailable"
+            },
+            "standing": "$replacement.record_id"
+          }
+        ]
+      },
+      {
+        "name": "valid_dissent_never_corrected",
+        "steps": [
+          {
+            "op": "create",
+            "inputs": {
+              "coordinator_key": "vector/round-1/seat-A",
+              "brief_utf8": "Inspect the frozen contract",
+              "subjects": [
+                {
+                  "kind": "document",
+                  "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "paths": [
+                    "contract.md"
+                  ],
+                  "revision": null
+                }
+              ],
+              "seat": "seat-A"
+            },
+            "expect": {},
+            "save": "original",
+            "standing": null
+          },
+          {
+            "op": "ingest",
+            "inputs": {
+              "binding": "$original.binding",
+              "body_json": {
+                "schema_version": "review_reply.v1",
+                "request_binding": "$original.binding",
+                "review_status": "COMPLETE",
+                "verdict": "DISAGREE",
+                "summary": "Inspected contract",
+                "scope_reviewed": [
+                  "frozen contract"
+                ],
+                "findings": [
+                  {
+                    "id": "F1",
+                    "severity": "BLOCKING",
+                    "title": "Concern",
+                    "explanation": "Observed invariant gap",
+                    "requested_change": "Repair gap",
+                    "obligation_refs": [
+                      "contract invariant"
+                    ],
+                    "evidence": [],
+                    "falsifier": null
+                  }
+                ],
+                "coverage": [],
+                "limitations": []
+              },
+              "envelope_utf8": "vector terminal envelope",
+              "evidence_digests": {}
+            },
+            "expect": {
+              "rejection_code": null,
+              "content_valid": true,
+              "usable_vote": true,
+              "replaces_record_id": null
+            },
+            "save": "dissent",
+            "standing": "$dissent.record_id"
+          },
+          {
+            "op": "reserve",
+            "inputs": {
+              "binding": "$original.binding"
+            },
+            "expect": {
+              "refused": "result_unavailable"
+            },
+            "standing": "$dissent.record_id"
+          },
+          {
+            "op": "restart",
+            "inputs": {},
+            "expect": {},
+            "standing": "$dissent.record_id"
+          },
+          {
+            "op": "revalidate",
+            "inputs": {
+              "binding": "$original.binding"
+            },
+            "expect": {
+              "rejection_code": null,
+              "content_valid": true,
+              "usable_vote": true,
+              "replaces_record_id": null,
+              "record_id": "$dissent.record_id"
+            },
+            "standing": "$dissent.record_id"
+          },
+          {
+            "op": "reserve",
+            "inputs": {
+              "binding": "$original.binding"
+            },
+            "expect": {
+              "refused": "result_unavailable"
+            },
+            "standing": "$dissent.record_id"
+          }
+        ]
+      },
+      {
+        "name": "oversize_original_oversize_correction_exhausted",
+        "steps": [
+          {
+            "op": "create",
+            "inputs": {
+              "coordinator_key": "vector/round-1/seat-A",
+              "brief_utf8": "Inspect the frozen contract",
+              "subjects": [
+                {
+                  "kind": "document",
+                  "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "paths": [
+                    "contract.md"
+                  ],
+                  "revision": null
+                }
+              ],
+              "seat": "seat-A",
+              "byte_limit": 1024
+            },
+            "expect": {},
+            "save": "original",
+            "standing": null
+          },
+          {
+            "op": "ingest",
+            "inputs": {
+              "binding": "$original.binding",
+              "body_json": {
+                "schema_version": "review_reply.v1",
+                "request_binding": "$original.binding",
+                "review_status": "COMPLETE",
+                "verdict": "DISAGREE",
+                "summary": "Inspected contract",
+                "scope_reviewed": [
+                  "frozen contract"
+                ],
+                "findings": [],
+                "coverage": [],
+                "limitations": []
+              },
+              "envelope_utf8": "vector terminal envelope",
+              "evidence_digests": {},
+              "body_suffix_spaces": 1025
+            },
+            "expect": {
+              "rejection_code": "limit_exceeded",
+              "content_valid": false,
+              "usable_vote": false,
+              "replaces_record_id": null
+            },
+            "save": "failed",
+            "standing": "$failed.record_id"
+          },
+          {
+            "op": "reserve",
+            "inputs": {
+              "binding": "$original.binding"
+            },
+            "expect": {
+              "lineage_id": "$original.lineage_id",
+              "replaces_record_id": "$failed.record_id",
+              "attempt_id_not": "$original.attempt_id",
+              "binding_not": "$original.binding"
+            },
+            "save": "correction",
+            "standing": null
+          },
+          {
+            "op": "restart",
+            "inputs": {},
+            "expect": {},
+            "standing": null
+          },
+          {
+            "op": "recover",
+            "inputs": {
+              "binding": "$original.binding"
+            },
+            "expect": {
+              "binding": "$correction.binding",
+              "attempt_id": "$correction.attempt_id"
+            },
+            "save": "recovered",
+            "standing": null
+          },
+          {
+            "op": "create",
+            "inputs": {
+              "coordinator_key": "vector/round-1/seat-A",
+              "brief_utf8": "Inspect the frozen contract",
+              "subjects": [
+                {
+                  "kind": "document",
+                  "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                  "paths": [
+                    "contract.md"
+                  ],
+                  "revision": null
+                }
+              ],
+              "seat": "seat-A",
+              "byte_limit": 1024
+            },
+            "expect": {
+              "binding": "$original.binding",
+              "attempt_id": "$original.attempt_id"
+            },
+            "save": "same_original",
+            "standing": null
+          },
+          {
+            "op": "reserve",
+            "inputs": {
+              "binding": "$same_original.binding"
+            },
+            "expect": {
+              "refused": "result_unavailable"
+            },
+            "standing": null
+          },
+          {
+            "op": "ingest",
+            "inputs": {
+              "binding": "$correction.binding",
+              "body_json": {
+                "schema_version": "review_reply.v1",
+                "request_binding": "$correction.binding",
+                "review_status": "COMPLETE",
+                "verdict": "DISAGREE",
+                "summary": "Inspected contract",
+                "scope_reviewed": [
+                  "frozen contract"
+                ],
+                "findings": [],
+                "coverage": [],
+                "limitations": []
+              },
+              "envelope_utf8": "vector terminal envelope",
+              "evidence_digests": {},
+              "body_suffix_spaces": 1025
+            },
+            "expect": {
+              "rejection_code": "limit_exceeded",
+              "content_valid": false,
+              "usable_vote": false,
+              "replaces_record_id": "$failed.record_id"
+            },
+            "save": "second",
+            "standing": "$second.record_id"
+          },
+          {
+            "op": "restart",
+            "inputs": {},
+            "expect": {},
+            "standing": "$second.record_id"
+          },
+          {
+            "op": "ingest",
+            "inputs": {
+              "binding": "$correction.binding",
+              "body_json": {
+                "schema_version": "review_reply.v1",
+                "request_binding": "$correction.binding",
+                "review_status": "COMPLETE",
+                "verdict": "DISAGREE",
+                "summary": "Inspected contract",
+                "scope_reviewed": [
+                  "frozen contract"
+                ],
+                "findings": [],
+                "coverage": [],
+                "limitations": []
+              },
+              "envelope_utf8": "vector terminal envelope",
+              "evidence_digests": {},
+              "body_suffix_spaces": 1025
+            },
+            "expect": {
+              "rejection_code": "limit_exceeded",
+              "content_valid": false,
+              "usable_vote": false,
+              "replaces_record_id": "$failed.record_id",
+              "record_id": "$second.record_id"
+            },
+            "standing": "$second.record_id"
+          },
+          {
+            "op": "ingest",
+            "inputs": {
+              "binding": "$correction.binding",
+              "body_json": {
+                "schema_version": "review_reply.v1",
+                "request_binding": "$correction.binding",
+                "review_status": "COMPLETE",
+                "verdict": "DISAGREE",
+                "summary": "Inspected contract",
+                "scope_reviewed": [
+                  "frozen contract"
+                ],
+                "findings": [],
+                "coverage": [],
+                "limitations": []
+              },
+              "envelope_utf8": "vector terminal envelope",
+              "evidence_digests": {},
+              "body_suffix_spaces": 0
+            },
+            "expect": {
+              "refused": "delivery_conflict"
+            },
+            "standing": "$second.record_id"
+          },
+          {
+            "op": "recover",
+            "inputs": {
+              "binding": "$original.binding"
+            },
+            "expect": {
+              "binding": "$correction.binding",
+              "attempt_id": "$correction.attempt_id"
+            },
+            "standing": "$second.record_id"
+          },
+          {
+            "op": "revalidate",
+            "inputs": {
+              "binding": "$correction.binding"
+            },
+            "expect": {
+              "rejection_code": "limit_exceeded",
+              "content_valid": false,
+              "usable_vote": false,
+              "replaces_record_id": "$failed.record_id",
+              "record_id": "$second.record_id"
+            },
+            "save": "revalidated",
+            "standing": "$second.record_id"
+          },
+          {
+            "op": "reserve",
+            "inputs": {
+              "binding": "$original.binding"
+            },
+            "expect": {
+              "refused": "result_unavailable"
+            },
+            "standing": "$second.record_id"
+          },
+          {
+            "op": "reserve",
+            "inputs": {
+              "binding": "$correction.binding"
+            },
+            "expect": {
+              "refused": "result_unavailable"
+            },
+            "standing": "$second.record_id"
+          }
+        ]
+      }
+    ]
+  }
+}

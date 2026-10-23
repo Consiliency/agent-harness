@@ -10,11 +10,13 @@ argv: ``<owner pid> <comma-separated env allowlist keys> [--no-pdeathsig]``.
 Protocol: one JSON object per line, UTF-8 with ``ensure_ascii=True``.  Requests
 arrive on fd 0; responses leave on a dup of fd 1 taken before fd 1 is pointed
 at stderr, so nothing the native runtime prints can corrupt the protocol.
-Every request carries an ``id`` that the response echoes.  A response has
+Every request carries an ``id`` that the response echoes. Legacy responses have
 exactly the keys ``{id, fingerprint, <one of ok|error|request|fault>}``.
+Review parse replies also carry operation, function_name and runtime_version.
 
 Op table (fixed): ``init``, ``parse_closeout``, ``closeout_request``,
-``evidence_request``, plus ``env`` when ``init`` carried ``test_mode``.  An op
+``evidence_request``, review reply/decision parse and request operations,
+plus ``env`` when ``init`` carried ``test_mode``. An op
 before ``init`` or a second ``init`` is answered with a ``fault``.  Any
 exception raised by an op (``BaseException``, including ``BamlPanic``) is
 returned as a ``fault``; the client then discards and kills the worker.
@@ -27,6 +29,10 @@ import os
 import sys
 
 _OP_FUNCTIONS = {
+    "parse_review_reply": ("user.phase_loop_parse_review_reply", ("raw",), ("ok", "error")),
+    "parse_review_decision": ("user.phase_loop_parse_review_decision", ("raw",), ("ok", "error")),
+    "review_reply_request": ("user.phase_loop_review_reply_request", ("request_json",), ("request",)),
+    "review_decision_request": ("user.phase_loop_review_decision_request", ("request_json",), ("request",)),
     "parse_closeout": ("user.phase_loop_parse_closeout", ("raw",), ("ok", "error")),
     "closeout_request": (
         "user.phase_loop_closeout_request",
@@ -38,6 +44,10 @@ _OP_FUNCTIONS = {
         ("tier2_signal_summary", "sample_artifact_content", "expected_artifact_characteristics"),
         ("request",),
     ),
+}
+_REVIEW_FUNCTIONS = {
+    "parse_review_reply": "EmitReviewReply",
+    "parse_review_decision": "EmitReviewDecision",
 }
 # The client caps a request frame at 4 MiB + 1 KiB; anything larger here is a
 # client bug or a hostile writer, and is refused rather than buffered forever.
@@ -85,6 +95,7 @@ class _Worker:
         self.fp: str | None = None
         self.fns: dict[str, object] | None = None
         self.test_mode = False
+        self.runtime_version: str | None = None
 
     def send(self, obj: dict) -> None:
         data = (json.dumps(obj, separators=(",", ":"), ensure_ascii=True) + "\n").encode("ascii")
@@ -95,6 +106,7 @@ class _Worker:
 
     def handle(self, line: bytes) -> None:
         req_id = None
+        req = None
         try:
             req = json.loads(line.decode("ascii"))
             if not isinstance(req, dict):
@@ -122,9 +134,21 @@ class _Worker:
             ((key, value),) = out.items()
             if key not in keys or not isinstance(value, str):
                 raise RuntimeError(f"bridge {op} returned key {key!r}")
-            self.send({"id": req_id, "fingerprint": self.fp, key: value})
+            metadata = {}
+            if op in _REVIEW_FUNCTIONS:
+                metadata = {
+                    "operation": op,
+                    "function_name": _REVIEW_FUNCTIONS[op],
+                    "runtime_version": self.runtime_version,
+                }
+            self.send({"id": req_id, "fingerprint": self.fp, **metadata, key: value})
         except BaseException as exc:  # noqa: BLE001 - every op failure is a typed fault
-            message = f"{type(exc).__module__}.{type(exc).__qualname__}: {str(exc)[:500]}"
+            # Review content must never escape in exceptions/telemetry.
+            message = "review worker fault" if (
+                isinstance(req, dict) and isinstance(req.get("op"), str) and req["op"] in _REVIEW_FUNCTIONS
+            ) else (
+                f"{type(exc).__module__}.{type(exc).__qualname__}: {str(exc)[:500]}"
+            )
             self.send({"id": req_id, "fingerprint": self.fp, "fault": message})
 
     def init(self, req: dict) -> dict:
@@ -145,7 +169,8 @@ class _Worker:
         fns = {op: baml_bridge.define_function(name, "sync", list(params)) for op, (name, params, _keys) in _OP_FUNCTIONS.items()}
         self.fp = fingerprint(files)
         self.fns = fns
-        return {"version": baml_bridge.get_version(), "pid": os.getpid()}
+        self.runtime_version = baml_bridge.get_version()
+        return {"version": self.runtime_version, "pid": os.getpid()}
 
     def serve(self) -> None:
         buf = b""

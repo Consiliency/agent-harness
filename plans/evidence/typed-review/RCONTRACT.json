@@ -1,0 +1,349 @@
+{
+  "schema": "typed_review_phase_evidence.v1",
+  "phase": "RCONTRACT",
+  "status": "complete",
+  "timestamp": "2026-10-19T20:54:28.494862+00:00",
+  "roadmap": "docs/proposals/typed-review-roadmap.md",
+  "roadmap_sha256": "45b6faac632fcdf47fc5605389826d256126ab6f4c2a2b44859f2a3088f2e3e8",
+  "plan": "plans/phase-plan-v1-typed-review-RCONTRACT.md",
+  "verified_plan_sha256": "125af0652e4884ba18aff01ac491218b6d82317adf8ba455d30a5e8e2d6f892c",
+  "implementation_head": "bbb3bb8b5a1b4e7a119021ec6449fd8fcb2c7eae",
+  "lanes_completed": [
+    "SL-0",
+    "SL-1"
+  ],
+  "produced_if_gates": [
+    "IF-0-RCONTRACT-1",
+    "IF-0-RCONTRACT-2"
+  ],
+  "verification_status": "passed",
+  "verification_artifact": {
+    "path": "/mnt/workspace/worktrees/viperjuice/agent-harness-typed-review-spec-20261019/.phase-loop/typed-review/RCONTRACT/verify-20261019T202735210288Z/verification.json",
+    "sha256": "b05aaabe6e7b2419ff44415a596f4c68e12a60541a6df301a036f10fbc5ff7c2"
+  },
+  "verification_log": {
+    "path": "/mnt/workspace/worktrees/viperjuice/agent-harness-typed-review-spec-20261019/.phase-loop/typed-review/RCONTRACT/verify-20261019T202735210288Z/verification.log",
+    "sha256": "2a6c91bcb780f07cd1bde05d66e8fd31c2083e0c8fb7ac5861e3cf128f1089dc"
+  },
+  "phase_suite_counts": {
+    "passed": 670,
+    "skipped": 194,
+    "deselected": 14828,
+    "xfailed": 1,
+    "warnings": 6
+  },
+  "required_checks": {
+    "make_check": {
+      "exit_code": 0,
+      "counts": {
+        "passed": 843,
+        "skipped": 157,
+        "xfailed": 1,
+        "warnings": 6
+      },
+      "stdout": {
+        "path": "/mnt/workspace/worktrees/viperjuice/agent-harness-typed-review-spec-20261019/.phase-loop/typed-review/RCONTRACT/final-verification-20261019-02/make-check.stdout.log",
+        "sha256": "ffc1c164680fdaa8ace6db6a75aa7034c24b66041197ab3377737f738a10b318"
+      }
+    },
+    "entry_docs": {
+      "exit_code": 0,
+      "stdout": {
+        "path": "/mnt/workspace/worktrees/viperjuice/agent-harness-typed-review-spec-20261019/.phase-loop/typed-review/RCONTRACT/final-verification-20261019-02/entry-doc-check.stdout.log",
+        "sha256": "7dc2d17d59965785aabdbfce52465e1a42349a4dcc67692fef8b613110713558"
+      }
+    },
+    "docs_audit": {
+      "path": ".phase-loop/typed-review/RCONTRACT/docs-audit-after-checkpoint/result.json",
+      "sha256": "9bca9be22de9041cf29e5166163c926583b2e1db2a5fd8d1e54443e3ec9d8d79"
+    },
+    "closeout_audit": {
+      "path": ".phase-loop/typed-review/RCONTRACT/closeout-audit-final.log",
+      "sha256": "2e8e77cf5c34b1eb7adf90baa17ab5e252f0e3def823cd63abe03d87e3c7eada"
+    }
+  },
+  "source_sha256": {
+    ".github/workflows/test.yml": "d59b84ff0f0304e7d86276114bc8bd37d9b020c21d57578094a35c912ad8385f",
+    "phase-loop-runtime/src/phase_loop_runtime/baml_src/review_reply.baml": "7f3414d30da21543dd72c1a2d9df150e809905511e995be2a8595baf9ae41b4b",
+    "phase-loop-runtime/src/phase_loop_runtime/baml_src/phase_loop_bridge.baml": "46df29993a8459ea9e2f4f008baaee73a766a194f7baef8971a587f26d79efc1",
+    "phase-loop-runtime/src/phase_loop_runtime/_baml_worker.py": "dfce5b76b4672650b183bcb65f8eb569f5c5778af691c79474bcd477c003eda0",
+    "phase-loop-runtime/src/phase_loop_runtime/baml_modular.py": "613ef544158d67d33173f2c8273347b1510db2480325fb864d3715515a35642b",
+    "phase-loop-runtime/tests/test_phase_loop_baml_v1_runtime.py": "ccb69a0f000d76d4edac2b1efe352dc87703ff2f3956e5ca02e4219b4a23bc07",
+    "phase-loop-runtime/tests/test_phase_loop_baml_schema_export.py": "18c7532c5a83e556c90ab495f2e1388e4a4a613161a01c152ee228c67f632dc5",
+    "phase-loop-runtime/tests/test_phase_loop_baml_schema_source.py": "c7f1e3fb84654e665b5fb83e578bf86b6a7d02b92f6fc2ac42a07d0bef3530fa",
+    "phase-loop-runtime/tests/test_phase_loop_baml_v1_callers.py": "10241a568db796dd26e9ca9f433462b8190963d80bd4113fc140c65fdb6ce043",
+    "phase-loop-runtime/tests/fixtures/baml_worker_peers.py": "2168b1f4819c4de2bd9bea291297ff735479ad6a46397ae6d0ee5ced5d4aea0c",
+    "phase-loop-runtime/tests/data/baml_call_sites.json": "a0259b3576463f90a9816d2d3c61f40c6f2082f62bbc0c05d6ed9c4fd8e9a3e4",
+    "phase-loop-runtime/src/phase_loop_runtime/review_contract.py": "9b59c92f3522e592d02050b95a2707b3471773c10103a9989c37c7a0aa9528a5",
+    "phase-loop-runtime/tests/test_review_contract.py": "999087091125782c29a932eae1c8088ecfe20d87d4dca54d46885a913fbd1fc6",
+    "phase-loop-runtime/tests/data/typed_review_contract_vectors.json": "ce661910260ba253bfbedb34d08f529fd50697b516a5c417ed6cb3603590c4d6",
+    "docs/phase-loop/typed-review-contract.md": "3fef6fb1ed8ae130e25b46bf8f83ec98fea6a40f3d5aa4ef18921134e6a82f64",
+    "CHANGELOG.md": "67916fb164d681e9feff25a4ec018a55405e8d9ac1cf772a52cd03fa7a4930ed"
+  },
+  "proposal_sha256": {
+    "docs/proposals/typed-review-roadmap.md": "45b6faac632fcdf47fc5605389826d256126ab6f4c2a2b44859f2a3088f2e3e8",
+    "docs/proposals/typed-review-roadmap_reviews.md": "aa7087e050b3f293be4186dcaf97a4249dca6ee2698a801ec20f08ed6f5b52b1",
+    "docs/proposals/typed-review-contract.md": "b72df16dd3a52349f78dc53268526d492383ac11ec1dc9e97ff5a7bfe7f392f9"
+  },
+  "criteria": {
+    "EC-RCONTRACT-1": {
+      "status": "met",
+      "evidence": "sealed phase suite",
+      "test_module": "phase-loop-runtime/tests/test_review_contract.py",
+      "production_controls": [
+        "test_acceptance_observes_and_consumes_real_worker",
+        "test_echo_invocation_bypass_is_detected_by_recording_control",
+        "test_class_schema_only_bypass_cannot_accept",
+        "test_mutated_actual_worker_reply_is_rejected",
+        "test_metadata_mutations_refuse",
+        "test_real_worker_parse_failure_cannot_mint_valid_record"
+      ]
+    },
+    "EC-RCONTRACT-2": {
+      "status": "met",
+      "evidence": "sealed phase suite",
+      "test_module": "phase-loop-runtime/tests/test_review_contract.py",
+      "production_controls": [
+        "test_original_json_negatives_never_call_worker",
+        "test_baml_derived_strict_schema_negatives",
+        "test_semantic_negatives",
+        "test_lens_free_valid_review_advisory_and_dissent",
+        "test_president_disposition_and_status_negatives",
+        "test_exact_byte_cap_at_production_constructor",
+        "test_depth_exhaustion_at_production_constructor",
+        "test_json_envelope_expansion_vectors_do_not_stall_reviewer_lineage"
+      ]
+    },
+    "EC-RCONTRACT-3": {
+      "status": "met",
+      "evidence": "sealed phase suite",
+      "test_module": "phase-loop-runtime/tests/test_review_contract.py",
+      "production_controls": [
+        "test_canonical_vectors_and_negative_domains",
+        "test_full_request_vector_matches_real_constructor",
+        "test_historical_replay_never_reads_current_sources",
+        "test_bound_snapshot_mutates_strict_schema_only_for_that_snapshot",
+        "test_missing_mismatched_unsupported_saved_state_refuses",
+        "test_delivery_idempotence_conflict_and_private_metadata",
+        "test_transport_neutral_lineage_fixture_is_executed",
+        "test_correction_budget_survives_invalid_correction_and_restart",
+        "test_revalidation_stable_identity_and_durable_invocation_history",
+        "test_default_governed_admission_keeps_host_attested_non_gating"
+      ]
+    }
+  },
+  "interfaces": {
+    "IF-0-RCONTRACT-1": {
+      "status": "produced",
+      "sources": [
+        "phase-loop-runtime/src/phase_loop_runtime/baml_src/review_reply.baml",
+        "phase-loop-runtime/src/phase_loop_runtime/baml_modular.py",
+        "phase-loop-runtime/src/phase_loop_runtime/_baml_worker.py"
+      ],
+      "evidence": "EC-RCONTRACT-1, EC-RCONTRACT-2; sealed suite, worker snapshot/lifetime/export regressions",
+      "lane_handoff": {
+        "path": ".phase-loop/typed-review/RCONTRACT/sl0-api-freeze.json",
+        "sha256": "acbf59c4a96974502b729b8e153d8bb8bbebc81414ad910d980225f461109925"
+      }
+    },
+    "IF-0-RCONTRACT-2": {
+      "status": "produced",
+      "sources": [
+        "phase-loop-runtime/src/phase_loop_runtime/review_contract.py",
+        "docs/phase-loop/typed-review-contract.md",
+        "phase-loop-runtime/tests/data/typed_review_contract_vectors.json"
+      ],
+      "evidence": "EC-RCONTRACT-2, EC-RCONTRACT-3; sealed suite",
+      "api_version": "typed_review.v1 / review_validator.v1 / baml-bridge 0.20.1"
+    }
+  },
+  "review": {
+    "planning": "COMPLETE / AGREE round 2",
+    "implementation": "COMPLETE / AGREE round 3",
+    "evidence_class": "manual independent review; not BAML accepted",
+    "unresolved_blockers": [],
+    "post_review_resolution": "RC-IMPL-R3-F1 option (a), subsequently implemented and sealed-verified; not independently re-reviewed",
+    "documented_limitation": "SQLite parsing lock has 60-second busy timeout; RC-IMPL-R1-F4 accepted"
+  },
+  "spec_delta_closeout": {
+    "decision": "canonical_spec_update",
+    "target_surfaces": [
+      "docs/phase-loop/typed-review-contract.md",
+      "phase-loop-runtime/src/phase_loop_runtime/baml_src/review_reply.baml"
+    ],
+    "evidence_paths": [
+      ".phase-loop/evidence/typed-reviews/RCONTRACT.json",
+      "plans/evidence/typed-review/RCONTRACT.json"
+    ],
+    "redaction_posture": "metadata_only",
+    "schema": "spec_delta_closeout.v1"
+  },
+  "issue_inventory": [],
+  "issue_dispositions": [],
+  "limitations": [
+    "No transport integration or live-route qualification in RCONTRACT. RT3, RPANEL and RENFORCE remain pending.",
+    "Six supervisor teardown thread warnings in each suite retained in logs; test commands exited zero.",
+    "Historical baseline, development, ownership overlap, provider startup and docs-audit failures retained separately.",
+    "Existing draft agent-harness#1770 is not landing ratification. No merge, release or production activation."
+  ],
+  "post_publication_ci_repair": {
+    "status": "locally_verified_ci_pending",
+    "owned_file": ".gitleaks.toml",
+    "config_sha256": "df64e76661e5ccc1af7589dde80222d4f9993a84f4df08e740660247bde8fb86",
+    "handler": "Daybreak; exclusive flagged-content handling",
+    "classification": "Confirmed non-secret deterministic canonical-vector digest, independently recomputed",
+    "change": "One exact-value regex and descriptive rationale only; all prior rules/paths/exceptions preserved",
+    "verification": {
+      "pinned_gitleaks": "v8.21.2",
+      "history": "20371e84 ancestry",
+      "commits_scanned": 2854,
+      "exit_code": 0,
+      "findings": 0,
+      "sealed_source_hashes_unchanged": 16
+    },
+    "handoff": {
+      "path": ".phase-loop/typed-review/private/RCONTRACT/scrub-daybreak-fix-20261019-02/handoff.json",
+      "sha256": "1053c17005294c44087d595851875020963769f79088125355f593d1806fdf9e"
+    },
+    "readiness": "Required CI confirmation remains pending; earlier local EC/IF results unchanged."
+  },
+  "verified_plan_path": "plans/phase-plan-typed-review-RCONTRACT.md",
+  "ci_readiness": "accepted_at_exact_corrected_head",
+  "ci_repair": {
+    "failure": {
+      "head": "37be33608fafde41ef8dd31acd746de24b5aa2f5",
+      "run_id": 39325236763,
+      "pytest_job": 118309519045,
+      "status": "FAILURE",
+      "counts": {
+        "failed": 2,
+        "passed": 14344,
+        "skipped": 662,
+        "xfailed": 1,
+        "warnings": 32
+      },
+      "duration_seconds": 2526.17,
+      "failed_at": "2026-10-19T21:52:39Z",
+      "failed_nodes": [
+        "tests/test_convergence_runtime_imports.py::test_runtime_v10_reground_record_is_present_and_ancestral",
+        "tests/test_seat_reference_inventory.py::test_runtime_launch_references_match_the_classified_inventory"
+      ],
+      "aggregate_failure_jobs": [
+        118328444753,
+        118328488220
+      ],
+      "aggregate_note": "Fallback and suite gate aggregate the failed pytest result; not separate test runs.",
+      "ci_log": {
+        "path": ".phase-loop/typed-review/RCONTRACT/ci-pytest-39325236763.log",
+        "sha256": "234a305dfbc35714b1e438c00e1ab7b291f6a4777219deacad217a5a1e461258"
+      },
+      "local_reproduction": {
+        "path": ".phase-loop/typed-review/RCONTRACT/ci-reproduce-39325236763.log",
+        "sha256": "d57011525d9c311e34b785e08fd68f74906d99a76656f295cabc8859978fec3a"
+      }
+    },
+    "canonical_path_mapping": {
+      "plans/phase-plan-typed-review-RCONTRACT.md": "plans/phase-plan-v1-typed-review-RCONTRACT.md",
+      "plans/phase-plan-typed-review-RCONTRACT_reviews.md": "plans/reviews/typed-review-RCONTRACT_reviews.md",
+      "plans/phase-plan-typed-review-RT3.md": "plans/phase-plan-v1-typed-review-RT3.md",
+      "plans/phase-plan-typed-review-RT3_reviews.md": "plans/reviews/typed-review-RT3_reviews.md"
+    },
+    "classification": {
+      "module": "review_contract",
+      "function": "ReviewCoordinator.__init__",
+      "primitive": "io.open",
+      "count": 1,
+      "role": "host-io",
+      "basis": "os.open creates the private reviews.sqlite3 file with O_CREAT|O_RDWR and O_NOFOLLOW; it does not launch a process."
+    },
+    "runtime_sources_changed": false,
+    "guard_tests_changed": false,
+    "review": {
+      "coverage": "COMPLETE",
+      "verdict": "AGREE",
+      "blockers": [],
+      "report": {
+        "path": ".phase-loop/typed-review/private/RCONTRACT/ci-repair-review-r1/report.md",
+        "sha256": "5c20cdb2b1a321162e9c96677ba6336a4f25eeb518bc069ca7b9e43d95f0ad99"
+      },
+      "evidence_class": "manual independent scoped CI-repair review; not BAML accepted",
+      "nonblocking_disposition": {
+        "RCR-R1-N1": "Resolved by same four-module selection on Python3.12: 38 passed, 1 skipped, 0 failed in 21.52s. Earlier Python3.14 environment failure remains preserved. Reviewer saw the earlier result; later local verification supplies this resolution.",
+        "RCR-R1-N2": "Clarified explicitly: verified_plan_sha256 binds verified_plan_path at historical commit68095b9292d2ab05c0904a6ce14115e5ad4cab2d, not current canonical path/bytes.",
+        "RCR-R1-N3": "Retained additive inventory row; ordering has no semantics and minimizes changes to existing classifications."
+      },
+      "author_factual_clarification": "Review report states underscore is outside PLAN_RE alias class; actual [A-Za-z0-9._-] includes it. Original unversioned review sibling is noncanonical; a versioned sibling would be classified as a phase plan. Relocating review records under plans/reviews correctly keeps non-plan records outside root phase discovery. Original report is preserved unchanged."
+    },
+    "local_verification": {
+      "path": ".phase-loop/typed-review/RCONTRACT/ci-repair-39325236763/verification.json",
+      "sha256": "5012b11f1cca3222ea98642bfa57a7862b9538de113f458c1b2a60404aa1e478",
+      "counts": {
+        "passed": 38,
+        "skipped": 1,
+        "failed": 0,
+        "duration_seconds": 21.52,
+        "selection": "Same full four test modules as failed Python3.14 run; no extra deselection. Includes both original CI failures and launch isolation test."
+      },
+      "prior_environment_failure": {
+        "passed": 37,
+        "skipped": 1,
+        "failed": 1,
+        "failure": "unchanged test_review_launch_stays_owned_at_each_site: Python3.14.5 lacks os.memfd_create; seat_filter_unavailable"
+      },
+      "checks": {
+        "plan_literals": "passed",
+        "lane_ir": "no diagnostics",
+        "plan_docs": "passed; existing nonblocking release-shaped heuristic warning",
+        "ruff_0_15_5": "passed",
+        "entry_docs": "8 clean",
+        "docs_audit": "passed",
+        "diff_check": "passed"
+      }
+    }
+  },
+  "verified_plan_note": "verified_plan_sha256 binds verified_plan_path at historical commit 68095b9292d2ab05c0904a6ce14115e5ad4cab2d; current plan is the canonical successor and has subsequent ownership/evidence-only amendments.",
+  "ci_acceptance": {
+    "head": "6b2b2d3f966bdfc50ecd6fe3c8c098de3e05a0df",
+    "run_id": 39332069820,
+    "run_url": "https://github.com/Consiliency/agent-harness/actions/runs/39332069820",
+    "status": "completed",
+    "conclusion": "success",
+    "jobs": [
+      {
+        "databaseId": 118332446031,
+        "name": "BAML sources (pinned baml-cli fmt + check)",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/Consiliency/agent-harness/actions/runs/39332069820/job/118332446031"
+      },
+      {
+        "databaseId": 118332475248,
+        "name": "pytest (py3.12)",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/Consiliency/agent-harness/actions/runs/39332069820/job/118332475248"
+      },
+      {
+        "databaseId": 118346317727,
+        "name": "suite (hosted fallback)",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/Consiliency/agent-harness/actions/runs/39332069820/job/118346317727"
+      },
+      {
+        "databaseId": 118346348515,
+        "name": "suite gate",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/Consiliency/agent-harness/actions/runs/39332069820/job/118346348515"
+      }
+    ],
+    "observed_at": "2026-10-19T22:41:10.000396+00:00",
+    "metadata": {
+      "path": ".phase-loop/typed-review/RT3/upstream-ci-readiness-39332069820.json",
+      "sha256": "f2dbd65dbba7d8f7ae683461591e87491505465736827e30000bab83c1e61143"
+    },
+    "required_checks": "Root verified all six SUCCESS: suite gate, gitleaks, chronology, lint, docs-freshness, release check.",
+    "scope": "Accepted RCONTRACT serial-consumption prerequisite; PR remains draft; no production/live-route/merge authority."
+  }
+}

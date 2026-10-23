@@ -37,7 +37,7 @@ PKG = TESTS.parent / "src" / "phase_loop_runtime"
 CALL_SITES = TESTS / "data" / "baml_call_sites.json"
 HANDLER_ALLOWLIST = TESTS / "data" / "baml_worker_handler_allowlist.json"
 REACHING = {
-    "parse_baml_response", "build_baml_request", "parse_closeout_payload_doc", "parse_closeout_payload",
+    "parse_baml_response", "parse_review_response", "build_baml_request", "parse_closeout_payload_doc", "parse_closeout_payload",
     "evaluate_suspected_fake_evidence", "build_prompt", "build_prompt_bundle", "build_lane_prompt_bundle",
     "launch_delegated_child", "_parsed_child_automation",
 }
@@ -178,7 +178,11 @@ def test_wave_finalize_persists_blocked_unretryable():
             return LaunchResult(command=spec.command, returncode=0, output=output, executor=spec.executor)
 
         try:
-            with _runner_seams(launch), patch("phase_loop_runtime.worker_pool.os.cpu_count", return_value=4):
+            with (
+                _runner_seams(launch),
+                patch("phase_loop_runtime.worker_pool.os.cpu_count", return_value=4),
+                patch("phase_loop_runtime.runtime_paths.lane_worktree_root", return_value=Path(td) / "worktrees"),
+            ):
                 snapshot, _results = runner.run_loop(repo, roadmap, phase_scheduler_mode="concurrent", max_phases=2)
         finally:
             if "fault" in state:

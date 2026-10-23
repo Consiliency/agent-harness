@@ -2689,7 +2689,9 @@ def _validate_bootstrap_evidence_root_isolation(
         )
 
 
-def _exclusive_write_at(directory_fd: int, name: str, data: bytes, mode: int) -> None:
+def _exclusive_write_at(
+    directory_fd: int, name: str, data: bytes, mode: int, *, exact_mode: bool = False,
+) -> None:
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
     fd = os.open(name, flags, mode, dir_fd=directory_fd)
     try:
@@ -2699,6 +2701,8 @@ def _exclusive_write_at(directory_fd: int, name: str, data: bytes, mode: int) ->
             if written <= 0:
                 raise AgyCanaryEvidenceError(f"short write for {name}")
             view = view[written:]
+        if exact_mode:
+            os.fchmod(fd, mode)
         os.fsync(fd)
     finally:
         os.close(fd)
@@ -8134,7 +8138,7 @@ def _finalize_targets_transactionally(plan_target: _FinalTarget, manifest_target
             raise AgyCanaryEvidenceError("finalizer target identity or bytes drifted before staging")
         for target in targets:
             target.temporary = f".phase-loop-agy-finalize-{target.name}.{secrets.token_hex(16)}.tmp"
-            _exclusive_write_at(target.parent_fd, target.temporary, target.replacement, target.mode)
+            _exclusive_write_at(target.parent_fd, target.temporary, target.replacement, target.mode, exact_mode=True)
         for target in targets:
             if not _final_target_matches_preimage(target):
                 raise AgyCanaryEvidenceError("finalizer target identity or bytes drifted before exchange")

@@ -5,11 +5,13 @@ import base64
 import csv
 import errno
 import io
+import inspect
 import json
 import hashlib
 import os
 import py_compile
 import shutil
+import shlex
 import socket
 import stat
 import signal
@@ -37,6 +39,8 @@ _REAL_REACQUIRE_WRITE_LEASE = evidence._reacquire_write_lease
 _REAL_RELEASE_WRITE_LEASE = evidence._release_write_lease
 _REAL_BUILD_MINIMAL_HOME = evidence.build_minimal_home
 _REAL_CANONICAL_BWRAP = evidence._canonical_bwrap
+_REAL_UV_STORE_AUTHORITY = evidence._uv_store_authority
+_REAL_UV_WORKSPACE_ROOT = evidence._UV_WORKSPACE_ROOT
 _REAL_OS_GETEUID = os.geteuid
 _REAL_EFFECTIVE_UID = _REAL_OS_GETEUID()
 _TEST_SETTINGS_OWNER_UID = 65534 if _REAL_EFFECTIVE_UID == 0 else os.getuid()
@@ -119,10 +123,18 @@ def _canonical_test_account_home(monkeypatch, tmp_path: Path) -> None:
         ".cache/uv",
     ):
         (account_home / relative).mkdir(parents=True)
-    if evidence._UV_WORKSPACE_ROOT.is_dir():
-        workspace_info = evidence._UV_WORKSPACE_ROOT.resolve(strict=True).stat()
-        for path in (account_home, *account_home.rglob("*")):
-            os.chown(path, workspace_info.st_uid, workspace_info.st_gid)
+    workspace = tmp_path / "canonical-workspace"
+    for relative in ("uv-data/tools", "uv-data/python", "uv-cache"):
+        (workspace / relative).mkdir(parents=True)
+
+    def synthetic_uv_store_authority(**kwargs):
+        # The real keyword default was bound at import. Follow the test's policy
+        # for omitted roots, while forwarding explicit/adversarial roots intact.
+        kwargs.setdefault("workspace_root", evidence._UV_WORKSPACE_ROOT)
+        return _REAL_UV_STORE_AUTHORITY(**kwargs)
+
+    monkeypatch.setattr(evidence, "_UV_WORKSPACE_ROOT", workspace)
+    monkeypatch.setattr(evidence, "_uv_store_authority", synthetic_uv_store_authority)
     monkeypatch.setattr(evidence, "_account_home", lambda: account_home)
     monkeypatch.setenv("HOME", str(account_home))
     if _REAL_EFFECTIVE_UID == 0:
@@ -326,7 +338,7 @@ def test_git_run_uses_sealed_executable_and_strict_environment(
 def test_github_run_uses_sealed_executable_and_strict_environment(
     monkeypatch, tmp_path,
 ):
-    trusted = Path("/usr/bin/true")
+    trusted = Path("/usr/bin/true").resolve(strict=True)
     assert trusted.is_file()
     monkeypatch.setattr(evidence, "_GITHUB_EXECUTABLE", trusted)
     monkeypatch.setattr(evidence, "_SEALED_GITHUB_AUTHORITY", None)
@@ -357,7 +369,7 @@ def test_github_run_uses_sealed_executable_and_strict_environment(
     monkeypatch.setattr(evidence.subprocess, "run", record_run)
     assert evidence._github_run("--version").returncode == 0
     assert len(seen) == 1
-    assert seen[0][0] == ["/usr/bin/true", "--version"]
+    assert seen[0][0] == [str(trusted), "--version"]
     assert seen[0][1]["env"] == {
         "HOME": str(evidence._account_home()), "PATH": "/usr/bin", "LC_ALL": "C",
     }
@@ -911,6 +923,8 @@ def _record_hash(data: bytes) -> str:
 def test_synthetic_installation_identity_uses_hermetic_canonical_uv_store(tmp_path):
     installation = _installation_identity()
     authority = installation["uv_store_authority"]
+    assert authority["policy"] == "workspace"
+    assert authority["workspace"]["selector"] == str(tmp_path / "canonical-workspace")
     assert authority["account_home"] == str(
         (tmp_path / "canonical-account-home").resolve(strict=True)
     )
@@ -4413,7 +4427,7 @@ def test_probe_selects_1_1_13_stream_json_only_after_complete_capability_matrix(
         assert result["complete"] is True
         assert result["mode"] == "stream_json"
         assert result["schema"] == "agy_capability_probe.v2"
-        assert result["agy_runtime"]["path"] == "/usr/bin/true"
+        assert result["agy_runtime"]["path"] == str(Path("/usr/bin/true").resolve(strict=True))
         assert result["agy_runtime"]["version"] == result["agy_version"]
         assert [row["class"] for row in result["classes"]] == [item[0] for item in evidence._CAPABILITY_CLASSES]
         assert all(row["attempt"] and row["execution"] and row["result"] == "text" for row in result["classes"])
@@ -4558,7 +4572,7 @@ def test_bootstrap_attest_rejects_child_visible_evidence_root_before_launch(
     if location == "home":
         parent = evidence._account_home()
     else:
-        parent = Path("/mnt/workspace") if Path("/mnt/workspace").is_dir() else tmp_path
+        parent = evidence._UV_WORKSPACE_ROOT
     root = parent / f"phase-loop-invalid-evidence-{os.getpid()}-{tmp_path.name}"
     root.mkdir(mode=0o700)
     monkeypatch.setattr(
@@ -5477,6 +5491,371 @@ def test_finalizer_reports_cleanup_residue_after_commit(monkeypatch, tmp_path):
         assert [path for path in plan.parent.iterdir() if path.name.startswith(".phase-loop-agy-finalize-")]
     finally:
         shutil.rmtree(root)
+
+
+@pytest.mark.parametrize("child_umask", (0o077, 0o022), ids=("umask0077", "umask0022"))
+@pytest.mark.parametrize("target_mode", (0o640, 0o600), ids=("mode0640", "mode0600"))
+def test_finalizer_exact_mode_transaction_preserves_target_modes(child_umask, target_mode):
+    import textwrap
+
+    script = textwrap.dedent("""\
+        import errno
+        import json
+        import os
+        import stat
+        import sys
+        from pathlib import Path
+        from phase_loop_runtime import agy_canary_evidence as e
+
+        root, mask, mode = Path(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3])
+        os.umask(mask)
+        before_mask = next(x for x in Path('/proc/self/status').read_text().splitlines() if x.startswith('Umask:'))
+        targets = []
+        for name in ('plan', 'manifest'):
+            path = root / name
+            path.write_bytes(b'original-' + name.encode())
+            path.chmod(mode)
+            targets.append(e._open_final_target(path, b'replacement-' + name.encode()))
+        real_chmod, real_sync, real_close = os.fchmod, os.fsync, os.close
+        real_verify = e._verify_final_target_exchange
+        events, exchanged = [], []
+
+        def chmod(fd, requested):
+            path = Path(os.readlink(f'/proc/self/fd/{fd}'))
+            target = next(t for t in targets if path.name == t.temporary)
+            assert path.read_bytes() == target.replacement
+            assert stat.S_IMODE(os.fstat(fd).st_mode) == mode & ~mask
+            events.append(('chmod', fd, requested))
+            real_chmod(fd, requested)
+
+        def sync(fd):
+            events.append(('fsync', fd))
+            real_sync(fd)
+
+        def close(fd):
+            real_close(fd)
+            events.append(('close', fd))
+
+        def verify(target):
+            real_verify(target)
+            original, info = e._reopen_at(target.parent_fd, target.temporary)
+            assert original == target.data
+            assert (info.st_dev, info.st_ino) == (target.device, target.inode)
+            assert stat.S_IMODE(info.st_mode) == mode
+            exchanged.append(target.name)
+
+        os.fchmod, os.fsync, os.close = chmod, sync, close
+        e._verify_final_target_exchange = verify
+        try:
+            e._finalize_targets_transactionally(*targets)
+            assert exchanged == ['plan', 'manifest', 'plan', 'manifest']
+            chmod_positions = [i for i, event in enumerate(events) if event[0] == 'chmod']
+            assert len(chmod_positions) == 2
+            for i, target in zip(chmod_positions, targets):
+                fd = events[i][1]
+                assert events[i + 1:i + 4] == [('fsync', fd), ('close', fd), ('fsync', target.parent_fd)]
+                try:
+                    os.fstat(fd)
+                except OSError as error:
+                    assert error.errno == errno.EBADF
+                else:
+                    raise AssertionError('staging descriptor leaked')
+                path = root / target.name
+                info = path.stat()
+                assert path.read_bytes() == target.replacement
+                assert stat.S_IMODE(info.st_mode) == mode
+                assert (info.st_dev, info.st_ino) != (target.device, target.inode)
+                assert target.temporary is None
+            assert sorted(p.name for p in root.iterdir()) == ['manifest', 'plan']
+            after_mask = next(x for x in Path('/proc/self/status').read_text().splitlines() if x.startswith('Umask:'))
+            assert before_mask == after_mask
+            print(json.dumps({'umask': before_mask, 'mode': oct(mode), 'exchanges_verified': exchanged, 'events': events}))
+        finally:
+            os.fchmod, os.fsync, os.close = real_chmod, real_sync, real_close
+            e._verify_final_target_exchange = real_verify
+            for target in targets:
+                os.close(target.parent_fd)
+        """)
+    before_mask = next(line for line in Path('/proc/self/status').read_text().splitlines() if line.startswith('Umask:'))
+    with tempfile.TemporaryDirectory(prefix="rt3-finalizer-matrix-", dir="/tmp") as scratch:
+        env = dict(os.environ, PYTHONPATH=f"{Path(evidence.__file__).resolve().parents[1]}:{Path(__file__).resolve().parent}")
+        result = subprocess.run(
+            [sys.executable, "-c", script, scratch, str(child_umask), str(target_mode)],
+            cwd=scratch, env=env, capture_output=True, text=True, timeout=30,
+        )
+        print(result.stdout)
+        assert result.returncode == 0, result.stdout + result.stderr
+    assert next(line for line in Path('/proc/self/status').read_text().splitlines() if line.startswith('Umask:')) == before_mask
+
+
+@pytest.mark.parametrize("child_umask", (0o077, 0o022), ids=("umask0077", "umask0022"))
+@pytest.mark.parametrize("target_mode", (0o640, 0o600), ids=("mode0640", "mode0600"))
+def test_finalizer_staging_helper_default_mode_compatibility(child_umask, target_mode):
+    import textwrap
+
+    parameter = inspect.signature(evidence._exclusive_write_at).parameters["exact_mode"]
+    assert parameter.default is False
+    assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+    script = textwrap.dedent("""\
+        import errno
+        import json
+        import os
+        import stat
+        import sys
+        from pathlib import Path
+        from phase_loop_runtime import agy_canary_evidence as e
+
+        root, mask, mode = Path(sys.argv[1]), int(sys.argv[2]), int(sys.argv[3])
+        os.umask(mask)
+        before_mask = next(x for x in Path('/proc/self/status').read_text().splitlines() if x.startswith('Umask:'))
+        parent = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        real_chmod, real_close = os.fchmod, os.close
+        closed, chmod_calls = [], []
+
+        def forbidden_chmod(fd, requested):
+            chmod_calls.append((fd, requested))
+            raise AssertionError('omitted keyword must not invoke fchmod')
+
+        def close(fd):
+            real_close(fd)
+            closed.append(fd)
+
+        os.fchmod, os.close = forbidden_chmod, close
+        try:
+            e._exclusive_write_at(parent, 'staged', b'exact default bytes', mode)
+            assert chmod_calls == []
+            assert len(closed) == 1
+            try:
+                os.fstat(closed[0])
+            except OSError as error:
+                assert error.errno == errno.EBADF
+            else:
+                raise AssertionError('staging descriptor leaked')
+            path = root / 'staged'
+            assert path.read_bytes() == b'exact default bytes'
+            actual_mode = stat.S_IMODE(path.stat().st_mode)
+            assert actual_mode == mode & ~mask
+            after_mask = next(x for x in Path('/proc/self/status').read_text().splitlines() if x.startswith('Umask:'))
+            assert before_mask == after_mask
+            print(json.dumps({'umask': before_mask, 'requested_mode': oct(mode), 'actual_mode': oct(actual_mode), 'fchmod_calls': chmod_calls, 'closed': closed}))
+        finally:
+            os.fchmod, os.close = real_chmod, real_close
+            os.close(parent)
+        """)
+    before_mask = next(line for line in Path('/proc/self/status').read_text().splitlines() if line.startswith('Umask:'))
+    with tempfile.TemporaryDirectory(prefix="rt3-finalizer-default-", dir="/tmp") as scratch:
+        env = dict(os.environ, PYTHONPATH=f"{Path(evidence.__file__).resolve().parents[1]}:{Path(__file__).resolve().parent}")
+        result = subprocess.run(
+            [sys.executable, "-c", script, scratch, str(child_umask), str(target_mode)],
+            cwd=scratch, env=env, capture_output=True, text=True, timeout=30,
+        )
+        print(result.stdout)
+        assert result.returncode == 0, result.stdout + result.stderr
+    assert next(line for line in Path('/proc/self/status').read_text().splitlines() if line.startswith('Umask:')) == before_mask
+
+
+@pytest.mark.parametrize("failed_stage", (1, 2), ids=("plan", "manifest"))
+def test_finalizer_exact_mode_failure_precedes_exchange(monkeypatch, failed_stage):
+    with tempfile.TemporaryDirectory(prefix="rt3-finalizer-failure-", dir="/tmp") as scratch:
+        root = Path(scratch)
+        targets = []
+        for name in ("plan", "manifest"):
+            path = root / name
+            path.write_bytes(b"original-" + name.encode())
+            path.chmod(0o640)
+            targets.append(evidence._open_final_target(path, b"replacement-" + name.encode()))
+        real_chmod, real_close = os.fchmod, os.close
+        events, exchanges = [], []
+        injected = OSError(errno.EPERM, "staging fchmod unavailable")
+        calls = 0
+
+        def chmod(fd, mode):
+            nonlocal calls
+            calls += 1
+            target = targets[calls - 1]
+            assert Path(os.readlink(f"/proc/self/fd/{fd}")).name == target.temporary
+            assert (root / target.temporary).read_bytes() == target.replacement
+            events.append(("chmod", fd))
+            if calls == failed_stage:
+                raise injected
+            real_chmod(fd, mode)
+            assert stat.S_IMODE(os.fstat(fd).st_mode) == target.mode
+
+        def close(fd):
+            real_close(fd)
+            events.append(("close", fd))
+
+        def forbidden_exchange(*args):
+            exchanges.append(args)
+            raise AssertionError("exchange reached after staging failure")
+
+        try:
+            with monkeypatch.context() as patch:
+                patch.setattr(evidence.os, "fchmod", chmod)
+                patch.setattr(evidence.os, "close", close)
+                patch.setattr(evidence, "_rename_exchange", forbidden_exchange)
+                with pytest.raises(OSError) as caught:
+                    evidence._finalize_targets_transactionally(*targets)
+            assert caught.value is injected
+            assert calls == failed_stage
+            assert exchanges == []
+            for i, event in enumerate(events):
+                if event[0] == "chmod":
+                    assert events[i + 1] == ("close", event[1])
+                    with pytest.raises(OSError) as closed:
+                        os.fstat(event[1])
+                    assert closed.value.errno == errno.EBADF
+            for target in targets:
+                path = root / target.name
+                info = path.stat()
+                assert path.read_bytes() == target.data
+                assert stat.S_IMODE(info.st_mode) == target.mode
+                assert (info.st_dev, info.st_ino) == (target.device, target.inode)
+                assert target.temporary is None
+                assert not target.exchanged
+            assert sorted(path.name for path in root.iterdir()) == ["manifest", "plan"]
+            print(json.dumps({"failed_stage": failed_stage, "fchmod_calls": calls, "exchanges": exchanges, "events": events}))
+        finally:
+            for target in targets:
+                os.close(target.parent_fd)
+
+
+def test_finalizer_exact_mode_retains_cleanup_failure(monkeypatch):
+    with tempfile.TemporaryDirectory(prefix="rt3-finalizer-residue-", dir="/tmp") as scratch:
+        root = Path(scratch)
+        targets = []
+        for name in ("plan", "manifest"):
+            path = root / name
+            path.write_bytes(b"original-" + name.encode())
+            path.chmod(0o640)
+            targets.append(evidence._open_final_target(path, b"replacement-" + name.encode()))
+        real_chmod, real_close, real_unlink = os.fchmod, os.close, os.unlink
+        chmod_error = OSError(errno.EPERM, "staging fchmod unavailable")
+        cleanup_error = OSError(errno.EACCES, "staged cleanup unavailable")
+        events, exchanges, cleanup_calls = [], [], []
+        calls = 0
+
+        def chmod(fd, mode):
+            nonlocal calls
+            calls += 1
+            target = targets[calls - 1]
+            assert (root / target.temporary).read_bytes() == target.replacement
+            events.append(("chmod", fd))
+            if calls == 2:
+                raise chmod_error
+            real_chmod(fd, mode)
+
+        def close(fd):
+            real_close(fd)
+            events.append(("close", fd))
+
+        def unlink(path, *, dir_fd=None):
+            cleanup_calls.append((path, dir_fd))
+            if path == targets[0].temporary and dir_fd == targets[0].parent_fd:
+                raise cleanup_error
+            return real_unlink(path, dir_fd=dir_fd)
+
+        def forbidden_exchange(*args):
+            exchanges.append(args)
+            raise AssertionError("exchange reached after staging failure")
+
+        try:
+            with monkeypatch.context() as patch:
+                patch.setattr(evidence.os, "fchmod", chmod)
+                patch.setattr(evidence.os, "close", close)
+                patch.setattr(evidence.os, "unlink", unlink)
+                patch.setattr(evidence, "_rename_exchange", forbidden_exchange)
+                with pytest.raises(OSError) as caught:
+                    evidence._finalize_targets_transactionally(*targets)
+            assert caught.value is cleanup_error
+            assert caught.value.__context__ is chmod_error
+            assert calls == 2
+            assert exchanges == []
+            assert cleanup_calls == [(targets[0].temporary, targets[0].parent_fd)]
+            for i, event in enumerate(events):
+                if event[0] == "chmod":
+                    assert events[i + 1] == ("close", event[1])
+                    with pytest.raises(OSError) as closed:
+                        os.fstat(event[1])
+                    assert closed.value.errno == errno.EBADF
+            for target in targets:
+                path = root / target.name
+                info = path.stat()
+                assert path.read_bytes() == target.data
+                assert stat.S_IMODE(info.st_mode) == target.mode
+                assert (info.st_dev, info.st_ino) == (target.device, target.inode)
+                assert not target.exchanged
+                assert target.temporary is not None
+                assert (root / target.temporary).read_bytes() == target.replacement
+            assert len(list(root.iterdir())) == 4
+            print(json.dumps({"fchmod_calls": calls, "cleanup_calls": cleanup_calls, "exchanges": exchanges, "events": events, "propagated": str(caught.value), "context": str(caught.value.__context__)}))
+        finally:
+            for target in targets:
+                os.close(target.parent_fd)
+
+
+@pytest.mark.parametrize("collision", ("regular", "symlink"))
+def test_finalizer_exact_mode_keeps_exclusive_collision_guard(monkeypatch, collision):
+    with tempfile.TemporaryDirectory(prefix="rt3-finalizer-collision-", dir="/tmp") as scratch:
+        root = Path(scratch)
+        referent = root / "referent"
+        referent.write_bytes(b"referent preimage")
+        referent.chmod(0o640)
+        entry = root / "staged"
+        if collision == "symlink":
+            entry.symlink_to(referent)
+        else:
+            entry.write_bytes(b"entry preimage")
+            entry.chmod(0o600)
+
+        def snapshot(path):
+            info = path.lstat()
+            return (path.read_bytes(), stat.S_IMODE(info.st_mode), info.st_dev, info.st_ino,
+                    os.readlink(path) if path.is_symlink() else None)
+
+        before = {path.name: snapshot(path) for path in (entry, referent)}
+        parent_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        real_open, real_close = os.open, os.close
+        opened, closed, chmod_calls, writes = [], [], [], []
+
+        def open_entry(path, flags, mode=0o777, *, dir_fd=None):
+            assert path == "staged"
+            assert flags == os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
+            assert dir_fd == parent_fd
+            fd = real_open(path, flags, mode, dir_fd=dir_fd)
+            opened.append(fd)
+            return fd
+
+        def close(fd):
+            real_close(fd)
+            closed.append(fd)
+
+        def forbidden_chmod(*args):
+            chmod_calls.append(args)
+            raise AssertionError("collision reached fchmod")
+
+        def forbidden_write(*args):
+            writes.append(args)
+            raise AssertionError("collision reached write")
+
+        try:
+            with monkeypatch.context() as patch:
+                patch.setattr(evidence.os, "open", open_entry)
+                patch.setattr(evidence.os, "close", close)
+                patch.setattr(evidence.os, "fchmod", forbidden_chmod)
+                patch.setattr(evidence.os, "write", forbidden_write)
+                with pytest.raises(FileExistsError) as caught:
+                    evidence._exclusive_write_at(parent_fd, "staged", b"replacement", 0o640, exact_mode=True)
+            assert caught.value.errno == errno.EEXIST
+            assert opened == closed == chmod_calls == writes == []
+            assert {path.name: snapshot(path) for path in (entry, referent)} == before
+            assert sorted(path.name for path in root.iterdir()) == ["referent", "staged"]
+            assert stat.S_ISDIR(os.fstat(parent_fd).st_mode)
+        finally:
+            os.close(parent_fd)
+        with pytest.raises(OSError) as closed_parent:
+            os.fstat(parent_fd)
+        assert closed_parent.value.errno == errno.EBADF
 
 
 @pytest.mark.parametrize(
@@ -6721,6 +7100,32 @@ def test_bootstrap_environment_never_uses_attacker_path_or_home(monkeypatch, tmp
         )
 
 
+def test_uv_store_authority_preserves_production_default_and_explicit_roots(tmp_path):
+    assert _REAL_UV_WORKSPACE_ROOT == Path("/mnt/workspace")
+    assert (
+        inspect.signature(_REAL_UV_STORE_AUTHORITY).parameters["workspace_root"].default
+        is _REAL_UV_WORKSPACE_ROOT
+    )
+    home = evidence._account_home()
+    absent = tmp_path / "absent-workspace"
+    assert not absent.exists()
+    authority = evidence._uv_store_authority(account_home=home, workspace_root=absent)
+    assert authority == _REAL_UV_STORE_AUTHORITY(account_home=home, workspace_root=absent)
+    assert authority["policy"] == "home"
+    evidence._validate_uv_store_authority(
+        authority, revalidate=True, account_home=home, workspace_root=absent,
+    )
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="workspace policy drifted"):
+        evidence._validate_uv_store_authority(
+            authority, revalidate=True, workspace_root=evidence._UV_WORKSPACE_ROOT,
+        )
+    unsafe = tmp_path / "unsafe-workspace"
+    unsafe.mkdir()
+    unsafe.chmod(0o777)
+    with pytest.raises(evidence.AgyCanaryEvidenceError, match="workspace root is unsafe"):
+        evidence._uv_store_authority(account_home=home, workspace_root=unsafe)
+
+
 def test_uv_store_authority_matches_committed_workspace_policy(tmp_path):
     account_home = tmp_path / "account-home"
     (account_home / ".local" / "bin").mkdir(parents=True)
@@ -7411,7 +7816,19 @@ def test_interpreter_authority_rejects_wrong_symlink_owner_mode_or_hash(mutation
 
 @_requires_bwrap
 @_requires_memfd
-def test_bootstrap_attestation_has_no_parent_only_nonce_claim(monkeypatch, tmp_path):
+@pytest.mark.parametrize("storage_policy", ["workspace", "home"])
+def test_bootstrap_attestation_has_no_parent_only_nonce_claim(
+    monkeypatch, tmp_path, storage_policy,
+):
+    if storage_policy == "home":
+        absent = tmp_path / "absent-workspace"
+        assert not absent.exists()
+        monkeypatch.setattr(evidence, "_UV_WORKSPACE_ROOT", absent)
+    expected_home = evidence._account_home()
+    expected_tool = (
+        expected_home / ".local/share/uv/tools" if storage_policy == "home"
+        else evidence._UV_WORKSPACE_ROOT / "uv-data/tools"
+    )
     root = _private_root(tmp_path)
     marker = root / "host-secret-marker"
     marker.write_text("private-evidence-secret\n")
@@ -7420,7 +7837,9 @@ def test_bootstrap_attestation_has_no_parent_only_nonce_claim(monkeypatch, tmp_p
     plan.parent.mkdir(parents=True)
     (repo / "shared").mkdir()
     (repo / "bootstrap.sh").write_text(
-        f"#!/bin/sh\ntest ! -e {root}/host-secret-marker || exit 91\nexit 0\n"
+        f"#!/bin/sh\ntest ! -e {root}/host-secret-marker || exit 91\n"
+        f'test "$HOME" = {shlex.quote(str(expected_home))} || exit 92\n'
+        f'test "$UV_TOOL_DIR" = {shlex.quote(str(expected_tool))} || exit 93\nexit 0\n'
     )
     (repo / "shared" / "agent-harness.pin").write_text("v0.7.14\n")
     plan.write_text("# canary\n")
@@ -7431,6 +7850,8 @@ def test_bootstrap_attestation_has_no_parent_only_nonce_claim(monkeypatch, tmp_p
     uv.chmod(0o700)
     installation = _installation_identity()
     installation["uv_executable"] = str(uv)
+    authority = installation["uv_store_authority"]
+    assert authority["policy"] == storage_policy
     monkeypatch.setattr(evidence, "_canonical_bash", lambda: Path("/usr/bin/bash"))
     monkeypatch.setattr(evidence, "_canonical_uv", lambda: uv)
     monkeypatch.setattr(evidence, "_validate_bootstrap_uv_policy", lambda **_kwargs: None)
@@ -7449,6 +7870,18 @@ def test_bootstrap_attestation_has_no_parent_only_nonce_claim(monkeypatch, tmp_p
         ) == receipt
         assert receipt["bootstrap"]["returncode"] == 0
         assert receipt["bootstrap"]["installation"] == installation
+        assert receipt["bootstrap"]["uv_store_authority"] == authority
+        expected_binds = [str(evidence._account_home())]
+        if storage_policy == "workspace":
+            expected_binds.append(str(evidence._UV_WORKSPACE_ROOT))
+        assert receipt["bootstrap"]["sandbox"]["writable_binds"] == sorted(expected_binds)
+        environment = receipt["bootstrap"]["uv_environment"]
+        assert environment["HOME"] == str(evidence._account_home())
+        for variable, directory in (
+            ("UV_TOOL_DIR", "tool"), ("UV_TOOL_BIN_DIR", "bin"),
+            ("UV_CACHE_DIR", "cache"), ("UV_PYTHON_INSTALL_DIR", "python"),
+        ):
+            assert environment[variable] == authority["directories"][directory]["path"]
         assert receipt["bootstrap"]["sandbox"]["evidence_root_masking"]["path"] == str(root)
         assert b"private-evidence-secret" not in evidence._canonical_json(receipt)
         assert "nonce_sha256" not in receipt

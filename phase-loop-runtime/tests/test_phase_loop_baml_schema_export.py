@@ -105,3 +105,45 @@ class PhaseLoopBamlSchemaExportTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_review_export_uses_saved_native_declarations_and_required_nulls():
+    from phase_loop_runtime import baml_modular as m
+
+    current = m.snapshot_baml_sources()
+    schema = m.export_function_schema("EmitReviewReply", source_snapshot=current)
+    assert schema == m.export_function_schema("ReviewReplyV1", source_snapshot=current)
+    for node in _walk_schema(schema):
+        if node.get("type") == "object" or node.get("type") == ["object", "null"]:
+            assert set(node["required"]) == set(node["properties"])
+    assert schema["properties"]["verdict"]["enum"] == ["AGREE", "PARTIALLY_AGREE", "DISAGREE", None]
+    coverage = schema["properties"]["coverage"]["items"]["properties"]
+    assert coverage["status"]["enum"] == ["ANSWERED", "NOT_ASSESSED"]
+    changed = dict(current.files)
+    changed["review_reply.baml"] = changed["review_reply.baml"].replace("    AGREE", "    HISTORICAL_AGREE").replace(
+        "    summary: string,", "    historical_summary: string,",
+    )
+    saved = m.snapshot_baml_sources(changed)
+    changed.clear()  # construction copied the source; caller mutation cannot change it
+    with patch.object(m, "_enum_literal_map", side_effect=AssertionError("global enum cache")), patch.object(
+        m, "_snapshot_files", side_effect=AssertionError("current package"),
+    ):
+        historical = m.export_function_schema("EmitReviewReply", source_snapshot=saved)
+        decision = m.export_function_schema("ReviewDecisionV1", source_snapshot=saved)
+    assert "HISTORICAL_AGREE" in historical["properties"]["verdict"]["enum"]
+    assert "historical_summary" in historical["required"]
+    assert "summary" not in historical["properties"]
+    assert decision["properties"]["dispositions"]["items"]["properties"]["status"]["enum"] == ["RESOLVED", "OPEN", "DEFERRED"]
+    assert m.export_function_schema("EmitReviewReply", source_snapshot=current) == schema
+    assert current.fingerprint != saved.fingerprint
+
+
+def test_review_snapshot_rejects_unrendered_or_missing_sources():
+    from phase_loop_runtime import baml_modular as m
+    import pytest
+
+    for files in ({}, {"../bad.baml": "x"}, {"review.baml": "{{ unresolved }}"}):
+        with pytest.raises(BamlValidationError):
+            m.snapshot_baml_sources(files)
+    with pytest.raises(BamlValidationError):
+        m.export_function_schema("EmitReviewReply", source_snapshot=m.snapshot_baml_sources({"old.baml": "class Old {\n x: string,\n}\n"}))

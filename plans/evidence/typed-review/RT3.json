@@ -1,0 +1,742 @@
+{
+  "schema": "typed_review_phase_evidence.v1",
+  "phase": "RT3",
+  "lane": "SL-1",
+  "status": "partial",
+  "timestamp": "2026-10-19T23:09:31.012428+00:00",
+  "dispatch_head": "8585a9aed728159fd245447ed146918cdb132c99",
+  "produced_if_gates": [],
+  "roadmap": "docs/proposals/typed-review-roadmap.md",
+  "roadmap_sha256": "45b6faac632fcdf47fc5605389826d256126ab6f4c2a2b44859f2a3088f2e3e8",
+  "plan": "plans/phase-plan-v1-typed-review-RT3.md",
+  "plan_sha256": "6169583cba2e2157c47809959514010215bd8921e6a8a9ad208d28b4dcfab97e",
+  "source_sha256": {
+    "phase-loop-runtime/tests/test_review_t3_faults.py": "9920ae687b1edbeddfa20288fbe76ed873cfd521fc8921b52eb57dcea3a1ef68",
+    "phase-loop-runtime/tests/test_review_t3_cli.py": "2f4be27850fadd82743b5a1b9fb9aca91d7446831659ce039d4c4aba00e85bfa",
+    "docs/phase-loop/typed-reviews.md": "8b79126581fcb186df8bc1cf9d2c76936b2d4a3ec17459a3847400a5c9dd9a9f",
+    "phase-loop-runtime/README.md": "6ffa591f387b67171b54de541e6bc3fa0ed953624e6362a10a51bdc569548e31",
+    "CHANGELOG.md": "51c023714ac5370684e084520584a8e10434750c2063fed6f37c99aa3e68b6d0"
+  },
+  "verification_status": "failed",
+  "focused_result": "224 passed in 59.25s",
+  "ruff": "0.15.5 passed",
+  "diff_check": "passed",
+  "commands": [
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--isolated",
+        "--python",
+        "3.12",
+        "--project",
+        "phase-loop-runtime",
+        "--group",
+        "test",
+        "--extra",
+        "visual",
+        "--locked",
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "phase-loop-runtime/tests/test_review_t3_cli.py",
+        "-k",
+        "only_local_worker_side_effects",
+        "--basetemp",
+        ".phase-loop/typed-review/RT3/sl1/pytest-fourth"
+      ],
+      "cwd": "/mnt/workspace/worktrees/viperjuice/agent-harness-typed-review-spec-20261019",
+      "started": "2026-10-19T23:06:11.720900+00:00",
+      "ended": "2026-10-19T23:06:19.814273+00:00",
+      "exit_code": 0,
+      "logs": {
+        ".stdout.log": {
+          "path": ".phase-loop/typed-review/RT3/sl1/audit-fourth.stdout.log",
+          "sha256": "bab404a82f99f0abeab770e4025d3cc273e7feb7853cc49888af034b61a221c5"
+        },
+        ".stderr.log": {
+          "path": ".phase-loop/typed-review/RT3/sl1/audit-fourth.stderr.log",
+          "sha256": "eb9012c4bd765d6172fa6e73bf06779921782a5a8355c19a1cce38e309d637c2"
+        }
+      },
+      "record_path": ".phase-loop/typed-review/RT3/sl1/audit-fourth.command.json",
+      "record_sha256": "977b12e3f852bcffa9c9d6f391e67e9d445b03c67ec2591266681e93c9549030"
+    },
+    {
+      "argv": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "cwd": "/mnt/workspace/worktrees/viperjuice/agent-harness-typed-review-spec-20261019",
+      "started": "2026-10-19T23:07:24.434549+00:00",
+      "ended": "2026-10-19T23:07:24.448815+00:00",
+      "exit_code": 0,
+      "logs": {
+        ".stdout.log": {
+          "path": ".phase-loop/typed-review/RT3/sl1/diff-check.stdout.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        ".stderr.log": {
+          "path": ".phase-loop/typed-review/RT3/sl1/diff-check.stderr.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "record_path": ".phase-loop/typed-review/RT3/sl1/diff-check.command.json",
+      "record_sha256": "642a6e40bec98c5f09382c8dfd0f246775c26c15356980adb64bcb4daeb3bfc1"
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--isolated",
+        "--python",
+        "3.12",
+        "--project",
+        "phase-loop-runtime",
+        "--group",
+        "test",
+        "--extra",
+        "visual",
+        "--locked",
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "phase-loop-runtime/tests/test_review_t3_faults.py",
+        "phase-loop-runtime/tests/test_review_t3_cli.py",
+        "phase-loop-runtime/tests/test_review_t3.py",
+        "--basetemp",
+        ".phase-loop/typed-review/RT3/sl1/pytest-final"
+      ],
+      "cwd": "/mnt/workspace/worktrees/viperjuice/agent-harness-typed-review-spec-20261019",
+      "started": "2026-10-19T23:07:06.621879+00:00",
+      "ended": "2026-10-19T23:08:07.390146+00:00",
+      "exit_code": 0,
+      "logs": {
+        ".stdout.log": {
+          "path": ".phase-loop/typed-review/RT3/sl1/focused-final.stdout.log",
+          "sha256": "e2a05cf721a69a78ddf1b32bada1341b691053696f0ee9b030ac3c0b7ffb8514"
+        },
+        ".stderr.log": {
+          "path": ".phase-loop/typed-review/RT3/sl1/focused-final.stderr.log",
+          "sha256": "eb9012c4bd765d6172fa6e73bf06779921782a5a8355c19a1cce38e309d637c2"
+        }
+      },
+      "record_path": ".phase-loop/typed-review/RT3/sl1/focused-final.command.json",
+      "record_sha256": "d397dd17203ed184175fbe5b1b01f90eab7b96047531b9ba1dd361c0a71259e3"
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--isolated",
+        "--python",
+        "3.12",
+        "--project",
+        "phase-loop-runtime",
+        "--group",
+        "test",
+        "--extra",
+        "visual",
+        "--locked",
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "phase-loop-runtime/tests/test_review_t3_faults.py",
+        "phase-loop-runtime/tests/test_review_t3_cli.py",
+        "phase-loop-runtime/tests/test_review_t3.py",
+        "--basetemp",
+        ".phase-loop/typed-review/RT3/sl1/pytest-first"
+      ],
+      "cwd": "/mnt/workspace/worktrees/viperjuice/agent-harness-typed-review-spec-20261019",
+      "started": "2026-10-19T23:01:59.568152+00:00",
+      "ended": "2026-10-19T23:02:47.014494+00:00",
+      "exit_code": 1,
+      "logs": {
+        ".stdout.log": {
+          "path": ".phase-loop/typed-review/RT3/sl1/focused-first.stdout.log",
+          "sha256": "8db44592df28a24b9bf11d2c2ee55b8c491dcbadddcee0d5c0bcf39c06c49785"
+        },
+        ".stderr.log": {
+          "path": ".phase-loop/typed-review/RT3/sl1/focused-first.stderr.log",
+          "sha256": "8f3801d15459437a737014060ccb356273f835d9054e7a6f94f31031e45bb7e4"
+        }
+      },
+      "record_path": ".phase-loop/typed-review/RT3/sl1/focused-first.command.json",
+      "record_sha256": "6079ecfcfe9ea6a243166e4d363787749d22f5e60d8234b8f573320551fdb811"
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--isolated",
+        "--python",
+        "3.12",
+        "--project",
+        "phase-loop-runtime",
+        "--group",
+        "test",
+        "--extra",
+        "visual",
+        "--locked",
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "phase-loop-runtime/tests/test_review_t3_faults.py",
+        "phase-loop-runtime/tests/test_review_t3_cli.py",
+        "phase-loop-runtime/tests/test_review_t3.py",
+        "--basetemp",
+        ".phase-loop/typed-review/RT3/sl1/pytest-second"
+      ],
+      "cwd": "/mnt/workspace/worktrees/viperjuice/agent-harness-typed-review-spec-20261019",
+      "started": "2026-10-19T23:04:40.896173+00:00",
+      "ended": "2026-10-19T23:05:30.826693+00:00",
+      "exit_code": 1,
+      "logs": {
+        ".stdout.log": {
+          "path": ".phase-loop/typed-review/RT3/sl1/focused-second.stdout.log",
+          "sha256": "21003ffb009ceedac62408618eb5a877192e707bea2438e48237af3725d4f27b"
+        },
+        ".stderr.log": {
+          "path": ".phase-loop/typed-review/RT3/sl1/focused-second.stderr.log",
+          "sha256": "0bda02a6f394b0ecd142f7a9db4d58be673dbd3bcb73e3e3a42e28ab4f784cd8"
+        }
+      },
+      "record_path": ".phase-loop/typed-review/RT3/sl1/focused-second.command.json",
+      "record_sha256": "9aa989250972651f2f06f6d20af17831bf92e08b562fa23c6b23d852cc1bc9d8"
+    },
+    {
+      "argv": [
+        "uvx",
+        "--from",
+        "ruff==0.15.5",
+        "ruff",
+        "check",
+        "phase-loop-runtime/tests/test_review_t3_faults.py",
+        "phase-loop-runtime/tests/test_review_t3_cli.py"
+      ],
+      "cwd": "/mnt/workspace/worktrees/viperjuice/agent-harness-typed-review-spec-20261019",
+      "started": "2026-10-19T23:07:24.430905+00:00",
+      "ended": "2026-10-19T23:07:24.454701+00:00",
+      "exit_code": 0,
+      "logs": {
+        ".stdout.log": {
+          "path": ".phase-loop/typed-review/RT3/sl1/ruff-final.stdout.log",
+          "sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18"
+        },
+        ".stderr.log": {
+          "path": ".phase-loop/typed-review/RT3/sl1/ruff-final.stderr.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "record_path": ".phase-loop/typed-review/RT3/sl1/ruff-final.command.json",
+      "record_sha256": "42efa54ff38be2adceb1e0cd86c20d2099d9b18d95b0a863f67617ffebca015c"
+    },
+    {
+      "argv": [
+        "uvx",
+        "--from",
+        "ruff==0.15.5",
+        "ruff",
+        "check",
+        "phase-loop-runtime/tests/test_review_t3_faults.py",
+        "phase-loop-runtime/tests/test_review_t3_cli.py"
+      ],
+      "cwd": "/mnt/workspace/worktrees/viperjuice/agent-harness-typed-review-spec-20261019",
+      "started": "2026-10-19T23:04:45.515829+00:00",
+      "ended": "2026-10-19T23:04:45.653698+00:00",
+      "exit_code": 0,
+      "logs": {
+        ".stdout.log": {
+          "path": ".phase-loop/typed-review/RT3/sl1/ruff-first.stdout.log",
+          "sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18"
+        },
+        ".stderr.log": {
+          "path": ".phase-loop/typed-review/RT3/sl1/ruff-first.stderr.log",
+          "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        }
+      },
+      "record_path": ".phase-loop/typed-review/RT3/sl1/ruff-first.command.json",
+      "record_sha256": "09b5ed765352ea08f8d92673cfad09f85372053609d51fbe407e60a1ac99d817"
+    },
+    {
+      "argv": [
+        "uv",
+        "run",
+        "--isolated",
+        "--python",
+        "3.12",
+        "--project",
+        "phase-loop-runtime",
+        "--group",
+        "test",
+        "--extra",
+        "visual",
+        "--locked",
+        "python",
+        "-m",
+        "pytest",
+        "-q",
+        "phase-loop-runtime/tests/test_review_t3_faults.py",
+        "phase-loop-runtime/tests/test_review_t3_cli.py",
+        "-k",
+        "saved_source_replay or only_local_worker_side_effects",
+        "--basetemp",
+        ".phase-loop/typed-review/RT3/sl1/pytest-third"
+      ],
+      "cwd": "/mnt/workspace/worktrees/viperjuice/agent-harness-typed-review-spec-20261019",
+      "started": "2026-10-19T23:05:59.088114+00:00",
+      "ended": "2026-10-19T23:06:02.514440+00:00",
+      "exit_code": 1,
+      "logs": {
+        ".stdout.log": {
+          "path": ".phase-loop/typed-review/RT3/sl1/targeted-third.stdout.log",
+          "sha256": "d03f563b53a8ce8828852d0531ff0df5effb8c01c30f9e4ddfe0ba7c1a223a3e"
+        },
+        ".stderr.log": {
+          "path": ".phase-loop/typed-review/RT3/sl1/targeted-third.stderr.log",
+          "sha256": "eaa2385c0b313371a71e198311f7a8f0bc12c829927333d39232b306a61f149e"
+        }
+      },
+      "record_path": ".phase-loop/typed-review/RT3/sl1/targeted-third.command.json",
+      "record_sha256": "4694e40778028615d0bc2658259f8ae2a2cc1b7cf646bfc42aa1afc3216b2de7"
+    }
+  ],
+  "criteria": {
+    "EC-RT3-1": {
+      "status": "pending_required_repository_verification_and_closeout",
+      "evidence": [
+        "test_review_t3.py",
+        "test_review_t3_faults.py",
+        "test_review_t3_cli.py"
+      ]
+    },
+    "EC-RT3-2": {
+      "status": "pending_required_repository_verification_and_closeout",
+      "evidence": [
+        "test_review_t3.py",
+        "test_review_t3_faults.py",
+        "test_review_t3_cli.py"
+      ]
+    },
+    "IF-0-RT3-1": {
+      "status": "pending_required_repository_verification_and_closeout",
+      "evidence": [
+        "test_review_t3.py",
+        "test_review_t3_faults.py",
+        "test_review_t3_cli.py"
+      ]
+    }
+  },
+  "test_matrix": [
+    {
+      "area": "CLI, policy, charter, immutable scope and private state",
+      "criterion": "EC-RT3-1",
+      "coverage": [
+        "six subprocess operations and help grammars",
+        "same-UID private files, symlinks and outside-checkout state",
+        "fixed NON_GATING/HOST_ATTESTED, injected incompatible admission before request commit",
+        "malformed/unbound/different charter, frozen correction allowance",
+        "metadata stdout/refusal privacy, exact original/base64-context correction prompt bytes",
+        "JSON/environment cannot upgrade authority or redispatch",
+        "guarded real CLI permits local BAML worker only"
+      ]
+    },
+    {
+      "area": "Original identity, capabilities and completion",
+      "criterion": "EC-RT3-1",
+      "coverage": [
+        "task/thread/run/provider/model and null/different identities",
+        "immutable registration",
+        "explicit declared options preserved for correction, unsupported capabilities/profiles/modes",
+        "original failure/later success; original completion/later failure/running/question",
+        "summary cannot replace original bytes; full maximum-position original assistant selection"
+      ]
+    },
+    {
+      "area": "Complete recovery and finite bounds",
+      "criterion": "EC-RT3-1",
+      "coverage": [
+        "timeline/item identity and stable fields",
+        "wrong source/parent/checkout",
+        "duplicates, cursor gaps/loops",
+        "filtered gaps, final null/global maximum, invalid/empty final page",
+        "astral/split-surrogate UTF-16, gaps/overlaps, U+FFFD boundary uncertainty",
+        "exact UTF-8, raw observations, bounded envelope",
+        "timeline/text/items/metadata/observation/aggregate/prompt/UTF-8 ceilings",
+        "authentic original/correction oversize at MAX_BYTES+1, recovery ceiling and ceiling+1"
+      ]
+    },
+    {
+      "area": "Durability and concurrent callers",
+      "criterion": "EC-RT3-2",
+      "coverage": [
+        "orphan charter before request",
+        "request commit before intent",
+        "intent commit before offer",
+        "offered lost response unresolved and late matching registration",
+        "journal registration before coordinator registration",
+        "journal/coordinator delivery before parse",
+        "reservation before intent",
+        "same/conflicting concurrent intake and concurrent reservation",
+        "same key changed payload refusal",
+        "fake-only true redispatch control in accepted SL-0 tests"
+      ]
+    },
+    {
+      "area": "Current local replay and frozen lineage vectors",
+      "criterion": "EC-RT3-2",
+      "coverage": [
+        "saved source after installed map changes; missing source and changed policy refuse",
+        "stable accepted record and actual new validation IPC history",
+        "no provider retry for dissent/incomplete/local BAML/bridge outage",
+        "all four frozen typed_review_lineage_replay.v1 scenarios with unchanged assertions",
+        "retained failures and source packages, restart, oversized correction, replacement and exhausted reservation"
+      ]
+    },
+    {
+      "area": "Matching bypass controls and real worker proof",
+      "criterion": "EC-RT3-1 / EC-RT3-2",
+      "coverage": [
+        "original identity",
+        "complete recovery",
+        "actual BAML gateway invocation",
+        "durable correction reservation",
+        "matching positive controls use local BAML; transport alone is synthetic"
+      ]
+    }
+  ],
+  "missing_planned_synthetic_cases": [],
+  "production_repair_requests": [],
+  "preserved_failures": [
+    {
+      "command": "focused-first",
+      "result": "3 failed, 189 passed",
+      "diagnosis": "Two fixture patches replaced saved-map restoration as well as installed-source acquisition; one assertion expected plain original text instead of frozen base64 correction context.",
+      "resolution": "Patch installed _snapshot_files only; assert exact base64 and public correction_context bytes."
+    },
+    {
+      "command": "focused-second",
+      "result": "2 failed, 201 passed",
+      "diagnosis": "New replay assertion incorrectly required stable receipt IPC to equal fresh parse IPC.",
+      "resolution": "Keep stable receipt IPC unchanged and assert new invocation ID/operation/fingerprint/bytes/tree/digest against validation_history and actual worker frames."
+    },
+    {
+      "command": "targeted-third",
+      "result": "1 failed, 2 passed, 163 deselected",
+      "diagnosis": "Test-only audited CLI argv accidentally removed typed-review subcommand.",
+      "resolution": "Remove erroneous argv pop; targeted audit-fourth passed."
+    }
+  ],
+  "limitations": [
+    "Synthetic trusted host observations only; no provider dispatch, actual route qualification, EC-RENFORCE-2 or deployment claim.",
+    "HOST_ATTESTED original terminal selection and same-UID trust cannot authenticate a dishonest host or isolate hostile same-UID code.",
+    "Production redispatch false; true capability exists only as a clearly fake SL-0 mutation control.",
+    "Crash boundaries use injected SystemExit and durable reopen; standalone commands use fresh processes. No power-loss/filesystem durability qualification.",
+    "Resource tests exercise documented finite limits; no total database quota or live host load qualification.",
+    "Frozen vector reserve/recover operations retain distinct coordinator API semantics; service correction intentionally combines reserve/recover. No frozen expected outcome is rewritten.",
+    "Independent implementation review, sealed final phase suite, make check, docs audits, inventory/global checks and closeout audit remain parent-owned and not run here.",
+    "No lifecycle/whole-worker/full-phase regression rerun. Earlier 133 SL-0 regressions remain historical only."
+  ],
+  "parent_controls": "Parent ledger changed to sl1_conformance_running and records actual checkpoint; no child writes. Plan and accepted SL-0 source hashes unchanged.",
+  "upstream": {
+    "RCONTRACT": "accepted by parent at 6b2b2d3f, actual pytest/suite success run39332069820; failed run39325236763 retained as history"
+  },
+  "retained_ownership": [
+    "N9-R3 structural falsifier gate: RPANEL",
+    "EC-EXECFIND-2 carried/open"
+  ],
+  "publication": "agent-harness#1770 remains draft; no commit, push, PR edit, ready, merge or release",
+  "initial_lane_checkpoint": {
+    "path": ".phase-loop/typed-review/RT3/finalizer-implementation/rt3-evidence-before-parent-reduction.json",
+    "sha256": "5cb301d4b4ff2d7b3ee6edcc5bc9c70922749473d3255e76f3142ee52bcd4613",
+    "note": "Original SL-1 lane evidence preserved; earlier command/source/focused fields below retain that checkpoint meaning."
+  },
+  "parent_reduction": {
+    "timestamp": "2026-10-20T01:33:24.995797+00:00",
+    "current_head": "8585a9aed728159fd245447ed146918cdb132c99",
+    "working_tree_changes_uncommitted": true,
+    "canonical_plan": "plans/phase-plan-v1-typed-review-RT3.md",
+    "canonical_plan_sha256": "4d10366188c0f7a7862074a1252fb6fae01f52bcaef7557b554fac352c811169",
+    "adapter_review": {
+      "round": 2,
+      "status": "COMPLETE",
+      "source_head": "8585a9aed728159fd245447ed146918cdb132c99",
+      "scope": "SL-0 plus completed SL-1 and serial correction, 58 frozen review inputs",
+      "prior_verdict": "COMPLETE/PARTIALLY_AGREE round 1",
+      "prior_blocking": [
+        "RT3-IMPL-R1-F1"
+      ],
+      "author_response": ".phase-loop/typed-review/RT3/correction-r1/response.md",
+      "source_manifest": ".phase-loop/typed-review/RT3/implementation-review-r2-inputs.json",
+      "verdict": "AGREE",
+      "blocking": [],
+      "new_findings": [],
+      "resolved_findings": [
+        "RT3-IMPL-R1-F1",
+        "RT3-IMPL-R1-F2",
+        "RT3-IMPL-R1-F3",
+        "RT3-IMPL-R1-F4",
+        "RT3-IMPL-R1-F5"
+      ],
+      "report": ".phase-loop/typed-review/private/RT3/implementation-review-r2/report.md",
+      "report_sha256": "ffc35717eb967089aee768a4e437807bb6e4ab0dfc2b1299f6e2e091c5ff6e6c",
+      "evidence_class": "manual independent implementation review; not BAML accepted",
+      "parent_verified_inputs": 58,
+      "residual_limitations": [
+        "Status-only association remains a trusted-host assertion; unrelated unused task could spend correction on binding mismatch.",
+        "Effective child permission and host mode after prepare or at resume remain unattested.",
+        "RENFORCE must establish root-child worktreePath, explicit final nextTextOffset null and acknowledgement updatedAt behavior."
+      ]
+    },
+    "historical_sealed_phase_verification": {
+      "schema": "rt3_final_verification_parent_intake.v1",
+      "at": "2026-10-20T00:20:02.630867+00:00",
+      "result_sha256": "821ea79ba121edd2e70ec071ed28e81c2aef0a4020b9a3118996a523fd5e8313",
+      "output_artifacts_verified": 24,
+      "sealed_artifact": ".phase-loop/typed-review/RT3/verify-20261019T233947572588Z/verification.json",
+      "sealed_artifact_sha256": "4f5c2aa7bc96fa8f73f334a4b2ae73d442202696063ba57b96e83e4ae1588686",
+      "sealed_validation_ok": true,
+      "suite_summary": "603 passed in 135.01s (0:02:15)",
+      "required_repository_check": "failed: 4 failed, 5641 passed, 506 skipped, 146 deselected, 1 xfailed, 6 warnings, 278 errors; companion 64 passed",
+      "global_guards": "2 passed",
+      "post_review_doc_repair": {
+        "phase-loop-runtime/README.md": {
+          "verified": "6ffa591f387b67171b54de541e6bc3fa0ed953624e6362a10a51bdc569548e31",
+          "current": "4e1b96114b9206760075259afe71824580602a95037e6fcba0957d60ed288a1e"
+        }
+      },
+      "entry_doc_repair": {
+        "exit_code": 0,
+        "log": ".phase-loop/typed-review/RT3/entry-doc-link-repair.log",
+        "sha256": "7dc2d17d59965785aabdbfce52465e1a42349a4dcc67692fef8b613110713558",
+        "summary": "entry_doc_check: OK \u2014 8 entry doc(s) clean"
+      },
+      "phase_status": "not closed; repository-check diagnosis active; no new CI or push"
+    },
+    "finalizer_bounded_verification": {
+      "path": ".phase-loop/typed-review/RT3/finalizer-implementation/parent-intake.json",
+      "sha256": "75db3b79d6c16d7e9b93f405907893651919c8d3eb92836a7aa9a4fd3825bbd5",
+      "final_inputs_matched": 135,
+      "unchanged_consumed_inputs": 133,
+      "artifact_hashes_matched": 56,
+      "raw_junit_checks": {
+        "pre-edit": {
+          "passed": 0,
+          "failed": 1,
+          "skipped": 0,
+          "errors": 0,
+          "exit_code": 1,
+          "inherited_umask": "0077",
+          "source_binding_count": 2101
+        },
+        "new-controls": {
+          "passed": 13,
+          "failed": 0,
+          "skipped": 0,
+          "errors": 0,
+          "exit_code": 0,
+          "inherited_umask": "0077",
+          "source_binding_count": 2101
+        },
+        "former-eight": {
+          "passed": 8,
+          "failed": 0,
+          "skipped": 0,
+          "errors": 0,
+          "exit_code": 0,
+          "inherited_umask": "0077",
+          "source_binding_count": 2101
+        },
+        "affected-module": {
+          "passed": 290,
+          "failed": 0,
+          "skipped": 4,
+          "errors": 0,
+          "exit_code": 0,
+          "inherited_umask": "0077",
+          "source_binding_count": 2101
+        }
+      },
+      "source_scope_verified": true,
+      "source_bindings": {
+        "phase-loop-runtime/src/phase_loop_runtime/agy_canary_evidence.py": {
+          "before": "db195aeda93eb9934e4e87b1af8f4c5e7260264713180b47dbb693310a85b0d9",
+          "after": "1a1c258e7e22dee98d2355a296ced3955e2f76615b4c8fc48514b5cc4264d534"
+        },
+        "phase-loop-runtime/tests/test_agy_canary_evidence.py": {
+          "before": "053b7747169cab8d4dd2036f143af16cfad4555f381622d0b46eff2b36ca2f70",
+          "after": "1d8ba7b77655d3e0e9d7d1c909bdaf34c5b5d545dda9e36c506c9db7a263c911"
+        }
+      },
+      "phase_completion": false
+    },
+    "finalizer_manual_review": {
+      "coverage": "COMPLETE",
+      "vote": "AGREE",
+      "round": 1,
+      "blocking": [],
+      "nonblocking": [
+        "RT3-FINALIZER-IMPL-R1-F1",
+        "RT3-FINALIZER-IMPL-R1-F2",
+        "RT3-FINALIZER-IMPL-R1-F3"
+      ],
+      "report": ".phase-loop/typed-review/private/RT3/finalizer-implementation-review-r1/report.md",
+      "report_sha256": "2beeb082e5cd391bc908bb55831e0de11d45c22c4474b9070496a1f1959ee728",
+      "matched_inputs": 193,
+      "evidence_class": "manual independent implementation/security review; not BAML acceptance",
+      "response": ".phase-loop/typed-review/RT3/finalizer-implementation/review-r1-response.md",
+      "root_disposition": ".phase-loop/typed-review/private/RT3/finalizer-followups/root-disposition.json",
+      "root_disposition_sha256": "7d8464382286ebdde0ced179024159138494e0f04eeb17e48f93458e2ca8eac9",
+      "no_round_2_required": true
+    },
+    "finalizer_qualification": {
+      "accepted_scope": "reviewed non-root exact captured-mode semantics",
+      "empirically_tested_modes": [
+        "0600",
+        "0640"
+      ],
+      "restriction_is_runtime_guard": false,
+      "broader_policy": "OPEN/UNQUALIFIED, root-owned; no capture rejection implemented"
+    },
+    "evidence_labels": {
+      "discriminating": [
+        "0077 x 0640 transaction matrix cell",
+        "inherited0077 original-node pre-edit failure / post-edit pass"
+      ],
+      "other_three_cells": "compatibility/positive controls",
+      "descriptor_closure": "close event ordering primary; EBADF corroborating"
+    },
+    "private_followup_metadata": {
+      "index": ".phase-loop/typed-review/private/RT3/finalizer-followups/index.json",
+      "index_sha256": "26fe5b7e9841961a1e39aefa232c3b14142674ac7f1ba9bd429e6ec9bc838670",
+      "owner": "root thread d8238af5-72f9-42f1-9c57-40dbd12e63ee",
+      "findings": [
+        "RT3-FINALIZER-IMPL-R1-F1",
+        "RT3-FINALIZER-IMPL-R1-F2"
+      ],
+      "state": "private drafts, UNFILED",
+      "filed_references": [],
+      "filing_obligation_satisfied": false
+    },
+    "current_finalizer_source_sha256": {
+      "phase-loop-runtime/src/phase_loop_runtime/agy_canary_evidence.py": "1a1c258e7e22dee98d2355a296ced3955e2f76615b4c8fc48514b5cc4264d534",
+      "phase-loop-runtime/tests/test_agy_canary_evidence.py": "1d8ba7b77655d3e0e9d7d1c909bdaf34c5b5d545dda9e36c506c9db7a263c911"
+    },
+    "final_corrected_head_ci": "pending; checkpoint run39338465600 excludes unpushed SL-1 and corrections",
+    "remaining_gates": [
+      "original required make check remains failed; no qualified broad retry authorized",
+      "Jev helper/native dependency handoff unavailable",
+      "namespace administrator prerequisite unresolved",
+      "no available qualified venue",
+      "final corrected-head CI pending",
+      "final docs/ignored-output audit and EC/IF closeout unresolved",
+      "private follow-up filing obligation not satisfied by local drafts"
+    ],
+    "ec_if_completion_claimed": false,
+    "production_activation_authorized": false,
+    "publication": "Existing agent-harness#1770 remains draft; no new commit or push in this reduction",
+    "integrated_scoped_verification_20261020": {
+      "id": "RT3-INTEGRATED-SCOPED-VERIFICATION-20261020",
+      "recorded_at": "2026-10-20T04:49:01.769094+00:00",
+      "verified_head": "be9edf64fb3e5d06f06ce4fa100b64c5d550b92f",
+      "main_input": "da360f44d5b1646389f8801662ee5c638f9de5c1",
+      "scope": "Separate integrated scoped checks; not a single aggregate suite pass, repository verification or phase acceptance",
+      "evidence_storage": "Private frontier-conflict-recovery-20261020-r1 artifacts; metadata and digests only",
+      "runs": [
+        {
+          "selection": "canonical nine-module RT3 selection plus full canary",
+          "result": {
+            "passed": 889,
+            "failed": 3,
+            "skipped": 4
+          },
+          "rt3_nine_module_subtotal": {
+            "passed": 603,
+            "failed": 0
+          },
+          "canary_subtotal": {
+            "passed": 286,
+            "failed": 3,
+            "skipped": 4
+          },
+          "failure": "Three socket setup failures from inherited long temporary paths; retained, not erased",
+          "result_record": {
+            "private_record": "integrated-verification/result.json",
+            "sha256": "f12c4e07ec75365a4f5d4d280e808de78490c69c84ed13ca20b5d0a85930ac5c"
+          },
+          "junit": {
+            "private_record": "integrated-verification/scoped-tests.junit.xml",
+            "sha256": "2f80c9222c9f0baf9e53bda5d191ca8c849e7c90a1723fcd09e773046ae7c278"
+          }
+        },
+        {
+          "selection": "One full canary-only rerun; nine-module603 pass not repeated",
+          "result": {
+            "passed": 289,
+            "failed": 0,
+            "skipped": 4
+          },
+          "correction": "Explicit short /tmp task root, TMPDIR=/tmp and short pytest basetemp; inherited umask0077 read without mutation",
+          "existing_skip_limits": [
+            "root-runner ownership seam",
+            "root-runner lease seam",
+            "root-only minimal-home seam",
+            "real uv launcher-install prerequisite"
+          ],
+          "result_record": {
+            "private_record": "integrated-verification-short-tmp/result.json",
+            "sha256": "123494f386f9aab06aad3b4d52a8ba00d38728c726602f34cecaeab4187ccfec"
+          },
+          "junit": {
+            "private_record": "integrated-verification-short-tmp/canary-rerun.junit.xml",
+            "sha256": "3fbb2c7132298d5c46e732e3179967b3878acaf5cc01cff71e35c6e053c3fa41"
+          }
+        }
+      ],
+      "other_checks": {
+        "ruff_0_15_5": "passed",
+        "entry_docs": "passed; 8 docs",
+        "canonical_plan": "passed; 3 lanes; one N warning retained for post-dispatch evidence-reducer lane",
+        "canonical_manifest": "passed;48canonical/48registered/0unregistered",
+        "inventory_and_ancestry": "2passed",
+        "docs_audit": "passed; no findings; explicit integrated main base",
+        "diff_check": "passed"
+      },
+      "binding": {
+        "tracked_files": 2022,
+        "tracked_before_after_equal": true,
+        "private_metadata_before_after_equal": true,
+        "source_snapshot": {
+          "private_record": "integrated-verification-short-tmp/after.json",
+          "sha256": "c5819b0ef00ee17dc66a27d6850636adf8125f67cc8624ab10315ea8ffefae56"
+        },
+        "artifact_manifest": {
+          "private_record": "integrated-verification-short-tmp/artifact-sha256.json",
+          "sha256": "82e837366fa6d96379c6596494bba978330e1e14b711b5010edc30d16438d1e2"
+        }
+      },
+      "verification_status": "failed",
+      "phase_status": "FAILED/open; required repository and external gates unresolved",
+      "produced_if_gates": [],
+      "ec_if_completion_claimed": false,
+      "prior_repository_failures": "Original make check and verified282-node reproduction remain failed; scoped checks do not replace them",
+      "private_followups": "F1/F2 remain private UNFILED and root-owned; no payload or disposition change",
+      "review_history": "All original reviews, input hashes, failures and exhausted caps retained; no new review round",
+      "publication_status_at_reduction": "Remote8585a9a CI historical; corrected published-head CI pending; draft-only, no ready/merge/activation",
+      "remaining_gates": [
+        "required repository verification",
+        "Jev/helper native runtime handoff",
+        "administrator-owned namespace prerequisite",
+        "qualified venue unavailable",
+        "corrected published-head CI",
+        "final ignored-output/spec/EC/IF closeout",
+        "private follow-up filing obligation"
+      ]
+    }
+  }
+}

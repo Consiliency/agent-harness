@@ -1464,7 +1464,7 @@ def test_helper_observer_includes_nested_pid_namespaces(tmp_path):
             sleeping = []
             for pid in children:
                 try:
-                    if Path(f"/proc/{pid}/exe").resolve() == Path("/usr/bin/sleep"):
+                    if Path(f"/proc/{pid}/exe").resolve() == Path("/usr/bin/sleep").resolve(strict=True):
                         sleeping.append(pid)
                 except (FileNotFoundError, ProcessLookupError):
                     pass
