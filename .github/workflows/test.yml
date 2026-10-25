@@ -344,7 +344,7 @@ jobs:
     # `hosted` is the suite of record.
     needs: elig
     if: needs.elig.outputs.eligible != 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned: ubuntu-latest moved to 26.04, unvalidated here (agent-harness#1763)
     timeout-minutes: 100
     strategy:
       fail-fast: false
@@ -583,7 +583,7 @@ jobs:
     # agent-harness#1029: push-to-main, nightly, dispatch and tags only; pull requests
     # run the `wheel-smoke` job below instead.
     if: needs.elig.outputs.eligible != 'true' && github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned: ubuntu-latest moved to 26.04, unvalidated here (agent-harness#1763)
     timeout-minutes: 150  # agent-harness#1297: stopgap until the per-test seat fixture is shared; restore to 100 after
     steps:
       - uses: actions/checkout@v4
@@ -673,7 +673,7 @@ jobs:
     # except the full standalone suite, which Gate A still runs after merge.
     needs: elig
     if: needs.elig.outputs.eligible != 'true' && github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned: ubuntu-latest moved to 26.04, unvalidated here (agent-harness#1763)
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
