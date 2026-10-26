@@ -19,6 +19,7 @@ def _review_dir(root: Path) -> Path:
 def _build(review: Path, subject: Path, dependency):
     bundle = seat_jail.memfd_with("synthetic-bundle", b"bundle")
     instructions = seat_jail.memfd_with("synthetic-instructions", b"instructions")
+    token = seat_jail.token_pipe(b"synthetic-token")
     try:
         return seat_jail.build_seat_jail(
             "claude",
@@ -26,10 +27,12 @@ def _build(review: Path, subject: Path, dependency):
             subject,
             bundle_memfd=bundle,
             instructions_memfd=instructions,
+            token_fd=token,
+            seat_ids=(1, 1),
             dependency=dependency,
         )
     except BaseException:
-        for fd in (bundle, instructions):
+        for fd in (bundle, instructions, token):
             try:
                 os.close(fd)
             except OSError:
@@ -112,14 +115,20 @@ def test_mutation_immediately_before_launch_never_reaches_process_boundary(
                 "Popen",
                 lambda *_args, **_kwargs: launched.append(object()),
             )
-            fixture.helper.write_bytes(b"changed-before-launch")
-            with pytest.raises(ExecutableDependencyError, match="source_changed"):
-                panel_invoker.launch_provider(
-                    [production.provider_argv0],
-                    process_owner=production,
-                    probe_owner=probe,
-                    env={},
-                )
+            egress = panel_invoker._EGRESS_LAUNCH_PREFIX.set(
+                ("/usr/bin/nsenter", "--net=/proc/1/ns/net", "/usr/bin/setpriv", "--")
+            )
+            try:
+                fixture.helper.write_bytes(b"changed-before-launch")
+                with pytest.raises(ExecutableDependencyError, match="source_changed"):
+                    panel_invoker.launch_provider(
+                        [production.provider_argv0],
+                        process_owner=production,
+                        probe_owner=probe,
+                        env={},
+                    )
+            finally:
+                panel_invoker._EGRESS_LAUNCH_PREFIX.reset(egress)
             assert not launched
         finally:
             if probe is not None:

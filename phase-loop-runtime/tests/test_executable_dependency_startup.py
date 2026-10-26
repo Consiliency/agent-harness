@@ -1,11 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import replace
+import hashlib
 import os
 from pathlib import Path
+import stat
 import threading
 
 import pytest
+import rfc8785
 
 from executable_dependency_test_support import build_fixture
 from phase_loop_runtime.executable_dependency import ExecutableDependencyError
@@ -38,6 +41,90 @@ def runtime_package() -> QualifiedRuntimePackage:
         python_executable_sha256="5" * 64,
         private_runtime_binding_sha256="6" * 64,
     )
+
+
+def verified_runtime_package(monkeypatch, root: Path) -> tuple[QualifiedRuntimePackage, Path]:
+    package_root = root / "runtime"
+    module = package_root / "phase_loop_runtime/executable_dependency_startup.py"
+    metadata = package_root / "phase_loop_runtime-0.7.27.dist-info"
+    record = metadata / "RECORD"
+    python = root / "python3.14"
+    module.parent.mkdir(parents=True)
+    metadata.mkdir()
+    module.write_bytes(b"runtime-module\n")
+    (metadata / "METADATA").write_bytes(b"Name: phase-loop-runtime\nVersion: 0.7.27\n")
+    record.write_bytes(b"canonical-record\n")
+    python.write_bytes(b"synthetic-python\n")
+    python.chmod(0o755)
+
+    def digest(value: bytes) -> str:
+        return hashlib.sha256(value).hexdigest()
+
+    rows = [
+        {
+            "path": path.relative_to(package_root).as_posix(),
+            "sha256": digest(path.read_bytes()),
+            "size": path.stat().st_size,
+        }
+        for path in package_root.rglob("*")
+        if path.is_file()
+    ]
+    rows.sort(key=lambda item: item["path"].encode("ascii"))
+    metadata_path = metadata.relative_to(package_root).as_posix()
+    metadata_rows = [row for row in rows if row["path"].startswith(metadata_path + "/")]
+    files_sha256 = digest(rfc8785.dumps(rows))
+    metadata_sha256 = digest(rfc8785.dumps(metadata_rows))
+    root_stat = package_root.stat()
+    manifest = {
+        "schema": "org.agent-harness.installed-package-tree.v1",
+        "distribution": "phase-loop-runtime",
+        "version": "0.7.27",
+        "install_root": {
+            "path": str(package_root),
+            "device": root_stat.st_dev,
+            "inode": root_stat.st_ino,
+            "uid": root_stat.st_uid,
+            "gid": root_stat.st_gid,
+            "mode": f"0{stat.S_IMODE(root_stat.st_mode):03o}",
+        },
+        "coverage": {
+            "regular_files": "include-all",
+            "symlinks": "reject",
+            "bytecode": "include-if-present",
+            "generated_files": "include-if-present",
+            "special_files": "reject",
+        },
+        "distribution_metadata": {
+            "path": metadata_path,
+            "metadata_sha256": metadata_sha256,
+            "record_path": record.relative_to(package_root).as_posix(),
+            "record_sha256": digest(record.read_bytes()),
+        },
+        "files_sha256": files_sha256,
+        "files": rows,
+    }
+    python_stat = python.stat()
+    monkeypatch.setattr(startup, "__file__", str(module))
+    monkeypatch.setattr(startup, "__version__", "0.7.27")
+    monkeypatch.setattr(startup.sys, "executable", str(python))
+    return QualifiedRuntimePackage(
+        distribution="phase-loop-runtime",
+        version="0.7.27",
+        install_root=str(package_root),
+        install_root_device=root_stat.st_dev,
+        install_root_inode=root_stat.st_ino,
+        installed_tree_manifest_id=digest(rfc8785.dumps(manifest)),
+        installed_tree_files_sha256=files_sha256,
+        distribution_metadata_sha256=metadata_sha256,
+        distribution_record_path=record.relative_to(package_root).as_posix(),
+        distribution_record_sha256=digest(record.read_bytes()),
+        python_executable=str(python),
+        python_executable_device=python_stat.st_dev,
+        python_executable_inode=python_stat.st_ino,
+        python_executable_size=python_stat.st_size,
+        python_executable_sha256=digest(python.read_bytes()),
+        private_runtime_binding_sha256="6" * 64,
+    ), module
 
 
 class FakeDependency:
@@ -197,3 +284,16 @@ def test_runtime_binding_digest_is_opaque_but_still_hash_typed(monkeypatch) -> N
     monkeypatch.setattr(startup, "__version__", package.version)
     with pytest.raises(ExecutableDependencyError, match="runtime_mismatch"):
         startup._validate_runtime_package(replace(package, private_runtime_binding_sha256="opaque"))
+
+
+def test_runtime_package_recomputes_manifest_and_refuses_mismatch_or_mutation(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    package, module = verified_runtime_package(monkeypatch, tmp_path)
+    startup._validate_runtime_package(package)
+    with pytest.raises(ExecutableDependencyError, match="installed tree manifest"):
+        startup._validate_runtime_package(replace(package, installed_tree_manifest_id="f" * 64))
+    module.write_bytes(b"mutated-runtime-module\n")
+    with pytest.raises(ExecutableDependencyError, match="installed tree"):
+        startup._validate_runtime_package(package)

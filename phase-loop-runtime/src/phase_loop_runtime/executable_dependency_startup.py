@@ -427,12 +427,46 @@ def _validate_runtime_package(package: QualifiedRuntimePackage) -> None:
         record = Path(root) / record_relative
         if _file_sha256(record, FILE_MAX_BYTES) != package.distribution_record_sha256:
             raise ExecutableDependencyError("runtime_mismatch", "distribution record")
-        metadata_root = str(PurePosixPath(record_relative).parent)
-        if metadata_root == ".":
-            raise ExecutableDependencyError("runtime_mismatch", "distribution metadata path")
-        metadata = [row for row in rows if str(row["path"]).startswith(metadata_root + "/")]
-        if not metadata or _digest(rfc8785.dumps(metadata)) != package.distribution_metadata_sha256:
+        record_parts = PurePosixPath(record_relative).parts
+        metadata_candidates: list[tuple[str, list[dict[str, object]]]] = []
+        for width in range(1, len(record_parts)):
+            candidate = "/".join(record_parts[:width])
+            subset = [row for row in rows if str(row["path"]).startswith(candidate + "/")]
+            if subset and _digest(rfc8785.dumps(subset)) == package.distribution_metadata_sha256:
+                metadata_candidates.append((candidate, subset))
+        if len(metadata_candidates) != 1:
             raise ExecutableDependencyError("runtime_mismatch", "distribution metadata")
+        metadata_root, _metadata = metadata_candidates[0]
+        manifest = {
+            "schema": "org.agent-harness.installed-package-tree.v1",
+            "distribution": package.distribution,
+            "version": package.version,
+            "install_root": {
+                "path": root,
+                "device": root_stat.st_dev,
+                "inode": root_stat.st_ino,
+                "uid": _host_id(root_stat.st_uid),
+                "gid": _host_id(root_stat.st_gid),
+                "mode": f"0{stat.S_IMODE(root_stat.st_mode):03o}",
+            },
+            "coverage": {
+                "regular_files": "include-all",
+                "symlinks": "reject",
+                "bytecode": "include-if-present",
+                "generated_files": "include-if-present",
+                "special_files": "reject",
+            },
+            "distribution_metadata": {
+                "path": metadata_root,
+                "metadata_sha256": package.distribution_metadata_sha256,
+                "record_path": record_relative,
+                "record_sha256": package.distribution_record_sha256,
+            },
+            "files_sha256": package.installed_tree_files_sha256,
+            "files": rows,
+        }
+        if _digest(rfc8785.dumps(manifest)) != package.installed_tree_manifest_id:
+            raise ExecutableDependencyError("runtime_mismatch", "installed tree manifest")
     except ExecutableDependencyError:
         raise
     except (OSError, ValueError) as exc:
@@ -462,6 +496,12 @@ def _safe_identity(value: os.stat_result) -> None:
     for item in (value.st_dev, value.st_ino, value.st_size):
         if type(item) is not int or not 0 <= item <= SAFE_INTEGER_MAX:
             raise ExecutableDependencyError("runtime_mismatch", "unsupported host identity")
+
+
+def _host_id(value: int) -> int:
+    if type(value) is not int or not 0 <= value <= 4_294_967_295:
+        raise ExecutableDependencyError("runtime_mismatch", "unsupported host identity")
+    return value
 
 
 def _absolute_path(value: str) -> str:
