@@ -2142,6 +2142,14 @@ def launch_with_spec(
     caller_run_id: str | None = None,
     lease_authority: object | None = None,
 ) -> LaunchResult:
+    dependency = None
+    if not dry_run:
+        # Dependency admission is deliberately before availability checks and the
+        # Channel/AgentView early returns: every managed provider-capable route must
+        # hold an explicit startup task before it can resolve or launch a provider.
+        from .executable_dependency_startup import current_dependency_for_provider
+
+        dependency = current_dependency_for_provider(spec.executor, spec.command)
     if not spec.available and not dry_run:
         raise ValueError("live launch requested for unavailable executor")
     action = spec.prompt_bundle.product_action or "execute"
@@ -2162,6 +2170,8 @@ def launch_with_spec(
             spec,
         )
     command, staged_review_paths = _resolve_command_context(spec, log_path, dry_run=dry_run)
+    if dependency is not None:
+        dependency.validate_command(command, provider=spec.executor)
     # DFCHTELEMETRY (IF-0-DFCHTELEMETRY-1): runtime no-hidden-print guard. A primary
     # Claude route (Channel / Agent View) must never resolve to a real `claude -p`
     # invocation; the build path guarantees this structurally, so a violation is a

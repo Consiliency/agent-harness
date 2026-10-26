@@ -84,17 +84,38 @@ def dispatch_ready_nodes(
                 persist_decision(decision)
             (batch if verdict is None else deferred).append(request)
         workers = min(max_workers, len(batch))
+        from phase_loop_runtime.executable_dependency_startup import (
+            acquire_child_dependency_task,
+            bind_child_dependency_task,
+            release_unstarted_dependency_task,
+        )
+
+        dependency_tasks: dict[str, object | None] = {}
+        try:
+            for request in batch:
+                dependency_tasks[request.node_id] = acquire_child_dependency_task(
+                    f"convergence:{request.node_id}"
+                )
+        except BaseException:
+            for task in dependency_tasks.values():
+                release_unstarted_dependency_task(task)  # type: ignore[arg-type]
+            raise
+
         def _run(request: RepositoryDispatchRequest) -> ConvergenceResultEnvelope:
             lock = locks.for_repository(request.repository)
-            with lock:
+            with bind_child_dependency_task(dependency_tasks[request.node_id]), lock:  # type: ignore[arg-type]
                 try:
                     return execute(request)
                 except Exception as exc:
                     return ConvergenceResultEnvelope(ConvergenceResultStatus.FAILED, request.node_id, str(exc))
-        with ThreadPoolExecutor(max_workers=workers) as pool:
-            future_to_request = {pool.submit(_run, request): request for request in batch}
-            for future in as_completed(future_to_request):
-                request = future_to_request[future]
-                results[request.node_id] = future.result()
+        try:
+            with ThreadPoolExecutor(max_workers=workers) as pool:
+                future_to_request = {pool.submit(_run, request): request for request in batch}
+                for future in as_completed(future_to_request):
+                    request = future_to_request[future]
+                    results[request.node_id] = future.result()
+        finally:
+            for task in dependency_tasks.values():
+                release_unstarted_dependency_task(task)  # type: ignore[arg-type]
         pending = deferred
     return results

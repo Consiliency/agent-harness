@@ -4851,6 +4851,8 @@ def run_loop(
                             break
                         continue
                     preps[ready_phase] = prep
+                    from .executable_dependency_startup import acquire_child_dependency_task
+
                     jobs.append(
                         PhaseWorkerJob(
                             phase=ready_phase,
@@ -4865,6 +4867,9 @@ def run_loop(
                             worktree_handle=handle,
                             caller_run_id=caller_run_id,
                             lease_authority=getattr(handle, "lease_authority", None),
+                            dependency_task=acquire_child_dependency_task(
+                                f"phase-worker:{ready_phase}"
+                            ),
                             closeout_mode=closeout_mode,
                         )
                     )
@@ -5050,6 +5055,10 @@ def run_loop(
                         metadata={"staged_artifacts": sorted(set(staged_artifacts))},
                     )
             finally:
+                from .executable_dependency_startup import release_unstarted_dependency_task
+
+                for job in jobs:
+                    release_unstarted_dependency_task(job.dependency_task)  # type: ignore[arg-type]
                 # Every launch has returned before this point, so no descendant can
                 # still need the parent copy of its descriptor. Preserve unresolved
                 # generations, but release the coordinator's duplicate descriptor so

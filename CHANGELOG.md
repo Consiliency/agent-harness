@@ -6,6 +6,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Executable dependency admission (agent-harness#1774)
+
+- Add deployment-neutral, canonical requirement/authority/declaration admission,
+  descriptor-held read-only projections, a pinned in-process startup API, and explicit
+  worker/panel/convergence task lifetime. Required dependency failures refuse before
+  managed provider effects; standalone behavior remains only when requirement and
+  authority are both absent.
+
 ### Claude execute-phase drops under the skill size limit (agent-harness#1358)
 
 - Move interactive publication (mode (b), the publication-mode check, draft PR early),
