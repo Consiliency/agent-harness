@@ -272,10 +272,7 @@ def _profile_command_registrars():
         seen.add(key)
         registrars.append(registrar)
 
-    try:
-        entry_points = importlib.metadata.entry_points(group="phase_loop_runtime.profile_commands")
-    except TypeError:  # pragma: no cover - py<3.10 selectable API
-        entry_points = importlib.metadata.entry_points().get("phase_loop_runtime.profile_commands", [])
+    entry_points = importlib.metadata.entry_points(group="phase_loop_runtime.profile_commands")
     for entry_point in entry_points:
         try:
             _add(entry_point.load())
@@ -846,6 +843,10 @@ def build_parser() -> argparse.ArgumentParser:
             sub.description = "agent-harness#211: check that a plan's acceptance items reference every EC-<ALIAS>-<N> goal ID of its anchored roadmap phase (decidable completeness)."
             sub.add_argument("--plan", required=True, help="Path to the phase plan to audit.")
         if name == "fleet-map":
+            sub.add_argument("--manifest", help="Closed fleet_scan_input.v1 manifest for offline artifact mode.")
+            sub.add_argument("--producer-commit", help="Producer source commit for artifact provenance.")
+            sub.add_argument("--generated-at", help="Explicit UTC observation timestamp for artifact mode.")
+            sub.add_argument("--output", help="Artifact output file (required with --manifest).")
             sub.description = (
                 "CS-0.7: extract the realized cross-repo interface graph (git+ref pins, "
                 "copied-literal contract/schema drift, hard-coded host-path refs) across "
@@ -4816,6 +4817,19 @@ def _closeout_drift_audit_command(*, args: argparse.Namespace, as_json: bool) ->
 
 def _fleet_map_command(*, args: argparse.Namespace, as_json: bool) -> int:
     from .fleet_map import build_fleet_map
+
+    artifact_args = (args.manifest, args.producer_commit, args.generated_at, args.output)
+    if any(artifact_args):
+        from .fleet_map_artifact import ArtifactError, write_artifact
+        if not all(artifact_args) or args.repo != ".":
+            print("fleet-map: artifact mode requires manifest, producer-commit, generated-at and output; omit --repo", file=sys.stderr)
+            return 2
+        try:
+            write_artifact(Path(args.manifest), args.producer_commit, args.generated_at, Path(args.output))
+        except ArtifactError as exc:
+            print(f"fleet-map: {exc}", file=sys.stderr)
+            return 2
+        return 0
 
     repo_args = args.repo or ["."]
     if isinstance(repo_args, str):

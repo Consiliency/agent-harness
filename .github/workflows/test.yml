@@ -98,7 +98,7 @@ jobs:
     if: needs.elig.outputs.eligible == 'true'
     # One job runs ALL the heavy stages, so this budget is not the per-lane 100
     # the hosted jobs use. The Dagger module runs them concurrently, so the wall
-    # clock is max(py3.10, Gate A) -- ~60 min on a warm engine when the chronology
+    # clock is max(py3.12 suite, Gate A) -- ~60 min on a warm engine when the chronology
     # node is retained, 7:45 when it is deselected (measured on run 33773648179,
     # a chronology=false dispatch of main). 120 leaves room for a
     # cold-image run and a Gate A slower than the ~58 min its hosted 86:36 scales
@@ -303,17 +303,6 @@ jobs:
           baml-cli --agent-skill-check off check --project "$rendered" 2>&1 | tee "$RUNNER_TEMP/rendered.log"
           grep -q 'Finished checked 9 file(s)' "$RUNNER_TEMP/rendered.log"
 
-      - name: I1 interrupt subset on Python 3.12 (sys.monitoring)
-        # agent-harness#1135: pull requests run the pytest lane on 3.10 only
-        # (settrace injection). The fixed I1 regression subset and the double-
-        # injection test also run here, on 3.12, where the sweep injects through
-        # sys.monitoring. The full sweep is baml-i1-sweep.yml.
-        working-directory: phase-loop-runtime
-        run: |
-          set -euo pipefail
-          python -m pip install ".[visual]" pytest
-          PYTHONPATH=src:tests python -m pytest -q -p no:cacheprovider \
-            tests/test_phase_loop_baml_v1_runtime.py -k "i1_boundary_subset or i1_double_injection"
 
   lint:
     name: lint (pyflakes)
@@ -355,15 +344,14 @@ jobs:
     # `hosted` is the suite of record.
     needs: elig
     if: needs.elig.outputs.eligible != 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned: ubuntu-latest moved to 26.04, unvalidated here (agent-harness#1763)
     timeout-minutes: 100
     strategy:
       fail-fast: false
       matrix:
-        python-version: ['3.10', '3.11', '3.12']
-        # agent-harness#1029: pull requests run the py3.10 floor lane only; push,
-        # nightly and dispatch keep all three.
-        exclude: ${{ github.event_name == 'pull_request' && fromJSON('[{"python-version":"3.11"},{"python-version":"3.12"}]') || fromJSON('[]') }}
+        # agent-harness#1546: 3.12 is the floor and the only lane, on every event.
+        # A one-entry matrix keeps the job name and the retention guard's subject.
+        python-version: ['3.12']
     steps:
       - uses: actions/checkout@v4
         with:
@@ -449,16 +437,16 @@ jobs:
           # deliberately to exercise the installed-consumer posture.
           # Chronology selection: when this run retains the heavy CONFORM
           # chronology node (~50 min; see ci/chronology-scope.sh) it runs in
-          # exactly two of the four CI executions -- this py3.10 lane (oldest
-          # supported interpreter; the node drives version-sensitive subprocess
-          # machinery, cf. the 3.10-vs-3.12 egg-info divergence in
-          # agent-harness#382) and Gate A (py3.12 clean room). The 3.11 and 3.12
-          # matrix lanes always deselect it. The py3.10 lane always writes junit,
-          # so the uploaded evidence witnesses the decision either way.
+          # exactly two CI executions -- this py3.12 lane (the oldest supported
+          # interpreter since agent-harness#1546; the node drives version-sensitive
+          # subprocess machinery, cf. the egg-info divergence in agent-harness#382)
+          # and Gate A (py3.12 clean room). Any other matrix lane deselects it. The
+          # py3.12 lane always writes junit, so the uploaded evidence witnesses the
+          # decision either way.
           CHRONOLOGY_NODE="$(bash ../ci/chronology-scope.sh --node)"
           suite_args=()
-          if [ "${{ matrix.python-version }}" = "3.10" ]; then
-            suite_args+=("--junitxml=$RUNNER_TEMP/junit-py310.xml")
+          if [ "${{ matrix.python-version }}" = "3.12" ]; then
+            suite_args+=("--junitxml=$RUNNER_TEMP/junit-py312.xml")
             if [ "${CHRONOLOGY:-true}" = "true" ]; then
               expect=present
             else
@@ -490,7 +478,7 @@ jobs:
             # The junit must WITNESS the decision: node present (ran, passed)
             # when retained, absent when deselected. A skipped row is neither.
             python scripts/chronology_witness.py \
-              --junit "$RUNNER_TEMP/junit-py310.xml" --node "$CHRONOLOGY_NODE" --expect "$expect"
+              --junit "$RUNNER_TEMP/junit-py312.xml" --node "$CHRONOLOGY_NODE" --expect "$expect"
           fi
           suite_root="$(mktemp -d)/phase-loop-runtime"
           mkdir -p "$suite_root" "$(dirname "$suite_root")/specs"
@@ -501,15 +489,15 @@ jobs:
             "$suite_root/tests/test_legible_evidence.py" \
             -m "not dotfiles_integration"
 
-      - name: Upload chronology junit (py3.10 lane)
+      - name: Upload chronology junit (py3.12 lane)
         # Durable per-node evidence: without the upload the xml dies with the
-        # runner. Only the py3.10 lane produces it (the other lanes deselect the
+        # runner. Only the py3.12 lane produces it (any other lane deselects the
         # node), and it must survive a red suite, hence if: always().
-        if: always() && matrix.python-version == '3.10'
+        if: always() && matrix.python-version == '3.12'
         uses: actions/upload-artifact@v4
         with:
-          name: chronology-junit-py310
-          path: ${{ runner.temp }}/junit-py310.xml
+          name: chronology-junit-py312
+          path: ${{ runner.temp }}/junit-py312.xml
           if-no-files-found: error
 
       - name: WIRE-THE-DOCTOR — fail on a stale gating BOM target
@@ -595,7 +583,7 @@ jobs:
     # agent-harness#1029: push-to-main, nightly, dispatch and tags only; pull requests
     # run the `wheel-smoke` job below instead.
     if: needs.elig.outputs.eligible != 'true' && github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned: ubuntu-latest moved to 26.04, unvalidated here (agent-harness#1763)
     timeout-minutes: 150  # agent-harness#1297: stopgap until the per-test seat fixture is shared; restore to 100 after
     steps:
       - uses: actions/checkout@v4
@@ -685,7 +673,7 @@ jobs:
     # except the full standalone suite, which Gate A still runs after merge.
     needs: elig
     if: needs.elig.outputs.eligible != 'true' && github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04  # pinned: ubuntu-latest moved to 26.04, unvalidated here (agent-harness#1763)
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4

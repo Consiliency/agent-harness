@@ -237,10 +237,8 @@ def _contract_floor(repo: Path) -> Optional[str]:
         if pyproj is None or not pyproj.is_file():
             continue
         try:
-            try:
-                import tomllib
-            except ModuleNotFoundError:  # py<3.11
-                import tomli as tomllib  # type: ignore[no-redef]
+            import tomllib
+
             deps = tomllib.loads(pyproj.read_text(encoding="utf-8"))["project"]["dependencies"]
         except Exception:
             continue

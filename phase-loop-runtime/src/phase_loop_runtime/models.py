@@ -548,6 +548,8 @@ class PromptBundle:
     installed_skill_roots: tuple[str, ...] = ()
     installed_skill_warnings: tuple[str, ...] = ()
     bridge_skill_inventory: tuple[dict[str, Any], ...] = ()
+    # Internal launch payload; excluded from serialized prompt metadata.
+    skill_reference_files: tuple[tuple[str, bytes], ...] = ()
 
     def __post_init__(self) -> None:
         require_literal(self.injection_mode, INJECTION_MODES, "injection mode")

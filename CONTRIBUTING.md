@@ -21,7 +21,7 @@ below don't repeat it.
 
 ## Local checks
 
-Requirements: Python 3.10 or newer for the runtime (`requires-python = ">=3.10"`), plus
+Requirements: Python 3.12 or newer for the runtime (`requires-python = ">=3.12"`), plus
 [`uv`](https://docs.astral.sh/uv/).
 
 - `make check` runs the checks your change can affect against `origin/main`. That covers

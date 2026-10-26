@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import subprocess
 import tempfile
+import time
 import unittest
 import hashlib
 import os
@@ -331,47 +332,59 @@ class GeminiRetryOnceTests(unittest.TestCase):
         self.assertEqual(rc, 124)
 
 
+class _LegClock:
+    """Virtual time for ``panel_invoker`` alone, advanced only by the fake leg.
+
+    Patching ``pi.time.monotonic`` replaced the process-wide ``time.monotonic``, so any
+    other reader during the call (another thread, a stdlib wait) took values from a finite
+    stub: one extra read turned the slow case into a retry and exhausted it. Every read
+    here returns the current time and only a leg attempt moves it, so the number of reads,
+    or who makes them, cannot change the elapsed time the retry guard sees.
+    """
+
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def monotonic(self) -> float:
+        return self.now
+
+    def __getattr__(self, name: str):
+        return getattr(time, name)  # everything else is the real module
+
+
 class RetryElapsedGuardTests(unittest.TestCase):
     """Fix 3: the soft-empty retry is bounded to FAST failures so it can never
     ~double a slow leg's wall-clock (the full-concurrent-path near-hang)."""
 
     def test_codex_slow_empty_turn_is_not_retried(self) -> None:
         calls = {"n": 0}
+        clock = _LegClock()
 
         def fake_run(cmd, **kwargs):
             calls["n"] += 1
+            clock.now += 10_000.0  # the attempt consumed far more than half its budget
             return _FakeProc(0, stdout="")  # empty → would normally retry
-
-        # Stub the clock so the first attempt "consumed" nearly the whole budget.
-        times = iter([0.0, 10_000.0, 10_000.0, 20_000.0])
-
-        def fake_monotonic():
-            return next(times)
 
         with tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as od:
             with patch.object(pi, "_run_leg_with_liveness", fake_run), \
                  patch.object(pi, "_leg_auth_ok", return_value=(True, "")), \
-                 patch.object(pi.time, "monotonic", side_effect=fake_monotonic):
+                 patch.object(pi, "time", clock):
                 pi._exec_leg("codex", Path(rd), Path(od))
         self.assertEqual(calls["n"], 1)  # slow empty → bounded, not re-run
 
     def test_codex_fast_empty_turn_is_retried(self) -> None:
         calls = {"n": 0}
+        clock = _LegClock()
 
         def fake_run(cmd, **kwargs):
             calls["n"] += 1
+            clock.now += 0.1  # fast attempts → the transient retry still fires once
             return _FakeProc(0, stdout="")
-
-        # Fast attempts (elapsed ~0) → the transient retry still fires once.
-        times = iter([0.0, 0.1, 0.2, 0.3, 0.4, 0.5])
-
-        def fake_monotonic():
-            return next(times)
 
         with tempfile.TemporaryDirectory() as rd, tempfile.TemporaryDirectory() as od:
             with patch.object(pi, "_run_leg_with_liveness", fake_run), \
                  patch.object(pi, "_leg_auth_ok", return_value=(True, "")), \
-                 patch.object(pi.time, "monotonic", side_effect=fake_monotonic):
+                 patch.object(pi, "time", clock):
                 pi._exec_leg("codex", Path(rd), Path(od))
         self.assertEqual(calls["n"], 2)
 

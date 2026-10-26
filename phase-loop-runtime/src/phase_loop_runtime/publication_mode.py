@@ -43,10 +43,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
 
-try:  # Python 3.11+
-    import tomllib  # type: ignore[import-not-found]
-except ModuleNotFoundError:  # Python 3.10 — the requires-python floor
-    import tomli as tomllib  # type: ignore[no-redef]
+import tomllib
 
 REPO_CONFIG = ".phase-loop-publication.toml"
 USER_CONFIG_RELATIVE_PATH = "agent-harness/publication.toml"

@@ -64,6 +64,35 @@ def test_auth_probe_missing_cli_fails_open(monkeypatch):
     assert ok  # a flaky/absent probe must never block the leg
 
 
+@pytest.mark.parametrize("returncode,output", [(126, ""), (127, "not logged in"),
+    (1, "sh: codex: command not found"), (1, "sh: /missing/codex: No such file or directory"),
+    (1, "bash: line 1: codex: command not found"),
+    (1, "/bin/sh: 1: /missing/codex: No such file or directory"),
+    (1, "command not found"), (1, "No such file"), (1, "No such file or directory")])
+@pytest.mark.parametrize("stream", ["stdout", "stderr"])
+def test_auth_probe_unavailable_executable_is_inconclusive(monkeypatch, returncode, output, stream):
+    result = types.SimpleNamespace(returncode=returncode, stdout="", stderr="")
+    setattr(result, stream, output)
+    monkeypatch.setattr(pi, "run_provider", lambda *a, **k: result)
+    assert pi._leg_auth_ok("codex", {}) == (True, "")
+
+
+@pytest.mark.parametrize("output", [
+    "not logged in: cannot read credentials: No such file or directory: /home/operator/.codex/auth.json",
+    "cannot read /home/operator/.codex/auth.json: No such file or directory",
+    "codex: No such file or directory: /home/operator/.codex/auth.json",
+    "codex: No such file while reading /home/operator/.codex/auth.json",
+    "cannot read /home/operator/.codex/auth.json: codex: No such file or directory",
+    "codex: No such file or directory\ncannot read /home/operator/.codex/auth.json",
+])
+def test_auth_probe_missing_credentials_remains_a_failure(monkeypatch, output):
+    result = types.SimpleNamespace(returncode=1, stdout="", stderr=output)
+    monkeypatch.setattr(pi, "run_provider", lambda *a, **k: result)
+    ok, detail = pi._leg_auth_ok("codex", {})
+    assert not ok
+    assert pi._AUTH_SIGNATURE.search(detail)
+
+
 # --- strict Claude.ai subscription preflight -----------------------------------
 # agent-harness#1444: the seat holds the login's access token alone, so the subscription is
 # proven from the login store the credential is drawn from and the seat reports only

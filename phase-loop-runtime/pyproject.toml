@@ -4,22 +4,24 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "phase-loop-runtime"  # PyPI dist name; NOT "agent-harness" (an unrelated third-party PyPI project)
-version = "0.7.26"
+version = "0.7.27"
 description = "Harness-neutral phase-loop orchestration runtime and CLI"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 license = "Apache-2.0"
 authors = [{ name = "ViperJuice", email = "viperjuice@users.noreply.github.com" }]
 classifiers = [
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
-    "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Intended Audience :: Developers",
     "Topic :: Software Development :: Build Tools",
 ]
 dependencies = [
     "detect-secrets==1.5.0",
+    "tree-sitter==0.25.2",
+    "tree-sitter-typescript==0.23.2",
     "baml-bridge==0.20.1",
     "protobuf>=6.31.1,<8",
     "pydantic>=2,<3",
@@ -52,11 +54,13 @@ dependencies = [
     # jail could not qualify. >=8 is the line the suite and Gate A are tested on; <9 keeps the
     # hookwrapper API the wrapper uses inside the tested range -- widen it with a test run.
     "pytest>=8,<9",
-    # The falsifier run's interpreter is /usr/bin/python3, whose minor can be older than the
-    # runtime's, and pytest's backports (exceptiongroup, tomli; exceptiongroup's typing-extensions)
-    # are selected by markers evaluated for the runtime's interpreter. A 3.11+ runtime over a 3.10
-    # system interpreter got neither, and the run could not import pytest. Declare them with no
-    # marker so the snapshot can always stage them (agent-harness#1361).
+    # The falsifier run's interpreter is /usr/bin/python3, the host's own, whose minor can be
+    # older than the runtime's and below requires-python (Ubuntu 22.04 ships 3.10). pytest's
+    # backports (exceptiongroup, tomli; exceptiongroup's typing-extensions) are selected by
+    # markers evaluated for the runtime's interpreter, so a 3.12+ runtime over a 3.10 system
+    # interpreter would get neither, and the run could not import pytest. Declare them with no
+    # marker so the snapshot can always stage them (agent-harness#1361). They are NOT a
+    # requires-python compatibility shim: the runtime itself never imports them.
     "exceptiongroup>=1",
     "typing-extensions>=4.6",
     # `phase-loop doctor` (IF-0-AHADOPT-2) compares consumer pins to registry
@@ -69,11 +73,9 @@ dependencies = [
     # plus contract-identical RFC 8785 approval-body hashing.
     "websockets>=12,<16",
     "rfc8785>=0.1.4,<0.2",
-    # Advisor Board config loader (ABDREG) parses advisor-boards.toml. tomllib is
-    # stdlib on 3.11+; on the 3.10 requires-python floor it is absent, so the
-    # tomli backport is the fallback (import shim in advisor_board/config.py).
-    # Unconditional: pytest also needs it when the falsifier run's interpreter,
-    # /usr/bin/python3, is older than 3.11, whatever the runtime's own minor is.
+    # pytest needs tomli when the falsifier run's interpreter, /usr/bin/python3, is older
+    # than 3.11, whatever the runtime's own minor is (see exceptiongroup above). The
+    # runtime reads TOML with the stdlib tomllib.
     "tomli>=2,<3",
 ]
 
@@ -107,6 +109,7 @@ codex-phase-loop = "phase_loop_runtime.cli:main"
 # reads that import failure (exit 1) as "unknown ignored outputs"
 # (agent-harness#670).
 phase-loop-closeout-audit = "phase_loop_runtime.closeout_classifier:console_main"
+phase-loop-skill-eval = "phase_loop_runtime.skill_eval:console_main"
 # Roadmap-ownership preflight. Same reason as the audit above: under
 # `uv tool install` isolation the module form fails to import and exits 1 --
 # which `--preflight` defines as "claimed by another phase", i.e. a phantom

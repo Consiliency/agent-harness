@@ -21,7 +21,7 @@ class AgyImageUnqualified(RuntimeError):
     pass
 
 
-def _locally_qualified(data, source, env):
+def _locally_qualified(data, source, env, evidence=None):
     """The image's local self-qualification admission (agent-harness#1076), else refuse.
 
     Same lookup as ``gemini_heartbeat.admit`` step 2: opt-out, failed entry, provenance,
@@ -31,7 +31,11 @@ def _locally_qualified(data, source, env):
     from .sandbox_egress import EgressUnavailable
     from .seat_jail import SeatSandboxRefused
     try:
-        return agy_qualification.lookup(dict(env), data, str(source)).image
+        admission = agy_qualification.lookup(dict(env), data, str(source))
+        if evidence is not None:
+            evidence.update(provider_admission_class=admission.admission_class,
+                            provider_image_sha256=admission.image.sha256)
+        return admission.image
     except gemini_heartbeat.AdmissionMiss as miss:
         miss.image.close()
         raise AgyImageUnqualified("agy_image_unqualified") from None
@@ -48,7 +52,7 @@ def _locally_qualified(data, source, env):
         raise AgyImageUnqualified("agy_image_unqualified") from exc
 
 
-def check(path, env=None):
+def check(path, env=None, *, evidence=None):
     """Admit a release-qualified agy image. With ``env``, also admit a locally
     self-qualified one, so the seat probe and launch honour the same admission as the
     heartbeat route (agent-harness#1331). Without ``env`` (canary evidence) only
@@ -73,8 +77,12 @@ def check(path, env=None):
         if sha256(data).hexdigest() not in gemini_heartbeat.QUALIFIED_IMAGES:
             if env is None:
                 raise AgyImageUnqualified("agy_image_unqualified")
-            return _locally_qualified(data, source, env)
-        return gemini_heartbeat.VerifiedImage.from_bytes(data, source)
+            return _locally_qualified(data, source, env, evidence)
+        image = gemini_heartbeat.VerifiedImage.from_bytes(data, source)
+        if evidence is not None:
+            evidence.update(provider_admission_class="release_qualified",
+                            provider_image_sha256=image.sha256)
+        return image
     except (OSError, ValueError) as exc:
         raise AgyImageUnqualified("agy_image_unqualified") from exc
     finally:
@@ -82,7 +90,7 @@ def check(path, env=None):
             os.close(descriptor)
 
 
-def admit_for_seat(path, env):
+def admit_for_seat(path, env, *, evidence=None):
     """Admission for the two owned review-seat sites only (agent-harness#1333 PR1).
 
     ``check`` with the seat's env, from one read: a release member is admitted offline
@@ -98,7 +106,7 @@ def admit_for_seat(path, env):
     and a jail refusal (``SeatSandboxRefused``). The executor and canary callers call ``check``
     without an env and stay release-only.
     """
-    return check(path, env)
+    return check(path, env, evidence=evidence)
 
 
 def trusted_command(argv, env):

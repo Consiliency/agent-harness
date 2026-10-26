@@ -127,7 +127,7 @@ def host(tmp_path, monkeypatch):
     agy.chmod(0o755)
     image = _Image(agy)
     monkeypatch.setattr(pi, "_PROVIDER_SEARCH_PATH", str(bindir))
-    monkeypatch.setattr(agy_integrity, "admit_for_seat", lambda executable, env: image)
+    monkeypatch.setattr(agy_integrity, "admit_for_seat", lambda executable, env, **kwargs: image)
 
     def plan(**behaviour):
         (home / "agy.plan").write_text(json.dumps(behaviour))

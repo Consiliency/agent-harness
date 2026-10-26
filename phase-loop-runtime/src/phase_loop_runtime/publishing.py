@@ -91,11 +91,11 @@ def _atomic_json(path: Path, payload: dict, *, mode: int = 0o666) -> None:
         os.close(descriptor)
 
 
-def _read_json_nofollow(path: Path) -> dict | None:
-    """``None`` when ``path`` is absent; its JSON object when it is a regular file.
+def _read_bytes_nofollow(path: Path) -> bytes | None:
+    """``None`` when ``path`` is absent; its bytes when it is a regular file.
 
     A symlink, a non-regular file (a FIFO included, without blocking), or bytes
-    that are not a JSON object refuse with ``PublishTransactionConflict``
+    that cannot be read refuse with ``PublishTransactionConflict``
     (agent-harness#1296 recovery records).
     """
     try:
@@ -112,7 +112,13 @@ def _read_json_nofollow(path: Path) -> dict | None:
         os.close(descriptor)
         raise PublishTransactionConflict(f"{path} is not a regular file")
     with os.fdopen(descriptor, "rb") as stream:
-        raw = stream.read()
+        return stream.read()
+
+
+def _read_json_nofollow(path: Path) -> dict | None:
+    raw = _read_bytes_nofollow(path)
+    if raw is None:
+        return None
     try:
         value = json.loads(raw)
     except ValueError as error:
@@ -237,6 +243,10 @@ class PublishCrashInjected(RuntimeError):
 
 class PublishTransactionConflict(RuntimeError):
     pass
+
+
+class UnadmittedPrebuiltConflict(PublishTransactionConflict):
+    provider_call_made = False
 
 
 class RecoveryRecordConflict(PublishTransactionConflict):
@@ -537,6 +547,7 @@ class PublishTransaction:
         # split, two writers can both read the same current state and both
         # advance it.
         with self.store.exclusive():
+            self._require_no_tombstone()
             durable = json.loads(self.checkpoint_path.read_text(encoding="utf-8"))
             if durable.get("transaction_id") != self.transaction_id:
                 raise PublishTransactionConflict(
@@ -632,13 +643,19 @@ class PublishTransaction:
 
     def _conflict(self, detail: str) -> None:
         with self.store.exclusive():
+            self._require_no_tombstone()
             self.write_tombstone(PublishTransactionState.CONFLICTED)
             self.clear_active_pointer()
             self.state = PublishTransactionState.CONFLICTED
             self._write()
         raise PublishTransactionConflict(f"CONFLICTED: {detail}")
 
+    def _require_no_tombstone(self) -> None:
+        if _read_json_nofollow(self.tombstone_path) is not None:
+            raise PublishTransactionConflict("tombstoned transaction cannot advance")
+
     def resume(self) -> "PublishTransaction":
+        self._require_no_tombstone()
         if self.state in (PublishTransactionState.ABANDONED, PublishTransactionState.CONFLICTED):
             raise PublishTransactionConflict("tombstoned transaction cannot resume")
         _validate_transaction_source_audit(self.repo, self)
@@ -1050,6 +1067,91 @@ def validate_transaction_owned_workspace(repo: Path, transaction: PublishTransac
         raise RuntimeError("resolved transaction workspace must be clean")
 
 
+def _unused_prebuilt_transaction(
+    repo: Path, store: PublishTransactionStore, transaction_id: str, identity: str,
+    *, complete: bool = True,
+) -> PublishTransaction:
+    payload = _read_json_nofollow(store.checkpoint_path(transaction_id))
+    tombstone = _read_json_nofollow(store.tombstone_path(transaction_id))
+    expected_tombstone = {
+        "schema": "PublishTransactionTombstone.v1", "transaction_id": transaction_id,
+        "state": PublishTransactionState.ABANDONED,
+    }
+    if payload is None or (tombstone != expected_tombstone and (complete or tombstone is not None)):
+        raise UnadmittedPrebuiltConflict("no exact unused prebuilt transaction pair")
+    required_state = PublishTransactionState.ABANDONED if complete else PublishTransactionState.COMMITTED_HEAD_RESOLVED
+    if (
+        payload.get("schema") != "PublishCheckpoint.v1"
+        or payload.get("transaction_id") != transaction_id
+        or payload.get("canonical_repository_identity") != identity
+        or payload.get("repo") != str(Path(repo).resolve())
+        or payload.get("checkpoint_root") != str(store.root.parent.parent)
+        or payload.get("envelope_authority_preimage", {}).get("node_id") != store.node_id
+        or payload.get("node_id", store.node_id) != store.node_id
+        or payload.get("state") != required_state
+        or payload.get("mode") != "prebuilt"
+        or not isinstance(payload.get("staged_diff_sha256"), str)
+        or len(payload["staged_diff_sha256"]) != 64
+        or payload["staged_diff_sha256"] == _sha256(b"")
+        or not payload.get("base_tip_sha")
+        or any(payload.get(name) != payload["base_tip_sha"] for name in (
+            "parent_head_sha", "expected_commit_oid", "committed_head_sha",
+        ))
+        or payload.get("exact_ref") != f"refs/heads/{payload.get('branch')}"
+    ):
+        raise UnadmittedPrebuiltConflict("transaction is not an unused-base prebuilt checkpoint")
+    raw = _git_bytes(Path(repo), "cat-file", "commit", payload["expected_commit_oid"])
+    if raw is None or _sha256(raw) != payload.get("final_commit_object_sha256"):
+        raise UnadmittedPrebuiltConflict("unused prebuilt commit object differs")
+    return PublishTransaction(Path(repo), store, payload)
+
+
+def _retired_prebuilt_remainder(repo: Path, store: PublishTransactionStore, tombstones: tuple[Path, ...]):
+    triggered = False
+    for path in tombstones:
+        try:
+            tombstone = _read_json_nofollow(path)
+            payload = _read_json_nofollow(store.checkpoint_path(path.name.removesuffix(".tombstone.json")))
+            triggered = triggered or bool(
+                tombstone and payload and tombstone.get("state") == PublishTransactionState.ABANDONED
+                and tombstone.get("transaction_id") == payload.get("transaction_id")
+                and tombstone.get("transaction_id") == path.name.removesuffix(".tombstone.json")
+                and payload.get("mode") == "prebuilt"
+            )
+        except Exception:
+            continue
+    if not triggered:
+        return None
+    from .convergence.broker import live
+    from .convergence.broker.verbs import require_unadmitted_prebuilt_witnesses
+
+    remaining = list(tombstones)
+    try:
+        snapshot = live.repository_snapshot(repo)
+        root = live.active_store_root(snapshot.container)
+        for path in tombstones:
+            try:
+                transaction = _unused_prebuilt_transaction(
+                    repo, store, path.name.removesuffix(".tombstone.json"), snapshot.identity,
+                )
+                require_unadmitted_prebuilt_witnesses(root, transaction)
+            except Exception:
+                continue
+            remaining.remove(path)
+    except Exception:
+        pass
+    if not remaining:
+        return PublishResumeCandidate(PublishTransactionState.CONFLICTED)
+    if len(remaining) == 1:
+        try:
+            payload = _read_json_nofollow(store.checkpoint_path(remaining[0].name.removesuffix(".tombstone.json")))
+            if payload is not None:
+                return PublishResumeCandidate(PublishTransactionState.CONFLICTED, PublishTransaction(repo, store, payload))
+        except Exception as error:
+            raise PublishTransactionConflict("remaining publication checkpoint is unreadable") from error
+    raise PublishTransactionConflict("retired prebuilt history has conflicting remaining transactions")
+
+
 def inspect_publish_resume_candidate(repo: Path, *, checkpoint_root: Path, node_id: str) -> PublishResumeCandidate:
     """Read-only resume inspection; it never chooses a semantic substitute OID."""
     store = PublishTransactionStore(Path(checkpoint_root), node_id)
@@ -1059,6 +1161,9 @@ def inspect_publish_resume_candidate(repo: Path, *, checkpoint_root: Path, node_
     active = store.load_active()
     if active is None:
         tombstones = tuple(sorted(store.root.glob("*.tombstone.json"))) if store.root.exists() else ()
+        remainder = _retired_prebuilt_remainder(Path(repo), store, tombstones)
+        if remainder is not None:
+            return remainder
         if len(tombstones) == 1:
             transaction_id = tombstones[0].name.removesuffix(".tombstone.json")
             transaction = _load_transaction(
@@ -1144,17 +1249,33 @@ def _is_secret_path(path: str) -> bool:
 
 
 def _source_path_evidence(repo: Path, path: str, parent: str, tree: str) -> dict | None:
-    """Classify existing Python modules, never merely a Python-looking filename."""
+    """Classify frozen implementation blobs before the source-only exception."""
     candidate = Path(path)
-    if candidate.suffix != ".py" or any(
+    typescript = (
+        candidate.suffix == ".ts" and candidate.parts[0] in {"src", "test", "tests"}
+        and not candidate.name.lower().endswith(".d.ts")
+    )
+    if (candidate.suffix != ".py" and not typescript) or any(
         part.lower().startswith(".env") or ".key" in part.lower()
         or part.lower().endswith((".pem", ".p12", ".pfx"))
         for part in candidate.parts
     ):
         return None
+    if typescript:
+        if version("tree-sitter") != "0.25.2" or version("tree-sitter-typescript") != "0.23.2":
+            raise ValueError("unsupported publication parser version")
+        from tree_sitter import Language, Parser
+        import tree_sitter_typescript
+
     blobs = []
     for ref in (parent, tree):
         entry = _git_bytes(repo, "--literal-pathspecs", "ls-tree", "-z", ref, "--", path)
+        if typescript and ref == parent and entry == b"":
+            changed = _git_bytes(repo, "diff", "--name-only", "--no-renames", "-z", parent, tree)
+            if changed is None or os.fsencode(path) not in changed.split(b"\0"):
+                return None
+            blobs.append((None, None))
+            continue
         if not entry or len(entry.split(b"\0")) != 2:
             return None
         metadata, _, returned_path = entry.partition(b"\t")
@@ -1173,11 +1294,30 @@ def _source_path_evidence(repo: Path, path: str, parent: str, tree: str) -> dict
         try:
             with warnings.catch_warnings():
                 warnings.simplefilter("error")
-                module = ast.parse(blob, filename="<publication-source>")
-                compile(module, "<publication-source>", "exec", dont_inherit=True)
-        except (SyntaxError, ValueError, Warning):
+                if typescript:
+                    text = blob.decode("utf-8")
+                    if "\0" in text:
+                        return None
+                    parsed = Parser(Language(tree_sitter_typescript.language_typescript())).parse(blob)
+                    if parsed is None or parsed.root_node.has_error:
+                        return None
+                    declarations = [
+                        node.child_by_field_name("declaration") if node.type == "export_statement" else node
+                        for node in parsed.root_node.named_children
+                    ]
+                    if not any(
+                        node is not None
+                        and node.type in {"function_declaration", "generator_function_declaration", "class_declaration"}
+                        and node.child_by_field_name("body") is not None
+                        for node in declarations
+                    ):
+                        return None
+                else:
+                    module = ast.parse(blob, filename="<publication-source>")
+                    compile(module, "<publication-source>", "exec", dont_inherit=True)
+        except (SyntaxError, ValueError, UnicodeError, Warning):
             return None
-        if not any(isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) for node in module.body):
+        if not typescript and not any(isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) for node in module.body):
             return None
         blobs.append((oid, blob))
     # Instantiate only the pinned built-in detectors: no repo config, allowlist,
@@ -1194,12 +1334,19 @@ def _source_path_evidence(repo: Path, path: str, parent: str, tree: str) -> dict
     import io
     import tokenize
 
-    encoding, _ = tokenize.detect_encoding(io.BytesIO(blob).readline)
+    if typescript:
+        encoding = "utf-8"
+    else:
+        encoding, _ = tokenize.detect_encoding(io.BytesIO(blob).readline)
     for number, line in enumerate(blob.decode(encoding).splitlines(), 1):
         if any(plugin.analyze_line(filename=path, line=line, line_number=number) for plugin in plugins):
             return None
-    return {"path": path, "parent_blob_oid": blobs[0][0], "blob_oid": oid,
-            "blob_sha256": _sha256(blob), "policy": "tracked-python-detect-secrets-1.5.0-v1"}
+    record = {"path": path, "parent_blob_oid": blobs[0][0], "blob_oid": oid,
+              "blob_sha256": _sha256(blob), "policy": "tracked-python-detect-secrets-1.5.0-v1"}
+    if typescript:
+        record.update(tree_sitter_version="0.25.2", tree_sitter_typescript_version="0.23.2",
+                      policy="typescript-detect-secrets-1.5.0-v1")
+    return record
 
 
 def _blocked(reason: str, detail: str = "") -> dict[str, Any]:
@@ -1455,6 +1602,18 @@ def _human_publication_handoff(
         repository_common_dir=str(snapshot.common_dir),
         resume="retry publish_human_invoked_from_worktree with the same plan and verification artifact",
     )
+    if next_step in ("inspect_scope_correction_predecessor", "review_scope_correction_outcome"):
+        handoff.update(
+            recovery_procedure="docs/fabpub-partition-rotation-runbook.md section 8b",
+            resume=(
+                "preserve the original and successor checkpoints and broker evidence; "
+                "review the successor outcome before any further provider attempt. "
+                "PublishScopeCorrection.v1 authenticates its predecessor only in the "
+                "active generation and does not support rotate-then-retry recovery. "
+                "A later generation requires supported predecessor-chain recovery; "
+                "do not replace receipts or infer no effect from remote absence."
+            ),
+        )
     if next_step == "resolve_publication_recovery_refusal":
         handoff.update(
             recovery_procedure="docs/fabpub-partition-rotation-runbook.md section 8a",
@@ -1845,9 +2004,41 @@ def _typed_refusal_handoffs() -> tuple[tuple[Any, Any], ...]:
 
 
 def _typed_refusal_handoff(error: BaseException) -> tuple[str, dict[str, Any]] | None:
+    from .publish_scope_correction import ScopeCorrectionPredecessorUnavailable
+
+    if isinstance(error, ScopeCorrectionPredecessorUnavailable):
+        return "inspect_scope_correction_predecessor", {}
     for types, handler in _typed_refusal_handoffs():
         if isinstance(error, types):
             return handler(error)
+    return None
+
+
+def _human_publication_scope_precheck(
+    repo: Path, owned_paths: Sequence[str], *, base: str, branch: str,
+) -> str | None:
+    """Catch omitted committed companion paths before creating a new commit.
+
+    The broker still checks the final branch independently. This early check
+    cannot authorize publication; it avoids creating a sticky rejected head
+    when a human caller supplies only its currently dirty paths.
+    """
+    from .convergence.broker.credsep import GitHubBrokerAdapter
+
+    if GitHubBrokerAdapter._base_invalid(base, branch):
+        return "owned-scope-invalid-base"
+    changed = _git_bytes(
+        repo, "diff", "--name-only", "-z", "--no-renames", f"origin/{base}...HEAD",
+    )
+    if changed is None:
+        return "owned-scope-diff-failed"
+    uncovered = sorted(
+        os.fsdecode(path) for path in changed.split(b"\0") if path
+        and not GitHubBrokerAdapter._covered_by_owned(os.fsdecode(path), owned_paths)
+    )
+    if uncovered:
+        return "owned-scope-exceeded:" + ",".join(uncovered[:20])
+    # An empty committed diff is normal before the first staged publication.
     return None
 
 
@@ -1863,12 +2054,22 @@ def publish_human_invoked_from_worktree(
     protected_branches: frozenset[str] = PROTECTED_BRANCHES,
     prebuilt: bool = False,
     base: str = "main",
+    scope_correction_from: tuple[Path, str] | None = None,
+    abandon_unadmitted_prebuilt: str | None = None,
 ) -> dict[str, Any]:
     """Publish a human-invoked detailed-plan run through authenticated FABPUB.
 
     This adapter derives only pre-admission authority. The broker still allocates
     all fencing fields, and repository routing remains receipt- and lease-gated.
     """
+    if abandon_unadmitted_prebuilt is not None and (
+        prebuilt or scope_correction_from is not None or not isinstance(abandon_unadmitted_prebuilt, str)
+        or len(abandon_unadmitted_prebuilt) != 64
+        or any(character not in "0123456789abcdef" for character in abandon_unadmitted_prebuilt)
+    ):
+        result = _blocked("publication_transaction_conflicted", "recovery requires one exact lowercase transaction ID and normal publication")
+        result["provider_call_made"] = False
+        return result
     required = [
         name
         for name, value in (
@@ -1961,6 +2162,16 @@ def publish_human_invoked_from_worktree(
         )
         return result
 
+    scope_error = _human_publication_scope_precheck(
+        repo, owned_paths, base=base, branch=branch,
+    )
+    if scope_error is not None:
+        result = _blocked("publication_scope_precheck_failed", scope_error)
+        result["handoff"] = _human_publication_handoff(
+            repo, next_step="repair_publication_scope_and_retry"
+        )
+        return result
+
     try:
         plan_sha256 = _sha256(artifacts["plan_path"].read_bytes())
         verification_sha256 = _sha256(
@@ -1987,6 +2198,10 @@ def publish_human_invoked_from_worktree(
     broker_client = None
     try:
         pr_body = _redact_publication_body(repo, pr_body, checkpoint_root)
+        if abandon_unadmitted_prebuilt is not None:
+            from .convergence.broker.verbs import capture_unadmitted_prebuilt_history
+
+            capture_unadmitted_prebuilt_history(live.active_store_root(snapshot.container))
         barrier_report = live.fabpub_activation_barrier([repo])
         authenticated = {
             str(Path(worktree).resolve())
@@ -2012,6 +2227,13 @@ def publish_human_invoked_from_worktree(
             checkpoint_root=checkpoint_root,
         )
         broker_client = live.build_routing_broker_client()
+        if abandon_unadmitted_prebuilt is not None:
+            broker_client.abandon_unadmitted_prebuilt(
+                repo, abandon_unadmitted_prebuilt, checkpoint_root=checkpoint_root,
+                node_id=resolve_transaction_node_id(authority.envelope_authority_preimage, authority.envelope_authority_preimage.get("node_id")),
+                authority=authority.envelope_authority_preimage, branch=branch,
+                owned_paths=tuple(sorted(owned_paths)), base=base, draft=draft, pr_body=pr_body,
+            )
         result = publish_from_worktree(
             repo,
             owned_paths,
@@ -2021,6 +2243,7 @@ def publish_human_invoked_from_worktree(
             topology=topology,
             protected_branches=protected_branches,
             prebuilt=prebuilt,
+            scope_correction_from=scope_correction_from,
             broker_client=broker_client,
             base=base,
             publish_authority=authority,
@@ -2037,7 +2260,9 @@ def publish_human_invoked_from_worktree(
             result["handoff"] = _human_publication_handoff(
                 repo,
                 next_step=(
-                    "adjudicate_publication_by_partition_rotation"
+                    "review_scope_correction_outcome"
+                    if ambiguous and scope_correction_from is not None
+                    else "adjudicate_publication_by_partition_rotation"
                     if ambiguous
                     else "repair_publication_precheck_and_retry"
                 ),
@@ -2058,6 +2283,8 @@ def publish_human_invoked_from_worktree(
         return result
     except PublishTransactionConflict as error:
         result = _blocked("publication_transaction_conflicted", str(error))
+        if isinstance(error, UnadmittedPrebuiltConflict):
+            result["provider_call_made"] = False
         result["handoff"] = _human_publication_handoff(
             repo,
             next_step="resolve_publication_transaction_conflict",
@@ -2078,6 +2305,10 @@ def publish_human_invoked_from_worktree(
             )
         else:
             next_step, refusal = typed
+            if scope_correction_from is not None and next_step in (
+                "adjudicate_publication_by_partition_rotation", "retry_once_before_partition_rotation",
+            ):
+                next_step = "review_scope_correction_outcome"
             result["handoff"] = _human_publication_handoff(
                 repo, next_step=next_step, refusal=refusal
             )
@@ -2136,6 +2367,7 @@ def publish_from_worktree(
     broker_client: BrokerClient | None = None,
     admission: AdmissionRequest | None = None,
     base: str = "main",
+    scope_correction_from: tuple[Path, str] | None = None,
     publish_authority: PublishAuthorityPreimages | None = None,
     checkpoint_root: Path | None = None,
 ) -> dict[str, Any]:
@@ -2200,17 +2432,23 @@ def publish_from_worktree(
             )
     if candidate.transaction is not None and candidate.state == PublishTransactionState.CONFLICTED:
         raise PublishTransactionConflict("active publish transaction is conflicted")
+    if prebuilt and scope_correction_from is not None:
+        return _blocked("scope_correction_prebuilt_conflict", "scope correction is a distinct operation")
     if not prebuilt and not owned_paths:
         return _blocked("no_owned_paths", "No owned paths to stage; nothing to publish")
-    if not prebuilt and not resuming and _git(repo, "add", "--", *owned_paths).returncode:
+    if not prebuilt and not resuming and scope_correction_from is None and _git(repo, "add", "--", *owned_paths).returncode:
         return _blocked("stage_failed", "git add -- <owned_paths> failed")
     publication_audit = {} if active and authority is not None else None
-    audit = None if prebuilt or resuming else _audit_staged_diff(repo, owned_paths, evidence=publication_audit)
+    audit = None if prebuilt or resuming or scope_correction_from is not None else _audit_staged_diff(repo, owned_paths, evidence=publication_audit)
     if audit is not None:
         return audit
     if broker_client is None:
         return _blocked("broker_required", "publish mutation requires an admitted broker client")
     if active and authority is not None and not resuming:
+        if prebuilt:
+            staged = _git_bytes(repo, "diff", "--cached", "--binary")
+            if staged is None or staged:
+                return _blocked("publication_workspace_invalid", "prebuilt publication requires a readable empty staged index")
         unstaged = _git_bytes(repo, "diff", "--name-only", "-z")
         untracked = _git_bytes(repo, "ls-files", "--others", "--exclude-standard", "-z")
         if unstaged is None or untracked is None:
@@ -2222,6 +2460,8 @@ def publish_from_worktree(
             )
 
     if not active:
+        if scope_correction_from is not None:
+            return _blocked("scope_correction_requires_fabpub", "scope correction requires active FABPUB")
         if admission is None:
             return _blocked("broker_required", "publish mutation requires an admitted broker client")
         if not prebuilt and _git(repo, "commit", "-m", commit_message or "chore: publish plan changes").returncode:
@@ -2236,7 +2476,16 @@ def publish_from_worktree(
         authority = publish_authority.envelope_authority_preimage
         if Path(checkpoint_root).resolve() != Path(publish_authority.checkpoint_root).resolve():
             return _blocked("checkpoint_root_mismatch", "checkpoint_root must equal the authority handoff root")
-        if candidate.transaction is not None and not sealed_prior:
+        if scope_correction_from is not None:
+            from .publish_scope_correction import prepare
+
+            transaction = prepare(
+                Path(repo), original_checkpoint_root=scope_correction_from[0],
+                original_node_id=scope_correction_from[1], checkpoint_root=Path(checkpoint_root),
+                owned_paths=owned_paths, branch=branch, authority=authority,
+                base=base, draft=draft, pr_body=pr_body or "",
+            )
+        elif candidate.transaction is not None and not sealed_prior:
             transaction = candidate.transaction
             if (
                 transaction.envelope_authority_preimage != authority
@@ -2255,7 +2504,7 @@ def publish_from_worktree(
         transaction.resume()
         _crash_at("after_committed_checkpoint_before_broker_execute")
         envelope = _envelope_from_transaction(transaction, authority, repo)
-        execution = broker_client.execute(BrokerRequest(BrokerVerb.PUBLISH_COMMITTED_BRANCH, envelope, transaction.canonical_repository_identity, branch, transaction.committed_head_sha, transaction.owned_paths, base=base, draft=draft, pr_body=transaction.pr_body, adapter_worktree=str(Path(repo).resolve())))
+        execution = broker_client.execute(BrokerRequest(BrokerVerb.PUBLISH_COMMITTED_BRANCH, envelope, transaction.canonical_repository_identity, branch, transaction.committed_head_sha, transaction.owned_paths, base=base, draft=draft, pr_body=transaction.pr_body, adapter_worktree=str(Path(repo).resolve()), scope_correction_of=transaction._payload.get("scope_correction", {}).get("predecessor_id", "")))
         if execution.accepted:
             candidate = inspect_publish_resume_candidate(
                 repo,

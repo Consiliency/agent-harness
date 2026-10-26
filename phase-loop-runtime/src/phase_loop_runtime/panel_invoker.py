@@ -4701,6 +4701,7 @@ class SeatProfile:
     #: at)`` for each directory of declared outputs the seat may replace atomically.
     #: ``outputs`` are the ones bound in place instead.
     output_dirs: tuple[tuple[str, str], ...] = ()
+    evidence: Mapping[str, object] = field(default_factory=dict)
 
 
 _OWNED_LAUNCH = ContextVar("owned_provider_launch", default=False)
@@ -4782,6 +4783,48 @@ _SHELL_WRAPPER_EXPORT = re.compile(r'export [A-Z_][A-Z0-9_]*=(?:[A-Za-z0-9._/:@+
 _SHELL_WRAPPER_EXEC = re.compile(
     r'exec (/[A-Za-z0-9._@+/-]+)(?: -c [A-Za-z0-9._-]+=[A-Za-z0-9._/:@+-]+)* "\$@"')
 
+_PROVIDER_HARNESSES = {"agy": "gemini", "gemini": "gemini", "codex.js": "codex",
+                       "claude.exe": "claude", "grok-native": "grok", "opencode.exe": "opencode"}
+
+
+def _native_provider_target(path, provider=None, *, resolve_launcher=False):
+    """Resolve a native provider alias, or Codex's launcher with a native vendored image."""
+    try:
+        target = Path(path).resolve(strict=True)
+        launcher = None
+        name = target.name.lower()
+        harness = _PROVIDER_HARNESSES.get(name, name)
+        if provider is not None and harness != _PROVIDER_HARNESSES.get(provider, provider):
+            return None
+        if harness == "codex" and name == "codex.js":
+            if not target.is_file():
+                return None
+            launcher = target
+            package = target.parent.parent
+            machine = os.uname().machine
+            suffix = {"x86_64": "x64", "aarch64": "arm64"}.get(machine)
+            if suffix is None:
+                return None
+            triple = machine + "-unknown-linux-musl"
+            candidates = (package / "node_modules/@openai" / ("codex-linux-" + suffix) / "vendor" / triple / "bin/codex",
+                          package / "vendor" / triple / "bin/codex",
+                          package.parent / ("codex-linux-" + suffix) / "vendor" / triple / "bin/codex")
+            native = next((path for path in candidates if path.is_file()), None)
+            if native is None:
+                return None
+            target = native.resolve(strict=True)
+            if target.name.lower() != "codex":
+                return None
+        descriptor = os.open(target, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOCTTY)
+        try:
+            if not stat.S_ISREG(os.fstat(descriptor).st_mode) or os.read(descriptor, 4) != b"\x7fELF":
+                return None
+        finally:
+            os.close(descriptor)
+        return target if resolve_launcher or launcher is None else launcher
+    except (OSError, ValueError):
+        return None
+
 
 def _shell_wrapper_target(path: Path, provider: str | None = None) -> Path | None:
     """The absolute ``exec`` target of a trusted launcher wrapper, else ``None``.
@@ -4790,10 +4833,10 @@ def _shell_wrapper_target(path: Path, provider: str | None = None) -> Path | Non
     ``exec /abs/path [-c k=v ...] "$@"`` (agent-harness#1318). The seat binds only the
     provider itself, so the wrapper's target would be missing from the view. Only a regular
     file owned by root or the operator, writable by no one else, read through one no-follow,
-    non-blocking descriptor, of exactly that shape, whose target is named ``provider``
-    (when given), is followed."""
+    non-blocking descriptor, of exactly that shape, whose resolved target is a native
+    member of the provider's alias set (or Codex's vendored launcher), is followed."""
     try:
-        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC | os.O_NOCTTY)
     except OSError:
         return None
     try:
@@ -4814,16 +4857,12 @@ def _shell_wrapper_target(path: Path, provider: str | None = None) -> Path | Non
     match = _SHELL_WRAPPER_EXEC.fullmatch(lines[-1])
     if not match:
         return None
-    target = Path(match.group(1))
-    if provider is not None and target.name.lower() != provider:
-        return None
-    return target
+    return _native_provider_target(match.group(1), provider)
 
 
 def _seat_provider_source(command, env):
     name = Path(command).name.lower()
-    harness = {"agy": "gemini", "gemini": "gemini", "codex.js": "codex",
-               "claude.exe": "claude", "grok-native": "grok", "opencode.exe": "opencode"}.get(name, name)
+    harness = _PROVIDER_HARNESSES.get(name, name)
     source = shutil.which(str(command), path=_PROVIDER_SEARCH_PATH)
     if source is None:
         raise FileNotFoundError("seat_provider_unavailable")
@@ -4834,17 +4873,7 @@ def _seat_provider_source(command, env):
             break
         source = target.resolve(strict=True)
     if harness == "codex" and source.suffix == ".js":
-        package = source.parent.parent
-        machine = os.uname().machine
-        suffix = {"x86_64": "x64", "aarch64": "arm64"}.get(machine)
-        triple = {"x86_64": "x86_64-unknown-linux-musl", "aarch64": "aarch64-unknown-linux-musl"}.get(machine)
-        if suffix is None:
-            raise _sandbox_egress.SeatIdentityUnverified("seat_provider_unavailable")
-        candidates = (package / "node_modules/@openai" / ("codex-linux-" + suffix) / "vendor" / triple / "bin/codex",
-                      package / "vendor" / triple / "bin/codex",
-                      # npm hoists the platform package beside @openai/codex.
-                      package.parent / ("codex-linux-" + suffix) / "vendor" / triple / "bin/codex")
-        source = next((path for path in candidates if path.is_file()), None)
+        source = _native_provider_target(source, "codex", resolve_launcher=True)
         if source is None:
             raise _sandbox_egress.SeatIdentityUnverified("seat_provider_unavailable")
     return harness, _seat_bind_source(source)
@@ -5059,6 +5088,7 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
     pass_fds = set()
     keep_fds = set()
     redactions = []
+    evidence = {}
     with contextlib.ExitStack() as stack:
         if (harness == "gemini" and needs_login
                 and SeatLaunchRole(role) is SeatLaunchRole.PROVIDER_REVIEW
@@ -5166,9 +5196,10 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
                            private_home + "/.gemini/antigravity-cli/settings.json"))
             pass_fds.update(gemini_profile.pass_fds)
             gemini_profile.evidence["provider_agy_subscription_reference"] = "private_access_token_copy"
+            evidence.update(gemini_profile.evidence)
         elif harness == "gemini":
             from . import agy_integrity
-            image = agy_integrity.admit_for_seat(executable, env)
+            image = agy_integrity.admit_for_seat(executable, env, evidence=evidence)
             stack.callback(image.close)
             descriptor = image.reopen()
             stack.callback(os.close, descriptor)
@@ -5194,6 +5225,7 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
             outputs=tuple(outputs), pass_fds=tuple(sorted(pass_fds)),
             keep_fds=tuple(sorted(keep_fds)), broker_socket=broker_socket,
             writable_trees=tuple(writable_trees),
+            evidence=evidence,
         )
 
 
@@ -7494,6 +7526,18 @@ def _leg_auth_ok(
         # so don't block; the leg's own launch fail-closes with its typed code.
         return True, ""
     combined = (proc.stdout or "") + (proc.stderr or "")
+    if proc.returncode in {126, 127}:
+        return True, ""
+    unavailable = re.fullmatch(
+        r"(?:(?:/[^\s:\n]*/)?(?:sh|bash|dash|zsh|ksh|ash):[ \t]*"
+        r"(?:(?:line[ \t]+)?[0-9]+:[ \t]*)?)?(?:/[^\s:\n]*/)?" + re.escape(probe[0])
+        + r"(?:\.js)?:[ \t]*(?:command not found|no such file(?: or directory)?)",
+        combined.strip(), re.IGNORECASE,
+    )
+    if (unavailable or combined.strip().lower() in {
+            "command not found", "no such file", "no such file or directory"}) \
+            and not _AUTH_SIGNATURE.search(combined):
+        return True, ""
     if proc.returncode != 0 or _AUTH_SIGNATURE.search(combined):
         return (
             False,
@@ -8838,6 +8882,7 @@ def _run_leg_with_liveness(
     stdout_guard: Callable[[bytes], bool] | None = None,
     writable_tree: "Path | None" = None,
     writable_tree_checked: bool = False,
+    broker_evidence: dict[str, object] | None = None,
     seat_jail: "_seat_jail.SeatJail | None" = None,
     probe_jail: "_seat_jail.SeatJail | None" = None,
 ) -> "_LegRun":
@@ -8904,6 +8949,8 @@ def _run_leg_with_liveness(
             **({"writable_tree": writable_tree, "writable_tree_checked": writable_tree_checked}
                if writable_tree is not None else {}),
         ))
+        if broker_evidence is not None:
+            broker_evidence.update(profile.evidence)
         if not _EGRESS_LAUNCH_PREFIX.get():
             # An owned review launch runs only in the filtered namespace. A leg outside any
             # board leg (the agy --help measurement) holds none: it holds one for this
@@ -12430,6 +12477,7 @@ def _exec_leg(
                             proc = _run_leg_with_liveness(
                                 cmd, cwd=provider_cwd, env=agy_env,
                                 deadline_s=deadline_s, input_text=broker_stream_input,
+                                broker_evidence=broker_evidence,
                                 quiescence_latch=quiescence_latch,
                                 **({"review_monitor": review_monitor, "gemini_profile": profile}
                                    if review_monitor is not None else {}),

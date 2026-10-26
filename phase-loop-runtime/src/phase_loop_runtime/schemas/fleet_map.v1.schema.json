@@ -1,0 +1,732 @@
+{
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema": {
+      "const": "fleet_map.v1"
+    },
+    "source_commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$",
+      "minLength": 40,
+      "maxLength": 40
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "(Z|\\+00:00)$"
+    },
+    "scope": {
+      "$ref": "#/$defs/scope"
+    },
+    "repositories": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/repository"
+      }
+    },
+    "scanned_repos": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+$",
+        "not": {
+          "pattern": "[\\r\\n]"
+        }
+      },
+      "uniqueItems": true
+    },
+    "edges": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/edge"
+      },
+      "uniqueItems": true
+    }
+  },
+  "required": [
+    "schema",
+    "source_commit",
+    "generated_at",
+    "scope",
+    "repositories",
+    "scanned_repos",
+    "edges"
+  ],
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$defs": {
+    "account": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "login": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*$",
+          "not": {
+            "pattern": "[\\r\\n]"
+          }
+        },
+        "type": {
+          "enum": [
+            "User",
+            "Organization"
+          ]
+        },
+        "installation_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "repository_selection": {
+          "enum": [
+            "all",
+            "selected"
+          ]
+        },
+        "enumerated_count": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "login",
+        "type",
+        "installation_id",
+        "repository_selection",
+        "enumerated_count"
+      ]
+    },
+    "scope": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "enumeration_complete": {
+          "const": true
+        },
+        "accounts": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/account"
+          }
+        },
+        "expected_repos": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "enumeration_complete",
+        "accounts",
+        "expected_repos"
+      ]
+    },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "full_name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+$",
+          "not": {
+            "pattern": "[\\r\\n]"
+          }
+        },
+        "github_repository_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "default_branch": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/git_ref"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "head_sha": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$",
+              "minLength": 40,
+              "maxLength": 40
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "scan_state": {
+          "enum": [
+            "scanned",
+            "empty",
+            "clone_failed",
+            "scan_failed",
+            "budget_exhausted"
+          ]
+        },
+        "failure_code": {
+          "enum": [
+            "empty_repository",
+            "clone_failed",
+            "scan_failed",
+            "budget_exhausted",
+            "not_found_or_inaccessible"
+          ]
+        }
+      },
+      "required": [
+        "full_name",
+        "github_repository_id",
+        "default_branch",
+        "head_sha",
+        "scan_state"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "scan_state": {
+                "const": "scanned"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "head_sha": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{40}$",
+                "minLength": 40,
+                "maxLength": 40
+              },
+              "default_branch": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "not": {
+              "required": [
+                "failure_code"
+              ]
+            }
+          },
+          "else": {
+            "required": [
+              "failure_code"
+            ]
+          }
+        }
+      ]
+    },
+    "input_repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "full_name": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+$",
+          "not": {
+            "pattern": "[\\r\\n]"
+          }
+        },
+        "github_repository_id": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "default_branch": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/git_ref"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "head_sha": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$",
+              "minLength": 40,
+              "maxLength": 40
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "scan_state": {
+          "enum": [
+            "scanned",
+            "empty",
+            "clone_failed",
+            "scan_failed",
+            "budget_exhausted"
+          ]
+        },
+        "failure_code": {
+          "enum": [
+            "empty_repository",
+            "clone_failed",
+            "scan_failed",
+            "budget_exhausted",
+            "not_found_or_inaccessible"
+          ]
+        },
+        "local_path": {
+          "anyOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(/|$))(?!.*[\\\\:\\x00-\\x1f\\x7f])[^/]+(?:/[^/]+)*$"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "full_name",
+        "github_repository_id",
+        "default_branch",
+        "head_sha",
+        "scan_state",
+        "local_path"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "scan_state": {
+                "const": "scanned"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "head_sha": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{40}$",
+                "minLength": 40,
+                "maxLength": 40
+              },
+              "default_branch": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "not": {
+              "required": [
+                "failure_code"
+              ]
+            }
+          },
+          "else": {
+            "required": [
+              "failure_code"
+            ]
+          }
+        }
+      ]
+    },
+    "edge": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "from": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+$",
+          "not": {
+            "pattern": "[\\r\\n]"
+          }
+        },
+        "to": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+$",
+              "not": {
+                "pattern": "[\\r\\n]"
+              }
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "kind": {
+          "enum": [
+            "pin",
+            "copied-literal",
+            "host-path"
+          ]
+        },
+        "maturity_label": {
+          "enum": [
+            "presence-only",
+            "hash-checked",
+            "realized-edge-observed"
+          ]
+        },
+        "evidence_path": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(/|$))(?!.*[\\\\\\x00-\\x1f\\x7f])[^:]+:[1-9][0-9]*$"
+        },
+        "paired_evidence_path": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(/|$))(?!.*[\\\\\\x00-\\x1f\\x7f])[^:]+:[1-9][0-9]*$"
+        },
+        "target_state": {
+          "enum": [
+            "known",
+            "not_found_or_inaccessible",
+            "outside_scope",
+            "unmatched",
+            "ambiguous"
+          ]
+        },
+        "target_hint": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9_.-]+$",
+          "not": {
+            "pattern": "[\\r\\n]"
+          }
+        },
+        "pinned_ref": {
+          "$ref": "#/$defs/git_ref"
+        },
+        "resolved_pin_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$",
+          "minLength": 40,
+          "maxLength": 40
+        },
+        "target_head_sha": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$",
+          "minLength": 40,
+          "maxLength": 40
+        },
+        "comparison": {
+          "enum": [
+            "up_to_date",
+            "behind",
+            "off_default_branch",
+            "unresolvable"
+          ]
+        }
+      },
+      "required": [
+        "from",
+        "to",
+        "kind",
+        "maturity_label",
+        "evidence_path",
+        "target_state"
+      ],
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "to": {
+                "type": "null"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "target_hint"
+            ],
+            "properties": {
+              "target_state": {
+                "enum": [
+                  "unmatched",
+                  "ambiguous"
+                ]
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "target_state": {
+                "enum": [
+                  "known",
+                  "not_found_or_inaccessible",
+                  "outside_scope"
+                ]
+              }
+            },
+            "not": {
+              "required": [
+                "target_hint"
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "pin"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "comparison"
+            ]
+          },
+          "else": {
+            "not": {
+              "anyOf": [
+                {
+                  "required": [
+                    "pinned_ref"
+                  ]
+                },
+                {
+                  "required": [
+                    "resolved_pin_sha"
+                  ]
+                },
+                {
+                  "required": [
+                    "target_head_sha"
+                  ]
+                },
+                {
+                  "required": [
+                    "comparison"
+                  ]
+                }
+              ]
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "copied-literal"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "paired_evidence_path"
+            ],
+            "properties": {
+              "maturity_label": {
+                "const": "hash-checked"
+              }
+            }
+          },
+          "else": {
+            "not": {
+              "required": [
+                "paired_evidence_path"
+              ]
+            }
+          }
+        }
+      ]
+    },
+    "pin_observation": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "from": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+$",
+          "not": {
+            "pattern": "[\\r\\n]"
+          }
+        },
+        "evidence_path": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(/|$))(?!.*[\\\\\\x00-\\x1f\\x7f])[^:]+:[1-9][0-9]*$"
+        },
+        "to": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+$",
+          "not": {
+            "pattern": "[\\r\\n]"
+          }
+        },
+        "effective_ref": {
+          "$ref": "#/$defs/git_ref"
+        },
+        "resolved_pin_sha": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$",
+              "minLength": 40,
+              "maxLength": 40
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "target_head_sha": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$",
+              "minLength": 40,
+              "maxLength": 40
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "declared_ref_sha": {
+          "anyOf": [
+            {
+              "type": "string",
+              "pattern": "^[0-9a-f]{40}$",
+              "minLength": 40,
+              "maxLength": 40
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "relation": {
+          "enum": [
+            "equal",
+            "ancestor",
+            "off_default_branch",
+            "unresolvable"
+          ]
+        }
+      },
+      "required": [
+        "from",
+        "evidence_path",
+        "to",
+        "effective_ref",
+        "resolved_pin_sha",
+        "target_head_sha",
+        "relation"
+      ]
+    },
+    "fleet_scan_input.v1": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "const": "fleet_scan_input.v1"
+        },
+        "clone_root": {
+          "type": "string",
+          "minLength": 1
+        },
+        "scope": {
+          "$ref": "#/$defs/scope"
+        },
+        "repositories": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/input_repository"
+          }
+        },
+        "pin_observations": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/pin_observation"
+          }
+        }
+      },
+      "required": [
+        "schema",
+        "clone_root",
+        "scope",
+        "repositories"
+      ]
+    },
+    "fleet_map_source.v1": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "schema": {
+          "const": "fleet_map_source.v1"
+        },
+        "source_repo": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9_.-]+$",
+          "not": {
+            "pattern": "[\\r\\n]"
+          }
+        },
+        "data_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$",
+          "minLength": 40,
+          "maxLength": 40
+        },
+        "artifact_path": {
+          "const": "fleet-map/fleet-map.json"
+        },
+        "artifact_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "minLength": 64,
+          "maxLength": 64
+        },
+        "producer_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$",
+          "minLength": 40,
+          "maxLength": 40
+        },
+        "producer_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "generated_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "(Z|\\+00:00)$"
+        }
+      },
+      "required": [
+        "schema",
+        "source_repo",
+        "data_commit",
+        "artifact_path",
+        "artifact_sha256",
+        "producer_commit",
+        "producer_version",
+        "generated_at"
+      ]
+    },
+    "git_ref": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 256,
+      "pattern": "^(?![-/])(?!.*\\.\\.)(?!.*//)(?!.*@\\{)(?!.*(?:^|/)\\.)(?!.*\\.lock(?:/|$))(?!.*[/.]$)[^\\x00-\\x20\\x7f~^:?*\\[\\\\]+$",
+      "not": {
+        "anyOf": [
+          {
+            "pattern": "[\\x00-\\x20\\x7f]"
+          },
+          {
+            "const": "@"
+          }
+        ]
+      }
+    }
+  }
+}

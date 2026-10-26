@@ -34,7 +34,7 @@ from .claude_channel_sidecar import ChannelSidecarClient, ChannelSidecarClientEr
 from .discovery import classify_phase_team_eligibility
 from .harness_env_signatures import child_executor_env
 from .sandbox_policy import CHILD_SCRATCH_RELOCATE, SandboxSpaceError, child_scratch_env
-from .injection import materialize_claude_plugin_bundle
+from .injection import materialize_claude_plugin_bundle, materialize_skill_references
 from .models import (
     ClaudeTeamPolicy,
     DelegationRequest,
@@ -3537,6 +3537,7 @@ def _resolve_command_context_inner(
         context_path = _gemini_workspace_context_path(repo_path, log_path, spec.prompt_bundle.render_context())
         if context_path is None:
             return staged_command
+        _copy_skill_references(spec, context_path)
         command = [part.replace(GEMINI_CONTEXT_PLACEHOLDER, context_path) for part in staged_command]
         mirror_root = str(Path(context_path).parent)
         if mirror_root != str(repo_path) and mirror_root not in command:
@@ -3554,11 +3555,13 @@ def _resolve_command_context_inner(
         context_path = _phase_loop_context_path(log_path, spec.prompt_bundle.render_context())
         if context_path is None:
             return spec.command
+        _copy_skill_references(spec, context_path)
         return [part.replace(GROK_CONTEXT_PLACEHOLDER, context_path) for part in spec.command]
     if spec.executor == "opencode" and OPENCODE_CONTEXT_PLACEHOLDER in " ".join(spec.command):
         context_path = _phase_loop_context_path(log_path, spec.prompt_bundle.render_context())
         if context_path is None:
             return spec.command
+        _copy_skill_references(spec, context_path)
         return [part.replace(OPENCODE_CONTEXT_PLACEHOLDER, context_path) for part in spec.command]
     if spec.executor == "pi" and PI_CONTEXT_PLACEHOLDER in " ".join(spec.command):
         context_path = _phase_loop_context_path(log_path, spec.prompt_bundle.render_context())
@@ -3569,6 +3572,7 @@ def _resolve_command_context_inner(
         context_path = _phase_loop_context_path(log_path, spec.prompt_bundle.render_context())
         if context_path is None:
             return spec.command
+        _copy_skill_references(spec, context_path)
         return [part.replace(COMMAND_CONTEXT_PLACEHOLDER, context_path) for part in spec.command]
     return spec.command
 
@@ -3580,6 +3584,18 @@ def _command_repo_path(command: list[str], flag: str) -> Path | None:
         return None
     raw = command[include_idx].split(",", 1)[0].strip()
     return Path(raw) if raw else None
+
+
+def _copy_skill_references(spec: LaunchSpec, context_path: str) -> None:
+    """Copy the pack skills' linked references/ beside a context-file launch's context.md.
+
+    agent-harness#1358: `_skill_bodies` inlines only SKILL.md and tells the adapter
+    these copies sit under `skills/<skill>/references/` next to the context file.
+    """
+    materialize_skill_references(
+        context_dir=Path(context_path).parent,
+        prompt_bundle=spec.prompt_bundle,
+    )
 
 
 def _gemini_workspace_context_path(repo: Path, log_path: Path | None, context_text: str) -> str | None:

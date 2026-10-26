@@ -92,6 +92,7 @@ def _make_repo(tmp_path: Path) -> Path:
     (repo / "README.md").write_text("fixture\n", encoding="utf-8")
     _git(repo, "add", "README.md")
     _git(repo, "commit", "-m", "fixture base")
+    _git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
     # Move to a safe working branch (not main/protected).
     _git(repo, "checkout", "-b", "feat/p1-test")
     return repo
@@ -428,6 +429,382 @@ def test_source_warnings_cannot_print_credential_lines(tmp_path, monkeypatch, ca
 
 
 # ---------------------------------------------------------------------------
+_TS_MODULE = """import type { Value } from './types.js';
+export type PublicValue = string;
+type LocalValue = number;
+export interface Options { count: LocalValue }
+export function load(value: PublicValue): PublicValue {
+    return value;
+}
+"""
+_TS_POLICY_EXCLUSIONS = (
+    "export interface Options { count: number }\n",
+    "const values = [1, 2];\n",
+    "abstract class Loader {}\n",
+    "export default function() { return 1; }\n",
+    "const load = function() { return 1; };\n",
+    "const load = () => 1;\n",
+    "namespace Values { export function load() { return 1; } }\n",
+    "declare function load(): void;\n",
+    "function load(value: string): string;\n",
+)
+_TS_DETECTOR_BODIES = (
+    'function fixture() { return 1; }\nconst name = 1, password = "synthetic-test-value";\n',
+    'function fixture() { return 1; }\nconst password = "synthetic-test-value"; // pragma: allowlist secret\n',
+    'export function load() { return "-----BEGIN PRIVATE KEY-----"; }\n',
+)
+
+
+def _typescript_repo(tmp_path, path="src/credentials.ts", body=_TS_MODULE, *, parent=None):
+    repo = _make_repo(tmp_path)
+    (repo / path).parent.mkdir(parents=True, exist_ok=True)
+    if parent is not None:
+        _write_and_stage(repo, path, parent)
+        _git(repo, "commit", "-m", "existing module")
+    (repo / path).write_bytes(body if isinstance(body, bytes) else body.encode())
+    _git(repo, "add", "--", path)
+    return repo
+
+
+@pytest.mark.parametrize("path,body,parent", [
+    ("src/auth/credentials.ts", _TS_MODULE, None),
+    ("test/credentials.test.ts", "function fixture() { return 1; }\n", None),
+    ("tests/private.test.ts", _TS_MODULE, _TS_MODULE.replace("return value", "return ''")),
+    ("src/secrets.ts", "export function* load() { yield 1; }\n", None),
+    ("src/private.ts", "class Loader { load() { return 1; } }\n", None),
+    ("src/credentials[prod]\nmodule.ts", _TS_MODULE, None),
+    ("src/private.ts", _TS_MODULE + "abstract class Adjacent {}\nnamespace Values {}\n", None),
+    ("src/credentials.ts", _TS_MODULE, _TS_DETECTOR_BODIES[0]),
+])
+def test_typescript_source_evidence(tmp_path, monkeypatch, path, body, parent):
+    import hashlib
+    import requests
+    from phase_loop_runtime import publishing
+    def no_network(*args, **kwargs):
+        pytest.fail("source classification must stay offline")
+    monkeypatch.setattr(requests.sessions.Session, "request", no_network)
+    repo = _typescript_repo(tmp_path, path, body, parent=parent)
+    evidence = {}
+    assert publishing._audit_staged_diff(repo, [path], evidence=evidence) is None
+    record, = evidence["source_exceptions"]
+    assert record == {
+        "path": path,
+        "parent_blob_oid": _git(repo, "rev-parse", "HEAD:" + path).stdout.strip() if parent else None,
+        "blob_oid": _git(repo, "rev-parse", ":" + path).stdout.strip(),
+        "blob_sha256": hashlib.sha256(body.encode()).hexdigest(),
+        "tree_sitter_version": "0.25.2",
+        "tree_sitter_typescript_version": "0.23.2",
+        "policy": "typescript-detect-secrets-1.5.0-v1",
+    }
+
+
+@pytest.mark.parametrize("body", [
+    _TS_MODULE + "@@@\n",
+    _TS_MODULE + "function incomplete( {\n",
+    _TS_MODULE + "function incomplete() { return 1;\n",
+    b"/*\xff*/\n" + _TS_MODULE.encode(),
+    b"/*\x00*/\n" + _TS_MODULE.encode(),
+    *_TS_POLICY_EXCLUSIONS,
+    *_TS_DETECTOR_BODIES,
+])
+def test_typescript_source_refusals_are_private(tmp_path, monkeypatch, capsys, body):
+    import warnings
+    import requests
+    from phase_loop_runtime import publishing
+    if body in (*_TS_POLICY_EXCLUSIONS, *_TS_DETECTOR_BODIES):
+        from tree_sitter import Language, Parser
+        import tree_sitter_typescript
+        root = Parser(Language(tree_sitter_typescript.language_typescript())).parse(body.encode()).root_node
+        assert root.has_error is False
+        if body in _TS_DETECTOR_BODIES:
+            declarations = [
+                node.child_by_field_name("declaration") if node.type == "export_statement" else node
+                for node in root.named_children
+            ]
+            assert any(
+                node is not None
+                and node.type in {"function_declaration", "generator_function_declaration", "class_declaration"}
+                and node.child_by_field_name("body") is not None
+                for node in declarations
+            )
+    if isinstance(body, str) and "function incomplete()" in body:
+        from tree_sitter import Language, Parser
+        import tree_sitter_typescript
+        root = Parser(Language(tree_sitter_typescript.language_typescript())).parse(body.encode()).root_node
+        nodes, pending = [], [root]
+        while pending:
+            node = pending.pop()
+            nodes.append(node)
+            pending.extend(node.children)
+        assert root.has_error and any(node.is_missing for node in nodes)
+        assert not any(node.is_error for node in nodes)
+    def no_network(*args, **kwargs):
+        pytest.fail("source classification must stay offline")
+    monkeypatch.setattr(requests.sessions.Session, "request", no_network)
+    path = "test/credentials.test.ts"
+    repo = _typescript_repo(tmp_path, path, body)
+    (repo / path).write_text(_TS_MODULE)
+    with warnings.catch_warnings(record=True) as recorded:
+        result = publishing._audit_staged_diff(repo, [path], evidence={})
+    assert result["reason"] == "secret_staged_path"
+    captured = capsys.readouterr()
+    assert not recorded and not captured.out and not captured.err
+    assert "synthetic-test-value" not in str(result) and "BEGIN PRIVATE" not in str(result)
+
+
+@pytest.mark.parametrize("path", [
+    "src/credentials.d.ts", "src/credentials.D.ts", "src/credentials.tsx",
+    "src/credentials.js", "docs/src/credentials.ts", "credentials.ts",
+    "src/.env/credentials.ts", "src/api.key/credentials.ts", "src/private.pem/credentials.ts",
+    "src/private.p12/credentials.ts", "src/private.pfx/credentials.ts",
+])
+def test_typescript_source_path_scope(tmp_path, capsys, path):
+    import warnings
+    from phase_loop_runtime import publishing
+    repo = _typescript_repo(tmp_path, path)
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
+        result = publishing._audit_staged_diff(repo, [path], evidence={})
+    assert result["reason"] == "secret_staged_path" and "PublicValue" not in str(result)
+    captured = capsys.readouterr()
+    assert not recorded and not captured.out and not captured.err
+
+
+@pytest.mark.parametrize("case", ["parent_data", "deleted", "parent_symlink", "staged_symlink", "oversized"])
+def test_typescript_source_object_scope(tmp_path, capsys, case):
+    import warnings
+    from phase_loop_runtime import publishing
+    path = "src/credentials.ts"
+    repo = _typescript_repo(tmp_path, path, parent="const value = 1;" if case == "parent_data" else _TS_MODULE)
+    if case == "deleted":
+        _git(repo, "rm", "-f", "--", path)
+    elif case == "parent_symlink":
+        (repo / path).unlink()
+        (repo / path).symlink_to("../README.md")
+        _git(repo, "add", "--", path)
+        _git(repo, "commit", "-m", "symbolic entry")
+        (repo / path).unlink()
+        _write_and_stage(repo, path, _TS_MODULE)
+    elif case == "staged_symlink":
+        (repo / path).unlink()
+        (repo / path).symlink_to("../README.md")
+        _git(repo, "add", "--", path)
+    elif case == "oversized":
+        _write_and_stage(repo, path, "/*" + "x" * 1_048_576 + "*/\n" + _TS_MODULE)
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
+        result = publishing._audit_staged_diff(repo, [path], evidence={})
+    assert result["reason"] == "secret_staged_path" and "PublicValue" not in str(result)
+    captured = capsys.readouterr()
+    assert not recorded and not captured.out and not captured.err
+
+
+@pytest.mark.parametrize("fault", ["parent_lookup", "tree_lookup", "wrong_name", "diff_lookup", "diff_omits_path"])
+def test_typescript_lookup_refuses_substitution(tmp_path, monkeypatch, capsys, fault):
+    import warnings
+    from phase_loop_runtime import publishing
+    path = "src/credentials[prod]\nmodule.ts"
+    repo = _typescript_repo(tmp_path, path)
+    parent = _git(repo, "rev-parse", "HEAD").stdout.strip()
+    real = publishing._git_bytes
+    reached, diffs = False, 0
+    def lookup(repo, *args):
+        nonlocal reached, diffs
+        if "ls-tree" in args:
+            if fault == "parent_lookup" and parent in args:
+                reached = True
+                return None
+            if fault == "tree_lookup" and parent not in args:
+                reached = True
+                return None
+            result = real(repo, *args)
+            if fault == "wrong_name" and result:
+                reached = True
+                return result.partition(b"\t")[0] + b"\tdecoy.ts\0"
+            return result
+        if "diff" in args:
+            diffs += 1
+            if fault in {"diff_lookup", "diff_omits_path"} and diffs == 2:
+                reached = True
+                return None if fault == "diff_lookup" else b"src/other.ts\0"
+        return real(repo, *args)
+    monkeypatch.setattr(publishing, "_git_bytes", lookup)
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
+        result = publishing._audit_staged_diff(repo, [path], evidence={})
+    assert reached and result["reason"] == "secret_staged_path"
+    assert "PublicValue" not in str(result)
+    captured = capsys.readouterr()
+    assert not recorded and not captured.out and not captured.err
+
+
+@pytest.mark.parametrize("dependency", ["tree-sitter", "tree-sitter-typescript", "detect-secrets"])
+def test_typescript_dependency_version_refusal(tmp_path, monkeypatch, capsys, dependency):
+    from phase_loop_runtime import publishing
+    repo = _typescript_repo(tmp_path)
+    original = publishing.version
+    monkeypatch.setattr(publishing, "version", lambda name: "unsupported" if name == dependency else original(name))
+    result = publishing._audit_staged_diff(repo, ["src/credentials.ts"], evidence={})
+    assert result["reason"] == "source_scan_failed"
+    captured = capsys.readouterr()
+    assert not captured.out and not captured.err
+
+
+@pytest.mark.parametrize("fault", ["warning", "exception", "missing_tree"])
+def test_typescript_parser_failure_is_private(tmp_path, monkeypatch, capsys, fault):
+    import tree_sitter
+    import warnings
+    from phase_loop_runtime import publishing
+    class Parser:
+        def __init__(self, *args): pass
+        def parse(self, *args):
+            if fault == "warning":
+                warnings.warn("source-diagnostic-sentinel", UserWarning)
+            if fault == "exception":
+                raise RuntimeError("source-diagnostic-sentinel")
+            return None
+    monkeypatch.setattr(tree_sitter, "Parser", Parser)
+    repo = _typescript_repo(tmp_path)
+    with warnings.catch_warnings(record=True) as recorded:
+        result = publishing._audit_staged_diff(repo, ["src/credentials.ts"], evidence={})
+    assert result["reason"] == ("source_scan_failed" if fault == "exception" else "secret_staged_path")
+    captured = capsys.readouterr()
+    assert not recorded and not captured.out and not captured.err
+    assert "source-diagnostic-sentinel" not in str(result)
+
+
+def test_typescript_parser_imports_are_lazy(tmp_path, monkeypatch):
+    import sys
+    from phase_loop_runtime import publishing
+    code = "import sys; sys.modules['tree_sitter'] = None; sys.modules['tree_sitter_typescript'] = None; import phase_loop_runtime.publishing"
+    subprocess.run([sys.executable, "-I", "-c", code], check=True, capture_output=True)
+    monkeypatch.setitem(sys.modules, "tree_sitter", None)
+    monkeypatch.setitem(sys.modules, "tree_sitter_typescript", None)
+    repo = _source_repo(tmp_path)
+    assert publishing._audit_staged_diff(repo, ["credentials.py"], evidence={}) is None
+    (repo / "src").mkdir()
+    _write_and_stage(repo, "src/credentials.ts", _TS_MODULE)
+    assert publishing._audit_staged_diff(repo, ["credentials.py", "src/credentials.ts"], evidence={})["reason"] == "source_scan_failed"
+
+
+@pytest.mark.parametrize("kind", ["new", "existing", "mixed"])
+def test_typescript_transaction_reloads_frozen_audit(tmp_path, kind):
+    import hashlib
+    from phase_loop_runtime import publishing
+    path = "src/credentials.ts"
+    repo = _typescript_repo(tmp_path, parent=_TS_MODULE.replace("return value", "return ''") if kind == "existing" else None)
+    owned = [path]
+    if kind == "mixed":
+        _write_and_stage(repo, "credentials.py", "def load(): return None\n")
+        _git(repo, "commit", "--only", "credentials.py", "-m", "existing Python")
+        _write_and_stage(repo, "credentials.py", "def load(): return 1\n")
+        owned.append("credentials.py")
+    evidence = {}
+    assert publishing._audit_staged_diff(repo, owned, evidence=evidence) is None
+    assert [x["path"] for x in evidence["source_exceptions"]] == sorted(owned)
+    expected_python = None
+    if kind == "mixed":
+        expected_python = {
+            "path": "credentials.py",
+            "parent_blob_oid": _git(repo, "rev-parse", "HEAD:credentials.py").stdout.strip(),
+            "blob_oid": _git(repo, "rev-parse", ":credentials.py").stdout.strip(),
+            "blob_sha256": hashlib.sha256(b"def load(): return 1\n").hexdigest(),
+            "policy": "tracked-python-detect-secrets-1.5.0-v1",
+        }
+        assert evidence["source_exceptions"][0] == expected_python
+    authority = _fabpub_publish_authority(repo, tmp_path / "checkpoints")
+    tx = publishing.prepare_publish_transaction(repo, owned_paths=owned, checkpoint_root=authority.checkpoint_root,
+        branch="feat/p1-test", node_id="repo-a", envelope_authority_preimage=authority.envelope_authority_preimage, publication_audit=evidence)
+    for sealed in [False, True]:
+        if sealed:
+            tx.resume()
+            for state in publishing.PublishTransactionState.ORDERED[3:]:
+                tx.project(state)
+            assert _git(repo, "rev-parse", "HEAD").stdout.strip() == tx.expected_commit_oid
+        candidate = publishing.inspect_publish_resume_candidate(repo, checkpoint_root=authority.checkpoint_root, node_id="repo-a")
+        assert candidate.state != publishing.PublishTransactionState.CONFLICTED
+        assert candidate.transaction.publication_audit == evidence
+        expected = [publishing._source_path_evidence(repo, x, tx.parent_head_sha, tx.tree_oid) for x in sorted(owned)]
+        assert candidate.transaction.publication_audit["source_exceptions"] == expected
+        if expected_python is not None:
+            assert candidate.transaction.publication_audit["source_exceptions"][0] == expected_python
+
+
+@pytest.mark.parametrize("kind,field,replacement", [
+    ("new", "parent_blob_oid", "other_blob"),
+    ("existing", "parent_blob_oid", None),
+    ("new", "tree_sitter_version", "tampered-audit-sentinel"),
+    ("new", "tree_sitter_typescript_version", "tampered-audit-sentinel"),
+    ("new", "policy", "tampered-audit-sentinel"),
+    ("new", "blob_sha256", "tampered-audit-sentinel"),
+    ("new", "blob_oid", "other_blob"),
+])
+def test_typescript_persisted_audit_tamper_refuses(tmp_path, kind, field, replacement, capsys):
+    import hashlib
+    import warnings
+    from phase_loop_runtime import publishing
+    repo = _typescript_repo(tmp_path, parent=_TS_MODULE.replace("return value", "return ''") if kind == "existing" else None)
+    evidence = {}
+    assert publishing._audit_staged_diff(repo, ["src/credentials.ts"], evidence=evidence) is None
+    authority = _fabpub_publish_authority(repo, tmp_path / "checkpoints")
+    tx = publishing.prepare_publish_transaction(repo, owned_paths=["src/credentials.ts"], checkpoint_root=authority.checkpoint_root,
+        branch="feat/p1-test", node_id="repo-a", envelope_authority_preimage=authority.envelope_authority_preimage, publication_audit=evidence)
+    original_head = _git(repo, "rev-parse", "HEAD").stdout
+    payload = json.loads(tx.checkpoint_path.read_text())
+    original_values = {
+        "parent_blob_oid": _git(repo, "rev-parse", "HEAD:src/credentials.ts").stdout.strip() if kind == "existing" else None,
+        "tree_sitter_version": "0.25.2",
+        "tree_sitter_typescript_version": "0.23.2",
+        "policy": "typescript-detect-secrets-1.5.0-v1",
+        "blob_sha256": hashlib.sha256(_TS_MODULE.encode()).hexdigest(),
+        "blob_oid": _git(repo, "rev-parse", ":src/credentials.ts").stdout.strip(),
+    }
+    assert payload["publication_audit"]["source_exceptions"][0][field] == original_values[field]
+    if replacement == "other_blob":
+        replacement = _git(repo, "rev-parse", "HEAD:README.md").stdout.strip()
+    assert replacement != original_values[field]
+    payload["publication_audit"]["source_exceptions"][0][field] = replacement
+    tx.checkpoint_path.write_text(json.dumps(payload))
+    with warnings.catch_warnings(record=True) as recorded:
+        warnings.simplefilter("always")
+        candidate = publishing.inspect_publish_resume_candidate(repo, checkpoint_root=authority.checkpoint_root, node_id="repo-a")
+        assert candidate.state == publishing.PublishTransactionState.CONFLICTED
+        assert candidate.transaction is not None
+        with pytest.raises(RuntimeError, match="frozen source publication audit failed"):
+            candidate.transaction.resume()
+    assert _git(repo, "rev-parse", "HEAD").stdout == original_head
+    captured = capsys.readouterr()
+    assert not recorded and not captured.out and not captured.err
+
+
+def test_typescript_direct_preparation_requires_audit(tmp_path):
+    from phase_loop_runtime import publishing
+    repo = _typescript_repo(tmp_path)
+    authority = _fabpub_publish_authority(repo, tmp_path / "checkpoints")
+    before = _git(repo, "rev-parse", "HEAD").stdout
+    with pytest.raises(RuntimeError, match="requires a matching"):
+        publishing.prepare_publish_transaction(repo, owned_paths=["src/credentials.ts"], checkpoint_root=authority.checkpoint_root,
+            branch="feat/p1-test", node_id="repo-a", envelope_authority_preimage=authority.envelope_authority_preimage)
+    assert _git(repo, "rev-parse", "HEAD").stdout == before
+    assert publishing.PublishTransactionStore(authority.checkpoint_root, "repo-a").load_active() is None
+
+
+@pytest.mark.parametrize("drift", ["index", "parent"])
+def test_typescript_audit_detects_frozen_input_drift(tmp_path, monkeypatch, drift):
+    from phase_loop_runtime import publishing
+    repo = _typescript_repo(tmp_path)
+    real = publishing._source_path_evidence
+    def change(*args):
+        result = real(*args)
+        if drift == "index":
+            _write_and_stage(repo, "src/credentials.ts", _TS_MODULE.replace("return value", "return ''"))
+        else:
+            _git(repo, "commit", "-m", "advance fixture parent")
+        return result
+    monkeypatch.setattr(publishing, "_source_path_evidence", change)
+    assert publishing._audit_staged_diff(repo, ["src/credentials.ts"], evidence={})["reason"] == "staged_audit_changed"
+
+
 # Invariant: main / protected branch → publication_blocked
 # ---------------------------------------------------------------------------
 
@@ -703,6 +1080,66 @@ def human_gh_auth(monkeypatch):
 
     monkeypatch.setattr(publishing, "_check_gh_auth", lambda: None)
     monkeypatch.setattr(publishing, "_check_publish_origin", lambda _repo: None)
+
+
+def test_human_scope_preflight_preserves_head_and_index_until_scope_corrected(
+    tmp_path, monkeypatch, human_gh_auth
+):
+    from phase_loop_runtime.convergence.broker import live
+
+    repo = _make_repo(tmp_path)
+    _write_and_stage(repo, "earlier.py", "earlier = True\n")
+    _git(repo, "commit", "-m", "earlier companion change")
+    _write_and_stage(repo, "current.py", "current = True\n")
+    before = (_git(repo, "rev-parse", "HEAD").stdout, _git(repo, "write-tree").stdout)
+    plan, verification = _human_publish_artifacts(tmp_path)
+    monkeypatch.setattr(live, "fabpub_capability_active", lambda: True)
+    calls = []
+    monkeypatch.setattr(live, "fabpub_activation_barrier", lambda worktrees: calls.append(worktrees) or {"repositories": [], "leases": []})
+    monkeypatch.setattr(live, "release_barrier_leases", lambda report: None)
+    result = publish_human_invoked_from_worktree(
+        repo, ["current.py"], plan_path=plan, verification_artifact_path=verification,
+    )
+    assert result["reason"] == "publication_scope_precheck_failed"
+    assert result["detail"] == "owned-scope-exceeded:earlier.py"
+    assert not calls
+    assert not (repo / ".git/phase-loop-human-publication-v1").exists()
+    assert (_git(repo, "rev-parse", "HEAD").stdout, _git(repo, "write-tree").stdout) == before
+    result = publish_human_invoked_from_worktree(
+        repo, ["current.py", "earlier.py"], plan_path=plan, verification_artifact_path=verification,
+    )
+    assert result["reason"] == "repository_publication_authority_required"
+    assert len(calls) == 1
+    assert (_git(repo, "rev-parse", "HEAD").stdout, _git(repo, "write-tree").stdout) == before
+
+
+@pytest.mark.parametrize("base", ["missing", "main~1", "feat/p1-test"])
+def test_human_scope_preflight_refuses_unavailable_or_invalid_base(tmp_path, monkeypatch, human_gh_auth, base):
+    from phase_loop_runtime.convergence.broker import live
+    repo = _make_repo(tmp_path)
+    plan, verification = _human_publish_artifacts(tmp_path)
+    monkeypatch.setattr(live, "fabpub_capability_active", lambda: True)
+    monkeypatch.setattr(live, "fabpub_activation_barrier", lambda _: pytest.fail("scope must refuse before authority"))
+    result = publish_human_invoked_from_worktree(repo, ["owned.py"], plan_path=plan, verification_artifact_path=verification, base=base)
+    assert result["reason"] == "publication_scope_precheck_failed"
+
+
+def test_human_scope_preflight_keeps_both_rename_endpoints_and_exact_paths(tmp_path):
+    import os
+    from phase_loop_runtime import publishing
+    repo = _make_repo(tmp_path)
+    (repo / "old").mkdir()
+    unusual = os.fsdecode(b"old/space \r\n\xff.py")
+    _write_and_stage(repo, unusual, "retained\n")
+    _git(repo, "commit", "-m", "base file")
+    _git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
+    (repo / "new").mkdir()
+    _git(repo, "mv", unusual, "new/destination.py")
+    _git(repo, "commit", "-m", "rename")
+    check = publishing._human_publication_scope_precheck
+    assert check(repo, ["new/"], base="main", branch="feat/p1-test").startswith("owned-scope-exceeded:")
+    assert check(repo, ["new/", unusual], base="main", branch="feat/p1-test") is None
+    assert check(repo, ["new/", "old/"], base="main", branch="feat/p1-test") is None
 
 
 def test_human_publish_requires_plan_and_verification_context(

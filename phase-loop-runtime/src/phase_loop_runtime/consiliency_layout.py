@@ -426,10 +426,7 @@ def _requirement_from_adjacent_pyproject() -> str | None:
     ``consiliency-contract`` dependency -- in every such case metadata governs.
     """
     try:
-        try:
-            import tomllib  # Python 3.11+
-        except ModuleNotFoundError:  # pragma: no cover - 3.10 backport path
-            import tomli as tomllib
+        import tomllib
 
         from packaging.requirements import Requirement
         from packaging.utils import canonicalize_name

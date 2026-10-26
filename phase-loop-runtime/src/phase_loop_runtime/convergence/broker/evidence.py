@@ -125,7 +125,7 @@ class BrokerEvidenceStore:
         # "block the epoch" mutually exclusive. Deadlock-safe: no evidence write happens
         # while the admission lock is held (execute admits, THEN records).
         self.lock_path = root / "admissions.lock"
-    def replay(self) -> dict[str, EvidenceRecord]:
+    def replay(self, raw_bytes: bytes | None = None) -> dict[str, EvidenceRecord]:
         # SCHEMA DRIFT IS A TYPED REFUSAL, NOT A TypeError.
         #
         # This is the defect that opened agent-harness#789. Its first step was an
@@ -147,7 +147,7 @@ class BrokerEvidenceStore:
         # record: fabricating a partial read of a sealed evidence store is worse than
         # refusing it. (agent-harness#789.)
         result: dict[str, EvidenceRecord] = {}
-        if self.path.exists():
+        if raw_bytes is not None or self.path.exists():
             # READ BYTES AND DECODE PER ROW. `read_text(encoding="utf-8")` decoded the
             # WHOLE FILE before the per-row guard, so one undecodable byte sequence
             # anywhere raised `UnicodeDecodeError` and escaped the typed refusal —
@@ -176,7 +176,8 @@ class BrokerEvidenceStore:
             # writer cannot emit any of them regardless — `json.dumps` with default
             # `ensure_ascii` plus an explicit `"\n"` — and `_parse_strict_jsonl` documents
             # the same class. (ah#834 r8 fable note 2, resolved by the r8 fix.)
-            for index, raw_line in enumerate(self.path.read_bytes().splitlines(), start=1):
+            body = self.path.read_bytes() if raw_bytes is None else raw_bytes
+            for index, raw_line in enumerate(body.splitlines(), start=1):
                 # THE DECODE AND THE SHAPE CHECK BELONG INSIDE THE GUARD TOO.
                 #
                 # They sat above the try, so three more shapes escaped the typed refusal

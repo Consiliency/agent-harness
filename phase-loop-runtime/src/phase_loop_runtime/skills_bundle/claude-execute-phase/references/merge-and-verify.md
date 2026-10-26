@@ -1,6 +1,6 @@
 # claude-execute-phase — gates, merge and final verification (Steps 6–9)
 
-Reference for `claude-execute-phase` (linked from its `SKILL.md`). Read it when a lane reports done and through final verification.
+Reference for `claude-execute-phase` (linked from its `SKILL.md`). Read it when a lane reports done and through final verification. Read "Browser verification" earlier, at plan intake in both modes, when any test needs a browser.
 
 ## Contents
 
@@ -12,6 +12,7 @@ Reference for `claude-execute-phase` (linked from its `SKILL.md`). Read it when 
 - Worktree lifecycle — prune after merge (standing rule)
 - Output contract
 - Worktree layout
+- Browser verification
 
 ## Step 6 — Gate verification
 
@@ -202,3 +203,15 @@ On halt:
 ```
 
 Both paths are auto-added to `.gitignore` in Step 2.
+
+## Browser verification
+
+Read this at plan intake, in adapter and interactive mode, before implementation or lane dispatch. Put the setup it requires in each affected lane brief.
+
+When a plan's `## Verification` section includes Playwright/e2e commands or lane tasks ask for browser smoke-testing, run them:
+
+- **Playwright via PMCP** — `pmcp_invoke(tool_id="playwright::browser_navigate", ...)` and related `playwright::*` tools. Default.
+- **Chrome DevTools Protocol (CDP)** — low-level debugging (performance traces, CPU profiling).
+- **`claude-in-chrome`** — extension-context automation only.
+
+The PMCP Playwright server provisions on demand. If the repo lacks a Playwright config, add one in the lane rather than deferring the test.

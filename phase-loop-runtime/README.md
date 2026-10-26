@@ -8,6 +8,14 @@ monorepo (Apache-2.0).
 
 ## Install
 
+Version 0.7.27 requires Python 3.12+ (agent-harness#1549). The host-side jail helpers
+remain 3.10-compatible, but a governed-review falsifier node importing the runtime
+under an older host interpreter ends in `error` and remains a blocking receipt.
+All twelve shipped agy members have renewed live qualification on the revised
+source. Exact-candidate package and compatibility checks remain release-cut gates;
+qualification evidence and historical runtime smoke limitations are recorded in the
+[release handoff](https://github.com/Consiliency/agent-harness/blob/main/docs/releases/outside-agent-release-handoff.md).
+
 Most users should use the repo's installer (it also installs the workflow skills):
 
 ```sh
@@ -19,7 +27,7 @@ To install just this runtime package directly:
 
 ```sh
 pip install phase-loop-runtime              # latest compatible release
-pip install phase-loop-runtime==0.7.26      # …or pin an exact version
+pip install phase-loop-runtime==0.7.27      # …or pin an exact version
 ```
 
 To pin a specific tag from source instead, substitute a tag from
@@ -29,12 +37,49 @@ To pin a specific tag from source instead, substitute a tag from
 uv tool install "git+https://github.com/Consiliency/agent-harness@<TAG>#subdirectory=phase-loop-runtime"
 ```
 
-This exposes four console scripts: `phase-loop` and `codex-phase-loop` (both calling
+This exposes five console scripts: `phase-loop` and `codex-phase-loop` (both calling
 `phase_loop_runtime.cli:main`), `phase-loop-closeout-audit` (the closeout
-ignored-output audit) and `roadmap-ownership` (the roadmap-ownership preflight). The
+ignored-output audit), `phase-loop-skill-eval` (the opt-in diagnostic planning
+evaluator; see [the guide](https://github.com/Consiliency/agent-harness/blob/main/docs/phase-loop/skill-eval.md)) and
+`roadmap-ownership` (the roadmap-ownership preflight). The
 canonical protocol document ships in the wheel as package data
 (from `src/phase_loop_runtime/_contract_docs/phase-loop/protocol.md`); an older copy is also
 installed to `share/phase-loop-runtime/protocol/protocol.md`.
+
+## Offline repository-map artifacts
+
+Legacy `phase-loop fleet-map --repo <path> --json` output remains unchanged.
+Artifact mode accepts a closed `fleet_scan_input.v1` manifest and explicit
+provenance:
+
+```sh
+phase-loop fleet-map --manifest scan-input.json \
+  --producer-commit <producer-source-sha> --generated-at <UTC-timestamp> \
+  --output fleet-map.json
+```
+
+The packaged [artifact schema](https://github.com/Consiliency/agent-harness/blob/main/phase-loop-runtime/src/phase_loop_runtime/schemas/fleet_map.v1.schema.json) defines the output and the input
+and source-pin `$defs`. Input repository entries use qualified identities such
+as Example/source, numeric provider IDs, captured default-branch SHAs,
+collection states and paths relative to an absolute clone root. Account counts
+must describe the complete declared enumeration. Failed collection or file
+inspection stays explicit and never becomes covered zero relationships.
+
+The extractor runs offline, reads regular files through a no-follow boundary,
+and executes no repository code. It emits pin presence, undirected paired-file
+drift and host-path observations. Supplied pin observations must bind the exact
+declaration and captured target SHA; unequal SHAs alone never prove ancestry.
+Versions are as of the supplied scan timestamp. Missing/ambiguous targets and
+unresolved comparisons remain explicit. Local paths and source lines are not
+output. The caller owns collection, dependency installation, credential handling,
+freshness policy and reviewed artifact adoption; this command performs none of
+those operations. Artifact mode requires descriptor-based no-follow file access.
+The identity adapter is intended for this strict artifact path. Scanning omits
+VCS, dependency and build directories named `.git`, `node_modules`, `__pycache__`,
+`.venv`, `venv`, `.mypy_cache`, `.pytest_cache`, `dist` and `build`; coverage applies
+to the supported file kinds outside those directories. Unsupported host-path
+identities fail that repository's scan. Branch names and pin refs must satisfy
+the bounded Git-ref rules in the packaged schema.
 
 ## Contributor test environment
 
@@ -49,7 +94,7 @@ PYTHONPATH=phase-loop-runtime/src:phase-loop-runtime/tests phase-loop-runtime/.v
 The test group supplies pytest and package build/install tools, including pip;
 the visual extra supplies Pillow for image decoding. Both are opt-in. The native
 repository-wide interpreter guard includes the dagger subproject's Python 3.14
-floor, which is separate from this runtime package's Python 3.10 minimum and CI's
+floor, which is separate from this runtime package's Python 3.12 minimum and CI's
 interpreter matrix. These commands verify the two selected files; they do not
 establish complete CI equivalence, behavior without Pillow, full-suite acceptance
 or production readiness.
@@ -98,23 +143,42 @@ of agent-harness#841's dependency repair.
 Normal FABPUB publication can distinguish an existing Python implementation such
 as `credentials.py` from a credential artifact (Consiliency/agent-harness#893).
 The path must be owned, regular Python source in both the frozen parent and staged
-tree, parse and compile without warnings, and contain a top-level function or class. New files,
-data-only files, symlinks, `.env*` and `.key` names do not receive this exception.
-Other source languages remain subject to the existing filename guard.
+tree, parse and compile without warnings, and contain a top-level function or class.
+New Python files still do not receive this exception.
+
+Regular `.ts` files whose first path component is `src`, `test` or `tests` may
+qualify through a separate frozen source check. Both revisions of an existing
+file must be strict UTF-8 without NUL and parse without warnings, error or missing
+nodes (`has_error` must be false). A new file requires proven parent absence and
+membership in the frozen changed-path set. Each present revision must contain a named
+function, generator-function or class declaration with a body, optionally wrapped
+in one top-level export; imports, interfaces and type aliases may coexist.
+Other forms alone do not qualify. Declaration files (`.d.ts`), other roots,
+TSX/JavaScript and other languages, data-only files, nonregular entries, deletions,
+and `.env*`, `.key`, `.pem`, `.p12` and `.pfx` path components stay refused.
 
 The complete staged blob is scanned with pinned `detect-secrets` 1.5.0 built-in
 detectors. Repository configuration, inline suppressions, filter exemptions and
 online verification are not consulted. Findings and scanner failures block the
 exception without printing matched data. Parsing/compilation warnings reject the
 candidate rather than rendering source lines. No candidate code is executed.
-This heuristic scan is not proof that
-arbitrary or obfuscated secrets are absent; source review is still required.
+This heuristic scan is not proof that secrets are absent; source review remains
+required. For example, the quote-required TypeScript keyword rules can miss typed
+assignments or a keyword split from its literal across lines unless another
+detector fires. Encoded, obfuscated or separator-split values can also evade
+detection. New heuristic-named TypeScript files expose those detector limitations
+on the same basis as the existing Python exception; ordinary filenames already
+publish without this scan.
 
 Metadata-only evidence (parent/tree and blob identifiers, content hash and policy
 version) is retained in the local publication checkpoint and checked again on
 recovery against the frozen Git objects. The existing FABPUB tree binding and
 transaction identity are unchanged. Legacy and prebuilt publication do not gain
 the source exception; there is no caller-controlled path allowlist.
+
+The TypeScript parser pins are `tree-sitter==0.25.2` and
+`tree-sitter-typescript==0.23.2`. Its flat JSON evidence records both versions and
+a null parent blob only for a proven addition. Python evidence is unchanged.
 
 Fresh FABPUB publication refuses unstaged or untracked workspace changes with
 `publication_workspace_invalid` before creating a transaction or advancing the

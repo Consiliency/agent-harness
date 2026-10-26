@@ -28,7 +28,7 @@ import asyncio
 import dagger
 from dagger import dag, function, object_type
 
-# The heavy CONFORM chronology node (~50 min). When retained, it runs in the 3.10
+# The heavy CONFORM chronology node (~50 min). When retained, it runs in the 3.12
 # container and in the Gate A stage, nowhere else. Kept in lockstep with
 # ci/chronology-scope.sh (`--node`) by tests/test_ci_chronology_scope.py.
 CHRONOLOGY_NODE = (
@@ -37,10 +37,11 @@ CHRONOLOGY_NODE = (
 )
 
 # Oldest supported interpreter. It keeps the chronology node because the node
-# drives version-sensitive subprocess machinery -- the 3.10-vs-3.12 egg-info
-# divergence recorded in agent-harness#382.
-CHRONOLOGY_PYTHON = "3.10"
-PYTHON_VERSIONS = ("3.10", "3.11", "3.12")
+# drives version-sensitive subprocess machinery -- the egg-info divergence
+# recorded in agent-harness#382. 3.12 is the floor and the only suite lane since
+# agent-harness#1546.
+CHRONOLOGY_PYTHON = "3.12"
+PYTHON_VERSIONS = ("3.12",)
 
 # The per-stage verdict roll-up, written into the exported evidence directory
 # alongside the junit. `all` returns a Directory, so this is where the roll-up
@@ -76,7 +77,9 @@ BASE_PACKAGES = [
 # /opt/python3.12 and `python -m pip install` wrote the console scripts to
 # /opt/python3.12/bin, which is not on PATH -- pip said so in the run log, and
 # `codex-phase-loop` then failed to spawn. The 3.10 and 3.11 lanes ran the same
-# test green, which is what localises the fault to the graft.
+# test green, which is what localises the fault to the graft. With 3.12 the only
+# suite lane (agent-harness#1546) no current lane takes the graft; it stays for a
+# lane on any other interpreter.
 PIN_INTERPRETER_IMAGE = "python:3.12-bookworm"
 PIN_INTERPRETER_PATH = "/usr/local/bin/python3.12"
 # The version whose own interpreter already satisfies the pin, so it must be left
@@ -316,7 +319,7 @@ PYTHONPATH="$suite_root/tests" python -m pytest \\
     def suite(
         self, source: dagger.Directory, python_version: str, chronology: bool = True
     ) -> dagger.Container:
-        """Run the standalone suite for one interpreter (3.10 keeps the chronology node)."""
+        """Run the standalone suite for one interpreter (3.12 keeps the chronology node)."""
         return self._suite(source, python_version, chronology)
 
     @function
@@ -340,7 +343,7 @@ export GATE_A_JUNIT=/junit/junit-gate-a.xml
 
     @function
     async def all(self, source: dagger.Directory, chronology: bool = True) -> dagger.Directory:
-        """The full offloaded gate: object-database probe, three suites, Gate A.
+        """The full offloaded gate: object-database probe, the suite lanes, Gate A.
 
         ``chronology`` is the scope decision from ``ci/chronology-scope.sh``. It
         defaults to True so a caller that forgets to decide gets the expensive
@@ -352,11 +355,12 @@ export GATE_A_JUNIT=/junit/junit-gate-a.xml
         it, which is the whole reason it exists. Gate A reads history too, so it
         must not start before the probe clears either.
 
-        The four heavy stages then run CONCURRENTLY. Run sequentially they cost
-        43:32 + 4:41 + 4:54 + Gate A -- over the 100-minute job budget, and slower
-        end-to-end than the hosted lanes, which run in parallel (hosted total is
+        The heavy stages then run CONCURRENTLY. Run sequentially (with the three
+        suite lanes of before agent-harness#1546) they cost 43:32 + 4:41 + 4:54 +
+        Gate A -- over the 100-minute job budget, and slower end-to-end than the
+        hosted lanes, which run in parallel (hosted total is
         ~87 min, with Gate A the long pole at 86:36). Concurrently the wall clock
-        is max(py3.10, Gate A), which is what makes the offload a win rather than
+        is max(suite, Gate A), which is what makes the offload a win rather than
         a rearrangement. The host has 32 cores.
 
         Failures are AGGREGATED, not short-circuited. Sequential composition

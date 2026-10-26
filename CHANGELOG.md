@@ -6,6 +6,317 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Claude execute-phase drops under the skill size limit (agent-harness#1358)
+
+- Move interactive publication (mode (b), the publication-mode check, draft PR early),
+  model-class and governed-mode detail, and browser verification into
+  `claude-execute-phase` references. Interactive publication is read before the first
+  commit and governed-mode detail before each panel round. Browser verification is read
+  at plan intake in both modes, before implementation or lane dispatch, and lane briefs
+  carry its setup. Adapter mode, runner closeout, the closeout audit, the `/clear` rules and
+  PR-description requirements stay in `SKILL.md`. Both size-gate exceptions for the skill
+  are removed.
+
+### Hosted native-test jobs pinned to ubuntu-24.04 (agent-harness#1763)
+
+- `test.yml`'s `pytest`, `clean-room` and `wheel-smoke` jobs run on `ubuntu-24.04`
+  instead of `ubuntu-latest`, which now resolves to Ubuntu 26.04. Under 26.04, 17 sandbox
+  and process tests failed in test files unchanged from main. The last passing PR run had
+  used an ubuntu-24.04 image. Compatibility with 26.04 is unproven, not claimed.
+  Tests, assertions, timeouts and sandbox policy are unchanged
+  (`docs/releases/github-hosted-runners-for-public-repo.md`).
+
+### Diagnostic planning skill evaluation (agent-harness#1321)
+
+- Add the opt-in `phase-loop-skill-eval` command for frozen, independent planning
+  comparisons, owned Linux execution with access evidence, blinded human packets,
+  one-shot scorer calibration, and exact Boolean pair reduction. Live pilot
+  qualification and editor gating remain pending; no skill is automatically adopted.
+- Require single-turn stream ordering, refuse identity-bearing packet inputs, and
+  report malformed score documents through the CLI refusal path while retaining
+  failed one-shot calibration evidence.
+- Stop the batch on returned launcher cancellation, retaining invalid trial
+  receipts and the launcher's cleanup evidence before propagating interruption.
+- Reject duplicate gold output texts across the calibration pack before
+  preparation, preserving an unambiguous annotation mapping (agent-harness#1733).
+
+### Offline repository-map artifact mode
+
+- Add a manifest-driven `phase-loop fleet-map` mode with qualified repository
+  identities, explicit scan coverage, paired contract drift, and as-of-scan pin
+  comparisons. Ship the closed input/output schema with the package; preserve
+  existing `--repo` JSON and text output.
+
+### Skill long lines rewrapped under the size limit (agent-harness#1358)
+
+- Rewrapped the one line over 1,000 characters in each of `claude-advisor-board`,
+  `codex-plan-phase`, `gemini-plan-phase` and `opencode-plan-phase` at sentence
+  boundaries. The wording is unchanged. The four `long_line` entries are removed
+  from the skill size gate allowlist.
+
+### Gitleaks synthetic fixture classification
+
+- Add an exact full-secret allowlist match for the synthetic typed-review digest
+  fixture introduced by agent-harness#1770, leaving other detections unchanged.
+
+### TypeScript publication source classification (agent-harness#1765)
+
+- Normal publication can classify new or existing regular TypeScript implementation
+  modules with names caught by the secret-path guard under `src`, `test` or `tests`
+  through frozen-object syntax/body checks and
+  the existing detector scan. Declaration files and detector findings remain refused;
+  the Python policy is unchanged. Adds pinned `tree-sitter==0.25.2` and
+  `tree-sitter-typescript==0.23.2` dependencies. See the package README's publication
+  source audit section for scope and limitations.
+
+### Codex execute-phase reads interactive procedures on demand (agent-harness#1358)
+
+- Split planning-handoff reuse, interactive publication, worktree lifecycle, and
+  worker-brief procedures into Codex-only `references/` files. Keep runner ownership,
+  governance, verification, closeout audit/evidence, and PR-description parity anchors
+  in `SKILL.md`; remove the duplicate audit explanation. Relative reference reads were
+  proven with a live, read-only Codex native-skill canary through the adapter launcher
+  before the split. The token-size exception remains for retained normative text;
+  the longest-line exception is removed.
+
+- Human publication checks already-committed companion paths before creating a
+  commit. Incomplete ownership now produces a repairable scope-precheck result.
+- Add `PublishScopeCorrection.v1` for an exact sealed local ownership-scope
+  refusal. The supported SDK can bind a corrected ownership superset to the
+  existing commit and one broker-reserved successor, preserving the original
+  terminal and checkpoint. Ordinary replay and ambiguous-outcome recovery retain
+  their existing behavior; see the FABPUB recovery runbook section 8b.
+
+### OpenCode execute-phase loads interactive procedures on demand (agent-harness#1358)
+
+- Move interactive publication and worktree-pruning procedures into linked references,
+  keeping lane execution, runner closeout and PR-description requirements in `SKILL.md`.
+  Core Rules loads interactive publication before the first commit or push, with or
+  without an explicit plan. Worktree pruning remains a standing rule for every path,
+  linked at phase start and closeout.
+  The OpenCode skill now fits all three size limits; its references install only for
+  OpenCode and accompany adapter context delivery through agent-harness#1738.
+
+### `gemini-execute-phase` drops under the skill size limit (agent-harness#1358)
+
+- Move procedures into three linked `references/` files. Inputs loads
+  `interactive-path.md` before execution on interactive runs, with or without an
+  explicit plan, for handoff reuse, publication-mode checks and first-commit drafts.
+  Worktree pruning links `worktree-pruning.md` at phase start and closeout as a standing
+  rule for every path; Optional Worker Fanout links `worker-fanout.md` before briefing
+  authorized workers. `SKILL.md` stays under 5,000 tokens with no line over 1,000
+  characters. Runner publication ownership and test-pinned phrases stay inline;
+  gemini runner launches get the references beside
+  `context.md`. The duplicate closeout-audit block in Core Rules now points to Closeout.
+
+### Unadmitted prebuilt publication recovery (agent-harness#1758)
+
+- Human publication supports exact-ID retirement of an unused, unadmitted
+  prebuilt transaction through `abandon_unadmitted_prebuilt`, preserving its
+  history before ordinary publication. Fresh prebuilt publication refuses a
+  nonempty staged index before checkpoint preparation (agent-harness#1758).
+
+## [0.7.27] - 2026-10-18
+
+### Upgrade notes
+
+- **Breaking: 0.7.27 requires Python 3.12+ (agent-harness#1549; agent-harness#1546).**
+  Upgrade the runtime interpreter before installing this release. The host helper
+  interpreter contract remains 3.10-compatible; a governed-review falsifier node that
+  imports this runtime under an older host interpreter ends in `error`, fails closed,
+  and remains a blocking receipt. See the detailed breaking-change entry below.
+- **Live agy qualification has been renewed after agent-harness#1750.** All twelve
+  members passed completion, cancellation and owner-loss checks in one current-source
+  batch (36 operations), with all 245 source pins verified. Earlier successful
+  batches and retained staging failures remain separate historical evidence.
+  Package and compatibility verification passed for the revised package; final I1,
+  CI and review remain release-cut gates. Historical
+  real-CLI smoke failures and unverified runtime panel behavior remain disclosed in
+  the release handoff; they are not a runtime PASS.
+- **The Claude jail pass carries forward from 0.7.26.** The seat jail's falsifier-run layout
+  identity is unchanged (`execfind-falsifier-layout.v1:805042ce…`), and so are the Claude jail
+  profile digests (x86_64 and aarch64), recomputed on the same host. The Gemini jail has a
+  new profile and qualifies on first use (agent-harness#1170). A host upgrading from
+  0.7.24 or earlier (layout `c1e0b88a…`) still takes the one-time 0.7.25 reset (see
+  `[0.7.25]`).
+- **No runtime dependency declaration change.** `[project].dependencies` is identical
+  to 0.7.26's. The Python floor and interpreter classifiers change, and `uv.lock` is
+  refreshed for Python 3.12+. A hash-locked deployment (Consiliency/dotfiles#77) must
+  resolve and verify its lock and new package hashes under a supported interpreter.
+- **agy 1.3.2, 1.3.3, 1.3.4 and 1.3.5 are shipped members.** The qualified set is now
+  1.2.11, 1.2.12, 1.2.14, 1.2.15, 1.2.16, 1.2.17, 1.3.0, 1.3.1, 1.3.2, 1.3.3, 1.3.4 and 1.3.5;
+  1.3.5 is the newest shipped member. A host on one of the four new members no longer depends
+  on self-qualification for its Gemini seat; it uses the shipped record, and an earlier
+  self-qualification of it is no longer consulted. 1.3.5's `--help` differs from 1.3.4's only
+  in listing a new `--mode` value (`auto`), so it carries its own help digest; the seat still
+  passes `--mode plan`.
+- **The Claude executor preflight refuses a caller credential (agent-harness#1444; PR
+  agent-harness#1517).** When the environment that runs `phase-loop` holds
+  `CLAUDE_CODE_OAUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`,
+  `CLAUDE_CODE_OAUTH_REFRESH_TOKEN` or any variable whose name begins `ANTHROPIC_` (for
+  example `ANTHROPIC_API_KEY`, but also `ANTHROPIC_BASE_URL` or `ANTHROPIC_MODEL`), the
+  Claude executor's auth preflight now fails with blocker class `account_or_billing_setup`
+  ("Claude CLI is logged in, but the Claude subscription is not proven.") and the executor is
+  demoted to `proof_gated`. A Claude board seat in the same environment is refused
+  `subscription_auth_unproven`. So is a host whose Claude login is not a subscription login.
+  The fix is to unset those variables in the shell that runs `phase-loop` and use a Claude
+  subscription login. In 0.7.26 the preflight's probe ran inside the seat and never saw a
+  subscription, so the Claude executor and Claude seats were refused on a subscription login
+  too. 0.7.27 admits the Claude executor, Claude seats and the president's Fable rung again
+  when the login proves a subscription, and refuses them only in the cases above.
+- **Claude board seats run headless `claude -p` by default (agent-harness#1391; PR
+  agent-harness#1446).** This needs Claude Code 2.1.259 or newer.
+  `PHASE_LOOP_PANEL_CLAUDE_ROUTE=tui` restores the PTY adapter; any other value than `print`
+  or `tui` refuses the seat (`panel_claude_route_invalid`). The same route, the same 2.1.259
+  minimum and the same caller-environment check also apply to the president's Fable rung off
+  Claude Code: a refusal there fails the president's run, and the ladder does not walk past
+  it. On the default print route a direct (non-brokered) Claude seat has Read only, where it
+  had Read and Write; `tui` keeps Read and Write.
+- **The codex seat of a sandboxed board can run commands again (agent-harness#1470; PR
+  agent-harness#1489).** Its own staged review tree, a disposable clone, is now writable in
+  its view. Nothing else a seat sandbox permits changed. A codex seat whose command sandbox
+  still cannot start is `DEGRADED` (`seat_tool_sandbox_unavailable`) and is not counted
+  toward the reviewer floor (PR agent-harness#1469), so on a board of four one more unusable
+  seat makes the board unusable (non-zero exit), where 0.7.26 counted a codex seat that had
+  read nothing. On a host that refuses the nested user namespace codex's sandbox needs
+  (agent-harness#1335, open; for example some shared team hosts) the codex seat is still
+  `DEGRADED` on every round.
+- **A jailed Claude seat's output may not sit inside a read-only input (agent-harness#1433;
+  PR agent-harness#1491).** The Claude TUI seat now refuses at launch, with
+  `seat_output_inside_readonly_input`, an output whose directory is inside one of its
+  read-only inputs, including a staging root inside the reviewed repository. Set
+  `PHASE_LOOP_SANDBOX_STAGING_DIR` to a directory outside it. See the Claude TUI seat entry
+  below.
+- **A Gemini seat can wait up to 10 minutes before it starts (agent-harness#1407; PR
+  agent-harness#1465).** When the agy login has less than 10 minutes left, the seat sleeps
+  until the login expires, then renews it and starts with a full hour, where 0.7.26 refused
+  it `gemini_credential_near_expiry`. A bounded leg waits only if enough of its deadline
+  remains, and is charged the time it slept. The log line is `gemini_credential_awaiting_refresh`.
+  The renewal runs without a session bus, so it renews agy's login file and not a desktop
+  keyring; the fix line of the two refresh refusals is now
+  `DBUS_SESSION_BUS_ADDRESS=unix:path=/dev/null agy models`.
+- **The non-local placement driver ships OFF (agent-harness#896; PR agent-harness#1492).**
+  Nothing a user runs changes: the launch site does not call it and no backend ships. The
+  new `phase-loop placement reap` command and the `PHASE_LOOP_SANDBOX_LAST_RUNG`,
+  `PHASE_LOOP_SANDBOX_ADMIT_WAIT_S` and `PHASE_LOOP_SANDBOX_TRANSFER_ALLOWANCE_S` settings
+  have no effect until a backend exists and the driver is turned on.
+- **Roadmap v11 is the active roadmap (agent-harness#1394).** In a repository whose
+  `specs/roadmap-status.json` registers an active roadmap (agent-harness's own checkouts), a
+  phase-loop state that names any other roadmap is refused. On an agent-harness checkout whose
+  `.phase-loop/state.json` names `specs/phase-plans-v10.md`, `phase-loop status` and
+  `phase-loop run` stop with `NonActiveSelectionError: specs/phase-plans-v10.md: recognized
+  non-active roadmap (superseded) cannot be selected`, as a traceback. To recover, run
+  `phase-loop archive-state --repo .`: it moves the state to
+  `.phase-loop/archive/<UTC timestamp>/`, and the next command selects
+  `specs/phase-plans-v11.md` from the registry. Passing `--roadmap specs/phase-plans-v11.md`
+  once also works, but it overwrites the old state instead of keeping it. v10's delivered
+  phases stay recorded in the ledger (`plans/manifest.json`). The refusal does not yet name
+  this remedy (agent-harness#1510).
+- **Review seats need working tools.** Gemini review seats now run jailed with tools;
+  install their egress layer once per user with `phase-loop seat-egress install` (node
+  22.12+ and npm). Without it the seat is `DEGRADED` and not run. A seat that would run
+  sealed or without tools is never counted, so a board below its reviewer floor now
+  refuses (agent-harness#1170, agent-harness#1244). The sandboxed grok seat can use its
+  granted shell tools (agent-harness#1652). See the corresponding entries below.
+- **Gemini planning and review use Argon.** Planning, roadmap and review defaults now use
+  Gemini 4 Argon; implementation uses Gemini 3.8 Flash high. The optional
+  `PHASE_LOOP_GEMINI_MODEL` preference moves only unpinned Gemini routes; explicit pins
+  still win (agent-harness#1695, agent-harness#1697). Re-run any in-flight board on the
+  upgraded runtime; an earlier run does not prove the new tool and model routes.
+
+### Mapped-seat resolver setup (agent-harness#1750; agent-harness#1570)
+
+- Prepare the mapped seat's resolver through the trusted parent before releasing
+  its namespace holder, preserving setup refusal and cleanup on failure.
+
+### Fixed
+
+- The LEGIBLE live transition probe accepts the launcher's optional diagnostic
+  field, preserving typed deferrals instead of raising an unpacking error.
+
+### Qualified agy set adds 1.3.2, 1.3.3, 1.3.4 and 1.3.5 (agent-harness#1542)
+
+- `gemini_heartbeat.QUALIFIED_IMAGES` and `plans/evidence/qualified-provider-images.json`
+  now admit agy 1.3.2 (Linux x64 image SHA256
+  `32f9478e47d1d456e090f7ed0a297fcde2fa45ec10839904f03ea1ba00645e49`, upstream asset
+  `bf8504c7…`) and 1.3.3 (image
+  `d97edcf90eda1799cd6cedc92616ef402f23c9752a723e8b8ae3e8f062ce458b`, upstream asset
+  `8ee3ca32…`). Both help digests equal 1.2.15–1.3.1's (`8fcf4022…`).
+- They also admit agy 1.3.4 (image
+  `5b93565c5f04ea4f7b79d49d5c3237449bf6ce47b6779e8cf46c1fae97957c98`, upstream asset
+  `db5e81e8…`, help `8fcf4022…`) and 1.3.5 (image
+  `b5385638174a5e720e904f3a2678752534fb8414d10c2c302fa16daf56cbcfc9`, upstream asset
+  `007a5a44…`). 1.3.5's help digest is new (`a12355e8…`): its `--help` adds the `--mode`
+  value `auto`, which the route does not use. The route core needed only the four new
+  entries.
+- All twelve members were requalified after agent-harness#1750 (completion, cancel
+  and owner-loss each, then `--validate`). Their current records verify all 245
+  source pins and the route core. Earlier successful batches and staging failures
+  remain historical evidence, separate from this batch's 36 successful operations.
+- A newer upstream release remains eligible for first-use self-qualification; as of
+  2026-10-16, upstream's latest is 1.4.0 and is outside this shipped set.
+
+### Roadmap v11 replaces v10 (agent-harness#1394)
+
+- `specs/phase-plans-v11.md` ("Fast Loop First, Then Finish v10") is the active roadmap and
+  `specs/phase-plans-v10.md` is superseded. v10's six delivered phases stay recorded in the
+  ledger; its unfinished phases are carried with their aliases and goal IDs unchanged, cited
+  against v10 as of `9eb77a3d`. EC-HARDEN-5 is retired and replaced by EC-HARDEN-6.
+- Discovery selects the registry-declared active roadmap before the manifest fallback, so a
+  default run no longer picks a retained superseded v10 row (PR agent-harness#1414, merged
+  into agent-harness#1394). An explicit `--roadmap`, the resume state and repositories without
+  a registry keep their precedence. The roadmap banner parser recognises v10's supersession
+  banner.
+- See the upgrade note above for a checkout whose phase-loop state still names v10.
+
+### BREAKING: Python 3.12 is the minimum (agent-harness#1549; agent-harness#1546)
+
+- `phase-loop-runtime` and the checked-in `consiliency-harness` metadata now declare
+  `requires-python = ">=3.12"` (was `>=3.10`). The shim stays at 0.6.1 and is not being
+  separately published in this release. The 3.10/3.11 classifiers are gone and
+  3.13/3.14 are listed. On an older interpreter, unpinned pip and uv resolution can
+  select an earlier compatible release; an exact 0.7.27 pin requires Python 3.12+.
+  Existing pins to older compatible releases keep working. `install-agent-harness.sh` installs through
+  `uv tool install`, which selects a 3.12+ interpreter itself.
+- CI: the hosted pytest matrix is one 3.12 lane on every event (was 3.10/3.11/3.12 on
+  push and 3.10 on pull requests). The CONFORM chronology node and its junit artifact
+  (`chronology-junit-py312`) moved with it from the 3.10 lane, so the node still runs
+  in that lane and Gate A on push, the nightly, and a dispatch with `chronology=true`.
+  The separate 3.12 I1 subset step in the BAML job is gone because the pytest lane now
+  runs it. `baml-i1-sweep.yml` and the Dagger offload module run 3.12 only.
+- The `tomllib`/`tomli` import fallbacks and the pre-3.10 `entry_points` fallback are
+  removed from the runtime. `exceptiongroup`, `tomli` and `typing-extensions` stay
+  unconditional dependencies: the falsifier run uses the host's `/usr/bin/python3`, which
+  can be older than 3.12 (3.10 on Ubuntu 22.04), and pytest needs them there
+  (agent-harness#1361). The programs the runtime runs under that interpreter stay
+  3.10-compatible, and a new test compiles them with it. The governed-review falsifier is
+  different: it runs the reviewed tree's own test node under that interpreter, so on a host
+  whose `/usr/bin/python3` is older than 3.12, falsifier nodes of this repository cannot load
+  the runtime and end in `error`. That is fail-closed: such a node is never counted red or
+  green, and its finding stays a blocking receipt.
+
+### Context-file adapter runs get the `references/` files their skills link (agent-harness#1738; plan agent-harness#1690; agent-harness#1358)
+
+- Gemini and OpenCode launches carry each injected skill's `references/` files
+  beside the delivered `context.md` under `skills/<skill>/references/`, and the
+  context says where they are. Gemini uses its workspace mirror. Skills without
+  references are unchanged, so every current Gemini and OpenCode context is
+  byte-identical. The bundle digest and delivered files use the same captured
+  bytes, including a canonical `_overrides/<harness>/references/` file. This unblocks
+  splitting the codex, gemini and opencode plan and execute skills; codex reads its
+  installed skills and is not changed.
+
+### skills-parity CI runs the skill size gate (agent-harness#1691; agent-harness#1358)
+
+- `skills-parity.yml` runs `tests/test_skill_size_gate.py` as a warn-first step,
+  with `-rw`, so the job log lists every skill body over the size guidance. The
+  step fails only where the test does: a stale allowlist entry, or, once `STRICT`
+  is on, a new or grown offender. Changing the test now triggers the workflow.
+
+### Provider admission and availability evidence
+
+- Record the admitted CLI image's class and SHA256 in review evidence, and distinguish unavailable provider commands from login failures (agent-harness#1557; agent-harness#1343).
+
 ### Gemini: a local model preference, `PHASE_LOOP_GEMINI_MODEL` (agent-harness#1604, ported from agent-harness#1615)
 
 - `PHASE_LOOP_GEMINI_MODEL` selects a registered canonical Gemini base model for the unpinned Gemini executor actions, model classes and composed/default board seats. Explicit task models, plan/roadmap model pins and configured board seats win; effort, other providers, subscription auth and sandbox admission are unchanged. Unset, the shipped defaults hold. An invalid value fails without fallback.
@@ -13,7 +324,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ### Implementer roster: per-executor implementation model and effort
 
-- Implementation (execute/repair and the `implementer` class) now runs on `gemini-3.8-flash` at high, `gpt-6.1-sol` at medium, `claude-sonnet-5-5` at medium (on the Agent View and print routes; the default Claude Channel route binds neither model nor effort and records them as `session_model_unbound`) and `grok-4.7` at high, on both the runner's shipped model policy and the executor defaults; the Gemini worker moves from `gemini-3.5-flash-high` to `gemini-3.8-flash-high`. A governed repair that escalates to the planner class keeps the shipped `high` effort. Planning, review, opencode and the other worker tiers are unchanged, and explicit model and effort settings still win.
+- Implementation (execute/repair and the `implementer` class) now runs on `gemini-3.8-flash` at high, `gpt-6.1-sol` at medium, `claude-sonnet-5-5` at medium (on the Agent View and print routes; the default Claude Channel route binds neither model nor effort, marks the model `session_model_unbound`, and records effort without a disclaimer) and `grok-4.7` at high, on both the runner's shipped model policy and the executor defaults; the Gemini worker moves from `gemini-3.5-flash-high` to `gemini-3.8-flash-high`. A governed repair that escalates to the planner class keeps the shipped `high` effort. Planning, review, opencode and the other worker tiers are unchanged, and explicit model and effort settings still win. Extending the Channel disclaimer to effort remains agent-harness#1710.
 
 ### The Gemini board seat runs jailed with tools (agent-harness#1170)
 
@@ -395,6 +706,30 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   removes whatever the seat left there (measured with the real CLI: codex leaves its
   `.agents`, `.aws` and `.codex` mount-point directories when it is killed).
 
+### Claude board seats run headless `claude -p` by default (agent-harness#1391; PRs agent-harness#1442, agent-harness#1446)
+
+- **The ruling (PR agent-harness#1442, docs only).**
+  `plans/decision-claude-print-subscription-route-20261008.md` allows a non-native Claude
+  seat, and the president's Fable rung off Claude Code, to run as
+  `claude -p --output-format stream-json`, but only on a subscription login proven in band.
+  API keys, the Agent SDK, direct HTTP and gateways stay excluded. The capabilities card,
+  `advisor_board/CONTRACTS.md` and the advisor-board skills say so.
+- **The route (PR agent-harness#1446).** `PHASE_LOOP_PANEL_CLAUDE_ROUTE` selects `print`
+  (the default) or `tui`; any other value fails closed as `panel_claude_route_invalid`.
+  Jailed, capture and research seats stay on the TUI.
+  - The first `system/init` event must report `apiKeySource == "none"`, and a
+    `system/api_retry` carrying an auth, billing or organisation error stops the run. Either
+    breach kills the process group and ends the leg `claude_print_subscription_unproven` or
+    `claude_print_auth_drift`. A run without an `init` fails closed. `--bare` is never used.
+  - The prompt goes on stdin, with `--no-session-persistence`, `--safe-mode`, the TUI's
+    run-isolated `--settings` and `--permission-mode dontAsk --permission-prompts none`.
+    Brokered seats have no tools; direct seats have Read only (they had Read and Write).
+  - The review text comes only from the `result` event; a run without one is never OK.
+  - Before launch: Claude Code 2.1.259 or newer, and `claude auth status`.
+  - The HARDEN evidence verifier accepts the brokered print argv alongside the TUI argv,
+    chosen by the recorded `claude_route`; it requires `claude_api_key_source == "none"`.
+- The seat's subscription proof was tightened again by agent-harness#1517 (next entry).
+
 ### A Claude seat's subscription is proven from the login, not from the seat's own answer (agent-harness#1444)
 
 - A Claude seat is handed the login's access token by descriptor (agent-harness#1253), so
@@ -756,6 +1091,72 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   Before 0.7.25 the same test passed while running the installed code instead of the tree.
 - That test now puts its worker's stderr in the failure message.
 - Test-only. Nothing in the runtime changes.
+
+### FABPUB refuses a dirty workspace before it commits (PR agent-harness#1564)
+
+- A fresh FABPUB publication now refuses unstaged or untracked workspace changes with
+  `publication_workspace_invalid` before it creates a transaction or advances the branch, and
+  a conflicted transaction is refused before staging. Before, it could commit and then refuse
+  with "fresh publish names no exact committed transaction", for example when private
+  publication evidence was left untracked.
+- Private plan, verification and handoff files under `.dev-skills/` must be Git-ignored
+  (`phase-loop init` adds the rule; a local `.git/info/exclude` entry also works). The
+  publisher adds no ignore rule itself. After such a refusal, repair the workspace and retry
+  the same publication: an already committed transaction resumes without another commit.
+
+### Pull request descriptions stay current through readiness (PRs agent-harness#1548, agent-harness#1581)
+
+- The four providers' `execute-detailed` and `execute-phase` skills share a PR-writing
+  reference. They pass the PR body and commit message to the publication adapter, refresh an
+  agent-owned description before the PR is marked ready and after a material change, keep
+  human edits to the title and text, and report a failed refresh instead of proceeding to
+  readiness.
+- `phase-loop publication-mode` allows description upkeep under the publishing modes and
+  forbids it under `none` and on an error.
+- Publication prepares a stable, redacted body before the transaction identity is bound; a
+  safe retry reuses the exact checkpointed body, and a body already published is never
+  rewritten. No new flag, configuration field or schema.
+
+### HARDEN SL-5: retained completion evidence is derived and sealed (PRs agent-harness#1264, agent-harness#1412)
+
+- `scripts/build_harden_evidence.py` builds the retained, publication-safe HARDEN evidence and
+  `scripts/verify_harden_evidence.py` checks its Git, review, execution, completion-ledger,
+  artifact and reuse boundaries. The verifier rejects a rollback to an earlier, superseded
+  reviewed SL-4 landing, in both the `commit-tree` integration shape and a merge followed by
+  a first-parent revert, while a legitimate sibling sync stays accepted (agent-harness#1412
+  holds the falsifiers).
+- Repository scripts and tests only; nothing in the installed runtime changes.
+
+### The rule registry proves each negative control ran (agent-harness#1324 follow-up; PRs agent-harness#1390, agent-harness#1421, agent-harness#1427)
+
+- The registry's run check counts a control only by its exact node id, with a passed call
+  phase and no skipped or failed report in any phase; an empty registry is refused. A new
+  test disables each named enforcer in turn and requires its row's control to go red on its
+  own assertion.
+- Package data: `rule_enforcement.json` points four `plan-phase` rows
+  (`owned-files-disjoint`, `lane-dag-acyclic`, `reducer-lists-producers`,
+  `spec-closeout-plan-valid`) at new controls in `tests/test_rule_enforcement_controls.py`
+  that reach every enforcer of the row.
+- Tests only (agent-harness#1421, agent-harness#1427): the demotion probe writes the
+  validator's `(X) WARN` prefix and keeps the finding's original text.
+
+### Docs: how the harness publishes in your repository (PR agent-harness#1393)
+
+- New `docs/branch-and-publication-flow.md`: runner-managed and interactive publication,
+  the closeout modes, the merge-target safety gate, per-lane worktrees and their
+  reclamation, and what a draft pull request signals. README and `docs/TEAM-ONBOARDING.md`
+  point to it. agent-harness#1432 (above) then closed the gap it recorded.
+
+### Plans: non-local seat placement (PR agent-harness#1463)
+
+- Two detailed plans for agent-harness#896: the execution driver (amendments C1–C12) and the
+  launch factoring it needs. Planning artifacts only; agent-harness#1492 (above) implements
+  the driver.
+
+### Tests: the login-sleep renewal test no longer races its own rewrite (agent-harness#1499; PR agent-harness#1508)
+
+- The test serialises its renewal with the sleep's reads, so it no longer fails about one
+  run in seven under load. Test only.
 
 ## [0.7.26] - 2026-10-09
 
