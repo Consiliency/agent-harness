@@ -6,6 +6,26 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Claude execute-phase drops under the skill size limit (agent-harness#1358)
+
+- Move interactive publication (mode (b), the publication-mode check, draft PR early),
+  model-class and governed-mode detail, and browser verification into
+  `claude-execute-phase` references. Interactive publication is read before the first
+  commit and governed-mode detail before each panel round. Browser verification is read
+  at plan intake in both modes, before implementation or lane dispatch, and lane briefs
+  carry its setup. Adapter mode, runner closeout, the closeout audit, the `/clear` rules and
+  PR-description requirements stay in `SKILL.md`. Both size-gate exceptions for the skill
+  are removed.
+
+### Hosted native-test jobs pinned to ubuntu-24.04 (agent-harness#1763)
+
+- `test.yml`'s `pytest`, `clean-room` and `wheel-smoke` jobs run on `ubuntu-24.04`
+  instead of `ubuntu-latest`, which now resolves to Ubuntu 26.04. Under 26.04, 17 sandbox
+  and process tests failed in test files unchanged from main. The last passing PR run had
+  used an ubuntu-24.04 image. Compatibility with 26.04 is unproven, not claimed.
+  Tests, assertions, timeouts and sandbox policy are unchanged
+  (`docs/releases/github-hosted-runners-for-public-repo.md`).
+
 ### Diagnostic planning skill evaluation (agent-harness#1321)
 
 - Add the opt-in `phase-loop-skill-eval` command for frozen, independent planning
