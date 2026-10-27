@@ -191,10 +191,14 @@ class DependencyStartupSession:
         return self._run("skill-eval", argv, bool(argv and argv[0] == "run"), invoke)
 
     def run_seat_jail_qualification(self, argv: Sequence[str]) -> int:
-        from .seat_jail_qualification import main
+        from .seat_jail_qualification import main, qualification_provider_capable
 
-        provider_capable = not any(item in {"-h", "--help", "--version"} for item in argv)
-        return self._run("seat-jail-qualification", argv, provider_capable, lambda: main(list(argv)))
+        return self._run(
+            "seat-jail-qualification",
+            argv,
+            qualification_provider_capable(argv),
+            lambda: main(list(argv)),
+        )
 
     def _run(
         self,

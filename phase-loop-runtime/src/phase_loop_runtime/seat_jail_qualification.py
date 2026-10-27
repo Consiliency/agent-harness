@@ -35,6 +35,7 @@ the outcome is the parent's own observation.
 
 from __future__ import annotations
 
+import argparse
 import datetime
 import hashlib
 import json
@@ -46,8 +47,9 @@ import tempfile
 import threading
 import time
 from pathlib import Path
+from typing import Sequence
 
-from . import review_stage, sandbox_egress, seat_jail, seat_uid
+from . import __version__, review_stage, sandbox_egress, seat_jail, seat_uid
 
 SCHEMA = "seat_jail_execfind2_qualification.v1"
 _SENTINEL_TEST = "tests/test_jail_sentinel.py"
@@ -478,7 +480,35 @@ def _write_private(path: Path, data: bytes) -> None:
     os.replace(temporary, path)
 
 
+_PROVIDER_FREE_ARGV = frozenset({("-h",), ("--help",), ("--version",)})
+
+
+def qualification_provider_capable(argv: Sequence[str]) -> bool:
+    """Only closed, effect-free informational commands run without a dependency lease."""
+    return tuple(argv) not in _PROVIDER_FREE_ARGV
+
+
+def _argument_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="phase-loop-seat-jail-qualification",
+        add_help=False,
+        description="Qualify and record the host's seat-jail profile.",
+    )
+    informational = parser.add_mutually_exclusive_group()
+    informational.add_argument("-h", "--help", action="store_true", dest="show_help")
+    informational.add_argument("--version", action="store_true", dest="show_version")
+    return parser
+
+
 def main(argv: list[str] | None = None) -> int:
+    parser = _argument_parser()
+    arguments = parser.parse_args(argv)
+    if arguments.show_help:
+        parser.print_help()
+        return 0
+    if arguments.show_version:
+        print(f"{parser.prog} {__version__}")
+        return 0
     evidence = qualify()
     summary = {k: evidence.get(k) for k in ("result", "profile_digest", "falsifier_layout",
                                             "checks", "run_outcome", "recorded_pass")}
