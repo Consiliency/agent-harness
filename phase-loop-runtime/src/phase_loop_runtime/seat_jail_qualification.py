@@ -43,6 +43,7 @@ import os
 import secrets
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -480,18 +481,24 @@ def _write_private(path: Path, data: bytes) -> None:
     os.replace(temporary, path)
 
 
-_PROVIDER_FREE_ARGV = frozenset({("-h",), ("--help",), ("--version",)})
+_ARGV_ACTIONS = {
+    (): "qualify",
+    ("-h",): "help",
+    ("--help",): "help",
+    ("--version",): "version",
+}
 
 
 def qualification_provider_capable(argv: Sequence[str]) -> bool:
     """Only closed, effect-free informational commands run without a dependency lease."""
-    return tuple(argv) not in _PROVIDER_FREE_ARGV
+    return _ARGV_ACTIONS.get(tuple(argv)) not in {"help", "version"}
 
 
 def _argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="phase-loop-seat-jail-qualification",
         add_help=False,
+        allow_abbrev=False,
         description="Qualify and record the host's seat-jail profile.",
     )
     informational = parser.add_mutually_exclusive_group()
@@ -502,11 +509,14 @@ def _argument_parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     parser = _argument_parser()
-    arguments = parser.parse_args(argv)
-    if arguments.show_help:
+    normalized = tuple(sys.argv[1:] if argv is None else argv)
+    action = _ARGV_ACTIONS.get(normalized)
+    if action is None:
+        parser.error("expected no arguments or exactly one of -h, --help, --version")
+    if action == "help":
         parser.print_help()
         return 0
-    if arguments.show_version:
+    if action == "version":
         print(f"{parser.prog} {__version__}")
         return 0
     evidence = qualify()

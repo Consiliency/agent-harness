@@ -37,6 +37,16 @@ class QualificationBoundaryReached(RuntimeError):
     pass
 
 
+NONCANONICAL_INFORMATIONAL_ARGV = [
+    ["--hel"],
+    ["--ver"],
+    ["-hh"],
+    ["--help", "--help"],
+    ["-h", "--help"],
+    ["--version", "--version"],
+]
+
+
 def _runtime_package() -> QualifiedRuntimePackage:
     return QualifiedRuntimePackage(
         distribution="phase-loop-runtime",
@@ -80,6 +90,7 @@ def _reject_effect_boundaries(monkeypatch, effects: list[str]) -> None:
     monkeypatch.setattr(qualification, "_write_private", reject("qualification file write"))
     monkeypatch.setattr(qualification, "_run_probe_in_jail", reject("qualification probe"))
     monkeypatch.setattr(qualification.subprocess, "run", reject("provider process"))
+    monkeypatch.setattr(qualification.subprocess, "Popen", reject("provider process"))
 
 
 @pytest.mark.parametrize("argv", [["-h"], ["--help"], ["--version"]])
@@ -121,7 +132,25 @@ def test_direct_main_uses_actual_sys_argv_without_help_bypass(monkeypatch, capsy
     with pytest.raises(SystemExit) as refused:
         qualification.main()
     assert refused.value.code == 2
-    assert "unrecognized arguments: unexpected" in capsys.readouterr().err
+    assert "expected no arguments or exactly one of" in capsys.readouterr().err
+    assert effects == []
+
+
+@pytest.mark.parametrize("argv", NONCANONICAL_INFORMATIONAL_ARGV)
+def test_direct_main_refuses_noncanonical_informational_argv_before_effects(
+    monkeypatch,
+    capsys,
+    argv: list[str],
+) -> None:
+    effects: list[str] = []
+    _reject_effect_boundaries(monkeypatch, effects)
+    monkeypatch.setattr(sys, "argv", ["phase-loop-seat-jail-qualification", *argv])
+
+    with pytest.raises(SystemExit) as refused:
+        qualification.main()
+
+    assert refused.value.code == 2
+    assert "expected no arguments or exactly one of" in capsys.readouterr().err
     assert effects == []
 
 
@@ -153,6 +182,32 @@ def test_mixed_and_unknown_arguments_refuse_under_required_lease(
         assert effects == []
     finally:
         session.close()
+
+
+@pytest.mark.parametrize("argv", NONCANONICAL_INFORMATIONAL_ARGV)
+def test_managed_noncanonical_informational_argv_refuses_and_releases_lease(
+    monkeypatch,
+    capsys,
+    argv: list[str],
+) -> None:
+    session, dependency = _session(monkeypatch)
+    effects: list[str] = []
+    _reject_effect_boundaries(monkeypatch, effects)
+    try:
+        assert qualification.qualification_provider_capable(argv)
+        with pytest.raises(SystemExit) as refused:
+            session.run_seat_jail_qualification(argv)
+        assert refused.value.code == 2
+        assert "expected no arguments or exactly one of" in capsys.readouterr().err
+        assert dependency.revalidations == 1
+        assert startup._CURRENT_TASK.get() is None
+        assert not startup._ACTIVE_REQUIRED
+        assert not session._tasks
+        assert effects == []
+    finally:
+        session.close()
+    assert session.closed
+    assert dependency.closed
 
 
 def test_no_argument_qualification_reaches_effect_boundary_with_required_lease(monkeypatch) -> None:
