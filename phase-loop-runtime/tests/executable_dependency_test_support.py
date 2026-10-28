@@ -77,6 +77,7 @@ def build_fixture(
     root: Path,
     *,
     layout: str = "layout-a",
+    provider: str = "synthetic",
     authority_transform: Callable[[dict[str, Any]], bytes | dict[str, Any]] | None = None,
 ) -> BuiltFixture:
     release = root / ("release-a" if layout == "layout-a" else "versions/v2")
@@ -160,7 +161,7 @@ def build_fixture(
         "schema": "org.agent-harness.executable-dependency-declaration.v1",
         "declaration_id": "0" * 64,
         "adapter": {"id": "synthetic-adapter", "version": "1"},
-        "provider": "synthetic",
+        "provider": provider,
         "policy": {"id": "synthetic-policy", "version": "1"},
         "subject": {
             "source": str(subject),
@@ -194,7 +195,7 @@ def build_fixture(
         "authority_id": "0" * 64,
         "authority_version": 1,
         "adapter": {"id": "synthetic-adapter", "version": "1"},
-        "subject": {"provider": "synthetic", "executable": file_identity(subject)},
+        "subject": {"provider": provider, "executable": file_identity(subject)},
         "declaration": file_identity(declaration_path),
         "source_roots": [directory_identity(release)],
         "destination_policy": {
@@ -243,7 +244,7 @@ def build_fixture(
     authority_path.write_bytes(authority_bytes)
     authority_path.chmod(0o600)
     requirement = DependencyRequirement(
-        provider="synthetic",
+        provider=provider,
         selected_executable=ExecutableRequirementIdentity(
             path=str(subject),
             kind="file",
