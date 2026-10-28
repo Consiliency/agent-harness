@@ -1,4 +1,9 @@
 [
+  {"count": 1, "function": "_digest", "module": "artifact_retention", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "_git", "module": "artifact_retention", "primitive": "subprocess.run", "role": "operator-out-of-scope"},
+  {"count": 1, "function": "_read", "module": "artifact_retention", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "_verify_signature", "module": "artifact_retention", "primitive": "subprocess.run", "role": "operator-out-of-scope"},
+  {"count": 1, "function": "main", "module": "artifact_retention", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "authorize", "module": "publish_scope_correction", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "_pgrp_and_ticks", "module": "_proc_cpu", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "group_cpu_ticks", "module": "_proc_cpu", "primitive": "io.open", "role": "host-io"},

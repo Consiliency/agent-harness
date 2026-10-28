@@ -144,7 +144,8 @@ UNKNOWN_IGNORED = "unknown_ignored"
 # agent-harness#1139: an ignored build output a committed declaration covers AND a
 # recorded producer run left behind with the same content digest.
 DECLARED_OUTPUT = "declared_output"
-_BUCKETS = (RUNNER_OWNED, TOOL_CACHE, DECLARED_OUTPUT, UNKNOWN_IGNORED)
+RETAINED_ARTIFACT = "retained_artifact"
+_BUCKETS = (RUNNER_OWNED, TOOL_CACHE, DECLARED_OUTPUT, RETAINED_ARTIFACT, UNKNOWN_IGNORED)
 
 
 @dataclass(frozen=True)
@@ -265,7 +266,7 @@ def _ignored_members(repo: Path, directory: str) -> list[str] | None:
         return None
 
 
-def _grade_by_provenance(repo: Path, path: str, context):
+def _grade_by_provenance(repo: Path, path: str, context, retention_cache=None):
     """Yield ``(provenance, member, reason)`` for one path the path rules left unknown."""
 
     if path.endswith("/"):
@@ -284,6 +285,15 @@ def _grade_by_provenance(repo: Path, path: str, context):
         is_handoff, handoff_reason = generated_outputs.is_harness_handoff(repo, member)
         if is_handoff:
             yield RUNNER_OWNED, member, handoff_reason
+            continue
+        from .artifact_retention import verify_retention
+
+        retained, retention_reason = verify_retention(repo, member, context.phase, retention_cache)
+        if retained:
+            yield RETAINED_ARTIFACT, member, retention_reason
+            continue
+        if retention_reason != "not a retained artifact path":
+            yield UNKNOWN_IGNORED, member, retention_reason
             continue
         declared, declared_reason = generated_outputs.verify_declared_output(repo, member, context)
         if declared:
@@ -346,6 +356,8 @@ def audit_ignored_outputs(repo: Path, phase: str | None = None) -> dict:
     buckets: dict = {bucket: [] for bucket in _BUCKETS}
     unknown_reasons: dict[str, str] = {}
     blocking = False
+    retention_cache: dict = {}
+    retention_reasons: dict[str, str] = {}
     for line in out.stdout.splitlines():
         # Only `!!` entries are ignored; tracked/untracked dirt is graded by the
         # ownership contract, not by this audit.
@@ -369,12 +381,15 @@ def audit_ignored_outputs(repo: Path, phase: str | None = None) -> dict:
         # The path rules could not attribute it. Grade its FILES by provenance:
         # git renders a wholly-ignored directory collapsed (`!! dist/`), and a
         # directory is attributable only if every ignored file in it is.
-        for provenance, member, reason in _grade_by_provenance(repo, path, context):
+        for provenance, member, reason in _grade_by_provenance(repo, path, context, retention_cache):
             buckets[provenance].append(member)
+            if provenance == RETAINED_ARTIFACT:
+                retention_reasons[member] = reason
             if provenance == UNKNOWN_IGNORED:
                 unknown_reasons[member] = reason
                 # One seam for the blocking fact: only unknown blocks here.
                 blocking = True
+    buckets["retention_reasons"] = retention_reasons
     buckets["unknown_reasons"] = unknown_reasons
     buckets["probe_failed"] = False
     buckets["blocks"] = blocking
@@ -383,7 +398,7 @@ def audit_ignored_outputs(repo: Path, phase: str | None = None) -> dict:
     buckets["reason"] = (
         f"{len(buckets[UNKNOWN_IGNORED])} ignored output(s) with no recognised producer"
         if blocking
-        else "every ignored path was produced by the runner, its toolchain or a declared producer"
+        else "every ignored path has recognized production or retention provenance"
     )
     return buckets
 
@@ -464,7 +479,7 @@ def _main(argv: list[str]) -> int:
     if result["probe_failed"]:
         print(f"closeout-ignored-audit: CANNOT EVALUATE — {result['reason']}")
         return _exit(2)
-    reasons = result.get("unknown_reasons", {})
+    reasons = {**result.get("unknown_reasons", {}), **result.get("retention_reasons", {})}
     for bucket in _BUCKETS:
         paths = result[bucket]
         if paths:

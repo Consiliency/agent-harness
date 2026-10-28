@@ -15,13 +15,14 @@ and `blocker_class=dirty_worktree_conflict`, and so does an exception (exit 1, a
 and the skills' exit-code list governs. Failing to run the audit at all blocks the same
 way.
 
-The audit recognises four producers:
+The audit recognises these production and retention categories:
 
 | Bucket | What earns it |
 |---|---|
 | `runner_owned` | Runner state under `.phase-loop/` or `.codex/phase-loop/`, and **harness handoffs** (see below). |
 | `tool_cache` | Toolchain directories such as `__pycache__/`, `.pytest_cache/`, `node_modules/`, `.venv/` and `*.egg-info/`. |
 | `declared_output` | A build output your project **declares**, backed by a **recorded producer run** (see below). |
+| `retained_artifact` | Runtime-recorded verification files or operator-signed historical custody (below); retention only. |
 | `unknown_ignored` | Anything else. It blocks. |
 
 When git collapses a wholly ignored directory into one entry (`!! dist/`), the audit
@@ -241,3 +242,94 @@ with write access to the worktree. Such an actor can forge the record or a hando
 frontmatter as easily as the outputs themselves. It also does not defend against a
 declared producer that deliberately writes something harmful. Declaring a producer
 means trusting what it writes inside its globs.
+
+## Retained verification and historical artifacts (agent-harness#1772)
+
+The `retained_artifact` bucket records **retention only**. It does not satisfy a
+verification requirement, change a failed/empty review's outcome, or grant phase
+acceptance. The audit prints the attribution mode beside each retained path.
+An unregistered sibling still blocks, and generic declarations still cannot
+claim `.dev-skills`.
+
+### Newly produced verification files
+
+When `verification_evidence.run_verification` receives an explicit phase and
+writes `.dev-skills/runs/<run_id>/verification.json` and `verification.log`, it
+records their exact sizes and SHA-256 values after completing both writes.
+This applies to failed runs too. The producer identity is the runtime function,
+not an inferred human, provider, or model. Recording failures are surfaced to the
+caller; moving HEAD during the run prevents recording.
+
+Receipts bind the resolved checkout root, Git common directory and object format,
+source commit, run identity, phase, timestamp, and both files. Audit requires the
+source commit to remain an ancestor of HEAD, the explicit consuming phase to
+match, and both files to retain their recorded bytes. This lets retained history
+outlive its source commit without claiming it verifies the current commit.
+Existing deterministic build-output records keep their stricter current-HEAD rule.
+Missing, changed, malformed, or symlinked records/artifacts block attribution.
+
+The public verification API and its artifact schema are unchanged. Runs outside
+this exact `.dev-skills/runs/<run_id>` layout retain their existing behavior.
+No implicit phase from an environment variable or state file grants retention.
+Review tools are not automatically attributed by this change: their historical
+outputs use the explicit custody route below until their write boundaries are
+instrumented. Do not call the verification receipt writer on preexisting files.
+
+### Historical custody adoption
+
+A historical file without a producer receipt stays unknown until an operator
+accepts custody of its exact bytes. Adoption records today's custodian and
+limitations; it never invents or backdates original authorship. A digest manifest,
+a plan reference, or a handoff reference alone grants no trust.
+
+The operator provisions their existing **public** SSH signing key in
+`~/.config/consiliency/artifact-adoption-allowed-signers`, using OpenSSH's allowed
+signers format, for example `release-owner ssh-ed25519 <public-key>`. This trust
+file must resolve outside both the checkout and Git common directory. Repository
+configuration, the proposal, and CLI flags cannot supply a replacement trust
+root. Provisioning or changing that file is a separate operator trust decision;
+agents must not enroll themselves to approve their own proposal. The command
+never creates keys or changes the trust store. Trust is checked again during
+every audit, so removing a signer makes their retained files block again.
+
+Prepare a proposal without touching the historical files (the output must not
+already exist):
+
+```sh
+python -m phase_loop_runtime.artifact_retention prepare \
+  --repo /path/to/original-checkout --phase PRODALIGN \
+  --run-id historical-run --custodian release-owner \
+  --limitations 'Original producer identity is unavailable; custody only, not acceptance.' \
+  --output /path/to/custody.json \
+  .dev-skills/runs/historical-run/verification.json \
+  .dev-skills/runs/historical-run/verification.log
+```
+
+The operator reviews the exact proposal, including its repository, paths,
+consuming phases and limitations, then signs those bytes with their existing
+signing key. `--phase` may be repeated to authorize named cross-phase consumers;
+there is no wildcard dependency or automatic acceptance propagation.
+
+```sh
+ssh-keygen -Y sign -f /path/to/operator-signing-key \
+  -n phase-loop-artifact-custody-v1 /path/to/custody.json
+python -m phase_loop_runtime.artifact_retention adopt \
+  --repo /path/to/original-checkout \
+  --statement /path/to/custody.json --signature /path/to/custody.json.sig
+phase-loop-closeout-audit --repo /path/to/original-checkout --phase PRODALIGN
+```
+
+Only exact files under `.dev-skills/runs/`, `.dev-skills/reviews/`, or
+`.dev-skills/evidence/` are supported. Empty and failed outputs can be retained.
+Receipts live under `.phase-loop/artifact-retention/`; original bytes stay in
+place. Partial receipt-write failure is surfaced and leaves unmatched files
+blocking; rerunning the authorized adoption is safe. The audit reads evidence
+without rewriting, moving, deleting, reexecuting, or relabeling it. Signature
+verification uses temporary scratch files outside the repository.
+
+This is the existing local-owner threat model, not protection against someone
+who can replace the runtime, operator trust store, or producer receipts on disk.
+A signed custody receipt provides separate operator authorization for legacy
+adoption; prospective receipts describe the runtime-observed write. Neither is
+a remote attestation. A fresh clone or different checkout needs its own explicit
+custody decision; copying receipts does not transfer checkout identity.
