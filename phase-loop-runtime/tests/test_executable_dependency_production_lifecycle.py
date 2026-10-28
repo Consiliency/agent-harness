@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace
 import threading
@@ -643,3 +644,34 @@ def test_panel_cancellation_releases_child_task_and_projection_descriptors(
         if not session.closed:
             session.close()
         fixture.close()
+
+
+@pytest.mark.parametrize("managed", [False, True])
+def test_command_profile_enters_with_and_without_dependency(tmp_path, monkeypatch, managed):
+    dependency = SimpleNamespace(
+        subject_source=Path("/synthetic/provider"),
+        subject_destination="/run/phase-loop-seat/provider",
+        entries=(SimpleNamespace(destination="/run/phase-loop-seat/provider"),),
+    ) if managed else None
+    monkeypatch.setattr(startup, "current_dependency_for_provider", lambda *args: dependency)
+    monkeypatch.setattr(panel_invoker, "_seat_provider_source",
+                        lambda *args: ("codex", Path("/synthetic/provider")))
+    events = []
+
+    @contextmanager
+    def profile_boundary(**kwargs):
+        assert kwargs["dependency"] is dependency
+        events.append("entered")
+        try:
+            yield "/run/phase-loop-seat/provider", panel_invoker.SeatProfile(env={})
+        finally:
+            events.append("closed")
+
+    monkeypatch.setattr(panel_invoker, "seat_profile", profile_boundary)
+    with panel_invoker._seat_command_profile(
+        ["codex", "--version"], env={}, cwd=tmp_path
+    ) as (command, profile):
+        assert command == ["/run/phase-loop-seat/provider", "--version"]
+        assert profile.outputs == ()
+        assert events == ["entered"]
+    assert events == ["entered", "closed"]

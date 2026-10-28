@@ -61,6 +61,11 @@ jail directories. Dependency destinations may not equal, descend from, or be
 ancestors of harness-owned or system mount points. The sole `/seat` exception is
 the selected subject itself at the exact canonical `/seat/bin/<leg>` slot.
 
+The generic seat view also rejects overlap with its system, private-home, review,
+input, writable, output, broker, and keyring layers. Its only exception is the
+selected subject at `/run/phase-loop-seat/provider`. The destination check runs
+before projection reopening and again at the final owned-launch boundary.
+
 The existing qualified base jail digest remains distinct from the executable
 dependency projection digest. Production and probe reopen descriptors from the
 same admitted object and must carry the same projection digest and destination

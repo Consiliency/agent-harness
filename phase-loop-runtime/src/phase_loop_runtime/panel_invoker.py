@@ -5616,7 +5616,6 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
         writable_trees=writable,
         outputs=outputs,
         output_dirs=tuple(path.parent for path in delivered),
-        broker_socket=broker_socket,
     )
     staging = None
     if delivered:
