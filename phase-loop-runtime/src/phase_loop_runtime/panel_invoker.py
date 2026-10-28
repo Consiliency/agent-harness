@@ -132,6 +132,7 @@ from . import seat_session_label as _seat_session_label
 from . import seat_tool_evidence as _seat_tool_evidence
 from . import seat_uid as _seat_uid
 from . import seat_preflight as _seat_preflight
+from .executable_dependency import ExecutableDependencyError
 from .advisor_board.research import (
     RESEARCH_CAPABLE_LANES,
     ResearchLedger,
@@ -4687,6 +4688,65 @@ class SeatLaunchRole(str, Enum):
     EXECUTOR_TRUSTED = "EXECUTOR_TRUSTED"
 
 
+_SEAT_PROFILE_PROTECTED_DESTINATIONS: tuple[str, ...] = (
+    "/proc",
+    "/dev",
+    "/tmp",
+    "/etc",
+    "/sys",
+    "/run/phase-loop-seat",
+    *_GEMINI_VIEW_SYSTEM,
+)
+
+
+def _seat_paths_overlap(left: str, right: str) -> bool:
+    left = os.path.abspath(left)
+    right = os.path.abspath(right)
+    return (
+        left == right
+        or left.startswith(right.rstrip("/") + "/")
+        or right.startswith(left.rstrip("/") + "/")
+    )
+
+
+def _require_safe_dependency_profile_destinations(
+    dependency: object | None,
+    *,
+    cwd: str | Path,
+    private_home: str,
+    readonly_paths: Sequence[str | Path] = (),
+    writable_trees: Sequence[str | Path] = (),
+    outputs: Sequence[str | Path] = (),
+    output_dirs: Sequence[str | Path] = (),
+    broker_socket: str | Path | None = None,
+) -> None:
+    """Keep dependency mounts disjoint from every generic seat-view layer.
+
+    The exact provider subject slot is the sole exception: it is the mount this profile
+    exists to supply. Other dependency entries do not inherit that exception.
+    """
+    if dependency is None:
+        return
+    protected = {
+        *(_SEAT_PROFILE_PROTECTED_DESTINATIONS),
+        os.path.abspath(cwd),
+        os.path.abspath(private_home),
+        *(os.path.abspath(path) for path in readonly_paths),
+        *(os.path.abspath(path) for path in writable_trees),
+        *(os.path.abspath(path) for path in outputs),
+        *(os.path.abspath(path) for path in output_dirs),
+    }
+    if broker_socket is not None:
+        protected.add(os.path.abspath(broker_socket))
+    subject_destination = str(getattr(dependency, "subject_destination"))
+    for entry in getattr(dependency, "entries"):
+        destination = str(entry.destination)
+        if destination == subject_destination == "/run/phase-loop-seat/provider":
+            continue
+        if any(_seat_paths_overlap(destination, item) for item in protected):
+            raise _sandbox_egress.SeatIdentityUnverified("seat_profile_unavailable")
+
+
 @dataclass(frozen=True)
 class SeatProfile:
     env: Mapping[str, str] = field(repr=False)
@@ -5089,6 +5149,15 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
     if gemini_profile is not None:
         home = Path(_gemini_credential_target(gemini_profile.mount_args)).parents[2]
     private_home = gemini_heartbeat.PRIVATE_HOME if gemini_profile is not None else "/home/phase-loop-seat"
+    _require_safe_dependency_profile_destinations(
+        dependency,
+        cwd=cwd,
+        private_home=private_home,
+        readonly_paths=readonly_paths,
+        writable_trees=writable_trees,
+        outputs=outputs,
+        broker_socket=broker_socket,
+    )
     profile_env = {key: value for key, value in env.items()
                    if key in {"LANG", "LC_ALL", "LC_CTYPE", "TERM", "NO_COLOR"}}
     profile_env.update(HOME=private_home, PATH="/usr/bin:/bin",
@@ -5535,6 +5604,20 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
     delivered = tuple(dict.fromkeys(
         path for path in (Path(os.path.abspath(item)) for item in replaceable_outputs)
         if path not in outputs))
+    _require_safe_dependency_profile_destinations(
+        dependency,
+        cwd=cwd,
+        private_home=(
+            gemini_heartbeat.PRIVATE_HOME
+            if gemini_profile is not None
+            else "/home/phase-loop-seat"
+        ),
+        readonly_paths=readonly,
+        writable_trees=writable,
+        outputs=outputs,
+        output_dirs=tuple(path.parent for path in delivered),
+        broker_socket=broker_socket,
+    )
     staging = None
     if delivered:
         _require_replaceable_placement(layers, readonly, delivered)
@@ -5654,6 +5737,16 @@ def _filtered_holder_namespace() -> int:
 def launch_owned(argv, *, role, profile: SeatProfile, supervisor=None, **kwargs):
     role = SeatLaunchRole(role)
     if profile.dependency is not None:
+        _require_safe_dependency_profile_destinations(
+            profile.dependency,
+            cwd=kwargs.get("cwd", os.getcwd()),
+            private_home=profile.env.get("HOME", "/home/phase-loop-seat"),
+            readonly_paths=profile.readonly_paths,
+            writable_trees=profile.writable_trees,
+            outputs=profile.outputs,
+            output_dirs=tuple(destination for _source, destination in profile.output_dirs),
+            broker_socket=profile.broker_socket,
+        )
         profile.dependency.revalidate()
         if profile.dependency.projection_digest != profile.dependency_projection_digest:
             raise _sandbox_egress.SeatIdentityUnverified("seat_profile_unavailable")
@@ -7181,15 +7274,23 @@ def _record_executable_dependency_evidence(
     evidence: dict[str, object] | None,
     jail: "_seat_jail.SeatJail",
 ) -> None:
-    dependency = jail.dependency
-    if evidence is None or dependency is None:
+    dependency = getattr(jail, "dependency", None)
+    if dependency is None:
         return
-    dependency.revalidate()
+    try:
+        dependency.revalidate()
+    except ExecutableDependencyError as exc:
+        raise _seat_jail.SeatSandboxRefused(
+            _seat_jail.refused("identity"),
+            "dependency evidence unavailable",
+        ) from exc
     if dependency.projection_digest != jail.dependency_projection_digest:
         raise _seat_jail.SeatSandboxRefused(
             _seat_jail.refused("identity"),
             "dependency projection evidence changed",
         )
+    if evidence is None:
+        return
     evidence.update({
         "executable_dependency_projection_sha256": dependency.projection_digest,
         "executable_dependency_authority_sha256": dependency.authority_sha256,
@@ -11352,6 +11453,55 @@ class _JailedSeat:
     admission_class: str | None = None
 
 
+def _cleanup_jailed_seat(
+    seat: _JailedSeat,
+    *,
+    snapshots: Path | None = None,
+    primary: BaseException | None = None,
+) -> None:
+    """Close both jail projections and attempt every parent-side teardown step.
+
+    Cleanup must not replace the dependency refusal (or provider failure) that caused it.
+    Without an active primary exception, the first cleanup failure remains observable.
+    """
+    failures: list[BaseException] = []
+    retained: list[Path] = []
+    for jail in (seat.jail, seat.probe_jail):
+        try:
+            _seat_jail.close_jail_fds(jail)
+        except BaseException as exc:
+            failures.append(exc)
+    for parent in (seat.review_dir, seat.seat_dir, seat.seat_dir / _JAIL_PROBE_DIRNAME):
+        try:
+            retained.extend(
+                parent / name
+                for name in _seat_uid.teardown_in_h(seat.holder_pid, str(parent))
+            )
+        except BaseException as exc:
+            failures.append(exc)
+    for path in retained:
+        try:
+            # Under the leg's own mkdtemp scratch dir: operator-owned and 0700 (F020).
+            _seat_uid.record_retention(path)
+        except BaseException as exc:
+            failures.append(exc)
+    if retained:
+        seat.notices.append("seat_sandbox_retained_after_teardown")
+    if snapshots is not None:
+        shutil.rmtree(snapshots, ignore_errors=True)
+    if failures:
+        if primary is not None:
+            for failure in failures:
+                primary.add_note(
+                    f"jailed seat cleanup also failed: {type(failure).__name__}"
+                )
+            return
+        first, *additional = failures
+        for failure in additional:
+            first.add_note(f"additional jailed seat cleanup failure: {type(failure).__name__}")
+        raise first
+
+
 def _resolve_claude_executable() -> Path:
     found = shutil.which("claude", path="/usr/local/bin:/usr/bin:/bin:" + os.environ.get("PATH", ""))
     if found is None:
@@ -11485,7 +11635,6 @@ def _exec_jailed_claude_leg(
     if review_monitor is not None and review_monitor.cancel.is_set():
         return "UNAVAILABLE", "review_operation_cancelled"
     jail = seat.jail
-    _record_executable_dependency_evidence(broker_evidence, jail)
     session_id = str(uuid.uuid4())
     command = _broker_claude_tui_command(model=model, effort=effort, session_id=session_id,
                                          sandboxed=jail, env=env, session_name=session_name)
@@ -11559,6 +11708,7 @@ def _exec_jailed_claude_leg(
             "seat_jail_owner_argv_shape": tuple(jail.redacted_owner()),
         })
     try:
+        _record_executable_dependency_evidence(broker_evidence, jail)
         rc, review_text, log_text, pty_tail = _run_claude_tui_session(
             command=command, cwd=Path(_seat_jail.SEAT_TREE), prompt=prompt,
             output_file=output_snapshot, timeout_s=timeout_s, env=dict(jail.env),
@@ -11573,19 +11723,7 @@ def _exec_jailed_claude_leg(
         _refresh_transcript()
         kept = transcript_snapshot.read_bytes()
     finally:
-        _seat_jail.close_jail_fds(jail)
-        _seat_jail.close_jail_fds(seat.probe_jail)
-        retained = [
-            parent / name
-            for parent in (seat.review_dir, seat.seat_dir, seat.seat_dir / _JAIL_PROBE_DIRNAME)
-            for name in _seat_uid.teardown_in_h(seat.holder_pid, str(parent))
-        ]
-        for path in retained:
-            # Under the leg's own mkdtemp scratch dir: operator-owned and 0700 (F020).
-            _seat_uid.record_retention(path)
-        if retained:
-            seat.notices.append("seat_sandbox_retained_after_teardown")
-        shutil.rmtree(snapshots, ignore_errors=True)
+        _cleanup_jailed_seat(seat, snapshots=snapshots, primary=sys.exception())
     if unsafe:
         return _jailed_failure("seat_sandbox_refused:output_unsafe", failure_detail_sink)
     pty_tail = str(pty_tail or "")
@@ -11841,7 +11979,6 @@ def _exec_jailed_gemini_leg(
     if review_monitor is not None and review_monitor.cancel.is_set():
         return "UNAVAILABLE", "review_operation_cancelled"
     jail = seat.jail
-    _record_executable_dependency_evidence(broker_evidence, jail)
     command = _jailed_gemini_command(model)
     protocol = _broker_gemini_stream_protocol(prompt, tooled=True)
     # Both credentials this leg hands the seat are scanned out of everything the parent
@@ -11896,6 +12033,7 @@ def _exec_jailed_gemini_leg(
             **({"egress": dict(egress_evidence)} if egress_evidence is not None else {}),
         })
     try:
+        _record_executable_dependency_evidence(broker_evidence, jail)
         proc = _run_leg_with_liveness(
             command, cwd=_seat_jail.SEAT_GEMINI_WORKSPACE, env=dict(jail.env),
             deadline_s=deadline_s, input_text=protocol.transport,
@@ -11906,17 +12044,7 @@ def _exec_jailed_gemini_leg(
     except subprocess.TimeoutExpired:
         proc = None
     finally:
-        _seat_jail.close_jail_fds(jail)
-        _seat_jail.close_jail_fds(seat.probe_jail)
-        retained = [
-            parent / name
-            for parent in (seat.review_dir, seat.seat_dir, seat.seat_dir / _JAIL_PROBE_DIRNAME)
-            for name in _seat_uid.teardown_in_h(seat.holder_pid, str(parent))
-        ]
-        for path in retained:
-            _seat_uid.record_retention(path)
-        if retained:
-            seat.notices.append("seat_sandbox_retained_after_teardown")
+        _cleanup_jailed_seat(seat, primary=sys.exception())
     if token_seen or (proc is not None and any(
             _seat_jail.contains_secret(f"{proc.stdout}{proc.stderr}".encode("utf-8", errors="replace"), secret)
             for secret in secrets)):

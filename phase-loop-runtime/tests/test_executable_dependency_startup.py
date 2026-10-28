@@ -355,6 +355,23 @@ def test_cli_command_inventory_has_one_closed_dependency_classification(monkeypa
     assert startup._classify_cli_route(["--future-option", "run"]) == "dependency_unwired"
 
 
+def test_cli_global_option_arity_matches_the_actual_parser_actions(monkeypatch) -> None:
+    from phase_loop_runtime import cli
+
+    monkeypatch.delenv("PHASE_LOOP_PROFILE_PLUGINS", raising=False)
+    parser = cli.build_parser()
+    actual_flags: set[str] = set()
+    actual_values: set[str] = set()
+    for action in parser._actions:
+        for option in action.option_strings:
+            if option in {"-h", "--help", "--version"}:
+                continue
+            assert option.startswith("--"), f"unclassified short global option: {option}"
+            (actual_flags if action.nargs == 0 else actual_values).add(option)
+    assert actual_flags == startup._CLI_GLOBAL_FLAG_OPTIONS
+    assert actual_values == startup._CLI_GLOBAL_VALUE_OPTIONS
+
+
 def test_session_exit_preserves_primary_exception_and_attaches_cleanup_failure() -> None:
     session = register_session(FakeDependency())
     lease = session.acquire_task("still-live")

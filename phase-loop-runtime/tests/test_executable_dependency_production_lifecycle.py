@@ -54,6 +54,272 @@ def _assert_descriptors_closed(descriptors: tuple[int, ...]) -> None:
             os.fstat(descriptor)
 
 
+class _LegDependency:
+    def __init__(self, refusal: str) -> None:
+        self.refusal = refusal
+        self.projection_digest = "a" * 64
+        self.authority_sha256 = "b" * 64
+        self.declaration_sha256 = "c" * 64
+        self._runtime_euid_owned_sources = False
+        self._runtime_euid_writable_sources = False
+
+    def revalidate(self) -> None:
+        if self.refusal == "source_changed":
+            raise ExecutableDependencyError("source_changed", "/fixture/provider")
+
+
+def _dummy_pipe_jail(dependency: object | None, projection_digest: str) -> SimpleNamespace:
+    read_fd, write_fd = os.pipe()
+    return SimpleNamespace(
+        dependency=dependency,
+        dependency_projection_digest=projection_digest,
+        env={},
+        profile_digest="d" * 64,
+        profile_id="synthetic-profile",
+        filter_digest="e" * 64,
+        pass_fds=(read_fd, write_fd),
+        provider_argv0="/run/phase-loop-seat/provider",
+        redacted_owner=lambda: ["synthetic-owner"],
+    )
+
+
+@pytest.mark.parametrize("leg", ["claude", "gemini"])
+@pytest.mark.parametrize("refusal", ["source_changed", "digest_changed"])
+def test_jailed_leg_dependency_refusal_runs_real_descriptor_cleanup_before_boundary(
+    monkeypatch,
+    tmp_path: Path,
+    leg: str,
+    refusal: str,
+) -> None:
+    dependency = _LegDependency(refusal)
+    production = _dummy_pipe_jail(
+        dependency,
+        dependency.projection_digest if refusal == "source_changed" else "f" * 64,
+    )
+    probe = _dummy_pipe_jail(None, "")
+    descriptors = (*production.pass_fds, *probe.pass_fds)
+    seat = panel_invoker._JailedSeat(
+        jail=production,
+        probe_jail=probe,
+        holder_pid=123,
+        token=b"synthetic-no-credential",
+        review_dir=tmp_path / "review",
+        seat_dir=tmp_path / "seat",
+        image_sha256="1" * 64,
+        admission_class="synthetic",
+    )
+    teardown: list[tuple[int, str]] = []
+    retained: list[Path] = []
+    boundaries: list[str] = []
+
+    def teardown_in_h(pid: int, parent: str) -> list[str]:
+        teardown.append((pid, parent))
+        return [f"retained-{len(teardown)}"]
+
+    monkeypatch.setattr(panel_invoker._seat_uid, "teardown_in_h", teardown_in_h)
+    cleanup_failure = leg == "claude" and refusal == "source_changed"
+
+    def record_retention(path: Path) -> None:
+        retained.append(path)
+        if cleanup_failure:
+            raise RuntimeError("synthetic cleanup failure")
+
+    monkeypatch.setattr(panel_invoker._seat_uid, "record_retention", record_retention)
+    monkeypatch.setattr(
+        panel_invoker,
+        "_broker_claude_tui_command",
+        lambda **_kwargs: ["/run/phase-loop-seat/provider"],
+    )
+    monkeypatch.setattr(
+        panel_invoker,
+        "_jailed_gemini_command",
+        lambda _model: ["/run/phase-loop-seat/provider"],
+    )
+    monkeypatch.setattr(
+        panel_invoker,
+        "_run_claude_tui_session",
+        lambda **_kwargs: boundaries.append("claude-provider") or pytest.fail("provider ran"),
+    )
+    monkeypatch.setattr(
+        panel_invoker,
+        "_run_leg_with_liveness",
+        lambda *_args, **_kwargs: boundaries.append("gemini-provider") or pytest.fail("provider ran"),
+    )
+    for name in ("_require_qualified_jail", "_require_jailed_seat_identity", "launch_provider"):
+        monkeypatch.setattr(
+            panel_invoker,
+            name,
+            lambda *_args, _name=name, **_kwargs: boundaries.append(_name)
+            or pytest.fail(f"{_name} boundary ran"),
+        )
+
+    try:
+        with pytest.raises(seat_jail.SeatSandboxRefused) as excinfo:
+            if leg == "claude":
+                panel_invoker._exec_jailed_claude_leg(
+                    seat,
+                    timeout_s=5,
+                    backstop_s=5,
+                    model=None,
+                    effort=None,
+                    prompt="synthetic",
+                    broker_evidence={},
+                )
+            else:
+                panel_invoker._exec_jailed_gemini_leg(
+                    seat,
+                    deadline_s=5,
+                    model="synthetic-model",
+                    prompt="synthetic",
+                    broker_evidence={},
+                )
+        assert excinfo.value.code == seat_jail.refused("identity")
+        if refusal == "source_changed":
+            assert isinstance(excinfo.value.__cause__, ExecutableDependencyError)
+        assert boundaries == []
+        assert [parent for _pid, parent in teardown] == [
+            str(seat.review_dir),
+            str(seat.seat_dir),
+            str(seat.seat_dir / panel_invoker._JAIL_PROBE_DIRNAME),
+        ]
+        assert len(retained) == 3
+        assert seat.notices == ["seat_sandbox_retained_after_teardown"]
+        if cleanup_failure:
+            assert len(excinfo.value.__notes__) == 3
+            assert all("cleanup also failed" in note for note in excinfo.value.__notes__)
+        _assert_descriptors_closed(descriptors)
+    finally:
+        for descriptor in descriptors:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+
+
+@pytest.mark.parametrize(
+    "collision",
+    [
+        "review_tree",
+        "readonly_ca",
+        "writable_tree",
+        "output",
+        "broker",
+        "keyring",
+        "private_home",
+        "system",
+    ],
+)
+def test_generic_profile_refuses_dependency_collision_before_reopen_or_effects(
+    collision: str,
+) -> None:
+    base = Path("/synthetic-seat-view")
+    cwd = base / "review" / "tree"
+    readonly = Path("/etc/ssl/certs/ca-certificates.crt")
+    writable = base / "writable-tree"
+    output = base / "output" / "review.txt"
+    broker = Path("/run/user/123/synthetic-broker.sock")
+    destinations = {
+        "review_tree": str(cwd / "provider"),
+        "readonly_ca": str(readonly),
+        "writable_tree": str(writable / "provider"),
+        "output": str(output),
+        "broker": str(broker),
+        "keyring": "/run/phase-loop-seat/keyring.py",
+        "private_home": "/home/phase-loop-seat/.config/provider",
+        "system": "/usr/lib/synthetic-provider",
+    }
+    effects: list[str] = []
+
+    class Dependency:
+        subject_destination = "/fixture/provider"
+        entries = (SimpleNamespace(destination=destinations[collision]),)
+
+        def revalidate(self) -> None:
+            effects.append("revalidate")
+
+        def reopen_projection(self):
+            effects.append("reopen")
+            raise AssertionError("projection reopened")
+
+    with pytest.raises(
+        panel_invoker._sandbox_egress.SeatIdentityUnverified,
+        match="seat_profile_unavailable",
+    ):
+        with panel_invoker.seat_profile(
+            harness=None,
+            executable="/usr/bin/true",
+            env={},
+            cwd=cwd,
+            readonly_paths=(readonly,),
+            outputs=(output,),
+            broker_socket=broker,
+            writable_trees=(writable,),
+            dependency=Dependency(),
+        ):
+            pytest.fail("colliding projection reached the seat profile")
+    assert effects == []
+
+
+def test_generic_profile_allows_only_the_exact_provider_subject_slot(tmp_path: Path) -> None:
+    dependency = SimpleNamespace(
+        subject_destination="/run/phase-loop-seat/provider",
+        entries=(SimpleNamespace(destination="/run/phase-loop-seat/provider"),),
+    )
+    panel_invoker._require_safe_dependency_profile_destinations(
+        dependency,
+        cwd=tmp_path,
+        private_home="/home/phase-loop-seat",
+    )
+    dependency.entries = (SimpleNamespace(destination="/run/phase-loop-seat/provider/helper"),)
+    with pytest.raises(panel_invoker._sandbox_egress.SeatIdentityUnverified):
+        panel_invoker._require_safe_dependency_profile_destinations(
+            dependency,
+            cwd=tmp_path,
+            private_home="/home/phase-loop-seat",
+        )
+
+
+def test_owned_launch_rechecks_output_directory_collision_before_any_owner_effect(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    effects: list[str] = []
+    output_directory = Path("/synthetic-seat-view/private-output")
+
+    class Dependency:
+        subject_destination = "/fixture/provider"
+        projection_digest = "a" * 64
+        entries = (SimpleNamespace(destination=str(output_directory / "helper")),)
+
+        def revalidate(self) -> None:
+            effects.append("revalidate")
+
+    profile = panel_invoker.SeatProfile(
+        env={"HOME": "/home/phase-loop-seat"},
+        dependency=Dependency(),
+        dependency_projection_digest="a" * 64,
+        output_dirs=((str(tmp_path / "host-output"), str(output_directory)),),
+    )
+    monkeypatch.setattr(
+        panel_invoker,
+        "_filtered_holder_namespace",
+        lambda: effects.append("namespace"),
+    )
+    monkeypatch.setattr(
+        panel_invoker,
+        "launch_provider",
+        lambda *_args, **_kwargs: effects.append("provider"),
+    )
+    with pytest.raises(panel_invoker._sandbox_egress.SeatIdentityUnverified):
+        panel_invoker.launch_owned(
+            ["/fixture/provider"],
+            role=panel_invoker.SeatLaunchRole.PROVIDER_REVIEW,
+            profile=profile,
+            cwd=tmp_path,
+        )
+    assert effects == []
+
+
 def test_managed_launcher_and_production_jails_share_one_dependency_lifetime(
     monkeypatch,
     tmp_path: Path,

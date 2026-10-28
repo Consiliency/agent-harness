@@ -42,8 +42,8 @@ digest, then owns a close-on-exec duplicate. It no-follow opens and validates th
 declaration, selected executable, source roots, and every declared file. The
 session retains those file descriptors and revalidates identity and bytes before
 profile construction and immediately before launch. Group- or world-writable
-file, directory, and source-root modes are outside the non-overridable public
-ceiling even if a caller or local authority names them.
+file, declared directory entries, and source roots are outside the
+non-overridable public ceiling even if a caller or local authority names them.
 
 ## Projection and lifecycle
 

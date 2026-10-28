@@ -14,10 +14,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   managed provider effects; standalone behavior remains only when requirement and
   authority are both absent.
 - Give every projection consumer an independent descriptor offset over immutable sealed
-  content, protect the jail's harness and system mount destinations, bind direct launches
+  content, protect the jail and generic seat-view mount destinations, bind direct launches
   to the held subject inode, and record the authority/declaration/projection digests on
-  jailed broker evidence. Required CLI sessions use a closed provider-free inventory and
-  refuse provider routes that are not dependency-wired.
+  jailed broker evidence. A typed dependency refusal runs both jail and parent-seat cleanup
+  before it reaches the established degraded-leg path. Required CLI sessions use a closed
+  provider-free inventory and refuse provider routes that are not dependency-wired.
 - The seat-jail qualification entry grammar is closed: it accepts only no arguments or one
   of `-h`, `--help`, and `--version`; repeated, clustered, abbreviated, mixed, or unknown
   forms exit with status 2 before qualification.
