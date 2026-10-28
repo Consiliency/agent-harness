@@ -10,7 +10,7 @@ from phase_loop_runtime import launcher, panel_invoker, sandbox_egress
 @pytest.mark.parametrize("route", ["claude_channel", "claude_agent_view"])
 def test_executor_review_refuses_an_unowned_transport(route, monkeypatch):
     spec = SimpleNamespace(available=True, prompt_bundle=SimpleNamespace(product_action="review"),
-                           claude_route=route, executor="claude")
+                           claude_route=route, executor="claude", command=("claude",))
     monkeypatch.setattr(launcher, "_launch_claude_channel", lambda *a, **k: pytest.fail("channel ran"))
     monkeypatch.setattr(launcher, "_launch_claude_agent_view", lambda *a, **k: pytest.fail("agent view ran"))
     with pytest.raises(sandbox_egress.SeatIdentityUnverified, match="executor_review_route_unsupported"):
@@ -25,7 +25,7 @@ def test_panel_agent_view_review_is_a_refusal(tmp_path):
 
 def test_trusted_channel_action_keeps_its_transport(monkeypatch):
     spec = SimpleNamespace(available=True, prompt_bundle=SimpleNamespace(product_action="execute"),
-                           claude_route="claude_channel", executor="claude")
+                           claude_route="claude_channel", executor="claude", command=("claude",))
     expected = object()
     monkeypatch.setattr(launcher, "_launch_claude_channel", lambda *a, **k: expected)
     monkeypatch.setattr(launcher, "_result_with_spec", lambda result, spec: result)

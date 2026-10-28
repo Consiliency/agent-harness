@@ -11525,7 +11525,7 @@ def _prepare_jailed_claude(
 
     dependency = current_dependency_for_provider("claude")
     executable = (
-        Path(dependency.subject_source) if dependency is not None else _resolve_claude_executable()
+        Path(dependency.subject_source) if dependency is not None else None
     )
     tree = review_dir / _seat_jail.HOST_TREE_DIRNAME
     try:
@@ -11553,6 +11553,8 @@ def _prepare_jailed_claude(
     # build, the pre-seed, the probe jail) still says when a stored override was ignored --
     # the credential's notices as siblings of its one refusal code.
     try:
+        if executable is None:
+            executable = _resolve_claude_executable()
         token = credential.token
         bundle = _seat_jail.memfd_with("seat-bundle", artifact.encode("utf-8"))
         brief = _seat_jail.memfd_with("seat-instructions", instructions.encode("utf-8"))

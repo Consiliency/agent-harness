@@ -241,3 +241,11 @@ def test_public_fixture_bytes_are_canonical_and_hash_bound() -> None:
             assert not raw.endswith(b"\n")
             assert hashlib.sha256(raw).hexdigest() == digest
             assert rfc8785.dumps(json.loads(raw)) == raw
+
+
+def test_admission_without_posix_descriptors_refuses_before_inputs(monkeypatch):
+    from phase_loop_runtime import executable_dependency as dependency
+
+    monkeypatch.setattr(dependency, "fcntl", None)
+    with pytest.raises(dependency.ExecutableDependencyError, match="platform_unsupported"):
+        dependency.admit_executable_dependency(None, -1, "")

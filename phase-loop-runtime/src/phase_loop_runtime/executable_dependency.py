@@ -8,7 +8,10 @@ declaration, selected executable, and read-only projection graph.
 
 from __future__ import annotations
 
-import fcntl
+try:
+    import fcntl
+except ImportError:  # Standalone imports remain supported on non-POSIX hosts.
+    fcntl = None
 import hashlib
 from importlib import resources
 import json
@@ -356,6 +359,8 @@ def admit_executable_dependency(
 ) -> AdmittedExecutableDependency:
     """Admit one required executable dependency without taking the borrowed FD."""
 
+    if fcntl is None:
+        raise ExecutableDependencyError("platform_unsupported", "descriptor admission requires POSIX")
     _validate_requirement_object(requirement)
     if type(borrowed_authority_fd) is not int or borrowed_authority_fd < 0:
         raise ExecutableDependencyError("authority_invalid", "descriptor")
