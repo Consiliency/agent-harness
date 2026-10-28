@@ -2157,8 +2157,12 @@ def launch_with_spec(
         from .sandbox_egress import SeatIdentityUnverified
         raise SeatIdentityUnverified("executor_review_route_unsupported")
     if spec.executor == "claude" and spec.claude_route == "claude_channel" and not dry_run:
+        if dependency is not None:
+            dependency.validate_command(spec.command, provider=spec.executor)
         return _result_with_spec(_launch_claude_channel(spec, log_path=log_path), spec)
     if spec.executor == "claude" and spec.claude_route == "claude_agent_view" and not dry_run:
+        if dependency is not None:
+            dependency.validate_command(spec.command, provider=spec.executor)
         return _result_with_spec(
             _launch_claude_agent_view(
                 spec,
@@ -2196,6 +2200,11 @@ def launch_with_spec(
                 stdin_text = command[-1]
                 command = [*command[:-1], "-"]
             command = [*command[:2], "--output-last-message", str(final_path), *command[2:]]
+        if dependency is not None:
+            # Bind the final path lookup to the admitted subject inode as late as
+            # this path-based launcher permits, after every command rewrite and
+            # immediately before the process boundary.
+            dependency.validate_command(command, provider=spec.executor)
         result = launch(
             command,
             action=action,

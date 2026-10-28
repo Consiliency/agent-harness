@@ -74,6 +74,115 @@ _REGISTRY_LOCK = threading.RLock()
 _ACTIVE_REQUIRED: dict[str, DependencyStartupSession] = {}
 _SKILL_EVAL_ARGV_LOCK = threading.Lock()
 
+_CLI_DEPENDENCY_WIRED_COMMANDS = frozenset({
+    "advisor-board",
+    "execute",
+    "maintain-skills",
+    "resume",
+    "run",
+    "run-train",
+})
+_CLI_DEPENDENCY_UNWIRED_COMMANDS = frozenset({
+    "agy-canary-bootstrap-attest",
+    "agy-canary-clean-settings",
+    "agy-canary-finalize",
+    "agy-canary-prepare",
+    "agy-canary-probe",
+    "agy-canary-verify",
+    "agy-qualification",
+    "cli-qualification",
+})
+_CLI_CONDITIONAL_COMMANDS = frozenset({"seat-sandbox"})
+_CLI_PROVIDER_FREE_COMMANDS = frozenset({
+    "archive-state",
+    "attest",
+    "closeout-drift-audit",
+    "consiliency-ingest",
+    "consiliency-lease",
+    "consiliency-scaffold",
+    "docs-audit",
+    "doctor",
+    "dry-run",
+    "evidence-audit",
+    "export-schema",
+    "fabpub-bootstrap",
+    "fabpub-rotate-partition",
+    "fleet-map",
+    "goal-coverage-audit",
+    "handoff",
+    "init",
+    "install",
+    "migrate-events",
+    "migrate-handoffs",
+    "monitor",
+    "outside-agent-preflight",
+    "outside-agent-validate",
+    "placement",
+    "publication-mode",
+    "reconcile",
+    "reopen",
+    "repo-validate",
+    "seat-egress",
+    "state",
+    "status",
+    "task-message-broker-serve",
+    "task-message-probe",
+    "task-message-resolve",
+    "train-status",
+    "validate-roadmap",
+    "version",
+    "worktree-index",
+})
+_CLI_CLASSIFIED_COMMANDS = (
+    _CLI_DEPENDENCY_WIRED_COMMANDS
+    | _CLI_DEPENDENCY_UNWIRED_COMMANDS
+    | _CLI_CONDITIONAL_COMMANDS
+    | _CLI_PROVIDER_FREE_COMMANDS
+)
+_CLI_GLOBAL_FLAG_OPTIONS = frozenset({
+    "--allow-branchgov",
+    "--bypass-approvals",
+    "--dry-run",
+    "--force-replan",
+    "--full-phase",
+    "--json",
+    "--no-deprecation-hints",
+    "--no-heartbeat",
+    "--no-observe",
+    "--observe",
+    "--stream-output",
+    "--work-unit-mode",
+})
+_CLI_GLOBAL_VALUE_OPTIONS = frozenset({
+    "--allow-cross-phase-dirty",
+    "--allow-executor",
+    "--claude-execution-mode",
+    "--closeout-mode",
+    "--command-name",
+    "--command-template",
+    "--disable-executor",
+    "--effort",
+    "--executor",
+    "--fallback-executor",
+    "--heartbeat-interval-seconds",
+    "--lane-scheduler",
+    "--max-phases",
+    "--model",
+    "--model-profile",
+    "--phase",
+    "--phase-scheduler",
+    "--pipeline-mode",
+    "--quiet-blocker-seconds",
+    "--quiet-warning-seconds",
+    "--repo",
+    "--require-capability",
+    "--roadmap",
+    "--rotate-executors",
+    "--rotation-mode",
+    "--rotation-on-policy-pin",
+    "--source-bundle",
+})
+
 
 class DependencyTaskLease:
     """An explicit child-work capability owned by one startup session."""
@@ -171,7 +280,14 @@ class DependencyStartupSession:
     def run_cli(self, argv: Sequence[str]) -> int:
         from .cli import main
 
-        return self._run("cli", argv, _cli_provider_capable(argv), lambda: main(list(argv)))
+        route = _classify_cli_route(argv)
+        return self._run(
+            "cli",
+            argv,
+            route == "dependency_wired",
+            lambda: main(list(argv)),
+            dependency_unwired=route == "dependency_unwired",
+        )
 
     def run_skill_eval(self, argv: Sequence[str]) -> int:
         from .skill_eval import console_main
@@ -206,11 +322,15 @@ class DependencyStartupSession:
         argv: Sequence[str],
         provider_capable: bool,
         invoke: Callable[[], int],
+        *,
+        dependency_unwired: bool = False,
     ) -> int:
         del argv
         with self._lock:
             self._require_open()
         _validate_runtime_package(self.runtime_package)
+        if dependency_unwired and self.dependency is not None:
+            raise ExecutableDependencyError("dependency_route_unwired", label)
         if not provider_capable or self.dependency is None:
             return int(invoke())
         lease = self.acquire_task(f"{label}:{uuid.uuid4().hex}")
@@ -236,8 +356,14 @@ class DependencyStartupSession:
     def __enter__(self) -> DependencyStartupSession:
         return self
 
-    def __exit__(self, *_exc: object) -> None:
-        self.close()
+    def __exit__(self, _exc_type: object, exc: object, _traceback: object) -> None:
+        try:
+            self.close()
+        except BaseException as cleanup_error:
+            if exc is None:
+                raise
+            if isinstance(exc, BaseException):
+                exc.add_note(f"dependency session cleanup failed: {cleanup_error}")
 
 
 def open_dependency_startup(spec: DependencyStartupSpec) -> DependencyStartupSession:
@@ -329,17 +455,58 @@ def release_unstarted_dependency_task(lease: DependencyTaskLease | None) -> None
         lease._release_if_pending()
 
 
+def _classify_cli_route(argv: Sequence[str]) -> Literal[
+    "provider_free", "dependency_wired", "dependency_unwired"
+]:
+    """Classify the closed generic CLI inventory for a required session.
+
+    New or profile-plugin commands default to refusal, never provider-free.
+    Standalone sessions still hand them to the ordinary parser unchanged.
+    """
+    values = tuple(argv)
+    if values in {("-h",), ("--help",), ("--version",)}:
+        return "provider_free"
+    command = _cli_command(values)
+    if command is None:
+        return "dependency_unwired"
+    if command in _CLI_DEPENDENCY_UNWIRED_COMMANDS:
+        return "dependency_unwired"
+    if command in _CLI_DEPENDENCY_WIRED_COMMANDS:
+        return "dependency_wired"
+    if command == "seat-sandbox":
+        return "dependency_wired" if "qualify" in values else "provider_free"
+    if command in _CLI_PROVIDER_FREE_COMMANDS:
+        return "provider_free"
+    return "dependency_unwired"
+
+
+def _cli_command(values: tuple[str, ...]) -> str | None:
+    """Return the top-level command using only the closed global option grammar."""
+    index = 0
+    while index < len(values):
+        item = values[index]
+        if item in _CLI_GLOBAL_FLAG_OPTIONS:
+            index += 1
+            continue
+        if item in _CLI_GLOBAL_VALUE_OPTIONS:
+            if index + 1 >= len(values):
+                return None
+            index += 2
+            continue
+        if any(item.startswith(option + "=") for option in _CLI_GLOBAL_VALUE_OPTIONS):
+            index += 1
+            continue
+        if item.startswith("-"):
+            return None
+        return item
+    if "--dry-run" in values:
+        return "dry-run"
+    return "run"
+
+
 def _cli_provider_capable(argv: Sequence[str]) -> bool:
-    if any(item in {"-h", "--help", "--version", "--dry-run", "dry-run"} for item in argv):
-        return False
-    if not argv:
-        return True
-    if any(
-        item in {"run", "resume", "execute", "maintain-skills", "run-train", "advisor-board"}
-        for item in argv
-    ):
-        return True
-    return "seat-sandbox" in argv and "qualify" in argv
+    """Compatibility helper for callers/tests that need the lease classification."""
+    return _classify_cli_route(argv) == "dependency_wired"
 
 
 def _validate_runtime_package(package: QualifiedRuntimePackage) -> None:

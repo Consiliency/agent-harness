@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import hashlib
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -40,6 +42,22 @@ def _build(review: Path, subject: Path, dependency):
         raise
 
 
+def _projection_file_descriptors(jail) -> dict[str, int]:
+    args = jail.dependency_mount_args
+    files: dict[str, int] = {}
+    for index, item in enumerate(args):
+        if item == "--ro-bind-data":
+            files[args[index + 2]] = int(args[index + 1])
+    return files
+
+
+def _read_all(fd: int, chunk_size: int = 2) -> bytes:
+    chunks: list[bytes] = []
+    while chunk := os.read(fd, chunk_size):
+        chunks.append(chunk)
+    return b"".join(chunks)
+
+
 def test_production_and_probe_reopen_same_projection_with_independent_fds(tmp_path: Path) -> None:
     fixture = build_fixture(tmp_path / "fixture", layout="layout-b")
     try:
@@ -63,6 +81,55 @@ def test_production_and_probe_reopen_same_projection_with_independent_fds(tmp_pa
             )
             assert fixture.authority_fd not in production.pass_fds
             assert fixture.authority_fd not in probe.pass_fds
+            evidence: dict[str, object] = {}
+            panel_invoker._record_executable_dependency_evidence(evidence, production)
+            assert evidence == {
+                "executable_dependency_projection_sha256": dependency.projection_digest,
+                "executable_dependency_authority_sha256": dependency.authority_sha256,
+                "executable_dependency_declaration_sha256": dependency.declaration_sha256,
+                "executable_dependency_runtime_euid_owned_sources": True,
+                "executable_dependency_runtime_euid_writable_sources": True,
+            }
+            expected = {
+                str(fixture.subject_destination): fixture.subject.read_bytes(),
+                str(fixture.helper_destination): fixture.helper.read_bytes(),
+            }
+            probe_files = _projection_file_descriptors(probe)
+            production_files = _projection_file_descriptors(production)
+            assert probe_files.keys() == production_files.keys() == expected.keys()
+
+            # A real sequential consumer drains every probe descriptor. Production
+            # descriptors must still begin at byte zero.
+            for destination, descriptor in probe_files.items():
+                observed = _read_all(descriptor)
+                assert observed == expected[destination]
+                assert hashlib.sha256(observed).digest() == hashlib.sha256(
+                    expected[destination]
+                ).digest()
+            assert all(os.lseek(fd, 0, os.SEEK_CUR) == 0 for fd in production_files.values())
+
+            # Read production and a later consumer interleaved. Independent FD
+            # numbers alone would not make this pass if they shared an OFD offset.
+            with dependency.reopen_projection() as subsequent:
+                subsequent_files = {
+                    item.destination: item.fd for item in subsequent.files
+                }
+                assert subsequent_files.keys() == production_files.keys()
+                for destination in expected:
+                    production_bytes = bytearray()
+                    subsequent_bytes = bytearray()
+                    while True:
+                        left = os.read(production_files[destination], 1)
+                        right = os.read(subsequent_files[destination], 3)
+                        production_bytes.extend(left)
+                        subsequent_bytes.extend(right)
+                        if not left and not right:
+                            break
+                    assert bytes(production_bytes) == expected[destination]
+                    assert bytes(subsequent_bytes) == expected[destination]
+                    expected_digest = hashlib.sha256(expected[destination]).digest()
+                    assert hashlib.sha256(production_bytes).digest() == expected_digest
+                    assert hashlib.sha256(subsequent_bytes).digest() == expected_digest
         finally:
             if probe is not None:
                 seat_jail.close_jail_fds(probe)
@@ -71,6 +138,53 @@ def test_production_and_probe_reopen_same_projection_with_independent_fds(tmp_pa
             dependency.close()
     finally:
         fixture.close()
+
+
+@pytest.mark.parametrize(
+    "destination",
+    (
+        "/seat",
+        "/seat/review/review-bundle.md",
+        "/seat/tree/injected",
+        "/seat/home",
+        "/seat/out/result",
+        "/seat/egress-ca.pem",
+        "/usr",
+        "/usr/bin/injected",
+        "/etc/ssl",
+        "/proc/self/status",
+    ),
+)
+def test_dependency_destination_overlap_refuses_before_jail_effects(
+    tmp_path: Path,
+    destination: str,
+) -> None:
+    effects: list[str] = []
+    dependency = SimpleNamespace(
+        entries=(SimpleNamespace(destination=destination),),
+        subject_destination="/fixture/provider",
+        revalidate=lambda: effects.append("revalidate"),
+    )
+    review = _review_dir(tmp_path / destination.strip("/").replace("/", "-"))
+    with pytest.raises(seat_jail.SeatSandboxRefused, match="dependency destination overlaps"):
+        _build(review, Path("/unused/provider"), dependency)
+    assert effects == []
+    assert not (review / seat_jail.HOST_HOME_DIRNAME).exists()
+    assert not (review / seat_jail.HOST_OUT_DIRNAME).exists()
+
+
+def test_only_exact_provider_subject_gets_narrow_seat_bin_exception() -> None:
+    seat_jail._require_safe_dependency_destinations(
+        "claude",
+        ("/seat/bin/claude",),
+        "/seat/bin/claude",
+    )
+    with pytest.raises(seat_jail.SeatSandboxRefused, match="dependency destination overlaps"):
+        seat_jail._require_safe_dependency_destinations(
+            "claude",
+            ("/seat/bin/claude", "/seat/bin/claude-helper"),
+            "/seat/bin/claude",
+        )
 
 
 def test_mutation_refuses_before_jail_directories_are_created(tmp_path: Path) -> None:

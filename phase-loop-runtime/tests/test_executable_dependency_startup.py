@@ -279,6 +279,96 @@ def test_provider_free_entry_uses_no_task_and_live_entry_binds_one(monkeypatch) 
         session.close()
 
 
+@pytest.mark.parametrize(
+    "argv",
+    (
+        ["agy-canary-probe", "--evidence-root", "/synthetic"],
+        ["agy-qualification", "run"],
+        ["cli-qualification", "status", "--harness", "gemini"],
+        ["future-provider-command"],
+    ),
+    ids=("agy-canary", "agy-qualification", "cli-qualification", "unknown-command"),
+)
+def test_required_session_refuses_unwired_or_unknown_cli_before_any_effect(
+    monkeypatch,
+    argv,
+) -> None:
+    dependency = FakeDependency()
+    session = register_session(dependency)
+    monkeypatch.setattr(startup, "_validate_runtime_package", lambda package: None)
+    effects: list[str] = []
+    monkeypatch.setattr("phase_loop_runtime.cli.main", lambda _argv: effects.append("cli") or 0)
+    try:
+        with pytest.raises(ExecutableDependencyError, match="dependency_route_unwired"):
+            session.run_cli(argv)
+        assert effects == []
+        assert dependency.revalidations == 0
+        assert not session._tasks
+    finally:
+        session.close()
+
+
+def test_standalone_session_preserves_unknown_cli_parser_dispatch(monkeypatch) -> None:
+    session = DependencyStartupSession(runtime_package=runtime_package(), dependency=None)
+    monkeypatch.setattr(startup, "_validate_runtime_package", lambda package: None)
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "phase_loop_runtime.cli.main",
+        lambda argv: calls.append(list(argv)) or 2,
+    )
+    try:
+        assert session.run_cli(["future-provider-command"]) == 2
+        assert calls == [["future-provider-command"]]
+    finally:
+        session.close()
+
+
+def test_cli_command_inventory_has_one_closed_dependency_classification(monkeypatch) -> None:
+    from phase_loop_runtime import cli
+
+    monkeypatch.delenv("PHASE_LOOP_PROFILE_PLUGINS", raising=False)
+    parser = cli.build_parser()
+    subparsers = next(
+        action for action in parser._actions if isinstance(getattr(action, "choices", None), dict)
+    )
+    actual = set(subparsers.choices)
+    assert startup._CLI_CLASSIFIED_COMMANDS <= actual
+    assert all(
+        startup._classify_cli_route([command]) == "dependency_unwired"
+        for command in actual - startup._CLI_CLASSIFIED_COMMANDS
+    )
+    classes = (
+        startup._CLI_DEPENDENCY_WIRED_COMMANDS,
+        startup._CLI_DEPENDENCY_UNWIRED_COMMANDS,
+        startup._CLI_CONDITIONAL_COMMANDS,
+        startup._CLI_PROVIDER_FREE_COMMANDS,
+    )
+    assert sum(len(item) for item in classes) == len(set().union(*classes))
+    assert startup._classify_cli_route(["agy-canary-probe", "--help"]) == "dependency_unwired"
+    assert startup._classify_cli_route(["seat-sandbox", "qualify"]) == "dependency_wired"
+    assert startup._classify_cli_route(["seat-sandbox", "token-status"]) == "provider_free"
+    assert startup._classify_cli_route(["new-command", "--help"]) == "dependency_unwired"
+    assert startup._classify_cli_route(["new-command", "run"]) == "dependency_unwired"
+    assert startup._classify_cli_route(["new-command", "doctor"]) == "dependency_unwired"
+    assert startup._classify_cli_route(["--repo", "/synthetic", "run"]) == "dependency_wired"
+    assert startup._classify_cli_route(["--repo", "/synthetic", "doctor"]) == "provider_free"
+    assert startup._classify_cli_route(["--future-option", "run"]) == "dependency_unwired"
+
+
+def test_session_exit_preserves_primary_exception_and_attaches_cleanup_failure() -> None:
+    session = register_session(FakeDependency())
+    lease = session.acquire_task("still-live")
+    try:
+        with pytest.raises(RuntimeError, match="primary") as excinfo:
+            with session:
+                raise RuntimeError("primary")
+        assert any("task_live" in note for note in excinfo.value.__notes__)
+        assert not session.closed
+    finally:
+        lease.release()
+        session.close()
+
+
 def test_runtime_binding_digest_is_opaque_but_still_hash_typed(monkeypatch) -> None:
     package = runtime_package()
     monkeypatch.setattr(startup, "__version__", package.version)

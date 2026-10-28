@@ -4512,8 +4512,11 @@ def _compose_seat_jail_prefix(jail: "_seat_jail.SeatJail", retain_caps=()) -> li
 def _require_canonical_jail(jail: "_seat_jail.SeatJail") -> None:
     """The jail about to run must BE the qualified profile: the digest of its actual owner
     argv and the bytes actually in its seccomp memfd must equal the canonical digest -- the
-    one EC-EXECFIND-2's pass is recorded against. An added bind, a dropped flag or a
-    different filter is a mismatch, refused with `seat_sandbox_refused:identity`."""
+    one EC-EXECFIND-2's pass is recorded against. Dependency mounts are removed from that
+    base-profile comparison only after their destinations pass the non-overridable jail
+    collision floor; their authority, declaration and projection digests are recorded
+    separately. Any other added bind, dropped flag or different filter is refused with
+    `seat_sandbox_refused:identity`."""
     if _seat_jail.actual_profile_digest(jail) != _seat_jail.jail_profile_digest(jail.leg):
         raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("identity"),
                                             "jail is not the qualified profile")
@@ -5116,8 +5119,8 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
                 stack.callback(refresh_image.close)
             else:
                 if dependency is not None:
-                    refresh_image = gemini_heartbeat.VerifiedImage(
-                        dependency.reopen_subject(), dependency.subject_sha256, dependency.subject_source
+                    refresh_image = gemini_heartbeat.VerifiedImage.from_bytes(
+                        dependency._subject_snapshot_bytes(), dependency.subject_source
                     )
                 else:
                     from . import agy_integrity
@@ -5210,6 +5213,12 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
                 executable_dependency_projection_sha256=dependency_projection.digest,
                 executable_dependency_authority_sha256=dependency.authority_sha256,
                 executable_dependency_declaration_sha256=dependency.declaration_sha256,
+                executable_dependency_runtime_euid_owned_sources=(
+                    dependency._runtime_euid_owned_sources
+                ),
+                executable_dependency_runtime_euid_writable_sources=(
+                    dependency._runtime_euid_writable_sources
+                ),
             )
         elif gemini_profile is not None:
             # Reuse the admitted image and blocked-wrapper handshake unchanged.
@@ -7166,6 +7175,28 @@ def _record_broker_provider_evidence(
     })
     if transport_metadata is not None:
         evidence.update(transport_metadata)
+
+
+def _record_executable_dependency_evidence(
+    evidence: dict[str, object] | None,
+    jail: "_seat_jail.SeatJail",
+) -> None:
+    dependency = jail.dependency
+    if evidence is None or dependency is None:
+        return
+    dependency.revalidate()
+    if dependency.projection_digest != jail.dependency_projection_digest:
+        raise _seat_jail.SeatSandboxRefused(
+            _seat_jail.refused("identity"),
+            "dependency projection evidence changed",
+        )
+    evidence.update({
+        "executable_dependency_projection_sha256": dependency.projection_digest,
+        "executable_dependency_authority_sha256": dependency.authority_sha256,
+        "executable_dependency_declaration_sha256": dependency.declaration_sha256,
+        "executable_dependency_runtime_euid_owned_sources": dependency._runtime_euid_owned_sources,
+        "executable_dependency_runtime_euid_writable_sources": dependency._runtime_euid_writable_sources,
+    })
 
 
 def _render_leg_prompt(
@@ -11454,6 +11485,7 @@ def _exec_jailed_claude_leg(
     if review_monitor is not None and review_monitor.cancel.is_set():
         return "UNAVAILABLE", "review_operation_cancelled"
     jail = seat.jail
+    _record_executable_dependency_evidence(broker_evidence, jail)
     session_id = str(uuid.uuid4())
     command = _broker_claude_tui_command(model=model, effort=effort, session_id=session_id,
                                          sandboxed=jail, env=env, session_name=session_name)
@@ -11705,8 +11737,8 @@ def _prepare_jailed_gemini(
     else:
         executable = Path(dependency.subject_source)
         image_sha256, admission_class = dependency.subject_sha256, "executable_dependency"
-        image = gemini_heartbeat.VerifiedImage(
-            dependency.reopen_subject(), dependency.subject_sha256, dependency.subject_source
+        image = gemini_heartbeat.VerifiedImage.from_bytes(
+            dependency._subject_snapshot_bytes(), dependency.subject_source
         )
         try:
             _await_gemini_login(["agy"], {"HOME": str(home)}, review_monitor=review_monitor,
@@ -11809,6 +11841,7 @@ def _exec_jailed_gemini_leg(
     if review_monitor is not None and review_monitor.cancel.is_set():
         return "UNAVAILABLE", "review_operation_cancelled"
     jail = seat.jail
+    _record_executable_dependency_evidence(broker_evidence, jail)
     command = _jailed_gemini_command(model)
     protocol = _broker_gemini_stream_protocol(prompt, tooled=True)
     # Both credentials this leg hands the seat are scanned out of everything the parent

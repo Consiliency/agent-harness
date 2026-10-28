@@ -1305,6 +1305,66 @@ def _system_mounts() -> list[str]:
     return args
 
 
+_JAIL_PROTECTED_DESTINATIONS: tuple[str, ...] = (
+    SEAT_ROOT,
+    "/proc",
+    "/dev",
+    "/tmp",
+    "/etc",
+    *SYSTEM_READONLY_PATHS,
+)
+
+
+def _paths_overlap(left: str, right: str) -> bool:
+    return (
+        left == right
+        or left.startswith(right + "/")
+        or right.startswith(left + "/")
+    )
+
+
+def _require_safe_dependency_destinations(
+    leg: str,
+    destinations: Sequence[str],
+    subject_destination: str,
+) -> None:
+    """Keep dependency mounts disjoint from the jail's owned namespace.
+
+    The one exception is the dependency subject itself at the jail's canonical
+    provider slot. No directory, helper, or link gains the same exception.
+    """
+    canonical_subject = f"{SEAT_BIN}/{leg}"
+    for destination in destinations:
+        if destination == subject_destination == canonical_subject:
+            continue
+        if any(_paths_overlap(destination, protected) for protected in _JAIL_PROTECTED_DESTINATIONS):
+            raise SeatSandboxRefused(
+                refused("identity"),
+                "dependency destination overlaps the jail namespace",
+            )
+
+
+def _dependency_mount_destinations(args: Sequence[str]) -> tuple[str, ...]:
+    """Parse only the mount grammar emitted by DependencyProjection.mount_args."""
+    destinations: list[str] = []
+    index = 0
+    while index < len(args):
+        if index + 3 < len(args) and args[index] == "--perms" and args[index + 2] == "--dir":
+            destinations.append(args[index + 3])
+            index += 4
+        elif index + 3 < len(args) and args[index] == "--perms" and args[index + 2] == "--ro-bind-data":
+            if index + 4 >= len(args):
+                raise SeatSandboxRefused(refused("identity"), "dependency mount grammar changed")
+            destinations.append(args[index + 4])
+            index += 5
+        elif index + 2 < len(args) and args[index] == "--symlink":
+            destinations.append(args[index + 2])
+            index += 3
+        else:
+            raise SeatSandboxRefused(refused("identity"), "dependency mount grammar changed")
+    return tuple(destinations)
+
+
 # Placeholders that stand for the per-launch values in the CANONICAL owner argv. The
 # profile digest is taken over the argv with these substituted, so it binds the ACTUAL
 # policy the launch uses: an added bind, a dropped flag or a different filter changes it.
@@ -1352,7 +1412,11 @@ def installed_filter_sha256(jail: "SeatJail") -> str:
 
 
 def actual_profile_digest(jail: "SeatJail", arch: str | None = None) -> str:
-    """The profile digest of THIS jail's real owner argv and installed filter bytes."""
+    """The profile digest of THIS jail's real owner argv and installed filter bytes.
+
+    Dependency mounts are separately destination-checked and digest-bound, then
+    removed only so the already-qualified base profile remains comparable.
+    """
     arch = arch or host_arch()
     substitute = {jail.tree_dir: _PLACEHOLDERS["tree"],
                   str(Path(jail.review_dir) / HOST_HOME_DIRNAME): _PLACEHOLDERS["home"],
@@ -1373,6 +1437,17 @@ def actual_profile_digest(jail: "SeatJail", arch: str | None = None) -> str:
                               for name in (*GEMINI_WRITABLE_CONFIG_DIRS, *GEMINI_WRITABLE_DOTDIR_DIRS)}})
     owner = list(jail.process_owner)
     if jail.dependency_mount_args:
+        parsed_destinations = _dependency_mount_destinations(jail.dependency_mount_args)
+        if (
+            len(parsed_destinations) != len(jail.dependency_destinations)
+            or set(parsed_destinations) != set(jail.dependency_destinations)
+        ):
+            raise SeatSandboxRefused(refused("identity"), "dependency destination set changed")
+        _require_safe_dependency_destinations(
+            jail.leg,
+            parsed_destinations,
+            jail.provider_argv0,
+        )
         owner = _without_contiguous(owner, jail.dependency_mount_args)
         try:
             anchor = next(
@@ -1559,6 +1634,11 @@ def build_seat_jail(
         raise SeatSandboxRefused(refused("jail_build"), f"no jail for leg {leg!r}")
     dependency_projection = None
     if dependency is not None:
+        _require_safe_dependency_destinations(
+            leg,
+            tuple(item.destination for item in dependency.entries),
+            dependency.subject_destination,
+        )
         dependency.revalidate()
         dependency_projection = dependency.reopen_projection()
     seccomp_fd = None

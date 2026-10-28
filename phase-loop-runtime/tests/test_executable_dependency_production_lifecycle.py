@@ -262,6 +262,67 @@ def test_missing_authority_refuses_before_credentials_outputs_or_processes(
         fixture.close()
 
 
+def test_launcher_rechecks_subject_path_inode_at_final_process_boundary(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    fixture = build_fixture(tmp_path / "fixture", provider="claude")
+    monkeypatch.setattr(startup, "_validate_runtime_package", lambda _package: None)
+    session = open_dependency_startup(
+        DependencyStartupSpec(
+            fixture.requirement,
+            fixture.authority_fd,
+            fixture.requirement.expected_authority_sha256,
+            _runtime_package(),
+        )
+    )
+    launched: list[list[str]] = []
+    monkeypatch.setattr(
+        launcher,
+        "_resolve_command_context",
+        lambda spec, *_args, **_kwargs: (list(spec.command), []),
+    )
+    monkeypatch.setattr(
+        launcher,
+        "launch",
+        lambda command, **_kwargs: launched.append(list(command)),
+    )
+
+    def swap_after_initial_validation() -> str:
+        original = fixture.subject.read_bytes()
+        fixture.release.rename(fixture.release.with_name("held-release"))
+        fixture.subject.parent.mkdir(parents=True)
+        fixture.subject.write_bytes(original)
+        fixture.subject.chmod(0o755)
+        return "synthetic-input"
+
+    spec = SimpleNamespace(
+        executor="claude",
+        command=[str(fixture.subject), "--synthetic"],
+        prompt_bundle=SimpleNamespace(product_action="execute"),
+        available=True,
+        claude_route=None,
+        delivery_mode="stdin",
+        delivery_payload=swap_after_initial_validation,
+        wrapped_cwd=None,
+        launch_timeout_seconds=None,
+        cleanup_paths=(),
+    )
+
+    def managed_main(_argv: list[str]) -> int:
+        with pytest.raises(ExecutableDependencyError, match="source_changed"):
+            launcher.launch_with_spec(spec)
+        return 0
+
+    monkeypatch.setattr("phase_loop_runtime.cli.main", managed_main)
+    try:
+        assert session.run_cli(["run"]) == 0
+        assert launched == []
+    finally:
+        session.close()
+        fixture.close()
+
+
 def test_panel_cancellation_releases_child_task_and_projection_descriptors(
     monkeypatch,
     tmp_path: Path,

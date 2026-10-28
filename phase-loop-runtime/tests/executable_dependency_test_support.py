@@ -78,6 +78,9 @@ def build_fixture(
     *,
     layout: str = "layout-a",
     provider: str = "synthetic",
+    subject_mode: int = 0o755,
+    helper_mode: int = 0o644,
+    directory_mode: int = 0o755,
     authority_transform: Callable[[dict[str, Any]], bytes | dict[str, Any]] | None = None,
 ) -> BuiltFixture:
     release = root / ("release-a" if layout == "layout-a" else "versions/v2")
@@ -90,12 +93,13 @@ def build_fixture(
     subject.parent.mkdir(parents=True, mode=0o755)
     helper.parent.mkdir(parents=True, mode=0o755)
     activation.mkdir(parents=True, mode=0o755)
-    for directory in (release, subject.parent, helper.parent, activation):
-        directory.chmod(0o755)
+    for directory in (release, subject.parent, helper.parent):
+        directory.chmod(directory_mode)
+    activation.chmod(0o755)
     subject.write_bytes(b"tool-v1")
-    subject.chmod(0o755)
+    subject.chmod(subject_mode)
     helper.write_bytes(b"helper-v1")
-    helper.chmod(0o644)
+    helper.chmod(helper_mode)
     uid, gid = os.getuid(), os.getgid()
     base_profile = "1" * 64
     exclusions: list[dict[str, str]] = []
@@ -107,7 +111,7 @@ def build_fixture(
             "kind": "directory",
             "uid": uid,
             "gid": gid,
-            "mode": "0755",
+            "mode": f"0{directory_mode:03o}",
             "nlink": None,
             "size": None,
             "sha256": None,
@@ -120,7 +124,7 @@ def build_fixture(
             "kind": "directory",
             "uid": uid,
             "gid": gid,
-            "mode": "0755",
+            "mode": f"0{directory_mode:03o}",
             "nlink": None,
             "size": None,
             "sha256": None,
@@ -133,7 +137,7 @@ def build_fixture(
             "kind": "file",
             "uid": uid,
             "gid": gid,
-            "mode": "0644",
+            "mode": f"0{helper_mode:03o}",
             "nlink": 1,
             "size": helper.stat().st_size,
             "sha256": sha256(helper.read_bytes()),
@@ -169,7 +173,7 @@ def build_fixture(
             "kind": "file",
             "uid": uid,
             "gid": gid,
-            "mode": "0755",
+            "mode": f"0{subject_mode:03o}",
             "nlink": 1,
             "size": subject.stat().st_size,
             "sha256": sha256(subject.read_bytes()),
@@ -205,8 +209,8 @@ def build_fixture(
         "owner_mode_policy": {
             "allowed_uids": [uid],
             "allowed_gids": [gid],
-            "file_modes": ["0644", "0755"],
-            "directory_modes": ["0755"],
+            "file_modes": sorted({f"0{helper_mode:03o}", f"0{subject_mode:03o}"}),
+            "directory_modes": [f"0{directory_mode:03o}"],
             "symlink_mode": "0777",
             "single_link_files": True,
         },
@@ -248,7 +252,7 @@ def build_fixture(
         selected_executable=ExecutableRequirementIdentity(
             path=str(subject),
             kind="file",
-            mode="0755",
+            mode=f"0{subject_mode:03o}",
             size=subject.stat().st_size,
             sha256=sha256(subject.read_bytes()),
         ),

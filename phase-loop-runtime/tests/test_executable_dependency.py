@@ -11,6 +11,7 @@ import rfc8785
 
 from executable_dependency_test_support import build_fixture
 from phase_loop_runtime.executable_dependency import (
+    AdmittedExecutableDependency,
     ExecutableDependencyError,
     ProjectionPolicy,
     _parse_canonical,
@@ -50,6 +51,13 @@ def test_admits_two_neutral_layouts_and_holds_cloexec_descriptors(tmp_path: Path
                 for fd in fds:
                     with pytest.raises(OSError):
                         os.fstat(fd)
+            subject_fd = admitted.reopen_subject()
+            try:
+                seals = fcntl.fcntl(subject_fd, getattr(fcntl, "F_GET_SEALS", 1034))
+                assert seals & 0xF == 0xF
+                assert os.read(subject_fd, fixture.subject.stat().st_size) == fixture.subject.read_bytes()
+            finally:
+                os.close(subject_fd)
         finally:
             admitted.close()
         # Public admission borrows but never closes the private caller's descriptor.
@@ -70,6 +78,29 @@ def test_source_mutation_is_refused_on_lifecycle_revalidation(tmp_path: Path) ->
             fixture.helper.write_bytes(b"changed")
             with pytest.raises(ExecutableDependencyError, match="source_changed"):
                 admitted.revalidate()
+        finally:
+            admitted.close()
+    finally:
+        fixture.close()
+
+
+def test_command_path_must_still_name_the_held_subject_inode(tmp_path: Path) -> None:
+    fixture = build_fixture(tmp_path / "ancestor-swap")
+    try:
+        admitted = admit_executable_dependency(
+            fixture.requirement,
+            fixture.authority_fd,
+            fixture.requirement.expected_authority_sha256,
+        )
+        try:
+            original = fixture.subject.read_bytes()
+            moved = fixture.release.with_name(fixture.release.name + "-held")
+            fixture.release.rename(moved)
+            fixture.subject.parent.mkdir(parents=True)
+            fixture.subject.write_bytes(original)
+            fixture.subject.chmod(0o755)
+            with pytest.raises(ExecutableDependencyError, match="source_changed"):
+                admitted.validate_command([str(fixture.subject)], provider="synthetic")
         finally:
             admitted.close()
     finally:
@@ -121,6 +152,61 @@ def test_each_policy_layer_can_narrow_destination_roots(tmp_path: Path) -> None:
                 fixture.requirement.expected_authority_sha256,
                 host_policy=denied,
             )
+    finally:
+        fixture.close()
+
+
+@pytest.mark.parametrize(
+    "fixture_kwargs",
+    (
+        {"helper_mode": 0o664},
+        {"directory_mode": 0o775},
+    ),
+    ids=("group-writable-file", "group-writable-directory-and-source-root"),
+)
+def test_public_mode_floor_rejects_group_or_world_writable_sources(
+    tmp_path: Path,
+    fixture_kwargs,
+) -> None:
+    fixture = build_fixture(tmp_path / "writable", **fixture_kwargs)
+    try:
+        with pytest.raises(ExecutableDependencyError, match="authority_invalid"):
+            admit_executable_dependency(
+                fixture.requirement,
+                fixture.authority_fd,
+                fixture.requirement.expected_authority_sha256,
+                public_policy=ProjectionPolicy(
+                    file_modes=frozenset({"0644", "0664", "0755"}),
+                    directory_modes=frozenset({"0755", "0775"}),
+                ),
+            )
+    finally:
+        fixture.close()
+
+
+def test_final_admission_revalidation_failure_closes_every_owned_descriptor(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    fixture = build_fixture(tmp_path / "final-revalidation")
+    before = set(os.listdir("/proc/self/fd"))
+
+    def refuse_final_revalidation(_dependency) -> None:
+        raise ExecutableDependencyError("source_changed", "final")
+
+    monkeypatch.setattr(
+        AdmittedExecutableDependency,
+        "revalidate",
+        refuse_final_revalidation,
+    )
+    try:
+        with pytest.raises(ExecutableDependencyError, match="source_changed"):
+            admit_executable_dependency(
+                fixture.requirement,
+                fixture.authority_fd,
+                fixture.requirement.expected_authority_sha256,
+            )
+        assert set(os.listdir("/proc/self/fd")) == before
     finally:
         fixture.close()
 

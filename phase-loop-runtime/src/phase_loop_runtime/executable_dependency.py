@@ -48,6 +48,16 @@ _PUBLIC_BLOCKED_DESTINATIONS = (
     "/var/run",
 )
 _AUTHORITY_MODES = frozenset({0o400, 0o440, 0o444, 0o600, 0o640, 0o644})
+_PUBLIC_SAFE_MODES = frozenset(
+    f"0{mode:03o}" for mode in range(0o1000) if mode & 0o022 == 0
+)
+_F_ADD_SEALS = 1033
+_F_GET_SEALS = 1034
+_F_SEAL_SEAL = 0x1
+_F_SEAL_SHRINK = 0x2
+_F_SEAL_GROW = 0x4
+_F_SEAL_WRITE = 0x8
+_IMMUTABLE_SEALS = _F_SEAL_SEAL | _F_SEAL_SHRINK | _F_SEAL_GROW | _F_SEAL_WRITE
 _HEX = frozenset("0123456789abcdef")
 _NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]{0,127}$")
 
@@ -124,7 +134,8 @@ class _HeldFile:
     size: int
     sha256: str
     fd: int
-    stat_identity: tuple[int, int, int, int, int, int, int]
+    snapshot_fd: int
+    stat_identity: tuple[int, int, int, int, int, int, int, int, int]
 
 
 class DependencyProjection:
@@ -208,6 +219,16 @@ class AdmittedExecutableDependency:
         self.subject_source = subject.source
         self.subject_destination = subject.destination
         self.subject_sha256 = subject.sha256
+        self._subject_size = subject.size
+        source_stats = tuple(os.fstat(item.fd) for item in (subject, *files))
+        self._runtime_euid_owned_sources = any(
+            observed.st_uid == os.geteuid() for observed in source_stats
+        )
+        self._runtime_euid_writable_sources = any(
+            observed.st_uid == os.geteuid()
+            and stat.S_IMODE(observed.st_mode) & 0o200 != 0
+            for observed in source_stats
+        )
         self.projection_digest = projection_digest
         self.entries = entries
         self._subject = subject
@@ -264,11 +285,30 @@ class AdmittedExecutableDependency:
             raise ExecutableDependencyError("subject_mismatch", "unresolvable command") from exc
         if selected_absolute != self.subject_source or resolved != self.subject_source:
             raise ExecutableDependencyError("subject_mismatch", "selected executable")
+        self._require_subject_path_identity()
         self.revalidate()
+        self._require_subject_path_identity()
+
+    def _require_subject_path_identity(self) -> None:
+        try:
+            observed = os.stat(self.subject_source, follow_symlinks=True)
+            held = os.fstat(self._subject.fd)
+        except OSError as exc:
+            raise ExecutableDependencyError("source_changed", self.subject_destination) from exc
+        if (
+            not stat.S_ISREG(observed.st_mode)
+            or (observed.st_dev, observed.st_ino) != (held.st_dev, held.st_ino)
+        ):
+            raise ExecutableDependencyError("source_changed", self.subject_destination)
 
     def reopen_subject(self) -> int:
         self.revalidate()
-        return _dup_cloexec(self._subject.fd)
+        return _reopen_snapshot(self._subject)
+
+    def _subject_snapshot_bytes(self) -> bytes:
+        """Return the verified immutable subject bytes for a sealed-image consumer."""
+        self.revalidate()
+        return _verified_snapshot_bytes(self._subject)
 
     def reopen_projection(self) -> DependencyProjection:
         self.revalidate()
@@ -282,7 +322,7 @@ class AdmittedExecutableDependency:
                         mode=held.mode,
                         size=held.size,
                         sha256=held.sha256,
-                        fd=_dup_cloexec(held.fd),
+                        fd=_reopen_snapshot(held),
                     )
                 )
         except BaseException:
@@ -296,7 +336,9 @@ class AdmittedExecutableDependency:
             return
         self._closed = True
         for fd in (
+            *(item.snapshot_fd for item in self._files),
             *(item.fd for item in self._files),
+            self._subject.snapshot_fd,
             self._subject.fd,
             self._declaration_fd,
             self._authority_fd,
@@ -340,9 +382,13 @@ def admit_executable_dependency(
         _bind_requirement_authority(requirement, authority)
 
         local = _local_policy(authority)
+        public_floor = ProjectionPolicy(
+            file_modes=_PUBLIC_SAFE_MODES,
+            directory_modes=_PUBLIC_SAFE_MODES,
+        )
         public = public_policy or ProjectionPolicy()
         host = host_policy or ProjectionPolicy()
-        effective = _intersect_policy(public, host, local)
+        effective = _intersect_policy(public_floor, public, host, local)
         declaration_fd = _open_absolute_nofollow(authority["declaration"]["path"], directory=False)
         owned.append(declaration_fd)
         _require_host_file(
@@ -375,6 +421,7 @@ def admit_executable_dependency(
                 code="subject_mismatch",
             )
             owned.append(subject.fd)
+            owned.append(subject.snapshot_fd)
             files: list[_HeldFile] = []
             try:
                 for entry in declaration["entries"]:
@@ -383,6 +430,7 @@ def admit_executable_dependency(
                     held = _open_declared_file(entry, None, source_roots, effective, code="authority_invalid")
                     files.append(held)
                     owned.append(held.fd)
+                    owned.append(held.snapshot_fd)
             except BaseException:
                 raise
         finally:
@@ -410,8 +458,8 @@ def admit_executable_dependency(
             declaration_fd=declaration_fd,
             projection_digest=projection_digest,
         )
-        owned.clear()
         admitted.revalidate()
+        owned.clear()
         return admitted
     except ExecutableDependencyError:
         raise
@@ -824,15 +872,21 @@ def _open_declared_file(
         if len(raw) != row["size"] or _sha256(raw) != row["sha256"]:
             raise ExecutableDependencyError(code, "file content")
         observed = os.fstat(fd)
-        return _HeldFile(
-            source=source,
-            destination=row["destination"],
-            mode=row["mode"],
-            size=row["size"],
-            sha256=row["sha256"],
-            fd=fd,
-            stat_identity=_stat_identity(observed),
-        )
+        snapshot_fd = _sealed_snapshot_fd(raw, row["mode"], code)
+        try:
+            return _HeldFile(
+                source=source,
+                destination=row["destination"],
+                mode=row["mode"],
+                size=row["size"],
+                sha256=row["sha256"],
+                fd=fd,
+                snapshot_fd=snapshot_fd,
+                stat_identity=_stat_identity(observed),
+            )
+        except BaseException:
+            _close_quietly(snapshot_fd)
+            raise
     except BaseException:
         _close_quietly(fd)
         raise
@@ -929,9 +983,77 @@ def _revalidate_held_file(held: _HeldFile) -> None:
         raise ExecutableDependencyError("source_changed", held.destination) from exc
 
 
+def _sealed_snapshot_fd(raw: bytes, mode: str, code: str) -> int:
+    try:
+        fd = os.memfd_create("executable-dependency", os.MFD_CLOEXEC | os.MFD_ALLOW_SEALING)
+    except (AttributeError, OSError) as exc:
+        raise ExecutableDependencyError(code, "immutable snapshot unavailable") from exc
+    try:
+        view = memoryview(raw)
+        while view:
+            written = os.write(fd, view)
+            if written < 1:
+                raise OSError("short snapshot write")
+            view = view[written:]
+        os.fchmod(fd, int(mode, 8))
+        os.lseek(fd, 0, os.SEEK_SET)
+        fcntl.fcntl(fd, getattr(fcntl, "F_ADD_SEALS", _F_ADD_SEALS), _IMMUTABLE_SEALS)
+        _require_immutable_snapshot(fd, len(raw), _sha256(raw), code)
+        return fd
+    except BaseException:
+        _close_quietly(fd)
+        raise
+
+
+def _require_immutable_snapshot(fd: int, size: int, digest: str, code: str) -> None:
+    try:
+        observed = os.fstat(fd)
+        seals = fcntl.fcntl(fd, getattr(fcntl, "F_GET_SEALS", _F_GET_SEALS))
+        if (
+            not stat.S_ISREG(observed.st_mode)
+            or observed.st_size != size
+            or seals & _IMMUTABLE_SEALS != _IMMUTABLE_SEALS
+        ):
+            raise ExecutableDependencyError(code, "immutable snapshot")
+        raw = _read_stable_fd(fd, size, code, exact_size=True)
+        if len(raw) != size or _sha256(raw) != digest:
+            raise ExecutableDependencyError(code, "immutable snapshot content")
+    except OSError as exc:
+        raise ExecutableDependencyError(code, "immutable snapshot") from exc
+
+
+def _verified_snapshot_bytes(held: _HeldFile) -> bytes:
+    _require_immutable_snapshot(held.snapshot_fd, held.size, held.sha256, "source_changed")
+    return _read_stable_fd(held.snapshot_fd, held.size, "source_changed", exact_size=True)
+
+
+def _reopen_snapshot(held: _HeldFile) -> int:
+    """Reopen one sealed snapshot with an independent open-file description."""
+    _require_immutable_snapshot(held.snapshot_fd, held.size, held.sha256, "source_changed")
+    try:
+        reopened = os.open(
+            f"/proc/self/fd/{held.snapshot_fd}",
+            os.O_RDONLY | os.O_CLOEXEC,
+        )
+    except OSError as exc:
+        raise ExecutableDependencyError("source_changed", "snapshot reopen") from exc
+    try:
+        original = os.fstat(held.snapshot_fd)
+        observed = os.fstat(reopened)
+        if (observed.st_dev, observed.st_ino) != (original.st_dev, original.st_ino):
+            raise ExecutableDependencyError("source_changed", "snapshot identity")
+        _require_immutable_snapshot(reopened, held.size, held.sha256, "source_changed")
+        if os.lseek(reopened, 0, os.SEEK_CUR) != 0:
+            raise ExecutableDependencyError("source_changed", "snapshot offset")
+        return reopened
+    except BaseException:
+        _close_quietly(reopened)
+        raise
+
+
 def _revalidate_control_file(
     fd: int,
-    identity: tuple[int, int, int, int, int, int, int],
+    identity: tuple[int, int, int, int, int, int, int, int, int],
     size: int,
     digest: str,
 ) -> None:
@@ -1040,7 +1162,7 @@ def _require_safe_stat(value: os.stat_result, code: str) -> None:
             raise ExecutableDependencyError(code, "unsupported host identity")
 
 
-def _stat_identity(value: os.stat_result) -> tuple[int, int, int, int, int, int, int]:
+def _stat_identity(value: os.stat_result) -> tuple[int, int, int, int, int, int, int, int, int]:
     return (
         value.st_dev,
         value.st_ino,
@@ -1049,6 +1171,8 @@ def _stat_identity(value: os.stat_result) -> tuple[int, int, int, int, int, int,
         stat.S_IMODE(value.st_mode),
         value.st_nlink,
         value.st_size,
+        value.st_mtime_ns,
+        value.st_ctime_ns,
     )
 
 
