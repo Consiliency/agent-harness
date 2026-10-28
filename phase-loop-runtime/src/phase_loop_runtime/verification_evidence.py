@@ -616,6 +616,9 @@ def run_verification(
     stage_observer = _STAGE_OBSERVER.get()
     repo_path = _resolve_repo(repo)
     run_path = _resolve_run_dir(repo_path, run_dir)
+    from . import artifact_retention
+
+    retention_commit = artifact_retention.verification_start(repo_path, run_path, phase_alias)
     run_path.mkdir(parents=True, exist_ok=True)
     log_path = run_path / LOG_NAME
     artifact_path = run_path / ARTIFACT_NAME
@@ -741,6 +744,8 @@ def run_verification(
     log_sha256 = hashlib.sha256(log_path.read_bytes()).hexdigest()
     result = replace(unsealed, log_sha256=log_sha256)
     _write_artifact_atomic(artifact_path, _result_to_payload(result))
+    if retention_commit is not None:
+        artifact_retention.verification_finished(repo_path, run_path, phase_alias, retention_commit)
     return result
 
 

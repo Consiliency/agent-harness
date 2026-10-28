@@ -6,6 +6,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Retained verification and historical custody (agent-harness#1772)
+
+- Record verification producer receipts for explicit-phase `.dev-skills/runs`
+  outputs and classify unchanged, repository/run/phase-bound files as retained.
+  Failed verification retains its failure; retention grants no acceptance.
+- Add signed historical custody proposals/adoption with operator-managed SSH
+  signer trust outside the repository, exact file digests and explicit consuming
+  phases. Audits preserve original evidence and refuse unattributed siblings.
+- Document migration and remaining historical attribution limits in
+  `docs/phase-loop/closeout-generated-outputs.md`.
+
 ### Claude execute-phase drops under the skill size limit (agent-harness#1358)
 
 - Move interactive publication (mode (b), the publication-mode check, draft PR early),
