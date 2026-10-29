@@ -6,6 +6,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Run output retention
+
+- Remove pytest scratch audit folders on session teardown and normal interpreter
+  exit, with separate ownership for workers and forked children.
+- Add `phase-loop output-retention` for managed producer runs, explicit lifecycle
+  declarations and previewable cleanup after 30 days. Configured output roots are
+  swept on run/execute/advisor-board startup; active, held and unmarked output is
+  preserved. See `docs/phase-loop/output-retention.md` for evidence/review and
+  HARDEN integration, policy configuration and crash limitations.
+
 ### Claude execute-phase drops under the skill size limit (agent-harness#1358)
 
 - Move interactive publication (mode (b), the publication-mode check, draft PR early),
