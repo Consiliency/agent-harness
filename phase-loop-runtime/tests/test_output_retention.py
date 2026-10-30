@@ -475,3 +475,15 @@ r.run_managed(Path(sys.argv[1]), 'unfinished', ['synthetic'], finish_state='seal
             child.kill()
             child.wait(timeout=5)
         child.stdout.close()
+
+
+def test_oversized_policy_refused_before_producer(root, monkeypatch, capsys):
+    monkeypatch.setenv('PHASE_LOOP_OUTPUT_RETENTION_DAYS', str(10**400))
+    monkeypatch.setenv('PHASE_LOOP_OUTPUT_ROOTS', str(root))
+    r.configured_sweep()
+    assert 'supported numeric range' in capsys.readouterr().err
+    with pytest.raises(ValueError, match='supported numeric range'):
+        r.run_managed(root, 'new', ['synthetic'], finish_state='sealed')
+    assert not (root / 'new').exists()
+    with pytest.raises(ValueError, match='supported numeric range'):
+        r.prune(root, days=10**400)

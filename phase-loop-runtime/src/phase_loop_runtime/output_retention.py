@@ -174,6 +174,10 @@ def retention_days(days: int | None = None) -> int:
         days = int(os.environ.get("PHASE_LOOP_OUTPUT_RETENTION_DAYS", str(DEFAULT_DAYS)))
     if type(days) is not int or days < 1:
         raise ValueError("retention days must be a positive integer")
+    try:
+        float(days * 86400)
+    except OverflowError as exc:
+        raise ValueError("retention days exceed the supported numeric range") from exc
     return days
 
 

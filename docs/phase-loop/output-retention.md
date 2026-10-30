@@ -22,7 +22,10 @@ run directories must belong to the current account and not be group/world
 writable. Retention currently requires POSIX locking and directory operations.
 
 The wrapper creates a fresh run directory and passes its absolute path to the
-foreground producer as `PHASE_LOOP_OUTPUT_DIR`:
+foreground producer as `PHASE_LOOP_OUTPUT_DIR`. It already contains the private
+`.phase-loop-retention-token`; producers must preserve it and must not require an
+empty directory or wipe all its contents. Write payloads into a child directory
+when a producer requires an empty destination:
 
 ```sh
 mkdir -p "$HOME/evidence" "$HOME/reviews"
@@ -49,7 +52,15 @@ siblings without changing the producer exit status. Handled exceptions record
 before releasing a hold or completing an abandoned run, establish that all
 descendant writers have stopped. `--days N` overrides
 `PHASE_LOOP_OUTPUT_RETENTION_DAYS`; every sweep otherwise uses that environment
-setting, falling back to 30 days.
+setting, falling back to 30 days. A lifecycle-recording failure still returns an
+error even if the producer succeeded; only trailing cleanup is best-effort.
+
+If the token is lost, the run remains preserved and cannot be marked complete.
+Stop all writers and inspect the output before recovery. Enroll a new dedicated
+run as active, copy only the validated payload into it while preserving its new
+token, and complete it after the normal seal/publication checks. Keep the old
+output and metadata until their owner explicitly disposes of them; do not recreate
+a token or overwrite a live run to bypass the identity check.
 
 ## Existing phase-loop and HARDEN workflows
 
@@ -115,7 +126,9 @@ keep permissions and lifecycle changes under the same owner.
 Apply first retires the record and moves the output into a private
 `.phase-loop-output-retention/.retiring-*` directory, then checks its identity
 again before removal. An interrupted or incomplete retirement is preserved there
-with `recovery.json`; subsequent sweeps do not retry it automatically. Inspect the
+with `recovery.json`. Once the live record has moved, subsequent sweeps do not
+retry it automatically. Failures before that move can be retried and can leave
+additional recovery folders, including incomplete receipts. Inspect the
 receipt and remaining output before manually recovering or disposing of it. A
 failed deletion can leave partially removed output. Never restore over an existing
 run directory. Missing-run records are retired as `.missing-*`; older or invalid
