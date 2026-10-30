@@ -9,7 +9,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 ### Run output retention
 
 - Remove pytest scratch audit folders on session teardown and normal interpreter
-  exit, with separate ownership for workers and forked children.
+  exit. Workers own separate folders; forked children preserve the parent's folder.
 - Add `phase-loop output-retention` for managed producer runs, explicit lifecycle
   declarations and previewable cleanup after 30 days. Configured output roots are
   swept on run/execute/advisor-board startup; active, held and unmarked output is

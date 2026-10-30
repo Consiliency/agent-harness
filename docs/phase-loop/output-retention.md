@@ -42,10 +42,14 @@ this wrapper for commands that launch background writers or return while awaitin
 a native review fill. Run IDs cannot be reused.
 
 The wrapper records `active` before starting the producer. Exit zero records the
-chosen completion state. Failure or a handled interrupt records `held`; a hard
-kill leaves `active`. Neither state expires. Successful and failed wrapper runs
-also sweep older eligible siblings. `--days N` changes the sweep threshold;
-all sweep entrypoints should use the same policy value.
+chosen completion state. Failure or a handled interrupt records `held`; an unhandled termination (including SIGTERM) leaves `active`. Neither state
+expires. Normal producer exits, including nonzero exits, sweep older eligible
+siblings without changing the producer exit status. Handled exceptions record
+`held` and propagate without sweeping. The launcher terminates its direct child;
+before releasing a hold or completing an abandoned run, establish that all
+descendant writers have stopped. `--days N` overrides
+`PHASE_LOOP_OUTPUT_RETENTION_DAYS`; every sweep otherwise uses that environment
+setting, falling back to 30 days.
 
 ## Existing phase-loop and HARDEN workflows
 
@@ -56,7 +60,9 @@ or mark a shared parent folder finished just because one file was sealed.
 
 For these workflows, keep one dedicated directory per entire run, then explicitly
 record its state. Lifecycle metadata is stored beside runs in
-`.phase-loop-output-retention/`, outside the evidence bytes:
+`.phase-loop-output-retention/`. Enrollment also creates a private
+`.phase-loop-retention-token` file inside the run. Enroll before producing or
+inventorying evidence; retain this token unchanged. Evidence files are not rewritten:
 
 ```sh
 phase-loop output-retention mark --root "$HOME/evidence" --run harden-20261029 --state active
@@ -65,12 +71,15 @@ phase-loop output-retention mark --root "$HOME/evidence" --run harden-20261029 -
 ```
 
 Mark `active` **before** resuming a completed run, or `held` for an investigation,
-review HOLD or evidence preservation requirement. No caller should write to a
+review HOLD or evidence preservation requirement. Manual `mark --state active`
+is a cooperative declaration with no tracked producer PID; only the wrapper
+records its live owner. No caller should write to a
 sealed/published run without this transition. Completion time is preserved across
 repeat seal/publication declarations; a new active period resets it. An explicit
 hold release preserves the original completion time, so an old run may become
-immediately eligible. Records bind to directory identity; replacing a directory
-with another of the same name does not transfer retention permission.
+immediately eligible. Records bind to directory identity and the enrollment token. Keep the registry
+private, and do not copy tokens into replacement directories or mutate completed
+outputs during cleanup.
 
 ## Recurring cleanup
 
@@ -98,7 +107,19 @@ phase-loop output-retention prune --root "$HOME/reviews" --days 30 --apply
 
 Preview returns `eligible`; apply returns `removed`. Cleanup is restricted to
 registered immediate children. All lifecycle changes and sweeps serialize using
-the root's lock. Use local, dedicated output storage without mount points inside
-run directories, and keep permissions and lifecycle changes under the same owner.
+the root's lock, so other operations wait while deletion runs. Git checkouts
+and other filesystem devices are refused; Linux also checks mount IDs to refuse
+bind mounts. Use local, dedicated storage without mount points inside runs, and
+keep permissions and lifecycle changes under the same owner.
+
+Apply first retires the record and moves the output into a private
+`.phase-loop-output-retention/.retiring-*` directory, then checks its identity
+again before removal. An interrupted or incomplete retirement is preserved there
+with `recovery.json`; subsequent sweeps do not retry it automatically. Inspect the
+receipt and remaining output before manually recovering or disposing of it. A
+failed deletion can leave partially removed output. Never restore over an existing
+run directory. Missing-run records are retired as `.missing-*`; older or invalid
+record formats are preserved for operator reconciliation. These small recovery
+records intentionally require manual disposition.
 This feature does not install a timer or retroactively enroll/delete historical
 folders. It is a local storage policy, not a verification or acceptance vote.
