@@ -188,7 +188,18 @@ def test_xdist_workers_remove_owned_audit_scratch(tmp_path):
     assert list(scratch.glob("pl-scratch-audit-*")) == []
 
 
-def test_operator_producer_uses_owned_launch_and_scratch_policy(root, tmp_path):
+@pytest.mark.parametrize("ram_backed", [False, True])
+def test_operator_producer_uses_owned_launch_and_scratch_policy(root, tmp_path, monkeypatch, ram_backed):
+    from phase_loop_runtime import sandbox_policy
+
+    # Control filesystem observations, not the launch/decision seam. The policy
+    # intentionally leaves TMPDIR unset when the system default is disk-backed.
+    scratch = tmp_path / "child-scratch"
+    scratch.mkdir(mode=0o700)
+    monkeypatch.delenv("TMPDIR", raising=False)
+    monkeypatch.delenv("CLAUDE_CODE_TMPDIR", raising=False)
+    monkeypatch.setattr(sandbox_policy, "is_ram_backed", lambda path: ram_backed)
+    monkeypatch.setattr(sandbox_policy, "_child_tmp_dir", lambda: sandbox_policy.ScratchLocation(scratch, False))
     # A local stub, never a provider/auth/network trial. The suite audit hook
     # recognizes this executable name and checks the actual launch environment.
     stub = tmp_path / "codex"
@@ -203,4 +214,4 @@ def test_operator_producer_uses_owned_launch_and_scratch_policy(root, tmp_path):
     assert r.run_managed(root, "owned", [str(stub)], finish_state="sealed") == 0
     observed = json.loads((root / "owned" / "env.json").read_text())
     assert observed["PHASE_LOOP_SCRATCH_DECIDED"] == "relocate"
-    assert observed["TMPDIR"]
+    assert observed["TMPDIR"] == (str(scratch) if ram_backed else None)
