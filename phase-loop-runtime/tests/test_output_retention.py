@@ -186,3 +186,21 @@ def test_xdist_workers_remove_owned_audit_scratch(tmp_path):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     assert list(scratch.glob("pl-scratch-audit-*")) == []
+
+
+def test_operator_producer_uses_owned_launch_and_scratch_policy(root, tmp_path):
+    # A local stub, never a provider/auth/network trial. The suite audit hook
+    # recognizes this executable name and checks the actual launch environment.
+    stub = tmp_path / "codex"
+    stub.write_text(
+        f"#!{sys.executable}\n"
+        "import json, os, pathlib\n"
+        "out = pathlib.Path(os.environ['PHASE_LOOP_OUTPUT_DIR'])\n"
+        "(out / 'env.json').write_text(json.dumps({k: os.environ.get(k) "
+        "for k in ('TMPDIR', 'PHASE_LOOP_SCRATCH_DECIDED')}))\n"
+    )
+    stub.chmod(0o700)
+    assert r.run_managed(root, "owned", [str(stub)], finish_state="sealed") == 0
+    observed = json.loads((root / "owned" / "env.json").read_text())
+    assert observed["PHASE_LOOP_SCRATCH_DECIDED"] == "relocate"
+    assert observed["TMPDIR"]

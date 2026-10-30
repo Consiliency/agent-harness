@@ -14,7 +14,6 @@ from pathlib import Path
 import secrets
 import shutil
 import stat
-import subprocess
 import time
 
 from .sandbox_retention import _process_start, _recorded_owner_alive
@@ -217,7 +216,11 @@ def run_managed(root: Path, run: str, command: list[str], *, finish_state: str, 
     mark(root, run, "active", owner_pid=os.getpid())
     try:
         env = dict(os.environ, PHASE_LOOP_OUTPUT_DIR=str(root.absolute() / run))
-        code = subprocess.run(command, env=env).returncode
+        from .panel_invoker import run_provider
+
+        # Explicit operator producer, using the shared owner and scratch policy.
+        # This wrapper does not confer review-seat qualification or isolation.
+        code = run_provider(command, executor=True, env=env).returncode
     except BaseException:
         mark(root, run, "held")
         raise

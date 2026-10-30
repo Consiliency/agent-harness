@@ -34,7 +34,9 @@ phase-loop output-retention run --root "$HOME/reviews" --run review-20261029 \
 `produce-and-publish-review` above stands for your own producer/publication
 command. Use `--finish-state sealed` for a producer that seals its complete local
 output; use `published` only when the command also publishes it. Choosing either
-state authorizes expiry. Commands must run in the foreground, finish all writers,
+state authorizes expiry. The wrapper uses the shared launch owner in its explicit operator-executor role
+and applies the runtime scratch policy. It does not grant review-seat isolation,
+authentication, or qualification. Commands must run in the foreground, finish all writers,
 and put only that run's disposable output in the supplied directory. Do not use
 this wrapper for commands that launch background writers or return while awaiting
 a native review fill. Run IDs cannot be reused.
