@@ -488,7 +488,8 @@ the caller passes a PATH and the runtime reads it.
     amendments are normative for every backend and every later plan. They are the text of
     `plans/detailed-remote-seat-placement-896-20261010.md`, unchanged, so "this plan"
     below means that plan; `LADDER_TABLE` is C7's two tables as data and a test holds the
-    three copies equal.
+    three copies equal, except the first gate row's workload wording, which the
+    finite implementation supplement above extends to ``leg`` or ``implementation``.
     - **C1 The unit of execution is a workload the runtime owns, not an argv.** `ExecSpec` is
       `(workload, request, deadline_s, must_end_within_s, output_cap_bytes)`. `workload` is
       `leg` or `qualification`. A backend maps it to the runtime's own packaged worker and
