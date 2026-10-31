@@ -27,6 +27,7 @@ class PhaseWorkerJob:
     worktree_handle: object | None = None
     caller_run_id: str | None = None
     lease_authority: object | None = None
+    dependency_task: object | None = None
     closeout_mode: str = "manual"
 
 
@@ -89,26 +90,35 @@ def run_phase_worker_pool(
     worker_count = max(1, min(worker_count, len(jobs)))
     by_phase = {job.phase: index for index, job in enumerate(jobs)}
     results: list[PhaseWorkerResult] = []
-    with ThreadPoolExecutor(max_workers=worker_count) as executor:
-        futures = {executor.submit(_run_one, repo, roadmap, job): job for job in jobs}
-        for future in as_completed(futures):
-            results.append(future.result())
+    try:
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = {executor.submit(_run_one, repo, roadmap, job): job for job in jobs}
+            for future in as_completed(futures):
+                results.append(future.result())
+    finally:
+        from .executable_dependency_startup import release_unstarted_dependency_task
+
+        for job in jobs:
+            release_unstarted_dependency_task(job.dependency_task)  # type: ignore[arg-type]
     return tuple(sorted(results, key=lambda item: by_phase[item.phase]))
 
 
 def _run_one(repo: Path, roadmap: Path, job: PhaseWorkerJob) -> PhaseWorkerResult:
-    result = launch_with_spec(
-        job.spec,
-        dry_run=job.dry_run,
-        log_path=job.log_path,
-        heartbeat_path=job.heartbeat_path,
-        stream_output=job.stream_output,
-        heartbeat_interval_seconds=job.heartbeat_interval_seconds,
-        quiet_warning_seconds=job.quiet_warning_seconds,
-        quiet_blocker_seconds=job.quiet_blocker_seconds,
-        caller_run_id=job.caller_run_id,
-        lease_authority=job.lease_authority,
-    )
+    from .executable_dependency_startup import bind_child_dependency_task
+
+    with bind_child_dependency_task(job.dependency_task):  # type: ignore[arg-type]
+        result = launch_with_spec(
+            job.spec,
+            dry_run=job.dry_run,
+            log_path=job.log_path,
+            heartbeat_path=job.heartbeat_path,
+            stream_output=job.stream_output,
+            heartbeat_interval_seconds=job.heartbeat_interval_seconds,
+            quiet_warning_seconds=job.quiet_warning_seconds,
+            quiet_blocker_seconds=job.quiet_blocker_seconds,
+            caller_run_id=job.caller_run_id,
+            lease_authority=job.lease_authority,
+        )
     summary = {
         "phase": job.phase,
         "returncode": result.returncode,

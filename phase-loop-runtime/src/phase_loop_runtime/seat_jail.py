@@ -1268,6 +1268,12 @@ class SeatJail:
     gemini_config_dir: str = ""
     egress_ca: str = ""
     egress_proxy: str = field(default="", repr=False)
+    dependency_fds: tuple[int, ...] = ()
+    dependency_mount_args: tuple[str, ...] = field(default=(), repr=False)
+    dependency_destinations: tuple[str, ...] = ()
+    dependency_mount_points: tuple[str, ...] = ()
+    dependency_projection_digest: str = ""
+    dependency: object | None = field(default=None, repr=False)
 
     def redacted_owner(self) -> list[str]:
         """The owner argv with every descriptor number replaced by a placeholder, for
@@ -1297,6 +1303,66 @@ def _system_mounts() -> list[str]:
         if os.path.lexists(host):
             args += ["--ro-bind", host, host]
     return args
+
+
+_JAIL_PROTECTED_DESTINATIONS: tuple[str, ...] = (
+    SEAT_ROOT,
+    "/proc",
+    "/dev",
+    "/tmp",
+    "/etc",
+    *SYSTEM_READONLY_PATHS,
+)
+
+
+def _paths_overlap(left: str, right: str) -> bool:
+    return (
+        left == right
+        or left.startswith(right + "/")
+        or right.startswith(left + "/")
+    )
+
+
+def _require_safe_dependency_destinations(
+    leg: str,
+    destinations: Sequence[str],
+    subject_destination: str,
+) -> None:
+    """Keep dependency mounts disjoint from the jail's owned namespace.
+
+    The one exception is the dependency subject itself at the jail's canonical
+    provider slot. No directory, helper, or link gains the same exception.
+    """
+    canonical_subject = f"{SEAT_BIN}/{leg}"
+    for destination in destinations:
+        if destination == subject_destination == canonical_subject:
+            continue
+        if any(_paths_overlap(destination, protected) for protected in _JAIL_PROTECTED_DESTINATIONS):
+            raise SeatSandboxRefused(
+                refused("identity"),
+                "dependency destination overlaps the jail namespace",
+            )
+
+
+def _dependency_mount_destinations(args: Sequence[str]) -> tuple[str, ...]:
+    """Parse only the mount grammar emitted by DependencyProjection.mount_args."""
+    destinations: list[str] = []
+    index = 0
+    while index < len(args):
+        if index + 3 < len(args) and args[index] == "--perms" and args[index + 2] == "--dir":
+            destinations.append(args[index + 3])
+            index += 4
+        elif index + 3 < len(args) and args[index] == "--perms" and args[index + 2] == "--ro-bind-data":
+            if index + 4 >= len(args):
+                raise SeatSandboxRefused(refused("identity"), "dependency mount grammar changed")
+            destinations.append(args[index + 4])
+            index += 5
+        elif index + 2 < len(args) and args[index] == "--symlink":
+            destinations.append(args[index + 2])
+            index += 3
+        else:
+            raise SeatSandboxRefused(refused("identity"), "dependency mount grammar changed")
+    return tuple(destinations)
 
 
 # Placeholders that stand for the per-launch values in the CANONICAL owner argv. The
@@ -1346,7 +1412,11 @@ def installed_filter_sha256(jail: "SeatJail") -> str:
 
 
 def actual_profile_digest(jail: "SeatJail", arch: str | None = None) -> str:
-    """The profile digest of THIS jail's real owner argv and installed filter bytes."""
+    """The profile digest of THIS jail's real owner argv and installed filter bytes.
+
+    Dependency mounts are separately destination-checked and digest-bound, then
+    removed only so the already-qualified base profile remains comparable.
+    """
     arch = arch or host_arch()
     substitute = {jail.tree_dir: _PLACEHOLDERS["tree"],
                   str(Path(jail.review_dir) / HOST_HOME_DIRNAME): _PLACEHOLDERS["home"],
@@ -1365,8 +1435,39 @@ def actual_profile_digest(jail: "SeatJail", arch: str | None = None) -> str:
                            **{_gemini_writable_source(home, name):
                               _gemini_writable_source(_PLACEHOLDERS["home"], name)
                               for name in (*GEMINI_WRITABLE_CONFIG_DIRS, *GEMINI_WRITABLE_DOTDIR_DIRS)}})
-    owner = [substitute.get(item, item) for item in jail.process_owner]
+    owner = list(jail.process_owner)
+    if jail.dependency_mount_args:
+        parsed_destinations = _dependency_mount_destinations(jail.dependency_mount_args)
+        if (
+            len(parsed_destinations) != len(jail.dependency_destinations)
+            or set(parsed_destinations) != set(jail.dependency_destinations)
+        ):
+            raise SeatSandboxRefused(refused("identity"), "dependency destination set changed")
+        _require_safe_dependency_destinations(
+            jail.leg,
+            parsed_destinations,
+            jail.provider_argv0,
+        )
+        owner = _without_contiguous(owner, jail.dependency_mount_args)
+        try:
+            anchor = next(
+                index
+                for index in range(len(owner) - 2)
+                if owner[index:index + 3] == ["--perms", "0444", "--ro-bind-data"]
+            )
+        except StopIteration as exc:
+            raise SeatSandboxRefused(refused("identity"), "dependency projection anchor changed") from exc
+        owner[anchor:anchor] = ["--ro-bind", _PLACEHOLDERS["provider"], f"{SEAT_BIN}/{jail.leg}"]
+    owner = [substitute.get(item, item) for item in owner]
     return _profile_digest_of(jail.leg, owner, installed_filter_sha256(jail), arch)
+
+
+def _without_contiguous(values: list[str], remove: Sequence[str]) -> list[str]:
+    width = len(remove)
+    for index in range(len(values) - width + 1):
+        if tuple(values[index:index + width]) == tuple(remove):
+            return [*values[:index], *values[index + width:]]
+    raise SeatSandboxRefused(refused("identity"), "dependency projection mounts changed")
 
 
 def seat_env(leg: str, *, token_fd: int | None, lang: str = "C.UTF-8",
@@ -1437,7 +1538,9 @@ def memfd_with(name: str, data: bytes) -> int:
 def _owner_argv(leg: str, *, tree: str, home: str, out: str, provider: str, bundle_fd: str,
                 instructions_fd: str, token_fd: str | None, seccomp_fd: str,
                 gemini_config: str | None = None, egress_ca: str | None = None,
-                egress_proxy: str | None = None) -> list[str]:
+                egress_proxy: str | None = None,
+                dependency_mount_args: Sequence[str] = (),
+                provider_bind: bool = True) -> list[str]:
     """The bwrap owner argv, as a pure function of its per-launch values, so the canonical
     profile (placeholders) and every real launch are built by the same code."""
     owner: list[str] = [
@@ -1456,13 +1559,14 @@ def _owner_argv(leg: str, *, tree: str, home: str, out: str, provider: str, bund
         # FILE bind 0700 and owned by H-root, which the seat uid could not traverse.
         *(item for directory in (SEAT_ROOT, SEAT_BIN, SEAT_REVIEW)
           for item in ("--perms", "0755", "--dir", directory)),
-        "--ro-bind", provider, f"{SEAT_BIN}/{leg}",
+        *(("--ro-bind", provider, f"{SEAT_BIN}/{leg}") if provider_bind else ()),
         "--perms", "0444", "--ro-bind-data", bundle_fd, SEAT_BUNDLE,
         "--perms", "0444", "--ro-bind-data", instructions_fd, SEAT_INSTRUCTIONS,
         "--bind", tree, SEAT_TREE,
         "--bind", home, SEAT_HOME,
         "--bind", out, SEAT_OUT,
         *(_gemini_binds(home, gemini_config, egress_ca) if leg == "gemini" else ()),
+        *dependency_mount_args,
         "--remount-ro", "/",
         # No `--chdir`: with no DAC capability, H-root cannot enter the seat's 0700 tree.
         # The cwd is entered after the drop, as the seat (`seat_cwd`).
@@ -1510,6 +1614,7 @@ def build_seat_jail(
     gemini_config: Path | None = None,
     egress_ca: Path | None = None,
     egress_proxy: str | None = None,
+    dependency=None,
 ) -> SeatJail:
     """The bwrap owner for one jailed launch (plan "Seat jail").
 
@@ -1527,64 +1632,112 @@ def build_seat_jail(
     """
     if leg not in ("claude", "gemini"):
         raise SeatSandboxRefused(refused("jail_build"), f"no jail for leg {leg!r}")
-    arch = arch or host_arch()
-    review_dir = Path(review_dir)
-    tree = Path(tree) if tree is not None else review_dir / HOST_TREE_DIRNAME
-    home = review_dir / HOST_HOME_DIRNAME
-    out = review_dir / HOST_OUT_DIRNAME
-    if not tree.is_dir() or tree.is_symlink():
-        raise SeatSandboxRefused(refused("jail_build"), "staged tree missing")
-    directories = [home, out, home / SEAT_TMP_DIRNAME]
-    if leg == "gemini":
-        # `.gemini` and `antigravity-cli` are the read-only bind (F006); only the empty
-        # workspace cwd and the writable bin/cache/log sources are created under seat-home.
-        directories += [home / "workspace", home / HOST_GEMINI_WRITABLE_DIRNAME,
-                        *(home / HOST_GEMINI_WRITABLE_DIRNAME / name
-                          for name in (*GEMINI_WRITABLE_CONFIG_DIRS, *GEMINI_WRITABLE_DOTDIR_DIRS))]
-    for directory in directories:
-        try:
-            os.mkdir(directory, 0o700)
-        except OSError as exc:
-            raise SeatSandboxRefused(refused("jail_build"), f"{directory.name}: {exc}") from exc
-    provider = Path(provider_executable)
-    if not provider.is_absolute() or not provider.is_file():
-        raise SeatSandboxRefused(refused("jail_build"), "provider executable not found")
-    program = seccomp_program if seccomp_program is not None else build_seccomp_filter(arch)
-    seccomp_fd = memfd_with("seat-seccomp", program)
-    seat_bin = f"{SEAT_BIN}/{leg}"
-    owner = _owner_argv(leg, tree=str(tree), home=str(home), out=str(out), provider=str(provider),
-                        bundle_fd=str(bundle_memfd), instructions_fd=str(instructions_memfd),
-                        token_fd=None if token_fd is None else str(token_fd),
-                        seccomp_fd=str(seccomp_fd),
-                        gemini_config=None if gemini_config is None else str(gemini_config),
-                        egress_ca=None if egress_ca is None else str(egress_ca),
-                        egress_proxy=egress_proxy)
-    env = seat_env(leg, token_fd=token_fd, egress_proxy=egress_proxy)
-    pass_fds = tuple(fd for fd in (bundle_memfd, instructions_memfd, token_fd) if fd is not None)
-    jail = SeatJail(
-        leg=leg,
-        process_owner=tuple(owner),
-        provider_path=str(provider),
-        bundle_fd=bundle_memfd,
-        instructions_fd=instructions_memfd,
-        path_map={str(tree): SEAT_TREE, str(home): SEAT_HOME, str(out): SEAT_OUT,
-                  str(provider): seat_bin},
-        env=env,
-        pass_fds=(*pass_fds, seccomp_fd),
-        seccomp_fd=seccomp_fd,
-        profile_id=PROFILE_ID,
-        profile_digest="",
-        filter_digest=filter_digest(program),
-        seat_ids=seat_ids,
-        provider_argv0=seat_bin,
-        review_dir=str(review_dir),
-        tree_dir=str(tree),
-        token_fd=token_fd,
-        gemini_config_dir="" if gemini_config is None else str(gemini_config),
-        egress_ca="" if egress_ca is None else str(egress_ca),
-        egress_proxy=egress_proxy or "",
-    )
-    return dataclasses.replace(jail, profile_digest=actual_profile_digest(jail, arch))
+    dependency_projection = None
+    seccomp_fd = None
+    try:
+        if dependency is not None:
+            _require_safe_dependency_destinations(
+                leg,
+                tuple(item.destination for item in dependency.entries),
+                dependency.subject_destination,
+            )
+            dependency.revalidate()
+            dependency_projection = dependency.reopen_projection()
+        arch = arch or host_arch()
+        review_dir = Path(review_dir)
+        tree = Path(tree) if tree is not None else review_dir / HOST_TREE_DIRNAME
+        home = review_dir / HOST_HOME_DIRNAME
+        out = review_dir / HOST_OUT_DIRNAME
+        if not tree.is_dir() or tree.is_symlink():
+            raise SeatSandboxRefused(refused("jail_build"), "staged tree missing")
+        directories = [home, out, home / SEAT_TMP_DIRNAME]
+        if leg == "gemini":
+            # `.gemini` and `antigravity-cli` are the read-only bind (F006); only the empty
+            # workspace cwd and the writable bin/cache/log sources are created under seat-home.
+            directories += [home / "workspace", home / HOST_GEMINI_WRITABLE_DIRNAME,
+                            *(home / HOST_GEMINI_WRITABLE_DIRNAME / name
+                              for name in (*GEMINI_WRITABLE_CONFIG_DIRS, *GEMINI_WRITABLE_DOTDIR_DIRS))]
+        for directory in directories:
+            try:
+                os.mkdir(directory, 0o700)
+            except OSError as exc:
+                raise SeatSandboxRefused(refused("jail_build"), f"{directory.name}: {exc}") from exc
+        provider_source = Path(provider_executable)
+        provider = provider_source
+        if dependency is not None:
+            if str(provider) != dependency.subject_source:
+                raise SeatSandboxRefused(refused("identity"), "dependency subject changed")
+            provider = Path(dependency.subject_destination)
+        elif not provider.is_absolute() or not provider.is_file():
+            raise SeatSandboxRefused(refused("jail_build"), "provider executable not found")
+        program = seccomp_program if seccomp_program is not None else build_seccomp_filter(arch)
+        seccomp_fd = memfd_with("seat-seccomp", program)
+        seat_bin = str(provider) if dependency is not None else f"{SEAT_BIN}/{leg}"
+        dependency_mount_args = (
+            dependency_projection.mount_args() if dependency_projection is not None else ()
+        )
+        owner = _owner_argv(leg, tree=str(tree), home=str(home), out=str(out), provider=str(provider),
+                            bundle_fd=str(bundle_memfd), instructions_fd=str(instructions_memfd),
+                            token_fd=None if token_fd is None else str(token_fd),
+                            seccomp_fd=str(seccomp_fd),
+                            gemini_config=None if gemini_config is None else str(gemini_config),
+                            egress_ca=None if egress_ca is None else str(egress_ca),
+                            egress_proxy=egress_proxy,
+                            dependency_mount_args=dependency_mount_args,
+                            provider_bind=dependency is None)
+        env = seat_env(leg, token_fd=token_fd, egress_proxy=egress_proxy)
+        pass_fds = tuple(fd for fd in (bundle_memfd, instructions_memfd, token_fd) if fd is not None)
+        dependency_fds = dependency_projection.pass_fds if dependency_projection is not None else ()
+        jail = SeatJail(
+            leg=leg,
+            process_owner=tuple(owner),
+            provider_path=str(provider_source),
+            bundle_fd=bundle_memfd,
+            instructions_fd=instructions_memfd,
+            path_map={
+                str(tree): SEAT_TREE,
+                str(home): SEAT_HOME,
+                str(out): SEAT_OUT,
+                str(provider_source): seat_bin,
+            },
+            env=env,
+            pass_fds=(*pass_fds, *dependency_fds, seccomp_fd),
+            seccomp_fd=seccomp_fd,
+            profile_id=PROFILE_ID,
+            profile_digest="",
+            filter_digest=filter_digest(program),
+            seat_ids=seat_ids,
+            provider_argv0=seat_bin,
+            review_dir=str(review_dir),
+            tree_dir=str(tree),
+            token_fd=token_fd,
+            gemini_config_dir="" if gemini_config is None else str(gemini_config),
+            egress_ca="" if egress_ca is None else str(egress_ca),
+            egress_proxy=egress_proxy or "",
+            dependency_fds=dependency_fds,
+            dependency_mount_args=dependency_mount_args,
+            dependency_destinations=(
+                dependency_projection.destinations if dependency_projection is not None else ()
+            ),
+            dependency_mount_points=(
+                tuple(item.destination for item in dependency_projection.files)
+                if dependency_projection is not None else ()
+            ),
+            dependency_projection_digest=(
+                dependency_projection.digest if dependency_projection is not None else ""
+            ),
+            dependency=dependency,
+        )
+        return dataclasses.replace(jail, profile_digest=actual_profile_digest(jail, arch))
+    except BaseException:
+        if seccomp_fd is not None:
+            try:
+                os.close(seccomp_fd)
+            except OSError:
+                pass
+        if dependency_projection is not None:
+            dependency_projection.close()
+        raise
 
 
 # bwrap's own `--dev` populates these mount points (and `/dev/console` when its stdout is a
@@ -1597,8 +1750,11 @@ def expected_mount_points(jail: SeatJail) -> list[str]:
     independently of the argv the launch uses, so an extra bind in that argv is a mismatch,
     not a new expectation."""
     points = {"/", "/proc", "/dev", *BWRAP_DEV_MOUNTS, "/tmp", "/dev/shm",
-              f"{SEAT_BIN}/{jail.leg}", SEAT_BUNDLE, SEAT_INSTRUCTIONS, SEAT_TREE, SEAT_HOME,
+              SEAT_BUNDLE, SEAT_INSTRUCTIONS, SEAT_TREE, SEAT_HOME,
               SEAT_OUT}
+    if not jail.dependency_destinations:
+        points.add(f"{SEAT_BIN}/{jail.leg}")
+    points.update(jail.dependency_mount_points)
     if jail.leg == "gemini":
         points |= {SEAT_GEMINI_DOTDIR, SEAT_EGRESS_CA,
                    *(f"{SEAT_GEMINI_CONFIG}/{name}" for name in GEMINI_WRITABLE_CONFIG_DIRS),

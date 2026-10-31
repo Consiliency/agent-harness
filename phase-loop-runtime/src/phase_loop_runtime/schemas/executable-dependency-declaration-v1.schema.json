@@ -1,0 +1,356 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.agent-harness.example/executable-dependency-declaration-v1.schema.json",
+  "title": "Executable dependency normalized declaration v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "declaration_id",
+    "adapter",
+    "provider",
+    "policy",
+    "subject",
+    "entries",
+    "base_system"
+  ],
+  "properties": {
+    "schema": {
+      "const": "org.agent-harness.executable-dependency-declaration.v1"
+    },
+    "declaration_id": {
+      "$ref": "#/$defs/sha256"
+    },
+    "adapter": {
+      "$ref": "#/$defs/adapter"
+    },
+    "provider": {
+      "$ref": "#/$defs/name"
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/name"
+        },
+        "version": {
+          "$ref": "#/$defs/name"
+        }
+      }
+    },
+    "subject": {
+      "$ref": "#/$defs/subject"
+    },
+    "entries": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1024,
+      "items": {
+        "oneOf": [
+          {
+            "$ref": "#/$defs/fileEntry"
+          },
+          {
+            "$ref": "#/$defs/directoryEntry"
+          },
+          {
+            "$ref": "#/$defs/symlinkEntry"
+          }
+        ]
+      }
+    },
+    "base_system": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base_profile_sha256", "exclusions_sha256", "exclusions"],
+      "properties": {
+        "base_profile_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "exclusions_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "exclusions": {
+          "type": "array",
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/exclusion"
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*$"
+    },
+    "absolutePath": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 4096,
+      "pattern": "^/[ -~]+$"
+    },
+    "relativeLink": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^[ -~]+$"
+    },
+    "mode": {
+      "type": "string",
+      "pattern": "^0[0-7]{3}$"
+    },
+    "idNumber": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295
+    },
+    "adapter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/name"
+        },
+        "version": {
+          "$ref": "#/$defs/name"
+        }
+      }
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "destination",
+        "kind",
+        "uid",
+        "gid",
+        "mode",
+        "nlink",
+        "size",
+        "sha256",
+        "forwarding"
+      ],
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/absolutePath"
+        },
+        "destination": {
+          "$ref": "#/$defs/absolutePath"
+        },
+        "kind": {
+          "const": "file"
+        },
+        "uid": {
+          "$ref": "#/$defs/idNumber"
+        },
+        "gid": {
+          "$ref": "#/$defs/idNumber"
+        },
+        "mode": {
+          "$ref": "#/$defs/mode"
+        },
+        "nlink": {
+          "const": 1
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 536870912
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "forwarding": {
+          "const": "original-argv"
+        }
+      }
+    },
+    "fileEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "destination",
+        "kind",
+        "uid",
+        "gid",
+        "mode",
+        "nlink",
+        "size",
+        "sha256",
+        "link_text",
+        "target"
+      ],
+      "properties": {
+        "source": {
+          "$ref": "#/$defs/absolutePath"
+        },
+        "destination": {
+          "$ref": "#/$defs/absolutePath"
+        },
+        "kind": {
+          "const": "file"
+        },
+        "uid": {
+          "$ref": "#/$defs/idNumber"
+        },
+        "gid": {
+          "$ref": "#/$defs/idNumber"
+        },
+        "mode": {
+          "$ref": "#/$defs/mode"
+        },
+        "nlink": {
+          "const": 1
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 536870912
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "link_text": {
+          "type": "null"
+        },
+        "target": {
+          "type": "null"
+        }
+      }
+    },
+    "directoryEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "destination",
+        "kind",
+        "uid",
+        "gid",
+        "mode",
+        "nlink",
+        "size",
+        "sha256",
+        "link_text",
+        "target"
+      ],
+      "properties": {
+        "source": {
+          "type": "null"
+        },
+        "destination": {
+          "$ref": "#/$defs/absolutePath"
+        },
+        "kind": {
+          "const": "directory"
+        },
+        "uid": {
+          "$ref": "#/$defs/idNumber"
+        },
+        "gid": {
+          "$ref": "#/$defs/idNumber"
+        },
+        "mode": {
+          "$ref": "#/$defs/mode"
+        },
+        "nlink": {
+          "type": "null"
+        },
+        "size": {
+          "type": "null"
+        },
+        "sha256": {
+          "type": "null"
+        },
+        "link_text": {
+          "type": "null"
+        },
+        "target": {
+          "type": "null"
+        }
+      }
+    },
+    "symlinkEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "destination",
+        "kind",
+        "uid",
+        "gid",
+        "mode",
+        "nlink",
+        "size",
+        "sha256",
+        "link_text",
+        "target"
+      ],
+      "properties": {
+        "source": {
+          "type": "null"
+        },
+        "destination": {
+          "$ref": "#/$defs/absolutePath"
+        },
+        "kind": {
+          "const": "symlink"
+        },
+        "uid": {
+          "$ref": "#/$defs/idNumber"
+        },
+        "gid": {
+          "$ref": "#/$defs/idNumber"
+        },
+        "mode": {
+          "const": "0777"
+        },
+        "nlink": {
+          "const": 1
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "sha256": {
+          "type": "null"
+        },
+        "link_text": {
+          "$ref": "#/$defs/relativeLink"
+        },
+        "target": {
+          "$ref": "#/$defs/absolutePath"
+        }
+      }
+    },
+    "exclusion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "kind"],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/absolutePath"
+        },
+        "kind": {
+          "enum": ["file", "directory"]
+        }
+      }
+    }
+  }
+}
+

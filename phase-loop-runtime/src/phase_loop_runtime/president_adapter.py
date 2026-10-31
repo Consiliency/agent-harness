@@ -402,6 +402,9 @@ class PresidentInvoke:
         if monitor is not None:
             # agent-harness#1001: the heartbeat route is the review seat's -- an owned agy
             # profile under the monitor, no print timeout, no silence kill.
+            # agent-harness#1782: a declared dependency cannot compose with this route.
+            from .executable_dependency_startup import refuse_unwired_dependency_route
+            refuse_unwired_dependency_route("Gemini heartbeat")
             gemini_heartbeat.require_capability(subscription_env)
             with gemini_heartbeat.owned_profile(
                 subscription_env, settings_bytes=panel_invoker._broker_agy_settings_bytes(),

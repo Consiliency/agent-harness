@@ -1,0 +1,346 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://schemas.agent-harness.example/executable-dependency-authority-v1.schema.json",
+  "title": "Executable dependency local authority v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "authority_id",
+    "authority_version",
+    "adapter",
+    "subject",
+    "declaration",
+    "source_roots",
+    "destination_policy",
+    "owner_mode_policy",
+    "limits",
+    "base_profile",
+    "provenance",
+    "activation_nonce"
+  ],
+  "properties": {
+    "schema": {
+      "const": "org.agent-harness.executable-dependency-authority.v1"
+    },
+    "authority_id": {
+      "$ref": "#/$defs/sha256"
+    },
+    "authority_version": {
+      "const": 1
+    },
+    "adapter": {
+      "$ref": "#/$defs/adapter"
+    },
+    "subject": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider", "executable"],
+      "properties": {
+        "provider": {
+          "$ref": "#/$defs/name"
+        },
+        "executable": {
+          "$ref": "#/$defs/hostFile"
+        }
+      }
+    },
+    "declaration": {
+      "$ref": "#/$defs/hostFile"
+    },
+    "source_roots": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 32,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/hostDirectory"
+      }
+    },
+    "destination_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["provider_destination", "allowed_roots"],
+      "properties": {
+        "provider_destination": {
+          "$ref": "#/$defs/absolutePath"
+        },
+        "allowed_roots": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 32,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/absolutePath"
+          }
+        }
+      }
+    },
+    "owner_mode_policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowed_uids",
+        "allowed_gids",
+        "file_modes",
+        "directory_modes",
+        "symlink_mode",
+        "single_link_files"
+      ],
+      "properties": {
+        "allowed_uids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/idNumber"
+          }
+        },
+        "allowed_gids": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/idNumber"
+          }
+        },
+        "file_modes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/mode"
+          }
+        },
+        "directory_modes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 8,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/mode"
+          }
+        },
+        "symlink_mode": {
+          "const": "0777"
+        },
+        "single_link_files": {
+          "const": true
+        }
+      }
+    },
+    "limits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "authority_bytes",
+        "declaration_bytes",
+        "entry_count",
+        "file_bytes",
+        "aggregate_file_bytes",
+        "path_bytes",
+        "link_text_bytes"
+      ],
+      "properties": {
+        "authority_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 131072
+        },
+        "declaration_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 16777216
+        },
+        "entry_count": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1024
+        },
+        "file_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 536870912
+        },
+        "aggregate_file_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2147483648
+        },
+        "path_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        },
+        "link_text_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 4096
+        }
+      }
+    },
+    "base_profile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["base_profile_sha256", "exclusions_sha256"],
+      "properties": {
+        "base_profile_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "exclusions_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "issuer",
+        "upstream_receipt_sha256",
+        "upstream_manifest_sha256",
+        "adapter_evidence_sha256"
+      ],
+      "properties": {
+        "issuer": {
+          "$ref": "#/$defs/name"
+        },
+        "upstream_receipt_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "upstream_manifest_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "adapter_evidence_sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "activation_nonce": {
+      "$ref": "#/$defs/sha256"
+    }
+  },
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._+-]*$"
+    },
+    "absolutePath": {
+      "type": "string",
+      "minLength": 2,
+      "maxLength": 4096,
+      "pattern": "^/[ -~]+$"
+    },
+    "mode": {
+      "type": "string",
+      "pattern": "^0[0-7]{3}$"
+    },
+    "idNumber": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 4294967295
+    },
+    "adapter": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "version"],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/name"
+        },
+        "version": {
+          "$ref": "#/$defs/name"
+        }
+      }
+    },
+    "hostFile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "device",
+        "inode",
+        "uid",
+        "gid",
+        "mode",
+        "nlink",
+        "size",
+        "sha256"
+      ],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/absolutePath"
+        },
+        "device": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "inode": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "uid": {
+          "$ref": "#/$defs/idNumber"
+        },
+        "gid": {
+          "$ref": "#/$defs/idNumber"
+        },
+        "mode": {
+          "$ref": "#/$defs/mode"
+        },
+        "nlink": {
+          "const": 1
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 536870912
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "hostDirectory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "device", "inode", "uid", "gid", "mode"],
+      "properties": {
+        "path": {
+          "$ref": "#/$defs/absolutePath"
+        },
+        "device": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9007199254740991
+        },
+        "inode": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9007199254740991
+        },
+        "uid": {
+          "$ref": "#/$defs/idNumber"
+        },
+        "gid": {
+          "$ref": "#/$defs/idNumber"
+        },
+        "mode": {
+          "$ref": "#/$defs/mode"
+        }
+      }
+    }
+  }
+}
+
