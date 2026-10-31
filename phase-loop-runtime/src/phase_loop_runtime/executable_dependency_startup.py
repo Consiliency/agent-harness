@@ -77,7 +77,6 @@ _SKILL_EVAL_ARGV_LOCK = threading.Lock()
 _CLI_DEPENDENCY_WIRED_COMMANDS = frozenset({
     "advisor-board",
     "execute",
-    "maintain-skills",
     "resume",
     "run",
     "run-train",
@@ -91,6 +90,7 @@ _CLI_DEPENDENCY_UNWIRED_COMMANDS = frozenset({
     "agy-canary-verify",
     "agy-qualification",
     "cli-qualification",
+    "maintain-skills",
 })
 _CLI_CONDITIONAL_COMMANDS = frozenset({"seat-sandbox"})
 _CLI_PROVIDER_FREE_COMMANDS = frozenset({
@@ -400,7 +400,7 @@ def open_dependency_startup(spec: DependencyStartupSpec) -> DependencyStartupSes
 
 
 def current_dependency_for_provider(
-    provider: str,
+    provider: str | None = None,
     command: Sequence[str] | None = None,
 ) -> AdmittedExecutableDependency | None:
     """Return the bound dependency, refusing a managed unbound thread."""
@@ -420,10 +420,16 @@ def current_dependency_for_provider(
     if dependency is None:
         raise ExecutableDependencyError("task_invalid", "missing dependency")
     if command is None:
-        dependency.validate_provider(provider)
+        dependency.validate_provider(provider if provider is not None else dependency.provider)
     else:
         dependency.validate_command(command, provider=provider)
     return dependency
+
+
+def refuse_unwired_dependency_route(route: str) -> None:
+    """Refuse unsupported compositions before lookup, credentials or output effects."""
+    if current_dependency_for_provider() is not None:
+        raise ExecutableDependencyError("dependency_route_unwired", route)
 
 
 def acquire_child_dependency_task(task_id: str) -> DependencyTaskLease | None:

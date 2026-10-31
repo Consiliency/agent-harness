@@ -397,8 +397,9 @@ def test_managed_launcher_and_production_jails_share_one_dependency_lifetime(
     def managed_main(_argv: list[str]) -> int:
         assert len(session._tasks) == 1
         assert current_dependency_for_provider("claude") is dependency
-        result = launcher.launch_with_spec(spec)
-        assert result.returncode == 0
+        with pytest.raises(ExecutableDependencyError, match="dependency_route_unwired"):
+            launcher.launch_with_spec(spec)
+        assert launched == []
 
         review = tmp_path / "review"
         tree = review / seat_jail.HOST_TREE_DIRNAME
@@ -529,7 +530,7 @@ def test_missing_authority_refuses_before_credentials_outputs_or_processes(
         fixture.close()
 
 
-def test_launcher_rechecks_subject_path_inode_at_final_process_boundary(
+def test_launcher_refuses_direct_transport_before_command_staging(
     monkeypatch,
     tmp_path: Path,
 ) -> None:
@@ -577,7 +578,7 @@ def test_launcher_rechecks_subject_path_inode_at_final_process_boundary(
     )
 
     def managed_main(_argv: list[str]) -> int:
-        with pytest.raises(ExecutableDependencyError, match="source_changed"):
+        with pytest.raises(ExecutableDependencyError, match="dependency_route_unwired"):
             launcher.launch_with_spec(spec)
         return 0
 
@@ -585,6 +586,8 @@ def test_launcher_rechecks_subject_path_inode_at_final_process_boundary(
     try:
         assert session.run_cli(["run"]) == 0
         assert launched == []
+        assert fixture.release.exists()
+        assert not fixture.release.with_name("held-release").exists()
     finally:
         session.close()
         fixture.close()
@@ -649,11 +652,12 @@ def test_panel_cancellation_releases_child_task_and_projection_descriptors(
 @pytest.mark.parametrize("managed", [False, True])
 def test_command_profile_enters_with_and_without_dependency(tmp_path, monkeypatch, managed):
     dependency = SimpleNamespace(
+        provider="codex",
         subject_source=Path("/synthetic/provider"),
         subject_destination="/run/phase-loop-seat/provider",
         entries=(SimpleNamespace(destination="/run/phase-loop-seat/provider"),),
     ) if managed else None
-    monkeypatch.setattr(startup, "current_dependency_for_provider", lambda *args: dependency)
+    monkeypatch.setattr(startup, "current_dependency_for_provider", lambda *args, **kwargs: dependency)
     monkeypatch.setattr(panel_invoker, "_seat_provider_source",
                         lambda *args: ("codex", Path("/synthetic/provider")))
     events = []

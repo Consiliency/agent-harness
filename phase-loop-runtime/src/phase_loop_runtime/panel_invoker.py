@@ -4648,7 +4648,7 @@ def _seat_probe_marker():
         os.unlink(marker)
 
 
-def _require_seat_identity(prefix: "Sequence[str]", retain_caps=()) -> None:
+def _require_seat_identity(prefix: "Sequence[str]", retain_caps=(), *, pass_fds=()) -> None:
     """Launch only on POSITIVE evidence that the seat is the operator, locked down.
 
     The probe runs through the very prefix the provider will run through (owner wrapper,
@@ -4666,6 +4666,7 @@ def _require_seat_identity(prefix: "Sequence[str]", retain_caps=()) -> None:
                 [*prefix, "/bin/sh", "-c", _SEAT_PROBE, "sh", marker],
                 capture_output=True, text=True, timeout=30,
                 env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"}, stdin=subprocess.DEVNULL,
+                **({"pass_fds": pass_fds} if pass_fds else {}),
             ).stdout.splitlines()
         except subprocess.TimeoutExpired:
             seen = ["TIMEOUT"]
@@ -5129,6 +5130,19 @@ def _gemini_login_sleep(home, left, *, cancel=None, quiescence_latch=None) -> st
             raise _ReviewOperationCancelled("review_operation_cancelled")
 
 
+def _require_dependency_profile_composition(dependency, harness, env, *, gemini_profile=None,
+                                            needs_login=True, role=SeatLaunchRole.PROVIDER_REVIEW):
+    if dependency is None:
+        return
+    from .executable_dependency import ExecutableDependencyError
+    if gemini_profile is not None:
+        raise ExecutableDependencyError("dependency_route_unwired", "Gemini heartbeat")
+    if (harness == "gemini" and needs_login
+            and SeatLaunchRole(role) is SeatLaunchRole.PROVIDER_REVIEW
+            and not _gemini_credential_fresh(Path(env.get("HOME", str(Path.home()))))):
+        raise ExecutableDependencyError("dependency_route_unwired", "Gemini host credential refresh")
+
+
 @contextmanager
 def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=(),
                  broker_socket=None, gemini_profile=None, role=SeatLaunchRole.PROVIDER_REVIEW,
@@ -5144,6 +5158,9 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
             harness,
             None if gemini_profile is not None else [str(executable)],
         )
+    _require_dependency_profile_composition(
+        dependency, harness, env, gemini_profile=gemini_profile, needs_login=needs_login, role=role,
+    )
     _require_owner_platform()
     home = Path(env.get("HOME", str(Path.home())))
     if gemini_profile is not None:
@@ -5178,6 +5195,9 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
         if (harness == "gemini" and needs_login
                 and SeatLaunchRole(role) is SeatLaunchRole.PROVIDER_REVIEW
                 and not _gemini_credential_fresh(home)):
+            if dependency is not None:
+                from .executable_dependency import ExecutableDependencyError
+                raise ExecutableDependencyError("dependency_route_unwired", "Gemini host credential refresh")
             if gemini_profile is not None:
                 # The help measurement also uses this caller. Reuse its verified image;
                 # a second lookup here would recursively enter the help measurement.
@@ -5187,13 +5207,8 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
                 )
                 stack.callback(refresh_image.close)
             else:
-                if dependency is not None:
-                    refresh_image = gemini_heartbeat.VerifiedImage.from_bytes(
-                        dependency._subject_snapshot_bytes(), dependency.subject_source
-                    )
-                else:
-                    from . import agy_integrity
-                    refresh_image = agy_integrity.admit_for_seat(executable, env)
+                from . import agy_integrity
+                refresh_image = agy_integrity.admit_for_seat(executable, env)
                 stack.callback(refresh_image.close)
             _refresh_gemini_credential(home, refresh_image)
         def directory(path):
@@ -5548,11 +5563,9 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
     from .executable_dependency_startup import current_dependency_for_provider
 
     if gemini_profile is None:
-        name = Path(command[0]).name.lower()
-        candidate_harness = _PROVIDER_HARNESSES.get(name, name)
-        dependency = current_dependency_for_provider(candidate_harness, command)
+        dependency = current_dependency_for_provider(command=command)
         if dependency is not None:
-            harness, executable = candidate_harness, dependency.subject_source
+            harness, executable = dependency.provider, dependency.subject_source
         else:
             harness, executable = _seat_provider_source(command[0], env)
             if harness not in {"codex", "claude", "grok", "gemini", "opencode"}:
@@ -5560,6 +5573,10 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
     else:
         harness, executable = "gemini", gemini_profile.executable
         dependency = current_dependency_for_provider(harness)
+    _require_dependency_profile_composition(
+        dependency, harness, env, gemini_profile=gemini_profile,
+        needs_login=_gemini_launch_needs_login(command, gemini_profile), role=role,
+    )
     readonly = list(readonly_paths)
     cwd = Path(cwd)
     # agent-harness#1470: at most one writable tree, and only the path `--cd` names.
@@ -5735,6 +5752,9 @@ def _filtered_holder_namespace() -> int:
 
 def launch_owned(argv, *, role, profile: SeatProfile, supervisor=None, **kwargs):
     role = SeatLaunchRole(role)
+    if role is SeatLaunchRole.EXECUTOR_TRUSTED:
+        from .executable_dependency_startup import refuse_unwired_dependency_route
+        refuse_unwired_dependency_route("direct executor")
     if profile.dependency is not None:
         _require_safe_dependency_profile_destinations(
             profile.dependency,
@@ -5787,9 +5807,30 @@ def launch_owned(argv, *, role, profile: SeatProfile, supervisor=None, **kwargs)
                     writable_trees=profile.writable_trees,
                 )
 
+                probe_projection = None
+                if profile.dependency is not None:
+                    probe_projection = stack.enter_context(profile.dependency.reopen_projection())
+                    if (
+                        probe_projection.digest != profile.dependency_projection_digest
+                        or probe_projection.destinations != tuple(
+                            item.destination for item in profile.dependency.entries
+                        )
+                    ):
+                        raise _sandbox_egress.SeatIdentityUnverified("seat_profile_unavailable")
+                    kwargs["probe_pass_fds"] = probe_projection.pass_fds
+
                 def probe_owner(marker):
-                    return _seat_owner(_seat_filesystem_view(cwd, readonly_paths=(marker,)),
-                                       filtered_network=filtered_network)
+                    if probe_projection is None:
+                        probe_view = _seat_filesystem_view(cwd, readonly_paths=(marker,))
+                    else:
+                        probe_view = _seat_filesystem_view(
+                            cwd, readonly_paths=(*profile.readonly_paths, marker),
+                            outputs=profile.outputs, output_dirs=profile.output_dirs,
+                            profile_mounts=probe_projection.mount_args(),
+                            broker_socket=profile.broker_socket,
+                            writable_trees=profile.writable_trees,
+                        )
+                    return _seat_owner(probe_view, filtered_network=filtered_network)
 
                 descriptor = seat_seccomp.sealed_keyring_filter()
                 stack.callback(os.close, descriptor)
@@ -5810,6 +5851,8 @@ def launch_owned(argv, *, role, profile: SeatProfile, supervisor=None, **kwargs)
                     _require_seat_identity(
                         lambda marker: _compose_launch_prefix(kwargs.get("cwd"), probe_owner(marker))
                         if callable(probe_owner) else prefix,
+                        **({"pass_fds": kwargs["probe_pass_fds"]}
+                           if kwargs.get("probe_pass_fds") else {}),
                     )
                 command = supervisor([*prefix, *command], kwargs.get("pass_fds", ()))
                 egress_token = _EGRESS_LAUNCH_PREFIX.set(())
@@ -5880,6 +5923,7 @@ def _child_scratch_kwargs(kwargs: dict, decision: str) -> None:
 
 
 def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None, dependency=None,
+                    probe_pass_fds=(),
                     child_scratch=_sandbox_policy.CHILD_SCRATCH_RELOCATE,
                     **kwargs) -> "subprocess.Popen[bytes]":
     """THE one place a review provider process is started. Popen form.
@@ -5963,7 +6007,9 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
                 return _compose_launch_prefix(cwd, probe_owner(marker), retain_caps)
         else:
             probe = _compose_launch_prefix(cwd, probe_owner, retain_caps)
-        _require_seat_identity(probe, retain_caps)
+        _require_seat_identity(
+            probe, retain_caps, **({"pass_fds": probe_pass_fds} if probe_pass_fds else {}),
+        )
     if dependency is not None:
         dependency.revalidate()
     process = subprocess.Popen([*prefix, *argv], **kwargs)
@@ -11508,6 +11554,35 @@ def _resolve_claude_executable() -> Path:
     return Path(os.path.realpath(found))
 
 
+def _build_jail_with_owned_inputs(leg, directory, executable, *, artifact, instructions,
+                                  token=None, **kwargs):
+    """Caller owns partial input allocation; a successful jail takes all descriptors."""
+    with contextlib.ExitStack() as stack:
+        bundle = _seat_jail.memfd_with("seat-bundle", artifact)
+        stack.callback(os.close, bundle)
+        brief = _seat_jail.memfd_with("seat-instructions", instructions)
+        stack.callback(os.close, brief)
+        token_fd = None
+        if token is not None:
+            token_fd = _seat_jail.token_pipe(token)
+            stack.callback(os.close, token_fd)
+        jail = _seat_jail.build_seat_jail(
+            leg, directory, executable, bundle_memfd=bundle, instructions_memfd=brief,
+            token_fd=token_fd, **kwargs,
+        )
+        stack.pop_all()
+        return jail
+
+
+def _validate_jail_dependency(leg, dependency):
+    if dependency is not None:
+        _seat_jail._require_safe_dependency_destinations(
+            leg, tuple(item.destination for item in dependency.entries),
+            dependency.subject_destination,
+        )
+        dependency.revalidate()
+
+
 def _prepare_jailed_claude(
     review_dir: Path, seat_dir: Path, review_authorization: "ReviewIsolationAuthorization",
     seat_id: int, holder_pid: int, prompt_parts: tuple[str, str],
@@ -11524,6 +11599,7 @@ def _prepare_jailed_claude(
     from .executable_dependency_startup import current_dependency_for_provider
 
     dependency = current_dependency_for_provider("claude")
+    _validate_jail_dependency("claude", dependency)
     executable = (
         Path(dependency.subject_source) if dependency is not None else None
     )
@@ -11533,82 +11609,80 @@ def _prepare_jailed_claude(
     except OSError as exc:
         raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build")) from exc
     try:
-        tree_fd = _seat_jail.open_dir_nofollow(tree)
-    except OSError as exc:
-        raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("stage_changed")) from exc
-    try:
-        observed = _seat_jail.tree_manifest_sha256_at(tree_fd)
-    except OSError as exc:
-        raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("stage_changed")) from exc
-    finally:
-        os.close(tree_fd)
-    if observed != review_authorization.staged_tree_sha256:
-        raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("stage_changed"))
-    # Read afresh for THIS launch: the override if present, else the current login's access
-    # token with at least the leg's margin of lifetime left (plan amendment A1). The margin is
-    # the one the pre-launch seat mode checked: `_claude_seat_login_margin_s(timeout_s)`.
-    credential = _seat_credentials.resolve_claude_seat_credential(
-        _claude_seat_login_margin_s(timeout_s))
-    # agent-harness#1253 round 2: a refusal after the credential is resolved (the jail
-    # build, the pre-seed, the probe jail) still says when a stored override was ignored --
-    # the credential's notices as siblings of its one refusal code.
-    try:
-        if executable is None:
-            executable = _resolve_claude_executable()
-        token = credential.token
-        bundle = _seat_jail.memfd_with("seat-bundle", artifact.encode("utf-8"))
-        brief = _seat_jail.memfd_with("seat-instructions", instructions.encode("utf-8"))
-        token_fd = _seat_jail.token_pipe(token)
         try:
-            jail = _seat_jail.build_seat_jail(
-                "claude", seat_dir, executable, tree=tree, bundle_memfd=bundle,
-                instructions_memfd=brief, token_fd=token_fd, seat_ids=(seat_id, seat_id),
-                dependency=dependency,
-            )
-        except BaseException:
-            for fd in (bundle, brief, token_fd):
-                os.close(fd)
-            raise
+            tree_fd = _seat_jail.open_dir_nofollow(tree)
+        except OSError as exc:
+            raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("stage_changed")) from exc
         try:
-            if _seat_jail.CLAUDE_PRESEED:
-                home = _seat_jail.open_dir_nofollow(seat_dir / _seat_jail.HOST_HOME_DIRNAME)
-                try:
-                    _seat_jail.write_new_file_at(
-                        home, ".claude/.claude.json",
-                        json.dumps(dict(_seat_jail.CLAUDE_PRESEED), sort_keys=True).encode(),
-                    )
-                except OSError as exc:
-                    raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("preseed")) from exc
-                finally:
-                    os.close(home)
-            # The probe jail: the same shape over its own empty directories, because the
-            # bundle memfds and the token pipe are single-use.
-            probe_dir = seat_dir / _JAIL_PROBE_DIRNAME
-            (probe_dir / _seat_jail.HOST_TREE_DIRNAME).mkdir(mode=0o700, parents=True)
-            probe = _seat_jail.build_seat_jail(
-                "claude", probe_dir, executable,
-                bundle_memfd=_seat_jail.memfd_with("probe-bundle", b""),
-                instructions_memfd=_seat_jail.memfd_with("probe-instructions", b""),
-                token_fd=_seat_jail.token_pipe(b"probe"), seat_ids=(seat_id, seat_id),
-                dependency=dependency,
+            observed = _seat_jail.tree_manifest_sha256_at(tree_fd)
+        except OSError as exc:
+            raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("stage_changed")) from exc
+        finally:
+            os.close(tree_fd)
+        if observed != review_authorization.staged_tree_sha256:
+            raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("stage_changed"))
+        # Read afresh for THIS launch: the override if present, else the current login's access
+        # token with at least the leg's margin of lifetime left (plan amendment A1). The margin is
+        # the one the pre-launch seat mode checked: `_claude_seat_login_margin_s(timeout_s)`.
+        credential = _seat_credentials.resolve_claude_seat_credential(
+            _claude_seat_login_margin_s(timeout_s))
+        # agent-harness#1253 round 2: a refusal after the credential is resolved (the jail
+        # build, the pre-seed, the probe jail) still says when a stored override was ignored --
+        # the credential's notices as siblings of its one refusal code.
+        try:
+            if executable is None:
+                executable = _resolve_claude_executable()
+            token = credential.token
+            jail = _build_jail_with_owned_inputs(
+                "claude", seat_dir, executable, tree=tree,
+                artifact=artifact.encode("utf-8"), instructions=instructions.encode("utf-8"),
+                token=token, seat_ids=(seat_id, seat_id), dependency=dependency,
             )
-            if dependency is not None and (
-                jail.dependency_projection_digest != dependency.projection_digest
-                or probe.dependency_projection_digest != dependency.projection_digest
-            ):
-                _seat_jail.close_jail_fds(probe)
-                raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("identity"))
-        except BaseException:
-            _seat_jail.close_jail_fds(jail)
-            raise
-        return _JailedSeat(jail=jail, probe_jail=probe, holder_pid=holder_pid, token=token,
-                           review_dir=review_dir, seat_dir=seat_dir, source=credential.source,
-                           expires_at=credential.expires_at, notices=list(credential.notices))
-    except _seat_jail.SeatSandboxRefused as exc:
-        if not credential.notices:
-            raise
-        raise _seat_jail.SeatSandboxRefused(
-            exc.code, str(exc), also=_dedupe((*exc.also, *credential.notices))) from exc
+            try:
+                if _seat_jail.CLAUDE_PRESEED:
+                    home = _seat_jail.open_dir_nofollow(seat_dir / _seat_jail.HOST_HOME_DIRNAME)
+                    try:
+                        _seat_jail.write_new_file_at(
+                            home, ".claude/.claude.json",
+                            json.dumps(dict(_seat_jail.CLAUDE_PRESEED), sort_keys=True).encode(),
+                        )
+                    except OSError as exc:
+                        raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("preseed")) from exc
+                    finally:
+                        os.close(home)
+                # The probe jail: the same shape over its own empty directories, because the
+                # bundle memfds and the token pipe are single-use.
+                probe_dir = seat_dir / _JAIL_PROBE_DIRNAME
+                (probe_dir / _seat_jail.HOST_TREE_DIRNAME).mkdir(mode=0o700, parents=True)
+                probe = _build_jail_with_owned_inputs(
+                    "claude", probe_dir, executable, artifact=b"", instructions=b"",
+                    token=b"probe", seat_ids=(seat_id, seat_id),
+                    dependency=dependency,
+                )
+                if dependency is not None and (
+                    jail.dependency_projection_digest != dependency.projection_digest
+                    or probe.dependency_projection_digest != dependency.projection_digest
+                ):
+                    _seat_jail.close_jail_fds(probe)
+                    raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("identity"))
+            except BaseException:
+                _seat_jail.close_jail_fds(jail)
+                raise
+            return _JailedSeat(jail=jail, probe_jail=probe, holder_pid=holder_pid, token=token,
+                               review_dir=review_dir, seat_dir=seat_dir, source=credential.source,
+                               expires_at=credential.expires_at, notices=list(credential.notices))
+        except _seat_jail.SeatSandboxRefused as exc:
+            if not credential.notices:
+                raise
+            raise _seat_jail.SeatSandboxRefused(
+                exc.code, str(exc), also=_dedupe((*exc.also, *credential.notices))) from exc
+    except BaseException as primary:
+        if dependency is not None:
+            try:
+                shutil.rmtree(seat_dir)
+            except BaseException as cleanup:
+                primary.add_note(f"jail preparation cleanup failed: {cleanup}")
+        raise
 
 
 def _exec_jailed_claude_leg(
@@ -11853,98 +11927,93 @@ def _prepare_jailed_gemini(
     from .executable_dependency_startup import current_dependency_for_provider
 
     dependency = current_dependency_for_provider("gemini")
+    _validate_jail_dependency("gemini", dependency)
+    if dependency is not None:
+        from .executable_dependency import ExecutableDependencyError
+        home = Path(_broker_subscription_env(env).get("HOME", str(Path.home())))
+        if not _gemini_credential_fresh(home):
+            raise ExecutableDependencyError("dependency_route_unwired", "Gemini host credential refresh")
     try:
         seat_dir.mkdir(mode=0o700)
     except OSError as exc:
         raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build")) from exc
-    tree = _approved_stage_or_refuse(review_dir, review_authorization)
-    subscription_env = _broker_subscription_env(env)
-    home = Path(subscription_env.get("HOME", str(Path.home())))
-    if dependency is None:
-        admission = gemini_heartbeat.admit(subscription_env)
+    try:
+        tree = _approved_stage_or_refuse(review_dir, review_authorization)
+        subscription_env = _broker_subscription_env(env)
+        home = Path(subscription_env.get("HOME", str(Path.home())))
+        if dependency is None:
+            admission = gemini_heartbeat.admit(subscription_env)
+            try:
+                if admission.path is None:
+                    raise ValueError("gemini_heartbeat_capability_unavailable")
+                executable = Path(os.path.realpath(admission.path))
+                image_sha256, admission_class = admission.image.sha256, admission.admission_class
+                _await_gemini_login(["agy"], {"HOME": str(home)}, review_monitor=review_monitor,
+                                    quiescence_latch=quiescence_latch)
+                if not _gemini_credential_fresh(home):
+                    _refresh_gemini_credential(home, admission.image)
+            finally:
+                admission.close()
+        else:
+            executable = Path(dependency.subject_source)
+            image_sha256, admission_class = dependency.subject_sha256, "executable_dependency"
+        copy = _seat_jail.build_gemini_seat_copy(
+            home / ".gemini" / "antigravity-cli" / "antigravity-oauth-token")
+        document = json.loads(copy)
+        token = str(document["token"]["access_token"]).encode("utf-8")
         try:
-            if admission.path is None:
-                raise ValueError("gemini_heartbeat_capability_unavailable")
-            executable = Path(os.path.realpath(admission.path))
-            image_sha256, admission_class = admission.image.sha256, admission.admission_class
-            _await_gemini_login(["agy"], {"HOME": str(home)}, review_monitor=review_monitor,
-                                quiescence_latch=quiescence_latch)
-            if not _gemini_credential_fresh(home):
-                _refresh_gemini_credential(home, admission.image)
-        finally:
-            admission.close()
-    else:
-        executable = Path(dependency.subject_source)
-        image_sha256, admission_class = dependency.subject_sha256, "executable_dependency"
-        image = gemini_heartbeat.VerifiedImage.from_bytes(
-            dependency._subject_snapshot_bytes(), dependency.subject_source
-        )
+            expires_at = _parse_agy_expiry(document["token"]["expiry"]).timestamp()
+        except (KeyError, TypeError, ValueError) as exc:
+            raise _seat_jail.SeatSandboxRefused("gemini_seat_token_expired") from exc
+        if expires_at - time.time() < _GEMINI_LOGIN_MIN_S:
+            raise _seat_jail.SeatSandboxRefused("gemini_seat_token_expired")
         try:
-            _await_gemini_login(["agy"], {"HOME": str(home)}, review_monitor=review_monitor,
-                                quiescence_latch=quiescence_latch)
-            if not _gemini_credential_fresh(home):
-                _refresh_gemini_credential(home, image)
-        finally:
-            image.close()
-    copy = _seat_jail.build_gemini_seat_copy(
-        home / ".gemini" / "antigravity-cli" / "antigravity-oauth-token")
-    document = json.loads(copy)
-    token = str(document["token"]["access_token"]).encode("utf-8")
-    try:
-        expires_at = _parse_agy_expiry(document["token"]["expiry"]).timestamp()
-    except (KeyError, TypeError, ValueError) as exc:
-        raise _seat_jail.SeatSandboxRefused("gemini_seat_token_expired") from exc
-    if expires_at - time.time() < _GEMINI_LOGIN_MIN_S:
-        raise _seat_jail.SeatSandboxRefused("gemini_seat_token_expired")
-    try:
-        _write_gemini_config(seat_dir / _seat_jail.HOST_GEMINI_CONFIG_DIRNAME, copy)
-        ca = _write_egress_ca(seat_dir, egress.ca_cert)
-    except OSError as exc:
-        raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build")) from exc
-    bundle = _seat_jail.memfd_with("seat-bundle", artifact.encode("utf-8"))
-    brief = _seat_jail.memfd_with("seat-instructions", instructions.encode("utf-8"))
-    try:
-        jail = _seat_jail.build_seat_jail(
-            "gemini", seat_dir, executable, tree=tree, bundle_memfd=bundle,
-            instructions_memfd=brief, seat_ids=(seat_id, seat_id),
-            gemini_config=seat_dir / _seat_jail.HOST_GEMINI_CONFIG_DIRNAME, egress_ca=ca,
-            egress_proxy=egress.proxy_url,
-            dependency=dependency,
-        )
-    except BaseException:
-        for fd in (bundle, brief):
-            os.close(fd)
-        raise
-    try:
-        # The probe jail: the same shape over its own directories (no credential in it).
-        probe_dir = seat_dir / _JAIL_PROBE_DIRNAME
-        (probe_dir / _seat_jail.HOST_TREE_DIRNAME).mkdir(mode=0o700, parents=True)
-        _write_gemini_config(probe_dir / _seat_jail.HOST_GEMINI_CONFIG_DIRNAME, b"")
-        probe = _seat_jail.build_seat_jail(
-            "gemini", probe_dir, executable,
-            bundle_memfd=_seat_jail.memfd_with("probe-bundle", b""),
-            instructions_memfd=_seat_jail.memfd_with("probe-instructions", b""),
+            _write_gemini_config(seat_dir / _seat_jail.HOST_GEMINI_CONFIG_DIRNAME, copy)
+            ca = _write_egress_ca(seat_dir, egress.ca_cert)
+        except OSError as exc:
+            raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build")) from exc
+        jail = _build_jail_with_owned_inputs(
+            "gemini", seat_dir, executable, tree=tree,
+            artifact=artifact.encode("utf-8"), instructions=instructions.encode("utf-8"),
             seat_ids=(seat_id, seat_id),
-            gemini_config=probe_dir / _seat_jail.HOST_GEMINI_CONFIG_DIRNAME,
-            egress_ca=_write_egress_ca(probe_dir, egress.ca_cert), egress_proxy=egress.proxy_url,
-            dependency=dependency,
+            gemini_config=seat_dir / _seat_jail.HOST_GEMINI_CONFIG_DIRNAME, egress_ca=ca,
+            egress_proxy=egress.proxy_url, dependency=dependency,
         )
-        if dependency is not None and (
-            jail.dependency_projection_digest != dependency.projection_digest
-            or probe.dependency_projection_digest != dependency.projection_digest
-        ):
-            _seat_jail.close_jail_fds(probe)
-            raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("identity"))
-    except OSError as exc:
-        _seat_jail.close_jail_fds(jail)
-        raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build")) from exc
-    except BaseException:
-        _seat_jail.close_jail_fds(jail)
+        try:
+            # The probe jail: the same shape over its own directories (no credential in it).
+            probe_dir = seat_dir / _JAIL_PROBE_DIRNAME
+            (probe_dir / _seat_jail.HOST_TREE_DIRNAME).mkdir(mode=0o700, parents=True)
+            _write_gemini_config(probe_dir / _seat_jail.HOST_GEMINI_CONFIG_DIRNAME, b"")
+            probe = _build_jail_with_owned_inputs(
+                "gemini", probe_dir, executable, artifact=b"", instructions=b"",
+                seat_ids=(seat_id, seat_id),
+                gemini_config=probe_dir / _seat_jail.HOST_GEMINI_CONFIG_DIRNAME,
+                egress_ca=_write_egress_ca(probe_dir, egress.ca_cert), egress_proxy=egress.proxy_url,
+                dependency=dependency,
+            )
+            if dependency is not None and (
+                jail.dependency_projection_digest != dependency.projection_digest
+                or probe.dependency_projection_digest != dependency.projection_digest
+            ):
+                _seat_jail.close_jail_fds(probe)
+                raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("identity"))
+        except OSError as exc:
+            _seat_jail.close_jail_fds(jail)
+            raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build")) from exc
+        except BaseException:
+            _seat_jail.close_jail_fds(jail)
+            raise
+        return _JailedSeat(jail=jail, probe_jail=probe, holder_pid=holder_pid, token=token,
+                           review_dir=review_dir, seat_dir=seat_dir,
+                           source=_seat_credentials.SOURCE_LOGIN, expires_at=expires_at,
+                           image_sha256=image_sha256, admission_class=admission_class)
+    except BaseException as primary:
+        if dependency is not None:
+            try:
+                shutil.rmtree(seat_dir)
+            except BaseException as cleanup:
+                primary.add_note(f"jail preparation cleanup failed: {cleanup}")
         raise
-    return _JailedSeat(jail=jail, probe_jail=probe, holder_pid=holder_pid, token=token,
-                       review_dir=review_dir, seat_dir=seat_dir,
-                       source=_seat_credentials.SOURCE_LOGIN, expires_at=expires_at,
-                       image_sha256=image_sha256, admission_class=admission_class)
 
 
 def _jailed_gemini_secrets(seat: "_JailedSeat") -> tuple[bytes, ...]:
@@ -12315,6 +12384,8 @@ def _exec_leg(
         quiescence_latch.raise_if_set()
     brokered = broker_prompt is not None
     if leg == "gemini" and review_monitor is not None:
+        from .executable_dependency_startup import refuse_unwired_dependency_route
+        refuse_unwired_dependency_route("Gemini heartbeat")
         if not brokered or agy_capture is not None or research_seat is not None:
             return 1, "", _HarnessCode("gemini_heartbeat_broker_required")
         if review_monitor.cancel.is_set():

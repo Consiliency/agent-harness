@@ -2150,6 +2150,12 @@ def launch_with_spec(
         from .executable_dependency_startup import current_dependency_for_provider
 
         dependency = current_dependency_for_provider(spec.executor, spec.command)
+    if dependency is not None and (
+        spec.claude_route in {"claude_channel", "claude_agent_view"}
+        or (spec.prompt_bundle.product_action or "execute") != "review"
+    ):
+        from .executable_dependency import ExecutableDependencyError
+        raise ExecutableDependencyError("dependency_route_unwired", "executor transport")
     if not spec.available and not dry_run:
         raise ValueError("live launch requested for unavailable executor")
     action = spec.prompt_bundle.product_action or "execute"
@@ -2702,6 +2708,9 @@ def launch(
     action: str = "execute",
     _review_profile: object | None = None,
 ) -> LaunchResult:
+    if not dry_run and action != "review":
+        from .executable_dependency_startup import refuse_unwired_dependency_route
+        refuse_unwired_dependency_route("direct executor")
     if action == "review" and _review_profile is None and not dry_run:
         from . import panel_invoker, sandbox_egress
         # agent-harness#1407: a Gemini review whose agy login is short but not yet expired

@@ -14,11 +14,23 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   managed provider effects; standalone behavior remains only when requirement and
   authority are both absent.
 - Give every projection consumer an independent descriptor offset over immutable sealed
-  content, protect the jail and generic seat-view mount destinations, bind direct launches
-  to the held subject inode, and record the authority/declaration/projection digests on
-  jailed broker evidence. A typed dependency refusal runs both jail and parent-seat cleanup
-  before it reaches the established degraded-leg path. Required CLI sessions use a closed
+  content, protect the jail and generic seat-view mount destinations, and record the
+  authority/declaration/projection digests on jailed broker evidence. A typed dependency
+  refusal on a prepared seat runs both jail and parent-seat cleanup before it reaches
+  the established degraded-leg path. Required preparation failures close their descriptors
+  and remove their newly created seat directory. Required CLI sessions use a closed
   provider-free inventory and refuse provider routes that are not dependency-wired.
+- Check jail destinations before provider preparation effects, close projection and input
+  descriptors on partial construction, and give generic identity probes an independent
+  dependency projection. Accept arbitrary wrapper names from the trusted requirement;
+  validate intermediate source directory permissions, refuse FIFO inputs without waiting,
+  and count each file once toward the aggregate limit (agent-harness#1782).
+- Required sessions explicitly refuse direct host executor/lease-supervisor transports,
+  Claude Channel/Agent View, `maintain-skills`, and Gemini heartbeat composition before
+  entering those routes. Required Gemini reviews need a fresh existing login and refuse
+  host credential refresh. Standalone launches retain their prior behavior. See
+  `docs/executable-dependency-projection.md` for supported routes and outstanding live
+  qualification; offline tests do not establish authenticated provider acceptance.
 - The seat-jail qualification entry grammar is closed: it accepts only no arguments or one
   of `-h`, `--help`, and `--version`; repeated, clustered, abbreviated, mixed, or unknown
   forms exit with status 2 before qualification.

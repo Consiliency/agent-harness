@@ -130,6 +130,12 @@ class ProjectionFile:
 
 
 @dataclass(frozen=True)
+class _HeldDirectory:
+    fd: int
+    identity: tuple[int, int, int, int, int]
+
+
+@dataclass(frozen=True)
 class _HeldFile:
     source: str
     destination: str
@@ -211,6 +217,7 @@ class AdmittedExecutableDependency:
         authority_fd: int,
         declaration_fd: int,
         projection_digest: str,
+        ancestry: tuple[_HeldDirectory, ...] = (),
     ) -> None:
         self.provider = provider
         self.authority_id = authority_id
@@ -234,6 +241,7 @@ class AdmittedExecutableDependency:
         )
         self.projection_digest = projection_digest
         self.entries = entries
+        self._ancestry = ancestry
         self._subject = subject
         self._files = files
         self._authority_fd = authority_fd
@@ -265,6 +273,10 @@ class AdmittedExecutableDependency:
             self._declaration_size,
             self.declaration_sha256,
         )
+        for directory in self._ancestry:
+            observed = os.fstat(directory.fd)
+            if _directory_identity(observed) != directory.identity:
+                raise ExecutableDependencyError("source_changed", "source ancestry")
         for held in (self._subject, *self._files):
             _revalidate_held_file(held)
 
@@ -339,6 +351,7 @@ class AdmittedExecutableDependency:
             return
         self._closed = True
         for fd in (
+            *(item.fd for item in self._ancestry),
             *(item.snapshot_fd for item in self._files),
             *(item.fd for item in self._files),
             self._subject.snapshot_fd,
@@ -416,6 +429,7 @@ def admit_executable_dependency(
         _bind_declaration(requirement, authority, declaration)
         _validate_graph(declaration, authority, effective)
 
+        ancestry: list[_HeldDirectory] = []
         source_roots = _open_source_roots(authority, effective)
         try:
             subject = _open_declared_file(
@@ -424,6 +438,8 @@ def admit_executable_dependency(
                 source_roots,
                 effective,
                 code="subject_mismatch",
+                ancestry=ancestry,
+                owned=owned,
             )
             owned.append(subject.fd)
             owned.append(subject.snapshot_fd)
@@ -432,7 +448,10 @@ def admit_executable_dependency(
                 for entry in declaration["entries"]:
                     if entry["kind"] != "file":
                         continue
-                    held = _open_declared_file(entry, None, source_roots, effective, code="authority_invalid")
+                    held = _open_declared_file(
+                        entry, None, source_roots, effective, code="authority_invalid",
+                        ancestry=ancestry, owned=owned,
+                    )
                     files.append(held)
                     owned.append(held.fd)
                     owned.append(held.snapshot_fd)
@@ -462,13 +481,14 @@ def admit_executable_dependency(
             authority_fd=authority_fd,
             declaration_fd=declaration_fd,
             projection_digest=projection_digest,
+            ancestry=tuple(ancestry),
         )
         admitted.revalidate()
         owned.clear()
         return admitted
     except ExecutableDependencyError:
         raise
-    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError, TypeError, json.JSONDecodeError, RecursionError) as exc:
         raise ExecutableDependencyError("authority_invalid", type(exc).__name__) from exc
     finally:
         for fd in owned:
@@ -517,6 +537,8 @@ def _validate_requirement_object(requirement: Any) -> None:
 def _authority_stat_or_refuse(fd: int) -> os.stat_result:
     try:
         observed = os.fstat(fd)
+        if fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_ACCMODE != os.O_RDONLY:
+            raise ExecutableDependencyError("authority_invalid", "authority descriptor must be read-only")
     except OSError as exc:
         raise ExecutableDependencyError("authority_invalid", "descriptor unavailable") from exc
     if not stat.S_ISREG(observed.st_mode) or observed.st_nlink != 1:
@@ -732,7 +754,7 @@ def _validate_graph(
     }:
         raise ExecutableDependencyError("subject_mismatch", "destination collision")
 
-    total = subject["size"]
+    total = 0
     destination_kind = {subject["destination"]: "file"}
     destination_kind.update({item["destination"]: item["kind"] for item in entries})
     for item in all_entries:
@@ -842,6 +864,8 @@ def _open_declared_file(
     policy: ProjectionPolicy,
     *,
     code: str,
+    ancestry: list[_HeldDirectory],
+    owned: list[int],
 ) -> _HeldFile:
     source = _canonical_absolute(row["source"])
     if len(source.encode("ascii")) > policy.path_bytes:
@@ -851,7 +875,24 @@ def _open_declared_file(
         raise ExecutableDependencyError(code, "source root")
     root = containing[0]
     relative = source[len(root) + (0 if root == "/" else 1) :]
-    fd = _open_relative_nofollow(roots[root], relative, directory=False)
+    def retain_directory(fd):
+        observed = os.fstat(fd)
+        mode = f"0{stat.S_IMODE(observed.st_mode):03o}"
+        if (
+            stat.S_IMODE(observed.st_mode) & 0o022
+            or (policy.allowed_uids is not None and observed.st_uid not in policy.allowed_uids)
+            or (policy.allowed_gids is not None and observed.st_gid not in policy.allowed_gids)
+            or (policy.directory_modes is not None and mode not in policy.directory_modes)
+        ):
+            raise ExecutableDependencyError(code, "source ancestry owner or mode")
+        held_fd = _dup_cloexec(fd)
+        owned.append(held_fd)
+        ancestry.append(_HeldDirectory(held_fd, _directory_identity(observed)))
+
+    retain_directory(roots[root])
+    fd = _open_relative_nofollow(
+        roots[root], relative, directory=False, check_directory=retain_directory,
+    )
     try:
         expected = host_row or {
             "path": source,
@@ -1104,7 +1145,12 @@ def _open_absolute_nofollow(path: str, *, directory: bool) -> int:
         os.close(root_fd)
 
 
-def _open_relative_nofollow(root_fd: int, relative: str, *, directory: bool) -> int:
+def _directory_identity(observed: os.stat_result) -> tuple[int, int, int, int, int]:
+    return (observed.st_dev, observed.st_ino, observed.st_uid, observed.st_gid, observed.st_mode)
+
+
+def _open_relative_nofollow(root_fd: int, relative: str, *, directory: bool,
+                            check_directory=None) -> int:
     components = relative.split("/")
     parent = _dup_cloexec(root_fd)
     try:
@@ -1116,7 +1162,9 @@ def _open_relative_nofollow(root_fd: int, relative: str, *, directory: bool) -> 
             )
             os.close(parent)
             parent = next_fd
-        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC
+            if check_directory is not None:
+                check_directory(parent)
+        flags = os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
         if directory:
             flags |= os.O_DIRECTORY
         return os.open(components[-1], flags, dir_fd=parent)

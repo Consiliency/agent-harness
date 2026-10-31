@@ -1633,30 +1633,30 @@ def build_seat_jail(
     if leg not in ("claude", "gemini"):
         raise SeatSandboxRefused(refused("jail_build"), f"no jail for leg {leg!r}")
     dependency_projection = None
-    if dependency is not None:
-        _require_safe_dependency_destinations(
-            leg,
-            tuple(item.destination for item in dependency.entries),
-            dependency.subject_destination,
-        )
-        dependency.revalidate()
-        dependency_projection = dependency.reopen_projection()
     seccomp_fd = None
-    arch = arch or host_arch()
-    review_dir = Path(review_dir)
-    tree = Path(tree) if tree is not None else review_dir / HOST_TREE_DIRNAME
-    home = review_dir / HOST_HOME_DIRNAME
-    out = review_dir / HOST_OUT_DIRNAME
-    if not tree.is_dir() or tree.is_symlink():
-        raise SeatSandboxRefused(refused("jail_build"), "staged tree missing")
-    directories = [home, out, home / SEAT_TMP_DIRNAME]
-    if leg == "gemini":
-        # `.gemini` and `antigravity-cli` are the read-only bind (F006); only the empty
-        # workspace cwd and the writable bin/cache/log sources are created under seat-home.
-        directories += [home / "workspace", home / HOST_GEMINI_WRITABLE_DIRNAME,
-                        *(home / HOST_GEMINI_WRITABLE_DIRNAME / name
-                          for name in (*GEMINI_WRITABLE_CONFIG_DIRS, *GEMINI_WRITABLE_DOTDIR_DIRS))]
     try:
+        if dependency is not None:
+            _require_safe_dependency_destinations(
+                leg,
+                tuple(item.destination for item in dependency.entries),
+                dependency.subject_destination,
+            )
+            dependency.revalidate()
+            dependency_projection = dependency.reopen_projection()
+        arch = arch or host_arch()
+        review_dir = Path(review_dir)
+        tree = Path(tree) if tree is not None else review_dir / HOST_TREE_DIRNAME
+        home = review_dir / HOST_HOME_DIRNAME
+        out = review_dir / HOST_OUT_DIRNAME
+        if not tree.is_dir() or tree.is_symlink():
+            raise SeatSandboxRefused(refused("jail_build"), "staged tree missing")
+        directories = [home, out, home / SEAT_TMP_DIRNAME]
+        if leg == "gemini":
+            # `.gemini` and `antigravity-cli` are the read-only bind (F006); only the empty
+            # workspace cwd and the writable bin/cache/log sources are created under seat-home.
+            directories += [home / "workspace", home / HOST_GEMINI_WRITABLE_DIRNAME,
+                            *(home / HOST_GEMINI_WRITABLE_DIRNAME / name
+                              for name in (*GEMINI_WRITABLE_CONFIG_DIRS, *GEMINI_WRITABLE_DOTDIR_DIRS))]
         for directory in directories:
             try:
                 os.mkdir(directory, 0o700)

@@ -185,6 +185,8 @@ def admit(env, *, keep_miss=False):
        ``gemini_heartbeat_capability_unavailable`` (``keep_miss=True``, for
        ``ensure_admitted`` only, raises ``AdmissionMiss`` carrying the image instead).
     """
+    from .executable_dependency_startup import refuse_unwired_dependency_route
+    refuse_unwired_dependency_route("Gemini heartbeat image admission")
     try:
         _local_capabilities()
         if _CANDIDATE is not None:
@@ -407,6 +409,8 @@ def owned_profile(env, *, settings_bytes, credential_path, admission=None):
     sandbox is an independent read of the admission's sealed memfd, re-hashed here, so
     the executed bytes are the verified bytes whatever happens to the PATH file.
     """
+    from .executable_dependency_startup import refuse_unwired_dependency_route
+    refuse_unwired_dependency_route("Gemini heartbeat")
     owned = admission is None
     if owned:
         admission = admit(env)
