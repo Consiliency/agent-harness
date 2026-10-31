@@ -99,8 +99,11 @@ def test_jail_floor_precedes_all_preparation_effects(tmp_path, monkeypatch, prov
         fixture.close()
 
 
-@pytest.mark.parametrize('route', ['claude_channel', 'claude_agent_view', None])
-def test_required_executor_transports_refuse_before_staging(tmp_path, monkeypatch, route):
+@pytest.mark.parametrize('route,action', [
+    ('claude_channel', 'execute'), ('claude_agent_view', 'execute'), (None, 'execute'),
+    ('claude_channel', 'review'), ('claude_agent_view', 'review'),
+])
+def test_required_executor_transports_refuse_before_staging(tmp_path, monkeypatch, route, action):
     fixture = build_fixture(tmp_path / 'fixture', provider='claude')
     try:
         with _managed(monkeypatch, fixture):
@@ -109,7 +112,7 @@ def test_required_executor_transports_refuse_before_staging(tmp_path, monkeypatc
             monkeypatch.setattr(panel.subprocess, 'Popen', _unreached)
             spec = SimpleNamespace(
                 executor='claude', command=[str(fixture.subject), '--original'],
-                prompt_bundle=SimpleNamespace(product_action='execute'), claude_route=route,
+                prompt_bundle=SimpleNamespace(product_action=action), claude_route=route,
             )
             with pytest.raises(ExecutableDependencyError, match='dependency_route_unwired'):
                 launcher.launch_with_spec(spec, log_path=tmp_path / 'output/log')
@@ -133,6 +136,26 @@ def test_direct_launch_and_maintenance_refuse_before_lookup_or_outputs(tmp_path,
             with pytest.raises(ExecutableDependencyError, match='dependency_route_unwired'):
                 panel.launch_owned([str(fixture.subject)], role=panel.SeatLaunchRole.EXECUTOR_TRUSTED,
                                    profile=panel.SeatProfile(env={}))
+            assert not (tmp_path / 'out').exists()
+    finally:
+        fixture.close()
+
+
+def test_president_heartbeat_refuses_before_capability_and_launch(tmp_path, monkeypatch):
+    import threading
+    from phase_loop_runtime import president_adapter
+    from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
+    fixture = build_fixture(tmp_path / 'fixture', provider='gemini')
+    try:
+        with _managed(monkeypatch, fixture):
+            monkeypatch.setattr(gemini_heartbeat, 'require_capability', _unreached)
+            monkeypatch.setattr(gemini_heartbeat, 'owned_profile', _unreached)
+            monkeypatch.setattr(panel, '_run_leg_with_liveness', _unreached)
+            monkeypatch.setattr(panel.subprocess, 'Popen', _unreached)
+            seam = president_adapter.build_president_invoke(DEFAULT_BOARD, repo_dir=str(tmp_path), base_env={})
+            monitor = panel._ReviewMonitor(tmp_path / 'm.json', 't', 0, threading.Event())
+            with pytest.raises(ExecutableDependencyError, match='Gemini heartbeat'):
+                seam._launch_gemini('gemini-model', 'F001: [x] y', tmp_path / 'out', monitor=monitor)
             assert not (tmp_path / 'out').exists()
     finally:
         fixture.close()
@@ -187,6 +210,24 @@ def test_required_gemini_stale_login_refuses_host_refresh(tmp_path, monkeypatch,
                     panel._prepare_jailed_gemini(tmp_path / 'review', tmp_path / 'seat', None,
                                                 1, os.getpid(), ('bundle', 'brief'), SimpleNamespace())
             assert not (tmp_path / 'seat').exists()
+            assert not (tmp_path / 'out').exists()
+    finally:
+        fixture.close()
+
+
+def test_required_gemini_review_launch_refuses_short_login_without_waiting(tmp_path, monkeypatch):
+    fixture = build_fixture(tmp_path / 'fixture', provider='gemini')
+    try:
+        with _managed(monkeypatch, fixture):
+            monkeypatch.setattr(panel, '_gemini_login_left_s', lambda _home: 300.0)
+            monkeypatch.setattr(panel, '_gemini_credential_fresh', lambda _home: False)
+            # Reaching the wait's notice/sleep, network isolation or a spawn is a failure.
+            monkeypatch.setattr(panel, '_BOARD_CANCEL', SimpleNamespace(get=_unreached))
+            monkeypatch.setattr('phase_loop_runtime.sandbox_egress.isolated_network', _unreached)
+            monkeypatch.setattr(panel.subprocess, 'Popen', _unreached)
+            with pytest.raises(ExecutableDependencyError, match='Gemini host credential refresh'):
+                launcher.launch(['agy', '--original'], log_path=tmp_path / 'out/log',
+                                env={'HOME': str(tmp_path)}, cwd=tmp_path, action='review')
             assert not (tmp_path / 'out').exists()
     finally:
         fixture.close()

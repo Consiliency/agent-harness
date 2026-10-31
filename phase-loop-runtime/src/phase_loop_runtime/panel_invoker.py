@@ -5078,6 +5078,12 @@ def _await_gemini_login(command, env, *, gemini_profile=None, review_monitor=Non
     if (review_monitor is None and deadline_s is not None
             and float(deadline_s) - left < _GEMINI_LOGIN_MIN_S):
         return 0.0  # the leg would not be left a run: no sleep, the gate decides now
+    # agent-harness#1782: a required session cannot renew this login on the host, so
+    # refuse now rather than sleep until expiry and refuse afterwards.
+    from .executable_dependency_startup import current_dependency_for_provider
+    dependency = current_dependency_for_provider()
+    if dependency is not None:
+        _require_dependency_profile_composition(dependency, "gemini", env, gemini_profile=gemini_profile)
     cancel = review_monitor.cancel if review_monitor is not None else _BOARD_CANCEL.get()
     _what, why, fix = _seat_jail.NOTICES[_GEMINI_LOGIN_AWAITING]
     log = logging.getLogger(__name__)
