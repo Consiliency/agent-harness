@@ -147,11 +147,11 @@ def test_heartbeat_composition_refuses_before_admission_credentials_and_outputs(
             monkeypatch.setattr(panel, '_seat_credential', _unreached)
             monkeypatch.setattr(panel, '_precreate_seat_output', _unreached)
             monkeypatch.setattr(panel.subprocess, 'Popen', _unreached)
+            from phase_loop_runtime import agy_qualification
+            monkeypatch.setattr(agy_qualification, 'ensure_admitted', _unreached)
+            board = SimpleNamespace(seats=(SimpleNamespace(harness='gemini'),))
             with pytest.raises(ExecutableDependencyError, match='Gemini heartbeat'):
-                gemini_heartbeat.require_capability({})
-            with pytest.raises(ExecutableDependencyError, match='Gemini heartbeat'):
-                with gemini_heartbeat.owned_profile({}, settings_bytes=b'{}', credential_path=tmp_path / 'absent'):
-                    pytest.fail('profile entered')
+                panel._preflight_gemini_heartbeat(board, 'heartbeat_only', env={})
             with pytest.raises(ExecutableDependencyError, match='Gemini heartbeat'):
                 with panel.seat_profile(harness='gemini', executable=str(fixture.subject), env={},
                                         cwd=tmp_path, dependency=session.dependency,

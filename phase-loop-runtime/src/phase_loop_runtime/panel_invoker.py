@@ -7229,6 +7229,9 @@ def _preflight_gemini_heartbeat(board, monitoring_policy, env=None, cancel_event
         # agent-harness#1076: the whole-board preflight is the ONLY caller that may
         # self-qualify a genuine upstream agy release on first use; legs and the
         # president admit by lookup only (gemini_heartbeat.admit).
+        # agent-harness#1782: guarded here, not in the qualification-pinned route core.
+        from .executable_dependency_startup import refuse_unwired_dependency_route
+        refuse_unwired_dependency_route("Gemini heartbeat image admission")
         from . import agy_qualification
         agy_qualification.ensure_admitted(_broker_subscription_env(env), cancel_event,
                                           agy_qualification.board_heartbeat(stream_dir)).close()
