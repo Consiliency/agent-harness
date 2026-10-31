@@ -58,7 +58,8 @@ LAUNCHERS = {
 #: what they are called with today; a call that hands one a literal agent-CLI argv is a
 #: new agent launch and is recorded at the caller.
 PASS_THROUGH_HELPERS = frozenset({"_run_process", "_run_bounded", "_run_probe",
-                                  "run_notification_command", "_git_run", "_github_run"})
+                                  "run_notification_command", "_git_run", "_github_run",
+                                  "run_process"})
 #: Event-loop launch methods, whatever the receiver (``loop.subprocess_exec``).
 LOOP_LAUNCH_METHODS = frozenset({"subprocess_exec", "subprocess_shell"})
 #: Submodules reached as an attribute of a launch-capable module.
@@ -118,6 +119,8 @@ INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
     # -- programs that are not agent CLIs (the AST cannot see the program) --------------
     # agent-harness#1222 §5/§5a: trusted host helpers resolved to absolute paths.
     ("review_stage.py", "host_git"): (NOT_AGENT, "git, the hardened host invocation"),
+    ("openshell_artifacts.py", "run_process"): (
+        NOT_AGENT, "bounded supervisor primitive; its only caller passes /usr/bin/git"),
     ("review_stage.py", "trusted_host_executable"): (
         NOT_AGENT, "a trusted host helper's own version probe"),
     ("sandbox_egress.py", "egress_isolation_available"): (

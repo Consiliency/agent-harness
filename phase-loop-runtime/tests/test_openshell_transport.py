@@ -110,7 +110,9 @@ def transport_bindings(request, monkeypatch):
     monkeypatch.setattr(sys.modules[__name__], "P", proto)
     return proto
 
-GEN = str(uuid4())
+# Fixed values: pytest-xdist requires identical parametrize IDs in every worker.
+GEN = "d1e50366-0a54-4df0-b778-45b37b391df6"
+OTHER_GEN = "b971370c-a1b8-432a-a987-cef35cbc474b"
 
 
 def bound(seconds=1):
@@ -329,7 +331,7 @@ def test_f5_unseen_kill_nothing_to_settle_and_recovery_is_observation_only():
 
 @pytest.mark.parametrize("changes", [
     {"lease": {"lease_id": "other", "sandbox_ref": GEN}},
-    {"lease": {"lease_id": "lease", "sandbox_ref": str(uuid4())}},
+    {"lease": {"lease_id": "lease", "sandbox_ref": OTHER_GEN}},
     {"lease": {"lease_id": "lease", "sandbox_ref": "reservation:lease"}},
     {"barrier_confirmed": True, "cleanup_pending": False, "fenced": True, "admission_ready": False},
     {"create_settled": False},
@@ -506,7 +508,7 @@ def test_cancellation_during_exec_cancels_stream_without_retry():
 @pytest.mark.parametrize("entries", [
     [{"lease_id": "lease", "sandbox_ref": GEN}] * 2,
     [{"lease_id": "lease", "sandbox_ref": "reservation:other"}],
-    [{"lease_id": "lease", "sandbox_ref": str(uuid4())}],
+    [{"lease_id": "lease", "sandbox_ref": OTHER_GEN}],
     [{"lease_id": "other", "sandbox_ref": GEN}],
 ])
 def test_inventory_duplicates_malformed_and_wrong_generation_never_return_partial(entries):
@@ -533,7 +535,7 @@ def test_noninert_create_refused_without_dispatch(mutation):
 
 
 @pytest.mark.parametrize("changes,code", [
-    ({"lease": {"lease_id": "lease", "sandbox_ref": str(uuid4())}}, "generation_mismatch"),
+    ({"lease": {"lease_id": "lease", "sandbox_ref": OTHER_GEN}}, "generation_mismatch"),
     ({"fenced": True}, "invalid_observation"),
     ({"lease": {"lease_id": "other", "sandbox_ref": GEN}}, "lease_mismatch"),
 ])

@@ -7,11 +7,20 @@ import subprocess
 import sys
 
 import pytest
+import shutil
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts' / 'qualify_openshell_sdk.py'
 spec = importlib.util.spec_from_file_location('qualification_recipe', SCRIPT)
 recipe = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(recipe)
+
+# These tests run the real recipe, which executes git, uv and openssl. The clean
+# local check and the hosted lanes do not provide uv, so the tests skip there with
+# this reason rather than fail at the recipe's own prerequisite refusal.
+# Qualification itself is a separate explicit run, never ordinary CI.
+requires_recipe_tools = pytest.mark.skipif(
+    not all(shutil.which(tool) for tool in ('git', 'uv', 'openssl')),
+    reason='SDK qualification recipe needs git, uv and openssl on PATH')
 
 
 @pytest.mark.parametrize('name', ['openshell.proto', 'openshell_pb2.py', 'approved.whl'])
@@ -144,6 +153,7 @@ out = pathlib.Path(next(a.split('=', 1)[1] for a in sys.argv if a.startswith('--
     return state, work, root
 
 
+@requires_recipe_tools
 def test_caller_directory_is_independent(qualification_run, tmp_path, monkeypatch):
     _, work, _ = qualification_run
     shadow = tmp_path / 'grpc_tools'
@@ -157,6 +167,7 @@ def test_caller_directory_is_independent(qualification_run, tmp_path, monkeypatc
     assert (work / 'qualification-receipt.json').is_file()
 
 
+@requires_recipe_tools
 def test_explicit_plugin_selection(qualification_run, monkeypatch):
     _, work, root = qualification_run
     (root / 'tests' / 'ambient_plugin.py').write_text("raise RuntimeError('ambient plugin loaded')")
@@ -166,6 +177,7 @@ def test_explicit_plugin_selection(qualification_run, monkeypatch):
     assert (work / 'qualification-receipt.json').is_file()
 
 
+@requires_recipe_tools
 def test_installed_bytes_rechecked_after_generation(qualification_run):
     state, work, _ = qualification_run
     state['tamper'] = True
@@ -175,6 +187,7 @@ def test_installed_bytes_rechecked_after_generation(qualification_run):
     assert not (work / 'qualification-receipt.json').exists()
 
 
+@requires_recipe_tools
 def test_receipt_records_observed_run(qualification_run):
     import json
     _, work, _ = qualification_run
@@ -193,6 +206,7 @@ def test_receipt_records_observed_run(qualification_run):
     assert receipt['completed_at']
 
 
+@requires_recipe_tools
 def test_dirty_source_refuses_receipt(qualification_run):
     state, work, _ = qualification_run
     state['dirty'] = True
@@ -201,6 +215,7 @@ def test_dirty_source_refuses_receipt(qualification_run):
     assert not (work / 'qualification-receipt.json').exists()
 
 
+@requires_recipe_tools
 @pytest.mark.parametrize('level', [0, 1, 2])
 @pytest.mark.parametrize('name', ['conftest.py', 'pytest.ini', '.pytest.ini', 'tox.ini', 'setup.cfg'])
 def test_pytest_discovery_is_bounded(qualification_run, level, name):
@@ -244,6 +259,7 @@ def qualification_git(qualification_run):
     return state, work, root
 
 
+@requires_recipe_tools
 @pytest.mark.parametrize('stage', ['start', 'generation', 'end'])
 @pytest.mark.parametrize('relative,ignore', [
     (f'{directory}/pytest.pyc' if ignore == 'repository' else f'{directory}/pytest.py', ignore)
@@ -292,6 +308,7 @@ def test_ignored_import_files_refuse_receipt(qualification_git, monkeypatch, sta
     assert target.read_bytes() == content  # Refusal must not delete user files.
 
 
+@requires_recipe_tools
 @pytest.mark.parametrize('stage', ['start', 'generation', 'end'])
 @pytest.mark.parametrize('name', ['tracked.py', 'untracked.py'])
 def test_changed_import_files_refuse_receipt(qualification_git, stage, name):
@@ -310,6 +327,7 @@ def test_changed_import_files_refuse_receipt(qualification_git, stage, name):
     assert not (work / 'qualification-receipt.json').exists()
 
 
+@requires_recipe_tools
 @pytest.mark.parametrize('entry', ['extra', 'symlink', 'directory_symlink'])
 def test_exact_sdk_entries(qualification_run, entry):
     _, work, _ = qualification_run
@@ -330,6 +348,7 @@ def test_exact_sdk_entries(qualification_run, entry):
         recipe.verify(sdk, json.loads(recipe.MANIFEST.read_text())['generated_outputs'], exact=True)
 
 
+@requires_recipe_tools
 @pytest.mark.parametrize('body', [
     'import pytest\ndef test_case(): pytest.skip("fixture")\n',
     'import pytest\n@pytest.mark.xfail\ndef test_case(): assert False\n',
@@ -344,6 +363,7 @@ def test_unsuccessful_run_has_no_receipt(qualification_run, body):
     assert not (work / 'qualification-receipt.json').exists()
 
 
+@requires_recipe_tools
 @pytest.mark.parametrize('name', ['pytest.py', 'phase_loop_runtime/__init__.py',
                                   '_openshell_qualification.py'])
 def test_installed_inventory_rechecked(qualification_run, name):
@@ -361,6 +381,7 @@ def test_installed_inventory_rechecked(qualification_run, name):
     assert not (work / 'qualification-receipt.json').exists()
 
 
+@requires_recipe_tools
 @pytest.mark.parametrize('change', ['remove', 'file_symlink', 'directory_symlink', 'metadata'])
 def test_installed_tree_changes_refused(qualification_run, change):
     state, work, _ = qualification_run
