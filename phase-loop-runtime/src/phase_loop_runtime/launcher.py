@@ -1983,6 +1983,17 @@ def refuse_unwired_executor_spec(spec, *, dry_run: bool = False) -> None:
     _refuse_unwired_executor_spec(spec, current_dependency_for_provider(spec.executor, spec.command))
 
 
+def refuse_unwired_executor_action(action: str | None, *, dry_run: bool = False) -> None:
+    """agent-harness#1782: refuse a required-session non-review executor action before
+    default-executor selection, whose availability scan runs credential-bearing auth
+    probes. ``refuse_unwired_executor_spec`` and ``launch_with_spec`` repeat the check."""
+    if dry_run or (action or "execute") == "review":
+        return
+    from .executable_dependency_startup import refuse_unwired_dependency_route
+
+    refuse_unwired_dependency_route("executor transport")
+
+
 def run_auth_preflight(spec: LaunchSpec) -> AuthPreflightResult:
     if spec.auth_preflight_mode != "metadata_only":
         return AuthPreflightResult(ok=True, metadata={})

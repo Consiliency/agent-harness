@@ -153,6 +153,60 @@ def test_runner_refuses_unwired_executor_before_artifacts_and_auth_preflight(tmp
         fixture.close()
 
 
+def test_run_loop_refuses_before_default_executor_selection(tmp_path, monkeypatch):
+    from pathlib import Path
+    from phase_loop_test_utils import make_repo, write_phase_plan
+    from phase_loop_runtime import runner
+    repo_root = Path(__file__).resolve().parents[2]
+    if (repo_root / 'phase-loop-skills').is_dir():
+        monkeypatch.setenv('PHASE_LOOP_RUNNER_REPO_ROOT', str(repo_root))
+    repo = make_repo(tmp_path / 'repo')
+    roadmap = repo / 'specs' / 'phase-plans-v1.md'
+    write_phase_plan(repo, 'RUNNER', roadmap)
+    fixture = build_fixture(tmp_path / 'fixture', provider='codex')
+    try:
+        with _managed(monkeypatch, fixture):
+            # The default-executor availability scan runs credential-bearing auth probes.
+            monkeypatch.setattr(runner, 'resolve_default_executor', _unreached)
+            monkeypatch.setattr(runner, 'run_artifacts', _unreached)
+            monkeypatch.setattr(runner, 'run_auth_preflight', _unreached)
+            monkeypatch.setattr(runner, 'launch_with_spec', _unreached)
+            with pytest.raises(ExecutableDependencyError, match='executor transport'):
+                runner.run_loop(repo, roadmap, phase='RUNNER')
+    finally:
+        fixture.close()
+
+
+def test_delegated_child_refuses_before_artifacts_and_auth_preflight(tmp_path, monkeypatch):
+    from phase_loop_runtime import runner
+    fixture = build_fixture(tmp_path / 'fixture', provider='codex')
+    try:
+        with _managed(monkeypatch, fixture):
+            spec = SimpleNamespace(
+                executor='codex', command=[str(fixture.subject), 'exec', 'synthetic'],
+                prompt_bundle=SimpleNamespace(product_action='execute'), claude_route=None,
+            )
+            decision = SimpleNamespace(approved=True, selected_executor='codex', dispatch_decision=None)
+            monkeypatch.setattr(runner, 'validate_delegation_request', lambda *a, **k: decision)
+            monkeypatch.setattr(runner, 'ParentChildRunMetadata', lambda **k: SimpleNamespace(**k))
+            monkeypatch.setattr(runner, 'resolve_profile_for_executor', lambda **k: None)
+            monkeypatch.setattr(runner, 'build_prompt', lambda *a, **k: None)
+            monkeypatch.setattr(runner, 'build_launch_request', lambda **k: None)
+            monkeypatch.setattr(runner, 'build_launch_spec', lambda _request: spec)
+            monkeypatch.setattr(runner, 'run_artifacts', _unreached)
+            monkeypatch.setattr(runner, 'run_auth_preflight', _unreached)
+            monkeypatch.setattr(runner, 'launch_with_spec', _unreached)
+            request = SimpleNamespace(product_action='execute', request_id='r1', target_executor='codex',
+                                      review_context=None, reason='synthetic', repair_context=None)
+            with pytest.raises(ExecutableDependencyError, match='executor transport'):
+                runner.launch_delegated_child(
+                    repo=tmp_path, roadmap=tmp_path / 'ROADMAP.md', parent_phase='p1',
+                    parent_action='execute', plan=None, request=request,
+                )
+    finally:
+        fixture.close()
+
+
 def test_direct_launch_and_maintenance_refuse_before_lookup_or_outputs(tmp_path, monkeypatch):
     fixture = build_fixture(tmp_path / 'fixture', provider='codex')
     try:
@@ -189,6 +243,21 @@ def test_president_heartbeat_refuses_before_capability_and_launch(tmp_path, monk
             with pytest.raises(ExecutableDependencyError, match='Gemini heartbeat'):
                 seam._launch_gemini('gemini-model', 'F001: [x] y', tmp_path / 'out', monitor=monitor)
             assert not (tmp_path / 'out').exists()
+    finally:
+        fixture.close()
+
+
+def test_default_spawn_heartbeat_refuses_before_capability(tmp_path, monkeypatch):
+    import threading
+    fixture = build_fixture(tmp_path / 'fixture', provider='gemini')
+    try:
+        with _managed(monkeypatch, fixture):
+            monkeypatch.setattr(gemini_heartbeat, 'require_capability', _unreached)
+            monkeypatch.setattr(panel, 'revalidate_review_isolation_authorization', _unreached)
+            monkeypatch.setattr(panel.subprocess, 'Popen', _unreached)
+            monitor = panel._ReviewMonitor(tmp_path / 'm.json', 't', 0, threading.Event())
+            with pytest.raises(ExecutableDependencyError, match='Gemini heartbeat'):
+                panel._default_spawn('gemini', 'artifact', repo_dir=tmp_path, review_monitor=monitor)
     finally:
         fixture.close()
 

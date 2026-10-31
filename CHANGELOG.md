@@ -22,7 +22,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   provider-free inventory and refuse provider routes that are not dependency-wired.
 - Check jail destinations before provider preparation effects, close projection and input
   descriptors on partial construction, and give generic identity probes an independent
-  dependency projection. Accept arbitrary wrapper names from the trusted requirement;
+  dependency projection. Accept arbitrary wrapper names from the trusted requirement on the projected
+  seat routes (bounded convergence adapters still require the provider basename);
   validate intermediate source directory permissions, refuse FIFO inputs without waiting,
   and count each file once toward the aggregate limit (agent-harness#1782).
 - Required sessions explicitly refuse direct host executor/lease-supervisor transports,

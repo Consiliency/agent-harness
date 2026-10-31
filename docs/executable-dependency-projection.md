@@ -115,10 +115,11 @@ The following compositions raise `dependency_route_unwired` in required sessions
   lease-supervisor transports. `launch_with_spec` refuses these before command
   context staging or output allocation; `launch` and `launch_owned` also guard their
   entry boundaries. Path-based host execution and its ambient dependency closure
-  are not supported by this API. The runner refuses such a spec before it writes
-  run artifacts or runs auth-preflight probes, so `run`/`execute`/`resume`/`run-train`
-  in a required session never start a credential-bearing preflight for a launch
-  that would be refused.
+  are not supported by this API. For a non-review action the runner refuses
+  before default-executor selection (whose availability scan runs auth probes),
+  and refuses the built spec before it writes run artifacts or runs auth-preflight
+  probes, on the phase, lane work-unit and delegated-child paths. A `command`
+  executor in a required session refuses at the same point with `subject_mismatch`.
 - Claude Channel and Agent View, before invoking either transport or staging
   command context. Their operations are not bound to the selected wrapper.
 - `maintain-skills`, at CLI classification before dispatch.

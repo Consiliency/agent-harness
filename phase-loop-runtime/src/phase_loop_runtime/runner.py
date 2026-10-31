@@ -2740,6 +2740,7 @@ def run_loop(
             # When it runs, feed it the SAME merged allowed/disabled/required policy
             # constraints dispatch enforces, so an AUTO pick is never something
             # dispatch would then hard-block as a preferred candidate.
+            _launcher_module.refuse_unwired_executor_action(launch_action, dry_run=dry_run)
             if has_explicit_preferred:
                 autosel_selection = None
             else:
