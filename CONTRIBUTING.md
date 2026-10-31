@@ -66,11 +66,17 @@ Requirements: Python 3.12 or newer for the runtime (`requires-python = ">=3.12"`
   `entry-point docs verification` (`entry-doc-check.yml`), `skills-parity.yml`,
   `roadmap ownership (advisory)`, the package build workflows and
   `qualified-agy-image.yml`.
+- Pull requests land through GitHub's merge queue. The queue tests your pull request merged
+  onto `main`, together with anything queued ahead of it, and then pushes exactly that
+  commit to `main`. The required checks run again on that commit (the `merge_group`
+  event) with the full push-to-main suite: all three Python lanes, the quarantined tests,
+  the CONFORM chronology node and Gate A. A red removes the pull request from the queue,
+  and `main` is not touched. Your branch doesn't need to be up to date with `main`.
 - **The Gate A suite (run against a clean-room install of the wheel) does not run on pull requests.**
-  It runs on pushes to `main`, nightly and on dispatch (`test.yml`), and in the release
-  build on tags (`publish-pypi.yml`). If your change touches
+  It runs in the merge queue, on pushes to `main`, nightly and on dispatch (`test.yml`),
+  and in the release build on tags (`publish-pypi.yml`). If your change touches
   packaging, `skills-src/`, `docs/` paths that tests read, or workflows, dispatch it on
-  your branch before merging:
+  your branch before queueing, so a Gate A failure shows up before the queue run:
 
   ```sh
   gh workflow run test.yml --ref <your-branch> -f chronology=false
@@ -81,7 +87,11 @@ Requirements: Python 3.12 or newer for the runtime (`requires-python = ">=3.12"`
 - Changing skill text in `skills-src/` can change the recorded launch-spec golden
   (`phase-loop-runtime/tests/data/launchspec_golden/`). Regenerate the bundles and update
   the golden in the same pull request.
-- Add a CHANGELOG entry under `[Unreleased]` for user-visible behaviour.
+- For user-visible behaviour, add a changelog fragment, `changelog.d/<number>.<type>.md`.
+  Don't edit `CHANGELOG.md` `[Unreleased]`: every pull request that edits those lines
+  conflicts with the next one to merge. The format and types are in
+  [`changelog.d/README.md`](changelog.d/README.md). The release cut assembles the
+  fragments into `CHANGELOG.md`.
 - Reference issues and pull requests as `agent-harness#123`, never as a bare `#123`
   (see [`AGENTS.md`](AGENTS.md)).
 - Larger changes are reviewed by a cross-vendor advisor board
