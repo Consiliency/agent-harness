@@ -256,3 +256,5 @@ backward-compatible) so sequential merges are safe. See
 ## License
 
 Apache-2.0 (see `LICENSE` / `NOTICE`).
+
+For local evidence and review storage, see [scratch cleanup and output retention](docs/phase-loop/output-retention.md).

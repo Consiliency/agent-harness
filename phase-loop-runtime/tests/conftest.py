@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import atexit
 import functools
 import hashlib
 import os
@@ -47,8 +48,25 @@ import _scratch_audit_hook
 # scratch decision's marker. Enforced at runtime by an audit hook, not by reading source.
 _scratch_audit_hook.install()
 _scratch_audit_hook.enabled = True
-_scratch_audit_hook.log_path = os.path.join(
-    tempfile.mkdtemp(prefix="pl-scratch-audit-"), "violations.log")
+_scratch_audit_dir = tempfile.mkdtemp(prefix="pl-scratch-audit-")
+_scratch_audit_pid = os.getpid()
+_scratch_audit_hook.log_path = os.path.join(_scratch_audit_dir, "violations.log")
+
+
+def _cleanup_scratch_audit():
+    # Each xdist worker owns its directory. Forked children share the log but must
+    # not remove their parent's directory when they exit.
+    if os.getpid() == _scratch_audit_pid:
+        _scratch_audit_hook.log_path = None
+        shutil.rmtree(_scratch_audit_dir, ignore_errors=True)
+
+
+atexit.register(_cleanup_scratch_audit)
+
+
+def pytest_unconfigure(config):
+    # Runs after fixture/report teardown, also on collection failure/interrupt.
+    _cleanup_scratch_audit()
 
 
 @pytest.fixture(autouse=True)
