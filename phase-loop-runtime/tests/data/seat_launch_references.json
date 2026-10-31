@@ -1,4 +1,12 @@
 [
+  {"count": 1, "function": "_directory", "module": "output_retention", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "_locked", "module": "output_retention", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "_matches", "module": "output_retention", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "_mount_id", "module": "output_retention", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "_read", "module": "output_retention", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "_retire", "module": "output_retention", "primitive": "io.open", "role": "host-io"},
+  {"count": 2, "function": "mark", "module": "output_retention", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "run_managed", "module": "output_retention", "primitive": "run_provider", "role": "owned"},
   {"count": 1, "function": "authorize", "module": "publish_scope_correction", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "_pgrp_and_ticks", "module": "_proc_cpu", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "group_cpu_ticks", "module": "_proc_cpu", "primitive": "io.open", "role": "host-io"},
