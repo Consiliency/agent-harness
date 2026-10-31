@@ -6,6 +6,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- Add a disabled-model source staging RPC adapter on the original cancellation
+  lease, with fixed transfer bounds, verified wire digests and no uncertain replay.
+  Qualify candidate server bindings separately from production activation.
+
 - Refuse SDK qualification with changed, untracked or ignored files anywhere in
   the runtime tree, including sourceless bytecode planted during generation;
   bound pytest configuration, conftest discovery and package import paths.

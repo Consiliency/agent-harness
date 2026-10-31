@@ -39,6 +39,10 @@ async def main():
             await receive(request, context)
             yield p.ExecSandboxEvent(stdout={"data": b"x" * state["size"]})
 
+        async def SourceCancellationLease(self, request, context):
+            await receive(request, context)
+            return p.SourceCancellationLeaseResponse(generation=request.generation)
+
     try:
         config = json.loads(await reader.readline())
         service.add_OpenShellServicer_to_server(Service(), server)

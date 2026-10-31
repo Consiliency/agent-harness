@@ -18,7 +18,7 @@ from typing import Protocol
 
 from .openshell_artifacts import Bound, Identity, Refused, SourceBundle, canonical, digest, validate_result
 from .openshell_journal import JournalSession, ReaperAdapter
-from .openshell_transport import UnsupportedCapability
+from .openshell_transport import TransportError, UnsupportedCapability
 from .openshell_worker import seal_request
 from .placement_lease import LiveLeaseBackend
 from .sandbox_placement import (
@@ -64,6 +64,106 @@ class WorkerAdapter(Protocol):
     def exec_request(self, wire: bytes, end_s: float): ...
 
     def validate_native(self, identity: Identity, envelope: bytes, bound: Bound) -> None: ...
+
+
+class SourceRpcStage:
+    """Disabled-model stage wire, attached once to the backend's original session.
+
+    The fixed-width tree digest is the server's review_tree_manifest_sha256;
+    StageBinding retains the distinct canonical SourceBundle identity.
+    """
+
+    def __init__(self):
+        self._session = None
+        self._attempted = False
+
+    def validate_configuration(self):
+        if self._session is not None:
+            raise Refused("stage_already_bound")
+
+    def bind_session(self, session):
+        self.validate_configuration()
+        self._session = session
+
+    async def commit(self, binding, bundle, bound):
+        journal = self._session
+        if journal is None or self._attempted:
+            raise Refused("stage_not_repeatable")
+        self._attempted = True
+        session = journal._session
+        try:
+            session._request(bound)  # Validate finite caller bound before effects.
+            end = Bound(time.monotonic() + min(bound.timeout_s, 30),
+                        lambda: bound.cancelled.is_set() or not journal.lease.held or
+                        journal.lease.fenced or session._kill_requested or session._poisoned)
+            end.check()
+            journal.lease.validate_live_binding(journal)
+            if (type(binding) is not StageBinding or
+                    any(type(v) is not str for v in vars(binding).values()) or
+                    (binding.workspace, binding.owner_id, binding.lease_id, binding.generation) !=
+                    (session._workspace, session._owner, session._lease, session._generation) or
+                    session._observation is None or not session._observation.admission_ready or
+                    session._exec_attempted):
+                raise Refused("source_binding_invalid")
+            bundle.validate()
+            if binding.source_sha256 != bundle.sha256:
+                raise Refused("source_binding_invalid")
+            files, records = [], []
+            total = chunks = 0
+            previous = ""
+            for entry in bundle.files:
+                end.check()
+                if (type(entry.data) is not bytes or entry.path <= previous or
+                        len(entry.path.encode()) > 1024 or
+                        any(part.endswith((" ", ".")) for part in entry.path.split("/"))):
+                    raise Refused("source_manifest_invalid")
+                previous = entry.path
+                size = len(entry.data)
+                total += size
+                chunks += (size + 65535) // 65536
+                sha = digest(entry.data)
+                files.append(dict(path=entry.path, size=size, sha256=bytes.fromhex(sha),
+                                  executable=entry.mode == 0o100755))
+                records.append(b"blob" + (b"1" if entry.mode == 0o100755 else b"0") +
+                               sha.encode() + b"%020d" % size + digest(entry.path.encode()).encode())
+            if len(files) > 1024 or total > 4 * 1024 * 1024 or chunks > 4096:
+                raise Refused("source_limit")
+            expected = bytes.fromhex(digest(b"".join(records)))
+
+            class Cancellation:
+                def is_set(self):
+                    return end.cancelled()
+
+            async def send(**operation):
+                journal.lease.validate_live_binding(journal)
+                end.check()
+                request = session._proto.SourceCancellationLeaseRequest(
+                    workspace_scope={"workspace": binding.workspace}, owner_id=binding.owner_id,
+                    lease_id=binding.lease_id, generation=binding.generation, **operation)
+                if request.ByteSize() > 1024 * 1024:
+                    raise Refused("source_message_limit")
+                left = end.check()
+                response = await session._bounded(
+                    lambda: session._stub.SourceCancellationLease(request, timeout=left),
+                    OperationBound(left, Cancellation()))
+                end.check()
+                journal.lease.validate_live_binding(journal)
+                if (response.generation != binding.generation or
+                        response.digest != (expected if "commit" in operation else b"")):
+                    raise TransportError("stage_binding_mismatch", uncertain=True)
+
+            await send(begin={"files": files, "digest": expected})
+            for index, entry in enumerate(bundle.files):
+                for offset in range(0, len(entry.data), 65536):
+                    await send(chunk={"file": index, "offset": offset,
+                                      "data": entry.data[offset:offset + 65536]})
+            await send(commit=True)
+            return StageBinding(binding.workspace, binding.owner_id, binding.lease_id,
+                                binding.generation, binding.source_sha256)
+        except BaseException:
+            session._poisoned = True
+            journal.lease.fence()
+            raise
 
 
 class _LiveCancellation:
@@ -144,6 +244,8 @@ class OpenShellBackend(LiveLeaseBackend):
             if self._session is not None or lease.owner_id != self._owner:
                 raise Refused("lease_binding_invalid")
             self._session = JournalSession(lease, self._proto, self._stub, workspace=self._workspace)
+            if isinstance(self._stage, SourceRpcStage):
+                self._stage.bind_session(self._session)
             return self._session
 
     def _live(self):
@@ -239,12 +341,15 @@ class OpenShellBackend(LiveLeaseBackend):
             receipt = await self._stage.commit(self._binding, self._bundle, bound)
             self._live()
             if (bound.cancelled.is_set() or type(receipt) is not StageBinding or
+                    any(type(value) is not str for value in (
+                        receipt.workspace, receipt.owner_id, receipt.lease_id,
+                        receipt.generation, receipt.source_sha256)) or
                     self._binding != receipt):
                 session.lease.fence()
                 raise Refused("stage_binding_mismatch")
-            session.lease.confirm_commit_ref(session, receipt.generation)
+            session.lease.confirm_commit_ref(session, self._binding.generation)
             self._committed = True
-            return BackendReceipt("committed", receipt.generation, receipt.source_sha256)
+            return BackendReceipt("committed", self._binding.generation, self._binding.source_sha256)
 
         return self._run(commit(), bound)
 

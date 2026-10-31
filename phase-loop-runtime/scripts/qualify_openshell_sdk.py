@@ -168,7 +168,8 @@ def main():
                     '-p', 'no:cacheprovider',
                     '-p', '_openshell_qualification',
                     'tests/test_openshell_transport.py', 'tests/test_openshell_transport_grpc.py',
-                    'tests/test_openshell_channel.py'], cwd=ROOT, env=env, check=True, timeout=TIMEOUTS['pytest'])
+                    'tests/test_openshell_channel.py', 'tests/test_openshell_source_rpc.py'],
+                   cwd=ROOT, env=env, check=True, timeout=TIMEOUTS['pytest'])
     results = json.loads((work / 'test-results.json').read_text())
     if results['exitstatus'] or results['collected'] <= 0 or results['passed'] != results['collected']:
         raise ValueError('qualification requires a complete passing test run')

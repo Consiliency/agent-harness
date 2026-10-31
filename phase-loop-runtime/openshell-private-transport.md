@@ -216,11 +216,10 @@ extra entries and symlinked SDK files/directories before collection;
 ordinary optional developer runs retain their skip behavior.
 Main CI workflow integration remains outstanding; ordinary CI is not qualification.
 
-These pins support the **existing reviewed wire** only. They do not supply bindings
-for new server RPCs. After new wire review, regenerate and review the input/output
-manifest together. Byte hash enforcement establishes identity, not cross-platform
-reproducibility or live proof; a fresh generation matching retained r13 output is
-bounded evidence for this interpreter/generator/platform only.
+The r72 pins include the source RPC as a **test integration candidate** (see below).
+Byte hash enforcement establishes identity, not cross-platform reproducibility or
+live proof. Review changed input/output pins together; the interpreter, generator
+and platform remain fixed.
 
 With the environment variable set, missing or incompatible generated modules fail
 rather than silently falling back. Without it, generated cases explicitly skip;
@@ -609,3 +608,62 @@ reaper, physical and live qualification obligations above are unchanged. Pending
 cancellation still permits previously claimed execution; confirmation still needs
 exact destruction and settled obligations. Production CREATE/EXEC and
 `_NONLOCAL_EXECUTION_DRIVER` remain closed.
+
+## Source RPC adapter (r72, disabled model only)
+
+`openshell_backend.SourceRpcStage()` implements `StageAdapter` on the backend's
+original `JournalSession`. The backend attaches it once when binding its live lease;
+it uses that session's protobuf module and injected stub, without constructing a
+channel, enrolling an owner or opening another lease. The authenticated scoped stub
+now forwards `SourceCancellationLease` under its existing scope/lifecycle checks.
+Production construction still refuses, capabilities remain empty, the registry is
+empty and the nonlocal driver flag remains false.
+
+The adapter validates the bundle and exact owner/workspace/lease/generation before
+begin. It sends the exact ordered files and bytes, retaining executable bits and
+empty files. Server-compatible preflight refuses unsorted/conflicting paths,
+trailing-dot components, more than 1024 files, paths over 1024 bytes, total bytes
+above 4 MiB and protobuf messages over 1 MiB. Chunks are at most 64 KiB with exact
+file indices/offsets and at most 4096 calls. Caller policy cannot enlarge these
+server caps. Sequential begin/chunk/commit calls share one monotonic deadline,
+capped at 30 seconds and the caller's remaining allowance; responses never reset
+it. Caller cancellation, lease loss/fencing and transport poisoning stop transfer.
+
+The wire manifest digest is the server's fixed-width `review_tree_manifest_sha256`
+encoding: in path order, `blob`, executable `0`/`1`, lowercase content SHA-256 hex,
+20-digit decimal byte length, lowercase path SHA-256 hex. This is deliberately
+distinct from the canonical JSON `SourceBundle.sha256`, which also binds base/tree,
+owned paths and caller limits. Every response must echo the original generation;
+begin/chunk digests must be empty and commit must return the recomputed wire digest.
+Only then does the adapter return the canonical original `StageBinding`.
+
+The attempt is consumed before transfer. Any failure fences the original lease
+and poisons its transport; there is no retry, resume, new begin or commit replay.
+The backend's existing cancellation/error handling retains its journal until the
+existing KILL/STATUS/complete-LIST cleanup protocol establishes settled obligations.
+A lost commit reply does not establish publication or cleanup. This client deadline
+is not endpoint-owned fixed expiry after client loss.
+
+SDK candidate pin: `99358e04266b7b22a84e7369c68c2653d8563a1f`, parent
+`fd170f4c20c95cbee9dc07b5133e20e43f7dab53`. r61 agreed to the parent's disabled
+wire; r69 reported 64 passing server tests for the cleanup repair. **Independent
+server cleanup review remains pending.** This pin is only a test integration
+candidate, not acceptance of that repair or permission to activate.
+
+Prior pin `d16558327be26766f57882b081c7de2333505909` and its complete manifest
+remain in Git at harness `1acb019f640e4618c1217da9200199fd147461cd`; r65/r68
+qualification evidence is retained. `source_manifest_sha256` retains its historical
+provenance value, not a hash of the new server inputs. The current `proto_inputs`
+and `generated_outputs` independently pin all candidate bytes. Wheels, generator
+inputs, import guards, installed-payload verification and clean-source requirements
+are unchanged. The qualification recipe now also runs source-RPC tests; its test
+count must therefore increase from the historical 310.
+
+Tests use genuine generated protobuf plus the compatible compact descriptor where
+applicable, local UDS gRPC for exact wire/lifecycle behavior, and a subprocess TLS
+fixture for scoped bearer-channel forwarding. None runs the Rust authority or a VM.
+Production VM materialization and terminal write exclusion, fixed endpoint expiry,
+exact-generation destruction/settled cleanup, C5, physical falsifiers and
+authenticated pinned-digest live qualification remain required. No live endpoint
+is contacted by these fixtures. Existing raw exception context/typed error mapping
+and production channel shutdown qualification remain open.

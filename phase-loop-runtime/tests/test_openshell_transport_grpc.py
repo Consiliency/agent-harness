@@ -125,7 +125,8 @@ def test_compact_fields_match_generated_schema(sdk):
                 compare(field.message_type, actual.message_type)
 
     for name in ("ControlCancellationLeaseRequest", "ControlCancellationLeaseResponse",
-                 "ExecCancellationLeaseRequest", "ExecSandboxEvent"):
+                 "ExecCancellationLeaseRequest", "ExecSandboxEvent",
+                 "SourceCancellationLeaseRequest", "SourceCancellationLeaseResponse"):
         compare(getattr(compact, name).DESCRIPTOR, getattr(sdk.proto, name).DESCRIPTOR)
     operation = sdk.proto.ControlCancellationLeaseRequest.DESCRIPTOR.fields_by_name["operation"].enum_type
     assert {v.name: v.number for v in operation.values} == {

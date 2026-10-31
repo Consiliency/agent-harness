@@ -135,7 +135,7 @@ out = pathlib.Path(next(a.split('=', 1)[1] for a in sys.argv if a.startswith('--
             return subprocess.CompletedProcess(argv, 0)
         if 'tests/test_openshell_transport.py' in argv:
             state['pytest_called'] = True
-            argv = argv[:-3] + ['tests/test_case.py']
+            argv = argv[:argv.index('tests/test_openshell_transport.py')] + ['tests/test_case.py']
         result = real_run(argv, **kwargs)
         if 'tests/test_case.py' in argv and state.get('after_pytest'):
             state['after_pytest']()

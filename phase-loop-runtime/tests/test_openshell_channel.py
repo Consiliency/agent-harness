@@ -335,3 +335,29 @@ def test_scope_lifetime_and_cancel(config, sdk, certificates, monkeypatch):
             with pytest.raises(oc.TransportError, match="context"):
                 stub.ControlCancellationLease(request(sdk), timeout=1)
     asyncio.run(run())
+
+
+@pytest.mark.parametrize('failure', [None, 'UNAUTHENTICATED', 'UNAVAILABLE'])
+def test_source_rpc_uses_authenticated_scoped_channel(config, sdk, certificates, failure):
+    async def run():
+        async with tls_server(sdk, certificates, config) as (local, state):
+            await state.command(failure=failure)
+            async with oc.authenticated_channel(local, sdk.service) as stub:
+                req = sdk.proto.SourceCancellationLeaseRequest(
+                    owner_id='owner', workspace_scope={'workspace': 'dedicated'},
+                    lease_id='lease', generation='generation', commit=True)
+                req.owner_id = 'wrong'
+                with pytest.raises(oc.TransportError, match='owner_workspace_refused'):
+                    stub.SourceCancellationLease(req, timeout=1)
+                req.owner_id = 'owner'
+                if failure:
+                    with pytest.raises(sdk.grpc.aio.AioRpcError) as error:
+                        await stub.SourceCancellationLease(req, timeout=1)
+                    assert error.value.code().name == failure
+                else:
+                    response = await stub.SourceCancellationLease(req, timeout=1)
+                    assert response.generation == 'generation'
+                assert (await state.command())['calls'] == 1
+            with pytest.raises(oc.TransportError, match='invalid_channel_context'):
+                stub.SourceCancellationLease(req, timeout=1)
+    asyncio.run(run())
