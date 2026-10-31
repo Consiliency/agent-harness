@@ -1,0 +1,41 @@
+{
+  "provenance": "Captured during the authorized 2026-10-26 dev0 canary; original live outcome remains inconclusive",
+  "boot_id": "a05e80ee-580f-405f-81bd-a1f32292a1d9",
+  "begin": {
+    "monotonic_ns": 117212645015570,
+    "realtime_ns": 1793050474536552618
+  },
+  "finish": {
+    "monotonic_ns": 117213199364498,
+    "realtime_ns": 1793050475090902668
+  },
+  "capture_finish": {
+    "monotonic_ns": 117213208105481,
+    "realtime_ns": 1793050475099643652
+  },
+  "gate": {
+    "pid": 783242,
+    "start": 11721297,
+    "label": ":phase_loop_codex_canary_409a8470d4024231a2fdc162a3016dae:bwrap//&unpriv_bwrap (enforce)"
+  },
+  "trace": [
+    {
+      "exit_monotonic_ns": 117213182028002,
+      "exit_realtime_ns": 1793050475073566052,
+      "flags": 268566528,
+      "monotonic_ns": 117213180916174,
+      "pid": 783242,
+      "realtime_ns": 1793050475072453924,
+      "return": -1,
+      "start": 11721297,
+      "syscall": "unshare"
+    }
+  ],
+  "journal_row": {
+    "MESSAGE": "audit: type=1400 audit(1793050475.071:248): apparmor=\"DENIED\" operation=\"capable\" class=\"cap\" namespace=\"root//phase_loop_codex_canary_409a8470d4024231a2fdc162a3016dae\" profile=\"unpriv_bwrap\" pid=783242 comm=\"unshare\" capability=21  capname=\"sys_admin\"",
+    "_BOOT_ID": "a05e80ee580f405f81bda1f32292a1d9",
+    "__REALTIME_TIMESTAMP": "1793050475072557",
+    "__MONOTONIC_TIMESTAMP": "117213181019",
+    "_TRANSPORT": "kernel"
+  }
+}

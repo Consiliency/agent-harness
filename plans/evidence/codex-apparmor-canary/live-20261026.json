@@ -1,0 +1,169 @@
+{
+  "schema_version": 1,
+  "authorization": "Owner authorized the canary in this thread before privileged operations",
+  "host": "dev0",
+  "source_head": "3ba9404ba8f71ad1365542d8aabea3302590f790",
+  "boot_id": "a05e80ee-580f-405f-81bd-a1f32292a1d9",
+  "kernel": "7.0.0-38-generic",
+  "helper_sha256": "4860c2e75fd74695b3f449d033b7db84e999b8fb4b6f16a9de7c7f5fd2e4c1a0",
+  "manifest_sha256": "9d7a5c75e5684c626b7a3a1099e7ebaaaadc4837eb965832e76d4b4780cafd06",
+  "live_argv": [
+    "sudo",
+    "-n",
+    "/usr/bin/python3",
+    "-I",
+    "-S",
+    "/var/lib/phase-loop-codex-canary/live-20261026-3ba9404b-a05e80ee/inputs/codex_apparmor_canary.py",
+    "run",
+    "--operator-uid",
+    "1000",
+    "--operator-gid",
+    "1000",
+    "--evidence",
+    "/var/lib/phase-loop-codex-canary/live-20261026-3ba9404b-a05e80ee/result"
+  ],
+  "live_exit_code": 1,
+  "outcome": "inconclusive",
+  "reason": "baseline attribution absent; candidate not run",
+  "candidate_executed": false,
+  "baseline": {
+    "go_sent": true,
+    "label": ":phase_loop_codex_canary_409a8470d4024231a2fdc162a3016dae:bwrap//&unpriv_bwrap (enforce)",
+    "operator_uid": 1000,
+    "operator_gid": 1000,
+    "primary_syscall": {
+      "exit_monotonic_ns": 117213182028002,
+      "exit_realtime_ns": 1793050475073566052,
+      "flags": 268566528,
+      "monotonic_ns": 117213180916174,
+      "pid": 783242,
+      "realtime_ns": 1793050475072453924,
+      "return": -1,
+      "start": 11721297,
+      "syscall": "unshare"
+    },
+    "matched_audit_records": 0,
+    "observed_loaded_profiles": [
+      [
+        "bwrap",
+        "enforce"
+      ],
+      [
+        "unpriv_bwrap",
+        "enforce"
+      ]
+    ]
+  },
+  "audit_attribution_diagnostic": {
+    "status": "reproduced_offline_without_modifying_helper",
+    "original_parser_match_count": 0,
+    "single_namespace_prefix_change_capture_match_count": 1,
+    "single_namespace_prefix_change_attributed": false,
+    "audit_event_precedes_syscall_entry_by_ns": 1453924,
+    "source_realtime_tolerance_ns": 1000000,
+    "journal_monotonic_time_within_syscall": true,
+    "original_live_outcome_unchanged": true,
+    "expected_namespace": "phase_loop_codex_canary_409a8470d4024231a2fdc162a3016dae",
+    "observed_namespace": "root//phase_loop_codex_canary_409a8470d4024231a2fdc162a3016dae",
+    "owned_kernel_denial": {
+      "apparmor": "DENIED",
+      "operation": "capable",
+      "namespace": "root//phase_loop_codex_canary_409a8470d4024231a2fdc162a3016dae",
+      "profile": "unpriv_bwrap",
+      "pid": "783242",
+      "comm": "unshare",
+      "capability": "21",
+      "capname": "sys_admin"
+    },
+    "interpretation": "The exact namespace matcher rejects the root-qualified kernel namespace. A diagnostic copy with only that prefix normalized is captured but still fails the realtime correlation tolerance. The original live outcome remains inconclusive and the candidate was not run."
+  },
+  "cleanup": {
+    "checkpoint_sha256": "d4295a9e4467460a4b51f85769b6eb22c4dce8f5caefdd6d2cf50968b0c2a1fc",
+    "checks": {
+      "controller_command_registry_empty": true,
+      "controller_host_namespaces_unchanged": true,
+      "disk_root_policy_unchanged": true,
+      "helper_and_independent_policy_snapshots_agree": true,
+      "loaded_root_policy_unchanged": true,
+      "no_teardown_errors": true,
+      "owned_namespace_absent": true,
+      "owned_process_registry_empty": true,
+      "owned_session_cleared": true,
+      "reported_cleanup_passed": true,
+      "root_profile_set_unchanged": true,
+      "staged_input_bytes_unchanged": true
+    },
+    "known_processes": [
+      {
+        "observed": "absent",
+        "pid": 783106,
+        "start": 11721264
+      },
+      {
+        "observed": "absent",
+        "pid": 783242,
+        "start": 11721297
+      }
+    ],
+    "namespace": "phase_loop_codex_canary_409a8470d4024231a2fdc162a3016dae",
+    "outcome": "inconclusive",
+    "reason": "baseline attribution absent; candidate not run",
+    "result_path": "/var/lib/phase-loop-codex-canary/live-20261026-3ba9404b-a05e80ee/result/result.json",
+    "result_sha256": "866fd32d56a7fd704bceb6770c3e586566f002ede8e4daff4ed674d43073f644",
+    "root_after_sha256": "348d006ae639089f8cb897e2e8a60b400d8dc15366c8928e0c7ef7ee5e12cc4c",
+    "root_policy_counts": {
+      "disk": 344,
+      "labels": 208,
+      "loaded": 206
+    },
+    "schema_version": 1,
+    "verified_at_ns": 1793050631925250176
+  },
+  "result_sha256": "866fd32d56a7fd704bceb6770c3e586566f002ede8e4daff4ed674d43073f644",
+  "result_path": "/var/lib/phase-loop-codex-canary/live-20261026-3ba9404b-a05e80ee/result/result.json",
+  "checkpoint_path": "/var/lib/phase-loop-codex-canary/live-20261026-3ba9404b-a05e80ee/result/checkpoint.json",
+  "preexecution_receipt_sha256": "004debfc3c4e7f09407bc41a8cfd58f2ac1bcfd9697fbddc196c9d218467cbe8",
+  "runner_artifacts": {
+    "preflight-verification": {
+      "path": ".dev-skills/handoffs/canary-live-20261026/preflight-verification/verification.json",
+      "sha256": "0ccf6de08d3ea1ddb809544fae43d3c4b10e0282da975ca2e87b5be3ca3d294c",
+      "command_exit_codes": [
+        0,
+        0,
+        0
+      ]
+    },
+    "staging-verification": {
+      "path": ".dev-skills/handoffs/canary-live-20261026/staging-verification/verification.json",
+      "sha256": "42b3eb98a246dce01632d8ae746a8bdabbd06da7f243dd2b425ac39d35fd8cc6",
+      "command_exit_codes": [
+        0
+      ]
+    },
+    "live-verification": {
+      "path": ".dev-skills/handoffs/canary-live-20261026/live-verification/verification.json",
+      "sha256": "53de2f81be464219d350ff0621204e92d0e516e12387109c2a014fe2f05acba1",
+      "command_exit_codes": [
+        1
+      ]
+    },
+    "cleanup-verification": {
+      "path": ".dev-skills/handoffs/canary-live-20261026/cleanup-verification/verification.json",
+      "sha256": "c5961c92f692208dd672f309d0edec8c08f0680a177704cc9435fe6d01754e32",
+      "command_exit_codes": [
+        0
+      ]
+    }
+  },
+  "acceptance": {
+    "C1": "Baseline staging, identities and gate observed; candidate unobserved",
+    "C2": "Both fixed policies compiled; baseline loaded in enforce mode; candidate unobserved",
+    "C3": "Unmet: original live matcher did not attribute the baseline and candidate did not run",
+    "C4": "Passed: independent cleanup and root-policy invariance checks all passed",
+    "C5": "Preserved: no live acceptance, production repair, new review, president ruling or PR merge claimed"
+  },
+  "next_step": "Fix and review root-qualified namespace matching and audit timestamp correlation, preserving exact owned-task attribution, before another live run",
+  "reviewed_helper_and_policies_changed": false,
+  "production_policy_changed": false,
+  "evidence_root": "/home/viperjuice/workspace/evidence/codex-apparmor-canary-live-20261026"
+}

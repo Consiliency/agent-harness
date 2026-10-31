@@ -738,6 +738,134 @@ profile (Ubuntu 22.04, and 24.04 as measured) needs nothing. The jail itself is 
   `--local` print the two policy texts for review.
 - **Then:** run `phase-loop seat-sandbox qualify` on the host.
 
+**Experimental Codex AppArmor canary (administrator authorization required).**
+`phase-loop-runtime/tests/codex_apparmor_canary.py` is a standalone stdlib diagnostic,
+outside the installed runtime and CLI. The existing uid-drop override above addresses
+the seat's identity switch; this experiment compares two reviewed profiles in one
+fresh private policy namespace. It does not install a production policy or establish
+that a complete nested Codex sandbox works. Its direct-host-bubblewrap topology is
+deliberately different from the production seat topology. dev0 is the intended live
+target; claw supplied planning review only.
+
+Render as the operator on the intended host and boot, review the entire manifest and
+helper, then run both non-loading parser checks from
+`plans/detailed-codex-apparmor-canary-20261016-0227.md`. For example:
+
+```sh
+python3 phase-loop-runtime/tests/codex_apparmor_canary.py render --out "$EVIDENCE_ROOT/rendered"
+apparmor_parser -K -Q --config-file "$EVIDENCE_ROOT/rendered/parser.conf" --base "$EVIDENCE_ROOT/rendered" --Include "$EVIDENCE_ROOT/rendered" --policy-features "$EVIDENCE_ROOT/rendered/features.dump" "$EVIDENCE_ROOT/rendered/baseline.policy"
+apparmor_parser -K -Q --config-file "$EVIDENCE_ROOT/rendered/parser.conf" --base "$EVIDENCE_ROOT/rendered" --Include "$EVIDENCE_ROOT/rendered" --policy-features "$EVIDENCE_ROOT/rendered/features.dump" "$EVIDENCE_ROOT/rendered/candidate.policy"
+```
+
+Before any root execution, an administrator must independently compare **every**
+staged file, including helper and manifest, with the reviewed SHA-256 packet.
+Use a fresh directory such as `/var/lib/phase-loop-codex-canary/<run-id>/inputs`,
+with canonical root-owned, non-writable ancestors, regular single-link input files
+owned by root (mode 0644), and no additional files. The empty parser config and kernel
+feature dump are closed inputs; there are no host includes or cache writes. Create only
+the protected evidence **parent**; the helper exclusively creates the final private
+directory. Tool, library, kernel-feature and boot changes require a fresh render/review.
+The helper's self-check cannot substitute for checking code before executing it.
+
+The manifest separately records the controller tools and their resolved loader/library
+dependencies, including the system Python's imported stdlib/bytecode/native modules
+and ldd's bash interpreter and loader probes; unsupported tool
+interpreter recipes fail closed. These controller dependencies are not added to the
+synthetic fixture. The closed Python fixture binds hashed `os.py` and `linecache.py`
+bootstrap files, the encodings directory and selected executable dependencies. Every
+encodings file and directory is protected and inventoried; links and special files
+are rejected before GO. It creates an empty
+`lib-dynload` directory rather than exposing the host stdlib tree. The non-root
+startup regression supplies EOF permanently: it must observe READY followed by exit
+125, without sending GO or invoking the primary operation. A host that prohibits
+unprivileged bubblewrap reports an explicit prerequisite skip.
+
+The protected Python trampoline requires self-view `unconfined` and sends exactly
+`ENTRY` before blocking for the one-byte `E` acknowledgment. The root controller
+independently verifies the unreaped direct child's PID/start/pidfd, canonical Python,
+host user namespace and exact `:<owned-namespace>:unconfined` label before acknowledging.
+After protected input validation, the trusted child creates a mount namespace,
+proves its identity changed from the controller-recorded entry identity, and makes
+only that tree recursively private before the existing complete identity/capability
+drop. Preparation failure prevents fixture execution. The prepared identity is
+recorded as child-reported evidence, separate from the independent entry observation.
+The final gate still rejects every propagation field, including slave `master:N`
+and `unbindable`. A disposable nonroot user-namespace control exercises the helper's
+own preparation and actual fixture mount checks with permanent EOF. Its extra user
+namespace is test-only and proves neither production mappings nor AppArmor behavior.
+The canary starts from a private mount tree, unlike production's shared/slave tree;
+the primary namespace capability-decision hypothesis is unchanged. Trusted preparation
+precedes READY and observer attachment and never counts as primary evidence. The
+single startup deadline and aggregate output bound span ENTRY/E and READY/G. These
+changes do not authorize administrator staging, privileged preparation or a live run.
+
+Only after separate live authorization, use nonzero host-operator ids and the staged
+system-Python invocation:
+
+```sh
+sudo /usr/bin/python3 -I -S /var/lib/phase-loop-codex-canary/<run-id>/inputs/codex_apparmor_canary.py run --operator-uid <uid> --operator-gid <gid> --evidence /var/lib/phase-loop-codex-canary/<run-id>/result
+```
+
+Both arms hold the worker before the inner command until the external controller
+verifies identity/maps, capabilities, descriptors, mounts, namespaces and the exact
+owned enforce stack. Missing baseline syscall/audit attribution stops before candidate.
+Support requires a positive successful return from the same CLONE_NEWNS operation;
+audit silence, compilation and mocks cannot establish it. Later command failure is
+recorded separately. Any missing proof, dropped capture, unexpected stack or global
+policy change is inconclusive. No capabilities are widened automatically.
+
+Audit matching accepts only the exact owned namespace name or its `root//`-qualified
+form, with the expected denying profile. A denial must come through the kernel journal
+transport and match the verified task, label, boot and capability. Its journal monotonic
+timestamp is journald's reception time, an upper bound on kernel generation time, and
+must fall within the observed primary syscall's entry/exit interval. Kernel
+audit timestamps use a [coarse clock](https://docs.kernel.org/core-api/timekeeping.html)
+and millisecond formatting, so they remain recorded with whole-arm realtime sanity
+bounds rather than serving as a submillisecond syscall clock. Missing syscall exit
+timing, a foreign namespace, audit loss or audit silence remains inconclusive.
+
+Normal cleanup reaps owned descendants, removes profiles using the recorded nonempty
+`--namespace phase_loop_codex_canary_<nonce>`, closes the held namespace descriptor,
+then removes **only** that apparmorfs namespace. The result must prove its absence and
+unchanged disk **and loaded** root policy. Cleanup failure prevents a successful result.
+Revalidation, parser subprocesses and their teardown share the same 30-second cleanup
+deadline. Expiry refuses a new parser, still attempts removal of the exact held namespace
+after descendants have been reaped, and reports failed cleanup if proof is incomplete.
+An unreaped parser or unavailable root-policy snapshot requires administrator recovery;
+a timeout never establishes successful cleanup.
+Controller commands retain explicit process/session ownership through setup and teardown
+errors, including validation and removal commands. Unresolved ownership blocks profile or
+namespace removal. Handled cancellation is deferred across exclusive namespace creation
+and identity registration; uncertain acquisition retains the exact recovery target without
+claiming a colliding namespace or removing an object without its held identity.
+Spawned direct children remain owned if pidfd acquisition fails. Discovery errors
+still permit bounded teardown of known children, but prevent policy removal and a
+successful closeout. Dead descendants must have their wait status consumed (or prior
+reaping proved), and unresolved identities/pidfds remain recorded for recovery;
+resolved descriptors and the outer pipes are closed even on failure. Startup validation
+shares the controller's absolute 10-second startup deadline. Observer attachment,
+host gates, the primary and unconditional diagnostic drain share a separate 10-second
+operation budget, with startup and later output counted against one 64-KiB limit.
+An unsuccessful arm teardown retains its original cleanup deadline for final cleanup.
+After SIGKILL, an administrator must verify the recorded PID/start identities and
+namespace directory identity before recovery; never signal a numeric PID alone or
+substitute a root/empty namespace. With owned descendants reaped and identity checked,
+the exact recovery operations are:
+
+```sh
+apparmor_parser -K --config-file "$STAGED/parser.conf" --base "$STAGED" --Include "$STAGED" --policy-features "$STAGED/features.dump" --namespace "$OWNED_NAMESPACE" -R "$STAGED/baseline.policy"
+rmdir -- "/sys/kernel/security/apparmor/policy/namespaces/$OWNED_NAMESPACE"
+```
+
+`OWNED_NAMESPACE` must equal the recorded unpredictable `phase_loop_codex_canary_`
+name, never a guessed or shared target. Verify namespace absence and root-policy
+invariance afterward. The root-owned `checkpoint.json` records namespace ownership
+and verified process identities before GO for interrupted-run recovery; `result.json`
+records the final outcome and cleanup. See the reviewed plan and its `review.json` for the owner’s
+unanimous-review waiver for plan landing; no president ruling or live-policy approval
+is claimed. Consiliency/agent-harness#1003 and Consiliency/agent-harness#1335 remain
+separate production work.
+
 **Gemini seat login.** A Gemini seat needs 10 minutes left on the agy login. agy renews a
 login that has expired, and before that only when it chooses to (its last 5 minutes on the
 builds measured). A seat whose login has under 10 minutes left and has not expired waits
