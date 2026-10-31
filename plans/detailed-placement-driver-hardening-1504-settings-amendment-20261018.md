@@ -46,3 +46,23 @@ are implementation evidence only. Original full/live acceptance, independent
 actual-source review, president ruling, exact-head hosted checks and postmerge
 proof remain required. No endpoint activation, push, merge or provider use is
 authorized by this amendment.
+
+## Owner decision, 2026-10-31: live acceptance gates activation, not merge
+
+The President r6 ruling found that disabled source could not land while live/full
+acceptance stayed open, unless the owner moved that obligation through the
+governance route. The owner selected that route on 2026-10-31: "Move live tests
+to activation". The decision covers this lane and the disabled OpenShell offload
+source that depends on it.
+
+- **Moved to pre-activation:** the original full native-ai runner with its live
+  D8 jailed-Claude case, and reconciliation of the previously failed full/live
+  acceptance. These are not waived. They must pass, with their original scope and
+  receipts, before the nonlocal driver flag or any offload backend is enabled.
+- **Still merge gates:** AC6 as the originating plan words it (nonlocal leg flag
+  false; lease/placement/ladder/inventory/local-equivalence regressions and
+  required hosted checks pass; panel CR, independent approval and president bind
+  the actual source), exact-head Gate A, and postmerge proof on main.
+- **Unchanged:** the activation gates, C6/C7, endpoint governance and every
+  "no activation" statement above. Merging under this decision makes no claim of
+  live acceptance or offload readiness.

@@ -83,7 +83,8 @@ adapter mode overrides the orchestrator-only interactive workflow below.
   against the active plan's owned files and control artifacts. If a generated
   path is unowned or derived from unauthorized raw/private inputs, stop with
   `dirty_worktree_conflict` instead of reporting completion. For IGNORED paths do
-  not judge by hand: run the closeout audit, `phase-loop-closeout-audit --repo . --record-outputs --phase "<ALIAS>"` (module form `python -m phase_loop_runtime.closeout_classifier --repo . --record-outputs --phase "<ALIAS>"` only when the package is on the ACTIVE python's path); replace `<ALIAS>` with the alias of the phase you are executing, exactly as your plan and runner prompt name it. Pasted unchanged it is still valid shell; `--phase` matters only in a repo that commits `.phase-loop-generated-outputs.json`, and there an unsubstituted `<ALIAS>` records and accepts nothing, so the closeout audit blocks.
+  not judge by hand: run the closeout audit, `phase-loop-closeout-audit --repo . --record-outputs --phase "<ALIAS>"` (module form `python -m phase_loop_runtime.closeout_classifier --repo . --record-outputs --phase "<ALIAS>"` only when the package is on the ACTIVE python's path); replace `<ALIAS>` with the alias of the phase you are executing, exactly as your plan and runner prompt name it.
+  Pasted unchanged it is still valid shell; `--phase` matters only in a repo that commits `.phase-loop-generated-outputs.json`, and there an unsubstituted `<ALIAS>` records and accepts nothing, so the closeout audit blocks.
   The closeout audit's last output line (`action: exit N ... -> ...`) states the required action; follow it. A runtime that predates that line gets the same mapping from its exit code:
     - exit 0 (every ignored path was produced by the runner or its own toolchain -- `.phase-loop/**`, pytest/Ruff caches, `__pycache__`, egg-info, `.venv` -- is a harness handoff, or was written by a producer the committed `.phase-loop-generated-outputs.json` declares, re-run and recorded by `--record-outputs`, agent-harness#1139): ignored paths are not a blocker and must never block a verified owned diff (agent-harness#670); the rest of closeout still decides the terminal status.
     - exit 1 (unknown ignored outputs): stop with `dirty_worktree_conflict`.
@@ -120,36 +121,10 @@ Model IDs appear only in this table. All model-routing logic in the workflow ref
 | strong    | claude-sonnet-5    | contract-authoring (IF-freeze), schema/migration, algorithmic |
 | fast      | claude-haiku-4-5-20251001 | mechanical wiring, small components against frozen types |
 
-These map to the runtime `model_class` axis: implementer = strong, worker = fast.
-(The planner class routes to the heavy model `claude-opus-5` — the same model as
-`frontier`. The reviewer class routes to the ULTRA model `claude-opus-5-5`, a
-review-tier model ABOVE this execute table.) The shipped `model_policy` dispatches **implementation at the
-implementer class**. The runtime's `model_class`-escalation bookkeeping is
-runner-internal and is NOT applied to the launched model — see
-`governed_premerge.next_escalation` / `runner.py` for its current status. This
-skill's own retry-tier ladder is `fast → strong → frontier` (below).
-The default `run_mode` is `autonomous` — no panel,
-no `human_required`; every governed escalation terminal is a non-human
-`review_gate_block` surfaced in the run-end summary, never a synchronous human
-wait.
-
-Governed mode is **live on the serial path** (`--governed` / `PHASE_LOOP_RUN_MODE=governed`,
-model-routing-v2): a pre-merge panel gate (codex + gemini) reviews the
-implementation diff *before* the closeout commit and runs a bounded
-review→fix→re-review loop. The runtime re-runs the full panel every round and
-stops at `max_rounds` (`governed_premerge.DEFAULT_MAX_REVIEW_ROUNDS`); it
-performs no delta review and no descope itself. A `block` finding holds the
-merge until fixed; if one still stands when the loop stops, the terminal is a
-non-human `review_gate_block` with `mergeable=False` — the loop ending never
-releases the merge. The agent applies the review-round rules from the
-advisor-board skill to what that loop returns: let every seat finish before
-fixing, fix once per round, and treat a finding as blocking only when it cites
-what it breaks under that skill's rule 3 (the citation classes are defined
-there, not here). At the cap, descope by removing the scope that carries the
-blocker and leaving its goal unclaimed; a blocker that cannot be removed with
-its scope halts the phase for the operator — never merge with a blocker
-waived. Autonomous runs spawn no panel. Concurrent-wave dispatch is not
-governed yet.
+This skill's retry-tier ladder is `fast → strong → frontier`. The default `run_mode` is `autonomous`: no panel and
+no `human_required`. Tier-to-model-class mapping and the governed (`--governed` / `PHASE_LOOP_RUN_MODE=governed`) pre-merge
+panel loop: [references/lane-dispatch.md](references/lane-dispatch.md#model-classes-and-governed-mode);
+governed runs read it before each panel round. Never merge with a blocker waived.
 
 ## Inputs
 
@@ -159,17 +134,20 @@ governed yet.
 | `--dry-run` | no | Parse + validate, print the dispatch schedule with per-lane model assignments, do not spawn teammates. |
 | `--resume` | no | Continue a partially executed plan: skip lanes already merged (their merge commit is on the target branch and their produced gates are closed). |
 
+Both modes: if a test needs a browser (Playwright, `claude-in-chrome`), read [browser setup](references/merge-and-verify.md#browser-verification) at plan intake, before implementation or lane dispatch; brief affected lanes on it.
+
 ## Workflow (orchestrator-only main thread)
 
 The main thread reads exactly two things: the plan doc and the TaskList. It does not Grep/Read repo source — lane teammates own their files. If the main thread is reaching for Grep or Read on source files, the teammate brief was incomplete; re-brief via `SendMessage`.
 
 ### Interactive steps
 
-Each step's full procedure is in a reference file. Read the file when you reach that step; it is not preloaded.
+Read each step's reference at that step; none is preloaded.
 
 - Setup (environment variables, expected helpers, deferred tool preloading), teamwork posture (hard rules), Step 0 predecessor handoff, Step 1 resolve and parse the plan, Step 2 preflight (`scripts/verify_harness.sh`), Step 2.5 baseline capture, Step 2a worktree hygiene: [references/interactive-steps.md](references/interactive-steps.md).
 - Step 3 model and thinking per lane, Step 4 TeamCreate, Step 5 dispatch loop and teammate brief, plus the lane state machine, parallelism contract, model selection quick-reference: [references/lane-dispatch.md](references/lane-dispatch.md).
-- Step 6 gate verification, Step 6.5 parent-tree leakage check, Step 7 auto-merge, Step 8 retry-once then halt, Step 9 final verification and cleanup, worktree pruning, output contract and worktree layout: [references/merge-and-verify.md](references/merge-and-verify.md).
+- Steps 6–9 (gates, leakage check, auto-merge, retry-once, final verification), pruning, output contract, layout: [merge-and-verify](references/merge-and-verify.md).
+- Interactive only, before the first commit: early draft PR and the publication-mode check before each push or PR command, [references/interactive-path.md](references/interactive-path.md); PR text, [PR descriptions on the interactive path](#pr-descriptions-on-the-interactive-path).
 - Step 9.5 close-out (artifact staging, next-step routing, path resolution, reflection and handoff templates): [references/closeout-reflection-handoff.md](references/closeout-reflection-handoff.md).
 
 ### Step 2 — Merge-target safety gate
@@ -200,21 +178,8 @@ driving), print to the user:
 
 `/clear` is a human-operated reset and applies only to the interactive TUI path
 above. **Do not emit it in Phase-Loop Adapter (autonomous) mode** — an
-autonomous loop has no human to run it and cannot clear its own context.
-In autonomous runs, continuity is the written handoff and the runner re-invokes
-the next phase in a fresh executor process; that fresh process *is* the context
-reset. See "Phase-Loop Adapter Mode" above.
-
-## Browser verification capabilities
-
-When a plan's `## Verification` section includes Playwright/e2e commands or lane tasks ask for browser smoke-testing, run them:
-
-- **Playwright via PMCP** — `pmcp_invoke(tool_id="playwright::browser_navigate", ...)` and related `playwright::*` tools. Default.
-- **Chrome DevTools Protocol (CDP)** — low-level debugging (performance traces, CPU profiling).
-- **`claude-in-chrome`** — extension-context automation only.
-
-The PMCP Playwright server provisions on demand. If the repo lacks a Playwright config, add one in the lane rather than deferring the test.
-
+autonomous loop has no human to run it and cannot clear its own context. Continuity there is
+the written handoff (see "Phase-Loop Adapter Mode" above).
 
 Use `phase_loop_runtime.skill_paths` resolver helpers for harness skill roots, handoff roots, helper roots, and reflection roots.
 
@@ -234,7 +199,10 @@ In the closeout, handoff, and final response — and in any PR/issue body or com
 
 ### Manifest lifecycle
 
-After plan validation and before lane execution, perform a best-effort `plan-manifest append` lifecycle update through `phase_loop_runtime.plan_manifest.update_lifecycle` to mark the matching `type=phase` entry `executing` with run metadata. During closeout, update the same entry to `completed` or `failed` with verification metadata, reflection metadata, produced-gate metadata, `if_gates_produced`, and dirty-worktree summary fields as available. A `completed` phase update must also include explicit `issue_inventory` and matching `issue_dispositions` arrays, including explicit empty arrays when no issues were enrolled. `if_gates_produced` must list only the IF gates the active phase produces per its own plan; never carry a prior phase's gate forward into this phase's closeout. Manifest lifecycle failures are non-fatal during the dual-mode window: emit a ledger warning, mention the warning in the mandatory reflection, and preserve the existing phase closeout JSON, verification, and dirty-worktree behavior.
+After plan validation and before lane execution, perform a best-effort `plan-manifest append` lifecycle update through `phase_loop_runtime.plan_manifest.update_lifecycle` to mark the matching `type=phase` entry `executing` with run metadata. During closeout, update the same entry to `completed` or `failed` with verification metadata, reflection metadata, produced-gate metadata, `if_gates_produced`, and dirty-worktree summary fields as available.
+A `completed` phase update must also include explicit `issue_inventory` and matching `issue_dispositions` arrays, including explicit empty arrays when no issues were enrolled.
+`if_gates_produced` must list only the IF gates the active phase produces per its own plan; never carry a prior phase's gate forward into this phase's closeout.
+Manifest lifecycle failures are non-fatal during the dual-mode window: emit a ledger warning, mention the warning in the mandatory reflection, and preserve the existing phase closeout JSON, verification, and dirty-worktree behavior.
 
 Closeout payload shape is defined by `EmitPhaseCloseout` in `phase_loop_runtime/baml_src/emit_phase_closeout.baml` (if that path is absent in the checkout, use the operator/prompt-supplied field contract or the installed `phase_loop_runtime` package — the missing vendored BAML source is not a blocker); keep skill text focused on value selection and handoff routing, not duplicated field ceremony.
 
@@ -254,33 +222,11 @@ clear interactive signal is present** — a run missing BOTH the adapter prompt 
   independently publish — defer entirely to runner closeout (`awaiting_phase_closeout` /
   runner commit). Publishing here would bypass the governed pre-merge review panel.
 - (b) Interactive orchestrator on a clean, non-protected feature branch (a clear
-  interactive signal, and the merge target passed the merge-target safety gate). After the
-  Step-9 clean-tree state, run `phase-loop publication-mode --repo .` and do what its
-  `PUBLICATION_ACTION:` line says (see "Interactive publication mode" below). With `ready`,
-  push the merge-target branch and open a PR (`gh pr create`, `--draft` if dependencies
-  remain or verification was partial/skipped, else ready) instead of leaving the lane merge
-  only local. Before readiness, follow [PR descriptions on the interactive path](#pr-descriptions-on-the-interactive-path).
-  With `draft-only`, push and open or keep a DRAFT PR; never flip it to ready.
-  With `none`, do not push and do not open a PR: the work stays committed on the local
-  feature branch, and the final report names that branch as unpublished.
+  interactive signal, and the merge target passed the merge-target safety gate): publish as
+  [references/interactive-path.md](references/interactive-path.md) says, and follow [PR descriptions on the interactive path](#pr-descriptions-on-the-interactive-path).
 - (c) Merge target is `main` or a protected branch. Already STOPPED at the merge-target
   safety gate before any lane merge — never merge lanes onto `main`/protected. Re-target a
   feature branch or take explicit instruction.
-
-This applies only to interactive (non-runner) completion; it never overrides
-`awaiting_phase_closeout`, the runner's deliberate non-complete terminal. Allowed runner
-hygiene (forced lane-worktree removal, `branch -D`, `sweep_stale_worktrees.sh`) is
-unchanged — the destructive-op ban targets publication branches/worktrees holding
-unmerged work.
-
-## Draft PR early — push on first commit (visibility)
-
-Use [PR descriptions on the interactive path](#pr-descriptions-on-the-interactive-path)
-for pending-work draft text and the final description refresh before readiness.
-
-Do not let a phase branch accumulate commits only locally — that is how lanes drift 70–100 commits ahead of `origin` and in-flight work stays invisible. On the FIRST commit of a phase, unless the interactive publication mode below is `none`, push the branch to `origin` and open a DRAFT PR (`gh pr create --draft`); keep pushing as the phase progresses, and flip the PR to ready at closeout once verification is green. The early draft PR is the visibility contract, not a request to merge.
-
-Respect the publication ownership above: in runner-managed / governed mode the RUNNER owns publication, so the runner performs the early push and draft-PR — do not independently publish or bypass the governed pre-merge review panel. In the interactive-orchestrator path you perform the early push + draft PR yourself on the first commit, as the interactive publication mode allows.
 
 ## PR descriptions on the interactive path
 
@@ -303,14 +249,3 @@ Repeat the reassessment after material implementation, verification, or comparis
 changes before merge; refresh stale agent-owned text through the same mode check.
 This is description upkeep, not a new advisor round or merge authorization. Runner
 and broker-owned descriptions remain with their publication owner.
-
-## Interactive publication mode (agent-harness#1392)
-
-On the interactive path, run `phase-loop publication-mode --repo .` immediately before each `git push`, `gh pr create`, `gh pr edit`, or `gh pr ready`, including the closeout publication in mode (b). Module form, only when the package is on the ACTIVE python's path: `python -m phase_loop_runtime.publication_mode --repo .`. It prints `publication_mode=<none|draft-only|ready>` and exactly one `PUBLICATION_ACTION:` line. Do what that line says. Never choose the mode yourself, and never read the config files by hand.
-
-- `ready` (the default when nothing is configured): push on the first commit, open a draft PR, refresh its description at closeout, and flip it to ready once verification is green.
-- `draft-only`: push and open or refresh an agent-owned draft PR. Never run `gh pr ready`, and never open a ready PR.
-- `none`: no `git push`, no `gh pr create`, no `gh pr edit`, no `gh pr ready`. The phase still completes: lanes merge locally and closeout runs. The final report names the local branch and says publication was withheld by the publication mode.
-- A non-zero exit, `publication_mode=error`, or a missing command: publish nothing and report the error. Finish the phase locally as under `none`; never fall back to `ready`.
-
-The mode comes from the repo's committed `.phase-loop-publication.toml` and the user's `agent-harness/publication.toml`; the most restrictive wins. It governs only this interactive path. Runner-managed closeout (mode (a)) stays under `--closeout-mode`.

@@ -25,6 +25,109 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - Shared sandbox validation also applies to president-ladder resolution: malformed
   user roots, order or driver settings now refuse that resolution.
 
+### Executable dependency admission (agent-harness#1774)
+
+- Add deployment-neutral, canonical requirement/authority/declaration admission,
+  descriptor-held read-only projections, a pinned in-process startup API, and explicit
+  worker/panel/convergence task lifetime. Required dependency failures refuse before
+  managed provider effects; standalone behavior remains only when requirement and
+  authority are both absent.
+- Give every projection consumer an independent descriptor offset over immutable sealed
+  content, protect the jail and generic seat-view mount destinations, and record the
+  authority/declaration/projection digests on jailed broker evidence. A typed dependency
+  refusal on a prepared seat runs both jail and parent-seat cleanup before it reaches
+  the established degraded-leg path. Required preparation failures close their descriptors
+  and remove their newly created seat directory. Required CLI sessions use a closed
+  provider-free inventory and refuse provider routes that are not dependency-wired.
+- Check jail destinations before provider preparation effects, close projection and input
+  descriptors on partial construction, and give generic identity probes an independent
+  dependency projection. Accept arbitrary wrapper names from the trusted requirement on the projected
+  seat routes (bounded convergence adapters still require the provider basename);
+  validate intermediate source directory permissions, refuse FIFO inputs without waiting,
+  and count each file once toward the aggregate limit (agent-harness#1782).
+- Required sessions explicitly refuse direct host executor/lease-supervisor transports,
+  Claude Channel/Agent View, `maintain-skills`, and Gemini heartbeat composition before
+  entering those routes. Required Gemini reviews need a fresh existing login and refuse
+  host credential refresh. Standalone launches retain their prior behavior. See
+  `docs/executable-dependency-projection.md` for supported routes and outstanding live
+  qualification; offline tests do not establish authenticated provider acceptance.
+- The seat-jail qualification entry grammar is closed: it accepts only no arguments or one
+  of `-h`, `--help`, and `--version`; repeated, clustered, abbreviated, mixed, or unknown
+  forms exit with status 2 before qualification.
+
+### Run output retention
+
+- Remove pytest scratch audit folders on session teardown and normal interpreter
+  exit. Workers own separate folders; forked children preserve the parent's folder.
+- Add `phase-loop output-retention` for managed producer runs, explicit lifecycle
+  declarations and previewable cleanup after 30 days. Configured output roots are
+  swept on run/execute/advisor-board startup; active, held and unmarked output is
+  preserved. See `docs/phase-loop/output-retention.md` for evidence/review and
+  HARDEN integration, policy configuration and crash limitations.
+
+### Claude execute-phase drops under the skill size limit (agent-harness#1358)
+
+- Move interactive publication (mode (b), the publication-mode check, draft PR early),
+  model-class and governed-mode detail, and browser verification into
+  `claude-execute-phase` references. Interactive publication is read before the first
+  commit and governed-mode detail before each panel round. Browser verification is read
+  at plan intake in both modes, before implementation or lane dispatch, and lane briefs
+  carry its setup. Adapter mode, runner closeout, the closeout audit, the `/clear` rules and
+  PR-description requirements stay in `SKILL.md`. Both size-gate exceptions for the skill
+  are removed.
+
+### Hosted native-test jobs pinned to ubuntu-24.04 (agent-harness#1763)
+
+- `test.yml`'s `pytest`, `clean-room` and `wheel-smoke` jobs run on `ubuntu-24.04`
+  instead of `ubuntu-latest`, which now resolves to Ubuntu 26.04. Under 26.04, 17 sandbox
+  and process tests failed in test files unchanged from main. The last passing PR run had
+  used an ubuntu-24.04 image. Compatibility with 26.04 is unproven, not claimed.
+  Tests, assertions, timeouts and sandbox policy are unchanged
+  (`docs/releases/github-hosted-runners-for-public-repo.md`).
+
+### Diagnostic planning skill evaluation (agent-harness#1321)
+
+- Add the opt-in `phase-loop-skill-eval` command for frozen, independent planning
+  comparisons, owned Linux execution with access evidence, blinded human packets,
+  one-shot scorer calibration, and exact Boolean pair reduction. Live pilot
+  qualification and editor gating remain pending; no skill is automatically adopted.
+- Require single-turn stream ordering, refuse identity-bearing packet inputs, and
+  report malformed score documents through the CLI refusal path while retaining
+  failed one-shot calibration evidence.
+- Stop the batch on returned launcher cancellation, retaining invalid trial
+  receipts and the launcher's cleanup evidence before propagating interruption.
+- Reject duplicate gold output texts across the calibration pack before
+  preparation, preserving an unambiguous annotation mapping (agent-harness#1733).
+
+### Offline repository-map artifact mode
+
+- Add a manifest-driven `phase-loop fleet-map` mode with qualified repository
+  identities, explicit scan coverage, paired contract drift, and as-of-scan pin
+  comparisons. Ship the closed input/output schema with the package; preserve
+  existing `--repo` JSON and text output.
+
+### Skill long lines rewrapped under the size limit (agent-harness#1358)
+
+- Rewrapped the one line over 1,000 characters in each of `claude-advisor-board`,
+  `codex-plan-phase`, `gemini-plan-phase` and `opencode-plan-phase` at sentence
+  boundaries. The wording is unchanged. The four `long_line` entries are removed
+  from the skill size gate allowlist.
+
+### Gitleaks synthetic fixture classification
+
+- Add an exact full-secret allowlist match for the synthetic typed-review digest
+  fixture introduced by agent-harness#1770, leaving other detections unchanged.
+
+### TypeScript publication source classification (agent-harness#1765)
+
+- Normal publication can classify new or existing regular TypeScript implementation
+  modules with names caught by the secret-path guard under `src`, `test` or `tests`
+  through frozen-object syntax/body checks and
+  the existing detector scan. Declaration files and detector findings remain refused;
+  the Python policy is unchanged. Adds pinned `tree-sitter==0.25.2` and
+  `tree-sitter-typescript==0.23.2` dependencies. See the package README's publication
+  source audit section for scope and limitations.
+
 ### Codex execute-phase reads interactive procedures on demand (agent-harness#1358)
 
 - Split planning-handoff reuse, interactive publication, worktree lifecycle, and

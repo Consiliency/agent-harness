@@ -1963,6 +1963,37 @@ def _render_command_template(template: str, request: LaunchRequest) -> list[str]
     return shlex.split(rendered)
 
 
+def _refuse_unwired_executor_spec(spec, dependency) -> None:
+    if dependency is not None and (
+        spec.claude_route in {"claude_channel", "claude_agent_view"}
+        or (spec.prompt_bundle.product_action or "execute") != "review"
+    ):
+        from .executable_dependency import ExecutableDependencyError
+        raise ExecutableDependencyError("dependency_route_unwired", "executor transport")
+
+
+def refuse_unwired_executor_spec(spec, *, dry_run: bool = False) -> None:
+    """agent-harness#1782: refuse an unsupported required-session executor spec before
+    the runner allocates run artifacts or runs credential-bearing auth preflight probes.
+    ``launch_with_spec`` repeats the same check."""
+    if dry_run:
+        return
+    from .executable_dependency_startup import current_dependency_for_provider
+
+    _refuse_unwired_executor_spec(spec, current_dependency_for_provider(spec.executor, spec.command))
+
+
+def refuse_unwired_executor_action(action: str | None, *, dry_run: bool = False) -> None:
+    """agent-harness#1782: refuse a required-session non-review executor action before
+    default-executor selection, whose availability scan runs credential-bearing auth
+    probes. ``refuse_unwired_executor_spec`` and ``launch_with_spec`` repeat the check."""
+    if dry_run or (action or "execute") == "review":
+        return
+    from .executable_dependency_startup import refuse_unwired_dependency_route
+
+    refuse_unwired_dependency_route("executor transport")
+
+
 def run_auth_preflight(spec: LaunchSpec) -> AuthPreflightResult:
     if spec.auth_preflight_mode != "metadata_only":
         return AuthPreflightResult(ok=True, metadata={})
@@ -2142,6 +2173,15 @@ def launch_with_spec(
     caller_run_id: str | None = None,
     lease_authority: object | None = None,
 ) -> LaunchResult:
+    dependency = None
+    if not dry_run:
+        # Dependency admission is deliberately before availability checks and the
+        # Channel/AgentView early returns: every managed provider-capable route must
+        # hold an explicit startup task before it can resolve or launch a provider.
+        from .executable_dependency_startup import current_dependency_for_provider
+
+        dependency = current_dependency_for_provider(spec.executor, spec.command)
+    _refuse_unwired_executor_spec(spec, dependency)
     if not spec.available and not dry_run:
         raise ValueError("live launch requested for unavailable executor")
     action = spec.prompt_bundle.product_action or "execute"
@@ -2149,8 +2189,12 @@ def launch_with_spec(
         from .sandbox_egress import SeatIdentityUnverified
         raise SeatIdentityUnverified("executor_review_route_unsupported")
     if spec.executor == "claude" and spec.claude_route == "claude_channel" and not dry_run:
+        if dependency is not None:
+            dependency.validate_command(spec.command, provider=spec.executor)
         return _result_with_spec(_launch_claude_channel(spec, log_path=log_path), spec)
     if spec.executor == "claude" and spec.claude_route == "claude_agent_view" and not dry_run:
+        if dependency is not None:
+            dependency.validate_command(spec.command, provider=spec.executor)
         return _result_with_spec(
             _launch_claude_agent_view(
                 spec,
@@ -2162,6 +2206,8 @@ def launch_with_spec(
             spec,
         )
     command, staged_review_paths = _resolve_command_context(spec, log_path, dry_run=dry_run)
+    if dependency is not None:
+        dependency.validate_command(command, provider=spec.executor)
     # DFCHTELEMETRY (IF-0-DFCHTELEMETRY-1): runtime no-hidden-print guard. A primary
     # Claude route (Channel / Agent View) must never resolve to a real `claude -p`
     # invocation; the build path guarantees this structurally, so a violation is a
@@ -2186,6 +2232,11 @@ def launch_with_spec(
                 stdin_text = command[-1]
                 command = [*command[:-1], "-"]
             command = [*command[:2], "--output-last-message", str(final_path), *command[2:]]
+        if dependency is not None:
+            # Bind the final path lookup to the admitted subject inode as late as
+            # this path-based launcher permits, after every command rewrite and
+            # immediately before the process boundary.
+            dependency.validate_command(command, provider=spec.executor)
         result = launch(
             command,
             action=action,
@@ -2683,6 +2734,9 @@ def launch(
     action: str = "execute",
     _review_profile: object | None = None,
 ) -> LaunchResult:
+    if not dry_run and action != "review":
+        from .executable_dependency_startup import refuse_unwired_dependency_route
+        refuse_unwired_dependency_route("direct executor")
     if action == "review" and _review_profile is None and not dry_run:
         from . import panel_invoker, sandbox_egress
         # agent-harness#1407: a Gemini review whose agy login is short but not yet expired

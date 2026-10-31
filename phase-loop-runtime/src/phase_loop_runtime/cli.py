@@ -407,6 +407,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Explicitly bypass the cross-phase dirty start gate. Requires a non-empty operator reason.",
     )
     subparsers = parser.add_subparsers(dest="command")
+    from .output_retention import register_parser as _retention_parser
+
+    _retention_parser(subparsers)
     agy_qual_sub = subparsers.add_parser(
         "agy-qualification",
         help="First-use self-qualification of a genuine upstream agy release (agent-harness#1076)",
@@ -843,6 +846,10 @@ def build_parser() -> argparse.ArgumentParser:
             sub.description = "agent-harness#211: check that a plan's acceptance items reference every EC-<ALIAS>-<N> goal ID of its anchored roadmap phase (decidable completeness)."
             sub.add_argument("--plan", required=True, help="Path to the phase plan to audit.")
         if name == "fleet-map":
+            sub.add_argument("--manifest", help="Closed fleet_scan_input.v1 manifest for offline artifact mode.")
+            sub.add_argument("--producer-commit", help="Producer source commit for artifact provenance.")
+            sub.add_argument("--generated-at", help="Explicit UTC observation timestamp for artifact mode.")
+            sub.add_argument("--output", help="Artifact output file (required with --manifest).")
             sub.description = (
                 "CS-0.7: extract the realized cross-repo interface graph (git+ref pins, "
                 "copied-literal contract/schema drift, hard-coded host-path refs) across "
@@ -1288,6 +1295,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     command = args.command or ("dry-run" if args.dry_run else "run")
+    from .output_retention import cli_main as _retention_main, configured_sweep
+
+    if command == "output-retention":
+        return _retention_main(args)
+    if command in {"run", "execute", "advisor-board"} and not args.dry_run:
+        configured_sweep()
     if command == "agy-qualification":
         from .agy_qualification import cli_main as _agy_qualification_main
 
@@ -4813,6 +4826,19 @@ def _closeout_drift_audit_command(*, args: argparse.Namespace, as_json: bool) ->
 
 def _fleet_map_command(*, args: argparse.Namespace, as_json: bool) -> int:
     from .fleet_map import build_fleet_map
+
+    artifact_args = (args.manifest, args.producer_commit, args.generated_at, args.output)
+    if any(artifact_args):
+        from .fleet_map_artifact import ArtifactError, write_artifact
+        if not all(artifact_args) or args.repo != ".":
+            print("fleet-map: artifact mode requires manifest, producer-commit, generated-at and output; omit --repo", file=sys.stderr)
+            return 2
+        try:
+            write_artifact(Path(args.manifest), args.producer_commit, args.generated_at, Path(args.output))
+        except ArtifactError as exc:
+            print(f"fleet-map: {exc}", file=sys.stderr)
+            return 2
+        return 0
 
     repo_args = args.repo or ["."]
     if isinstance(repo_args, str):
