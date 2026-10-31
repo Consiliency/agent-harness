@@ -1155,5 +1155,16 @@
   {"count": 1, "function": "install", "module": "seat_egress_proxy", "primitive": "subprocess.run", "role": "host-helper"},
   {"count": 1, "function": "start_proxy", "module": "seat_egress_proxy", "primitive": "subprocess.Popen", "role": "host-helper"},
   {"count": 1, "function": "tree_sha256", "module": "seat_egress_proxy", "primitive": "io.read_bytes", "role": "host-io"},
-  {"count": 3, "function": "verify_install", "module": "seat_egress_proxy", "primitive": "io.read_text", "role": "host-io"}
+  {"count": 3, "function": "verify_install", "module": "seat_egress_proxy", "primitive": "io.read_text", "role": "host-io"},
+  {"count": 1, "function": "init_tree", "module": "openshell_artifacts", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "prepare_source", "module": "openshell_artifacts", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "prepare_source.metadata", "module": "openshell_artifacts", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "run_process", "module": "openshell_artifacts", "primitive": "subprocess.Popen", "role": "supervisor"},
+  {"count": 2, "function": "scan", "module": "openshell_artifacts", "primitive": "io.lstat", "role": "host-io"},
+  {"count": 1, "function": "scan", "module": "openshell_artifacts", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "validate_result", "module": "openshell_artifacts", "primitive": "io.lstat", "role": "host-io"},
+  {"count": 1, "function": "validate_result", "module": "openshell_artifacts", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "reap", "module": "placement_lease", "primitive": "io.stat", "role": "host-io"},
+  {"count": 1, "function": "recover_lease", "module": "placement_lease", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "recover_lease", "module": "placement_lease", "primitive": "io.stat", "role": "host-io"}
 ]
