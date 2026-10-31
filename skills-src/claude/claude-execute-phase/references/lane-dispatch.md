@@ -10,6 +10,7 @@ Reference for `claude-execute-phase` (linked from its `SKILL.md`). Read it befor
 - Lane state machine
 - Parallelism contract
 - Model selection quick-reference
+- Model classes and governed mode
 
 ## Step 3 — Assign model + thinking per lane
 
@@ -68,6 +69,7 @@ Repeat until all lanes are `merged` or halt is triggered:
    - The merge target branch and the orchestrator's current tip SHA, injected as `<TIP_SHA>` (used by the stale-base check below).
    - The lane's test → impl → verify task list. The lane's verify command must include regression files listed in the plan's `## Verification` section that reference this lane's owned files, not only the lane's new tests. Each lane must enumerate tests that mock or stub any existing public function the lane's scope adds a call to, and include those tests in verify.
    - Thinking-level guidance matching the lane's profile.
+   - **Browser setup**, when the lane's tests need a browser: the obligations from [Browser verification](merge-and-verify.md#browser-verification), including adding a missing Playwright config in the lane rather than deferring the test.
    - **Stale-base discipline**: AFTER `EnterWorktree` returns and BEFORE any code change, run `git rebase main` (or `git merge main --no-ff -m "merge: incorporate prior-lane foundation"`). Verify with `git merge-base --is-ancestor <TIP_SHA> HEAD && echo OK || echo STALE`. Repeat the rebase immediately before your final commit. On conflicts, STOP and report — do not resolve silently. Never `git reset --hard` or `git checkout HEAD~N -- …` in a stale worktree; this destroys peer-lane work on `--no-ff` merge.
    - **Staging discipline**: Forbid `git add -A` and `git add .`. Stage with explicit pathspecs drawn from the lane's `Owned files`.
    - **No self-merge**: DO NOT run `git merge` or `git push` against the merge-target branch yourself; the orchestrator owns merges.
@@ -119,3 +121,36 @@ pending ──► running ──► verify-ok ──► merged
 | Retry | One tier up | One tier up |
 
 Resolve tier names to model IDs via the Model tiers table in `SKILL.md`.
+
+## Model classes and governed mode
+
+The tiers in [Model tiers](../SKILL.md#model-tiers-edit-on-anthropic-releases) map to the runtime `model_class` axis: implementer = strong, worker = fast.
+(The planner class routes to the heavy model `claude-opus-5` — the same model as
+`frontier`. The reviewer class routes to the ULTRA model `claude-opus-5-5`, a
+review-tier model above that execute table.) The shipped `model_policy` dispatches **implementation at the
+implementer class**. The runtime's `model_class`-escalation bookkeeping is
+runner-internal and is NOT applied to the launched model — see
+`governed_premerge.next_escalation` / `runner.py` for its current status. This
+skill's own retry-tier ladder is `fast → strong → frontier`.
+The default `run_mode` is `autonomous` — no panel,
+no `human_required`; every governed escalation terminal is a non-human
+`review_gate_block` surfaced in the run-end summary, never a synchronous human
+wait.
+
+Governed mode is **live on the serial path** (`--governed` / `PHASE_LOOP_RUN_MODE=governed`,
+model-routing-v2): a pre-merge panel gate (codex + gemini) reviews the
+implementation diff *before* the closeout commit and runs a bounded
+review→fix→re-review loop. The runtime re-runs the full panel every round and
+stops at `max_rounds` (`governed_premerge.DEFAULT_MAX_REVIEW_ROUNDS`); it
+performs no delta review and no descope itself. A `block` finding holds the
+merge until fixed; if one still stands when the loop stops, the terminal is a
+non-human `review_gate_block` with `mergeable=False` — the loop ending never
+releases the merge. The agent applies the review-round rules from the
+advisor-board skill to what that loop returns: let every seat finish before
+fixing, fix once per round, and treat a finding as blocking only when it cites
+what it breaks under that skill's rule 3 (the citation classes are defined
+there, not here). At the cap, descope by removing the scope that carries the
+blocker and leaving its goal unclaimed; a blocker that cannot be removed with
+its scope halts the phase for the operator — never merge with a blocker
+waived. Autonomous runs spawn no panel. Concurrent-wave dispatch is not
+governed yet.

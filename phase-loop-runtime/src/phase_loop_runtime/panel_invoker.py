@@ -132,6 +132,7 @@ from . import seat_session_label as _seat_session_label
 from . import seat_tool_evidence as _seat_tool_evidence
 from . import seat_uid as _seat_uid
 from . import seat_preflight as _seat_preflight
+from .executable_dependency import ExecutableDependencyError
 from .advisor_board.research import (
     RESEARCH_CAPABLE_LANES,
     ResearchLedger,
@@ -4512,8 +4513,11 @@ def _compose_seat_jail_prefix(jail: "_seat_jail.SeatJail", retain_caps=()) -> li
 def _require_canonical_jail(jail: "_seat_jail.SeatJail") -> None:
     """The jail about to run must BE the qualified profile: the digest of its actual owner
     argv and the bytes actually in its seccomp memfd must equal the canonical digest -- the
-    one EC-EXECFIND-2's pass is recorded against. An added bind, a dropped flag or a
-    different filter is a mismatch, refused with `seat_sandbox_refused:identity`."""
+    one EC-EXECFIND-2's pass is recorded against. Dependency mounts are removed from that
+    base-profile comparison only after their destinations pass the non-overridable jail
+    collision floor; their authority, declaration and projection digests are recorded
+    separately. Any other added bind, dropped flag or different filter is refused with
+    `seat_sandbox_refused:identity`."""
     if _seat_jail.actual_profile_digest(jail) != _seat_jail.jail_profile_digest(jail.leg):
         raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("identity"),
                                             "jail is not the qualified profile")
@@ -4644,7 +4648,7 @@ def _seat_probe_marker():
         os.unlink(marker)
 
 
-def _require_seat_identity(prefix: "Sequence[str]", retain_caps=()) -> None:
+def _require_seat_identity(prefix: "Sequence[str]", retain_caps=(), *, pass_fds=()) -> None:
     """Launch only on POSITIVE evidence that the seat is the operator, locked down.
 
     The probe runs through the very prefix the provider will run through (owner wrapper,
@@ -4662,6 +4666,7 @@ def _require_seat_identity(prefix: "Sequence[str]", retain_caps=()) -> None:
                 [*prefix, "/bin/sh", "-c", _SEAT_PROBE, "sh", marker],
                 capture_output=True, text=True, timeout=30,
                 env={"PATH": "/usr/bin:/bin", "LC_ALL": "C"}, stdin=subprocess.DEVNULL,
+                **({"pass_fds": pass_fds} if pass_fds else {}),
             ).stdout.splitlines()
         except subprocess.TimeoutExpired:
             seen = ["TIMEOUT"]
@@ -4684,6 +4689,65 @@ class SeatLaunchRole(str, Enum):
     EXECUTOR_TRUSTED = "EXECUTOR_TRUSTED"
 
 
+_SEAT_PROFILE_PROTECTED_DESTINATIONS: tuple[str, ...] = (
+    "/proc",
+    "/dev",
+    "/tmp",
+    "/etc",
+    "/sys",
+    "/run/phase-loop-seat",
+    *_GEMINI_VIEW_SYSTEM,
+)
+
+
+def _seat_paths_overlap(left: str, right: str) -> bool:
+    left = os.path.abspath(left)
+    right = os.path.abspath(right)
+    return (
+        left == right
+        or left.startswith(right.rstrip("/") + "/")
+        or right.startswith(left.rstrip("/") + "/")
+    )
+
+
+def _require_safe_dependency_profile_destinations(
+    dependency: object | None,
+    *,
+    cwd: str | Path,
+    private_home: str,
+    readonly_paths: Sequence[str | Path] = (),
+    writable_trees: Sequence[str | Path] = (),
+    outputs: Sequence[str | Path] = (),
+    output_dirs: Sequence[str | Path] = (),
+    broker_socket: str | Path | None = None,
+) -> None:
+    """Keep dependency mounts disjoint from every generic seat-view layer.
+
+    The exact provider subject slot is the sole exception: it is the mount this profile
+    exists to supply. Other dependency entries do not inherit that exception.
+    """
+    if dependency is None:
+        return
+    protected = {
+        *(_SEAT_PROFILE_PROTECTED_DESTINATIONS),
+        os.path.abspath(cwd),
+        os.path.abspath(private_home),
+        *(os.path.abspath(path) for path in readonly_paths),
+        *(os.path.abspath(path) for path in writable_trees),
+        *(os.path.abspath(path) for path in outputs),
+        *(os.path.abspath(path) for path in output_dirs),
+    }
+    if broker_socket is not None:
+        protected.add(os.path.abspath(broker_socket))
+    subject_destination = str(getattr(dependency, "subject_destination"))
+    for entry in getattr(dependency, "entries"):
+        destination = str(entry.destination)
+        if destination == subject_destination == "/run/phase-loop-seat/provider":
+            continue
+        if any(_seat_paths_overlap(destination, item) for item in protected):
+            raise _sandbox_egress.SeatIdentityUnverified("seat_profile_unavailable")
+
+
 @dataclass(frozen=True)
 class SeatProfile:
     env: Mapping[str, str] = field(repr=False)
@@ -4702,6 +4766,8 @@ class SeatProfile:
     #: ``outputs`` are the ones bound in place instead.
     output_dirs: tuple[tuple[str, str], ...] = ()
     evidence: Mapping[str, object] = field(default_factory=dict)
+    dependency: object | None = field(default=None, repr=False)
+    dependency_projection_digest: str = ""
 
 
 _OWNED_LAUNCH = ContextVar("owned_provider_launch", default=False)
@@ -4984,7 +5050,8 @@ def _await_gemini_login(command, env, *, gemini_profile=None, review_monitor=Non
     one earlier. Returns the seconds slept.
 
     This is a sleep and nothing else. It starts no process, takes no lock, admits no image
-    and refuses nothing; the gate runs once, after it, with its one renewal and its
+    and refuses nothing (except, in a required dependency session, a login it cannot
+    renew, agent-harness#1782); the gate runs once, after it, with its one renewal and its
     refusals. It applies only to a Gemini launch that needs its login and whose login file is
     readable with more than 0 and less than :data:`_GEMINI_LOGIN_MIN_S` seconds left. Every
     other state returns at once.
@@ -5012,6 +5079,12 @@ def _await_gemini_login(command, env, *, gemini_profile=None, review_monitor=Non
     if (review_monitor is None and deadline_s is not None
             and float(deadline_s) - left < _GEMINI_LOGIN_MIN_S):
         return 0.0  # the leg would not be left a run: no sleep, the gate decides now
+    # agent-harness#1782: a required session cannot renew this login on the host, so
+    # refuse now rather than sleep until expiry and refuse afterwards.
+    from .executable_dependency_startup import current_dependency_for_provider
+    dependency = current_dependency_for_provider()
+    if dependency is not None:
+        _require_dependency_profile_composition(dependency, "gemini", env, gemini_profile=gemini_profile)
     cancel = review_monitor.cancel if review_monitor is not None else _BOARD_CANCEL.get()
     _what, why, fix = _seat_jail.NOTICES[_GEMINI_LOGIN_AWAITING]
     log = logging.getLogger(__name__)
@@ -5064,19 +5137,51 @@ def _gemini_login_sleep(home, left, *, cancel=None, quiescence_latch=None) -> st
             raise _ReviewOperationCancelled("review_operation_cancelled")
 
 
+def _require_dependency_profile_composition(dependency, harness, env, *, gemini_profile=None,
+                                            needs_login=True, role=SeatLaunchRole.PROVIDER_REVIEW):
+    if dependency is None:
+        return
+    from .executable_dependency import ExecutableDependencyError
+    if gemini_profile is not None:
+        raise ExecutableDependencyError("dependency_route_unwired", "Gemini heartbeat")
+    if (harness == "gemini" and needs_login
+            and SeatLaunchRole(role) is SeatLaunchRole.PROVIDER_REVIEW
+            and not _gemini_credential_fresh(Path(env.get("HOME", str(Path.home()))))):
+        raise ExecutableDependencyError("dependency_route_unwired", "Gemini host credential refresh")
+
+
 @contextmanager
 def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=(),
                  broker_socket=None, gemini_profile=None, role=SeatLaunchRole.PROVIDER_REVIEW,
-                 writable_trees=(), needs_login=True):
+                 writable_trees=(), needs_login=True, dependency=None):
     """Copy declared subscription state into a per-launch private home.
 
     ``needs_login`` is False only for a launch that makes no provider request
     (:func:`_gemini_launch_needs_login`): the freshness of the login is then not asked."""
+    if dependency is None and harness in {"codex", "claude", "grok", "gemini", "opencode"}:
+        from .executable_dependency_startup import current_dependency_for_provider
+
+        dependency = current_dependency_for_provider(
+            harness,
+            None if gemini_profile is not None else [str(executable)],
+        )
+    _require_dependency_profile_composition(
+        dependency, harness, env, gemini_profile=gemini_profile, needs_login=needs_login, role=role,
+    )
     _require_owner_platform()
     home = Path(env.get("HOME", str(Path.home())))
     if gemini_profile is not None:
         home = Path(_gemini_credential_target(gemini_profile.mount_args)).parents[2]
     private_home = gemini_heartbeat.PRIVATE_HOME if gemini_profile is not None else "/home/phase-loop-seat"
+    _require_safe_dependency_profile_destinations(
+        dependency,
+        cwd=cwd,
+        private_home=private_home,
+        readonly_paths=readonly_paths,
+        writable_trees=writable_trees,
+        outputs=outputs,
+        broker_socket=broker_socket,
+    )
     profile_env = {key: value for key, value in env.items()
                    if key in {"LANG", "LC_ALL", "LC_CTYPE", "TERM", "NO_COLOR"}}
     profile_env.update(HOME=private_home, PATH="/usr/bin:/bin",
@@ -5090,9 +5195,16 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
     redactions = []
     evidence = {}
     with contextlib.ExitStack() as stack:
+        dependency_projection = None
+        if dependency is not None:
+            dependency.revalidate()
+            dependency_projection = stack.enter_context(dependency.reopen_projection())
         if (harness == "gemini" and needs_login
                 and SeatLaunchRole(role) is SeatLaunchRole.PROVIDER_REVIEW
                 and not _gemini_credential_fresh(home)):
+            if dependency is not None:
+                from .executable_dependency import ExecutableDependencyError
+                raise ExecutableDependencyError("dependency_route_unwired", "Gemini host credential refresh")
             if gemini_profile is not None:
                 # The help measurement also uses this caller. Reuse its verified image;
                 # a second lookup here would recursively enter the help measurement.
@@ -5184,7 +5296,22 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
         elif harness is not None:
             raise _sandbox_egress.SeatIdentityUnverified("seat_profile_unavailable")
         destination = "/run/phase-loop-seat/provider"
-        if gemini_profile is not None:
+        if dependency_projection is not None:
+            destination = dependency.subject_destination
+            mounts.extend(dependency_projection.mount_args())
+            pass_fds.update(dependency_projection.pass_fds)
+            evidence.update(
+                executable_dependency_projection_sha256=dependency_projection.digest,
+                executable_dependency_authority_sha256=dependency.authority_sha256,
+                executable_dependency_declaration_sha256=dependency.declaration_sha256,
+                executable_dependency_runtime_euid_owned_sources=(
+                    dependency._runtime_euid_owned_sources
+                ),
+                executable_dependency_runtime_euid_writable_sources=(
+                    dependency._runtime_euid_writable_sources
+                ),
+            )
+        elif gemini_profile is not None:
             # Reuse the admitted image and blocked-wrapper handshake unchanged.
             destination = gemini_profile.executable
             args = gemini_profile.mount_args
@@ -5226,6 +5353,10 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
             keep_fds=tuple(sorted(keep_fds)), broker_socket=broker_socket,
             writable_trees=tuple(writable_trees),
             evidence=evidence,
+            dependency=dependency,
+            dependency_projection_digest=(
+                dependency_projection.digest if dependency_projection is not None else ""
+            ),
         )
 
 
@@ -5436,12 +5567,23 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
     tree writable; ``_granted_writable_tree`` checks the grant and refuses one it cannot
     honour exactly. ``writable_tree_checked`` passes on that the leg already checked the
     tree's provenance (a relaunch of the same leg)."""
+    from .executable_dependency_startup import current_dependency_for_provider
+
     if gemini_profile is None:
-        harness, executable = _seat_provider_source(command[0], env)
-        if harness not in {"codex", "claude", "grok", "gemini", "opencode"}:
-            harness = None
+        dependency = current_dependency_for_provider(command=command)
+        if dependency is not None:
+            harness, executable = dependency.provider, dependency.subject_source
+        else:
+            harness, executable = _seat_provider_source(command[0], env)
+            if harness not in {"codex", "claude", "grok", "gemini", "opencode"}:
+                harness = None
     else:
         harness, executable = "gemini", gemini_profile.executable
+        dependency = current_dependency_for_provider(harness)
+    _require_dependency_profile_composition(
+        dependency, harness, env, gemini_profile=gemini_profile,
+        needs_login=_gemini_launch_needs_login(command, gemini_profile), role=role,
+    )
     readonly = list(readonly_paths)
     cwd = Path(cwd)
     # agent-harness#1470: at most one writable tree, and only the path `--cd` names.
@@ -5486,6 +5628,19 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
     delivered = tuple(dict.fromkeys(
         path for path in (Path(os.path.abspath(item)) for item in replaceable_outputs)
         if path not in outputs))
+    _require_safe_dependency_profile_destinations(
+        dependency,
+        cwd=cwd,
+        private_home=(
+            gemini_heartbeat.PRIVATE_HOME
+            if gemini_profile is not None
+            else "/home/phase-loop-seat"
+        ),
+        readonly_paths=readonly,
+        writable_trees=writable,
+        outputs=outputs,
+        output_dirs=tuple(path.parent for path in delivered),
+    )
     staging = None
     if delivered:
         _require_replaceable_placement(layers, readonly, delivered)
@@ -5522,7 +5677,8 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
             outputs=tuple(path for path in outputs if path != transcript),
             gemini_profile=gemini_profile, role=role,
             writable_trees=tuple(writable),
-            needs_login=_gemini_launch_needs_login(command, gemini_profile)))
+            needs_login=_gemini_launch_needs_login(command, gemini_profile),
+            dependency=dependency))
         profile = replace(profile, output_dirs=tuple(
             (source, directory) for directory, source in private.items()))
         owned_command = [provider, *command[1:]]
@@ -5603,6 +5759,23 @@ def _filtered_holder_namespace() -> int:
 
 def launch_owned(argv, *, role, profile: SeatProfile, supervisor=None, **kwargs):
     role = SeatLaunchRole(role)
+    if role is SeatLaunchRole.EXECUTOR_TRUSTED:
+        from .executable_dependency_startup import refuse_unwired_dependency_route
+        refuse_unwired_dependency_route("direct executor")
+    if profile.dependency is not None:
+        _require_safe_dependency_profile_destinations(
+            profile.dependency,
+            cwd=kwargs.get("cwd", os.getcwd()),
+            private_home=profile.env.get("HOME", "/home/phase-loop-seat"),
+            readonly_paths=profile.readonly_paths,
+            writable_trees=profile.writable_trees,
+            outputs=profile.outputs,
+            output_dirs=tuple(destination for _source, destination in profile.output_dirs),
+            broker_socket=profile.broker_socket,
+        )
+        profile.dependency.revalidate()
+        if profile.dependency.projection_digest != profile.dependency_projection_digest:
+            raise _sandbox_egress.SeatIdentityUnverified("seat_profile_unavailable")
     if role is not SeatLaunchRole.EXECUTOR_TRUSTED:
         # A seat never reads the operator's terminal: stdin is closed unless given.
         kwargs.setdefault("stdin", subprocess.DEVNULL)
@@ -5641,9 +5814,30 @@ def launch_owned(argv, *, role, profile: SeatProfile, supervisor=None, **kwargs)
                     writable_trees=profile.writable_trees,
                 )
 
+                probe_projection = None
+                if profile.dependency is not None:
+                    probe_projection = stack.enter_context(profile.dependency.reopen_projection())
+                    if (
+                        probe_projection.digest != profile.dependency_projection_digest
+                        or probe_projection.destinations != tuple(
+                            item.destination for item in profile.dependency.entries
+                        )
+                    ):
+                        raise _sandbox_egress.SeatIdentityUnverified("seat_profile_unavailable")
+                    kwargs["probe_pass_fds"] = probe_projection.pass_fds
+
                 def probe_owner(marker):
-                    return _seat_owner(_seat_filesystem_view(cwd, readonly_paths=(marker,)),
-                                       filtered_network=filtered_network)
+                    if probe_projection is None:
+                        probe_view = _seat_filesystem_view(cwd, readonly_paths=(marker,))
+                    else:
+                        probe_view = _seat_filesystem_view(
+                            cwd, readonly_paths=(*profile.readonly_paths, marker),
+                            outputs=profile.outputs, output_dirs=profile.output_dirs,
+                            profile_mounts=probe_projection.mount_args(),
+                            broker_socket=profile.broker_socket,
+                            writable_trees=profile.writable_trees,
+                        )
+                    return _seat_owner(probe_view, filtered_network=filtered_network)
 
                 descriptor = seat_seccomp.sealed_keyring_filter()
                 stack.callback(os.close, descriptor)
@@ -5664,11 +5858,13 @@ def launch_owned(argv, *, role, profile: SeatProfile, supervisor=None, **kwargs)
                     _require_seat_identity(
                         lambda marker: _compose_launch_prefix(kwargs.get("cwd"), probe_owner(marker))
                         if callable(probe_owner) else prefix,
+                        **({"pass_fds": kwargs["probe_pass_fds"]}
+                           if kwargs.get("probe_pass_fds") else {}),
                     )
                 command = supervisor([*prefix, *command], kwargs.get("pass_fds", ()))
                 egress_token = _EGRESS_LAUNCH_PREFIX.set(())
                 stack.callback(_EGRESS_LAUNCH_PREFIX.reset, egress_token)
-            return launch_provider(command, **kwargs)
+            return launch_provider(command, dependency=profile.dependency, **kwargs)
     finally:
         _OWNED_LAUNCH.reset(token)
 
@@ -5733,7 +5929,8 @@ def _child_scratch_kwargs(kwargs: dict, decision: str) -> None:
         kwargs["env"] = _sandbox_policy.child_scratch_env(kwargs["env"], decision)
 
 
-def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
+def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None, dependency=None,
+                    probe_pass_fds=(),
                     child_scratch=_sandbox_policy.CHILD_SCRATCH_RELOCATE,
                     **kwargs) -> "subprocess.Popen[bytes]":
     """THE one place a review provider process is started. Popen form.
@@ -5782,12 +5979,24 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
         if not isinstance(probe_owner, _seat_jail.SeatJail):
             raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("identity"),
                                                 "a jailed launch needs its probe jail")
+        if process_owner.dependency is not None:
+            process_owner.dependency.revalidate()
+            if (
+                process_owner.dependency.projection_digest
+                != process_owner.dependency_projection_digest
+                or probe_owner.dependency is not process_owner.dependency
+                or probe_owner.dependency_projection_digest
+                != process_owner.dependency_projection_digest
+            ):
+                raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("identity"))
         _require_qualified_jail(process_owner)
         # The provider's scratch decision, applied to the helper chain's own env; the probe
         # and the launch are handed this same decided object.
         env = _jail_launch_env(child_scratch)
         _require_jailed_seat_identity(_compose_seat_jail_prefix(probe_owner), probe_owner,
                                       probe_owner.pass_fds, env)
+        if process_owner.dependency is not None:
+            process_owner.dependency.revalidate()
         kwargs.pop("cwd", None)
         kwargs["pass_fds"] = tuple(process_owner.pass_fds)
         kwargs["close_fds"] = True
@@ -5805,7 +6014,11 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
                 return _compose_launch_prefix(cwd, probe_owner(marker), retain_caps)
         else:
             probe = _compose_launch_prefix(cwd, probe_owner, retain_caps)
-        _require_seat_identity(probe, retain_caps)
+        _require_seat_identity(
+            probe, retain_caps, **({"pass_fds": probe_pass_fds} if probe_pass_fds else {}),
+        )
+    if dependency is not None:
+        dependency.revalidate()
     process = subprocess.Popen([*prefix, *argv], **kwargs)
     # Counted once the process exists: a launch that fails to exec is not a spawn.
     _count_provider_spawn()
@@ -7023,6 +7236,9 @@ def _preflight_gemini_heartbeat(board, monitoring_policy, env=None, cancel_event
         # agent-harness#1076: the whole-board preflight is the ONLY caller that may
         # self-qualify a genuine upstream agy release on first use; legs and the
         # president admit by lookup only (gemini_heartbeat.admit).
+        # agent-harness#1782: guarded here, not in the qualification-pinned route core.
+        from .executable_dependency_startup import refuse_unwired_dependency_route
+        refuse_unwired_dependency_route("Gemini heartbeat image admission")
         from . import agy_qualification
         agy_qualification.ensure_admitted(_broker_subscription_env(env), cancel_event,
                                           agy_qualification.board_heartbeat(stream_dir)).close()
@@ -7107,6 +7323,36 @@ def _record_broker_provider_evidence(
     })
     if transport_metadata is not None:
         evidence.update(transport_metadata)
+
+
+def _record_executable_dependency_evidence(
+    evidence: dict[str, object] | None,
+    jail: "_seat_jail.SeatJail",
+) -> None:
+    dependency = getattr(jail, "dependency", None)
+    if dependency is None:
+        return
+    try:
+        dependency.revalidate()
+    except ExecutableDependencyError as exc:
+        raise _seat_jail.SeatSandboxRefused(
+            _seat_jail.refused("identity"),
+            "dependency evidence unavailable",
+        ) from exc
+    if dependency.projection_digest != jail.dependency_projection_digest:
+        raise _seat_jail.SeatSandboxRefused(
+            _seat_jail.refused("identity"),
+            "dependency projection evidence changed",
+        )
+    if evidence is None:
+        return
+    evidence.update({
+        "executable_dependency_projection_sha256": dependency.projection_digest,
+        "executable_dependency_authority_sha256": dependency.authority_sha256,
+        "executable_dependency_declaration_sha256": dependency.declaration_sha256,
+        "executable_dependency_runtime_euid_owned_sources": dependency._runtime_euid_owned_sources,
+        "executable_dependency_runtime_euid_writable_sources": dependency._runtime_euid_writable_sources,
+    })
 
 
 def _render_leg_prompt(
@@ -11262,11 +11508,89 @@ class _JailedSeat:
     admission_class: str | None = None
 
 
+def _cleanup_jailed_seat(
+    seat: _JailedSeat,
+    *,
+    snapshots: Path | None = None,
+    primary: BaseException | None = None,
+) -> None:
+    """Close both jail projections and attempt every parent-side teardown step.
+
+    Cleanup must not replace the dependency refusal (or provider failure) that caused it.
+    Without an active primary exception, the first cleanup failure remains observable.
+    """
+    failures: list[BaseException] = []
+    retained: list[Path] = []
+    for jail in (seat.jail, seat.probe_jail):
+        try:
+            _seat_jail.close_jail_fds(jail)
+        except BaseException as exc:
+            failures.append(exc)
+    for parent in (seat.review_dir, seat.seat_dir, seat.seat_dir / _JAIL_PROBE_DIRNAME):
+        try:
+            retained.extend(
+                parent / name
+                for name in _seat_uid.teardown_in_h(seat.holder_pid, str(parent))
+            )
+        except BaseException as exc:
+            failures.append(exc)
+    for path in retained:
+        try:
+            # Under the leg's own mkdtemp scratch dir: operator-owned and 0700 (F020).
+            _seat_uid.record_retention(path)
+        except BaseException as exc:
+            failures.append(exc)
+    if retained:
+        seat.notices.append("seat_sandbox_retained_after_teardown")
+    if snapshots is not None:
+        shutil.rmtree(snapshots, ignore_errors=True)
+    if failures:
+        if primary is not None:
+            for failure in failures:
+                primary.add_note(
+                    f"jailed seat cleanup also failed: {type(failure).__name__}"
+                )
+            return
+        first, *additional = failures
+        for failure in additional:
+            first.add_note(f"additional jailed seat cleanup failure: {type(failure).__name__}")
+        raise first
+
+
 def _resolve_claude_executable() -> Path:
     found = shutil.which("claude", path="/usr/local/bin:/usr/bin:/bin:" + os.environ.get("PATH", ""))
     if found is None:
         raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build"), "claude not found")
     return Path(os.path.realpath(found))
+
+
+def _build_jail_with_owned_inputs(leg, directory, executable, *, artifact, instructions,
+                                  token=None, **kwargs):
+    """Caller owns partial input allocation; a successful jail takes all descriptors."""
+    with contextlib.ExitStack() as stack:
+        bundle = _seat_jail.memfd_with("seat-bundle", artifact)
+        stack.callback(os.close, bundle)
+        brief = _seat_jail.memfd_with("seat-instructions", instructions)
+        stack.callback(os.close, brief)
+        token_fd = None
+        if token is not None:
+            token_fd = _seat_jail.token_pipe(token)
+            stack.callback(os.close, token_fd)
+        jail = _seat_jail.build_seat_jail(
+            leg, directory, executable, bundle_memfd=bundle, instructions_memfd=brief,
+            token_fd=token_fd, **kwargs,
+        )
+        stack.pop_all()
+        return jail
+
+
+def _validate_jail_dependency(leg, dependency):
+    if dependency is not None:
+        _seat_jail._require_safe_dependency_destinations(
+            leg, tuple(item.destination for item in dependency.entries),
+            dependency.subject_destination,
+        )
+        dependency.revalidate()
 
 
 def _prepare_jailed_claude(
@@ -11282,79 +11606,93 @@ def _prepare_jailed_claude(
     holds ``seat-home/`` and ``seat-out/``; the tree is the approved stage in
     ``review_dir``."""
     artifact, instructions = prompt_parts
+    from .executable_dependency_startup import current_dependency_for_provider
+
+    dependency = current_dependency_for_provider("claude")
+    _validate_jail_dependency("claude", dependency)
+    executable = (
+        Path(dependency.subject_source) if dependency is not None else None
+    )
     tree = review_dir / _seat_jail.HOST_TREE_DIRNAME
     try:
         seat_dir.mkdir(mode=0o700)
     except OSError as exc:
         raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build")) from exc
     try:
-        tree_fd = _seat_jail.open_dir_nofollow(tree)
-    except OSError as exc:
-        raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("stage_changed")) from exc
-    try:
-        observed = _seat_jail.tree_manifest_sha256_at(tree_fd)
-    except OSError as exc:
-        raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("stage_changed")) from exc
-    finally:
-        os.close(tree_fd)
-    if observed != review_authorization.staged_tree_sha256:
-        raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("stage_changed"))
-    # Read afresh for THIS launch: the override if present, else the current login's access
-    # token with at least the leg's margin of lifetime left (plan amendment A1). The margin is
-    # the one the pre-launch seat mode checked: `_claude_seat_login_margin_s(timeout_s)`.
-    credential = _seat_credentials.resolve_claude_seat_credential(
-        _claude_seat_login_margin_s(timeout_s))
-    # agent-harness#1253 round 2: a refusal after the credential is resolved (the jail
-    # build, the pre-seed, the probe jail) still says when a stored override was ignored --
-    # the credential's notices as siblings of its one refusal code.
-    try:
-        token = credential.token
-        executable = _resolve_claude_executable()
-        bundle = _seat_jail.memfd_with("seat-bundle", artifact.encode("utf-8"))
-        brief = _seat_jail.memfd_with("seat-instructions", instructions.encode("utf-8"))
-        token_fd = _seat_jail.token_pipe(token)
         try:
-            jail = _seat_jail.build_seat_jail(
-                "claude", seat_dir, executable, tree=tree, bundle_memfd=bundle,
-                instructions_memfd=brief, token_fd=token_fd, seat_ids=(seat_id, seat_id),
-            )
-        except BaseException:
-            for fd in (bundle, brief, token_fd):
-                os.close(fd)
-            raise
+            tree_fd = _seat_jail.open_dir_nofollow(tree)
+        except OSError as exc:
+            raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("stage_changed")) from exc
         try:
-            if _seat_jail.CLAUDE_PRESEED:
-                home = _seat_jail.open_dir_nofollow(seat_dir / _seat_jail.HOST_HOME_DIRNAME)
-                try:
-                    _seat_jail.write_new_file_at(
-                        home, ".claude/.claude.json",
-                        json.dumps(dict(_seat_jail.CLAUDE_PRESEED), sort_keys=True).encode(),
-                    )
-                except OSError as exc:
-                    raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("preseed")) from exc
-                finally:
-                    os.close(home)
-            # The probe jail: the same shape over its own empty directories, because the
-            # bundle memfds and the token pipe are single-use.
-            probe_dir = seat_dir / _JAIL_PROBE_DIRNAME
-            (probe_dir / _seat_jail.HOST_TREE_DIRNAME).mkdir(mode=0o700, parents=True)
-            probe = _seat_jail.build_seat_jail(
-                "claude", probe_dir, executable,
-                bundle_memfd=_seat_jail.memfd_with("probe-bundle", b""),
-                instructions_memfd=_seat_jail.memfd_with("probe-instructions", b""),
-                token_fd=_seat_jail.token_pipe(b"probe"), seat_ids=(seat_id, seat_id),
+            observed = _seat_jail.tree_manifest_sha256_at(tree_fd)
+        except OSError as exc:
+            raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("stage_changed")) from exc
+        finally:
+            os.close(tree_fd)
+        if observed != review_authorization.staged_tree_sha256:
+            raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("stage_changed"))
+        # Read afresh for THIS launch: the override if present, else the current login's access
+        # token with at least the leg's margin of lifetime left (plan amendment A1). The margin is
+        # the one the pre-launch seat mode checked: `_claude_seat_login_margin_s(timeout_s)`.
+        credential = _seat_credentials.resolve_claude_seat_credential(
+            _claude_seat_login_margin_s(timeout_s))
+        # agent-harness#1253 round 2: a refusal after the credential is resolved (the jail
+        # build, the pre-seed, the probe jail) still says when a stored override was ignored --
+        # the credential's notices as siblings of its one refusal code.
+        try:
+            if executable is None:
+                executable = _resolve_claude_executable()
+            token = credential.token
+            jail = _build_jail_with_owned_inputs(
+                "claude", seat_dir, executable, tree=tree,
+                artifact=artifact.encode("utf-8"), instructions=instructions.encode("utf-8"),
+                token=token, seat_ids=(seat_id, seat_id), dependency=dependency,
             )
-        except BaseException:
-            _seat_jail.close_jail_fds(jail)
-            raise
-        return _JailedSeat(jail=jail, probe_jail=probe, holder_pid=holder_pid, token=token,
-                           review_dir=review_dir, seat_dir=seat_dir, source=credential.source,
-                           expires_at=credential.expires_at, notices=list(credential.notices))
-    except _seat_jail.SeatSandboxRefused as exc:
-        if not credential.notices:
-            raise
-        raise _seat_jail.SeatSandboxRefused(
-            exc.code, str(exc), also=_dedupe((*exc.also, *credential.notices))) from exc
+            try:
+                if _seat_jail.CLAUDE_PRESEED:
+                    home = _seat_jail.open_dir_nofollow(seat_dir / _seat_jail.HOST_HOME_DIRNAME)
+                    try:
+                        _seat_jail.write_new_file_at(
+                            home, ".claude/.claude.json",
+                            json.dumps(dict(_seat_jail.CLAUDE_PRESEED), sort_keys=True).encode(),
+                        )
+                    except OSError as exc:
+                        raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("preseed")) from exc
+                    finally:
+                        os.close(home)
+                # The probe jail: the same shape over its own empty directories, because the
+                # bundle memfds and the token pipe are single-use.
+                probe_dir = seat_dir / _JAIL_PROBE_DIRNAME
+                (probe_dir / _seat_jail.HOST_TREE_DIRNAME).mkdir(mode=0o700, parents=True)
+                probe = _build_jail_with_owned_inputs(
+                    "claude", probe_dir, executable, artifact=b"", instructions=b"",
+                    token=b"probe", seat_ids=(seat_id, seat_id),
+                    dependency=dependency,
+                )
+                if dependency is not None and (
+                    jail.dependency_projection_digest != dependency.projection_digest
+                    or probe.dependency_projection_digest != dependency.projection_digest
+                ):
+                    _seat_jail.close_jail_fds(probe)
+                    raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("identity"))
+            except BaseException:
+                _seat_jail.close_jail_fds(jail)
+                raise
+            return _JailedSeat(jail=jail, probe_jail=probe, holder_pid=holder_pid, token=token,
+                               review_dir=review_dir, seat_dir=seat_dir, source=credential.source,
+                               expires_at=credential.expires_at, notices=list(credential.notices))
+        except _seat_jail.SeatSandboxRefused as exc:
+            if not credential.notices:
+                raise
+            raise _seat_jail.SeatSandboxRefused(
+                exc.code, str(exc), also=_dedupe((*exc.also, *credential.notices))) from exc
+    except BaseException as primary:
+        if dependency is not None:
+            try:
+                shutil.rmtree(seat_dir)
+            except BaseException as cleanup:
+                primary.add_note(f"jail preparation cleanup failed: {cleanup}")
+        raise
 
 
 def _exec_jailed_claude_leg(
@@ -11455,6 +11793,7 @@ def _exec_jailed_claude_leg(
             "seat_jail_owner_argv_shape": tuple(jail.redacted_owner()),
         })
     try:
+        _record_executable_dependency_evidence(broker_evidence, jail)
         rc, review_text, log_text, pty_tail = _run_claude_tui_session(
             command=command, cwd=Path(_seat_jail.SEAT_TREE), prompt=prompt,
             output_file=output_snapshot, timeout_s=timeout_s, env=dict(jail.env),
@@ -11469,19 +11808,7 @@ def _exec_jailed_claude_leg(
         _refresh_transcript()
         kept = transcript_snapshot.read_bytes()
     finally:
-        _seat_jail.close_jail_fds(jail)
-        _seat_jail.close_jail_fds(seat.probe_jail)
-        retained = [
-            parent / name
-            for parent in (seat.review_dir, seat.seat_dir, seat.seat_dir / _JAIL_PROBE_DIRNAME)
-            for name in _seat_uid.teardown_in_h(seat.holder_pid, str(parent))
-        ]
-        for path in retained:
-            # Under the leg's own mkdtemp scratch dir: operator-owned and 0700 (F020).
-            _seat_uid.record_retention(path)
-        if retained:
-            seat.notices.append("seat_sandbox_retained_after_teardown")
-        shutil.rmtree(snapshots, ignore_errors=True)
+        _cleanup_jailed_seat(seat, snapshots=snapshots, primary=sys.exception())
     if unsafe:
         return _jailed_failure("seat_sandbox_refused:output_unsafe", failure_detail_sink)
     pty_tail = str(pty_tail or "")
@@ -11607,76 +11934,96 @@ def _prepare_jailed_gemini(
     margin of life, the config directory and CA certificate, the jail and its probe jail.
     The first failure raises its one code and nothing has launched."""
     artifact, instructions = prompt_parts
+    from .executable_dependency_startup import current_dependency_for_provider
+
+    dependency = current_dependency_for_provider("gemini")
+    _validate_jail_dependency("gemini", dependency)
+    if dependency is not None:
+        from .executable_dependency import ExecutableDependencyError
+        home = Path(_broker_subscription_env(env).get("HOME", str(Path.home())))
+        if not _gemini_credential_fresh(home):
+            raise ExecutableDependencyError("dependency_route_unwired", "Gemini host credential refresh")
     try:
         seat_dir.mkdir(mode=0o700)
     except OSError as exc:
         raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build")) from exc
-    tree = _approved_stage_or_refuse(review_dir, review_authorization)
-    subscription_env = _broker_subscription_env(env)
-    home = Path(subscription_env.get("HOME", str(Path.home())))
-    admission = gemini_heartbeat.admit(subscription_env)
     try:
-        if admission.path is None:
-            raise ValueError("gemini_heartbeat_capability_unavailable")
-        executable = Path(os.path.realpath(admission.path))
-        image_sha256, admission_class = admission.image.sha256, admission.admission_class
-        _await_gemini_login(["agy"], {"HOME": str(home)}, review_monitor=review_monitor,
-                            quiescence_latch=quiescence_latch)
-        if not _gemini_credential_fresh(home):
-            _refresh_gemini_credential(home, admission.image)
-    finally:
-        admission.close()
-    copy = _seat_jail.build_gemini_seat_copy(
-        home / ".gemini" / "antigravity-cli" / "antigravity-oauth-token")
-    document = json.loads(copy)
-    token = str(document["token"]["access_token"]).encode("utf-8")
-    try:
-        expires_at = _parse_agy_expiry(document["token"]["expiry"]).timestamp()
-    except (KeyError, TypeError, ValueError) as exc:
-        raise _seat_jail.SeatSandboxRefused("gemini_seat_token_expired") from exc
-    if expires_at - time.time() < _GEMINI_LOGIN_MIN_S:
-        raise _seat_jail.SeatSandboxRefused("gemini_seat_token_expired")
-    try:
-        _write_gemini_config(seat_dir / _seat_jail.HOST_GEMINI_CONFIG_DIRNAME, copy)
-        ca = _write_egress_ca(seat_dir, egress.ca_cert)
-    except OSError as exc:
-        raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build")) from exc
-    bundle = _seat_jail.memfd_with("seat-bundle", artifact.encode("utf-8"))
-    brief = _seat_jail.memfd_with("seat-instructions", instructions.encode("utf-8"))
-    try:
-        jail = _seat_jail.build_seat_jail(
-            "gemini", seat_dir, executable, tree=tree, bundle_memfd=bundle,
-            instructions_memfd=brief, seat_ids=(seat_id, seat_id),
-            gemini_config=seat_dir / _seat_jail.HOST_GEMINI_CONFIG_DIRNAME, egress_ca=ca,
-            egress_proxy=egress.proxy_url,
-        )
-    except BaseException:
-        for fd in (bundle, brief):
-            os.close(fd)
-        raise
-    try:
-        # The probe jail: the same shape over its own directories (no credential in it).
-        probe_dir = seat_dir / _JAIL_PROBE_DIRNAME
-        (probe_dir / _seat_jail.HOST_TREE_DIRNAME).mkdir(mode=0o700, parents=True)
-        _write_gemini_config(probe_dir / _seat_jail.HOST_GEMINI_CONFIG_DIRNAME, b"")
-        probe = _seat_jail.build_seat_jail(
-            "gemini", probe_dir, executable,
-            bundle_memfd=_seat_jail.memfd_with("probe-bundle", b""),
-            instructions_memfd=_seat_jail.memfd_with("probe-instructions", b""),
+        tree = _approved_stage_or_refuse(review_dir, review_authorization)
+        subscription_env = _broker_subscription_env(env)
+        home = Path(subscription_env.get("HOME", str(Path.home())))
+        if dependency is None:
+            admission = gemini_heartbeat.admit(subscription_env)
+            try:
+                if admission.path is None:
+                    raise ValueError("gemini_heartbeat_capability_unavailable")
+                executable = Path(os.path.realpath(admission.path))
+                image_sha256, admission_class = admission.image.sha256, admission.admission_class
+                _await_gemini_login(["agy"], {"HOME": str(home)}, review_monitor=review_monitor,
+                                    quiescence_latch=quiescence_latch)
+                if not _gemini_credential_fresh(home):
+                    _refresh_gemini_credential(home, admission.image)
+            finally:
+                admission.close()
+        else:
+            executable = Path(dependency.subject_source)
+            image_sha256, admission_class = dependency.subject_sha256, "executable_dependency"
+        copy = _seat_jail.build_gemini_seat_copy(
+            home / ".gemini" / "antigravity-cli" / "antigravity-oauth-token")
+        document = json.loads(copy)
+        token = str(document["token"]["access_token"]).encode("utf-8")
+        try:
+            expires_at = _parse_agy_expiry(document["token"]["expiry"]).timestamp()
+        except (KeyError, TypeError, ValueError) as exc:
+            raise _seat_jail.SeatSandboxRefused("gemini_seat_token_expired") from exc
+        if expires_at - time.time() < _GEMINI_LOGIN_MIN_S:
+            raise _seat_jail.SeatSandboxRefused("gemini_seat_token_expired")
+        try:
+            _write_gemini_config(seat_dir / _seat_jail.HOST_GEMINI_CONFIG_DIRNAME, copy)
+            ca = _write_egress_ca(seat_dir, egress.ca_cert)
+        except OSError as exc:
+            raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build")) from exc
+        jail = _build_jail_with_owned_inputs(
+            "gemini", seat_dir, executable, tree=tree,
+            artifact=artifact.encode("utf-8"), instructions=instructions.encode("utf-8"),
             seat_ids=(seat_id, seat_id),
-            gemini_config=probe_dir / _seat_jail.HOST_GEMINI_CONFIG_DIRNAME,
-            egress_ca=_write_egress_ca(probe_dir, egress.ca_cert), egress_proxy=egress.proxy_url,
+            gemini_config=seat_dir / _seat_jail.HOST_GEMINI_CONFIG_DIRNAME, egress_ca=ca,
+            egress_proxy=egress.proxy_url, dependency=dependency,
         )
-    except OSError as exc:
-        _seat_jail.close_jail_fds(jail)
-        raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build")) from exc
-    except BaseException:
-        _seat_jail.close_jail_fds(jail)
+        try:
+            # The probe jail: the same shape over its own directories (no credential in it).
+            probe_dir = seat_dir / _JAIL_PROBE_DIRNAME
+            (probe_dir / _seat_jail.HOST_TREE_DIRNAME).mkdir(mode=0o700, parents=True)
+            _write_gemini_config(probe_dir / _seat_jail.HOST_GEMINI_CONFIG_DIRNAME, b"")
+            probe = _build_jail_with_owned_inputs(
+                "gemini", probe_dir, executable, artifact=b"", instructions=b"",
+                seat_ids=(seat_id, seat_id),
+                gemini_config=probe_dir / _seat_jail.HOST_GEMINI_CONFIG_DIRNAME,
+                egress_ca=_write_egress_ca(probe_dir, egress.ca_cert), egress_proxy=egress.proxy_url,
+                dependency=dependency,
+            )
+            if dependency is not None and (
+                jail.dependency_projection_digest != dependency.projection_digest
+                or probe.dependency_projection_digest != dependency.projection_digest
+            ):
+                _seat_jail.close_jail_fds(probe)
+                raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("identity"))
+        except OSError as exc:
+            _seat_jail.close_jail_fds(jail)
+            raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build")) from exc
+        except BaseException:
+            _seat_jail.close_jail_fds(jail)
+            raise
+        return _JailedSeat(jail=jail, probe_jail=probe, holder_pid=holder_pid, token=token,
+                           review_dir=review_dir, seat_dir=seat_dir,
+                           source=_seat_credentials.SOURCE_LOGIN, expires_at=expires_at,
+                           image_sha256=image_sha256, admission_class=admission_class)
+    except BaseException as primary:
+        if dependency is not None:
+            try:
+                shutil.rmtree(seat_dir)
+            except BaseException as cleanup:
+                primary.add_note(f"jail preparation cleanup failed: {cleanup}")
         raise
-    return _JailedSeat(jail=jail, probe_jail=probe, holder_pid=holder_pid, token=token,
-                       review_dir=review_dir, seat_dir=seat_dir,
-                       source=_seat_credentials.SOURCE_LOGIN, expires_at=expires_at,
-                       image_sha256=image_sha256, admission_class=admission_class)
 
 
 def _jailed_gemini_secrets(seat: "_JailedSeat") -> tuple[bytes, ...]:
@@ -11766,6 +12113,7 @@ def _exec_jailed_gemini_leg(
             **({"egress": dict(egress_evidence)} if egress_evidence is not None else {}),
         })
     try:
+        _record_executable_dependency_evidence(broker_evidence, jail)
         proc = _run_leg_with_liveness(
             command, cwd=_seat_jail.SEAT_GEMINI_WORKSPACE, env=dict(jail.env),
             deadline_s=deadline_s, input_text=protocol.transport,
@@ -11776,17 +12124,7 @@ def _exec_jailed_gemini_leg(
     except subprocess.TimeoutExpired:
         proc = None
     finally:
-        _seat_jail.close_jail_fds(jail)
-        _seat_jail.close_jail_fds(seat.probe_jail)
-        retained = [
-            parent / name
-            for parent in (seat.review_dir, seat.seat_dir, seat.seat_dir / _JAIL_PROBE_DIRNAME)
-            for name in _seat_uid.teardown_in_h(seat.holder_pid, str(parent))
-        ]
-        for path in retained:
-            _seat_uid.record_retention(path)
-        if retained:
-            seat.notices.append("seat_sandbox_retained_after_teardown")
+        _cleanup_jailed_seat(seat, primary=sys.exception())
     if token_seen or (proc is not None and any(
             _seat_jail.contains_secret(f"{proc.stdout}{proc.stderr}".encode("utf-8", errors="replace"), secret)
             for secret in secrets)):
@@ -12056,6 +12394,8 @@ def _exec_leg(
         quiescence_latch.raise_if_set()
     brokered = broker_prompt is not None
     if leg == "gemini" and review_monitor is not None:
+        from .executable_dependency_startup import refuse_unwired_dependency_route
+        refuse_unwired_dependency_route("Gemini heartbeat")
         if not brokered or agy_capture is not None or research_seat is not None:
             return 1, "", _HarnessCode("gemini_heartbeat_broker_required")
         if review_monitor.cancel.is_set():
@@ -13017,6 +13357,8 @@ def _default_spawn(
                 or leg not in ("claude", "codex", "grok", "gemini")):
                 raise ValueError("review_monitoring_unsupported_route")
             if review_monitor is not None and leg == "gemini":
+                from .executable_dependency_startup import refuse_unwired_dependency_route
+                refuse_unwired_dependency_route("Gemini heartbeat")
                 gemini_heartbeat.require_capability(_broker_subscription_env(env))
             revalidate_review_isolation_authorization(
                 review_authorization, None, artifact, mode=mode,
@@ -14036,81 +14378,100 @@ def _run_legs_ordered(
     seq = list(items)
     if not seq:
         return []
+    from .executable_dependency_startup import (
+        acquire_child_dependency_task,
+        bind_child_dependency_task,
+        release_unstarted_dependency_task,
+    )
+
+    dependency_tasks: list[object | None] = []
+    try:
+        for index in range(len(seq)):
+            dependency_tasks.append(
+                acquire_child_dependency_task(f"panel-leg:{uuid.uuid4().hex}:{index}")
+            )
+    except BaseException:
+        for task in dependency_tasks:
+            release_unstarted_dependency_task(task)  # type: ignore[arg-type]
+        raise
     max_workers = max(1, min(max_concurrency or len(seq), _PANEL_MAX_WORKERS))
     streaming = on_leg_complete is not None or review_dir is not None
-    def run_with_cancellation(item: object) -> PanelLegResult:
-        try:
-            return run_one(item)
-        except ProviderProcessGroupQuiescenceError:
-            if cancel_event is not None:
-                cancel_event.set()
-            raise
-    with ThreadPoolExecutor(max_workers=max_workers) as pool, _review_cancellation_scope(cancel_event):
-        worker = run_one if cancel_event is None else run_with_cancellation
-        futures = [pool.submit(worker, item) for item in seq]
 
-        def _cancel_and_raise(
-            error: ProviderProcessGroupQuiescenceError,
-        ) -> None:
-            if cancel_event is not None:
-                cancel_event.set()
-            primary = fatal_latch.trip(error) if fatal_latch is not None else error
-            for pending in futures:
-                pending.cancel()
-            raise primary
+    def run_with_cancellation(index: int, item: object) -> PanelLegResult:
+        with bind_child_dependency_task(dependency_tasks[index]):  # type: ignore[arg-type]
+            try:
+                return run_one(item)
+            except ProviderProcessGroupQuiescenceError:
+                if cancel_event is not None:
+                    cancel_event.set()
+                raise
+    try:
+        with ThreadPoolExecutor(max_workers=max_workers) as pool, _review_cancellation_scope(cancel_event):
+            futures = [pool.submit(run_with_cancellation, index, item) for index, item in enumerate(seq)]
 
-        if not streaming:
-            # DEFAULT PATH — byte-identical: block in submission order, return in order.
-            ordered: list[PanelLegResult] = []
-            try:
-                for future in futures:
-                    ordered.append(future.result())
-            except ProviderProcessGroupQuiescenceError as exc:
-                _cancel_and_raise(exc)
-            return ordered
-        # STREAMING PATH — deliver each leg as it LANDS (out of order), then re-sort
-        # the consolidated return to submission order.
-        index_of = {future: i for i, future in enumerate(futures)}
-        results: list[PanelLegResult | None] = [None] * len(seq)
-        for future in as_completed(futures):
-            i = index_of[future]
-            try:
-                result = future.result()
-            except ProviderProcessGroupQuiescenceError as exc:
-                _cancel_and_raise(exc)
-            results[i] = result
-            if review_dir is not None:
+            def _cancel_and_raise(
+                error: ProviderProcessGroupQuiescenceError,
+            ) -> None:
+                if cancel_event is not None:
+                    cancel_event.set()
+                primary = fatal_latch.trip(error) if fatal_latch is not None else error
+                for pending in futures:
+                    pending.cancel()
+                raise primary
+
+            if not streaming:
+                # DEFAULT PATH — block in submission order and return in order.
+                ordered: list[PanelLegResult] = []
                 try:
-                    _capture_mutation(
-                        fatal_latch,
-                        lambda: _write_incremental_verdict(review_dir, i, result),
-                    )
+                    for future in futures:
+                        ordered.append(future.result())
                 except ProviderProcessGroupQuiescenceError as exc:
                     _cancel_and_raise(exc)
-            if on_leg_complete is not None:
-                def publish_callback() -> None:
+                return ordered
+            # STREAMING PATH — deliver each leg as it LANDS (out of order), then
+            # re-sort the consolidated return to submission order.
+            index_of = {future: i for i, future in enumerate(futures)}
+            results: list[PanelLegResult | None] = [None] * len(seq)
+            for future in as_completed(futures):
+                i = index_of[future]
+                try:
+                    result = future.result()
+                except ProviderProcessGroupQuiescenceError as exc:
+                    _cancel_and_raise(exc)
+                results[i] = result
+                if review_dir is not None:
                     try:
-                        on_leg_complete(result)
-                    except Exception:  # fail-open callback never breaks the pool
-                        logging.getLogger(__name__).warning(
-                            "on_leg_complete callback raised for leg %s",
-                            result.leg,
-                            exc_info=True,
+                        _capture_mutation(
+                            fatal_latch,
+                            lambda: _write_incremental_verdict(review_dir, i, result),
                         )
+                    except ProviderProcessGroupQuiescenceError as exc:
+                        _cancel_and_raise(exc)
+                if on_leg_complete is not None:
+                    def publish_callback() -> None:
+                        try:
+                            on_leg_complete(result)
+                        except Exception:  # fail-open callback never breaks the pool
+                            logging.getLogger(__name__).warning(
+                                "on_leg_complete callback raised for leg %s",
+                                result.leg,
+                                exc_info=True,
+                            )
 
-                try:
-                    _capture_mutation(fatal_latch, publish_callback)
-                except ProviderProcessGroupQuiescenceError as exc:
-                    _cancel_and_raise(exc)
-        # Every future produced a result (run_one is fail-closed). Fail LOUD if a
-        # slot stayed None rather than silently shrinking the list — a length change
-        # would break the positional ``result[i] ↔ items[i]`` contract worse than a
-        # crash would.
-        if any(r is None for r in results):
-            raise RuntimeError(
-                "streaming fan-out lost a leg result (positional contract broken)"
-            )
-        return cast("list[PanelLegResult]", results)
+                    try:
+                        _capture_mutation(fatal_latch, publish_callback)
+                    except ProviderProcessGroupQuiescenceError as exc:
+                        _cancel_and_raise(exc)
+            # Every future produced a result (run_one is fail-closed). Fail LOUD if a
+            # slot stayed None rather than silently shrinking the list.
+            if any(r is None for r in results):
+                raise RuntimeError(
+                    "streaming fan-out lost a leg result (positional contract broken)"
+                )
+            return cast("list[PanelLegResult]", results)
+    finally:
+        for task in dependency_tasks:
+            release_unstarted_dependency_task(task)  # type: ignore[arg-type]
 
 
 def invoke_panel(

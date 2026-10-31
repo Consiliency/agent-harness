@@ -35,6 +35,7 @@ the outcome is the parent's own observation.
 
 from __future__ import annotations
 
+import argparse
 import datetime
 import hashlib
 import json
@@ -42,12 +43,14 @@ import os
 import secrets
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
 from pathlib import Path
+from typing import Sequence
 
-from . import review_stage, sandbox_egress, seat_jail, seat_uid
+from . import __version__, review_stage, sandbox_egress, seat_jail, seat_uid
 
 SCHEMA = "seat_jail_execfind2_qualification.v1"
 _SENTINEL_TEST = "tests/test_jail_sentinel.py"
@@ -478,7 +481,44 @@ def _write_private(path: Path, data: bytes) -> None:
     os.replace(temporary, path)
 
 
+_ARGV_ACTIONS = {
+    (): "qualify",
+    ("-h",): "help",
+    ("--help",): "help",
+    ("--version",): "version",
+}
+
+
+def qualification_provider_capable(argv: Sequence[str]) -> bool:
+    """Only closed, effect-free informational commands run without a dependency lease."""
+    return _ARGV_ACTIONS.get(tuple(argv)) not in {"help", "version"}
+
+
+def _argument_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="phase-loop-seat-jail-qualification",
+        add_help=False,
+        allow_abbrev=False,
+        description="Qualify and record the host's seat-jail profile.",
+    )
+    informational = parser.add_mutually_exclusive_group()
+    informational.add_argument("-h", "--help", action="store_true", dest="show_help")
+    informational.add_argument("--version", action="store_true", dest="show_version")
+    return parser
+
+
 def main(argv: list[str] | None = None) -> int:
+    parser = _argument_parser()
+    normalized = tuple(sys.argv[1:] if argv is None else argv)
+    action = _ARGV_ACTIONS.get(normalized)
+    if action is None:
+        parser.error("expected no arguments or exactly one of -h, --help, --version")
+    if action == "help":
+        parser.print_help()
+        return 0
+    if action == "version":
+        print(f"{parser.prog} {__version__}")
+        return 0
     evidence = qualify()
     summary = {k: evidence.get(k) for k in ("result", "profile_digest", "falsifier_layout",
                                             "checks", "run_outcome", "recorded_pass")}

@@ -18,6 +18,66 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - Shared sandbox validation also applies to president-ladder resolution: malformed
   user roots, order or driver settings now refuse that resolution.
 
+### Executable dependency admission (agent-harness#1774)
+
+- Add deployment-neutral, canonical requirement/authority/declaration admission,
+  descriptor-held read-only projections, a pinned in-process startup API, and explicit
+  worker/panel/convergence task lifetime. Required dependency failures refuse before
+  managed provider effects; standalone behavior remains only when requirement and
+  authority are both absent.
+- Give every projection consumer an independent descriptor offset over immutable sealed
+  content, protect the jail and generic seat-view mount destinations, and record the
+  authority/declaration/projection digests on jailed broker evidence. A typed dependency
+  refusal on a prepared seat runs both jail and parent-seat cleanup before it reaches
+  the established degraded-leg path. Required preparation failures close their descriptors
+  and remove their newly created seat directory. Required CLI sessions use a closed
+  provider-free inventory and refuse provider routes that are not dependency-wired.
+- Check jail destinations before provider preparation effects, close projection and input
+  descriptors on partial construction, and give generic identity probes an independent
+  dependency projection. Accept arbitrary wrapper names from the trusted requirement on the projected
+  seat routes (bounded convergence adapters still require the provider basename);
+  validate intermediate source directory permissions, refuse FIFO inputs without waiting,
+  and count each file once toward the aggregate limit (agent-harness#1782).
+- Required sessions explicitly refuse direct host executor/lease-supervisor transports,
+  Claude Channel/Agent View, `maintain-skills`, and Gemini heartbeat composition before
+  entering those routes. Required Gemini reviews need a fresh existing login and refuse
+  host credential refresh. Standalone launches retain their prior behavior. See
+  `docs/executable-dependency-projection.md` for supported routes and outstanding live
+  qualification; offline tests do not establish authenticated provider acceptance.
+- The seat-jail qualification entry grammar is closed: it accepts only no arguments or one
+  of `-h`, `--help`, and `--version`; repeated, clustered, abbreviated, mixed, or unknown
+  forms exit with status 2 before qualification.
+
+### Run output retention
+
+- Remove pytest scratch audit folders on session teardown and normal interpreter
+  exit. Workers own separate folders; forked children preserve the parent's folder.
+- Add `phase-loop output-retention` for managed producer runs, explicit lifecycle
+  declarations and previewable cleanup after 30 days. Configured output roots are
+  swept on run/execute/advisor-board startup; active, held and unmarked output is
+  preserved. See `docs/phase-loop/output-retention.md` for evidence/review and
+  HARDEN integration, policy configuration and crash limitations.
+
+### Claude execute-phase drops under the skill size limit (agent-harness#1358)
+
+- Move interactive publication (mode (b), the publication-mode check, draft PR early),
+  model-class and governed-mode detail, and browser verification into
+  `claude-execute-phase` references. Interactive publication is read before the first
+  commit and governed-mode detail before each panel round. Browser verification is read
+  at plan intake in both modes, before implementation or lane dispatch, and lane briefs
+  carry its setup. Adapter mode, runner closeout, the closeout audit, the `/clear` rules and
+  PR-description requirements stay in `SKILL.md`. Both size-gate exceptions for the skill
+  are removed.
+
+### Hosted native-test jobs pinned to ubuntu-24.04 (agent-harness#1763)
+
+- `test.yml`'s `pytest`, `clean-room` and `wheel-smoke` jobs run on `ubuntu-24.04`
+  instead of `ubuntu-latest`, which now resolves to Ubuntu 26.04. Under 26.04, 17 sandbox
+  and process tests failed in test files unchanged from main. The last passing PR run had
+  used an ubuntu-24.04 image. Compatibility with 26.04 is unproven, not claimed.
+  Tests, assertions, timeouts and sandbox policy are unchanged
+  (`docs/releases/github-hosted-runners-for-public-repo.md`).
+
 ### Diagnostic planning skill evaluation (agent-harness#1321)
 
 - Add the opt-in `phase-loop-skill-eval` command for frozen, independent planning

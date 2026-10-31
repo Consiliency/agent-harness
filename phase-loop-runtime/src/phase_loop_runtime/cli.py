@@ -407,6 +407,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Explicitly bypass the cross-phase dirty start gate. Requires a non-empty operator reason.",
     )
     subparsers = parser.add_subparsers(dest="command")
+    from .output_retention import register_parser as _retention_parser
+
+    _retention_parser(subparsers)
     agy_qual_sub = subparsers.add_parser(
         "agy-qualification",
         help="First-use self-qualification of a genuine upstream agy release (agent-harness#1076)",
@@ -1292,6 +1295,12 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     command = args.command or ("dry-run" if args.dry_run else "run")
+    from .output_retention import cli_main as _retention_main, configured_sweep
+
+    if command == "output-retention":
+        return _retention_main(args)
+    if command in {"run", "execute", "advisor-board"} and not args.dry_run:
+        configured_sweep()
     if command == "agy-qualification":
         from .agy_qualification import cli_main as _agy_qualification_main
 

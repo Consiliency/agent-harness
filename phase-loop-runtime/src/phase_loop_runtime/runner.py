@@ -116,6 +116,7 @@ from .fab_provenance import atomic_write_text_durable, fsync_run_store_durable
 from .git_ops import expand_dir_dirty_paths, pipeline_write_boundary_diagnostic
 from .git_topology import collect_git_topology, resolve_closeout_push_target
 from .handoff import tui_handoff_path, write_tui_handoff
+from . import launcher as _launcher_module
 from .launcher import (
     LaunchResult,
     build_launch_request,
@@ -2739,6 +2740,7 @@ def run_loop(
             # When it runs, feed it the SAME merged allowed/disabled/required policy
             # constraints dispatch enforces, so an AUTO pick is never something
             # dispatch would then hard-block as a preferred candidate.
+            _launcher_module.refuse_unwired_executor_action(launch_action, dry_run=dry_run)
             if has_explicit_preferred:
                 autosel_selection = None
             else:
@@ -3428,6 +3430,7 @@ def run_loop(
                     ),
                 )
                 return (_DispatchOutcome("break", None), None)
+            _launcher_module.refuse_unwired_executor_spec(spec, dry_run=dry_run)
             artifacts = run_artifacts(repo, alias, launch_action, len(results) + 1, spec) if observe else {}
             if artifacts:
                 merge_launch_metadata(artifacts.get("metadata"), {"execution_policy": execution_policy.to_json()})
@@ -4851,6 +4854,8 @@ def run_loop(
                             break
                         continue
                     preps[ready_phase] = prep
+                    from .executable_dependency_startup import acquire_child_dependency_task
+
                     jobs.append(
                         PhaseWorkerJob(
                             phase=ready_phase,
@@ -4865,6 +4870,9 @@ def run_loop(
                             worktree_handle=handle,
                             caller_run_id=caller_run_id,
                             lease_authority=getattr(handle, "lease_authority", None),
+                            dependency_task=acquire_child_dependency_task(
+                                f"phase-worker:{ready_phase}"
+                            ),
                             closeout_mode=closeout_mode,
                         )
                     )
@@ -5050,6 +5058,10 @@ def run_loop(
                         metadata={"staged_artifacts": sorted(set(staged_artifacts))},
                     )
             finally:
+                from .executable_dependency_startup import release_unstarted_dependency_task
+
+                for job in jobs:
+                    release_unstarted_dependency_task(job.dependency_task)  # type: ignore[arg-type]
                 # Every launch has returned before this point, so no descendant can
                 # still need the parent copy of its descriptor. Preserve unresolved
                 # generations, but release the coordinator's duplicate descriptor so
@@ -5323,6 +5335,7 @@ def launch_delegated_child(
         bypass_approvals=bypass_approvals,
     )
     spec = build_launch_spec(launch_request)
+    _launcher_module.refuse_unwired_executor_spec(spec, dry_run=dry_run)
     artifacts = run_artifacts(repo, parent_phase.upper(), request.product_action, 1, spec)
     parent_child = ParentChildRunMetadata(
         parent_phase=parent_child.parent_phase,
@@ -6028,6 +6041,7 @@ def launch_harness_lane_work_unit(
         bypass_approvals=bypass_approvals,
     )
     spec = build_launch_spec(request)
+    _launcher_module.refuse_unwired_executor_spec(spec, dry_run=dry_run)
     artifacts = run_artifacts(repo, assignment.phase, action, 1, spec)
     identity = WorkUnitIdentity(
         phase=assignment.phase.upper(),
