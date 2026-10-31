@@ -20,7 +20,8 @@ A missing config file is not an error: the built-in presets load on their own.
 
 The same user file may carry a ``[president]`` table whose ``ladder`` sets the
 president fallback order; a repository may set its own in
-``<repo>/.agent-harness/advisor-boards.toml`` (``[president]`` only). The effective
+``<repo>/.agent-harness/advisor-boards.toml`` (``[president]`` and the narrow
+``[sandbox.driver]`` tunables). The effective
 order is resolved by ``load_president_ladder``: built-in ``PRESIDENT_LADDER`` < user
 < repo.
 """
@@ -29,6 +30,8 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
+from importlib import resources
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -52,16 +55,17 @@ from .schema import (
 # Recognised keys — anything else is a hard error (no silent drop).
 _KNOWN_TOP_KEYS: frozenset[str] = frozenset({"default_board", "boards", "president", "agy", "sandbox",
                                              "qualification"})
-# A repository file configures the president ladder only: repo-level boards are not a
-# feature, so a ``[[boards]]`` there is refused rather than silently ignored.
-_KNOWN_REPO_TOP_KEYS: frozenset[str] = frozenset({"president"})
+# Repository files configure the president ladder and driver tunables only;
+# repo-level boards and sandbox roots remain forbidden.
+_KNOWN_REPO_TOP_KEYS: frozenset[str] = frozenset({"president", "sandbox"})
 _KNOWN_PRESIDENT_KEYS: frozenset[str] = frozenset({"ladder"})
 # agent-harness#1076 D3: the USER file's ``[agy] self_qualification = false`` restores the
 # hard refusal of a non-release agy image. A repository file cannot carry it.
 _KNOWN_AGY_KEYS: frozenset[str] = frozenset({"self_qualification"})
 # agent-harness#896: the USER file's ``[sandbox]`` names one root per remote placement
-# backend and the order to try them in. A repository file cannot carry it: roots name hosts.
-_KNOWN_SANDBOX_KEYS: frozenset[str] = frozenset({"roots", "order"})
+# backend and the order to try them in. Repositories may carry only driver tunables.
+_KNOWN_SANDBOX_KEYS: frozenset[str] = frozenset({"roots", "order", "driver"})
+_KNOWN_DRIVER_KEYS = frozenset({"admit_wait_s", "transfer_allowance_s", "max_live_workers"})
 # agent-harness#1333 PR2: the USER file's ``[qualification.<harness>] self_qualification``
 # opts that harness out of first-use CLI qualification. A repository file cannot carry it.
 _KNOWN_QUALIFICATION_KEYS: frozenset[str] = frozenset({"self_qualification"})
@@ -253,14 +257,30 @@ def _parse_qualification(data: Mapping[str, Any], where: str) -> dict[str, bool]
     return enabled
 
 
-def _parse_sandbox(data: Mapping[str, Any], where: str) -> tuple[tuple[str, str], ...]:
+def _parse_driver(raw: object) -> dict[str, Any]:
+    from ..sandbox_policy import SandboxConfigError, _driver_value
+
+    if not isinstance(raw, Mapping):
+        raise BoardConfigError("sandbox.driver must be a table")
+    _reject_unknown(raw.keys(), _KNOWN_DRIVER_KEYS, "sandbox.driver")
+    try:
+        return {key: value for key, value in raw.items() if _driver_value(key, value) is not None}
+    except SandboxConfigError:
+        raise BoardConfigError("sandbox_config_invalid") from None
+
+
+def _parse_sandbox(
+    data: Mapping[str, Any], where: str, *, repository: bool = False,
+) -> tuple[tuple[str, str], ...]:
     """The user file's ``[sandbox]``, validated: ``(name, root)`` in the order to try them."""
     raw = data.get("sandbox")
     if raw is None:
         return ()
     if not isinstance(raw, Mapping):
         raise BoardConfigError(f"{where}: 'sandbox' must be a table")
-    _reject_unknown(raw.keys(), _KNOWN_SANDBOX_KEYS, f"{where} [sandbox]")
+    _reject_unknown(raw.keys(), frozenset({"driver"}) if repository else _KNOWN_SANDBOX_KEYS,
+                    f"{where} [sandbox]")
+    _parse_driver(raw.get("driver", {}))
     roots = raw.get("roots", {})
     if not isinstance(roots, Mapping):
         raise BoardConfigError(f"{where} [sandbox]: 'roots' must be a table")
@@ -341,6 +361,69 @@ def repo_board_config_path(repo_dir: Path | str) -> Path:
     return Path(repo_dir) / REPO_CONFIG_RELATIVE_PATH
 
 
+def _repo_config(repo_dir: Path | str, review_base: bool) -> dict[str, Any] | None:
+    if not review_base:
+        return _load_toml(repo_board_config_path(repo_dir))
+    from ..review_stage import trusted_review_control
+
+    try:
+        content = trusted_review_control(Path(repo_dir), REPO_CONFIG_RELATIVE_PATH)
+        return tomllib.loads(content.decode("utf-8")) if content is not None else None
+    except ValueError as exc:
+        if str(exc) == "review_base_unavailable":
+            return None
+        raise BoardConfigError("unreadable base configuration") from None
+    except (OSError, UnicodeError, subprocess.SubprocessError):
+        raise BoardConfigError("unreadable base configuration") from None
+
+
+def load_placement_driver_settings(
+    repo_dir: Path | str | None = None, *, env: Mapping[str, str] | None = None,
+    path: Path | None = None, review_base: bool = False,
+) -> dict[str, Any]:
+    """Validated raw values: packaged defaults < user < explicit repo < duration aliases."""
+    from ..sandbox_policy import SandboxConfigError
+
+    try:
+        resource = resources.files(__package__).joinpath("fixtures/placement-driver.defaults.toml")
+        defaults = tomllib.loads(resource.read_text(encoding="utf-8"))
+        _reject_unknown(defaults, frozenset({"sandbox"}), "driver defaults")
+        _parse_sandbox(defaults, "driver defaults", repository=True)
+        values = _parse_driver(defaults.get("sandbox", {}).get("driver", {}))
+        if set(values) != _KNOWN_DRIVER_KEYS:
+            raise BoardConfigError("incomplete driver defaults")
+        user_path = path if path is not None else _user_config_path(env)
+        user = _load_toml(user_path) if user_path is not None else None
+        if user is not None:
+            _reject_unknown(user, _KNOWN_TOP_KEYS, "user configuration")
+            _parse_president(user, "user configuration")
+            _parse_agy(user, "user configuration")
+            _parse_qualification(user, "user configuration")
+            _parse_sandbox(user, "user configuration")
+            boards = user.get("boards", [])
+            if not isinstance(boards, list):
+                raise BoardConfigError("boards must be an array")
+            for index, board in enumerate(boards):
+                _parse_board(board, index)
+            values.update(_parse_driver(user.get("sandbox", {}).get("driver", {})))
+        if repo_dir is not None:
+            repo = _repo_config(repo_dir, review_base)
+            if repo is not None:
+                _reject_unknown(repo, _KNOWN_REPO_TOP_KEYS, "repository configuration")
+                _parse_president(repo, "repository configuration")
+                _parse_sandbox(repo, "repository configuration", repository=True)
+                values.update(_parse_driver(repo.get("sandbox", {}).get("driver", {})))
+        environment = os.environ if env is None else env
+        aliases = {key: environment[name] for key, name in (
+            ("admit_wait_s", "PHASE_LOOP_SANDBOX_ADMIT_WAIT_S"),
+            ("transfer_allowance_s", "PHASE_LOOP_SANDBOX_TRANSFER_ALLOWANCE_S"),
+        ) if name in environment}
+        values.update(_parse_driver(aliases))
+        return values
+    except (ValueError, TypeError, OSError):
+        raise SandboxConfigError("sandbox_config_invalid") from None
+
+
 def load_president_ladder(
     repo_dir: Path | str | None = None,
     *,
@@ -364,6 +447,7 @@ def load_president_ladder(
     user = _load_toml(user_path) if user_path is not None else None
     if user is not None:
         _reject_unknown(user.keys(), _KNOWN_TOP_KEYS, str(user_path))
+        _parse_sandbox(user, str(user_path))
         ladder = _parse_president(user, str(user_path)) or ladder
     if repo_dir is not None:
         repo_path = repo_board_config_path(repo_dir)
@@ -385,6 +469,7 @@ def load_president_ladder(
             repo = _load_toml(repo_path)
         if repo is not None:
             _reject_unknown(repo.keys(), _KNOWN_REPO_TOP_KEYS, str(repo_path))
+            _parse_sandbox(repo, str(repo_path), repository=True)
             ladder = _parse_president(repo, str(repo_path)) or ladder
     return ladder
 

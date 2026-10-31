@@ -29,6 +29,7 @@
   {"count": 2, "function": "revalidate_review_isolation_authorization", "module": "advisor_board/backing", "primitive": "io.stat", "role": "host-io"},
   {"count": 1, "function": "_load_toml", "module": "advisor_board/config", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "load_boards", "module": "advisor_board/config", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "load_placement_driver_settings", "module": "advisor_board/config", "primitive": "io.read_text", "role": "host-io"},
   {"count": 1, "function": "JsonlLedgerWriter.append_record", "module": "advisor_board/observability", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "_validated_records", "module": "advisor_board/research", "primitive": "io.read_bytes", "role": "host-io"},
   {"count": 1, "function": "materialize_research_run", "module": "advisor_board/research", "primitive": "subprocess.run", "role": "operator-out-of-scope"},

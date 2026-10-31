@@ -9,6 +9,11 @@
 # cognition {model, effort, harness?, lens?, auth?, backing?}, model-first: the
 # harness is a defaulted-but-overridable execution lane.
 
+# Driver tunables may be set in [sandbox.driver] in user or explicit repository config:
+# admit_wait_s, transfer_allowance_s, max_live_workers. Defaults are authoritative only in
+# placement-driver.defaults.toml; this format example does not repeat them.
+# Repositories cannot set sandbox roots, order, endpoints or enablement.
+
 # Optional: the board a bare `advisor-board` invocation resolves to.
 default_board = "default"
 

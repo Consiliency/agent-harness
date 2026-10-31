@@ -6,6 +6,18 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+### Placement driver bounds and settings (agent-harness#1504)
+
+- Bound sealing with caller context and the remaining walk budget; validate result caps
+  before parsing. Limit all live workers per call group, with local readiness refusal
+  and capacity restored only at actual exit.
+- Load driver defaults from the packaged settings resource, with user and explicit
+  repository overrides and the existing duration aliases. Malformed durations now raise
+  `sandbox_config_invalid` instead of silently defaulting; blank inheritance, zero and
+  negative clamping remain supported. The nonlocal leg driver remains disabled.
+- Shared sandbox validation also applies to president-ladder resolution: malformed
+  user roots, order or driver settings now refuse that resolution.
+
 ### Executable dependency admission (agent-harness#1774)
 
 - Add deployment-neutral, canonical requirement/authority/declaration admission,
