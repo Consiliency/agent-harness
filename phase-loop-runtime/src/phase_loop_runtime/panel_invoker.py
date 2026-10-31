@@ -13356,6 +13356,8 @@ def _default_spawn(
                 or leg not in ("claude", "codex", "grok", "gemini")):
                 raise ValueError("review_monitoring_unsupported_route")
             if review_monitor is not None and leg == "gemini":
+                from .executable_dependency_startup import refuse_unwired_dependency_route
+                refuse_unwired_dependency_route("Gemini heartbeat")
                 gemini_heartbeat.require_capability(_broker_subscription_env(env))
             revalidate_review_isolation_authorization(
                 review_authorization, None, artifact, mode=mode,

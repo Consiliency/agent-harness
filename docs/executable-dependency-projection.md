@@ -104,8 +104,10 @@ in a required session; they never default to provider-free.
 
 Required dependencies are supported by the generic review/admin seat profiles and
 Claude/Gemini seat jails. Provider identity comes from the trusted requirement;
-wrapper basenames need not match the provider. Projected launches execute the
-selected snapshot at its declared destination with the original argument tail.
+wrapper basenames need not match the provider on those routes. The bounded
+convergence adapters still require the executable basename to equal the provider
+and block otherwise. Projected launches execute the selected snapshot at its
+declared destination with the original argument tail.
 
 The following compositions raise `dependency_route_unwired` in required sessions:
 
@@ -113,18 +115,24 @@ The following compositions raise `dependency_route_unwired` in required sessions
   lease-supervisor transports. `launch_with_spec` refuses these before command
   context staging or output allocation; `launch` and `launch_owned` also guard their
   entry boundaries. Path-based host execution and its ambient dependency closure
-  are not supported by this API.
+  are not supported by this API. The runner refuses such a spec before it writes
+  run artifacts or runs auth-preflight probes, so `run`/`execute`/`resume`/`run-train`
+  in a required session never start a credential-bearing preflight for a launch
+  that would be refused.
 - Claude Channel and Agent View, before invoking either transport or staging
   command context. Their operations are not bound to the selected wrapper.
 - `maintain-skills`, at CLI classification before dispatch.
 - Gemini heartbeat profiles, before ambient image admission or capability checks,
-  credential copies, output allocation, or spawn. Combining a projection with the
+  credential copies, output allocation, or spawn. These guards live in the heartbeat callers
+  (board preflight, president, review legs and seat profiles), not in the
+  qualification-pinned agy route-core files. Combining a projection with the
   heartbeat gate/settings descriptor protocol is not implemented.
 - Gemini host credential renewal. A required Gemini review/jail launch needs a
   fresh pre-existing login; otherwise it refuses before output/config writes and
   credential projection. It never refreshes by executing the declared subject on
   the host with the real HOME. Operators renew credentials outside the required
-  launch session. Standalone renewal behavior is unchanged.
+  launch session. A short-but-unexpired login refuses at once rather than waiting
+  for it to expire. Standalone renewal behavior is unchanged.
 
 With no requirement and no authority, the existing standalone transports and
 launch paths remain unchanged. This API coordinates trusted in-process code; it

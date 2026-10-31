@@ -116,6 +116,7 @@ from .fab_provenance import atomic_write_text_durable, fsync_run_store_durable
 from .git_ops import expand_dir_dirty_paths, pipeline_write_boundary_diagnostic
 from .git_topology import collect_git_topology, resolve_closeout_push_target
 from .handoff import tui_handoff_path, write_tui_handoff
+from . import launcher as _launcher_module
 from .launcher import (
     LaunchResult,
     build_launch_request,
@@ -3428,6 +3429,7 @@ def run_loop(
                     ),
                 )
                 return (_DispatchOutcome("break", None), None)
+            _launcher_module.refuse_unwired_executor_spec(spec, dry_run=dry_run)
             artifacts = run_artifacts(repo, alias, launch_action, len(results) + 1, spec) if observe else {}
             if artifacts:
                 merge_launch_metadata(artifacts.get("metadata"), {"execution_policy": execution_policy.to_json()})
@@ -5332,6 +5334,7 @@ def launch_delegated_child(
         bypass_approvals=bypass_approvals,
     )
     spec = build_launch_spec(launch_request)
+    _launcher_module.refuse_unwired_executor_spec(spec, dry_run=dry_run)
     artifacts = run_artifacts(repo, parent_phase.upper(), request.product_action, 1, spec)
     parent_child = ParentChildRunMetadata(
         parent_phase=parent_child.parent_phase,
@@ -6037,6 +6040,7 @@ def launch_harness_lane_work_unit(
         bypass_approvals=bypass_approvals,
     )
     spec = build_launch_spec(request)
+    _launcher_module.refuse_unwired_executor_spec(spec, dry_run=dry_run)
     artifacts = run_artifacts(repo, assignment.phase, action, 1, spec)
     identity = WorkUnitIdentity(
         phase=assignment.phase.upper(),

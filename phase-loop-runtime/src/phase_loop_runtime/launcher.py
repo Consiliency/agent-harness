@@ -1963,6 +1963,26 @@ def _render_command_template(template: str, request: LaunchRequest) -> list[str]
     return shlex.split(rendered)
 
 
+def _refuse_unwired_executor_spec(spec, dependency) -> None:
+    if dependency is not None and (
+        spec.claude_route in {"claude_channel", "claude_agent_view"}
+        or (spec.prompt_bundle.product_action or "execute") != "review"
+    ):
+        from .executable_dependency import ExecutableDependencyError
+        raise ExecutableDependencyError("dependency_route_unwired", "executor transport")
+
+
+def refuse_unwired_executor_spec(spec, *, dry_run: bool = False) -> None:
+    """agent-harness#1782: refuse an unsupported required-session executor spec before
+    the runner allocates run artifacts or runs credential-bearing auth preflight probes.
+    ``launch_with_spec`` repeats the same check."""
+    if dry_run:
+        return
+    from .executable_dependency_startup import current_dependency_for_provider
+
+    _refuse_unwired_executor_spec(spec, current_dependency_for_provider(spec.executor, spec.command))
+
+
 def run_auth_preflight(spec: LaunchSpec) -> AuthPreflightResult:
     if spec.auth_preflight_mode != "metadata_only":
         return AuthPreflightResult(ok=True, metadata={})
@@ -2150,12 +2170,7 @@ def launch_with_spec(
         from .executable_dependency_startup import current_dependency_for_provider
 
         dependency = current_dependency_for_provider(spec.executor, spec.command)
-    if dependency is not None and (
-        spec.claude_route in {"claude_channel", "claude_agent_view"}
-        or (spec.prompt_bundle.product_action or "execute") != "review"
-    ):
-        from .executable_dependency import ExecutableDependencyError
-        raise ExecutableDependencyError("dependency_route_unwired", "executor transport")
+    _refuse_unwired_executor_spec(spec, dependency)
     if not spec.available and not dry_run:
         raise ValueError("live launch requested for unavailable executor")
     action = spec.prompt_bundle.product_action or "execute"

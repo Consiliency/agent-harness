@@ -121,6 +121,38 @@ def test_required_executor_transports_refuse_before_staging(tmp_path, monkeypatc
         fixture.close()
 
 
+def test_runner_refuses_unwired_executor_before_artifacts_and_auth_preflight(tmp_path, monkeypatch):
+    from phase_loop_runtime import runner
+    fixture = build_fixture(tmp_path / 'fixture', provider='codex')
+    try:
+        with _managed(monkeypatch, fixture):
+            spec = SimpleNamespace(
+                executor='codex', command=[str(fixture.subject), 'exec', 'synthetic'],
+                prompt_bundle=SimpleNamespace(product_action='execute'), claude_route=None,
+            )
+            monkeypatch.setattr(runner, 'pipeline_execution_plan_diagnostic', lambda *a, **k: None)
+            monkeypatch.setattr(runner, 'load_execution_phase_source_bundle', lambda *a, **k: None)
+            monkeypatch.setattr(runner, 'resolve_profile_for_executor', lambda **k: None)
+            monkeypatch.setattr(runner, 'build_prompt', lambda *a, **k: None)
+            monkeypatch.setattr(runner, 'build_launch_request', lambda **k: None)
+            monkeypatch.setattr(runner, 'build_launch_spec', lambda _request: spec)
+            monkeypatch.setattr(runner, 'run_artifacts', _unreached)
+            monkeypatch.setattr(runner, 'run_auth_preflight', _unreached)
+            monkeypatch.setattr(launcher, 'run_auth_preflight', _unreached)
+            monkeypatch.setattr(runner, 'launch_with_spec', _unreached)
+            with pytest.raises(ExecutableDependencyError, match='executor transport'):
+                runner.launch_harness_lane_work_unit(
+                    repo=tmp_path, roadmap=tmp_path / 'ROADMAP.md', plan=tmp_path / 'plan.md',
+                    assignment=SimpleNamespace(phase='P1', metadata={}), executor='codex',
+                    action='execute', dry_run=False,
+                )
+            # A review spec on the projected route is not refused at this gate.
+            spec.prompt_bundle = SimpleNamespace(product_action='review')
+            launcher.refuse_unwired_executor_spec(spec)
+    finally:
+        fixture.close()
+
+
 def test_direct_launch_and_maintenance_refuse_before_lookup_or_outputs(tmp_path, monkeypatch):
     fixture = build_fixture(tmp_path / 'fixture', provider='codex')
     try:
