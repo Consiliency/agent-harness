@@ -1,0 +1,1015 @@
+{
+  "valid": [
+    {
+      "name": "deep-policy",
+      "type": "CreateBody",
+      "value": {
+        "image": "127.0.0.1:17671/pi-runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "policy": {
+          "deep": {
+            "a": [
+              {
+                "b": {
+                  "c": [
+                    1,
+                    {
+                      "d": false
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "policy_digest": "sha256:775f422fc30d016a03639e8f483dbc93a1c879869ce959a735e91cfb0de3f92e",
+        "service_exposures": [
+          {
+            "name": "link",
+            "target_port": 17690,
+            "protocol": "tcp"
+          }
+        ],
+        "restart_policy": "never",
+        "providers": []
+      }
+    },
+    {
+      "name": "reserved",
+      "type": "LeaseStatus",
+      "value": {
+        "lease_id": "00000000-0000-4000-8000-000000000001",
+        "state": "reserved",
+        "sandbox_id": null,
+        "expires_at": "2026-11-01T12:00:00Z",
+        "flags": {
+          "reserved": false,
+          "create_settled": false,
+          "ready": false,
+          "exec_claimed": false,
+          "fenced": false,
+          "destruction_observed": false,
+          "cleanup_pending": false,
+          "barrier_confirmed": false,
+          "expired": false
+        },
+        "binding": {
+          "label_matches": 0,
+          "duplicates": []
+        }
+      }
+    },
+    {
+      "name": "destroyed",
+      "type": "LeaseStatus",
+      "value": {
+        "lease_id": "00000000-0000-4000-8000-000000000001",
+        "state": "destroyed",
+        "sandbox_id": null,
+        "expires_at": "2026-11-01T12:00:00Z",
+        "flags": {
+          "reserved": false,
+          "create_settled": true,
+          "ready": false,
+          "exec_claimed": false,
+          "fenced": true,
+          "destruction_observed": false,
+          "cleanup_pending": false,
+          "barrier_confirmed": true,
+          "expired": false
+        },
+        "binding": {
+          "label_matches": 0,
+          "duplicates": []
+        }
+      }
+    },
+    {
+      "name": "expired",
+      "type": "LeaseStatus",
+      "value": {
+        "lease_id": "00000000-0000-4000-8000-000000000001",
+        "state": "expired",
+        "sandbox_id": null,
+        "expires_at": "2026-11-01T12:00:00Z",
+        "flags": {
+          "reserved": false,
+          "create_settled": true,
+          "ready": false,
+          "exec_claimed": false,
+          "fenced": true,
+          "destruction_observed": false,
+          "cleanup_pending": false,
+          "barrier_confirmed": true,
+          "expired": true
+        },
+        "binding": {
+          "label_matches": 0,
+          "duplicates": []
+        }
+      }
+    },
+    {
+      "name": "tombstone",
+      "type": "LeaseStatus",
+      "value": {
+        "lease_id": "00000000-0000-4000-8000-000000000001",
+        "state": "tombstone",
+        "sandbox_id": null,
+        "expires_at": "2026-11-01T12:00:00Z",
+        "flags": {
+          "reserved": false,
+          "create_settled": true,
+          "ready": false,
+          "exec_claimed": false,
+          "fenced": true,
+          "destruction_observed": false,
+          "cleanup_pending": false,
+          "barrier_confirmed": true,
+          "expired": false
+        },
+        "binding": {
+          "label_matches": 0,
+          "duplicates": []
+        }
+      }
+    },
+    {
+      "name": "duplicate_binding",
+      "type": "LeaseStatus",
+      "value": {
+        "lease_id": "00000000-0000-4000-8000-000000000001",
+        "state": "killing",
+        "sandbox_id": "00000000-0000-4000-8000-000000000001",
+        "expires_at": "2026-11-01T12:00:00Z",
+        "flags": {
+          "reserved": false,
+          "create_settled": false,
+          "ready": false,
+          "exec_claimed": false,
+          "fenced": false,
+          "destruction_observed": false,
+          "cleanup_pending": false,
+          "barrier_confirmed": false,
+          "expired": false
+        },
+        "binding": {
+          "label_matches": 2,
+          "duplicates": [
+            "00000000-0000-4000-8000-000000000001",
+            "00000000-0000-4000-8000-000000000002"
+          ]
+        }
+      }
+    },
+    {
+      "name": "first-page",
+      "type": "InventoryPage",
+      "value": {
+        "items": [
+          {
+            "lease_id": "00000000-0000-4000-8000-000000000001",
+            "state": "reserved",
+            "sandbox_id": null,
+            "expires_at": "2026-11-01T12:00:00Z",
+            "flags": {
+              "reserved": false,
+              "create_settled": false,
+              "ready": false,
+              "exec_claimed": false,
+              "fenced": false,
+              "destruction_observed": false,
+              "cleanup_pending": false,
+              "barrier_confirmed": false,
+              "expired": false
+            },
+            "binding": {
+              "label_matches": 0,
+              "duplicates": []
+            }
+          }
+        ],
+        "next_page_token": "next",
+        "snapshot": "opaque"
+      }
+    },
+    {
+      "name": "last-page",
+      "type": "InventoryPage",
+      "value": {
+        "items": [],
+        "next_page_token": null,
+        "snapshot": "opaque"
+      }
+    },
+    {
+      "name": "at_capacity",
+      "type": "ErrorBody",
+      "value": {
+        "code": "at_capacity",
+        "reason": "pressure",
+        "lease_id": "00000000-0000-4000-8000-000000000001"
+      }
+    },
+    {
+      "name": "owner_mismatch",
+      "type": "ErrorBody",
+      "value": {
+        "code": "owner_mismatch",
+        "reason": null,
+        "lease_id": "00000000-0000-4000-8000-000000000001"
+      }
+    },
+    {
+      "name": "not_enrolled",
+      "type": "ErrorBody",
+      "value": {
+        "code": "not_enrolled",
+        "reason": null,
+        "lease_id": "00000000-0000-4000-8000-000000000001"
+      }
+    },
+    {
+      "name": "unknown_lease",
+      "type": "ErrorBody",
+      "value": {
+        "code": "unknown_lease",
+        "reason": null,
+        "lease_id": "00000000-0000-4000-8000-000000000001"
+      }
+    },
+    {
+      "name": "fenced",
+      "type": "ErrorBody",
+      "value": {
+        "code": "fenced",
+        "reason": null,
+        "lease_id": "00000000-0000-4000-8000-000000000001"
+      }
+    },
+    {
+      "name": "expired",
+      "type": "ErrorBody",
+      "value": {
+        "code": "expired",
+        "reason": null,
+        "lease_id": "00000000-0000-4000-8000-000000000001"
+      }
+    },
+    {
+      "name": "lifetime_exceeded",
+      "type": "ErrorBody",
+      "value": {
+        "code": "lifetime_exceeded",
+        "reason": null,
+        "lease_id": "00000000-0000-4000-8000-000000000001"
+      }
+    },
+    {
+      "name": "digest_mismatch",
+      "type": "ErrorBody",
+      "value": {
+        "code": "digest_mismatch",
+        "reason": null,
+        "lease_id": "00000000-0000-4000-8000-000000000001"
+      }
+    },
+    {
+      "name": "duplicate_binding",
+      "type": "ErrorBody",
+      "value": {
+        "code": "duplicate_binding",
+        "reason": null,
+        "lease_id": "00000000-0000-4000-8000-000000000001"
+      }
+    },
+    {
+      "name": "snapshot_expired",
+      "type": "ErrorBody",
+      "value": {
+        "code": "snapshot_expired",
+        "reason": null,
+        "lease_id": "00000000-0000-4000-8000-000000000001"
+      }
+    },
+    {
+      "name": "invalid_request",
+      "type": "ErrorBody",
+      "value": {
+        "code": "invalid_request",
+        "reason": null,
+        "lease_id": "00000000-0000-4000-8000-000000000001"
+      }
+    },
+    {
+      "name": "workload_unsupported",
+      "type": "ErrorBody",
+      "value": {
+        "code": "workload_unsupported",
+        "reason": null,
+        "lease_id": "00000000-0000-4000-8000-000000000001"
+      }
+    },
+    {
+      "name": "deadline_exceeded",
+      "type": "ErrorBody",
+      "value": {
+        "code": "deadline_exceeded",
+        "reason": null,
+        "lease_id": "00000000-0000-4000-8000-000000000001"
+      }
+    },
+    {
+      "name": "response-extensions",
+      "type": "LeaseStatus",
+      "value": {
+        "lease_id": "00000000-0000-4000-8000-000000000001",
+        "state": "reserved",
+        "sandbox_id": null,
+        "expires_at": "2026-11-01T12:00:00Z",
+        "flags": {
+          "reserved": false,
+          "create_settled": false,
+          "ready": false,
+          "exec_claimed": false,
+          "fenced": false,
+          "destruction_observed": false,
+          "cleanup_pending": false,
+          "barrier_confirmed": false,
+          "expired": false,
+          "future": 42
+        },
+        "binding": {
+          "label_matches": 0,
+          "duplicates": []
+        },
+        "future": true
+      }
+    },
+    {
+      "name": "page-size-1",
+      "type": "InventoryQuery",
+      "value": {
+        "page_size": 1
+      }
+    },
+    {
+      "name": "page-size-200",
+      "type": "InventoryQuery",
+      "value": {
+        "page_size": 200
+      }
+    },
+    {
+      "name": "deadline-1",
+      "type": "DeadlineHeaders",
+      "value": {
+        "X-Deadline-Ms": 1
+      }
+    },
+    {
+      "name": "deadline-30000",
+      "type": "DeadlineHeaders",
+      "value": {
+        "X-Deadline-Ms": 30000
+      }
+    }
+  ],
+  "invalid": [
+    {
+      "name": "create-policy",
+      "type": "CreateBody",
+      "value": {
+        "image": "127.0.0.1:17671/pi-runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "policy": [],
+        "policy_digest": "sha256:775f422fc30d016a03639e8f483dbc93a1c879869ce959a735e91cfb0de3f92e",
+        "service_exposures": [
+          {
+            "name": "link",
+            "target_port": 17690,
+            "protocol": "tcp"
+          }
+        ],
+        "restart_policy": "never",
+        "providers": []
+      },
+      "keyword": "type"
+    },
+    {
+      "name": "create-image",
+      "type": "CreateBody",
+      "value": {
+        "image": "image:latest",
+        "policy": {
+          "deep": {
+            "a": [
+              {
+                "b": {
+                  "c": [
+                    1,
+                    {
+                      "d": false
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "policy_digest": "sha256:775f422fc30d016a03639e8f483dbc93a1c879869ce959a735e91cfb0de3f92e",
+        "service_exposures": [
+          {
+            "name": "link",
+            "target_port": 17690,
+            "protocol": "tcp"
+          }
+        ],
+        "restart_policy": "never",
+        "providers": []
+      },
+      "keyword": "pattern"
+    },
+    {
+      "name": "create-policy_digest",
+      "type": "CreateBody",
+      "value": {
+        "image": "127.0.0.1:17671/pi-runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "policy": {
+          "deep": {
+            "a": [
+              {
+                "b": {
+                  "c": [
+                    1,
+                    {
+                      "d": false
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "policy_digest": "SHA256:ABC",
+        "service_exposures": [
+          {
+            "name": "link",
+            "target_port": 17690,
+            "protocol": "tcp"
+          }
+        ],
+        "restart_policy": "never",
+        "providers": []
+      },
+      "keyword": "pattern"
+    },
+    {
+      "name": "create-restart_policy",
+      "type": "CreateBody",
+      "value": {
+        "image": "127.0.0.1:17671/pi-runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "policy": {
+          "deep": {
+            "a": [
+              {
+                "b": {
+                  "c": [
+                    1,
+                    {
+                      "d": false
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "policy_digest": "sha256:775f422fc30d016a03639e8f483dbc93a1c879869ce959a735e91cfb0de3f92e",
+        "service_exposures": [
+          {
+            "name": "link",
+            "target_port": 17690,
+            "protocol": "tcp"
+          }
+        ],
+        "restart_policy": "always",
+        "providers": []
+      },
+      "keyword": "const"
+    },
+    {
+      "name": "create-providers",
+      "type": "CreateBody",
+      "value": {
+        "image": "127.0.0.1:17671/pi-runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "policy": {
+          "deep": {
+            "a": [
+              {
+                "b": {
+                  "c": [
+                    1,
+                    {
+                      "d": false
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "policy_digest": "sha256:775f422fc30d016a03639e8f483dbc93a1c879869ce959a735e91cfb0de3f92e",
+        "service_exposures": [
+          {
+            "name": "link",
+            "target_port": 17690,
+            "protocol": "tcp"
+          }
+        ],
+        "restart_policy": "never",
+        "providers": [
+          "x"
+        ]
+      },
+      "keyword": "maxItems"
+    },
+    {
+      "name": "create-service_exposures",
+      "type": "CreateBody",
+      "value": {
+        "image": "127.0.0.1:17671/pi-runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "policy": {
+          "deep": {
+            "a": [
+              {
+                "b": {
+                  "c": [
+                    1,
+                    {
+                      "d": false
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "policy_digest": "sha256:775f422fc30d016a03639e8f483dbc93a1c879869ce959a735e91cfb0de3f92e",
+        "service_exposures": [
+          {
+            "name": "link",
+            "target_port": 17690,
+            "protocol": "tcp"
+          },
+          {
+            "name": "link",
+            "target_port": 17690,
+            "protocol": "tcp"
+          },
+          {
+            "name": "link",
+            "target_port": 17690,
+            "protocol": "tcp"
+          },
+          {
+            "name": "link",
+            "target_port": 17690,
+            "protocol": "tcp"
+          },
+          {
+            "name": "link",
+            "target_port": 17690,
+            "protocol": "tcp"
+          }
+        ],
+        "restart_policy": "never",
+        "providers": []
+      },
+      "keyword": "maxItems"
+    },
+    {
+      "name": "unknown-request-field",
+      "type": "CreateBody",
+      "value": {
+        "image": "127.0.0.1:17671/pi-runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "policy": {
+          "deep": {
+            "a": [
+              {
+                "b": {
+                  "c": [
+                    1,
+                    {
+                      "d": false
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "policy_digest": "sha256:775f422fc30d016a03639e8f483dbc93a1c879869ce959a735e91cfb0de3f92e",
+        "service_exposures": [
+          {
+            "name": "link",
+            "target_port": 17690,
+            "protocol": "tcp"
+          }
+        ],
+        "restart_policy": "never",
+        "providers": [],
+        "unknown": 1
+      },
+      "keyword": "additionalProperties"
+    },
+    {
+      "name": "missing-policy",
+      "type": "CreateBody",
+      "value": {
+        "image": "127.0.0.1:17671/pi-runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "policy_digest": "sha256:775f422fc30d016a03639e8f483dbc93a1c879869ce959a735e91cfb0de3f92e",
+        "service_exposures": [
+          {
+            "name": "link",
+            "target_port": 17690,
+            "protocol": "tcp"
+          }
+        ],
+        "restart_policy": "never",
+        "providers": []
+      },
+      "keyword": "required"
+    },
+    {
+      "name": "exposure-nameBad",
+      "type": "CreateBody",
+      "value": {
+        "image": "127.0.0.1:17671/pi-runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "policy": {
+          "deep": {
+            "a": [
+              {
+                "b": {
+                  "c": [
+                    1,
+                    {
+                      "d": false
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "policy_digest": "sha256:775f422fc30d016a03639e8f483dbc93a1c879869ce959a735e91cfb0de3f92e",
+        "service_exposures": [
+          {
+            "name": "Bad",
+            "target_port": 17690,
+            "protocol": "tcp"
+          }
+        ],
+        "restart_policy": "never",
+        "providers": []
+      },
+      "keyword": "pattern"
+    },
+    {
+      "name": "exposure-target_port0",
+      "type": "CreateBody",
+      "value": {
+        "image": "127.0.0.1:17671/pi-runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "policy": {
+          "deep": {
+            "a": [
+              {
+                "b": {
+                  "c": [
+                    1,
+                    {
+                      "d": false
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "policy_digest": "sha256:775f422fc30d016a03639e8f483dbc93a1c879869ce959a735e91cfb0de3f92e",
+        "service_exposures": [
+          {
+            "name": "link",
+            "target_port": 0,
+            "protocol": "tcp"
+          }
+        ],
+        "restart_policy": "never",
+        "providers": []
+      },
+      "keyword": "minimum"
+    },
+    {
+      "name": "exposure-target_port65536",
+      "type": "CreateBody",
+      "value": {
+        "image": "127.0.0.1:17671/pi-runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "policy": {
+          "deep": {
+            "a": [
+              {
+                "b": {
+                  "c": [
+                    1,
+                    {
+                      "d": false
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "policy_digest": "sha256:775f422fc30d016a03639e8f483dbc93a1c879869ce959a735e91cfb0de3f92e",
+        "service_exposures": [
+          {
+            "name": "link",
+            "target_port": 65536,
+            "protocol": "tcp"
+          }
+        ],
+        "restart_policy": "never",
+        "providers": []
+      },
+      "keyword": "maximum"
+    },
+    {
+      "name": "exposure-protocoludp",
+      "type": "CreateBody",
+      "value": {
+        "image": "127.0.0.1:17671/pi-runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "policy": {
+          "deep": {
+            "a": [
+              {
+                "b": {
+                  "c": [
+                    1,
+                    {
+                      "d": false
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "policy_digest": "sha256:775f422fc30d016a03639e8f483dbc93a1c879869ce959a735e91cfb0de3f92e",
+        "service_exposures": [
+          {
+            "name": "link",
+            "target_port": 17690,
+            "protocol": "udp"
+          }
+        ],
+        "restart_policy": "never",
+        "providers": []
+      },
+      "keyword": "const"
+    },
+    {
+      "name": "exposure-unknownTrue",
+      "type": "CreateBody",
+      "value": {
+        "image": "127.0.0.1:17671/pi-runner@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "policy": {
+          "deep": {
+            "a": [
+              {
+                "b": {
+                  "c": [
+                    1,
+                    {
+                      "d": false
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        "policy_digest": "sha256:775f422fc30d016a03639e8f483dbc93a1c879869ce959a735e91cfb0de3f92e",
+        "service_exposures": [
+          {
+            "name": "link",
+            "target_port": 17690,
+            "protocol": "tcp",
+            "unknown": true
+          }
+        ],
+        "restart_policy": "never",
+        "providers": []
+      },
+      "keyword": "additionalProperties"
+    },
+    {
+      "name": "status-state",
+      "type": "LeaseStatus",
+      "value": {
+        "lease_id": "00000000-0000-4000-8000-000000000001",
+        "state": "stopped",
+        "sandbox_id": null,
+        "expires_at": "2026-11-01T12:00:00Z",
+        "flags": {
+          "reserved": false,
+          "create_settled": false,
+          "ready": false,
+          "exec_claimed": false,
+          "fenced": false,
+          "destruction_observed": false,
+          "cleanup_pending": false,
+          "barrier_confirmed": false,
+          "expired": false
+        },
+        "binding": {
+          "label_matches": 0,
+          "duplicates": []
+        }
+      },
+      "keyword": "enum"
+    },
+    {
+      "name": "status-sandbox_id",
+      "type": "LeaseStatus",
+      "value": {
+        "lease_id": "00000000-0000-4000-8000-000000000001",
+        "state": "reserved",
+        "sandbox_id": "bad",
+        "expires_at": "2026-11-01T12:00:00Z",
+        "flags": {
+          "reserved": false,
+          "create_settled": false,
+          "ready": false,
+          "exec_claimed": false,
+          "fenced": false,
+          "destruction_observed": false,
+          "cleanup_pending": false,
+          "barrier_confirmed": false,
+          "expired": false
+        },
+        "binding": {
+          "label_matches": 0,
+          "duplicates": []
+        }
+      },
+      "keyword": "format"
+    },
+    {
+      "name": "status-expires_at",
+      "type": "LeaseStatus",
+      "value": {
+        "lease_id": "00000000-0000-4000-8000-000000000001",
+        "state": "reserved",
+        "sandbox_id": null,
+        "expires_at": "tomorrow",
+        "flags": {
+          "reserved": false,
+          "create_settled": false,
+          "ready": false,
+          "exec_claimed": false,
+          "fenced": false,
+          "destruction_observed": false,
+          "cleanup_pending": false,
+          "barrier_confirmed": false,
+          "expired": false
+        },
+        "binding": {
+          "label_matches": 0,
+          "duplicates": []
+        }
+      },
+      "keyword": "format"
+    },
+    {
+      "name": "status-flags",
+      "type": "LeaseStatus",
+      "value": {
+        "lease_id": "00000000-0000-4000-8000-000000000001",
+        "state": "reserved",
+        "sandbox_id": null,
+        "expires_at": "2026-11-01T12:00:00Z",
+        "flags": {},
+        "binding": {
+          "label_matches": 0,
+          "duplicates": []
+        }
+      },
+      "keyword": "required"
+    },
+    {
+      "name": "status-binding",
+      "type": "LeaseStatus",
+      "value": {
+        "lease_id": "00000000-0000-4000-8000-000000000001",
+        "state": "reserved",
+        "sandbox_id": null,
+        "expires_at": "2026-11-01T12:00:00Z",
+        "flags": {
+          "reserved": false,
+          "create_settled": false,
+          "ready": false,
+          "exec_claimed": false,
+          "fenced": false,
+          "destruction_observed": false,
+          "cleanup_pending": false,
+          "barrier_confirmed": false,
+          "expired": false
+        },
+        "binding": {
+          "label_matches": -1,
+          "duplicates": []
+        }
+      },
+      "keyword": "minimum"
+    },
+    {
+      "name": "inventory-missing-snapshot",
+      "type": "InventoryPage",
+      "value": {
+        "items": [],
+        "next_page_token": null
+      },
+      "keyword": "required"
+    },
+    {
+      "name": "inventory-items",
+      "type": "InventoryPage",
+      "value": {
+        "items": [
+          {}
+        ],
+        "next_page_token": null,
+        "snapshot": "s"
+      },
+      "keyword": "required"
+    },
+    {
+      "name": "unknown-code",
+      "type": "ErrorBody",
+      "value": {
+        "code": "unreachable",
+        "reason": null,
+        "lease_id": null
+      },
+      "keyword": "enum"
+    },
+    {
+      "name": "unknown-reason",
+      "type": "ErrorBody",
+      "value": {
+        "code": "at_capacity",
+        "reason": "busy",
+        "lease_id": null
+      },
+      "keyword": "enum"
+    },
+    {
+      "name": "missing-nullable",
+      "type": "ErrorBody",
+      "value": {
+        "code": "at_capacity"
+      },
+      "keyword": "required"
+    },
+    {
+      "name": "page-size-0",
+      "type": "InventoryQuery",
+      "value": {
+        "page_size": 0
+      },
+      "keyword": "minimum"
+    },
+    {
+      "name": "page-size-201",
+      "type": "InventoryQuery",
+      "value": {
+        "page_size": 201
+      },
+      "keyword": "maximum"
+    },
+    {
+      "name": "deadline-0",
+      "type": "DeadlineHeaders",
+      "value": {
+        "X-Deadline-Ms": 0
+      },
+      "keyword": "minimum"
+    },
+    {
+      "name": "deadline-30001",
+      "type": "DeadlineHeaders",
+      "value": {
+        "X-Deadline-Ms": 30001
+      },
+      "keyword": "maximum"
+    }
+  ]
+}

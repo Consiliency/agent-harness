@@ -1,0 +1,494 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "Source: phase_loop_runtime/baml_src/placement_contract.baml\nbaml-cli: 0.23.0; sha256: 5976ec0279b19f008fdc2984a81a6fb7d868797146d003296bfbe80dc90cf045\nGenerated; do not edit.",
+  "$defs": {
+    "TargetKind": {
+      "type": "string",
+      "enum": [
+        "local",
+        "openshell",
+        "e2b"
+      ]
+    },
+    "CapacitySource": {
+      "type": "string",
+      "enum": [
+        "gateway",
+        "config",
+        "host_probe"
+      ]
+    },
+    "AdmissionOutcome": {
+      "type": "string",
+      "enum": [
+        "admitted",
+        "at_capacity",
+        "refused",
+        "unreachable",
+        "timeout"
+      ]
+    },
+    "AdmissionReason": {
+      "type": "string",
+      "enum": [
+        "no_capacity",
+        "pressure",
+        "fairness_wait",
+        "reserved_for_other_client"
+      ]
+    },
+    "Client": {
+      "type": "string",
+      "enum": [
+        "agent-harness",
+        "agent-toolkit"
+      ]
+    },
+    "ErrorCode": {
+      "type": "string",
+      "enum": [
+        "at_capacity",
+        "owner_mismatch",
+        "not_enrolled",
+        "unknown_lease",
+        "fenced",
+        "expired",
+        "lifetime_exceeded",
+        "digest_mismatch",
+        "duplicate_binding",
+        "snapshot_expired",
+        "invalid_request",
+        "workload_unsupported",
+        "deadline_exceeded"
+      ]
+    },
+    "Workload": {
+      "type": "string",
+      "enum": [
+        "leg",
+        "qualification",
+        "implementation",
+        "pi-runner"
+      ]
+    },
+    "LeaseState": {
+      "type": "string",
+      "enum": [
+        "reserved",
+        "creating",
+        "ready",
+        "killing",
+        "destroyed",
+        "expired",
+        "tombstone"
+      ]
+    },
+    "RestartPolicy": {
+      "type": "string",
+      "enum": [
+        "never"
+      ]
+    },
+    "ServiceProtocol": {
+      "type": "string",
+      "enum": [
+        "tcp"
+      ]
+    },
+    "PlacementTarget": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "name",
+        "kind",
+        "rank"
+      ],
+      "properties": {
+        "name": {
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/TargetKind"
+        },
+        "rank": {
+          "type": "integer"
+        }
+      }
+    },
+    "Limits": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "max_ttl_s",
+        "max_extend_s",
+        "max_lifetime_s"
+      ],
+      "properties": {
+        "max_ttl_s": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_extend_s": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "max_lifetime_s": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "CapacityReading": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "source",
+        "observed_at"
+      ],
+      "properties": {
+        "free": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "ceiling": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "source": {
+          "$ref": "#/$defs/CapacitySource"
+        },
+        "observed_at": {
+          "type": "string"
+        },
+        "limits": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Limits"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "TrailEntry": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "target",
+        "outcome",
+        "code"
+      ],
+      "properties": {
+        "target": {
+          "type": "string"
+        },
+        "outcome": {
+          "$ref": "#/$defs/AdmissionOutcome"
+        },
+        "code": {
+          "type": "string"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AdmissionReason"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "Ownership": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "owner",
+        "lease",
+        "client"
+      ],
+      "properties": {
+        "owner": {
+          "type": "string"
+        },
+        "lease": {
+          "type": "string"
+        },
+        "client": {
+          "$ref": "#/$defs/Client"
+        }
+      }
+    },
+    "ErrorBody": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "code",
+        "reason",
+        "lease_id"
+      ],
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/ErrorCode"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/AdmissionReason"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "lease_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "ServiceExposure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "target_port",
+        "protocol"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{0,62}$"
+        },
+        "target_port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "protocol": {
+          "$ref": "#/$defs/ServiceProtocol",
+          "const": "tcp"
+        }
+      }
+    },
+    "CreateBody": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "image",
+        "policy",
+        "policy_digest",
+        "service_exposures",
+        "restart_policy",
+        "providers"
+      ],
+      "properties": {
+        "image": {
+          "type": "string",
+          "pattern": "^.+@sha256:[0-9a-f]{64}$"
+        },
+        "policy": {
+          "type": "object"
+        },
+        "policy_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "service_exposures": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ServiceExposure"
+          },
+          "maxItems": 4
+        },
+        "restart_policy": {
+          "$ref": "#/$defs/RestartPolicy",
+          "const": "never"
+        },
+        "providers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 0
+        }
+      }
+    },
+    "LeaseFlags": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "reserved",
+        "create_settled",
+        "ready",
+        "exec_claimed",
+        "fenced",
+        "destruction_observed",
+        "cleanup_pending",
+        "barrier_confirmed",
+        "expired"
+      ],
+      "properties": {
+        "reserved": {
+          "type": "boolean"
+        },
+        "create_settled": {
+          "type": "boolean"
+        },
+        "ready": {
+          "type": "boolean"
+        },
+        "exec_claimed": {
+          "type": "boolean"
+        },
+        "fenced": {
+          "type": "boolean"
+        },
+        "destruction_observed": {
+          "type": "boolean"
+        },
+        "cleanup_pending": {
+          "type": "boolean"
+        },
+        "barrier_confirmed": {
+          "type": "boolean"
+        },
+        "expired": {
+          "type": "boolean"
+        }
+      }
+    },
+    "Binding": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "label_matches",
+        "duplicates"
+      ],
+      "properties": {
+        "label_matches": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "duplicates": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "format": "uuid"
+          }
+        }
+      }
+    },
+    "LeaseStatus": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "lease_id",
+        "state",
+        "sandbox_id",
+        "expires_at",
+        "flags",
+        "binding"
+      ],
+      "properties": {
+        "lease_id": {
+          "type": "string"
+        },
+        "state": {
+          "$ref": "#/$defs/LeaseState"
+        },
+        "sandbox_id": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "format": "uuid"
+        },
+        "expires_at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "(?:[Zz]|\\+00:00)$"
+        },
+        "flags": {
+          "$ref": "#/$defs/LeaseFlags"
+        },
+        "binding": {
+          "$ref": "#/$defs/Binding"
+        }
+      }
+    },
+    "InventoryPage": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "items",
+        "next_page_token",
+        "snapshot"
+      ],
+      "properties": {
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/LeaseStatus"
+          }
+        },
+        "next_page_token": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "snapshot": {
+          "type": "string"
+        }
+      }
+    },
+    "InventoryQuery": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [],
+      "properties": {
+        "page_size": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 1,
+          "maximum": 200,
+          "default": 100
+        },
+        "page_token": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "DeadlineHeaders": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "X-Deadline-Ms"
+      ],
+      "properties": {
+        "X-Deadline-Ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 30000
+        }
+      }
+    }
+  }
+}
