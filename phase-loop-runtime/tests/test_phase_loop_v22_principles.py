@@ -103,6 +103,10 @@ class PhaseLoopV22PrinciplesTest(unittest.TestCase):
     def test_dotfiles_baml_schemas_are_openai_dialect_clean(self):
         class_names = []
         for path in sorted(BAML_SRC.glob("*.baml")):
+            # The passive placement contract (agent-harness#1792) is wire types, not an
+            # LLM output schema; it has its own generator, JSON Schema and parity tests.
+            if path.name == "placement_contract.baml":
+                continue
             class_names.extend(_baml_class_names(path))
 
         self.assertTrue(class_names)

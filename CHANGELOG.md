@@ -6,6 +6,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- Add the passive cross-client placement contract and coordinator v1 wire schema,
+  type-only TypeScript, and digest/validation vectors (agent-harness#1792).
+
 - Pin BAML 0.23.0, the latest stable release: `baml-bridge==0.23.0` and the CI `baml-cli`
   0.23.0 (sha256-verified). The bridge source uses `baml.json.stringify` in place of the
   removed `baml.json.to_string`; the runtime fault fixture uses `baml.spawn.Root` in place

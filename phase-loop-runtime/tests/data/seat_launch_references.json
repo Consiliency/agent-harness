@@ -1166,5 +1166,6 @@
   {"count": 1, "function": "validate_result", "module": "openshell_artifacts", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "reap", "module": "placement_lease", "primitive": "io.stat", "role": "host-io"},
   {"count": 1, "function": "recover_lease", "module": "placement_lease", "primitive": "io.open", "role": "host-io"},
-  {"count": 1, "function": "recover_lease", "module": "placement_lease", "primitive": "io.stat", "role": "host-io"}
+  {"count": 1, "function": "recover_lease", "module": "placement_lease", "primitive": "io.stat", "role": "host-io"},
+  {"count": 1, "function": "<module>", "module": "placement_contract", "primitive": "io.read_text", "role": "host-io"}
 ]

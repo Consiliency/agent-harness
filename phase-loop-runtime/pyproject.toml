@@ -154,6 +154,7 @@ phase_loop_runtime = [
     "py.typed",
     "rule_enforcement.json",
     "baml_src/*.baml",
+    "contracts/placement/**",
     "route_policy/fixtures/*.json",
     "schemas/*.json",
     "_contract_docs/**",

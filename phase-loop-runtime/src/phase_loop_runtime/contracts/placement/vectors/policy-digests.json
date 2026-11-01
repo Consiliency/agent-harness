@@ -1,0 +1,60 @@
+[
+  {
+    "policy": {},
+    "jcs_utf8": "{}",
+    "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+  },
+  {
+    "policy": {
+      "": "bmp",
+      "😀": "astral",
+      "a": "ascii"
+    },
+    "jcs_utf8": "{\"a\":\"ascii\",\"😀\":\"astral\",\"\":\"bmp\"}",
+    "sha256": "ce973a921d58152a954cab372cb0e5f5be6ad00ed4074db52819fea4053fa4de"
+  },
+  {
+    "policy": {
+      "nested": {
+        "arrays": [
+          null,
+          true,
+          false,
+          {
+            "π": "雪",
+            "n": 17
+          }
+        ],
+        "numbers": [
+          1e+21,
+          0.1,
+          -0.0,
+          1,
+          1.5
+        ]
+      }
+    },
+    "jcs_utf8": "{\"nested\":{\"arrays\":[null,true,false,{\"n\":17,\"π\":\"雪\"}],\"numbers\":[1e+21,0.1,0,1,1.5]}}",
+    "sha256": "ea3a8b255d8e74fbcdc25c734240403784016f0516337aca2dd248e894f3555b"
+  },
+  {
+    "policy": {
+      "deep": {
+        "a": [
+          {
+            "b": {
+              "c": [
+                1,
+                {
+                  "d": false
+                }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    "jcs_utf8": "{\"deep\":{\"a\":[{\"b\":{\"c\":[1,{\"d\":false}]}}]}}",
+    "sha256": "775f422fc30d016a03639e8f483dbc93a1c879869ce959a735e91cfb0de3f92e"
+  }
+]
