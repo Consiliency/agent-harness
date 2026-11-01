@@ -306,6 +306,7 @@ jobs:
       - name: Placement contract generator parity
         env:
           BAML_AGENT_SKILL_CHECK: "off"
+          PLACEMENT_PARITY_REQUIRED: "1"
         run: |
           PYTHONPATH="$PWD/phase-loop-runtime/src:$PWD/phase-loop-runtime/tests" python -m pytest -q phase-loop-runtime/tests/test_placement_contract.py -k parity
 

@@ -114,13 +114,23 @@ def test_mapping():
 
 
 def test_parity(tmp_path):
+    # CI (the baml-sources job) sets PLACEMENT_PARITY_REQUIRED=1 so this can never
+    # pass by skipping there. Locally, another baml-cli on PATH (for example the
+    # legacy npm one) is skipped, not run.
+    required = os.environ.get('PLACEMENT_PARITY_REQUIRED') == '1'
+    def unavailable(why):
+        if required:
+            pytest.fail(why)
+        pytest.skip(why)
     cli = shutil.which('baml-cli')
     if not cli:
-        pytest.skip('pinned baml-cli absent')
+        unavailable('pinned baml-cli absent')
     env = {**os.environ, 'BAML_AGENT_SKILL_CHECK': 'off', 'BAML_TELEMETRY': 'off', 'BOUNDARY_API_KEY': 'local'}
+    probe = subprocess.run([cli, '--version'], env=env, capture_output=True, text=True)
+    if probe.returncode != 0 or probe.stdout.strip() != 'baml-cli ' + emitter.VERSION:
+        unavailable(f'baml-cli on PATH is not the pinned {emitter.VERSION}: {(probe.stdout or probe.stderr).strip()[:80]!r}')
     def run(*args):
         return subprocess.run([cli, '--agent-skill-check', 'off', *args], env=env, check=True, capture_output=True, text=True).stdout
-    assert run('--version').strip() == 'baml-cli '+emitter.VERSION
     (tmp_path / 'baml_src').mkdir()
     shutil.copy(emitter.SOURCE, tmp_path / 'baml_src/placement_contract.baml')
     (tmp_path / 'baml.toml').write_text('[package]\nname = "placement_parity"\n[generator.ts]\noutput_type = "typescript/node"\noutput_dir = "generated"\nnaming_convention = "preserve-case"\n')

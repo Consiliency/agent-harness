@@ -40,10 +40,20 @@ never prove release: flags are authoritative, including barrier_confirmed.
 
 Python's passive mappings retain timeout uncertainty. `unknown_lease` maps to
 no answer; recovery must kill to create a tombstone and confirm. Codes absent
-from the older mapping table use conservative refusal (invalid_request,
-digest_mismatch, lifetime_exceeded) or release_unconfirmed (duplicate_binding,
-snapshot_expired); these are context-sensitive recovery signals, not automatic
-ladder actions. Nothing here enables the placement driver.
+from the older mapping table map as follows:
+- `invalid_request` and `digest_mismatch` map to refusal. **A refusal at create
+  still leaves the reserved lease holding capacity, so the client kills the lease
+  (tombstone, then confirm) before moving on.**
+- `duplicate_binding` maps to release_unconfirmed until kill confirms every
+  label match is destroyed.
+- `lifetime_exceeded` (renew only) and `snapshot_expired` (inventory only) map to
+  no ladder code. The run ends before the lease's current expiry, and a listing
+  restarts from page 1. Only a listing that still can't complete leaves release
+  unconfirmed.
+
+These are context-sensitive recovery signals, not automatic ladder actions.
+Nothing here enables the placement driver. The adoption bundle excludes
+`placement_contract.baml`, because it isn't a dotfiles adoption schema.
 
 The pinned official TS generator preserves BAML identifiers in enum values and
 class property names even with @alias. Parity checks compare these declared

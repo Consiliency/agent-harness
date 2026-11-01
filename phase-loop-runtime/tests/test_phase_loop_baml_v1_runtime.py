@@ -528,7 +528,8 @@ def test_d3_field_syntax_stays_strict():
 
 
 def test_adoption_bundle_excludes_the_bridge(tmp_path):
-    """#26: schema refs are the 9 schema files; editing the bridge changes nothing."""
+    """#26: schema refs are the 8 schema files (not the bridge or the placement
+    contract); editing the bridge changes nothing."""
     from phase_loop_runtime import adoption_bundle
 
     root = tmp_path / adoption_bundle.BAML_SCHEMA_ROOT
@@ -536,8 +537,8 @@ def test_adoption_bundle_excludes_the_bridge(tmp_path):
     for path in (PKG / "baml_src").glob("*.baml"):
         (root / path.name).write_bytes(path.read_bytes())
     refs = adoption_bundle._schema_refs(tmp_path)
-    assert len(refs) == 9
-    assert all(not ref["source_path"].endswith("phase_loop_bridge.baml") for ref in refs)
+    assert len(refs) == 8
+    assert all(not ref["source_path"].endswith(("phase_loop_bridge.baml", "placement_contract.baml")) for ref in refs)
     (root / "phase_loop_bridge.baml").write_text("// edited\n", encoding="utf-8")
     assert adoption_bundle._schema_refs(tmp_path) == refs
     assert adoption_bundle._stale_schema_refs(refs, adoption_bundle._schema_refs(tmp_path)) == []
@@ -565,7 +566,7 @@ def test_adoption_bundle_refresh_and_check_end_to_end(tmp_path):
     assert adoption_bundle.adoption_bundle_status(tmp_path)["status"] == "stale"
     assert adoption_bundle.refresh_adoption_bundle(tmp_path)["refreshed"] is True
     bundle = json.loads((tmp_path / adoption_bundle.ADOPTION_BUNDLE_PATH).read_text(encoding="utf-8"))
-    assert len(bundle["schema_refs"]) == 9
+    assert len(bundle["schema_refs"]) == 8
     assert not any(ref["source_path"].endswith("phase_loop_bridge.baml") for ref in bundle["schema_refs"])
     assert adoption_bundle.adoption_bundle_status(tmp_path)["status"] == "fresh"
     (root / "phase_loop_bridge.baml").write_text("// host glue edited\n", encoding="utf-8")
