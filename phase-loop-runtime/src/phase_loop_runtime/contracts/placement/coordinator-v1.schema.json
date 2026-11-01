@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$comment": "Source: phase_loop_runtime/baml_src/placement_contract.baml\nbaml-cli: 0.23.0; sha256: 942b22ca7608753429e8908f1189d1cc93688775fd41eb1c249a4e675a7ac594\nGenerated; do not edit.",
+  "$comment": "Source: phase_loop_runtime/baml_src/placement_contract.baml\nbaml-cli: 0.23.0; sha256: ff0f7d5ecc234d09623ee199002855fdc19bc0c2bc7f8654730413f8bf495ee9\nGenerated; do not edit.",
   "$defs": {
     "TargetKind": {
       "type": "string",
@@ -99,7 +99,7 @@
     "ServiceProtocol": {
       "type": "string",
       "enum": [
-        "tcp"
+        "http"
       ]
     },
     "PlacementTarget": {
@@ -285,7 +285,7 @@
         },
         "protocol": {
           "$ref": "#/$defs/ServiceProtocol",
-          "const": "tcp"
+          "const": "http"
         }
       }
     },

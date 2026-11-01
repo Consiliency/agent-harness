@@ -24,9 +24,9 @@
         "policy_digest": "sha256:775f422fc30d016a03639e8f483dbc93a1c879869ce959a735e91cfb0de3f92e",
         "service_exposures": [
           {
-            "name": "link",
+            "name": "web",
             "target_port": 17690,
-            "protocol": "tcp"
+            "protocol": "http"
           }
         ],
         "restart_policy": "never",
@@ -393,9 +393,9 @@
         "policy_digest": "sha256:775f422fc30d016a03639e8f483dbc93a1c879869ce959a735e91cfb0de3f92e",
         "service_exposures": [
           {
-            "name": "link",
+            "name": "web",
             "target_port": 17690,
-            "protocol": "tcp"
+            "protocol": "http"
           }
         ],
         "restart_policy": "never",
@@ -427,9 +427,9 @@
         "policy_digest": "sha256:775f422fc30d016a03639e8f483dbc93a1c879869ce959a735e91cfb0de3f92e",
         "service_exposures": [
           {
-            "name": "link",
+            "name": "web",
             "target_port": 17690,
-            "protocol": "tcp"
+            "protocol": "http"
           }
         ],
         "restart_policy": "never",
@@ -461,9 +461,9 @@
         "policy_digest": "SHA256:ABC",
         "service_exposures": [
           {
-            "name": "link",
+            "name": "web",
             "target_port": 17690,
-            "protocol": "tcp"
+            "protocol": "http"
           }
         ],
         "restart_policy": "never",
@@ -495,9 +495,9 @@
         "policy_digest": "sha256:775f422fc30d016a03639e8f483dbc93a1c879869ce959a735e91cfb0de3f92e",
         "service_exposures": [
           {
-            "name": "link",
+            "name": "web",
             "target_port": 17690,
-            "protocol": "tcp"
+            "protocol": "http"
           }
         ],
         "restart_policy": "always",
@@ -529,9 +529,9 @@
         "policy_digest": "sha256:775f422fc30d016a03639e8f483dbc93a1c879869ce959a735e91cfb0de3f92e",
         "service_exposures": [
           {
-            "name": "link",
+            "name": "web",
             "target_port": 17690,
-            "protocol": "tcp"
+            "protocol": "http"
           }
         ],
         "restart_policy": "never",
@@ -565,29 +565,29 @@
         "policy_digest": "sha256:775f422fc30d016a03639e8f483dbc93a1c879869ce959a735e91cfb0de3f92e",
         "service_exposures": [
           {
-            "name": "link",
+            "name": "web",
             "target_port": 17690,
-            "protocol": "tcp"
+            "protocol": "http"
           },
           {
-            "name": "link",
+            "name": "web",
             "target_port": 17690,
-            "protocol": "tcp"
+            "protocol": "http"
           },
           {
-            "name": "link",
+            "name": "web",
             "target_port": 17690,
-            "protocol": "tcp"
+            "protocol": "http"
           },
           {
-            "name": "link",
+            "name": "web",
             "target_port": 17690,
-            "protocol": "tcp"
+            "protocol": "http"
           },
           {
-            "name": "link",
+            "name": "web",
             "target_port": 17690,
-            "protocol": "tcp"
+            "protocol": "http"
           }
         ],
         "restart_policy": "never",
@@ -619,9 +619,9 @@
         "policy_digest": "sha256:775f422fc30d016a03639e8f483dbc93a1c879869ce959a735e91cfb0de3f92e",
         "service_exposures": [
           {
-            "name": "link",
+            "name": "web",
             "target_port": 17690,
-            "protocol": "tcp"
+            "protocol": "http"
           }
         ],
         "restart_policy": "never",
@@ -638,9 +638,9 @@
         "policy_digest": "sha256:775f422fc30d016a03639e8f483dbc93a1c879869ce959a735e91cfb0de3f92e",
         "service_exposures": [
           {
-            "name": "link",
+            "name": "web",
             "target_port": 17690,
-            "protocol": "tcp"
+            "protocol": "http"
           }
         ],
         "restart_policy": "never",
@@ -674,7 +674,7 @@
           {
             "name": "Bad",
             "target_port": 17690,
-            "protocol": "tcp"
+            "protocol": "http"
           }
         ],
         "restart_policy": "never",
@@ -706,9 +706,9 @@
         "policy_digest": "sha256:775f422fc30d016a03639e8f483dbc93a1c879869ce959a735e91cfb0de3f92e",
         "service_exposures": [
           {
-            "name": "link",
+            "name": "web",
             "target_port": 0,
-            "protocol": "tcp"
+            "protocol": "http"
           }
         ],
         "restart_policy": "never",
@@ -740,9 +740,9 @@
         "policy_digest": "sha256:775f422fc30d016a03639e8f483dbc93a1c879869ce959a735e91cfb0de3f92e",
         "service_exposures": [
           {
-            "name": "link",
+            "name": "web",
             "target_port": 65536,
-            "protocol": "tcp"
+            "protocol": "http"
           }
         ],
         "restart_policy": "never",
@@ -774,7 +774,7 @@
         "policy_digest": "sha256:775f422fc30d016a03639e8f483dbc93a1c879869ce959a735e91cfb0de3f92e",
         "service_exposures": [
           {
-            "name": "link",
+            "name": "web",
             "target_port": 17690,
             "protocol": "udp"
           }
@@ -808,9 +808,9 @@
         "policy_digest": "sha256:775f422fc30d016a03639e8f483dbc93a1c879869ce959a735e91cfb0de3f92e",
         "service_exposures": [
           {
-            "name": "link",
+            "name": "web",
             "target_port": 17690,
-            "protocol": "tcp",
+            "protocol": "http",
             "unknown": true
           }
         ],
@@ -1029,6 +1029,16 @@
         "lease_id": null
       },
       "keyword": "enum"
+    },
+    {
+      "name": "exposure-protocol-tcp-withdrawn",
+      "type": "ServiceExposure",
+      "value": {
+        "name": "link",
+        "target_port": 17690,
+        "protocol": "tcp"
+      },
+      "keyword": "const"
     }
   ]
 }

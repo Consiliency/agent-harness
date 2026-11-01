@@ -59,3 +59,9 @@ The pinned official TS generator preserves BAML identifiers in enum values and
 class property names even with @alias. Parity checks compare these declared
 names/values, then verify our wire aliases through official `baml-cli describe` output.
 Our generated wire TS deliberately uses alias values and names.
+
+**Service exposure (agent-harness#1795 revision 8):** `service_exposures` is HTTP
+only (`protocol` = `"http"`). Stock OpenShell exposes HTTP services and has no raw
+TCP exposure. A raw TCP link, such as agent-toolkit's runner link, uses
+`ForwardTcp` (`openshell forward service`) with no exposure entry. Both clients
+currently send `service_exposures: []`.

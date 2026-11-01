@@ -78,7 +78,7 @@ enum RestartPolicy {
 }
 
 enum ServiceProtocol {
-    tcp,
+    http,
 }
 
 class PlacementTarget {

@@ -118,7 +118,7 @@ def emit(source: bytes) -> dict[str, bytes]:
     constrain('CreateBody', 'restart_policy', const='never')
     constrain('ServiceExposure', 'name', pattern=r'^[a-z][a-z0-9-]{0,62}$')
     constrain('ServiceExposure', 'target_port', minimum=1, maximum=65535)
-    constrain('ServiceExposure', 'protocol', const='tcp')
+    constrain('ServiceExposure', 'protocol', const='http')
     constrain('InventoryQuery', 'page_size', minimum=1, maximum=200, default=100)
     constrain('DeadlineHeaders', 'X-Deadline-Ms', minimum=1, maximum=30000)
     constrain('Binding', 'label_matches', minimum=0)

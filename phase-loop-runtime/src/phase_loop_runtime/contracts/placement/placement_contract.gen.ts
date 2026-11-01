@@ -1,5 +1,5 @@
 // Source: phase_loop_runtime/baml_src/placement_contract.baml
-// baml-cli: 0.23.0; sha256: 942b22ca7608753429e8908f1189d1cc93688775fd41eb1c249a4e675a7ac594
+// baml-cli: 0.23.0; sha256: ff0f7d5ecc234d09623ee199002855fdc19bc0c2bc7f8654730413f8bf495ee9
 // Generated; do not edit.
 
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
@@ -31,8 +31,8 @@ export type LeaseState = "reserved" | "creating" | "ready" | "killing" | "destro
 export const RestartPolicyValues = ["never"] as const;
 export type RestartPolicy = "never";
 
-export const ServiceProtocolValues = ["tcp"] as const;
-export type ServiceProtocol = "tcp";
+export const ServiceProtocolValues = ["http"] as const;
+export type ServiceProtocol = "http";
 
 export interface PlacementTarget {
   "name": string;
