@@ -121,8 +121,8 @@ export interface InventoryPage {
 }
 
 export interface InventoryQuery {
-  "page_size"?: number | null;
-  "page_token"?: string | null;
+  "page_size"?: number;
+  "page_token"?: string;
 }
 
 export interface DeadlineHeaders {

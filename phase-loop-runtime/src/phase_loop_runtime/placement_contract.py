@@ -30,12 +30,16 @@ COORDINATOR_CODES = MappingProxyType({
     # Renew-only, after launch: the lease runs to its current expiry and the run must
     # end before then. Not a placement refusal, so no ladder code.
     'lifetime_exceeded': None,
-    'digest_mismatch': 'sandbox_placement_refused',
+    # Create-only: the reserved lease still holds capacity, so this is NOT
+    # "nothing held". The caller enters releasing (kill to tombstone, confirm).
+    'digest_mismatch': None,
     'duplicate_binding': 'sandbox_placement_release_unconfirmed',
     # Listing-only: restart the inventory from page 1. Only a listing that still
     # cannot complete leaves release unconfirmed (decided by the caller).
     'snapshot_expired': None,
-    'invalid_request': 'sandbox_placement_refused',
+    # Phase-dependent: on reserve nothing is held (refused); on create the
+    # reservation holds capacity and must be released. The caller decides.
+    'invalid_request': None,
     # Revision 7: a typed pre-reservation refusal (nothing reserved or dispatched),
     # so nothing is held and the walk moves on, like an unreachable far end.
     'unavailable': 'sandbox_placement_unreachable',
@@ -50,7 +54,8 @@ def coordinator_code(code: str) -> str | None:
     """Map a code only; callers retain operation context and recovery obligations.
 
     fenced/expired map to lost-after-launch for an already launched lease.
-    unknown_lease, lifetime_exceeded and snapshot_expired map to None: they are
+    unknown_lease, lifetime_exceeded, snapshot_expired, digest_mismatch and
+    invalid_request map to None: they are
     handled by operation context, never as a placement outcome. unknown_lease has
     no successful/empty interpretation. An incomplete kill or
     listing always retains release_unconfirmed, irrespective of HTTP status.

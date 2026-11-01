@@ -66,6 +66,7 @@ def emit(source: bytes) -> dict[str, bytes]:
               '// Generated; do not edit.\n\n')
     ts = header + 'export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };\n\n'
     defs = {}
+    REQUESTS = {'CreateBody', 'ServiceExposure', 'InventoryQuery', 'DeadlineHeaders'}
 
     def field_schema(typ):
         # Mirrors baml_modular._schema_for_baml_field: primitive types, nullable
@@ -93,6 +94,7 @@ def emit(source: bytes) -> dict[str, bytes]:
         ts += f'export interface {name} {{\n'
         properties = {}
         required = []
+        is_request = name in REQUESTS
         for member, typ, alias in entries:
             wire = alias or member
             optional = typ.endswith('?')
@@ -100,13 +102,18 @@ def emit(source: bytes) -> dict[str, bytes]:
             ts_type = {'string': 'string', 'int': 'number', 'bool': 'boolean', JSON_OBJECT: '{ [key: string]: JsonValue }'}.get(base, base)
             # Wire response nullables are required keys (revision 6 examples).
             nullable_required = name in {'ErrorBody', 'LeaseStatus', 'InventoryPage'}
+            if is_request and optional:
+                # Request optionals may be omitted but never sent as null.
+                ts += f'  {json.dumps(wire)}?: ' + ts_type + ';\n'
+                properties[wire] = field_schema(base)
+                continue
             ts += f'  {json.dumps(wire)}' + ('?' if optional and not nullable_required else '') + ': ' + ts_type + (' | null' if optional else '') + ';\n'
             properties[wire] = field_schema(typ)
             if not optional or nullable_required:
                 required.append(wire)
         ts += '}\n\n'
         # Mirrors _schema_for_baml_class, except only requests reject extensions.
-        defs[name] = {'type': 'object', 'additionalProperties': name not in {'CreateBody', 'ServiceExposure', 'InventoryQuery', 'DeadlineHeaders'}, 'required': required, 'properties': properties}
+        defs[name] = {'type': 'object', 'additionalProperties': not is_request, 'required': required, 'properties': properties}
 
     def constrain(cls, field, **constraints):
         defs[cls]['properties'][field].update(constraints)
@@ -122,7 +129,7 @@ def emit(source: bytes) -> dict[str, bytes]:
     constrain('InventoryQuery', 'page_size', minimum=1, maximum=200, default=100)
     constrain('DeadlineHeaders', 'X-Deadline-Ms', minimum=1, maximum=30000)
     constrain('Binding', 'label_matches', minimum=0)
-    constrain('LeaseStatus', 'expires_at', format='date-time', pattern=r'(?:[Zz]|\+00:00)$')
+    constrain('LeaseStatus', 'expires_at', format='date-time', pattern=r'^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:(?:[0-5]\d|60)(?:\.\d+)?(?:[Zz]|\+00:00)$')
     constrain('LeaseStatus', 'sandbox_id', format='uuid')
     defs['Binding']['properties']['duplicates']['items']['format'] = 'uuid'
     for cls, fields in {'CapacityReading': ['free', 'ceiling'], 'Limits': ['max_ttl_s', 'max_extend_s', 'max_lifetime_s']}.items():

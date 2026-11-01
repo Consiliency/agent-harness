@@ -41,9 +41,10 @@ never prove release: flags are authoritative, including barrier_confirmed.
 Python's passive mappings retain timeout uncertainty. `unknown_lease` maps to
 no answer; recovery must kill to create a tombstone and confirm. Codes absent
 from the older mapping table map as follows:
-- `invalid_request` and `digest_mismatch` map to refusal. **A refusal at create
-  still leaves the reserved lease holding capacity, so the client kills the lease
-  (tombstone, then confirm) before moving on.**
+- `digest_mismatch` (create only) and `invalid_request` (any phase) map to no
+  ladder code. On reserve, `invalid_request` means nothing is held. **At create,
+  the reserved lease still holds capacity, so the client kills it (tombstone,
+  then confirm) before moving on.** The caller decides from the phase.
 - `duplicate_binding` maps to release_unconfirmed until kill confirms every
   label match is destroyed.
 - `lifetime_exceeded` (renew only) and `snapshot_expired` (inventory only) map to
@@ -65,3 +66,7 @@ only (`protocol` = `"http"`). Stock OpenShell exposes HTTP services and has no r
 TCP exposure. A raw TCP link, such as agent-toolkit's runner link, uses
 `ForwardTcp` (`openshell forward service`) with no exposure entry. Both clients
 currently send `service_exposures: []`.
+
+**Request optionals** (for example `InventoryQuery.page_size`) may be omitted but
+never sent as `null`. `LeaseStatus.expires_at` must be RFC 3339 UTC (`Z` or
+`+00:00`), checked by pattern, because JSON Schema `format` isn't asserted by default.

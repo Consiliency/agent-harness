@@ -125,12 +125,12 @@ def test_parity(tmp_path):
     cli = shutil.which('baml-cli')
     if not cli:
         unavailable('pinned baml-cli absent')
-    env = {**os.environ, 'BAML_AGENT_SKILL_CHECK': 'off', 'BAML_TELEMETRY': 'off', 'BOUNDARY_API_KEY': 'local'}
+    env = {**os.environ, 'BAML_AGENT_SKILL_CHECK': 'off', 'BAML_TELEMETRY': 'off', 'BOUNDARY_API_KEY': 'local', 'NO_COLOR': '1'}
     probe = subprocess.run([cli, '--version'], env=env, capture_output=True, text=True)
     if probe.returncode != 0 or probe.stdout.strip() != 'baml-cli ' + emitter.VERSION:
         unavailable(f'baml-cli on PATH is not the pinned {emitter.VERSION}: {(probe.stdout or probe.stderr).strip()[:80]!r}')
     def run(*args):
-        return subprocess.run([cli, '--agent-skill-check', 'off', *args], env=env, check=True, capture_output=True, text=True).stdout
+        return subprocess.run([cli, '--agent-skill-check', 'off', '--color', 'never', *args], env=env, check=True, capture_output=True, text=True).stdout
     (tmp_path / 'baml_src').mkdir()
     shutil.copy(emitter.SOURCE, tmp_path / 'baml_src/placement_contract.baml')
     (tmp_path / 'baml.toml').write_text('[package]\nname = "placement_parity"\n[generator.ts]\noutput_type = "typescript/node"\noutput_dir = "generated"\nnaming_convention = "preserve-case"\n')
