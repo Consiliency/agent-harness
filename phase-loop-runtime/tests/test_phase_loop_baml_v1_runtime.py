@@ -172,7 +172,7 @@ def _hostile(fn: str, prefix: str) -> dict[str, str]:
     return _files(phase_loop_bridge=_bridge_with(fn, prefix))
 
 
-SPAWN_HOOK = 'let hook = spawn with baml.spawn.options(detach = true) { throw baml.errors.Io { message: "boom" } };'
+SPAWN_HOOK = 'let hook = spawn with baml.spawn.Root.new() { throw baml.errors.Io { message: "boom" } };'
 PANIC_PARSE = (
     "function phase_loop_parse_closeout(raw: string) -> map<string, string> {\n"
     "    let xs = [1];\n    let y = xs[5];\n    { \"ok\": \"x\" }\n}\n"

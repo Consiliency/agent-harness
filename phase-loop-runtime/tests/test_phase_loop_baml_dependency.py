@@ -20,7 +20,7 @@ class PhaseLoopBamlDependencyTest(unittest.TestCase):
         # into share/. See test_pkg_layout_freeze.py for the full freeze contract.
         text = (ROOT / "vendor/phase-loop-runtime/pyproject.toml").read_text(encoding="utf-8")
         # agent-harness#1135: BAML v1 (D6 exact pin; D5 protobuf window).
-        self.assertIn('"baml-bridge==0.20.1"', text)
+        self.assertIn('"baml-bridge==0.23.0"', text)
         self.assertIn('"protobuf>=6.31.1,<8"', text)
         self.assertNotIn("baml-py", text)
         self.assertIn('"pydantic>=2,<3"', text)
@@ -48,7 +48,7 @@ class PhaseLoopBamlDependencyTest(unittest.TestCase):
         # notes (f): the 0.20.0 fingerprint failure hit every Linux wheel).
         from phase_loop_runtime import baml_modular
 
-        self.assertEqual(importlib.metadata.version("baml-bridge"), "0.20.1")
+        self.assertEqual(importlib.metadata.version("baml-bridge"), "0.23.0")
         parsed = baml_modular.parse_baml_response(
             "EmitPhaseCloseout",
             json.dumps(

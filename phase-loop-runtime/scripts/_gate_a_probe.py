@@ -53,8 +53,8 @@ def main() -> None:
     import importlib.metadata
 
     bridge_version = importlib.metadata.version("baml-bridge")
-    if bridge_version != "0.20.1":
-        fail(f"baml-bridge is {bridge_version}, expected 0.20.1")
+    if bridge_version != "0.23.0":
+        fail(f"baml-bridge is {bridge_version}, expected 0.23.0")
     from phase_loop_runtime.baml_modular import parse_baml_response
 
     parsed = parse_baml_response(
