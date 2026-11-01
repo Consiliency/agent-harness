@@ -275,6 +275,7 @@ PYEOF
       /phase-loop-runtime/scripts/qualify_gemini_heartbeat.py \
       /phase-loop-runtime/scripts/qualify_openshell_sdk.py \
       /phase-loop-runtime/scripts/openshell-sdk-manifest.json \
+      /phase-loop-runtime/scripts/emit_placement_contract.py \
       /plans/detailed-remote-seat-placement-896-20261010.md \
       /.agent-harness/advisor-boards.toml \
       /CHANGELOG.md
