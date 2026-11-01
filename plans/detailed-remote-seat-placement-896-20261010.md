@@ -205,11 +205,23 @@ is final; backend receipts never make `sandbox_root_applied` true.
     only a finished sandbox. `list_owned(owner_id, bound)` returns `(sandbox_ref,
     lease_id)` pairs and includes reservations; `kill(lease_id, bound)` is targeted by
     lease.
-  - **`kill` fences the lease.** Once a backend has been told to kill a lease id, including
-    one it has not yet heard of because the admission request is still on its way, it
-    never completes an admission or a transfer for that lease id, never starts a workload
-    for it, and removes whatever a late request creates for it. The driver, for its part,
-    never sends `execute` for a lease it has abandoned.
+  - **`kill` fences the lease, and its acknowledgement waits for a barrier.** When a backend
+    receives an authenticated `kill` for a lease id, including one it has not yet heard of
+    because the admission request is still on its way, it durably records a terminal fence for
+    that lease before anything else. The fence is never removed or rolled back, including after
+    the lease's resources are gone, while any request for that lease could still arrive. From
+    that record on, the backend publishes no admission and no completed transfer for the lease,
+    accepts no new `execute` for it, and removes whatever a late request creates for it. Only an
+    `execute` the backend accepted before the fence was recorded is *previously dispatched*.
+    Such an `execute` may still start its workload while the kill is pending; the backend never
+    accepts it a second time. The backend acknowledges `kill` only after its **launch barrier**
+    holds for every sandbox bound to the lease: after the barrier, no workload for the lease can
+    start and none is running. Each backend plan names its barrier and how it is confirmed. A
+    backend that cannot confirm the barrier within the bound raises
+    `sandbox_placement_operation_timeout`, keeps the fence and every cleanup obligation, and
+    keeps reporting the lease in `list_owned` until they are settled. A pending kill is never
+    reported as a completed one. The driver, for its part, never sends `execute` for a lease it
+    has abandoned.
   - **An abandoned lease is the reaper's at once.** When the walk leaves a rung without a
     confirmed release (C7), it marks the entry abandoned and gives up that lease's lock, so
     any reaper, this process's own included, may act on it; the entry is cleared only when

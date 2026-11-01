@@ -467,6 +467,19 @@ the caller passes a PATH and the runtime reads it.
     with `user:…@` or a query (`sandbox_root_unrecognised`) are refused without a probe and
     rendered as a placeholder. No warning, reason, recorded path or probe argument is built
     from the configured text; all use the parsed form.
+  - **Finite implementation supplement (r54).** The unregistered model integration
+    also accepts `implementation` as a runtime-owned C1 workload. C10 gates it exactly
+    like `leg`: only `qualification` is exempt. It returns validated, untrusted quarantine
+    evidence, never owner acceptance or application to a user's tree. Production
+    construction and registration remain closed; no physical backend conformance or C5
+    capability follows from model fixtures. The adapter interfaces and remaining gates
+    are in `phase-loop-runtime/openshell-private-transport.md`, section "Finite
+    implementation driver integration". The C7 local-check row also covers
+    `implementation` while the driver flag is false. For all backends, cancellation
+    observed after `wait` wins a simultaneous result or error, and cancellation wins
+    an already-failed launch; none earns a completed receipt. This does not confirm
+    remote destruction or settle cleanup obligations. The historical C1–C12 text
+    below is preserved.
   - **Execution driver (agent-harness#896): amendments C1–C12.** `sandbox_placement.place`
     walks the configured remote rungs and `sandbox_placement.run_placed` is everything
     after `execute`; `placement_lease` is the lease journal and its reaper. The launch
@@ -475,7 +488,8 @@ the caller passes a PATH and the runtime reads it.
     amendments are normative for every backend and every later plan. They are the text of
     `plans/detailed-remote-seat-placement-896-20261010.md`, unchanged, so "this plan"
     below means that plan; `LADDER_TABLE` is C7's two tables as data and a test holds the
-    three copies equal.
+    three copies equal, except the first gate row's workload wording, which the
+    finite implementation supplement above extends to ``leg`` or ``implementation``.
     - **C1 The unit of execution is a workload the runtime owns, not an argv.** `ExecSpec` is
       `(workload, request, deadline_s, must_end_within_s, output_cap_bytes)`. `workload` is
       `leg` or `qualification`. A backend maps it to the runtime's own packaged worker and
@@ -554,11 +568,23 @@ the caller passes a PATH and the runtime reads it.
         only a finished sandbox. `list_owned(owner_id, bound)` returns `(sandbox_ref,
         lease_id)` pairs and includes reservations; `kill(lease_id, bound)` is targeted by
         lease.
-      - **`kill` fences the lease.** Once a backend has been told to kill a lease id, including
-        one it has not yet heard of because the admission request is still on its way, it
-        never completes an admission or a transfer for that lease id, never starts a workload
-        for it, and removes whatever a late request creates for it. The driver, for its part,
-        never sends `execute` for a lease it has abandoned.
+      - **`kill` fences the lease, and its acknowledgement waits for a barrier.** When a backend
+        receives an authenticated `kill` for a lease id, including one it has not yet heard of
+        because the admission request is still on its way, it durably records a terminal fence
+        for that lease before anything else. The fence is never removed or rolled back,
+        including after the lease's resources are gone, while any request for that lease could
+        still arrive. From that record on, the backend publishes no admission and no completed
+        transfer for the lease, accepts no new `execute` for it, and removes whatever a late
+        request creates for it. Only an `execute` the backend accepted before the fence was
+        recorded is *previously dispatched*. Such an `execute` may still start its workload
+        while the kill is pending; the backend never accepts it a second time. The backend
+        acknowledges `kill` only after its **launch barrier** holds for every sandbox bound to
+        the lease: after the barrier, no workload for the lease can start and none is running.
+        Each backend plan names its barrier and how it is confirmed. A backend that cannot
+        confirm the barrier within the bound raises `sandbox_placement_operation_timeout`, keeps
+        the fence and every cleanup obligation, and keeps reporting the lease in `list_owned`
+        until they are settled. A pending kill is never reported as a completed one. The driver,
+        for its part, never sends `execute` for a lease it has abandoned.
       - **An abandoned lease is the reaper's at once.** When the walk leaves a rung without a
         confirmed release (C7), it marks the entry abandoned and gives up that lease's lock, so
         any reaper, this process's own included, may act on it; the entry is cleared only when

@@ -273,6 +273,9 @@ PYEOF
       '/skills-src/*/*-skill-editor/' \
       /phase-loop-runtime/scripts/verify_harden_evidence.py \
       /phase-loop-runtime/scripts/qualify_gemini_heartbeat.py \
+      /phase-loop-runtime/scripts/qualify_openshell_sdk.py \
+      /phase-loop-runtime/scripts/openshell-sdk-manifest.json \
+      /plans/detailed-remote-seat-placement-896-20261010.md \
       /.agent-harness/advisor-boards.toml \
       /CHANGELOG.md
     git -C "$STANDALONE_ROOT" checkout --quiet --detach "$SOURCE_HEAD"

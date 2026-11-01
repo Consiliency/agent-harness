@@ -169,6 +169,10 @@ def test_the_products_table_is_the_plans_table():
     change to a row of `LADDER_TABLE` (a next state, an event, a row removed)."""
     product = [(r.state, r.when, r.next, r.means) for r in sp.LADDER_TABLE.rung]
     literal = [(row[0], row[1], _next_id(row[2]), row[3]) for row in STATE_ROWS]
+    # The finite implementation supplement extends only the gate workload wording.
+    state, when, next_state, means = literal[0]
+    literal[0] = (state, when.replace("a `leg` workload",
+                                     "a `leg` or `implementation` workload"), next_state, means)
     assert product == literal
     assert tuple(r.event for r in sp.LADDER_TABLE.rung) == ROW_EVENTS
     after = [(r.condition, r.walk, r.when, r.then) for r in sp.LADDER_TABLE.after_left]

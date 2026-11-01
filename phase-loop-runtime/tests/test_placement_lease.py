@@ -181,7 +181,7 @@ def test_a_lease_is_one_private_file_synced_with_its_directory_before_it_is_retu
     entry = _entry(lease.path)
     assert set(entry) == {
         "lease_id", "backend", "root", "sandbox_ref", "created_at", "confirmed_killed_at",
-        "abandoned",
+        "abandoned", "create_sent_at", "execute_sent_at",
     }
     assert (entry["lease_id"], entry["backend"], entry["root"]) == (lease.lease_id, "stage", ROOT)
     assert (entry["sandbox_ref"], entry["confirmed_killed_at"], entry["abandoned"]) == (None, None, False)
@@ -641,3 +641,259 @@ class _Protocol:
 
     def renew(self, sandbox_ref, until_s, bound):
         return None
+
+
+@pytest.mark.parametrize("mutex_held", [False, True])
+@pytest.mark.parametrize("operation", [
+    "clear", "_unlock", "abandon", "note_killed", "record_sandbox_ref", "fence",
+    "attach_transport", "mark_create", "mark_execute", "record_transport_ref",
+])
+def test_inherited_mutators_preserve_parent_entry_and_lock(mutex_held, operation):
+    lease = placement_lease.open_lease("stage", _root())
+    adapter = object()
+    if operation != "attach_transport":
+        lease.attach_transport(adapter)
+        if operation != "mark_create":
+            lease.mark_dispatch(adapter, "create")
+    if operation == "mark_execute":
+        lease.record_transport_ref(adapter, "sbx-parent")
+    before = lease.path.read_bytes()
+    if mutex_held:
+        lease._lock.acquire()
+    pid = os.fork()
+    if pid == 0:
+        signal.alarm(5)
+        try:
+            assert not lease.held
+            if operation == "attach_transport":
+                with pytest.raises(ValueError, match="^lease transport already attached or not owned$"):
+                    lease.attach_transport(adapter)
+            elif operation in ("mark_create", "mark_execute"):
+                with pytest.raises(ValueError, match="^lease dispatch forbidden$"):
+                    lease.mark_dispatch(adapter, operation.removeprefix("mark_"))
+            elif operation == "record_transport_ref":
+                with pytest.raises(ValueError, match="^lease transport not owned$"):
+                    lease.record_transport_ref(adapter, "sbx-child")
+            elif operation == "record_sandbox_ref":
+                lease.record_sandbox_ref("sbx-child")
+            else:
+                getattr(lease, operation)()
+            if operation in ("clear", "_unlock", "abandon"):
+                assert lease._fd is None
+            if operation in ("abandon", "fence"):
+                assert lease.fenced
+            os._exit(0)
+        except BaseException:
+            os._exit(1)
+    if mutex_held:
+        lease._lock.release()
+    try:
+        status = os.waitpid(pid, 0)[1]
+        assert lease.held and lease.path.read_bytes() == before
+        src = str(Path(placement_lease.__file__).resolve().parents[1])
+        probe = """
+import sys
+from phase_loop_runtime import placement_lease
+try:
+    lease = placement_lease.recover_lease(sys.argv[1])
+except BlockingIOError:
+    print("blocked")
+else:
+    lease._unlock()
+    print("recovered")
+"""
+        def recover_elsewhere():
+            return subprocess.check_output(
+                [sys.executable, "-c", probe, lease.lease_id], text=True, timeout=10,
+                env={**os.environ, "PYTHONPATH": src},
+            ).strip()
+
+        assert recover_elsewhere() == "blocked"
+        lease._unlock()
+        assert recover_elsewhere() == "recovered"
+        assert lease.path.read_bytes() == before
+        assert status == 0, f"child status {status} (SIGALRM means inherited mutex deadlock)"
+    finally:
+        lease._unlock()
+
+
+def test_abandoned_clear_preserves_retained_obligation():
+    lease = placement_lease.open_lease("stage", _root())
+    lease.abandon()
+    before = lease.path.read_bytes()
+    recovered = placement_lease.recover_lease(lease.lease_id)
+    try:
+        lease.clear()
+        assert lease.path.read_bytes() == before
+        assert recovered.held and _locked(recovered.path)
+    finally:
+        recovered._unlock()
+
+
+@pytest.mark.parametrize("change", ["unlink", "replace", "symlink"])
+def test_recovery_refuses_path_changed_between_open_and_lock(monkeypatch, change):
+    lease = placement_lease.open_lease("stage", _root())
+    lease.abandon()
+    before = lease.path.read_bytes()
+    moved = lease.path.with_suffix(".old")
+    original_flock = fcntl.flock
+    opened_fds = []
+
+    def race(fd, flags):
+        opened_fds.append(fd)
+        # A separate process changes the directory entry after recovery opened it,
+        # before the exclusive lock is acquired. Renaming retains the old inode.
+        subprocess.run(
+            [sys.executable, "-c", """
+import pathlib, sys
+path, moved = map(pathlib.Path, sys.argv[1:3])
+change = sys.argv[3]
+if change == "unlink":
+    path.unlink()
+else:
+    path.rename(moved)
+    if change == "replace":
+        path.write_bytes(moved.read_bytes())
+    else:
+        path.symlink_to(moved)
+""", str(lease.path), str(moved), change], check=True, timeout=10,
+        )
+        return original_flock(fd, flags)
+
+    monkeypatch.setattr(fcntl, "flock", race)
+    with pytest.raises(FileNotFoundError):
+        recovered = placement_lease.recover_lease(lease.lease_id)
+        recovered._unlock()
+    assert len(opened_fds) == 1
+    with pytest.raises(OSError):
+        os.fstat(opened_fds[0])
+    if change == "unlink":
+        assert not lease.path.exists()
+    else:
+        assert moved.read_bytes() == before
+        assert lease.path.read_bytes() == before
+        assert lease.path.is_symlink() == (change == "symlink")
+
+
+@pytest.mark.parametrize("reference", [None, "generation-one"])
+def test_recovered_attach_is_never_fresh(reference):
+    lease = placement_lease.open_lease("stage", _root())
+    if reference is not None:
+        lease.record_sandbox_ref(reference)
+    # Model owner exit without an abandonment marker, including an empty entry.
+    lease._unlock()
+    recovered = placement_lease.recover_lease(lease.lease_id)
+    try:
+        assert recovered.attach_transport(object()) == (False, reference)
+    finally:
+        recovered._unlock()
+
+
+def test_transport_reference_replacement_fences_without_write(monkeypatch):
+    lease = placement_lease.open_lease("stage", _root())
+    adapter = object()
+    lease.attach_transport(adapter)
+    lease.record_transport_ref(adapter, "generation-one")
+    before = lease.path.read_bytes()
+    writes = []
+    monkeypatch.setattr(placement_lease, "_write_entry", lambda *args: writes.append(args))
+    try:
+        with pytest.raises(ValueError, match="generation changed"):
+            lease.record_transport_ref(adapter, "generation-two")
+        assert lease.fenced and not writes
+        assert lease.path.read_bytes() == before
+        assert lease._entry["sandbox_ref"] == "generation-one"
+    finally:
+        lease._unlock()
+
+
+@pytest.mark.parametrize("created,referenced", [(False, False), (True, False), (False, True)])
+def test_execute_marker_requires_create_and_reference_without_write(monkeypatch, created, referenced):
+    lease = placement_lease.open_lease("stage", _root())
+    adapter = object()
+    lease.attach_transport(adapter)
+    if created:
+        lease.mark_dispatch(adapter, "create")
+    if referenced:
+        lease.record_transport_ref(adapter, "generation-one")
+    before = lease.path.read_bytes()
+    writes = []
+    monkeypatch.setattr(placement_lease, "_write_entry", lambda *args: writes.append(args))
+    try:
+        with pytest.raises(ValueError, match="create not recorded"):
+            lease.mark_dispatch(adapter, "execute")
+        assert not writes and lease.path.read_bytes() == before
+        assert lease._entry["execute_sent_at"] is None
+    finally:
+        lease._unlock()
+
+
+def test_clear_serializes_abandon_and_recovery(monkeypatch):
+    lease = placement_lease.open_lease("remote", _root())
+    entered, release, abandoned = threading.Event(), threading.Event(), threading.Event()
+    unlink = os.unlink
+
+    def paused(path, *args, **kwargs):
+        if path == lease.path:
+            entered.set()
+            assert release.wait(2)
+        return unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(os, "unlink", paused)
+    clearing = threading.Thread(target=lease.clear)
+    clearing.start()
+    assert entered.wait(2)
+
+    def abandon():
+        lease.abandon()
+        abandoned.set()
+
+    abandoning = threading.Thread(target=abandon)
+    abandoning.start()
+    try:
+        assert not abandoned.wait(.05)
+        with pytest.raises(BlockingIOError):
+            placement_lease.recover_lease(lease.lease_id)
+    finally:
+        release.set()
+        clearing.join(2)
+        abandoning.join(2)
+    assert not clearing.is_alive() and not abandoning.is_alive()
+    assert not lease.path.exists()
+
+
+@pytest.mark.parametrize("pending", [False, True])
+@pytest.mark.parametrize("race", ["removed", "replaced", "symlink"])
+def test_reaper_checks_inode_after_lock(monkeypatch, pending, race):
+    lease = placement_lease.open_lease("remote", _root())
+    lease.abandon()
+    path = lease.path
+    if pending:
+        path = path.with_name(f".{lease.lease_id}.pending")
+        lease.path.rename(path)
+    content = path.read_bytes()
+    flock = fcntl.flock
+    changed = False
+
+    def race_lock(fd, mode):
+        nonlocal changed
+        if not changed:
+            changed = True
+            path.unlink()
+            if race == "replaced":
+                path.write_bytes(content)
+            elif race == "symlink":
+                target = path.with_name("replacement")
+                target.write_bytes(content)
+                path.symlink_to(target)
+        return flock(fd, mode)
+
+    monkeypatch.setattr(fcntl, "flock", race_lock)
+
+    def forbidden(scheme):
+        pytest.fail("detached inode must not contact backend")
+
+    result = placement_lease.reap(forbidden, sp.OperationBound(1, threading.Event()))
+    assert result == {"cleared": (), "kept": (lease.lease_id,)}
+    if race != "removed":
+        assert path.read_bytes() == content

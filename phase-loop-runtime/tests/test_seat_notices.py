@@ -97,6 +97,35 @@ def test_every_placement_code_is_a_detail_literal_with_a_notice_and_a_fix(code):
     assert [n.code for n in leg.seat_notices] == [code]
 
 
+def test_unconfirmed_release_notice_discloses_pending_execution():
+    notice = seat_jail.render_notice("sandbox_placement_release_unconfirmed", "codex:a")
+    assert notice is not None
+    assert "if execute was sent" in notice.fix
+    assert "may have started or still be running" in notice.fix
+    assert "using its delivered credential until release is confirmed" in notice.fix
+    assert "nothing was retried" in notice.fix
+    assert "lease is kept for the reaper" in notice.fix
+    assert "nothing can start" not in notice.fix
+
+
+def test_c6_copies_preserve_approved_pending_cancellation_rule():
+    repo = Path(__file__).resolve().parents[2]
+    paths = (
+        repo / "phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md",
+        repo / "plans/detailed-remote-seat-placement-896-20261010.md",
+    )
+    copies = []
+    for path in paths:
+        text = path.read_text()
+        start = text.index("- **`kill` fences the lease, and its acknowledgement")
+        end = text.index("- **An abandoned lease", start)
+        copies.append(" ".join(text[start:end].split()))
+    assert copies[0] == copies[1]
+    assert "may still start its workload while the kill is pending" in copies[0]
+    assert "only after its **launch barrier** holds" in copies[0]
+    assert "keeps the fence and every cleanup obligation" in copies[0]
+
+
 def test_the_placement_code_list_is_closed_and_its_notices_name_no_deployment():
     """The runtime's list is exactly the plan's. No notice names an address, an account or
     a place: each must read the same on one laptop with one spare machine."""
