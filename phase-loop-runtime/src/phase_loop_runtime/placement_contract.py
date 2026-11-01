@@ -36,6 +36,9 @@ COORDINATOR_CODES = MappingProxyType({
     # cannot complete leaves release unconfirmed (decided by the caller).
     'snapshot_expired': None,
     'invalid_request': 'sandbox_placement_refused',
+    # Revision 7: a typed pre-reservation refusal (nothing reserved or dispatched),
+    # so nothing is held and the walk moves on, like an unreachable far end.
+    'unavailable': 'sandbox_placement_unreachable',
 })
 
 

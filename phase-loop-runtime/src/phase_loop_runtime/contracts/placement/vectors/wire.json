@@ -372,6 +372,15 @@
       "value": {
         "X-Deadline-Ms": 30000
       }
+    },
+    {
+      "name": "error-unavailable-recovering",
+      "type": "ErrorBody",
+      "value": {
+        "code": "unavailable",
+        "reason": "recovering",
+        "lease_id": null
+      }
     }
   ],
   "invalid": [
@@ -1010,6 +1019,16 @@
         "X-Deadline-Ms": 30001
       },
       "keyword": "maximum"
+    },
+    {
+      "name": "error-unavailable-bad-reason",
+      "type": "ErrorBody",
+      "value": {
+        "code": "unavailable",
+        "reason": "maintenance",
+        "lease_id": null
+      },
+      "keyword": "enum"
     }
   ]
 }

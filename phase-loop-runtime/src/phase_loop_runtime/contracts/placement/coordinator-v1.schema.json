@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$comment": "Source: phase_loop_runtime/baml_src/placement_contract.baml\nbaml-cli: 0.23.0; sha256: 5976ec0279b19f008fdc2984a81a6fb7d868797146d003296bfbe80dc90cf045\nGenerated; do not edit.",
+  "$comment": "Source: phase_loop_runtime/baml_src/placement_contract.baml\nbaml-cli: 0.23.0; sha256: 942b22ca7608753429e8908f1189d1cc93688775fd41eb1c249a4e675a7ac594\nGenerated; do not edit.",
   "$defs": {
     "TargetKind": {
       "type": "string",
@@ -34,7 +34,13 @@
         "no_capacity",
         "pressure",
         "fairness_wait",
-        "reserved_for_other_client"
+        "reserved_for_other_client",
+        "recovering",
+        "telemetry_stale",
+        "slice_unbounded",
+        "untracked_vms",
+        "ledger_restored",
+        "internal"
       ]
     },
     "Client": {
@@ -59,7 +65,8 @@
         "snapshot_expired",
         "invalid_request",
         "workload_unsupported",
-        "deadline_exceeded"
+        "deadline_exceeded",
+        "unavailable"
       ]
     },
     "Workload": {

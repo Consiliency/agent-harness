@@ -26,6 +26,12 @@ enum AdmissionReason {
     pressure,
     fairness_wait,
     reserved_for_other_client,
+    recovering,
+    telemetry_stale,
+    slice_unbounded,
+    untracked_vms,
+    ledger_restored,
+    internal,
 }
 
 enum Client {
@@ -47,6 +53,7 @@ enum ErrorCode {
     invalid_request,
     workload_unsupported,
     deadline_exceeded,
+    unavailable,
 }
 
 enum Workload {

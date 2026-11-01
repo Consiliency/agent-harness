@@ -1,5 +1,5 @@
 // Source: phase_loop_runtime/baml_src/placement_contract.baml
-// baml-cli: 0.23.0; sha256: 5976ec0279b19f008fdc2984a81a6fb7d868797146d003296bfbe80dc90cf045
+// baml-cli: 0.23.0; sha256: 942b22ca7608753429e8908f1189d1cc93688775fd41eb1c249a4e675a7ac594
 // Generated; do not edit.
 
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
@@ -13,14 +13,14 @@ export type CapacitySource = "gateway" | "config" | "host_probe";
 export const AdmissionOutcomeValues = ["admitted", "at_capacity", "refused", "unreachable", "timeout"] as const;
 export type AdmissionOutcome = "admitted" | "at_capacity" | "refused" | "unreachable" | "timeout";
 
-export const AdmissionReasonValues = ["no_capacity", "pressure", "fairness_wait", "reserved_for_other_client"] as const;
-export type AdmissionReason = "no_capacity" | "pressure" | "fairness_wait" | "reserved_for_other_client";
+export const AdmissionReasonValues = ["no_capacity", "pressure", "fairness_wait", "reserved_for_other_client", "recovering", "telemetry_stale", "slice_unbounded", "untracked_vms", "ledger_restored", "internal"] as const;
+export type AdmissionReason = "no_capacity" | "pressure" | "fairness_wait" | "reserved_for_other_client" | "recovering" | "telemetry_stale" | "slice_unbounded" | "untracked_vms" | "ledger_restored" | "internal";
 
 export const ClientValues = ["agent-harness", "agent-toolkit"] as const;
 export type Client = "agent-harness" | "agent-toolkit";
 
-export const ErrorCodeValues = ["at_capacity", "owner_mismatch", "not_enrolled", "unknown_lease", "fenced", "expired", "lifetime_exceeded", "digest_mismatch", "duplicate_binding", "snapshot_expired", "invalid_request", "workload_unsupported", "deadline_exceeded"] as const;
-export type ErrorCode = "at_capacity" | "owner_mismatch" | "not_enrolled" | "unknown_lease" | "fenced" | "expired" | "lifetime_exceeded" | "digest_mismatch" | "duplicate_binding" | "snapshot_expired" | "invalid_request" | "workload_unsupported" | "deadline_exceeded";
+export const ErrorCodeValues = ["at_capacity", "owner_mismatch", "not_enrolled", "unknown_lease", "fenced", "expired", "lifetime_exceeded", "digest_mismatch", "duplicate_binding", "snapshot_expired", "invalid_request", "workload_unsupported", "deadline_exceeded", "unavailable"] as const;
+export type ErrorCode = "at_capacity" | "owner_mismatch" | "not_enrolled" | "unknown_lease" | "fenced" | "expired" | "lifetime_exceeded" | "digest_mismatch" | "duplicate_binding" | "snapshot_expired" | "invalid_request" | "workload_unsupported" | "deadline_exceeded" | "unavailable";
 
 export const WorkloadValues = ["leg", "qualification", "implementation", "pi-runner"] as const;
 export type Workload = "leg" | "qualification" | "implementation" | "pi-runner";
