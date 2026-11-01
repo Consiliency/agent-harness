@@ -584,9 +584,11 @@ def test_environment_inside_the_worker_is_the_allowlist(client):
         closeout = m.build_baml_request("EmitPhaseCloseout", CLOSEOUT)
         allowlist = set(m._worker_env())
     assert outcome == "ok"
-    # The allowlist, plus the one key the worker itself forces (profiling off).
-    assert set(info["env"]) <= allowlist | {"BAML_PROFILE"}, set(info["env"]) - allowlist
-    assert "BAML_PROFILE" in info["env"]
+    # The allowlist, plus the keys the worker itself forces (profiling and
+    # telemetry off, local-only credential resolution).
+    forced = {"BAML_PROFILE", "BAML_TELEMETRY", "BOUNDARY_API_KEY"}
+    assert set(info["env"]) <= allowlist | forced, set(info["env"]) - allowlist
+    assert forced <= set(info["env"])
     assert "LC_CTYPE" not in info["env"] and "__PYVENV_LAUNCHER__" not in info["env"]
     assert Path(info["cwd"]).resolve() == Path(m.__file__).resolve().parent
     golden = [entry["v0"] for entry in _baseline("evidence_requests.json")["requests"].values()]
@@ -788,6 +790,43 @@ def test_profiling_passed_in_by_the_parent_is_still_forced_off(tmp_path):
         proc.stdin.close()
         proc.wait(10)
     assert not (pkg / ".baml").exists() and not (tmp_path / "profiles").exists()
+
+
+def test_telemetry_passed_in_by_the_parent_is_still_forced_off(tmp_path):
+    """Since 0.23 the runtime records telemetry (local .btel and CAS files under
+    the BAML home) and resolves saved Boundary credentials for cloud recording.
+    Forced off: even a worker started WITH telemetry on, its own BAML home and
+    HOME, and a saved login present, writes nothing anywhere."""
+    pkg = _package_copy(tmp_path, "checkout")
+    home, baml_home = tmp_path / "home", tmp_path / "baml-home"
+    (baml_home / "login").mkdir(parents=True)
+    (baml_home / "login" / "cache").write_text("{}")
+    home.mkdir()
+    before = sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*") if "phase_loop_runtime" not in p.parts)
+    env = {**m._worker_env(), "BAML_TELEMETRY": "high", "BAML_HOME": str(baml_home), "HOME": str(home)}
+    proc = subprocess.Popen(
+        [sys.executable, "-I", "-S", str(pkg / "_baml_worker.py"), str(os.getpid()), ",".join(sorted(env))],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, env=env, cwd=str(pkg),
+    )
+    try:
+        def send(obj):
+            proc.stdin.write((json.dumps(obj) + "\n").encode())
+            proc.stdin.flush()
+            return json.loads(proc.stdout.readline())
+
+        init = {"id": 1, "op": "init", "files": m._read_baml_files(), "sys_path": m._worker_sys_path(), "test_mode": True}
+        assert "ok" in send(init)
+        assert "ok" in send({"id": 2, "op": "parse_closeout", "args": {"raw": OK}})
+        assert "request" in send({"id": 3, "op": "closeout_request", "args": {
+            "phase_alias": "A", "plan_produces": [], "plan_owned_files": [], "closeout_commit_sha": None}})
+        names = send({"id": 4, "op": "env", "args": {}})["ok"]["env"]
+    finally:
+        proc.stdin.close()
+        proc.wait(10)
+    after = sorted(p.relative_to(tmp_path) for p in tmp_path.rglob("*") if "phase_loop_runtime" not in p.parts)
+    assert after == before, sorted(set(after) - set(before))
+    assert not (pkg / ".baml").exists(), sorted(p.name for p in pkg.iterdir())
+    assert {"BAML_TELEMETRY", "BOUNDARY_API_KEY"} <= set(names), names
 
 
 def test_worker_protocol_rejects_ops_before_init_and_a_second_init():

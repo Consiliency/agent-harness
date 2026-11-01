@@ -185,6 +185,15 @@ def main(argv: list[str]) -> int:
     # defaulted: no call data is ever written to disk, whatever was passed in.
     os.environ["BAML_PROFILE"] = "0"
     os.environ.pop("BAML_PROFILE_DIR", None)
+    # Since 0.23 the runtime also initializes telemetry: it can record call data
+    # locally (.btel and content-addressed files) and look up saved Boundary
+    # login credentials (~/.baml/login) to configure cloud recording.  Forced off
+    # before the bridge is imported, for the same reason as profiling.  The
+    # credential lookup happens while the recording is resolved, before the off
+    # switch is consulted; the reserved key ``local`` (bcs_api LOCAL_API_KEY)
+    # selects local-only resolution, so no saved login or key is ever read.
+    os.environ["BAML_TELEMETRY"] = "off"
+    os.environ["BOUNDARY_API_KEY"] = "local"
 
     if os.name == "posix":
         if sys.platform.startswith("linux") and not no_pdeathsig:
