@@ -6,6 +6,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- Pin BAML 0.23.0, the latest stable release: `baml-bridge==0.23.0` and the CI `baml-cli`
+  0.23.0 (sha256-verified). The bridge source uses `baml.json.stringify` in place of the
+  removed `baml.json.to_string`; the runtime fault fixture uses `baml.spawn.Root` in place
+  of the removed `baml.spawn.options(detach = true)`. The BAML worker now also forces
+  `BAML_TELEMETRY=off` and `BOUNDARY_API_KEY=local` before importing the bridge, so 0.23's
+  telemetry never records call data or reads saved Boundary login credentials.
+
 - Add a disabled-model source staging RPC adapter on the original cancellation
   lease, with fixed transfer bounds, verified wire digests and no uncertain replay.
   Qualify candidate server bindings separately from production activation.

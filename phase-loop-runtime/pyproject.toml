@@ -22,7 +22,7 @@ dependencies = [
     "detect-secrets==1.5.0",
     "tree-sitter==0.25.2",
     "tree-sitter-typescript==0.23.2",
-    "baml-bridge==0.20.1",
+    "baml-bridge==0.23.0",
     "protobuf>=6.31.1,<8",
     "pydantic>=2,<3",
     "PyYAML>=6,<7",

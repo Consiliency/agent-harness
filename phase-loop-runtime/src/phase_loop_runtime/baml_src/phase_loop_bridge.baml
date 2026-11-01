@@ -9,7 +9,7 @@ function phase_loop_parse_closeout(raw: string) -> map<string, string> {
             return { "error": e.message };
         }
     };
-    { "ok": baml.json.to_string(v) }
+    { "ok": baml.json.stringify(v) }
 }
 
 function phase_loop_closeout_request(
@@ -25,7 +25,7 @@ function phase_loop_closeout_request(
         closeout_commit_sha = closeout_commit_sha,
     )
         .build_request();
-    { "request": baml.json.to_string(r) }
+    { "request": baml.json.stringify(r) }
 }
 
 function phase_loop_evidence_request(
@@ -39,5 +39,5 @@ function phase_loop_evidence_request(
         expected_artifact_characteristics = expected_artifact_characteristics,
     )
         .build_request();
-    { "request": baml.json.to_string(r) }
+    { "request": baml.json.stringify(r) }
 }

@@ -260,17 +260,17 @@ jobs:
           set -euo pipefail
           python -m pip install ./phase-loop-runtime
 
-      - name: Download and verify baml-cli 0.20.1
+      - name: Download and verify baml-cli 0.23.0
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          tarball=baml-language-0.20.1-x86_64-unknown-linux-gnu.tar.gz
+          tarball=baml-language-0.23.0-x86_64-unknown-linux-gnu.tar.gz
           mkdir -p "$RUNNER_TEMP/bamlcli"
           cd "$RUNNER_TEMP/bamlcli"
-          gh release download baml-language-0.20.1 -R BoundaryML/baml -p "$tarball*"
+          gh release download baml-language-0.23.0 -R BoundaryML/baml -p "$tarball*"
           sha256sum -c "$tarball.sha256"
-          echo "6067729f14483eca4ab61bfcd3c1921818e9ecc66da035bc64fbbfeb850e2795  $tarball" | sha256sum -c -
+          echo "a1f5ab12e2d60543945c985e372dca66aefe02221d8c235aa618e62720d8a215  $tarball" | sha256sum -c -
           tar -xzf "$tarball"
           echo "$RUNNER_TEMP/bamlcli/bin" >> "$GITHUB_PATH"
 
@@ -280,7 +280,7 @@ jobs:
           cli="$(baml-cli --version 2>/dev/null)"
           bridge="$(python -c 'import baml_bridge as b; print(b.get_toolchain_version())')"
           echo "cli=$cli bridge=$bridge"
-          test "$cli" = "baml-cli 0.20.1"
+          test "$cli" = "baml-cli 0.23.0"
           test "$cli" = "baml-cli $bridge"
 
       - name: fmt round-trip on the raw sources

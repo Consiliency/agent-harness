@@ -407,7 +407,7 @@ still names the superseded `v0.2.0`, reported upstream on `Consiliency/spec#118`
   `EC-RELEASE-5` or `EC-RELEASE-6`: no pilot trains are claimed and the v10 RELEASE phase
   remains `committed`. It does not declare `production-ready`.
 - Content above the `v0.7.22` tag commit (`6d279759`):
-  - BAML v1: `baml-bridge` 0.20.1 (exact pin) with `protobuf` 7.36.2 (locked resolution of
+  - BAML v1: `baml-bridge` 0.23.0 (exact pin) with `protobuf` 7.36.2 (locked resolution of
     `protobuf>=6.31.1,<8`) in a worker subprocess (agent-harness#1160, agent-harness#1135);
   - sandbox staging and agent-CLI scratch kept off RAM-backed filesystems, with the
     test-suite scratch audit hook (agent-harness#1161, agent-harness#1147);
