@@ -1,0 +1,1305 @@
+{
+  "schema": 1,
+  "run_id": "codex-apparmor-canary-sol-20261016-r2",
+  "starting_head": "d3ea320436638aaf462294fd4efb1c588328cde4",
+  "branch": "exec/codex-apparmor-canary-sol-20261016",
+  "worktree": "/mnt/workspace/worktrees/viperjuice/agent-harness-codex-apparmor-plan",
+  "technical_plan_unchanged": true,
+  "reviewed_policy_bytes_unchanged": true,
+  "review_json_unchanged": true,
+  "historical_first_run_record": "plans/evidence/codex-apparmor-canary/implementation-sol-20261016.json",
+  "historical_note": "The first offline173-test result remains historical; parent falsifiers requested these implementation corrections. Revision artifacts preserve failed wrapper and earlier passing evidence separately.",
+  "findings": {
+    "IMPL-001": {
+      "status": "addressed",
+      "verification": "Real non-root startup from sealed manifest: READY then EOF exit125, empty stderr, no GO. test_nonroot_fixture_startup_reaches_ready_and_refuses_eof passed without skip.",
+      "change": "Closed hashed os.py/linecache.py bootstrap and empty lib-dynload landmark; host-only mount metadata escape handling preserves strict experimental mount gate."
+    },
+    "IMPL-002": {
+      "status": "addressed",
+      "verification": "Expiry-at10/after11 revalidation negative controls refuse parser; nested validation probes share absolute deadline; teardown waits are9+1 under deadline10 and report unreaped child identity; exact namespace removal still attempted with failed proof.",
+      "change": "Absolute deadline propagated through revalidation, hashing, subprocess work/teardown, child reaping and final root snapshot; removed timeout floors and implicit Popen unbounded exit wait."
+    }
+  },
+  "verification_status": "passed",
+  "verification_scope": "Offline only; no kernel enforcement claim",
+  "summary": "182 passed in 19.54s",
+  "verification_artifact_path": "/mnt/workspace/worktrees/viperjuice/agent-harness-codex-apparmor-plan/.dev-skills/handoffs/codex-execute-detailed/codex-apparmor-canary-sol-20261016-r2/verification-final3/verification.json",
+  "verification_artifact_sha256": "9e8af2de797f58beb4659b7ecde8808c4280e6e39ebf2ae88967af799d049914",
+  "commands": [
+    {
+      "command": "uv sync --project phase-loop-runtime --python 3.12 --group test --locked --refresh",
+      "status": "passed"
+    },
+    {
+      "command": "python phase-loop-runtime/tests/codex_apparmor_canary.py render --out /home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r2/rendered/final3/rendered",
+      "status": "passed",
+      "exit_code": 0
+    },
+    {
+      "command": "/usr/sbin/apparmor_parser -K -Q --config-file /home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r2/rendered/final3/rendered/parser.conf --base /home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r2/rendered/final3/rendered --Include /home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r2/rendered/final3/rendered --policy-features /home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r2/rendered/final3/rendered/features.dump /home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r2/rendered/final3/rendered/baseline.policy",
+      "status": "passed",
+      "exit_code": 0
+    },
+    {
+      "command": "/usr/sbin/apparmor_parser -K -Q --config-file /home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r2/rendered/final3/rendered/parser.conf --base /home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r2/rendered/final3/rendered --Include /home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r2/rendered/final3/rendered --policy-features /home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r2/rendered/final3/rendered/features.dump /home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r2/rendered/final3/rendered/candidate.policy",
+      "status": "passed",
+      "exit_code": 0
+    },
+    {
+      "command": "python -c 'import sys, pathlib, json, subprocess, os\nsys.path.insert(0,str(pathlib.Path.cwd()/'\"'\"'phase-loop-runtime/tests'\"'\"'))\nimport codex_apparmor_canary as aa\nroot=pathlib.Path(sys.argv[1])\nmanifest=json.loads((root/'\"'\"'manifest.json'\"'\"').read_text())\nassert os.getuid()>0 and os.getgid()>0\nr=subprocess.run(aa.bwrap_argv(root,manifest,os.getuid(),os.getgid()),stdin=subprocess.DEVNULL,capture_output=True,env=aa.ENV,close_fds=True,timeout=10)\nrecord={'\"'\"'returncode'\"'\"':r.returncode,'\"'\"'stdout'\"'\"':r.stdout.decode(),'\"'\"'stderr'\"'\"':r.stderr.decode(),'\"'\"'uid'\"'\"':os.getuid(),'\"'\"'gid'\"'\"':os.getgid(),'\"'\"'go_sent'\"'\"':False,'\"'\"'primary_executed'\"'\"':False,'\"'\"'scope'\"'\"':'\"'\"'non-root startup-only; stdin permanently DEVNULL'\"'\"'}\npathlib.Path(sys.argv[2]).write_text(json.dumps(record,indent=2)+'\"'\"'\\n'\"'\"')\nassert r.returncode==125 and r.stdout==b'\"'\"'READY\\n'\"'\"' and not r.stderr, record\nprint('\"'\"'Actual sealed-fixture startup: READY, EOF exit125; no GO, no primary operation'\"'\"')\n' /home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r2/rendered/final3/rendered /home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r2/startup-after.json",
+      "status": "passed",
+      "exit_code": 0
+    },
+    {
+      "command": "uv run --project phase-loop-runtime --group test python -c 'import sys; print(sys.version); assert sys.version_info[:2] == (3,12)'",
+      "status": "passed",
+      "exit_code": 0
+    },
+    {
+      "command": "env LOCAL_CHECK_PYTHON=/mnt/workspace/worktrees/viperjuice/agent-harness-codex-apparmor-plan/phase-loop-runtime/.venv/bin/python make check",
+      "status": "passed",
+      "exit_code": 0
+    },
+    {
+      "command": "git diff --check",
+      "status": "passed",
+      "exit_code": 0
+    },
+    {
+      "command": "uv run --project phase-loop-runtime --group test python -m pytest -q phase-loop-runtime/tests/test_codex_apparmor_canary.py phase-loop-runtime/tests/test_seat_jail_apparmor.py phase-loop-runtime/tests/test_seat_owner_composition.py phase-loop-runtime/tests/test_codex_seat_tool_sandbox_1335.py",
+      "status": "passed",
+      "summary": "182 passed in 19.54s"
+    },
+    {
+      "command": "Administrator root-stage checks and fixed live run",
+      "status": "not_run",
+      "reason": "Explicit live-policy authorization boundary."
+    }
+  ],
+  "rendered_files": {
+    "baseline.policy": {
+      "sha256": "e7f15a673916c8a8208234e4f623da2bb12018d0a5b06fa5d5c59643ddb4710c",
+      "size": 759
+    },
+    "candidate.policy": {
+      "sha256": "48b4fb0d745b7dd46c311b460e91612a7f416d6e72eaeaac7a6e21090532d793",
+      "size": 764
+    },
+    "codex_apparmor_canary.py": {
+      "sha256": "e99664a9b4d3d182c72c018b9f364c6144cdf0a658392ef98132065be96ae4df",
+      "size": 50372
+    },
+    "features.dump": {
+      "sha256": "611413ba507a5c19522a9ae5f4b479d3f782c7a3553cc761fbff3c02cd20c927",
+      "size": 3219
+    },
+    "fixture.txt": {
+      "sha256": "f7096e77c3bdc78fc543225c8a5d42e08546b5e235509897d7dcd05089c0d986",
+      "size": 34
+    },
+    "manifest.json": {
+      "sha256": "f25e83179e9aa774fda1771ae78aa8a3c6b81671bfc37d8d78508b725e2593ef",
+      "size": 29274
+    },
+    "parser.conf": {
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "size": 0
+    }
+  },
+  "preprocessed_sha256": {
+    "baseline.policy": "e7f15a673916c8a8208234e4f623da2bb12018d0a5b06fa5d5c59643ddb4710c",
+    "candidate.policy": "48b4fb0d745b7dd46c311b460e91612a7f416d6e72eaeaac7a6e21090532d793"
+  },
+  "input_closure_sha256": "656068006253432dbe8f2532d3ac02ce8eeb534128b3f8b5a7d8e02f0572875c",
+  "tool_closure_sha256": "515ce466a142d8993979f407d2c3fc317d23f75c0e443b4f8257d9c2c852188f",
+  "fixture_closure_sha256": "becab1e648a3fd9128dd476616b5f632916e8b09ad45fb00e6414c4988705c2b",
+  "boot_id": "989f21f5-fdbb-49fe-b11f-b10f2e07e4af",
+  "kernel": "7.0.0-34-generic",
+  "acceptance": {
+    "C1": {
+      "status": "unmet",
+      "offline_status": "passed",
+      "reason": "Administrator protected-byte staging and live root identity/map/FD metadata remain unauthorized."
+    },
+    "C2": {
+      "status": "unmet",
+      "offline_status": "passed",
+      "reason": "Reviewed policies and closed inputs pass compile-only checks; binding to live loads remains unobserved."
+    },
+    "C3": {
+      "status": "unmet",
+      "reason": "No live baseline/candidate attribution, syscall progression or root host gates. EOF startup cannot prove enforcement."
+    },
+    "C4": {
+      "status": "unmet",
+      "offline_status": "passed",
+      "reason": "Shared-deadline and cleanup negative controls pass; live root policy invariance/reaping/namespace absence remain unobserved."
+    },
+    "C5": {
+      "status": "satisfied",
+      "reason": "Original reviews/owner waiver preserved; no president ruling, implementation board, live or production approval claimed."
+    }
+  },
+  "acceptance_status": "unmet_live_authorization_pending",
+  "implementation_review": "parent_reproductions_passed; independent_implementation_review_pending",
+  "lifecycle_warnings": [
+    "executing: invalid lifecycle transition: failed -> executing; prior terminal history preserved",
+    "closeout: invalid lifecycle transition for codex-apparmor-canary-20261016-0227: failed -> failed"
+  ],
+  "doc_delta_decision": "docs_updated",
+  "publication_intent": "draft",
+  "approval_packet_path": "/home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r2/approval-packet.txt",
+  "staging_suffix": "sol-20261016-r2-e99664a9b4d3",
+  "owned_paths": [
+    "phase-loop-runtime/tests/codex_apparmor_canary.py",
+    "phase-loop-runtime/tests/test_codex_apparmor_canary.py",
+    "docs/advisor-board-capabilities-card.md",
+    "plans/evidence/codex-apparmor-canary/implementation-sol-20261016-r2.json"
+  ],
+  "dirty_path_classification": {
+    "plan_owned": [
+      "phase-loop-runtime/tests/codex_apparmor_canary.py",
+      "phase-loop-runtime/tests/test_codex_apparmor_canary.py",
+      "docs/advisor-board-capabilities-card.md",
+      "plans/evidence/codex-apparmor-canary/implementation-sol-20261016-r2.json"
+    ],
+    "pre_existing_unrelated": [],
+    "non_plan_output": []
+  },
+  "no_root_helper_or_policy_operations": true,
+  "no_merge": true,
+  "parent_review": {
+    "reviewed_head": "df3675fe924f3d9787c73ddd7102cd8e1863f813",
+    "scope": "Parent read of revision diff and independent rerun of both original falsifiers; no independent cross-vendor or live-kernel approval claimed.",
+    "findings": {
+      "IMPL-001": "Resolved: actual non-root sealed fixture emitted READY, returned125 on permanent EOF with empty stderr; no GO or primary operation.",
+      "IMPL-002": "Resolved: original fake-clock expiry now raises Inconclusive before any parser launch."
+    },
+    "evidence_integrity": "Current helper and rendered-helper hashes match committed metadata; runner artifact SHA-256 matches revision evidence.",
+    "publication_input_repair": "Original narrow-scope transaction returned no_effect_terminal_proven. The corrected prebuilt retry rejected the adapter-created commit trailer. This real review-metadata update is submitted as a fresh normal transaction covering the entire owned branch diff; no frozen transaction or authority record is edited.",
+    "root_policy_operations": false,
+    "live_acceptance": "C1-C4 remain unmet"
+  },
+  "current_revision": "reachability_followup",
+  "round2_followup": {
+    "run_id": "codex-apparmor-canary-sol-20261016-r4",
+    "starting_head": "690f42b9eed10d57cbde9bb8f9540e27e6bbfed2",
+    "worktree": "/mnt/workspace/worktrees/viperjuice/agent-harness-codex-apparmor-plan",
+    "branch": "exec/codex-apparmor-canary-sol-20261016",
+    "plan_path": "plans/detailed-codex-apparmor-canary-20261016-0227.md",
+    "technical_plan_unchanged": true,
+    "review_json_unchanged": true,
+    "reviewed_policy_bytes_unchanged": true,
+    "verification_status": "passed",
+    "verification_scope": "Offline only; live kernel acceptance not established",
+    "summary": "219 passed in 39.55s",
+    "helper_summary": "176 passed",
+    "verification_artifact_path": "/mnt/workspace/worktrees/viperjuice/agent-harness-codex-apparmor-plan/.dev-skills/handoffs/codex-execute-detailed/codex-apparmor-canary-sol-20261016-r4/verification-final5/verification.json",
+    "verification_artifact_sha256": "8b1ff2b77f22d41c47c6b18dab6f9ff14015bda95967b263786bc2b013f6a0a5",
+    "helper_sha256": "09465b7a24cda8d100364fd209b92588156042a924c88d6c3bb556f8266ba5c6",
+    "commands": [
+      {
+        "command": [
+          "python",
+          "-c",
+          "import hashlib,json,subprocess\nfrom pathlib import Path\np=Path.cwd()\nbindings=json.loads(Path('/home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r4/source-bindings-final5.json').read_text())\nfor name,expected in bindings.items():\n    assert hashlib.sha256((p/name).read_bytes()).hexdigest()==expected, name\nfor name in ['plans/detailed-codex-apparmor-canary-20261016-0227.md', 'plans/evidence/codex-apparmor-canary/review.json', 'plans/evidence/codex-apparmor-canary/baseline.policy', 'plans/evidence/codex-apparmor-canary/candidate.policy']:\n    assert subprocess.check_output(['git','show','690f42b9eed10d57cbde9bb8f9540e27e6bbfed2:'+name])==(p/name).read_bytes(), name\nprint('Current source hashes bound; reviewed plan, review and policies unchanged')\n"
+        ],
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "command": [
+          "uv",
+          "run",
+          "--project",
+          "phase-loop-runtime",
+          "--group",
+          "test",
+          "python",
+          "-m",
+          "pytest",
+          "-q",
+          "phase-loop-runtime/tests/test_codex_apparmor_canary.py"
+        ],
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "command": [
+          "python",
+          "phase-loop-runtime/tests/codex_apparmor_canary.py",
+          "render",
+          "--out",
+          "/home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r4/rendered/final5"
+        ],
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "command": [
+          "/usr/sbin/apparmor_parser",
+          "-K",
+          "-Q",
+          "--config-file",
+          "/home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r4/rendered/final5/parser.conf",
+          "--base",
+          "/home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r4/rendered/final5",
+          "--Include",
+          "/home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r4/rendered/final5",
+          "--policy-features",
+          "/home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r4/rendered/final5/features.dump",
+          "/home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r4/rendered/final5/baseline.policy"
+        ],
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "command": [
+          "/usr/sbin/apparmor_parser",
+          "-K",
+          "-Q",
+          "--config-file",
+          "/home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r4/rendered/final5/parser.conf",
+          "--base",
+          "/home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r4/rendered/final5",
+          "--Include",
+          "/home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r4/rendered/final5",
+          "--policy-features",
+          "/home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r4/rendered/final5/features.dump",
+          "/home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r4/rendered/final5/candidate.policy"
+        ],
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "command": [
+          "python",
+          "-c",
+          "import json,os,subprocess,sys\nfrom pathlib import Path\nsys.path.insert(0,str(Path.cwd()/'phase-loop-runtime/tests'))\nimport codex_apparmor_canary as aa\nroot=Path('/home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r4/rendered/final5')\nmanifest=json.loads((root/'manifest.json').read_text())\nassert os.getuid()>0 and os.getgid()>0\nr=subprocess.run(aa.bwrap_argv(root,manifest,os.getuid(),os.getgid()),stdin=subprocess.DEVNULL,capture_output=True,env=aa.ENV,close_fds=True,timeout=10)\nrecord={'returncode':r.returncode,'stdout':r.stdout.decode(),'stderr':r.stderr.decode(),'uid':os.getuid(),'gid':os.getgid(),'go_sent':False,'primary_executed':False}\nPath('/home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r4/startup.json').write_text(json.dumps(record,indent=2)+'\\n')\nassert r.returncode==125 and r.stdout==b'READY\\n' and not r.stderr, record\nassert (root/'codex_apparmor_canary.py').read_bytes()==Path(aa.__file__).read_bytes()\nprint('Actual sealed nonroot startup: READY, permanent EOF exit125, empty stderr; no GO or primary')\n"
+        ],
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "command": [
+          "uv",
+          "run",
+          "--project",
+          "phase-loop-runtime",
+          "--group",
+          "test",
+          "python",
+          "-c",
+          "import sys; print(sys.version); assert sys.version_info[:2]==(3,12)"
+        ],
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "command": [
+          "env",
+          "LOCAL_CHECK_PYTHON=/mnt/workspace/worktrees/viperjuice/agent-harness-codex-apparmor-plan/phase-loop-runtime/.venv/bin/python",
+          "make",
+          "check"
+        ],
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "command": [
+          "git",
+          "diff",
+          "--check"
+        ],
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "command": [
+          "python",
+          "-c",
+          "import hashlib,json,subprocess\nfrom pathlib import Path\np=Path.cwd()\nbindings=json.loads(Path('/home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r4/source-bindings-final5.json').read_text())\nfor name,expected in bindings.items():\n    assert hashlib.sha256((p/name).read_bytes()).hexdigest()==expected, name\nfor name in ['plans/detailed-codex-apparmor-canary-20261016-0227.md', 'plans/evidence/codex-apparmor-canary/review.json', 'plans/evidence/codex-apparmor-canary/baseline.policy', 'plans/evidence/codex-apparmor-canary/candidate.policy']:\n    assert subprocess.check_output(['git','show','690f42b9eed10d57cbde9bb8f9540e27e6bbfed2:'+name])==(p/name).read_bytes(), name\nprint('Current source hashes bound; reviewed plan, review and policies unchanged')\n"
+        ],
+        "status": "passed",
+        "exit_code": 0
+      }
+    ],
+    "env_refresh": {
+      "status": "passed",
+      "command": "uv sync --project phase-loop-runtime --python 3.12 --group test --locked --refresh"
+    },
+    "suite": {
+      "status": "passed",
+      "command": "uv run --project phase-loop-runtime --group test python -m pytest -q phase-loop-runtime/tests/test_codex_apparmor_canary.py phase-loop-runtime/tests/test_seat_jail_apparmor.py phase-loop-runtime/tests/test_seat_owner_composition.py phase-loop-runtime/tests/test_codex_seat_tool_sandbox_1335.py"
+    },
+    "findings": [
+      {
+        "id": "R2-F01",
+        "status": "accepted/fixed",
+        "acceptance": [
+          "C1",
+          "C4"
+        ],
+        "response": "All postspawn setup is protected. Handled cancellation is masked across spawn and direct/PID-start/pidfd registration. Context-scoped explicit command ownership survives errors and is checkpointed. The existing ownership-safe reaper handles commands and adopted descendants; session escape fails closed. Cleanup gates apply before removal and after cleanup revalidation/removal commands, retaining original absolute budgets. Trampoline commands preserve the outer session; subreaper state is restored after resolved commands.",
+        "source": [
+          "phase-loop-runtime/tests/codex_apparmor_canary.py:127",
+          "phase-loop-runtime/tests/codex_apparmor_canary.py:891",
+          "phase-loop-runtime/tests/codex_apparmor_canary.py:926",
+          "phase-loop-runtime/tests/codex_apparmor_canary.py:1173"
+        ],
+        "tests": [
+          "test_controller_spawn_setup_failure_is_reaped_before_namespace_removal",
+          "test_controller_command_adopted_fork_is_reaped_or_refused",
+          "test_subprocess_teardown_cannot_obtain_a_new_budget"
+        ],
+        "before": "reproduction-before.txt: selector failure and handled SIGHUP left the ordinary sleeping child unreaped; scratch orchestration allowed cleanup to pass. Identity-failure control already passed.",
+        "after": "Setup/selector-close/teardown-signal controls reap ordinary children. Real fork/adoption consumes wait status; escaped session is reaped and refused. Fake deadline load/remove/nested-validation controls retain PID123/start456 at deadline10, block namespace removal and fail cleanup, without renewed waits."
+      },
+      {
+        "id": "R2-F02",
+        "status": "accepted/fixed",
+        "acceptance": [
+          "C1",
+          "C4"
+        ],
+        "response": "Handled cancellation is masked across exclusive mkdir and validated directory identity/descriptor acquisition, then delivered. Collision never claims ownership. Interrupted mkdir has an explicit uncertain target; lstat/open/fstat failure never authorizes removal. Recovery metadata records created/acquired/uncertain state and exact target.",
+        "source": [
+          "phase-loop-runtime/tests/codex_apparmor_canary.py:847",
+          "phase-loop-runtime/tests/codex_apparmor_canary.py:857",
+          "phase-loop-runtime/tests/codex_apparmor_canary.py:926"
+        ],
+        "tests": [
+          "test_namespace_acquisition_interruption_keeps_honest_recovery",
+          "test_namespace_collision_and_exact_owned_cleanup_preserve_neighbors",
+          "test_namespace_identity_replacement_is_refused"
+        ],
+        "before": "reproduction-before.txt: both injected cancellation after scratch mkdir and actual handled SIGHUP left a directory with owned_target=null and cleanup passed; lstat/open controls already failed honestly.",
+        "after": "Actual pending SIGHUP is delivered after identity registration and exact scratch namespace is removed. Synthetic post-mkdir cancellation and lstat/open/fstat acquisition failures preserve the target and fail cleanup. Collision/replacement refusal remains passing."
+      }
+    ],
+    "standing_assessments": "R1-F01-F08 corrections and response history retained; R1-F09 remains unresolved live audit-transport uncertainty; R1-F10 realistic false-success sequence remains not established. No live ptrace proof claimed.",
+    "review_binding": {
+      "canonical_round2_sha256": "0c4e6c119e67eacbd58d57e4edd0792195a7983c9b3b60898e1fa58f6489b5c7",
+      "source_head": "690f42b9eed10d57cbde9bb8f9540e27e6bbfed2",
+      "mode": "advisory/non-gating",
+      "verdicts": {
+        "Grok": "OK/AGREE",
+        "Gemini": "OK/AGREE",
+        "Codex": "OK/PARTIALLY AGREE",
+        "Claude": "DEGRADED/no verdict; unknown failure/output not retained"
+      },
+      "four_vendor_delivery_complete": false,
+      "president_requested": false,
+      "new_review_invoked": false,
+      "next_round": "Parent-owned final bounded substantive round3"
+    },
+    "acceptance": {
+      "C1": {
+        "status": "unmet",
+        "reason": "Separate administrator authorization and live protected-byte/gate/load/attribution/cleanup observations remain absent"
+      },
+      "C2": {
+        "status": "unmet",
+        "reason": "Separate administrator authorization and live protected-byte/gate/load/attribution/cleanup observations remain absent"
+      },
+      "C3": {
+        "status": "unmet",
+        "reason": "Separate administrator authorization and live protected-byte/gate/load/attribution/cleanup observations remain absent"
+      },
+      "C4": {
+        "status": "unmet",
+        "reason": "Separate administrator authorization and live protected-byte/gate/load/attribution/cleanup observations remain absent"
+      },
+      "C5": {
+        "status": "satisfied",
+        "reason": "Actual review findings/responses and incomplete verdict delivery retained; no live/production/president/merge approval claimed"
+      }
+    },
+    "lifecycle_warnings": [
+      "executing: failed -> executing refused; terminal failed lifecycle preserved",
+      "closeout: invalid lifecycle transition for codex-apparmor-canary-20261016-0227: failed -> failed"
+    ],
+    "doc_delta_decision": "docs_updated",
+    "owned_paths": [
+      "phase-loop-runtime/tests/codex_apparmor_canary.py",
+      "phase-loop-runtime/tests/test_codex_apparmor_canary.py",
+      "docs/advisor-board-capabilities-card.md",
+      "plans/evidence/codex-apparmor-canary/implementation-sol-20261016.json",
+      "plans/evidence/codex-apparmor-canary/implementation-sol-20261016-r2.json",
+      "plans/manifest.json"
+    ],
+    "dirty_path_classification": {
+      "plan_owned": [
+        "phase-loop-runtime/tests/codex_apparmor_canary.py",
+        "phase-loop-runtime/tests/test_codex_apparmor_canary.py",
+        "docs/advisor-board-capabilities-card.md"
+      ],
+      "pre_existing_unrelated": [],
+      "non_plan_output": []
+    },
+    "verification_history": "reproduction-before: 4 failed/3 passed. first-verification: 2 failures (transient discovery and tiny timeout control); second: 1 tiny-timeout failure. regressions-third: test injection bug plus fstat-acquisition guard. All corrected. Runner verification-final: unavailable shorthand pin3.12, plus wrapper None handling error; final2: 3.12 rejected by repository-wide >=3.14 guard. final3 and final4 passed for earlier bytes; final5 binds current bytes, with uv-isolated3.12 suite and explicit assertion, using supported system3.14 runner shim. Initial artifacts/logs preserved. No bypass of runner guard.",
+    "approval_packet_path": "/home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r4/approval-packet.txt",
+    "approval_packet_sha256": "6079d0c8fc4d0c19ad2d35ea3090066567c4a4d4d15612b2699690d1d041d61b",
+    "staging_suffix": "sol-20261016-r4-09465b7a24cd",
+    "manifest_sha256": "5a3cc8a025544281152e3a68e9c039074f62d9e91926f56e7a591c84fcee3156",
+    "staged_hashes": {
+      "baseline.policy": "e7f15a673916c8a8208234e4f623da2bb12018d0a5b06fa5d5c59643ddb4710c",
+      "candidate.policy": "48b4fb0d745b7dd46c311b460e91612a7f416d6e72eaeaac7a6e21090532d793",
+      "codex_apparmor_canary.py": "09465b7a24cda8d100364fd209b92588156042a924c88d6c3bb556f8266ba5c6",
+      "features.dump": "611413ba507a5c19522a9ae5f4b479d3f782c7a3553cc761fbff3c02cd20c927",
+      "fixture.txt": "f7096e77c3bdc78fc543225c8a5d42e08546b5e235509897d7dcd05089c0d986",
+      "manifest.json": "5a3cc8a025544281152e3a68e9c039074f62d9e91926f56e7a591c84fcee3156",
+      "parser.conf": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "closure_sha256": {
+      "inputs": "9b8fa7a86a1ec2e6f8cf83cf8083a70aafbeba53e88d227859701f2ba8177dd5",
+      "tools": "bd6d5f34fa56507389707231723204311691ce1110213a5188bdabd9b110eb07",
+      "fixture": "ba50cc21783e5659d4e28b87873e096ec227ce7f352dd961f0ec373a88b51b45"
+    },
+    "reflection_path": "/home/viperjuice/.codex/skills/codex-execute-detailed/reflections/1c5ef07a43e3/exec-codex-apparmor-canary-sol-20261016/codex-apparmor-canary-sol-20261016-r4.md",
+    "handoff_path": "/mnt/workspace/worktrees/viperjuice/agent-harness-codex-apparmor-plan/.dev-skills/handoffs/codex-execute-detailed/codex-apparmor-canary-sol-20261016-r4/handoff.md",
+    "no_root_helper_or_policy_operations": true,
+    "no_shared_tooling_installation": true,
+    "no_merge": true,
+    "publication_intent": "draft",
+    "publication_pr_url": "https://github.com/Consiliency/agent-harness/pull/1731"
+  },
+  "round1_followup": {
+    "schema": 1,
+    "run_id": "codex-apparmor-canary-sol-20261016-r3",
+    "starting_head": "87807b4e7ef000114b8afe4a9af7ad384598a18c",
+    "worktree": "/mnt/workspace/worktrees/viperjuice/agent-harness-codex-apparmor-plan",
+    "branch": "exec/codex-apparmor-canary-sol-20261016",
+    "host": "dev0",
+    "plan_path": "plans/detailed-codex-apparmor-canary-20261016-0227.md",
+    "technical_plan_unchanged": true,
+    "reviewed_policy_bytes_unchanged": true,
+    "review_json_unchanged": true,
+    "verification_status": "passed",
+    "verification_scope": "Offline only; no kernel enforcement or overall acceptance claim",
+    "summary": "204 passed in 34.63s",
+    "helper_summary": "161 passed",
+    "verification_artifact_path": "/mnt/workspace/worktrees/viperjuice/agent-harness-codex-apparmor-plan/.dev-skills/handoffs/codex-execute-detailed/codex-apparmor-canary-sol-20261016-r3/verification-final4/verification.json",
+    "verification_artifact_sha256": "6878ce9313c386afefa6f805e18526ddc51bc0e8b304bf7a412d1fccd155ec70",
+    "commands": [
+      {
+        "command": "uv sync --project phase-loop-runtime --python 3.12 --group test --locked --refresh",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "command": "source/reviewed-input hash binding",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "command": "uv run --project phase-loop-runtime --group test python -m pytest -q phase-loop-runtime/tests/test_codex_apparmor_canary.py",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "command": "python phase-loop-runtime/tests/codex_apparmor_canary.py render --out /home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r3/rendered/final4",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "command": "/usr/sbin/apparmor_parser -K -Q --config-file /home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r3/rendered/final4/parser.conf --base /home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r3/rendered/final4 --Include /home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r3/rendered/final4 --policy-features /home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r3/rendered/final4/features.dump /home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r3/rendered/final4/baseline.policy",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "command": "/usr/sbin/apparmor_parser -K -Q --config-file /home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r3/rendered/final4/parser.conf --base /home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r3/rendered/final4 --Include /home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r3/rendered/final4 --policy-features /home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r3/rendered/final4/features.dump /home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r3/rendered/final4/candidate.policy",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "command": "actual non-root sealed-fixture startup (permanent DEVNULL stdin)",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "command": "uv run --project phase-loop-runtime --group test python -c 'import sys; print(sys.version); assert sys.version_info[:2]==(3,12)'",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "command": "env LOCAL_CHECK_PYTHON=/mnt/workspace/worktrees/viperjuice/agent-harness-codex-apparmor-plan/phase-loop-runtime/.venv/bin/python make check",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "command": "git diff --check",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "command": "source/reviewed-input hash binding",
+        "status": "passed",
+        "exit_code": 0
+      },
+      {
+        "command": "uv run --project phase-loop-runtime --group test python -m pytest -q phase-loop-runtime/tests/test_codex_apparmor_canary.py phase-loop-runtime/tests/test_seat_jail_apparmor.py phase-loop-runtime/tests/test_seat_owner_composition.py phase-loop-runtime/tests/test_codex_seat_tool_sandbox_1335.py",
+        "status": "passed",
+        "exit_code": 0,
+        "summary": "204 passed in 34.63s"
+      },
+      {
+        "command": "Administrator protected-byte staging and fixed root canary run",
+        "status": "not_run",
+        "reason": "Explicit live-policy authorization boundary."
+      }
+    ],
+    "source_bindings": {
+      "phase-loop-runtime/tests/codex_apparmor_canary.py": "3d3aeb0af23c43257d59f873dca48dbfbddb1248e464c8c364ce44a3418f75d9",
+      "phase-loop-runtime/tests/test_codex_apparmor_canary.py": "c264e6eadf3b280bc7a48ea28477ce353578c7fab10fb763b9ab809287f391a8",
+      "docs/advisor-board-capabilities-card.md": "5177948be481553e93b9c77cfd38451cad0f74cd84a95856293bda33e2052469",
+      "plans/detailed-codex-apparmor-canary-20261016-0227.md": "47fbdc0f2e62604fc86c4729917ca308a0d2df58a1e537485e4cc701437764dd",
+      "plans/evidence/codex-apparmor-canary/baseline.policy": "e7f15a673916c8a8208234e4f623da2bb12018d0a5b06fa5d5c59643ddb4710c",
+      "plans/evidence/codex-apparmor-canary/candidate.policy": "48b4fb0d745b7dd46c311b460e91612a7f416d6e72eaeaac7a6e21090532d793",
+      "plans/evidence/codex-apparmor-canary/review.json": "29bd48b38053f83f2fd0132826fc85d97d8d7a40e9fe88e6118ab3de52b0b859"
+    },
+    "rendered_files": {
+      "baseline.policy": {
+        "sha256": "e7f15a673916c8a8208234e4f623da2bb12018d0a5b06fa5d5c59643ddb4710c",
+        "size": 759
+      },
+      "candidate.policy": {
+        "sha256": "48b4fb0d745b7dd46c311b460e91612a7f416d6e72eaeaac7a6e21090532d793",
+        "size": 764
+      },
+      "codex_apparmor_canary.py": {
+        "sha256": "3d3aeb0af23c43257d59f873dca48dbfbddb1248e464c8c364ce44a3418f75d9",
+        "size": 59218
+      },
+      "features.dump": {
+        "sha256": "611413ba507a5c19522a9ae5f4b479d3f782c7a3553cc761fbff3c02cd20c927",
+        "size": 3219
+      },
+      "fixture.txt": {
+        "sha256": "f7096e77c3bdc78fc543225c8a5d42e08546b5e235509897d7dcd05089c0d986",
+        "size": 34
+      },
+      "manifest.json": {
+        "sha256": "6c3a6ff548649f087e448b71fc8e6e9cdf3931af7fe7dc703a12d6f0e79540ee",
+        "size": 66421
+      },
+      "parser.conf": {
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "size": 0
+      }
+    },
+    "preprocessed_sha256": {
+      "baseline.policy": "e7f15a673916c8a8208234e4f623da2bb12018d0a5b06fa5d5c59643ddb4710c",
+      "candidate.policy": "48b4fb0d745b7dd46c311b460e91612a7f416d6e72eaeaac7a6e21090532d793"
+    },
+    "input_closure_sha256": "2feee9a176adb99d8cafc5bab13dada7aa9301089f8c93b976074315cb794e80",
+    "tool_closure_sha256": "81cd166af47e102ebffb94cf03cb01c46ed8c31ce07cb6b3d058bb0af3c1b385",
+    "fixture_closure_sha256": "ba50cc21783e5659d4e28b87873e096ec227ce7f352dd961f0ec373a88b51b45",
+    "kernel": "7.0.0-34-generic",
+    "boot_id": "989f21f5-fdbb-49fe-b11f-b10f2e07e4af",
+    "measured_tool_executables": 9,
+    "measured_tool_dependencies": 170,
+    "encoding_files": 246,
+    "encoding_directories": [
+      "__pycache__"
+    ],
+    "review_binding": {
+      "path": "/home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r2/board-round1/board.json",
+      "sha256": "7eac4ee21e75d7e584f68ff6c8449915e79bc9c39931f322a934b6fa03f0efb3",
+      "round": 1,
+      "requested_vendors": 4,
+      "delivered_vendors": 3,
+      "delivered_verdicts": [
+        {
+          "seat_key": "grok:grok-4.7:high:adversarial",
+          "status": "OK",
+          "verdict": "PARTIALLY AGREE"
+        },
+        {
+          "seat_key": "codex:gpt-6-astra:high:red-team",
+          "status": "OK",
+          "verdict": "PARTIALLY AGREE"
+        },
+        {
+          "seat_key": "gemini:gemini-4-argon:medium:alternative-approach",
+          "status": "OK",
+          "verdict": "PARTIALLY AGREE"
+        }
+      ],
+      "claude_status": "DEGRADED; empty; unknown failure; output not retained",
+      "mode": "advisory/non-gating",
+      "new_review_or_president_invoked": false,
+      "review_fix_round_cap": 3
+    },
+    "finding_responses": {
+      "R1-F01": {
+        "status": "accepted/fixed",
+        "response": "Direct Popen child ownership survives pidfd acquisition failure; cancellation is masked only across spawn/registration and the trusted fork restores the child mask before exec. Direct-child Popen teardown and bounded wait precede policy cleanup.",
+        "locations": [
+          "phase-loop-runtime/tests/codex_apparmor_canary.py:998",
+          "phase-loop-runtime/tests/codex_apparmor_canary.py:904"
+        ],
+        "regression_evidence": [
+          "phase-loop-runtime/tests/test_codex_apparmor_canary.py:611",
+          "phase-loop-runtime/tests/test_codex_apparmor_canary.py:779"
+        ],
+        "before_evidence": "cleanup-before.txt: unregistered ordinary nonroot child survived before correction; failing assertion reproduced",
+        "offline_only": true
+      },
+      "R1-F02": {
+        "status": "accepted/fixed",
+        "response": "Discovery failure is sticky and does not stop ownership-safe teardown of known handles. Incomplete discovery/ownership prevents namespace/profile removal even after known children are reaped.",
+        "locations": [
+          "phase-loop-runtime/tests/codex_apparmor_canary.py:904"
+        ],
+        "regression_evidence": [
+          "phase-loop-runtime/tests/test_codex_apparmor_canary.py:611",
+          "phase-loop-runtime/tests/test_codex_apparmor_canary.py:877"
+        ],
+        "before_evidence": "cleanup-before.txt: registered ordinary nonroot child survived injected discovery failure",
+        "offline_only": true
+      },
+      "R1-F03": {
+        "status": "accepted/fixed",
+        "response": "Every owned handle consumes terminal wait status independent of pidfd liveness; observer-consumed waits are marked reaped. A still-present non-child zombie is retained until adopted/reaped.",
+        "locations": [
+          "phase-loop-runtime/tests/codex_apparmor_canary.py:453",
+          "phase-loop-runtime/tests/codex_apparmor_canary.py:904"
+        ],
+        "regression_evidence": [
+          "phase-loop-runtime/tests/test_codex_apparmor_canary.py:642",
+          "phase-loop-runtime/tests/test_codex_apparmor_canary.py:926"
+        ],
+        "before_evidence": "cleanup-before.txt: second already-dead child retained unconsumed wait status",
+        "offline_only": true
+      },
+      "R1-F04": {
+        "status": "accepted/fixed",
+        "response": "Separate tool dependency inventory binds resolved transitive loader/library paths, ldd bash interpreter and existing loader probes, system-Python imported stdlib/bytecode/native modules and native dependencies. Other tool interpreter recipes refuse. No controller tool/dependency is added to fixture binds.",
+        "locations": [
+          "phase-loop-runtime/tests/codex_apparmor_canary.py:239",
+          "phase-loop-runtime/tests/codex_apparmor_canary.py:309"
+        ],
+        "regression_evidence": [
+          "phase-loop-runtime/tests/test_codex_apparmor_canary.py:715"
+        ],
+        "before_evidence": "closure-output-before.txt: changing a fake parser-only library left old tool inventory unchanged; current validation rejects it without modifying host libraries",
+        "offline_only": true
+      },
+      "R1-F05": {
+        "status": "accepted/fixed",
+        "response": "Protected complete file/directory membership inventory rejects symlinked encodings root/entries, FIFOs and other special objects; added directories change the manifest. Ordinary executable sources retain canonical item[path] in bwrap_argv and expected_binds, so the broader ordinary-executable symlink allegation is rejected by source evidence.",
+        "locations": [
+          "phase-loop-runtime/tests/codex_apparmor_canary.py:202",
+          "phase-loop-runtime/tests/codex_apparmor_canary.py:384",
+          "phase-loop-runtime/tests/codex_apparmor_canary.py:511"
+        ],
+        "regression_evidence": [
+          "phase-loop-runtime/tests/test_codex_apparmor_canary.py:694",
+          "phase-loop-runtime/tests/test_codex_apparmor_canary.py:708",
+          "phase-loop-runtime/tests/test_codex_apparmor_canary.py:1064"
+        ],
+        "before_evidence": "closure-output-before.txt: scratch FIFO, file/directory links and new-directory controls all failed before correction",
+        "offline_only": true
+      },
+      "R1-F06": {
+        "status": "accepted/fixed",
+        "response": "Unbuffered pipes are drained through EOF even after process exit; startup plus post-primary stdout/stderr share META_LIMIT. Startup remains 10s; attachment/gates/primary/drain share the existing 10s operation budget, with no new drain timeout. Failed arm teardown retains its original 30s deadline in final cleanup.",
+        "locations": [
+          "phase-loop-runtime/tests/codex_apparmor_canary.py:998",
+          "phase-loop-runtime/tests/codex_apparmor_canary.py:1074",
+          "phase-loop-runtime/tests/codex_apparmor_canary.py:904"
+        ],
+        "regression_evidence": [
+          "phase-loop-runtime/tests/test_codex_apparmor_canary.py:762",
+          "phase-loop-runtime/tests/test_codex_apparmor_canary.py:798",
+          "phase-loop-runtime/tests/test_codex_apparmor_canary.py:901"
+        ],
+        "before_evidence": "closure-output-before.txt: already-exited child with 64KiB plus startup output was accepted before correction",
+        "offline_only": true
+      },
+      "R1-F07": {
+        "status": "accepted/fixed",
+        "response": "Failed descendant ownership revalidation closes its unregistered pidfd. Resolved handles and all outer stdio are closed on failure; unresolved pidfds/start identities remain owned and checkpointed. Direct child reference clears after bounded wait; no replacement /dev/null stream is opened.",
+        "locations": [
+          "phase-loop-runtime/tests/codex_apparmor_canary.py:470",
+          "phase-loop-runtime/tests/codex_apparmor_canary.py:904",
+          "phase-loop-runtime/tests/codex_apparmor_canary.py:863"
+        ],
+        "regression_evidence": [
+          "phase-loop-runtime/tests/test_codex_apparmor_canary.py:667",
+          "phase-loop-runtime/tests/test_codex_apparmor_canary.py:856",
+          "phase-loop-runtime/tests/test_codex_apparmor_canary.py:877"
+        ],
+        "before_evidence": "cleanup-before.txt: failed ownership revalidation leaked unregistered handle",
+        "offline_only": true
+      },
+      "R1-F08": {
+        "status": "accepted/fixed",
+        "response": "The original child validate_inputs deadline=None is confirmed; an independent unbounded hang was not demonstrated. The controller now passes its absolute startup end to __drop; validation/subcommands/hashing and final exec checks consume it. Dedicated-session descendants remain subject to bounded subreaper cleanup, including acquisition/discovery failure paths.",
+        "locations": [
+          "phase-loop-runtime/tests/codex_apparmor_canary.py:402",
+          "phase-loop-runtime/tests/codex_apparmor_canary.py:998",
+          "phase-loop-runtime/tests/codex_apparmor_canary.py:904"
+        ],
+        "regression_evidence": [
+          "phase-loop-runtime/tests/test_codex_apparmor_canary.py:837",
+          "phase-loop-runtime/tests/test_codex_apparmor_canary.py:496",
+          "phase-loop-runtime/tests/test_codex_apparmor_canary.py:901",
+          "phase-loop-runtime/tests/test_codex_apparmor_canary.py:926"
+        ],
+        "before_evidence": null,
+        "offline_only": true
+      },
+      "R1-F09": {
+        "status": "unresolved/blocking",
+        "response": "Environment-dependent audit-transport concern remains unresolved for live C3 only, not an established static publication blocker. Kernel-journal selection and exact baseline attribution gate are unchanged. No journal read, transport broadening or live probe was performed; missing attribution remains inconclusive and prevents candidate execution.",
+        "locations": [
+          "phase-loop-runtime/tests/codex_apparmor_canary.py:694",
+          "phase-loop-runtime/tests/codex_apparmor_canary.py:717",
+          "phase-loop-runtime/tests/codex_apparmor_canary.py:764"
+        ],
+        "regression_evidence": [
+          "phase-loop-runtime/tests/test_codex_apparmor_canary.py:436",
+          "phase-loop-runtime/tests/test_codex_apparmor_canary.py:525"
+        ],
+        "before_evidence": null,
+        "offline_only": true
+      },
+      "R1-F10": {
+        "status": "rejected-with-evidence",
+        "response": "No realistic false-success ptrace stop sequence was supplied or found. Source explicitly separates op=1 entry from op=2 exit and consumes the pending primary entry. Entry-only/exit-only sequences produce no primary record; unsupported/missing/duplicate requests remain inconclusive. Capability observations do not replace the required primary return. Live observer semantics remain unobserved; no speculative observer redesign.",
+        "locations": [
+          "phase-loop-runtime/tests/codex_apparmor_canary.py:603",
+          "phase-loop-runtime/tests/codex_apparmor_canary.py:764",
+          "phase-loop-runtime/tests/codex_apparmor_canary.py:780"
+        ],
+        "regression_evidence": [
+          "phase-loop-runtime/tests/test_codex_apparmor_canary.py:542",
+          "phase-loop-runtime/tests/test_codex_apparmor_canary.py:317",
+          "phase-loop-runtime/tests/test_codex_apparmor_canary.py:346",
+          "phase-loop-runtime/tests/test_codex_apparmor_canary.py:340"
+        ],
+        "before_evidence": null,
+        "offline_only": true
+      }
+    },
+    "acceptance": {
+      "C1": {
+        "status": "unmet",
+        "offline_status": "passed",
+        "reason": "Protected administrator staging and live identity/map/FD metadata unauthorized/unobserved."
+      },
+      "C2": {
+        "status": "unmet",
+        "offline_status": "passed",
+        "reason": "Reviewed policy bytes, inventories, preprocessing and both compile-only checks pass; exact live-load binding unobserved."
+      },
+      "C3": {
+        "status": "unmet",
+        "reason": "Live baseline attribution, candidate progression and independent host gates unauthorized/unobserved; audit transport uncertainty remains."
+      },
+      "C4": {
+        "status": "unmet",
+        "offline_status": "passed",
+        "reason": "Ordinary-child/subreaper and fake failure controls pass; live disk/loaded-root invariance and private-namespace absence unobserved."
+      },
+      "C5": {
+        "status": "satisfied",
+        "reason": "Three delivered advisory PARTIALLY AGREE results and Claude delivery shortfall preserved accurately; no new review, president, governance/live/merge authorization claimed."
+      }
+    },
+    "acceptance_status": "unmet_live_authorization_pending",
+    "lifecycle_warnings": [
+      "executing: invalid lifecycle transition: failed -> executing; prior terminal history preserved",
+      "closeout: invalid lifecycle transition for codex-apparmor-canary-20261016-0227: failed -> failed"
+    ],
+    "doc_delta_decision": "docs_updated",
+    "publication_intent": "draft",
+    "publication_owned_paths": [
+      "phase-loop-runtime/tests/codex_apparmor_canary.py",
+      "phase-loop-runtime/tests/test_codex_apparmor_canary.py",
+      "docs/advisor-board-capabilities-card.md",
+      "plans/evidence/codex-apparmor-canary/implementation-sol-20261016.json",
+      "plans/evidence/codex-apparmor-canary/implementation-sol-20261016-r2.json",
+      "plans/manifest.json"
+    ],
+    "dirty_path_classification": {
+      "plan_owned": [
+        "phase-loop-runtime/tests/codex_apparmor_canary.py",
+        "phase-loop-runtime/tests/test_codex_apparmor_canary.py",
+        "docs/advisor-board-capabilities-card.md",
+        "plans/evidence/codex-apparmor-canary/implementation-sol-20261016-r2.json"
+      ],
+      "pre_existing_unrelated": [],
+      "non_plan_output": []
+    },
+    "verification_history": "Initial wrapper quoting failure preserved in verification-final; final2 and final3 passed before final cleanup-budget/Python-bootstrap inventory additions; verification-final4 binds current bytes.",
+    "no_root_helper_or_policy_operations": true,
+    "no_shared_tooling_installation": true,
+    "no_merge": true,
+    "approval_packet_path": "/home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r3/approval-packet.txt",
+    "approval_packet_sha256": "7df16a496f6cdd6d6579aafc3fc818dc2c5c896c585a4cee13cbfae487f9d946",
+    "staging_suffix": "sol-20261016-r3-3d3aeb0af23c",
+    "reflection_path": "/home/viperjuice/.codex/skills/codex-execute-detailed/reflections/1c5ef07a43e3/exec-codex-apparmor-canary-sol-20261016/codex-apparmor-canary-sol-20261016-r3.md",
+    "handoff_path": "/mnt/workspace/worktrees/viperjuice/agent-harness-codex-apparmor-plan/.dev-skills/handoffs/codex-execute-detailed/codex-apparmor-canary-sol-20261016-r3/handoff.md"
+  },
+  "reachability_followup": {
+    "run_id": "sol-reachability-20261016",
+    "starting_head": "c1211692b58ad3d2a92fa27b27913e6e41de6392",
+    "branch": "exec/codex-apparmor-canary-sol-20261016",
+    "worktree": "/mnt/workspace/worktrees/viperjuice/agent-harness-codex-apparmor-plan",
+    "plan_path": "plans/detailed-codex-apparmor-reachability-20261016.md",
+    "plan_sha256": "0b1b0cde3a1b22fbafd7b11781fa0061a9e9953865f333011bf0a06f2f544b5c",
+    "review_binding": {
+      "path": "r5/cristina-plan-review/review.json",
+      "sha256": "f3dddcd3aff44f05b855af5f6c13ce19d6cf5c08abfbd6b822162c7c9c9eb507",
+      "provider_instance": "t3-claude-cristina",
+      "model": "claude-opus-5-5",
+      "verdict": "AGREE",
+      "scope": "owner-directed supplement plan only, separate from failed canonical Claude seat; no implementation, governed, president, live or merge approval",
+      "literal_plan_review_status": "reviewed bytes retain pending planning-input frontmatter; actual subsequent provenance bound here"
+    },
+    "technical_original_plan_policies_and_canonical_records_unchanged": true,
+    "verification_status": "passed",
+    "verification_scope": "offline supplement only; no live acceptance",
+    "summary": "267 passed in 40.28s",
+    "helper_summary": "224 passed",
+    "nonroot_controls": "3 passed, no skips; permanent EOF, actual helper preparation and mount-call mutation",
+    "verification_artifact_path": "/mnt/workspace/worktrees/viperjuice/agent-harness-codex-apparmor-plan/.dev-skills/handoffs/codex-execute-detailed/sol-reachability-20261016/verification-final/verification.json",
+    "verification_artifact_sha256": "128b20eae15171eb4060bc91d4d3786569c857083848bdde1e25e52a4a39f488",
+    "runner_exit_summary": {
+      "commands": [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      "env_refresh": 0,
+      "suite": 0
+    },
+    "source_bindings": {
+      "phase-loop-runtime/tests/codex_apparmor_canary.py": "4860c2e75fd74695b3f449d033b7db84e999b8fb4b6f16a9de7c7f5fd2e4c1a0",
+      "phase-loop-runtime/tests/test_codex_apparmor_canary.py": "c1311b0003a228df95f4db554522ae0ff2e96f50fb8fa8b86190f3a1171b05e7",
+      "docs/advisor-board-capabilities-card.md": "100d1724e4835441ec7da12331fff4d5329d9f57140deb9189ebbb9773b7269d",
+      "plans/detailed-codex-apparmor-reachability-20261016.md": "0b1b0cde3a1b22fbafd7b11781fa0061a9e9953865f333011bf0a06f2f544b5c",
+      "plans/detailed-codex-apparmor-canary-20261016-0227.md": "47fbdc0f2e62604fc86c4729917ca308a0d2df58a1e537485e4cc701437764dd",
+      "plans/evidence/codex-apparmor-canary/review.json": "29bd48b38053f83f2fd0132826fc85d97d8d7a40e9fe88e6118ab3de52b0b859",
+      "plans/evidence/codex-apparmor-canary/baseline.policy": "e7f15a673916c8a8208234e4f623da2bb12018d0a5b06fa5d5c59643ddb4710c",
+      "plans/evidence/codex-apparmor-canary/candidate.policy": "48b4fb0d745b7dd46c311b460e91612a7f416d6e72eaeaac7a6e21090532d793"
+    },
+    "rendered_files": {
+      "baseline.policy": "e7f15a673916c8a8208234e4f623da2bb12018d0a5b06fa5d5c59643ddb4710c",
+      "candidate.policy": "48b4fb0d745b7dd46c311b460e91612a7f416d6e72eaeaac7a6e21090532d793",
+      "codex_apparmor_canary.py": "4860c2e75fd74695b3f449d033b7db84e999b8fb4b6f16a9de7c7f5fd2e4c1a0",
+      "features.dump": "611413ba507a5c19522a9ae5f4b479d3f782c7a3553cc761fbff3c02cd20c927",
+      "fixture.txt": "f7096e77c3bdc78fc543225c8a5d42e08546b5e235509897d7dcd05089c0d986",
+      "manifest.json": "626d3a3e72665481485fe207730551e0b349a837007de4509eb4547f85dd9385",
+      "parser.conf": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    "preprocessed_sha256": {
+      "baseline.policy": "e7f15a673916c8a8208234e4f623da2bb12018d0a5b06fa5d5c59643ddb4710c",
+      "candidate.policy": "48b4fb0d745b7dd46c311b460e91612a7f416d6e72eaeaac7a6e21090532d793"
+    },
+    "closure_sha256": {
+      "inputs": "9f1f43a8efd70e0f028a0f608836745c093f04bdcba961eebafd57d722f4bd4e",
+      "tools": "bd6d5f34fa56507389707231723204311691ce1110213a5188bdabd9b110eb07",
+      "fixture": "ba50cc21783e5659d4e28b87873e096ec227ce7f352dd961f0ec373a88b51b45"
+    },
+    "boot_id": "989f21f5-fdbb-49fe-b11f-b10f2e07e4af",
+    "kernel": "7.0.0-34-generic",
+    "finding_responses": {
+      "T3C-F01": {
+        "status": "implemented_offline",
+        "response": "Self-view is exactly unconfined; independent held direct-child PID/start/pidfd, canonical Python, host userns and exact root-view :NS:unconfined are required before E. No initial poll/wait/reap. ENTRY/E precedes validation, drop, bwrap and primary GO.",
+        "source": [
+          451,
+          1111,
+          1196
+        ],
+        "tests": [
+          496,
+          1456,
+          1469,
+          1477,
+          1506,
+          1517,
+          1629,
+          1658
+        ],
+        "remaining": "Target-kernel label observation remains live C1/C3."
+      },
+      "T3C-F02": {
+        "status": "implemented_offline",
+        "response": "After acknowledgment and protected input validation, trusted child verifies controller-recorded starting mnt identity, calls only CLONE_NEWNS, requires changed identity, then recursively privatizes /. Final mount gate remains strict. Same setup in both arms; observer attaches only after READY.",
+        "source": [
+          428,
+          451,
+          605,
+          1111,
+          1235
+        ],
+        "tests": [
+          1421,
+          1533,
+          1565,
+          1621,
+          1639
+        ],
+        "remaining": "Root execution in the AppArmor namespace and dev0 mount tree remain unobserved."
+      },
+      "T3C-P01": {
+        "status": "implemented_and_measured",
+        "response": "Ordinary nonroot control invokes helper prepare_mounts inside a disposable userns, without util-linux propagation preparation. Actual sealed-fixture mountinfo is checked by validate_mounts, the exact extracted final-gate mount loop. Permanent EOF yields READY/125. Mutation replacing only helper libc mount with return0 exposes master:N and fails preparation and the strict mount loop.",
+        "source": [
+          428,
+          605
+        ],
+        "tests": [
+          1073,
+          1565,
+          1621
+        ],
+        "evidence": "r5/nonroot-controls.txt (runner-written JUnit properties include actual rows and observations); extra userns is test-only, not production topology proof."
+      },
+      "T3C-P02": {
+        "status": "implemented_offline",
+        "response": "Separate stdout/stderr before E; exactly ENTRY newline and empty stderr. A second nonblocking drain precedes E. READY is read only into fresh postack buffers and requires exact PREPARED/READY sequence. Child uses select against original deadline then os.read(0,1); no buffered stdin. Aggregate counts all phases and streams. Duplicate/preack READY, stderr, EOF, wrong ack, expiry/cancel/overflow refuse continuation.",
+        "source": [
+          451,
+          1111,
+          1196
+        ],
+        "tests": [
+          496,
+          768,
+          804,
+          1469,
+          1506,
+          1517,
+          1658
+        ]
+      },
+      "T3C-P03": {
+        "status": "implemented_offline",
+        "response": "Held direct-child ownership and liveness precede reads; pidfd liveness/start are checked again after exe/user/mnt/label proc observations and final marker drain. Exact Namespace.name label equality rejects host, foreign, nested and mode suffix variants. No poll/wait before E.",
+        "source": [
+          1196
+        ],
+        "tests": [
+          1456,
+          1477
+        ]
+      },
+      "T3C-P04": {
+        "status": "implemented_offline",
+        "response": "Bounded internal mnt:[digits] argument carries controller-observed entry identity. Before value must match; unshare return0 and changed identity are mandatory before mount. Explicit libc NULL source/type/data, c_ulong flags MS_REC|MS_PRIVATE, return/errno checks; all optional fields including unbindable must be empty. No namespace fds opened. Failed/unchanged unshare makes zero mount calls; preparation failure prevents drop/exec.",
+        "source": [
+          428,
+          451,
+          1111
+        ],
+        "tests": [
+          1421,
+          1533,
+          1639
+        ]
+      },
+      "T3C-PS1": {
+        "status": "nonblocking_not_adopted",
+        "response": "Keep preparation after input validation, as the exact reviewed plan specifies and parent selected. Moving it before validation would alter reviewed ordering. Root-only propagation window remains constrained by protected inputs and final bind identity checks."
+      },
+      "T3C-PS2": {
+        "status": "implemented_offline",
+        "response": "Entry mnt identity is independently observed by root controller. PREPARED identity is explicitly trusted-child self-report, retained in arm/checkpoint evidence, never labeled independent or primary evidence. Owned-child teardown bounds its lifetime.",
+        "source": [
+          451,
+          1111,
+          1196
+        ]
+      },
+      "T3C-PS3": {
+        "status": "documented",
+        "response": "Experimental note states private canary versus production shared/slave starting tree and unchanged primary capability-decision hypothesis.",
+        "docs": "docs/advisor-board-capabilities-card.md:760"
+      },
+      "T3C-S01": {
+        "status": "accepted_nonblocking_deferral",
+        "response": "Non-child PID reuse can cause conservative spurious cleanup failure; no false successful cleanup. Preserve existing identity-safe reaper; unrelated refactor excluded."
+      },
+      "T3C-S02": {
+        "status": "accepted_nonblocking_deferral",
+        "response": "Late adopted arm child may be attributed to command owner and cause conservative inconclusive. Preserve reviewed ownership logic; no scope expansion."
+      },
+      "T3C-S03": {
+        "status": "implemented_metadata",
+        "response": "Advance current_revision to reachability_followup; append new follow-up while preserving every historical vote and payload."
+      },
+      "T3C-S04": {
+        "status": "accepted_nonblocking_deferral",
+        "response": "Synchronous non-EEXIST mkdir uncertainty is conservative and requires exact recovery proof; preserve without unrelated cleanup change."
+      },
+      "IMPL-001": {
+        "status": "preserved_and_reverified",
+        "response": "Closed os.py/linecache bootstrap and actual READY/permanent EOF125 remain tested.",
+        "source": [
+          239,
+          402
+        ],
+        "tests": [
+          1073,
+          1565
+        ]
+      },
+      "IMPL-002": {
+        "status": "preserved_and_reverified",
+        "response": "Absolute deadlines still prevent post-expiry parser launch and renewed cleanup budgets.",
+        "source": [
+          127,
+          1008
+        ],
+        "tests": [
+          1100,
+          1116,
+          1168,
+          1325
+        ]
+      },
+      "R1-F01": {
+        "status": "preserved_and_reverified",
+        "response": "Child ownership registered before acquisition; direct Popen retained on pidfd failure; masked cancellation and bounded teardown unchanged.",
+        "source": [
+          1111,
+          1008
+        ],
+        "tests": [
+          616,
+          785
+        ]
+      },
+      "R1-F02": {
+        "status": "preserved_and_reverified",
+        "response": "Discovery failure stays sticky while known handles receive ownership-safe best-effort teardown; incomplete proof blocks removal.",
+        "source": [
+          1008
+        ],
+        "tests": [
+          616,
+          886
+        ]
+      },
+      "R1-F03": {
+        "status": "preserved_and_reverified",
+        "response": "Dead/adopted terminal wait consumption independent of liveness remains unchanged.",
+        "source": [
+          507,
+          1008
+        ],
+        "tests": [
+          647,
+          935
+        ]
+      },
+      "R1-F04": {
+        "status": "preserved_and_reverified",
+        "response": "Tool/dependency/interpreter closure unchanged; parser-only library mutation still rejects.",
+        "source": [
+          228,
+          265
+        ],
+        "tests": [
+          720
+        ]
+      },
+      "R1-F05": {
+        "status": "preserved_and_reverified",
+        "response": "Full encoding membership inventory and object-type refusals retained; fixed fixture binds unchanged.",
+        "source": [
+          228,
+          410
+        ],
+        "tests": [
+          699,
+          713
+        ]
+      },
+      "R1-F06": {
+        "status": "preserved_and_extended",
+        "response": "Unconditional EOF drain and one aggregate limit now span entry plus postack startup plus primary diagnostics; original operation and cleanup deadlines retained.",
+        "source": [
+          1111,
+          1196,
+          1008
+        ],
+        "tests": [
+          768,
+          804,
+          910,
+          1506
+        ]
+      },
+      "R1-F07": {
+        "status": "preserved_and_reverified",
+        "response": "Failed unregistered descendant closes pidfd; resolved handles/stdio close; unresolved handles and recovery targets remain owned.",
+        "source": [
+          524,
+          1008
+        ],
+        "tests": [
+          672,
+          865,
+          886
+        ]
+      },
+      "R1-F08": {
+        "status": "preserved_and_extended",
+        "response": "Single absolute startup end reaches ENTRY/E, input validation, preparation and pre-exec checks, without new budget.",
+        "source": [
+          451,
+          1111,
+          1196
+        ],
+        "tests": [
+          843,
+          1506
+        ]
+      },
+      "R1-F09": {
+        "status": "unresolved_live_only",
+        "response": "Live audit transport remains unmeasured. No raw journal reads or transport broadening. Exact baseline EPERM/sys_admin attribution still required or no candidate.",
+        "source": [
+          828,
+          844,
+          1263
+        ],
+        "tests": [
+          332,
+          436,
+          530
+        ],
+        "static_publication_blocker": false
+      },
+      "R1-F10": {
+        "status": "not_established",
+        "response": "No realistic false-success ptrace sequence established; preserve syscall entry/exit discrimination and require positive return0 for exact primary. No speculative observer rewrite or live observer claim.",
+        "source": [
+          695,
+          828,
+          844
+        ],
+        "tests": [
+          317,
+          340,
+          346,
+          547
+        ]
+      },
+      "R2-F01": {
+        "status": "preserved_and_reverified",
+        "response": "Controller subprocess ownership retained through postspawn/selector/teardown failure, adopted descendants and original absolute deadlines; removal still gated on complete reaping.",
+        "source": [
+          127,
+          935,
+          1253,
+          1263
+        ],
+        "tests": [
+          1176,
+          1275,
+          1325
+        ]
+      },
+      "R2-F02": {
+        "status": "preserved_and_reverified",
+        "response": "Namespace exclusive creation cancellation mask and identity registration unchanged; uncertain/unacquired and collision metadata remains truthful.",
+        "source": [
+          889,
+          1263
+        ],
+        "tests": [
+          372,
+          388,
+          1230
+        ]
+      }
+    },
+    "finding_responses_path": "/home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r5/finding-responses.json",
+    "finding_responses_sha256": "798a6f443cf06435b7ba6cfe7dd873c4c2e30b5352e4f3353b5f8de7a2ae1fd5",
+    "acceptance": {
+      "1": {
+        "status": "satisfied_offline",
+        "live_limit": "Original C1-C4 remain unmet live"
+      },
+      "2": {
+        "status": "satisfied_offline",
+        "live_limit": "Original C1-C4 remain unmet live"
+      },
+      "3": {
+        "status": "satisfied_offline",
+        "live_limit": "Original C1-C4 remain unmet live"
+      },
+      "4": {
+        "status": "satisfied_offline",
+        "live_limit": "Original C1-C4 remain unmet live"
+      },
+      "5": {
+        "status": "satisfied_offline",
+        "live_limit": "Original C1-C4 remain unmet live"
+      }
+    },
+    "original_acceptance": {
+      "C1": "unmet_live",
+      "C2": "unmet_live",
+      "C3": "unmet_live",
+      "C4": "unmet_live",
+      "C5": "truth_preserved"
+    },
+    "review_limits": "Prior votes bind prior inputs; canonical Claude failure and Consiliency/agent-harness#1734 remain separate. No new reviews or agents. Parent owns the one planned Cristina implementation re-review.",
+    "verification_history": "First helper run 14 failed/203 passed: readlink mock also intercepted system Python symlink; host fixture inventory attempted inside disposable userns where root files map to overflow uid. Test setup corrected by scoped readlink mock and host-validated manifest carried into userns. Second helper run 217 passed. Added startup/refusal cases; final runner 224 helper/267 suite passed. Initial evidence preserved. Root-level prerequisite probe lacked Python config; correct phase-loop-runtime preflight passed.",
+    "approval_packet_path": "/home/viperjuice/workspace/evidence/codex-apparmor-canary-sol-20261016/r5/approval-packet.txt",
+    "approval_packet_sha256": "0e6b5e03ea2b67d5ea5b24bc432338a51d215dd8f5af22db2db54e85c62fcf54",
+    "staging_suffix": "sol-20261016-r5-4860c2e75fd7",
+    "manifest_sha256": "626d3a3e72665481485fe207730551e0b349a837007de4509eb4547f85dd9385",
+    "doc_delta_decision": "docs_updated",
+    "doc_delta_scope": "experimental canary note only",
+    "owned_paths": [
+      "phase-loop-runtime/tests/codex_apparmor_canary.py",
+      "phase-loop-runtime/tests/test_codex_apparmor_canary.py",
+      "docs/advisor-board-capabilities-card.md",
+      "plans/evidence/codex-apparmor-canary/implementation-sol-20261016.json",
+      "plans/evidence/codex-apparmor-canary/implementation-sol-20261016-r2.json",
+      "plans/manifest.json",
+      "plans/detailed-codex-apparmor-reachability-20261016.md"
+    ],
+    "dirty_path_classification": {
+      "plan_owned": [
+        "docs/advisor-board-capabilities-card.md",
+        "phase-loop-runtime/tests/codex_apparmor_canary.py",
+        "phase-loop-runtime/tests/test_codex_apparmor_canary.py",
+        "plans/manifest.json",
+        "plans/detailed-codex-apparmor-reachability-20261016.md"
+      ],
+      "prepared_owned_inputs": [
+        "plans/detailed-codex-apparmor-reachability-20261016.md",
+        "plans/manifest.json"
+      ],
+      "pre_existing_unrelated": [],
+      "non_plan_output": []
+    },
+    "reflection_path": "/home/viperjuice/.codex/skills/codex-execute-detailed/reflections/1c5ef07a43e3/exec-codex-apparmor-canary-sol-20261016/sol-reachability-20261016.md",
+    "handoff_path": "/mnt/workspace/worktrees/viperjuice/agent-harness-codex-apparmor-plan/.dev-skills/handoffs/codex-execute-detailed/sol-reachability-20261016/handoff.md",
+    "publication_intent": "draft",
+    "publication_pr_url": "https://github.com/Consiliency/agent-harness/pull/1731",
+    "no_root_helper_or_policy_operations": true,
+    "no_host_mount_operation": true,
+    "no_shared_tooling_installation": true,
+    "no_merge": true
+  }
+}

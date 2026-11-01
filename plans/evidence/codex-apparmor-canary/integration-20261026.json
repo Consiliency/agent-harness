@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "pull_request": "https://github.com/Consiliency/agent-harness/pull/1731",
+  "pre_integration_head": "b9678b2a197f1a2a1fa03a783a428e57b4af1d8d",
+  "upstream_head": "8494258bc2f5e301a3e30f5c3ec65541fb8a4ac3",
+  "integration_head": "681b67474cab028d125049b151e159b95290555b",
+  "resolved_paths": [
+    "plans/manifest.json"
+  ],
+  "manifest_reconciliation": {
+    "unique_plan_records": 108,
+    "upstream_record_order_preserved": true,
+    "branch_plan_history_preserved": [
+      "codex-apparmor-canary-20261016-0227",
+      "codex-apparmor-reachability-20261016"
+    ]
+  },
+  "canary_helper_and_test_bytes_unchanged_by_integration": true,
+  "observed_offline_verification": {
+    "passed": 281,
+    "skipped": 1,
+    "scope": "The original four-file canary suite plus plan manifest validation and append-order tests"
+  },
+  "fresh_verification_artifact": ".dev-skills/handoffs/canary-integration-20261026/verification-final/verification.json",
+  "live_acceptance": "C1-C4 remain pending separate administrator authorization and live evidence",
+  "review_provenance": "Existing reviews retain their original source bindings; no new review or live acceptance is claimed"
+}

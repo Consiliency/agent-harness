@@ -1,0 +1,971 @@
+{
+  "schema_version": 1,
+  "authorization": "Owner: Authorize one focused review and rerun; earlier administrator canary authorization retained",
+  "host": "dev0",
+  "source_head": "2be1944719241055abf60969172fd1fc04de54c4",
+  "source_state": "Frozen approved helper/test/fixture delta is uncommitted; source digests are authoritative",
+  "review_sha256": "1fb3778f1206e2b0e644fce9ab0fc1078b21f9ac93010752129189af9dc7226c",
+  "approved_helper_sha256": "25e6d091ef0853777efa15e54d16be1246c43aaf2996e831e76a13b131b6590a",
+  "boot_id": "a05e80ee-580f-405f-81bd-a1f32292a1d9",
+  "kernel": "7.0.0-38-generic",
+  "manifest_sha256": "9e16439e5b0ecd5c7a516f5388ed38b14b5d97cf7906cd53c2606f5df4d51c83",
+  "live_argv": [
+    "sudo",
+    "-n",
+    "/usr/bin/python3",
+    "-I",
+    "-S",
+    "/var/lib/phase-loop-codex-canary/live-20261026-auditfix-25e6d091-a05e80ee/inputs/codex_apparmor_canary.py",
+    "run",
+    "--operator-uid",
+    "1000",
+    "--operator-gid",
+    "1000",
+    "--evidence",
+    "/var/lib/phase-loop-codex-canary/live-20261026-auditfix-25e6d091-a05e80ee/result"
+  ],
+  "live_exit_code": 0,
+  "outcome": "hypothesis_supported",
+  "arms": {
+    "baseline": {
+      "go_sent": true,
+      "entry_ack_sent": true,
+      "entry": {
+        "exe": "/usr/bin/python3.14",
+        "label": ":phase_loop_codex_canary_32f4164a98594c4fa308d4e2c2765c00:unconfined",
+        "mnt": "mnt:[4026531832]",
+        "pid": 1075517,
+        "provenance": "independent root-controller proc observation",
+        "start": 11956527,
+        "user": "user:[4026531837]"
+      },
+      "preparation": {
+        "mnt": "mnt:[4026533948]",
+        "primary_evidence": false,
+        "provenance": "trusted child self-report; not independently observed"
+      },
+      "profiles": [
+        [
+          "bwrap",
+          "enforce"
+        ],
+        [
+          "unpriv_bwrap",
+          "enforce"
+        ]
+      ],
+      "gate": {
+        "fds": {
+          "0": "gate",
+          "1": "status",
+          "2": "status"
+        },
+        "gid_map": [
+          [
+            1000,
+            1000,
+            1
+          ]
+        ],
+        "host_namespaces": {
+          "ipc": "ipc:[4026531839]",
+          "mnt": "mnt:[4026531832]",
+          "net": "net:[4026531833]",
+          "pid": "pid:[4026531836]",
+          "user": "user:[4026531837]",
+          "uts": "uts:[4026531838]"
+        },
+        "label": ":phase_loop_codex_canary_32f4164a98594c4fa308d4e2c2765c00:bwrap//&unpriv_bwrap (enforce)",
+        "mounts": [
+          {
+            "dev": "0:80",
+            "fs": "tmpfs",
+            "options": [
+              "rw",
+              "nosuid",
+              "nodev",
+              "relatime"
+            ],
+            "path": "/",
+            "propagation": [],
+            "root": "/"
+          },
+          {
+            "dev": "0:81",
+            "fs": "proc",
+            "options": [
+              "rw",
+              "nosuid",
+              "nodev",
+              "noexec",
+              "relatime"
+            ],
+            "path": "/proc",
+            "propagation": [],
+            "root": "/"
+          },
+          {
+            "dev": "0:82",
+            "fs": "tmpfs",
+            "options": [
+              "rw",
+              "nosuid",
+              "nodev",
+              "relatime"
+            ],
+            "path": "/dev",
+            "propagation": [],
+            "root": "/"
+          },
+          {
+            "dev": "0:7",
+            "fs": "devtmpfs",
+            "options": [
+              "rw",
+              "nosuid"
+            ],
+            "path": "/dev/null",
+            "propagation": [],
+            "root": "/null"
+          },
+          {
+            "dev": "252:1",
+            "fs": "ext4",
+            "options": [
+              "ro",
+              "nosuid",
+              "nodev",
+              "relatime"
+            ],
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "propagation": [],
+            "root": "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2"
+          },
+          {
+            "dev": "252:1",
+            "fs": "ext4",
+            "options": [
+              "ro",
+              "nosuid",
+              "nodev",
+              "relatime"
+            ],
+            "path": "/usr/bin/python3",
+            "propagation": [],
+            "root": "/usr/bin/python3.14"
+          },
+          {
+            "dev": "252:1",
+            "fs": "ext4",
+            "options": [
+              "ro",
+              "nosuid",
+              "nodev",
+              "relatime"
+            ],
+            "path": "/usr/bin/true",
+            "propagation": [],
+            "root": "/usr/bin/gnutrue"
+          },
+          {
+            "dev": "252:1",
+            "fs": "ext4",
+            "options": [
+              "ro",
+              "nosuid",
+              "nodev",
+              "relatime"
+            ],
+            "path": "/usr/bin/unshare",
+            "propagation": [],
+            "root": "/usr/bin/unshare"
+          },
+          {
+            "dev": "252:1",
+            "fs": "ext4",
+            "options": [
+              "ro",
+              "nosuid",
+              "nodev",
+              "relatime"
+            ],
+            "path": "/usr/lib/python3.14/linecache.py",
+            "propagation": [],
+            "root": "/usr/lib/python3.14/linecache.py"
+          },
+          {
+            "dev": "252:1",
+            "fs": "ext4",
+            "options": [
+              "ro",
+              "nosuid",
+              "nodev",
+              "relatime"
+            ],
+            "path": "/usr/lib/python3.14/os.py",
+            "propagation": [],
+            "root": "/usr/lib/python3.14/os.py"
+          },
+          {
+            "dev": "252:1",
+            "fs": "ext4",
+            "options": [
+              "ro",
+              "nosuid",
+              "nodev",
+              "relatime"
+            ],
+            "path": "/usr/lib/x86_64-linux-gnu/libc.so.6",
+            "propagation": [],
+            "root": "/usr/lib/x86_64-linux-gnu/libc.so.6"
+          },
+          {
+            "dev": "252:1",
+            "fs": "ext4",
+            "options": [
+              "ro",
+              "nosuid",
+              "nodev",
+              "relatime"
+            ],
+            "path": "/usr/lib/x86_64-linux-gnu/libexpat.so.1",
+            "propagation": [],
+            "root": "/usr/lib/x86_64-linux-gnu/libexpat.so.1.11.2"
+          },
+          {
+            "dev": "252:1",
+            "fs": "ext4",
+            "options": [
+              "ro",
+              "nosuid",
+              "nodev",
+              "relatime"
+            ],
+            "path": "/usr/lib/x86_64-linux-gnu/libm.so.6",
+            "propagation": [],
+            "root": "/usr/lib/x86_64-linux-gnu/libm.so.6"
+          },
+          {
+            "dev": "252:1",
+            "fs": "ext4",
+            "options": [
+              "ro",
+              "nosuid",
+              "nodev",
+              "relatime"
+            ],
+            "path": "/usr/lib/x86_64-linux-gnu/libz.so.1",
+            "propagation": [],
+            "root": "/usr/lib/x86_64-linux-gnu/libz.so.1.3.1"
+          },
+          {
+            "dev": "252:1",
+            "fs": "ext4",
+            "options": [
+              "ro",
+              "nosuid",
+              "nodev",
+              "relatime"
+            ],
+            "path": "/usr/lib/python3.14/encodings",
+            "propagation": [],
+            "root": "/usr/lib/python3.14/encodings"
+          },
+          {
+            "dev": "252:1",
+            "fs": "ext4",
+            "options": [
+              "ro",
+              "nosuid",
+              "nodev",
+              "relatime"
+            ],
+            "path": "/fixture.txt",
+            "propagation": [],
+            "root": "/var/lib/phase-loop-codex-canary/live-20261026-auditfix-25e6d091-a05e80ee/inputs/fixture.txt"
+          }
+        ],
+        "namespaces": {
+          "ipc": "ipc:[4026533953]",
+          "mnt": "mnt:[4026533951]",
+          "net": "net:[4026533955]",
+          "pid": "pid:[4026533954]",
+          "user": "user:[4026533950]",
+          "uts": "uts:[4026533952]"
+        },
+        "pid": 1075681,
+        "start": 11956563,
+        "status": {
+          "CapAmb": "\t0000000000000000",
+          "CapBnd": "\t0000000000000000",
+          "CapEff": "\t0000000000000000",
+          "CapInh": "\t0000000000000000",
+          "CapPrm": "\t0000000000000000",
+          "CoreDumping": "\t0",
+          "Cpus_allowed": "\tffffff",
+          "Cpus_allowed_list": "\t0-23",
+          "FDSize": "\t64",
+          "Gid": "\t1000\t1000\t1000\t1000",
+          "Groups": "\t ",
+          "HugetlbPages": "\t       0 kB",
+          "Kthread": "\t0",
+          "Mems_allowed": "\t00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000001",
+          "Mems_allowed_list": "\t0",
+          "NSpgid": "\t1075517\t0",
+          "NSpid": "\t1075681\t2",
+          "NSsid": "\t1075517\t0",
+          "NStgid": "\t1075681\t2",
+          "Name": "\tpython3",
+          "Ngid": "\t0",
+          "NoNewPrivs": "\t1",
+          "PPid": "\t1075680",
+          "Pid": "\t1075681",
+          "RssAnon": "\t    3388 kB",
+          "RssFile": "\t    6472 kB",
+          "RssShmem": "\t       0 kB",
+          "Seccomp": "\t0",
+          "Seccomp_filters": "\t0",
+          "ShdPnd": "\t0000000000000000",
+          "SigBlk": "\t0000000000000000",
+          "SigCgt": "\t0000000000000002",
+          "SigIgn": "\t0000000001001000",
+          "SigPnd": "\t0000000000000000",
+          "SigQ": "\t0/122424",
+          "SpeculationIndirectBranch": "\tconditional enabled",
+          "Speculation_Store_Bypass": "\tthread vulnerable",
+          "State": "\tt (tracing stop)",
+          "THP_enabled": "\t1",
+          "Tgid": "\t1075681",
+          "Threads": "\t1",
+          "TracerPid": "\t1074627",
+          "Uid": "\t1000\t1000\t1000\t1000",
+          "Umask": "\t0077",
+          "VmData": "\t    5236 kB",
+          "VmExe": "\t    3608 kB",
+          "VmHWM": "\t    9860 kB",
+          "VmLck": "\t       0 kB",
+          "VmLib": "\t    2668 kB",
+          "VmPTE": "\t      64 kB",
+          "VmPeak": "\t   15916 kB",
+          "VmPin": "\t       0 kB",
+          "VmRSS": "\t    9860 kB",
+          "VmSize": "\t   15916 kB",
+          "VmStk": "\t     132 kB",
+          "VmSwap": "\t       0 kB",
+          "nonvoluntary_ctxt_switches": "\t0",
+          "untag_mask": "\t0xffffffffffffffff",
+          "voluntary_ctxt_switches": "\t2",
+          "x86_Thread_features": "\t",
+          "x86_Thread_features_locked": "\t"
+        },
+        "uid_map": [
+          [
+            1000,
+            1000,
+            1
+          ]
+        ],
+        "user_owner": 1000,
+        "user_parent": "user:[4026531837]"
+      },
+      "trace": [
+        {
+          "exit_monotonic_ns": 119565780138051,
+          "exit_realtime_ns": 1793052827671676051,
+          "flags": 268566528,
+          "monotonic_ns": 119565779018138,
+          "pid": 1075681,
+          "realtime_ns": 1793052827670555768,
+          "return": -1,
+          "start": 11956563,
+          "syscall": "unshare"
+        }
+      ],
+      "audit": [
+        {
+          "audit_namespace": "root//phase_loop_codex_canary_32f4164a98594c4fa308d4e2c2765c00",
+          "audit_profile": "unpriv_bwrap",
+          "boot_id": "a05e80ee-580f-405f-81bd-a1f32292a1d9",
+          "capability": 21,
+          "journal_realtime_ns": 1793052827671570000,
+          "label": ":phase_loop_codex_canary_32f4164a98594c4fa308d4e2c2765c00:bwrap//&unpriv_bwrap (enforce)",
+          "monotonic_ns": 119565780032000,
+          "operation": "capable",
+          "pid": 1075681,
+          "realtime_ns": 1793052827670000000,
+          "serial": "253",
+          "start": 11956563
+        }
+      ],
+      "exit_codes": {
+        "1075681": 1
+      },
+      "begin": {
+        "monotonic_ns": 119565275331382,
+        "realtime_ns": 1793052827166868701
+      },
+      "finish": {
+        "monotonic_ns": 119565797525044,
+        "realtime_ns": 1793052827689062774
+      },
+      "capture_finish": {
+        "monotonic_ns": 119565805370877,
+        "realtime_ns": 1793052827696909168
+      },
+      "loss_before": {
+        "audit_status": "unavailable",
+        "printk_ratelimit": 5,
+        "printk_ratelimit_burst": 10
+      },
+      "loss_after": {
+        "audit_status": "unavailable",
+        "printk_ratelimit": 5,
+        "printk_ratelimit_burst": 10
+      }
+    },
+    "candidate": {
+      "go_sent": true,
+      "entry_ack_sent": true,
+      "entry": {
+        "exe": "/usr/bin/python3.14",
+        "label": ":phase_loop_codex_canary_32f4164a98594c4fa308d4e2c2765c00:unconfined",
+        "mnt": "mnt:[4026531832]",
+        "pid": 1075969,
+        "provenance": "independent root-controller proc observation",
+        "start": 11956644,
+        "user": "user:[4026531837]"
+      },
+      "preparation": {
+        "mnt": "mnt:[4026533948]",
+        "primary_evidence": false,
+        "provenance": "trusted child self-report; not independently observed"
+      },
+      "profiles": [
+        [
+          "bwrap",
+          "enforce"
+        ],
+        [
+          "unpriv_bwrap",
+          "enforce"
+        ]
+      ],
+      "gate": {
+        "fds": {
+          "0": "gate",
+          "1": "status",
+          "2": "status"
+        },
+        "gid_map": [
+          [
+            1000,
+            1000,
+            1
+          ]
+        ],
+        "host_namespaces": {
+          "ipc": "ipc:[4026531839]",
+          "mnt": "mnt:[4026531832]",
+          "net": "net:[4026531833]",
+          "pid": "pid:[4026531836]",
+          "user": "user:[4026531837]",
+          "uts": "uts:[4026531838]"
+        },
+        "label": ":phase_loop_codex_canary_32f4164a98594c4fa308d4e2c2765c00:bwrap//&unpriv_bwrap (enforce)",
+        "mounts": [
+          {
+            "dev": "0:80",
+            "fs": "tmpfs",
+            "options": [
+              "rw",
+              "nosuid",
+              "nodev",
+              "relatime"
+            ],
+            "path": "/",
+            "propagation": [],
+            "root": "/"
+          },
+          {
+            "dev": "0:81",
+            "fs": "proc",
+            "options": [
+              "rw",
+              "nosuid",
+              "nodev",
+              "noexec",
+              "relatime"
+            ],
+            "path": "/proc",
+            "propagation": [],
+            "root": "/"
+          },
+          {
+            "dev": "0:82",
+            "fs": "tmpfs",
+            "options": [
+              "rw",
+              "nosuid",
+              "nodev",
+              "relatime"
+            ],
+            "path": "/dev",
+            "propagation": [],
+            "root": "/"
+          },
+          {
+            "dev": "0:7",
+            "fs": "devtmpfs",
+            "options": [
+              "rw",
+              "nosuid"
+            ],
+            "path": "/dev/null",
+            "propagation": [],
+            "root": "/null"
+          },
+          {
+            "dev": "252:1",
+            "fs": "ext4",
+            "options": [
+              "ro",
+              "nosuid",
+              "nodev",
+              "relatime"
+            ],
+            "path": "/lib64/ld-linux-x86-64.so.2",
+            "propagation": [],
+            "root": "/usr/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2"
+          },
+          {
+            "dev": "252:1",
+            "fs": "ext4",
+            "options": [
+              "ro",
+              "nosuid",
+              "nodev",
+              "relatime"
+            ],
+            "path": "/usr/bin/python3",
+            "propagation": [],
+            "root": "/usr/bin/python3.14"
+          },
+          {
+            "dev": "252:1",
+            "fs": "ext4",
+            "options": [
+              "ro",
+              "nosuid",
+              "nodev",
+              "relatime"
+            ],
+            "path": "/usr/bin/true",
+            "propagation": [],
+            "root": "/usr/bin/gnutrue"
+          },
+          {
+            "dev": "252:1",
+            "fs": "ext4",
+            "options": [
+              "ro",
+              "nosuid",
+              "nodev",
+              "relatime"
+            ],
+            "path": "/usr/bin/unshare",
+            "propagation": [],
+            "root": "/usr/bin/unshare"
+          },
+          {
+            "dev": "252:1",
+            "fs": "ext4",
+            "options": [
+              "ro",
+              "nosuid",
+              "nodev",
+              "relatime"
+            ],
+            "path": "/usr/lib/python3.14/linecache.py",
+            "propagation": [],
+            "root": "/usr/lib/python3.14/linecache.py"
+          },
+          {
+            "dev": "252:1",
+            "fs": "ext4",
+            "options": [
+              "ro",
+              "nosuid",
+              "nodev",
+              "relatime"
+            ],
+            "path": "/usr/lib/python3.14/os.py",
+            "propagation": [],
+            "root": "/usr/lib/python3.14/os.py"
+          },
+          {
+            "dev": "252:1",
+            "fs": "ext4",
+            "options": [
+              "ro",
+              "nosuid",
+              "nodev",
+              "relatime"
+            ],
+            "path": "/usr/lib/x86_64-linux-gnu/libc.so.6",
+            "propagation": [],
+            "root": "/usr/lib/x86_64-linux-gnu/libc.so.6"
+          },
+          {
+            "dev": "252:1",
+            "fs": "ext4",
+            "options": [
+              "ro",
+              "nosuid",
+              "nodev",
+              "relatime"
+            ],
+            "path": "/usr/lib/x86_64-linux-gnu/libexpat.so.1",
+            "propagation": [],
+            "root": "/usr/lib/x86_64-linux-gnu/libexpat.so.1.11.2"
+          },
+          {
+            "dev": "252:1",
+            "fs": "ext4",
+            "options": [
+              "ro",
+              "nosuid",
+              "nodev",
+              "relatime"
+            ],
+            "path": "/usr/lib/x86_64-linux-gnu/libm.so.6",
+            "propagation": [],
+            "root": "/usr/lib/x86_64-linux-gnu/libm.so.6"
+          },
+          {
+            "dev": "252:1",
+            "fs": "ext4",
+            "options": [
+              "ro",
+              "nosuid",
+              "nodev",
+              "relatime"
+            ],
+            "path": "/usr/lib/x86_64-linux-gnu/libz.so.1",
+            "propagation": [],
+            "root": "/usr/lib/x86_64-linux-gnu/libz.so.1.3.1"
+          },
+          {
+            "dev": "252:1",
+            "fs": "ext4",
+            "options": [
+              "ro",
+              "nosuid",
+              "nodev",
+              "relatime"
+            ],
+            "path": "/usr/lib/python3.14/encodings",
+            "propagation": [],
+            "root": "/usr/lib/python3.14/encodings"
+          },
+          {
+            "dev": "252:1",
+            "fs": "ext4",
+            "options": [
+              "ro",
+              "nosuid",
+              "nodev",
+              "relatime"
+            ],
+            "path": "/fixture.txt",
+            "propagation": [],
+            "root": "/var/lib/phase-loop-codex-canary/live-20261026-auditfix-25e6d091-a05e80ee/inputs/fixture.txt"
+          }
+        ],
+        "namespaces": {
+          "ipc": "ipc:[4026533954]",
+          "mnt": "mnt:[4026533952]",
+          "net": "net:[4026533956]",
+          "pid": "pid:[4026533955]",
+          "user": "user:[4026533951]",
+          "uts": "uts:[4026533953]"
+        },
+        "pid": 1076141,
+        "start": 11956679,
+        "status": {
+          "CapAmb": "\t0000000000000000",
+          "CapBnd": "\t0000000000000000",
+          "CapEff": "\t0000000000000000",
+          "CapInh": "\t0000000000000000",
+          "CapPrm": "\t0000000000000000",
+          "CoreDumping": "\t0",
+          "Cpus_allowed": "\tffffff",
+          "Cpus_allowed_list": "\t0-23",
+          "FDSize": "\t64",
+          "Gid": "\t1000\t1000\t1000\t1000",
+          "Groups": "\t ",
+          "HugetlbPages": "\t       0 kB",
+          "Kthread": "\t0",
+          "Mems_allowed": "\t00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000000,00000001",
+          "Mems_allowed_list": "\t0",
+          "NSpgid": "\t1075969\t0",
+          "NSpid": "\t1076141\t2",
+          "NSsid": "\t1075969\t0",
+          "NStgid": "\t1076141\t2",
+          "Name": "\tpython3",
+          "Ngid": "\t0",
+          "NoNewPrivs": "\t1",
+          "PPid": "\t1076140",
+          "Pid": "\t1076141",
+          "RssAnon": "\t    3388 kB",
+          "RssFile": "\t    6408 kB",
+          "RssShmem": "\t       0 kB",
+          "Seccomp": "\t0",
+          "Seccomp_filters": "\t0",
+          "ShdPnd": "\t0000000000000000",
+          "SigBlk": "\t0000000000000000",
+          "SigCgt": "\t0000000000000002",
+          "SigIgn": "\t0000000001001000",
+          "SigPnd": "\t0000000000000000",
+          "SigQ": "\t0/122424",
+          "SpeculationIndirectBranch": "\tconditional enabled",
+          "Speculation_Store_Bypass": "\tthread vulnerable",
+          "State": "\tt (tracing stop)",
+          "THP_enabled": "\t1",
+          "Tgid": "\t1076141",
+          "Threads": "\t1",
+          "TracerPid": "\t1074627",
+          "Uid": "\t1000\t1000\t1000\t1000",
+          "Umask": "\t0077",
+          "VmData": "\t    5236 kB",
+          "VmExe": "\t    3608 kB",
+          "VmHWM": "\t    9796 kB",
+          "VmLck": "\t       0 kB",
+          "VmLib": "\t    2668 kB",
+          "VmPTE": "\t      68 kB",
+          "VmPeak": "\t   15916 kB",
+          "VmPin": "\t       0 kB",
+          "VmRSS": "\t    9796 kB",
+          "VmSize": "\t   15916 kB",
+          "VmStk": "\t     132 kB",
+          "VmSwap": "\t       0 kB",
+          "nonvoluntary_ctxt_switches": "\t0",
+          "untag_mask": "\t0xffffffffffffffff",
+          "voluntary_ctxt_switches": "\t2",
+          "x86_Thread_features": "\t",
+          "x86_Thread_features_locked": "\t"
+        },
+        "uid_map": [
+          [
+            1000,
+            1000,
+            1
+          ]
+        ],
+        "user_owner": 1000,
+        "user_parent": "user:[4026531837]"
+      },
+      "trace": [
+        {
+          "exit_monotonic_ns": 119566941026476,
+          "exit_realtime_ns": 1793052828832564597,
+          "flags": 268566528,
+          "monotonic_ns": 119566939934245,
+          "pid": 1076141,
+          "realtime_ns": 1793052828831472255,
+          "return": 0,
+          "start": 11956679,
+          "syscall": "unshare"
+        }
+      ],
+      "audit": [],
+      "exit_codes": {
+        "1076141": 0
+      },
+      "begin": {
+        "monotonic_ns": 119566447559018,
+        "realtime_ns": 1793052828339096387
+      },
+      "finish": {
+        "monotonic_ns": 119567051757303,
+        "realtime_ns": 1793052828943294913
+      },
+      "capture_finish": {
+        "monotonic_ns": 119567057411510,
+        "realtime_ns": 1793052828948949801
+      },
+      "loss_before": {
+        "audit_status": "unavailable",
+        "printk_ratelimit": 5,
+        "printk_ratelimit_burst": 10
+      },
+      "loss_after": {
+        "audit_status": "unavailable",
+        "printk_ratelimit": 5,
+        "printk_ratelimit_burst": 10
+      }
+    }
+  },
+  "cleanup": {
+    "checkpoint_sha256": "773dd2e1bfad43c9b74c62c4422fdf1796a78117ff6af7bfa49cb54c2c81266c",
+    "checks": {
+      "controller_command_registry_empty": true,
+      "controller_host_namespaces_unchanged": true,
+      "disk_root_policy_unchanged": true,
+      "helper_and_independent_policy_snapshots_agree": true,
+      "loaded_root_policy_unchanged": true,
+      "no_teardown_errors": true,
+      "owned_namespace_absent": true,
+      "owned_process_registry_empty": true,
+      "owned_session_cleared": true,
+      "reported_cleanup_passed": true,
+      "root_profile_set_unchanged": true,
+      "staged_input_bytes_unchanged": true
+    },
+    "known_processes": [
+      {
+        "observed": "absent",
+        "pid": 1075517,
+        "start": 11956527
+      },
+      {
+        "observed": "absent",
+        "pid": 1075681,
+        "start": 11956563
+      },
+      {
+        "observed": "absent",
+        "pid": 1075969,
+        "start": 11956644
+      },
+      {
+        "observed": "absent",
+        "pid": 1076141,
+        "start": 11956679
+      }
+    ],
+    "namespace": "phase_loop_codex_canary_32f4164a98594c4fa308d4e2c2765c00",
+    "outcome": "hypothesis_supported",
+    "reason": null,
+    "result_path": "/var/lib/phase-loop-codex-canary/live-20261026-auditfix-25e6d091-a05e80ee/result/result.json",
+    "result_sha256": "e3ee7f027004e8e371b6eedac85a9e5388ab5fb5d6b4fb101fb7bd13b05e1d60",
+    "root_after_sha256": "348d006ae639089f8cb897e2e8a60b400d8dc15366c8928e0c7ef7ee5e12cc4c",
+    "root_policy_counts": {
+      "disk": 344,
+      "labels": 208,
+      "loaded": 206
+    },
+    "schema_version": 1,
+    "verified_at_ns": 1793052850079693688
+  },
+  "result_path": "/var/lib/phase-loop-codex-canary/live-20261026-auditfix-25e6d091-a05e80ee/result/result.json",
+  "result_sha256": "e3ee7f027004e8e371b6eedac85a9e5388ab5fb5d6b4fb101fb7bd13b05e1d60",
+  "checkpoint_sha256": "773dd2e1bfad43c9b74c62c4422fdf1796a78117ff6af7bfa49cb54c2c81266c",
+  "runner_artifacts": {
+    "preflight-verification": {
+      "path": ".dev-skills/handoffs/canary-live-rerun1-20261026/preflight-verification/verification.json",
+      "sha256": "4840665d05e7e9f3aa2d1fcbf94af112509e3ae9888b4dd258e7459754ebb7e4",
+      "command_exit_codes": [
+        0,
+        0,
+        0
+      ]
+    },
+    "staging-verification": {
+      "path": ".dev-skills/handoffs/canary-live-rerun1-20261026/staging-verification/verification.json",
+      "sha256": "92203f338bef9cfa6e2cd40cdcb85a9dd1e56add7080eefecdb7158a10b570de",
+      "command_exit_codes": [
+        0
+      ]
+    },
+    "live-verification": {
+      "path": ".dev-skills/handoffs/canary-live-rerun1-20261026/live-verification/verification.json",
+      "sha256": "faf8f5e5f7ab2668e2da1cfbbd539e1f05649caa034c4c1377bcc673b9577e88",
+      "command_exit_codes": [
+        0
+      ]
+    },
+    "cleanup-verification": {
+      "path": ".dev-skills/handoffs/canary-live-rerun1-20261026/cleanup-verification/verification.json",
+      "sha256": "4edda2cd67b4e37f04d7803fa865fcac694cacecd47486847a15084282619309",
+      "command_exit_codes": [
+        0
+      ]
+    }
+  },
+  "acceptance": {
+    "C1": {
+      "status": "passed",
+      "evidence": "Independent protected-byte staging and both arms host-observed entry, identity/maps, capabilities, NoNewPrivs, namespace, mount and fd gates before GO"
+    },
+    "C2": {
+      "status": "passed",
+      "evidence": "Identical closed reviewed policy bytes, both compiles, actual baseline and candidate enforce profile sets, namespace-scoped parser loads, stable manifest/features and staged input bytes"
+    },
+    "C3": {
+      "status": "passed_for_scoped_diagnostic",
+      "evidence": "Exact primary baseline unshare EPERM with one matched capability21/sys_admin denial; same candidate syscall return0, command exit0; audit silence is not success evidence"
+    },
+    "C4": {
+      "status": "passed",
+      "evidence": "Independent namespace absence, cleared owned process/command registries and absent recorded tasks, unchanged disk/loaded root policy and host namespaces"
+    },
+    "C5": {
+      "status": "preserved",
+      "evidence": "Actual focused Cristina AGREE bound to executed helper hash; prior votes and original inconclusive evidence unchanged. No production approval, president ruling or PR merge claimed"
+    }
+  },
+  "limitations": [
+    "Synthetic direct-host bubblewrap topology; production topology equivalence is not established",
+    "Only the first namespace/capability hypothesis is tested; this is not a production policy repair or general sandbox qualification",
+    "Journal arrival outside the exact syscall window remains fail-closed; nonblocking review notes retained"
+  ],
+  "previous_attempt": "plans/evidence/codex-apparmor-canary/live-20261026.json",
+  "review_record": "plans/evidence/codex-apparmor-canary/audit-matcher-fix-20261026.json",
+  "production_policy_changed": false,
+  "merge_authorized": false,
+  "journal_diagnostics": {
+    "baseline": {
+      "read_only_post_run_diagnostic": true,
+      "primary_pid": 1075681,
+      "journal_rows_read": 5,
+      "owned_task_rows": [
+        {
+          "fields": {
+            "apparmor": "DENIED",
+            "operation": "capable",
+            "namespace": "root//phase_loop_codex_canary_32f4164a98594c4fa308d4e2c2765c00",
+            "profile": "unpriv_bwrap",
+            "pid": "1075681",
+            "capability": "21",
+            "capname": "sys_admin"
+          },
+          "journal": {
+            "_SOURCE_BOOTTIME_TIMESTAMP": "119566206962",
+            "_BOOT_ID": "a05e80ee580f405f81bda1f32292a1d9",
+            "__MONOTONIC_TIMESTAMP": "119565780032",
+            "_TRANSPORT": "kernel",
+            "SYSLOG_IDENTIFIER": "kernel",
+            "__REALTIME_TIMESTAMP": "1793052827671570",
+            "SYSLOG_FACILITY": "0",
+            "_SOURCE_MONOTONIC_TIMESTAMP": "119566206962"
+          },
+          "receipt_after_entry_ns": 1013862,
+          "exit_after_receipt_ns": 106051
+        }
+      ],
+      "audit_absence_not_used_as_success_evidence": true
+    },
+    "candidate": {
+      "read_only_post_run_diagnostic": true,
+      "primary_pid": 1076141,
+      "journal_rows_read": 2,
+      "owned_task_rows": [],
+      "audit_absence_not_used_as_success_evidence": true
+    }
+  },
+  "original_plan_lifecycle": {
+    "status": "failed",
+    "preserved": true,
+    "reason": "The original failed execution is terminal in the manifest state machine. Its lifecycle is preserved; this authorized successful rerun is bound by the separate execution amendment and live evidence record."
+  }
+}

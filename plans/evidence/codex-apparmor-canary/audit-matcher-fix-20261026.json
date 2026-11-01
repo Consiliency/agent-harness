@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "source_head": "2be1944719241055abf60969172fd1fc04de54c4",
+  "scope": "Offline correction of live-canary audit namespace and timestamp matching",
+  "input_live_evidence": "plans/evidence/codex-apparmor-canary/live-20261026.json",
+  "implementation_changes": [
+    "Accept only the exact owned namespace or its root//-qualified equivalent; reject foreign and descendant namespaces",
+    "Require trusted kernel journal transport",
+    "Use same-boot journal monotonic time inside the observed syscall entry/exit interval, retaining whole-arm coarse realtime sanity bounds and raw audit timestamps"
+  ],
+  "regression_fixture": "phase-loop-runtime/tests/data/codex-apparmor-canary-denial-20261026.json",
+  "verification_artifact": ".dev-skills/handoffs/canary-audit-matcher-fix-20261026/verification/verification.json",
+  "review_status": "AGREE_for_frozen_helper_delta",
+  "privileged_reexecution_status": "completed_hypothesis_supported",
+  "existing_canary_authorization": "retained; no new production policy or merge authority",
+  "original_live_outcome": "inconclusive; preserved unchanged",
+  "source_references": [
+    "https://docs.kernel.org/core-api/timekeeping.html",
+    "https://kernel.googlesource.com/pub/scm/linux/kernel/git/torvalds/linux.git/+/refs/tags/v6.17-rc7/kernel/audit.c",
+    "https://www.freedesktop.org/software/systemd/man/latest/systemd.journal-fields.html"
+  ],
+  "focused_review": {
+    "provider_instance": "t3-claude-cristina",
+    "model": "claude-opus-5-5",
+    "verdict": "AGREE",
+    "material_findings": 0,
+    "artifact": ".dev-skills/handoffs/canary-audit-matcher-fix-20261026/cristina-delta-review/review.json",
+    "sha256": "1fb3778f1206e2b0e644fce9ab0fc1078b21f9ac93010752129189af9dc7226c",
+    "approved_helper_sha256": "25e6d091ef0853777efa15e54d16be1246c43aaf2996e831e76a13b131b6590a",
+    "reviewed_source_bindings": {
+      "phase-loop-runtime/tests/codex_apparmor_canary.py": "25e6d091ef0853777efa15e54d16be1246c43aaf2996e831e76a13b131b6590a",
+      "phase-loop-runtime/tests/test_codex_apparmor_canary.py": "03cffaf846b92d10a2ea147c65e995fa698780e42997475a8411fed297f13199",
+      "phase-loop-runtime/tests/data/codex-apparmor-canary-denial-20261026.json": "06eed3411c80c99bf13bcc470606b44fcf5b9c401fe89b1eb0fb5e7fcdc8bfc9",
+      "docs/advisor-board-capabilities-card.md": "e453fe41ac63ed745a206a16066ef382d1c795568f30e46872ce3f72470cac48",
+      "plans/evidence/codex-apparmor-canary/audit-matcher-fix-20261026.json": "2506c24769b645a63ee7b64e174fc2a92fcbf2f15438947f7c9e4a15a0d58d6f"
+    },
+    "reviewer_reported_write_exception": "Temporary offline probe under /tmp/cr-probe-1731, subsequently deleted; no source/evidence changes or privileged commands reported",
+    "scope": "One owner-authorized non-canonical delta review; prior votes retain original bindings"
+  },
+  "fixture_provenance": {
+    "fixture_sha256": "06eed3411c80c99bf13bcc470606b44fcf5b9c401fe89b1eb0fb5e7fcdc8bfc9",
+    "root_owned_result_sha256": "866fd32d56a7fd704bceb6770c3e586566f002ede8e4daff4ed674d43073f644",
+    "root_owned_result_path": "/var/lib/phase-loop-codex-canary/live-20261026-3ba9404b-a05e80ee/result/result.json",
+    "first_live_record": "plans/evidence/codex-apparmor-canary/live-20261026.json"
+  },
+  "offline_verification_interpreters": {
+    "runner": "/usr/bin/python3.14",
+    "make_check": "Python 3.12.14; current local_check VENV_PYTHON=3.12",
+    "four_file_suite": "Python 3.12.14",
+    "correction": "The earlier request described make check as Python3.10; the sealed log actually records Python3.12.14. Pass counts remain 240 helper / 283 prescribed suite."
+  },
+  "review_suggestions": {
+    "S01": {
+      "text": "Journal reception >= entry does not bound generation from below (probe: a denial whose kernel audit stamp is 51ms pre-entry but received in-window is attributed). Currently unreachable under C3 gates (A4). Optional hardening without new clocks: require exactly one matching (pid,start) sys_admin denial across the whole capture, so any pre-entry or duplicate same-task denial becomes inconclusive rather than relying on any().",
+      "disposition": "Deferred nonblocking: approved helper bytes remain unchanged; retain observation in rerun diagnostics where available"
+    },
+    "S02": {
+      "text": "_TRANSPORT=kernel also covers userspace /dev/kmsg writes (root-only on standard hosts; journald records them with a non-kernel SYSLOG_FACILITY). If a real kernel row is confirmed to carry SYSLOG_FACILITY=0 / SYSLOG_IDENTIFIER=kernel, also require it. Do not add it untested: the sanitized fixture omits these fields, so adding it blind would make the next live run fail closed.",
+      "disposition": "Deferred nonblocking: approved helper bytes remain unchanged; retain observation in rerun diagnostics where available"
+    },
+    "S03": {
+      "text": "Also record _SOURCE_MONOTONIC_TIMESTAMP and the reception-minus-entry/exit deltas in the match record so a future inconclusive caused by journald delivery after the traced exit (fail-closed availability risk; live margin was ~1.0ms) is diagnosable without the root-owned result.",
+      "disposition": "Addressed in separate read-only rerun journal diagnostics: source/receipt timestamps and syscall margins retained without changing the approved helper"
+    },
+    "S04": {
+      "text": "State explicitly that the journal monotonic timestamp is journald reception time (an upper bound on kernel generation), not event time.",
+      "disposition": "Addressed: docs now explicitly identify reception time"
+    },
+    "S05": {
+      "text": "Fixture journal timestamps and begin/finish/capture_finish stamps are not present in committed live-20261026.json (only its boolean journal_monotonic_time_within_syscall and 1453924ns delta). Bind the fixture to the root-owned result digest 866fd32d56a7fd704bceb6770c3e586566f002ede8e4daff4ed674d43073f644 in the follow-up metadata.",
+      "disposition": "Addressed: fixture bound to original protected result digest"
+    },
+    "S06": {
+      "text": "verification.log reports suite interpreter /usr/bin/python3.14 and local_check venv 3.12.14, while the request describes the 283-test suite as Python 3.12 and make check as Python 3.10. Reconcile the stated interpreters in follow-up metadata (C5 accuracy); pass counts match.",
+      "disposition": "Addressed: actual interpreters recorded; original sealed logs retained"
+    }
+  },
+  "live_rerun_evidence": "plans/evidence/codex-apparmor-canary/live-20261026-rerun1.json",
+  "live_rerun_result_sha256": "e3ee7f027004e8e371b6eedac85a9e5388ab5fb5d6b4fb101fb7bd13b05e1d60"
+}
