@@ -285,10 +285,11 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
     "sandbox_placement_local_release_unconfirmed": (
         "cleanup not confirmed",
         "a slot on this machine may have been reserved and its release was not confirmed",
-        "nothing was moved to another target and nothing was retried; the reservation "
-        "handle, if learned by the runtime, is kept on the decision or in its pending record "
-        "for reconciliation. Check this machine's sandbox "
-        "count before running the review again"),
+        "nothing was moved to another target and nothing was retried; any reservation "
+        "handle the runtime learns of is kept for reconciliation on the decision, its "
+        "pending record or the cancellation, and a pending record that later shows "
+        "released needs nothing more. Check this machine's sandbox count before running "
+        "the review again"),
     "sandbox_placement_lost_after_launch": (
         "seat lost",
         "the seat was started on the remote machine and its result did not come back",
