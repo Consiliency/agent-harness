@@ -151,7 +151,8 @@ closed and retain cleanup obligations. No prose parsing or interpreting an untyp
   tracks expiry and the 24-hour cap; never fabricates success. Rename cleanup-only
   `OpenShellBackend` to distinguish it from execution. Targeted edit to retained
   `placement_lease.reap`: catch `validate_reaper_context()` ValueError outside
-  the per-lease handler, emit a typed refusal and continue other scheme groups
+  the per-lease handler, emit a typed refusal, keep that scheme's leases in `kept`
+  (never dropped from both `cleared` and `kept`) and continue other scheme groups
   (agent-harness#1789).
 - **Verification**: journal/backend/reap CLI tests: crashes at each durable marker,
   lost reserve/create replies, unseen kill tombstones, duplicates, coordinator
@@ -162,7 +163,8 @@ closed and retain cleanup obligations. No prose parsing or interpreting an untyp
   `test_fork_entry_refuses_start_without_erasure_or_dispatch`;
   `test_reaper_context_refusal_continues_other_schemes` (placement-lease suite);
   `test_unavailable_phase_split_no_overflow` parameterizes reserve versus
-  create/renew/kill/status and asserts the Execution Notes recovery sequence;
+  create/renew/kill/status: reserve advances the ladder (`unreachable`, nothing
+  reserved); the others assert the Execution Notes recovery sequence, no overflow;
   `test_reserve_collision_journals_fresh_uuid_retries_once_records_bug`;
   `test_renew_lifetime_exceeded_ends_before_expiry`;
   `test_fenced_or_expired_before_launch_releases_without_exec`;
@@ -182,7 +184,7 @@ lease is not proof it is live or released. Record duplicate/reclaim details.
 
 ### SL-3 — Worker policy and projections
 
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/openshell_worker.py`, `phase-loop-runtime/tests/test_openshell_worker.py`, `phase-loop-runtime/tests/test_openshell_source_rpc.py`
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/openshell_worker.py`, `phase-loop-runtime/tests/test_openshell_worker.py`, `phase-loop-runtime/tests/test_openshell_source_rpc.py`, `phase-loop-runtime/images/review-runner/Containerfile` (build definition only; the digest push stays the owner/ai-stack action)
 - **Interfaces provided**: one-shot load/restrict/exec envelope
 - **Tasks**: replace private source publication with a bounded load manifest and
   verified content carried in the single stock ExecSandbox worker stdin envelope,
@@ -193,9 +195,11 @@ lease is not proof it is live or released. Record duplicate/reclaim details.
 - **Prerequisite/policy**: agent-harness#1805 must merge before SL-3. Its
   `contracts/placement/vectors/policies.json` contains `minimal-with-app`,
   `minimal-without-app`, `full-remote-pi-runner`, all `pending_qualification`.
-  Tests consume these vectors. Build the `full-remote-*` policy for the dedicated
-  **agent-harness review-runner image**, using the baseline without `/app` unless
-  that image has it, plus `/work`; the pi-runner vector is a shape reference.
+  Tests consume these vectors. The dedicated **agent-harness review-runner image**
+  uses the checked-in `full-remote-pi-runner` document **verbatim** (baseline
+  without `/app`, plus `/work`); the image has no `/app` and installs the worker
+  under baseline paths. Any other policy is a new contract vector, returned to the
+  lead for a `policies.json` change; SL-3 never authors one.
   Live use stays blocked until owner's qualification flips `pending_qualification`.
 - **Tasks**: strictly validate stock `SandboxPolicy`: snake_case and unknown-key
   checks cover **message field names only**; user-named map keys in
@@ -375,13 +379,11 @@ claim phase-dispatch readiness from a within-budget draft.
    wrapper. It is pushed **by digest** to ai's private registry (`127.0.0.1:17671`)
    and allowlisted by ai-stack. Per-run guest paths live under `/work/<run-id>/`
    with a host↔guest mapping in the run record, and no per-run leaves appear in the
-   outer policy (revision 13 addendum). The full remote policy is the
-   `full-remote-*` shape in `vectors/policies.json`. Candidate policies stay
+   outer policy (revision 13 addendum). The full remote policy is the checked-in
+   `full-remote-pi-runner` document in `vectors/policies.json`, used verbatim. Candidate policies stay
    `pending_qualification` until the owner's live run.
-   - **Wrapper:** prefer sharing agent-toolkit's static `landlock-exec` (one audited
-     implementation), subject to its agreement. If it isn't shareable, write an
-     equivalent with the same contract: validate roots, ABI 3–8, fail closed,
-     `no_new_privs`, `restrict_self`, exec.
+   - **Wrapper:** the shared agent-toolkit static `landlock-exec` (agreed; revision
+     14), pinned by input commit plus `BUILD.lock`. No local equivalent.
 4. **Authority:**
    - ai-stack owns Unit 7 deployment.
    - The **owner** runs the live qualification and approves launch-site activation,
