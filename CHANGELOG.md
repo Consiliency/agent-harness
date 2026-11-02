@@ -6,6 +6,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- Placement contract revision 9 (agent-harness#1795): `ReserveBody` and `RenewBody` request
+  types (no `client`/`owner`; both come from the certificate), and optional `LeaseStatus.reclaims`
+  reclaim records with closed `reason` and `outcome` values. Reserve and renew answer a `LeaseStatus`.
+
 - Add the passive cross-client placement contract and coordinator v1 wire schema,
   type-only TypeScript, and digest/validation vectors (agent-harness#1792).
 

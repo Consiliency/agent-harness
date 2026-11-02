@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$comment": "Source: phase_loop_runtime/baml_src/placement_contract.baml\nbaml-cli: 0.23.0; sha256: ff0f7d5ecc234d09623ee199002855fdc19bc0c2bc7f8654730413f8bf495ee9\nGenerated; do not edit.",
+  "$comment": "Source: phase_loop_runtime/baml_src/placement_contract.baml\nbaml-cli: 0.23.0; sha256: f662ea044dbe37a65c8bd782aeb7a5b2dd75b5851944c05b4f055061fcd27ace\nGenerated; do not edit.",
   "$defs": {
     "TargetKind": {
       "type": "string",
@@ -276,7 +276,7 @@
       "properties": {
         "name": {
           "type": "string",
-          "pattern": "^[a-z][a-z0-9-]{0,62}$"
+          "pattern": "^[a-z][a-z0-9-]{0,62}$(?![\\s\\S])"
         },
         "target_port": {
           "type": "integer",
@@ -303,14 +303,14 @@
       "properties": {
         "image": {
           "type": "string",
-          "pattern": "^.+@sha256:[0-9a-f]{64}$"
+          "pattern": "^.+@sha256:[0-9a-f]{64}$(?![\\s\\S])"
         },
         "policy": {
           "type": "object"
         },
         "policy_digest": {
           "type": "string",
-          "pattern": "^sha256:[0-9a-f]{64}$"
+          "pattern": "^sha256:[0-9a-f]{64}$(?![\\s\\S])"
         },
         "service_exposures": {
           "type": "array",
@@ -425,13 +425,19 @@
         "expires_at": {
           "type": "string",
           "format": "date-time",
-          "pattern": "^\\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\\d|3[01])T(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:[Zz]|\\+00:00)$"
+          "pattern": "^\\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\\d|3[01])T(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:[Zz]|\\+00:00)$(?![\\s\\S])"
         },
         "flags": {
           "$ref": "#/$defs/LeaseFlags"
         },
         "binding": {
           "$ref": "#/$defs/Binding"
+        },
+        "reclaims": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ReclaimRecord"
+          }
         }
       }
     },
@@ -488,6 +494,92 @@
           "type": "integer",
           "minimum": 1,
           "maximum": 30000
+        }
+      }
+    },
+    "ReclaimReason": {
+      "type": "string",
+      "enum": [
+        "unbound",
+        "duplicate_binding",
+        "lease_expired",
+        "lease_fenced",
+        "recovery_orphan"
+      ]
+    },
+    "ReclaimOutcome": {
+      "type": "string",
+      "enum": [
+        "destroyed",
+        "destroy_pending"
+      ]
+    },
+    "ReclaimRecord": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "sandbox_id",
+        "reason",
+        "at",
+        "outcome"
+      ],
+      "properties": {
+        "sandbox_id": {
+          "type": "string",
+          "format": "uuid"
+        },
+        "reason": {
+          "$ref": "#/$defs/ReclaimReason"
+        },
+        "at": {
+          "type": "string",
+          "format": "date-time",
+          "pattern": "^\\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\\d|3[01])T(?:[01]\\d|2[0-3]):[0-5]\\d:[0-5]\\d(?:\\.\\d+)?(?:[Zz]|\\+00:00)$(?![\\s\\S])"
+        },
+        "outcome": {
+          "$ref": "#/$defs/ReclaimOutcome"
+        }
+      }
+    },
+    "ReserveBody": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workload",
+        "ttl_s",
+        "image_digest",
+        "policy_digest"
+      ],
+      "properties": {
+        "workload": {
+          "$ref": "#/$defs/Workload"
+        },
+        "ttl_s": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600
+        },
+        "image_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$(?![\\s\\S])"
+        },
+        "policy_digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$(?![\\s\\S])"
+        }
+      }
+    },
+    "RenewBody": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "extend_s"
+      ],
+      "properties": {
+        "extend_s": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600
         }
       }
     }

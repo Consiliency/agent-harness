@@ -1,5 +1,5 @@
 // Source: phase_loop_runtime/baml_src/placement_contract.baml
-// baml-cli: 0.23.0; sha256: ff0f7d5ecc234d09623ee199002855fdc19bc0c2bc7f8654730413f8bf495ee9
+// baml-cli: 0.23.0; sha256: f662ea044dbe37a65c8bd782aeb7a5b2dd75b5851944c05b4f055061fcd27ace
 // Generated; do not edit.
 
 export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };
@@ -112,6 +112,7 @@ export interface LeaseStatus {
   "expires_at": string;
   "flags": LeaseFlags;
   "binding": Binding;
+  "reclaims"?: ReclaimRecord[];
 }
 
 export interface InventoryPage {
@@ -127,4 +128,28 @@ export interface InventoryQuery {
 
 export interface DeadlineHeaders {
   "X-Deadline-Ms": number;
+}
+
+export const ReclaimReasonValues = ["unbound", "duplicate_binding", "lease_expired", "lease_fenced", "recovery_orphan"] as const;
+export type ReclaimReason = "unbound" | "duplicate_binding" | "lease_expired" | "lease_fenced" | "recovery_orphan";
+
+export const ReclaimOutcomeValues = ["destroyed", "destroy_pending"] as const;
+export type ReclaimOutcome = "destroyed" | "destroy_pending";
+
+export interface ReclaimRecord {
+  "sandbox_id": string;
+  "reason": ReclaimReason;
+  "at": string;
+  "outcome": ReclaimOutcome;
+}
+
+export interface ReserveBody {
+  "workload": Workload;
+  "ttl_s": number;
+  "image_digest": string;
+  "policy_digest": string;
+}
+
+export interface RenewBody {
+  "extend_s": number;
 }
