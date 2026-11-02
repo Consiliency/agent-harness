@@ -30,13 +30,10 @@ release or publish a package; provenance retirement is source maintenance. Keep
 No deployment, endpoint enrollment, provider use, launch-site activation, cloud
 backend implementation, OpenShell upgrade, streaming proxy or upstream patch.
 
-**Scope conflict requiring lead resolution:** the task's removal bullet names
-`placement_lease`, `lease_store` and `lease_supervisor`, while its read-first
-instructions and agent-harness#1795 explicitly keep them. This draft preserves
-all three: placement journals protect local dispatch/reaping; path-set leases
-and process supervision have separate responsibilities. Only the patched SDK
-pin, private RPC adapters and fork qualification are removed. Deleting retained
-modules needs an explicit scope amendment, not an inferred coordinator migration.
+**Retained modules (lead decision, 2026-11-02):** `placement_lease`, `lease_store`
+and `lease_supervisor` stay. Placement journals protect local dispatch and reaping;
+path-set leases and process supervision have separate responsibilities. Only the
+patched SDK pin, private RPC adapters and fork qualification are removed.
 
 ## Interface Freeze Gates
 
@@ -322,16 +319,36 @@ claim phase-dispatch readiness from a within-budget draft.
   No shared wire change is intended. A new code/schema revision returns to the
   lead and shared-contract governance rather than being silently implemented.
 
-## Open questions for the lead
+## Lead decisions (2026-11-02)
 
-1. Confirm preserving `placement_lease`, `lease_store`, `lease_supervisor` resolves
-   the contradictory removal bullet, or explicitly authorize a different scope.
-2. Which roadmap/phase and existing goal IDs, if any, should bind this issue-led
-   draft for formal phase dispatch? None are fabricated here.
-3. Name the agent-harness immutable workload image, stable load parents, guest
-   mappings, trusted Landlock wrapper and qualified minimal/full policy. These
-   depend on the owner's live run; candidate policy is not acceptance.
-4. Who owns Unit 7 deployment and the live qualification receipts, and who may
-   approve launch-site activation after all outstanding gates are met?
-5. What is the retention and cleanup authority for any surviving fork-era journal
-   obligations? Coordinator `unknown_lease` cannot erase a legacy sandbox debt.
+1. **Retained modules:** `placement_lease`, `lease_store` and `lease_supervisor` stay
+   (see Context). The removal bullet in the brief was ambiguous; only the fork SDK
+   pin, the private RPC adapters and the fork qualification go.
+2. **No roadmap phase:** this is an issue-led detailed plan, like the
+   placement-hardening amendments (agent-harness#1504). There are no phase or EC
+   goal IDs, so `validate_plan_doc.py`'s formal-frontmatter errors are expected and
+   recorded, not a defect. Formal phase dispatch isn't used; lanes land as reviewed
+   PRs.
+3. **Workload image (owner decision):** a **dedicated minimal agent-harness
+   review-runner image**: Python runtime, the harness worker, stable load parent
+   `/work` (uid/gid 10001, 0700), user `sandbox` 10001, and the inner Landlock
+   wrapper. It is pushed **by digest** to ai's private registry (`127.0.0.1:17671`)
+   and allowlisted by ai-stack. Per-run guest paths live under `/work/<run-id>/`
+   with a host↔guest mapping in the run record, and no per-run leaves appear in the
+   outer policy (revision 13 addendum). The full remote policy is the
+   `full-remote-*` shape in `vectors/policies.json`. Candidate policies stay
+   `pending_qualification` until the owner's live run.
+   - **Wrapper:** prefer sharing agent-toolkit's static `landlock-exec` (one audited
+     implementation), subject to its agreement. If it isn't shareable, write an
+     equivalent with the same contract: validate roots, ABI 3–8, fail closed,
+     `no_new_privs`, `restrict_self`, exec.
+4. **Authority:**
+   - ai-stack owns Unit 7 deployment.
+   - The **owner** runs the live qualification and approves launch-site activation,
+     after a board review, once all gates (#1787–#1790, Unit 7, qualification) are
+     met.
+   - The lead coordinates and reports.
+5. **Fork-era journal obligations:** none exist in production. The fork's lease
+   execution was disabled in every non-test build and was never deployed. The new
+   backend **refuses to start if any fork-era journal entry is present** (a typed
+   refusal, no silent erasure), and an operator clears them deliberately.
