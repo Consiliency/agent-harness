@@ -184,7 +184,8 @@ lease is not proof it is live or released. Record duplicate/reclaim details.
 
 ### SL-3 — Worker policy and projections
 
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/openshell_worker.py`, `phase-loop-runtime/tests/test_openshell_worker.py`, `phase-loop-runtime/tests/test_openshell_source_rpc.py`, `phase-loop-runtime/images/review-runner/Containerfile` (build definition only; the digest push stays the owner/ai-stack action)
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/openshell_worker.py`, `phase-loop-runtime/tests/test_openshell_worker.py`, `phase-loop-runtime/tests/test_openshell_source_rpc.py`, `phase-loop-runtime/images/review-runner/Containerfile`
+- **Image note**: the Containerfile is the build definition only; the digest push stays the owner/ai-stack action.
 - **Interfaces provided**: one-shot load/restrict/exec envelope
 - **Tasks**: replace private source publication with a bounded load manifest and
   verified content carried in the single stock ExecSandbox worker stdin envelope,
