@@ -404,18 +404,18 @@ def probe_timeout_s() -> float:
 def candidate_roots(
     roots: "Sequence[tuple[str | None, str]] | None" = None,
 ) -> tuple[SandboxRootChoice, ...]:
-    """The remote rungs of the placement walk: every configured non-local root, in the
+    """The ranked rungs of the placement walk: local paths and URL roots, in the
     configured order (:func:`configured_roots` when ``roots`` is not given).
 
-    A rung is a root written as a URL with a usable scheme. A bare path and the legacy
-    ``host:path`` form are never rungs (``host:path`` stays record-only), and neither is a
+    A rung is a root written as a URL with a usable scheme. The legacy
+    ``host:path`` form is never a rung (``host:path`` stays record-only), and neither is a
     root that does not parse. A root whose scheme has no registered backend, or whose
     plugin does not load, IS a rung: it fails its local checks in the walk. Nothing is
     looked up, called or probed here."""
     rungs: list[SandboxRootChoice] = []
     for name, raw in (configured_roots() if roots is None else roots):
         parsed = parse_location(raw)
-        if parsed.url and parsed.refusal is None:
+        if (parsed.url or parsed.scheme == "local") and parsed.refusal is None:
             rungs.append(SandboxRootChoice(
                 parsed.host, parsed.path, False, scheme=parsed.scheme, name=name,
             ))
@@ -441,9 +441,10 @@ def last_rung() -> str:
 
 def _driver_value(key: str, value: object) -> int | None:
     """Validate before conversion, including values beyond Python's decimal digit limit."""
-    limit = sys.maxsize if key == "max_live_workers" else int(threading.TIMEOUT_MAX // 2)
+    positive = key not in {"admit_wait_s", "transfer_allowance_s"}
+    limit = sys.maxsize if positive else int(threading.TIMEOUT_MAX // 2)
     if type(value) is int:
-        if key == "max_live_workers":
+        if positive:
             if not 0 < value <= limit:
                 raise SandboxConfigError("sandbox_config_invalid") from None
             return value
@@ -459,7 +460,7 @@ def _driver_value(key: str, value: object) -> int | None:
     digits = text.lstrip("+-").lstrip("0") or "0"
     maximum = str(limit)
     oversized = (len(digits), digits) > (len(maximum), maximum)
-    if key == "max_live_workers":
+    if positive:
         if negative or digits == "0" or oversized:
             raise SandboxConfigError("sandbox_config_invalid") from None
     elif negative:
@@ -474,9 +475,13 @@ class PlacementDriverSettings:
     admit_wait_s: int
     transfer_allowance_s: int
     max_live_workers: int
+    local_min_memory_bytes: int = 1073741824
+    local_max_load_per_cpu_percent: int = 100
+    local_max_live_sandboxes: int = 4
+    capacity_max_age_s: int = 5
 
     def __post_init__(self) -> None:
-        for key in ("admit_wait_s", "transfer_allowance_s", "max_live_workers"):
+        for key in self.__dataclass_fields__:
             value = _driver_value(key, getattr(self, key))
             if value is None:
                 raise SandboxConfigError("sandbox_config_invalid") from None

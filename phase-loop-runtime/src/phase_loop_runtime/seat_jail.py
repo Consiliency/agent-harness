@@ -232,16 +232,16 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "PHASE_LOOP_SANDBOX_TRANSFER_ALLOWANCE_S or PHASE_LOOP_SANDBOX_ADMIT_WAIT_S"),
     "sandbox_placement_at_capacity": (
         "remote placement not used",
-        "the remote machine answered that it has no free slot until the admission wait ran "
-        "out",
+        "a remote target had no free slot within the admission wait, or this machine lacked "
+        "memory, load or sandbox headroom",
         "run the review again when a slot is free, raise the remote machine's seat limit, "
         "or raise PHASE_LOOP_SANDBOX_ADMIT_WAIT_S"),
     "sandbox_placement_capacity_exhausted": (
         "seat not run",
-        "a remote machine answered that it was full, and a seat that was told \"full\" is "
-        "never moved to this machine",
-        "run the review again when the remote machine has a free slot, raise its seat "
-        "limit, or raise PHASE_LOOP_SANDBOX_ADMIT_WAIT_S"),
+        "an earlier build reported that a remote machine said full and the seat was not moved "
+        "here; this build reports sandbox_placement_at_capacity instead",
+        "run the review again when a target has a free slot or this machine has headroom, "
+        "raise a seat limit, or raise PHASE_LOOP_SANDBOX_ADMIT_WAIT_S"),
     "sandbox_placement_not_enrolled": (
         "remote placement not used",
         "the remote machine does not know this user or this machine",
@@ -282,6 +282,14 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "and using its delivered credential until release is confirmed; nothing was retried; "
         "the lease is kept for the reaper. Run `phase-loop placement reap` when the remote "
         "machine answers again"),
+    "sandbox_placement_local_release_unconfirmed": (
+        "cleanup not confirmed",
+        "a slot on this machine may have been reserved and its release was not confirmed",
+        "nothing was moved to another target and nothing was retried; any reservation "
+        "handle the runtime learns of is kept for reconciliation on the decision, its "
+        "pending record or the cancellation, and a pending record that later shows "
+        "released needs nothing more. Check this machine's sandbox count before running "
+        "the review again"),
     "sandbox_placement_lost_after_launch": (
         "seat lost",
         "the seat was started on the remote machine and its result did not come back",

@@ -2,3 +2,7 @@
 admit_wait_s = 600
 transfer_allowance_s = 300
 max_live_workers = 4
+local_min_memory_bytes = 1073741824
+local_max_load_per_cpu_percent = 100
+local_max_live_sandboxes = 4
+capacity_max_age_s = 5

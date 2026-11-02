@@ -190,9 +190,16 @@ def rungs(*schemes: str):
         [(f"r{i + 1}", f"{scheme}://rung-{i + 1}.invalid:7/stage") for i, scheme in enumerate(schemes)])
 
 
+LOCAL_ADMITTED = [("local", "admitted", None)]
+
+
+def local_headroom():
+    return sp.LocalHeadroom(4 * 1024**3, 25, 0, sp._monotonic())
+
+
 def walk(roots, *, last_rung="local", workload="leg", deadline_s=None, required=REQUIRED,
          preflight=lambda: None, seal=None, driver_enabled=True, cancelled=None, prepared=None,
-         open_lease=placement_lease.open_lease, settings=None):
+         open_lease=placement_lease.open_lease, settings=None, local_capacity=None, local_admit=None, local_release=lambda handle: None):
     prepared = prepared if prepared is not None else prepared_stage(Path("/nonexistent/stage"))
 
     def request_for(root):
@@ -209,6 +216,10 @@ def walk(roots, *, last_rung="local", workload="leg", deadline_s=None, required=
         seal=seal if seal is not None else exec_spec, driver_enabled=driver_enabled,
         cancelled=cancelled if cancelled is not None else threading.Event(),
         settings=settings,
+        local_capacity=local_capacity or local_headroom,
+        local_admit=local_admit or (lambda settings, bound: sp.LocalAdmission(
+            sp.LocalReservation("test-slot"), local_headroom())),
+        local_release=local_release,
     )
 
 
@@ -233,12 +244,12 @@ def raises(code: str, reason: str = ""):
 
 def test_the_runtimes_capacity_code_is_capacity(far, monkeypatch):
     """One capacity code, the runtime's. With the wait spent the rung is left "capacity"
-    and the launching host is barred."""
+    and local may admit only with headroom."""
     monkeypatch.setenv("PHASE_LOOP_SANDBOX_ADMIT_WAIT_S", "0")
     far.behave["admit"] = raises(CAPACITY)
     decision = walk(rungs("drv"))
-    assert (decision.outcome, decision.code) == ("not_run", EXHAUSTED)
-    assert summary(decision.trail) == [("r1", "capacity", CAPACITY)]
+    assert (decision.outcome, decision.code) == ("launching_host", None)
+    assert summary(decision.trail) == [("r1", "capacity", CAPACITY)] + LOCAL_ADMITTED
     assert "kill" not in far.calls and lease_files() == []
 
 
@@ -247,7 +258,7 @@ def test_a_registered_code_is_a_refusal_and_never_capacity(far):
     far.behave["admit"] = raises(OWN_CODE)
     decision = walk(rungs("drv"))
     assert decision.outcome == "launching_host"
-    assert summary(decision.trail) == [("r1", "refused", OWN_CODE)]
+    assert summary(decision.trail) == [("r1", "refused", OWN_CODE)] + LOCAL_ADMITTED
     assert far.calls.count("admit") == 1 and "kill" not in far.calls
     assert lease_files() == []
 
@@ -255,7 +266,7 @@ def test_a_registered_code_is_a_refusal_and_never_capacity(far):
 @pytest.mark.parametrize("code", sorted(sp._BACKEND_REFUSALS))
 def test_the_runtimes_refusal_codes_pass_through(far, code):
     far.behave["admit"] = raises(code)
-    assert summary(walk(rungs("drv")).trail) == [("r1", "refused", code)]
+    assert summary(walk(rungs("drv")).trail) == [("r1", "refused", code)] + LOCAL_ADMITTED
 
 
 @pytest.mark.parametrize("raised", [
@@ -292,7 +303,7 @@ def test_any_other_exception_from_admit_is_no_answer_and_is_released(far):
     far.behave["admit"] = lost
     decision = walk(rungs("drv"))
     assert decision.outcome == "launching_host"
-    assert summary(decision.trail) == [("r1", "refused", REFUSED)]
+    assert summary(decision.trail) == [("r1", "refused", REFUSED)] + LOCAL_ADMITTED
     assert far.calls[-3:] == ["admit", "kill", "list_owned"]
     assert lease_files() == []
 
@@ -370,7 +381,7 @@ def test_unreachable_is_decided_by_the_drivers_own_attempt(far, endpoints, conne
     )
     decision = walk(rungs("drv"))
     assert decision.outcome == "launching_host"
-    assert summary(decision.trail) == [("r1", "unreachable", UNREACHABLE)]
+    assert summary(decision.trail) == [("r1", "unreachable", UNREACHABLE)] + LOCAL_ADMITTED
     assert connections == [far.endpoint_value]
     assert far.calls == ["available", "endpoint", "capabilities", "declaration"]
     assert lease_files() == []
@@ -391,7 +402,7 @@ def test_the_endpoint_is_asked_without_network_and_recorded_beside_the_root(far,
 def test_a_required_capability_that_is_not_declared_fails_the_rung_locally(far):
     far.capability_set = REQUIRED - {"inbound_closed"}
     decision = walk(rungs("drv"))
-    assert summary(decision.trail) == [("r1", "failed_locally", UNMET)]
+    assert summary(decision.trail) == [("r1", "failed_locally", UNMET)] + LOCAL_ADMITTED
     assert "admit" not in far.calls and lease_files() == []
 
 
@@ -399,7 +410,7 @@ def test_a_capability_not_verified_after_commit_is_released(far):
     far.verify = REQUIRED - {"private_ranges_unreachable"}
     decision = walk(rungs("drv"))
     assert decision.outcome == "launching_host"
-    assert summary(decision.trail) == [("r1", "refused", UNMET)]
+    assert summary(decision.trail) == [("r1", "refused", UNMET)] + LOCAL_ADMITTED
     assert far.calls[-3:] == ["commit", "kill", "list_owned"] and "execute" not in far.calls
 
 
@@ -408,7 +419,7 @@ def test_a_bare_receipt_from_commit_verifies_nothing(far):
     verified; a request that requires none is placed."""
     far.behave["commit"] = lambda prepared, request, bound: sp.BackendReceipt(
         "committed", "sbx-bare", prepared.snapshot_sha256)
-    assert summary(walk(rungs("drv")).trail) == [("r1", "refused", UNMET)]
+    assert summary(walk(rungs("drv")).trail) == [("r1", "refused", UNMET)] + LOCAL_ADMITTED
     far.capability_set = frozenset()
     decision = walk(rungs("drv"), required=frozenset())
     assert decision.outcome == "placed" and decision.placement.sandbox_ref == "sbx-bare"
@@ -440,14 +451,14 @@ def test_a_commit_that_fails_is_released_with_its_code(far, fault, code):
     far.behave["commit"] = commit
     decision = walk(rungs("drv"))
     assert decision.outcome == "launching_host"
-    assert summary(decision.trail) == [("r1", "refused", code)]
+    assert summary(decision.trail) == [("r1", "refused", code)] + LOCAL_ADMITTED
     assert far.calls[-3:] == ["commit", "kill", "list_owned"] and lease_files() == []
 
 
 def test_a_deadline_beyond_the_backends_maximum_lifetime_fails_locally(far):
     far.max_lifetime_s = 600.0
     decision = walk(rungs("drv"), deadline_s=601.0)
-    assert summary(decision.trail) == [("r1", "failed_locally", REFUSED)]
+    assert summary(decision.trail) == [("r1", "failed_locally", REFUSED)] + LOCAL_ADMITTED
     assert "admit" not in far.calls
     assert walk(rungs("drv"), deadline_s=600.0).outcome == "placed"
 
@@ -477,7 +488,7 @@ def test_the_other_local_checks(far, monkeypatch, fault, code):
         options["open_lease"] = unwritable
     decision = walk(roots, **options)
     assert decision.outcome == "launching_host"
-    assert summary(decision.trail) == [("r1", "failed_locally", code)]
+    assert summary(decision.trail) == [("r1", "failed_locally", code)] + LOCAL_ADMITTED
     assert not {"admit", "commit", "execute", "kill"} & set(far.calls)
     assert lease_files() == []
 
@@ -497,7 +508,7 @@ def test_the_seal_step_must_return_this_requests_spec_with_a_fixed_end(far):
     for seal in (other_workload, no_end, raising, lambda request: None):
         far.calls.clear()
         decision = walk(rungs("drv"), seal=seal, deadline_s=600.0 if seal is no_end else None)
-        assert summary(decision.trail) == [("r1", "refused", REFUSED)]
+        assert summary(decision.trail) == [("r1", "refused", REFUSED)] + LOCAL_ADMITTED
         assert "execute" not in far.calls and far.calls[-2:] == ["kill", "list_owned"]
 
 
@@ -591,8 +602,15 @@ def test_a_backend_call_that_never_returns_ends_within_its_bound(far, hang, monk
     started = time.monotonic()
     decision = walk(rungs("drv"))
     assert time.monotonic() - started < 6.0
-    assert decision.outcome == "launching_host"
-    assert summary(decision.trail) == [("r1", klass, code)]
+    if klass == "refused_unconfirmed":
+        assert (decision.outcome, decision.code) == ("not_run", UNCONFIRMED)
+        assert summary(decision.trail) == [("r1", klass, code)]
+    elif method == "commit":
+        assert decision.outcome == "not_run"
+        assert summary(decision.trail) == [("r1", klass, code), ("local", "refused", BUDGET)]
+    else:
+        assert decision.outcome == "launching_host"
+        assert summary(decision.trail) == [("r1", klass, code)] + LOCAL_ADMITTED
     if klass == "refused_unconfirmed":
         (path,) = lease_files()
         assert entry_of(path)["abandoned"] is True
@@ -667,7 +685,7 @@ def test_the_last_rung_setting(monkeypatch):
         walk((), last_rung="cloud")
 
 
-def test_candidate_roots_are_the_url_roots_in_the_configured_order(monkeypatch):
+def test_candidate_roots_are_ranked_local_and_url_roots_in_the_configured_order(monkeypatch):
     """A `host:path` root is never a rung: that form stays record-only. Nothing is looked
     up, called or probed."""
     def forbidden(*_args, **_kwargs):
@@ -682,7 +700,8 @@ def test_candidate_roots_are_the_url_roots_in_the_configured_order(monkeypatch):
     ]
     found = sandbox_policy.candidate_roots(configured)
     assert [(root.name, root.scheme, root.host) for root in found] == [
-        ("first", "nobackend", "one.invalid"), ("second", "drv", "two.invalid:2222")]
+        ("first", "nobackend", "one.invalid"), ("path", "local", None),
+        ("second", "drv", "two.invalid:2222")]
     assert all(root.fell_back is False for root in found)
     assert sandbox_policy.candidate_roots([(None, "build-host:/srv/stage")]) == ()
     monkeypatch.setenv("PHASE_LOOP_SANDBOX_ROOT", "drv://only.invalid/stage")
@@ -725,12 +744,12 @@ PLAN_CODES = (
     "sandbox_placement_workload_unsupported", "sandbox_placement_operation_timeout",
     "sandbox_placement_code_invalid", "sandbox_placement_release_unconfirmed",
     "sandbox_placement_at_capacity", "sandbox_placement_budget_spent",
-    "seat_placement_waiting",
+    "seat_placement_waiting", "sandbox_placement_local_release_unconfirmed",
 )
 
 
 def test_the_runtimes_code_list_is_the_plans():
-    assert sp.PLACEMENT_CODES == frozenset(PLAN_CODES) and len(PLAN_CODES) == 21
+    assert sp.PLACEMENT_CODES == frozenset(PLAN_CODES) and len(PLAN_CODES) == 22
 
 
 def test_the_flag_is_still_off_and_the_launch_site_does_not_call_the_driver():
@@ -1041,7 +1060,7 @@ def test_run_placed_takes_only_a_launched_placement(far):
 
 def test_implementation_is_gated_and_never_applied(far):
     decision = walk(rungs("drv"), workload="implementation", driver_enabled=False)
-    assert summary(decision.trail) == [("r1", "failed_locally", DRIVER)] and far.calls == []
+    assert summary(decision.trail) == [("r1", "failed_locally", DRIVER)] + LOCAL_ADMITTED and far.calls == []
     placement = _placed(far, workload="implementation", driver_enabled=True)
     sp.run_placed(placement, on_progress=None, cancelled=threading.Event())
     assert _applied(placement) == (False, "a non-leg workload is never an applied placement")
@@ -1063,7 +1082,7 @@ def test_a_qualification_request_is_driven_while_the_flag_is_false(far):
 
     far.calls.clear()
     decision = walk(rungs("drv"), workload="leg", driver_enabled=False)
-    assert summary(decision.trail) == [("r1", "failed_locally", DRIVER)] and far.calls == []
+    assert summary(decision.trail) == [("r1", "failed_locally", DRIVER)] + LOCAL_ADMITTED and far.calls == []
 
 
 def test_a_leg_receipt_keeps_todays_record_shape():
@@ -1078,15 +1097,13 @@ def test_a_leg_receipt_keeps_todays_record_shape():
 # agent-harness#1492 board round 1: the president's findings, as named tests.
 # --------------------------------------------------------------------------------------
 
-def test_a_capacity_answer_from_commit_never_sends_the_seat_to_the_launching_host(far):
-    """codex F006. A capacity code raised by `commit` sets the capacity bar (C7: the first
-    capacity answer on any rung), so the seat is not run rather than run on this machine;
-    the slot is released as a failed transfer. Mutation: the bar is not set on a
-    commit-time capacity code."""
+def test_a_capacity_answer_from_commit_allows_local_with_headroom_after_release(far):
+    """codex F006. A capacity code raised by `commit` releases the failed transfer before
+    local admission. Mutation: reinstate the capacity bar, or skip release."""
     far.behave["commit"] = raises(CAPACITY)
     decision = walk(rungs("drv"), last_rung="local")
-    assert (decision.outcome, decision.code) == ("not_run", EXHAUSTED)
-    assert summary(decision.trail) == [("r1", "refused", CAPACITY)]
+    assert (decision.outcome, decision.code) == ("launching_host", None)
+    assert summary(decision.trail) == [("r1", "refused", CAPACITY)] + LOCAL_ADMITTED
     assert far.calls[-3:] == ["commit", "kill", "list_owned"] and "execute" not in far.calls
     assert decision.notices == () and lease_files() == []
 
@@ -1258,7 +1275,7 @@ def test_seal_is_bounded_and_late_spec_is_discarded(far, monkeypatch, cancel):
         if cancel:
             assert isinstance(outcomes[0], sp.PlacementCancelled)
         else:
-            assert summary(outcomes[0].trail) == [("r1", "refused", BUDGET)]
+            assert summary(outcomes[0].trail) == [("r1", "refused", BUDGET), ("local", "refused", BUDGET)]
     finally:
         release.set()
         thread.join(3)
@@ -1268,7 +1285,7 @@ def test_seal_is_bounded_and_late_spec_is_discarded(far, monkeypatch, cancel):
 
 def test_seal_timeout_with_remaining_budget_is_refused(far):
     decision = walk(rungs("drv"), seal=raises(TIMEOUT))
-    assert summary(decision.trail) == [("r1", "refused", REFUSED)]
+    assert summary(decision.trail) == [("r1", "refused", REFUSED)] + LOCAL_ADMITTED
     assert "execute" not in far.calls
     assert "kill" in far.calls and lease_files() == []
 
@@ -1351,14 +1368,13 @@ def test_worker_exhaustion_preserves_ladder_and_fenced_evidence(far, second, mon
     settings = sandbox_policy.PlacementDriverSettings(11, 13, 1 if capacity else 2)
     try:
         decision = walk(rungs("drv", "drw"), settings=settings, last_rung=last_rung)
-        assert summary(decision.trail)[-1] == ("r2", "failed_locally", REFUSED)
-        assert "admit" not in second.calls
+        assert summary(decision.trail) == [
+            ("r1", "refused_unconfirmed", CAPACITY if capacity else TIMEOUT)]
+        assert second.calls == []
         assert not any(row["code"] == UNREACHABLE for row in decision.trail)
         assert len(lease_files()) == 1
         assert entry_of(lease_files()[0])["abandoned"] is True
-        assert decision.outcome == ("not_run" if capacity or last_rung == "none" else "launching_host")
-        if capacity and last_rung == "local":
-            assert decision.code == EXHAUSTED
+        assert (decision.outcome, decision.code) == ("not_run", UNCONFIRMED)
     finally:
         release.set()
         for thread in threads:
@@ -1382,7 +1398,9 @@ def test_readiness_failure_precedes_probe_and_lease(far, monkeypatch, cancel):
             walk(rungs("drv"), cancelled=cancelled)
     else:
         decision = walk(rungs("drv"))
-        assert summary(decision.trail) == [("r1", "failed_locally", REFUSED)]
+        assert summary(decision.trail) == [
+            ("r1", "failed_locally", REFUSED), ("local", "capacity", CAPACITY)]
+        assert decision.code == CAPACITY
     assert lease_files() == [] and "admit" not in far.calls
 
 
@@ -1432,7 +1450,7 @@ def test_seal_uses_whole_budget_and_execute_only_the_remainder(far, monkeypatch,
 
     decision = walk(rungs("drv"), seal=seal)
     if remaining == 0:
-        assert decision.outcome == "launching_host" and "execute" not in far.calls
+        assert decision.outcome == "not_run" and "execute" not in far.calls
     else:
         assert decision.outcome == "placed"
         assert far.seen["execute"][0][2].timeout_s == min(sp.ANSWER_BOUND_S, remaining)

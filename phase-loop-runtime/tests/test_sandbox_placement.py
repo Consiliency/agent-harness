@@ -22,6 +22,7 @@ import pytest
 
 from phase_loop_runtime import (
     panel_invoker,
+    placement_lease,
     review_stage,
     sandbox_egress,
     sandbox_policy,
@@ -1441,3 +1442,429 @@ def test_board_loading_refuses_a_malformed_sandbox_table(tmp_path):
         )
     path.write_text('[sandbox]\nroots.self-hosted = "https://h/p"\n', encoding="utf-8")
     config.load_boards(path, validate=False, is_available=lambda _: True, auth_ok=lambda _: True)
+
+# OSCOORD2 SL-0: ranked local uses fresh three-dimensional headroom and admission.
+def _headroom(**changes):
+    values = dict(memory_available_bytes=4 * 1024**3, load_per_cpu_percent=25,
+                  live_sandboxes=0, observed_monotonic=sandbox_placement._monotonic())
+    values.update(changes)
+    return sandbox_placement.LocalHeadroom(**values)
+
+
+def _reserved(**changes):
+    return sandbox_placement.LocalAdmission(sandbox_placement.LocalReservation('test-slot'),
+                                             _headroom(**changes))
+
+
+def _ranked_walk(monkeypatch, *, readings=None, admission=None, roots=None):
+    reading = _headroom() if readings is None else readings
+    roots = sandbox_policy.candidate_roots([('local', '/stage')]) if roots is None else roots
+    return _sl0_walk(roots, last_rung='none', required=frozenset(),
+                settings=sandbox_policy.PlacementDriverSettings(0, 30, 4),
+                local_capacity=lambda: reading,
+                local_admit=admission or (lambda settings, bound: _reserved()))
+
+
+def test_ranked_local_candidate_position():
+    roots = sandbox_policy.candidate_roots([
+        ('ai', 'drv://ai.invalid/stage'), ('local', '/stage'),
+        ('overflow', 'drw://overflow.invalid/stage')])
+    assert [root.scheme for root in roots] == ['drv', 'local', 'drw']
+
+
+def test_capacity_then_local_with_headroom_before_overflow(tmp_path, monkeypatch):
+    from test_placement_driver import FarSide, rungs, raises, CAPACITY
+    far = FarSide('drv', None)
+    far.behave['admit'] = raises(CAPACITY)
+    monkeypatch.setitem(sandbox_placement._REGISTRY, 'drv', far)
+    local = sandbox_policy.SandboxRootChoice(None, '/stage', False, scheme='local', name='local')
+    admitted = []
+    decision = _sl0_walk((*rungs('drv'), local, *rungs('missing')), last_rung='none',
+                    settings=sandbox_policy.PlacementDriverSettings(0, 30, 4),
+                    local_capacity=lambda: _headroom(),
+                    local_admit=lambda settings, bound: admitted.append(True) or _reserved())
+    assert decision.outcome == 'launching_host'
+    assert admitted == [True]
+    assert [entry['rung'] for entry in decision.trail] == ['r1', 'local']
+    assert decision.trail[0]['code'] == CAPACITY
+
+
+@pytest.mark.parametrize('changes', [
+    {'memory_available_bytes': None}, {'load_per_cpu_percent': None},
+    {'live_sandboxes': None}, {'observed_monotonic': -1000},
+    {'memory_available_bytes': 0}, {'load_per_cpu_percent': 100},
+    {'live_sandboxes': 4}, {'load_per_cpu_percent': float('nan')},
+])
+def test_ranked_local_refuses_unknown_stale_or_full(monkeypatch, changes):
+    admitted = []
+    decision = _ranked_walk(monkeypatch, readings=_headroom(**changes),
+                            admission=lambda *args: admitted.append(True))
+    assert decision.outcome == 'not_run'
+    assert not admitted
+
+
+def test_local_read_admit_race_never_uses_advisory_slot(monkeypatch):
+    from test_placement_driver import raises, CAPACITY
+    decision = _ranked_walk(monkeypatch, admission=raises(CAPACITY))
+    assert decision.outcome == 'not_run'
+    assert decision.trail[-1]['code'] == CAPACITY
+
+
+def test_local_requires_authoritative_fresh_headroom(monkeypatch):
+    decision = _ranked_walk(monkeypatch, admission=lambda *args: _reserved(live_sandboxes=4))
+    assert decision.outcome == 'not_run'
+
+
+def test_ranked_local_respects_remote_required(monkeypatch):
+    monkeypatch.setenv('PHASE_LOOP_SANDBOX_REMOTE_REQUIRED', '1')
+    assert _ranked_walk(monkeypatch).outcome == 'not_run'
+
+
+def _sl0_walk(roots, *, local_capacity=None, local_admit=None, local_release=lambda handle: None, **kwargs):
+    from test_placement_driver import prepared_stage, exec_spec
+    prepared = prepared_stage(Path('/nonexistent/stage'))
+    return sandbox_placement.place(
+        roots, kwargs.pop('last_rung', 'none'), prepared,
+        lambda root: sandbox_placement.PlacementRequest(
+            'codex', 'codex:a', '/repo', prepared.snapshot_sha256, None,
+            sandbox_placement.EgressNeeds()),
+        placement_lease.open_lease, preflight=kwargs.get("preflight", lambda: None), seal=exec_spec,
+        driver_enabled=True, cancelled=kwargs.get("cancelled", threading.Event()),
+        local_capacity=local_capacity, local_admit=local_admit, local_release=local_release,
+        settings=kwargs.get('settings'))
+
+
+def test_local_refusal_overflows_only_after_authoritative_answer(monkeypatch):
+    from test_placement_driver import FarSide, rungs, raises, CAPACITY
+    backend = FarSide('drv', None)
+    monkeypatch.setitem(sandbox_placement._REGISTRY, 'drv', backend)
+    local = sandbox_policy.candidate_roots([('local', '/stage')])[0]
+    decision = _sl0_walk((local, *rungs('drv')), local_capacity=lambda: _headroom(),
+                    local_admit=raises(CAPACITY),
+                    settings=sandbox_policy.PlacementDriverSettings(0, 30, 4))
+    assert decision.outcome == 'placed'
+    assert decision.trail[0]['code'] == CAPACITY
+    sandbox_placement.run_placed(decision.placement, on_progress=None,
+                                 cancelled=threading.Event())
+
+
+def test_uncertain_local_admission_stops_overflow(monkeypatch):
+    from test_placement_driver import raises, TIMEOUT, rungs
+    local = sandbox_policy.candidate_roots([('local', '/stage')])[0]
+    decision = _ranked_walk(monkeypatch, admission=raises(TIMEOUT), roots=(local, *rungs('missing')))
+    assert decision.code == 'sandbox_placement_local_release_unconfirmed'
+    assert len(decision.trail) == 1
+
+
+@pytest.mark.parametrize('confirmed', [True, False])
+def test_release_before_ranked_local(monkeypatch, confirmed):
+    from test_placement_driver import FarSide, rungs, raises, REFUSED
+    backend = FarSide('drv', None)
+    backend.behave['commit'] = raises(REFUSED)
+    events = []
+    def kill(*args):
+        events.append('kill')
+        if not confirmed:
+            raise RuntimeError('unconfirmed')
+        backend.held.clear()
+    backend.behave['kill'] = kill
+    monkeypatch.setitem(sandbox_placement._REGISTRY, 'drv', backend)
+    local = sandbox_policy.candidate_roots([('local', '/stage')])[0]
+    decision = _sl0_walk((*rungs('drv'), local), local_capacity=lambda: _headroom(),
+                    local_admit=lambda *args: events.append('local') or _reserved(),
+                    settings=sandbox_policy.PlacementDriverSettings(0, 30, 4))
+    assert decision.outcome == ('launching_host' if confirmed else 'not_run')
+    assert events == (['kill', 'local'] if confirmed else ['kill'])
+
+
+def test_capacity_then_full_local_then_overflow(monkeypatch):
+    from test_placement_driver import FarSide, rungs, raises, CAPACITY
+    full = FarSide('drv', None)
+    overflow = FarSide('drw', None)
+    full.behave['admit'] = raises(CAPACITY)
+    monkeypatch.setitem(sandbox_placement._REGISTRY, 'drv', full)
+    monkeypatch.setitem(sandbox_placement._REGISTRY, 'drw', overflow)
+    local = sandbox_policy.candidate_roots([('local', '/stage')])[0]
+    decision = _sl0_walk((*rungs('drv'), local, *rungs('drw')),
+                         local_capacity=lambda: _headroom(memory_available_bytes=0),
+                         local_admit=lambda *args: pytest.fail('full local admitted'),
+                         settings=sandbox_policy.PlacementDriverSettings(0, 30, 4))
+    assert decision.outcome == 'placed'
+    assert [entry['code'] for entry in decision.trail[:2]] == [CAPACITY, CAPACITY]
+    sandbox_placement.run_placed(decision.placement, on_progress=None, cancelled=threading.Event())
+
+
+def test_missing_local_inventory_and_admission_refuse(monkeypatch):
+    local = sandbox_policy.candidate_roots([('local', '/stage')])[0]
+    assert _sl0_walk((local,)).outcome == 'not_run'
+
+
+def test_local_authoritative_stale_reservation_releases_before_overflow(monkeypatch):
+    from test_placement_driver import rungs
+    local = sandbox_policy.candidate_roots([('local', '/stage')])[0]
+    decision = _ranked_walk(monkeypatch, admission=lambda *args: _reserved(observed_monotonic=-1000),
+                            roots=(local, *rungs('missing')))
+    assert decision.code == 'sandbox_placement_backend_unregistered'
+    assert len(decision.trail) == 2
+
+
+@pytest.mark.parametrize('case', [
+    'ok', 'stale', 'full', 'budget', 'cancel', 'raise', 'timeout',
+    'release-fail', 'release-timeout', 'cancel-release-fail',
+    'no-handle', 'missing-handle', 'invalid-handle', 'probe-raise', 'probe-timeout', 'probe-budget',
+    'policy-refusal', 'reading-raise', 'probe-validation-budget',
+])
+def test_local_reservation_lifecycle_property(monkeypatch, case):
+    """Grok r1: a slot is either launched, released, or explicitly uncertain.
+
+    Advance the clock in both local calls, inject every local admission/release
+    outcome, and observe held slots independently of the driver's result/trail.
+    """
+    from test_placement_driver import rungs
+    sp = sandbox_placement
+    clock = [100.0]
+    monkeypatch.setattr(sp, '_monotonic', lambda: clock[0])
+    monkeypatch.setattr(sp, 'ANSWER_BOUND_S', 0.02)
+    cancelled, finish_release, released = threading.Event(), threading.Event(), threading.Event()
+    held, calls, bounds = set(), [], []
+    handle = sp.LocalReservation('review-slot')
+    required = [False]
+    monkeypatch.setattr(sandbox_policy, 'remote_required', lambda: required[0])
+
+    class AdvancingReading(sp.LocalHeadroom):
+        def admits(self, settings):
+            clock[0] += 1
+            return True
+
+    class BrokenReading(sp.LocalHeadroom):
+        def admits(self, settings):
+            raise RuntimeError('malformed authoritative reading')
+
+    def capacity():
+        calls.append('capacity')
+        if case == 'probe-raise':
+            raise RuntimeError('unknown reading')
+        if case == 'probe-timeout':
+            finish_release.wait(1)
+        if case == 'probe-budget':
+            clock[0] += 1
+        if case == 'probe-validation-budget':
+            return AdvancingReading(4 * 1024**3, 25, 0, clock[0])
+        return _headroom()
+
+    def admit(settings, bound):
+        calls.append('admit')
+        bounds.append(bound)
+        if case == 'no-handle':
+            return _headroom(live_sandboxes=3)  # No slot was reserved.
+        if case == 'missing-handle':
+            return sp.LocalAdmission(None, _headroom())
+        if case == 'invalid-handle':
+            return sp.LocalAdmission(object(), _headroom())
+        held.add(handle)
+        if case == 'raise':
+            raise RuntimeError('reply lost after reserve')
+        if case == 'timeout':
+            assert bound.cancelled.wait(1), 'abandoned admission was not cancelled'
+        if case == 'budget':
+            clock[0] += 1
+        if case == 'policy-refusal':
+            required[0] = True
+        if case in {'cancel', 'cancel-release-fail'}:
+            cancelled.set()
+        changes = {}
+        if case in {'stale', 'release-fail', 'release-timeout', 'cancel-release-fail'}:
+            changes['observed_monotonic'] = 90
+        if case == 'full':
+            changes['memory_available_bytes'] = 0
+        reading = (BrokenReading(4 * 1024**3, 25, 0, clock[0])
+                   if case == 'reading-raise' else _headroom(**changes))
+        return sp.LocalAdmission(handle, reading)
+
+    def release(slot):
+        assert slot is handle
+        calls.append('release')
+        if case in {'release-fail', 'cancel-release-fail'}:
+            raise RuntimeError('release failed')
+        if case == 'release-timeout':
+            finish_release.wait(1)
+        held.remove(slot)
+        released.set()
+
+    local = sandbox_policy.candidate_roots([('local', '/stage')])[0]
+    try:
+        if case in {'cancel', 'cancel-release-fail'}:
+            with pytest.raises(sp.PlacementCancelled) as caught:
+                _sl0_walk((local, *rungs('missing')), local_capacity=capacity,
+                          local_admit=admit, local_release=release, cancelled=cancelled,
+                          settings=sandbox_policy.PlacementDriverSettings(0, 1, 4))
+            assert calls == ['capacity', 'admit', 'release']
+            assert bounds[0].cancelled.is_set()
+            assert caught.value.trail[-1]['release_confirmed'] is (case == 'cancel')
+            if case == 'cancel':
+                assert not held
+            else:
+                assert caught.value.trail[-1]['code'] == sp._LOCAL_RELEASE_UNCONFIRMED
+                assert caught.value.local_reservation is handle
+            return
+        decision = _sl0_walk((local, *rungs('missing')), local_capacity=capacity,
+                             local_admit=admit, local_release=release, cancelled=cancelled,
+                             settings=sandbox_policy.PlacementDriverSettings(0, 1, 4))
+        if case == 'ok':
+            assert decision.outcome == 'launching_host'
+            assert decision.local_reservation is handle and held == {handle}
+            assert calls == ['capacity', 'admit']
+            release(decision.local_reservation)  # Caller owns cleanup after launch.
+        elif case in {'raise', 'timeout', 'release-fail', 'release-timeout'}:
+            assert decision.outcome == 'not_run'
+            assert decision.code == sp._LOCAL_RELEASE_UNCONFIRMED
+            assert decision.trail[-1]['code'] == sp._LOCAL_RELEASE_UNCONFIRMED
+            assert len(decision.trail) == 1
+            assert bounds[0].cancelled.is_set()
+            if case == 'timeout':
+                assert released.wait(1), 'late returned reservation was leaked'
+                assert not held
+            if case in {'raise', 'release-fail'}:
+                assert held == {handle}
+            if case in {'release-fail', 'release-timeout'}:
+                assert decision.local_reservation is handle
+                assert calls == ['capacity', 'admit', 'release']
+        elif case in {'budget', 'probe-budget', 'probe-validation-budget'}:
+            assert decision.code == 'sandbox_placement_budget_spent'
+            assert len(decision.trail) == 1
+            assert not held
+            assert calls == (['capacity', 'admit', 'release'] if case == 'budget' else ['capacity'])
+        elif case == 'policy-refusal':
+            assert decision.code == 'sandbox_placement_required_unavailable'
+            assert not held and calls == ['capacity', 'admit', 'release']
+        else:
+            assert decision.code == 'sandbox_placement_backend_unregistered'
+            assert len(decision.trail) == 2  # Nothing held: continue to next ranked target.
+            assert not held
+            if case in {'stale', 'full', 'reading-raise'}:
+                assert calls == ['capacity', 'admit', 'release']
+            if case.startswith('probe-'):
+                assert calls == ['capacity']
+    finally:
+        finish_release.set()
+        if case == 'release-timeout':
+            assert released.wait(1)
+
+
+@pytest.mark.parametrize('missing', ['local_capacity', 'local_admit', 'local_release'])
+def test_missing_local_hook_refuses_before_reserving(missing):
+    local = sandbox_policy.candidate_roots([('local', '/stage')])[0]
+    hooks = dict(local_capacity=lambda: pytest.fail('probe with a missing hook'),
+                 local_admit=lambda *args: pytest.fail('admit with a missing hook'),
+                 local_release=lambda handle: pytest.fail('release with nothing held'))
+    hooks[missing] = None
+    decision = _sl0_walk((local,), **hooks)
+    assert decision.outcome == 'not_run'
+    assert decision.local_reservation is None
+    assert decision.code == 'sandbox_placement_refused'
+
+
+def test_compatibility_local_preserves_budget_reason(monkeypatch):
+    sp = sandbox_placement
+    clock = [0.0]
+    monkeypatch.setattr(sp, '_monotonic', lambda: clock[0])
+    def capacity():
+        clock[0] = 1.0
+        return _headroom()
+    result = _sl0_walk((), last_rung='local', local_capacity=capacity,
+                       local_admit=lambda *args: pytest.fail('admit after budget'),
+                       local_release=lambda handle: pytest.fail('nothing held'),
+                       settings=sandbox_policy.PlacementDriverSettings(0, 1, 4))
+    assert result.code == 'sandbox_placement_budget_spent'
+    assert result.code == result.trail[-1]['code']
+
+
+@pytest.mark.parametrize('case', ['success', 'no-handle', 'release-raises', 'release-hangs',
+                                  'admit-raises', 'cancel-release-raises'])
+def test_late_local_reservation_handoff(monkeypatch, case):
+    """A late slot is released or retained, including abandoned cleanup workers."""
+    sp = sandbox_placement
+    monkeypatch.setattr(sp, 'ANSWER_BOUND_S', 0.02)
+    admit_started, finish_admit = threading.Event(), threading.Event()
+    finish_release, release_done = threading.Event(), threading.Event()
+    cancelled = threading.Event()
+    handle = sp.LocalReservation('late-slot')
+    held = set()
+    results = []
+
+    def admit(settings, bound):
+        admit_started.set()
+        assert finish_admit.wait(2)
+        if case == 'admit-raises':
+            raise RuntimeError('admission failed without a handle')
+        if case == 'no-handle':
+            return sp.LocalAdmission(None, _headroom())
+        held.add(handle)
+        return sp.LocalAdmission(handle, _headroom())
+
+    def release(slot):
+        assert slot in held
+        if case in {'release-raises', 'cancel-release-raises'}:
+            raise RuntimeError('release failed')
+        if case == 'release-hangs':
+            assert finish_release.wait(2)
+        held.remove(slot)
+        release_done.set()
+
+    def walk():
+        try:
+            results.append(_sl0_walk((), last_rung='local', local_capacity=_headroom,
+                                     local_admit=admit, local_release=release,
+                                     cancelled=cancelled))
+        except sp.PlacementCancelled as exc:
+            results.append(exc)
+
+    worker = threading.Thread(target=walk)
+    worker.start()
+    try:
+        assert admit_started.wait(1)
+        if case == 'cancel-release-raises':
+            cancelled.set()  # After admission starts, before its late release.
+        worker.join(1)
+        assert not worker.is_alive()
+        result = results[0]
+        if case == 'cancel-release-raises':
+            assert isinstance(result, sp.PlacementCancelled)
+        else:
+            assert result.code == 'sandbox_placement_local_release_unconfirmed'
+        pending = result.pending_local_reservation
+        assert pending.inspect() == ('pending', None)
+        assert pending.wait(0) == ('pending', None)
+        finish_admit.set()
+        expected = ('none_returned' if case in {'admit-raises', 'no-handle'} else
+                    'released' if case == 'success' else 'retained')
+        assert pending.wait(1) == (expected, handle if expected == 'retained' else None)
+        assert held == ({handle} if expected == 'retained' else set())
+    finally:
+        finish_admit.set()
+        finish_release.set()
+        worker.join(1)
+        if case == 'release-hangs':
+            assert release_done.wait(1)
+            assert pending.inspect() == ('retained', handle)
+
+
+@pytest.mark.parametrize('budget_spent', [False, True])
+def test_preflight_code_survives_compatibility_local_refusal(monkeypatch, budget_spent):
+    sp = sandbox_placement
+    clock = [0.0]
+    monkeypatch.setattr(sp, '_monotonic', lambda: clock[0])
+
+    def capacity():
+        if budget_spent:
+            clock[0] = 1.0
+        return _headroom(memory_available_bytes=0)
+
+    result = _sl0_walk((), last_rung='local',
+                       preflight=lambda: 'seat_credential_below_floor',
+                       local_capacity=capacity,
+                       local_admit=lambda *args: pytest.fail('refused local admitted'),
+                       settings=sandbox_policy.PlacementDriverSettings(0, 1, 4))
+    assert result.code == 'seat_credential_below_floor'
+    assert result.trail[-1]['code'] == ('sandbox_placement_budget_spent' if budget_spent
+                                       else 'sandbox_placement_at_capacity')

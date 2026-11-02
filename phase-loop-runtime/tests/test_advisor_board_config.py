@@ -459,7 +459,9 @@ def test_packaged_driver_settings_are_the_authority(tmp_path, monkeypatch):
 
     resource = tmp_path / "fixtures" / "placement-driver.defaults.toml"
     resource.parent.mkdir()
-    resource.write_text('[sandbox.driver]\nadmit_wait_s = 37\ntransfer_allowance_s = 41\nmax_live_workers = 2\n')
+    resource.write_text('[sandbox.driver]\nadmit_wait_s = 37\ntransfer_allowance_s = 41\nmax_live_workers = 2\n'
+                        'local_min_memory_bytes = 1024\nlocal_max_load_per_cpu_percent = 90\n'
+                        'local_max_live_sandboxes = 2\ncapacity_max_age_s = 5\n')
     monkeypatch.setattr(config.resources, "files", lambda package: tmp_path)
     monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_path / "absent"))
     for name in ("ADMIT_WAIT_S", "TRANSFER_ALLOWANCE_S"):
@@ -559,3 +561,20 @@ def test_driver_defaults_have_no_code_or_current_prose_duplicates():
 
 if __name__ == "__main__":
     unittest.main()
+
+
+def test_governed_local_headroom_settings(tmp_path):
+    from phase_loop_runtime import sandbox_policy
+    defaults = sandbox_policy.placement_driver_settings(env={})
+    assert defaults.local_min_memory_bytes == 1024**3
+    assert defaults.local_max_load_per_cpu_percent == 100
+    assert defaults.local_max_live_sandboxes == 4
+    assert defaults.capacity_max_age_s == 5
+    user = tmp_path / 'user.toml'
+    user.write_text('[sandbox.driver]\nlocal_max_live_sandboxes = 2\n')
+    repo = tmp_path / 'repo'
+    (repo / '.agent-harness').mkdir(parents=True)
+    (repo / '.agent-harness/advisor-boards.toml').write_text(
+        '[sandbox.driver]\nlocal_max_live_sandboxes = 3\n')
+    assert sandbox_policy.placement_driver_settings(repo, path=user, env={}).local_max_live_sandboxes == 3
+    assert sandbox_policy.placement_driver_settings(path=user, env={}).local_max_live_sandboxes == 2
