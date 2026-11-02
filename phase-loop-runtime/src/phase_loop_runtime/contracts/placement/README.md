@@ -12,8 +12,9 @@ TypeScript compiler or bundler; Node's native type stripping can load it.
 The header records the source digest and pinned baml-cli version. The vendoring
 commit identifies the agent-harness revision without self-referential SHA churn.
 
-Coordinator v1 follows agent-harness#1795 revisions 6–8: revision 6 is the wire
-schema, revision 7 adds `unavailable`, revision 8 makes exposures HTTP only.
+Coordinator v1 follows agent-harness#1795 revisions 6–9: revision 6 is the wire
+schema, revision 7 adds `unavailable`, revision 8 makes exposures HTTP only, and
+revision 9 adds the reserve and renew bodies and reclaim records.
 Select a schema with `$ref: '#/$defs/CreateBody'` (or the other wire type) and
 include `$defs`. Requests reject unknown properties; responses allow them. Use a
 format checker for UUID and timestamp validation. In responses and non-request
@@ -82,3 +83,11 @@ lowercase hex (`sha256`). On the wire, `policy_digest` is `"sha256:" + hex`.
 
 **Timestamps:** `expires_at` is RFC 3339 UTC with seconds 00–59. Leap seconds
 (`:60`) are refused so that every validator agrees (agent-harness#1797).
+
+**Revision 9:** `ReserveBody` (`workload`, `ttl_s` 1–3600, `image_digest`,
+`policy_digest`) and `RenewBody` (`extend_s` 1–3600) are request types, with
+**no `client` or `owner` field**: both come from the certificate. Reserve and
+renew answer with a `LeaseStatus`. `LeaseStatus.reclaims` may be absent but is
+never `null`. Each `ReclaimRecord` carries a closed `reason` (`unbound`,
+`duplicate_binding`, `lease_expired`, `lease_fenced`, `recovery_orphan`) and an
+`outcome` (`destroyed`, `destroy_pending`).

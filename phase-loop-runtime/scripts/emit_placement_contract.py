@@ -66,7 +66,9 @@ def emit(source: bytes) -> dict[str, bytes]:
               '// Generated; do not edit.\n\n')
     ts = header + 'export type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue };\n\n'
     defs = {}
-    REQUESTS = {'CreateBody', 'ServiceExposure', 'InventoryQuery', 'DeadlineHeaders'}
+    REQUESTS = {'CreateBody', 'ServiceExposure', 'InventoryQuery', 'DeadlineHeaders', 'ReserveBody', 'RenewBody'}
+    # Response fields that may be absent but are never null (revision 9).
+    OMITTABLE_RESPONSE_FIELDS = {('LeaseStatus', 'reclaims')}
 
     def field_schema(typ):
         # Mirrors baml_modular._schema_for_baml_field: primitive types, nullable
@@ -102,7 +104,7 @@ def emit(source: bytes) -> dict[str, bytes]:
             ts_type = {'string': 'string', 'int': 'number', 'bool': 'boolean', JSON_OBJECT: '{ [key: string]: JsonValue }'}.get(base, base)
             # Wire response nullables are required keys (revision 6 examples).
             nullable_required = name in {'ErrorBody', 'LeaseStatus', 'InventoryPage'}
-            if is_request and optional:
+            if optional and (is_request or (name, member) in OMITTABLE_RESPONSE_FIELDS):
                 # Request optionals may be omitted but never sent as null.
                 ts += f'  {json.dumps(wire)}?: ' + ts_type + ';\n'
                 properties[wire] = field_schema(base)
@@ -131,6 +133,12 @@ def emit(source: bytes) -> dict[str, bytes]:
     constrain('Binding', 'label_matches', minimum=0)
     constrain('LeaseStatus', 'expires_at', format='date-time', pattern=r'^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:[Zz]|\+00:00)$')
     constrain('LeaseStatus', 'sandbox_id', format='uuid')
+    constrain('ReserveBody', 'ttl_s', minimum=1, maximum=3600)
+    constrain('ReserveBody', 'image_digest', pattern=r'^sha256:[0-9a-f]{64}$')
+    constrain('ReserveBody', 'policy_digest', pattern=r'^sha256:[0-9a-f]{64}$')
+    constrain('RenewBody', 'extend_s', minimum=1, maximum=3600)
+    constrain('ReclaimRecord', 'sandbox_id', format='uuid')
+    constrain('ReclaimRecord', 'at', format='date-time', pattern=r'^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:[Zz]|\+00:00)$')
     defs['Binding']['properties']['duplicates']['items']['format'] = 'uuid'
     for cls, fields in {'CapacityReading': ['free', 'ceiling'], 'Limits': ['max_ttl_s', 'max_extend_s', 'max_lifetime_s']}.items():
         for field in fields:

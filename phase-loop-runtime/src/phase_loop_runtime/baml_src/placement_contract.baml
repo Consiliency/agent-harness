@@ -159,6 +159,7 @@ class LeaseStatus {
     expires_at: string,
     flags: LeaseFlags,
     binding: Binding,
+    reclaims: ReclaimRecord[]?,
 }
 
 class InventoryPage {
@@ -174,4 +175,35 @@ class InventoryQuery {
 
 class DeadlineHeaders {
     X_Deadline_Ms: int @alias("X-Deadline-Ms"),
+}
+
+enum ReclaimReason {
+    unbound,
+    duplicate_binding,
+    lease_expired,
+    lease_fenced,
+    recovery_orphan,
+}
+
+enum ReclaimOutcome {
+    destroyed,
+    destroy_pending,
+}
+
+class ReclaimRecord {
+    sandbox_id: string,
+    reason: ReclaimReason,
+    at: string,
+    outcome: ReclaimOutcome,
+}
+
+class ReserveBody {
+    workload: Workload,
+    ttl_s: int,
+    image_digest: string,
+    policy_digest: string,
+}
+
+class RenewBody {
+    extend_s: int,
 }

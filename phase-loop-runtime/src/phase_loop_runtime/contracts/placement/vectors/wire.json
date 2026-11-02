@@ -386,6 +386,98 @@
       "name": "inventory-query-empty",
       "type": "InventoryQuery",
       "value": {}
+    },
+    {
+      "name": "reserve-pi-runner",
+      "type": "ReserveBody",
+      "value": {
+        "workload": "pi-runner",
+        "ttl_s": 3600,
+        "image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "policy_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    },
+    {
+      "name": "reserve-leg-min-ttl",
+      "type": "ReserveBody",
+      "value": {
+        "workload": "leg",
+        "ttl_s": 1,
+        "image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "policy_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    },
+    {
+      "name": "renew-max",
+      "type": "RenewBody",
+      "value": {
+        "extend_s": 3600
+      }
+    },
+    {
+      "name": "status-with-reclaims",
+      "type": "LeaseStatus",
+      "value": {
+        "lease_id": "00000000-0000-4000-8000-000000000001",
+        "state": "reserved",
+        "sandbox_id": null,
+        "expires_at": "2026-11-01T12:00:00Z",
+        "flags": {
+          "reserved": false,
+          "create_settled": false,
+          "ready": false,
+          "exec_claimed": false,
+          "fenced": false,
+          "destruction_observed": false,
+          "cleanup_pending": false,
+          "barrier_confirmed": false,
+          "expired": false
+        },
+        "binding": {
+          "label_matches": 0,
+          "duplicates": []
+        },
+        "reclaims": [
+          {
+            "sandbox_id": "11111111-2222-4333-8444-555555555555",
+            "reason": "unbound",
+            "at": "2026-11-01T23:30:00Z",
+            "outcome": "destroyed"
+          },
+          {
+            "sandbox_id": "11111111-2222-4333-8444-555555555555",
+            "reason": "recovery_orphan",
+            "at": "2026-11-01T23:30:00Z",
+            "outcome": "destroy_pending"
+          }
+        ]
+      }
+    },
+    {
+      "name": "status-reclaims-empty",
+      "type": "LeaseStatus",
+      "value": {
+        "lease_id": "00000000-0000-4000-8000-000000000001",
+        "state": "reserved",
+        "sandbox_id": null,
+        "expires_at": "2026-11-01T12:00:00Z",
+        "flags": {
+          "reserved": false,
+          "create_settled": false,
+          "ready": false,
+          "exec_claimed": false,
+          "fenced": false,
+          "destruction_observed": false,
+          "cleanup_pending": false,
+          "barrier_confirmed": false,
+          "expired": false
+        },
+        "binding": {
+          "label_matches": 0,
+          "duplicates": []
+        },
+        "reclaims": []
+      }
     }
   ],
   "invalid": [
@@ -1104,6 +1196,120 @@
         }
       },
       "keyword": "pattern"
+    },
+    {
+      "name": "reserve-with-client-field",
+      "type": "ReserveBody",
+      "value": {
+        "workload": "pi-runner",
+        "ttl_s": 3600,
+        "image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "policy_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "client": "agent-toolkit"
+      },
+      "keyword": "additionalProperties"
+    },
+    {
+      "name": "reserve-ttl-over-cap",
+      "type": "ReserveBody",
+      "value": {
+        "workload": "pi-runner",
+        "ttl_s": 3601,
+        "image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "policy_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "keyword": "maximum"
+    },
+    {
+      "name": "reserve-image-digest-tag",
+      "type": "ReserveBody",
+      "value": {
+        "workload": "pi-runner",
+        "ttl_s": 3600,
+        "image_digest": "pi-runner:latest",
+        "policy_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "keyword": "pattern"
+    },
+    {
+      "name": "reserve-unknown-workload",
+      "type": "ReserveBody",
+      "value": {
+        "workload": "batch",
+        "ttl_s": 3600,
+        "image_digest": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "policy_digest": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "keyword": "enum"
+    },
+    {
+      "name": "renew-zero",
+      "type": "RenewBody",
+      "value": {
+        "extend_s": 0
+      },
+      "keyword": "minimum"
+    },
+    {
+      "name": "status-reclaims-null",
+      "type": "LeaseStatus",
+      "value": {
+        "lease_id": "00000000-0000-4000-8000-000000000001",
+        "state": "reserved",
+        "sandbox_id": null,
+        "expires_at": "2026-11-01T12:00:00Z",
+        "flags": {
+          "reserved": false,
+          "create_settled": false,
+          "ready": false,
+          "exec_claimed": false,
+          "fenced": false,
+          "destruction_observed": false,
+          "cleanup_pending": false,
+          "barrier_confirmed": false,
+          "expired": false
+        },
+        "binding": {
+          "label_matches": 0,
+          "duplicates": []
+        },
+        "reclaims": null
+      },
+      "keyword": "type"
+    },
+    {
+      "name": "status-reclaim-bad-reason",
+      "type": "LeaseStatus",
+      "value": {
+        "lease_id": "00000000-0000-4000-8000-000000000001",
+        "state": "reserved",
+        "sandbox_id": null,
+        "expires_at": "2026-11-01T12:00:00Z",
+        "flags": {
+          "reserved": false,
+          "create_settled": false,
+          "ready": false,
+          "exec_claimed": false,
+          "fenced": false,
+          "destruction_observed": false,
+          "cleanup_pending": false,
+          "barrier_confirmed": false,
+          "expired": false
+        },
+        "binding": {
+          "label_matches": 0,
+          "duplicates": []
+        },
+        "reclaims": [
+          {
+            "sandbox_id": "11111111-2222-4333-8444-555555555555",
+            "reason": "gc",
+            "at": "2026-11-01T23:30:00Z",
+            "outcome": "destroyed"
+          }
+        ]
+      },
+      "keyword": "enum"
     }
   ]
 }
