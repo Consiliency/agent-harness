@@ -511,6 +511,31 @@
           }
         ]
       }
+    },
+    {
+      "name": "killing-unseen-lease-sandbox",
+      "type": "LeaseStatus",
+      "value": {
+        "lease_id": "00000000-0000-4000-8000-000000000001",
+        "state": "killing",
+        "sandbox_id": "22222222-3333-4444-8555-666666666666",
+        "expires_at": "2026-11-01T12:00:00Z",
+        "flags": {
+          "reserved": false,
+          "create_settled": true,
+          "ready": false,
+          "exec_claimed": false,
+          "fenced": true,
+          "destruction_observed": false,
+          "cleanup_pending": true,
+          "barrier_confirmed": false,
+          "expired": false
+        },
+        "binding": {
+          "label_matches": 0,
+          "duplicates": []
+        }
+      }
     }
   ],
   "invalid": [

@@ -100,7 +100,10 @@ end-of-input meaning.
 **State and flags:** `flags` are authoritative and `state` is a derived summary,
 so a `state` must never contradict its flags. These are necessary conditions,
 checked over every valid vector:
-- every state except `tombstone` has `reserved`;
+- every state except `tombstone` and `killing` has `reserved`. A never-reserved
+  lease shows `killing` while the coordinator destroys a sandbox found for it later
+  (`fenced`, `cleanup_pending`, barrier not yet confirmed), and `tombstone` once
+  the barrier is confirmed. `tombstone` is always terminal;
 - `tombstone` is `fenced` and `barrier_confirmed`, never `reserved`. It may carry a
   `sandbox_id` when a sandbox found later (an out-of-band create, or an
   unknown-lease label) was bound and destroyed under it;

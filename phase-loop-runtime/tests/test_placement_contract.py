@@ -180,8 +180,10 @@ def _state_violations(status):
         'tombstone': f['fenced'] and f['barrier_confirmed'] and not f['reserved'],
     }
     out = []
-    if state != 'tombstone' and not f['reserved']:
-        out.append('only a tombstone was never reserved')
+    # Never-reserved leases: a tombstone, or a tombstone row still killing a sandbox
+    # found later (fenced, cleanup_pending, barrier not yet confirmed).
+    if state not in ('tombstone', 'killing') and not f['reserved']:
+        out.append('only a tombstone (or its in-progress kill) was never reserved')
     if not rules[state]:
         out.append(f'flags contradict state {state!r}')
     return out
