@@ -158,3 +158,71 @@ def test_an_untrusted_frontdoor_file_is_not_followed(releases, tmp_path):
     door = _frontdoor(tmp_path / "bin", "grok", release, native)
     door.chmod(0o777)
     assert _target(door, "grok") is None
+
+
+# --- Review r1 (agent-harness#1802): trust the whole chain of the image actually executed. ---
+
+def test_a_writable_directory_between_release_and_target_is_not_followed(releases, tmp_path, monkeypatch):
+    release = _release(releases)
+    native = _exe(release / "native/sub/grok", "\x7fELF")
+    (release / "native").chmod(0o777)
+    _frontdoor(tmp_path / "bin", "grok", release, native)
+    assert _target(tmp_path / "bin/grok", "grok") is None
+
+
+def test_a_writable_target_image_is_not_followed(releases, tmp_path):
+    release = _release(releases)
+    native = _exe(release / "native/grok", "\x7fELF", 0o777)
+    assert _target(_frontdoor(tmp_path / "bin", "grok", release, native), "grok") is None
+
+
+def test_a_target_owned_by_someone_else_is_not_followed(releases, tmp_path, monkeypatch):
+    release = _release(releases)
+    native = _exe(release / "native/grok", "\x7fELF")
+    door = _frontdoor(tmp_path / "bin", "grok", release, native)
+    real_lstat = os.lstat
+    image = str(native.resolve())
+
+    def lstat(path, *args, **kwargs):
+        info = real_lstat(path, *args, **kwargs)
+        if os.fspath(path) == image:
+            return os.stat_result((info.st_mode, info.st_ino, info.st_dev, info.st_nlink, 4242,
+                                   info.st_gid, info.st_size, info.st_atime, info.st_mtime, info.st_ctime))
+        return info
+    monkeypatch.setattr(pi.os, "lstat", lstat)
+    assert _target(door, "grok") is None
+
+
+def test_codex_vendored_binary_outside_the_release_is_not_followed(releases, tmp_path):
+    machine = os.uname().machine
+    if machine not in {"x86_64", "aarch64"}:
+        pytest.skip("codex ships linux binaries for x86_64/aarch64 only")
+    suffix = {"x86_64": "x64", "aarch64": "arm64"}[machine]
+    release = _release(releases)
+    modules = release / "npm/node_modules"
+    _exe(modules / "@openai/codex/bin/codex.js", "#!/usr/bin/env node\n")
+    (modules / ".bin").mkdir(parents=True)
+    (modules / ".bin/codex").symlink_to("../@openai/codex/bin/codex.js")
+    outside = _exe(tmp_path / "loose/codex", "\x7fELF")
+    vendored = modules / f"@openai/codex-linux-{suffix}/vendor/{machine}-unknown-linux-musl/bin"
+    vendored.mkdir(parents=True)
+    (vendored / "codex").symlink_to(outside)
+    door = _frontdoor(tmp_path / "bin", "codex", release, modules / ".bin/codex")
+    assert _target(door, "codex") is None
+
+
+def test_the_returned_path_is_the_final_validated_image(releases, tmp_path):
+    release = _release(releases)
+    native = _exe(release / "native/v1/grok", "\x7fELF")
+    (release / "native/grok").symlink_to("v1/grok")
+    door = _frontdoor(tmp_path / "bin", "grok", release, release / "native/grok")
+    assert _target(door, "grok") == native.resolve()
+
+
+def test_a_symlink_swapped_to_an_outside_image_before_the_check_is_not_followed(releases, tmp_path):
+    release = _release(releases)
+    _exe(release / "native/grok-1.0", "\x7fELF")
+    outside = _exe(tmp_path / "loose/grok", "\x7fELF")
+    link = release / "native/grok"
+    link.symlink_to(outside)
+    assert _target(_frontdoor(tmp_path / "bin", "grok", release, link), "grok") is None

@@ -4939,13 +4939,30 @@ def _shell_wrapper_target(path: Path, provider: str | None = None) -> Path | Non
     return _frontdoor_target(lines[-1], provider)
 
 
+def _frontdoor_trusted(path: Path) -> bool:
+    """``path`` (already resolved) is owned by an allowed owner and writable by no one
+    else, read without following a final symlink."""
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return False
+    return (info.st_uid in _FRONTDOOR_OWNERS and not info.st_mode & 0o022
+            and (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)))
+
+
 def _frontdoor_target(line: str, provider: str | None) -> Path | None:
-    """The native ``--shared`` target of a Consiliency guarded frontdoor's ``exec`` line,
-    else ``None`` (agent-harness#1798). Followed only when the launcher script and the
-    target lie in one release directly under :data:`_FRONTDOOR_RELEASES`, that release is
-    owned by root and writable by no one else, ``--provider`` names the same harness as
-    the seat's provider, and the target (resolved) stays inside the release and is a native
-    member of that provider's alias set (or Codex's vendored launcher)."""
+    """The final native image a Consiliency guarded frontdoor's ``exec`` line selects, else
+    ``None`` (agent-harness#1798).
+
+    ``--shared`` is resolved all the way to the native image the seat will execute
+    (including Codex's vendored binary behind ``codex.js``), and only that image is
+    returned. It is accepted only when the launcher script and the target lie in one
+    release directly under :data:`_FRONTDOOR_RELEASES`; ``--provider`` names the seat's
+    provider harness; and the image's resolved path is inside the resolved release, with
+    the release, **every directory between it and the image**, and **the image itself**
+    owned by an allowed owner (root) and writable by no one else. With that whole chain
+    immutable to others, nothing a non-owner can do changes what is bound between this
+    check and the bind (the frontdoor's own ``shared_target`` checks the same chain)."""
     match = _FRONTDOOR_EXEC.fullmatch(line)
     if not match:
         return None
@@ -4959,16 +4976,24 @@ def _frontdoor_target(line: str, provider: str | None) -> Path | None:
     if provider is not None and harness != _PROVIDER_HARNESSES.get(provider, provider):
         return None
     try:
-        info = os.stat(release, follow_symlinks=False)
-        if not stat.S_ISDIR(info.st_mode) or info.st_uid not in _FRONTDOOR_OWNERS or info.st_mode & 0o022:
-            return None
-        resolved = shared.resolve(strict=True)
         root = release.resolve(strict=True)
     except OSError:
         return None
-    if not resolved.is_relative_to(root):
+    if not _frontdoor_trusted(release) or not _frontdoor_trusted(root):
         return None
-    return _native_provider_target(shared, provider or named)
+    image = _native_provider_target(shared, provider or named, resolve_launcher=True)
+    if image is None:
+        return None
+    try:
+        image = image.resolve(strict=True)
+    except OSError:
+        return None
+    if not image.is_relative_to(root):
+        return None
+    chain = [image, *image.parents[:len(image.parts) - len(root.parts)]]
+    if not all(_frontdoor_trusted(part) for part in chain):
+        return None
+    return image
 
 
 def _seat_provider_source(command, env):
