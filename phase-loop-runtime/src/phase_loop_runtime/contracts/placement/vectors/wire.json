@@ -494,7 +494,7 @@
           "exec_claimed": false,
           "fenced": true,
           "destruction_observed": true,
-          "cleanup_pending": false,
+          "cleanup_pending": true,
           "barrier_confirmed": true,
           "expired": false
         },
