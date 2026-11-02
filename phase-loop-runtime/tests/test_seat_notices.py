@@ -73,7 +73,7 @@ PLACEMENT_CODES = (
     "sandbox_placement_workload_unsupported", "sandbox_placement_operation_timeout",
     "sandbox_placement_code_invalid", "sandbox_placement_release_unconfirmed",
     "sandbox_placement_at_capacity", "sandbox_placement_budget_spent",
-    "seat_placement_waiting",
+    "sandbox_placement_local_release_unconfirmed", "seat_placement_waiting",
 )
 
 

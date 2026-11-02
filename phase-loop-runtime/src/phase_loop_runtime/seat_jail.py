@@ -238,10 +238,10 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "or raise PHASE_LOOP_SANDBOX_ADMIT_WAIT_S"),
     "sandbox_placement_capacity_exhausted": (
         "seat not run",
-        "a remote machine answered that it was full, and a seat that was told \"full\" is "
-        "never moved to this machine",
-        "run the review again when the remote machine has a free slot, raise its seat "
-        "limit, or raise PHASE_LOOP_SANDBOX_ADMIT_WAIT_S"),
+        "every ranked target was full, and this machine, where it was ranked, did not have "
+        "memory, load and sandbox headroom",
+        "run the review again when a target has a free slot or this machine has headroom, "
+        "raise a seat limit, or raise PHASE_LOOP_SANDBOX_ADMIT_WAIT_S"),
     "sandbox_placement_not_enrolled": (
         "remote placement not used",
         "the remote machine does not know this user or this machine",
@@ -282,6 +282,13 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "and using its delivered credential until release is confirmed; nothing was retried; "
         "the lease is kept for the reaper. Run `phase-loop placement reap` when the remote "
         "machine answers again"),
+    "sandbox_placement_local_release_unconfirmed": (
+        "cleanup not confirmed",
+        "the runtime reserved a slot on this machine and could not confirm that the slot "
+        "was released",
+        "nothing was moved to another target and nothing was retried; the reservation "
+        "handle is kept on the decision for reconciliation. Check this machine's sandbox "
+        "count before running the review again"),
     "sandbox_placement_lost_after_launch": (
         "seat lost",
         "the seat was started on the remote machine and its result did not come back",

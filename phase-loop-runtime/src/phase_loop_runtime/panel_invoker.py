@@ -3050,6 +3050,7 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "sandbox_placement_workload_unsupported", "sandbox_placement_operation_timeout",
     "sandbox_placement_code_invalid", "sandbox_placement_release_unconfirmed",
     "sandbox_placement_at_capacity", "sandbox_placement_budget_spent",
+    "sandbox_placement_local_release_unconfirmed",
     "seat_placement_waiting",
     # agent-harness#1222: the seat-launch owner's refusals (typed notices in seat_jail.NOTICES)
     "seat_owner_unavailable", "seat_bind_source_unavailable", "seat_broker_socket_unavailable",
