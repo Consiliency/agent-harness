@@ -24,6 +24,17 @@ def _exe(path: Path, text: str, mode: int = 0o755) -> Path:
     return path
 
 
+@pytest.fixture(autouse=True)
+def _fixed_umask():
+    """The trust checks refuse group/other-writable directories, so fixtures must not
+    depend on the caller's umask (dev0 uses 002, CI 022)."""
+    previous = os.umask(0o022)
+    try:
+        yield
+    finally:
+        os.umask(previous)
+
+
 @pytest.fixture
 def releases(tmp_path, monkeypatch):
     root = tmp_path / "releases"
