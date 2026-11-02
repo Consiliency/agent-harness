@@ -12,11 +12,14 @@ TypeScript compiler or bundler; Node's native type stripping can load it.
 The header records the source digest and pinned baml-cli version. The vendoring
 commit identifies the agent-harness revision without self-referential SHA churn.
 
-Coordinator v1 follows agent-harness#1795 revision 6. Select a schema with
-`$ref: '#/$defs/CreateBody'` (or the other wire type) and include `$defs`.
-Requests reject unknown properties; responses allow them. Use a format checker
-for UUID and timestamp validation. Optional placement fields may be absent or
-null; the explicitly nullable revision 6 response keys remain required.
+Coordinator v1 follows agent-harness#1795 revisions 6–8: revision 6 is the wire
+schema, revision 7 adds `unavailable`, revision 8 makes exposures HTTP only.
+Select a schema with `$ref: '#/$defs/CreateBody'` (or the other wire type) and
+include `$defs`. Requests reject unknown properties; responses allow them. Use a
+format checker for UUID and timestamp validation. In responses and non-request
+placement types, optional fields may be absent or null, and the explicitly
+nullable revision 6 response keys remain required. **Request optionals**
+(`InventoryQuery.page_size`, `page_token`) may be omitted but never sent as `null`.
 `DeadlineHeaders` describes X-Deadline-Ms, and `InventoryQuery` describes query
 parameters; these are not JSON request bodies.
 
@@ -52,6 +55,9 @@ from the older mapping table map as follows:
   restarts from page 1. Only a listing that still can't complete leaves release
   unconfirmed.
 
+- `unavailable` (revision 7) maps to `sandbox_placement_unreachable`: it is sent
+  only when nothing was reserved or dispatched, so nothing is held.
+
 These are context-sensitive recovery signals, not automatic ladder actions.
 Nothing here enables the placement driver. The adoption bundle excludes
 `placement_contract.baml`, because it isn't a dotfiles adoption schema.
@@ -70,3 +76,9 @@ currently send `service_exposures: []`.
 **Request optionals** (for example `InventoryQuery.page_size`) may be omitted but
 never sent as `null`. `LeaseStatus.expires_at` must be RFC 3339 UTC (`Z` or
 `+00:00`), checked by pattern, because JSON Schema `format` isn't asserted by default.
+
+**Digest spelling:** `vectors/policy-digests.json` stores the SHA-256 as bare
+lowercase hex (`sha256`). On the wire, `policy_digest` is `"sha256:" + hex`.
+
+**Timestamps:** `expires_at` is RFC 3339 UTC with seconds 00–59. Leap seconds
+(`:60`) are refused so that every validator agrees (agent-harness#1797).

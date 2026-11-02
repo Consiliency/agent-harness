@@ -129,7 +129,7 @@ def emit(source: bytes) -> dict[str, bytes]:
     constrain('InventoryQuery', 'page_size', minimum=1, maximum=200, default=100)
     constrain('DeadlineHeaders', 'X-Deadline-Ms', minimum=1, maximum=30000)
     constrain('Binding', 'label_matches', minimum=0)
-    constrain('LeaseStatus', 'expires_at', format='date-time', pattern=r'^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:(?:[0-5]\d|60)(?:\.\d+)?(?:[Zz]|\+00:00)$')
+    constrain('LeaseStatus', 'expires_at', format='date-time', pattern=r'^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\d(?:\.\d+)?(?:[Zz]|\+00:00)$')
     constrain('LeaseStatus', 'sandbox_id', format='uuid')
     defs['Binding']['properties']['duplicates']['items']['format'] = 'uuid'
     for cls, fields in {'CapacityReading': ['free', 'ceiling'], 'Limits': ['max_ttl_s', 'max_extend_s', 'max_lifetime_s']}.items():
