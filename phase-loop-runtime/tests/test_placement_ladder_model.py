@@ -1,10 +1,11 @@
 """The placement ladder, tested from its table (agent-harness#896, amendment C7).
 
-C7 of ``plans/detailed-remote-seat-placement-896-20261010.md`` specifies the walk as two
+C7, amended by agent-harness#1791 and OSCOORD2 SL-0, specifies the walk as two
 tables. This file keeps a LITERAL copy of them, so the product's ``LADDER_TABLE`` is never
 its own oracle:
 
-* the copy is compared with ``LADDER_TABLE`` and with the contract text;
+* the amended copy is compared with ``LADDER_TABLE``; the original contract text
+  is retained and checked as historical input;
 * an interpreter of the copy (``_Model``) enumerates every event ordering the tables allow
   for one, two and three remote rungs and both values of the last rung, the waiting loop
   bounded by ``CAPACITY_ANSWERS_PER_RUNG``;
@@ -16,11 +17,11 @@ its own oracle:
 
 The clock can pass the budget inside any call, a release and the local checks included.
 
-**What is real.** Every ordering drives the real ``place``. For one and two rungs (9,356
+**What is real.** Every ordering drives the real ``place``. For one and two rungs (6,206
 orderings) everything under it is real too: the worker thread that bounds each backend
 call, a loopback connection attempt to a socket that is open or closed, and the lease
-journal on disk. Driven that way the 219,424 three-rung orderings take about eleven minutes
-per Python version, so they run with three primitives in memory -- calls inline, the
+journal on disk. The 90,400 three-rung orderings run with three primitives in
+memory -- calls inline, the
 connection attempt answered by the script, and a lease object with the journal's interface
 passed through ``place``'s own ``open_lease`` parameter -- and every
 ``REAL_IO_STRIDE``-th of them runs with everything real as well. Nothing is skipped.
@@ -93,6 +94,21 @@ C7_AFTER_LEFT = """\
 | Otherwise (the last rung is `none`) | Ends **not run**, with the code of the last rung left, or `sandbox_placement_required_unavailable` under the knob |
 """
 
+# Historical frozen contract remains readable; agent-harness#1791 amends C7.
+HISTORICAL_TABLES = (C7_STATES, C7_CODES, C7_AFTER_LEFT)
+C7_STATES = C7_STATES.replace("**The capacity bar is set for the attempt.** ", "")
+C7_AFTER_LEFT = """\
+| Condition | The walk |
+|---|---|
+| A previous target may still hold capacity | Stops without overflow; retains the fenced lease for cleanup |
+| Another ranked target exists and the budget is not spent | Starts that rung |
+| Otherwise, a compatibility local target remains | Attempts local with fresh headroom and authoritative admission |
+| Otherwise (the last rung is `none`) | Ends **not run**, with the code of the last rung left, or `sandbox_placement_required_unavailable` under the knob |
+"""
+LOCAL_ADMITTED = ({"rung": "local", "class": "admitted", "code": None},)
+LOCAL_BUDGET = ({"rung": "local", "class": "refused", "code": "sandbox_placement_budget_spent"},)
+
+
 #: The test's own names for the twenty rows above, in order. The state and the next state
 #: of each come from the literal text, never from the product.
 ROW_EVENTS = (
@@ -106,9 +122,9 @@ ROW_EVENTS = (
 )
 #: And for the four rows of the second table: (condition, what the walk does).
 AFTER_LEFT_EVENTS = (
+    ("release_unconfirmed", "not_run_release_unconfirmed"),
     ("another_rung", "start_next"),
-    ("last_local_unbarred", "launching_host"),
-    ("last_local_barred", "not_run_capacity_exhausted"),
+    ("last_local", "launching_host"),
     ("last_none", "not_run_last_code"),
 )
 
@@ -185,7 +201,7 @@ def test_the_products_table_is_the_plans_table():
 def test_the_contract_carries_the_tables_verbatim():
     contract = Path(sp.__file__).parent / "advisor_board" / "CONTRACTS.md"
     lines = {line.strip() for line in contract.read_text(encoding="utf-8").splitlines()}
-    for table in (C7_STATES, C7_CODES, C7_AFTER_LEFT):
+    for table in HISTORICAL_TABLES:
         for line in table.splitlines():
             assert line.strip() in lines, line[:80]
 
@@ -219,7 +235,6 @@ class _Model:
     state: str = "start"
     budget: bool = False
     wait: bool = False
-    bar: bool = False
     capacity_answers: int = 0
     cancel: bool = False
     reason: str | None = None
@@ -300,17 +315,19 @@ class _Model:
         for (condition, walk) in AFTER_LEFT_EVENTS:
             if condition == "another_rung" and not (m.i + 1 < m.n and not m.budget):
                 continue
-            if condition == "last_local_unbarred" and not (m.last_rung == "local" and not m.bar):
+            if condition == "release_unconfirmed" and extra.get("release") != UNCONFIRMED:
                 continue
-            if condition == "last_local_barred" and not (m.last_rung == "local" and m.bar):
+            if condition == "last_local" and m.last_rung != "local":
                 continue
             break
         if walk == "start_next":
             return replace(m, i=m.i + 1, state="start", capacity_answers=0, reason=None)
         if walk == "launching_host":
-            return replace(m, outcome="launching_host")
-        if walk == "not_run_capacity_exhausted":
-            return replace(m, outcome="not_run", code=EXHAUSTED)
+            if m.budget:
+                return replace(m, outcome="not_run", code=EXHAUSTED, trail=m.trail + LOCAL_BUDGET)
+            return replace(m, outcome="launching_host", trail=m.trail + LOCAL_ADMITTED)
+        if walk == "not_run_release_unconfirmed":
+            return replace(m, outcome="not_run", code=UNCONFIRMED)
         return replace(m, outcome="not_run", code=code)
 
     def advance(self, step: Step) -> "_Model":
@@ -352,7 +369,7 @@ class _Model:
             m = m._call("lease_open")._set("leases", "held")
         if s == "admitting":
             if event == "at_capacity":
-                m = replace(m._set("held", False), bar=True, capacity_truth=True,
+                m = replace(m._set("held", False), capacity_truth=True,
                             capacity_answers=m.capacity_answers + 1, waited=True)
             elif event == "refused":
                 m = m._set("held", False)._set("leases", None)
@@ -521,6 +538,7 @@ class World:
         self.fail_lease = False
         self.unexpected: list[str] = []
         self.requests: list[sp.PlacementRequest] = []
+        self.local_calls: list[str] = []
         self.connect_errors: list[str] = []
         self.fenced_at_kill: list[bool] = []
 
@@ -783,6 +801,10 @@ class Harness:
                 self.rungs[:n], last_rung, self.prepared, self._request_for, self._open_lease,
                 preflight=preflight, seal=self._seal, driver_enabled=driver_enabled,
                 cancelled=world.cancelled,
+                local_capacity=lambda: world.local_calls.append("capacity") or sp.LocalHeadroom(
+                    4 * 1024**3, 25, 0, world.now),
+                local_admit=lambda settings, bound: world.local_calls.append("admit") or sp.LocalHeadroom(
+                    4 * 1024**3, 25, 0, world.now),
             )
         except sp.PlacementCancelled as exc:
             return world, None, exc
@@ -894,11 +916,13 @@ def _compare(harness, model, world, decision, cancel) -> list[str]:
         wrong.append("P1: execute is called at most once, exactly once when placed")
     if executes and executes[0] != len(log) - 1:
         wrong.append("P2: a call follows execute")
-    answered_capacity = any(step.event == "at_capacity" for step in model.script)
-    if outcome == "launching_host" and answered_capacity:
-        wrong.append("P3: the launching host after a capacity answer")
-    if outcome == "not_run" and not (answered_capacity or model.last_rung == "none"):
-        wrong.append("P4: not run without the capacity bar or a last rung of none")
+    expect("local advisory then authoritative admission", world.local_calls,
+           ["capacity", "admit"] if outcome == "launching_host" else [])
+    if outcome == "launching_host" and (not trail or trail[-1] != LOCAL_ADMITTED[0]):
+        wrong.append("P3: local launch without fresh headroom and authoritative admission")
+    if outcome == "not_run" and not (model.budget or model.last_rung == "none"
+                                     or any(row.get("release") == UNCONFIRMED for row in trail)):
+        wrong.append("P4: not run despite local headroom and no outstanding release")
     if world.cancel_at is not None:
         after = log[world.cancel_at + 1:]
         rung_in_hand = log[world.cancel_at][0]
@@ -922,7 +946,7 @@ def _compare(harness, model, world, decision, cancel) -> list[str]:
         } or world.leases[log[k][0]].fenced:
             wrong.append("P6: execute was sent for a fenced lease")
     touched = list(dict.fromkeys(rung for rung, _op in log))
-    if [record["rung"] for record in trail] != [f"r{rung + 1}" for rung in touched]:
+    if [record["rung"] for record in trail if record["rung"] != "local"] != [f"r{rung + 1}" for rung in touched]:
         wrong.append("P7: the trail does not name every rung touched, once, in order")
     for k in range(1, len(log)):
         # A rung's first call: was the budget already spent when the rung before was left?
@@ -966,7 +990,9 @@ def test_the_real_walk_does_what_the_table_says_on_every_ordering(harness, n, la
 
 
 #: The size of the enumeration, so that a change which silently skips orderings is seen.
-EXPECTED_ORDERINGS = {1: 176, 2: 4502, 3: 109712}
+#: C7's release barrier makes unconfirmed release terminal; downstream continuations
+#: after that event are no longer legal. All legal event orderings remain enumerated.
+EXPECTED_ORDERINGS = {1: 176, 2: 2927, 3: 45200}
 
 
 # --------------------------------------------------------------------------------------
@@ -1017,7 +1043,7 @@ def test_two_refusals_end_on_the_launching_host_with_both_rungs_in_the_trail(dri
     assert decision.outcome == "launching_host" and decision.code is None
     assert decision.tooled_route_required is True
     assert summary(decision.trail) == [
-        ("r1", "refused", NOT_ENROLLED), ("r2", "refused", NOT_ENROLLED)]
+        ("r1", "refused", NOT_ENROLLED), ("r2", "refused", NOT_ENROLLED), ("local", "admitted", None)]
     assert "commit" not in ops(world) and "execute" not in ops(world)
     assert [drive.lease_state(world, rung) for rung in (0, 1)] == [None, None]
 
@@ -1051,19 +1077,20 @@ def test_the_lifetime_boundary_with_the_default_settings(drive):
 
     world, decision, _ = drive(2, "local", defaults=True, preflight=preflight(2699.0), guard=guard)
     assert decision.outcome == "launching_host" and decision.code == "below_floor"
-    assert decision.tooled_route_required is True and decision.trail == ()
+    assert decision.tooled_route_required is True and decision.trail == LOCAL_ADMITTED
     assert world.log == []
 
 
-@pytest.mark.parametrize("rungs,outcome", [(1, "launching_host"), (2, "placed")])
-def test_a_host_that_stops_answering_is_left_fenced_and_the_walk_goes_on(drive, rungs, outcome):
+@pytest.mark.parametrize("rungs,outcome", [(1, "not_run"), (2, "not_run")])
+def test_a_host_that_stops_answering_is_left_fenced_and_stops_overflow(drive, rungs, outcome):
     """Connected; `admit` times out; the kill by lease id times out too. Mutations: an
     unconfirmed release clears the lease entry, or does not fence; an unconfirmed release
-    before `execute` ends the attempt; the release is never attempted."""
+    before `execute` permits overflow; the release is never attempted."""
     world, decision, _ = drive(
         rungs, "local", *REACHED, "admitting:no_answer", "releasing:release_unconfirmed",
-        *(PLACED if rungs == 2 else ()))
+        )
     assert decision.outcome == outcome
+    assert decision.code == UNCONFIRMED
     assert dict(decision.trail[0]) == {
         "rung": "r1", "class": "refused_unconfirmed", "code": TIMEOUT, "release": UNCONFIRMED}
     assert ops(world, 0)[-2:] == ["admit", "kill"]
@@ -1072,13 +1099,13 @@ def test_a_host_that_stops_answering_is_left_fenced_and_the_walk_goes_on(drive, 
     assert (0, "execute") not in world.log
 
 
-@pytest.mark.parametrize("rungs,outcome,code", [(1, "not_run", EXHAUSTED), (2, "placed", None)])
-def test_a_full_rung_that_then_fails_never_sends_the_seat_to_the_launching_host(
+@pytest.mark.parametrize("rungs,outcome,code", [(1, "launching_host", None), (2, "placed", None)])
+def test_a_full_rung_that_then_fails_allows_ranked_local_with_headroom(
     drive, rungs, outcome, code,
 ):
     """At capacity, then admitted on the same rung, then the seal step's guard fails: the
-    capacity bar is set, so the next remote rung or "not run". Mutation: the capacity bar
-    is cleared by a later admission, or not set at all."""
+    reservation is released, so the next ranked target may admit. Local requires
+    fresh headroom even after a remote capacity answer. Mutation: restore the bar."""
     world, decision, _ = drive(
         rungs, "local", *REACHED, "admitting:at_capacity", "waiting:backoff_elapsed",
         "admitting:admitted", "committing:committed", "sealing:seal_failed",
@@ -1092,8 +1119,8 @@ def test_a_full_rung_that_then_fails_never_sends_the_seat_to_the_launching_host(
 def test_the_budget_spent_while_committing_releases_and_starts_no_other_rung(drive):
     world, decision, _ = drive(
         2, "local", *ADMITTED, "committing:commit_failed:budget", "releasing:release_confirmed")
-    assert decision.outcome == "launching_host"
-    assert summary(decision.trail) == [("r1", "refused", BUDGET)]
+    assert decision.outcome == "not_run"
+    assert summary(decision.trail) == [("r1", "refused", BUDGET), ("local", "refused", BUDGET)]
     assert ops(world, 0)[-3:] == ["commit", "kill", "list_owned"] and ops(world, 1) == []
 
 
@@ -1103,8 +1130,8 @@ def test_the_clock_can_pass_the_budget_during_a_release(drive, rungs):
     when the rung is left and no further rung is started."""
     world, decision, _ = drive(
         rungs, "local", *REACHED, "admitting:no_answer", "releasing:release_confirmed:budget")
-    assert decision.outcome == "launching_host"
-    assert summary(decision.trail) == [("r1", "refused", TIMEOUT)]
+    assert decision.outcome == "not_run"
+    assert summary(decision.trail) == [("r1", "refused", TIMEOUT), ("local", "refused", BUDGET)]
     assert ops(world, 0)[-2:] == ["kill", "list_owned"] and ops(world, 1) == []
 
 
@@ -1120,7 +1147,7 @@ def test_the_budget_wins_a_tie_with_the_connection_attempt(drive):
     """The connection attempt fails as the budget ends: "out of time", not "unreachable"."""
     world, decision, _ = drive(1, "local", "start:local_checks_passed", "connecting:budget_spent:tie")
     assert len(world.connect_errors) == 1
-    assert summary(decision.trail) == [("r1", "out_of_time", BUDGET)]
+    assert summary(decision.trail) == [("r1", "out_of_time", BUDGET), ("local", "refused", BUDGET)]
 
 
 @pytest.mark.parametrize("state,specs,release", [
@@ -1169,7 +1196,8 @@ def test_a_leg_with_the_driver_flag_false_touches_no_backend(drive, last_rung, o
     world, decision, _ = drive(2, last_rung, driver_enabled=False)
     assert (decision.outcome, decision.code) == (outcome, code)
     assert summary(decision.trail) == [
-        ("r1", "failed_locally", DRIVER), ("r2", "failed_locally", DRIVER)]
+        ("r1", "failed_locally", DRIVER), ("r2", "failed_locally", DRIVER)
+    ] + ([("local", "admitted", None)] if last_rung == "local" else [])
     assert world.log == [] and world.leases == {}
 
 
@@ -1178,7 +1206,7 @@ def test_a_failed_preflight_resolves_the_last_rung_at_once(drive, last_rung, out
     world, decision, _ = drive(2, last_rung, preflight=lambda world: "seat_credential_below_floor")
     assert (decision.outcome, decision.code) == (outcome, "seat_credential_below_floor")
     assert decision.tooled_route_required is (outcome == "launching_host")
-    assert decision.trail == () and world.log == []
+    assert decision.trail == (LOCAL_ADMITTED if last_rung == "local" else ()) and world.log == []
 
 
 def test_a_last_rung_of_none_under_the_knob_carries_the_knobs_code(drive, monkeypatch):

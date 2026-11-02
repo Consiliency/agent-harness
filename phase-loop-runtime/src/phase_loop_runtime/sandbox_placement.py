@@ -1304,7 +1304,7 @@ class _Walk:
         if walk == "launching_host":
             local = self._local("local")
             if local is not None:
-                return local
+                return replace(local, code=code) if code is not None and local.outcome == "launching_host" else local
             trail = tuple(self.trail)
             code = code or _CAPACITY_EXHAUSTED
         if code is None and trail:
