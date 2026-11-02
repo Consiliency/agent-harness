@@ -6,6 +6,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- Seats follow a Consiliency guarded frontdoor (`exec /usr/bin/python3 -I <release>/source/lib/
+  user_agent_tools.py launch --provider P --shared <native> ...`) to its native provider, so board
+  CLI seats no longer fail their `--version` probe with exit 2 (agent-harness#1798). It's followed only
+  inside one root-owned release under `/opt/consiliency/tooling/releases/`, with the #1318 checks.
+
 - An owned claude seat's profile sets `DISABLE_AUTOUPDATER=1` and `DISABLE_UPDATES=1`, and an opencode seat
   sets `OPENCODE_DISABLE_AUTOUPDATE=true`, as the team-host frontdoor does. Seats run the native binary
   directly (agent-harness#1798), so they must suppress self-update themselves.

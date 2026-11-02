@@ -4849,6 +4849,19 @@ _SHELL_WRAPPER_EXPORT = re.compile(r'export [A-Z_][A-Z0-9_]*=(?:[A-Za-z0-9._/:@+
 _SHELL_WRAPPER_EXEC = re.compile(
     r'exec (/[A-Za-z0-9._@+/-]+)(?: -c [A-Za-z0-9._-]+=[A-Za-z0-9._/:@+-]+)* "\$@"')
 
+# A Consiliency guarded frontdoor (Consiliency/dotfiles 38639c7; agent-harness#1798): the
+# shared team-host CLI re-enters a release-pinned Python launcher, whose `--shared` names
+# the native provider. The seat cannot see the release's launcher, so the native target is
+# followed instead, under the #1318 trust checks plus the release checks below.
+_FRONTDOOR_EXEC = re.compile(
+    r'exec /usr/bin/python3 -I (/[A-Za-z0-9._@+/-]+/source/lib/user_agent_tools\.py) launch'
+    r' --provider ([a-z][a-z0-9-]*) --shared (/[A-Za-z0-9._@+/-]+)'
+    r' --node-bin /[A-Za-z0-9._@+/-]+ -- "\$@"')
+#: Where guarded frontdoors' immutable, root-owned releases live.
+_FRONTDOOR_RELEASES = Path("/opt/consiliency/tooling/releases")
+#: Owners a frontdoor release may have: root only (tests substitute their own uid).
+_FRONTDOOR_OWNERS = frozenset({0})
+
 _PROVIDER_HARNESSES = {"agy": "gemini", "gemini": "gemini", "codex.js": "codex",
                        "claude.exe": "claude", "grok-native": "grok", "opencode.exe": "opencode"}
 
@@ -4921,9 +4934,66 @@ def _shell_wrapper_target(path: Path, provider: str | None = None) -> Path | Non
     if not all(_SHELL_WRAPPER_EXPORT.fullmatch(line) for line in lines[1:-1]):
         return None
     match = _SHELL_WRAPPER_EXEC.fullmatch(lines[-1])
+    if match:
+        return _native_provider_target(match.group(1), provider)
+    return _frontdoor_target(lines[-1], provider)
+
+
+def _frontdoor_trusted(path: Path) -> bool:
+    """``path`` (already resolved) is owned by an allowed owner and writable by no one
+    else, read without following a final symlink."""
+    try:
+        info = os.lstat(path)
+    except OSError:
+        return False
+    return (info.st_uid in _FRONTDOOR_OWNERS and not info.st_mode & 0o022
+            and (stat.S_ISDIR(info.st_mode) or stat.S_ISREG(info.st_mode)))
+
+
+def _frontdoor_target(line: str, provider: str | None) -> Path | None:
+    """The final native image a Consiliency guarded frontdoor's ``exec`` line selects, else
+    ``None`` (agent-harness#1798).
+
+    ``--shared`` is resolved all the way to the native image the seat will execute
+    (including Codex's vendored binary behind ``codex.js``), and only that image is
+    returned. It is accepted only when the launcher script and the target lie in one
+    release directly under :data:`_FRONTDOOR_RELEASES`; ``--provider`` names the seat's
+    provider harness; and the image's resolved path is inside the resolved release, with
+    the release, **every directory between it and the image**, and **the image itself**
+    owned by an allowed owner (root) and writable by no one else. With that whole chain
+    immutable to others, nothing a non-owner can do changes what is bound between this
+    check and the bind (the frontdoor's own ``shared_target`` checks the same chain)."""
+    match = _FRONTDOOR_EXEC.fullmatch(line)
     if not match:
         return None
-    return _native_provider_target(match.group(1), provider)
+    script, named, shared = Path(match.group(1)), match.group(2), Path(match.group(3))
+    release = script.parents[2]
+    if release.parent != _FRONTDOOR_RELEASES or ".." in script.parts or ".." in shared.parts:
+        return None
+    if shared.parts[:len(release.parts)] != release.parts:
+        return None
+    harness = _PROVIDER_HARNESSES.get(named, named)
+    if provider is not None and harness != _PROVIDER_HARNESSES.get(provider, provider):
+        return None
+    try:
+        root = release.resolve(strict=True)
+    except OSError:
+        return None
+    if not _frontdoor_trusted(release) or not _frontdoor_trusted(root):
+        return None
+    image = _native_provider_target(shared, provider or named, resolve_launcher=True)
+    if image is None:
+        return None
+    try:
+        image = image.resolve(strict=True)
+    except OSError:
+        return None
+    if not image.is_relative_to(root):
+        return None
+    chain = [image, *image.parents[:len(image.parts) - len(root.parts)]]
+    if not all(_frontdoor_trusted(part) for part in chain):
+        return None
+    return image
 
 
 def _seat_provider_source(command, env):
