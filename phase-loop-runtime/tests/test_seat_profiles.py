@@ -264,3 +264,32 @@ def test_the_decision_reads_the_launching_session_s_login(operator_home, monkeyp
         60, env={"HOME": str(operator_home)})
     assert (credential.token, credential.source) == (b"synthetic-access-token",
                                                      seat_credentials.SOURCE_LOGIN)
+
+
+# agent-harness#1798 follow-up: an owned seat runs the native binary, not the team-host
+# frontdoor, so the frontdoor's self-update suppression must be in the seat profile's env.
+
+def test_claude_profile_suppresses_self_update(operator_home, tmp_path):
+    with panel_invoker.seat_profile(harness="claude", executable="/usr/bin/true",
+                                   env={"HOME": str(operator_home)}, cwd=tmp_path) as (_, profile):
+        assert profile.env["DISABLE_AUTOUPDATER"] == "1"
+        assert profile.env["DISABLE_UPDATES"] == "1"
+
+
+def test_opencode_profile_suppresses_self_update(operator_home, tmp_path):
+    auth = operator_home / ".local/share/opencode/auth.json"
+    auth.parent.mkdir(parents=True, exist_ok=True)
+    if not auth.exists():
+        auth.write_text(json.dumps({"openai": {"type": "oauth", "access": "synthetic-access-token",
+                                               "refresh": "synthetic-refresh-token",
+                                               "expires": 9999999999999}}))
+    with panel_invoker.seat_profile(harness="opencode", executable="/usr/bin/true",
+                                   env={"HOME": str(operator_home)}, cwd=tmp_path) as (_, profile):
+        assert profile.env["OPENCODE_DISABLE_AUTOUPDATE"] == "true"
+
+
+@pytest.mark.parametrize("harness", ["codex", "grok"])
+def test_other_profiles_do_not_gain_the_claude_or_opencode_flags(operator_home, tmp_path, harness):
+    with panel_invoker.seat_profile(harness=harness, executable="/usr/bin/true",
+                                   env={"HOME": str(operator_home)}, cwd=tmp_path) as (_, profile):
+        assert not {"DISABLE_UPDATES", "OPENCODE_DISABLE_AUTOUPDATE"} & set(profile.env)

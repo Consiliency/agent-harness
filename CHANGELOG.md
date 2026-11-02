@@ -6,8 +6,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
-- A claude seat also sets `DISABLE_UPDATES=1`, as the team-host frontdoor does for the shared claude.
-  Seats run the native binary directly (agent-harness#1798), so they must suppress self-update themselves.
+- An owned claude seat's profile sets `DISABLE_AUTOUPDATER=1` and `DISABLE_UPDATES=1`, and an opencode seat
+  sets `OPENCODE_DISABLE_AUTOUPDATE=true`, as the team-host frontdoor does. Seats run the native binary
+  directly (agent-harness#1798), so they must suppress self-update themselves.
 
 - Placement contract revision 9 (agent-harness#1795): `ReserveBody` and `RenewBody` request
   types (no `client`/`owner`; both come from the certificate), and optional `LeaseStatus.reclaims`

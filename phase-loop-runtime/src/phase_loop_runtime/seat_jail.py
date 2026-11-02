@@ -1489,9 +1489,6 @@ def seat_env(leg: str, *, token_fd: int | None, lang: str = "C.UTF-8",
         "DISABLE_AUTOUPDATER": "1",
     }
     if leg == "claude":
-        # The team-host frontdoor sets this for the shared claude (agent-harness#1798);
-        # a seat runs the native binary directly, so it must not try to self-update either.
-        env["DISABLE_UPDATES"] = "1"
         env["CLAUDE_CONFIG_DIR"] = SEAT_CLAUDE_CONFIG
         env["CLAUDE_CODE_TMPDIR"] = SEAT_TMP
         if token_fd is not None:
