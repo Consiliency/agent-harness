@@ -6,6 +6,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- Placement contract: stock OpenShell v0.1.4 `SandboxPolicy` vectors (`vectors/policies.json`) with
+  digests: minimal with and without `/app`, and the full remote pi-runner policy with `/work`, plus a
+  refused fork-era shape. All pending live qualification (agent-harness#1795 revisions 12-13).
+
 - Seats follow a Consiliency guarded frontdoor (`exec /usr/bin/python3 -I <release>/source/lib/
   user_agent_tools.py launch --provider P --shared <native> ...`) to its native provider, so board
   CLI seats no longer fail their `--version` probe with exit 2 (agent-harness#1798). It's followed only

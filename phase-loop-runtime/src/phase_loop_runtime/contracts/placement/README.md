@@ -112,3 +112,17 @@ checked over every valid vector:
 - `killing` is `fenced` without `barrier_confirmed`;
 - `destroyed` is `fenced` and `barrier_confirmed`;
 - `expired` has `expired`.
+
+**Stock policy vectors (`vectors/policies.json`, pending qualification):** stock
+OpenShell v0.1.4 `SandboxPolicy` documents in proto3 JSON with snake_case field
+names (agent-harness#1795 revision 12), each with its `policy_digest`:
+- `minimal-with-app`: ai-stack's qualification image;
+- `minimal-without-app`: the agent-toolkit pi-runner image; its digest matches
+  Consiliency/agent-toolkit#41's pinned value;
+- `full-remote-pi-runner`: the previous one plus the stable load root `/work`
+  (revision 13). Per-run paths live below it and are never listed, because a
+  listed path that doesn't exist at start is skipped and granted nothing.
+
+`refused` holds a fork-era document that the coordinator rejects. The JSON Schema
+can't catch it, because it treats `policy` as an opaque object. The file stays
+`pending_qualification` until the owner's live run confirms the effective policy.
