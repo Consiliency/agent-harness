@@ -232,14 +232,14 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "PHASE_LOOP_SANDBOX_TRANSFER_ALLOWANCE_S or PHASE_LOOP_SANDBOX_ADMIT_WAIT_S"),
     "sandbox_placement_at_capacity": (
         "remote placement not used",
-        "the remote machine answered that it has no free slot until the admission wait ran "
-        "out",
+        "a remote target had no free slot within the admission wait, or this machine lacked "
+        "memory, load or sandbox headroom",
         "run the review again when a slot is free, raise the remote machine's seat limit, "
         "or raise PHASE_LOOP_SANDBOX_ADMIT_WAIT_S"),
     "sandbox_placement_capacity_exhausted": (
         "seat not run",
-        "every ranked target was full, and this machine, where it was ranked, did not have "
-        "memory, load and sandbox headroom",
+        "an earlier build reported that a remote machine said full and the seat was not moved "
+        "here; this build reports sandbox_placement_at_capacity instead",
         "run the review again when a target has a free slot or this machine has headroom, "
         "raise a seat limit, or raise PHASE_LOOP_SANDBOX_ADMIT_WAIT_S"),
     "sandbox_placement_not_enrolled": (
@@ -284,10 +284,10 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "machine answers again"),
     "sandbox_placement_local_release_unconfirmed": (
         "cleanup not confirmed",
-        "the runtime reserved a slot on this machine and could not confirm that the slot "
-        "was released",
+        "a slot on this machine may have been reserved and its release was not confirmed",
         "nothing was moved to another target and nothing was retried; the reservation "
-        "handle is kept on the decision for reconciliation. Check this machine's sandbox "
+        "handle, if learned by the runtime, is kept on the decision or in its pending record "
+        "for reconciliation. Check this machine's sandbox "
         "count before running the review again"),
     "sandbox_placement_lost_after_launch": (
         "seat lost",

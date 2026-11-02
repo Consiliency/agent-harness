@@ -1528,7 +1528,7 @@ def _sl0_walk(roots, *, local_capacity=None, local_admit=None, local_release=lam
         lambda root: sandbox_placement.PlacementRequest(
             'codex', 'codex:a', '/repo', prepared.snapshot_sha256, None,
             sandbox_placement.EgressNeeds()),
-        placement_lease.open_lease, preflight=lambda: None, seal=exec_spec,
+        placement_lease.open_lease, preflight=kwargs.get("preflight", lambda: None), seal=exec_spec,
         driver_enabled=True, cancelled=kwargs.get("cancelled", threading.Event()),
         local_capacity=local_capacity, local_admit=local_admit, local_release=local_release,
         settings=kwargs.get('settings'))
@@ -1777,3 +1777,94 @@ def test_compatibility_local_preserves_budget_reason(monkeypatch):
                        settings=sandbox_policy.PlacementDriverSettings(0, 1, 4))
     assert result.code == 'sandbox_placement_budget_spent'
     assert result.code == result.trail[-1]['code']
+
+
+@pytest.mark.parametrize('case', ['success', 'no-handle', 'release-raises', 'release-hangs',
+                                  'admit-raises', 'cancel-release-raises'])
+def test_late_local_reservation_handoff(monkeypatch, case):
+    """A late slot is released or retained, including abandoned cleanup workers."""
+    sp = sandbox_placement
+    monkeypatch.setattr(sp, 'ANSWER_BOUND_S', 0.02)
+    admit_started, finish_admit = threading.Event(), threading.Event()
+    finish_release, release_done = threading.Event(), threading.Event()
+    cancelled = threading.Event()
+    handle = sp.LocalReservation('late-slot')
+    held = set()
+    results = []
+
+    def admit(settings, bound):
+        admit_started.set()
+        assert finish_admit.wait(2)
+        if case == 'admit-raises':
+            raise RuntimeError('admission failed without a handle')
+        if case == 'no-handle':
+            return sp.LocalAdmission(None, _headroom())
+        held.add(handle)
+        return sp.LocalAdmission(handle, _headroom())
+
+    def release(slot):
+        assert slot in held
+        if case in {'release-raises', 'cancel-release-raises'}:
+            raise RuntimeError('release failed')
+        if case == 'release-hangs':
+            assert finish_release.wait(2)
+        held.remove(slot)
+        release_done.set()
+
+    def walk():
+        try:
+            results.append(_sl0_walk((), last_rung='local', local_capacity=_headroom,
+                                     local_admit=admit, local_release=release,
+                                     cancelled=cancelled))
+        except sp.PlacementCancelled as exc:
+            results.append(exc)
+
+    worker = threading.Thread(target=walk)
+    worker.start()
+    try:
+        assert admit_started.wait(1)
+        if case == 'cancel-release-raises':
+            cancelled.set()  # After admission starts, before its late release.
+        worker.join(1)
+        assert not worker.is_alive()
+        result = results[0]
+        if case == 'cancel-release-raises':
+            assert isinstance(result, sp.PlacementCancelled)
+        else:
+            assert result.code == 'sandbox_placement_local_release_unconfirmed'
+        pending = result.pending_local_reservation
+        assert pending.inspect() == ('pending', None)
+        assert pending.wait(0) == ('pending', None)
+        finish_admit.set()
+        expected = ('none_returned' if case in {'admit-raises', 'no-handle'} else
+                    'released' if case == 'success' else 'retained')
+        assert pending.wait(1) == (expected, handle if expected == 'retained' else None)
+        assert held == ({handle} if expected == 'retained' else set())
+    finally:
+        finish_admit.set()
+        finish_release.set()
+        worker.join(1)
+        if case == 'release-hangs':
+            assert release_done.wait(1)
+            assert pending.inspect() == ('retained', handle)
+
+
+@pytest.mark.parametrize('budget_spent', [False, True])
+def test_preflight_code_survives_compatibility_local_refusal(monkeypatch, budget_spent):
+    sp = sandbox_placement
+    clock = [0.0]
+    monkeypatch.setattr(sp, '_monotonic', lambda: clock[0])
+
+    def capacity():
+        if budget_spent:
+            clock[0] = 1.0
+        return _headroom(memory_available_bytes=0)
+
+    result = _sl0_walk((), last_rung='local',
+                       preflight=lambda: 'seat_credential_below_floor',
+                       local_capacity=capacity,
+                       local_admit=lambda *args: pytest.fail('refused local admitted'),
+                       settings=sandbox_policy.PlacementDriverSettings(0, 1, 4))
+    assert result.code == 'seat_credential_below_floor'
+    assert result.trail[-1]['code'] == ('sandbox_placement_budget_spent' if budget_spent
+                                       else 'sandbox_placement_at_capacity')

@@ -228,10 +228,12 @@ class PlacementCancelled(RuntimeError):
     review operation carries everywhere else, and the trail is attached."""
 
     def __init__(self, trail: Sequence[Mapping[str, object]] = (), *,
-                 local_reservation: LocalReservation | None = None) -> None:
+                 local_reservation: LocalReservation | None = None,
+                 pending_local_reservation: LocalReservationPending | None = None) -> None:
         super().__init__(_CANCELLED)
         self.trail = tuple(trail)
         self.local_reservation = local_reservation
+        self.pending_local_reservation = pending_local_reservation
 
     def __str__(self) -> str:
         return _CANCELLED
@@ -1030,6 +1032,7 @@ class PlacementDecision:
     notices: tuple[str, ...] = ()
     #: Local slot owned by the caller on launch, or retained for unconfirmed cleanup.
     local_reservation: LocalReservation | None = field(default=None, repr=False)
+    pending_local_reservation: LocalReservationPending | None = field(default=None, repr=False)
 
 
 class _CallCancelled(Exception):
@@ -1212,6 +1215,39 @@ class LocalReservation:
             raise ValueError("invalid local reservation")
 
 
+class LocalReservationPending:
+    """Thread-safe ownership record for an admission that outlives its caller.
+
+    ``inspect`` returns (state, handle); ``wait(timeout_s)`` waits at most the
+    supplied bound. Pending transitions exactly once to released, retained or
+    none_returned. A retained handle remains available for reconciliation even
+    if the abandoned release worker subsequently finishes.
+    """
+
+    def __init__(self) -> None:
+        self._condition = threading.Condition()
+        self._state = "pending"
+        self._handle: LocalReservation | None = None
+
+    def inspect(self) -> tuple[str, LocalReservation | None]:
+        with self._condition:
+            return self._state, self._handle
+
+    def wait(self, timeout_s: float) -> tuple[str, LocalReservation | None]:
+        if not math.isfinite(timeout_s) or timeout_s < 0:
+            raise ValueError("wait requires a finite nonnegative bound")
+        with self._condition:
+            self._condition.wait_for(lambda: self._state != "pending", timeout_s)
+            return self._state, self._handle
+
+    def _finish(self, state: str, handle: LocalReservation | None = None) -> None:
+        with self._condition:
+            if self._state != "pending":
+                raise RuntimeError("local reservation already resolved")
+            self._state, self._handle = state, handle
+            self._condition.notify_all()
+
+
 @dataclass(frozen=True)
 class LocalAdmission:
     """An authoritative local reservation and its pre-reservation headroom.
@@ -1286,21 +1322,24 @@ class _Walk:
         return self._end(self._after_left(False, last_rung))
 
     def _local_left(self, label: str, code: str,
-                    handle: LocalReservation | None = None) -> PlacementDecision | None:
+                    handle: LocalReservation | None = None,
+                    pending: LocalReservationPending | None = None) -> PlacementDecision | None:
         self.trail.append({"rung": label, "class": "capacity" if code == _CAPACITY else "refused",
                            "code": code})
         if code == _LOCAL_RELEASE_UNCONFIRMED:
             return PlacementDecision("not_run", tuple(self.trail), code, notices=tuple(self.notices),
-                                     local_reservation=handle)
+                                     local_reservation=handle, pending_local_reservation=pending)
         return None
 
     def _local_cancel(self, label: str, *, released: bool | None = None,
-                      uncertain: bool = False, handle: LocalReservation | None = None) -> None:
+                      uncertain: bool = False, handle: LocalReservation | None = None,
+                      pending: LocalReservationPending | None = None) -> None:
         self.trail.append({"rung": label, "class": "cancelled",
                            "code": _LOCAL_RELEASE_UNCONFIRMED if uncertain else None,
                            "release_needed": released is not None or uncertain,
                            "release_confirmed": released})
-        raise PlacementCancelled(self.trail, local_reservation=handle if uncertain else None)
+        raise PlacementCancelled(self.trail, local_reservation=handle if uncertain else None,
+                                 pending_local_reservation=pending if uncertain else None)
 
     def _release_local(self, handle: LocalReservation) -> bool:
         # Cleanup has its own bound, outside the exhausted admission budget, and
@@ -1347,9 +1386,14 @@ class _Walk:
         handoff = threading.Lock()
         results: list[object] = []
         abandoned = False
+        pending = LocalReservationPending()
 
         def reserve() -> object:
-            result = self.local_admit(self.settings, bound)
+            try:
+                result = self.local_admit(self.settings, bound)
+            except BaseException:
+                pending._finish("none_returned")
+                raise
             with handoff:
                 if not abandoned:
                     results.append(result)
@@ -1358,7 +1402,11 @@ class _Walk:
             # still owned here, so release it rather than losing it in _Calls.
             handle = _local_handle(result)
             if handle is not None:
-                self._release_local(handle)
+                released = self._release_local(handle)
+                pending._finish("released" if released else "retained",
+                                None if released else handle)
+            else:
+                pending._finish("none_returned")
             return result
 
         try:
@@ -1367,18 +1415,24 @@ class _Walk:
             bound.cancelled.set()
             with handoff:
                 abandoned = True
-                result = results.pop() if results else None
+                completed = bool(results)
+                result = results.pop() if completed else None
             handle = _local_handle(result)
             released = self._release_local(handle) if handle is not None else None
+            if completed:
+                pending._finish("none_returned" if handle is None else
+                                "released" if released else "retained",
+                                handle if released is False else None)
             safe_refusal = (isinstance(exc, PlacementUnavailable)
                             and exc.code in {_CAPACITY, _REFUSED} and handle is None)
             uncertain = not safe_refusal
             if self.cancelled.is_set() or isinstance(exc, _CallCancelled):
                 self._local_cancel(label, released=released,
-                                   uncertain=uncertain and released is not True, handle=handle)
+                                   uncertain=uncertain and released is not True, handle=handle,
+                                   pending=pending)
             code = _LOCAL_RELEASE_UNCONFIRMED if uncertain else (
                 exc.code if safe_refusal else _REFUSED)
-            return self._local_left(label, code, handle if released is not True else None)
+            return self._local_left(label, code, handle if released is not True else None, pending)
 
         handle = _local_handle(result)
         if handle is None:
@@ -1436,7 +1490,6 @@ class _Walk:
             if local is not None:
                 return replace(local, code=code) if code is not None and local.outcome == "launching_host" else local
             trail = tuple(self.trail)
-            code = trail[-1]["code"] if trail else code
         if code is None and trail:
             code = trail[-1]["code"]  # type: ignore[assignment]
         if code is None or sandbox_policy.remote_required():
@@ -1852,7 +1905,11 @@ def place(
     handles are released by the abandoned admission worker. On launch the handle is
     transferred in decision.local_reservation; the caller owns subsequent cleanup.
     A failed release retains its known handle on the decision or cancellation exception
-    for reconciliation; an unknown handle remains explicitly uncertain.
+    for reconciliation. An admission that outlives the caller exposes
+    pending_local_reservation on its decision or cancellation exception. Its
+    inspect() and wait(timeout_s) report pending, released, retained(handle), or
+    none_returned; cleanup that exceeds its bound retains the handle. An unknown
+    handle remains explicitly uncertain.
     These hooks remain unwired at launch sites; missing hooks refuse local.
 
     ``rungs`` are the configured roots in order
