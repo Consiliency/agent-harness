@@ -1078,6 +1078,32 @@
         "page_size": null
       },
       "keyword": "type"
+    },
+    {
+      "name": "status-expires-at-leap-second",
+      "type": "LeaseStatus",
+      "value": {
+        "lease_id": "00000000-0000-4000-8000-000000000001",
+        "state": "reserved",
+        "sandbox_id": null,
+        "expires_at": "2026-11-01T23:59:60Z",
+        "flags": {
+          "reserved": false,
+          "create_settled": false,
+          "ready": false,
+          "exec_claimed": false,
+          "fenced": false,
+          "destruction_observed": false,
+          "cleanup_pending": false,
+          "barrier_confirmed": false,
+          "expired": false
+        },
+        "binding": {
+          "label_matches": 0,
+          "duplicates": []
+        }
+      },
+      "keyword": "pattern"
     }
   ]
 }
