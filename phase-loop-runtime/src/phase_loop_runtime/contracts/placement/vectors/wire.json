@@ -478,6 +478,39 @@
         },
         "reclaims": []
       }
+    },
+    {
+      "name": "tombstone-with-reclaimed-sandbox",
+      "type": "LeaseStatus",
+      "value": {
+        "lease_id": "00000000-0000-4000-8000-000000000001",
+        "state": "tombstone",
+        "sandbox_id": "22222222-3333-4444-8555-666666666666",
+        "expires_at": "2026-11-01T12:00:00Z",
+        "flags": {
+          "reserved": false,
+          "create_settled": true,
+          "ready": false,
+          "exec_claimed": false,
+          "fenced": true,
+          "destruction_observed": true,
+          "cleanup_pending": false,
+          "barrier_confirmed": true,
+          "expired": false
+        },
+        "binding": {
+          "label_matches": 0,
+          "duplicates": []
+        },
+        "reclaims": [
+          {
+            "sandbox_id": "22222222-3333-4444-8555-666666666666",
+            "reason": "recovery_orphan",
+            "at": "2026-11-01T23:40:00Z",
+            "outcome": "destroyed"
+          }
+        ]
+      }
     }
   ],
   "invalid": [

@@ -101,8 +101,9 @@ end-of-input meaning.
 so a `state` must never contradict its flags. These are necessary conditions,
 checked over every valid vector:
 - every state except `tombstone` has `reserved`;
-- `tombstone` is `fenced` and `barrier_confirmed`, never `reserved`, and has no
-  `sandbox_id`;
+- `tombstone` is `fenced` and `barrier_confirmed`, never `reserved`. It may carry a
+  `sandbox_id` when a sandbox found later (an out-of-band create, or an
+  unknown-lease label) was bound and destroyed under it;
 - `reserved` and `creating` are neither `fenced` nor `ready`;
 - `ready` is `create_settled` and `ready`, has a `sandbox_id`, and isn't `fenced`;
 - `killing` is `fenced` without `barrier_confirmed`;

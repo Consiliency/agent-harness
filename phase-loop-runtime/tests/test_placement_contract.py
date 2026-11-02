@@ -175,7 +175,9 @@ def _state_violations(status):
         'killing': f['fenced'] and not f['barrier_confirmed'],
         'destroyed': f['fenced'] and f['barrier_confirmed'],
         'expired': f['expired'],
-        'tombstone': f['fenced'] and f['barrier_confirmed'] and not f['reserved'] and not bound,
+        # A sandbox found later (out-of-band create, or an unknown-lease label) may be
+        # bound and destroyed under a tombstone, so sandbox_id is not constrained.
+        'tombstone': f['fenced'] and f['barrier_confirmed'] and not f['reserved'],
     }
     out = []
     if state != 'tombstone' and not f['reserved']:
