@@ -532,9 +532,17 @@
           "expired": false
         },
         "binding": {
-          "label_matches": 0,
+          "label_matches": 1,
           "duplicates": []
-        }
+        },
+        "reclaims": [
+          {
+            "sandbox_id": "22222222-3333-4444-8555-666666666666",
+            "reason": "recovery_orphan",
+            "at": "2026-11-01T23:39:00Z",
+            "outcome": "destroy_pending"
+          }
+        ]
       }
     }
   ],
