@@ -4849,6 +4849,19 @@ _SHELL_WRAPPER_EXPORT = re.compile(r'export [A-Z_][A-Z0-9_]*=(?:[A-Za-z0-9._/:@+
 _SHELL_WRAPPER_EXEC = re.compile(
     r'exec (/[A-Za-z0-9._@+/-]+)(?: -c [A-Za-z0-9._-]+=[A-Za-z0-9._/:@+-]+)* "\$@"')
 
+# A Consiliency guarded frontdoor (Consiliency/dotfiles 38639c7; agent-harness#1798): the
+# shared team-host CLI re-enters a release-pinned Python launcher, whose `--shared` names
+# the native provider. The seat cannot see the release's launcher, so the native target is
+# followed instead, under the #1318 trust checks plus the release checks below.
+_FRONTDOOR_EXEC = re.compile(
+    r'exec /usr/bin/python3 -I (/[A-Za-z0-9._@+/-]+/source/lib/user_agent_tools\.py) launch'
+    r' --provider ([a-z][a-z0-9-]*) --shared (/[A-Za-z0-9._@+/-]+)'
+    r' --node-bin /[A-Za-z0-9._@+/-]+ -- "\$@"')
+#: Where guarded frontdoors' immutable, root-owned releases live.
+_FRONTDOOR_RELEASES = Path("/opt/consiliency/tooling/releases")
+#: Owners a frontdoor release may have: root only (tests substitute their own uid).
+_FRONTDOOR_OWNERS = frozenset({0})
+
 _PROVIDER_HARNESSES = {"agy": "gemini", "gemini": "gemini", "codex.js": "codex",
                        "claude.exe": "claude", "grok-native": "grok", "opencode.exe": "opencode"}
 
@@ -4921,9 +4934,41 @@ def _shell_wrapper_target(path: Path, provider: str | None = None) -> Path | Non
     if not all(_SHELL_WRAPPER_EXPORT.fullmatch(line) for line in lines[1:-1]):
         return None
     match = _SHELL_WRAPPER_EXEC.fullmatch(lines[-1])
+    if match:
+        return _native_provider_target(match.group(1), provider)
+    return _frontdoor_target(lines[-1], provider)
+
+
+def _frontdoor_target(line: str, provider: str | None) -> Path | None:
+    """The native ``--shared`` target of a Consiliency guarded frontdoor's ``exec`` line,
+    else ``None`` (agent-harness#1798). Followed only when the launcher script and the
+    target lie in one release directly under :data:`_FRONTDOOR_RELEASES`, that release is
+    owned by root and writable by no one else, ``--provider`` names the same harness as
+    the seat's provider, and the target (resolved) stays inside the release and is a native
+    member of that provider's alias set (or Codex's vendored launcher)."""
+    match = _FRONTDOOR_EXEC.fullmatch(line)
     if not match:
         return None
-    return _native_provider_target(match.group(1), provider)
+    script, named, shared = Path(match.group(1)), match.group(2), Path(match.group(3))
+    release = script.parents[2]
+    if release.parent != _FRONTDOOR_RELEASES or ".." in script.parts or ".." in shared.parts:
+        return None
+    if shared.parts[:len(release.parts)] != release.parts:
+        return None
+    harness = _PROVIDER_HARNESSES.get(named, named)
+    if provider is not None and harness != _PROVIDER_HARNESSES.get(provider, provider):
+        return None
+    try:
+        info = os.stat(release, follow_symlinks=False)
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid not in _FRONTDOOR_OWNERS or info.st_mode & 0o022:
+            return None
+        resolved = shared.resolve(strict=True)
+        root = release.resolve(strict=True)
+    except OSError:
+        return None
+    if not resolved.is_relative_to(root):
+        return None
+    return _native_provider_target(shared, provider or named)
 
 
 def _seat_provider_source(command, env):

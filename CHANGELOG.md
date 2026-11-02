@@ -6,6 +6,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- Seats follow a Consiliency guarded frontdoor (`exec /usr/bin/python3 -I <release>/source/lib/
+  user_agent_tools.py launch --provider P --shared <native> ...`) to its native provider, so board
+  CLI seats no longer fail their `--version` probe with exit 2 (agent-harness#1798). It's followed only
+  inside one root-owned release under `/opt/consiliency/tooling/releases/`, with the #1318 checks.
+
 - Placement contract revision 9 (agent-harness#1795): `ReserveBody` and `RenewBody` request
   types (no `client`/`owner`; both come from the certificate), and optional `LeaseStatus.reclaims`
   reclaim records with closed `reason` and `outcome` values. Reserve and renew answer a `LeaseStatus`.
