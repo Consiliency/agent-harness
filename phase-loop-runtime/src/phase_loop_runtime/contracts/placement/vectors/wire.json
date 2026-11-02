@@ -539,7 +539,7 @@
           {
             "sandbox_id": "22222222-3333-4444-8555-666666666666",
             "reason": "recovery_orphan",
-            "at": "2026-11-01T23:39:00Z",
+            "at": "2026-11-01T23:40:00Z",
             "outcome": "destroy_pending"
           }
         ]
