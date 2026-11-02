@@ -199,3 +199,68 @@ def test_state_flag_check_catches_a_contradiction():
     status = next(s for v in VECTORS['valid'] for s in _status_values(v) if s['state'] == 'reserved')
     bad = {**status, 'flags': {**status['flags'], 'reserved': False}}
     assert _state_violations(bad)
+
+
+# --- Stock SandboxPolicy vectors (agent-harness#1795 revisions 12-13), pending live qualification ---
+
+POLICIES = json.loads((OUT / 'vectors/policies.json').read_text())
+_STOCK_TOP = {'version', 'filesystem', 'landlock', 'process', 'network_policies', 'network_middlewares'}
+_BASELINE_RO = {'/dev/urandom', '/etc', '/lib', '/proc', '/usr', '/var/log'}
+_BASELINE_RW = {'/dev/null', '/tmp'}
+
+
+def _keys(value):
+    if isinstance(value, dict):
+        for key, item in value.items():
+            yield key
+            yield from _keys(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _keys(item)
+
+
+def test_policy_vectors_are_marked_pending_qualification():
+    assert POLICIES['status'] == 'pending_qualification'
+
+
+@pytest.mark.parametrize('vector', POLICIES['valid'], ids=lambda v: v['name'])
+def test_valid_policy_vectors_are_stock_shaped_and_digests_recompute(vector):
+    policy = vector['policy']
+    assert vector['policy_digest'] == 'sha256:' + hashlib.sha256(rfc8785.dumps(policy)).hexdigest()
+    assert set(policy) <= _STOCK_TOP
+    assert all(key == key.lower() for key in _keys(policy)), 'snake_case field names only (revision 12)'
+    fs = policy['filesystem']
+    assert set(fs) == {'include_workdir', 'read_only', 'read_write'}
+    assert _BASELINE_RO <= set(fs['read_only']) and _BASELINE_RW <= set(fs['read_write'])
+    assert fs['read_only'] == sorted(fs['read_only']) and fs['read_write'] == sorted(fs['read_write'])
+    assert policy['landlock'] == {'compatibility': 'hard_requirement'}
+    assert policy['process'] == {'run_as_user': 'sandbox', 'run_as_group': 'sandbox'}
+    assert policy['network_policies'] == {}
+
+
+def test_the_without_app_vector_matches_agent_toolkits_pinned_digest():
+    vector = next(v for v in POLICIES['valid'] if v['name'] == 'minimal-without-app')
+    assert vector['policy_digest'] == 'sha256:974189cb8fa035f9273eda1db2d5002a712a6953f8d92c519b4a8f381e80b43d'
+
+
+@pytest.mark.parametrize('vector', POLICIES['refused'], ids=lambda v: v['name'])
+def test_refused_policy_vectors_are_not_stock_shaped(vector):
+    assert not set(vector['policy']) <= _STOCK_TOP
+
+
+@pytest.mark.parametrize('vector', POLICIES['valid'], ids=lambda v: v['name'])
+def test_policy_vectors_list_only_stable_parents_never_per_run_leaves(vector):
+    """Revision 13: a listed path absent at start is skipped and granted nothing, so the
+    outer policy lists only stable image-baked parents (for example /work), never per-run
+    leaves below them. Minimal policies are exactly the baseline (+ /app for the
+    qualification image); only full-remote policies add the /work load root."""
+    fs = vector['policy']['filesystem']
+    listed = set(fs['read_only']) | set(fs['read_write'])
+    assert not any(path.startswith('/work/') for path in listed), 'no per-run leaves'
+    extra_ro = set(fs['read_only']) - _BASELINE_RO
+    extra_rw = set(fs['read_write']) - _BASELINE_RW
+    if vector['name'].startswith('minimal-'):
+        assert extra_ro <= {'/app'} and not extra_rw
+    else:
+        assert vector['name'].startswith('full-remote-')
+        assert extra_rw == {'/work'} and extra_ro <= {'/app'}

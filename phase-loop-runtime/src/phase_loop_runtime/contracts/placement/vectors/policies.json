@@ -1,0 +1,121 @@
+{
+  "_comment": "Stock OpenShell v0.1.4 SandboxPolicy documents (proto3 JSON, snake_case field names). PENDING the owner's live qualification run (agent-harness#1795 revisions 12-13); swap in the confirmed document then. policy_digest = 'sha256:' + hex(SHA-256(RFC 8785 JCS(policy))).",
+  "status": "pending_qualification",
+  "valid": [
+    {
+      "name": "minimal-with-app",
+      "note": "ai-stack's qualification image (has /app)",
+      "policy": {
+        "version": 1,
+        "filesystem": {
+          "include_workdir": false,
+          "read_only": [
+            "/app",
+            "/dev/urandom",
+            "/etc",
+            "/lib",
+            "/proc",
+            "/usr",
+            "/var/log"
+          ],
+          "read_write": [
+            "/dev/null",
+            "/tmp"
+          ]
+        },
+        "landlock": {
+          "compatibility": "hard_requirement"
+        },
+        "process": {
+          "run_as_user": "sandbox",
+          "run_as_group": "sandbox"
+        },
+        "network_policies": {}
+      },
+      "policy_digest": "sha256:075b63f281bb7ec6c9bd2c1c5c3fb529240d2be7766dc93ed89f5fcd7ed4577e"
+    },
+    {
+      "name": "minimal-without-app",
+      "note": "agent-toolkit pi-runner image (no /app); pinned in Consiliency/agent-toolkit#41",
+      "policy": {
+        "version": 1,
+        "filesystem": {
+          "include_workdir": false,
+          "read_only": [
+            "/dev/urandom",
+            "/etc",
+            "/lib",
+            "/proc",
+            "/usr",
+            "/var/log"
+          ],
+          "read_write": [
+            "/dev/null",
+            "/tmp"
+          ]
+        },
+        "landlock": {
+          "compatibility": "hard_requirement"
+        },
+        "process": {
+          "run_as_user": "sandbox",
+          "run_as_group": "sandbox"
+        },
+        "network_policies": {}
+      },
+      "policy_digest": "sha256:974189cb8fa035f9273eda1db2d5002a712a6953f8d92c519b4a8f381e80b43d"
+    },
+    {
+      "name": "full-remote-pi-runner",
+      "note": "minimal-without-app plus the stable load root /work (10001, 0700); per-run paths live below it and are never listed",
+      "policy": {
+        "version": 1,
+        "filesystem": {
+          "include_workdir": false,
+          "read_only": [
+            "/dev/urandom",
+            "/etc",
+            "/lib",
+            "/proc",
+            "/usr",
+            "/var/log"
+          ],
+          "read_write": [
+            "/dev/null",
+            "/tmp",
+            "/work"
+          ]
+        },
+        "landlock": {
+          "compatibility": "hard_requirement"
+        },
+        "process": {
+          "run_as_user": "sandbox",
+          "run_as_group": "sandbox"
+        },
+        "network_policies": {}
+      },
+      "policy_digest": "sha256:767400727c35828c350a7adaa01a8eed40e14bdc86fd934812910872a935ec2c"
+    }
+  ],
+  "refused": [
+    {
+      "name": "fork-era-network-shape",
+      "reason": "unknown top-level fields `network`/`filesystem_policy`; the coordinator refuses non-stock SandboxPolicy (revision 12), though the opaque-object JSON Schema can't",
+      "policy": {
+        "version": 1,
+        "network": {
+          "allow": []
+        },
+        "filesystem_policy": {
+          "read_only": [
+            "/usr"
+          ],
+          "read_write": [
+            "/tmp"
+          ]
+        }
+      }
+    }
+  ]
+}
