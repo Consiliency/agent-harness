@@ -43,6 +43,7 @@ from dataclasses import dataclass, field, replace
 import hashlib
 import json
 import logging
+import math
 import os
 from pathlib import Path
 import queue
@@ -864,7 +865,7 @@ LADDER_TABLE = _Ladder(
             "admitting", "at_capacity", "waiting",
             "the backend raises the runtime's capacity code",
             (
-                "**The capacity bar is set for the attempt.** The far end's answer means it "
+                "The far end's answer means it "
                 "holds nothing."
             ),
         ),
@@ -946,19 +947,19 @@ LADDER_TABLE = _Ladder(
     ),
     after_left=(
         _AfterLeftRow(
+            "release_unconfirmed", "not_run_release_unconfirmed",
+            "A previous target may still hold capacity",
+            "Stops without overflow; retains the fenced lease for cleanup",
+        ),
+        _AfterLeftRow(
             "another_rung", "start_next",
-            "Another remote rung exists and the budget is not spent",
+            "Another ranked target exists and the budget is not spent",
             "Starts that rung",
         ),
         _AfterLeftRow(
-            "last_local_unbarred", "launching_host",
-            "Otherwise, the last rung is `local` and the capacity bar is not set",
-            "Ends on **the launching host**",
-        ),
-        _AfterLeftRow(
-            "last_local_barred", "not_run_capacity_exhausted",
-            "Otherwise, the last rung is `local` and the capacity bar is set",
-            "Ends **not run**, `sandbox_placement_capacity_exhausted`",
+            "last_local", "launching_host",
+            "Otherwise, a compatibility local target remains",
+            "Attempts local with fresh headroom and authoritative admission",
         ),
         _AfterLeftRow(
             "last_none", "not_run_last_code",
@@ -1162,6 +1163,36 @@ class _Rung:
     cancel: bool = False
 
 
+@dataclass(frozen=True)
+class LocalHeadroom:
+    """Local inventory snapshot; missing or stale dimensions fail closed.
+
+    CPU-relative load is 100 * one-minute load / online CPU count. The live
+    count includes all local sandboxes, not just this process's reservations.
+    """
+
+    memory_available_bytes: int | None
+    load_per_cpu_percent: float | None
+    live_sandboxes: int | None
+    observed_monotonic: float
+
+    def admits(self, settings: sandbox_policy.PlacementDriverSettings) -> bool:
+        try:
+            age = _monotonic() - self.observed_monotonic
+            return (
+                math.isfinite(age) and 0 <= age <= settings.capacity_max_age_s
+                and type(self.memory_available_bytes) is int
+                and self.memory_available_bytes >= settings.local_min_memory_bytes
+                and type(self.live_sandboxes) is int
+                and 0 <= self.live_sandboxes < settings.local_max_live_sandboxes
+                and type(self.load_per_cpu_percent) in (int, float)
+                and math.isfinite(self.load_per_cpu_percent)
+                and 0 <= self.load_per_cpu_percent < settings.local_max_load_per_cpu_percent
+            )
+        except (TypeError, ValueError, OverflowError):
+            return False
+
+
 class _Walk:
     """One attempt to place one seat. The transitions are :data:`LADDER_TABLE`'s; each
     ``_<state>`` method does that state's work and names the event that happened."""
@@ -1172,6 +1203,8 @@ class _Walk:
         seal: Callable[[PlacementRequest], "ExecSpec | None"],
         driver_enabled: bool, cancelled: threading.Event,
         settings: sandbox_policy.PlacementDriverSettings,
+        local_capacity: Callable[[], LocalHeadroom | None] | None = None,
+        local_admit: Callable[[sandbox_policy.PlacementDriverSettings, OperationBound], LocalHeadroom] | None = None,
     ) -> None:
         self.prepared = prepared
         self.request_for = request_for
@@ -1180,11 +1213,11 @@ class _Walk:
         self.driver_enabled = driver_enabled
         self.cancelled = cancelled
         self.settings = settings
+        self.local_capacity = local_capacity
+        self.local_admit = local_admit
         self.calls = _Calls(settings=settings)
         self.trail: list[Mapping[str, object]] = []
         self.notices: list[str] = []
-        #: Set by the first capacity answer on any rung; nothing clears it.
-        self.capacity_bar = False
         self.admit_wait_s = float(settings.admit_wait_s)
         self.budget_s = self.admit_wait_s + float(settings.transfer_allowance_s)
         self.waited_s = 0.0
@@ -1203,30 +1236,77 @@ class _Walk:
     # -- the walk -----------------------------------------------------------------------
     def run(self, rungs: Sequence[object], last_rung: str) -> PlacementDecision:
         for index, root in enumerate(rungs):
-            placed = self._rung(root)
+            if getattr(root, "scheme", "") == "local":
+                placed = self._local(getattr(root, "name", None) or "local")
+            else:
+                placed = self._rung(root)
             if placed is not None:
                 return placed
             if self._after_left(index + 1 < len(rungs), last_rung) != "start_next":
                 break
         return self._end(self._after_left(False, last_rung))
 
+    def _local(self, label: str) -> PlacementDecision | None:
+        if self.cancelled.is_set():
+            raise PlacementCancelled(self.trail)
+        code = _CAPACITY
+        try:
+            if sandbox_policy.remote_required():
+                code = _REQUIRED_UNAVAILABLE
+            elif self._budget_spent():
+                code = _BUDGET_SPENT
+            elif self.local_capacity is not None and self.local_admit is not None:
+                reading = self.calls.run(self.local_capacity,
+                                         min(ANSWER_BOUND_S, self._budget_left()), self.cancelled)
+                if isinstance(reading, LocalHeadroom) and reading.admits(self.settings):
+                    bound = _bound(min(ANSWER_BOUND_S, self._budget_left()), self.cancelled)
+                    admitted = self.calls.run(lambda: self.local_admit(self.settings, bound),
+                                              bound.timeout_s, self.cancelled)
+                    if self.cancelled.is_set():
+                        raise PlacementCancelled(self.trail)
+                    if (isinstance(admitted, LocalHeadroom) and admitted.admits(self.settings)
+                            and not self._budget_spent()):
+                        self.trail.append({"rung": label, "class": "admitted", "code": None})
+                        return PlacementDecision("launching_host", tuple(self.trail), None,
+                                                 tooled_route_required=True,
+                                                 notices=tuple(self.notices))
+                    code = _TIMEOUT  # A malformed success may already hold a reservation.
+        except _CallCancelled:
+            raise PlacementCancelled(self.trail) from None
+        except PlacementUnavailable as exc:
+            code = exc.code if exc.code in {_CAPACITY, _REFUSED} else _TIMEOUT
+        except PlacementCancelled:
+            raise
+        except Exception:
+            code = _TIMEOUT
+        self.trail.append({"rung": label, "class": "capacity" if code == _CAPACITY else "refused",
+                           "code": code})
+        if code == _TIMEOUT:
+            # An uncertain admission must never overflow to another target.
+            return PlacementDecision("not_run", tuple(self.trail), _RELEASE_UNCONFIRMED,
+                                     notices=tuple(self.notices))
+        return None
+
     def _after_left(self, another: bool, last_rung: str) -> str:
         facts = {
+            "release_unconfirmed": any(entry.get("release") == _RELEASE_UNCONFIRMED
+                                       for entry in self.trail),
             "another_rung": another and not self._budget_spent(),
-            "last_local_unbarred": last_rung == "local" and not self.capacity_bar,
-            "last_local_barred": last_rung == "local" and self.capacity_bar,
+            "last_local": last_rung == "local",
             "last_none": last_rung == "none",
         }
         return next(row.walk for row in LADDER_TABLE.after_left if facts[row.condition])
 
     def _end(self, walk: str, code: str | None = None) -> PlacementDecision:
         trail, notices = tuple(self.trail), tuple(self.notices)
+        if walk == "not_run_release_unconfirmed":
+            return PlacementDecision("not_run", trail, _RELEASE_UNCONFIRMED, notices=notices)
         if walk == "launching_host":
-            return PlacementDecision(
-                "launching_host", trail, code, tooled_route_required=True, notices=notices,
-            )
-        if walk == "not_run_capacity_exhausted":
-            return PlacementDecision("not_run", trail, _CAPACITY_EXHAUSTED, notices=notices)
+            local = self._local("local")
+            if local is not None:
+                return local
+            trail = tuple(self.trail)
+            code = code or _CAPACITY_EXHAUSTED
         if code is None and trail:
             code = trail[-1]["code"]  # type: ignore[assignment]
         if code is None or sandbox_policy.remote_required():
@@ -1412,12 +1492,11 @@ class _Walk:
         return "admitted", None
 
     def _at_capacity(self, rung: _Rung) -> None:
-        self.capacity_bar = True
         if _WAITING_NOTICE not in self.notices:
             self.notices.append(_WAITING_NOTICE)
             logging.getLogger(__name__).warning(
                 "seat placement [%s]: %s is at capacity; waiting up to %d s in all for a "
-                "slot, and the seat will not run on this host", _WAITING_NOTICE, rung.label,
+                "slot before trying the next ranked target", _WAITING_NOTICE, rung.label,
                 int(self.admit_wait_s),
             )
 
@@ -1461,9 +1540,7 @@ class _Walk:
             if exc.code == _TIMEOUT:
                 return failed, _BUDGET_SPENT if self._budget_spent() else _TIMEOUT
             if exc.code == _CAPACITY:
-                # The bar is set by the first capacity answer on any rung (C7). Nothing
-                # waits here: the slot is released as a failed transfer.
-                self.capacity_bar = True
+                # A failed transfer releases before another ranked target is tried.
                 return failed, _CAPACITY
             return failed, self._refusal_code(rung, exc.code, _COMMIT_REFUSALS)
         except Exception:
@@ -1626,10 +1703,20 @@ def place(
     driver_enabled: bool,
     cancelled: threading.Event,
     settings: sandbox_policy.PlacementDriverSettings | None = None,
+    local_capacity: Callable[[], LocalHeadroom | None] | None = None,
+    local_admit: Callable[[sandbox_policy.PlacementDriverSettings, OperationBound], LocalHeadroom] | None = None,
 ) -> PlacementDecision:
     """Decide where a candidate seat runs, and launch it there if a remote rung takes it.
 
-    The walk of amendment C7. ``rungs`` are the configured remote roots in order
+    The walk of amendment C7 (agent-harness#1791). Local roots may occur anywhere.
+    ``local_capacity`` supplies advisory headroom; ``local_admit`` atomically
+    checks all three thresholds and reserves a slot, returning the fresh pre-reservation
+    reading. The caller owns that reservation through local execution and cleanup.
+    Neither hook is wired at launch sites while the driver is disabled; missing hooks
+    refuse local, never infer zero live sandboxes. An uncertain local admission stops
+    the walk for cleanup rather than overflowing.
+
+    ``rungs`` are the configured roots in order
     (:func:`sandbox_policy.candidate_roots`) and ``last_rung`` is ``local`` or ``none``
     (:func:`sandbox_policy.last_rung`). ``prepared`` is the runtime's revalidated local
     stage: this is called where ``commit`` is called today.
@@ -1658,7 +1745,7 @@ def place(
         raise ValueError(f"unknown last rung {last_rung!r}")
     settings = settings if settings is not None else sandbox_policy.placement_driver_settings()
     refusal = preflight()
-    walk = _Walk(prepared, request_for, open_lease, seal, bool(driver_enabled), cancelled, settings)
+    walk = _Walk(prepared, request_for, open_lease, seal, bool(driver_enabled), cancelled, settings, local_capacity, local_admit)
     try:
         if refusal is not None:
             return walk._end(walk._after_left(False, last_rung), str(refusal))

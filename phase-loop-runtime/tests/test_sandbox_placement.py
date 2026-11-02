@@ -22,6 +22,7 @@ import pytest
 
 from phase_loop_runtime import (
     panel_invoker,
+    placement_lease,
     review_stage,
     sandbox_egress,
     sandbox_policy,
@@ -1441,3 +1442,162 @@ def test_board_loading_refuses_a_malformed_sandbox_table(tmp_path):
         )
     path.write_text('[sandbox]\nroots.self-hosted = "https://h/p"\n', encoding="utf-8")
     config.load_boards(path, validate=False, is_available=lambda _: True, auth_ok=lambda _: True)
+
+# OSCOORD2 SL-0: ranked local uses fresh three-dimensional headroom and admission.
+def _headroom(**changes):
+    values = dict(memory_available_bytes=4 * 1024**3, load_per_cpu_percent=25,
+                  live_sandboxes=0, observed_monotonic=sandbox_placement._monotonic())
+    values.update(changes)
+    return sandbox_placement.LocalHeadroom(**values)
+
+
+def _ranked_walk(monkeypatch, *, readings=None, admission=None, roots=None):
+    reading = _headroom() if readings is None else readings
+    roots = sandbox_policy.candidate_roots([('local', '/stage')]) if roots is None else roots
+    return _sl0_walk(roots, last_rung='none', required=frozenset(),
+                settings=sandbox_policy.PlacementDriverSettings(0, 30, 4),
+                local_capacity=lambda: reading,
+                local_admit=admission or (lambda settings, bound: _headroom()))
+
+
+def test_ranked_local_candidate_position():
+    roots = sandbox_policy.candidate_roots([
+        ('ai', 'drv://ai.invalid/stage'), ('local', '/stage'),
+        ('overflow', 'drw://overflow.invalid/stage')])
+    assert [root.scheme for root in roots] == ['drv', 'local', 'drw']
+
+
+def test_capacity_then_local_with_headroom_before_overflow(tmp_path, monkeypatch):
+    from test_placement_driver import FarSide, rungs, raises, CAPACITY
+    far = FarSide('drv', None)
+    far.behave['admit'] = raises(CAPACITY)
+    monkeypatch.setitem(sandbox_placement._REGISTRY, 'drv', far)
+    local = sandbox_policy.SandboxRootChoice(None, '/stage', False, scheme='local', name='local')
+    admitted = []
+    decision = _sl0_walk((*rungs('drv'), local, *rungs('missing')), last_rung='none',
+                    settings=sandbox_policy.PlacementDriverSettings(0, 30, 4),
+                    local_capacity=lambda: _headroom(),
+                    local_admit=lambda settings, bound: admitted.append(True) or _headroom())
+    assert decision.outcome == 'launching_host'
+    assert admitted == [True]
+    assert [entry['rung'] for entry in decision.trail] == ['r1', 'local']
+    assert decision.trail[0]['code'] == CAPACITY
+
+
+@pytest.mark.parametrize('changes', [
+    {'memory_available_bytes': None}, {'load_per_cpu_percent': None},
+    {'live_sandboxes': None}, {'observed_monotonic': -1000},
+    {'memory_available_bytes': 0}, {'load_per_cpu_percent': 100},
+    {'live_sandboxes': 4}, {'load_per_cpu_percent': float('nan')},
+])
+def test_ranked_local_refuses_unknown_stale_or_full(monkeypatch, changes):
+    admitted = []
+    decision = _ranked_walk(monkeypatch, readings=_headroom(**changes),
+                            admission=lambda *args: admitted.append(True))
+    assert decision.outcome == 'not_run'
+    assert not admitted
+
+
+def test_local_read_admit_race_never_uses_advisory_slot(monkeypatch):
+    from test_placement_driver import raises, CAPACITY
+    decision = _ranked_walk(monkeypatch, admission=raises(CAPACITY))
+    assert decision.outcome == 'not_run'
+    assert decision.trail[-1]['code'] == CAPACITY
+
+
+def test_local_requires_authoritative_fresh_headroom(monkeypatch):
+    decision = _ranked_walk(monkeypatch, admission=lambda *args: _headroom(live_sandboxes=4))
+    assert decision.outcome == 'not_run'
+
+
+def test_ranked_local_respects_remote_required(monkeypatch):
+    monkeypatch.setenv('PHASE_LOOP_SANDBOX_REMOTE_REQUIRED', '1')
+    assert _ranked_walk(monkeypatch).outcome == 'not_run'
+
+
+def _sl0_walk(roots, *, local_capacity=None, local_admit=None, **kwargs):
+    from test_placement_driver import prepared_stage, exec_spec
+    prepared = prepared_stage(Path('/nonexistent/stage'))
+    return sandbox_placement.place(
+        roots, kwargs.pop('last_rung', 'none'), prepared,
+        lambda root: sandbox_placement.PlacementRequest(
+            'codex', 'codex:a', '/repo', prepared.snapshot_sha256, None,
+            sandbox_placement.EgressNeeds()),
+        placement_lease.open_lease, preflight=lambda: None, seal=exec_spec,
+        driver_enabled=True, cancelled=threading.Event(),
+        local_capacity=local_capacity, local_admit=local_admit,
+        settings=kwargs.get('settings'))
+
+
+def test_local_refusal_overflows_only_after_authoritative_answer(monkeypatch):
+    from test_placement_driver import FarSide, rungs, raises, CAPACITY
+    backend = FarSide('drv', None)
+    monkeypatch.setitem(sandbox_placement._REGISTRY, 'drv', backend)
+    local = sandbox_policy.candidate_roots([('local', '/stage')])[0]
+    decision = _sl0_walk((local, *rungs('drv')), local_capacity=lambda: _headroom(),
+                    local_admit=raises(CAPACITY),
+                    settings=sandbox_policy.PlacementDriverSettings(0, 30, 4))
+    assert decision.outcome == 'placed'
+    assert decision.trail[0]['code'] == CAPACITY
+    sandbox_placement.run_placed(decision.placement, on_progress=None,
+                                 cancelled=threading.Event())
+
+
+def test_uncertain_local_admission_stops_overflow(monkeypatch):
+    from test_placement_driver import raises, TIMEOUT, rungs
+    local = sandbox_policy.candidate_roots([('local', '/stage')])[0]
+    decision = _ranked_walk(monkeypatch, admission=raises(TIMEOUT), roots=(local, *rungs('missing')))
+    assert decision.code == 'sandbox_placement_release_unconfirmed'
+    assert len(decision.trail) == 1
+
+
+@pytest.mark.parametrize('confirmed', [True, False])
+def test_release_before_ranked_local(monkeypatch, confirmed):
+    from test_placement_driver import FarSide, rungs, raises, REFUSED
+    backend = FarSide('drv', None)
+    backend.behave['commit'] = raises(REFUSED)
+    events = []
+    def kill(*args):
+        events.append('kill')
+        if not confirmed:
+            raise RuntimeError('unconfirmed')
+        backend.held.clear()
+    backend.behave['kill'] = kill
+    monkeypatch.setitem(sandbox_placement._REGISTRY, 'drv', backend)
+    local = sandbox_policy.candidate_roots([('local', '/stage')])[0]
+    decision = _sl0_walk((*rungs('drv'), local), local_capacity=lambda: _headroom(),
+                    local_admit=lambda *args: events.append('local') or _headroom(),
+                    settings=sandbox_policy.PlacementDriverSettings(0, 30, 4))
+    assert decision.outcome == ('launching_host' if confirmed else 'not_run')
+    assert events == (['kill', 'local'] if confirmed else ['kill'])
+
+
+def test_capacity_then_full_local_then_overflow(monkeypatch):
+    from test_placement_driver import FarSide, rungs, raises, CAPACITY
+    full = FarSide('drv', None)
+    overflow = FarSide('drw', None)
+    full.behave['admit'] = raises(CAPACITY)
+    monkeypatch.setitem(sandbox_placement._REGISTRY, 'drv', full)
+    monkeypatch.setitem(sandbox_placement._REGISTRY, 'drw', overflow)
+    local = sandbox_policy.candidate_roots([('local', '/stage')])[0]
+    decision = _sl0_walk((*rungs('drv'), local, *rungs('drw')),
+                         local_capacity=lambda: _headroom(memory_available_bytes=0),
+                         local_admit=lambda *args: pytest.fail('full local admitted'),
+                         settings=sandbox_policy.PlacementDriverSettings(0, 30, 4))
+    assert decision.outcome == 'placed'
+    assert [entry['code'] for entry in decision.trail[:2]] == [CAPACITY, CAPACITY]
+    sandbox_placement.run_placed(decision.placement, on_progress=None, cancelled=threading.Event())
+
+
+def test_missing_local_inventory_and_admission_refuse(monkeypatch):
+    local = sandbox_policy.candidate_roots([('local', '/stage')])[0]
+    assert _sl0_walk((local,)).outcome == 'not_run'
+
+
+def test_local_authoritative_stale_success_never_overflows(monkeypatch):
+    from test_placement_driver import rungs
+    local = sandbox_policy.candidate_roots([('local', '/stage')])[0]
+    decision = _ranked_walk(monkeypatch, admission=lambda *args: _headroom(observed_monotonic=-1000),
+                            roots=(local, *rungs('missing')))
+    assert decision.code == 'sandbox_placement_release_unconfirmed'
+    assert len(decision.trail) == 1

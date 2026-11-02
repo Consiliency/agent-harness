@@ -65,7 +65,7 @@ _KNOWN_AGY_KEYS: frozenset[str] = frozenset({"self_qualification"})
 # agent-harness#896: the USER file's ``[sandbox]`` names one root per remote placement
 # backend and the order to try them in. Repositories may carry only driver tunables.
 _KNOWN_SANDBOX_KEYS: frozenset[str] = frozenset({"roots", "order", "driver"})
-_KNOWN_DRIVER_KEYS = frozenset({"admit_wait_s", "transfer_allowance_s", "max_live_workers"})
+_KNOWN_DRIVER_KEYS = frozenset({"admit_wait_s", "transfer_allowance_s", "max_live_workers", 'local_min_memory_bytes', 'local_max_load_per_cpu_percent', 'local_max_live_sandboxes', 'capacity_max_age_s'})
 # agent-harness#1333 PR2: the USER file's ``[qualification.<harness>] self_qualification``
 # opts that harness out of first-use CLI qualification. A repository file cannot carry it.
 _KNOWN_QUALIFICATION_KEYS: frozenset[str] = frozenset({"self_qualification"})

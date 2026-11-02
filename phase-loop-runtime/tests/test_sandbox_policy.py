@@ -439,3 +439,10 @@ def test_an_operational_failure_is_not_reported_as_a_verdict_violation():
         f"via panel_nonconforming: {result[1]!r}"
     )
     assert "floor" in result[2], f"the reason must survive into detail: {result[2]!r}"
+
+@pytest.mark.parametrize('key', ['local_min_memory_bytes', 'local_max_load_per_cpu_percent',
+                                 'local_max_live_sandboxes', 'capacity_max_age_s'])
+@pytest.mark.parametrize('value', [0, -1, True, 1.5])
+def test_local_headroom_limits_are_positive_integers(key, value):
+    with pytest.raises(sandbox_policy.SandboxConfigError):
+        sandbox_policy.PlacementDriverSettings(0, 30, 4, **{key: value})
