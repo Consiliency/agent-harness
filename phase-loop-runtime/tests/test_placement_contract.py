@@ -246,3 +246,21 @@ def test_the_without_app_vector_matches_agent_toolkits_pinned_digest():
 @pytest.mark.parametrize('vector', POLICIES['refused'], ids=lambda v: v['name'])
 def test_refused_policy_vectors_are_not_stock_shaped(vector):
     assert not set(vector['policy']) <= _STOCK_TOP
+
+
+@pytest.mark.parametrize('vector', POLICIES['valid'], ids=lambda v: v['name'])
+def test_policy_vectors_list_only_stable_parents_never_per_run_leaves(vector):
+    """Revision 13: a listed path absent at start is skipped and granted nothing, so the
+    outer policy lists only stable image-baked parents (for example /work), never per-run
+    leaves below them. Minimal policies are exactly the baseline (+ /app for the
+    qualification image); only full-remote policies add the /work load root."""
+    fs = vector['policy']['filesystem']
+    listed = set(fs['read_only']) | set(fs['read_write'])
+    assert not any(path.startswith('/work/') for path in listed), 'no per-run leaves'
+    extra_ro = set(fs['read_only']) - _BASELINE_RO
+    extra_rw = set(fs['read_write']) - _BASELINE_RW
+    if vector['name'].startswith('minimal-'):
+        assert extra_ro <= {'/app'} and not extra_rw
+    else:
+        assert vector['name'].startswith('full-remote-')
+        assert extra_rw == {'/work'} and extra_ro <= {'/app'}
