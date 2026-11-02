@@ -5354,6 +5354,9 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
                       "projects": {str(cwd): {"hasTrustDialogAccepted": True}}}
             data_file(".claude/.claude.json", json.dumps(config).encode())
             profile_env["CLAUDE_CONFIG_DIR"] = private_home + "/.claude"
+            # The seat runs the native binary, not the team-host frontdoor (agent-harness
+            # #1318, #1798), so the frontdoor's self-update suppression must be set here.
+            profile_env.update(DISABLE_AUTOUPDATER="1", DISABLE_UPDATES="1")
         elif harness == "grok":
             credential(".grok/auth.json", shape=_SEAT_CREDENTIAL_SHAPE["grok"])
             data_file(".grok/agent_id", _seat_credential(home, ".grok/agent_id"))
@@ -5363,6 +5366,7 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
                 data_file(".gemini/antigravity-cli/settings.json", _broker_agy_settings_bytes())
         elif harness == "opencode":
             credential(".local/share/opencode/auth.json", shape=_SEAT_CREDENTIAL_SHAPE["opencode"])
+            profile_env["OPENCODE_DISABLE_AUTOUPDATE"] = "true"
         elif harness is not None:
             raise _sandbox_egress.SeatIdentityUnverified("seat_profile_unavailable")
         destination = "/run/phase-loop-seat/provider"

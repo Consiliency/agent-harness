@@ -96,3 +96,19 @@ never `null`. Each `ReclaimRecord` carries a closed `reason` (`unbound`,
 match before a final newline and ECMAScript's doesn't. The lookahead makes
 both refuse a trailing `"\n"`. Ports to other regex engines must keep that
 end-of-input meaning.
+
+**State and flags:** `flags` are authoritative and `state` is a derived summary,
+so a `state` must never contradict its flags. These are necessary conditions,
+checked over every valid vector:
+- every state except `tombstone` and `killing` has `reserved`. A never-reserved
+  lease shows `killing` while the coordinator destroys a sandbox found for it later
+  (`fenced`, `cleanup_pending`, barrier not yet confirmed), and `tombstone` once
+  the barrier is confirmed. `tombstone` is always terminal;
+- `tombstone` is `fenced` and `barrier_confirmed`, never `reserved`. It may carry a
+  `sandbox_id` when a sandbox found later (an out-of-band create, or an
+  unknown-lease label) was bound and destroyed under it;
+- `reserved` and `creating` are neither `fenced` nor `ready`;
+- `ready` is `create_settled` and `ready`, has a `sandbox_id`, and isn't `fenced`;
+- `killing` is `fenced` without `barrier_confirmed`;
+- `destroyed` is `fenced` and `barrier_confirmed`;
+- `expired` has `expired`.
