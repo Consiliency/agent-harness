@@ -199,7 +199,7 @@ def local_headroom():
 
 def walk(roots, *, last_rung="local", workload="leg", deadline_s=None, required=REQUIRED,
          preflight=lambda: None, seal=None, driver_enabled=True, cancelled=None, prepared=None,
-         open_lease=placement_lease.open_lease, settings=None, local_capacity=None, local_admit=None):
+         open_lease=placement_lease.open_lease, settings=None, local_capacity=None, local_admit=None, local_release=lambda handle: None):
     prepared = prepared if prepared is not None else prepared_stage(Path("/nonexistent/stage"))
 
     def request_for(root):
@@ -217,7 +217,9 @@ def walk(roots, *, last_rung="local", workload="leg", deadline_s=None, required=
         cancelled=cancelled if cancelled is not None else threading.Event(),
         settings=settings,
         local_capacity=local_capacity or local_headroom,
-        local_admit=local_admit or (lambda settings, bound: local_headroom()),
+        local_admit=local_admit or (lambda settings, bound: sp.LocalAdmission(
+            sp.LocalReservation("test-slot"), local_headroom())),
+        local_release=local_release,
     )
 
 
@@ -742,12 +744,12 @@ PLAN_CODES = (
     "sandbox_placement_workload_unsupported", "sandbox_placement_operation_timeout",
     "sandbox_placement_code_invalid", "sandbox_placement_release_unconfirmed",
     "sandbox_placement_at_capacity", "sandbox_placement_budget_spent",
-    "seat_placement_waiting",
+    "seat_placement_waiting", "sandbox_placement_local_release_unconfirmed",
 )
 
 
 def test_the_runtimes_code_list_is_the_plans():
-    assert sp.PLACEMENT_CODES == frozenset(PLAN_CODES) and len(PLAN_CODES) == 21
+    assert sp.PLACEMENT_CODES == frozenset(PLAN_CODES) and len(PLAN_CODES) == 22
 
 
 def test_the_flag_is_still_off_and_the_launch_site_does_not_call_the_driver():
@@ -1397,8 +1399,8 @@ def test_readiness_failure_precedes_probe_and_lease(far, monkeypatch, cancel):
     else:
         decision = walk(rungs("drv"))
         assert summary(decision.trail) == [
-            ("r1", "failed_locally", REFUSED), ("local", "refused", TIMEOUT)]
-        assert decision.code == UNCONFIRMED
+            ("r1", "failed_locally", REFUSED), ("local", "capacity", CAPACITY)]
+        assert decision.code == CAPACITY
     assert lease_files() == [] and "admit" not in far.calls
 
 

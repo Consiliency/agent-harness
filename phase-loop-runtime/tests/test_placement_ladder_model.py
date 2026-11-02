@@ -324,7 +324,7 @@ class _Model:
             return replace(m, i=m.i + 1, state="start", capacity_answers=0, reason=None)
         if walk == "launching_host":
             if m.budget:
-                return replace(m, outcome="not_run", code=EXHAUSTED, trail=m.trail + LOCAL_BUDGET)
+                return replace(m, outcome="not_run", code=BUDGET, trail=m.trail + LOCAL_BUDGET)
             return replace(m, outcome="launching_host", trail=m.trail + LOCAL_ADMITTED)
         if walk == "not_run_release_unconfirmed":
             return replace(m, outcome="not_run", code=UNCONFIRMED)
@@ -803,8 +803,9 @@ class Harness:
                 cancelled=world.cancelled,
                 local_capacity=lambda: world.local_calls.append("capacity") or sp.LocalHeadroom(
                     4 * 1024**3, 25, 0, world.now),
-                local_admit=lambda settings, bound: world.local_calls.append("admit") or sp.LocalHeadroom(
-                    4 * 1024**3, 25, 0, world.now),
+                local_admit=lambda settings, bound: world.local_calls.append("admit") or sp.LocalAdmission(
+                    sp.LocalReservation("model-slot"), sp.LocalHeadroom(4 * 1024**3, 25, 0, world.now)),
+                local_release=lambda handle: world.local_calls.append("release"),
             )
         except sp.PlacementCancelled as exc:
             return world, None, exc
@@ -896,6 +897,8 @@ def _compare(harness, model, world, decision, cancel) -> list[str]:
         outcome, code, trail = decision.outcome, decision.code, decision.trail
         expect("the never-sealed mark", decision.tooled_route_required, outcome == "launching_host")
         expect("a placement", decision.placement is not None, outcome == "placed")
+        expect("explicit local reservation", isinstance(decision.local_reservation, sp.LocalReservation),
+               outcome == "launching_host")
         expect("the waiting notice", WAITING_NOTICE in decision.notices, model.waited)
     expect("outcome", outcome, model.outcome)
     expect("code", code, model.code)

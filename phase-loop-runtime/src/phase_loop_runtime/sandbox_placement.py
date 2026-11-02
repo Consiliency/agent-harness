@@ -75,6 +75,9 @@ __all__ = [
     "LOCAL_BACKEND",
     "LegPlacement",
     "LocalBackend",
+    "LocalReservation",
+    "LocalAdmission",
+    "LocalHeadroom",
     "OperationBound",
     "PlacedSandbox",
     "PlacementBackend",
@@ -139,6 +142,7 @@ _CAPABILITY_UNMET = "sandbox_placement_capability_unmet"
 _CAPACITY_EXHAUSTED = "sandbox_placement_capacity_exhausted"
 _CODE_INVALID = "sandbox_placement_code_invalid"
 _RELEASE_UNCONFIRMED = "sandbox_placement_release_unconfirmed"
+_LOCAL_RELEASE_UNCONFIRMED = "sandbox_placement_local_release_unconfirmed"
 _LOST_AFTER_LAUNCH = "sandbox_placement_lost_after_launch"
 _END_REACHED = "sandbox_placement_end_reached"
 _WAITING_NOTICE = "seat_placement_waiting"
@@ -154,7 +158,7 @@ PLACEMENT_CODES: frozenset[str] = frozenset({
     "sandbox_placement_plugin_unavailable", "sandbox_placement_backend_unregistered",
     # the walk
     _UNREACHABLE, _BUDGET_SPENT, _CAPACITY, _CAPACITY_EXHAUSTED, _REFUSED, _CODE_INVALID,
-    _TIMEOUT, _CAPABILITY_UNMET, _RELEASE_UNCONFIRMED,
+    _TIMEOUT, _CAPABILITY_UNMET, _RELEASE_UNCONFIRMED, _LOCAL_RELEASE_UNCONFIRMED,
     "sandbox_placement_not_enrolled", "sandbox_placement_identity_mismatch",
     "sandbox_placement_workload_unsupported",
     # after `execute`
@@ -223,9 +227,11 @@ class PlacementCancelled(RuntimeError):
     """The caller cancelled a walk, or a placed leg. ``str()`` is the fixed code a cancelled
     review operation carries everywhere else, and the trail is attached."""
 
-    def __init__(self, trail: Sequence[Mapping[str, object]] = ()) -> None:
+    def __init__(self, trail: Sequence[Mapping[str, object]] = (), *,
+                 local_reservation: LocalReservation | None = None) -> None:
         super().__init__(_CANCELLED)
         self.trail = tuple(trail)
+        self.local_reservation = local_reservation
 
     def __str__(self) -> str:
         return _CANCELLED
@@ -1022,6 +1028,8 @@ class PlacementDecision:
     tooled_route_required: bool = False
     #: Notice codes the walk raised, e.g. ``seat_placement_waiting``.
     notices: tuple[str, ...] = ()
+    #: Local slot owned by the caller on launch, or retained for unconfirmed cleanup.
+    local_reservation: LocalReservation | None = field(default=None, repr=False)
 
 
 class _CallCancelled(Exception):
@@ -1193,6 +1201,35 @@ class LocalHeadroom:
             return False
 
 
+@dataclass(frozen=True)
+class LocalReservation:
+    """Opaque adapter-issued handle for a reserved local slot, never telemetry."""
+
+    token: str = field(repr=False)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.token, str) or not _SANDBOX_REF.fullmatch(self.token):
+            raise ValueError("invalid local reservation")
+
+
+@dataclass(frozen=True)
+class LocalAdmission:
+    """An authoritative local reservation and its pre-reservation headroom.
+
+    Returning no valid handle is a definitive refusal with nothing held. Adapters
+    must never discard a held slot by returning a missing or invalid handle.
+    """
+
+    handle: LocalReservation | None
+    reading: LocalHeadroom | None
+
+
+def _local_handle(result: object) -> LocalReservation | None:
+    if isinstance(result, LocalAdmission) and isinstance(result.handle, LocalReservation):
+        return result.handle
+    return None
+
+
 class _Walk:
     """One attempt to place one seat. The transitions are :data:`LADDER_TABLE`'s; each
     ``_<state>`` method does that state's work and names the event that happened."""
@@ -1204,7 +1241,8 @@ class _Walk:
         driver_enabled: bool, cancelled: threading.Event,
         settings: sandbox_policy.PlacementDriverSettings,
         local_capacity: Callable[[], LocalHeadroom | None] | None = None,
-        local_admit: Callable[[sandbox_policy.PlacementDriverSettings, OperationBound], LocalHeadroom] | None = None,
+        local_admit: Callable[[sandbox_policy.PlacementDriverSettings, OperationBound], LocalAdmission] | None = None,
+        local_release: Callable[[LocalReservation], None] | None = None,
     ) -> None:
         self.prepared = prepared
         self.request_for = request_for
@@ -1215,6 +1253,7 @@ class _Walk:
         self.settings = settings
         self.local_capacity = local_capacity
         self.local_admit = local_admit
+        self.local_release = local_release
         self.calls = _Calls(settings=settings)
         self.trail: list[Mapping[str, object]] = []
         self.notices: list[str] = []
@@ -1246,46 +1285,137 @@ class _Walk:
                 break
         return self._end(self._after_left(False, last_rung))
 
-    def _local(self, label: str) -> PlacementDecision | None:
-        if self.cancelled.is_set():
-            raise PlacementCancelled(self.trail)
-        code = _CAPACITY
-        try:
-            if sandbox_policy.remote_required():
-                code = _REQUIRED_UNAVAILABLE
-            elif self._budget_spent():
-                code = _BUDGET_SPENT
-            elif self.local_capacity is not None and self.local_admit is not None:
-                reading = self.calls.run(self.local_capacity,
-                                         min(ANSWER_BOUND_S, self._budget_left()), self.cancelled)
-                if isinstance(reading, LocalHeadroom) and reading.admits(self.settings):
-                    bound = _bound(min(ANSWER_BOUND_S, self._budget_left()), self.cancelled)
-                    admitted = self.calls.run(lambda: self.local_admit(self.settings, bound),
-                                              bound.timeout_s, self.cancelled)
-                    if self.cancelled.is_set():
-                        raise PlacementCancelled(self.trail)
-                    if (isinstance(admitted, LocalHeadroom) and admitted.admits(self.settings)
-                            and not self._budget_spent()):
-                        self.trail.append({"rung": label, "class": "admitted", "code": None})
-                        return PlacementDecision("launching_host", tuple(self.trail), None,
-                                                 tooled_route_required=True,
-                                                 notices=tuple(self.notices))
-                    code = _TIMEOUT  # A malformed success may already hold a reservation.
-        except _CallCancelled:
-            raise PlacementCancelled(self.trail) from None
-        except PlacementUnavailable as exc:
-            code = exc.code if exc.code in {_CAPACITY, _REFUSED} else _TIMEOUT
-        except PlacementCancelled:
-            raise
-        except Exception:
-            code = _TIMEOUT
+    def _local_left(self, label: str, code: str,
+                    handle: LocalReservation | None = None) -> PlacementDecision | None:
         self.trail.append({"rung": label, "class": "capacity" if code == _CAPACITY else "refused",
                            "code": code})
-        if code == _TIMEOUT:
-            # An uncertain admission must never overflow to another target.
-            return PlacementDecision("not_run", tuple(self.trail), _RELEASE_UNCONFIRMED,
-                                     notices=tuple(self.notices))
+        if code == _LOCAL_RELEASE_UNCONFIRMED:
+            return PlacementDecision("not_run", tuple(self.trail), code, notices=tuple(self.notices),
+                                     local_reservation=handle)
         return None
+
+    def _local_cancel(self, label: str, *, released: bool | None = None,
+                      uncertain: bool = False, handle: LocalReservation | None = None) -> None:
+        self.trail.append({"rung": label, "class": "cancelled",
+                           "code": _LOCAL_RELEASE_UNCONFIRMED if uncertain else None,
+                           "release_needed": released is not None or uncertain,
+                           "release_confirmed": released})
+        raise PlacementCancelled(self.trail, local_reservation=handle if uncertain else None)
+
+    def _release_local(self, handle: LocalReservation) -> bool:
+        # Cleanup has its own bound, outside the exhausted admission budget, and
+        # cannot be short-circuited by the caller's cancellation.
+        cleanup = _Calls(settings=self.settings)
+        try:
+            cleanup.run(lambda: self.local_release(handle), ANSWER_BOUND_S)
+            return True
+        except Exception:
+            return False
+        finally:
+            cleanup.close()
+
+    def _local(self, label: str) -> PlacementDecision | None:
+        if self.cancelled.is_set():
+            self._local_cancel(label)
+        if sandbox_policy.remote_required():
+            return self._local_left(label, _REQUIRED_UNAVAILABLE)
+        if self._budget_spent():
+            return self._local_left(label, _BUDGET_SPENT)
+        if any(hook is None for hook in (self.local_capacity, self.local_admit, self.local_release)):
+            return self._local_left(label, _REFUSED)
+        try:
+            reading = self.calls.run(self.local_capacity,
+                                     min(ANSWER_BOUND_S, self._budget_left()), self.cancelled)
+        except _CallCancelled:
+            self._local_cancel(label)
+        except Exception:
+            # An advisory failure is unknown telemetry, never a held reservation.
+            reading = None
+        if self.cancelled.is_set():
+            self._local_cancel(label)
+        if self._budget_spent():
+            return self._local_left(label, _BUDGET_SPENT)
+        if not isinstance(reading, LocalHeadroom) or not reading.admits(self.settings):
+            return self._local_left(label, _CAPACITY)
+
+        # Keep the adapter's cancellation separate from the caller's event:
+        # an admission timeout must cancel the operation, not cancel the caller.
+        allowance = min(ANSWER_BOUND_S, self._budget_left())
+        if allowance <= 0:
+            return self._local_left(label, _BUDGET_SPENT)
+        bound = _bound(allowance)
+        handoff = threading.Lock()
+        results: list[object] = []
+        abandoned = False
+
+        def reserve() -> object:
+            result = self.local_admit(self.settings, bound)
+            with handoff:
+                if not abandoned:
+                    results.append(result)
+                    return result
+            # The bounded caller has already stopped. A late returned handle is
+            # still owned here, so release it rather than losing it in _Calls.
+            handle = _local_handle(result)
+            if handle is not None:
+                self._release_local(handle)
+            return result
+
+        try:
+            result = self.calls.run(reserve, bound.timeout_s, self.cancelled)
+        except Exception as exc:
+            bound.cancelled.set()
+            with handoff:
+                abandoned = True
+                result = results.pop() if results else None
+            handle = _local_handle(result)
+            released = self._release_local(handle) if handle is not None else None
+            safe_refusal = (isinstance(exc, PlacementUnavailable)
+                            and exc.code in {_CAPACITY, _REFUSED} and handle is None)
+            uncertain = not safe_refusal
+            if self.cancelled.is_set() or isinstance(exc, _CallCancelled):
+                self._local_cancel(label, released=released,
+                                   uncertain=uncertain and released is not True, handle=handle)
+            code = _LOCAL_RELEASE_UNCONFIRMED if uncertain else (
+                exc.code if safe_refusal else _REFUSED)
+            return self._local_left(label, code, handle if released is not True else None)
+
+        handle = _local_handle(result)
+        if handle is None:
+            # Contract: no valid handle means refused, with nothing held.
+            if self.cancelled.is_set():
+                bound.cancelled.set()
+                self._local_cancel(label)
+            return self._local_left(label, _REFUSED)
+        transferred = False
+        try:
+            fresh = isinstance(result.reading, LocalHeadroom) and result.reading.admits(self.settings)
+            if self.cancelled.is_set():
+                code = _CANCELLED
+            elif self._budget_spent():
+                code = _BUDGET_SPENT
+            elif sandbox_policy.remote_required():
+                code = _REQUIRED_UNAVAILABLE
+            elif not fresh:
+                code = _CAPACITY
+            else:
+                row = {"rung": label, "class": "admitted", "code": None}
+                decision = PlacementDecision("launching_host", (*self.trail, row), None,
+                                             tooled_route_required=True, notices=tuple(self.notices),
+                                             local_reservation=handle)
+                self.trail.append(row)
+                transferred = True
+                return decision
+        except Exception:
+            code = _REFUSED
+        finally:
+            if not transferred:
+                bound.cancelled.set()
+                released = self._release_local(handle)
+        if self.cancelled.is_set():
+            self._local_cancel(label, released=released, uncertain=not released, handle=handle)
+        return self._local_left(label, code if released else _LOCAL_RELEASE_UNCONFIRMED,
+                                handle if not released else None)
 
     def _after_left(self, another: bool, last_rung: str) -> str:
         facts = {
@@ -1306,7 +1436,7 @@ class _Walk:
             if local is not None:
                 return replace(local, code=code) if code is not None and local.outcome == "launching_host" else local
             trail = tuple(self.trail)
-            code = code or _CAPACITY_EXHAUSTED
+            code = trail[-1]["code"] if trail else code
         if code is None and trail:
             code = trail[-1]["code"]  # type: ignore[assignment]
         if code is None or sandbox_policy.remote_required():
@@ -1704,17 +1834,26 @@ def place(
     cancelled: threading.Event,
     settings: sandbox_policy.PlacementDriverSettings | None = None,
     local_capacity: Callable[[], LocalHeadroom | None] | None = None,
-    local_admit: Callable[[sandbox_policy.PlacementDriverSettings, OperationBound], LocalHeadroom] | None = None,
+    local_admit: Callable[[sandbox_policy.PlacementDriverSettings, OperationBound], LocalAdmission] | None = None,
+    local_release: Callable[[LocalReservation], None] | None = None,
 ) -> PlacementDecision:
     """Decide where a candidate seat runs, and launch it there if a remote rung takes it.
 
     The walk of amendment C7 (agent-harness#1791). Local roots may occur anywhere.
     ``local_capacity`` supplies advisory headroom; ``local_admit`` atomically
-    checks all three thresholds and reserves a slot, returning the fresh pre-reservation
-    reading. The caller owns that reservation through local execution and cleanup.
-    Neither hook is wired at launch sites while the driver is disabled; missing hooks
-    refuse local, never infer zero live sandboxes. An uncertain local admission stops
-    the walk for cleanup rather than overflowing.
+    checks all three thresholds and returns a LocalAdmission containing an explicit
+    LocalReservation handle and the pre-reservation reading. A reading alone never
+    admits. A missing/invalid handle promises nothing is held. A definitive
+    at-capacity/refused exception also promises nothing held; every other admission
+    exception is uncertain, cancels its OperationBound and stops without overflow.
+    `local_release(handle)` must complete release within ANSWER_BOUND_S or raise.
+    Every known handle is released before a non-launch exit, including cancellation;
+    uncertain release uses sandbox_placement_local_release_unconfirmed. Late returned
+    handles are released by the abandoned admission worker. On launch the handle is
+    transferred in decision.local_reservation; the caller owns subsequent cleanup.
+    A failed release retains its known handle on the decision or cancellation exception
+    for reconciliation; an unknown handle remains explicitly uncertain.
+    These hooks remain unwired at launch sites; missing hooks refuse local.
 
     ``rungs`` are the configured roots in order
     (:func:`sandbox_policy.candidate_roots`) and ``last_rung`` is ``local`` or ``none``
@@ -1745,7 +1884,7 @@ def place(
         raise ValueError(f"unknown last rung {last_rung!r}")
     settings = settings if settings is not None else sandbox_policy.placement_driver_settings()
     refusal = preflight()
-    walk = _Walk(prepared, request_for, open_lease, seal, bool(driver_enabled), cancelled, settings, local_capacity, local_admit)
+    walk = _Walk(prepared, request_for, open_lease, seal, bool(driver_enabled), cancelled, settings, local_capacity, local_admit, local_release)
     try:
         if refusal is not None:
             return walk._end(walk._after_left(False, last_rung), str(refusal))
