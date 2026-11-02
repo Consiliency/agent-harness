@@ -117,7 +117,15 @@ def emit(source: bytes) -> dict[str, bytes]:
         # Mirrors _schema_for_baml_class, except only requests reject extensions.
         defs[name] = {'type': 'object', 'additionalProperties': not is_request, 'required': required, 'properties': properties}
 
+    # Python's re (used by jsonschema) lets `$` match before a final newline;
+    # ECMAScript's doesn't. `(?![\s\S])` after `$` means "no character follows"
+    # in both, so a trailing "\n" is refused by every validator.
+    STRICT_END = r'(?![\s\S])'
+
     def constrain(cls, field, **constraints):
+        pattern = constraints.get('pattern')
+        if pattern is not None and pattern.endswith('$'):
+            constraints['pattern'] = pattern + STRICT_END
         defs[cls]['properties'][field].update(constraints)
 
     constrain('CreateBody', 'image', pattern=r'^.+@sha256:[0-9a-f]{64}$')

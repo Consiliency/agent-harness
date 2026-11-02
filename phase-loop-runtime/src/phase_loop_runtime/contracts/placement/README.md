@@ -91,3 +91,8 @@ renew answer with a `LeaseStatus`. `LeaseStatus.reclaims` may be absent but is
 never `null`. Each `ReclaimRecord` carries a closed `reason` (`unbound`,
 `duplicate_binding`, `lease_expired`, `lease_fenced`, `recovery_orphan`) and an
 `outcome` (`destroyed`, `destroy_pending`).
+
+**Pattern anchoring:** every pattern ends `$(?![\s\S])`. Python's `re` lets `$`
+match before a final newline and ECMAScript's doesn't. The lookahead makes
+both refuse a trailing `"\n"`. Ports to other regex engines must keep that
+end-of-input meaning.
