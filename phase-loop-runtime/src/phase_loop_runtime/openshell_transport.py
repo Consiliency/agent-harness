@@ -527,18 +527,25 @@ class CoordinatorClient:
 
     async def _http(self, method, path, body, allowance):
         writer = None
+        sent = False
         async def exchange():
-            nonlocal writer
-            reader, writer = await asyncio.open_connection(self._url.hostname, self._url.port or 443,
-                ssl=self._tls, server_hostname=self._url.hostname,
-                ssl_handshake_timeout=min(allowance.remaining(), self.config.connect_timeout_s),
-                limit=min(self.config.receive_limit_bytes, 65536))
+            nonlocal writer, sent
+            try:
+                async with asyncio.timeout(min(allowance.remaining(), self.config.connect_timeout_s)):
+                    reader, writer = await asyncio.open_connection(self._url.hostname, self._url.port or 443,
+                        ssl=self._tls, server_hostname=self._url.hostname,
+                        ssl_handshake_timeout=min(allowance.remaining(), self.config.connect_timeout_s),
+                        limit=min(self.config.receive_limit_bytes, 65536))
+            except (OSError, TimeoutError):
+                raise TransportError('sandbox_placement_unreachable', uncertain=False) from None
             wire = b'' if body is None else json.dumps(body, allow_nan=False, separators=(',', ':')).encode()
             ms = min(30000, int(allowance.remaining() * 1000))
             host = self._url.netloc
             head = (f'{method} /v1{path} HTTP/1.1\r\nHost: {host}\r\n'
                     f'X-Deadline-Ms: {ms}\r\nAccept: application/json\r\n'
                     f'Content-Type: application/json\r\nContent-Length: {len(wire)}\r\nConnection: close\r\n\r\n')
+            # Once write is attempted, a partial send cannot be ruled out.
+            sent = True
             writer.write(head.encode('ascii') + wire)
             await writer.drain()
             raw = await reader.readuntil(b'\r\n\r\n')
@@ -589,6 +596,10 @@ class CoordinatorClient:
             return int(status), value
         try:
             return await allowance.run(exchange, cap_s=30)
+        except TransportError as error:
+            if not sent and error.code == 'sandbox_placement_operation_timeout':
+                raise TransportError('sandbox_placement_unreachable', uncertain=False) from None
+            raise
         finally:
             if writer is not None:
                 # Abort rather than waiting for a TLS peer's shutdown response.
@@ -625,10 +636,19 @@ class CoordinatorClient:
                 value = self._observe(value, lease)
             allowance.remaining()
             return value
-        except (TransportError, asyncio.CancelledError):
+        except (TransportError, asyncio.CancelledError) as error:
             if lease:
-                self.poisoned_leases.add(lease)
-                self.cleanup_obligations.add(lease)
+                if operation == 'reserve' and isinstance(error, TransportError) and not error.uncertain:
+                    self.cleanup_obligations.discard(lease)
+                    self._reserve_attempted.discard(lease)
+                    self._bindings.pop(lease, None)
+                else:
+                    self.poisoned_leases.add(lease)
+                    self.cleanup_obligations.add(lease)
+                    if isinstance(error, TransportError):
+                        error.uncertain = True
+                        if error.code == 'sandbox_placement_unreachable':
+                            raise TransportError('sandbox_placement_operation_timeout', uncertain=True) from None
             raise
 
     def _observe(self, value, lease=None, *, commit=True):
@@ -669,13 +689,40 @@ class CoordinatorClient:
                 self.cleanup_obligations.add(identity)
         return value
 
-    async def reserve(self, lease, body, allowance):
+    def validate_create(self, body, binding):
+        """Validate full create inputs before reserving; no remote effects."""
+        try:
+            validate_wire('CreateBody', body)
+        except TransportError:
+            raise TransportError('invalid_create') from None
+        if body['service_exposures']:
+            raise TransportError('invalid_create')
+        try:
+            digest = 'sha256:' + hashlib.sha256(rfc8785.dumps(body['policy'])).hexdigest()
+        except (ValueError, TypeError):
+            raise TransportError('invalid_create') from None
+        if (binding is None or body['policy_digest'] != digest or digest != binding['policy_digest']
+                or body['image'].rsplit('@', 1)[1] != binding['image_digest']):
+            raise TransportError('digest_mismatch')
+
+    async def reserve(self, lease, body, allowance, *, create_body=None):
+        """Reserve once; supply create_body to refuse invalid creates before admission.
+
+        Split lifecycle callers can preflight with validate_create instead. Create
+        always validates again because a reservation must retain cleanup on refusal.
+        """
         _uuid(lease)
         validate_wire('ReserveBody', body)
         if body['workload'] == 'pi-runner':
-            raise TransportError('invalid_workload')
-        if lease in self._reserve_attempted:
-            raise TransportError('reserve_not_repeatable')
+            raise TransportError('invalid_workload', uncertain=lease in self.cleanup_obligations)
+        if create_body is not None:
+            try:
+                self.validate_create(create_body, body)
+            except TransportError as error:
+                error.uncertain = lease in self.cleanup_obligations
+                raise
+        if lease in self._reserve_attempted or lease in self.cleanup_obligations:
+            raise TransportError('reserve_not_repeatable', uncertain=lease in self.cleanup_obligations)
         self._reserve_attempted.add(lease)
         self.cleanup_obligations.add(lease)
         self._bindings[lease] = dict(body)
@@ -683,21 +730,15 @@ class CoordinatorClient:
 
     async def create(self, lease, body, allowance):
         _uuid(lease)
-        validate_wire('CreateBody', body)
-        if body['service_exposures']:
-            raise TransportError('invalid_create')
         try:
-            digest = 'sha256:' + hashlib.sha256(rfc8785.dumps(body['policy'])).hexdigest()
-        except (ValueError, TypeError):
-            raise TransportError('invalid_create') from None
-        binding = self._bindings.get(lease)
-        if (binding is None or body['policy_digest'] != digest or digest != binding['policy_digest']
-                or body['image'].rsplit('@', 1)[1] != binding['image_digest']):
-            raise TransportError('digest_mismatch')
-        previous = self._observations.get(lease)
-        if (lease in self._create_attempted or lease in self.poisoned_leases
-                or previous and (previous['flags']['fenced'] or previous['flags']['expired'])):
-            raise TransportError('create_not_repeatable')
+            self.validate_create(body, self._bindings.get(lease))
+            previous = self._observations.get(lease)
+            if (lease in self._create_attempted or lease in self.poisoned_leases
+                    or previous and (previous['flags']['fenced'] or previous['flags']['expired'])):
+                raise TransportError('create_not_repeatable')
+        except TransportError as error:
+            error.uncertain = lease in self.cleanup_obligations
+            raise
         self._create_attempted.add(lease)
         return await self._request('POST', '/leases/' + lease + '/sandbox', body, allowance, 'LeaseStatus', lease, 'create')
 
@@ -706,7 +747,11 @@ class CoordinatorClient:
 
     async def renew(self, lease, extend_s, allowance):
         body = {'extend_s': extend_s}
-        validate_wire('RenewBody', body)
+        try:
+            validate_wire('RenewBody', body)
+        except TransportError as error:
+            error.uncertain = lease in self.cleanup_obligations
+            raise
         return await self._request('POST', '/leases/' + _uuid(lease) + '/renew', body, allowance, 'LeaseStatus', lease, 'renew')
 
     async def kill(self, lease, allowance):
@@ -718,7 +763,7 @@ class CoordinatorClient:
 
     async def poll_ready(self, lease, allowance, *, interval_s=.05):
         if type(interval_s) not in (int, float) or not math.isfinite(interval_s) or interval_s <= 0:
-            raise TransportError('invalid_bound')
+            raise TransportError('invalid_bound', uncertain=lease in self.cleanup_obligations)
         while True:
             value = await self.status(lease, allowance)
             if value['flags']['fenced'] or value['flags']['expired']:

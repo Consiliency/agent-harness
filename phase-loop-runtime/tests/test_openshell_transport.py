@@ -1440,3 +1440,100 @@ def test_coordinator_typed_error_uses_code_even_with_advisory_http_status(mtls_m
                                                    ot.CallerAllowance(bound()))
             assert not error.value.uncertain and error.value.reason == 'pressure'
     run(scenario())
+
+
+@pytest.mark.parametrize('fault,code', [
+    ('workload', 'invalid_workload'), ('exposures', 'invalid_create'),
+    ('policy', 'digest_mismatch'), ('image', 'digest_mismatch'),
+    ('schema', 'invalid_create'),
+])
+def test_coordinator_upfront_refusal_never_reserves(mtls_material, fault, code):
+    async def scenario():
+        reserve, create = wire('reserve-leg-min-ttl'), wire('deep-policy')
+        create['service_exposures'] = []
+        reserve['policy_digest'] = create['policy_digest']
+        if fault == 'workload': reserve['workload'] = 'pi-runner'
+        if fault == 'exposures': create['service_exposures'] = wire('deep-policy')['service_exposures']
+        if fault == 'policy': create['policy']['injected'] = True
+        if fault == 'image': reserve['image_digest'] = 'sha256:' + 'f' * 64
+        if fault == 'schema': del create['policy']
+        async with json_coordinator(mtls_material, []) as (config, calls):
+            client = coordinator(config)
+            with pytest.raises(ot.TransportError, match=code) as error:
+                await client.reserve(wire('reserved')['lease_id'], reserve,
+                                     ot.CallerAllowance(bound()), create_body=create)
+            assert not error.value.uncertain
+            assert not calls and not client.cleanup_obligations
+            assert not client._reserve_attempted and not client._bindings
+    run(scenario())
+
+
+@pytest.mark.parametrize('fault,code', [('exposures', 'invalid_create'), ('policy', 'digest_mismatch'),
+                                       ('schema', 'invalid_create')])
+def test_coordinator_post_reserve_local_refusal_is_uncertain(mtls_material, fault, code):
+    async def scenario():
+        reserve, create = wire('reserve-leg-min-ttl'), wire('deep-policy')
+        create['service_exposures'] = []
+        reserve['policy_digest'] = create['policy_digest']
+        lease = wire('reserved')['lease_id']
+        async with json_coordinator(mtls_material, [wire('reserved')]) as (config, calls):
+            client, allowance = coordinator(config), ot.CallerAllowance(bound())
+            await client.reserve(lease, reserve, allowance, create_body=create)
+            if fault == 'exposures': create['service_exposures'] = wire('deep-policy')['service_exposures']
+            if fault == 'policy': create['policy']['injected'] = True
+            if fault == 'schema': del create['policy']
+            with pytest.raises(ot.TransportError, match=code) as error:
+                await client.create(lease, create, allowance)
+            assert error.value.uncertain
+            assert client.cleanup_obligations == {lease}
+            assert len(calls) == 1
+    run(scenario())
+
+
+def test_coordinator_refused_port_reserve_holds_nothing(mtls_material):
+    async def scenario():
+        async with json_coordinator(mtls_material, []) as (config, calls):
+            pass  # The local listener is closed: TCP connect is provably refused.
+        client = coordinator(config)
+        lease = wire('reserved')['lease_id']
+        with pytest.raises(ot.TransportError, match='sandbox_placement_unreachable') as error:
+            await client.reserve(lease, wire('reserve-leg-min-ttl'), ot.CallerAllowance(bound()))
+        assert not error.value.uncertain
+        assert not calls and not client.cleanup_obligations
+        assert not client._reserve_attempted and not client._bindings and not client.poisoned_leases
+    run(scenario())
+
+
+def test_coordinator_lost_reserve_reply_keeps_obligation(mtls_material):
+    async def scenario():
+        async def lose_reply():
+            raise ConnectionResetError
+        async with json_coordinator(mtls_material, [lose_reply]) as (config, calls):
+            client = coordinator(config)
+            lease = wire('reserved')['lease_id']
+            with pytest.raises(ot.TransportError, match='operation_timeout') as error:
+                await client.reserve(lease, wire('reserve-leg-min-ttl'), ot.CallerAllowance(bound()))
+            assert error.value.uncertain and len(calls) == 1
+            assert client.cleanup_obligations == client._reserve_attempted == {lease}
+    run(scenario())
+
+
+@pytest.mark.parametrize('operation', ['create', 'renew', 'kill', 'status'])
+def test_coordinator_held_lease_connect_failure_never_overflows(mtls_material, operation):
+    async def scenario():
+        reserve, create = wire('reserve-leg-min-ttl'), wire('deep-policy')
+        create['service_exposures'] = []
+        reserve['policy_digest'] = create['policy_digest']
+        lease = wire('reserved')['lease_id']
+        async with json_coordinator(mtls_material, [wire('reserved')]) as (config, calls):
+            client = coordinator(config)
+            await client.reserve(lease, reserve, ot.CallerAllowance(bound()), create_body=create)
+        allowance = ot.CallerAllowance(bound())
+        with pytest.raises(ot.TransportError, match='operation_timeout') as error:
+            if operation == 'create': await client.create(lease, create, allowance)
+            elif operation == 'renew': await client.renew(lease, 60, allowance)
+            else: await getattr(client, operation)(lease, allowance)
+        assert error.value.uncertain and len(calls) == 1
+        assert client.cleanup_obligations == {lease}
+        assert lease in client.poisoned_leases
+    run(scenario())
