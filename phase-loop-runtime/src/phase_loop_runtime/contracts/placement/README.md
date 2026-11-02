@@ -96,3 +96,15 @@ never `null`. Each `ReclaimRecord` carries a closed `reason` (`unbound`,
 match before a final newline and ECMAScript's doesn't. The lookahead makes
 both refuse a trailing `"\n"`. Ports to other regex engines must keep that
 end-of-input meaning.
+
+**State and flags:** `flags` are authoritative and `state` is a derived summary,
+so a `state` must never contradict its flags. These are necessary conditions,
+checked over every valid vector:
+- every state except `tombstone` has `reserved`;
+- `tombstone` is `fenced` and `barrier_confirmed`, never `reserved`, and has no
+  `sandbox_id`;
+- `reserved` and `creating` are neither `fenced` nor `ready`;
+- `ready` is `create_settled` and `ready`, has a `sandbox_id`, and isn't `fenced`;
+- `killing` is `fenced` without `barrier_confirmed`;
+- `destroyed` is `fenced` and `barrier_confirmed`;
+- `expired` has `expired`.

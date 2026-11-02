@@ -155,3 +155,43 @@ def test_parity(tmp_path):
             for entry in entries:
                 if entry[-1]:
                     assert f'@alias("{entry[-1]}")' in description
+
+
+def _status_values(vector):
+    if vector['type'] == 'LeaseStatus':
+        yield vector['value']
+    elif vector['type'] == 'InventoryPage':
+        yield from vector['value']['items']
+
+
+def _state_violations(status):
+    """Necessary state/flag consistency (README "State and flags"). Flags are the
+    source of truth; `state` is a derived summary and must not contradict them."""
+    f, state, bound = status['flags'], status['state'], status.get('sandbox_id') is not None
+    rules = {
+        'reserved': not f['fenced'] and not f['ready'],
+        'creating': not f['fenced'] and not f['ready'],
+        'ready': f['create_settled'] and f['ready'] and bound and not f['fenced'],
+        'killing': f['fenced'] and not f['barrier_confirmed'],
+        'destroyed': f['fenced'] and f['barrier_confirmed'],
+        'expired': f['expired'],
+        'tombstone': f['fenced'] and f['barrier_confirmed'] and not f['reserved'] and not bound,
+    }
+    out = []
+    if state != 'tombstone' and not f['reserved']:
+        out.append('only a tombstone was never reserved')
+    if not rules[state]:
+        out.append(f'flags contradict state {state!r}')
+    return out
+
+
+@pytest.mark.parametrize('vector', [v for v in VECTORS['valid'] if v['type'] in ('LeaseStatus', 'InventoryPage')], ids=lambda v: v['name'])
+def test_valid_status_vectors_have_consistent_state_and_flags(vector):
+    for status in _status_values(vector):
+        assert _state_violations(status) == [], (vector['name'], status['state'], status['flags'])
+
+
+def test_state_flag_check_catches_a_contradiction():
+    status = next(s for v in VECTORS['valid'] for s in _status_values(v) if s['state'] == 'reserved')
+    bad = {**status, 'flags': {**status['flags'], 'reserved': False}}
+    assert _state_violations(bad)

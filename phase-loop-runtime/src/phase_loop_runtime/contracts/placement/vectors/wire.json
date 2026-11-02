@@ -42,7 +42,7 @@
         "sandbox_id": null,
         "expires_at": "2026-11-01T12:00:00Z",
         "flags": {
-          "reserved": false,
+          "reserved": true,
           "create_settled": false,
           "ready": false,
           "exec_claimed": false,
@@ -67,7 +67,7 @@
         "sandbox_id": null,
         "expires_at": "2026-11-01T12:00:00Z",
         "flags": {
-          "reserved": false,
+          "reserved": true,
           "create_settled": true,
           "ready": false,
           "exec_claimed": false,
@@ -92,7 +92,7 @@
         "sandbox_id": null,
         "expires_at": "2026-11-01T12:00:00Z",
         "flags": {
-          "reserved": false,
+          "reserved": true,
           "create_settled": true,
           "ready": false,
           "exec_claimed": false,
@@ -142,13 +142,13 @@
         "sandbox_id": "00000000-0000-4000-8000-000000000001",
         "expires_at": "2026-11-01T12:00:00Z",
         "flags": {
-          "reserved": false,
-          "create_settled": false,
+          "reserved": true,
+          "create_settled": true,
           "ready": false,
           "exec_claimed": false,
-          "fenced": false,
+          "fenced": true,
           "destruction_observed": false,
-          "cleanup_pending": false,
+          "cleanup_pending": true,
           "barrier_confirmed": false,
           "expired": false
         },
@@ -172,7 +172,7 @@
             "sandbox_id": null,
             "expires_at": "2026-11-01T12:00:00Z",
             "flags": {
-              "reserved": false,
+              "reserved": true,
               "create_settled": false,
               "ready": false,
               "exec_claimed": false,
@@ -327,7 +327,7 @@
         "sandbox_id": null,
         "expires_at": "2026-11-01T12:00:00Z",
         "flags": {
-          "reserved": false,
+          "reserved": true,
           "create_settled": false,
           "ready": false,
           "exec_claimed": false,
@@ -423,7 +423,7 @@
         "sandbox_id": null,
         "expires_at": "2026-11-01T12:00:00Z",
         "flags": {
-          "reserved": false,
+          "reserved": true,
           "create_settled": false,
           "ready": false,
           "exec_claimed": false,
@@ -462,7 +462,7 @@
         "sandbox_id": null,
         "expires_at": "2026-11-01T12:00:00Z",
         "flags": {
-          "reserved": false,
+          "reserved": true,
           "create_settled": false,
           "ready": false,
           "exec_claimed": false,
