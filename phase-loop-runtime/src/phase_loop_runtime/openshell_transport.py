@@ -649,6 +649,13 @@ class CoordinatorClient:
                         error.uncertain = True
                         if error.code == 'sandbox_placement_unreachable':
                             raise TransportError('sandbox_placement_operation_timeout', uncertain=True) from None
+            # Only admission and advisory capacity may interpret a pre-send
+            # failure as unreachable. Confirmation without a lease (inventory)
+            # is still incomplete evidence and cannot authorize release.
+            if (isinstance(error, TransportError)
+                    and error.code == 'sandbox_placement_unreachable'
+                    and operation not in ('reserve', 'capacity')):
+                raise TransportError('sandbox_placement_operation_timeout', uncertain=True) from None
             raise
 
     def _observe(self, value, lease=None, *, commit=True):
@@ -711,8 +718,14 @@ class CoordinatorClient:
         Split lifecycle callers can preflight with validate_create instead. Create
         always validates again because a reservation must retain cleanup on refusal.
         """
-        _uuid(lease)
-        validate_wire('ReserveBody', body)
+        try:
+            _uuid(lease)
+            validate_wire('ReserveBody', body)
+        except TransportError as error:
+            # Local validation precedes the attempt marker and remote effects.
+            # Shared validators remain conservative for response parsing.
+            error.uncertain = type(lease) is str and lease in self.cleanup_obligations
+            raise
         if body['workload'] == 'pi-runner':
             raise TransportError('invalid_workload', uncertain=lease in self.cleanup_obligations)
         if create_body is not None:
@@ -759,7 +772,7 @@ class CoordinatorClient:
         return await self._request('POST', '/leases/' + lease + '/kill', {}, allowance, 'LeaseStatus', lease, 'kill')
 
     async def capacity(self, allowance):
-        return await self._request('GET', '/capacity', None, allowance, 'CapacityReading')
+        return await self._request('GET', '/capacity', None, allowance, 'CapacityReading', operation='capacity')
 
     async def poll_ready(self, lease, allowance, *, interval_s=.05):
         if type(interval_s) not in (int, float) or not math.isfinite(interval_s) or interval_s <= 0:

@@ -119,7 +119,13 @@ def generated_bindings():
     return importlib.import_module("openshell_pb2")
 
 
-@pytest.fixture(params=["compact", "generated"], autouse=True)
+def pytest_generate_tests(metafunc):
+    # Coordinator JSON tests do not consume either legacy protobuf fixture.
+    if not metafunc.function.__name__.startswith("test_coordinator_"):
+        metafunc.parametrize("transport_bindings", ["compact", "generated"], indirect=True)
+
+
+@pytest.fixture(autouse=True)
 def transport_bindings(request, monkeypatch):
     if request.node.name.startswith("test_coordinator_"):
         return None
@@ -1536,4 +1542,67 @@ def test_coordinator_held_lease_connect_failure_never_overflows(mtls_material, o
         assert error.value.uncertain and len(calls) == 1
         assert client.cleanup_obligations == {lease}
         assert lease in client.poisoned_leases
+    run(scenario())
+
+
+@pytest.mark.parametrize('fault,code', [('lease', 'invalid_lease_identity'),
+                                       ('body', 'invalid_coordinator_message')])
+def test_coordinator_local_reserve_validation_holds_nothing(mtls_material, fault, code):
+    async def scenario():
+        lease, body = wire('reserved')['lease_id'], wire('reserve-leg-min-ttl')
+        if fault == 'lease': lease = 'not-a-uuid'
+        else: del body['workload']
+        async with json_coordinator(mtls_material, []) as (config, calls):
+            client = coordinator(config)
+            with pytest.raises(ot.TransportError, match=code) as error:
+                await client.reserve(lease, body, ot.CallerAllowance(bound()))
+            assert not error.value.uncertain
+            assert not calls and not client.cleanup_obligations
+            assert not client._reserve_attempted and not client._create_attempted
+            assert not client._bindings and not client._observations and not client.poisoned_leases
+    run(scenario())
+
+
+@pytest.mark.parametrize('held', [False, True])
+def test_coordinator_refused_inventory_is_incomplete(mtls_material, held):
+    async def scenario():
+        lease = wire('reserved')['lease_id']
+        async with json_coordinator(mtls_material, [wire('reserved')]) as (config, calls):
+            client = coordinator(config)
+            if held:
+                await client.reserve(lease, wire('reserve-leg-min-ttl'), ot.CallerAllowance(bound()))
+        before = (client.cleanup_obligations.copy(), client._reserve_attempted.copy(),
+                  deepcopy(client._bindings), deepcopy(client._observations), client.poisoned_leases.copy())
+        with pytest.raises(ot.TransportError, match='operation_timeout') as error:
+            await client.list_owned(ot.CallerAllowance(bound()))
+        assert error.value.uncertain
+        assert len(calls) == int(held)
+        assert before == (client.cleanup_obligations, client._reserve_attempted,
+                          client._bindings, client._observations, client.poisoned_leases)
+    run(scenario())
+
+
+def test_coordinator_write_failure_is_after_send_boundary(mtls_material, monkeypatch):
+    async def scenario():
+        lease = wire('reserved')['lease_id']
+        writes, drains, aborts = [], [], []
+        class Writer:
+            @property
+            def transport(self): return self
+            def write(self, data):
+                writes.append(data)
+                raise ConnectionResetError
+            async def drain(self): drains.append(True)
+            def abort(self): aborts.append(True)
+        async def connect(*args, **kwargs): return None, Writer()
+        async with json_coordinator(mtls_material, []) as (config, calls):
+            client = coordinator(config)
+            monkeypatch.setattr(ot.asyncio, 'open_connection', connect)
+            with pytest.raises(ot.TransportError, match='operation_timeout') as error:
+                await client.reserve(lease, wire('reserve-leg-min-ttl'), ot.CallerAllowance(bound()))
+            assert error.value.uncertain
+            assert len(writes) == 1 and not drains and aborts == [True] and not calls
+            assert client._reserve_attempted == client.cleanup_obligations == {lease}
+            assert client._bindings[lease] == wire('reserve-leg-min-ttl')
+            assert client.poisoned_leases == {lease}
     run(scenario())
