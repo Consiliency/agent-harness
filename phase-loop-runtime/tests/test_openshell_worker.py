@@ -428,7 +428,8 @@ def test_production_entry_refuses_after_restriction_without_adapter(bundle, gues
         if argv[1] == '--probe':
             return subprocess.CompletedProcess(argv, 0, b'landlock-exec: abi 8 supported fs=0xffff\n', b'')
         assert argv[:2] == (ow.HELPER, '--policy')
-        assert tuple(argv[4:]) == (sys.executable, '-I', '-m', 'phase_loop_runtime.openshell_worker', '--restricted')
+        from phase_loop_runtime.seat_uid import trusted_module_argv
+        assert tuple(argv[4:]) == tuple(trusted_module_argv('phase_loop_runtime.openshell_worker', '--restricted'))
         # Fake only the helper's restriction/evidence. Run the actual installed
         # production entry, which has no adapter-selection option or test import.
         return subprocess.run(argv[4:], input=kwargs['input'], capture_output=True,
