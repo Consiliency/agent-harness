@@ -1973,7 +1973,7 @@ def test_saturated_local_release_stops_overflow_and_retains_handle(monkeypatch):
 
 @pytest.mark.parametrize('stage', ['queue', 'start', 'started'])
 @pytest.mark.parametrize('failure', [RuntimeError, KeyboardInterrupt])
-def test_call_startup_exceptions_return_process_permits(monkeypatch, stage, failure):
+def test_call_startup_exceptions_roll_back_before_start_and_consume_after(monkeypatch, stage, failure):
     """Pre-start failures roll back; called-start failures consume permits fail-closed."""
     sp = sandbox_placement
     quota = threading.BoundedSemaphore(1)

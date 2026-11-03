@@ -547,7 +547,7 @@ the caller passes a PATH and the runtime reads it.
       a shared process-wide cap of 32 workers across all call groups, including local
       cleanup. Only failures before calling `Thread.start()` roll back acquired
       permits. Once `start()` has been called, the parent never returns permits,
-      regardless of exception type. Any startup exception queues a shutdown sentinel
+      regardless of exception type. Any exception after `start()` queues a shutdown sentinel
       and detaches the call group, so another `ready()` must acquire fresh permits
       and create a fresh worker. A live worker consumes the sentinel and returns its
       own permits exactly once, on exit. If no OS thread was created, those permits
