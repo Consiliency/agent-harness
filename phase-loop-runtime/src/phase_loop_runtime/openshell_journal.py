@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 
 from .openshell_transport import CallerAllowance, CoordinatorError, TransportError, validate_wire
 from .placement_lease import (
-    JournalReapingBackend, Lease, _lease_dir, _valid_entry, recover_lease,
+    JournalReapingBackend, Lease, _lease_dir, _valid_entry, recover_lease, openshell_journal_kind,
 )
 from .sandbox_placement import PlacementUnavailable, _TIMEOUT
 
@@ -33,13 +33,10 @@ def refuse_fork_entries():
             finally:
                 os.close(fd)
         except (OSError, ValueError):
-            raise ForkJournalRefusal() from None
-        if not isinstance(value, dict):
+            # Corrupt files are reported individually by reap under their locks.
+            continue
+        if openshell_journal_kind(value, path.stem) == 'fork':
             raise ForkJournalRefusal()
-        if (str(value.get('backend', '')).startswith('openshell')
-                or str(value.get('root', '')).startswith('openshell:')):
-            if not _valid_entry(value, path.stem) or not value.get('coordinator_lease_id'):
-                raise ForkJournalRefusal()
 
 
 def outstanding(values):
@@ -54,6 +51,13 @@ class JournalSession:
     def __init__(self, lease: Lease, client, exec_channel=None):
         if lease.owner_id != client.local_owner_id:
             raise TransportError('journal_owner_mismatch', uncertain=True)
+        kind = openshell_journal_kind(lease._entry, lease.lease_id)
+        if kind == 'fork':
+            raise ForkJournalRefusal()
+        if kind == 'corrupt':
+            raise TransportError('corrupt_journal_entry', uncertain=True)
+        if kind == 'incomplete' and not lease._newly_opened:
+            raise TransportError('incomplete_journal_entry')
         self.lease, self.client, self.exec_channel = lease, client, exec_channel
         self.fresh, _ = lease.attach_transport(self)
         if not lease._entry.get('coordinator_lease_id'):
@@ -282,7 +286,11 @@ class ReaperAdapter(JournalReapingBackend):
             raise ValueError('invalid lease journal')
         identity = entry.get('coordinator_lease_id')
         if not identity:
-            raise ForkJournalRefusal()
+            kind = openshell_journal_kind(entry, lease_id)
+            if kind == 'fork':
+                raise ForkJournalRefusal()
+            raise TransportError('incomplete_journal_entry' if kind == 'incomplete'
+                                 else 'corrupt_journal_entry')
         self._local_ids[identity] = lease_id
         async def kill():
             a = CallerAllowance(bound)

@@ -169,8 +169,11 @@ def _valid_entry(entry: dict[str, object] | None, lease_id: str) -> bool:
     required = {"lease_id", "backend", "root", "sandbox_ref", "created_at",
                 "confirmed_killed_at", "abandoned"}
     markers = {"reserve_sent_at", "create_sent_at", "execute_sent_at"}
-    coordinator = {"coordinator_lease_id", "coordinator_sandbox_id", "reserve_collision", "coordinator_evidence"}
+    coordinator = {"coordinator_lease_id", "coordinator_sandbox_id", "reserve_collision", "coordinator_evidence",
+                   "journal_format"}
     if entry is not None:
+        if 'journal_format' in entry and entry['journal_format'] != 'placement-v2':
+            return False
         for key in ("coordinator_lease_id", "coordinator_sandbox_id"):
             value = entry.get(key)
             if value is not None:
@@ -196,6 +199,42 @@ def _valid_entry(entry: dict[str, object] | None, lease_id: str) -> bool:
                or type(value) in (int, float) and 0 <= value < float("inf")
                for key in ("created_at", "confirmed_killed_at", *markers)
                for value in (entry.get(key),))
+
+
+def openshell_journal_kind(entry, lease_id):
+    """Positive fork evidence is distinct from a pre-reserve crash or corruption."""
+    if not isinstance(entry, dict):
+        return 'corrupt'
+    if not _valid_entry(entry, lease_id):
+        return 'corrupt'
+    openshell = (str(entry.get('backend', '')).startswith('openshell')
+                 or str(entry.get('root', '')).startswith('openshell:'))
+    current_fields = {'journal_format', 'reserve_sent_at', 'reserve_collision',
+                      'coordinator_lease_id', 'coordinator_sandbox_id', 'coordinator_evidence'}
+    if (openshell and not current_fields.intersection(entry)
+            and any(entry.get(key) is not None for key in (
+                'create_sent_at', 'execute_sent_at', 'sandbox_ref', 'confirmed_killed_at'))):
+        return 'fork'
+    if openshell and not entry.get('coordinator_lease_id'):
+        if any(entry.get(key) is not None for key in (
+                'reserve_sent_at', 'create_sent_at', 'execute_sent_at', 'sandbox_ref', 'confirmed_killed_at')):
+            return 'corrupt'
+        return 'incomplete'
+    return 'current' if openshell else 'other'
+
+
+class JournalEntryRefusal(UserWarning):
+    """A single unreadable or incomplete journal remains for deliberate resolution."""
+    def __init__(self, code):
+        self.code = code
+        super().__init__(code)
+
+
+def _journal_refusal(code, on_refusal):
+    if on_refusal is None:
+        warnings.warn(JournalEntryRefusal(code), stacklevel=3)
+    else:
+        on_refusal(code)
 
 
 class ReaperContextRefusal(UserWarning):
@@ -478,6 +517,8 @@ def open_lease(backend_name: str | None, root: object) -> Lease:
                 "execute_sent_at": None,
                 "abandoned": False,
             }
+            if entry['root'].startswith('openshell:') or str(backend_name or '').startswith('openshell'):
+                entry['journal_format'] = 'placement-v2'
             _write_entry(fd, entry)
             os.rename(pending, final, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
             _fsync(dir_fd)
@@ -555,6 +596,7 @@ def reap(
                 continue  # cleared since the listing
             except OSError:
                 kept.append(match.group(1))  # unreadable: never acted on, never forgotten
+                _journal_refusal('corrupt_journal_entry', on_refusal)
                 continue
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -581,6 +623,11 @@ def reap(
             free.append((match.group(1), fd, directory / name, _read_entry(fd)))
         by_scheme: dict[str, list[tuple[str, int, Path, dict[str, object]]]] = {}
         for lease_id, fd, path, entry in free:
+            kind = openshell_journal_kind(entry, lease_id)
+            if kind in ('corrupt', 'incomplete'):
+                kept.append(lease_id)
+                _journal_refusal(kind + '_journal_entry', on_refusal)
+                continue
             scheme = sandbox_policy.parse_location(str((entry or {}).get("root", ""))).scheme
             if not _valid_entry(entry, lease_id) or not sandbox_placement._SCHEME.fullmatch(scheme):
                 kept.append(lease_id)  # unreadable: never guessed at

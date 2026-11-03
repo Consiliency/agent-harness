@@ -688,6 +688,8 @@ def test_backend_start_refuses_fork_entry_without_calls(pipeline):
     backend, endpoint, _, _, _, leases, args, _, *_ = pipeline
     lease = journal.open_lease('openshell', 'openshell://fake.invalid/work')
     leases.append(lease)
+    lease._entry.pop('journal_format', None)
+    lease._update(create_sent_at=1)
     lease.abandon()
     before = lease.path.read_bytes()
     from phase_loop_runtime.openshell_journal import ForkJournalRefusal
@@ -713,3 +715,29 @@ def test_sent_reserve_timeout_never_overflows_even_without_reply_metadata(pipeli
                             sandbox_policy.parse_location('overflow://fake.invalid/work')])
     assert decision.outcome == 'not_run' and 'overflow' not in lookups
     assert endpoint.calls.count('reserve') == 1 and 'create' not in endpoint.calls
+
+
+@pytest.mark.parametrize('phase', ['create', 'status'])
+def test_certain_nonreserve_unavailable_is_uncertain_and_never_overflows(pipeline, monkeypatch, phase):
+    backend, endpoint, _, _, place, _, *_ = pipeline
+    endpoint.fail[phase] = ob.CoordinatorError('unavailable', 'recovering', uncertain=False)
+    lookups = []
+    def lookup(scheme):
+        lookups.append(scheme)
+        return backend if scheme == 'openshell' else None
+    monkeypatch.setattr(sp, 'backend_for_scheme', lookup)
+    decision = place(roots=[sandbox_policy.parse_location('openshell://fake.invalid/work'),
+                            sandbox_policy.parse_location('overflow://fake.invalid/work')])
+    error = backend._placement_error(ob.CoordinatorError('unavailable', 'recovering', uncertain=False), phase)
+    assert error.code == sp._TIMEOUT and error.uncertain is True
+    assert decision.outcome == 'not_run' and 'overflow' not in lookups
+    assert endpoint.calls[-2:] == ['kill', 'list']
+
+
+def test_backend_starts_after_crash_before_uuid_record(pipeline):
+    from test_openshell_journal import _crash_journal
+    backend, endpoint, _, _, _, _, args, _, *_ = pipeline
+    lease_id = _crash_journal('open')
+    started = ob.OpenShellBackend(endpoint, backend._exec_channel, **args, model_only=True)
+    assert started._session is None and endpoint.calls == []
+    assert (journal._lease_dir() / (lease_id + '.json')).exists()

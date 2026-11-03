@@ -161,6 +161,8 @@ def test_release_requires_barrier_and_complete_inventory(session, barrier, prese
 def test_fork_entry_refuses_start_without_erasure_or_dispatch(session):
     s, c, lease = session
     old = journal.open_lease('openshell-model', 'openshell://fake.invalid/work')
+    old._entry.pop('journal_format', None)
+    old._update(create_sent_at=1)
     old.abandon()
     before = old.path.read_bytes()
     with pytest.raises(oj.ForkJournalRefusal):
@@ -390,3 +392,164 @@ def test_duplicate_and_reclaim_evidence_is_durable_and_secret_free(session):
         assert evidence['reclaims'][0]['outcome'] == 'destroy_pending'
         assert 'SECRET' not in lease.path.read_text()
     asyncio.run(run())
+
+
+def _crash_journal(phase):
+    """A real process exits with its lock held: no abandon or Python cleanup."""
+    import os
+    import sys
+    import subprocess
+    script = '''
+import os, sys
+from phase_loop_runtime import placement_lease as journal
+from phase_loop_runtime.openshell_journal import JournalSession
+from types import SimpleNamespace
+lease = journal.open_lease('openshell-model', 'openshell://fake.invalid/work')
+print(lease.lease_id, flush=True)
+phase = sys.argv[1]
+if phase != 'open':
+    adapter = JournalSession(lease, SimpleNamespace(local_owner_id=lease.owner_id))
+    if phase in ('reserve', 'create', 'execute'):
+        lease.mark_dispatch(adapter, 'reserve')
+    if phase in ('create', 'execute'):
+        lease.mark_dispatch(adapter, 'create')
+    if phase == 'execute':
+        lease.record_transport_ref(adapter, adapter.reference)
+        lease.mark_dispatch(adapter, 'execute')
+os._exit(73)
+'''
+    child = subprocess.run([sys.executable, '-c', script, phase], env=os.environ.copy(),
+                           text=True, capture_output=True, timeout=10)
+    assert child.returncode == 73, child.stderr
+    return child.stdout.strip()
+
+
+@pytest.mark.parametrize('phase', ['uuid', 'reserve', 'create', 'execute'])
+@pytest.mark.parametrize('cleanup', ['release', 'kill', 'reap'])
+def test_process_crash_recovery_never_dispatches(phase, cleanup):
+    lease_id = _crash_journal(phase)
+    path = journal._lease_dir() / (lease_id + '.json')
+    assert json.loads(path.read_text())['abandoned'] is False
+    c = Coordinator(journal.owner_id())
+    class Exec:
+        def bind_lease(self, *args, **kwargs):
+            return self
+
+        async def execute(self, *args, **kwargs):
+            c.calls.append('ExecSandbox')
+            pytest.fail('recovery reached stock exec: ' + repr(c.calls))
+    from _openshell_channel_server import stock_bindings
+    request = stock_bindings().ExecSandboxRequest(
+        command=['/bin/false'], workspace_scope={'workspace': 'model'},
+        workdir='/work', no_login_shell=True)
+    recovered = journal.recover_lease(lease_id)
+    try:
+        s = oj.JournalSession(recovered, c, Exec())
+        async def reject_dispatch():
+            # Use real public methods, including reserve/create/stock dispatch.
+            for operation in (
+                lambda: s.reserve({'ttl_s': 60}, {}, allowance()),
+                lambda: s.create({}, allowance()),
+                lambda: s.dispatch(request, allowance(), stream_allowance=allowance(),
+                                   output_cap_bytes=1, message_cap=1),
+            ):
+                try:
+                    result = await operation()
+                    if isinstance(result, oj.JournalStream):
+                        await result.wait(1)
+                except (ValueError, TransportError):
+                    pass
+        asyncio.run(reject_dispatch())
+        assert c.calls == []
+        with pytest.raises(ValueError):
+            recovered.validate_live_binding(s)
+        if cleanup == 'release':
+            asyncio.run(s.release(allowance()))
+        elif cleanup == 'kill':
+            asyncio.run(s.kill(allowance()))
+            asyncio.run(s.list_owned(allowance()))
+    finally:
+        recovered._unlock()  # Preserve abrupt-crash evidence, no abandon rewrite.
+    if cleanup == 'reap':
+        loop = asyncio.new_event_loop()
+        ready = threading.Event()
+        def serve():
+            loop.call_soon(ready.set)
+            loop.run_forever()
+        thread = threading.Thread(target=serve)
+        thread.start()
+        assert ready.wait(2)
+        try:
+            adapter = oj.ReaperAdapter(c, loop=loop, owner_id=journal.owner_id())
+            assert journal.reap(lambda _: adapter, bound()) == {'cleared': (lease_id,), 'kept': ()}
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(2)
+            loop.close()
+    assert c.calls and set(c.calls) <= {'status', 'kill', 'list'}
+    assert 'kill' in c.calls and 'list' in c.calls
+
+
+def test_crash_before_uuid_record_does_not_block_startup_or_contact_coordinator():
+    lease_id = _crash_journal('open')
+    c = Coordinator(journal.owner_id())
+    loop = asyncio.new_event_loop()
+    try:
+        oj.ReaperAdapter(c, loop=loop, owner_id=c.local_owner_id)
+        notes = []
+        result = journal.reap(lambda _: pytest.fail('incomplete lease contacted backend'),
+                              bound(), on_refusal=notes.append)
+        assert result == {'cleared': (), 'kept': (lease_id,)}
+        assert notes == ['incomplete_journal_entry'] and c.calls == []
+        recovered = journal.recover_lease(lease_id)
+        try:
+            with pytest.raises(TransportError, match='incomplete_journal_entry'):
+                oj.JournalSession(recovered, c)
+        finally:
+            recovered._unlock()
+    finally:
+        loop.close()
+
+
+@pytest.mark.parametrize('corruption', ['unreadable', 'non-dict', 'invalid-json', 'invalid-fields', 'current-no-uuid'])
+def test_corrupt_entry_does_not_block_other_cleanup(session, corruption):
+    import os
+    s, c, lease = session
+    bad = journal.open_lease('openshell-model', 'openshell://fake.invalid/work')
+    bad.abandon()
+    if corruption == 'unreadable':
+        bad.path.unlink()
+        bad.path.symlink_to('/nonexistent/sl2-journal')
+    elif corruption == 'current-no-uuid':
+        value = entry(bad)
+        value.pop('journal_format', None)
+        value.update(reserve_sent_at=1, create_sent_at=1)
+        bad.path.write_text(json.dumps(value))
+    elif corruption == 'invalid-fields':
+        value = entry(bad)
+        value.pop('journal_format', None)
+        value['create_sent_at'] = 'malformed legacy-looking marker'
+        bad.path.write_text(json.dumps(value))
+    else:
+        bad.path.write_text('[]' if corruption == 'non-dict' else '{bad-json')
+    lease.abandon()
+    loop = asyncio.new_event_loop()
+    ready = threading.Event()
+    def serve():
+        loop.call_soon(ready.set)
+        loop.run_forever()
+    thread = threading.Thread(target=serve)
+    thread.start()
+    assert ready.wait(2)
+    try:
+        adapter = oj.ReaperAdapter(c, loop=loop, owner_id=c.local_owner_id)
+        notes = []
+        result = journal.reap(lambda _: adapter, bound(), on_refusal=notes.append)
+        assert result == {'cleared': (lease.lease_id,), 'kept': (bad.lease_id,)}
+        assert notes == ['corrupt_journal_entry']
+        assert os.path.lexists(bad.path)
+        assert set(c.calls) == {'status', 'kill', 'list'}
+    finally:
+        loop.call_soon_threadsafe(loop.stop)
+        thread.join(2)
+        loop.close()

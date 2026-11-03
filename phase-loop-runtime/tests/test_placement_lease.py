@@ -900,7 +900,9 @@ def test_reaper_checks_inode_after_lock(monkeypatch, pending, race):
 
 
 def test_reaper_context_refusal_continues_other_schemes():
+    from uuid import UUID
     bad = placement_lease.open_lease('openshell', 'openshell://fake.invalid/work')
+    bad._update(coordinator_lease_id=str(UUID(bad.lease_id)))
     good = placement_lease.open_lease('resto', ROOT)
     bad.abandon()
     good.abandon()
@@ -942,3 +944,19 @@ def test_reap_cli_reports_typed_context_refusal(monkeypatch, capsys):
     assert 'sandbox_placement_reaper_context_refused' in captured.err
     assert 'remote diagnostics' not in captured.err
     assert '0 cleared, 1 kept' in captured.out and lease.path.exists()
+
+
+def test_short_write_refuses_before_publish_or_sync(tmp_path, monkeypatch):
+    import errno
+    path = tmp_path / 'short-journal'
+    fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o600)
+    calls = []
+    monkeypatch.setattr(os, 'pwrite', lambda fd, data, offset: len(data) - 1)
+    monkeypatch.setattr(os, 'ftruncate', lambda *args: calls.append('truncate'))
+    monkeypatch.setattr(placement_lease, '_fsync', lambda *args: calls.append('sync'))
+    try:
+        with pytest.raises(OSError) as error:
+            placement_lease._write_entry(fd, {'lease_id': 'short'})
+        assert error.value.errno == errno.EIO and calls == []
+    finally:
+        os.close(fd)

@@ -239,7 +239,8 @@ class OpenShellBackend(LiveLeaseBackend):
 
     @staticmethod
     def _placement_error(error, phase):
-        if error.uncertain:
+        uncertain = error.uncertain or error.code == 'unavailable' and phase != 'reserve'
+        if uncertain:
             code = ('sandbox_placement_release_unconfirmed' if error.code == 'duplicate_binding'
                     else _TIMEOUT)
         elif error.code == 'unavailable' and phase == 'reserve':
@@ -251,7 +252,7 @@ class OpenShellBackend(LiveLeaseBackend):
         else:
             code = 'sandbox_placement_refused'
         refusal = PlacementUnavailable(code, getattr(error, 'reason', None),
-                                       uncertain=error.uncertain)
+                                       uncertain=uncertain)
         return refusal
 
     def _track_expiry(self, value):
