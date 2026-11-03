@@ -18,6 +18,9 @@ RUN echo 'ccb26a3d7078ca1ab6d6dab0bdbf7a0bf44d8cc22250d193094d6425ae1a1a6c  BUIL
 FROM docker.io/library/python@sha256:623674a14ef93d052bb9b0de4dbf5f28eb578a35263838941cc8aa43213c1487
 # /usr is in the verbatim full-remote-pi-runner policy's baseline read_only.
 COPY phase-loop-runtime/src/phase_loop_runtime /usr/local/lib/python3.12/site-packages/phase_loop_runtime
+# Normalize ownership and modes so the build never depends on the checkout's umask.
+RUN chown -R 0:0 /usr/local/lib/python3.12/site-packages/phase_loop_runtime \
+    && chmod -R u=rwX,go=rX /usr/local/lib/python3.12/site-packages/phase_loop_runtime
 RUN printf '%s\n' 'rfc8785==0.1.4 --hash=sha256:520d690b448ecf0703691c76e1a34a24ddcd4fc5bc41d589cb7c58ec651bcd48' > /tmp/worker-requirements.txt \
     && pip install --no-cache-dir --only-binary=:all: --require-hashes -r /tmp/worker-requirements.txt \
     && rm /tmp/worker-requirements.txt \
