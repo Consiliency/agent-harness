@@ -1312,7 +1312,7 @@ def test_each_call_captures_its_own_context():
         calls.close()
 
 
-def test_live_worker_permit_lasts_until_exit_and_startup_rolls_back(monkeypatch):
+def test_live_worker_permit_lasts_until_exit_and_startup_failure_shrinks_cap(monkeypatch):
     settings = sandbox_policy.PlacementDriverSettings(11, 13, 1)
     calls = sp._Calls(settings=settings)
     release = threading.Event()
@@ -1337,11 +1337,18 @@ def test_live_worker_permit_lasts_until_exit_and_startup_rolls_back(monkeypatch)
         assert calls.run(lambda: "recovered", 1) == "recovered"
         calls.close()
         threads[-1].join(2)
-        with monkeypatch.context() as patch:
-            patch.setattr(threading.Thread, "start", lambda self: (_ for _ in ()).throw(RuntimeError()))
+        quota = threading.BoundedSemaphore(1)
+        with monkeypatch.context() as capacity:
+            capacity.setattr(sp, "_PROCESS_WORKERS", quota)
+            with monkeypatch.context() as patch:
+                patch.setattr(threading.Thread, "start", lambda self: (_ for _ in ()).throw(RuntimeError()))
+                with pytest.raises(sp.PlacementUnavailable, match=TIMEOUT):
+                    calls.run(lambda: None, 1)
+            assert calls._jobs is None
+            assert not calls._permits.acquire(blocking=False)
+            assert not quota.acquire(blocking=False)
             with pytest.raises(sp.PlacementUnavailable, match=TIMEOUT):
-                calls.run(lambda: None, 1)
-        assert calls.run(lambda: "rollback", 1) == "rollback"
+                calls.run(lambda: pytest.fail("job ran after fail-closed startup"), 1)
     finally:
         release.set()
         calls.close()

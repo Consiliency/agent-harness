@@ -1100,22 +1100,17 @@ class _Calls:
             worker = threading.Thread(
                 target=_serve, args=(jobs, self._permits, process_permits), name="placement-call", daemon=True,
             )
-            # A BaseException can interrupt start after OS thread creation but
-            # before Python publishes any thread identity or started state.
+            # Any exception from start can follow OS thread creation. Once
+            # called, only the worker may return these permits.
             start_called = True
-            try:
-                worker.start()
-            except Exception:
-                # Thread.start's ordinary exceptions mean creation failed.
-                start_called = False
-                raise
+            worker.start()
             self._jobs = jobs
         except BaseException as exc:
             if start_called:
-                # Creation is uncertain: keep the queue reachable and let a
-                # worker consume the sentinel and return its own permits.
-                self._jobs = jobs
+                # The worker (or CPython's limbo entry) owns this queue. Queue
+                # shutdown and detach so a retry never reuses uncertain startup.
                 jobs.put(None)
+                self._jobs = None
             else:
                 self._jobs = None
                 if process_acquired:

@@ -1974,7 +1974,7 @@ def test_saturated_local_release_stops_overflow_and_retains_handle(monkeypatch):
 @pytest.mark.parametrize('stage', ['queue', 'start', 'started'])
 @pytest.mark.parametrize('failure', [RuntimeError, KeyboardInterrupt])
 def test_call_startup_exceptions_return_process_permits(monkeypatch, stage, failure):
-    """Known failures roll back; uncertain creation consumes permits fail-closed."""
+    """Pre-start failures roll back; called-start failures consume permits fail-closed."""
     sp = sandbox_placement
     quota = threading.BoundedSemaphore(1)
     monkeypatch.setattr(sp, '_PROCESS_WORKERS', quota)
@@ -1990,16 +1990,17 @@ def test_call_startup_exceptions_return_process_permits(monkeypatch, stage, fail
 
     calls = PublicationFailureCalls(settings=sandbox_policy.PlacementDriverSettings(0, 1, 1))
     calls.fail_publication = stage == 'started'
-    started = []
+    started, failed_queues = [], []
     start = threading.Thread.start
 
     def injected_start(worker):
         if stage == 'start':
-            raise failure()  # No OS thread; KeyboardInterrupt must still fail closed.
+            failed_queues.append(worker._args[0])
+            raise failure()  # No OS thread; every exception must still fail closed.
         start(worker)
         started.append(worker)
         # Post-start exceptions are injected at queue publication, after start
-        # returns. Exception from start itself means creation failed by contract.
+        # returns. No exception from start itself establishes failed creation.
 
     def broken_queue():
         raise failure()
@@ -2013,11 +2014,13 @@ def test_call_startup_exceptions_return_process_permits(monkeypatch, stage, fail
             expected = sp.PlacementUnavailable if failure is RuntimeError else failure
             with pytest.raises(expected):
                 calls.ready()
-        if stage == 'start' and failure is KeyboardInterrupt:
-            assert calls._jobs is not None
+        assert calls._jobs is None
+        if stage == 'start':
+            assert failed_queues[0].get_nowait() is None
             assert not quota.acquire(blocking=False)
             assert not calls._permits.acquire(blocking=False)
-            calls.close()
+            with pytest.raises(sp.PlacementUnavailable):
+                calls.ready()
             with pytest.raises(sp.PlacementUnavailable):
                 sp._Calls().ready()
             return
@@ -2042,7 +2045,8 @@ def test_call_startup_exceptions_return_process_permits(monkeypatch, stage, fail
             assert not worker.is_alive()
 
 
-def test_interrupted_start_before_identity_keeps_permits_until_worker_exit(monkeypatch):
+@pytest.mark.parametrize('failure', [KeyboardInterrupt, MemoryError])
+def test_interrupted_start_before_identity_keeps_permits_until_worker_exit(monkeypatch, failure):
     """A real OS thread exists before ident publication and the parent's startup wait interrupts."""
     sp = sandbox_placement
     quota = threading.BoundedSemaphore(1)
@@ -2061,7 +2065,7 @@ def test_interrupted_start_before_identity_keeps_permits_until_worker_exit(monke
 
     def interrupted_wait(*args, **kwargs):
         assert boot_entered.wait(1)
-        raise KeyboardInterrupt()
+        raise failure()
 
     def make_worker(*args, **kwargs):
         worker = DelayedIdentityThread(*args, **kwargs)
@@ -2081,13 +2085,16 @@ def test_interrupted_start_before_identity_keeps_permits_until_worker_exit(monke
     monkeypatch.setattr(sp.threading, 'Thread', make_worker)
     monkeypatch.setattr(sp, '_serve', paused_serve)
     try:
-        with pytest.raises(KeyboardInterrupt):
+        expected = sp.PlacementUnavailable if issubclass(failure, Exception) else failure
+        with pytest.raises(expected):
             calls.ready()
         assert len(workers) == 1
         assert not quota.acquire(blocking=False), 'permit returned while OS thread is live'
-        assert calls._jobs is not None
-        jobs = calls._jobs
+        assert calls._jobs is None, 'uncertain worker remained attached to the group'
+        jobs = queues[0]
         assert not calls._permits.acquire(blocking=False)
+        with pytest.raises(sp.PlacementUnavailable):
+            calls.ready()
         with pytest.raises(sp.PlacementUnavailable):
             sp._Calls().ready()
         assert len(workers) == 1, 'a second OS thread started under a cap of one'
@@ -2103,10 +2110,24 @@ def test_interrupted_start_before_identity_keeps_permits_until_worker_exit(monke
             assert permits.acquire(blocking=False)
             assert not permits.acquire(blocking=False)
             permits.release()
+
+        def make_fresh_worker(*args, **kwargs):
+            worker = thread_type(*args, **kwargs)
+            queues.append(kwargs['args'][0])
+            workers.append(worker)
+            return worker
+
+        monkeypatch.setattr(sp.threading, 'Thread', make_fresh_worker)
+        assert calls.run(lambda: 'fresh worker', 1) == 'fresh worker'
+        assert len(workers) == 2
+        calls.close()
+        workers[1].join(1)
+        assert not workers[1].is_alive()
+        assert not errors
     finally:
         allow_identity.set()
         allow_exit.set()
-        # Also clean up the old ident-based mutation, which drops its queue.
+        # Also clean up rollback mutations that fail to enqueue shutdown.
         for jobs in queues:
             jobs.put(None)
         if workers:
