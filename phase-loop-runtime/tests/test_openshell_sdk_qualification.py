@@ -18,7 +18,10 @@ def test_fork_qualification_entrypoints_are_retired():
         'tests/_openshell_qualification.py',
     ):
         assert not (ROOT / relative).exists(), relative
-        assert relative not in (ROOT / 'scripts/gate_a_cleanroom.sh').read_text()
+        # Gate A supplies tests as data without its executable script.
+        sparse_list = ROOT / 'scripts/gate_a_cleanroom.sh'
+        if sparse_list.is_file():
+            assert relative not in sparse_list.read_text()
 
 
 def test_no_runtime_or_stock_helper_private_rpc_or_fork_sdk_dependency():
