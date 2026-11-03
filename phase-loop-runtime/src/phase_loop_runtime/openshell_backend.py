@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 from concurrent.futures import TimeoutError
 from dataclasses import dataclass
+from datetime import datetime, timezone
 import math
 from pathlib import Path
 import secrets
@@ -18,7 +19,8 @@ from typing import Protocol
 
 from .openshell_artifacts import Bound, Identity, Refused, SourceBundle, canonical, digest, validate_result
 from .openshell_journal import JournalSession, ReaperAdapter
-from .openshell_transport import TransportError, UnsupportedCapability
+from .openshell_transport import CallerAllowance, CoordinatorError, TransportError, UnsupportedCapability
+from .placement_contract import coordinator_code
 from .openshell_worker import seal_request
 from .placement_lease import LiveLeaseBackend
 from .sandbox_placement import (
@@ -66,106 +68,6 @@ class WorkerAdapter(Protocol):
     def validate_native(self, identity: Identity, envelope: bytes, bound: Bound) -> None: ...
 
 
-class SourceRpcStage:
-    """Disabled-model stage wire, attached once to the backend's original session.
-
-    The fixed-width tree digest is the server's review_tree_manifest_sha256;
-    StageBinding retains the distinct canonical SourceBundle identity.
-    """
-
-    def __init__(self):
-        self._session = None
-        self._attempted = False
-
-    def validate_configuration(self):
-        if self._session is not None:
-            raise Refused("stage_already_bound")
-
-    def bind_session(self, session):
-        self.validate_configuration()
-        self._session = session
-
-    async def commit(self, binding, bundle, bound):
-        journal = self._session
-        if journal is None or self._attempted:
-            raise Refused("stage_not_repeatable")
-        self._attempted = True
-        session = journal._session
-        try:
-            session._request(bound)  # Validate finite caller bound before effects.
-            end = Bound(time.monotonic() + min(bound.timeout_s, 30),
-                        lambda: bound.cancelled.is_set() or not journal.lease.held or
-                        journal.lease.fenced or session._kill_requested or session._poisoned)
-            end.check()
-            journal.lease.validate_live_binding(journal)
-            if (type(binding) is not StageBinding or
-                    any(type(v) is not str for v in vars(binding).values()) or
-                    (binding.workspace, binding.owner_id, binding.lease_id, binding.generation) !=
-                    (session._workspace, session._owner, session._lease, session._generation) or
-                    session._observation is None or not session._observation.admission_ready or
-                    session._exec_attempted):
-                raise Refused("source_binding_invalid")
-            bundle.validate()
-            if binding.source_sha256 != bundle.sha256:
-                raise Refused("source_binding_invalid")
-            files, records = [], []
-            total = chunks = 0
-            previous = ""
-            for entry in bundle.files:
-                end.check()
-                if (type(entry.data) is not bytes or entry.path <= previous or
-                        len(entry.path.encode()) > 1024 or
-                        any(part.endswith((" ", ".")) for part in entry.path.split("/"))):
-                    raise Refused("source_manifest_invalid")
-                previous = entry.path
-                size = len(entry.data)
-                total += size
-                chunks += (size + 65535) // 65536
-                sha = digest(entry.data)
-                files.append(dict(path=entry.path, size=size, sha256=bytes.fromhex(sha),
-                                  executable=entry.mode == 0o100755))
-                records.append(b"blob" + (b"1" if entry.mode == 0o100755 else b"0") +
-                               sha.encode() + b"%020d" % size + digest(entry.path.encode()).encode())
-            if len(files) > 1024 or total > 4 * 1024 * 1024 or chunks > 4096:
-                raise Refused("source_limit")
-            expected = bytes.fromhex(digest(b"".join(records)))
-
-            class Cancellation:
-                def is_set(self):
-                    return end.cancelled()
-
-            async def send(**operation):
-                journal.lease.validate_live_binding(journal)
-                end.check()
-                request = session._proto.SourceCancellationLeaseRequest(
-                    workspace_scope={"workspace": binding.workspace}, owner_id=binding.owner_id,
-                    lease_id=binding.lease_id, generation=binding.generation, **operation)
-                if request.ByteSize() > 1024 * 1024:
-                    raise Refused("source_message_limit")
-                left = end.check()
-                response = await session._bounded(
-                    lambda: session._stub.SourceCancellationLease(request, timeout=left),
-                    OperationBound(left, Cancellation()))
-                end.check()
-                journal.lease.validate_live_binding(journal)
-                if (response.generation != binding.generation or
-                        response.digest != (expected if "commit" in operation else b"")):
-                    raise TransportError("stage_binding_mismatch", uncertain=True)
-
-            await send(begin={"files": files, "digest": expected})
-            for index, entry in enumerate(bundle.files):
-                for offset in range(0, len(entry.data), 65536):
-                    await send(chunk={"file": index, "offset": offset,
-                                      "data": entry.data[offset:offset + 65536]})
-            await send(commit=True)
-            return StageBinding(binding.workspace, binding.owner_id, binding.lease_id,
-                                binding.generation, binding.source_sha256)
-        except BaseException:
-            session._poisoned = True
-            journal.lease.fence()
-            raise
-
-
 class _LiveCancellation:
     def __init__(self, backend):
         self.backend = backend
@@ -190,10 +92,10 @@ class OpenShellBackend(LiveLeaseBackend):
     """
     name = "openshell-model"
 
-    def __init__(self, proto, stub, *, loop, workspace: str, owner_id: str,
+    def __init__(self, client, exec_channel, *, loop, workspace: str, owner_id: str,
                  bundle: SourceBundle, stage: StageAdapter, worker: WorkerAdapter,
                  task: str, tests: tuple[str, ...], login_store, request_cap: int,
-                 message_cap: int, quarantine: Path, model_only: bool = False):
+                 message_cap: int, quarantine: Path, model_only: bool = False, ttl_s: int = 3600):
         if model_only is not True:
             raise Refused("production_adapters_unqualified")
         if stage is None or worker is None:
@@ -204,9 +106,14 @@ class OpenShellBackend(LiveLeaseBackend):
         if (type(request_cap) is not int or request_cap <= 0 or
                 type(message_cap) is not int or message_cap <= 0):
             raise Refused("invalid_caps")
-        self._bridge = ReaperAdapter(proto, stub, loop=loop, workspace=workspace, owner_id=owner_id)
+        if type(ttl_s) is not int or not 1 <= ttl_s <= 3600:
+            raise Refused("invalid_ttl")
+        self._ttl = ttl_s
+        self._expiry = self._renew_at = self._life_end = None
+        self._bridge = ReaperAdapter(client, loop=loop, owner_id=owner_id)
         self._bridge.validate_reaper_context()
-        self._proto, self._stub, self._workspace, self._owner = proto, stub, workspace, owner_id
+        self._client, self._exec_channel = client, exec_channel
+        self._workspace, self._owner = workspace, owner_id
         self._bundle, self._stage, self._worker = bundle, stage, worker
         self._task, self._tests, self._login_store = task, tests, login_store
         self._request_cap, self._message_cap, self._quarantine = request_cap, message_cap, quarantine
@@ -243,9 +150,8 @@ class OpenShellBackend(LiveLeaseBackend):
         with self._lock:
             if self._session is not None or lease.owner_id != self._owner:
                 raise Refused("lease_binding_invalid")
-            self._session = JournalSession(lease, self._proto, self._stub, workspace=self._workspace)
-            if isinstance(self._stage, SourceRpcStage):
-                self._stage.bind_session(self._session)
+            self._session = JournalSession(lease, self._client, self._exec_channel)
+            self._life_end = time.monotonic() + max(0, 86400 - max(0, time.time() - lease._entry['created_at']))
             return self._session
 
     def _live(self):
@@ -308,25 +214,53 @@ class OpenShellBackend(LiveLeaseBackend):
             if not cleanup:
                 self._session.lease.fence()
             if isinstance(exc, Refused) and str(exc) == "end_reached":
-                raise PlacementUnavailable(_TIMEOUT) from None
+                raise PlacementUnavailable(_TIMEOUT, uncertain=True) from None
             raise
 
     def admit(self, request, bound):
         session = self._request(request)  # finite deadline refusal before CREATE
 
         async def admit():
-            end = Bound(time.monotonic() + bound.timeout_s, bound.cancelled.is_set)
-            await session.create(self._worker.create_request(), OperationBound(end.check(), bound.cancelled))
-            while True:
-                self._live()
-                observed = await session.status(OperationBound(end.check(), bound.cancelled))
-                if observed.admission_ready:
-                    self._binding = StageBinding(self._workspace, self._owner, request.lease_id,
-                                                 observed.sandbox_ref, self._bundle.sha256)
-                    return
-                await asyncio.sleep(min(0.02, end.check()))
+            allowance = CallerAllowance(bound)
+            create = self._worker.create_request()
+            reserve = dict(workload=request.workload, ttl_s=self._ttl,
+                           image_digest=create['image'].rsplit('@', 1)[-1],
+                           policy_digest=create['policy_digest'])
+            try:
+                observed = await session.admit(reserve, create, allowance)
+            except TransportError as error:
+                raise self._placement_error(error, 'reserve' if session.lease._entry.get(
+                    'create_sent_at') is None else 'create') from None
+            self._track_expiry(observed)
+            self._binding = StageBinding(self._workspace, self._owner, request.lease_id,
+                                         session.reference, self._bundle.sha256)
 
         return self._run(admit(), bound)
+
+    @staticmethod
+    def _placement_error(error, phase):
+        uncertain = error.uncertain or error.code == 'unavailable' and phase != 'reserve'
+        if uncertain:
+            code = ('sandbox_placement_release_unconfirmed' if error.code == 'duplicate_binding'
+                    else _TIMEOUT)
+        elif error.code == 'unavailable' and phase == 'reserve':
+            code = 'sandbox_placement_unreachable'
+        elif error.code.startswith('sandbox_placement_'):
+            code = error.code
+        elif isinstance(error, CoordinatorError):
+            code = coordinator_code(error.code) or 'sandbox_placement_refused'
+        else:
+            code = 'sandbox_placement_refused'
+        refusal = PlacementUnavailable(code, getattr(error, 'reason', None),
+                                       uncertain=uncertain)
+        return refusal
+
+    def _track_expiry(self, value):
+        now = time.monotonic()
+        expiry = datetime.fromisoformat(value['expires_at'].replace('Z', '+00:00'))
+        self._expiry = min(self._life_end, now + self._ttl, now + max(0, (
+            expiry - datetime.now(timezone.utc)).total_seconds()))
+        self._renew_at = now + max(0, self._expiry - now) / 2
 
     def commit(self, prepared, request, bound=None):
         session = self._request(request)
@@ -372,7 +306,7 @@ class OpenShellBackend(LiveLeaseBackend):
                         self._result_bound().check(), self._bundle.limits.output_bytes)
 
     def _result_bound(self):
-        return Bound(self._end, lambda: self._cancelled.is_set() or
+        return Bound(min(self._end, self._expiry, self._life_end), lambda: self._cancelled.is_set() or
                      not self._session.lease.held or self._session.lease.fenced)
 
     def execute(self, sandbox_ref, spec, bound):
@@ -385,7 +319,7 @@ class OpenShellBackend(LiveLeaseBackend):
                     spec.output_cap_bytes != self._bundle.limits.output_bytes):
                 raise Refused("execute_not_permitted")
             self._executed = True
-        self._end = min(self._end, time.monotonic() + spec.must_end_within_s)
+        self._end = min(self._end, self._life_end, time.monotonic() + spec.must_end_within_s)
         self._cancelled = bound.cancelled
 
         async def execute():
@@ -397,7 +331,8 @@ class OpenShellBackend(LiveLeaseBackend):
                     not 0 < timeout <= left):
                 raise Refused("worker_mapping_invalid")
             self._stream = await session.dispatch(
-                wire, bound, stream_bound=OperationBound(self._result_bound().check(), _LiveCancellation(self)),
+                wire, CallerAllowance(bound), stream_allowance=CallerAllowance(
+                    OperationBound(self._result_bound().check(), _LiveCancellation(self))),
                 output_cap_bytes=spec.output_cap_bytes, message_cap=self._message_cap)
             self._stream._task.add_done_callback(_observe_task)
             self._live()
@@ -440,7 +375,7 @@ class OpenShellBackend(LiveLeaseBackend):
         if self._session is None or lease_id != self._session.lease.lease_id:
             raise Refused("lease_binding_invalid")
         self._session.lease.fence()
-        return self._run(self._session.kill(bound), bound, cleanup=True)
+        return self._run(self._session.kill(CallerAllowance(bound)), bound, cleanup=True)
 
     def cancel(self, sandbox_ref, bound):
         if self._binding is None or sandbox_ref != self._binding.generation:
@@ -450,17 +385,40 @@ class OpenShellBackend(LiveLeaseBackend):
     def list_owned(self, owner_id, bound):
         if owner_id != self._owner or self._session is None:
             raise Refused("owner_mismatch")
-        return self._run(self._session.list_owned(bound), bound, cleanup=True)
+        return self._run(self._session.list_owned(CallerAllowance(bound)), bound, cleanup=True)
 
     def release(self, prepared, bound=None):
         if bound is None:
             raise UnsupportedCapability()
-        end = Bound(time.monotonic() + bound.timeout_s, bound.cancelled.is_set)
-        self.kill(self._session.lease.lease_id, OperationBound(end.check(), bound.cancelled))
-        owned = self.list_owned(self._owner, OperationBound(end.check(), bound.cancelled))
-        if any(lease == self._session.lease.lease_id for _, lease in owned):
-            raise Refused("release_unconfirmed")
-        # Only the driver/reaper clears the journal after its own complete LIST.
+        return self._run(self._session.release(CallerAllowance(bound)), bound, cleanup=True)
 
     def renew(self, sandbox_ref, until_s, bound):
-        raise UnsupportedCapability()
+        session = self._live()
+        if sandbox_ref != session.reference or type(until_s) not in (int, float) or not math.isfinite(until_s):
+            raise Refused('invalid_renew')
+        now = time.monotonic()
+        if now >= self._expiry or now >= self._life_end:
+            session.lease.fence()
+            raise PlacementUnavailable(_END_REACHED)
+        if now < self._renew_at:
+            return  # Existing authoritative expiry still covers the half-TTL window.
+        extend = min(self._ttl, 3600, math.floor(until_s), math.floor(self._life_end - now))
+        if extend < 1:
+            session.lease.fence()
+            raise PlacementUnavailable(_END_REACHED)
+
+        async def renew():
+            allowance = CallerAllowance(bound)
+            try:
+                observed = await self._client.renew(session.client_uuid, extend, allowance)
+                session._observe(observed)
+                if observed['flags']['expired'] or observed['flags']['fenced']:
+                    raise TransportError('lease_not_ready', uncertain=True)
+                self._track_expiry(observed)
+            except TransportError as error:
+                if error.code == 'lifetime_exceeded':
+                    # End the fixed execution window before the last known expiry.
+                    self._end = min(self._end or self._expiry, self._expiry)
+                await session.reconcile(allowance)
+                raise self._placement_error(error, 'renew') from None
+        return self._run(renew(), bound)

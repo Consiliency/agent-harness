@@ -29,6 +29,8 @@ import re
 import secrets
 import threading
 import time
+from uuid import UUID
+import warnings
 from typing import Callable
 
 from . import sandbox_placement, sandbox_policy, seat_jail
@@ -166,8 +168,29 @@ def _valid_entry(entry: dict[str, object] | None, lease_id: str) -> bool:
     """Accept the legacy schema and optional dispatch markers, never unknown obligations."""
     required = {"lease_id", "backend", "root", "sandbox_ref", "created_at",
                 "confirmed_killed_at", "abandoned"}
-    markers = {"create_sent_at", "execute_sent_at"}
-    if (entry is None or not required <= entry.keys() or entry.keys() - required - markers
+    markers = {"reserve_sent_at", "create_sent_at", "execute_sent_at"}
+    coordinator = {"coordinator_lease_id", "coordinator_sandbox_id", "reserve_collision", "coordinator_evidence",
+                   "journal_format"}
+    if entry is not None:
+        if 'journal_format' in entry and entry['journal_format'] != 'placement-v2':
+            return False
+        for key in ("coordinator_lease_id", "coordinator_sandbox_id"):
+            value = entry.get(key)
+            if value is not None:
+                try:
+                    if type(value) is not str or str(UUID(value)) != value or not UUID(value).int:
+                        return False
+                except (ValueError, AttributeError):
+                    return False
+        if "reserve_collision" in entry and entry["reserve_collision"] is not True:
+            return False
+        if "coordinator_evidence" in entry:
+            from .openshell_transport import TransportError, validate_wire
+            try:
+                validate_wire('LeaseStatus', entry['coordinator_evidence'])
+            except TransportError:
+                return False
+    if (entry is None or not required <= entry.keys() or entry.keys() - required - markers - coordinator
             or entry["lease_id"] != lease_id or type(entry["abandoned"]) is not bool
             or any(type(entry[key]) is not str for key in ("backend", "root"))
             or entry["sandbox_ref"] is not None and not isinstance(entry["sandbox_ref"], str)):
@@ -176,6 +199,50 @@ def _valid_entry(entry: dict[str, object] | None, lease_id: str) -> bool:
                or type(value) in (int, float) and 0 <= value < float("inf")
                for key in ("created_at", "confirmed_killed_at", *markers)
                for value in (entry.get(key),))
+
+
+def openshell_journal_kind(entry, lease_id):
+    """Positive fork evidence is distinct from a pre-reserve crash or corruption."""
+    if not isinstance(entry, dict):
+        return 'corrupt'
+    if not _valid_entry(entry, lease_id):
+        return 'corrupt'
+    openshell = (str(entry.get('backend', '')).startswith('openshell')
+                 or str(entry.get('root', '')).startswith('openshell:'))
+    current_fields = {'journal_format', 'reserve_sent_at', 'reserve_collision',
+                      'coordinator_lease_id', 'coordinator_sandbox_id', 'coordinator_evidence'}
+    if (openshell and not current_fields.intersection(entry)
+            and any(entry.get(key) is not None for key in (
+                'create_sent_at', 'execute_sent_at', 'sandbox_ref', 'confirmed_killed_at'))):
+        return 'fork'
+    if openshell and not entry.get('coordinator_lease_id'):
+        if any(entry.get(key) is not None for key in (
+                'reserve_sent_at', 'create_sent_at', 'execute_sent_at', 'sandbox_ref', 'confirmed_killed_at')):
+            return 'corrupt'
+        return 'incomplete'
+    return 'current' if openshell else 'other'
+
+
+class JournalEntryRefusal(UserWarning):
+    """A single unreadable or incomplete journal remains for deliberate resolution."""
+    def __init__(self, code):
+        self.code = code
+        super().__init__(code)
+
+
+def _journal_refusal(code, on_refusal):
+    if on_refusal is None:
+        warnings.warn(JournalEntryRefusal(code), stacklevel=3)
+    else:
+        on_refusal(code)
+
+
+class ReaperContextRefusal(UserWarning):
+    """A scheme could not be reaped in this calling context; its debt remains."""
+    code = "sandbox_placement_reaper_context_refused"
+
+    def __str__(self):
+        return self.code
 
 
 class LiveLeaseBackend(ABC):
@@ -227,6 +294,11 @@ class Lease:
         """Does this process still hold the lease lock?"""
         return self._fd is not None and self._pid == os.getpid()
 
+    @property
+    def reserve_attempted(self) -> bool:
+        """Durable evidence available even if an admission caller loses its reply."""
+        return self._entry.get('reserve_sent_at') is not None
+
     def attach_transport(self, adapter: object) -> tuple[bool, str | None]:
         if self._pid != os.getpid():
             raise ValueError("lease transport already attached or not owned")
@@ -236,14 +308,14 @@ class Lease:
             self._adapter = adapter
             fresh = (self._newly_opened and not self.fenced and not self._entry["abandoned"]
                      and all(self._entry.get(k) is None for k in
-                             ("create_sent_at", "execute_sent_at", "sandbox_ref", "confirmed_killed_at")))
+                             ("reserve_sent_at", "create_sent_at", "execute_sent_at", "sandbox_ref", "confirmed_killed_at")))
             return fresh, self._entry["sandbox_ref"]
 
     def mark_dispatch(self, adapter: object, operation: str) -> None:
         if self._pid != os.getpid():
             raise ValueError("lease dispatch forbidden")
         with self._lock:
-            key = {"create": "create_sent_at", "execute": "execute_sent_at"}[operation]
+            key = {"reserve": "reserve_sent_at", "create": "create_sent_at", "execute": "execute_sent_at"}[operation]
             if (not self.held or self.fenced or not self._newly_opened
                     or self._adapter is not adapter or self._entry.get(key) is not None):
                 raise ValueError("lease dispatch forbidden")
@@ -251,6 +323,20 @@ class Lease:
                                             or self._entry["sandbox_ref"] is None):
                 raise ValueError("lease create not recorded")
             self._entry[key] = time.time()
+            try:
+                _write_entry(self._fd, self._entry)
+            except BaseException:
+                self.fenced = True
+                raise
+
+    def record_coordinator(self, adapter: object, **fields: object) -> None:
+        """Persist coordinator metadata only while this exact attachment owns the fd."""
+        if self._pid != os.getpid():
+            raise ValueError("lease transport not owned")
+        with self._lock:
+            if not self.held or self._adapter is not adapter:
+                raise ValueError("lease transport not owned")
+            self._entry.update(fields)
             try:
                 _write_entry(self._fd, self._entry)
             except BaseException:
@@ -431,6 +517,8 @@ def open_lease(backend_name: str | None, root: object) -> Lease:
                 "execute_sent_at": None,
                 "abandoned": False,
             }
+            if entry['root'].startswith('openshell:') or str(backend_name or '').startswith('openshell'):
+                entry['journal_format'] = 'placement-v2'
             _write_entry(fd, entry)
             os.rename(pending, final, src_dir_fd=dir_fd, dst_dir_fd=dir_fd)
             _fsync(dir_fd)
@@ -473,6 +561,7 @@ def recover_lease(lease_id: str) -> Lease:
 def reap(
     backends: Callable[[str], object],
     bound: "sandbox_placement.OperationBound",
+    *, on_refusal=None,
 ) -> dict[str, tuple[str, ...]]:
     """Kill what dead or abandoned leases left behind, driven by the journal.
 
@@ -507,6 +596,7 @@ def reap(
                 continue  # cleared since the listing
             except OSError:
                 kept.append(match.group(1))  # unreadable: never acted on, never forgotten
+                _journal_refusal('corrupt_journal_entry', on_refusal)
                 continue
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -533,6 +623,11 @@ def reap(
             free.append((match.group(1), fd, directory / name, _read_entry(fd)))
         by_scheme: dict[str, list[tuple[str, int, Path, dict[str, object]]]] = {}
         for lease_id, fd, path, entry in free:
+            kind = openshell_journal_kind(entry, lease_id)
+            if kind in ('corrupt', 'incomplete'):
+                kept.append(lease_id)
+                _journal_refusal(kind + '_journal_entry', on_refusal)
+                continue
             scheme = sandbox_policy.parse_location(str((entry or {}).get("root", ""))).scheme
             if not _valid_entry(entry, lease_id) or not sandbox_placement._SCHEME.fullmatch(scheme):
                 kept.append(lease_id)  # unreadable: never guessed at
@@ -547,7 +642,16 @@ def reap(
                 kept.extend(lease_id for lease_id, _fd, _path, _entry in group)
                 continue
             if isinstance(backend, JournalReapingBackend):
-                backend.validate_reaper_context()
+                try:
+                    backend.validate_reaper_context()
+                except ValueError:
+                    refusal = ReaperContextRefusal()
+                    if on_refusal is None:
+                        warnings.warn(refusal, stacklevel=2)
+                    else:
+                        on_refusal(refusal.code)
+                    kept.extend(lease_id for lease_id, _fd, _path, _entry in group)
+                    continue
             done = _reap_backend(backend, group, bound)
             cleared.extend(done)
             kept.extend(lease_id for lease_id, _fd, _path, _entry in group if lease_id not in done)
