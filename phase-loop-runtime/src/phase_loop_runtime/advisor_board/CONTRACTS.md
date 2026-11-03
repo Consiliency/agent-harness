@@ -543,8 +543,9 @@ the caller passes a PATH and the runtime reads it.
       budget and caller cancellation; each submission captures its caller's context,
       including jobs on a reused worker. Late results from abandoned jobs are discarded.
       All live workers, including idle and abandoned workers, count against
-      `sandbox.driver.max_live_workers` per call group (walk, result wait, renewal), not
-      process-wide. Permits return only at actual worker exit; startup failure rolls back.
+      `sandbox.driver.max_live_workers` per call group (walk, result wait, renewal) and
+      a shared process-wide cap of 32 workers across all call groups, including local
+      cleanup. Permits return only at actual worker exit; startup failure rolls back.
       The final local readiness check refuses before probe or lease allocation with
       `local_check_failed` / `sandbox_placement_refused`; cancellation wins. Normal next-rung
       and last-rung resolution and the capacity bar remain unchanged. Cleanup has no extra

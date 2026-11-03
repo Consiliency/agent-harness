@@ -1091,16 +1091,27 @@ class _Calls:
         if not _PROCESS_WORKERS.acquire(blocking=False):
             self._permits.release()
             raise _WorkerCapacity(_LOCAL_RELEASE_UNCONFIRMED)
-        jobs: queue.SimpleQueue[object] = queue.SimpleQueue()
+        worker: threading.Thread | None = None
         try:
-            threading.Thread(
+            jobs: queue.SimpleQueue[object] = queue.SimpleQueue()
+            # Publish the queue before starting: even an interruption immediately
+            # after start must leave a way to ask the worker to exit.
+            self._jobs = jobs
+            worker = threading.Thread(
                 target=_serve, args=(jobs, self._permits, _PROCESS_WORKERS), name="placement-call", daemon=True,
-            ).start()
-        except Exception:
-            self._permits.release()
-            _PROCESS_WORKERS.release()
-            raise PlacementUnavailable(_TIMEOUT) from None
-        self._jobs = jobs
+            )
+            worker.start()
+        except BaseException as exc:
+            if worker is not None and worker.ident is not None:
+                # A started worker owns both permits until it actually exits.
+                self.close()
+            else:
+                self._jobs = None
+                self._permits.release()
+                _PROCESS_WORKERS.release()
+            if isinstance(exc, Exception):
+                raise PlacementUnavailable(_TIMEOUT) from None
+            raise
 
     def run(
         self, call: Callable[[], object], timeout_s: float,
@@ -1388,9 +1399,6 @@ class _Walk:
                                      min(ANSWER_BOUND_S, self._budget_left()), self.cancelled)
         except _CallCancelled:
             self._local_cancel(label)
-        except _WorkerCapacity:
-            # Saturated abandoned workers must not turn into overflow admission.
-            return self._local_left(label, _LOCAL_RELEASE_UNCONFIRMED)
         except Exception:
             # An advisory failure is unknown telemetry, never a held reservation.
             reading = None
