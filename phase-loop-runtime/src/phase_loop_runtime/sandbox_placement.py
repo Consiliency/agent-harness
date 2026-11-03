@@ -1041,7 +1041,17 @@ class _CallCancelled(Exception):
     """The caller cancelled while a bounded call was in flight."""
 
 
-def _serve(jobs: "queue.SimpleQueue[object]", permits: threading.BoundedSemaphore) -> None:
+# A process-wide ceiling, independent of per-walk settings and _Calls lifetimes.
+_PROCESS_WORKER_LIMIT = 32
+_PROCESS_WORKERS = threading.BoundedSemaphore(_PROCESS_WORKER_LIMIT)
+
+
+class _WorkerCapacity(PlacementUnavailable):
+    """No process-wide worker slot is available."""
+
+
+def _serve(jobs: "queue.SimpleQueue[object]", permits: threading.BoundedSemaphore,
+           process_permits: threading.BoundedSemaphore) -> None:
     try:
         while True:
             job = jobs.get()
@@ -1056,6 +1066,7 @@ def _serve(jobs: "queue.SimpleQueue[object]", permits: threading.BoundedSemaphor
             del job, call, context, box, done
     finally:
         permits.release()
+        process_permits.release()
 
 
 class _Calls:
@@ -1064,7 +1075,8 @@ class _Calls:
     One worker thread serves the calls of one walk in turn. A call that does not return in
     time is abandoned together with its queue. All live workers (idle, active and
     abandoned) hold permits until actual exit. The settings cap is per group: the walk,
-    result wait and renewal each own a group, not a process-wide quota."""
+    result wait and renewal each own a group. A shared process-wide quota also
+    bounds workers across groups, including abandoned local cleanup calls."""
 
     def __init__(self, *, settings: sandbox_policy.PlacementDriverSettings | None = None) -> None:
         settings = settings if settings is not None else sandbox_policy.placement_driver_settings(env={})
@@ -1076,13 +1088,17 @@ class _Calls:
             return
         if not self._permits.acquire(blocking=False):
             raise PlacementUnavailable(_TIMEOUT)
+        if not _PROCESS_WORKERS.acquire(blocking=False):
+            self._permits.release()
+            raise _WorkerCapacity(_LOCAL_RELEASE_UNCONFIRMED)
         jobs: queue.SimpleQueue[object] = queue.SimpleQueue()
         try:
             threading.Thread(
-                target=_serve, args=(jobs, self._permits), name="placement-call", daemon=True,
+                target=_serve, args=(jobs, self._permits, _PROCESS_WORKERS), name="placement-call", daemon=True,
             ).start()
         except Exception:
             self._permits.release()
+            _PROCESS_WORKERS.release()
             raise PlacementUnavailable(_TIMEOUT) from None
         self._jobs = jobs
 
@@ -1372,6 +1388,9 @@ class _Walk:
                                      min(ANSWER_BOUND_S, self._budget_left()), self.cancelled)
         except _CallCancelled:
             self._local_cancel(label)
+        except _WorkerCapacity:
+            # Saturated abandoned workers must not turn into overflow admission.
+            return self._local_left(label, _LOCAL_RELEASE_UNCONFIRMED)
         except Exception:
             # An advisory failure is unknown telemetry, never a held reservation.
             reading = None

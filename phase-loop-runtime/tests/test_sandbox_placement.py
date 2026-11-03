@@ -1868,3 +1868,58 @@ def test_preflight_code_survives_compatibility_local_refusal(monkeypatch, budget
     assert result.code == 'seat_credential_below_floor'
     assert result.trail[-1]['code'] == ('sandbox_placement_budget_spent' if budget_spent
                                        else 'sandbox_placement_at_capacity')
+
+
+def test_process_worker_cap_bounds_abandoned_local_releases(monkeypatch):
+    """Removing the shared cap admits locally after N abandoned cleanup calls."""
+    from test_placement_driver import rungs
+
+    sp = sandbox_placement
+    limit = 3
+    monkeypatch.setattr(sp, '_PROCESS_WORKERS', threading.BoundedSemaphore(limit))
+    monkeypatch.setattr(sp, 'ANSWER_BOUND_S', 0.02)
+    gates = [threading.Event() for _ in range(limit)]
+    workers = []
+    baseline = set(threading.enumerate())
+    cleanup = object.__new__(sp._Walk)
+    cleanup.settings = sandbox_policy.PlacementDriverSettings(0, 1, 4)
+
+    def release(handle):
+        workers.append(threading.current_thread())
+        assert gates[int(handle.token)].wait(5)
+
+    cleanup.local_release = release
+    local = sandbox_policy.candidate_roots([('local', '/stage')])[0]
+    admissions = []
+
+    def admit(settings, bound):
+        admissions.append(True)
+        return sp.LocalAdmission(sp.LocalReservation('new'), _headroom())
+
+    try:
+        for index in range(limit):
+            assert not cleanup._release_local(sp.LocalReservation(str(index)))
+        assert len(workers) == limit
+        refused = _sl0_walk((local, *rungs('missing')), local_capacity=_headroom,
+                            local_admit=admit)
+        assert refused.outcome == 'not_run'
+        assert refused.code == 'sandbox_placement_local_release_unconfirmed'
+        assert len(refused.trail) == 1
+        assert not admissions
+        gates[0].set()
+        workers[0].join(1)
+        assert not workers[0].is_alive()
+        accepted = _sl0_walk((local,), local_capacity=_headroom, local_admit=admit)
+        assert accepted.outcome == 'launching_host'
+        assert admissions == [True]
+    finally:
+        for gate in gates:
+            gate.set()
+        for worker in workers:
+            worker.join(1)
+        # Also join the successful walk's worker before restoring the shared quota.
+        for worker in set(threading.enumerate()) - baseline:
+            if worker.name == 'placement-call':
+                worker.join(1)
+                assert not worker.is_alive()
+        assert all(not worker.is_alive() for worker in workers)
