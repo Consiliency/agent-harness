@@ -28,9 +28,13 @@ def test_no_runtime_or_stock_helper_private_rpc_or_fork_sdk_dependency():
     retired = ('CancellationLease', 'openshell_pb2',
                'OPENSHELL_GENERATED_DIR',
                'OPENSHELL_SDK_QUALIFICATION', 'qualify_openshell_sdk',
-               '_openshell_qualification')
-    paths = list((ROOT / 'src/phase_loop_runtime').rglob('*.py'))
-    paths.append(ROOT / 'tests/_openshell_channel_server.py')
+               '_openshell_qualification',
+               # Retired fork pins; a hash-only pin must not return either.
+               '99358e04266b7b22a84e7369c68c2653d8563a1f',
+               'd16558327be26766f57882b081c7de2333505909')
+    paths = [path for tree in ('src', 'tests', 'scripts') for path in (ROOT / tree).rglob('*.py')
+             if path.resolve() != Path(__file__).resolve()]
+    assert paths
     for path in paths:
         # Inspect executable identifiers/imports/string constants, excluding comments.
         tree = ast.parse(path.read_text())

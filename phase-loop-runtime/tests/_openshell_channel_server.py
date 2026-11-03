@@ -1,4 +1,4 @@
-"""Child-only synthetic TLS server; stdin EOF stops and stdout acknowledges state."""
+"""Stock OpenShell v0.1.4 exec fixtures for offline tests: descriptor and bindings only."""
 
 import asyncio
 import json
