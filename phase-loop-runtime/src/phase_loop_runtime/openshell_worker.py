@@ -32,6 +32,7 @@ from .openshell_artifacts import (
 )
 from .seat_credentials import login_subscription_proven, parse_login_token
 from .seat_jail import CLAUDE_TOKEN_FD_ENV, contains_secret, secret_encodings, token_pipe
+from .seat_uid import trusted_module_argv
 
 
 @dataclass(frozen=True)
@@ -558,7 +559,7 @@ def load_restrict_exec(wire, bundle, *, request_cap, bound, execute=None,
     with policy_path.open("xb") as stream:
         stream.write(manifest)
     bound.check()
-    argv = restricted_argv or (sys.executable, "-I", "-m", "phase_loop_runtime.openshell_worker", "--restricted")
+    argv = restricted_argv or tuple(trusted_module_argv("phase_loop_runtime.openshell_worker", "--restricted"))
     if not argv or not Path(argv[0]).is_absolute():
         raise Refused("runtime_program_invalid")
     result = execute((HELPER, "--policy", str(policy_path), "--", *argv),
