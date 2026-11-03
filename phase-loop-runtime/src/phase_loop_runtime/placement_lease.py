@@ -201,20 +201,34 @@ def _valid_entry(entry: dict[str, object] | None, lease_id: str) -> bool:
                for value in (entry.get(key),))
 
 
+def _canonical_coordinator_id(value):
+    try:
+        return str(UUID(value)) == value and bool(UUID(value).int)
+    except (ValueError, AttributeError):
+        return False
+
+
 def openshell_journal_kind(entry, lease_id):
     """Positive fork evidence is distinct from a pre-reserve crash or corruption."""
     if not isinstance(entry, dict):
         return 'corrupt'
-    if not _valid_entry(entry, lease_id):
-        return 'corrupt'
     openshell = (str(entry.get('backend', '')).startswith('openshell')
                  or str(entry.get('root', '')).startswith('openshell:'))
-    current_fields = {'journal_format', 'reserve_sent_at', 'reserve_collision',
-                      'coordinator_lease_id', 'coordinator_sandbox_id', 'coordinator_evidence'}
-    if (openshell and not current_fields.intersection(entry)
+    # Current sessions mirror their coordinator UUID into sandbox_ref. Any other
+    # reference is a separate generation whose cleanup the coordinator cannot prove.
+    reference = entry.get('sandbox_ref')
+    identity = entry.get('coordinator_lease_id')
+    current_reference = (type(identity) is str and reference == identity
+                         and _canonical_coordinator_id(identity))
+    if openshell and (
+            reference is not None and not current_reference
+            or entry.get('reserve_sent_at') is None
             and any(entry.get(key) is not None for key in (
-                'create_sent_at', 'execute_sent_at', 'sandbox_ref', 'confirmed_killed_at'))):
+                'create_sent_at', 'execute_sent_at'))
+            or not identity and entry.get('confirmed_killed_at') is not None):
         return 'fork'
+    if not _valid_entry(entry, lease_id):
+        return 'corrupt'
     if openshell and not entry.get('coordinator_lease_id'):
         if any(entry.get(key) is not None for key in (
                 'reserve_sent_at', 'create_sent_at', 'execute_sent_at', 'sandbox_ref', 'confirmed_killed_at')):
@@ -624,9 +638,10 @@ def reap(
         by_scheme: dict[str, list[tuple[str, int, Path, dict[str, object]]]] = {}
         for lease_id, fd, path, entry in free:
             kind = openshell_journal_kind(entry, lease_id)
-            if kind in ('corrupt', 'incomplete'):
+            if kind in ('fork', 'corrupt', 'incomplete'):
                 kept.append(lease_id)
-                _journal_refusal(kind + '_journal_entry', on_refusal)
+                _journal_refusal('sandbox_placement_fork_journal_refused' if kind == 'fork'
+                                 else kind + '_journal_entry', on_refusal)
                 continue
             scheme = sandbox_policy.parse_location(str((entry or {}).get("root", ""))).scheme
             if not _valid_entry(entry, lease_id) or not sandbox_placement._SCHEME.fullmatch(scheme):

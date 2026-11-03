@@ -282,13 +282,13 @@ class ReaperAdapter(JournalReapingBackend):
             raise PlacementUnavailable(error.code) from None
 
     def kill_journaled(self, owner_id, lease_id, entry, bound):
+        kind = openshell_journal_kind(entry, lease_id)
+        if kind == 'fork':
+            raise ForkJournalRefusal()
         if owner_id != self._owner or not _valid_entry(entry, lease_id):
-            raise ValueError('invalid lease journal')
+            raise TransportError('corrupt_journal_entry', uncertain=True)
         identity = entry.get('coordinator_lease_id')
         if not identity:
-            kind = openshell_journal_kind(entry, lease_id)
-            if kind == 'fork':
-                raise ForkJournalRefusal()
             raise TransportError('incomplete_journal_entry' if kind == 'incomplete'
                                  else 'corrupt_journal_entry')
         self._local_ids[identity] = lease_id

@@ -960,3 +960,18 @@ def test_short_write_refuses_before_publish_or_sync(tmp_path, monkeypatch):
         assert error.value.errno == errno.EIO and calls == []
     finally:
         os.close(fd)
+
+
+@pytest.mark.parametrize('marker', ['create_sent_at', 'execute_sent_at', 'sandbox_ref',
+                                  'confirmed_killed_at'])
+def test_sl1_markers_precede_schema_validation(marker):
+    lease = placement_lease.open_lease('openshell-model', 'openshell://fake.invalid/work')
+    try:
+        value = _entry(lease.path)
+        value.pop('journal_format', None)
+        value[marker] = 'remote-generation' if marker == 'sandbox_ref' else 1
+        assert placement_lease.openshell_journal_kind(value, lease.lease_id) == 'fork'
+        value.update(journal_format=None, unknown=True, reserve_sent_at=None)
+        assert placement_lease.openshell_journal_kind(value, lease.lease_id) == 'fork'
+    finally:
+        lease.abandon()
