@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
+import hashlib
 import ipaddress
 import math
 import os
@@ -86,6 +87,7 @@ class MTLSConfig:
             raise TransportError('invalid_mtls_credential')
         try:
             context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+            context.verify_mode = ssl.CERT_REQUIRED
             context.hostname_checks_common_name = False
             context.load_verify_locations(cadata=self.ca_pem.decode('ascii'))
             # ssl requires paths to load a key. Private temporary files are never
@@ -115,9 +117,37 @@ class MTLSConfig:
 async def stock_exec_channel(config: MTLSConfig, proto):
     """Stock ExecSandbox only. TLS readiness grants no lifecycle authority."""
     from .openshell_transport import StockExecChannel
-    target, _ = config.validate(config.local_owner_id)
+    target, context = config.validate(config.local_owner_id)
+    url = urlsplit(config.endpoint)
+    connect_deadline = asyncio.get_running_loop().time() + config.connect_timeout_s
+    writer = None
+    # uncertain=False below is correct only because this channel opens before
+    # any lease exists. A caller opening it after create must treat failures
+    # as uncertain, even though this handshake sends no ExecSandbox.
+    try:
+        async with asyncio.timeout_at(connect_deadline):
+            _, writer = await asyncio.open_connection(
+                url.hostname, url.port or 443, ssl=context,
+                server_hostname=url.hostname)
+            leaf = writer.get_extra_info('ssl_object').getpeercert(binary_form=True)
+    except ssl.SSLCertVerificationError:
+        raise TransportError('channel_peer_verification_failed', uncertain=False) from None
+    except (OSError, TimeoutError):
+        raise TransportError('sandbox_placement_unreachable', uncertain=False) from None
+    finally:
+        if writer is not None:
+            writer.close()
+            # TLS shutdown is best effort and must not extend the dial deadline.
+    leaf_sha256 = hashlib.sha256(leaf).hexdigest()
+    # grpcio 1.78 exposes no client peer-cert hook and BoringSSL does not
+    # enforce basicConstraints on a trust anchor (measured in the known-
+    # limitation test). Trust only the SAN-validated leaf, not its issuing CA.
+    # A different leaf from that CA or an unrelated certificate is refused.
+    # Signing a child accepted by this anchor requires the leaf's private key:
+    # the residual is server-key compromise, which TLS cannot defend against.
+    pinned_root = ssl.DER_cert_to_PEM_cert(leaf).encode('ascii')
     import grpc
-    credentials = grpc.ssl_channel_credentials(root_certificates=config.ca_pem,
+    credentials = grpc.ssl_channel_credentials(root_certificates=pinned_root,
         private_key=config.client_key_pem, certificate_chain=config.client_cert_pem)
     channel = grpc.aio.secure_channel(target, credentials, options=(
         ('grpc.enable_retries', 0),
@@ -128,9 +158,10 @@ async def stock_exec_channel(config: MTLSConfig, proto):
         ('grpc.enable_http_proxy', 0),
     ))
     client = StockExecChannel(channel, proto, config.local_owner_id)
+    client.peer_certificate_sha256 = leaf_sha256
     try:
         try:
-            async with asyncio.timeout(config.connect_timeout_s):
+            async with asyncio.timeout_at(connect_deadline):
                 await channel.channel_ready()
         except Exception:
             raise TransportError('channel_connect_timeout', uncertain=True) from None

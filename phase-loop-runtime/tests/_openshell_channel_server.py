@@ -107,3 +107,39 @@ async def json_coordinator(material, replies):
         for task in tuple(tasks):
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@pytest.fixture(scope='module')
+def san_template(mtls_material, tmp_path_factory):
+    """Independent fake server identities, including a leaf-signed child."""
+    import shutil
+    directory = tmp_path_factory.mktemp('san-identities')
+    shutil.copytree(mtls_material, directory, dirs_exist_ok=True)
+    def issue(name, extension, *, subject='127.0.0.1', issuer='ca'):
+        def command(*args):
+            subprocess.run(['openssl', *args], cwd=directory, check=True,
+                           capture_output=True, timeout=15)
+        command('req', '-new', '-newkey', 'rsa:2048', '-nodes',
+                '-subj', '/CN=' + subject, '-keyout', name + '.key',
+                '-out', name + '.csr')
+        (directory / 'extensions').write_text(extension)
+        command('x509', '-req', '-in', name + '.csr', '-CA', issuer + '.pem',
+                '-CAkey', issuer + '.key', '-CAcreateserial', '-days', '1',
+                '-extfile', 'extensions', '-out', name + '.pem')
+    leaf = 'basicConstraints=critical,CA:FALSE\nextendedKeyUsage=serverAuth\n'
+    ip = 'subjectAltName=IP:127.0.0.1\n'
+    issue('cn-only', leaf)
+    issue('cn-dns-only', leaf, subject='localhost')
+    issue('ip-san', leaf + ip)
+    issue('other-ip-san', leaf + ip)
+    issue('wrong-ip-san', leaf + 'subjectAltName=IP:127.0.0.2\n')
+    issue('unrelated-ip-san', leaf + ip, issuer='other')
+    issue('child', leaf + ip, issuer='ip-san')
+    return directory
+
+
+@pytest.fixture
+def san_material(san_template, tmp_path):
+    import shutil
+    shutil.copytree(san_template, tmp_path, dirs_exist_ok=True)
+    return tmp_path
