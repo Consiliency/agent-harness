@@ -543,8 +543,19 @@ the caller passes a PATH and the runtime reads it.
       budget and caller cancellation; each submission captures its caller's context,
       including jobs on a reused worker. Late results from abandoned jobs are discarded.
       All live workers, including idle and abandoned workers, count against
-      `sandbox.driver.max_live_workers` per call group (walk, result wait, renewal), not
-      process-wide. Permits return only at actual worker exit; startup failure rolls back.
+      `sandbox.driver.max_live_workers` per call group (walk, result wait, renewal) and
+      a shared process-wide cap of 32 workers across all call groups, including local
+      cleanup. Only failures before calling `Thread.start()` roll back acquired
+      permits. Once `start()` has been called, the parent never returns permits,
+      regardless of exception type. Any exception after `start()` queues a shutdown sentinel
+      and detaches the call group, so another `ready()` must acquire fresh permits
+      and create a fresh worker. A live worker consumes the sentinel and returns its
+      own permits exactly once, on exit. If no OS thread was created, those permits
+      remain consumed permanently: uncertainty fails closed by shrinking the cap.
+      CPython may also retain the thread and its queue in `_limbo` for the process
+      lifetime in that case; this reference is accepted. Acquires are guarded for
+      rollback, but an interrupt between a successful acquire and recording it can
+      likewise consume a permit permanently; these narrow windows never enlarge the cap.
       The final local readiness check refuses before probe or lease allocation with
       `local_check_failed` / `sandbox_placement_refused`; cancellation wins. Normal next-rung
       and last-rung resolution and the capacity bar remain unchanged. Cleanup has no extra

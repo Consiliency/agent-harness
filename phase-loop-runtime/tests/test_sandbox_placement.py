@@ -1868,3 +1868,288 @@ def test_preflight_code_survives_compatibility_local_refusal(monkeypatch, budget
     assert result.code == 'seat_credential_below_floor'
     assert result.trail[-1]['code'] == ('sandbox_placement_budget_spent' if budget_spent
                                        else 'sandbox_placement_at_capacity')
+
+
+def test_process_worker_cap_bounds_abandoned_local_releases(monkeypatch):
+    """A full shared cap skips local without claiming a held reservation."""
+    from test_placement_driver import FarSide, rungs
+
+    sp = sandbox_placement
+    limit = 3
+    monkeypatch.setattr(sp, '_PROCESS_WORKERS', threading.BoundedSemaphore(limit))
+    monkeypatch.setattr(sp, 'ANSWER_BOUND_S', 0.02)
+    gates = [threading.Event() for _ in range(limit)]
+    workers = []
+    baseline = set(threading.enumerate())
+    cleanup = object.__new__(sp._Walk)
+    cleanup.settings = sandbox_policy.PlacementDriverSettings(0, 1, 4)
+
+    def release(handle):
+        workers.append(threading.current_thread())
+        assert gates[int(handle.token)].wait(5)
+
+    cleanup.local_release = release
+    local = sandbox_policy.candidate_roots([('local', '/stage')])[0]
+    admissions = []
+    backend = FarSide('drv', None)
+    monkeypatch.setitem(sp._REGISTRY, 'drv', backend)
+
+    def admit(settings, bound):
+        admissions.append(True)
+        return sp.LocalAdmission(sp.LocalReservation('new'), _headroom())
+
+    try:
+        for index in range(limit):
+            assert not cleanup._release_local(sp.LocalReservation(str(index)))
+        assert len(workers) == limit
+        refused = _sl0_walk((local, *rungs('drv')), local_capacity=_headroom,
+                            local_admit=admit)
+        assert refused.outcome == 'not_run'
+        assert refused.trail[0]['code'] == 'sandbox_placement_at_capacity'
+        assert len(refused.trail) == 2
+        assert 'available' in backend.calls
+        assert not backend.held
+        assert refused.local_reservation is None
+        assert refused.pending_local_reservation is None
+        assert not admissions
+        gates[0].set()
+        workers[0].join(1)
+        assert not workers[0].is_alive()
+        accepted = _sl0_walk((local,), local_capacity=_headroom, local_admit=admit)
+        assert accepted.outcome == 'launching_host'
+        assert admissions == [True]
+    finally:
+        for gate in gates:
+            gate.set()
+        for worker in workers:
+            worker.join(1)
+        # Also join the successful walk's worker before restoring the shared quota.
+        for worker in set(threading.enumerate()) - baseline:
+            if worker.name == 'placement-call':
+                worker.join(1)
+                assert not worker.is_alive()
+        assert all(not worker.is_alive() for worker in workers)
+
+
+def test_saturated_compatibility_local_preserves_preflight_code(monkeypatch):
+    sp = sandbox_placement
+    monkeypatch.setattr(sp, '_PROCESS_WORKERS', threading.BoundedSemaphore(0))
+    decision = _sl0_walk((), last_rung='local',
+                        preflight=lambda: 'seat_credential_below_floor',
+                        local_capacity=lambda: pytest.fail('saturated probe ran'),
+                        local_admit=lambda *args: pytest.fail('saturated local admitted'))
+    assert decision.code == 'seat_credential_below_floor'
+    assert decision.trail[-1]['code'] == 'sandbox_placement_at_capacity'
+    assert decision.local_reservation is None
+    assert decision.pending_local_reservation is None
+
+
+def test_saturated_local_release_stops_overflow_and_retains_handle(monkeypatch):
+    from test_placement_driver import FarSide, rungs
+
+    sp = sandbox_placement
+    monkeypatch.setattr(sp, '_PROCESS_WORKERS', threading.BoundedSemaphore(1))
+    handle = sp.LocalReservation('held-slot')
+    backend = FarSide('drv', None)
+    monkeypatch.setitem(sp._REGISTRY, 'drv', backend)
+    local = sandbox_policy.candidate_roots([('local', '/stage')])[0]
+    baseline = set(threading.enumerate())
+    try:
+        decision = _sl0_walk((local, *rungs('drv')), local_capacity=_headroom,
+                            local_admit=lambda *args: sp.LocalAdmission(
+                                handle, _headroom(memory_available_bytes=0)),
+                            local_release=lambda slot: pytest.fail('saturated release ran'))
+        assert decision.outcome == 'not_run'
+        assert decision.code == 'sandbox_placement_local_release_unconfirmed'
+        assert len(decision.trail) == 1
+        assert decision.local_reservation is handle
+        assert not backend.calls
+    finally:
+        for worker in set(threading.enumerate()) - baseline:
+            if worker.name == 'placement-call':
+                worker.join(1)
+                assert not worker.is_alive()
+
+
+@pytest.mark.parametrize('stage', ['queue', 'start', 'started'])
+@pytest.mark.parametrize('failure', [RuntimeError, KeyboardInterrupt])
+def test_call_startup_exceptions_roll_back_before_start_and_consume_after(monkeypatch, stage, failure):
+    """Pre-start failures roll back; called-start failures consume permits fail-closed."""
+    sp = sandbox_placement
+    quota = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(sp, '_PROCESS_WORKERS', quota)
+
+    class PublicationFailureCalls(sp._Calls):
+        fail_publication = False
+
+        def __setattr__(self, name, value):
+            if name == '_jobs' and value is not None and self.fail_publication:
+                self.fail_publication = False
+                raise failure()
+            super().__setattr__(name, value)
+
+    calls = PublicationFailureCalls(settings=sandbox_policy.PlacementDriverSettings(0, 1, 1))
+    calls.fail_publication = stage == 'started'
+    started, failed_queues = [], []
+    start = threading.Thread.start
+
+    def injected_start(worker):
+        if stage == 'start':
+            failed_queues.append(worker._args[0])
+            raise failure()  # No OS thread; every exception must still fail closed.
+        start(worker)
+        started.append(worker)
+        # Post-start exceptions are injected at queue publication, after start
+        # returns. No exception from start itself establishes failed creation.
+
+    def broken_queue():
+        raise failure()
+
+    try:
+        with monkeypatch.context() as patch:
+            if stage == 'queue':
+                patch.setattr(sp.queue, 'SimpleQueue', broken_queue)
+            else:
+                patch.setattr(threading.Thread, 'start', injected_start)
+            expected = sp.PlacementUnavailable if failure is RuntimeError else failure
+            with pytest.raises(expected):
+                calls.ready()
+        assert calls._jobs is None
+        if stage == 'start':
+            assert failed_queues[0].get_nowait() is None
+            assert not quota.acquire(blocking=False)
+            assert not calls._permits.acquire(blocking=False)
+            with pytest.raises(sp.PlacementUnavailable):
+                calls.ready()
+            with pytest.raises(sp.PlacementUnavailable):
+                sp._Calls().ready()
+            return
+        calls.close()
+        for worker in started:
+            worker.join(1)
+            assert not worker.is_alive()
+        assert quota.acquire(blocking=False)
+        assert not quota.acquire(blocking=False)
+        quota.release()
+        # Recovery also proves the per-group permit was returned exactly once.
+        with monkeypatch.context() as patch:
+            def record_start(worker):
+                start(worker)
+                started.append(worker)
+            patch.setattr(threading.Thread, 'start', record_start)
+            assert calls.run(lambda: 'recovered', 1) == 'recovered'
+    finally:
+        calls.close()
+        for worker in started:
+            worker.join(1)
+            assert not worker.is_alive()
+
+
+@pytest.mark.parametrize('failure', [KeyboardInterrupt, MemoryError])
+def test_interrupted_start_before_identity_keeps_permits_until_worker_exit(monkeypatch, failure):
+    """A real OS thread exists before ident publication and the parent's startup wait interrupts."""
+    sp = sandbox_placement
+    quota = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(sp, '_PROCESS_WORKERS', quota)
+    calls = sp._Calls(settings=sandbox_policy.PlacementDriverSettings(0, 1, 1))
+    boot_entered, allow_identity = threading.Event(), threading.Event()
+    serve_entered, allow_exit = threading.Event(), threading.Event()
+    workers, queues, errors = [], [], []
+    thread_type, serve = threading.Thread, sp._serve
+
+    class DelayedIdentityThread(thread_type):
+        def _set_ident(self):
+            boot_entered.set()
+            assert allow_identity.wait(5)
+            super()._set_ident()
+
+    def interrupted_wait(*args, **kwargs):
+        assert boot_entered.wait(1)
+        raise failure()
+
+    def make_worker(*args, **kwargs):
+        worker = DelayedIdentityThread(*args, **kwargs)
+        queues.append(kwargs['args'][0])
+        worker._started.wait = interrupted_wait
+        workers.append(worker)
+        return worker
+
+    def paused_serve(*args):
+        serve_entered.set()
+        try:
+            assert allow_exit.wait(5)
+            serve(*args)
+        except BaseException as exc:
+            errors.append(exc)
+
+    monkeypatch.setattr(sp.threading, 'Thread', make_worker)
+    monkeypatch.setattr(sp, '_serve', paused_serve)
+    try:
+        expected = sp.PlacementUnavailable if issubclass(failure, Exception) else failure
+        with pytest.raises(expected):
+            calls.ready()
+        assert len(workers) == 1
+        assert not quota.acquire(blocking=False), 'permit returned while OS thread is live'
+        assert calls._jobs is None, 'uncertain worker remained attached to the group'
+        jobs = queues[0]
+        assert not calls._permits.acquire(blocking=False)
+        with pytest.raises(sp.PlacementUnavailable):
+            calls.ready()
+        with pytest.raises(sp.PlacementUnavailable):
+            sp._Calls().ready()
+        assert len(workers) == 1, 'a second OS thread started under a cap of one'
+        allow_identity.set()
+        assert serve_entered.wait(1)
+        assert not quota.acquire(blocking=False), 'permit returned before worker exit'
+        allow_exit.set()
+        workers[0].join(1)
+        assert not workers[0].is_alive()
+        assert jobs.empty(), 'worker did not consume the shutdown sentinel'
+        assert not errors, 'worker over-released a semaphore'
+        for permits in (quota, calls._permits):
+            assert permits.acquire(blocking=False)
+            assert not permits.acquire(blocking=False)
+            permits.release()
+
+        def make_fresh_worker(*args, **kwargs):
+            worker = thread_type(*args, **kwargs)
+            queues.append(kwargs['args'][0])
+            workers.append(worker)
+            return worker
+
+        monkeypatch.setattr(sp.threading, 'Thread', make_fresh_worker)
+        assert calls.run(lambda: 'fresh worker', 1) == 'fresh worker'
+        assert len(workers) == 2
+        calls.close()
+        workers[1].join(1)
+        assert not workers[1].is_alive()
+        assert not errors
+    finally:
+        allow_identity.set()
+        allow_exit.set()
+        # Also clean up rollback mutations that fail to enqueue shutdown.
+        for jobs in queues:
+            jobs.put(None)
+        if workers:
+            assert serve_entered.wait(1)
+        for worker in workers:
+            worker.join(1)
+            assert not worker.is_alive()
+        calls.close()
+
+
+def test_interrupt_between_worker_acquires_returns_group_permit(monkeypatch):
+    sp = sandbox_placement
+
+    class InterruptedQuota:
+        def acquire(self, *, blocking):
+            raise KeyboardInterrupt()
+
+    monkeypatch.setattr(sp, '_PROCESS_WORKERS', InterruptedQuota())
+    calls = sp._Calls(settings=sandbox_policy.PlacementDriverSettings(0, 1, 1))
+    with pytest.raises(KeyboardInterrupt):
+        calls.ready()
+    assert calls._jobs is None
+    assert calls._permits.acquire(blocking=False)
+    assert not calls._permits.acquire(blocking=False)
+    calls._permits.release()
