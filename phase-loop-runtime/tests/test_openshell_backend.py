@@ -11,7 +11,7 @@ import pytest
 from phase_loop_runtime import openshell_backend as ob, placement_lease as journal
 from phase_loop_runtime import sandbox_placement as sp, sandbox_policy
 from phase_loop_runtime.openshell_artifacts import Bound, Refused, SourceBundle, canonical, init_tree, scan
-from phase_loop_runtime.openshell_worker import read_request, run_worker
+from phase_loop_runtime.openshell_worker import read_request, review_policy, run_worker
 from test_openshell_artifacts import bound as bound, bundle as bundle, limits as limits, repository as repository
 from test_openshell_worker import SyntheticRuntime, login
 from test_openshell_journal import Coordinator, bound as operation_bound
@@ -66,8 +66,8 @@ class ModelWorker:
         assert request.no_login_shell and not request.environment
 
     def create_request(self):
-        return dict(image='fake.invalid/review@sha256:' + '4' * 64, policy={},
-                    policy_digest='sha256:' + '5' * 64, restart_policy='never',
+        return dict(image='fake.invalid/review@sha256:' + '4' * 64, policy=review_policy()['policy'],
+                    policy_digest=review_policy()['policy_digest'], restart_policy='never',
                     providers=[], service_exposures=[])
 
     def exec_request(self, wire, end_s):
@@ -93,6 +93,7 @@ class ModelEndpoint(Coordinator):
         self.killed = False
         self.delay = 0
         self.lost = False
+        self.worker_envelope = False
         self.corrupt = False
         self.list_present = False
         self.native_bad = False
@@ -145,6 +146,12 @@ class ModelEndpoint(Coordinator):
                     from phase_loop_runtime.openshell_artifacts import digest
                     data['native_sha256'] = digest(b'')
                 envelope = canonical(data)
+            if self.worker_envelope:
+                from phase_loop_runtime.openshell_worker import worker_evidence
+                import base64
+                envelope = canonical({"schema": "openshell.worker-result.v1", "exit_status": 0,
+                    "result": base64.b64encode(envelope).decode(), "error": None,
+                    "evidence": worker_evidence(self.bundle, identity.nonce, exec_claimed=True)})
             return self.proto.ExecSandboxEvent(stdout={"data": envelope})
 
         self.stream = ModelStream([output, self.proto.ExecSandboxEvent(exit={"exit_code": 0})])
@@ -362,9 +369,11 @@ def test_stage_binding_fields_must_be_plain_strings(pipeline, field):
         assert receipt.snapshot_sha256 == backend._binding.source_sha256
 
 
+@pytest.mark.parametrize('wrapped', [False, True])
 @pytest.mark.parametrize('failure', ['lost', 'corrupt', 'native_bad', 'native_refuse'])
-def test_untrusted_or_lost_result_refused_no_replay(pipeline, failure):
+def test_untrusted_or_lost_result_refused_no_replay(pipeline, failure, wrapped):
     backend, endpoint, _, worker, place, leases, *_ = pipeline
+    endpoint.worker_envelope = wrapped
     setattr(worker if failure == 'native_refuse' else endpoint, failure, True)
     decision = place()
     with pytest.raises(sp.PlacementUnavailable, match='lost_after_launch'):
@@ -741,3 +750,92 @@ def test_backend_starts_after_crash_before_uuid_record(pipeline):
     started = ob.OpenShellBackend(endpoint, backend._exec_channel, **args, model_only=True)
     assert started._session is None and endpoint.calls == []
     assert (journal._lease_dir() / (lease_id + '.json')).exists()
+
+
+@pytest.mark.parametrize('failure', ['dependency', 'camelcase', 'unknown', 'digest', 'hard_requirement',
+                                      'envelope', 'message'])
+def test_worker_pre_admission_refuses_certain_without_coordinator(pipeline, monkeypatch, failure):
+    backend, endpoint, stage, worker, place, leases, *_ = pipeline
+    original = worker.create_request
+    def create():
+        value = original()
+        if failure == 'camelcase':
+            value['policy']['filesystem']['readOnly'] = []
+        elif failure == 'unknown':
+            value['policy']['network'] = {}
+        elif failure == 'digest':
+            value['policy_digest'] = 'sha256:' + '0' * 64
+        elif failure == 'hard_requirement':
+            value['policy']['landlock']['compatibility'] = 'best_effort'
+        return value
+    worker.create_request = create
+    if failure == 'dependency':
+        from phase_loop_runtime.executable_dependency import ExecutableDependencyError
+        def refuse(route):
+            raise ExecutableDependencyError('dependency_route_unwired', route)
+        monkeypatch.setattr(ob, 'refuse_unwired_dependency_route', refuse)
+    elif failure == 'envelope':
+        backend._request_cap = 64
+    elif failure == 'message':
+        mapped = worker.exec_request
+        def huge(wire, end):
+            value = mapped(wire, end)
+            value.command.append('x' * (4 * 1024 * 1024))
+            return value
+        worker.exec_request = huge
+    # Directly enter admission so the ladder's normal cleanup calls don't obscure
+    # the preflight's zero-effect assertion.
+    root = sandbox_policy.parse_location('openshell://model.invalid/workspace')
+    lease = journal.open_lease('preflight', root)
+    leases.append(lease)
+    backend.bind_live_lease(lease)
+    request = replace(pipeline[-1], owner_id=lease.owner_id, lease_id=lease.lease_id)
+    before = lease.path.read_bytes()
+    with pytest.raises(sp.PlacementUnavailable) as caught:
+        backend.admit(request, sp.OperationBound(5, threading.Event()))
+    assert caught.value.uncertain is False
+    assert endpoint.calls == [] and stage.calls == 0
+    assert lease.path.read_bytes() == before
+
+
+def test_required_dependency_session_refuses_before_admission_on_caller_context(pipeline):
+    from test_executable_dependency_startup import FakeDependency, register_session
+    backend, endpoint, stage, worker, place, leases, *_ = pipeline
+    root = sandbox_policy.parse_location('openshell://model.invalid/workspace')
+    lease = journal.open_lease('dependency-preflight', root)
+    leases.append(lease)
+    backend.bind_live_lease(lease)
+    request = replace(pipeline[-1], owner_id=lease.owner_id, lease_id=lease.lease_id)
+    session = register_session(FakeDependency())
+    task = session.acquire_task('remote-review')
+    try:
+        with task.bind_current():
+            with pytest.raises(sp.PlacementUnavailable) as caught:
+                backend.admit(request, sp.OperationBound(5, threading.Event()))
+        assert caught.value.uncertain is False
+        assert caught.value.reason == 'dependency_route_unwired: openshell'
+        assert endpoint.calls == [] and stage.calls == 0
+    finally:
+        task.release()
+        session.close()
+
+
+def test_backend_consumes_worker_evidence_and_persists_separately_from_cleanup(pipeline):
+    from phase_loop_runtime.openshell_artifacts import digest
+    backend, endpoint, stage, worker, place, leases, *_ = pipeline
+    endpoint.worker_envelope = True
+    decision = place()
+    result = run(decision.placement)
+    value = json.loads(result.result)
+    evidence = value['worker_evidence']
+    record = backend._quarantine / 'worker-evidence.json'
+    assert record.read_bytes() == canonical(evidence)
+    assert value['worker_evidence_path'] == str(record)
+    assert value['worker_evidence_sha256'] == digest(record.read_bytes())
+    assert evidence['exec_claimed'] is True
+    assert evidence['read_only_enforced_by'] == 'client-landlock'
+    assert len(evidence['restricted_roots']) == 10
+    assert evidence['reclaims'] == []
+    assert value['required_next_step'] == 'isolated_same_base_retest_and_owner_acceptance'
+    assert endpoint.calls == ['reserve', 'create', 'status', 'status', 'exec', 'kill', 'list']
+    assert not leases[0].held

@@ -1,0 +1,8 @@
+{
+  "repository": "Consiliency/agent-toolkit",
+  "commit": "d945fdd060aab9ad9471845f4f8e78406a0ac841",
+  "helper_sha256": "775d4f7af61dff58e5094eeac56fcda2fdb7e56d3f05fbf008b1caf1f84500aa",
+  "BUILD.lock_sha256": "ccb26a3d7078ca1ab6d6dab0bdbf7a0bf44d8cc22250d193094d6425ae1a1a6c",
+  "vectors_sha256": "86e465e2c3d433b95dcb0ce6dea03a5e3e1d3da8cac60ba90f38878f3024d8d8",
+  "toolchain": "docker.io/library/rust@sha256:e15c563b25397d4172f34ebe50b3715bb9509c59e537ff58d48902571387b881"
+}

@@ -11,6 +11,7 @@ from concurrent.futures import TimeoutError
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import math
+import os
 from pathlib import Path
 import secrets
 import threading
@@ -21,7 +22,9 @@ from .openshell_artifacts import Bound, Identity, Refused, SourceBundle, canonic
 from .openshell_journal import JournalSession, ReaperAdapter
 from .openshell_transport import CallerAllowance, CoordinatorError, TransportError, UnsupportedCapability
 from .placement_contract import coordinator_code
-from .openshell_worker import seal_request
+from .openshell_worker import preflight_worker, seal_request, unwrap_worker_result
+from .executable_dependency_startup import refuse_unwired_dependency_route
+from .executable_dependency import ExecutableDependencyError
 from .placement_lease import LiveLeaseBackend
 from .sandbox_placement import (
     BackendReceipt, Declaration, ExecProgress, ExecResult, ExecSpec, OperationBound,
@@ -219,10 +222,17 @@ class OpenShellBackend(LiveLeaseBackend):
 
     def admit(self, request, bound):
         session = self._request(request)  # finite deadline refusal before CREATE
+        try:
+            refuse_unwired_dependency_route("openshell")
+            create = self._worker.create_request()
+            preflight_worker(self._bundle, create, task=self._task, tests=self._tests,
+                             deadline_s=request.deadline_s, request_cap=self._request_cap,
+                             generation=session.reference, exec_request=self._worker.exec_request)
+        except (ValueError, ExecutableDependencyError) as error:
+            raise PlacementUnavailable("sandbox_placement_refused", str(error), uncertain=False) from None
 
         async def admit():
             allowance = CallerAllowance(bound)
-            create = self._worker.create_request()
             reserve = dict(workload=request.workload, ttl_s=self._ttl,
                            image_digest=create['image'].rsplit('@', 1)[-1],
                            policy_digest=create['policy_digest'])
@@ -357,15 +367,35 @@ class OpenShellBackend(LiveLeaseBackend):
             return ExecProgress(sandbox_ref, 0)  # No invented progress.
         if raw.exit_code != 0 or raw.stderr:
             raise Refused("worker_incomplete")
-        self._worker.validate_native(self._identity, raw.stdout, self._result_bound())
-        patch = validate_result(self._identity, raw.stdout, self._bundle,
+        artifact, evidence = unwrap_worker_result(raw.stdout, self._bundle, self._identity)
+        self._worker.validate_native(self._identity, artifact, self._result_bound())
+        patch = validate_result(self._identity, artifact, self._bundle,
                                 self._quarantine, self._result_bound())
         # Worker identity hashes canonical credential-free metadata. C9 hashes the
         # exact secret-bearing request bytes. Never substitute one for the other.
-        result = canonical({"request_sha256": self._wire_digest,
-                            "worker_request_sha256": self._identity.request_sha256,
-                            "quarantine": str(patch.path), "patch_sha256": patch.sha256,
-                            "required_next_step": patch.required_next_step})
+        result_value = {"request_sha256": self._wire_digest,
+                        "worker_request_sha256": self._identity.request_sha256,
+                        "quarantine": str(patch.path), "patch_sha256": patch.sha256,
+                        "required_next_step": patch.required_next_step}
+        if evidence is not None:
+            # Never treat echoed reclaims as coordinator authority. Observation was
+            # validated and retained by SL-2; worker evidence stays client-reported.
+            evidence["reclaims"] = self._session.observation.get("reclaims", [])
+            self._result_bound().check()
+            record = canonical(evidence)
+            path = self._quarantine / "worker-evidence.json"
+            with path.open("xb") as stream:
+                stream.write(record)
+                stream.flush()
+                os.fsync(stream.fileno())
+            directory = os.open(self._quarantine, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+            result_value.update(worker_evidence=evidence, worker_evidence_path=str(path),
+                                worker_evidence_sha256=digest(record))
+        result = canonical(result_value)
         self._result_bound().check()
         if len(result) > self._bundle.limits.output_bytes:
             raise Refused("result_limit")
