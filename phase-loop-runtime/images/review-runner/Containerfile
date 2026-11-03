@@ -1,0 +1,29 @@
+# Build definition only. No CI image build/push/sign; owner qualification is required.
+# Build context: repository root. Shared source is pinned, never the moving branch.
+FROM docker.io/library/rust@sha256:e15c563b25397d4172f34ebe50b3715bb9509c59e537ff58d48902571387b881 AS landlock
+ADD https://github.com/Consiliency/agent-toolkit/archive/d945fdd060aab9ad9471845f4f8e78406a0ac841.tar.gz /toolkit.tar.gz
+RUN mkdir /unpack /src && tar -xzf /toolkit.tar.gz -C /unpack --strip-components=1 \
+    && cp -a /unpack/harnesses/pi/sandbox/landlock/. /src/
+WORKDIR /src
+RUN echo 'ccb26a3d7078ca1ab6d6dab0bdbf7a0bf44d8cc22250d193094d6425ae1a1a6c  BUILD.lock' | sha256sum -c - \
+    && echo '689b41cdd017f7df6e0246bddfb0f9b5913802001c6c0421ec076908ad0066fa  LICENSE' | sha256sum -c - \
+    && echo 'a83ec097b90a11c711493f2ace37ded50970c416fa7d71e5b280a171712e7b94  build.sh' | sha256sum -c - \
+    && echo 'dff311f80f0b30d6961a3f6d0644df71fbd42f8e7935e38d3689254f0f49eea5  exec.c' | sha256sum -c - \
+    && echo 'b58873117c841859537f9f4aef2ec2d7ae5c67ed57973f1961063858ac68055e  uapi.h' | sha256sum -c - \
+    && sh build.sh /landlock-exec \
+    && echo '775d4f7af61dff58e5094eeac56fcda2fdb7e56d3f05fbf008b1caf1f84500aa  /landlock-exec' | sha256sum -c -
+
+FROM docker.io/library/python:3.12-slim-bookworm
+# /usr is in the verbatim full-remote-pi-runner policy's baseline read_only.
+COPY phase-loop-runtime/src/phase_loop_runtime /usr/local/lib/python3.12/site-packages/phase_loop_runtime
+RUN pip install --no-cache-dir rfc8785==0.1.4 \
+    && groupadd --gid 10001 sandbox && useradd --uid 10001 --gid 10001 --no-create-home sandbox \
+    && install -d -o 10001 -g 10001 -m 0700 /work \
+    && install -d -o root -g root -m 0755 /usr/libexec/agent-toolkit \
+    && test ! -e /app
+COPY --from=landlock --chown=0:0 --chmod=0755 /landlock-exec /usr/libexec/agent-toolkit/landlock-exec
+COPY --from=landlock /src/LICENSE /src/PROVENANCE.md /usr/share/doc/landlock-exec/
+COPY --from=landlock /src/LICENSES /usr/share/doc/landlock-exec/LICENSES
+USER sandbox:sandbox
+WORKDIR /work
+ENTRYPOINT ["/usr/local/bin/python3", "-I", "-m", "phase_loop_runtime.openshell_worker"]

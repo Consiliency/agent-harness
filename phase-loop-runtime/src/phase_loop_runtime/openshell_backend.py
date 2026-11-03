@@ -21,7 +21,9 @@ from .openshell_artifacts import Bound, Identity, Refused, SourceBundle, canonic
 from .openshell_journal import JournalSession, ReaperAdapter
 from .openshell_transport import CallerAllowance, CoordinatorError, TransportError, UnsupportedCapability
 from .placement_contract import coordinator_code
-from .openshell_worker import seal_request
+from .openshell_worker import preflight_worker, seal_request
+from .executable_dependency_startup import refuse_unwired_dependency_route
+from .executable_dependency import ExecutableDependencyError
 from .placement_lease import LiveLeaseBackend
 from .sandbox_placement import (
     BackendReceipt, Declaration, ExecProgress, ExecResult, ExecSpec, OperationBound,
@@ -219,10 +221,17 @@ class OpenShellBackend(LiveLeaseBackend):
 
     def admit(self, request, bound):
         session = self._request(request)  # finite deadline refusal before CREATE
+        try:
+            refuse_unwired_dependency_route("openshell")
+            create = self._worker.create_request()
+            preflight_worker(self._bundle, create, task=self._task, tests=self._tests,
+                             deadline_s=request.deadline_s, request_cap=self._request_cap,
+                             generation=session.reference, exec_request=self._worker.exec_request)
+        except (ValueError, ExecutableDependencyError) as error:
+            raise PlacementUnavailable("sandbox_placement_refused", str(error), uncertain=False) from None
 
         async def admit():
             allowance = CallerAllowance(bound)
-            create = self._worker.create_request()
             reserve = dict(workload=request.workload, ttl_s=self._ttl,
                            image_digest=create['image'].rsplit('@', 1)[-1],
                            policy_digest=create['policy_digest'])

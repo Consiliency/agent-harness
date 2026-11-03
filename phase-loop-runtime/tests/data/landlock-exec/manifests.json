@@ -1,0 +1,564 @@
+{
+	"$comment": "Golden vectors of landlock-exec's policy manifest, version 1 (README.md, Manifest format). valid: the writer's input (role, type, rights for information, path), the exact encoded bytes and their sha256; a writer must reproduce the bytes, and the helper must accept them. invalid: bytes the helper's reader refuses before it opens anything, with the refusal class it prints ('landlock-exec: refused (<class>): ...'). runtime: refusals that depend on the filesystem, exercised by the real-kernel tests on a fixture tree (test/landlock.test.mjs).",
+	"manifestVersion": 1,
+	"helperVersion": 1,
+	"limits": {
+		"maxBytes": 1048576,
+		"maxRules": 512,
+		"maxPathBytes": 4095
+	},
+	"valid": [
+		{
+			"name": "minimal",
+			"description": "one writable directory",
+			"input": {
+				"uid": 10001,
+				"gid": 10001,
+				"rules": [
+					{
+						"role": "rw",
+						"type": "dir",
+						"path": "/work/run1/scratch",
+						"rights": "0x71bf"
+					}
+				]
+			},
+			"hex": "4c4c4558454330310100000011270000112700000100000002010000120000002f776f726b2f72756e312f73637261746368",
+			"sha256": "fd7c040c2ef39617add58bc79c7edf6293bbf780fabf212b00fe685e10491912",
+			"rules": 1
+		},
+		{
+			"name": "remote-run",
+			"description": "a remote run's shape: system, image tree, the workspace view, inputs read-only; run, results, scratch writable; devices (input order is not the encoded order)",
+			"input": {
+				"uid": 10001,
+				"gid": 10001,
+				"rules": [
+					{
+						"role": "rw",
+						"type": "dir",
+						"path": "/work/run1/scratch",
+						"rights": "0x71bf"
+					},
+					{
+						"role": "ro",
+						"type": "dir",
+						"path": "/usr",
+						"rights": "0xd"
+					},
+					{
+						"role": "ro",
+						"type": "dir",
+						"path": "/lib",
+						"follow": true,
+						"rights": "0xd"
+					},
+					{
+						"role": "ro",
+						"type": "dir",
+						"path": "/etc",
+						"rights": "0xd"
+					},
+					{
+						"role": "ro",
+						"type": "dir",
+						"path": "/proc",
+						"rights": "0xd"
+					},
+					{
+						"role": "dev",
+						"type": "char",
+						"path": "/dev/null",
+						"rights": "0x4006"
+					},
+					{
+						"role": "dev",
+						"type": "char",
+						"path": "/dev/urandom",
+						"rights": "0x4006"
+					},
+					{
+						"role": "ro",
+						"type": "dir",
+						"path": "/opt/node",
+						"rights": "0xd"
+					},
+					{
+						"role": "ro",
+						"type": "dir",
+						"path": "/work/run1/fs/home/u/ws",
+						"rights": "0xd"
+					},
+					{
+						"role": "ro",
+						"type": "file",
+						"path": "/work/run1/fs/tmp/pi/async-cfg-run1.json",
+						"rights": "0x5"
+					},
+					{
+						"role": "rw",
+						"type": "dir",
+						"path": "/work/run1/fs/tmp/pi/async-subagent-runs/run1",
+						"rights": "0x71bf"
+					},
+					{
+						"role": "rw",
+						"type": "dir",
+						"path": "/work/run1/fs/tmp/pi/async-subagent-results",
+						"rights": "0x71bf"
+					},
+					{
+						"role": "ro",
+						"type": "dir",
+						"path": "/work/run1/inputs",
+						"rights": "0xd"
+					}
+				]
+			},
+			"hex": "4c4c4558454330310100000011270000112700000d00000003030000090000002f6465762f6e756c6c030300000c0000002f6465762f7572616e646f6d01010000040000002f65746301010100040000002f6c696201010000090000002f6f70742f6e6f646501010000050000002f70726f6301010000040000002f75737201010000170000002f776f726b2f72756e312f66732f686f6d652f752f777301020000280000002f776f726b2f72756e312f66732f746d702f70692f6173796e632d6366672d72756e312e6a736f6e020100002b0000002f776f726b2f72756e312f66732f746d702f70692f6173796e632d7375626167656e742d726573756c7473020100002d0000002f776f726b2f72756e312f66732f746d702f70692f6173796e632d7375626167656e742d72756e732f72756e3101010000110000002f776f726b2f72756e312f696e7075747302010000120000002f776f726b2f72756e312f73637261746368",
+			"sha256": "089db06576bbe24097dc39ce5270b54de66f7b7789838fd8b8a17e61fd55df53",
+			"rules": 13
+		},
+		{
+			"name": "files-and-nesting",
+			"description": "file rules (read-only and writable), and a writable directory inside a read-only one (allowed: grants add)",
+			"input": {
+				"uid": 4242,
+				"gid": 4343,
+				"rules": [
+					{
+						"role": "ro",
+						"type": "dir",
+						"path": "/srv/ro",
+						"rights": "0xd"
+					},
+					{
+						"role": "rw",
+						"type": "dir",
+						"path": "/srv/ro/out",
+						"rights": "0x71bf"
+					},
+					{
+						"role": "ro",
+						"type": "file",
+						"path": "/srv/cfg.json",
+						"rights": "0x5"
+					},
+					{
+						"role": "rw",
+						"type": "file",
+						"path": "/srv/log.txt",
+						"rights": "0x4007"
+					}
+				]
+			},
+			"hex": "4c4c4558454330310100000092100000f710000004000000010200000d0000002f7372762f6366672e6a736f6e020200000c0000002f7372762f6c6f672e74787401010000070000002f7372762f726f020100000b0000002f7372762f726f2f6f7574",
+			"sha256": "64041ee1e5e52d89c3e10812b004917cdfe2c82dbb7cb5ace9cef50be430de47",
+			"rules": 4
+		},
+		{
+			"name": "byte-order",
+			"description": "paths sorted bytewise: \"/a\" < \"/a-b\" < \"/a/b\" (0x2d < 0x2f), and a UTF-8 path after ASCII",
+			"input": {
+				"uid": 10001,
+				"gid": 10001,
+				"rules": [
+					{
+						"role": "ro",
+						"type": "dir",
+						"path": "/a/b",
+						"rights": "0xd"
+					},
+					{
+						"role": "ro",
+						"type": "dir",
+						"path": "/données",
+						"rights": "0xd"
+					},
+					{
+						"role": "ro",
+						"type": "dir",
+						"path": "/a-b",
+						"rights": "0xd"
+					},
+					{
+						"role": "ro",
+						"type": "dir",
+						"path": "/a",
+						"rights": "0xd"
+					}
+				]
+			},
+			"hex": "4c4c4558454330310100000011270000112700000400000001010000020000002f6101010000040000002f612d6201010000040000002f612f6201010000090000002f646f6e6ec3a96573",
+			"sha256": "96aec9fdd57a29aeeb8532a6303c123c5dbeaff61128bea5ca3e63754f9ef58a",
+			"rules": 4
+		}
+	],
+	"invalid": [
+		{
+			"name": "empty",
+			"refusal": "size",
+			"description": "an empty file (the size is checked before anything is parsed: 1..1048576 bytes)",
+			"hex": ""
+		},
+		{
+			"name": "bad-magic",
+			"refusal": "magic",
+			"description": "the 8-byte magic is not LLEXEC01",
+			"hex": "4c4c4558454330320100000011270000112700000100000002010000020000002f77"
+		},
+		{
+			"name": "short-header",
+			"refusal": "magic",
+			"description": "fewer than 24 header bytes",
+			"hex": "4c4c455845433031"
+		},
+		{
+			"name": "bad-version",
+			"refusal": "version",
+			"description": "version 2 (only 1 is defined)",
+			"hex": "4c4c4558454330310200000011270000112700000100000002010000020000002f77"
+		},
+		{
+			"name": "no-rules",
+			"refusal": "count",
+			"description": "zero rules",
+			"hex": "4c4c45584543303101000000112700001127000000000000"
+		},
+		{
+			"name": "too-many-rules",
+			"refusal": "count",
+			"description": "513 rules declared (at most 512)",
+			"hex": "4c4c4558454330310100000011270000112700000102000002010000020000002f77"
+		},
+		{
+			"name": "truncated-rule-header",
+			"refusal": "truncated",
+			"description": "a rule header shorter than 8 bytes",
+			"hex": "4c4c455845433031010000001127000011270000010000000000000000"
+		},
+		{
+			"name": "truncated-path",
+			"refusal": "truncated",
+			"description": "a path length past the end of the file",
+			"hex": "4c4c4558454330310100000011270000112700000100000002010000090000002f77"
+		},
+		{
+			"name": "missing-rule",
+			"refusal": "truncated",
+			"description": "two rules declared, one present",
+			"hex": "4c4c4558454330310100000011270000112700000200000002010000020000002f77"
+		},
+		{
+			"name": "reserved-byte",
+			"refusal": "reserved",
+			"description": "the reserved byte is not 0",
+			"hex": "4c4c4558454330310100000011270000112700000100000002010001020000002f77"
+		},
+		{
+			"name": "unknown-role",
+			"refusal": "role",
+			"description": "role 4 (1 read-only, 2 writable, 3 device)",
+			"hex": "4c4c4558454330310100000011270000112700000100000004010000020000002f77"
+		},
+		{
+			"name": "role-zero",
+			"refusal": "role",
+			"description": "role 0",
+			"hex": "4c4c4558454330310100000011270000112700000100000000010000020000002f77"
+		},
+		{
+			"name": "unknown-type",
+			"refusal": "type",
+			"description": "type 4 (1 directory, 2 file, 3 character device)",
+			"hex": "4c4c4558454330310100000011270000112700000100000001040000020000002f77"
+		},
+		{
+			"name": "unknown-flag",
+			"refusal": "flags",
+			"description": "flag bit 1 (only bit 0, FOLLOW, is defined)",
+			"hex": "4c4c4558454330310100000011270000112700000100000001010200020000002f77"
+		},
+		{
+			"name": "follow-writable",
+			"refusal": "follow",
+			"description": "FOLLOW on a writable rule",
+			"hex": "4c4c4558454330310100000011270000112700000100000002010100020000002f77"
+		},
+		{
+			"name": "follow-file",
+			"refusal": "follow",
+			"description": "FOLLOW on a read-only file rule (only read-only directories may follow)",
+			"hex": "4c4c4558454330310100000011270000112700000100000001020100020000002f77"
+		},
+		{
+			"name": "device-dir",
+			"refusal": "device",
+			"description": "a device role on a directory type",
+			"hex": "4c4c4558454330310100000011270000112700000100000003010000090000002f6465762f6e756c6c"
+		},
+		{
+			"name": "char-not-device",
+			"refusal": "device",
+			"description": "a character-device type with a read-only role",
+			"hex": "4c4c4558454330310100000011270000112700000100000001030000090000002f6465762f6e756c6c"
+		},
+		{
+			"name": "device-outside-dev",
+			"refusal": "device",
+			"description": "a device rule not below /dev",
+			"hex": "4c4c4558454330310100000011270000112700000100000003030000090000002f746d702f6e756c6c"
+		},
+		{
+			"name": "dotdot",
+			"refusal": "canonical",
+			"description": "a .. component",
+			"hex": "4c4c4558454330310100000011270000112700000100000001010000070000002f612f2e2e2f62"
+		},
+		{
+			"name": "dot",
+			"refusal": "canonical",
+			"description": "a . component",
+			"hex": "4c4c4558454330310100000011270000112700000100000001010000060000002f612f2e2f62"
+		},
+		{
+			"name": "double-slash",
+			"refusal": "canonical",
+			"description": "an empty component",
+			"hex": "4c4c4558454330310100000011270000112700000100000001010000050000002f612f2f62"
+		},
+		{
+			"name": "trailing-slash",
+			"refusal": "canonical",
+			"description": "a trailing slash",
+			"hex": "4c4c4558454330310100000011270000112700000100000001010000030000002f612f"
+		},
+		{
+			"name": "root",
+			"refusal": "canonical",
+			"description": "the root itself",
+			"hex": "4c4c4558454330310100000011270000112700000100000001010000010000002f"
+		},
+		{
+			"name": "relative",
+			"refusal": "canonical",
+			"description": "a relative path",
+			"hex": "4c4c455845433031010000001127000011270000010000000101000003000000612f62"
+		},
+		{
+			"name": "empty-path",
+			"refusal": "canonical",
+			"description": "a zero-length path",
+			"hex": "4c4c455845433031010000001127000011270000010000000101000000000000"
+		},
+		{
+			"name": "nul-in-path",
+			"refusal": "canonical",
+			"description": "a NUL byte in the path",
+			"hex": "4c4c4558454330310100000011270000112700000100000001010000040000002f610062"
+		},
+		{
+			"name": "invalid-utf8",
+			"refusal": "encoding",
+			"description": "a byte (0xff) that is never UTF-8",
+			"hex": "4c4c4558454330310100000011270000112700000100000001010000020000002fff"
+		},
+		{
+			"name": "overlong-utf8",
+			"refusal": "encoding",
+			"description": "an overlong encoding (0xc0 0xaf for /)",
+			"hex": "4c4c4558454330310100000011270000112700000100000001010000030000002fc0af"
+		},
+		{
+			"name": "surrogate-utf8",
+			"refusal": "encoding",
+			"description": "an encoded surrogate (U+D800)",
+			"hex": "4c4c4558454330310100000011270000112700000100000001010000040000002feda080"
+		},
+		{
+			"name": "truncated-utf8",
+			"refusal": "encoding",
+			"description": "a multi-byte sequence cut short",
+			"hex": "4c4c4558454330310100000011270000112700000100000001010000030000002fe282"
+		},
+		{
+			"name": "unsorted",
+			"refusal": "order",
+			"description": "paths not in increasing byte order",
+			"hex": "4c4c4558454330310100000011270000112700000200000001010000020000002f6201010000020000002f61"
+		},
+		{
+			"name": "duplicate",
+			"refusal": "order",
+			"description": "the same path twice",
+			"hex": "4c4c4558454330310100000011270000112700000200000001010000020000002f6102010000020000002f61"
+		},
+		{
+			"name": "prefix-order",
+			"refusal": "order",
+			"description": "\"/a/b\" before \"/a-b\" (0x2f > 0x2d)",
+			"hex": "4c4c4558454330310100000011270000112700000200000001010000040000002f612f6201010000040000002f612d62"
+		},
+		{
+			"name": "trailing-bytes",
+			"refusal": "trailing",
+			"description": "a byte after the last rule",
+			"hex": "4c4c4558454330310100000011270000112700000100000002010000020000002f7700"
+		},
+		{
+			"name": "readonly-inside-writable",
+			"refusal": "overlap",
+			"description": "a read-only rule inside a writable directory rule (Landlock cannot keep it read-only)",
+			"hex": "4c4c4558454330310100000011270000112700000200000002010000020000002f7701020000060000002f772f636667"
+		},
+		{
+			"name": "readonly-equals-writable",
+			"refusal": "order",
+			"description": "one path both read-only and writable (a duplicate)",
+			"hex": "4c4c4558454330310100000011270000112700000200000001010000020000002f7702010000020000002f77"
+		},
+		{
+			"name": "root-uid",
+			"refusal": "root-id",
+			"description": "uid/gid 0",
+			"hex": "4c4c4558454330310100000000000000000000000100000002010000020000002f77"
+		}
+	],
+	"runtime": [
+		{
+			"name": "absent-root",
+			"refusal": "open",
+			"setup": "the rule's path does not exist",
+			"input": {
+				"role": "rw",
+				"type": "dir",
+				"path": "<tree>/absent"
+			}
+		},
+		{
+			"name": "symlink-root",
+			"refusal": "file-type",
+			"setup": "the rule's path is itself a symlink (to a file); without FOLLOW it is opened as the link, which is no regular file",
+			"input": {
+				"role": "ro",
+				"type": "file",
+				"path": "<tree>/rw/alias"
+			}
+		},
+		{
+			"name": "symlink-on-the-way",
+			"refusal": "symlink",
+			"setup": "a directory component of the path is a symlink (outside/dirlink -> ro), path outside/dirlink/a.txt",
+			"input": {
+				"role": "ro",
+				"type": "file",
+				"path": "<tree>/outside/dirlink/a.txt"
+			}
+		},
+		{
+			"name": "wrong-type",
+			"refusal": "file-type",
+			"setup": "a directory rule names a regular file",
+			"input": {
+				"role": "ro",
+				"type": "dir",
+				"path": "<tree>/ro-file.txt"
+			}
+		},
+		{
+			"name": "follow-alias-of-writable",
+			"refusal": "alias",
+			"setup": "a read-only FOLLOW directory rule whose link resolves to the writable rule's directory (or into it)",
+			"input": {
+				"role": "ro",
+				"type": "dir",
+				"follow": true,
+				"path": "<tree>/outside/to-rw"
+			}
+		},
+		{
+			"name": "hardlinked-readonly-file",
+			"refusal": "hardlink",
+			"setup": "a read-only file rule whose file has a second hard link (in the writable tree)",
+			"input": {
+				"role": "ro",
+				"type": "file",
+				"path": "<tree>/ro-file.txt"
+			}
+		},
+		{
+			"name": "hardlink-into-writable-tree",
+			"refusal": "hardlink",
+			"setup": "a file inside a read-only directory rule (ro/a.txt) has a second name inside a writable directory rule (rw/hard); any file in a writable tree with more than one link is refused",
+			"input": {
+				"role": "rw",
+				"type": "dir",
+				"path": "<tree>/rw"
+			}
+		},
+		{
+			"name": "mount-inside-writable-tree",
+			"refusal": "mount",
+			"setup": "a bind mount inside a writable directory rule's tree (the read-only ro/ mounted at rw/bind, or the file ro/a.txt mounted at rw/fileb); every entry of a writable tree must be on the tree's own mount (statx mount id)",
+			"input": {
+				"role": "rw",
+				"type": "dir",
+				"path": "<tree>/rw"
+			}
+		},
+		{
+			"name": "writable-root-is-a-bind-of-readonly",
+			"refusal": "alias",
+			"setup": "the writable rule's directory rw/ is a bind mount of the read-only ro/sub (bwrap --bind ro/sub rw)",
+			"input": {
+				"role": "rw",
+				"type": "dir",
+				"path": "<tree>/rw"
+			}
+		},
+		{
+			"name": "writable-mounted-inside-readonly",
+			"refusal": "mount",
+			"setup": "the writable rw/ is also mounted at ro/bind, inside the read-only tree (bwrap --bind rw ro/bind)",
+			"input": {
+				"role": "ro",
+				"type": "dir",
+				"path": "<tree>/ro"
+			}
+		},
+		{
+			"name": "readonly-file-is-a-bind-of-writable",
+			"refusal": "alias",
+			"setup": "the read-only file rule ro-file.txt is a bind mount of the writable rw/seed.txt",
+			"input": {
+				"role": "ro",
+				"type": "file",
+				"path": "<tree>/ro-file.txt"
+			}
+		},
+		{
+			"name": "overlay-layer-is-writable",
+			"refusal": "alias",
+			"setup": "the read-only ro/ is an overlay mount whose lower layer is the writable rw/ (bwrap --overlay-src <empty> --overlay-src rw --ro-overlay ro); the layer is matched exactly where it resolves, and by path suffix where mountinfo shows a mount-time path",
+			"input": {
+				"role": "ro",
+				"type": "dir",
+				"path": "<tree>/ro"
+			}
+		},
+		{
+			"name": "other-uid",
+			"refusal": "uid",
+			"setup": "the manifest names a uid/gid the helper does not run as",
+			"input": {
+				"uid": "<the test's uid + 1>"
+			}
+		},
+		{
+			"name": "oversized",
+			"refusal": "size",
+			"setup": "a manifest file over 1048576 bytes (not embedded here)",
+			"input": {}
+		}
+	]
+}
