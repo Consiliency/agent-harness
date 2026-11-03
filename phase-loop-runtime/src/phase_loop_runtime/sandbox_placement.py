@@ -1086,29 +1086,44 @@ class _Calls:
     def ready(self) -> None:
         if self._jobs is not None:
             return
-        if not self._permits.acquire(blocking=False):
-            raise PlacementUnavailable(_TIMEOUT)
-        if not _PROCESS_WORKERS.acquire(blocking=False):
-            self._permits.release()
-            raise _WorkerCapacity(_LOCAL_RELEASE_UNCONFIRMED)
-        worker: threading.Thread | None = None
+        group_acquired = process_acquired = start_called = False
+        process_permits = _PROCESS_WORKERS
+        jobs: queue.SimpleQueue[object] | None = None
         try:
-            jobs: queue.SimpleQueue[object] = queue.SimpleQueue()
-            # Publish the queue before starting: even an interruption immediately
-            # after start must leave a way to ask the worker to exit.
-            self._jobs = jobs
+            if not self._permits.acquire(blocking=False):
+                raise PlacementUnavailable(_TIMEOUT)
+            group_acquired = True
+            if not process_permits.acquire(blocking=False):
+                raise _WorkerCapacity(_LOCAL_RELEASE_UNCONFIRMED)
+            process_acquired = True
+            jobs = queue.SimpleQueue()
             worker = threading.Thread(
-                target=_serve, args=(jobs, self._permits, _PROCESS_WORKERS), name="placement-call", daemon=True,
+                target=_serve, args=(jobs, self._permits, process_permits), name="placement-call", daemon=True,
             )
-            worker.start()
+            # A BaseException can interrupt start after OS thread creation but
+            # before Python publishes any thread identity or started state.
+            start_called = True
+            try:
+                worker.start()
+            except Exception:
+                # Thread.start's ordinary exceptions mean creation failed.
+                start_called = False
+                raise
+            self._jobs = jobs
         except BaseException as exc:
-            if worker is not None and worker.ident is not None:
-                # A started worker owns both permits until it actually exits.
-                self.close()
+            if start_called:
+                # Creation is uncertain: keep the queue reachable and let a
+                # worker consume the sentinel and return its own permits.
+                self._jobs = jobs
+                jobs.put(None)
             else:
                 self._jobs = None
-                self._permits.release()
-                _PROCESS_WORKERS.release()
+                if process_acquired:
+                    process_permits.release()
+                if group_acquired:
+                    self._permits.release()
+            if isinstance(exc, PlacementUnavailable):
+                raise
             if isinstance(exc, Exception):
                 raise PlacementUnavailable(_TIMEOUT) from None
             raise

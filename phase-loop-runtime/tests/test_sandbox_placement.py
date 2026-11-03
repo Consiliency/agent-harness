@@ -1974,19 +1974,32 @@ def test_saturated_local_release_stops_overflow_and_retains_handle(monkeypatch):
 @pytest.mark.parametrize('stage', ['queue', 'start', 'started'])
 @pytest.mark.parametrize('failure', [RuntimeError, KeyboardInterrupt])
 def test_call_startup_exceptions_return_process_permits(monkeypatch, stage, failure):
-    """Pre-start errors roll back; post-start errors close and let the worker return permits."""
+    """Known failures roll back; uncertain creation consumes permits fail-closed."""
     sp = sandbox_placement
     quota = threading.BoundedSemaphore(1)
     monkeypatch.setattr(sp, '_PROCESS_WORKERS', quota)
-    calls = sp._Calls(settings=sandbox_policy.PlacementDriverSettings(0, 1, 1))
-    workers = []
+
+    class PublicationFailureCalls(sp._Calls):
+        fail_publication = False
+
+        def __setattr__(self, name, value):
+            if name == '_jobs' and value is not None and self.fail_publication:
+                self.fail_publication = False
+                raise failure()
+            super().__setattr__(name, value)
+
+    calls = PublicationFailureCalls(settings=sandbox_policy.PlacementDriverSettings(0, 1, 1))
+    calls.fail_publication = stage == 'started'
+    started = []
     start = threading.Thread.start
 
-    def broken_start(worker):
-        workers.append(worker)
-        if stage == 'started':
-            start(worker)
-        raise failure()
+    def injected_start(worker):
+        if stage == 'start':
+            raise failure()  # No OS thread; KeyboardInterrupt must still fail closed.
+        start(worker)
+        started.append(worker)
+        # Post-start exceptions are injected at queue publication, after start
+        # returns. Exception from start itself means creation failed by contract.
 
     def broken_queue():
         raise failure()
@@ -1996,28 +2009,126 @@ def test_call_startup_exceptions_return_process_permits(monkeypatch, stage, fail
             if stage == 'queue':
                 patch.setattr(sp.queue, 'SimpleQueue', broken_queue)
             else:
-                patch.setattr(threading.Thread, 'start', broken_start)
+                patch.setattr(threading.Thread, 'start', injected_start)
             expected = sp.PlacementUnavailable if failure is RuntimeError else failure
             with pytest.raises(expected):
                 calls.ready()
-        assert calls._jobs is None
-        for worker in workers:
-            if worker.ident is not None:
-                worker.join(1)
-                assert not worker.is_alive()
+        if stage == 'start' and failure is KeyboardInterrupt:
+            assert calls._jobs is not None
+            assert not quota.acquire(blocking=False)
+            assert not calls._permits.acquire(blocking=False)
+            calls.close()
+            with pytest.raises(sp.PlacementUnavailable):
+                sp._Calls().ready()
+            return
+        calls.close()
+        for worker in started:
+            worker.join(1)
+            assert not worker.is_alive()
         assert quota.acquire(blocking=False)
         assert not quota.acquire(blocking=False)
         quota.release()
         # Recovery also proves the per-group permit was returned exactly once.
         with monkeypatch.context() as patch:
             def record_start(worker):
-                workers.append(worker)
                 start(worker)
+                started.append(worker)
             patch.setattr(threading.Thread, 'start', record_start)
             assert calls.run(lambda: 'recovered', 1) == 'recovered'
     finally:
         calls.close()
+        for worker in started:
+            worker.join(1)
+            assert not worker.is_alive()
+
+
+def test_interrupted_start_before_identity_keeps_permits_until_worker_exit(monkeypatch):
+    """A real OS thread exists before ident publication and the parent's startup wait interrupts."""
+    sp = sandbox_placement
+    quota = threading.BoundedSemaphore(1)
+    monkeypatch.setattr(sp, '_PROCESS_WORKERS', quota)
+    calls = sp._Calls(settings=sandbox_policy.PlacementDriverSettings(0, 1, 1))
+    boot_entered, allow_identity = threading.Event(), threading.Event()
+    serve_entered, allow_exit = threading.Event(), threading.Event()
+    workers, queues, errors = [], [], []
+    thread_type, serve = threading.Thread, sp._serve
+
+    class DelayedIdentityThread(thread_type):
+        def _set_ident(self):
+            boot_entered.set()
+            assert allow_identity.wait(5)
+            super()._set_ident()
+
+    def interrupted_wait(*args, **kwargs):
+        assert boot_entered.wait(1)
+        raise KeyboardInterrupt()
+
+    def make_worker(*args, **kwargs):
+        worker = DelayedIdentityThread(*args, **kwargs)
+        queues.append(kwargs['args'][0])
+        worker._started.wait = interrupted_wait
+        workers.append(worker)
+        return worker
+
+    def paused_serve(*args):
+        serve_entered.set()
+        try:
+            assert allow_exit.wait(5)
+            serve(*args)
+        except BaseException as exc:
+            errors.append(exc)
+
+    monkeypatch.setattr(sp.threading, 'Thread', make_worker)
+    monkeypatch.setattr(sp, '_serve', paused_serve)
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            calls.ready()
+        assert len(workers) == 1
+        assert not quota.acquire(blocking=False), 'permit returned while OS thread is live'
+        assert calls._jobs is not None
+        jobs = calls._jobs
+        assert not calls._permits.acquire(blocking=False)
+        with pytest.raises(sp.PlacementUnavailable):
+            sp._Calls().ready()
+        assert len(workers) == 1, 'a second OS thread started under a cap of one'
+        allow_identity.set()
+        assert serve_entered.wait(1)
+        assert not quota.acquire(blocking=False), 'permit returned before worker exit'
+        allow_exit.set()
+        workers[0].join(1)
+        assert not workers[0].is_alive()
+        assert jobs.empty(), 'worker did not consume the shutdown sentinel'
+        assert not errors, 'worker over-released a semaphore'
+        for permits in (quota, calls._permits):
+            assert permits.acquire(blocking=False)
+            assert not permits.acquire(blocking=False)
+            permits.release()
+    finally:
+        allow_identity.set()
+        allow_exit.set()
+        # Also clean up the old ident-based mutation, which drops its queue.
+        for jobs in queues:
+            jobs.put(None)
+        if workers:
+            assert serve_entered.wait(1)
         for worker in workers:
-            if worker.ident is not None:
-                worker.join(1)
-                assert not worker.is_alive()
+            worker.join(1)
+            assert not worker.is_alive()
+        calls.close()
+
+
+def test_interrupt_between_worker_acquires_returns_group_permit(monkeypatch):
+    sp = sandbox_placement
+
+    class InterruptedQuota:
+        def acquire(self, *, blocking):
+            raise KeyboardInterrupt()
+
+    monkeypatch.setattr(sp, '_PROCESS_WORKERS', InterruptedQuota())
+    calls = sp._Calls(settings=sandbox_policy.PlacementDriverSettings(0, 1, 1))
+    with pytest.raises(KeyboardInterrupt):
+        calls.ready()
+    assert calls._jobs is None
+    assert calls._permits.acquire(blocking=False)
+    assert not calls._permits.acquire(blocking=False)
+    calls._permits.release()
