@@ -107,3 +107,25 @@ async def json_coordinator(material, replies):
         for task in tuple(tasks):
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@pytest.fixture
+def san_material(mtls_material, tmp_path):
+    """Independent fake server identities; leave stock fixture files untouched."""
+    import shutil
+    shutil.copytree(mtls_material, tmp_path, dirs_exist_ok=True)
+    def issue(name, extension):
+        def command(*args):
+            subprocess.run(['openssl', *args], cwd=tmp_path, check=True,
+                           capture_output=True, timeout=15)
+        command('req', '-new', '-newkey', 'rsa:2048', '-nodes',
+                '-subj', '/CN=127.0.0.1', '-keyout', name + '.key',
+                '-out', name + '.csr')
+        (tmp_path / 'extensions').write_text('extendedKeyUsage=serverAuth\n' + extension)
+        command('x509', '-req', '-in', name + '.csr', '-CA', 'ca.pem',
+                '-CAkey', 'ca.key', '-CAcreateserial', '-days', '1',
+                '-extfile', 'extensions', '-out', name + '.pem')
+    issue('cn-only', '')
+    issue('ip-san', 'subjectAltName=IP:127.0.0.1\n')
+    issue('other-ip-san', 'subjectAltName=IP:127.0.0.1\n')
+    return tmp_path

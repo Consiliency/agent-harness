@@ -4,7 +4,9 @@ from dataclasses import replace
 import pytest
 from phase_loop_runtime import openshell_channel as oc
 
-from _openshell_channel_server import json_coordinator, mtls_config, mtls_material as mtls_material
+from _openshell_channel_server import (
+    json_coordinator, mtls_config, mtls_material as mtls_material, san_material as san_material,
+)
 from phase_loop_runtime import openshell_transport as ot
 from test_openshell_transport import bound, wire
 from test_openshell_transport_grpc import stock_server
@@ -62,4 +64,69 @@ def test_stock_channel_close_is_bounded(mtls_material):
             with pytest.raises((ot.TransportError, asyncio.CancelledError)):
                 await asyncio.wait_for(task, .5)
             assert asyncio.get_running_loop().time() - started < 1.5
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('identity,accepted', [
+    ('cn-only', False), ('ip-san', True), ('server', False),
+])
+def test_stock_server_san_policy(san_material, identity, accepted):
+    import shutil
+    if identity != 'server':
+        for suffix in ('pem', 'key'):
+            shutil.copyfile(san_material / f'{identity}.{suffix}',
+                            san_material / f'server.{suffix}')
+    async def run():
+        async with stock_server(san_material) as (config, p, state):
+            config = replace(config, endpoint=config.endpoint.replace('localhost', '127.0.0.1'))
+            async def dispatch():
+                async with oc.stock_exec_channel(config, p) as channel:
+                    if not accepted:
+                        pytest.fail('server identity accepted before dispatch')
+                    session = channel.bind_lease(wire('reserved')['lease_id'],
+                        '11111111-2222-4333-8444-555555555555', local_owner_id='journal-owner')
+                    await session.execute(p.ExecSandboxRequest(workspace_scope={'workspace': 'offline'}, command=['worker']),
+                        ot.CallerAllowance(bound(1)), attempt=1,
+                        output_cap_bytes=100, message_cap=10)
+            if accepted:
+                await dispatch()
+                assert len(state.calls) == 1
+            else:
+                with pytest.raises(ot.TransportError) as error:
+                    await dispatch()
+                assert str(error.value) == 'channel_peer_verification_failed'
+                assert error.value.uncertain is False
+                assert not state.calls
+    asyncio.run(run())
+
+
+def test_stock_channel_pins_validated_leaf(san_material, monkeypatch):
+    import grpc
+    import hashlib
+    import shutil
+    import ssl
+    async def run():
+        for suffix in ('pem', 'key'):
+            shutil.copyfile(san_material / f'ip-san.{suffix}', san_material / f'server.{suffix}')
+        async with stock_server(san_material) as (config, p, original_state):
+            for suffix in ('pem', 'key'):
+                shutil.copyfile(san_material / f'other-ip-san.{suffix}', san_material / f'server.{suffix}')
+            async with stock_server(san_material) as (other, _, other_state):
+                secure_channel = grpc.aio.secure_channel
+                def redirected(target, credentials, *, options):
+                    return secure_channel(other.endpoint.removeprefix('https://').replace(
+                        'localhost', '127.0.0.1'), credentials, options=options)
+                monkeypatch.setattr(grpc.aio, 'secure_channel', redirected)
+                config = replace(config, endpoint=config.endpoint.replace('localhost', '127.0.0.1'))
+                with pytest.raises(ot.TransportError):
+                    async with oc.stock_exec_channel(config, p):
+                        pytest.fail('different leaf accepted')
+                assert not original_state.calls and not other_state.calls
+        # The successful path records the verified DER fingerprint.
+        monkeypatch.setattr(grpc.aio, 'secure_channel', secure_channel)
+        async with stock_server(san_material) as (config, p, _):
+            config = replace(config, endpoint=config.endpoint.replace('localhost', '127.0.0.1'))
+            async with oc.stock_exec_channel(config, p) as channel:
+                der = ssl.PEM_cert_to_DER_cert((san_material / 'server.pem').read_text())
+                assert channel.peer_certificate_sha256 == hashlib.sha256(der).hexdigest()
     asyncio.run(run())
