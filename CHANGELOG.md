@@ -6,6 +6,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- OpenShell Stage 2 (OSCOORD2, agent-harness#1795): disabled coordinator v1 lifecycle,
+  explicit mTLS and one-shot stock v0.1.4 exec, durable cleanup journals, ranked
+  local admission and load/restrict/exec worker envelope. Retire the patched SDK
+  pin, fork qualification and private source-RPC recipe; retain stock provenance
+  and offline regression guards. Registration and nonlocal execution stay disabled.
+  Live qualification, production adapter/provider, image publication and owner
+  approval after board review remain activation gates.
+
 - Placement contract: stock OpenShell v0.1.4 `SandboxPolicy` vectors (`vectors/policies.json`) with
   digests: minimal with and without `/app`, and the full remote pi-runner policy with `/work`, plus a
   refused fork-era shape. All pending live qualification (agent-harness#1795 revisions 12-13).
