@@ -1493,3 +1493,43 @@ def test_result_cap_precedes_digest_parsing(far, monkeypatch, kind):
         assert parsed == []
         assert "completed" not in placement._observed
     assert lease_files() == []
+
+
+@pytest.mark.parametrize('uncertain', [False, True, None])
+def test_reserve_unreachable_requires_explicit_nothing_sent_proof(far, second, uncertain):
+    def refusal(*args):
+        raise sp.PlacementUnavailable(UNREACHABLE, 'recovering', uncertain=uncertain)
+    far.behave['admit'] = refusal
+    decision = walk(rungs('drv', 'drw'), last_rung='none')
+    if uncertain is False:
+        assert decision.outcome == 'placed'
+        assert decision.trail[0]['class'] == 'unreachable'
+        assert decision.trail[0]['code'] == UNREACHABLE
+        assert decision.trail[0]['reason'] == 'recovering'
+        assert 'admit' in second.calls and 'kill' not in far.calls
+        decision.placement._lease.abandon()
+    elif uncertain is True:
+        assert decision.outcome == 'not_run'
+        assert 'admit' not in second.calls
+        assert 'kill' in far.calls and 'list_owned' in far.calls
+    else:
+        # Bare backend text remains outside the registered-code check.
+        assert decision.trail[0]['code'] == CODE_INVALID
+        assert 'admit' in second.calls
+        decision.placement._lease.abandon()
+
+
+@pytest.mark.parametrize('code', [TIMEOUT, NOT_ENROLLED, UNREACHABLE])
+@pytest.mark.parametrize('cleanup_succeeds', [True, False])
+def test_uncertain_admission_never_overflows_even_after_cleanup(far, second, code, cleanup_succeeds):
+    def uncertain(*args):
+        raise sp.PlacementUnavailable(code, uncertain=True)
+    far.behave['admit'] = uncertain
+    if not cleanup_succeeds:
+        far.behave['kill'] = raises(TIMEOUT)
+    decision = walk(rungs('drv', 'drw'), last_rung='local')
+    assert decision.outcome == 'not_run'
+    assert not second.calls
+    assert 'kill' in far.calls
+    assert ('list_owned' in far.calls) is cleanup_succeeds
+    assert bool(lease_files()) is not cleanup_succeeds

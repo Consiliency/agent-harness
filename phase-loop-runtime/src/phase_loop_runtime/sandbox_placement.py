@@ -214,10 +214,12 @@ class PlacementUnavailable(RuntimeError):
     falls back after ``execute``: that leg is over, on every rung.
     """
 
-    def __init__(self, code: str, reason: str = "") -> None:
+    def __init__(self, code: str, reason: str = "", *, uncertain: bool | None = None) -> None:
         super().__init__(code)
         self.code = code
         self.reason = reason
+        # Explicit transport evidence; None preserves the pre-existing adapter seam.
+        self.uncertain = uncertain
 
     def __str__(self) -> str:
         return self.code
@@ -1172,6 +1174,9 @@ class _Rung:
     #: The code that sent the rung to "releasing".
     reason: str | None = None
     cancel: bool = False
+    uncertain_admission: bool = False
+    reserve_unreachable: bool = False
+    admission_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -1540,6 +1545,10 @@ class _Walk:
                     raise self._cancelled(rung, release=not kept)
                 extra = {"release": _RELEASE_UNCONFIRMED} if kept else {}
                 self._record(rung, target[5:], rung.reason, **extra)
+                if rung.uncertain_admission:
+                    # OSCOORD2 revision 7: cleanup never authorizes replay elsewhere.
+                    return self._end('not_run_release_unconfirmed' if kept else 'not_run_last_code',
+                                     rung.reason)
                 return None
             if target == "releasing":
                 # Entering "releasing" always fences the lease first.
@@ -1556,7 +1565,10 @@ class _Walk:
             elif target.startswith("left:"):
                 if rung.lease is not None:
                     rung.lease.clear()  # type: ignore[attr-defined]
-                self._record(rung, target[5:], code)
+                if rung.reserve_unreachable:
+                    self._record(rung, 'unreachable', code, reason=rung.admission_reason)
+                else:
+                    self._record(rung, target[5:], code)
                 return None
             state = target
 
@@ -1661,6 +1673,18 @@ class _Walk:
         except _CallCancelled:
             return None, None
         except PlacementUnavailable as exc:
+            if (exc.uncertain is True or exc.uncertain is not False
+                    and getattr(rung.lease, 'reserve_attempted', False)):
+                rung.uncertain_admission = True
+                return "no_answer", _TIMEOUT
+            if exc.code == _UNREACHABLE and exc.uncertain is False:
+                # Only explicit nothing-sent evidence bypasses the registered-code
+                # check, for this one closed code, at admission only.
+                rung.reserve_unreachable = True
+                if exc.reason in ('recovering', 'telemetry_stale', 'slice_unbounded',
+                                  'untracked_vms', 'ledger_restored', 'internal'):
+                    rung.admission_reason = exc.reason
+                return "refused", _UNREACHABLE
             if exc.code == _CAPACITY:
                 self._at_capacity(rung)
                 return "at_capacity", _CAPACITY
@@ -1671,6 +1695,8 @@ class _Walk:
                 return "no_answer", _TIMEOUT
             return "refused", self._refusal_code(rung, exc.code, _BACKEND_REFUSALS)
         except Exception:
+            if getattr(rung.lease, 'reserve_attempted', False):
+                rung.uncertain_admission = True
             return "no_answer", _REFUSED
         return "admitted", None
 

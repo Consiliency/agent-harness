@@ -29,6 +29,8 @@ import re
 import secrets
 import threading
 import time
+from uuid import UUID
+import warnings
 from typing import Callable
 
 from . import sandbox_placement, sandbox_policy, seat_jail
@@ -166,8 +168,26 @@ def _valid_entry(entry: dict[str, object] | None, lease_id: str) -> bool:
     """Accept the legacy schema and optional dispatch markers, never unknown obligations."""
     required = {"lease_id", "backend", "root", "sandbox_ref", "created_at",
                 "confirmed_killed_at", "abandoned"}
-    markers = {"create_sent_at", "execute_sent_at"}
-    if (entry is None or not required <= entry.keys() or entry.keys() - required - markers
+    markers = {"reserve_sent_at", "create_sent_at", "execute_sent_at"}
+    coordinator = {"coordinator_lease_id", "coordinator_sandbox_id", "reserve_collision", "coordinator_evidence"}
+    if entry is not None:
+        for key in ("coordinator_lease_id", "coordinator_sandbox_id"):
+            value = entry.get(key)
+            if value is not None:
+                try:
+                    if type(value) is not str or str(UUID(value)) != value or not UUID(value).int:
+                        return False
+                except (ValueError, AttributeError):
+                    return False
+        if "reserve_collision" in entry and entry["reserve_collision"] is not True:
+            return False
+        if "coordinator_evidence" in entry:
+            from .openshell_transport import TransportError, validate_wire
+            try:
+                validate_wire('LeaseStatus', entry['coordinator_evidence'])
+            except TransportError:
+                return False
+    if (entry is None or not required <= entry.keys() or entry.keys() - required - markers - coordinator
             or entry["lease_id"] != lease_id or type(entry["abandoned"]) is not bool
             or any(type(entry[key]) is not str for key in ("backend", "root"))
             or entry["sandbox_ref"] is not None and not isinstance(entry["sandbox_ref"], str)):
@@ -176,6 +196,14 @@ def _valid_entry(entry: dict[str, object] | None, lease_id: str) -> bool:
                or type(value) in (int, float) and 0 <= value < float("inf")
                for key in ("created_at", "confirmed_killed_at", *markers)
                for value in (entry.get(key),))
+
+
+class ReaperContextRefusal(UserWarning):
+    """A scheme could not be reaped in this calling context; its debt remains."""
+    code = "sandbox_placement_reaper_context_refused"
+
+    def __str__(self):
+        return self.code
 
 
 class LiveLeaseBackend(ABC):
@@ -227,6 +255,11 @@ class Lease:
         """Does this process still hold the lease lock?"""
         return self._fd is not None and self._pid == os.getpid()
 
+    @property
+    def reserve_attempted(self) -> bool:
+        """Durable evidence available even if an admission caller loses its reply."""
+        return self._entry.get('reserve_sent_at') is not None
+
     def attach_transport(self, adapter: object) -> tuple[bool, str | None]:
         if self._pid != os.getpid():
             raise ValueError("lease transport already attached or not owned")
@@ -236,14 +269,14 @@ class Lease:
             self._adapter = adapter
             fresh = (self._newly_opened and not self.fenced and not self._entry["abandoned"]
                      and all(self._entry.get(k) is None for k in
-                             ("create_sent_at", "execute_sent_at", "sandbox_ref", "confirmed_killed_at")))
+                             ("reserve_sent_at", "create_sent_at", "execute_sent_at", "sandbox_ref", "confirmed_killed_at")))
             return fresh, self._entry["sandbox_ref"]
 
     def mark_dispatch(self, adapter: object, operation: str) -> None:
         if self._pid != os.getpid():
             raise ValueError("lease dispatch forbidden")
         with self._lock:
-            key = {"create": "create_sent_at", "execute": "execute_sent_at"}[operation]
+            key = {"reserve": "reserve_sent_at", "create": "create_sent_at", "execute": "execute_sent_at"}[operation]
             if (not self.held or self.fenced or not self._newly_opened
                     or self._adapter is not adapter or self._entry.get(key) is not None):
                 raise ValueError("lease dispatch forbidden")
@@ -251,6 +284,20 @@ class Lease:
                                             or self._entry["sandbox_ref"] is None):
                 raise ValueError("lease create not recorded")
             self._entry[key] = time.time()
+            try:
+                _write_entry(self._fd, self._entry)
+            except BaseException:
+                self.fenced = True
+                raise
+
+    def record_coordinator(self, adapter: object, **fields: object) -> None:
+        """Persist coordinator metadata only while this exact attachment owns the fd."""
+        if self._pid != os.getpid():
+            raise ValueError("lease transport not owned")
+        with self._lock:
+            if not self.held or self._adapter is not adapter:
+                raise ValueError("lease transport not owned")
+            self._entry.update(fields)
             try:
                 _write_entry(self._fd, self._entry)
             except BaseException:
@@ -473,6 +520,7 @@ def recover_lease(lease_id: str) -> Lease:
 def reap(
     backends: Callable[[str], object],
     bound: "sandbox_placement.OperationBound",
+    *, on_refusal=None,
 ) -> dict[str, tuple[str, ...]]:
     """Kill what dead or abandoned leases left behind, driven by the journal.
 
@@ -547,7 +595,16 @@ def reap(
                 kept.extend(lease_id for lease_id, _fd, _path, _entry in group)
                 continue
             if isinstance(backend, JournalReapingBackend):
-                backend.validate_reaper_context()
+                try:
+                    backend.validate_reaper_context()
+                except ValueError:
+                    refusal = ReaperContextRefusal()
+                    if on_refusal is None:
+                        warnings.warn(refusal, stacklevel=2)
+                    else:
+                        on_refusal(refusal.code)
+                    kept.extend(lease_id for lease_id, _fd, _path, _entry in group)
+                    continue
             done = _reap_backend(backend, group, bound)
             cleared.extend(done)
             kept.extend(lease_id for lease_id, _fd, _path, _entry in group if lease_id not in done)

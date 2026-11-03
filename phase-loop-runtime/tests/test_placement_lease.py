@@ -897,3 +897,48 @@ def test_reaper_checks_inode_after_lock(monkeypatch, pending, race):
     assert result == {"cleared": (), "kept": (lease.lease_id,)}
     if race != "removed":
         assert path.read_bytes() == content
+
+
+def test_reaper_context_refusal_continues_other_schemes():
+    bad = placement_lease.open_lease('openshell', 'openshell://fake.invalid/work')
+    good = placement_lease.open_lease('resto', ROOT)
+    bad.abandon()
+    good.abandon()
+
+    class Refused(placement_lease.JournalReapingBackend):
+        def validate_reaper_context(self):
+            raise ValueError('wrong loop')
+
+        def kill_journaled(self, *args):
+            pytest.fail('refused scheme must never dispatch')
+
+    class Clean:
+        def kill(self, lease_id, bound):
+            assert lease_id == good.lease_id
+
+        def list_owned(self, owner, bound):
+            return ()
+
+    with pytest.warns(placement_lease.ReaperContextRefusal, match='reaper_context_refused'):
+        result = placement_lease.reap(lambda scheme: Refused() if scheme == 'openshell' else Clean(),
+                                      sp.OperationBound(1, threading.Event()))
+    assert result == {'cleared': (good.lease_id,), 'kept': (bad.lease_id,)}
+    assert bad.path.exists() and not good.path.exists()
+
+
+def test_reap_cli_reports_typed_context_refusal(monkeypatch, capsys):
+    lease = placement_lease.open_lease('resto', ROOT)
+    lease.abandon()
+    monkeypatch.setenv('PHASE_LOOP_SANDBOX_ROOT', ROOT)
+    class Refused(placement_lease.JournalReapingBackend):
+        def validate_reaper_context(self):
+            raise ValueError('remote diagnostics must not escape')
+
+        def kill_journaled(self, *args):
+            pytest.fail('refused scheme dispatched')
+    monkeypatch.setattr(sp, 'backend_for_scheme', lambda scheme: Refused())
+    assert cli.main(['placement', 'reap']) == 1
+    captured = capsys.readouterr()
+    assert 'sandbox_placement_reaper_context_refused' in captured.err
+    assert 'remote diagnostics' not in captured.err
+    assert '0 cleared, 1 kept' in captured.out and lease.path.exists()

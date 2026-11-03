@@ -2862,9 +2862,12 @@ def _placement_command(args: argparse.Namespace) -> int:
         return sandbox_placement.backend_for_scheme(scheme) if scheme in schemes else None
 
     try:
+        refusals = []
         done = placement_lease.reap(backend_for, sandbox_placement.OperationBound(
             sandbox_placement.ANSWER_BOUND_S, threading.Event(),
-        ))
+        ), on_refusal=refusals.append)
+        for code in refusals:
+            print(f"placement reap: refused: {code}", file=sys.stderr)
     except OSError as exc:
         print(f"placement reap: failed ({type(exc).__name__})", file=sys.stderr)
         return 1
