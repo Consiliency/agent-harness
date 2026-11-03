@@ -113,6 +113,73 @@ class MTLSConfig:
             raise TransportError('invalid_mtls_credential') from None
 
 
+def _der_fields(data):
+    """Read definite-length DER fields from an already TLS-validated certificate.
+
+    Only the extension envelope is decoded here; OpenSSL handles certificate,
+    signature and hostname validation. No optional ASN.1 dependency is needed.
+    """
+    offset = 0
+    while offset < len(data):
+        tag, size = data[offset:offset + 2]
+        offset += 2
+        if size & 0x80:
+            width = size & 0x7f
+            if not 1 <= width <= 4 or offset + width > len(data):
+                raise ValueError
+            encoded = data[offset:offset + width]
+            size = int.from_bytes(encoded)
+            if encoded[0] == 0 or size < 128:
+                raise ValueError
+            offset += width
+        end = offset + size
+        if end > len(data):
+            raise ValueError
+        yield tag, data[offset:end]
+        offset = end
+
+
+def _server_leaf_extensions(leaf):
+    """Require an explicit non-CA leaf and explicit TLS server authentication."""
+    try:
+        ((tag, certificate),) = _der_fields(leaf)
+        if tag != 0x30:
+            raise ValueError
+        (tag, tbs), *_ = _der_fields(certificate)
+        if tag != 0x30:
+            raise ValueError
+        ((_, wrapper),) = [(tag, value) for tag, value in _der_fields(tbs) if tag == 0xa3]
+        ((tag, extensions),) = _der_fields(wrapper)
+        if tag != 0x30:
+            raise ValueError
+        values = {}
+        for tag, extension in _der_fields(extensions):
+            if tag != 0x30:
+                raise ValueError
+            fields = list(_der_fields(extension))
+            oid_tag, oid = fields.pop(0)
+            if fields and fields[0][0] == 0x01:  # optional critical flag
+                fields.pop(0)
+            ((value_tag, value),) = fields
+            if oid_tag != 0x06 or value_tag != 0x04 or oid in values:
+                raise ValueError
+            values[oid] = value
+        # basicConstraints: absent cA inside the *present* SEQUENCE means FALSE.
+        # An absent extension is unsafe as a gRPC trust anchor and is refused.
+        constraints = values.get(b'\x55\x1d\x13')
+        if constraints not in (b'\x30\x00', b'\x30\x03\x01\x01\x00'):
+            raise ValueError
+        ((tag, purposes),) = _der_fields(values[b'\x55\x1d\x25'])
+        if tag != 0x30:
+            raise ValueError
+        usages = list(_der_fields(purposes))
+        if (any(tag != 0x06 for tag, _ in usages)
+                or (0x06, b'\x2b\x06\x01\x05\x05\x07\x03\x01') not in usages):
+            raise ValueError
+    except (ValueError, KeyError, IndexError):
+        raise TransportError('channel_peer_verification_failed', uncertain=False) from None
+
+
 @asynccontextmanager
 async def stock_exec_channel(config: MTLSConfig, proto):
     """Stock ExecSandbox only. TLS readiness grants no lifecycle authority."""
@@ -127,17 +194,22 @@ async def stock_exec_channel(config: MTLSConfig, proto):
                 url.hostname, url.port or 443, ssl=context,
                 server_hostname=url.hostname)
             leaf = writer.get_extra_info('ssl_object').getpeercert(binary_form=True)
-    except Exception:
+    except ssl.SSLCertVerificationError:
         raise TransportError('channel_peer_verification_failed', uncertain=False) from None
+    except (OSError, TimeoutError):
+        raise TransportError('sandbox_placement_unreachable', uncertain=False) from None
     finally:
         if writer is not None:
             writer.close()
             # TLS shutdown is best effort and must not extend the dial deadline.
+    _server_leaf_extensions(leaf)
     leaf_sha256 = hashlib.sha256(leaf).hexdigest()
     # grpcio 1.78 exposes neither the client peer certificate nor a Python
     # verifier hook. Restrict its trust store to the SAN-validated leaf, never
-    # the issuing CA: another leaf from that CA cannot pass the second dial.
-    # This is trust-anchor pinning, not a byte-for-byte peer digest callback.
+    # the issuing CA. Explicit CA:FALSE prevents this anchor signing a child.
+    # No client peer-DER callback exists: grpcio's trust-anchor matching may
+    # treat an equivalent subject/public-key certificate as the same anchor.
+    # This is not exact DER equality and cannot protect a compromised leaf key.
     pinned_root = ssl.DER_cert_to_PEM_cert(leaf).encode('ascii')
     import grpc
     credentials = grpc.ssl_channel_credentials(root_certificates=pinned_root,

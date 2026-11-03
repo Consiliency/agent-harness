@@ -6,6 +6,7 @@ from phase_loop_runtime import openshell_channel as oc
 
 from _openshell_channel_server import (
     json_coordinator, mtls_config, mtls_material as mtls_material, san_material as san_material,
+    san_template as san_template,
 )
 from phase_loop_runtime import openshell_transport as ot
 from test_openshell_transport import bound, wire
@@ -67,10 +68,14 @@ def test_stock_channel_close_is_bounded(mtls_material):
     asyncio.run(run())
 
 
-@pytest.mark.parametrize('identity,accepted', [
-    ('cn-only', False), ('ip-san', True), ('server', False),
+@pytest.mark.parametrize('identity,host,accepted', [
+    ('cn-only', '127.0.0.1', False), ('ip-san', '127.0.0.1', True),
+    ('server', '127.0.0.1', False), ('cn-dns-only', 'localhost', False),
+    ('wrong-ip-san', '127.0.0.1', False), ('no-extensions', '127.0.0.1', False),
+    ('no-constraints', '127.0.0.1', False), ('ca-true', '127.0.0.1', False),
+    ('no-eku', '127.0.0.1', False), ('client-eku', '127.0.0.1', False),
 ])
-def test_stock_server_san_policy(san_material, identity, accepted):
+def test_stock_server_san_policy(san_material, identity, host, accepted):
     import shutil
     if identity != 'server':
         for suffix in ('pem', 'key'):
@@ -78,7 +83,7 @@ def test_stock_server_san_policy(san_material, identity, accepted):
                             san_material / f'server.{suffix}')
     async def run():
         async with stock_server(san_material) as (config, p, state):
-            config = replace(config, endpoint=config.endpoint.replace('localhost', '127.0.0.1'))
+            config = replace(config, endpoint=config.endpoint.replace('localhost', host))
             async def dispatch():
                 async with oc.stock_exec_channel(config, p) as channel:
                     if not accepted:
@@ -129,4 +134,62 @@ def test_stock_channel_pins_validated_leaf(san_material, monkeypatch):
             async with oc.stock_exec_channel(config, p) as channel:
                 der = ssl.PEM_cert_to_DER_cert((san_material / 'server.pem').read_text())
                 assert channel.peer_certificate_sha256 == hashlib.sha256(der).hexdigest()
+    asyncio.run(run())
+
+
+
+def test_stock_leaf_without_constraints_cannot_authorize_child(san_material, monkeypatch):
+    import grpc
+    import shutil
+    async def run():
+        for suffix in ('pem', 'key'):
+            shutil.copyfile(san_material / f'no-constraints.{suffix}',
+                            san_material / f'server.{suffix}')
+        async with stock_server(san_material) as (config, p, parent_state):
+            for suffix in ('pem', 'key'):
+                shutil.copyfile(san_material / f'child.{suffix}',
+                                san_material / f'server.{suffix}')
+            async with stock_server(san_material) as (child, _, child_state):
+                secure_channel = grpc.aio.secure_channel
+                def redirected(target, credentials, *, options):
+                    return secure_channel(child.endpoint.removeprefix('https://').replace(
+                        'localhost', '127.0.0.1'), credentials, options=options)
+                monkeypatch.setattr(grpc.aio, 'secure_channel', redirected)
+                config = replace(config, endpoint=config.endpoint.replace('localhost', '127.0.0.1'))
+                with pytest.raises(ot.TransportError) as error:
+                    async with oc.stock_exec_channel(config, p) as channel:
+                        session = channel.bind_lease(wire('reserved')['lease_id'],
+                            '11111111-2222-4333-8444-555555555555', local_owner_id='journal-owner')
+                        await session.execute(
+                            p.ExecSandboxRequest(workspace_scope={'workspace': 'offline'}, command=['worker']),
+                            ot.CallerAllowance(bound(1)), attempt=1,
+                            output_cap_bytes=100, message_cap=10)
+                assert error.value.code == 'channel_peer_verification_failed'
+                assert error.value.uncertain is False
+                assert not parent_state.calls and not child_state.calls
+    asyncio.run(run())
+
+
+@pytest.mark.parametrize('failure', ['refused', 'timeout'])
+def test_stock_predial_connect_failures_are_certain(mtls_material, monkeypatch, failure):
+    async def run():
+        async with stock_server(mtls_material) as (config, p, state):
+            if failure == 'timeout':
+                async def stalled(*args, **kwargs):
+                    await asyncio.Event().wait()
+                monkeypatch.setattr(oc.asyncio, 'open_connection', stalled)
+                config = replace(config, connect_timeout_s=0.01)
+            else:
+                listener = await asyncio.start_server(lambda r, w: w.close(), '127.0.0.1', 0)
+                port = listener.sockets[0].getsockname()[1]
+                listener.close()
+                await listener.wait_closed()
+                config = replace(config, endpoint=f'https://127.0.0.1:{port}')
+            with pytest.raises(ot.TransportError) as error:
+                async with oc.stock_exec_channel(config, p):
+                    pytest.fail('failed dial yielded a channel')
+            assert error.value.code == 'sandbox_placement_unreachable'
+            assert error.value.uncertain is False
+            assert not state.calls
+            assert '127.0.0.1' not in str(error.value)
     asyncio.run(run())

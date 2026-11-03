@@ -109,23 +109,63 @@ async def json_coordinator(material, replies):
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
-@pytest.fixture
-def san_material(mtls_material, tmp_path):
-    """Independent fake server identities; leave stock fixture files untouched."""
+
+# Adapt the exported fixture with a new constrained identity; the original stock
+# generator and stock server/binding helpers above remain byte-for-byte intact.
+_stock_mtls_material = mtls_material
+
+
+@pytest.fixture(scope='module', name='mtls_material')
+def constrained_mtls_material(tmp_path_factory):
+    directory = _stock_mtls_material.__wrapped__(tmp_path_factory)
+    (directory / 'leaf-extensions').write_text(
+        'subjectAltName=DNS:localhost\nbasicConstraints=critical,CA:FALSE\n'
+        'extendedKeyUsage=serverAuth\n')
+    subprocess.run(['openssl', 'x509', '-req', '-in', 'server.csr', '-CA', 'ca.pem',
+                    '-CAkey', 'ca.key', '-CAcreateserial', '-days', '1',
+                    '-extfile', 'leaf-extensions', '-out', 'server.pem'],
+                   cwd=directory, check=True, capture_output=True, timeout=15)
+    return directory
+
+
+mtls_material = constrained_mtls_material
+
+
+@pytest.fixture(scope='module')
+def san_template(mtls_material, tmp_path_factory):
+    """Independent fake server identities, including a leaf-signed child."""
     import shutil
-    shutil.copytree(mtls_material, tmp_path, dirs_exist_ok=True)
-    def issue(name, extension):
+    directory = tmp_path_factory.mktemp('san-identities')
+    shutil.copytree(mtls_material, directory, dirs_exist_ok=True)
+    def issue(name, extension, *, subject='127.0.0.1', issuer='ca'):
         def command(*args):
-            subprocess.run(['openssl', *args], cwd=tmp_path, check=True,
+            subprocess.run(['openssl', *args], cwd=directory, check=True,
                            capture_output=True, timeout=15)
         command('req', '-new', '-newkey', 'rsa:2048', '-nodes',
-                '-subj', '/CN=127.0.0.1', '-keyout', name + '.key',
+                '-subj', '/CN=' + subject, '-keyout', name + '.key',
                 '-out', name + '.csr')
-        (tmp_path / 'extensions').write_text('extendedKeyUsage=serverAuth\n' + extension)
-        command('x509', '-req', '-in', name + '.csr', '-CA', 'ca.pem',
-                '-CAkey', 'ca.key', '-CAcreateserial', '-days', '1',
+        (directory / 'extensions').write_text(extension)
+        command('x509', '-req', '-in', name + '.csr', '-CA', issuer + '.pem',
+                '-CAkey', issuer + '.key', '-CAcreateserial', '-days', '1',
                 '-extfile', 'extensions', '-out', name + '.pem')
-    issue('cn-only', '')
-    issue('ip-san', 'subjectAltName=IP:127.0.0.1\n')
-    issue('other-ip-san', 'subjectAltName=IP:127.0.0.1\n')
+    leaf = 'basicConstraints=critical,CA:FALSE\nextendedKeyUsage=serverAuth\n'
+    ip = 'subjectAltName=IP:127.0.0.1\n'
+    issue('cn-only', leaf)
+    issue('cn-dns-only', leaf, subject='localhost')
+    issue('ip-san', leaf + ip)
+    issue('other-ip-san', leaf + ip)
+    issue('wrong-ip-san', leaf + 'subjectAltName=IP:127.0.0.2\n')
+    issue('no-extensions', '')
+    issue('no-constraints', 'extendedKeyUsage=serverAuth\n' + ip)
+    issue('ca-true', 'basicConstraints=critical,CA:TRUE\nextendedKeyUsage=serverAuth\n' + ip)
+    issue('no-eku', 'basicConstraints=critical,CA:FALSE\n' + ip)
+    issue('client-eku', 'basicConstraints=critical,CA:FALSE\nextendedKeyUsage=clientAuth\n' + ip)
+    issue('child', leaf + ip, issuer='no-constraints')
+    return directory
+
+
+@pytest.fixture
+def san_material(san_template, tmp_path):
+    import shutil
+    shutil.copytree(san_template, tmp_path, dirs_exist_ok=True)
     return tmp_path
