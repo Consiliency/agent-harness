@@ -387,6 +387,8 @@ def test_guest_abi_order_and_zero_unrestricted_launches(bundle, guest, abi):
             bound=Bound(time.monotonic()+5, lambda: False), execute=execute,
             reclaims=({'reason': 'lease_expired'},))
         assert result.returncode == 126 and len(calls) == 2
+        assert record['exec_claimed'] is False
+        assert record['restricted_roots'] == ow.guest_rules(json.loads(guest)['load']['guest'])
         assert record['read_only_enforced_by'] == 'client-landlock'
         assert record['policy_digest'] == ow.review_policy()['policy_digest']
         assert record['reclaims'] == [{'reason': 'lease_expired'}]
@@ -536,3 +538,146 @@ def test_bootstrap_preserves_typed_adapter_refusal(bundle, monkeypatch, capsys):
     assert ow.main() == 126
     assert capsys.readouterr().err == 'worker refused: isolation_adapter_unavailable\n'
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize('abi,mask,accepted', [(3, '7fff', True), (4, '7fff', True),
+    (5, 'ffff', True), (8, 'ffff', True), (3, 'ffff', False), (4, 'ffff', False),
+    (5, '7fff', False), (8, '7fff', False), (2, '7fff', False), (9, 'ffff', False)])
+def test_restricted_evidence_pairs_abi_with_mask(bundle, abi, mask, accepted):
+    _, wire = seal(bundle)
+    result = subprocess.run((sys.executable, '-I', '-m', 'phase_loop_runtime.openshell_worker', '--restricted'),
+        input=wire, capture_output=True, env={'AGENT_TOOLKIT_LANDLOCK': f'1:abi={abi}:fs=0x{mask}'}, timeout=5)
+    assert result.returncode == 126 and result.stdout == b''
+    assert (b'isolation_adapter_unavailable' if accepted else b'landlock_evidence_missing') in result.stderr
+
+
+def test_bundle_reconstruction_keeps_request_refusal_code(bundle):
+    _, wire = seal(bundle)
+    value = json.loads(wire)
+    value['credential']['expires_at'] = 0
+    with pytest.raises(Refused, match='credential_expired'):
+        ow.bundle_from_envelope(canonical(value), 50000)
+    value = json.loads(wire)
+    value['metadata']['task'] = 'tampered'
+    with pytest.raises(Refused, match='request_identity_mismatch'):
+        ow.bundle_from_envelope(canonical(value), 50000)
+
+
+@pytest.mark.parametrize('returncode,stderr,code', [
+    (0, b'', None),
+    (126, b'worker refused: isolation_adapter_unavailable\n', 'isolation_adapter_unavailable'),
+    (126, b'landlock-exec: cannot exec /usr/bin/python (Permission denied); nothing was run\n', 'landlock_exec_failed'),
+    (126, b'landlock-exec: refused (alias): synthetic detail; nothing was run\n', 'landlock_alias'),
+    (126, b'landlock-exec: cannot restrict this process; nothing was run\n', 'landlock_helper_failed')])
+def test_main_returns_evidence_and_surfaces_helper_refusal(bundle, monkeypatch, capsys, returncode, stderr, code):
+    import io
+    identity, wire = seal(bundle)
+    monkeypatch.setattr(ow.sys, 'stdin', io.TextIOWrapper(io.BytesIO(wire)))
+    monkeypatch.setattr(ow.sys, 'argv', ['worker'])
+    evidence = ow.worker_evidence(bundle, identity.nonce, exec_claimed=returncode == 0)
+    def execute(*args, **kwargs):
+        return subprocess.CompletedProcess([], returncode, b'trusted offline artifact', stderr), evidence
+    monkeypatch.setattr(ow, 'load_restrict_exec', execute)
+    assert ow.main() == returncode
+    captured = capsys.readouterr()
+    value = json.loads(captured.out)
+    assert value['evidence'] == evidence and value['exit_status'] == returncode
+    assert value['evidence']['exec_claimed'] is (returncode == 0)
+    assert value['evidence']['restricted_roots'] == ow.guest_rules(evidence['guest_mapping'])
+    assert value['error'] == code
+    assert captured.err == (f'worker refused: {code}\n' if code else '')
+    assert value['result'] == (base64.b64encode(b'trusted offline artifact').decode() if returncode == 0 else None)
+    assert TOKEN not in captured.out + captured.err
+
+
+@pytest.mark.parametrize('tamper', ['policy_digest', 'restricted_roots', 'exec_claimed', 'reclaims'])
+def test_result_evidence_tamper_refused(bundle, tamper):
+    identity, _ = seal(bundle)
+    evidence = ow.worker_evidence(bundle, identity.nonce, exec_claimed=True)
+    evidence[tamper] = {'policy_digest': 'sha256:' + '0'*64, 'restricted_roots': [],
+                        'exec_claimed': False, 'reclaims': [{'untrusted': True}]}[tamper]
+    value = dict(schema='openshell.worker-result.v1', exit_status=0, error=None,
+                 evidence=evidence, result=base64.b64encode(b'opaque artifact').decode())
+    with pytest.raises(Refused, match='worker_evidence_invalid'):
+        ow.unwrap_worker_result(canonical(value), bundle, identity)
+
+
+def test_runtime_build_checks_resolved_loader_dependencies_and_hashes():
+    container = (Path(__file__).parents[1] / 'images/review-runner/Containerfile').read_text()
+    assert 'FROM docker.io/library/python@sha256:' in container
+    assert '# Runtime tag: docker.io/library/python:3.12-slim-bookworm' in container
+    assert '"readlink", "-f"' in container and 'PT_INTERP' in container and '["ldd", binary]' in container
+    assert 'resolved.startswith(("/usr/", "/lib/"))' in container
+    assert '--require-hashes' in container and '520d690b448ecf0703691c76e1a34a24ddcd4fc5bc41d589cb7c58ec651bcd48' in container
+
+
+def test_local_built_image_entrypoint_real_helper_without_network(bundle):
+    image = os.environ.get('SL3_REVIEW_RUNNER_IMAGE')
+    if not image:
+        pytest.skip('explicit opt-in local image; never build or push images in CI')
+    _, wire = seal(bundle)
+    result = subprocess.run(('docker', 'run', '--rm', '--network', 'none', '-i', image),
+                            input=wire, capture_output=True, timeout=30)
+    assert result.returncode == 126, result.stderr
+    assert result.stderr == b'worker refused: isolation_adapter_unavailable\n'
+    value = json.loads(result.stdout)
+    assert value['error'] == 'isolation_adapter_unavailable'
+    assert value['evidence']['exec_claimed'] is False
+    assert value['evidence']['read_only_enforced_by'] == 'client-landlock'
+    assert value['evidence']['policy_digest'] == ow.REVIEW_POLICY_DIGEST
+    assert TOKEN.encode() not in result.stdout + result.stderr
+    print(f"entrypoint exit={result.returncode}; {result.stderr.decode().strip()}; exec_claimed={value['evidence']['exec_claimed']}")
+
+
+def test_local_built_image_readonly_inputs_real_helper(bundle):
+    image = os.environ.get('SL3_REVIEW_RUNNER_IMAGE')
+    if not image:
+        pytest.skip('explicit opt-in local image; never build or push images in CI')
+    _, wire = seal(bundle)
+    # Trusted test-only adapter code supplied at the Docker command boundary.
+    # The production entry point has no option for importing this seam.
+    restricted = '''import os, pathlib, sys
+source, output = map(pathlib.Path, sys.argv[1:])
+target = next(p for p in source.rglob('*') if p.is_file())
+for operation in ('write', 'unlink', 'rename'):
+    try:
+        if operation == 'write': target.write_bytes(b'tamper')
+        elif operation == 'unlink': target.unlink()
+        else: target.rename(output / 'stolen')
+    except PermissionError: pass
+    else: raise AssertionError(operation + ' unexpectedly allowed')
+pid = os.fork()
+if pid == 0:
+    try: target.write_bytes(b'descendant tamper')
+    except PermissionError: os._exit(0)
+    os._exit(1)
+_, status = os.waitpid(pid, 0)
+assert os.waitstatus_to_exitcode(status) == 0
+q = output / 'allowed'
+q.write_bytes(b'allowed')
+q.rename(output / 'renamed')
+(output / 'renamed').unlink()
+print('uid=' + str(os.getuid()) + ' ' + os.environ['AGENT_TOOLKIT_LANDLOCK'])
+print('input write/unlink/rename/descendant denied; output create/rename/unlink allowed')
+'''
+    bootstrap = '''import json, sys, time
+from phase_loop_runtime.openshell_artifacts import Bound
+from phase_loop_runtime.openshell_worker import bundle_from_envelope, load_restrict_exec, STOCK_STDIN_LIMIT
+wire = sys.stdin.buffer.read(STOCK_STDIN_LIMIT + 1)
+bundle = bundle_from_envelope(wire, STOCK_STDIN_LIMIT)
+mapping = json.loads(wire)['load']['guest']
+result, evidence = load_restrict_exec(wire, bundle, request_cap=STOCK_STDIN_LIMIT,
+    bound=Bound(time.monotonic()+15, lambda: False),
+    restricted_argv=(sys.executable, '-I', '-c', sys.argv[1], mapping['input'], mapping['output']))
+assert evidence['exec_claimed'] is (result.returncode == 0)
+sys.stdout.buffer.write(result.stdout)
+sys.stderr.buffer.write(result.stderr)
+raise SystemExit(result.returncode)
+'''
+    result = subprocess.run(('docker', 'run', '--rm', '--network', 'none', '-i',
+        '--entrypoint', '/usr/local/bin/python3', image, '-I', '-c', bootstrap, restricted),
+        input=wire, capture_output=True, timeout=30)
+    assert result.returncode == 0, result.stderr
+    assert b'uid=10001 1:abi=' in result.stdout
+    assert b'input write/unlink/rename/descendant denied; output create/rename/unlink allowed' in result.stdout
+    print(result.stdout.decode().strip())

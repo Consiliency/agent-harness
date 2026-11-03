@@ -93,6 +93,7 @@ class ModelEndpoint(Coordinator):
         self.killed = False
         self.delay = 0
         self.lost = False
+        self.worker_envelope = False
         self.corrupt = False
         self.list_present = False
         self.native_bad = False
@@ -145,6 +146,12 @@ class ModelEndpoint(Coordinator):
                     from phase_loop_runtime.openshell_artifacts import digest
                     data['native_sha256'] = digest(b'')
                 envelope = canonical(data)
+            if self.worker_envelope:
+                from phase_loop_runtime.openshell_worker import worker_evidence
+                import base64
+                envelope = canonical({"schema": "openshell.worker-result.v1", "exit_status": 0,
+                    "result": base64.b64encode(envelope).decode(), "error": None,
+                    "evidence": worker_evidence(self.bundle, identity.nonce, exec_claimed=True)})
             return self.proto.ExecSandboxEvent(stdout={"data": envelope})
 
         self.stream = ModelStream([output, self.proto.ExecSandboxEvent(exit={"exit_code": 0})])
@@ -362,9 +369,11 @@ def test_stage_binding_fields_must_be_plain_strings(pipeline, field):
         assert receipt.snapshot_sha256 == backend._binding.source_sha256
 
 
+@pytest.mark.parametrize('wrapped', [False, True])
 @pytest.mark.parametrize('failure', ['lost', 'corrupt', 'native_bad', 'native_refuse'])
-def test_untrusted_or_lost_result_refused_no_replay(pipeline, failure):
+def test_untrusted_or_lost_result_refused_no_replay(pipeline, failure, wrapped):
     backend, endpoint, _, worker, place, leases, *_ = pipeline
+    endpoint.worker_envelope = wrapped
     setattr(worker if failure == 'native_refuse' else endpoint, failure, True)
     decision = place()
     with pytest.raises(sp.PlacementUnavailable, match='lost_after_launch'):
@@ -809,3 +818,24 @@ def test_required_dependency_session_refuses_before_admission_on_caller_context(
     finally:
         task.release()
         session.close()
+
+
+def test_backend_consumes_worker_evidence_and_persists_separately_from_cleanup(pipeline):
+    from phase_loop_runtime.openshell_artifacts import digest
+    backend, endpoint, stage, worker, place, leases, *_ = pipeline
+    endpoint.worker_envelope = True
+    decision = place()
+    result = run(decision.placement)
+    value = json.loads(result.result)
+    evidence = value['worker_evidence']
+    record = backend._quarantine / 'worker-evidence.json'
+    assert record.read_bytes() == canonical(evidence)
+    assert value['worker_evidence_path'] == str(record)
+    assert value['worker_evidence_sha256'] == digest(record.read_bytes())
+    assert evidence['exec_claimed'] is True
+    assert evidence['read_only_enforced_by'] == 'client-landlock'
+    assert len(evidence['restricted_roots']) == 10
+    assert evidence['reclaims'] == []
+    assert value['required_next_step'] == 'isolated_same_base_retest_and_owner_acceptance'
+    assert endpoint.calls == ['reserve', 'create', 'status', 'status', 'exec', 'kill', 'list']
+    assert not leases[0].held

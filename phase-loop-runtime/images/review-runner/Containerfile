@@ -1,9 +1,10 @@
 # Build definition only. No CI image build/push/sign; owner qualification is required.
 # Build context: repository root. Shared source is pinned, never the moving branch.
 FROM docker.io/library/rust@sha256:e15c563b25397d4172f34ebe50b3715bb9509c59e537ff58d48902571387b881 AS landlock
-ADD https://github.com/Consiliency/agent-toolkit/archive/d945fdd060aab9ad9471845f4f8e78406a0ac841.tar.gz /toolkit.tar.gz
-RUN mkdir /unpack /src && tar -xzf /toolkit.tar.gz -C /unpack --strip-components=1 \
-    && cp -a /unpack/harnesses/pi/sandbox/landlock/. /src/
+# Private source must be supplied as a named build context, fetched with gh api
+# at d945fdd060aab9ad9471845f4f8e78406a0ac841. No GitHub token enters the build.
+# --build-context landlock-source=<that commit>/harnesses/pi/sandbox/landlock
+COPY --from=landlock-source / /src/
 WORKDIR /src
 RUN echo 'ccb26a3d7078ca1ab6d6dab0bdbf7a0bf44d8cc22250d193094d6425ae1a1a6c  BUILD.lock' | sha256sum -c - \
     && echo '689b41cdd017f7df6e0246bddfb0f9b5913802001c6c0421ec076908ad0066fa  LICENSE' | sha256sum -c - \
@@ -13,14 +14,62 @@ RUN echo 'ccb26a3d7078ca1ab6d6dab0bdbf7a0bf44d8cc22250d193094d6425ae1a1a6c  BUIL
     && sh build.sh /landlock-exec \
     && echo '775d4f7af61dff58e5094eeac56fcda2fdb7e56d3f05fbf008b1caf1f84500aa  /landlock-exec' | sha256sum -c -
 
-FROM docker.io/library/python:3.12-slim-bookworm
+# Runtime tag: docker.io/library/python:3.12-slim-bookworm (3.12.16, linux/amd64).
+FROM docker.io/library/python@sha256:623674a14ef93d052bb9b0de4dbf5f28eb578a35263838941cc8aa43213c1487
 # /usr is in the verbatim full-remote-pi-runner policy's baseline read_only.
 COPY phase-loop-runtime/src/phase_loop_runtime /usr/local/lib/python3.12/site-packages/phase_loop_runtime
-RUN pip install --no-cache-dir rfc8785==0.1.4 \
+RUN printf '%s\n' 'rfc8785==0.1.4 --hash=sha256:520d690b448ecf0703691c76e1a34a24ddcd4fc5bc41d589cb7c58ec651bcd48' > /tmp/worker-requirements.txt \
+    && pip install --no-cache-dir --only-binary=:all: --require-hashes -r /tmp/worker-requirements.txt \
+    && rm /tmp/worker-requirements.txt \
     && groupadd --gid 10001 sandbox && useradd --uid 10001 --gid 10001 --no-create-home sandbox \
     && install -d -o 10001 -g 10001 -m 0700 /work \
     && install -d -o root -g root -m 0755 /usr/libexec/agent-toolkit \
     && test ! -e /app
+# Merged-usr is required by the unchanged policy. Fail the build on a rootfs
+# whose interpreter, ELF PT_INTERP loader or ldd dependencies escape the baseline.
+# Include native modules imported by the worker, not unused optional GUI modules.
+RUN /usr/local/bin/python3 - <<'CHECK_RUNTIME'
+import os
+import re
+import struct
+import subprocess
+import sys
+from phase_loop_runtime import openshell_worker
+
+def baseline(path):
+    resolved = subprocess.check_output(["readlink", "-f", path], text=True).strip()
+    assert os.path.isfile(resolved) and resolved.startswith(("/usr/", "/lib/")), (path, resolved)
+    return resolved
+
+interpreter = baseline(sys.executable)
+with open(interpreter, "rb") as stream:
+    elf = stream.read()
+assert elf[:6] == b"\x7fELF\x02\x01", "expected little-endian ELF64 runtime"
+phoff = struct.unpack_from("<Q", elf, 32)[0]
+phsize, phcount = struct.unpack_from("<HH", elf, 54)
+loaders = []
+for i in range(phcount):
+    at = phoff + i * phsize
+    if struct.unpack_from("<I", elf, at)[0] == 3:  # PT_INTERP
+        offset = struct.unpack_from("<Q", elf, at + 8)[0]
+        size = struct.unpack_from("<Q", elf, at + 32)[0]
+        loaders.append(elf[offset:offset + size].rstrip(b"\0").decode("ascii"))
+assert len(loaders) == 1, "dynamic interpreter must name one loader"
+print("runtime:", interpreter, "PT_INTERP:", loaders[0], "->", baseline(loaders[0]), flush=True)
+dependencies = set()
+native_modules = {getattr(module, "__file__", "") or "" for module in sys.modules.values()}
+for binary in [interpreter, *(path for path in native_modules if path.endswith(".so"))]:
+    output = subprocess.check_output(["ldd", binary], text=True)
+    assert "not found" not in output, output
+    for line in output.splitlines():
+        match = re.search(r"(/[^\s]+)", line)
+        if match:
+            dependencies.add(baseline(match[1]))
+        else:
+            assert "linux-vdso" in line or line.strip() == "statically linked", line
+for dependency in sorted(dependencies):
+    print("baseline dependency:", dependency, flush=True)
+CHECK_RUNTIME
 COPY --from=landlock --chown=0:0 --chmod=0755 /landlock-exec /usr/libexec/agent-toolkit/landlock-exec
 COPY --from=landlock /src/LICENSE /src/PROVENANCE.md /usr/share/doc/landlock-exec/
 COPY --from=landlock /src/LICENSES /usr/share/doc/landlock-exec/LICENSES

@@ -552,7 +552,8 @@ def load_restrict_exec(wire, bundle, *, request_cap, bound, execute=None,
     # Re-read loaded bytes before publishing the restriction manifest.
     if scan(Path(mapping["input"]), bundle.limits, bound) != bundle.files:
         raise Refused("load_digest_mismatch")
-    manifest = landlock_manifest(guest_rules(mapping))
+    rules = guest_rules(mapping)
+    manifest = landlock_manifest(rules)
     policy_path = parent / "landlock.bin"
     with policy_path.open("xb") as stream:
         stream.write(manifest)
@@ -562,13 +563,19 @@ def load_restrict_exec(wire, bundle, *, request_cap, bound, execute=None,
         raise Refused("runtime_program_invalid")
     result = execute((HELPER, "--policy", str(policy_path), "--", *argv),
                      input=wire, capture_output=True, timeout=bound.check(), check=False)
-    return result, {"read_only_enforced_by": "client-landlock",
-                    "policy_digest": stock_policy_digest(review_policy()["policy"]),
-                    "restricted_roots": [mapping["input"]], "guest_mapping": mapping,
-                    "load_sha256": digest(canonical(value["load"])),
-                    "landlock_manifest_sha256": digest(manifest),
-                    "exec_claimed": True, "exec_claim_attested_by": "client",
-                    "reclaims": list(reclaims)}
+    return result, worker_evidence(bundle, value["metadata"]["nonce"],
+                                   exec_claimed=result.returncode == 0, reclaims=reclaims)
+
+
+def worker_evidence(bundle, nonce, *, exec_claimed, reclaims=()):
+    """Credential-free client evidence; never coordinator or runtime attestation."""
+    load = load_document(bundle, nonce)
+    rules = guest_rules(load["guest"])
+    return {"read_only_enforced_by": "client-landlock", "policy_digest": REVIEW_POLICY_DIGEST,
+            "restricted_roots": rules, "guest_mapping": load["guest"],
+            "load_sha256": digest(canonical(load)),
+            "landlock_manifest_sha256": digest(landlock_manifest(rules)),
+            "exec_claimed": exec_claimed, "exec_claim_attested_by": "client", "reclaims": list(reclaims)}
 
 
 def bundle_from_envelope(wire, cap):
@@ -583,10 +590,52 @@ def bundle_from_envelope(wire, cap):
         bundle = SourceBundle(source["base"], source["tree"], entries,
                               tuple(source["owned_paths"]), Limits(**source["limits"]))
         bundle.validate()
-        read_request(wire, bundle, cap)
-        return bundle
+    except Refused:
+        raise
     except (KeyError, TypeError, ValueError):
         raise Refused("load_digest_mismatch") from None
+    # Request refusals (identity, expiry, etc.) must retain their own typed code.
+    read_request(wire, bundle, cap)
+    return bundle
+
+
+
+def helper_failure_code(stderr):
+    """Preserve helper refusal classes without echoing arbitrary paths/diagnostics."""
+    if stderr == b"worker refused: isolation_adapter_unavailable\n":
+        return "isolation_adapter_unavailable"
+    refusal = re.match(rb"landlock-exec: refused \(([a-z-]+)\):", stderr)
+    classes = {"size", "magic", "version", "count", "truncated", "reserved", "role", "type",
+               "flags", "follow", "device", "encoding", "canonical", "order", "trailing",
+               "root-id", "overlap", "uid", "open", "symlink", "file-type", "alias", "mount", "hardlink"}
+    if refusal and refusal[1].decode("ascii") in classes:
+        return "landlock_" + refusal[1].decode("ascii").replace("-", "_")
+    if stderr.startswith(b"landlock-exec: cannot exec "):
+        return "landlock_exec_failed"
+    return "landlock_helper_failed"
+
+
+def unwrap_worker_result(wire, bundle, identity):
+    """Validate bounded client evidence before the backend retains it.
+
+    The model-only legacy adapter returns the existing artifact document directly.
+    This wrapper adds no cleanup authority, runtime attestation or replay permission.
+    """
+    value = decode(wire, bundle.limits.output_bytes)
+    if "schema" not in value:
+        return wire, None
+    if (set(value) != {"schema", "exit_status", "result", "evidence", "error"} or
+            value["schema"] != "openshell.worker-result.v1" or type(value["exit_status"]) is not int or
+            value["exit_status"] != 0 or value["error"] is not None):
+        raise Refused("worker_evidence_invalid")
+    expected = worker_evidence(bundle, identity.nonce, exec_claimed=True)
+    if canonical(value["evidence"]) != canonical(expected):
+        raise Refused("worker_evidence_invalid")
+    try:
+        artifact = base64.b64decode(value["result"], validate=True)
+    except (ValueError, TypeError):
+        raise Refused("worker_evidence_invalid") from None
+    return artifact, expected
 
 
 def main():
@@ -603,19 +652,27 @@ def main():
         if sys.argv[1:] == ["--restricted"]:
             # Runtime-reported evidence is not a host attestation. This entry is
             # reached through the helper, with credentials still only on stdin.
-            if not re.fullmatch(r"1:abi=[3-8]:fs=0x(?:7fff|ffff)",
-                                os.environ.get("AGENT_TOOLKIT_LANDLOCK", "")):
+            evidence = re.fullmatch(r"1:abi=([3-8]):fs=0x(7fff|ffff)",
+                                    os.environ.get("AGENT_TOOLKIT_LANDLOCK", ""))
+            if (not evidence or int(evidence[2], 16) !=
+                    (0x7fff if int(evidence[1]) < 5 else 0xffff)):
                 raise Refused("landlock_evidence_missing")
             raise Refused("isolation_adapter_unavailable")
         if sys.argv[1:]:
             raise Refused("worker_arguments_invalid")
-        result, _ = load_restrict_exec(wire, bundle, request_cap=STOCK_STDIN_LIMIT,
+        result, evidence = load_restrict_exec(wire, bundle, request_cap=STOCK_STDIN_LIMIT,
             bound=Bound(time.monotonic() + min(request.must_end_within_s,
                                                request.expires_at - time.time()), lambda: False))
-        if result.returncode == 0:
-            sys.stdout.buffer.write(result.stdout)
-        elif result.stderr == b"worker refused: isolation_adapter_unavailable\n":
-            raise Refused("isolation_adapter_unavailable")
+        error = None if result.returncode == 0 else helper_failure_code(result.stderr)
+        envelope = canonical({"schema": "openshell.worker-result.v1", "exit_status": result.returncode,
+                              "result": base64.b64encode(result.stdout).decode("ascii")
+                                        if result.returncode == 0 else None,
+                              "evidence": evidence, "error": error})
+        if len(envelope) > min(bundle.limits.output_bytes, STOCK_MESSAGE_LIMIT):
+            raise Refused("result_limit")
+        sys.stdout.buffer.write(envelope)
+        if error:
+            sys.stderr.write("worker refused: " + error + "\n")
         return result.returncode
     except Refused as error:
         sys.stderr.write("worker refused: " + str(error) + "\n")
