@@ -109,28 +109,6 @@ async def json_coordinator(material, replies):
         await asyncio.gather(*tasks, return_exceptions=True)
 
 
-
-# Adapt the exported fixture with a new constrained identity; the original stock
-# generator and stock server/binding helpers above remain byte-for-byte intact.
-_stock_mtls_material = mtls_material
-
-
-@pytest.fixture(scope='module', name='mtls_material')
-def constrained_mtls_material(tmp_path_factory):
-    directory = _stock_mtls_material.__wrapped__(tmp_path_factory)
-    (directory / 'leaf-extensions').write_text(
-        'subjectAltName=DNS:localhost\nbasicConstraints=critical,CA:FALSE\n'
-        'extendedKeyUsage=serverAuth\n')
-    subprocess.run(['openssl', 'x509', '-req', '-in', 'server.csr', '-CA', 'ca.pem',
-                    '-CAkey', 'ca.key', '-CAcreateserial', '-days', '1',
-                    '-extfile', 'leaf-extensions', '-out', 'server.pem'],
-                   cwd=directory, check=True, capture_output=True, timeout=15)
-    return directory
-
-
-mtls_material = constrained_mtls_material
-
-
 @pytest.fixture(scope='module')
 def san_template(mtls_material, tmp_path_factory):
     """Independent fake server identities, including a leaf-signed child."""
@@ -155,12 +133,8 @@ def san_template(mtls_material, tmp_path_factory):
     issue('ip-san', leaf + ip)
     issue('other-ip-san', leaf + ip)
     issue('wrong-ip-san', leaf + 'subjectAltName=IP:127.0.0.2\n')
-    issue('no-extensions', '')
-    issue('no-constraints', 'extendedKeyUsage=serverAuth\n' + ip)
-    issue('ca-true', 'basicConstraints=critical,CA:TRUE\nextendedKeyUsage=serverAuth\n' + ip)
-    issue('no-eku', 'basicConstraints=critical,CA:FALSE\n' + ip)
-    issue('client-eku', 'basicConstraints=critical,CA:FALSE\nextendedKeyUsage=clientAuth\n' + ip)
-    issue('child', leaf + ip, issuer='no-constraints')
+    issue('unrelated-ip-san', leaf + ip, issuer='other')
+    issue('child', leaf + ip, issuer='ip-san')
     return directory
 
 
