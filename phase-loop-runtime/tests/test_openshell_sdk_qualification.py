@@ -38,6 +38,8 @@ def test_no_runtime_or_stock_helper_private_rpc_or_fork_sdk_dependency():
             values = []
             if isinstance(node, ast.Name):
                 values.append(node.id)
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                values.append(node.name)
             elif isinstance(node, ast.Attribute):
                 values.append(node.attr)
             elif isinstance(node, ast.Import):
