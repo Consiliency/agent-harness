@@ -528,7 +528,7 @@ def test_corrupt_entry_does_not_block_other_cleanup(session, corruption):
     elif corruption == 'invalid-fields':
         value = entry(bad)
         value.pop('journal_format', None)
-        value['create_sent_at'] = 'malformed legacy-looking marker'
+        value['created_at'] = 'malformed timestamp'
         bad.path.write_text(json.dumps(value))
     else:
         bad.path.write_text('[]' if corruption == 'non-dict' else '{bad-json')
@@ -553,3 +553,55 @@ def test_corrupt_entry_does_not_block_other_cleanup(session, corruption):
         loop.call_soon_threadsafe(loop.stop)
         thread.join(2)
         loop.close()
+
+
+@pytest.mark.parametrize('patch', [
+    {'journal_format': None, 'create_sent_at': 1},
+    {'journal_format': None, 'sandbox_ref': 'fork-remote'},
+    {'journal_format': 'other', 'create_sent_at': 1},
+    {'journal_format': 'other', 'sandbox_ref': 'fork-remote'},
+    {'reserve_sent_at': None, 'create_sent_at': 1},
+    {'reserve_sent_at': None, 'sandbox_ref': 'fork-remote'},
+    {'unknown': True, 'create_sent_at': 1},
+    {'unknown': True, 'sandbox_ref': 'fork-remote'},
+    {'coordinator_lease_id': REF, 'sandbox_ref': 'fork-remote'},
+    {'execute_sent_at': 1},
+    {'confirmed_killed_at': 1},
+    {'journal_format': None, 'reserve_sent_at': 1},
+    {'journal_format': 'other', 'reserve_sent_at': 1},
+    {'unknown': True, 'reserve_sent_at': 1},
+])
+def test_unaccounted_journal_evidence_is_preserved(session, patch):
+    _, c, _ = session
+    lease = journal.open_lease('openshell-model', 'openshell://fake.invalid/work')
+    lease.abandon()
+    value = entry(lease)
+    value.pop('journal_format', None)
+    value.update(patch)
+    lease.path.write_text(json.dumps(value))
+    before = lease.path.read_bytes()
+    fork = any(value.get(key) is not None for key in (
+        'sandbox_ref', 'create_sent_at', 'execute_sent_at', 'confirmed_killed_at'))
+    code = 'sandbox_placement_fork_journal_refused' if fork else 'corrupt_journal_entry'
+    assert journal.openshell_journal_kind(value, lease.lease_id) == ('fork' if fork else 'corrupt')
+    if fork:
+        with pytest.raises(oj.ForkJournalRefusal):
+            oj.refuse_fork_entries()
+    else:
+        oj.refuse_fork_entries()
+    lease._entry = value
+    with pytest.raises(TransportError, match=code):
+        oj.JournalSession(lease, c)
+    # Exercise the direct cleanup bridge as well as reap's pre-backend refusal.
+    adapter = object.__new__(oj.ReaperAdapter)
+    adapter._owner = c.local_owner_id
+    with pytest.raises(TransportError, match=code):
+        adapter.kill_journaled(c.local_owner_id, lease.lease_id, value, bound())
+    notes = []
+    result = journal.reap(lambda _: pytest.fail('refused entry contacted backend'),
+                          bound(), on_refusal=notes.append)
+    assert lease.lease_id in result['kept'] and not result['cleared']
+    assert code in notes
+    assert lease.path.read_bytes() == before
+    assert entry(lease).get('sandbox_ref') == value.get('sandbox_ref')
+    assert c.calls == []
