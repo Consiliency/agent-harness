@@ -273,8 +273,6 @@ PYEOF
       '/skills-src/*/*-skill-editor/' \
       /phase-loop-runtime/scripts/verify_harden_evidence.py \
       /phase-loop-runtime/scripts/qualify_gemini_heartbeat.py \
-      /phase-loop-runtime/scripts/qualify_openshell_sdk.py \
-      /phase-loop-runtime/scripts/openshell-sdk-manifest.json \
       /phase-loop-runtime/scripts/emit_placement_contract.py \
       /phase-loop-runtime/images/review-runner/Containerfile \
       /plans/detailed-remote-seat-placement-896-20261010.md \

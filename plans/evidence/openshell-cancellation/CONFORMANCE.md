@@ -1,3 +1,11 @@
+> **Historical fork-era evidence only (OSCOORD2 SL-4).** The implementation and
+> integration claims below describe the retired private cancellation-lease design,
+> not the current coordinator or stock OpenShell v0.1.4. In particular, the atomic
+> claim/fence ledger below is not a stock streaming-exec guarantee. The current
+> responsibility split, offline provenance and still-open activation gates are in
+> [the transport document](../../../phase-loop-runtime/openshell-private-transport.md).
+> Original receipts are retained unchanged below; they grant no activation authority.
+
 # OpenShell destruction-confirmed cancellation: implementation r2
 
 Status: foundational server ledger implemented; endpoint NOT conforming or ready.
