@@ -105,6 +105,7 @@ def test_stock_server_san_policy(san_material, identity, host, accepted):
 
 @pytest.mark.parametrize('replacement', ['other-ip-san', 'unrelated-ip-san'])
 def test_stock_channel_pins_validated_leaf(san_material, monkeypatch, replacement):
+    pytest.importorskip('grpc')
     import grpc
     import hashlib
     import shutil
@@ -139,6 +140,7 @@ def test_stock_channel_pins_validated_leaf(san_material, monkeypatch, replacemen
 
 
 def test_stock_pinned_leaf_child_known_limitation(san_material, monkeypatch):
+    pytest.importorskip('grpc')
     """Known limitation: grpcio 1.78 accepts a child of a CA:FALSE anchor."""
     import grpc
     import shutil
