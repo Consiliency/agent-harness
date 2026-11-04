@@ -197,6 +197,15 @@ def test_a_cited_section_only_on_the_head_fails(tree, seam):
     assert audit(tree, seam, head) == 1
 
 
+def test_a_section_added_after_its_citation_fails(tree, seam):
+    """The section must be on the BASE tree: a head that adds it under an admission that
+    already cites it does not make that admission ordered."""
+    record = RECORD_HEAD + SDK_SECTION
+    base = tree.commit(sdk=module_source(True, citation(record, "4b", 1901)))
+    head = tree.commit(record=record)
+    assert audit(tree, base, head) == 1
+
+
 def test_an_activation_on_a_base_without_its_section_fails(tree, seam):
     record = RECORD_HEAD + SDK_SECTION
     head = tree.commit(sdk=module_source(True, citation(record, "4b", 1901)))
