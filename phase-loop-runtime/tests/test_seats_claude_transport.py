@@ -533,7 +533,10 @@ def require_live_jail() -> None:
     prerequisite fails the test."""
     from phase_loop_runtime import sandbox_egress
 
-    from ._seat_prereq import SEAT_UID_PREREQUISITE, seat_uid_ready
+    try:
+        from ._seat_prereq import SEAT_UID_PREREQUISITE, seat_uid_ready
+    except ImportError:  # imported as a top-level module by a sibling test
+        from _seat_prereq import SEAT_UID_PREREQUISITE, seat_uid_ready
 
     missing = []
     if not hasattr(os, "memfd_create"):
@@ -747,6 +750,34 @@ def _argv_shape(argv: list[str]) -> list[str]:
     return out
 
 
+_STDIO = ("0", "1", "2")
+#: bwrap binds the controlling terminal at /dev/console, so it belongs to the TUI's channel.
+_TERMINAL_MOUNTS = frozenset({"/dev/console"})
+
+
+def _past_stdio(record: dict) -> dict:
+    return {fd: kind for fd, kind in (record.get("fds") or {}).items() if fd not in _STDIO}
+
+
+def _stdio_channel(record: dict) -> str | None:
+    """``terminal`` (all three on one pts) or ``pipe`` (three pipes); anything else is
+    ``None``."""
+    kinds = [(record.get("fds") or {}).get(fd) for fd in _STDIO]
+    if all(isinstance(k, str) and k.startswith("/dev/pts/") for k in kinds) and len(set(kinds)) == 1:
+        return "terminal"
+    if kinds == ["pipe", "pipe", "pipe"]:
+        return "pipe"
+    return None
+
+
+def _mounts(record: dict) -> list:
+    return [m for m in record.get("mounts") or () if m not in _TERMINAL_MOUNTS]
+
+
+#: Each transport's stdio channel at the CLI boundary.
+STDIO_CHANNEL = {"tui": "terminal", "print": "pipe", "sdk": "pipe"}
+
+
 def boundary_violations(baseline: dict, other: dict, *, cli_delta: tuple[str, ...] = ()) -> list[str]:
     """What ``other`` (one transport's record at /seat/bin/claude) widens against the TUI
     ``baseline``: an environment variable, a descriptor, a mount, a tool or permission
@@ -756,9 +787,13 @@ def boundary_violations(baseline: dict, other: dict, *, cli_delta: tuple[str, ..
         problems.append("pass_fds")
     if other.get("env") != baseline.get("env"):
         problems.append("environment")
-    if other.get("fds") != baseline.get("fds"):
+    # Stdio is each transport's declared channel (the TUI's terminal, print's pipes, see
+    # `_stdio_channel`); every descriptor past it must be the same, i.e. the token pipe.
+    if _past_stdio(other) != _past_stdio(baseline):
         problems.append("descriptors")
-    if other.get("mounts") != baseline.get("mounts"):
+    if _stdio_channel(other) is None:
+        problems.append("stdio")
+    if _mounts(other) != _mounts(baseline):
         problems.append("mounts")
     if other.get("cwd") != baseline.get("cwd"):
         problems.append("cwd")
@@ -807,6 +842,8 @@ def test_live_jail_every_admitted_transport_holds_the_jail_boundary(monkeypatch,
         assert not any(token.decode() in item for item in leg["argv"])
         assert "--bare" not in leg["argv"]
         assert evidence["claude_transport"] == transport
+        assert _stdio_channel(leg) == STDIO_CHANNEL[transport]
+        assert list(_past_stdio(leg).values()) == ["pipe"]  # the token pipe, nothing else
         records[transport] = {"leg": {**leg, "launch": observed["launch"]},
                               "digest": evidence.get("seat_jail_profile_digest")}
     baseline = records["tui"]

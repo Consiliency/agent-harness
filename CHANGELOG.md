@@ -6,6 +6,14 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- `PHASE_LOOP_PANEL_CLAUDE_ROUTE=print` now runs the jailed Claude seat on the print transport
+  (`claude_seat_print`, SEATS CLAUDE, agent-harness#1820): the jailed TUI command plus `-p`,
+  stream-json with the prompt on stdin and `--no-session-persistence`, in the same jail,
+  staged clone, tool set and teardown. It admits one successful `result` after an
+  `apiKeySource: "none"` init and salvages nothing. The selection is experimental and
+  unqualified (the print-route record's §4a item 6) and runs on open egress until CLAUDENET.
+  The jailed default stays the TUI.
+
 - The jailed Claude seat reads `PHASE_LOOP_PANEL_CLAUDE_ROUTE` (SEATS CLAUDE, agent-harness#1820).
   `claude_seat_transport` resolves `tui | print | sdk`: unset or blank keeps the TUI (the
   print-route record's §4a item 2); an unknown value refuses `panel_claude_route_invalid` and a

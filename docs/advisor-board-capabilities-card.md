@@ -635,6 +635,40 @@ The jail, not the CLI's permission settings, is the boundary. A brokered review 
 cannot run jailed is degraded and does not run, with a typed notice and its fix; it is never
 run toolless and never counted toward the reviewer floor (agent-harness#1244).
 
+### Jailed Claude transports (SEATS CLAUDE, agent-harness#1820)
+
+The jailed Claude seat reads `PHASE_LOOP_PANEL_CLAUDE_ROUTE`. Unset or blank keeps it on the
+TUI, the jailed default the print-route record's §4a item 2 sets, until the owner records a
+default (OD-3b) and a separate switch ships it. `tui` selects the TUI. `print` selects the
+jailed print transport: the jailed TUI command plus `-p`, stream-json output with the prompt on
+stdin, and `--no-session-persistence`, never `--bare`, in the same jail, staged clone, tool set
+and teardown. **The `print` selection is experimental and unqualified**: it has no row window
+yet (§4a items 6 and 7), and it runs on open egress until CLAUDENET confines the Claude seat.
+It admits only one successful `result` for its own session after a `system/init` reporting
+`apiKeySource: "none"`, and salvages nothing. `sdk` is refused
+(`panel_claude_transport_not_admitted`), and any other value is `panel_claude_route_invalid`.
+A refused value launches nothing, and no outcome of one transport launches another: choosing
+`tui` is the operator's selection, never an automatic fallback.
+
+Before any jailed transport launches, the seat proves its login (agent-harness#1532): no Claude
+token or `ANTHROPIC_*` variable in the launching environment, a first-party subscription login
+in the same login context, and one `claude auth status` in a single-use jail of the seat's own
+shape, handed the exact credential the seat will use. A seat that will not run republishes its
+row in `seat-modes.json` (agent-harness#1255).
+
+The jailed transports' codes carry their OD-10 class on the mode line. A `security` outcome is
+reported privately to the owner, never in a public issue.
+
+| Code | OD-10 class | Meaning |
+|---|---|---|
+| `claude_seat_token_in_output` | security | the seat's output carried its credential |
+| `claude_seat_api_key_source` | security | the CLI reported a credential source other than the subscription login |
+| `claude_sdk_closure_refused` | security | the `sdk` closure did not verify against its declared authority |
+| `claude_seat_login_unproven` | ordinary | the login proof did not hold |
+| `claude_seat_result_unproven` | ordinary | the stream did not end in exactly one admitted result |
+| `claude_seat_stream_unsafe` | ordinary | the stream broke a parser bound |
+| `claude_sdk_dependency_unavailable` | ordinary | `sdk` needs a dependency session carrying its closure |
+
 A jailed launch needs an EC-EXECFIND-2 falsifier
 pass recorded **on this host** for the jail's profile digest. The pass is stored per user,
 at `$XDG_STATE_HOME/phase-loop/seat-jail-passes/<digest>.json`, and uses
