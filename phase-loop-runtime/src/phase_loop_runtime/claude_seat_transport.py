@@ -552,6 +552,16 @@ def audit_order(
     if changed and record != head_record:
         problems.append("a landing that changes an admission or the default also edits the "
                         "decision record")
+    # Sections are append-only: no landing edits or removes a section an admission or the
+    # default cites, so a citation verified on a base stays true on every later tree.
+    base_sections = record_sections(record) if record is not None else {}
+    head_sections = record_sections(head_record) if head_record is not None else {}
+    cited = {c.section for c in (*before.admissions.values(), *after.admissions.values(),
+                                 before.authority, after.authority)
+             if isinstance(c, RecordCitation)}
+    for section in sorted(cited):
+        if section in base_sections and head_sections.get(section) != base_sections[section]:
+            problems.append(f"a landing edits cited section {section} of the decision record")
     for transport, citation in sorted(after.admissions.items()):
         problems.extend(_citation_failures(transport, citation, record, pr, pr_merged))
     if after.authority is not None:

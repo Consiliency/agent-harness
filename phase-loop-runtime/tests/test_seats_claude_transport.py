@@ -380,6 +380,34 @@ def test_ec_claude_7_a_failing_probe_at_the_real_call_site_launches_nothing(
     assert _detail(spawned) == sc.LOGIN_UNPROVEN and tuple(spawned)[0] == "DEGRADED"
 
 
+@pytest.mark.parametrize("differs", ["profile_digest", "filter_digest",
+                                     "dependency_projection_digest"])
+def test_an_auth_jail_of_another_shape_is_a_failed_probe_and_launches_nothing(
+        monkeypatch, tmp_path, differs):
+    review = types.SimpleNamespace(profile_digest="a" * 64, filter_digest="b" * 64,
+                                   dependency_projection_digest="", provider_path="/x",
+                                   seat_ids=(1, 1), dependency=None)
+    seat = types.SimpleNamespace(jail=review, seat_dir=tmp_path, holder_pid=1, notices=[])
+    built: list[object] = []
+
+    def build(_seat, directory, token):
+        jail = types.SimpleNamespace(**{**vars(review), "provider_argv0": "/seat/bin/claude",
+                                        "env": {}})
+        if not built:
+            setattr(jail, differs, "c" * 64)
+        built.append(jail)
+        return jail
+
+    monkeypatch.setattr(pi, "_build_claude_auth_jail", build)
+    monkeypatch.setattr(pi._seat_jail, "close_jail_fds", lambda _j: None)
+    monkeypatch.setattr(pi, "_run_leg_with_liveness",
+                        lambda *a, **k: pytest.fail("the probe launched"))
+    result = pi._jailed_claude_auth_probe(seat, ACCESS.encode())
+    assert len(built) == 2
+    assert result.returncode != 0 and result.stdout == b""
+    assert result.credential_sha256 == hashlib.sha256(ACCESS.encode()).hexdigest()
+
+
 def test_the_jailed_prepare_refuses_a_refused_selection_before_creating_anything(
         monkeypatch, tmp_path, none_admitted):
     seat_dir = tmp_path / "seat"

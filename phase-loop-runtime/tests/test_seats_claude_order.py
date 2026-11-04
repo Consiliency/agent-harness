@@ -279,6 +279,13 @@ def test_a_card_whose_default_statement_omits_a_part_fails(tree, card):
     assert audit(tree, base, head) == 1
 
 
+def test_a_landing_that_edits_a_cited_section_fails(tree, seam):
+    """Sections are append-only: a later landing may not rewrite what a citation names."""
+    base = tree.commit(print=module_source(True, citation(RECORD_HEAD, "4a", 1775)))
+    head = tree.commit(record=RECORD_HEAD.replace("Print, explicit.", "Print, by default."))
+    assert audit(tree, base, head) == 1
+
+
 def test_a_non_literal_admission_fails(tree, seam):
     head = tree.commit(print="FLAG = True\nADMITTED = FLAG\n")
     assert audit(tree, seam, head) == 1
