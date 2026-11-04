@@ -474,7 +474,8 @@ def select_roadmap(repo: Path, explicit: str | Path | None = None) -> Path:
 
 
 _BANNER_DECLARATION_ATTEMPT = re.compile(
-    r"^\s*>\s*[#*_~`\s]*(?:STATUS|ACTIVE|DELIVERED|SUPERSEDED|ADVISORY)\b",
+    # Advisory recognition belongs solely to roadmap_lint's shared classifier.
+    r"^\s*>\s*[#*_~`\s]*(?:STATUS|ACTIVE|DELIVERED|SUPERSEDED)\b",
     re.IGNORECASE,
 )
 
@@ -519,7 +520,7 @@ def _return_selectable_roadmap(repo: Path, candidate: Path, source: str) -> Path
     try:
         text = candidate.read_text(encoding="utf-8")
     except (OSError, UnicodeDecodeError) as exc:
-        raise roadmap_lint.MalformedBannerError(f"{rel}: cannot read roadmap lifecycle banner: {exc}") from exc
+        raise roadmap_lint.MalformedBannerError(f"{rel}: cannot read roadmap lifecycle banner") from exc
 
     banner_status: str | None
     try:

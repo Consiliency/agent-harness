@@ -30,6 +30,7 @@ import re
 import stat
 import subprocess
 import sys
+import unicodedata
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import date
@@ -582,33 +583,54 @@ _BANNER_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
 )
 
 
-def advisory_declaration_attempt(line: str, *, in_banner: bool = True) -> bool:
-    """Identify advisory markers, excluding ordinary ``ADVISORY ONLY:`` prose.
+def advisory_declaration_attempt(text: str, *, valid_declaration: bool = False) -> int | None:
+    """Return the first marker's 1-based line, excluding prose and fenced code.
 
-    The execution-exclusion phrase is a marker anywhere in the document.
-    Otherwise require a leading advisory label (possibly Markdown-decorated)
-    or a Status label in the leading banner, rather than a prose mention.
+    Without a valid declaration, inspect the banner and structural marker lines
+    anywhere. With one, inspect only structural banner lines after line 3: the
+    title and body may discuss advisory status without conflicting with it.
+    This is a bounded Markdown classifier, not a Unicode spoofing detector:
+    homoglyphs and non-ASCII hyphens are not covered. Format characters are
+    removed, but punctuation is not transliterated.
     """
-    line = line.replace("\u200b", "")
-    if re.search(r"not\s+runner-selected", line, re.IGNORECASE):
-        return True
-    if not in_banner:
-        return False
-    return bool(re.match(
-        r"^\s*(?:>\s*)*[^\w\n]*(?:\[!?\w+\]\s*)?"
-        r"(?:STATUS\b.*?\b)?ADVISORY\b(?!\s+ONLY\b)",
-        line, re.IGNORECASE,
-    ))
+    in_banner = True
+    fence: str | None = None
+    for number, raw in enumerate(text.splitlines(), 1):
+        # Do not fold homoglyphs or non-ASCII hyphens; only remove Unicode Cf.
+        line = "".join(char for char in raw if unicodedata.category(char) != "Cf")
+        fence_match = re.match(r"^\s*(`{3,}|~{3,})", line)
+        if fence is not None:
+            if re.fullmatch(r"\s*" + re.escape(fence[0]) + "{" + str(len(fence)) + r",}\s*", line):
+                fence = None
+            continue
+        if fence_match:
+            fence = fence_match[1]
+            continue
+        if line.startswith("## "):
+            in_banner = False
+        structural = bool(re.match(r"^\s*(?:>|#{1,6}\s)", line))
+        if valid_declaration and (number <= 3 or not in_banner or not structural):
+            continue
+        if not in_banner and not structural:
+            continue
+        # Only these actual prose forms are exempt, never headings or callouts.
+        if re.match(r"^\s*>\s*\**ADVISORY ONLY[:.]", line):
+            continue
+        if re.search(r"\bADVISORY\b", line):
+            return number
+        leading = re.sub(r"^\s*(?:>\s*)*[^\w\n]*(?:\[!?\w+\]\s*)?", "", line)
+        if re.match(r"not[\s-]*runner[\s-]*selected\b", leading, re.IGNORECASE):
+            return number
+        if re.match(
+            r"(?:status(?:\s*\([^)]*\))?|roadmap status|lifecycle|note)\s*:\s*\W*advisory\b",
+            leading, re.IGNORECASE,
+        ):
+            return number
+    return None
 
 
 def has_advisory_declaration_attempt(text: str) -> bool:
-    in_banner = True
-    for line in text.splitlines():
-        if line.startswith("## "):
-            in_banner = False
-        if advisory_declaration_attempt(line, in_banner=in_banner):
-            return True
-    return False
+    return advisory_declaration_attempt(text) is not None
 
 
 def parse_roadmap_banner_status(text: str, path: str) -> str:
@@ -656,11 +678,9 @@ def parse_roadmap_banner_status(text: str, path: str) -> str:
             f"{path}: recognized lifecycle declaration at line {line_index + 1}, expected line 3"
         )
     # A valid declaration must not hide a second, malformed advisory marker.
-    if any(
-        index != line_index and advisory_declaration_attempt(line, in_banner=index < banner_end)
-        for index, line in enumerate(lines)
-    ):
-        raise MalformedBannerError(f"{path}: conflicting advisory declaration attempt")
+    conflict_line = advisory_declaration_attempt(text, valid_declaration=True)
+    if conflict_line is not None:
+        raise MalformedBannerError(f"{path}: line {conflict_line}: conflicting advisory declaration attempt")
     return status
 
 
@@ -1183,9 +1203,13 @@ def declared_active_roadmap(repo: Path) -> Path:
         return candidates[0].resolve()
     active_candidates: List[Path] = []
     for candidate in candidates:
+        rel = candidate.relative_to(repo).as_posix()
         try:
-            rel = candidate.relative_to(repo).as_posix()
-            if parse_roadmap_banner_status(candidate.read_text(encoding="utf-8"), rel) == "active":
+            text = candidate.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise MalformedBannerError(f"{rel}: cannot read roadmap lifecycle banner") from exc
+        try:
+            if parse_roadmap_banner_status(text, rel) == "active":
                 active_candidates.append(candidate)
         except RoadmapStatusError:
             continue
