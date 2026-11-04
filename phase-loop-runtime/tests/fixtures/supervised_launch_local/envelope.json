@@ -1,0 +1,15 @@
+{
+  "schema": "synthetic-local-only-not-public-contract",
+  "version": 1,
+  "assignment_digest": "synthetic-assignment",
+  "run_id": "synthetic-run",
+  "attempt_id": "synthetic-attempt",
+  "target_unit_ids": ["unit-a"],
+  "readonly_neighbor_unit_ids": ["unit-b"],
+  "snapshot_reference": "synthetic-crosswalk",
+  "obligation_references": ["synthetic-obligation"],
+  "dependency_declaration": [],
+  "caller_context": {"opaque": ["preserved", 1]},
+  "redaction_posture": "metadata_only",
+  "launch_inputs": {}
+}

@@ -473,6 +473,11 @@ def _classify_cli_route(argv: Sequence[str]) -> Literal[
     if values in {("-h",), ("--help",), ("--version",)}:
         return "provider_free"
     command = _cli_command(values)
+    # Local module CLI namespace; these are not generic phase-loop subcommands.
+    if command in {"supervised-launch", "supervised-cancel"}:
+        return "dependency_unwired"
+    if command == "supervised-status":
+        return "provider_free"
     if command is None:
         return "dependency_unwired"
     if command in _CLI_DEPENDENCY_UNWIRED_COMMANDS:

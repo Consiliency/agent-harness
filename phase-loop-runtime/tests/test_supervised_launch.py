@@ -1,0 +1,352 @@
+"""Synthetic local corpus, deliberately not public contract conformance."""
+from dataclasses import asdict, replace
+import json
+import os
+from pathlib import Path
+import tempfile
+from types import SimpleNamespace
+
+import pytest
+
+from phase_loop_runtime import supervised_launch as launch
+
+
+@pytest.fixture
+def case():
+    mask = os.umask(0o077)
+    try:
+        # /tmp is intentionally unsuitable for trusted executable/binding paths.
+        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as directory:
+            root = Path(directory).absolute()
+            for name in ("workspace", "target", "references", "tools", "operator"):
+                (root / name).mkdir()
+            executable = root / "tools/tool"
+            executable.write_bytes(b"synthetic executable, never launched")
+            executable.chmod(0o700)
+            wrapper = root / "tools/wrapper"
+            wrapper.write_bytes(b"synthetic wrapper, never launched")
+            wrapper.chmod(0o700)
+            for name, data in (("instruction", b"synthetic instructions"), ("baseline", b"synthetic baseline")):
+                (root / "references" / name).write_bytes(data)
+            config = launch.LaunchConfig(root / "operator/config.json", root / "operator/template.json")
+            settings = {"reference_roots": [str(root / "references")], "executable_path": [str(root / "tools")],
+                        "envelope_cap": 16384, "reference_cap": 1024, "aggregate_cap": 2048,
+                        "timeout_max": 60, "qualified_version": "synthetic-v1"}
+            config.config_path.write_text(json.dumps(settings))
+            config.template_path.write_text('["{executable}", "readonly-proposal"]')
+            envelope = json.loads((Path(__file__).parent / "fixtures/supervised_launch_local/envelope.json").read_bytes())
+            envelope["launch_inputs"] = {
+                "instruction": {"root": str(root / "references"), "path": "instruction",
+                                "digest": launch.sha256((root / "references/instruction").read_bytes())},
+                "baseline": {"root": str(root / "references"), "path": "baseline",
+                             "digest": launch.sha256((root / "references/baseline").read_bytes())},
+                "executable": str(executable), "wrappers": [str(wrapper)],
+                "workspace": str(root / "workspace"), "target": str(root / "target"),
+                "tier": "post_write_audit_only", "constraints": [], "timeout": 30}
+            yield SimpleNamespace(root=root, config=config, settings=settings, envelope=envelope,
+                                  executable=executable, wrapper=wrapper)
+    finally:
+        os.umask(mask)
+
+
+def codec(capture):
+    return capture.envelope, capture.raw_digest
+
+
+def admit(view):
+    return launch.Admit(view.launch_digest, view.envelope["attempt_id"])
+
+
+def prepare(case, module=launch, validator=None, decoder=codec):
+    if validator is None:
+        validator = lambda view: module.Admit(view.launch_digest, view.envelope["attempt_id"])
+    return module.prepare_launch(json.dumps(case.envelope).encode(), validator=validator,
+                                 decoder=decoder, config=case.config)
+
+
+def refused(case, module=launch, reason=None, validator=None, decoder=codec):
+    # Only a successful boundary could reach these synthetic sinks.
+    sinks = []
+    result = prepare(case, module, validator, decoder)
+    if not isinstance(result, module.Refused):
+        sinks.extend(["probe", "worker"])
+    assert isinstance(result, module.Refused), result
+    assert sinks == []
+    if reason:
+        assert result.reason == reason
+
+
+def qualify(case):
+    case.envelope["launch_inputs"]["tier"] = "provider_readonly_patch_return_audit"
+    record = {"executable": {"path": str(case.executable), "digest": launch.sha256(case.executable.read_bytes())},
+              "wrappers": [{"path": str(case.wrapper), "digest": launch.sha256(case.wrapper.read_bytes())}],
+              "template_digest": launch.sha256(case.config.template_path.read_bytes()),
+              "version": "synthetic-v1", "write_attempt_refused": True, "proposal_return": True, "audit": True}
+    path = case.root / "operator/qualification.json"
+    path.write_text(json.dumps(record))
+    case.config = replace(case.config, qualification_path=path)
+    return path
+
+
+def capture_witness(case, module, monkeypatch):
+    raw = json.dumps(case.envelope).encode()
+    counts = {"parse": 0, "hash": 0}
+    original_json, original_sha = module._json, module.sha256
+    def parsed(data):
+        counts["parse"] += data == raw
+        return original_json(data)
+    def hashed(data):
+        counts["hash"] += data == raw
+        return original_sha(data)
+    monkeypatch.setattr(module, "_json", parsed)
+    monkeypatch.setattr(module, "sha256", hashed)
+    result = prepare(case, module)
+    assert isinstance(result, module.PreparedLaunch)
+    assert counts == {"parse": 1, "hash": 1}
+    return result
+
+
+def test_single_use_immutable_snapshots_and_identities(case, monkeypatch):
+    result = capture_witness(case, launch, monkeypatch)
+    assert isinstance(result, launch.PreparedLaunch)
+    assert result.view.envelope["caller_context"]["opaque"] == ("preserved", 1)
+    for key in ("run_id", "attempt_id", "snapshot_reference", "assignment_digest", "redaction_posture"):
+        assert result.view.envelope[key] == case.envelope[key]
+    assert result.view.envelope["target_unit_ids"] == ("unit-a",)
+    assert result.view.envelope["readonly_neighbor_unit_ids"] == ("unit-b",)
+    assert result.view.envelope["obligation_references"] == ("synthetic-obligation",)
+    with pytest.raises(TypeError):
+        result.view.envelope["caller_context"]["opaque"] = "changed"
+    (case.root / "references/instruction").write_bytes(b"replacement")
+    assert launch.consume_admission(result).instruction == b"synthetic instructions"
+    assert launch.consume_admission(result) == launch.Refused("token_spent")
+
+
+@pytest.mark.parametrize("value", [True, "admit", None, 1])
+def test_non_admit(case, value):
+    refused(case, validator=lambda view: value, reason="admit_required")
+
+
+@pytest.mark.parametrize("field", ["launch_digest", "attempt_id"])
+def test_verdict_binding(case, field):
+    refused(case, validator=lambda view: replace(admit(view), **{field: "stale"}), reason="admit_binding")
+
+
+def test_exception_and_unavailable_validator(case):
+    def failure(view):
+        raise RuntimeError("synthetic failure")
+    refused(case, validator=failure)
+    result = launch.prepare_launch(b"{}", validator=None, decoder=codec, config=case.config)
+    assert result == launch.Refused("binding_unavailable")
+
+
+@pytest.mark.parametrize("field", ["instruction", "baseline", "executable", "wrappers", "workspace", "target",
+                                  "tier", "constraints", "timeout"])
+def test_every_launch_input_substitution(case, field):
+    first = prepare(case)
+    assert isinstance(first, launch.PreparedLaunch)
+    values = {"instruction": dict(case.envelope["launch_inputs"]["baseline"]),
+              "baseline": dict(case.envelope["launch_inputs"]["instruction"]),
+              "executable": str(case.wrapper), "wrappers": [], "workspace": str(case.root / "target"),
+              "target": str(case.root / "workspace"), "tier": "provider_readonly_patch_return_audit",
+              "constraints": ["network_denial"], "timeout": 31}
+    case.envelope["launch_inputs"][field] = values[field]
+    refused(case, validator=lambda view: first.admit)
+
+
+@pytest.mark.parametrize("tier", ["os_enforced", "unknown"])
+def test_tier_refusal(case, tier):
+    case.envelope["launch_inputs"]["tier"] = tier
+    refused(case, reason="tier_unsupported")
+
+
+@pytest.mark.parametrize("constraint", ["write_scope", "command_denial", "network_denial", "unknown"])
+@pytest.mark.parametrize("provider", [False, True])
+def test_constraint_matrix(case, constraint, provider):
+    if provider:
+        qualify(case)
+    case.envelope["launch_inputs"]["constraints"] = [constraint]
+    refused(case, reason="constraints_unsupported")
+
+
+def test_qualification_missing_mismatched_and_positive(case):
+    case.envelope["launch_inputs"]["tier"] = "provider_readonly_patch_return_audit"
+    refused(case, reason="qualification_missing")
+    path = qualify(case)
+    assert isinstance(prepare(case), launch.PreparedLaunch)
+    data = json.loads(path.read_bytes())
+    data["write_attempt_refused"] = False
+    path.write_text(json.dumps(data))
+    refused(case, reason="qualification_invalid")
+
+
+@pytest.mark.parametrize("storage", ["gitfile", "hardlink", "symlink", "alternates", "commondir"])
+def test_workspace_provider_storage(case, storage):
+    qualify(case)
+    workspace = case.root / "workspace"
+    if storage == "gitfile":
+        (workspace / ".git").write_text("gitdir: ../target/.git")
+    elif storage == "hardlink":
+        os.link(case.executable, workspace / "linked")
+    elif storage == "symlink":
+        (workspace / "linked").symlink_to(case.root / "target")
+    else:
+        (workspace / storage).write_text("../target")
+    refused(case)
+
+
+def test_audit_worktree_and_in_place(case):
+    (case.root / "workspace/.git").write_text("gitdir: ../target/.git")
+    assert prepare(case).view.inputs.workspace_class == "worktree"
+    case.envelope["launch_inputs"]["workspace"] = str(case.root / "target")
+    assert prepare(case).view.inputs.workspace_class == "in_place"
+
+
+def test_provider_uninspectable_storage(case, monkeypatch):
+    storage_witness(case, launch, monkeypatch, "workspace_uninspectable")
+
+
+def storage_witness(case, module, monkeypatch, control):
+    qualify(case)
+    if control == "workspace_uninspectable":
+        def inaccessible(root, **kwargs):
+            kwargs["onerror"](PermissionError("synthetic unreadable subtree"))
+            return iter(())
+        monkeypatch.setattr(module.os, "walk", inaccessible)
+    else:
+        shared = case.root / "workspace/objects"
+        shared.mkdir()
+        target = case.root / "target/objects"
+        target.mkdir()
+        original = Path.lstat
+        def aliased(path, *args, **kwargs):
+            return original(target if path == shared else path, *args, **kwargs)
+        monkeypatch.setattr(Path, "lstat", aliased)
+    refused(case, module, reason=control)
+
+
+def test_provider_physical_shared_storage(case, monkeypatch):
+    storage_witness(case, launch, monkeypatch, "workspace_shared")
+
+
+@pytest.mark.parametrize("mode", ["relative_path", "empty_path", "workspace", "writable", "symlink", "missing"])
+def test_executable_path_refusal(case, mode):
+    if mode in {"relative_path", "empty_path"}:
+        case.envelope["launch_inputs"]["executable"] = "tool"
+        case.settings["executable_path"] = ["relative" if mode == "relative_path" else ""]
+        case.config.config_path.write_text(json.dumps(case.settings))
+    elif mode == "workspace":
+        path = case.root / "workspace/tool"
+        path.write_bytes(b"local")
+        path.chmod(0o700)
+        case.envelope["launch_inputs"]["executable"] = str(path)
+    elif mode == "writable":
+        case.executable.parent.chmod(0o770)
+    elif mode == "symlink":
+        case.executable.unlink()
+        case.executable.symlink_to(case.wrapper)
+    else:
+        case.executable.unlink()
+    refused(case)
+
+
+@pytest.mark.parametrize("control", ["reference_root", "reference_nofollow", "reference_regular", "reference_cap",
+                                     "aggregate_cap", "envelope_cap"])
+def test_reference_controls(case, control):
+    reference_witness(case, launch, control)
+
+
+def reference_witness(case, module, control):
+    spec = case.envelope["launch_inputs"]["instruction"]
+    if control == "reference_root":
+        spec["root"] = str(case.root / "operator")
+        (case.root / "operator/instruction").write_bytes(b"synthetic instructions")
+    elif control == "reference_nofollow":
+        path = case.root / "references/instruction"
+        path.unlink()
+        path.symlink_to(case.root / "references/baseline")
+        spec["digest"] = launch.sha256(b"synthetic baseline")
+    elif control == "reference_regular":
+        path = case.root / "references/instruction"
+        path.unlink()
+        os.mkfifo(path)
+        spec["digest"] = launch.sha256(b"")
+    else:
+        key, value = {"reference_cap": ("reference_cap", len(b"synthetic instructions") - 1), "aggregate_cap": ("aggregate_cap", 30),
+                      "envelope_cap": ("envelope_cap", 1)}[control]
+        case.settings[key] = value
+        case.config.config_path.write_text(json.dumps(case.settings))
+    refused(case, module)
+
+
+@pytest.mark.parametrize("control", ["consume_class", "consume_device", "consume_inode", "consume_executable", "consume_wrapper"])
+def test_consumption_rechecks(case, monkeypatch, control):
+    consumption_witness(case, launch, monkeypatch, control)
+
+
+def consumption_witness(case, module, monkeypatch, control):
+    prepared = prepare(case, module)
+    assert isinstance(prepared, module.PreparedLaunch)
+    if control == "consume_class":
+        (case.root / "workspace/.git").write_text("gitdir: ../target/.git")
+    elif control in {"consume_device", "consume_inode"}:
+        # A synthetic stat return is needed for device changes without live mount trials.
+        original = module.classify_workspace
+        def changed(*args):
+            kind, device, inode = original(*args)
+            return kind, device + (control == "consume_device"), inode + (control == "consume_inode")
+        monkeypatch.setattr(module, "classify_workspace", changed)
+    else:
+        (case.executable if control == "consume_executable" else case.wrapper).write_bytes(b"changed")
+    assert isinstance(module.consume_admission(prepared), module.Refused)
+
+
+def test_identity_only_launch_digest(case):
+    identity_witness(case, launch)
+
+
+def test_root_owned_executable_identity(case, monkeypatch):
+    executable_owner_witness(case, launch, monkeypatch)
+
+
+def executable_owner_witness(case, module, monkeypatch):
+    original = os.fstat
+    inodes = {case.executable.stat().st_ino, case.wrapper.stat().st_ino}
+    def root_owned(fd):
+        info = original(fd)
+        if info.st_ino in inodes:
+            values = {name: getattr(info, name) for name in dir(info) if name.startswith("st_")}
+            values["st_uid"] = 0
+            return SimpleNamespace(**values)
+        return info
+    monkeypatch.setattr(os, "fstat", root_owned)
+    prepared = prepare(case, module)
+    assert isinstance(prepared, module.PreparedLaunch)
+    assert isinstance(module.consume_admission(prepared), module.LaunchInputs)
+
+
+def identity_witness(case, module):
+    first = prepare(case, module)
+    case.executable.write_bytes(b"changed identity, identical envelope")
+    refused(case, module, validator=lambda view: first.admit)
+    second = prepare(case, module)
+    assert first.view.raw_digest == second.view.raw_digest
+    assert first.view.launch_digest != second.view.launch_digest
+    assert asdict(first.view.inputs.executable) != asdict(second.view.inputs.executable)
+
+
+@pytest.mark.parametrize("raw", [b'{"x":1,"x":2}', b'{"x":NaN}', b'{"x":Infinity}'])
+def test_ambiguous_json_before_codec(case, raw):
+    calls = []
+    result = launch.prepare_launch(raw, validator=lambda view: calls.append("validator"),
+                                   decoder=lambda data: calls.append("decoder"), config=case.config)
+    assert isinstance(result, launch.Refused)
+    assert calls == []
+
+
+def test_side_channels_and_missing_inputs(case):
+    case.envelope["launch_inputs"]["argv_tail"] = ["override"]
+    refused(case, reason="launch_fields")
+    del case.envelope["launch_inputs"]["argv_tail"]
+    del case.envelope["launch_inputs"]["instruction"]
+    refused(case, reason="launch_fields")
