@@ -4,7 +4,7 @@ phase: ENVELOPE
 roadmap: specs/phase-plans-v12.md
 roadmap_sha256: 8aea5fbcb0a8caa2b75d51ecb0147bd6f0e9e7db9bdeb9e58988d09bf12fdf2d
 automation:
-  suite_command: ["python3", "-m", "pytest", "-q", "phase-loop-runtime/tests", "-k", "supervised_launch"]
+  suite_command: ["python3", "-m", "pytest", "-q", "phase-loop-runtime/tests", "-k", "test_supervised_launch.py or test_supervised_launch_mutations.py or test_supervised_launch_binding.py or test_supervised_launch_route.py or test_supervised_launch_receipt.py"]
 ---
 
 # ENVELOPE: Admitted launch boundary
@@ -122,6 +122,11 @@ Apply identical trust checks to codec bindings, qualification records, closed
 argv templates and configuration. WORKER uses isolated Python (-I) from the
 trusted installed environment; SL-1 proves binding/transitive import behavior
 with shadowed stdlib modules under isolated Python, not just validator shadowing.
+For every isolated-Python test child, explicitly insert the absolute source root
+of the checkout under test, assert phase_loop_runtime.__file__ resolves beneath
+it, and record that resolved path in evidence before exercising the guard.
+-I ignores PYTHONPATH; the shared venv's primary checkout must not satisfy these
+tests. WORKER's CLI tests inherit this checkout-provenance requirement.
 
 preflight_supervised_route runs before envelope I/O, validator loading, probes,
 credentials or output effects. Namespaced classifier keys supervised-launch
@@ -180,8 +185,13 @@ SL-2 — Evidence and documentation reducer
   - verify: Run V0 and V1. Mutate the production digest/input comparison,
     exact typed-admit check, resolved-identity-only digest binding, token consumption, tier/qualification check and
     workspace classifier individually. Each negative control must enter the
-    production guard and turn a previously passing assertion red. No mutation
-    of a test-only acceptance model counts as evidence.
+    production guard and turn a previously passing assertion red. Add named
+    consumption-time controls: bypass workspace-classification recheck,
+    root-device recheck, root-inode recheck, executable-digest recheck and
+    wrapper-digest recheck. Add named reference-read controls: bypass root
+    confinement, component no-follow, regular-file restriction, per-file cap
+    and aggregate cap; also bypass the envelope byte cap. Mutate each separately.
+    No mutation of a test-only acceptance model counts as evidence.
 
 ### SL-1 — Trusted binding and standalone route composition
 
@@ -204,7 +214,9 @@ SL-2 — Evidence and documentation reducer
     unchanged. Implement secure external binding, with no automatic discovery
     or default validator. The CLI executable is WORKER scope; freeze its call
     order here. Only standalone/undeclared admission can proceed.
-  - verify: Run V2 including existing startup regressions. Mutate the
+  - verify: Run V2 and the separate required startup-regression command in
+    Verification. The frontmatter suite excludes startup regressions; the
+    required CI suite gate still covers them. Mutate the
     classification guard, uid/mode checks and trusted import resolution;
     require path-entered witnesses and failure of the corresponding negative
     tests. Record evidence separately from SL-0's results.
@@ -212,7 +224,7 @@ SL-2 — Evidence and documentation reducer
 ### SL-2 — Evidence and documentation reducer
 
 - **Scope**: Synthesize both producer lanes into accurate seam documentation and evidence.
-- **Owned files**: `docs/supervised-worker.md`, `plans/evidence/supervised-worker/ENVELOPE.md`, `phase-loop-runtime/tests/test_supervised_launch_receipt.py`, `CHANGELOG.md`
+- **Owned files**: `docs/supervised-worker.md`, `plans/evidence/supervised-worker/ENVELOPE.md`, `phase-loop-runtime/tests/test_supervised_launch_receipt.py`
 - **Interfaces provided**: `envelope_seam_receipt`
 - **Interfaces consumed**: `admission_test_evidence`, `route_test_evidence`, `prepare_launch`, `consume_admission`, `load_validator_binding`, `preflight_supervised_route`
 - **Parallel-safe**: no
@@ -226,11 +238,11 @@ SL-2 — Evidence and documentation reducer
     pending public-schema reconciliation, installed-tool qualification and
     registry activation separately. Note same-login/on-disk credential and
     journal trust limits; WORKER/JOURNAL own their implementation obligations.
-    Changelog describes only the implemented admission seam. Active v11 RELEASE
-    retains CHANGELOG.md ownership: before SL-2 writes, record an explicit
-    serialized handoff from that owner in the seam receipt and rebase onto its
-    completed changelog edits. Without that disposition, defer the changelog
-    write and SL-2 completion; other seam work may proceed.
+    No-doc-change decision for CHANGELOG.md: ENVELOPE freezes a local fixture
+    seam; WORKER closeout owns the integrated feature's changelog update.
+    README and release notes remain current because ENVELOPE introduces no
+    public CLI or release; docs/supervised-worker.md documents the local APIs.
+    No changelog handoff gates SL-2 completion.
   - verify: Run V3 and the whole suite. Falsify a receipt binding in a temporary
     copy after entering production and assert rejection. Finalize only actual
     observed results via runner-stamped evidence, never a fabricated pass.
@@ -244,9 +256,8 @@ lockfile, init modules and generated bundles stay untouched in this phase;
 WORKER owns their later integration. Shared startup changes/tests belong to
 SL-1. No schema loader or public schema files are needed for this first phase.
 
-Check (N), if emitted due to changelog ownership, is only a packaging/release
-heuristic. This phase neither tags nor dispatches a release; no post-dispatch
-lane is required. Fixture API freeze is not authoritative contract acceptance.
+This phase neither tags nor dispatches a release; no post-dispatch lane is
+required. Fixture API freeze is not authoritative contract acceptance.
 When the public contract differs, amend consumers and rerun production semantic
 vectors in CLOSEOUT; do not quietly reinterpret an EC.
 
@@ -261,19 +272,29 @@ advisories above roughly five minutes on one node; report multiple failures.
 
 Use the repository's locked Python 3.12+ environment and absolute source/test
 PYTHONPATH from CONTRIBUTING.md. These are future implementation commands,
-not tests to execute during planning. Directory selectors resolve today;
-zero collection, skipped-only cases or pytest exit 5 fail verification.
+not tests to execute during planning except for collection checks.
+Before implementation, pytest --collect-only must find ZERO matches for each
+of the five acceptance command selectors (frontmatter suite, whole-phase suite,
+V0, EC-ENVELOPE-1 and EC-ENVELOPE-2) on the pre-implementation tree.
+After implementation, every node selected by those commands must lie in an
+SL-owned test file, and each selected owned file must contribute at least one
+node; record both checks in the receipt. Zero collection, skipped-only cases
+or pytest exit 5 then fail verification.
 Record collected node IDs and mutation outcomes. V0 must collect new tier,
 workspace and qualification cases; V2 must collect new binding and route cases.
 The effective suite must include those same nodes; absent/skipped required cases
 fail intake/closeout even when existing regressions pass. All tests are offline.
+SL-0/SL-1 tests that create files whose modes are checked must pin umask to 077
+and restore it afterward; set deliberate unsafe modes explicitly with chmod.
+Operator documentation must explain that group-writable executable components
+are conservatively refused even with user-private groups and umask 002.
 
-- `python3 -m pytest -q phase-loop-runtime/tests -k "supervised_launch and not mutations and not binding and not route and not receipt"` — V0.
+- `python3 -m pytest -q phase-loop-runtime/tests -k "test_supervised_launch.py"` — V0.
 - `python3 -m pytest -q phase-loop-runtime/tests -k supervised_launch_mutations` — V1.
 - `python3 -m pytest -q phase-loop-runtime/tests -k "supervised_launch_binding or supervised_launch_route"` — V2.
 - `python3 -m pytest -q phase-loop-runtime/tests -k executable_dependency_startup` — additional required startup regression.
 - `python3 -m pytest -q phase-loop-runtime/tests -k supervised_launch_receipt` — V3.
-- `python3 -m pytest -q phase-loop-runtime/tests -k "supervised_launch"` — whole-phase effective suite.
+- `python3 -m pytest -q phase-loop-runtime/tests -k "test_supervised_launch.py or test_supervised_launch_mutations.py or test_supervised_launch_binding.py or test_supervised_launch_route.py or test_supervised_launch_receipt.py"` — whole-phase effective suite.
 
 Validate argv and the effective suite through IF-0-VC-2 at planning and intake;
 repeat selectors after test creation. Tests use spies/synthetic files and no
@@ -281,8 +302,8 @@ external providers. Restore production code after scoped mutations.
 
 ## Acceptance Criteria
 
-- [ ] EC-ENVELOPE-1 — proven by `python3 -m pytest -q phase-loop-runtime/tests -k "supervised_launch and not receipt"`; falsified by typed-admit/digest/single-use bypass at prepare_launch/consume_admission with path-entered witnesses.
-- [ ] EC-ENVELOPE-2 — proven by `python3 -m pytest -q phase-loop-runtime/tests -k "supervised_launch"`; falsified by tier/workspace or route-guard removal with path-entered zero-effect assertions.
+- [ ] EC-ENVELOPE-1 — proven by `python3 -m pytest -q phase-loop-runtime/tests -k "test_supervised_launch.py or test_supervised_launch_mutations.py or test_supervised_launch_binding.py or test_supervised_launch_route.py"`; falsified by typed-admit/digest/single-use bypass at prepare_launch/consume_admission with path-entered witnesses.
+- [ ] EC-ENVELOPE-2 — proven by `python3 -m pytest -q phase-loop-runtime/tests -k "test_supervised_launch.py or test_supervised_launch_mutations.py or test_supervised_launch_binding.py or test_supervised_launch_route.py or test_supervised_launch_receipt.py"`; falsified by tier/workspace or route-guard removal with path-entered zero-effect assertions.
 - [ ] EC-ENVELOPE-3 — proven by `python3 -m pytest -q phase-loop-runtime/tests -k "supervised_launch_mutations or supervised_launch_route or supervised_launch_binding or supervised_launch_receipt"`; falsified by surviving production mutants or falsely authoritative fixture receipts.
 
 ## Spec Closeout Plan
