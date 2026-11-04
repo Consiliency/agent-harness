@@ -12,7 +12,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   Older readers fail closed on advisory registry entries; without a registry,
   older runtimes may treat advisory banners as legacy roadmaps and run them.
   Advisory status requires the registry, which is the authority. Without one,
-  only the exact line-3 advisory banner is refused; other wording keeps legacy
+  the exact line-3 advisory banner adds a refusal; existing malformed `STATUS`
+  declaration refusals remain, and other wording keeps legacy
   behavior. `validate-roadmap` warns about advisory-looking text outside that
   banner without blocking validation or selection. Ordinary advisory prose is valid.
 

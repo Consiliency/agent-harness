@@ -61,7 +61,9 @@ dispatched. Their exact line-3 banner, after an H1 and a blank line, is:
 Use a valid ISO calendar date. Advisory status requires the registry; it is the
 authority. A registry/banner mismatch is a typed refusal. Without a registry,
 only the exact advisory banner on line 3 is refused for selection and dispatch.
-Other advisory wording keeps legacy behavior, including near-miss banners.
+Other advisory wording keeps main's legacy behavior, including near-miss banners.
+Existing malformed `STATUS` declaration refusals (such as `> Status: advisory`)
+still apply.
 `validate-roadmap` emits non-blocking WARNINGs for advisory-looking text outside
 the exact banner; these warnings never affect selection.
 

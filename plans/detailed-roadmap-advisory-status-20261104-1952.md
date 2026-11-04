@@ -23,9 +23,11 @@ active-only selected_roadmap, and typed registry/banner mismatch refusals.
 Registered advisory roadmaps are validated and included in evidence but never
 selected or dispatched. Promotion requires a separate coherent owner decision.
 
-Without a registry, refuse only the exact advisory banner on line 3. Other
-advisory wording retains legacy behavior: no prose-based or repository-wide
-refusals. Existing active/delivered/superseded behavior remains. Remove the shared
+Without a registry, add refusal of the exact advisory banner on line 3 to main's
+existing refusals. Other advisory wording retains main's legacy behavior,
+including refusal of malformed STATUS declarations such as `> Status: advisory`.
+No new prose-based or repository-wide refusals apply. Existing
+active/delivered/superseded behavior remains. Remove the shared
 marker classifier's body scanning, fence tracking, Unicode normalization,
 label-prefix and phrase detection. Ordinary ACTIVE documents with advisory prose
 remain valid, including prose in unselected siblings.
@@ -46,8 +48,8 @@ messages (including broken symlinks outside the repo), and clean CLI exit 2.
   fallback; add the non-blocking validator warning. Preserve registry coherence,
   vocabulary, evidence and anchored banner parser.
 - phase-loop-runtime/src/phase_loop_runtime/discovery.py: remove shared heuristic
-  use; retain existing-status declaration recognition without treating arbitrary
-  Status prose as a lifecycle declaration; preserve lexical relative paths for
+  use; retain main's existing STATUS/ACTIVE/DELIVERED/SUPERSEDED declaration
+  recognition unchanged; preserve lexical relative paths for
   unreadable symlinks.
 - phase-loop-runtime/tests/test_advisory_roadmap_status.py: replace shape tables
   with focused exact-banner refusal, near-miss legacy/warning, ACTIVE/prose,
@@ -90,7 +92,8 @@ manifest entry; record that warning in the reflection.
 - Advisory is accepted by v1, retained in coverage/evidence, and cannot be
   selected or dispatched; registry/banner mismatches refuse with typed errors.
 - Without a registry the exact line-3 advisory banner refuses selection/dispatch;
-  near misses otherwise behave as legacy and produce validator warnings.
+  near misses otherwise retain main's behavior and produce validator warnings
+  when content validation is reached; malformed STATUS declarations still refuse.
 - ACTIVE plus advisory prose and unselected siblings do not block selection.
 - Anchored parsing, relative typed read errors and clean CLI exit 2 remain.
 - README, CHANGELOG and this plan describe the same rule; adoption artifacts
