@@ -14080,6 +14080,35 @@
       "task_summary": null,
       "type": "phase",
       "updated_at": "2026-10-13T02:11:38Z"
+    },
+    {
+      "acceptance_criteria_count": null,
+      "created_at": "2026-11-04T18:30:31Z",
+      "file": "plans/phase-plan-v12-SCHEMA.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20261104-supervised-worker-planning.md",
+      "if_gates_produced": [
+        "IF-0-SCHEMA-1"
+      ],
+      "lanes": [
+        "SL-0",
+        "SL-1",
+        "SL-2"
+      ],
+      "lifecycle": [],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "SCHEMA",
+      "reflection_ref": null,
+      "roadmap_ref": {
+        "file": "specs/phase-plans-v12.md",
+        "slug": "phase-plans-v12",
+        "status": "committed",
+        "type": "phase"
+      },
+      "slug": "v12-SCHEMA",
+      "status": "committed",
+      "task_summary": null,
+      "type": "phase",
+      "updated_at": "2026-11-04T18:30:31Z"
     }
   ],
   "schema_version": 1
