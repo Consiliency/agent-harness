@@ -2,6 +2,7 @@
 from dataclasses import asdict, replace
 import json
 import os
+import pwd
 from pathlib import Path
 import subprocess
 import tempfile
@@ -12,12 +13,21 @@ import pytest
 from phase_loop_runtime import supervised_launch as launch
 
 
+def _fixture_base():
+    for base in (Path(__file__).parent, Path(pwd.getpwuid(os.getuid()).pw_dir)):
+        if os.access(base, os.W_OK) and all(
+                not item.stat().st_mode & 0o022 and item.stat().st_uid in {0, os.getuid()}
+                for item in (base, *base.parents)):
+            return base
+    pytest.fail("no trust-eligible fixture base")
+
+
 @pytest.fixture
 def case():
     mask = os.umask(0o077)
     try:
         # /tmp is intentionally unsuitable for trusted executable/binding paths.
-        with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as directory:
+        with tempfile.TemporaryDirectory(dir=_fixture_base()) as directory:
             root = Path(directory).absolute()
             for name in ("workspace", "target", "references", "tools", "operator"):
                 (root / name).mkdir()
@@ -511,6 +521,35 @@ def git_data_witness(case, module, setting="nested"):
         (workspace / ".git" / name).write_text(data)
         reason = "workspace_storage" if setting == "http-alternates" else "workspace_gitconfig"
     refused(case, module, reason=reason)
+
+
+def repository_shape_witness(case, module, nested=False):
+    qualify(case)
+    directory = case.root / "workspace"
+    if nested:
+        directory = directory / "sub"
+        directory.mkdir()
+    (directory / "HEAD").write_text("ref: refs/heads/main\n")
+    (directory / "objects").mkdir()
+    (directory / "refs").mkdir()
+    refused(case, module, reason="workspace_gitdir")
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_workspace_repository_shape(case, nested):
+    repository_shape_witness(case, launch, nested)
+
+
+def test_workspace_real_clone(case):
+    qualify(case)
+    source = case.root / "source"
+    subprocess.run(["git", "init", "-q", str(source)], check=True)
+    workspace = case.root / "workspace"
+    workspace.rmdir()
+    subprocess.run(["git", "clone", "--no-local", "--no-hardlinks", str(source), str(workspace)], check=True)
+    assert launch.classify_workspace(workspace, case.root / "target",
+                                    "provider_readonly_patch_return_audit")[0] == "separate"
+    assert isinstance(prepare(case), launch.PreparedLaunch)
 
 
 def test_process_attempt_reservation(case):

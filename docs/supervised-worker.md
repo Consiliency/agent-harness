@@ -120,7 +120,8 @@ version, with `write_attempt_refused`, `proposal_return` and `audit` evidence.
 Synthetic records establish only mechanics. Filesystem inspection rejects provider
 worktrees/gitfiles (including nested entries), nested/shared workspace roots,
 hardlinks, symlinks, alternates and commondir storage. Git config is read as data;
-worktree and include redirections refuse without executing git. Audit-only classification permits worktree/in-place use
+worktree and include redirections refuse without executing git. Repository-shaped
+directories outside the top-level `.git` refuse. Audit-only classification permits worktree/in-place use
 with detection-only posture. Unknown classifications refuse. Every requested
 constraint is currently unsupported on both tiers; `os_enforced` always refuses.
 

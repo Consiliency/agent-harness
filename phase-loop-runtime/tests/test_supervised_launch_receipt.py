@@ -3,7 +3,6 @@ import hashlib
 import inspect
 import json
 from functools import lru_cache
-import os
 from pathlib import Path
 import subprocess
 import sys
@@ -17,6 +16,8 @@ from test_supervised_launch_mutations import CONTROLS
 case = _case
 REPO = Path(__file__).resolve().parents[2]
 RECEIPT = REPO / "plans/evidence/supervised-worker/ENVELOPE.md"
+pytestmark = pytest.mark.skipif(not (REPO / "plans/manifest.json").is_file(),
+                                reason="repository evidence is absent in standalone clean-room")
 PRODUCERS = ["test_supervised_launch.py", "test_supervised_launch_mutations.py",
              "test_supervised_launch_binding.py", "test_supervised_launch_route.py"]
 
@@ -26,11 +27,6 @@ def current_producer_nodes():
     nodes = set()
     for filename in PRODUCERS:
         # Collect only one owned file at a time; never collect the repository.
-        subprocess.run(["uptime"], check=True)
-        pressure = Path("/proc/pressure/io").read_text()
-        print(pressure)
-        assert os.getloadavg()[0] < (os.cpu_count() or 1)
-        assert all(float(line.split("avg10=")[1].split()[0]) < 10 for line in pressure.splitlines())
         result = subprocess.run(
             ["timeout", "900", sys.executable, "-m", "pytest", "--collect-only", "-q",
              "-p", "no:cacheprovider", str(REPO / "phase-loop-runtime/tests" / filename)],

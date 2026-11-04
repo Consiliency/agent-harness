@@ -8,17 +8,30 @@ implementation without predicting its eventual commit.
 
 ## Round-2 verification
 
-The round-2 repair was checked serially: admission 112, mutation 78,
-binding 45, route 12 and startup 16 passed. The mutation file covers 39 intact
-witnesses and 39 killed source-copy mutants; binding retains 13 killed mutants.
+The president-directed repair was checked serially in the normal checkout:
+admission 115, mutation 80, binding 45, route 12, startup 16 and receipt 8 passed
+(276 total, no skips). The mutation file covers 40 intact witnesses and 40
+killed source-copy mutants; binding retains 13 killed mutants.
 The current producer rows below supersede the historical rows. Source hashes
 bind this repair snapshot; hosted full-suite and exact-head gates remain pending.
 Receipt validation additionally checks the current collected producer inventory
-before accepting a final stamp. Receipt execution observed seven passes and one
-host-load guard failure; current-inventory collection and its source-copy mutant
-remain unverified. Tests stopped on degraded host I/O. A subsequent tightening
-of the mutation exception oracle also awaits revalidation. No final-tree pass
-is claimed by these observations.
+before accepting a final stamp. Current-inventory collection and its source-copy
+mutant passed, as did the narrowed mutation exception oracle. A sparse source
+copy under a mode-1777 ancestor observed admission 115, mutation 80, binding 45,
+route 12 and startup 16 passes, with all 8 receipt tests skipped because the
+repository evidence manifest is absent (268 passes total). This is a layout
+simulation using Python 3.14.4 and source imports, not the hosted wheel Gate A.
+The new workspace guard's mutant was killed; root and nested repository-shaped
+directories refused, and a real clean clone remained separate in both layouts.
+An initial receipt-stamping script omitted filename suffixes; receipt validation
+rejected those rows. The corrected rows below and the rerun passed.
+No hosted final-tree pass is claimed by these observations.
+
+The two prior hosted runs named by the president have now failed: besides the
+removed host-load assertion, they report unclassified binding-loader references
+in the agent-CLI scratch and seat-reference inventories. Those inventories are
+outside this repair's owned files and remain a maintainer follow-up before
+hosted acceptance. Gate A was skipped in the observed hosted rollup.
 
 ## Historical verification
 
@@ -60,12 +73,13 @@ before each; do not run local suites on a degraded host.
 SL-0 removes each named production guard from an isolated compiled copy of the actual
 module. Each unchanged rejection assertion passes against the intact module and turns
 red against its mutant. No test-only admission model is used. The list below names
-all 31 controls: verdict digest/attempt binding, exact typed admit, identity-only launch
+all 40 controls, including verdict digest/attempt binding, exact typed admit, identity-only launch
 digest, atomic single-use consumption, qualification, workspace classification, tier,
 constraints, reference digest, five separate consumption checks and six reference/size
 checks, shared physical storage, unreadable storage and root/operator executable ownership,
 single parse/hash capture, finite numeric capture, codec capture equality,
-canonical locations, location and ancestor identity, root storage and gitfile checks.
+canonical locations, location and ancestor identity, root storage, gitfile and
+repository-shape checks, configuration grammar, callback values and link counts.
 The FIFO witness is synthetic and nonblocking; consumption device/inode witnesses
 patch `os.stat` metadata while retaining the production classifier. Location and
 root alias cases also substitute real fixture stat/fstat metadata; no live mount
@@ -75,7 +89,7 @@ digest comparison. All copies are discarded; production sources stay intact.
 SL-1's binding run kills uid and mode mutants independently for binding, validator, codec,
 qualification, template and config (12 cases); one absolute import resolution mutant;
 route classification, declared-dependency and direct required-session controls
-await hosted CI. UID mismatches are synthetic fstat metadata, without chown.
+also passed locally. UID mismatches are synthetic fstat metadata, without chown.
 The binding witness stops at the loader to avoid an intact downstream recheck masking
 a removed loader guard. Isolated Python children assert and print their checkout
 module path, which resolves to
@@ -85,7 +99,7 @@ Mode-sensitive fixtures pin umask 077 and restore it; unsafe modes use chmod.
 
 SL-2's revised tests consume a production admission, prove refusal and falsify
 source bindings, missing/failed outcomes, authority and readiness claims. They
-await hosted CI; fixture text is not a behavior oracle.
+passed locally; fixture text is not a behavior oracle.
 
 ## Limitations and handoff
 
@@ -130,23 +144,23 @@ files; this is a nonfatal ledger warning, not an ownership transfer.
   },
   "final_tree_validated": false,
   "runner_stamp": {
-    "observed_utc": "2026-11-04T22:25:41.804262+00:00",
-    "observed_input_head": "f6ace6ef7af896cbe8f997a24a2d567b15b49c4b",
+    "observed_utc": "2026-11-04T23:05:24.194996+00:00",
+    "observed_input_head": "470cb7e528c961ef63db326ef994653e690a0994",
     "approved_plan_input_head": "c1aac3c19b711f9688bddc2bda11128d928b3ad9",
-    "source_tree_digest": "6f06b77c8d33ff80a91aeabf2cf4ad14c11491d4c001d28f2e83ac858f326de2"
+    "source_tree_digest": "44f9c95f62044b36f6638b0d0867faff6b8314ba031bb343a1ad1447ea72f808"
   },
   "source_hashes": {
-    "phase-loop-runtime/src/phase_loop_runtime/supervised_launch.py": "b931853e40d4e3a7881181566cbacea1f29f464fe333cc9fb818060086cda83e",
+    "phase-loop-runtime/src/phase_loop_runtime/supervised_launch.py": "9c339674bef0b52bd6520d1e6d72bcee5157d5d80b4ba21f9baa425d4cfb0a22",
     "phase-loop-runtime/src/phase_loop_runtime/supervised_launch_binding.py": "d7f00ad8dcb5b979c6129c5836209497ee8e89ad20e3bfaed7bbe55b63b88958",
     "phase-loop-runtime/src/phase_loop_runtime/supervised_dependency.py": "7f465aee2193256b0816cfce7dad614d07af3f9e429f5f285c9e904157301713",
     "phase-loop-runtime/src/phase_loop_runtime/executable_dependency_startup.py": "b43b489d606bf92b910dbc6ce8a23e40ac564553d60a0f807013e0e286e5594a",
-    "phase-loop-runtime/tests/test_supervised_launch.py": "d2916fa3ef7b58e7ad7ae2d46d67e5d950691b2489f8516d37aeac1fd42a247f",
-    "phase-loop-runtime/tests/test_supervised_launch_mutations.py": "91764fabd3fec2f158daabee4923796b7cc9115f61ecbc52533dbcccdd472583",
+    "phase-loop-runtime/tests/test_supervised_launch.py": "75589c45c697c747407260c54a0ce9179cb32c458ea32937b3b1806c2acc1522",
+    "phase-loop-runtime/tests/test_supervised_launch_mutations.py": "f91b77785ed63a31798ce8ba509bc712efa5c489d59532d53266d2db30337125",
     "phase-loop-runtime/tests/test_supervised_launch_binding.py": "c126cc082b541ba2bfcfce92b6df8e56a83ae990510fdbb4199d190b94b717a9",
     "phase-loop-runtime/tests/test_supervised_launch_route.py": "9353ef72842b0a0cadf748f2622c279970ce7ee4453b816b7be8f348a66893d4",
-    "phase-loop-runtime/tests/test_supervised_launch_receipt.py": "9fbe4b1307b8b4280c4778b59e475ec5778d4d1ff9bc212bd1a997d0048b78d3",
+    "phase-loop-runtime/tests/test_supervised_launch_receipt.py": "13475dff1a4aebf4db2da694c36bafb4de58230c390008a7c126c62aade22073",
     "phase-loop-runtime/tests/fixtures/supervised_launch_local/envelope.json": "2c69f75c4bdcaf8f28b8ff40a92b9db21e4403bf7fd2ab8ff10d4df622463298",
-    "docs/supervised-worker.md": "e2b2fa9966b22cbc519006911a4d87cc05892728ba3b82efbf9bfdc4e773024a",
+    "docs/supervised-worker.md": "85e56c854b9cc860642f41742555bf99b5f7cfc5b953b9d911b2a7a521979f27",
     "plans/phase-plan-v12-ENVELOPE.md": "3aa1b74632b8322595da0b7662605e9834f2f3829b70d0c0ab3555acae87f977"
   },
   "producer_nodes": [
@@ -261,6 +275,9 @@ files; this is a nonfatal ledger warning, not an ownership transfer.
     "tests/test_supervised_launch.py::test_workspace_provider_storage[gitfile]",
     "tests/test_supervised_launch.py::test_workspace_provider_storage[hardlink]",
     "tests/test_supervised_launch.py::test_workspace_provider_storage[symlink]",
+    "tests/test_supervised_launch.py::test_workspace_real_clone",
+    "tests/test_supervised_launch.py::test_workspace_repository_shape[False]",
+    "tests/test_supervised_launch.py::test_workspace_repository_shape[True]",
     "tests/test_supervised_launch.py::test_workspace_root_identity",
     "tests/test_supervised_launch_binding.py::test_binding_absent_and_unisolated",
     "tests/test_supervised_launch_binding.py::test_binding_callback_refusal[KeyboardInterrupt-codec]",
@@ -342,6 +359,7 @@ files; this is a nonfatal ledger warning, not an ownership transfer.
     "tests/test_supervised_launch_mutations.py::test_production_control_witness[workspace]",
     "tests/test_supervised_launch_mutations.py::test_production_control_witness[workspace_ancestry]",
     "tests/test_supervised_launch_mutations.py::test_production_control_witness[workspace_gitconfig]",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[workspace_gitdir]",
     "tests/test_supervised_launch_mutations.py::test_production_control_witness[workspace_gitfile]",
     "tests/test_supervised_launch_mutations.py::test_production_control_witness[workspace_root_shared]",
     "tests/test_supervised_launch_mutations.py::test_production_control_witness[workspace_shared]",
@@ -381,6 +399,7 @@ files; this is a nonfatal ledger warning, not an ownership transfer.
     "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[workspace]",
     "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[workspace_ancestry]",
     "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[workspace_gitconfig]",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[workspace_gitdir]",
     "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[workspace_gitfile]",
     "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[workspace_root_shared]",
     "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[workspace_shared]",
@@ -510,6 +529,9 @@ files; this is a nonfatal ledger warning, not an ownership transfer.
     "tests/test_supervised_launch.py::test_workspace_provider_storage[gitfile]": "passed",
     "tests/test_supervised_launch.py::test_workspace_provider_storage[hardlink]": "passed",
     "tests/test_supervised_launch.py::test_workspace_provider_storage[symlink]": "passed",
+    "tests/test_supervised_launch.py::test_workspace_real_clone": "passed",
+    "tests/test_supervised_launch.py::test_workspace_repository_shape[False]": "passed",
+    "tests/test_supervised_launch.py::test_workspace_repository_shape[True]": "passed",
     "tests/test_supervised_launch.py::test_workspace_root_identity": "passed",
     "tests/test_supervised_launch_binding.py::test_binding_absent_and_unisolated": "passed",
     "tests/test_supervised_launch_binding.py::test_binding_callback_refusal[KeyboardInterrupt-codec]": "passed",
@@ -591,6 +613,7 @@ files; this is a nonfatal ledger warning, not an ownership transfer.
     "tests/test_supervised_launch_mutations.py::test_production_control_witness[workspace]": "passed",
     "tests/test_supervised_launch_mutations.py::test_production_control_witness[workspace_ancestry]": "passed",
     "tests/test_supervised_launch_mutations.py::test_production_control_witness[workspace_gitconfig]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[workspace_gitdir]": "passed",
     "tests/test_supervised_launch_mutations.py::test_production_control_witness[workspace_gitfile]": "passed",
     "tests/test_supervised_launch_mutations.py::test_production_control_witness[workspace_root_shared]": "passed",
     "tests/test_supervised_launch_mutations.py::test_production_control_witness[workspace_shared]": "passed",
@@ -630,6 +653,7 @@ files; this is a nonfatal ledger warning, not an ownership transfer.
     "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[workspace]": "passed",
     "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[workspace_ancestry]": "passed",
     "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[workspace_gitconfig]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[workspace_gitdir]": "passed",
     "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[workspace_gitfile]": "passed",
     "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[workspace_root_shared]": "passed",
     "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[workspace_shared]": "passed",
@@ -647,32 +671,136 @@ files; this is a nonfatal ledger warning, not an ownership transfer.
     "tests/test_supervised_launch_route.py::test_route_classification_mutation": "passed",
     "tests/test_supervised_launch_route.py::test_standalone_dependency_declaration": "passed"
   },
-  "producer_passed": 247,
+  "producer_passed": 252,
   "producer_skipped": 0,
   "preimplementation_selected": 0,
   "observed_checks": {
     "admission": {
-      "artifact": "repair-admission.xml",
-      "artifact_sha256": "bf89327077fe939369e5f5d09f9f4d0af207b4a31751466d9c125abe326062d8",
-      "passed": 91,
+      "artifact": "g-repair-normal-admission.xml",
+      "artifact_sha256": "323e748b16c6943d3af0a76911c195e2155e956a0fc216e3c757c003223d98b7",
+      "passed": 115,
       "skipped": 0,
-      "seconds": 0.408,
+      "seconds": 0.531,
       "final_tree_validated": false
     },
     "mutations": {
-      "artifact": "repair-mutations.xml",
-      "artifact_sha256": "81c2cebe884fe33d7c9b75c364441a0f447cedc92fdee2f5bed98887cdf6b14b",
-      "passed": 62,
+      "artifact": "g-repair-normal-mutations.xml",
+      "artifact_sha256": "22347a4eb937e14226ee9d5255f518983f0d8572b568fe9bc3fa949cf3d14798",
+      "passed": 80,
       "skipped": 0,
-      "seconds": 0.876,
+      "seconds": 1.029,
       "final_tree_validated": false
     },
     "binding": {
-      "artifact": "repair-binding.xml",
-      "artifact_sha256": "5018096a759368292b3df35cfe6f20c0f4d5c0606e1dc761a12b867c081734bf",
+      "artifact": "g-repair-normal-binding.xml",
+      "artifact_sha256": "e163dcea537b81ce97bb080d90b9127c6a293ac56e8417b708d46ddc450f7d91",
       "passed": 45,
       "skipped": 0,
-      "seconds": 10.879,
+      "seconds": 8.016,
+      "final_tree_validated": false
+    },
+    "route": {
+      "artifact": "g-repair-normal-route.xml",
+      "artifact_sha256": "483de0cf64a44d7b06e0bd5dc286ec691ecf5c255e0079df1f39d5fce7ca4b0e",
+      "passed": 12,
+      "skipped": 0,
+      "seconds": 0.173,
+      "final_tree_validated": false
+    },
+    "normal-admission": {
+      "artifact": "g-repair-normal-admission.xml",
+      "artifact_sha256": "323e748b16c6943d3af0a76911c195e2155e956a0fc216e3c757c003223d98b7",
+      "passed": 115,
+      "skipped": 0,
+      "seconds": 0.531,
+      "final_tree_validated": false
+    },
+    "normal-mutations": {
+      "artifact": "g-repair-normal-mutations.xml",
+      "artifact_sha256": "22347a4eb937e14226ee9d5255f518983f0d8572b568fe9bc3fa949cf3d14798",
+      "passed": 80,
+      "skipped": 0,
+      "seconds": 1.029,
+      "final_tree_validated": false
+    },
+    "normal-binding": {
+      "artifact": "g-repair-normal-binding.xml",
+      "artifact_sha256": "e163dcea537b81ce97bb080d90b9127c6a293ac56e8417b708d46ddc450f7d91",
+      "passed": 45,
+      "skipped": 0,
+      "seconds": 8.016,
+      "final_tree_validated": false
+    },
+    "normal-route": {
+      "artifact": "g-repair-normal-route.xml",
+      "artifact_sha256": "483de0cf64a44d7b06e0bd5dc286ec691ecf5c255e0079df1f39d5fce7ca4b0e",
+      "passed": 12,
+      "skipped": 0,
+      "seconds": 0.173,
+      "final_tree_validated": false
+    },
+    "normal-startup": {
+      "artifact": "g-repair-normal-startup.xml",
+      "artifact_sha256": "9f6f680ab4e1cb217b3a75940cecf45616615d017e27592b0eda6eefa97b87b5",
+      "passed": 16,
+      "skipped": 0,
+      "seconds": 0.12,
+      "final_tree_validated": false
+    },
+    "normal-receipt": {
+      "artifact": "g-repair-normal-receipt.xml",
+      "artifact_sha256": "b79f86a3e895b41e64d9d29f4291be93797615855ee4577bd1f77771cd87f766",
+      "passed": 8,
+      "skipped": 0,
+      "seconds": 7.332,
+      "final_tree_validated": false
+    },
+    "gate-a-admission": {
+      "artifact": "g-repair-gate-a-admission.xml",
+      "artifact_sha256": "b6bf6ad79d3ebbeb6e08bf7b94a5f7b8ac71aaa816ba5e058e914cb51f76eca4",
+      "passed": 115,
+      "skipped": 0,
+      "seconds": 0.419,
+      "final_tree_validated": false
+    },
+    "gate-a-mutations": {
+      "artifact": "g-repair-gate-a-mutations.xml",
+      "artifact_sha256": "4e65565f0488249c08ce075d5003a1841a119fb44df3ff995341f5999363065a",
+      "passed": 80,
+      "skipped": 0,
+      "seconds": 0.701,
+      "final_tree_validated": false
+    },
+    "gate-a-binding": {
+      "artifact": "g-repair-gate-a-binding.xml",
+      "artifact_sha256": "fd5967a53eae5e05e8b8f86440b15c4045db6a877e0b5d94d20548ead16dc288",
+      "passed": 45,
+      "skipped": 0,
+      "seconds": 6.803,
+      "final_tree_validated": false
+    },
+    "gate-a-route": {
+      "artifact": "g-repair-gate-a-route.xml",
+      "artifact_sha256": "9f0b8fc6aceff6001c3db76a7f1800f66f15ad15ba4452e50b0756f8b115cda5",
+      "passed": 12,
+      "skipped": 0,
+      "seconds": 0.234,
+      "final_tree_validated": false
+    },
+    "gate-a-startup": {
+      "artifact": "g-repair-gate-a-startup.xml",
+      "artifact_sha256": "daed378af38c5bad4ce03878715afa684a17204047fc68dc57c9155dadee6773",
+      "passed": 16,
+      "skipped": 0,
+      "seconds": 0.258,
+      "final_tree_validated": false
+    },
+    "gate-a-receipt": {
+      "artifact": "g-repair-gate-a-receipt.xml",
+      "artifact_sha256": "d96a4443562a57cecff4cb2a34f067ba83bb78c407494d7c965604e99904868f",
+      "passed": 0,
+      "skipped": 8,
+      "seconds": 0.11,
       "final_tree_validated": false
     }
   },
@@ -712,6 +840,7 @@ files; this is a nonfatal ledger warning, not an ownership transfer.
     "workspace",
     "workspace_ancestry",
     "workspace_gitconfig",
+    "workspace_gitdir",
     "workspace_gitfile",
     "workspace_root_shared",
     "workspace_shared",
@@ -756,18 +885,19 @@ files; this is a nonfatal ledger warning, not an ownership transfer.
     "workspace_gitfile": "killed",
     "workspace_root_shared": "killed",
     "workspace_shared": "killed",
-    "workspace_uninspectable": "killed"
+    "workspace_uninspectable": "killed",
+    "workspace_gitdir": "killed"
   },
   "binding_mutants_killed": 13,
   "pending": [
     "final_tree_revalidation",
-    "receipt_tests",
     "full_repository_suite",
     "exact_head_gate_a",
     "independent_closeout_review",
     "public_schema_reconciliation",
     "installed_tool_qualification",
-    "registry_activation"
+    "registry_activation",
+    "hosted_inventory_integration"
   ]
 }
 ```

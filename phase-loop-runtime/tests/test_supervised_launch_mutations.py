@@ -12,6 +12,7 @@ from test_supervised_launch import (
     executable_owner_witness, capture_witness,
     finite_witness, codec_witness, root_storage_witness, location_witness, nesting_witness, git_data_witness,
     config_grammar_witness, path_spelling_witness, callback_value_witness, trusted_links_witness,
+    repository_shape_witness,
 )
 
 case = _case
@@ -87,10 +88,13 @@ CONTROLS += ["nonfinite", "workspace_root_shared", "untrusted_location", "worksp
              "canonical_path_required", "codec_changed_envelope", "workspace_gitfile"]
 CONTROLS += ["workspace_gitconfig", "path_symlink", "codec_invalid", "admit_fields",
              "outer_refusal", "registry_inputs", "trusted_links", "executable_links"]
+CONTROLS += ["workspace_gitdir"]
 
 
 def witness(case, module, monkeypatch, control):
-    if control == "workspace_gitconfig":
+    if control == "workspace_gitdir":
+        repository_shape_witness(case, module)
+    elif control == "workspace_gitconfig":
         config_grammar_witness(case, module)
     elif control == "path_symlink":
         path_spelling_witness(case, module)

@@ -297,6 +297,8 @@ def classify_workspace(workspace: Path, target: Path, tier: str) -> tuple[str, i
                 protected.add((item.st_dev, item.st_ino))
         _require(_inode(info) not in protected, "workspace_root_shared")
         for parent, dirs, files in os.walk(workspace, followlinks=False, onerror=unreadable):
+            _require(Path(parent) == workspace / ".git" or
+                     not ("HEAD" in files and {"objects", "refs"} <= set(dirs)), "workspace_gitdir")
             for name in dirs + files:
                 path = Path(parent) / name
                 item = path.lstat()
