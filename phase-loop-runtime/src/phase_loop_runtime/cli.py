@@ -12,6 +12,8 @@ import sys
 import time
 from pathlib import Path
 
+from .roadmap_lint import RoadmapStatusError
+
 _LOGGER = logging.getLogger("phase_loop_runtime.cli")
 
 _ATTEST_RUNTIME_PATHS = (
@@ -1440,6 +1442,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     except RoadmapAuthorityError as exc:
         print(f"phase-loop {command}: roadmap authority refusal — {exc}", file=sys.stderr)
+        return 2
+    except RoadmapStatusError as exc:
+        print(f"phase-loop {command}: roadmap status refusal — {exc}", file=sys.stderr)
         return 2
 
 

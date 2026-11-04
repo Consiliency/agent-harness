@@ -582,6 +582,35 @@ _BANNER_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
 )
 
 
+def advisory_declaration_attempt(line: str, *, in_banner: bool = True) -> bool:
+    """Identify advisory markers, excluding ordinary ``ADVISORY ONLY:`` prose.
+
+    The execution-exclusion phrase is a marker anywhere in the document.
+    Otherwise require a leading advisory label (possibly Markdown-decorated)
+    or a Status label in the leading banner, rather than a prose mention.
+    """
+    line = line.replace("\u200b", "")
+    if re.search(r"not\s+runner-selected", line, re.IGNORECASE):
+        return True
+    if not in_banner:
+        return False
+    return bool(re.match(
+        r"^\s*(?:>\s*)*[^\w\n]*(?:\[!?\w+\]\s*)?"
+        r"(?:STATUS\b.*?\b)?ADVISORY\b(?!\s+ONLY\b)",
+        line, re.IGNORECASE,
+    ))
+
+
+def has_advisory_declaration_attempt(text: str) -> bool:
+    in_banner = True
+    for line in text.splitlines():
+        if line.startswith("## "):
+            in_banner = False
+        if advisory_declaration_attempt(line, in_banner=in_banner):
+            return True
+    return False
+
+
 def parse_roadmap_banner_status(text: str, path: str) -> str:
     """Parse the closed primary-banner lifecycle declaration of roadmap ``text``.
 
@@ -626,6 +655,12 @@ def parse_roadmap_banner_status(text: str, path: str) -> str:
         raise MalformedBannerError(
             f"{path}: recognized lifecycle declaration at line {line_index + 1}, expected line 3"
         )
+    # A valid declaration must not hide a second, malformed advisory marker.
+    if any(
+        index != line_index and advisory_declaration_attempt(line, in_banner=index < banner_end)
+        for index, line in enumerate(lines)
+    ):
+        raise MalformedBannerError(f"{path}: conflicting advisory declaration attempt")
     return status
 
 
@@ -1132,12 +1167,19 @@ def declared_active_roadmap(repo: Path) -> Path:
     if len(candidates) == 1:
         # Preserve historical singleton behavior for existing statuses, but an
         # advisory declaration attempt (even malformed) cannot become active.
-        banner = candidates[0].read_text(encoding="utf-8").split("\n## ", 1)[0]
-        if any(
-            re.match(r"^\s*>\s*[#*_~`\s]*ADVISORY\b", line, re.IGNORECASE)
-            for line in banner.splitlines()
-        ):
-            raise NonActiveSelectionError(f"{candidates[0]}: advisory roadmap cannot be selected")
+        rel = candidates[0].relative_to(repo).as_posix()
+        try:
+            text = candidates[0].read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise MalformedBannerError(f"{rel}: cannot read roadmap lifecycle banner") from exc
+        try:
+            banner_status = parse_roadmap_banner_status(text, rel)
+        except MalformedBannerError:
+            if has_advisory_declaration_attempt(text):
+                raise NonActiveSelectionError(f"{rel}: advisory declaration attempt cannot be selected") from None
+        else:
+            if banner_status == "advisory":
+                raise NonActiveSelectionError(f"{rel}: advisory roadmap cannot be selected")
         return candidates[0].resolve()
     active_candidates: List[Path] = []
     for candidate in candidates:

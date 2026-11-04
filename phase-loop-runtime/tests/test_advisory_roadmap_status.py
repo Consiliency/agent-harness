@@ -8,6 +8,7 @@ import pytest
 
 from phase_loop_runtime import cli, discovery, legible_evidence as evidence, roadmap_lint as lint
 from phase_loop_runtime import plan_manifest
+from phase_loop_runtime.roadmap_ownership import resolve_roadmap
 from test_legible_roadmap_contract import (
     BANNER_LINE3, SELECTOR_SOURCES, _build_source_fixture, _commit_all,
     _init_repo, _write_banner_roadmap, _write_status_registry,
@@ -157,12 +158,11 @@ def test_dispatch_never_reached(tmp_path, monkeypatch, command):
     argv = [command, "--repo", str(repo), "--roadmap", str(target)]
     if command == "execute":
         argv += ["BODY", "--output", str(tmp_path / "out")]
-    with pytest.raises(lint.NonActiveSelectionError):
-        cli.main(argv)
+    assert cli.main(argv) == 2
     sentinel.assert_not_called()
 
 
-def test_old_reader_fails_closed(tmp_path, monkeypatch):
+def test_prior_registry_vocabulary_fails_closed(tmp_path, monkeypatch):
     repo, _, registry = paired_repo(tmp_path)
     monkeypatch.setattr(lint, "ROADMAP_STATUSES", ("active", "delivered", "superseded"))
     with pytest.raises(lint.MalformedRegistryError, match="unrecognized"):
@@ -171,12 +171,111 @@ def test_old_reader_fails_closed(tmp_path, monkeypatch):
         discovery.select_roadmap(repo)
     sentinel = Mock(side_effect=AssertionError("dispatch reached"))
     monkeypatch.setattr(cli, "run_loop", sentinel)
-    with pytest.raises(lint.MalformedRegistryError, match="unrecognized"):
-        cli.main(["run", "--repo", str(repo)])
+    assert cli.main(["run", "--repo", str(repo)]) == 2
     sentinel.assert_not_called()
     _write_banner_roadmap(repo, B, BANNER_LINE3["specs/phase-plans-v1.md"])
     _write_status_registry(repo, {A: "active", B: "delivered"}, selected=A)
     assert discovery.select_roadmap(repo) == (repo / A).resolve()
+
+
+MALFORMED_MARKERS = [
+    "## Intro\n\n" + ADVISORY,
+    ADVISORY.removeprefix("> "),
+    "> " + ADVISORY,
+    "> [!WARNING] ADVISORY — not runner-selected",
+    "> ⚠️ ADVISORY — not runner-selected",
+    "> [ADVISORY] not runner-selected",
+    "<!-- " + ADVISORY + " -->",
+    "> # Not runner-selected (advisory)",
+    ADVISORY.replace("ADVISORY", "\u200bADVISORY"),
+    "> Status: ADVISORY",
+    "> **Status (2026-11-04): ADVISORY — not runner-selected**",
+]
+
+
+@pytest.mark.parametrize("marker", [*MALFORMED_MARKERS, "h1"])
+def test_malformed_markers_refuse_selection_ownership_and_dispatch(tmp_path, monkeypatch, marker):
+    repo = _init_repo(tmp_path)
+    target = _write_banner_roadmap(repo, A, marker if marker != "h1" else "")
+    if marker == "h1":
+        target.write_text(ADVISORY.removeprefix("> ") + "\n\n")
+    with pytest.raises(lint.RoadmapStatusError):
+        discovery.select_roadmap(repo)
+    with pytest.raises(lint.NonActiveSelectionError):
+        lint.declared_active_roadmap(repo)
+    sentinel = Mock(side_effect=AssertionError("dispatch reached"))
+    monkeypatch.setattr(cli, "run_loop", sentinel)
+    for command in ("run", "dry-run"):
+        assert cli.main([command, "--repo", str(repo)]) == 2
+    sentinel.assert_not_called()
+
+
+@pytest.mark.parametrize("banner", [ACTIVE, BANNER_LINE3[A], BANNER_LINE3["specs/phase-plans-v7.md"]])
+def test_recognized_singleton_with_advisory_prose(tmp_path, banner):
+    repo = _init_repo(tmp_path)
+    target = _write_banner_roadmap(repo, A, banner + "\n\n> ADVISORY ONLY: prose")
+    assert lint.declared_active_roadmap(repo) == target.resolve()
+    assert resolve_roadmap(repo) == target.resolve()
+    if banner == ACTIVE:
+        assert discovery.select_roadmap(repo) == target.resolve()
+
+
+@pytest.mark.parametrize("near", [ADVISORY.replace("2026-11-04", "2026-02-30"),
+    ADVISORY + " ", ADVISORY.replace("—", "-")])
+@pytest.mark.parametrize("registered", [False, True])
+def test_active_with_malformed_advisory_is_ambiguous(tmp_path, near, registered):
+    repo = _init_repo(tmp_path)
+    _write_banner_roadmap(repo, A, ACTIVE + "\n" + near)
+    if registered:
+        _write_status_registry(repo, {A: "active"}, selected=A)
+        _commit_all(repo)
+    with pytest.raises(lint.MalformedBannerError):
+        lint.parse_roadmap_banner_status((repo / A).read_text(), A)
+    with pytest.raises(lint.RoadmapStatusError):
+        discovery.select_roadmap(repo)
+    with pytest.raises(lint.RoadmapStatusError):
+        lint.declared_active_roadmap(repo)
+
+
+@pytest.mark.parametrize("defect", ["encoding", "symlink", "directory"])
+def test_unreadable_singleton_is_typed(tmp_path, defect):
+    repo = _init_repo(tmp_path)
+    target = repo / A
+    target.parent.mkdir(exist_ok=True)
+    if defect == "encoding":
+        target.write_bytes(b"\xff")
+    elif defect == "symlink":
+        target.symlink_to("missing.md")
+    else:
+        target.mkdir()
+    with pytest.raises(lint.MalformedBannerError):
+        lint.declared_active_roadmap(repo)
+
+
+def test_singleton_refusal_uses_relative_path(tmp_path):
+    repo = _init_repo(tmp_path)
+    _write_banner_roadmap(repo, A, ADVISORY)
+    with pytest.raises(lint.NonActiveSelectionError) as exc:
+        lint.declared_active_roadmap(repo)
+    assert str(exc.value).startswith(A + ":")
+    assert str(repo) not in str(exc.value)
+
+
+@pytest.mark.parametrize("marker", MALFORMED_MARKERS)
+def test_malformed_marker_singleton_accessor(tmp_path, marker):
+    repo = _init_repo(tmp_path)
+    _write_banner_roadmap(repo, A, marker)
+    with pytest.raises(lint.NonActiveSelectionError):
+        lint.declared_active_roadmap(repo)
+
+
+def test_cli_status_refusal_is_clean(tmp_path, capsys):
+    repo = _init_repo(tmp_path)
+    target = _write_banner_roadmap(repo, A, ADVISORY)
+    assert cli.main(["run", "--repo", str(repo), "--roadmap", str(target)]) == 2
+    err = capsys.readouterr().err
+    assert "roadmap status refusal" in err
+    assert "Traceback" not in err
 
 
 @pytest.mark.parametrize("drift", ["banner", "registry", "record"])

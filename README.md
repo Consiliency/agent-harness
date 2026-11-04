@@ -59,8 +59,10 @@ dispatched. Their exact line-3 banner, after an H1 and a blank line, is:
 ```
 
 Use a valid ISO calendar date. Upgrade the runtime before registering advisory
-entries: older readers reject the unknown status, even if an active roadmap is
-selected. Promotion requires a separate owner decision and coherent changes to
+entries: with a registry present, older readers reject the unknown status even
+if an active roadmap is selected. Without a registry, older runtimes may treat
+an advisory banner as a legacy roadmap and run it. Promotion requires a separate
+owner decision and coherent changes to
 the banner, registry status, selected path, and previous active roadmap's status.
 
 With a roadmap in place, `phase-loop run` drives it unattended. Two defaults worth

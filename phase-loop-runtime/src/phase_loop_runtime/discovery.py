@@ -494,7 +494,9 @@ def _banner_has_no_declaration(text: str) -> bool:
             if line.startswith("## "):
                 banner_end = index
                 break
-        return not any(_BANNER_DECLARATION_ATTEMPT.match(line) for line in lines[:banner_end])
+        return not roadmap_lint.has_advisory_declaration_attempt(text) and not any(
+            _BANNER_DECLARATION_ATTEMPT.match(line) for line in lines[:banner_end]
+        )
     except Exception:
         return False
 
@@ -516,7 +518,7 @@ def _return_selectable_roadmap(repo: Path, candidate: Path, source: str) -> Path
 
     try:
         text = candidate.read_text(encoding="utf-8")
-    except OSError as exc:
+    except (OSError, UnicodeDecodeError) as exc:
         raise roadmap_lint.MalformedBannerError(f"{rel}: cannot read roadmap lifecycle banner: {exc}") from exc
 
     banner_status: str | None
