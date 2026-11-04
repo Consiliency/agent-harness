@@ -1,4 +1,10 @@
 [
+  {"count": 2, "function": "_beneath", "module": "supervised_launch", "primitive": "io.stat", "role": "host-io"},
+  {"count": 1, "function": "_identity", "module": "supervised_launch", "primitive": "io.stat", "role": "host-io"},
+  {"count": 1, "function": "_read_file", "module": "supervised_launch", "primitive": "io.lstat", "role": "host-io"},
+  {"count": 3, "function": "_read_file", "module": "supervised_launch", "primitive": "io.open", "role": "host-io"},
+  {"count": 2, "function": "classify_workspace", "module": "supervised_launch", "primitive": "io.lstat", "role": "host-io"},
+  {"count": 2, "function": "classify_workspace", "module": "supervised_launch", "primitive": "io.stat", "role": "host-io"},
   {"count": 2, "function": "OpenShellBackend.wait", "module": "openshell_backend", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "review_policy", "module": "openshell_worker", "primitive": "io.read_text", "role": "host-io"},
   {"count": 2, "function": "verify_helper_metadata", "module": "openshell_worker", "primitive": "io.lstat", "role": "host-io"},

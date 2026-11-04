@@ -201,7 +201,8 @@ SL-2 — Evidence and documentation reducer
 ### SL-1 — Trusted binding and standalone route composition
 
 - **Scope**: Bind trusted validator configuration and dependency preflight to the admission API.
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/supervised_launch_binding.py`, `phase-loop-runtime/src/phase_loop_runtime/supervised_dependency.py`, `phase-loop-runtime/src/phase_loop_runtime/executable_dependency_startup.py`, `phase-loop-runtime/tests/test_supervised_launch_binding.py`, `phase-loop-runtime/tests/test_supervised_launch_route.py`, `phase-loop-runtime/tests/test_executable_dependency_startup.py`
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/supervised_launch_binding.py`, `phase-loop-runtime/src/phase_loop_runtime/supervised_dependency.py`, `phase-loop-runtime/src/phase_loop_runtime/executable_dependency_startup.py`, `phase-loop-runtime/tests/test_supervised_launch_binding.py`, `phase-loop-runtime/tests/test_supervised_launch_route.py`, `phase-loop-runtime/tests/test_executable_dependency_startup.py`, `phase-loop-runtime/tests/data/seat_launch_references.json`, `phase-loop-runtime/tests/test_seat_reference_inventory.py`, `phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py`
+- **Ownership amendment (root maintainer, agent-harness#1828)**: Inventory data/tests above are owned only for entries classifying ENVELOPE's new launch/reference sites; the scratch inventory is inline in its test file. Inventory rules and tests remain unchanged.
 - **Interfaces provided**: `load_validator_binding`, `classify_supervised_command`, `preflight_supervised_route`; route evidence is the observed per-node results from the SL-1 test files
 - **Interfaces consumed**: `prepare_launch`, `consume_admission`, `Validator`, `Admit`, `Refused`, `LaunchInputs`, `PreparedLaunch`
 - **Parallel-safe**: no
