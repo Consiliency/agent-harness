@@ -14185,7 +14185,9 @@
         "SL-1",
         "SL-2",
         "SL-3",
-        "SL-4"
+        "SL-4",
+        "SL-5",
+        "SL-6"
       ],
       "lifecycle": [],
       "owner_skill": "claude-plan-phase",
@@ -14201,7 +14203,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-11-04T21:33:14Z"
+      "updated_at": "2026-11-04T22:30:00Z"
     }
   ],
   "schema_version": 1
