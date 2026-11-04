@@ -11716,7 +11716,38 @@ def _resolve_claude_executable() -> Path:
     found = shutil.which("claude", path="/usr/local/bin:/usr/bin:/bin:" + os.environ.get("PATH", ""))
     if found is None:
         raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build"), "claude not found")
-    return Path(os.path.realpath(found))
+    executable = Path(os.path.realpath(found))
+    # agent-harness#1641: a managed release installs `claude` as a two-line shell launcher in
+    # front of the native image. The jail runs one file, so it is handed the native image the
+    # launcher would exec -- only when the launcher is exactly that shape; any other wrapper
+    # is jailed as it is.
+    try:
+        with executable.open("rb") as handle:
+            header = handle.read(4)
+            if header == b"\x7fELF":
+                return executable
+            launcher = (header + handle.read()).decode("utf-8", errors="replace")
+        root = executable.parent.parent
+        match = re.fullmatch(
+            r"#!/bin/sh\nexport PATH=" + re.escape(str(root))
+            + r'/node-v\d+\.\d+\.\d+-linux-(?P<arch>x64|arm64)/bin:"\$PATH"\n'
+            + r"export DISABLE_AUTOUPDATER=1\nexec " + re.escape(str(root))
+            + r'/npm/node_modules/@anthropic-ai/claude-code-linux-(?P=arch)/claude "\$@"\n',
+            launcher,
+        )
+        if match is None:
+            return executable
+        payload = root / f"npm/node_modules/@anthropic-ai/claude-code-linux-{match['arch']}/claude"
+        if not os.access(payload, os.X_OK):
+            raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build"),
+                                                "claude native image is not executable")
+        with payload.open("rb") as handle:
+            if handle.read(4) != b"\x7fELF":
+                raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build"),
+                                                    "claude native image is not ELF")
+        return payload.resolve()
+    except OSError as exc:
+        raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build")) from exc
 
 
 def _build_jail_with_owned_inputs(leg, directory, executable, *, artifact, instructions,

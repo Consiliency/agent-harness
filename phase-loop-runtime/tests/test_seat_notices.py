@@ -456,6 +456,66 @@ def test_codex_r1_a_jailed_launch_refusal_keeps_its_code(monkeypatch, tmp_path):
     assert pi._finalize_leg_detail(log) == "seat_sandbox_refused:identity"
 
 
+def _tooling_claude_launcher(tmp_path):
+    root = tmp_path / "release"
+    launcher = root / "bin" / "claude"
+    payload = root / "npm/node_modules/@anthropic-ai/claude-code-linux-x64/claude"
+    launcher.parent.mkdir(parents=True)
+    payload.parent.mkdir(parents=True)
+    payload.write_bytes(Path("/usr/bin/true").read_bytes())
+    payload.chmod(0o755)
+    launcher.write_text(
+        f'#!/bin/sh\nexport PATH={root}/node-v24.21.0-linux-x64/bin:"$PATH"\n'
+        f'export DISABLE_AUTOUPDATER=1\nexec {payload} "$@"\n')
+    launcher.chmod(0o755)
+    return launcher, payload
+
+
+@pytest.mark.parametrize("kind", ["native", "symlink", "managed-launcher"])
+def test_the_jailed_claude_resolver_selects_the_native_image(monkeypatch, tmp_path, kind):
+    """agent-harness#1641: the TUI and every jailed transport jail the native image."""
+    launcher, payload = _tooling_claude_launcher(tmp_path)
+    selected = payload if kind == "native" else launcher
+    if kind == "symlink":
+        selected = tmp_path / "claude-link"
+        selected.symlink_to(payload)
+    monkeypatch.setattr(pi.shutil, "which", lambda *a, **k: str(selected))
+    assert pi._resolve_claude_executable() == payload.resolve()
+
+
+@pytest.mark.parametrize("kind", ["missing", "script", "not-executable"])
+def test_a_managed_claude_launcher_with_no_executable_native_image_is_refused(
+        monkeypatch, tmp_path, kind):
+    launcher, payload = _tooling_claude_launcher(tmp_path)
+    if kind == "missing":
+        payload.unlink()
+    elif kind == "script":
+        payload.write_text("#!/bin/sh\nexit 0\n")
+    else:
+        payload.chmod(0o600)
+    monkeypatch.setattr(pi.shutil, "which", lambda *a, **k: str(launcher))
+    with pytest.raises(seat_jail.SeatSandboxRefused) as caught:
+        pi._resolve_claude_executable()
+    assert caught.value.code == "seat_sandbox_refused:jail_build"
+
+
+@pytest.mark.parametrize("kind", ["extra-export", "extra-argument", "different-architecture"])
+def test_an_unrecognised_claude_wrapper_is_not_replaced_by_an_adjacent_payload(
+        monkeypatch, tmp_path, kind):
+    launcher, _payload = _tooling_claude_launcher(tmp_path)
+    original = launcher.read_text()
+    if kind == "extra-export":
+        altered = original.replace(
+            "export DISABLE_AUTOUPDATER=1\n", "export DISABLE_AUTOUPDATER=1\nexport EXTRA=1\n")
+    elif kind == "extra-argument":
+        altered = original.replace('"$@"', '--extra "$@"')
+    else:
+        altered = original.replace("node-v24.21.0-linux-x64", "node-v24.21.0-linux-arm64")
+    launcher.write_text(altered)
+    monkeypatch.setattr(pi.shutil, "which", lambda *a, **k: str(launcher))
+    assert pi._resolve_claude_executable() == launcher.resolve()
+
+
 class _FakeSeat:
     def __init__(self, tmp_path):
         self.jail = types.SimpleNamespace(
