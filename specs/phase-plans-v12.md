@@ -6,6 +6,8 @@
 > This parser-required banner encodes non-selection, not delivery or actual
 > absorption into v11. v11 remains active/selected. Activation needs a separate
 > lifecycle decision; this repair makes no runtime or registry-code change.
+> agent-harness#1824 will replace this interim banner and denial text with the
+> real advisory status when its registry support lands.
 
 ## Context
 
@@ -36,7 +38,8 @@ exist today or fork another process runner.
 - Consiliency/consiliency-contract publishes public-safe, language-neutral schema bytes
   and positive/negative vectors. Their exact wire keys govern implementation.
 - Initial route: **standalone/undeclared**, only with no dependency requirement
-  and no authority. Required sessions refuse with `dependency_route_unwired`
+  and no authority. Required sessions refuse with `task_unbound` for direct unleased calls,
+  or `dependency_route_unwired` for a bound unwired route,
   before probes, credential/output effects or host execution. An envelope
   declaring a dependency cannot downgrade to standalone. A projected route
   requires separately planned integration; none is claimed here.
@@ -87,6 +90,19 @@ never a re-read file, ambient environment, extra CLI flag or `caller_context`.
 Trusted operator configuration may narrow inputs and supplies the closed argv
 template; its identity and effective choices are included in admission.
 No sandbox/approval/config-override argv tails are accepted.
+
+The harness launch digest is SHA-256 over a domain-separated, deterministic,
+length-delimited encoding of the raw-envelope SHA-256, canonical LaunchInputs
+(including resolved executable/wrapper identities, effective template, timeout,
+reference digests and trusted configuration/qualification digests), and attempt_id.
+The validator sees both codec envelope digest and harness launch digest;
+Admit and token consumption bind the latter. This is a local API digest, not a
+new wire field. Trusted codec, qualification, template and configuration inputs
+use the validator binding's uid/mode, outside-workspace/target and component-wise
+no-follow checks. Same-login writers remain outside this trust guarantee.
+Reference reads use dir_fd/O_NOFOLLOW at every component under declared roots,
+reject traversal and non-regular files, and enforce per-file and aggregate caps
+from trusted configuration before snapshotting; tests cover escape and overflow.
 
 The closed local tier matrix is conservative. “Unsupported” means refuse when
 required, never silently downgrade. Provider read-only behavior is not harness
@@ -150,7 +166,7 @@ Bind a validated envelope to an honest, explicit execution tier and route.
 
 **Exit criteria**
 
-- [ ] EC-ENVELOPE-1 — The immutable read-once envelope binds every launch input above; validation precedes all children/probes. Only a typed single-use admit bound to envelope digest and attempt id can proceed; invalid, stale, exceptional, replayed, unavailable or non-admit verdicts refuse with zero worker/probe invocations.
+- [ ] EC-ENVELOPE-1 — The immutable read-once envelope binds every launch input above; validation precedes all children/probes. Only a typed single-use admit bound to the harness launch digest and attempt id can proceed; invalid, stale, exceptional, replayed, unavailable or non-admit verdicts refuse with zero worker/probe invocations.
 - [ ] EC-ENVELOPE-2 — The closed tier matrix, workspace classification, qualification and standalone dependency guards refuse unsupported/unknown constraints, undemonstrable tiers and every `os_enforced` request before launch. Required sessions refuse before envelope reads or credential/output effects. `caller_context`, obligations and full attempt/unit identities survive unchanged in the admitted object.
 - [ ] EC-ENVELOPE-3 — Labelled synthetic fixtures and path-entered mutations detect admission, launch-input, tier/workspace, validator-binding and dependency-guard bypasses; later pinned semantic vectors run through these production paths before acceptance.
 
@@ -164,8 +180,15 @@ the target/workspace/envelope, verified by uid/mode and a trusted absolute
 module location. No entry-point discovery, environment/cwd imports or allow-all
 default. Missing binding refuses. Preserve workspace/repo-relative locator rules.
 Resolve executable/wrappers before chdir, using only absolute nonempty PATH
-entries or trusted paths; refuse workspace/worker-writable locations and bind
+entries or trusted paths; refuse paths under workspace, target or envelope-referenced roots and any
+group/world-writable component. Provider eligibility requires qualification
+SHA-256 matches; audit-only readiness discloses same-login write access to
+user-owned executables. Bind
 absolute realpaths/digests to admission. Probes and launch use that same identity.
+At token consumption recheck workspace classification/root device and inode,
+and executable/wrapper digests; changed values refuse. WORKER repeats these
+checks immediately before each probe/launch. Use descriptor execution where
+supported; otherwise readiness discloses the residual check-to-exec window.
 
 **Non-goals**
 
@@ -201,9 +224,9 @@ Provide authoritative attempt history and a replaceable replay projection.
 
 **Exit criteria**
 
-- [ ] EC-JOURNAL-1 — A locked single-writer journal outside the target uses validated single-component harness-minted ids, dir_fd-relative O_NOFOLLOW opens, verified uid/modes (0700 directories, 0600 files, no group/world write), drained/fsynced writes and chained rotation. Full line/writer identity and sequence rules reconcile to the pinned schema and `x-journal-rules` before acceptance.
+- [ ] EC-JOURNAL-1 — A locked single-writer journal outside the target uses validated single-component caller-supplied run/attempt ids, dir_fd-relative O_NOFOLLOW opens, verified uid/modes (0700 directories, 0600 files, no group/world write), drained/fsynced writes and chained rotation. Full line/writer identity and sequence rules reconcile to the pinned schema and `x-journal-rules` before acceptance.
 - [ ] EC-JOURNAL-2 — Torn lines, unknown versions, foreign writers, sequence defects and identity-versus-key/path mismatches fail closed with pinned semantic diagnostics; missing journals/segments and ambiguous/unindexed attempts are unknown. Readers never repair or truncate.
-- [ ] EC-JOURNAL-3 — Replay orders latest attempts only by a harness-owned append-only per-assignment admission index, never mtime, wall-clock or lexical order; binds writer identity and each attempt's seq/chain digest. Stale projections and absent/reused owner pid/start-time return pinned unknown/stale diagnostics, never running.
+- [ ] EC-JOURNAL-3 — Replay orders latest attempts only by a harness-owned append-only per-assignment admission index, never mtime, wall-clock or lexical order; binds writer identity and each attempt's seq/chain digest. Stale projections and absent/reused owner pid/start-time return pinned unknown/stale diagnostics, never running. Reservation is atomic under the per-assignment lock, appended and fsynced before any probe/launch; duplicate, terminal or crash-reserved attempt ids cannot be reused. The index is durable across processes/restarts, not just a process-local token.
 - [ ] EC-JOURNAL-4 — Offline production-path mutations prove pinned page/message/event bounds, omission/retention disclosure, display text from a closed harness phrase set, and separation of runtime references from outcome/evidence joins. Prompt/source/secret sentinels in stdout, stderr and argv never reach journals, projections or pages; caller_context appears only by digest.
 
 **Scope notes**
@@ -260,9 +283,9 @@ Compose admission and journals with the existing bounded adapter lifecycle.
 **Exit criteria**
 
 - [ ] EC-WORKER-1 — A compatible shared-seam extension returns bounded proposal bytes and baseline/proposal/attempt identities under the admitted workspace/tier policy, leaves application to the controller and keeps existing convergence callers compatible. The provider tier requires the separate storage defined above.
-- [ ] EC-WORKER-2 — Launch uses only the immutable admitted inputs. Evidence binds prompt-free argv, instruction digest, exit, stream digests and timing to the envelope digest; standalone identity includes absolute executable realpath/sha256/version and wrapper-chain realpaths/sha256, excluding proof of a wrapper's entire loaded closure.
-- [ ] EC-WORKER-3 — Native cancel is idempotent and targets only a verified owning launcher (pid plus process start time); the launcher holds the unreaped leader and reclaims its own group. Retry requires fresh admission/identity and preserves evidence. Lifecycle enums/termination fields follow the pinned schema; refusal never follows start, and natural process completion is never work acceptance.
-- [ ] EC-WORKER-4 — Injected providers prove zero-spawn refusal and evidence binding; real offline subprocess sessions prove descendant/group cleanup, cancel races and failed start. Mutations cover malformed/oversized proposals, planted credentials, prompt secrecy, audit failure, retention, retry and required-session refusal. A setsid descendant test records the explicit escape limitation; no live-tool qualification is claimed.
+- [ ] EC-WORKER-2 — Launch uses only the immutable admitted inputs. Evidence binds prompt-free argv, instruction digest, exit, stream digests and timing to the envelope digest; standalone identity includes absolute executable realpath/sha256/version and wrapper-chain realpaths/sha256, excluding proof of a wrapper's entire loaded closure. Evidence also binds the harness launch digest. After consuming admission, WORKER durably reserves the caller-supplied validated attempt_id through JOURNAL before any probe; reservation failure refuses with zero invocations. Until a trusted pinned public codec binding exists, the production CLI refuses codec_unavailable before probes; synthetic codecs are test-injection only. Codec bindings use validator-binding trust checks.
+- [ ] EC-WORKER-3 — Native cancel is idempotent and targets only a verified owning launcher (pid plus process start time, supervised-launcher executable/command identity and a matching nonce in a harness-private 0600 file); the launcher holds the unreaped leader and reclaims its own group. Retry requires fresh admission/identity and preserves evidence. Lifecycle enums/termination fields follow the pinned schema; refusal never follows start, and natural process completion is never work acceptance.
+- [ ] EC-WORKER-4 — Injected providers prove zero-spawn refusal and evidence binding; real offline subprocess sessions prove descendant/group cleanup, cancel races and failed start. Mutations cover malformed/oversized proposals, planted credentials, prompt secrecy, audit failure, retention, retry and required-session refusal. Tests replay one envelope sequentially and concurrently across processes, including restart after reservation, and assert at most one attempt launches. Test the installed CLI with no codec binding (zero probes), and forged cancel identity targeting an unrelated same-user process (zero signals). A setsid descendant test records the explicit escape limitation; no live-tool qualification is claimed.
 
 **Scope notes**
 
@@ -280,9 +303,15 @@ All probes and workers share base scrubbers, additionally dropping
 Plant vendor/GH tokens, agent socket and git/gh credential controls in tests.
 On-disk git/gh credentials remain reachable by same-login processes: disclose it.
 
-Native placement is `python -m phase_loop_runtime.supervised_worker_cli` with
+Native placement is `python -I -m phase_loop_runtime.supervised_worker_cli` with
 `launch --envelope <path> --result <path>`, `status --run <id>|--attempt <id>`,
-and `cancel --run <id>|--attempt <id>`. It does not replace `phase-loop status`.
+and `cancel --run <id>|--attempt <id>`. Use the trusted installed environment:
+isolated Python excludes cwd, PYTHONPATH and user-site imports, including
+transitive imports. Test shadowed stdlib and validator modules from workspace
+cwd. It does not replace `phase-loop status`.
+Envelope files require operator uid, regular-file/component-wise O_NOFOLLOW
+opens and a configured byte cap; reject group/world write, and group/world read
+when inline instructions are present. Test owner/mode, symlink and size refusals.
 Explicit dependency classification keys are `supervised-launch`,
 `supervised-status` and `supervised-cancel`; launch/cancel are unwired in required
 sessions (agent-harness#1782). In-process launch refuses at classification before
@@ -447,7 +476,11 @@ Missing/malformed evidence routes to blocker_class=contract_bug, human_required=
 
 ## Phase Dependency DAG
 
-ENVELOPE → WORKER → SCHEMA → CLOSEOUT; JOURNAL → WORKER; WORKER → CLOSEOUT.
+```text
+ENVELOPE → WORKER → SCHEMA → CLOSEOUT
+JOURNAL → WORKER
+WORKER → CLOSEOUT
+```
 
 ## Execution Notes
 
