@@ -8,7 +8,7 @@ from types import ModuleType
 from typing import Callable
 
 from .supervised_launch import (
-    LaunchConfig, Refused, Validator, _Refusal, _json, _require, sha256, trusted_bytes,
+    LaunchConfig, Refused, Validator, _Refusal, _json, _path, _require, sha256, trusted_bytes,
 )
 
 
@@ -43,10 +43,10 @@ def load_validator_binding(path: Path | None, *, workspace: Path, target: Path) 
         raw = trusted_bytes(path, excluded=excluded)
         binding = _json(raw)
         _require(set(binding) == {"validator", "codec", "config", "template", "qualification"}, "binding_fields")
-        config = LaunchConfig(Path(binding["config"]), Path(binding["template"]),
-                              Path(binding["qualification"]) if binding["qualification"] else None)
+        config = LaunchConfig(_path(binding["config"]), _path(binding["template"]),
+                              _path(binding["qualification"]) if binding["qualification"] else None)
         settings = _json(trusted_bytes(config.config_path, excluded=excluded))
-        excluded += tuple(Path(root) for root in settings["reference_roots"])
+        excluded += tuple(_path(root) for root in settings["reference_roots"])
         trusted_bytes(path, excluded=excluded)
         trusted_bytes(config.config_path, excluded=excluded)
         trusted_bytes(config.template_path, excluded=excluded)
@@ -55,7 +55,7 @@ def load_validator_binding(path: Path | None, *, workspace: Path, target: Path) 
         functions = []
         digests = []
         for kind, symbol in (("validator", "validate"), ("codec", "decode")):
-            path = Path(binding[kind])
+            path = _path(binding[kind])
             data = trusted_bytes(path, excluded=excluded)
             module = _load_absolute(path, data)
             function = getattr(module, symbol, None)
@@ -63,5 +63,5 @@ def load_validator_binding(path: Path | None, *, workspace: Path, target: Path) 
             functions.append(function)
             digests.append(sha256(data))
         return ValidatorBinding(functions[0], functions[1], config, sha256(raw), tuple(digests))
-    except Exception as exc:
+    except BaseException as exc:
         return Refused(str(exc) if isinstance(exc, _Refusal) else "binding_invalid")

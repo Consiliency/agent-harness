@@ -10,6 +10,7 @@ from phase_loop_runtime import supervised_launch as launch
 from test_supervised_launch import (
     case as _case, consumption_witness, identity_witness, prepare, qualify, reference_witness, refused, storage_witness,
     executable_owner_witness, capture_witness,
+    finite_witness, codec_witness, root_storage_witness, location_witness, nesting_witness, git_data_witness,
 )
 
 case = _case
@@ -35,6 +36,11 @@ def mutant(monkeypatch, production, control):
         source = source.replace('operator_owned=False', 'operator_owned=True')
     elif control == "capture_once":
         source = source.replace('capture = EnvelopeCapture(', '_json(envelope_bytes)\n        sha256(envelope_bytes)\n        capture = EnvelopeCapture(')
+    elif control == "workspace_ancestry":
+        source = source.replace('return any(_inode(parent.stat()) == identity for parent in (path, *path.parents))',
+                                'return path == root or root in path.parents')
+    elif control == "direct_route":
+        source = source.replace('refuse_unwired_dependency_route("supervised-launch")', 'pass')
     else:
         reason = {"consume_class": "workspace_changed", "consume_device": "device_changed",
                   "consume_inode": "inode_changed", "consume_executable": "executable_changed",
@@ -45,10 +51,10 @@ def mutant(monkeypatch, production, control):
                    and isinstance(node.value, ast.Call) and isinstance(node.value.func, ast.Name)
                    and node.value.func.id == "_require" and len(node.value.args) == 2
                    and isinstance(node.value.args[1], ast.Constant) and node.value.args[1].value == reason]
-        assert len(matches) == 1, (control, matches)
-        node = matches[0]
+        assert len(matches) == (2 if control in {"untrusted_location", "canonical_path_required"} else 1), (control, matches)
         lines = source.splitlines(keepends=True)
-        lines[node.lineno - 1:node.end_lineno] = [" " * node.col_offset + "pass\n"]
+        for node in sorted(matches, key=lambda node: node.lineno, reverse=True):
+            lines[node.lineno - 1:node.end_lineno] = [" " * node.col_offset + "pass\n"]
         source = "".join(lines)
     assert source != Path(production.__file__).read_text(), control
     name = "phase_loop_runtime._mutation_" + control
@@ -67,10 +73,27 @@ CONTROLS = ["admit_binding", "typed_admit", "identity_digest", "token", "qualifi
             "capture_once",
             "consume_class", "consume_device", "consume_inode", "consume_executable", "consume_wrapper",
             "reference_root", "reference_nofollow", "reference_regular", "reference_cap", "aggregate_cap", "envelope_cap"]
+CONTROLS += ["nonfinite", "workspace_root_shared", "untrusted_location", "workspace_ancestry",
+             "canonical_path_required", "codec_changed_envelope", "workspace_gitfile"]
 
 
 def witness(case, module, monkeypatch, control):
-    if control.startswith("consume_"):
+    if control == "nonfinite":
+        finite_witness(case, module)
+    elif control == "workspace_root_shared":
+        root_storage_witness(case, module, monkeypatch)
+    elif control == "untrusted_location":
+        location_witness(case, module, monkeypatch)
+    elif control == "workspace_ancestry":
+        nesting_witness(case, module, monkeypatch)
+    elif control == "canonical_path_required":
+        case.envelope["launch_inputs"]["workspace"] = "/" + case.envelope["launch_inputs"]["workspace"]
+        refused(case, module, reason="canonical_path_required")
+    elif control == "codec_changed_envelope":
+        codec_witness(case, module)
+    elif control == "workspace_gitfile":
+        git_data_witness(case, module)
+    elif control.startswith("consume_"):
         consumption_witness(case, module, monkeypatch, control)
     elif control in {"workspace_shared", "workspace_uninspectable"}:
         storage_witness(case, module, monkeypatch, control)
@@ -99,7 +122,7 @@ def witness(case, module, monkeypatch, control):
     elif control == "token":
         prepared = prepare(case, module)
         assert isinstance(module.consume_admission(prepared), module.LaunchInputs)
-        assert isinstance(module.consume_admission(prepared), module.Refused)
+        assert module.consume_admission(prepared) == module.Refused("token_spent")
     elif control == "qualification":
         path = qualify(case)
         path.write_text(path.read_text().replace('"write_attempt_refused": true', '"write_attempt_refused": false'))

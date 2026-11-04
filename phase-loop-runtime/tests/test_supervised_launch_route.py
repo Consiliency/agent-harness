@@ -1,8 +1,12 @@
 import pytest
+import os
+from pathlib import Path
+import subprocess
 
 from phase_loop_runtime import executable_dependency_startup as startup
 from phase_loop_runtime import supervised_dependency as route
 from phase_loop_runtime import supervised_launch as launch
+from phase_loop_runtime import supervised_launch_binding as binding
 from test_executable_dependency_startup import FakeDependency, register_session
 from test_supervised_launch import case as _case, refused
 from test_supervised_launch_mutations import mutant
@@ -20,10 +24,18 @@ def route_witness(case, module, bound=False, reason="task_unbound", command="sup
     session = register_session(FakeDependency())
     lease = session.acquire_task("synthetic-task") if bound else None
     calls = []
+    def effect(*args, **kwargs):
+        calls.append("effect")
+        raise AssertionError("unexpected route effect")
     def composed():
-        result = module.preflight_supervised_route(command)
-        if result is None:
-            calls.extend(["envelope_read", "import", "output", "probe"])
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(subprocess, "Popen", effect)
+            for name in ("system", "fork", "posix_spawn", "posix_spawnp"):
+                patch.setattr(os, name, effect)
+            patch.setattr(Path, "read_bytes", effect)
+            patch.setattr(Path, "write_bytes", effect)
+            patch.setattr(binding, "_load_absolute", effect)
+            result = module.preflight_supervised_route(command)
         assert result == launch.Refused(reason)
         assert calls == []
     try:
@@ -39,14 +51,14 @@ def route_witness(case, module, bound=False, reason="task_unbound", command="sup
 
 
 @pytest.mark.parametrize("bound,reason", [(False, "task_unbound"), (True, "dependency_route_unwired")])
-def test_direct_api_guard_before_decode(case, bound, reason):
+def test_direct_api_guard_before_decode(case, bound, reason, module=launch):
     session = register_session(FakeDependency())
     lease = session.acquire_task("synthetic-direct") if bound else None
     calls = []
     def direct():
-        result = launch.prepare_launch(b"not even JSON", validator=lambda view: calls.append("validator"),
+        result = module.prepare_launch(b"not even JSON", validator=lambda view: calls.append("validator"),
                                        decoder=lambda raw: calls.append("decoder"), config=None)
-        assert result == launch.Refused(reason)
+        assert result == module.Refused(reason)
         assert calls == []
     try:
         if lease:
@@ -62,17 +74,16 @@ def test_direct_api_guard_before_decode(case, bound, reason):
 
 @pytest.mark.parametrize("bound,reason", [(False, "task_unbound"), (True, "dependency_route_unwired")])
 def test_direct_api_guard_mutation(case, monkeypatch, bound, reason):
-    with monkeypatch.context() as patch:
-        patch.setattr(launch, "refuse_unwired_dependency_route", lambda route: None)
-        with pytest.raises(AssertionError):
-            test_direct_api_guard_before_decode(case, bound, reason)
+    module = mutant(monkeypatch, launch, "direct_route")
+    with pytest.raises(AssertionError):
+        test_direct_api_guard_before_decode(case, bound, reason, module)
 
 
 def test_classification_and_status_preserve_generic_inventory():
     session = register_session(FakeDependency())
     try:
-        for command in ("status", "supervised-status"):
-            assert startup._classify_cli_route((command,)) == "provider_free"
+        assert startup._classify_cli_route(("status",)) == "provider_free"
+        assert startup._classify_cli_route(("supervised-status",)) == "dependency_unwired"
         assert route.preflight_supervised_route("supervised-status") is None
         assert route.classify_supervised_command("supervised-launch") == "dependency_unwired"
         assert route.classify_supervised_command("supervised-cancel") == "dependency_unwired"

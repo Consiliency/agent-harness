@@ -1,11 +1,11 @@
 """Namespaced standalone route preflight, before envelope I/O or imports."""
 from .executable_dependency import ExecutableDependencyError
-from .executable_dependency_startup import _classify_cli_route, refuse_unwired_dependency_route
+from .executable_dependency_startup import refuse_unwired_dependency_route
 from .supervised_launch import Refused
 
 
 def classify_supervised_command(command: str) -> str:
-    return _classify_cli_route((command,))
+    return "provider_free" if command == "supervised-status" else "dependency_unwired"
 
 
 def preflight_supervised_route(command: str) -> Refused | None:

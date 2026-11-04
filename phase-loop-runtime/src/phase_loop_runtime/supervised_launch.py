@@ -6,8 +6,10 @@ This module never launches children, probes tools or writes evidence.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from copy import deepcopy
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import stat
@@ -48,7 +50,12 @@ def _json(data: bytes) -> dict:
     def nonfinite(_value):
         raise _Refusal("nonfinite")
 
-    result = json.loads(data, object_pairs_hook=pairs, parse_constant=nonfinite)
+    def finite_float(value):
+        parsed = float(value)
+        _require(math.isfinite(parsed), "nonfinite")
+        return parsed
+
+    result = json.loads(data, object_pairs_hook=pairs, parse_constant=nonfinite, parse_float=finite_float)
     _require(type(result) is dict, "object_required")
     return result
 
@@ -61,45 +68,89 @@ def _freeze(value):
     return value
 
 
+def _same_json(left, right) -> bool:
+    if type(left) is not type(right):
+        return False
+    if isinstance(left, Mapping):
+        return left.keys() == right.keys() and all(_same_json(left[key], right[key]) for key in right)
+    if isinstance(left, tuple):
+        return len(left) == len(right) and all(_same_json(a, b) for a, b in zip(left, right))
+    return left == right
+
+
 def _canonical(value) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
 
 
 def _parts(path: Path) -> tuple[str, ...]:
     _require(path.is_absolute() and ".." not in path.parts, "absolute_path_required")
+    _require(str(path) == os.path.normpath(str(path)) and path.anchor == "/", "canonical_path_required")
     return path.parts[1:]
 
 
+def _path(value: str) -> Path:
+    _require(type(value) is str and value == os.path.normpath(value), "canonical_path_required")
+    path = Path(value)
+    _parts(path)
+    return path
+
+
 def _beneath(path: Path, root: Path) -> bool:
-    return path == root or root in path.parents
+    identity = _inode(root.stat())
+    return any(_inode(parent.stat()) == identity for parent in (path, *path.parents))
+
+
+def _inode(info) -> tuple[int, int]:
+    return info.st_dev, info.st_ino
 
 
 def _read_file(path: Path, *, cap: int, trusted: bool = False,
                excluded: tuple[Path, ...] = (), nofollow: bool = True,
-               regular: bool = True, bounded: bool = True, operator_owned: bool = True) -> bytes:
+               regular: bool = True, bounded: bool = True, operator_owned: bool = True,
+               single_link: bool = False) -> bytes:
     """Walk from / with held dir fds; never resolve away a symlink first."""
     parts = _parts(path)
     _require(bool(parts), "file_required")
-    _require(not any(_beneath(path, root) for root in excluded), "untrusted_location")
-    fd = os.open("/", os.O_PATH | os.O_DIRECTORY)
+    for root in excluded:
+        _parts(root)
+    excluded_info = [root.lstat() for root in excluded]
+    _require(all(stat.S_ISDIR(info.st_mode) for info in excluded_info), "excluded_root_invalid")
+    excluded_ids = {_inode(info) for info in excluded_info}
+    fd = os.open("/", os.O_PATH | os.O_DIRECTORY | os.O_CLOEXEC)
     try:
+        _require(_inode(os.fstat(fd)) not in excluded_ids, "untrusted_location")
         for index, part in enumerate(parts):
-            flags = os.O_RDONLY | os.O_NONBLOCK
+            flags = os.O_PATH | os.O_CLOEXEC
             if nofollow:
                 flags |= os.O_NOFOLLOW
             if index < len(parts) - 1:
-                flags = os.O_PATH | os.O_DIRECTORY | (os.O_NOFOLLOW if nofollow else 0)
+                flags |= os.O_DIRECTORY
             child = os.open(part, flags, dir_fd=fd)
             os.close(fd)
             fd = child
             info = os.fstat(fd)
+            _require(_inode(info) not in excluded_ids, "untrusted_location")
             if trusted:
                 _require(info.st_uid in ({os.getuid()} if operator_owned else {0, os.getuid()}) if index == len(parts) - 1 else
                          info.st_uid in {0, os.getuid()}, "trusted_uid")  # MUTATION: trusted_uid
                 _require(not info.st_mode & 0o022, "trusted_mode")  # MUTATION: trusted_mode
         if regular:
             _require(stat.S_ISREG(info.st_mode), "reference_regular")  # MUTATION: reference_regular
-        data = os.read(fd, cap + 1)
+        if single_link:
+            _require(info.st_nlink == 1, "reference_links")
+        reader = os.open(f"/proc/self/fd/{fd}", os.O_RDONLY | os.O_NONBLOCK | os.O_NOCTTY | os.O_CLOEXEC)
+        try:
+            _require(_inode(os.fstat(reader)) == _inode(info), "file_changed")
+            chunks, size = [], 0
+            while size <= cap:
+                chunk = os.read(reader, min(65536, cap + 1 - size))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                size += len(chunk)
+            data = b"".join(chunks)
+        finally:
+            os.close(reader)
         if bounded:
             _require(len(data) <= cap, "file_cap")
         return data
@@ -184,17 +235,28 @@ class PreparedLaunch:
     _token: object = field(default_factory=object, repr=False)
 
 
-_TOKENS: dict[object, PreparedLaunch] = {}
+@dataclass(frozen=True)
+class _Admission:
+    owner_id: int
+    digest: str
+    attempt: str
+    raw_digest: str
+    inputs: LaunchInputs
+    attempt_key: tuple[str, str, str]
+
+
+_TOKENS: dict[object, _Admission] = {}
+_CONSUMED: set[tuple[str, str, str]] = set()
 _LOCK = threading.Lock()
 
 
 def _identity(name: str, search: tuple[str, ...], excluded: tuple[Path, ...]) -> ExecutableIdentity:
     if Path(name).is_absolute():
-        candidates = [Path(name)]
+        candidates = [_path(name)]
     else:
         _require("/" not in name and bool(name), "executable_path")
         _require(all(entry and Path(entry).is_absolute() for entry in search), "unsafe_path")
-        candidates = [Path(entry) / name for entry in search]
+        candidates = [_path(entry) / name for entry in search]
     for path in candidates:
         if not path.exists():
             continue
@@ -234,6 +296,7 @@ def classify_workspace(workspace: Path, target: Path, tier: str) -> tuple[str, i
             for name in dirs + files:
                 item = (Path(parent) / name).lstat()
                 protected.add((item.st_dev, item.st_ino))
+        _require(_inode(info) not in protected, "workspace_root_shared")
         for parent, dirs, files in os.walk(workspace, followlinks=False, onerror=unreadable):
             for name in dirs + files:
                 path = Path(parent) / name
@@ -241,19 +304,43 @@ def classify_workspace(workspace: Path, target: Path, tier: str) -> tuple[str, i
                 _require(not stat.S_ISLNK(item.st_mode), "workspace_storage")
                 _require(stat.S_ISDIR(item.st_mode) or
                          (stat.S_ISREG(item.st_mode) and item.st_nlink == 1), "workspace_storage")
-                _require(name not in {"alternates", "commondir"}, "workspace_storage")
+                _require(name != ".git" or (Path(parent) == workspace and stat.S_ISDIR(item.st_mode)),
+                         "workspace_gitfile")
+                _require(name not in {"alternates", "http-alternates", "commondir"}, "workspace_storage")
                 _require((item.st_dev, item.st_ino) not in protected, "workspace_shared")
+                if Path(parent) == workspace / ".git" and name in {"config", "config.worktree"}:
+                    _check_git_config(_read_file(path, cap=1024 * 1024))
     _require(kind != "unknown", "workspace_unknown")
     return kind, info.st_dev, info.st_ino
 
 
+def _check_git_config(data: bytes) -> None:
+    # Inspect configuration as data; never invoke git or follow includes.
+    import re
+    section = ""
+    for line in data.decode("utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith(("#", ";")):
+            continue
+        if line.startswith("["):
+            match = re.fullmatch(r'\[([A-Za-z0-9.-]+)(?:\s+".*")?\]\s*(?:[#;].*)?', line)
+            _require(match is not None, "workspace_gitconfig")
+            section = match[1].lower()
+            _require(section not in {"include", "includeif"} and not section.startswith("includeif."),
+                     "workspace_gitconfig")
+        else:
+            key = re.split(r"[=\s]", line, maxsplit=1)[0].lower()
+            _require((section, key) not in {("core", "worktree"), ("extensions", "worktreeconfig")},
+                     "workspace_gitconfig")
+
+
 def _reference(spec: dict, roots: tuple[Path, ...], cap: int) -> bytes:
     _require(set(spec) == {"root", "path", "digest"}, "reference_fields")
-    root, relative = Path(spec["root"]), Path(spec["path"])
+    root, relative = _path(spec["root"]), Path(spec["path"])
     _require(root in roots and not relative.is_absolute() and ".." not in relative.parts,
              "reference_root")  # MUTATION: reference_root
     data = _read_file(root / relative, cap=cap,
-                      nofollow=True, regular=True, bounded=False)  # MUTATION: reference_nofollow
+                      nofollow=True, regular=True, bounded=False, single_link=True)  # MUTATION: reference_nofollow
     _require(len(data) <= cap, "reference_cap")  # MUTATION: reference_cap
     _require(sha256(data) == spec["digest"], "reference_digest")
     return data
@@ -287,9 +374,14 @@ def prepare_launch(envelope_bytes: bytes, *, validator: Validator,
         _require(len(envelope_bytes) <= settings["envelope_cap"], "envelope_cap")  # MUTATION: envelope_cap
         raw_digest = sha256(envelope_bytes)
         capture = EnvelopeCapture(envelope_bytes, raw_digest, _freeze(_json(envelope_bytes)))
-        decoded, envelope_digest = decoder(capture)
+        try:
+            decoded, envelope_digest = decoder(capture)
+        except BaseException:
+            return Refused("codec_exception")
         _require(isinstance(decoded, Mapping) and isinstance(envelope_digest, str) and bool(envelope_digest), "codec_invalid")
         envelope = _freeze(decoded)
+        _require(_same_json(envelope, capture.envelope), "codec_changed_envelope")
+        decoded = envelope
         required = {"schema", "version", "assignment_digest", "run_id", "attempt_id",
                     "target_unit_ids", "readonly_neighbor_unit_ids", "snapshot_reference",
                     "obligation_references", "dependency_declaration", "caller_context",
@@ -297,6 +389,8 @@ def prepare_launch(envelope_bytes: bytes, *, validator: Validator,
         _require(set(decoded) == required, "envelope_fields")
         _require(not decoded["dependency_declaration"], "dependency_route_unwired")
         _require(type(decoded["attempt_id"]) is str and bool(decoded["attempt_id"]), "attempt_invalid")
+        _require(all(type(decoded[key]) is str and bool(decoded[key]) for key in ("assignment_digest", "run_id")),
+                 "attempt_invalid")
         launch = decoded["launch_inputs"]
         _require(set(launch) == {"instruction", "baseline", "executable", "wrappers", "workspace",
                                  "target", "tier", "constraints", "timeout"}, "launch_fields")
@@ -304,8 +398,8 @@ def prepare_launch(envelope_bytes: bytes, *, validator: Validator,
         _require(tier in {"provider_readonly_patch_return_audit", "post_write_audit_only"}, "tier_unsupported")
         _require(launch["constraints"] in ([], ()), "constraints_unsupported")
         _require(type(launch["timeout"]) is int and 0 < launch["timeout"] <= settings["timeout_max"], "timeout_invalid")
-        workspace, target = Path(launch["workspace"]), Path(launch["target"])
-        roots = tuple(Path(root) for root in settings["reference_roots"])
+        workspace, target = _path(launch["workspace"]), _path(launch["target"])
+        roots = tuple(_path(root) for root in settings["reference_roots"])
         excluded = (workspace, target, *roots)
         # Re-read under outside-workspace restrictions before using trusted inputs.
         trusted_bytes(config.config_path, excluded=excluded)
@@ -338,7 +432,10 @@ def prepare_launch(envelope_bytes: bytes, *, validator: Validator,
                               sha256(template_bytes), qualification_digest)
         digest = _launch_digest(raw_digest, inputs, decoded["attempt_id"])
         view = EnvelopeView(envelope, envelope_digest, raw_digest, digest, inputs)
-        verdict = validator(view)
+        try:
+            verdict = validator(view)
+        except BaseException:
+            return Refused("validator_exception")
         if type(verdict) is Refused:
             return verdict
         _require(type(verdict) is Admit, "admit_required")  # MUTATION: typed_admit
@@ -346,7 +443,9 @@ def prepare_launch(envelope_bytes: bytes, *, validator: Validator,
                  "admit_binding")  # MUTATION: admit_binding
         prepared = PreparedLaunch(view, verdict)
         with _LOCK:
-            _TOKENS[prepared._token] = prepared
+            _TOKENS[prepared._token] = _Admission(id(prepared), digest, decoded["attempt_id"], raw_digest,
+                                                 deepcopy(inputs), tuple(decoded[key] for key in
+                                                 ("assignment_digest", "run_id", "attempt_id")))
         return prepared
     except Exception as exc:
         return Refused(str(exc) if isinstance(exc, _Refusal) else "launch_invalid")
@@ -358,10 +457,15 @@ def consume_admission(prepared: PreparedLaunch) -> LaunchInputs | Refused:
         _require(type(prepared) is PreparedLaunch, "token_invalid")
         with _LOCK:
             registered = _TOKENS.pop(prepared._token, None)  # MUTATION: token
-        _require(registered is prepared, "token_spent")
+        _require(registered is not None and registered.owner_id == id(prepared), "token_spent")
         view, inputs = prepared.view, prepared.view.inputs
+        _require(inputs == registered.inputs and view.raw_digest == registered.raw_digest and
+                 prepared.admit == Admit(registered.digest, registered.attempt), "consume_binding")
         _require(prepared.admit == Admit(_launch_digest(view.raw_digest, inputs, view.envelope["attempt_id"]),
                                           view.envelope["attempt_id"]), "consume_binding")
+        with _LOCK:
+            _require(registered.attempt_key not in _CONSUMED, "attempt_replayed")
+            _CONSUMED.add(registered.attempt_key)
         kind, device, inode = classify_workspace(Path(inputs.workspace), Path(inputs.target), inputs.tier)
         _require(kind == inputs.workspace_class, "workspace_changed")  # MUTATION: consume_class
         _require(device == inputs.root_device, "device_changed")  # MUTATION: consume_device

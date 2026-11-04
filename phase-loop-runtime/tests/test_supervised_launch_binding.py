@@ -173,3 +173,11 @@ def test_external_binding_non_admit(case):
     paths = binding_files(case)
     paths["validator"].write_text('def validate(view):\n    return True\n')
     assert child(case, paths, load_only=False)["reason"] == "admit_required"
+
+
+@pytest.mark.parametrize("kind", ["validator", "codec"])
+@pytest.mark.parametrize("error", ["SystemExit", "KeyboardInterrupt"])
+def test_binding_callback_refusal(case, kind, error):
+    paths = binding_files(case)
+    paths[kind].write_text(f"raise {error}()\n")
+    assert child(case, paths)["reason"] == "binding_invalid"

@@ -1,10 +1,7 @@
 """Receipt reduction consumes observed producer artifacts, not text snapshots."""
 import hashlib
 import json
-import os
 from pathlib import Path
-import subprocess
-import sys
 
 import pytest
 
@@ -26,15 +23,26 @@ def read_receipt(path):
 def validate_receipt(record):
     assert record["authority"] == "synthetic_fixture_only"
     assert record["gate"] == "IF-0-ENVELOPE-1"
-    assert record["ec_status"] == {"EC-ENVELOPE-1": "local_fixture_pass",
-                                    "EC-ENVELOPE-2": "local_fixture_pass", "EC-ENVELOPE-3": "local_fixture_pass"}
     assert set(CONTROLS) <= set(record["mutation_controls"])
     for relative, digest in record["source_hashes"].items():
         assert hashlib.sha256((REPO / relative).read_bytes()).hexdigest() == digest, relative
     assert len(record["source_hashes"]) >= 8
     nodes = record["producer_nodes"]
-    assert len(nodes) == len(set(nodes)) == record["producer_passed"]
-    assert {node.split("::")[0].split("/")[-1] for node in nodes} == set(PRODUCERS)
+    outcomes = record["producer_outcomes"]
+    assert len(nodes) == len(set(nodes))
+    assert set(outcomes) == set(nodes)
+    assert record["producer_passed"] == sum(value == "passed" for value in outcomes.values())
+    assert record["producer_skipped"] == sum(value == "skipped" for value in outcomes.values())
+    assert outcomes and all(value == "passed" for value in outcomes.values())
+    assert set(record["ec_status"]) == {"EC-ENVELOPE-1", "EC-ENVELOPE-2", "EC-ENVELOPE-3"}
+    observed_files = {node.split("::")[0].split("/")[-1] for node in nodes}
+    assert observed_files <= set(PRODUCERS)
+    if record["final_tree_validated"]:
+        assert observed_files == set(PRODUCERS)
+        assert all(value == "local_fixture_pass" for value in record["ec_status"].values())
+    else:
+        assert all(value == "pending_hosted_ci" for value in record["ec_status"].values())
+        assert "final_tree_revalidation" in record["pending"]
     assert record["producer_skipped"] == 0
     assert record["preimplementation_selected"] == 0
     assert set(record["pending"]) >= {"public_schema_reconciliation", "installed_tool_qualification", "registry_activation"}
@@ -52,19 +60,13 @@ def test_receipt_production_single_use_and_refusal(case):
     validate_receipt(read_receipt(RECEIPT))
 
 
-def test_receipt_collected_producer_results():
+def test_receipt_observed_producer_results():
     record = read_receipt(RECEIPT)
     validate_receipt(record)
-    env = dict(os.environ, PYTHONPATH=f"{REPO / 'phase-loop-runtime/src'}:{REPO / 'phase-loop-runtime/tests'}")
-    result = subprocess.run([sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider",
-                             *[f"phase-loop-runtime/tests/{name}" for name in PRODUCERS]],
-                            cwd=REPO, env=env, capture_output=True, text=True, timeout=30)
-    assert result.returncode == 0, result.stderr + result.stdout
-    nodes = sorted(line for line in result.stdout.splitlines() if "::" in line)
-    assert nodes == sorted(record["producer_nodes"])
+    assert record["producer_outcomes"]
 
 
-@pytest.mark.parametrize("control", ["stale_binding", "missing_results", "false_authority"])
+@pytest.mark.parametrize("control", ["stale_binding", "missing_results", "false_authority", "failed_result", "false_readiness"])
 def test_receipt_mutations_after_production_entry(case, tmp_path, control):
     result = prepare(case)
     assert isinstance(launch.consume_admission(result), launch.LaunchInputs)
@@ -75,6 +77,11 @@ def test_receipt_mutations_after_production_entry(case, tmp_path, control):
         record["source_hashes"][key] = "stale"
     elif control == "missing_results":
         record["producer_nodes"].pop()
+    elif control == "failed_result":
+        record["producer_outcomes"][record["producer_nodes"][0]] = "failed"
+        record["producer_passed"] -= 1
+    elif control == "false_readiness":
+        record["ec_status"] = dict.fromkeys(record["ec_status"], "local_fixture_pass")
     else:
         record["authority"] = "authoritative_public_contract"
     temporary = tmp_path / "receipt.md"

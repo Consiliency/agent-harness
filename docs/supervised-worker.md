@@ -25,16 +25,20 @@ is in [the ENVELOPE receipt](../plans/evidence/supervised-worker/ENVELOPE.md).
 - `consume_admission(prepared)` atomically spends the token and returns
   `LaunchInputs` or `Refused`. It checks the original object and launch binding,
   workspace classification, device/inode and executable/wrapper hashes again.
+  The registry binds a separate snapshot of the admitted digest and inputs.
   A failed consumption also spends the token. A copy cannot consume the original
   object's token. JOURNAL must add durable reservation; WORKER must consume
   immediately before the bounded attempt and recheck identities before each
-  probe or worker spawn. Retries require fresh validation and attempt identity.
+  probe or worker spawn. Consumed assignment/run/attempt identities refuse reuse
+  within the process. Retries require fresh validation and attempt identity.
 
 The trusted injected codec consumes an immutable `EnvelopeCapture(raw_bytes,
 raw_digest, envelope)` and returns `(decoded_mapping, codec_envelope_digest)`.
 The boundary parses JSON and hashes the captured raw bytes once, then supplies
 the frozen mapping to the codec; codecs must consume it without reparsing bytes.
-The ambiguity check precedes codec invocation. The envelope digest follows the
+The returned mapping must equal the captured mapping; rewriting fields refuses
+before validation. Callback exceptions, including SystemExit and KeyboardInterrupt,
+become typed refusals. The ambiguity check precedes codec invocation. The envelope digest follows the
 supplied codec. The harness launch
 digest uses the domain `agent-harness:supervised-launch:v1`, NUL termination,
 and three eight-byte big-endian length-prefixed values: raw-envelope hash,
@@ -65,13 +69,18 @@ Wrappers and their digests are admitted with the executable.
 
 Reference locators contain `root`, relative `path` and `digest`. Reads walk from
 `/` using held directory descriptors and `O_NOFOLLOW` at every component; roots
-must be declared, traversal and non-regular files refuse. The per-file and total
+must be declared, traversal, non-regular files and multiply linked references
+refuse. Final components are inspected with `O_PATH` before opening for reads;
+descriptors use `O_CLOEXEC`. Reads loop to EOF or the configured cap. The per-file and total
 caps apply before validation. Linux `O_PATH` directory descriptors support
 search-only ancestor directories without requiring directory listing access.
 
 Executables are resolved before any chdir using only absolute, nonempty configured
 search entries, or an explicit absolute path. This local implementation requires
-non-symlink paths. Workspace, target and reference-root locations are excluded.
+canonical non-symlink paths. This stricter local restriction is an explicit plan
+amendment pending WORKER reconciliation. Workspace, target and reference-root
+locations are excluded by comparing device/inode identities during the held
+descriptor walk, including ancestors. Missing or non-directory excluded roots refuse.
 Executable files may belong to root or the operator. Group/world-writable components refuse conservatively, even with user-private
 groups and umask 002. Use explicit trusted, non-writable paths; there is no silent
 downgrade. Trusted input files must belong to the operator; ancestor directories
@@ -90,13 +99,17 @@ its placement and CLI integration. Offline children explicitly insert the checko
 source root, assert package provenance and record the resolved module path.
 Trusted input and executable captures have a local 1 MiB file cap; reference and
 envelope caps additionally come from the explicit operator configuration.
+The 1 MiB executable limit excludes many installed provider binaries. WORKER
+must reconcile that limit and preserve complete streaming hashes when raising
+it, pin interpreter chains as wrappers, and construct PATH from trusted config.
 
 Provider eligibility requires an operator-owned qualification record matching
 executable/wrapper paths and SHA-256 identities, template digest and configured
 version, with `write_attempt_refused`, `proposal_return` and `audit` evidence.
 Synthetic records establish only mechanics. Filesystem inspection rejects provider
-worktrees/gitfiles, nested/shared workspace roots, hardlinks, symlinks, alternates
-and commondir storage. Audit-only classification permits worktree/in-place use
+worktrees/gitfiles (including nested entries), nested/shared workspace roots,
+hardlinks, symlinks, alternates and commondir storage. Git config is read as data;
+worktree and include redirections refuse without executing git. Audit-only classification permits worktree/in-place use
 with detection-only posture. Unknown classifications refuse. Every requested
 constraint is currently unsupported on both tiers; `os_enforced` always refuses.
 
@@ -106,6 +119,8 @@ constraint is currently unsupported on both tiers; `os_enforced` always refuses.
 `supervised-launch` and `supervised-cancel` as dependency-unwired;
 `supervised-status` is provider-free. These names are reserved for WORKER's module
 CLI and do not replace generic `phase-loop status` or add generic subcommands.
+The generic classifier retains refusal for these unknown command names in
+required sessions; only the supervised namespace grants status readiness.
 `preflight_supervised_route` runs before envelope file reads, binding imports,
 credentials, output effects or probes. WORKER must preserve this composition.
 The admission API independently calls the existing startup guard before decode

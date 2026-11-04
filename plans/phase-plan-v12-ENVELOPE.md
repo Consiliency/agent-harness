@@ -113,6 +113,11 @@ user-owned executables remain writable by same-login processes. Descriptor
 execution is preferred where supported; otherwise disclose the residual race.
 No version probe is run by ENVELOPE; WORKER owns bounded post-admission probes.
 
+Repair amendment: ENVELOPE conservatively refuses symlink executable components
+and stores canonical absolute non-symlink paths rather than resolving symlinks.
+This is a local fixture restriction for WORKER/public reconciliation, not a claim
+that typical installed provider paths are already supported.
+
 load_validator_binding reads only explicitly configured operator-owned files
 outside target/workspace, verifies uid, non-writable group/world modes and
 no-follow paths, then loads from a trusted absolute module location. No entry
@@ -159,7 +164,7 @@ SL-2 — Evidence and documentation reducer
 
 - **Scope**: Build the process-free admission boundary and synthetic behavioral corpus.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/supervised_launch.py`, `phase-loop-runtime/tests/test_supervised_launch.py`, `phase-loop-runtime/tests/test_supervised_launch_mutations.py`, `phase-loop-runtime/tests/fixtures/supervised_launch_local/**`
-- **Interfaces provided**: `prepare_launch`, `consume_admission`, `Validator`, `Admit`, `Refused`, `LaunchInputs`, `PreparedLaunch`, `admission_test_evidence`
+- **Interfaces provided**: `prepare_launch`, `consume_admission`, `Validator`, `Admit`, `Refused`, `LaunchInputs`, `PreparedLaunch`; admission evidence is the observed per-node results from the SL-0 test files
 - **Interfaces consumed**: `refuse_unwired_dependency_route` (pre-existing)
 - **Parallel-safe**: no
 - **Tasks**:
@@ -197,7 +202,7 @@ SL-2 — Evidence and documentation reducer
 
 - **Scope**: Bind trusted validator configuration and dependency preflight to the admission API.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/supervised_launch_binding.py`, `phase-loop-runtime/src/phase_loop_runtime/supervised_dependency.py`, `phase-loop-runtime/src/phase_loop_runtime/executable_dependency_startup.py`, `phase-loop-runtime/tests/test_supervised_launch_binding.py`, `phase-loop-runtime/tests/test_supervised_launch_route.py`, `phase-loop-runtime/tests/test_executable_dependency_startup.py`
-- **Interfaces provided**: `load_validator_binding`, `classify_supervised_command`, `preflight_supervised_route`, `route_test_evidence`
+- **Interfaces provided**: `load_validator_binding`, `classify_supervised_command`, `preflight_supervised_route`; route evidence is the observed per-node results from the SL-1 test files
 - **Interfaces consumed**: `prepare_launch`, `consume_admission`, `Validator`, `Admit`, `Refused`, `LaunchInputs`, `PreparedLaunch`
 - **Parallel-safe**: no
 - **Tasks**:
@@ -225,8 +230,8 @@ SL-2 — Evidence and documentation reducer
 
 - **Scope**: Synthesize both producer lanes into accurate seam documentation and evidence.
 - **Owned files**: `docs/supervised-worker.md`, `plans/evidence/supervised-worker/ENVELOPE.md`, `phase-loop-runtime/tests/test_supervised_launch_receipt.py`
-- **Interfaces provided**: `envelope_seam_receipt`
-- **Interfaces consumed**: `admission_test_evidence`, `route_test_evidence`, `prepare_launch`, `consume_admission`, `load_validator_binding`, `preflight_supervised_route`
+- **Interfaces provided**: `plans/evidence/supervised-worker/ENVELOPE.md` (runner-stamped per-node outcomes and source bindings)
+- **Interfaces consumed**: observed SL-0/SL-1 per-node results, `prepare_launch`, `consume_admission`, `load_validator_binding`, `preflight_supervised_route`
 - **Parallel-safe**: no
 - **Tasks**:
   - test: Check receipt references against actual producer results, calling the
@@ -269,6 +274,15 @@ history. Proxy evidence requires a roadmap amendment. Record proof-cost
 advisories above roughly five minutes on one node; report multiple failures.
 
 ## Verification
+
+Repair verification amendment (owner shared-host rule): run only individual
+owned test files, serially, under `timeout 900` with `-p no:cacheprovider`.
+Check `uptime` and `/proc/pressure/io` before every test command; stop local
+tests if degraded. The five owned files together are the effective phase suite;
+run `test_executable_dependency_startup.py` separately. Mutation runs use one
+file at a time. Do not collect the full repository locally to recover deselected
+counts. Full repository suites, Gate A and CI remain hosted obligations. The
+receipt records actual per-node outcomes, not collection counts as pass evidence.
 
 Use the repository's locked Python 3.12+ environment and absolute source/test
 PYTHONPATH from CONTRIBUTING.md. These are future implementation commands,
