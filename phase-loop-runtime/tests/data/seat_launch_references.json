@@ -1201,5 +1201,7 @@
   {"count": 1, "function": "cli_main", "module": "seat_window", "primitive": "io.glob", "role": "host-io"},
   {"count": 1, "function": "_read_modes", "module": "seat_preflight", "primitive": "io.read_text", "role": "host-io"},
   {"count": 1, "function": "_modes_lock", "module": "seat_preflight", "primitive": "io.open", "role": "host-io"},
-  {"count": 1, "function": "_republish_locked", "module": "seat_preflight", "primitive": "io.stat", "role": "host-io"}
+  {"count": 1, "function": "_republish_locked", "module": "seat_preflight", "primitive": "io.stat", "role": "host-io"},
+  {"count": 1, "function": "_git", "module": "claude_seat_transport", "primitive": "subprocess.run", "role": "operator-out-of-scope"},
+  {"count": 1, "function": "_event", "module": "claude_seat_transport", "primitive": "io.read_text", "role": "operator-out-of-scope"}
 ]

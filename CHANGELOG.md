@@ -6,6 +6,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- The jailed Claude seat reads `PHASE_LOOP_PANEL_CLAUDE_ROUTE` (SEATS CLAUDE, agent-harness#1820).
+  `claude_seat_transport` resolves `tui | print | sdk`: unset or blank keeps the TUI (the
+  print-route record's §4a item 2); an unknown value refuses `panel_claude_route_invalid` and a
+  transport whose module is not admitted refuses `panel_claude_transport_not_admitted`. A refused
+  value launches nothing and never falls back. Every jailed transport now runs the jailed login
+  proof first (caller-credential rejection, the subscription check, and a single-use auth jail on
+  the exact credential, agent-harness#1532), and a seat that will not run republishes its row in
+  `seat-modes.json` (agent-harness#1255). The new typed codes carry their OD-10 class on the mode
+  line. `python -m phase_loop_runtime.claude_seat_transport audit-order` checks the ratification
+  order by content and runs as a step of the required lint job on pull requests.
+
 - The jailed Claude seat is handed the native Claude image behind a managed release launcher
   (agent-harness#1641) or a guarded frontdoor (agent-harness#1798) (SEATS CLAUDE,
   agent-harness#1820); a frontdoor whose release checks fail refuses `jail_build`.

@@ -200,13 +200,16 @@ def test_the_monitor_cancel_interrupts_the_production_wait(monkeypatch, tmp_path
 # Through the production spawn: renewed -> jailed; not renewed -> sealed; cancelled.
 # --------------------------------------------------------------------------------------
 
-def _spawn(monkeypatch, tmp_path, outcome, *, review_monitor=None, waited=30.0, jailed_leg=None):
+def _spawn(monkeypatch, tmp_path, outcome, *, review_monitor=None, waited=30.0, jailed_leg=None,
+           login_proof=None, prepare=None):
     from test_seat_notices import _FakeBroker
 
     calls = {"prepare": 0}
 
     def _prepare(*_a, **_k):
         calls["prepare"] += 1
+        if prepare is not None:
+            return prepare(*_a, **_k)
         if jailed_leg is not None:
             return types.SimpleNamespace(notices=[])
         raise seat_jail.SeatSandboxRefused("seat_sandbox_refused:jail_build")
@@ -243,6 +246,12 @@ def _spawn(monkeypatch, tmp_path, outcome, *, review_monitor=None, waited=30.0, 
     monkeypatch.setattr(pi, "_prepare_jailed_claude", _prepare)
     if jailed_leg is not None:
         monkeypatch.setattr(pi, "_exec_jailed_claude_leg", jailed_leg)
+        # IF-0-CLAUDE-4 (SEATS CLAUDE): the jailed call site proves the login before any
+        # transport launches. These tests are about the wait, so the proof holds; its own
+        # failing controls are in test_seats_claude_transport.py.
+        if login_proof != "real":
+            monkeypatch.setattr(pi, "_jailed_claude_login_proof", login_proof or (
+                lambda seat, *a, **k: sc.LoginProof(sc.SOURCE_LOGIN, "oauth_token", "none")))
     monkeypatch.setattr(pi, "ParentUnixBroker", _FakeBroker)
     monkeypatch.setattr(_FakeBroker, "invoked", 0)
     monkeypatch.setattr(pi, "revalidate_review_isolation_authorization", lambda *a, **k: None)
