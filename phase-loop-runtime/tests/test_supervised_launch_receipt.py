@@ -1,7 +1,12 @@
 """Receipt reduction consumes observed producer artifacts, not text snapshots."""
 import hashlib
+import inspect
 import json
+from functools import lru_cache
+import os
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -14,6 +19,27 @@ REPO = Path(__file__).resolve().parents[2]
 RECEIPT = REPO / "plans/evidence/supervised-worker/ENVELOPE.md"
 PRODUCERS = ["test_supervised_launch.py", "test_supervised_launch_mutations.py",
              "test_supervised_launch_binding.py", "test_supervised_launch_route.py"]
+
+
+@lru_cache(maxsize=1)
+def current_producer_nodes():
+    nodes = set()
+    for filename in PRODUCERS:
+        # Collect only one owned file at a time; never collect the repository.
+        subprocess.run(["uptime"], check=True)
+        pressure = Path("/proc/pressure/io").read_text()
+        print(pressure)
+        assert os.getloadavg()[0] < (os.cpu_count() or 1)
+        assert all(float(line.split("avg10=")[1].split()[0]) < 10 for line in pressure.splitlines())
+        result = subprocess.run(
+            ["timeout", "900", sys.executable, "-m", "pytest", "--collect-only", "-q",
+             "-p", "no:cacheprovider", str(REPO / "phase-loop-runtime/tests" / filename)],
+            cwd=REPO, capture_output=True, text=True, check=True)
+        selected = {"tests/" + line.split("tests/", 1)[1] for line in result.stdout.splitlines()
+                    if "tests/" + filename + "::" in line}
+        assert selected
+        nodes.update(selected)
+    return nodes
 
 
 def read_receipt(path):
@@ -39,6 +65,7 @@ def validate_receipt(record):
     assert observed_files <= set(PRODUCERS)
     if record["final_tree_validated"]:
         assert observed_files == set(PRODUCERS)
+        assert current_producer_nodes() <= set(nodes)
         assert all(value == "local_fixture_pass" for value in record["ec_status"].values())
     else:
         assert all(value == "pending_hosted_ci" for value in record["ec_status"].values())
@@ -88,3 +115,27 @@ def test_receipt_mutations_after_production_entry(case, tmp_path, control):
     temporary.write_text("```json\n" + json.dumps(record) + "\n```\n")
     with pytest.raises(AssertionError):
         validate_receipt(read_receipt(temporary))
+
+
+def test_receipt_current_inventory(monkeypatch):
+    record = read_receipt(RECEIPT)
+    record["final_tree_validated"] = True
+    record["ec_status"] = dict.fromkeys(record["ec_status"], "local_fixture_pass")
+    current = current_producer_nodes()
+    record["producer_nodes"] = sorted(current)[1:]
+    record["producer_outcomes"] = dict.fromkeys(record["producer_nodes"], "passed")
+    record["producer_passed"] = len(record["producer_nodes"])
+    with pytest.raises(AssertionError):
+        validate_receipt(record)
+    # Source-copy mutant: removing the current-inventory guard accepts the
+    # otherwise internally consistent historical rows as a final stamp.
+    source = inspect.getsource(validate_receipt)
+    needle = '        assert current_producer_nodes() <= set(nodes)'
+    assert source.count(needle) == 1
+    namespace = dict(globals())
+    exec(compile(source.replace(needle, '        pass'), __file__, "exec"), namespace)
+    namespace["validate_receipt"](record)
+    record["producer_nodes"] = sorted(current)
+    record["producer_outcomes"] = dict.fromkeys(current, "passed")
+    record["producer_passed"] = len(current)
+    validate_receipt(record)

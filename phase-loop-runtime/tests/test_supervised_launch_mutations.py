@@ -11,6 +11,7 @@ from test_supervised_launch import (
     case as _case, consumption_witness, identity_witness, prepare, qualify, reference_witness, refused, storage_witness,
     executable_owner_witness, capture_witness,
     finite_witness, codec_witness, root_storage_witness, location_witness, nesting_witness, git_data_witness,
+    config_grammar_witness, path_spelling_witness, callback_value_witness, trusted_links_witness,
 )
 
 case = _case
@@ -18,7 +19,16 @@ case = _case
 
 def mutant(monkeypatch, production, control):
     source = Path(production.__file__).read_text()
-    if control == "reference_nofollow":
+    if control == "workspace_gitconfig":
+        source = source.replace('_check_git_config(_read_file(path, cap=1024 * 1024))', 'pass')
+    elif control == "outer_refusal":
+        source = source.replace('except BaseException as exc:', 'except Exception as exc:')
+    elif control == "registry_inputs":
+        source = source.replace('return registered.inputs', 'return inputs')
+    elif control in {"trusted_links", "executable_links"}:
+        needle = 'excluded=excluded, single_link=True)' if control == "trusted_links" else 'operator_owned=False, single_link=True)'
+        source = source.replace(needle, needle.replace('single_link=True', 'single_link=False'))
+    elif control == "reference_nofollow":
         source = source.replace("nofollow=True, regular=True, bounded=False", "nofollow=False, regular=True, bounded=False")
     elif control == "token":
         source = source.replace("_TOKENS.pop(prepared._token, None)", "_TOKENS.get(prepared._token, None)")
@@ -75,10 +85,20 @@ CONTROLS = ["admit_binding", "typed_admit", "identity_digest", "token", "qualifi
             "reference_root", "reference_nofollow", "reference_regular", "reference_cap", "aggregate_cap", "envelope_cap"]
 CONTROLS += ["nonfinite", "workspace_root_shared", "untrusted_location", "workspace_ancestry",
              "canonical_path_required", "codec_changed_envelope", "workspace_gitfile"]
+CONTROLS += ["workspace_gitconfig", "path_symlink", "codec_invalid", "admit_fields",
+             "outer_refusal", "registry_inputs", "trusted_links", "executable_links"]
 
 
 def witness(case, module, monkeypatch, control):
-    if control == "nonfinite":
+    if control == "workspace_gitconfig":
+        config_grammar_witness(case, module)
+    elif control == "path_symlink":
+        path_spelling_witness(case, module)
+    elif control in {"codec_invalid", "admit_fields", "outer_refusal", "registry_inputs"}:
+        callback_value_witness(case, module, control)
+    elif control in {"trusted_links", "executable_links"}:
+        trusted_links_witness(case, module, "config" if control == "trusted_links" else "executable")
+    elif control == "nonfinite":
         finite_witness(case, module)
     elif control == "workspace_root_shared":
         root_storage_witness(case, module, monkeypatch)
@@ -148,5 +168,6 @@ def test_production_control_witness(case, monkeypatch, control):
 def test_supervised_launch_mutations(case, monkeypatch, control):
     # The same assertion is separately exercised against the intact production module.
     module = mutant(monkeypatch, launch, control)
-    with pytest.raises(AssertionError):
+    expected = (AssertionError, SystemExit, KeyboardInterrupt) if control == "outer_refusal" else AssertionError
+    with pytest.raises(expected):
         witness(case, module, monkeypatch, control)

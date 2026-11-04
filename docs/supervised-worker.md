@@ -86,6 +86,17 @@ groups and umask 002. Use explicit trusted, non-writable paths; there is no sile
 downgrade. Trusted input files must belong to the operator; ancestor directories
 may belong to the operator or root and must also be non-writable by group/world.
 
+Symlinks at any component, including ancestors above declared roots, refuse.
+File capture reports `path_symlink`; workspace and target classification retain
+their typed root refusals. Configure the canonical physical paths (for example,
+use `realpath` during operator setup) for every root and trusted input, including
+reference locators. A second spelling does not change the identity exclusions.
+Trusted inputs, executables and wrappers must also have `st_nlink == 1`;
+multiply linked installed tools require a separate single-link installation.
+Identity exclusion recognizes mounts of excluded roots and their ancestors.
+It does not identify a mount whose source is strictly inside an excluded root;
+operators must keep such mounts outside the admitted path set.
+
 `supervised_launch_binding.load_validator_binding(path, *, workspace, target)`
 requires isolated Python (`-I`) and an explicit operator-owned binding manifest
 outside workspace, target and reference roots. Its local manifest names
@@ -112,6 +123,12 @@ hardlinks, symlinks, alternates and commondir storage. Git config is read as dat
 worktree and include redirections refuse without executing git. Audit-only classification permits worktree/in-place use
 with detection-only posture. Unknown classifications refuse. Every requested
 constraint is currently unsupported on both tiers; `os_enforced` always refuses.
+
+Provider config accepts only clean-clone core, remote, branch and object-format
+keys. Standard remote/branch subsection headers are permitted; quoted section
+names, quoted values, escapes, continuations, includes and other keys refuse.
+WORKER must never run git under the workspace's own configuration: later audit
+and patch capture must use controlled local, global and system configuration.
 
 ## Standalone guard order and remaining authority
 

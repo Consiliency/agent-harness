@@ -123,12 +123,11 @@ def _read_file(path: Path, *, cap: int, trusted: bool = False,
             flags = os.O_PATH | os.O_CLOEXEC
             if nofollow:
                 flags |= os.O_NOFOLLOW
-            if index < len(parts) - 1:
-                flags |= os.O_DIRECTORY
             child = os.open(part, flags, dir_fd=fd)
             os.close(fd)
             fd = child
             info = os.fstat(fd)
+            _require(not stat.S_ISLNK(info.st_mode), "path_symlink")
             _require(_inode(info) not in excluded_ids, "untrusted_location")
             if trusted:
                 _require(info.st_uid in ({os.getuid()} if operator_owned else {0, os.getuid()}) if index == len(parts) - 1 else
@@ -159,11 +158,11 @@ def _read_file(path: Path, *, cap: int, trusted: bool = False,
 
 
 def trusted_bytes(path: Path, *, excluded: tuple[Path, ...] = ()) -> bytes:
-    return _read_file(path, cap=1024 * 1024, trusted=True, excluded=excluded)
+    return _read_file(path, cap=1024 * 1024, trusted=True, excluded=excluded, single_link=True)
 
 
 def _executable_bytes(path: Path, *, excluded: tuple[Path, ...] = ()) -> bytes:
-    return _read_file(path, cap=1024 * 1024, trusted=True, excluded=excluded, operator_owned=False)
+    return _read_file(path, cap=1024 * 1024, trusted=True, excluded=excluded, operator_owned=False, single_link=True)
 
 
 @dataclass(frozen=True)
@@ -315,22 +314,28 @@ def classify_workspace(workspace: Path, target: Path, tier: str) -> tuple[str, i
 
 
 def _check_git_config(data: bytes) -> None:
-    # Inspect configuration as data; never invoke git or follow includes.
+    # Accept only the deliberately small clean-clone grammar, as data.
     import re
+    keys = {"core": {"repositoryformatversion", "filemode", "bare", "logallrefupdates"},
+            "remote": {"url", "fetch"}, "branch": {"remote", "merge"},
+            "extensions": {"objectformat"}}
     section = ""
     for line in data.decode("utf-8").splitlines():
         line = line.strip()
         if not line or line.startswith(("#", ";")):
             continue
+        _require("\\" not in line, "workspace_gitconfig")
         if line.startswith("["):
-            match = re.fullmatch(r'\[([A-Za-z0-9.-]+)(?:\s+".*")?\]\s*(?:[#;].*)?', line)
+            # Standard remote/branch subsections are distinct from quoted
+            # section names. Escapes and quoted values are outside this grammar.
+            match = re.fullmatch(r'\[([A-Za-z]+)(?: "([^"\\]+)")?\]', line)
             _require(match is not None, "workspace_gitconfig")
             section = match[1].lower()
-            _require(section not in {"include", "includeif"} and not section.startswith("includeif."),
+            _require(section in keys and (bool(match[2]) == (section in {"remote", "branch"})),
                      "workspace_gitconfig")
         else:
-            key = re.split(r"[=\s]", line, maxsplit=1)[0].lower()
-            _require((section, key) not in {("core", "worktree"), ("extensions", "worktreeconfig")},
+            match = re.fullmatch(r'([A-Za-z]+)\s*=\s*([^"\\]*)', line)
+            _require(match is not None and match[1].lower() in keys.get(section, set()),
                      "workspace_gitconfig")
 
 
@@ -378,7 +383,7 @@ def prepare_launch(envelope_bytes: bytes, *, validator: Validator,
             decoded, envelope_digest = decoder(capture)
         except BaseException:
             return Refused("codec_exception")
-        _require(isinstance(decoded, Mapping) and isinstance(envelope_digest, str) and bool(envelope_digest), "codec_invalid")
+        _require(isinstance(decoded, Mapping) and type(envelope_digest) is str and bool(envelope_digest), "codec_invalid")
         envelope = _freeze(decoded)
         _require(_same_json(envelope, capture.envelope), "codec_changed_envelope")
         decoded = envelope
@@ -439,6 +444,7 @@ def prepare_launch(envelope_bytes: bytes, *, validator: Validator,
         if type(verdict) is Refused:
             return verdict
         _require(type(verdict) is Admit, "admit_required")  # MUTATION: typed_admit
+        _require(type(verdict.launch_digest) is str and type(verdict.attempt_id) is str, "admit_fields")
         _require(verdict.launch_digest == digest and verdict.attempt_id == decoded["attempt_id"],
                  "admit_binding")  # MUTATION: admit_binding
         prepared = PreparedLaunch(view, verdict)
@@ -447,7 +453,7 @@ def prepare_launch(envelope_bytes: bytes, *, validator: Validator,
                                                  deepcopy(inputs), tuple(decoded[key] for key in
                                                  ("assignment_digest", "run_id", "attempt_id")))
         return prepared
-    except Exception as exc:
+    except BaseException as exc:
         return Refused(str(exc) if isinstance(exc, _Refusal) else "launch_invalid")
 
 
@@ -475,6 +481,6 @@ def consume_admission(prepared: PreparedLaunch) -> LaunchInputs | Refused:
         for wrapper in inputs.wrappers:
             _require(sha256(_executable_bytes(Path(wrapper.path))) == wrapper.digest,
                      "wrapper_changed")  # MUTATION: consume_wrapper
-        return inputs
-    except Exception as exc:
+        return registered.inputs
+    except BaseException as exc:
         return Refused(str(exc) if isinstance(exc, _Refusal) else "consume_invalid")

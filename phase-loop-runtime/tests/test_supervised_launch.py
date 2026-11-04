@@ -563,3 +563,92 @@ def test_file_capture_metadata_before_read(case, monkeypatch):
     with pytest.raises(launch._Refusal, match="reference_regular"):
         launch._read_file(Path("/dev/null"), cap=10)
     assert all(flags & os.O_PATH and flags & os.O_CLOEXEC for _, flags in calls)
+
+
+def config_grammar_witness(case, module, data='[core]\n filemode = "true"'):
+    qualify(case)
+    directory = case.root / "workspace/.git"
+    directory.mkdir()
+    (directory / "config").write_text(data)
+    refused(case, module, reason="workspace_gitconfig")
+
+
+@pytest.mark.parametrize("data", [
+    '[core]\n filemode = "true"', '[core]\n filemode = true\\\n bare = false',
+    '["core"]\n bare = false', '[include]\n path = config',
+    '[core]\n fsmonitor = true', '[other]\n key = value',
+])
+def test_config_grammar(case, data):
+    config_grammar_witness(case, launch, data)
+
+
+def test_config_clean_clone(case):
+    qualify(case)
+    directory = case.root / "workspace/.git"
+    directory.mkdir()
+    (directory / "config").write_text(
+        '[core]\n repositoryformatversion = 0\n filemode = true\n bare = false\n logallrefupdates = true\n'
+        '[remote "origin"]\n url = https://example.invalid/repo\n fetch = +refs/heads/*:refs/remotes/origin/*\n'
+        '[branch "main"]\n remote = origin\n merge = refs/heads/main\n[extensions]\n objectformat = sha256\n')
+    assert isinstance(prepare(case), launch.PreparedLaunch)
+
+
+def path_spelling_witness(case, module, kind="ancestor"):
+    alias = case.root / "alias"
+    if kind == "ancestor":
+        alias.symlink_to(case.root / "operator", target_is_directory=True)
+        path = alias / "config.json"
+    else:
+        alias.symlink_to(case.config.config_path)
+        path = alias
+    case.config = replace(case.config, config_path=path)
+    refused(case, module, reason="path_symlink")
+
+
+@pytest.mark.parametrize("kind", ["ancestor", "alias"])
+def test_path_spelling_refusal(case, kind):
+    path_spelling_witness(case, launch, kind)
+
+
+def callback_value_witness(case, module, kind):
+    class Text(str):
+        pass
+    if kind == "codec_invalid":
+        refused(case, module, decoder=lambda capture: (capture.envelope, Text(capture.raw_digest)),
+                reason="codec_invalid")
+    elif kind == "admit_fields":
+        refused(case, module, validator=lambda view: module.Admit(Text(view.launch_digest), view.envelope["attempt_id"]),
+                reason="admit_fields")
+    elif kind == "outer_refusal":
+        from collections.abc import Mapping
+        class Deferred(Mapping):
+            def __iter__(self):
+                raise SystemExit()
+            def __len__(self):
+                raise KeyboardInterrupt()
+            def __getitem__(self, key):
+                raise SystemExit()
+        refused(case, module, decoder=lambda capture: (Deferred(), capture.raw_digest), reason="launch_invalid")
+    else:
+        prepared = prepare(case, module)
+        result = module.consume_admission(prepared)
+        assert isinstance(result, module.LaunchInputs)
+        assert result == prepared.view.inputs
+        assert result is not prepared.view.inputs
+
+
+@pytest.mark.parametrize("kind", ["codec_invalid", "admit_fields", "outer_refusal", "registry_inputs"])
+def test_callback_values(case, kind):
+    callback_value_witness(case, launch, kind)
+
+
+def trusted_links_witness(case, module, kind="config"):
+    path = {"config": case.config.config_path, "template": case.config.template_path,
+            "executable": case.executable, "wrapper": case.wrapper}[kind]
+    os.link(path, case.root / "linked")
+    refused(case, module, reason="reference_links")
+
+
+@pytest.mark.parametrize("kind", ["config", "template", "executable", "wrapper"])
+def test_trusted_links(case, kind):
+    trusted_links_witness(case, launch, kind)
