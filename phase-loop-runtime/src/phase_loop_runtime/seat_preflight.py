@@ -242,3 +242,43 @@ def write_modes_record(stream_dir: Path, modes: Sequence[SeatMode]) -> Path:
                               indent=2, sort_keys=True) + "\n", encoding="utf-8")
     tmp.replace(path)
     return path
+
+
+def republish_seat_mode(stream_dir: Path, mode: SeatMode) -> Path:
+    """Replace ONE seat's row in the published ``seat-modes.json`` (agent-harness#1255).
+
+    A seat whose mode changes after publication (a login wait that ended short, a refused
+    transport) is republished, so the record never shows a seat as running that did not.
+    The row is the one at ``mode.position`` when that is set (its seat key and leg must
+    match), else the rows of that seat key and leg. A missing or malformed record, or no
+    matching row, raises ``ValueError``; every other row is kept byte for byte."""
+    path = Path(stream_dir) / MODES_FILE
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ValueError("no published seat modes to republish") from exc
+    if not isinstance(record, dict) or record.get("schema") != MODES_SCHEMA:
+        raise ValueError("malformed seat modes record")
+    rows = record.get("modes")
+    if not isinstance(rows, list):
+        raise ValueError("malformed seat modes record")
+
+    def matches(row: object) -> bool:
+        return (isinstance(row, dict) and row.get("seat_key") == mode.seat_key
+                and row.get("leg") == mode.leg)
+
+    if mode.position >= 0:
+        if mode.position >= len(rows) or not matches(rows[mode.position]):
+            raise ValueError("no published row at that seat position")
+        targets = [mode.position]
+    else:
+        targets = [index for index, row in enumerate(rows) if matches(row)]
+    if not targets:
+        raise ValueError("no published row for that seat")
+    for index in targets:
+        rows[index] = mode.as_json()
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(json.dumps({"schema": MODES_SCHEMA, "modes": rows}, indent=2,
+                              sort_keys=True) + "\n", encoding="utf-8")
+    tmp.replace(path)
+    return path
