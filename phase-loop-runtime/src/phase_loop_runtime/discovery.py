@@ -470,12 +470,12 @@ def select_roadmap(repo: Path, explicit: str | Path | None = None) -> Path:
         raise FileNotFoundError("no specs/phase-plans-v*.md roadmap found")
     if len(candidates) != 1:
         raise AmbiguousRoadmapError([c.resolve() for c in candidates])
-    return _return_selectable_roadmap(repo, assert_roadmap_authorized(repo, candidates[0]), "singleton-glob")
+    assert_roadmap_authorized(repo, candidates[0])
+    return _return_selectable_roadmap(repo, candidates[0], "singleton-glob")
 
 
 _BANNER_DECLARATION_ATTEMPT = re.compile(
-    # Advisory recognition belongs solely to roadmap_lint's shared classifier.
-    r"^\s*>\s*[#*_~`\s]*(?:STATUS|ACTIVE|DELIVERED|SUPERSEDED)\b",
+    r"^\s*>\s*[#*_~`\s]*(?:STATUS\b.*\b(?:ACTIVE|DELIVERED|SUPERSEDED)|ACTIVE|DELIVERED|SUPERSEDED)\b",
     re.IGNORECASE,
 )
 
@@ -495,7 +495,7 @@ def _banner_has_no_declaration(text: str) -> bool:
             if line.startswith("## "):
                 banner_end = index
                 break
-        return not roadmap_lint.has_advisory_declaration_attempt(text) and not any(
+        return not roadmap_lint.has_exact_advisory_banner(text) and not any(
             _BANNER_DECLARATION_ATTEMPT.match(line) for line in lines[:banner_end]
         )
     except Exception:
@@ -511,11 +511,11 @@ def _return_selectable_roadmap(repo: Path, candidate: Path, source: str) -> Path
     roadmap. Legacy compatibility applies only when the candidate carries no
     lifecycle declaration at all."""
     repo_root = Path(repo).resolve()
-    candidate = Path(candidate).resolve()
+    candidate = Path(os.path.abspath(candidate))
     try:
         rel = candidate.relative_to(repo_root).as_posix()
     except ValueError:
-        rel = candidate.as_posix()
+        rel = candidate.name
 
     try:
         text = candidate.read_text(encoding="utf-8")
@@ -550,7 +550,7 @@ def _return_selectable_roadmap(repo: Path, candidate: Path, source: str) -> Path
                 f"{rel} is not the registered active roadmap ({status['selected_roadmap']})"
             )
 
-    return candidate
+    return candidate.resolve()
 
 
 def active_state_roadmap(repo: Path) -> Path | None:
