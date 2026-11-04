@@ -21,7 +21,10 @@ On a shared host, agents may run:
 - named test files or `-k` selectors for the code they changed;
 - with `-n 0`, or `-n 2` at most, and `-p no:cacheprovider`;
 - with a time limit per command, such as `timeout 900 uv run pytest ...`;
-- mutation checks one test file at a time.
+- mutation checks one test file at a time;
+- one test command at a time, after checking host load first (`uptime`, `free -g`,
+  `cat /proc/pressure/io`). Stop and defer to CI if load, swap or I/O pressure is
+  already high or rises during the run.
 
 Run whole-suite verification on hosted CI. Push the branch and let the required checks
 run, or dispatch Gate A (`gh workflow run test.yml --ref <branch> -f chronology=false`,
