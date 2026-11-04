@@ -223,6 +223,22 @@ def test_each_hardening_case_refuses_the_stream(monkeypatch, name, script):
     assert codes == [cp.STREAM_UNSAFE], name
 
 
+def test_the_stream_byte_cap_holds_across_many_small_lines(monkeypatch):
+    monkeypatch.setattr(cp, "STREAM_CAP_BYTES", 4096)
+    filler = {"type": "assistant", "session_id": "x", "message": {"role": "assistant",
+                                                                   "content": "y" * 100}}
+    status, _t, codes, _e, _s = drive(
+        monkeypatch, lambda s: _lines(_init(s), *([filler] * 60), _result(s)), chunk=256)
+    assert status == "DEGRADED" and codes == [cp.STREAM_UNSAFE]
+
+
+def test_a_second_result_stops_the_run_at_once():
+    stream = cp.StreamAdmission(token=TOKEN, session_id="s")
+    assert stream.feed(_lines(_init("s"), _result("s"))) is False
+    assert stream.feed(_lines(_result("s"))) is True
+    assert stream.violation == cp.RESULT_UNPROVEN and not stream.admitted(0)
+
+
 def test_a_parser_recursion_error_is_typed(monkeypatch):
     def explode(*_a, **_k):
         raise RecursionError("deep")

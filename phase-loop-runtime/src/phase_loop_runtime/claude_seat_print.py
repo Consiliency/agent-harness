@@ -117,13 +117,13 @@ class StreamAdmission:
 
     def __init__(self, *, token: bytes, session_id: str,
                  observations: ClaudePrintObservations | None = None,
-                 stream_cap: int = STREAM_CAP_BYTES, line_cap: int = LINE_CAP_BYTES) -> None:
+                 stream_cap: int | None = None, line_cap: int | None = None) -> None:
         self._forms = _seat_jail.secret_encodings(token)
         self._overlap = max(map(len, self._forms), default=1) - 1
         self._tail = b""
         self._carry = bytearray()
-        self._stream_cap = stream_cap
-        self._line_cap = line_cap
+        self._stream_cap = STREAM_CAP_BYTES if stream_cap is None else stream_cap
+        self._line_cap = LINE_CAP_BYTES if line_cap is None else line_cap
         self.session_id = session_id
         self.observations = observations
         self.bytes = 0
