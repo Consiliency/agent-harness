@@ -492,14 +492,14 @@ def lint_train_roadmap(path: Path | str) -> List[str]:
 #
 # `specs/roadmap-status.json` (`roadmap_status_manifest.v1`) is a repo-owned
 # registry naming every tracked `specs/phase-plans-*.md` roadmap's lifecycle
-# status (`active`/`delivered`/`superseded`), never the sole unchecked
+# status (`active`/`delivered`/`superseded`/`advisory`), never the sole unchecked
 # authority: every registry value must agree with that same roadmap's own
 # committed primary-banner declaration (closed grammar below) before any
 # status read returns a value. See plans/phase-plan-v10-LEGIBLE.md.
 
 ROADMAP_STATUS_SCHEMA = "roadmap_status_manifest.v1"
 ROADMAP_STATUS_REGISTRY_REL = "specs/roadmap-status.json"
-ROADMAP_STATUSES = ("active", "delivered", "superseded")
+ROADMAP_STATUSES = ("active", "delivered", "superseded", "advisory")
 
 
 class RoadmapStatusError(RuntimeError):
@@ -544,6 +544,10 @@ class RoadmapStatus:
 # succeeding on a corrupted date).
 _BANNER_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
     (
+        "advisory",
+        re.compile(r"^> # ADVISORY — not runner-selected \((?P<date>\d{4}-\d{2}-\d{2})\)$"),
+    ),
+    (
         "active",
         re.compile(
             r"^> \*\*Status \((?P<date>\d{4}-\d{2}-\d{2})\): ACTIVE — created this date, "
@@ -584,7 +588,7 @@ def parse_roadmap_banner_status(text: str, path: str) -> str:
     Requires a nonempty Markdown H1 on line 1 and an empty line 2, then scans
     only the leading banner (everything before the first ``## `` body heading)
     for exactly one recognized full-line declaration at line 3. Returns
-    ``"active"``, ``"delivered"``, or ``"superseded"``; raises
+    ``"active"``, ``"delivered"``, ``"superseded"``, or ``"advisory"``; raises
     :class:`MalformedBannerError` on a missing, malformed, ambiguous, or
     misplaced declaration.
     """
@@ -1126,6 +1130,14 @@ def declared_active_roadmap(repo: Path) -> Path:
 
     candidates = sorted((repo / "specs").glob("phase-plans-v*.md"))
     if len(candidates) == 1:
+        # Preserve historical singleton behavior for existing statuses, but an
+        # advisory declaration attempt (even malformed) cannot become active.
+        banner = candidates[0].read_text(encoding="utf-8").split("\n## ", 1)[0]
+        if any(
+            re.match(r"^\s*>\s*[#*_~`\s]*ADVISORY\b", line, re.IGNORECASE)
+            for line in banner.splitlines()
+        ):
+            raise NonActiveSelectionError(f"{candidates[0]}: advisory roadmap cannot be selected")
         return candidates[0].resolve()
     active_candidates: List[Path] = []
     for candidate in candidates:

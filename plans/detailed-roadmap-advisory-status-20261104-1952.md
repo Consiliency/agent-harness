@@ -38,6 +38,9 @@ All runtime paths below are under `phase-loop-runtime/src/phase_loop_runtime/`.
   `validate_roadmap_status_evidence`, and the roadmap-status section of evidence
   verification preserve records and validate their digests/coherence. No status
   enum is duplicated here; no implementation edit is needed.
+- `runner.py`: evidence forwarding at collection, embedding, and registry-path
+  consumption (around lines 9204, 9266, 9375) uses shared coherence validation;
+  no implementation change is needed.
 - `plan_manifest.py`: committed-tree scanning and reporting use the parser and
   coherent accessor; retain advisory paths in coverage. Plan lifecycle statuses
   are a separate vocabulary and must not gain `advisory`.
@@ -57,7 +60,7 @@ All runtime paths below are under `phase-loop-runtime/src/phase_loop_runtime/`.
 - `README.md` documents roadmap selection. The only registry discussion found
   under `docs/` is the historical, superseded
   `docs/proposals/review-seat-sandbox.md`; leave that historical record intact.
-  Add a current registry reference instead of rewriting frozen plans/specs.
+  Extend the README registry discussion instead of rewriting frozen plans/specs.
 
 ### Contract decision
 
@@ -85,6 +88,9 @@ Use exactly this additional line-3 grammar, with a valid ISO calendar date:
 
 Retain H1 on line 1, blank line 2, exactly one recognized declaration in the
 leading banner, and existing ambiguity/date/placement rejection. Advisory is
+matched as an anchored full line; prose such as `> ADVISORY ONLY:` is not a
+second declaration. SEATS is now registered at `specs/phase-plans-seats-v1.md`
+upstream on agent-harness#1820; neither it nor v12 is edited here. Advisory is
 neither delivered nor superseded. It contributes to exact tracked coverage and
 evidence, never to the active set. `selected_roadmap` must still identify the
 sole active record; an advisory-only registry remains invalid. Explicit content
@@ -101,7 +107,8 @@ there is no automatic promotion or new transition command.
 - Manifest/coherence functions — preserve existing active-only selection and
   coverage logic; advisory flows through the shared vocabulary and parser.
 - `declared_active_roadmap` — guard its registry-absent singleton fallback against
-  a parsed advisory banner, raising `NonActiveSelectionError`. Preserve existing
+  any advisory declaration attempt, including malformed or misplaced banners,
+  raising `NonActiveSelectionError`. Preserve existing
   legacy and existing-status behavior; do not broaden this into a fallback
   refactor. Multi-candidate selection remains active-only.
 
@@ -111,7 +118,7 @@ there is no automatic promotion or new transition command.
   active-only predicate and every existing return route.
 
 ### `phase-loop-runtime/src/phase_loop_runtime/roadmap_ownership.py` (modify)
-- `resolve_roadmap` docstring — include advisory among recorded non-active
+- `resolve_roadmap` docstring — include lifecycle status `advisory` among recorded non-active
   statuses; no ownership behavior change beyond the shared accessor fix.
 
 ### `phase-loop-runtime/tests/test_advisory_roadmap_status.py` (create)
@@ -122,6 +129,9 @@ there is no automatic promotion or new transition command.
   registry/coherence and explicit CLI `validate-roadmap`; ordinary invalid
   roadmap content still fails. Advisory is retained by manifest reporting and
   evidence collection/revalidation with the correct banner digest.
+- Old-reader compatibility: restrict the real parser to the prior three-value
+  vocabulary and assert unknown advisory fails closed in parsing and selection;
+  retain an old-status positive companion and prove no dispatch occurs.
 - Negative controls: advisory selected path; missing, malformed, invalid-date,
   misplaced, duplicate or conflicting advisory banner; registry/banner mismatch;
   omitted advisory coverage. Assert typed errors and CLI nonzero where applicable.
@@ -143,24 +153,20 @@ there is no automatic promotion or new transition command.
   validation kills missing-banner/coverage controls; dropping advisory evidence
   kills record/digest assertions. No mutation-testing dependency is introduced.
 
-### `docs/phase-loop/roadmap-registry.md` (create)
-- Add a registry reference with the four statuses, exact advisory banner, example
-  active-plus-advisory registry, validation versus execution distinction, upgrade
-  requirement, coverage rules, and separately authorized promotion procedure.
-
 ### `README.md` (modify)
-- Roadmap setup section — link the new registry reference and explain that
-  advisory roadmaps validate but cannot run.
+- Roadmap setup section — explain the four registry statuses, exact advisory
+  banner, validation versus execution, coverage, upgrade requirement, and
+  separately authorized coherent promotion.
 
 ### `CHANGELOG.md` (modify)
 - `[Unreleased]` — record advisory support, honest banner, and selection exclusion.
 
 ## Documentation impact
 
-The README, new reference and CHANGELOG satisfy CONTRIBUTING.md's documentation
+The README and CHANGELOG satisfy CONTRIBUTING.md's documentation
 and user-visible behavior requirements. No generated skill text or bundles
 change. Historical registry descriptions remain historical; no frozen artifact
-is amended. Seven implementation files total, three small runtime-source edits.
+is amended. Six implementation files total, three small runtime-source edits.
 
 ## Dependencies & order
 
@@ -187,6 +193,12 @@ export PYTHONPATH="$PWD/phase-loop-runtime/src:$PWD/phase-loop-runtime/tests"
 - V4: `phase-loop-runtime/.venv/bin/python -m phase_loop_runtime.entry_doc_check --repo .`
 - V5: `phase-loop-runtime/.venv/bin/python -m phase_loop_runtime.cli docs-audit --repo . --base origin/main --json`
 - V6: `git diff --exit-code origin/main -- specs/roadmap-status.json specs/phase-plans-v12.md` and `git diff --name-only origin/main` to confirm only the enumerated implementation and planning artifacts changed (including no SEATS roadmap edit).
+- V7: `phase-loop-runtime/.venv/bin/python -m phase_loop_runtime.cli validate-roadmap --repo . --roadmap specs/phase-plans-v11.md` with the source PYTHONPATH above.
+- V8: `uv run ruff check .` with the pinned Ruff executable on PATH.
+- V9: mutation-check every new test by removing its relevant guard; restore
+  source bytes after each mutation and retain per-node failure evidence.
+- V10: `make check-full` through the runtime verification-artifact writer,
+  including the locked dependency refresh and the checks above in its log.
 
 Before eventual merge, required CI checks are `suite gate`, `lint (pyflakes)`,
 `chronology retention guard`, `docs-freshness audit`, `gitleaks`, and release

@@ -6,6 +6,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- Roadmap registries accept lifecycle status `advisory` with a dated
+  `ADVISORY — not runner-selected` banner. Advisory roadmaps remain covered and
+  validated, but cannot be selected or dispatched (agent-harness#1824).
+
 - OpenShell Stage 2 (OSCOORD2, agent-harness#1795): disabled coordinator v1 lifecycle,
   explicit mTLS and one-shot stock v0.1.4 exec, durable cleanup journals, ranked
   local admission and load/restrict/exec worker envelope. Retire the patched SDK
