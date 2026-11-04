@@ -1,16 +1,24 @@
 # Phase roadmap v12 — Supervised patch-return worker
 
+> # SUPERSEDED — ABSORBED INTO `specs/phase-plans-v11.md` (2026-11-04)
+>
+> ADVISORY ONLY: the registry accepts only active, delivered and superseded.
+> This parser-required banner encodes non-selection, not delivery or actual
+> absorption into v11. v11 remains active/selected. Activation needs a separate
+> lifecycle decision; this repair makes no runtime or registry-code change.
+
 ## Context
 
 agent-harness#1818 commissions a bounded worker and per-attempt runtime status.
 This is a separate initiative from v11. This planning artifact grants no live
-execution, route qualification, merge, or release authority. Only SCHEMA is
-detailed now; implementation awaits the public contract publication.
+execution, route qualification, merge, or release authority. ENVELOPE is the
+first detailed phase. Local fixture-based seam authoring may start now; public
+contract publication gates authoritative acceptance, not work start.
 
 ## Architecture North Star
 
 An injected validator admits a deployment-neutral envelope before any child
-process, including capability probes. A thin patch-return adapter uses
+process, including capability probes. A compatible patch-return extension uses
 `convergence/adapters/base.py:run_bounded` and `codex.py:run_codex_adapter`.
 The worker returns proposal bytes, baseline blob identities, proposal digest,
 and attempt identity. The external controller owns patch, post-image, span,
@@ -43,16 +51,21 @@ The new pinned input is a **future published commit** of the public repository
 `admitted_launch_envelope.v1`, `supervised_run_status.v1` schemas and their
 conformance vectors/resource closure. Pin that commit plus per-file sha256;
 the commit and digest inventory do not exist yet. Their absence blocks SCHEMA,
-not planning. These are external inputs, never pins of this roadmap's outputs.
+acceptance/qualification and CLOSEOUT, not ENVELOPE/JOURNAL/WORKER seam authoring.
+These are external inputs, never pins of this roadmap's outputs.
 A tag/release needs separate owner approval and is not assumed or requested.
 
-Reuse the existing `consiliency-contract>=0.6.5,<0.7` dependency and its
-package-resource path if it exposes the exact published bytes and vector closure.
-The conftest floor check is a version compatibility guard, not proof of a commit
-or resource digest. If the installed dependency cannot provide those exact
-resources without an unapproved release, vendor them byte-identically in the
-harness with provenance naming the public repository, full commit and each
-file's sha256. Both routes enforce the same explicit content pin, offline.
+Vendor byte-identical public resources with provenance naming the full commit,
+git blob ids and per-file sha256 from a maintainer-supplied expected inventory.
+Fresh-fetch the canonical repository's protected default branch and check
+`git merge-base --is-ancestor`; record branch/protection evidence and the method.
+Never generate expected digests from the fetched payload. The loader hashes
+and parses the same in-memory bytes, offline, denying unlisted/remote resources.
+Keep `consiliency-contract>=0.6.5,<0.7` and its conftest floor check unchanged;
+the floor is not provenance. Switching to package resources requires a plan
+amendment addressing the dependency bound/lock; no release is awaited.
+Only installed `jsonschema` may be marked pre-existing in a later SCHEMA plan;
+the unpublished commit/inventory belongs solely in its External Inputs gate.
 No change inside consiliency-contract is planned. No private path, repository,
 revision, dependency or source text enters public artifacts.
 
@@ -65,15 +78,38 @@ sandbox claim or operational readiness claim follows from these plans.
 
 ## Cross-Cutting Principles
 
-- Use `provider_readonly_patch_return_audit`: provider-enforced read-only,
-  patch-return and post-run audit in a separate clone or copy. A git worktree
-  shares refs/object storage and supports only `post_write_audit_only`.
-  `os_enforced` remains reserved/unqualified. Neither same-login processes nor
-  network access are contained. Post-hoc `tool_action` detection is not prevention.
-- Required `write_scope`, `command_denial` and `network_denial` constraints are
-  checked against demonstrated tier capabilities. Unsupported requirements
-  produce `constraint_unsupported {constraint, tier}` before launch; never
-  weaken constraints silently or infer span enforcement from CLI flags.
+Every launch-determining input (instruction bytes or digest-bound reference,
+argv, executable/wrapper identity, workspace source/baseline, tier, constraints
+and timeout) must be covered by the envelope seen by the injected validator.
+Read/hash/parse once; snapshot referenced instruction/baseline bytes and bind
+their digests before admission. Launch uses that immutable admitted object,
+never a re-read file, ambient environment, extra CLI flag or `caller_context`.
+Trusted operator configuration may narrow inputs and supplies the closed argv
+template; its identity and effective choices are included in admission.
+No sandbox/approval/config-override argv tails are accepted.
+
+The closed local tier matrix is conservative. “Unsupported” means refuse when
+required, never silently downgrade. Provider read-only behavior is not harness
+span/command enforcement. Unknown tiers, constraints or cells are unsupported.
+
+| Requested tier | write_scope | command_denial | network_denial | Tier eligibility |
+| --- | --- | --- | --- | --- |
+| provider_readonly_patch_return_audit | unsupported | unsupported | unsupported | Separate storage plus qualified provider read-only mode, proposal return and audit |
+| post_write_audit_only | unsupported | unsupported | unsupported | Auditable workspace; detection only, including worktree/in-place |
+| os_enforced | unsupported | unsupported | unsupported | Always refuse; reserved and unqualified |
+
+Provider-tier eligibility requires an operator-owned qualification record
+bound to the executable/wrapper digests, version and closed template, with a
+demonstrated write-attempt refusal; argv flags alone prove nothing. Missing,
+stale or mismatched evidence refuses the requested tier before worker launch.
+Bounded identity probes occur only after admission and cannot upgrade a matrix
+cell. Offline injected fixtures prove mechanics, not installed-tool eligibility.
+A separate clone/copy has no shared object/ref storage, alternates, gitfile
+pointing outside, hard-linked files/objects, or symlinks into protected storage;
+use no-local/no-hardlinks copying and inspect the actual result. A worktree
+cannot claim the provider tier. No same-login containment or network denial
+is claimed; post-hoc tool-action detection is not prevention.
+
 - Identity is the assignment digest, envelope digest, `run_id`, `attempt_id`,
   `target_unit_ids`, `readonly_neighbor_unit_ids` and snapshot/crosswalk reference.
   Retry requires fresh admission and a new attempt. Equal proposal digests are
@@ -87,6 +123,15 @@ sandbox claim or operational readiness claim follows from these plans.
   guard is removed. Capture multiple failures; flag proof cost exceeding about
   five minutes on one node. No commit counts or future-head pins.
 
+Fixture development preserves the public field vocabulary: `schema`, `version`,
+envelope/assignment digests, `run_id`, `attempt_id`, `target_unit_ids`,
+`readonly_neighbor_unit_ids`, snapshot/crosswalk reference, workspace requirement,
+tier/constraints, obligation references, dependency declaration, `caller_context`
+and `redaction_posture`. Local fixtures are synthetic, labelled non-authoritative;
+do not copy private schemas, vectors or prose. Extra launch-binding concepts
+are harness-local immutable API members until the public schema can carry them.
+No independent public wire schema is authored.
+
 ## Top Interface-Freeze Gates
 
 - IF-0-SCHEMA-1 — Verified commit/sha256-pinned public schema/vector bundle and provenance.
@@ -97,52 +142,7 @@ sandbox claim or operational readiness claim follows from these plans.
 
 ## Phases
 
-### Phase 1 — Published schema intake (SCHEMA)
-
-**Objective**
-
-Establish the pinned-input gate before runtime implementation.
-
-**Exit criteria**
-
-- [ ] EC-SCHEMA-1 — Published schemas and all referenced resources/vectors match the pinned Consiliency/consiliency-contract commit and per-file sha256, via the existing dependency when suitable or byte-identical vendoring with public provenance; absent or altered inputs fail closed.
-- [ ] EC-SCHEMA-2 — The production bundle loader validates both record families against the pinned valid/negative vectors offline, refuses unpinned or remote schema resolution, and has path-entered mutation controls for digest and validation bypasses.
-- [ ] EC-SCHEMA-3 — A metadata-only freeze receipt binds the consumed inputs and conformance results, records unresolved contract questions without inventing wire fields, and permits downstream authoring only after the gate passes.
-
-**Scope notes**
-
-Interface-only phase; decompose into 3 lanes: public input intake and loader,
-conformance/mutation tests, then dependent documentation reducer. Publication is a
-prerequisite, not authorization to author or change the upstream contract.
-
-**Non-goals**
-
-No envelope launch, journal writer, provider process or independent schema.
-
-**Key files**
-
-- `phase-loop-runtime/src/phase_loop_runtime/schemas/supervised-worker-v1/`
-- `phase-loop-runtime/src/phase_loop_runtime/supervised_contracts.py`
-- `phase-loop-runtime/tests/test_supervised_contracts*.py`
-- `docs/supervised-worker-contracts.md`
-
-**Depends on**
-
-- (none)
-
-**Produces**
-
-- IF-0-SCHEMA-1 — Verified commit/sha256-pinned public schema/vector bundle and provenance.
-
-**Spec closeout policy**
-
-schema: spec_delta_closeout.v1; decision: canonical_spec_update;
-target surfaces: `phase-loop-runtime/src/phase_loop_runtime/schemas/supervised-worker-v1/`,
-`docs/supervised-worker-contracts.md`; evidence paths:
-`plans/evidence/supervised-worker/SCHEMA.md`; redaction_posture: metadata_only.
-Missing/malformed evidence routes to blocker_class=contract_bug, human_required=false.
-
-### Phase 2 — Admitted launch boundary (ENVELOPE)
+### Phase 1 — Admitted launch boundary (ENVELOPE)
 
 **Objective**
 
@@ -150,17 +150,22 @@ Bind a validated envelope to an honest, explicit execution tier and route.
 
 **Exit criteria**
 
-- [ ] EC-ENVELOPE-1 — Envelope validation and the injected validator run before any child process; invalid, stale, refused, exceptional or unavailable validation yields typed refusal and zero worker/probe invocations.
-- [ ] EC-ENVELOPE-2 — Unsupported required constraints and declared/required dependencies on the standalone route refuse before side effects; `caller_context`, obligation references and full attempt/unit identities survive unchanged.
-- [ ] EC-ENVELOPE-3 — Offline mutation tests enter the production launch boundary and detect bypass of admission, capability and executable-dependency guards.
+- [ ] EC-ENVELOPE-1 — The immutable read-once envelope binds every launch input above; validation precedes all children/probes. Only a typed single-use admit bound to envelope digest and attempt id can proceed; invalid, stale, exceptional, replayed, unavailable or non-admit verdicts refuse with zero worker/probe invocations.
+- [ ] EC-ENVELOPE-2 — The closed tier matrix, workspace classification, qualification and standalone dependency guards refuse unsupported/unknown constraints, undemonstrable tiers and every `os_enforced` request before launch. Required sessions refuse before envelope reads or credential/output effects. `caller_context`, obligations and full attempt/unit identities survive unchanged in the admitted object.
+- [ ] EC-ENVELOPE-3 — Labelled synthetic fixtures and path-entered mutations detect admission, launch-input, tier/workspace, validator-binding and dependency-guard bypasses; later pinned semantic vectors run through these production paths before acceptance.
 
 **Scope notes**
 
-Decompose into 2 lanes: admission/tier boundary with tests; dependent route
-composition and documentation with tests. No provider CLI probing before
+Decompose into 3 lanes: admission/tier boundary with tests; dependent route
+composition with tests; dependent documentation/evidence reducer. No provider CLI probing before
 admission. Freeze an injected Python callable protocol without importing its
-implementation; CLI callers must use a trusted binding, never an import path
-supplied by the envelope. Preserve workspace and repo-relative locator rules.
+implementation as a repository dependency. CLI binding comes only from operator-owned configuration outside
+the target/workspace/envelope, verified by uid/mode and a trusted absolute
+module location. No entry-point discovery, environment/cwd imports or allow-all
+default. Missing binding refuses. Preserve workspace/repo-relative locator rules.
+Resolve executable/wrappers before chdir, using only absolute nonempty PATH
+entries or trusted paths; refuse workspace/worker-writable locations and bind
+absolute realpaths/digests to admission. Probes and launch use that same identity.
 
 **Non-goals**
 
@@ -175,7 +180,7 @@ No interpretation of controller grants or obligation semantics.
 
 **Depends on**
 
-- SCHEMA
+- (none)
 
 **Produces**
 
@@ -188,7 +193,7 @@ target surfaces: `docs/supervised-worker.md`; evidence paths:
 `plans/evidence/supervised-worker/ENVELOPE.md`; redaction_posture: metadata_only.
 Missing/malformed evidence routes to blocker_class=contract_bug, human_required=false.
 
-### Phase 3 — Attempt journal and projection (JOURNAL)
+### Phase 2 — Attempt journal and projection (JOURNAL)
 
 **Objective**
 
@@ -196,10 +201,10 @@ Provide authoritative attempt history and a replaceable replay projection.
 
 **Exit criteria**
 
-- [ ] EC-JOURNAL-1 — A locked single-writer per-attempt journal in mode-0700 per-user local state outside the target repository drains writes, fsyncs data/directory entries, rotates chained segments, and enforces gapless `seq` from 0 and full attempt/writer identity on every line.
-- [ ] EC-JOURNAL-2 — Torn lines, unknown versions, foreign writers and sequence defects return `journal_torn_line`, `journal_unknown_version`, `journal_foreign_writer` or `attempt_overwritten`; readers never repair or truncate, and ambiguous attempts are unknown.
-- [ ] EC-JOURNAL-3 — Replay builds per-assignment latest status with each attempt's `seq` and segment digest; stale projections report `projection_behind_journal`, and absent/reused owner pid/start-time reports `owner_not_live`, never a live-running assertion.
-- [ ] EC-JOURNAL-4 — Offline mutation tests prove bounded event/attempt pages, `has_more` and omitted counts, retention disclosure, sanitized capped `untrusted_display_text`, and separation of runtime references from work-outcome/evidence joins.
+- [ ] EC-JOURNAL-1 — A locked single-writer journal outside the target uses validated single-component harness-minted ids, dir_fd-relative O_NOFOLLOW opens, verified uid/modes (0700 directories, 0600 files, no group/world write), drained/fsynced writes and chained rotation. Full line/writer identity and sequence rules reconcile to the pinned schema and `x-journal-rules` before acceptance.
+- [ ] EC-JOURNAL-2 — Torn lines, unknown versions, foreign writers, sequence defects and identity-versus-key/path mismatches fail closed with pinned semantic diagnostics; missing journals/segments and ambiguous/unindexed attempts are unknown. Readers never repair or truncate.
+- [ ] EC-JOURNAL-3 — Replay orders latest attempts only by a harness-owned append-only per-assignment admission index, never mtime, wall-clock or lexical order; binds writer identity and each attempt's seq/chain digest. Stale projections and absent/reused owner pid/start-time return pinned unknown/stale diagnostics, never running.
+- [ ] EC-JOURNAL-4 — Offline production-path mutations prove pinned page/message/event bounds, omission/retention disclosure, display text from a closed harness phrase set, and separation of runtime references from outcome/evidence joins. Prompt/source/secret sentinels in stdout, stderr and argv never reach journals, projections or pages; caller_context appears only by digest.
 
 **Scope notes**
 
@@ -211,7 +216,12 @@ Segments `<attempt>/<nnnn>.jsonl` begin with previous-segment sha256 and last
 seq; every `header`, `event`, `state`, `terminal` line carries `schema`,
 `version`, `line_kind`, `seq`, identity and writer identity (harness id/version,
 writer instance id, owner pid/process start time). `observed_at` is informational.
-Freeze numeric bounds from the pinned public contract; proposed limits are not facts.
+All enum names and numeric bounds are provisional fixture labels until the public
+pin; acceptance matches its enums, required fields and `x-journal-rules`. Example
+diagnostics include `journal_torn_line` and `attempt_provenance_mismatch`.
+JOURNAL owns the admission index and reconciliation against runtime vector cases.
+Same-login processes can forge a self-consistent chain: writer binding is not
+authentication against them. Record that unsupported trust boundary in readiness.
 Journal retention must preserve verifiable chains or explicitly report omitted
 history without presenting a truncated chain as complete. No new listener/watch.
 
@@ -224,10 +234,11 @@ No display implementation or authority inferred from a cached projection.
 - `phase-loop-runtime/src/phase_loop_runtime/run_status.py`
 - `phase-loop-runtime/src/phase_loop_runtime/run_status_projection.py`
 - `phase-loop-runtime/tests/test_run_status*.py`
+- `docs/supervised-run-status.md`
 
 **Depends on**
 
-- SCHEMA
+- (none)
 
 **Produces**
 
@@ -240,7 +251,7 @@ target surfaces: `docs/supervised-run-status.md`; evidence paths:
 `plans/evidence/supervised-worker/JOURNAL.md`; redaction_posture: metadata_only.
 Missing/malformed evidence routes to blocker_class=contract_bug, human_required=false.
 
-### Phase 4 — Bounded patch-return worker (WORKER)
+### Phase 3 — Bounded patch-return worker (WORKER)
 
 **Objective**
 
@@ -248,23 +259,54 @@ Compose admission and journals with the existing bounded adapter lifecycle.
 
 **Exit criteria**
 
-- [ ] EC-WORKER-1 — A thin adapter returns bounded proposal bytes and baseline/proposal/attempt identities from a separate clone or copy, leaves application to the external controller, and keeps existing convergence adapter callers compatible.
-- [ ] EC-WORKER-2 — Evidence binds argv, exit, stdout/stderr digests and timing to the envelope digest; standalone identity records executable realpath/sha256/version and wrapper-chain realpaths/sha256, explicitly excluding proof of a wrapper's entire loaded closure.
-- [ ] EC-WORKER-3 — Timeout and native idempotent cancel reclaim the owned process group; retries preserve earlier evidence under new admission/attempt identity. States `queued`, `running`, `cancelling`, `finished`, `refused` obey the pinned lifecycle; `refused` never follows launch. `finished` has `termination {reason, signal, by}` with `completed`, `cancelled`, `timed_out`, `failed_to_start`, nullable signal and `worker`, `harness` or `operator` attribution. A nonzero natural exit remains runtime `completed`, not acceptance.
-- [ ] EC-WORKER-4 — Offline fake-provider tests and mutation controls cover zero-spawn refusal, malformed/oversized output, process descendants, cancel races, failed start, post-run audit, retries, evidence retention and required-session refusal without live tooling qualification.
+- [ ] EC-WORKER-1 — A compatible shared-seam extension returns bounded proposal bytes and baseline/proposal/attempt identities under the admitted workspace/tier policy, leaves application to the controller and keeps existing convergence callers compatible. The provider tier requires the separate storage defined above.
+- [ ] EC-WORKER-2 — Launch uses only the immutable admitted inputs. Evidence binds prompt-free argv, instruction digest, exit, stream digests and timing to the envelope digest; standalone identity includes absolute executable realpath/sha256/version and wrapper-chain realpaths/sha256, excluding proof of a wrapper's entire loaded closure.
+- [ ] EC-WORKER-3 — Native cancel is idempotent and targets only a verified owning launcher (pid plus process start time); the launcher holds the unreaped leader and reclaims its own group. Retry requires fresh admission/identity and preserves evidence. Lifecycle enums/termination fields follow the pinned schema; refusal never follows start, and natural process completion is never work acceptance.
+- [ ] EC-WORKER-4 — Injected providers prove zero-spawn refusal and evidence binding; real offline subprocess sessions prove descendant/group cleanup, cancel races and failed start. Mutations cover malformed/oversized proposals, planted credentials, prompt secrecy, audit failure, retention, retry and required-session refusal. A setsid descendant test records the explicit escape limitation; no live-tool qualification is claimed.
 
 **Scope notes**
 
 Decompose into 3 lanes: shared bounded seam and regressions; dependent adapter
 and lifecycle integration; dependent CLI/documentation reducer. Use a bounded
 execution action, not review mode (review currently has different timeout and
-isolation behavior). Capture proposal transport without changing the frozen
-convergence status meaning or introducing a third evidence format. Whole-file
-`{path, content}` output is not the proposal contract. Capability probes must
-bind the same resolved executable as launch; all probes are bounded and occur
-after admission. Native CLI surface: `launch --envelope <path> --result <path>`,
-`status --run <id>|--attempt <id>`, `cancel --run <id>|--attempt <id>`; confirm
-exit codes against the published contract before freezing the public command.
+isolation behavior). The unchanged `run_bounded` return cannot carry proposals: it drops stderr and
+caps output at 64 KiB. Add a bounded proposal transport outside
+`ConvergenceResultEnvelope`, with a larger action-specific cap and stream digests
+(including stderr), preserving existing statuses/bounds for existing callers.
+Whole-file `{path, content}` is not the proposal contract. Send instructions via
+stdin, inherited fd or 0600 file, never argv; evidence stores only their digest.
+All probes and workers share base scrubbers, additionally dropping
+`SSH_AUTH_SOCK`, `GIT_ASKPASS`, `SSH_ASKPASS` and git credential-helper overrides.
+Plant vendor/GH tokens, agent socket and git/gh credential controls in tests.
+On-disk git/gh credentials remain reachable by same-login processes: disclose it.
+
+Native placement is `python -m phase_loop_runtime.supervised_worker_cli` with
+`launch --envelope <path> --result <path>`, `status --run <id>|--attempt <id>`,
+and `cancel --run <id>|--attempt <id>`. It does not replace `phase-loop status`.
+Explicit dependency classification keys are `supervised-launch`,
+`supervised-status` and `supervised-cancel`; launch/cancel are unwired in required
+sessions (agent-harness#1782). In-process launch refuses at classification before
+reading the envelope. A separate exec loses session context and is standalone;
+the envelope dependency declaration remains its only cross-exec guard.
+Open --result outside the workspace with O_CREAT|O_EXCL|O_NOFOLLOW, mode 0600,
+using verified parent directories. Include terminal seq and chain-head digest
+as a controller-held anchor. Freeze exit codes only after public reconciliation.
+
+The launcher never kills a journal-supplied pgid. Without an OS descendant
+boundary, a setsid child may escape: `finished` does not prove all descendants
+gone or audit stability. The real subprocess test must expose that limitation
+and clean up its own escapee. Required descendant containment refuses.
+Before/after audit covers workspace plus protected source tree and refs;
+unexplained changes or audit errors withhold the proposal and record failure.
+Hash directly or use isolated trusted git configuration disabling system/global
+config, hooks, fsmonitor, filters, textconv and external diff; never execute
+workspace-controlled git configuration.
+
+WORKER owns `output_retention.mark/prune` integration for dedicated evidence
+directories: active before writes, sealed only after writers stop. Journal
+segments/index live outside prune roots and are never pruned by this helper.
+Pruned evidence keeps digest references and explicit `retention_dropped`
+disclosure through JOURNAL pages; no incomplete chain appears complete.
 
 **Non-goals**
 
@@ -278,6 +320,8 @@ No OS isolation, OpenShell registration, live run or controller scope checks.
 - `phase-loop-runtime/src/phase_loop_runtime/supervised_worker_cli.py`
 - `phase-loop-runtime/tests/test_supervised_worker*.py`
 - `phase-loop-runtime/tests/test_convergence_adapters.py`
+- `phase-loop-runtime/src/phase_loop_runtime/output_retention.py` (reuse; call sites in worker)
+- `phase-loop-runtime/tests/test_output_retention.py`
 
 **Depends on**
 
@@ -295,6 +339,56 @@ target surfaces: `docs/supervised-worker.md`, `CHANGELOG.md`; evidence paths:
 `plans/evidence/supervised-worker/WORKER.md`; redaction_posture: metadata_only.
 Missing/malformed evidence routes to blocker_class=contract_bug, human_required=false.
 
+### Phase 4 — Published schema intake (SCHEMA)
+
+**Objective**
+
+Establish the public byte-pin gate after seam implementation and before acceptance.
+
+**Exit criteria**
+
+- [ ] EC-SCHEMA-1 — Vendored schemas/resources/vectors match the canonical protected-branch commit and maintainer inventory (blob ids and sha256); absent, altered or unpinned inputs fail closed, with public provenance and no network resolution.
+- [ ] EC-SCHEMA-2 — The production loader hashes/parses identical bytes and proves only JSON Schema pass/fail for both families' schema-valid/schema-invalid vectors, with path-entered digest/validation bypass controls. Every semantic-diagnostic vector is inventoried as unresolved `upstream_phase_unmet` for runtime proof, never counted as a schema pass.
+- [ ] EC-SCHEMA-3 — A metadata-only receipt binds inputs, schema-only results and unresolved semantic vector ownership; checks launch-input coverage (instruction/reference, argv, executable/dependency identity, workspace source/baseline and timeout), tier-matrix basis, lifecycle, identity, projection and bounds. Inadequate schema coverage blocks the byte-pin gate pending upstream repair, never a local wire extension.
+
+**Scope notes**
+
+Interface-only phase; decompose into 3 lanes: public input intake and loader,
+conformance/mutation tests, then dependent documentation reducer. Publication is a
+prerequisite for this phase only, not authorization to change the upstream contract.
+Freeze `supervised_contracts.py:load_contract_bundle` and `validate_record`;
+the latter implements JSON Schema only, not a parallel semantic model. Retain
+all semantic vectors for later ENVELOPE/JOURNAL/WORKER runtime reconciliation
+in CLOSEOUT. Check (N), if triggered by package-data/changelog ownership in the
+later plan, is a packaging heuristic: no release dispatch or reducer is needed.
+
+**Non-goals**
+
+No envelope launch, journal writer, provider process or independent schema.
+
+**Key files**
+
+- `phase-loop-runtime/src/phase_loop_runtime/schemas/supervised-worker-v1/`
+- `phase-loop-runtime/src/phase_loop_runtime/supervised_contracts.py`
+- `phase-loop-runtime/tests/test_supervised_contracts*.py`
+- `docs/supervised-worker-contracts.md`
+
+**Depends on**
+
+- WORKER
+
+**Produces**
+
+- IF-0-SCHEMA-1 — Verified commit/sha256-pinned public schema/vector bundle and provenance.
+
+**Spec closeout policy**
+
+schema: spec_delta_closeout.v1; decision: canonical_spec_update;
+target surfaces: `phase-loop-runtime/src/phase_loop_runtime/schemas/supervised-worker-v1/`,
+`docs/supervised-worker-contracts.md`; evidence paths:
+`plans/evidence/supervised-worker/SCHEMA.md`; redaction_posture: metadata_only.
+Missing/malformed evidence routes to blocker_class=contract_bug, human_required=false.
+
 ### Phase 5 — Review and readiness closeout (CLOSEOUT)
 
 **Objective**
@@ -303,17 +397,24 @@ Collect independently reviewable evidence without implying permission to run.
 
 **Exit criteria**
 
-- [ ] EC-CLOSEOUT-1 — The reviewed head passes all six required CI checks and dispatched Gate A, with exact observed head/run identities, and a T3 cross-vendor board covering correctness, red-team and adversarial review plus a separate president; unresolved findings block closeout.
+- [ ] EC-CLOSEOUT-1 — All pinned semantic vectors pass through ENVELOPE/JOURNAL/WORKER production paths, consumer differences are reconciled, and no SCHEMA semantic intake item remains unresolved. The reviewed head passes all six required CI checks and dispatched Gate A, with exact observed head/run identities, and a T3 cross-vendor board covering correctness, red-team and adversarial review plus a separate president; unresolved findings block closeout.
 - [ ] EC-CLOSEOUT-2 — A metadata-only readiness report distinguishes implemented/offline-tested capabilities, on-main evidence, installed-tool qualification, external conformance and live-use authority; unsupported/unknown items remain explicit with owners and blocked edges.
 
 **Scope notes**
 
-Interface-only evidence reducer phase; decompose into 2 lanes: offline regression
+Reconciliation and evidence phase; decompose into 2 lanes: offline regression
 and mutation evidence, then dependent review/readiness reducer. Landing is
-maintainer-owned. H1–H9 mapping must distinguish admission, workspace/proposal,
+maintainer-owned. The readiness mapping must distinguish admission, workspace/proposal,
 tier, execution evidence, cancellation/tool qualification, journal, reviewed
 main, local dependencies and shared-vector conformance. External controller
 and display consumer reconciliation cannot be manufactured by harness fixtures.
+The regression lane owns public-vector reconciliation in ENVELOPE/JOURNAL/WORKER
+tests: all semantic-diagnostic cases must enter their production runtime paths
+and match pinned expectations, with path-entered mutations. Bind observed results
+to the SCHEMA inventory; unresolved `upstream_phase_unmet` entries block acceptance.
+Update consumer code/tests/docs for any fixture-to-public differences by amendment,
+including the trusted public codec binding in supervised_launch_binding.py.
+The later CLOSEOUT plan must enumerate that complete touch set before execution.
 
 **Non-goals**
 
@@ -322,11 +423,16 @@ No live qualification, live monitoring acceptance, dispatch of a release or merg
 **Key files**
 
 - `plans/evidence/supervised-worker/CLOSEOUT.md`
+- `phase-loop-runtime/src/phase_loop_runtime/supervised_launch_binding.py`
+- `phase-loop-runtime/tests/test_supervised_launch*.py`
+- `phase-loop-runtime/tests/test_run_status*.py`
+- `phase-loop-runtime/tests/test_supervised_worker*.py`
 - `docs/supervised-worker-readiness.md`
 
 **Depends on**
 
 - WORKER
+- SCHEMA
 
 **Produces**
 
@@ -334,28 +440,33 @@ No live qualification, live monitoring acceptance, dispatch of a release or merg
 
 **Spec closeout policy**
 
-schema: spec_delta_closeout.v1; decision: no_spec_delta;
+schema: spec_delta_closeout.v1; decision: canonical_spec_update;
 target surfaces: `docs/supervised-worker-readiness.md`; evidence paths:
 `plans/evidence/supervised-worker/CLOSEOUT.md`; redaction_posture: metadata_only.
 Missing/malformed evidence routes to blocker_class=contract_bug, human_required=false.
 
 ## Phase Dependency DAG
 
-SCHEMA → ENVELOPE → WORKER → CLOSEOUT; SCHEMA → JOURNAL → WORKER.
+ENVELOPE → WORKER → SCHEMA → CLOSEOUT; JOURNAL → WORKER; WORKER → CLOSEOUT.
 
 ## Execution Notes
 
-SCHEMA may be planned now but cannot execute before the pinned public commit and digest inventory exist. ENVELOPE
-and JOURNAL may be planned/executed together only after IF-0-SCHEMA-1, with
-machine-verified disjoint ownership and scheduler-assigned worktrees if fanout
-is later authorized. WORKER consumes both frozen APIs; CLOSEOUT consumes every
-producer's evidence. This task authorizes no delegated execution.
-
-Schema changes require consumer reconciliation, never local schema invention.
-Readiness separates work-start, integration, completion and live-use edges:
-commissioned authoring after schema freeze is not route qualification; reviewed
-main plus external conformance precede qualification; journal proof precedes
-monitoring acceptance; fresh admission and owner authorization precede live use.
+ENVELOPE and JOURNAL may be planned and implemented now against synthetic
+field-name fixtures, independently with disjoint ownership. WORKER consumes
+their local frozen APIs without waiting for public bytes. These are work-start
+edges, not authoritative conformance. No private schema/vector is vendored.
+ENVELOPE/JOURNAL/WORKER phase completion and their IF gates are local seam
+freezes based on the labelled fixtures. References to pinned behavior in their
+ECs are final acceptance obligations discharged by CLOSEOUT, not prerequisites
+for those local gates. Their receipts must list each deferred pinned obligation.
+SCHEMA follows the seam and waits for the public commit/inventory; CLOSEOUT
+runs semantic reconciliation and blocks acceptance until all pinned vectors
+pass. Publication differences require consumer amendments, never local schema
+invention. Qualification further needs reviewed main, external conformance
+and installed-tool evidence; live use needs fresh admission and owner authority.
+Advisory registry status prevents autonomous selection until an owner separately
+activates this roadmap; it is not a public-contract blocker on manual authoring.
+This task authorizes no delegated execution.
 The roadmap may complete its scoped offline delivery while external/live edges
 remain blocked and explicitly recorded. No fixture is a live receipt.
 
