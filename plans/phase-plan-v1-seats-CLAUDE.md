@@ -14,16 +14,9 @@ automation:
 This plan covers roadmap Phase 1 (CLAUDE) of `specs/phase-plans-seats-v1.md`, a root phase.
 Exit criteria are EC-CLAUDE-1 to EC-CLAUDE-8, cited by ID only. The roadmap is advisory
 (OD-1) and the runner refuses it, so lanes land as governed PRs under principle 2. The file
-name follows the manifest's `phase-plan-v…` pattern rather than the roadmap's, by the root
-maintainer's decision.
+name follows the manifest pattern (root maintainer's decision).
 
-Round 2 (agent-harness#1830) recuts the lanes so that explicit jailed `print`, the
-agent-harness#1461 workaround, takes the shortest path: login proof, seam, print. Nothing
-gated by G1, W0, OD-3b or the v11 note is on it.
-
-Inputs are the roadmap's External Inputs: the print-route and Stage 3 records, the
-projection contract and the billing statement (article 15036540, read 2026-11-04). One pin
-is taken from the print-route record: §4a, merged by agent-harness#1775, has section sha256
+Inputs are the roadmap's External Inputs, plus one pin from the print-route record: §4a, merged by agent-harness#1775, has section sha256
 `7af0fb700ef10d444a904b01169c8b08aa056ba25ca496c7adcca7c646852cdb`. A section's bytes run
 from its `## ` heading line to the line before the next `## ` heading.
 
@@ -34,8 +27,6 @@ Today's tree:
   provider argv.
 - `_resolve_claude_executable` (`panel_invoker.py`) returns `which claude`'s realpath with no
   native-image check. The mergeable draft agent-harness#1641 fixes it.
-- Drafts agent-harness#1740 and agent-harness#1744 conflict with main. They are reading
-  copies; no hunk is applied.
 - The mode line accepts only `seat_jail.NOTICE_CODES`, and this phase doesn't edit
   `seat_jail.py`, so the seam carries its own code table.
 
@@ -335,8 +326,8 @@ SL-6 — Docs and shared inventory reducer
     Path-entered controls through `claude_seat_sdk.run_jailed`, each of which must fail or
     not admit: an ambient-host import path, an extraction to a writable path, a second
     result, a missing init and a frame the CLI didn't write. If the last can't be closed,
-    SL-3 stops and the owner decides privately (OD-10); the OD-3a text then names an
-    admission difference from `print`.
+    SL-3 stops and `sdk` stays unadmitted unless the owner privately decides otherwise
+    (OD-10); public text names no mechanism.
   - test: `test_seats_claude_sdk_adapter.py`: the adapter's credential-free tests. It accepts
     a review on the seat path and takes no solo-runner route (agent-harness#1391).
   - impl: Write `claude_sdk_adapter.py` against main from Stage 3 §3 as the OD-3a condition
@@ -353,7 +344,7 @@ SL-6 — Docs and shared inventory reducer
 ### SL-4 — Bake-off recorder and W0 kit (lane D, part 2)
 
 - **Scope**: Deliver IF-0-CLAUDE-2's recorder and validator and the W0 kit (`python -m phase_loop_runtime.claude_bakeoff`), without touching `panel_invoker.py`.
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/claude_bakeoff.py`, `phase-loop-runtime/tests/test_seats_claude_bakeoff.py`, `plans/evidence/seat-qualification/claude-w0/**`
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/claude_bakeoff.py`, `phase-loop-runtime/src/phase_loop_runtime/claude_bakeoff_recorder.mjs`, `phase-loop-runtime/tests/test_seats_claude_bakeoff.py`, `plans/evidence/seat-qualification/claude-w0/**`
 - **Interfaces provided**: `IF-0-CLAUDE-2`
 - **Interfaces consumed**: `IF-0-CLAUDE-1`
 - **Parallel-safe**: yes
@@ -364,6 +355,9 @@ SL-6 — Docs and shared inventory reducer
     - a disposable record with a planted credential shape, UUID, email, home path, IP
       literal, private host or untemplated identifier path;
     - a `contains_secret` hit on the test credential, which blocks the write;
+    - recorder output holding a planted header or body token or an untemplated path; a twin
+      environment beyond the declared delta or a bundle head off `main`; a `complete` set
+      with an unparsed connection;
     - a block mixing arms, shared meter refs, an `sdk` record whose head lacks §4b, or a
       control record marking a non-permitted check `not_applicable`.
 
@@ -376,12 +370,15 @@ SL-6 — Docs and shared inventory reducer
     meter prompts with private storage; the control-block brief and ingest; the composition
     preflight.
   - impl: Capture twin, principle 5's developer-host measurement. Once per native block,
-    inside its meter bracket, the kit runs that block's transport with its exact jailed argv
-    and environment outside the seat, on a disposable copy of the trusted W0 bundle, plus a
-    declared capture-only delta (a proxy variable and a CA variable). A metadata-only
-    TLS-terminating recorder, reusing `seat_egress_proxy`'s code unedited, keeps method, host
-    and templated path, never headers or bodies. A set is `complete` only when every
-    connection was terminated and parsed; CLAUDENET consumes only complete sets.
+    inside its meter bracket, the kit runs that block's transport outside the seat with its
+    jailed argv, environment and token pipe, on a disposable copy of the W0 bundle, whose
+    head must be on `main`. The only delta is path remaps, a fresh empty home (no host
+    settings, hooks, MCP servers or plugins load), a proxy variable and a CA variable. The
+    recorder (`claude_bakeoff_recorder.mjs`) runs on the verified srt install, with
+    `seat_egress_proxy` unedited and a per-window private CA trusted only through that
+    variable. It keeps method, host and templated path, never headers or bodies. The twin's
+    output is discarded, never a record. `complete` means every connection the recorder saw
+    was terminated and parsed; CLAUDENET consumes only complete sets.
   - impl: Give SL-6 the inventory rows.
   - verify: `V5`.
 
@@ -496,7 +493,7 @@ owner answers OQ-1 to OQ-5 otherwise before this plan merges.
 - **Request sets.** One capture twin per native block (OQ-5), inside its bracket.
 - **Control.** Three T3 Code SDK-route runs per control block. The kit prints one brief;
   the owner pastes it into a T3 Code thread whose own model isn't on the W0 account, which
-  delegates each run to a Claude child at the run's model and effort. Each child writes a
+  delegates each run to a W0-account Claude child at the run's model and effort. Each child writes a
   structured output file that the kit ingests.
 - **Security outcome.** It stops the arm; its records carry `withheld_private`, and the
   owner gets the detail privately (OD-10).
@@ -521,8 +518,8 @@ owner answers OQ-1 to OQ-5 otherwise before this plan merges.
 - **OQ-3, per-run timeout.** 30 minutes.
 - **OQ-4, sessions.** One session after GL-2. The alternative is an early session for the
   first print and control blocks, which costs one extra reading.
-- **OQ-5, capture twins.** One per native block. One per run doubles native runs for the
-  same set.
+- **OQ-5, capture twins.** One per native block, run unjailed with tools under the owner's
+  login (principle 5). One per run doubles native runs for the same set.
 - **OQ-6, the `print` landing, before SL-2 merges.** Accept the content check in place of
   §4a item 9's merge form. If declined, the merging maintainer uses item 9's form; this plan
   doesn't change.
@@ -581,11 +578,11 @@ planning tree, and each must collect more than zero after its lane lands.
 - `V4`: `P test_seats_claude_sdk.py test_seats_claude_sdk_adapter.py test_local_check.py test_ci_xdist_adoption.py test_executable_dependency_startup.py test_seats_claude_transport.py`
 - `V5`: `P test_seats_claude_bakeoff.py`
 - `V6`: `P test_seats_claude_records.py`
-- `V7`: `timeout 300 uv run --quiet --project phase-loop-runtime --python 3.14 --locked python -m phase_loop_runtime.claude_bakeoff validate plans/evidence/seat-qualification/claude-w0`. This is a shape check only. G2's reviewed records PR is the proof that the runs happened.
+- `V7`: `timeout 300 uv run --quiet --project phase-loop-runtime --python 3.14 --locked python -m phase_loop_runtime.claude_bakeoff validate plans/evidence/seat-qualification/claude-w0`.
 - `V8`: `P test_seat_reference_inventory.py`, plus the docs-freshness audit in hosted CI
 - `V9`: `automation.suite_command`. The full suite runs in hosted CI and dispatched Gate A only.
 - `V10`: `timeout 120 phase-loop validate-roadmap --repo . --roadmap specs/phase-plans-v11.md` and `timeout 120 phase-loop validate-roadmap --repo . --roadmap specs/phase-plans-seats-v1.md`
-- `VL`: `PHASE_LOOP_REQUIRE_LIVE_JAIL=1 P test_seats_claude_transport.py test_seats_claude_print.py test_seats_claude_sdk.py -k live_jail`, run on a named host class with the jail prerequisites. A skip fails. The junit receipt is cited in the activating PR.
+- `VL`: `PHASE_LOOP_REQUIRE_LIVE_JAIL=1 P test_seats_claude_transport.py test_seats_claude_print.py test_seats_claude_sdk.py -k live_jail`, run on a named host class with the jail prerequisites. A skip fails. The activating PR cites the `--junitxml` receipt's digest and host class; the file stays private.
 
 ## Acceptance Criteria
 
