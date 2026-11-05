@@ -18,6 +18,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 - Return typed review composition policy outcomes (agent-harness#1729).
 - Persist president attempt lifecycle and validate bounded monitoring (agent-harness#1822).
+- Keep review staging offline and prepare namespace resolver files consistently (agent-harness#1419, agent-harness#1623).
 
 - Roadmap registries accept lifecycle status `advisory` with a dated
   `ADVISORY — not runner-selected` banner. Advisory roadmaps remain covered and

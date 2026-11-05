@@ -3009,6 +3009,7 @@ def _redact_leg_text(text: str, known: Sequence[str | os.PathLike[str]] = ()) ->
 # `leg-logs/` dir under the run's stream dir) that detail names by a run-relative path; that
 # file is never part of PanelLegResult, the verdict JSON, governed reasons or the summary.
 _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
+    "sandbox_source_partial_clone",
     # claude TUI / Agent View route
     "claude_tui_broker_final_assistant", "claude_tui_broker_terminal_nonconforming",
     "claude_tui_editor_not_ready", "claude_tui_file_output", "claude_tui_missing_canonical_output",

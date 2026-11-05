@@ -327,6 +327,15 @@ def require_egress_isolation(available: bool | None = None) -> None:
 EGRESS_WORK_MARKER = ".phase-loop-egress-holder"
 
 
+def _write_namespace_resolver(work: Path) -> Path:
+    path = work / "resolv.conf"
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write("nameserver 10.0.2.3\noptions timeout:2 attempts:2\n")
+        os.fchmod(fd, 0o644)
+    return path
+
+
 @contextlib.contextmanager
 def isolated_network(
     policy: EgressPolicy | None = None,
@@ -419,9 +428,7 @@ def isolated_network(
         # already ACCEPTed ahead of the 10/8 deny. Point the namespace at it -- which
         # needs a MOUNT namespace too, so `/etc/resolv.conf` can be replaced for the seat
         # without touching the host's.
-        resolv = os.path.join(work, "resolv.conf")
-        with open(resolv, "w", encoding="utf-8") as handle:
-            handle.write("nameserver 10.0.2.3\noptions timeout:2 attempts:2\n")
+        resolv = str(_write_namespace_resolver(Path(work)))
         Path(work, EGRESS_WORK_MARKER).touch()
         owner_read = owner_write = None
         holder = None

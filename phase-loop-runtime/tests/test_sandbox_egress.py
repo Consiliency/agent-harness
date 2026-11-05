@@ -299,7 +299,7 @@ class TestItFailsClosed:
 
     @pytest.mark.parametrize("timeout_s", [None, 120.0])
     @pytest.mark.parametrize("failure", ["nonzero", "exec", "timeout"])
-    def test_mapped_resolver_setup_refuses_and_cleans_up(self, monkeypatch, timeout_s, failure):
+    def test_seats_firstseat_resolver_mapped_setup_refuses_and_cleans_up(self, monkeypatch, timeout_s, failure):
         import errno
         import os
         import subprocess as sp
@@ -339,6 +339,7 @@ class TestItFailsClosed:
             assert argv[8] == "--bind" and argv[10] == "/etc/resolv.conf"
             workdirs.append(Path(argv[9]).parent)
             assert Path(argv[9]).is_file()
+            assert Path(argv[9]).stat().st_mode & 0o777 == 0o644
             assert kwargs["check"] and kwargs["timeout"] == 15
             events.append("bind")
             if failure == "nonzero":
@@ -871,3 +872,15 @@ def test_a_retained_setfcap_lets_a_nested_sandbox_start_and_nothing_else():
     assert int(kept[0], 16) == 1 << 31, f"only CAP_SETFCAP (bit 31) may be retained: {kept}"
     assert kept[1] == "REFUSED", f"the seat withdrew its own firewall: {kept}"
     assert kept[2] == "NESTED-OK", f"codex's own sandbox still cannot start: {kept}"
+
+
+def test_seats_firstseat_resolver_private_umask(tmp_path):
+    import os
+    import stat
+    old = os.umask(0o077)
+    try:
+        path = sandbox_egress._write_namespace_resolver(tmp_path)
+    finally:
+        os.umask(old)
+    assert stat.S_IMODE(path.stat().st_mode) == 0o644
+    assert path.read_text().startswith("nameserver ")

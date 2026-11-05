@@ -748,3 +748,79 @@ def test_the_probe_descriptor_line_is_exactly_the_inherited_set():
     finally:
         os.close(read)
         os.close(write)
+
+
+def test_seats_firstseat_teamhost_promisor_stage(tmp_path, monkeypatch):
+    repo = tmp_path / "source"
+    repo.mkdir()
+    def git(*args):
+        return subprocess.run(["git", "-C", str(repo), *args], check=True,
+                              capture_output=True, text=True).stdout.strip()
+    git("init", "-q")
+    git("config", "user.name", "Fixture")
+    git("config", "user.email", "fixture@example.invalid")
+    (repo / "code.py").write_text("value = 1\n")
+    git("add", ".")
+    git("-c", "commit.gpgsign=false", "commit", "-qm", "fixture")
+    for version in (2, 3):
+        (repo / "code.py").write_text(f"value = {version}\n")
+        git("add", ".")
+        git("-c", "commit.gpgsign=false", "commit", "-qm", "fixture")
+    git("config", "uploadpack.allowFilter", "true")
+    origin = repo
+    repo = tmp_path / "partial"
+    subprocess.run(["git", "clone", "--filter=blob:none", "--no-checkout",
+                    origin.as_uri(), str(repo)], check=True, capture_output=True)
+    git("checkout", "-q", "HEAD")
+    head = git("rev-parse", "HEAD")
+    assert "?" in git("rev-list", "--objects", "--all", "--missing=print")
+    assert review_stage.host_git(repo, "show", "HEAD~1:code.py", capture_output=True,
+                                 text=True, check=True).stdout == "value = 2\n"
+    assert "?" in git("rev-list", "--objects", "--all", "--missing=print")
+    git("config", "remote.origin.url", "https://fixture.invalid/repo")
+    git("config", "remote.origin.promisor", "true")
+    git("config", "extensions.partialClone", "origin")
+    calls = []
+    original = review_stage.host_git
+    def observed(root, *args, **kw):
+        calls.append((args, review_stage.host_git_env(offline=kw.get("offline", False))))
+        return original(root, *args, **kw)
+    monkeypatch.setattr(review_stage, "host_git", observed)
+    previous = os.umask(0o077)
+    try:
+        staged = review_stage.stage_review_tree(repo, tmp_path / "stages")
+    finally:
+        os.umask(previous)
+    try:
+        assert review_stage.staged_source_commit(staged) == head
+        config = (staged / ".git/config").read_text()
+        assert "remote " not in config and "promisor" not in config and "partialclone" not in config.lower()
+        assert all(env["GIT_NO_LAZY_FETCH"] == "1" for args, env in calls if args[0] == "clone")
+        assert (staged / "code.py").read_text() == "value = 3\n"
+        assert not (staged / ".git/logs").exists()
+        assert not any(str(repo).encode() in p.read_bytes()
+                       for p in (staged / ".git").rglob("*") if p.is_file())
+    finally:
+        review_stage.remove_review_stage(staged)
+
+
+
+def test_seats_firstseat_teamhost_missing_blob(tmp_path):
+    repo = tmp_path / "source"
+    repo.mkdir()
+    def git(*args):
+        return subprocess.run(["git", "-C", str(repo), *args], check=True,
+                              capture_output=True, text=True).stdout.strip()
+    git("init", "-q")
+    (repo / "code.py").write_text("materialize before staging\n")
+    git("add", ".")
+    git("-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+        "-c", "commit.gpgsign=false", "commit", "-qm", "fixture")
+    identity = git("rev-parse", "HEAD:code.py")
+    git("config", "remote.origin.url", "https://fixture.invalid/repo")
+    git("config", "remote.origin.promisor", "true")
+    (repo / ".git/objects" / identity[:2] / identity[2:]).unlink()
+    with pytest.raises(RuntimeError, match="^sandbox_source_partial_clone$") as refusal:
+        review_stage.stage_review_tree(repo, tmp_path / "stages")
+    assert refusal.value.__suppress_context__ and str(repo) not in str(refusal.value)
+    assert not list((tmp_path / "stages").iterdir())

@@ -950,10 +950,12 @@ def trusted_host_executable(name: str, *, require_conform=False) -> str:
     return executable
 
 
-def host_git_env() -> dict[str, str]:
+def host_git_env(*, offline: bool = False) -> dict[str, str]:
     env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
                GIT_ATTR_NOSYSTEM="1", GIT_NO_REPLACE_OBJECTS="1")
+    if offline:
+        env.update(GIT_NO_LAZY_FETCH="1", GIT_TERMINAL_PROMPT="0", GIT_ALLOW_PROTOCOL="file")
     return env
 
 
@@ -961,7 +963,7 @@ def host_git(repo: Path, *args: str, **kwargs):
     executable = trusted_host_executable(
         "git", require_conform=bool(args and args[0] == "merge-tree" and "--write-tree" in args),
     )
-    env = host_git_env()
+    env = host_git_env(offline=kwargs.pop("offline", False))
     options = ["--no-replace-objects", "-c", "core.hooksPath=" + os.devnull,
                "-c", "core.fsmonitor=false", "-c", "safe.bareRepository=explicit",
                "-c", "diff.external=", "-c", "core.attributesFile=" + os.devnull]
@@ -992,7 +994,7 @@ def host_git(repo: Path, *args: str, **kwargs):
 
 
 def _git(repo: Path, *args: str, check: bool = True) -> str:
-    return host_git(repo, *args, capture_output=True, text=True, check=check).stdout
+    return host_git(repo, *args, capture_output=True, text=True, check=check, offline=True).stdout
 
 
 def trusted_review_control(repo: Path, relative: str) -> bytes | None:
@@ -1080,7 +1082,7 @@ def stage_review_tree(repo: Path, parent: Path | None = None) -> Path:
     try:
         _refuse_escaping_symlinks(root, root)
         resolved_head = host_git(root, "rev-parse", "--verify", "HEAD",
-                                 capture_output=True, text=True, check=False)
+                                 capture_output=True, text=True, check=False, offline=True)
         head = resolved_head.stdout.strip() if resolved_head.returncode == 0 else ""
         if not head:
             # Not a git checkout (or no commits yet): fall back to a contained copy so a
@@ -1088,13 +1090,27 @@ def stage_review_tree(repo: Path, parent: Path | None = None) -> Path:
             _copy_selected(root, staged)
             return staged
 
-        host_git(root, "clone", "--quiet", "--no-checkout", "--depth", str(CLONE_DEPTH),
-                 "--no-single-branch", f"file://{root}", str(staged),
-                 capture_output=True, text=True, check=True)
+        promisor = host_git(root, "config", "--get-regexp", r"^(remote\..*\.promisor|extensions\.partialclone)$",
+                            capture_output=True, text=True, check=False, offline=True)
+        depth = 1 if promisor.stdout.strip() else CLONE_DEPTH
+        try:
+            host_git(root, "clone", "--quiet", "--no-checkout", "--depth", str(depth),
+                     "--single-branch", f"file://{root}", str(staged),
+                     capture_output=True, text=True, check=True, offline=True)
+        except subprocess.CalledProcessError:
+            if promisor.stdout.strip():
+                raise RuntimeError("sandbox_source_partial_clone") from None
+            raise
+        # The staged checkout is independent and has no remotes or promisor source.
+        remotes = _git(staged, "remote").splitlines()
+        for remote in remotes:
+            _git(staged, "remote", "remove", remote)
+        _git(staged, "config", "--unset-all", "extensions.partialClone", check=False)
         _git(staged, "read-tree", head)
         _git(staged, "checkout-index", "-a")
         _git(staged, "update-ref", "--no-deref", "HEAD", head)
         _overlay_working_tree(root, staged)
+        shutil.rmtree(staged / ".git" / "logs", ignore_errors=True)
         # Inside `.git` on purpose: the marker describes the clone, and anything in the
         # tree itself would be hashed into the manifest and break source/stage equality.
         (staged / ".git" / "phase-loop-source-commit").write_text(head + "\n", encoding="utf-8")
