@@ -243,6 +243,14 @@ class StreamAdmission:
         except ValueError:
             if not strict:
                 raise _Unsafe("utf-8") from None
+            start = raw.find(b"{")
+            if start > 0:
+                try:
+                    embedded = json.loads(raw[start:].decode("utf-8", errors="strict"))
+                except (UnicodeDecodeError, ValueError):
+                    embedded = None
+                if isinstance(embedded, dict) and embedded.get("type") in ("system", "result"):
+                    raise _Unsafe("malformed") from None
             if raw.lstrip()[:1] in (b"{", b"["):
                 raise _Unsafe("malformed") from None  # a frame that does not parse
             return  # not a frame; it supplies nothing and admits nothing

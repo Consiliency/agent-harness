@@ -218,6 +218,17 @@ def test_a_frame_that_does_not_parse_refuses_and_hides_nothing(monkeypatch):
     assert (status, text, codes) == ("DEGRADED", "", [cp.STREAM_UNSAFE])
 
 
+@pytest.mark.parametrize("prefix", [b"notice: ", b"\xef\xbb\xbf"])
+def test_non_json_content_that_contains_a_result_object_never_admits(monkeypatch, prefix):
+    def script(session):
+        error = {"type": "result", "subtype": "error", "is_error": True,
+                 "result": "failed", "session_id": session}
+        return _lines(_init(session), prefix + json.dumps(error).encode(), _result(session))
+
+    status, text, codes, _evidence, _seen = drive(monkeypatch, script)
+    assert (status, text, codes) == ("DEGRADED", "", [cp.STREAM_UNSAFE])
+
+
 def test_a_nonzero_exit_does_not_admit(monkeypatch):
     status, _t, codes, _e, _s = drive(monkeypatch, lambda s: _lines(_init(s), _result(s)), rc=1)
     assert status == "DEGRADED" and codes == [cp.RESULT_UNPROVEN]
