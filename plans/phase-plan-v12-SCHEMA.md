@@ -198,7 +198,7 @@ SL-2 — Contract documentation and receipt reducer
 ### SL-2 — Contract documentation and receipt reducer
 
 - **Scope**: Reconcile both producers into documentation and an accurate authority receipt.
-- **Owned files**: `docs/supervised-worker-contracts.md`, `plans/evidence/supervised-worker/SCHEMA.md`, `phase-loop-runtime/tests/test_supervised_contracts_receipt.py`
+- **Owned files**: `docs/supervised-worker-contracts.md`, `plans/evidence/supervised-worker/SCHEMA.md`, `phase-loop-runtime/tests/test_supervised_contracts_receipt.py`, `.doc-decisions.json`
 - **Interfaces provided**: `plans/evidence/supervised-worker/SCHEMA.md`
 - **Interfaces consumed**: `intake_results`, `schema_results`, `semantic_inventory`, `mutation_results`, `load_contract_bundle`, `validate_record`
 - **Parallel-safe**: no
@@ -218,7 +218,8 @@ SL-2 — Contract documentation and receipt reducer
     provenance to runner evidence; never prefill outcomes or predicted heads.
     No-doc-change decision: CHANGELOG/README/release notes remain current because
     this internal seam adds no public CLI or release; WORKER owns integrated
-    feature documentation. No UI is introduced.
+    feature documentation; record it as a `no_doc_delta` entry in
+    `.doc-decisions.json` citing this lane. No UI is introduced.
   - verify: Run V3 and the effective phase suite; verify both producer groups,
     coverage inventory and evidence bindings. Require accurate withheld authority
     independently of successful schema tests. No local wire additions are made.
