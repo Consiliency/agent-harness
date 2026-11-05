@@ -68,7 +68,8 @@ def test_seats_firstseat_president_controlled_clock(tmp_path, monkeypatch, polic
     entered, release, late = threading.Event(), threading.Event(), threading.Event()
     def transport(*a, **kw):
         entered.set()
-        release.wait(3)
+        while not release.wait(0.01) and not getattr(kw["latch"], "_cancelled", False):
+            pass
         late.set()
         return 0, RULING, ""
     seam = president_adapter.PresidentInvoke(DEFAULT_BOARD, monitoring_policy=policy, no_output_bound_s=10)
@@ -109,7 +110,8 @@ def test_seats_firstseat_president_quiescence(monkeypatch):
     seam = president_adapter.PresidentInvoke(DEFAULT_BOARD, no_output_bound_s=0.01)
     def transport(**kw):
         entered.set()
-        release.wait(2)
+        while not release.wait(0.01) and not kw["latch"].cancelled:
+            pass
         return 0, RULING, ""
     monkeypatch.setattr(seam, "_transport", transport)
     class Latch:
@@ -138,7 +140,8 @@ def test_seats_firstseat_president_start_and_terminal(tmp_path, monkeypatch, run
     entered, release = threading.Event(), threading.Event()
     def transport(self, *a, **k):
         entered.set()
-        release.wait(2)
+        while not release.wait(0.01) and not getattr(k["latch"], "_cancelled", False):
+            pass
         return 0, RULING, ""
     monkeypatch.setattr(president_adapter.PresidentInvoke, "_transport", transport)
     seam = president_adapter.PresidentInvoke(DEFAULT_BOARD, base_env={},
@@ -168,6 +171,57 @@ def test_seats_firstseat_president_start_and_terminal(tmp_path, monkeypatch, run
     assert len(terminals) == 1
     assert json.loads(terminals[0].read_text())["attempt_id"] == start["attempt_id"]
     assert all(p.stat().st_mode & 0o777 == 0o600 for p in starts + terminals)
+
+
+@pytest.mark.parametrize("rung", PROVIDER_RUNGS)
+@pytest.mark.parametrize("chatty", [False, True])
+def test_seats_firstseat_president_broker_progress(tmp_path, monkeypatch, rung, chatty):
+    import os
+    import sys
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(president_adapter, "_injected_president_seam", lambda: False)
+    monkeypatch.setattr(sandbox_egress, "isolated_network",
+                        lambda **kw: contextlib.nullcontext(["fixture"]))
+    monkeypatch.setattr(panel_invoker, "_seat_command_profile",
+                        lambda cmd, **kw: contextlib.nullcontext((cmd, None)))
+    def launch(cmd, **kw):
+        return subprocess.Popen(cmd, cwd=kw["cwd"], env=kw["env"], stdin=kw["stdin"],
+            stdout=kw["stdout"], stderr=kw["stderr"], start_new_session=True)
+    monkeypatch.setattr(panel_invoker, "launch_owned", launch)
+    source = ("import time\nfor i in range(30):\n print('progress', flush=True)\n time.sleep(.03)"
+              if chatty else "import time; time.sleep(30)")
+    completed = []
+    def transport(self, *a, **kw):
+        try:
+            run = panel_invoker._run_leg_with_liveness([sys.executable, "-c", source],
+                cwd=tmp_path, env=dict(os.environ), deadline_s=10,
+                quiescence_latch=kw["latch"])
+            return run.returncode, RULING if chatty else "", run.stderr
+        finally:
+            completed.append(True)
+    monkeypatch.setattr(president_adapter.PresidentInvoke, "_transport", transport)
+    seam = president_adapter.PresidentInvoke(DEFAULT_BOARD, repo_dir=_git_repo(tmp_path),
+        base_env={}, no_output_bound_s=.4)
+    result = seam(rung, "F001: [x] y")
+    assert completed == [True]
+    assert result["status"] == ("ok" if chatty else "failed")
+    if not chatty:
+        assert result["code"] == "president_attempt_timed_out"
+    terminal = json.loads(next((tmp_path / "state").rglob("*-terminal.json")).read_text())
+    assert terminal["status"] == ("ok" if chatty else "timed_out")
+
+
+def test_seats_firstseat_president_policy_and_provider_exit(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    with pytest.raises(ValueError):
+        president_adapter.PresidentInvoke(DEFAULT_BOARD, monitoring_policy="other")
+    seam = president_adapter.PresidentInvoke(DEFAULT_BOARD, monitoring_policy="heartbeat_only")
+    monkeypatch.setattr(seam, "_launch_brokered", lambda *a: (124, "", ""))
+    monkeypatch.setattr(backing, "prepare_president_isolation_authorization",
+        lambda *a, **kw: type("Authorization", (), {"routes": {"grok": "fixture"}})())
+    monkeypatch.setattr(backing, "revalidate_president_isolation_authorization", lambda *a, **kw: None)
+    monkeypatch.setattr(backing, "close_president_isolation_authorization", lambda *a: None)
+    assert seam("grok", "fixture")["code"] == "president_invocation_failed"
 
 
 def _git_repo(tmp_path: Path) -> Path:

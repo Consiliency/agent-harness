@@ -1184,7 +1184,8 @@ def invoke_president(
             continue
         if status not in {"ok", "degraded"}:
             raise PresidentPolicyError(
-                "president_invocation_failed", f"president {model} returned {status!r}"
+                "president_attempt_timed_out" if response.get("code") == "president_attempt_timed_out"
+                else "president_invocation_failed", f"president {model} returned {status!r}"
             )
         text = response.get("text", "")
         format_reasks = 0
@@ -1198,7 +1199,8 @@ def invoke_president(
                 continue
             if response.get("status") not in {"ok", "degraded"}:
                 raise PresidentPolicyError(
-                    "president_invocation_failed", f"president {model} format reask failed"
+                    "president_attempt_timed_out" if response.get("code") == "president_attempt_timed_out"
+                    else "president_invocation_failed", f"president {model} format reask failed"
                 )
             text = response.get("text", "")
             if not _valid_president_grammar(text, findings):
@@ -1239,6 +1241,7 @@ PRESIDENT_MAX_SUBSTANTIVE_ROUNDS = 3
 _PRESIDENT_REFUSAL_CODES: frozenset[str] = frozenset({
     "president_unavailable",
     "president_invocation_failed",
+    "president_attempt_timed_out",
     "president_ruling_format_missing",
     "degraded_president_validation_deferred",
     "president_operation_cancelled",
@@ -9392,6 +9395,8 @@ def _run_leg_with_liveness(
                 except OSError:
                     chunk = b""
                 if chunk:
+                    from .president_adapter import note_attempt_output
+                    note_attempt_output()
                     fd_map[fd].extend(chunk)
                     last_heartbeat = time.monotonic()
                     last_output_progress = last_heartbeat
@@ -10206,6 +10211,8 @@ def _run_claude_tui_session(
                     last_heartbeat = now
                     last_output_progress = now
                 if len(transcript_text) > last_transcript_len:
+                    from .president_adapter import note_attempt_output
+                    note_attempt_output()
                     last_transcript_len = len(transcript_text)
                     last_heartbeat = now
                     last_output_progress = now
@@ -10976,6 +10983,9 @@ class _ClaudePrintStream:
         self.violation: str | None = None
 
     def feed(self, chunk: bytes) -> bool:
+        if chunk:
+            from .president_adapter import note_attempt_output
+            note_attempt_output()
         self._carry.extend(chunk)
         last = self._carry.rfind(b"\n")
         if last < 0:

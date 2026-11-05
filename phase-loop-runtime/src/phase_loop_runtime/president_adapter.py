@@ -80,6 +80,13 @@ PRESIDENT_OPERATION_CANCELLED = "president_operation_cancelled"
 _ATTEMPT_PROGRESS = contextvars.ContextVar("president_attempt_progress", default=None)
 
 
+class _AttemptTimeout(int):
+    pass
+
+
+_ATTEMPT_TIMED_OUT = _AttemptTimeout(124)
+
+
 def note_attempt_output() -> None:
     progress = _ATTEMPT_PROGRESS.get()
     if progress is not None:
@@ -210,6 +217,8 @@ class PresidentInvoke:
     no_output_bound_s: float = 300.0
 
     def __post_init__(self) -> None:
+        if self.monitoring_policy not in {"bounded", "heartbeat_only"}:
+            raise ValueError("unknown president monitoring policy")
         if self.monitoring_policy == "bounded" and (
             type(self.no_output_bound_s) not in (int, float)
             or not math.isfinite(self.no_output_bound_s) or not 0 < self.no_output_bound_s <= 1800
@@ -232,10 +241,13 @@ class PresidentInvoke:
         )
 
     def __call__(self, rung: str, prompt: str) -> Mapping[str, str]:
+        self.__post_init__()
         attempt = uuid.uuid4().hex
         record = {"schema": "president_attempt.v1", "attempt_id": attempt,
                   "rung": rung if rung in panel_invoker.PRESIDENT_LADDER else "other",
-                  "policy": self.monitoring_policy, "event": "start"}
+                  "policy": self.monitoring_policy, "event": "start",
+                  "invocation_digest": hashlib.sha256(self.invocation.encode()).hexdigest(),
+                  "observed_at": time.time()}
         try:
             write_private_record(attempt + "-start.json", record)
         except (OSError, ValueError):
@@ -247,10 +259,17 @@ class PresidentInvoke:
         except PresidentPolicyError as exc:
             response = {"status": "cancelled" if exc.code == PRESIDENT_OPERATION_CANCELLED else "refused"}
             raise
+        except panel_invoker.ProviderProcessGroupQuiescenceError:
+            response = {"status": "failed", "code": "president_quiescence_unproven"}
+            raise
         finally:
             status = response.get("status") if response else "cancelled"
             record.update(event="terminal", status=status if status in {
                 "ok", "failed", "unavailable", "native_fill_deferred", "cancelled", "refused"} else "failed")
+            if response and response.get("code") == "president_attempt_timed_out":
+                record.update(status="timed_out", code="president_attempt_timed_out")
+            elif response and response.get("code") == "president_quiescence_unproven":
+                record["code"] = "president_quiescence_unproven"
             try:
                 write_private_record(attempt + "-terminal.json", record)
             except (OSError, ValueError):
@@ -275,7 +294,7 @@ class PresidentInvoke:
                 # A launch the cancellation ended is a cancellation, not a rung failure.
                 self._raise_if_cancelled(rung, seat)
             return response
-        except PresidentPolicyError:
+        except (PresidentPolicyError, panel_invoker.ProviderProcessGroupQuiescenceError):
             raise
         except Exception as exc:  # a broken route is a typed failure, never a descent
             # A cancelled operation stops the whole walk: no later rung may launch.
@@ -337,7 +356,7 @@ class PresidentInvoke:
                 )
         finally:
             backing.close_president_isolation_authorization(authorization)
-        if rc == 124:
+        if rc is _ATTEMPT_TIMED_OUT:
             self._record(rung, seat, "timed_out", "president_attempt_timed_out", None)
             return {"status": "failed", "code": "president_attempt_timed_out"}
         if rc != 0 or not (text or "").strip():
@@ -370,9 +389,12 @@ class PresidentInvoke:
             self._raise_cancelled_transport(latch)
             if time.monotonic() - progress[0] >= self.no_output_bound_s:
                 latch.cancel()
-                if not latch.is_quiescent():
-                    raise RuntimeError("president transport did not quiesce")
-                return 124, "", "president_attempt_timed_out"
+                worker.join(5)
+                if worker.is_alive() or not latch.is_quiescent():
+                    raise panel_invoker.ProviderProcessGroupQuiescenceError("president transport did not quiesce")
+                if outcome and isinstance(outcome[0], panel_invoker.ProviderProcessGroupQuiescenceError):
+                    raise outcome[0]
+                return _ATTEMPT_TIMED_OUT, "", "president_attempt_timed_out"
         latch.raise_if_set()
         if isinstance(outcome[0], BaseException):
             raise outcome[0]
@@ -508,11 +530,15 @@ class PresidentInvoke:
                     adapter, deadline_s=None if deadline_s is None else float(deadline_s),
                     **({"cancel_event": cancel} if cancel is not None else {}),
                 )
-                latch.raise_if_set()
+                if outcome.get("rc") is not _ATTEMPT_TIMED_OUT:
+                    latch.raise_if_set()
+                self._raise_cancelled_transport(latch)
             finally:
                 broker.close()
         if response is None:
             return 1, "", "president broker completed without a response"
+        if outcome.get("rc") is _ATTEMPT_TIMED_OUT:
+            return _ATTEMPT_TIMED_OUT, "", "president_attempt_timed_out"
         rc = int(outcome.get("rc", 1)) if response["status"] == "OK" else (int(outcome.get("rc", 1)) or 1)
         return rc, str(response["text"]), str(outcome.get("log", ""))
 
