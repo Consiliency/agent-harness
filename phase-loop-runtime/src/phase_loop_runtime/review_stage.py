@@ -953,7 +953,8 @@ def trusted_host_executable(name: str, *, require_conform=False) -> str:
 def host_git_env() -> dict[str, str]:
     env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
     env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
-               GIT_ATTR_NOSYSTEM="1", GIT_NO_REPLACE_OBJECTS="1")
+               GIT_ATTR_NOSYSTEM="1", GIT_NO_REPLACE_OBJECTS="1",
+               GIT_NO_LAZY_FETCH="1", GIT_TERMINAL_PROMPT="0", GIT_ALLOW_PROTOCOL="file")
     return env
 
 
@@ -1091,6 +1092,11 @@ def stage_review_tree(repo: Path, parent: Path | None = None) -> Path:
         host_git(root, "clone", "--quiet", "--no-checkout", "--depth", str(CLONE_DEPTH),
                  "--no-single-branch", f"file://{root}", str(staged),
                  capture_output=True, text=True, check=True)
+        # The staged checkout is independent and has no remotes or promisor source.
+        remotes = _git(staged, "remote").splitlines()
+        for remote in remotes:
+            _git(staged, "remote", "remove", remote)
+        _git(staged, "config", "--unset-all", "extensions.partialClone", check=False)
         _git(staged, "read-tree", head)
         _git(staged, "checkout-index", "-a")
         _git(staged, "update-ref", "--no-deref", "HEAD", head)
