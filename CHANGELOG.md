@@ -6,6 +6,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- A candidate OD-3a amendment (§4b) is appended to the print-route decision record (SEATS CLAUDE,
+  agent-harness#1820). It takes effect only when the maintainer merges it in its own reviewed PR;
+  until then `sdk` stays refused on the jailed seat and the jailed default stays the TUI.
+
 - The W0 bake-off kit (SEATS CLAUDE, agent-harness#1820): `python -m
   phase_loop_runtime.claude_bakeoff` writes one closed, metadata-only
   `claude-bakeoff-record.v1` record per run, validates a record directory (`validate`, V7,

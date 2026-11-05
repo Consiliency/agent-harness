@@ -59,7 +59,9 @@ or choose a new, absent `AGENT_HARNESS_HOME`, then rerun the installer.
 form is delivered by it), and your harness CLI already installed (Claude Code / Codex / Gemini
 / OpenCode). The installer brings everything else (it installs `uv` if you don't have it).
 Claude advisor-board seats run headless `claude -p` by default, which needs Claude Code
-2.1.259 or newer; `PHASE_LOOP_PANEL_CLAUDE_ROUTE=tui` restores the PTY adapter.
+2.1.259 or newer; `PHASE_LOOP_PANEL_CLAUDE_ROUTE=tui` restores the PTY adapter. A jailed Claude
+seat stays on the TUI by default; `PHASE_LOOP_PANEL_CLAUDE_ROUTE=print` selects its jailed print
+transport, which is experimental and unqualified and runs on open egress until CLAUDENET.
 
 Run the chosen provider's own login and a small health check before real execution.
 `doctor` reports tool/credential discovery; it does not prove a working provider login.
