@@ -25,6 +25,10 @@
       "status": "active"
     },
     {
+      "path": "specs/phase-plans-v12.md",
+      "status": "superseded"
+    },
+    {
       "path": "specs/phase-plans-v2.md",
       "status": "superseded"
     },
