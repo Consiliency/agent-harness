@@ -164,7 +164,7 @@ class TestTheHelpersThemselves:
         marker = tmp_path / "RP_RAN"
         with _filtered_marker(marker, monkeypatch, administrative=True) as processes:
             done = panel_invoker.run_provider(
-                ["/bin/echo", "hi"], capture_output=True, text=True,
+                ["/usr/bin/python3", "-I", "-S", "-c", "print('hi')"], capture_output=True, text=True,
                 cwd=str(tmp_path), timeout=60,
             )
         _assert_process_marker(marker, processes)
@@ -342,6 +342,43 @@ def test_refresh_executes_the_fixed_operation_in_the_observed_process(tmp_path, 
     assert not (tmp_path / "MUST_NOT_RUN").exists()
 
 
+def test_parent_auth_probe_executes_in_the_host_context(tmp_path):
+    binary = tmp_path / "claude"
+    marker = tmp_path / "AUTH_RAN"
+    binary.write_text("#!/usr/bin/python3\nimport os,pathlib\n"
+        + "pathlib.Path(" + repr(str(marker)) + ").write_text('FIRED '+str(os.getpid()))\n"
+        + "print('{\"loggedIn\":true}')\n")
+    binary.chmod(0o700)
+    excluded = tmp_path / "SEAT_PREFIX"
+    token = panel_invoker._EGRESS_LAUNCH_PREFIX.set(_marker_prefix(excluded))
+    try:
+        assert panel_invoker._parent_auth_state("claude", {"PATH": str(tmp_path) + ":/usr/bin:/bin"}) == "healthy"
+    finally:
+        panel_invoker._EGRESS_LAUNCH_PREFIX.reset(token)
+    assert marker.is_file()
+    assert not excluded.exists()
+
+
+def test_definition_probe_executes_the_owner_prefix(tmp_path, monkeypatch):
+    import json
+    marker = tmp_path / "DEFINITION_PREFIX"
+    original = panel_invoker._seat_command_profile
+    @contextmanager
+    def profile(command, **kwargs):
+        value = ("--list-tools Print tool definitions without running a model" if command[-1] == "--help"
+                 else "fixture-v1" if command[-1] == "--version"
+                 else json.dumps({"tools": ["fixture_read"], "diagnostics": []}))
+        with original(["/usr/bin/python3", "-I", "-S", "-c", "print(" + repr(value) + ")"], **kwargs) as owned:
+            yield owned
+    monkeypatch.setattr(panel_invoker, "_seat_command_profile", profile)
+    monkeypatch.setattr(panel_invoker, "_grok_binary_identity", lambda *a: ("/fixture/grok", "1" * 64))
+    with _filtered_marker(marker, monkeypatch, administrative=True) as processes:
+        assert panel_invoker.probe_grok_tools(["grok", "--tools", "fixture_read"],
+                                             allowed_tools={"fixture_read"})["passed"]
+    assert len(processes) == 3
+    assert _marker_pid(marker) == str(processes[-1].pid)
+
+
 def test_every_launch_site_has_a_marker_proof_above():
     """Secondary source tripwire; kernel marker tests provide the launch evidence."""
     import ast
@@ -369,4 +406,5 @@ def test_every_launch_site_has_a_marker_proof_above():
     assert sites == {
         "launch_owned", "run_provider", "_refresh_gemini_credential", "_leg_auth_ok",
         "_claude_subscription_auth_ok", "_claude_code_support_status", "_popen",
+        "_parent_auth_state", "probe_grok_tools",
     }, "add a real caller marker proof for every new launch site"

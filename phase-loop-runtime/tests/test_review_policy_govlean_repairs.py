@@ -103,7 +103,8 @@ def test_post_switch_board_requires_a_tier_and_rejects_understrength_board(tmp_p
     assert excinfo.value.code == "review_board_policy_mismatch"
 
 
-def test_post_switch_full_production_board_reaches_the_real_invocation_path(tmp_path: Path) -> None:
+def test_post_switch_full_production_board_reaches_the_real_invocation_path(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path.parent / (tmp_path.name + "-state")))
     _post_switch_repo(tmp_path)
     # An execution-capable review path needs an explicit sanctioned authorization
     # control (EC-HARDEN-5); the assertion below is unchanged.

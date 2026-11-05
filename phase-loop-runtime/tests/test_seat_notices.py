@@ -525,7 +525,8 @@ def test_codex_r1_panel_invoker_imports_without_posix_open_flags():
 # --------------------------------------------------------------------------------------
 
 def _jailed_leg_ending_with(monkeypatch, tmp_path, *, rc, review_text, log_text, tail,
-                            source="seat_token", expires_at=None):
+                            source="seat_token", expires_at=None, parent_auth="healthy"):
+    monkeypatch.setattr(pi, "_parent_auth_state", lambda *a: parent_auth)
     seat = _FakeSeat(tmp_path)
     seat.source, seat.expires_at = source, expires_at
     monkeypatch.setattr(pi._seat_uid, "read_in_h", lambda *a, **k: b"")
@@ -535,9 +536,13 @@ def _jailed_leg_ending_with(monkeypatch, tmp_path, *, rc, review_text, log_text,
     monkeypatch.setattr(pi, "_run_claude_tui_session",
                         lambda **k: (rc, review_text, log_text, tail))
     sink: list = []
-    status, text = pi._exec_jailed_claude_leg(
-        seat, timeout_s=5, backstop_s=5, model=None, effort=None, prompt="p",
-        broker_evidence={}, failure_detail_sink=sink)
+    token = pi._EXEC_OBSERVATION.set({"model_turn": False, "verdict": False})
+    try:
+        status, text = pi._exec_jailed_claude_leg(
+            seat, timeout_s=5, backstop_s=5, model=None, effort=None, prompt="p",
+            broker_evidence={}, failure_detail_sink=sink)
+    finally:
+        pi._EXEC_OBSERVATION.reset(token)
     return seat, status, text, sink
 
 
@@ -567,7 +572,7 @@ def test_a_rejected_seat_token_ends_the_leg_with_its_notice(monkeypatch, tmp_pat
     seat, status, _text, sink = _jailed_leg_ending_with(
         monkeypatch, tmp_path, rc=1, review_text="",
         log_text=pi._HarnessCode("claude_tui_pty_eof_no_output"),
-        tail="Invalid API key · Please run /login")
+        tail="Invalid API key · Please run /login", parent_auth="signed_out")
     assert status == "DEGRADED"
     assert [f.template for f in sink] == ["auth_failure"]
     assert seat.notices == ["claude_seat_token_rejected"]
@@ -646,7 +651,7 @@ def test_a_login_token_rejected_before_its_expiry_is_a_rejection(monkeypatch, tm
     seat, _status, _text, sink = _jailed_leg_ending_with(
         monkeypatch, tmp_path, rc=1, review_text="",
         log_text=pi._HarnessCode("claude_tui_pty_eof_no_output"), tail=_AUTH_TAIL,
-        source="login", expires_at=time.time() + 3600)
+        source="login", expires_at=time.time() + 3600, parent_auth="signed_out")
     assert [f.template for f in sink] == ["auth_failure"]
     assert seat.notices == ["claude_seat_login_rejected"]
 
@@ -992,7 +997,7 @@ def test_a_journaled_give_up_keeps_the_credential_outcome(monkeypatch, tmp_path,
     assert (outcome.kind, outcome.code) == ("gave_up", "claude_seat_provider_api_error")
     seat, status, text, sink = _jailed_leg_ending_with(
         monkeypatch, tmp_path, rc=1, review_text="", log_text=pi._HarnessCode(outcome.code),
-        tail=_AUTH_TAIL, source=source,
+        tail=_AUTH_TAIL, source=source, parent_auth="signed_out",
         expires_at=None if expires_in is None else time.time() + expires_in)
     assert status == "DEGRADED" and text == ""
     assert [f.template for f in sink] == [detail]
@@ -1014,7 +1019,8 @@ def test_the_sealed_and_jailed_routes_label_a_give_up_alike(monkeypatch, tmp_pat
     code = pi._HarnessCode(terminal)
     assert pi._claude_leg_failure("DEGRADED", 1, "", code, tail).template == detail
     _seat, _status, _text, sink = _jailed_leg_ending_with(
-        monkeypatch, tmp_path, rc=1, review_text="", log_text=code, tail=tail)
+        monkeypatch, tmp_path, rc=1, review_text="", log_text=code, tail=tail,
+        parent_auth="signed_out" if detail == "auth_failure" else "healthy")
     assert [f.template for f in sink] == [detail]
 
 

@@ -20,6 +20,7 @@ pinned rather than asserted in prose.
 from __future__ import annotations
 
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -227,7 +228,7 @@ def test_the_real_spawn_path_hands_a_seat_a_working_sandbox(tmp_path, monkeypatc
         # reaps it on the way out, so anything checked afterwards is checking a corpse.
         if tree is not None:
             seen["red"] = subprocess.run(
-                ["python3", "-m", "pytest", "test_source.py", "-q", "-p", "no:randomly"],
+                [sys.executable, "-m", "pytest", "test_source.py", "-q", "-p", "no:cacheprovider", "-p", "no:randomly"],
                 cwd=tree, capture_output=True, text=True,
             )
             # Deliberately a DIFFERENT length: `41`->`42` is the same size and often the
@@ -236,7 +237,7 @@ def test_the_real_spawn_path_hands_a_seat_a_working_sandbox(tmp_path, monkeypatc
             # knowing about the sandbox, not a defect in it.
             (tree / "SOURCE.py").write_text("value = 42  # fixed\n", encoding="utf-8")
             seen["green"] = subprocess.run(
-                ["python3", "-m", "pytest", "test_source.py", "-q", "-p", "no:randomly"],
+                [sys.executable, "-m", "pytest", "test_source.py", "-q", "-p", "no:cacheprovider", "-p", "no:randomly"],
                 cwd=tree, capture_output=True, text=True,
             )
         return 0, "ok review", "log"
@@ -618,6 +619,7 @@ def test_the_opt_out_lets_that_same_host_proceed(tmp_path, monkeypatch):
 
 
 def test_only_a_sandboxed_codex_seat_keeps_setfcap_at_launch(tmp_path, monkeypatch):
+    monkeypatch.setattr(panel_invoker, "grok_tool_gate", lambda *a: True)
     """agent-harness#1003: the retained capability is scoped to the ONE seat that needs it.
 
     A sandboxed codex seat runs commands in codex's own bubblewrap, which needs CAP_SETFCAP

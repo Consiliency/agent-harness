@@ -34,6 +34,7 @@ def test_seats_firstseat_exec_record_prelaunch(tmp_path, monkeypatch, vendor):
     assert len(records) == 1
     record = json.loads(records[0].read_text())
     assert record["vendor"] == vendor
+    assert record["exit_code"] is None
     assert record["outcome"] != "leg_auth_signed_out"
     assert "planted" not in records[0].read_text()
     assert records[0].stat().st_mode & 0o777 == 0o600
@@ -57,7 +58,10 @@ def test_seats_firstseat_exec_record_closed_fields(tmp_path, assurance):
 
 @pytest.mark.parametrize("turn,verdict,state,expected", [
     (False, False, "signed_out", "leg_auth_signed_out"),
-    (None, False, "signed_out", "leg_auth_unavailable"),
+    (None, False, "signed_out", "leg_execution_failed"),
+    (False, False, "unavailable", "leg_auth_unavailable"),
+    (True, True, "unavailable", "leg_execution_failed"),
+    (None, None, "healthy", "leg_execution_failed"),
     (False, False, "healthy", "leg_execution_failed"),
     (True, False, "signed_out", "leg_execution_failed"),
     (False, True, "signed_out", "leg_execution_failed"),
@@ -187,6 +191,70 @@ def test_seats_firstseat_exec_record_parent_probes(tmp_path, monkeypatch):
     assert pi._parent_auth_state("grok") == "unavailable"
     assert all(Path(kw["cwd"]) != tmp_path and kw["stdin"] == subprocess.DEVNULL
                and kw["executor"] is True for _, kw in calls)
+
+
+@pytest.mark.parametrize("route,exit_code", [("print", 41), ("tui", 42)])
+def test_seats_firstseat_exec_record_claude_adapters(tmp_path, monkeypatch, route, exit_code):
+    from phase_loop_runtime import panel_invoker as pi
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("PHASE_LOOP_PANEL_CLAUDE_ROUTE", route)
+    monkeypatch.setattr(pi, "_under_claude_code", lambda *a: False)
+    monkeypatch.setattr(pi, "_claude_code_support_status", lambda **k: (True, "supported"))
+    monkeypatch.setattr(pi, "_claude_subscription_auth_ok", lambda *a: (True, ""))
+    monkeypatch.setattr(pi, "_run_claude_print_session", lambda *a, **k: (exit_code, "", "", ""))
+    monkeypatch.setattr(pi, "_run_claude_tui_session", lambda **k: (exit_code, "", "claude_tui_pty_eof_no_output", ""))
+    review, out = tmp_path / "review", tmp_path / "out"
+    review.mkdir()
+    out.mkdir()
+    (review / "review-bundle.md").write_text("fixture")
+    (review / "review-instructions.md").write_text("fixture")
+    @pi._retained_leg_exec
+    def run(leg):
+        return pi._exec_claude_tui_leg(review, out, 60, "fixture", env={})
+    assert run("claude")[0] != "OK"
+    record = json.loads(next((tmp_path / "state").rglob("leg-*.json")).read_text())
+    assert record["exit_code"] == exit_code
+    assert record["auth_state"] == "unavailable"
+
+
+@pytest.mark.parametrize("vendor,exit_code", [("gemini", 43), ("claude", 44)])
+def test_seats_firstseat_exec_record_jailed_adapters(tmp_path, monkeypatch, vendor, exit_code):
+    from types import SimpleNamespace
+    from phase_loop_runtime import panel_invoker as pi
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(pi, "_cleanup_jailed_seat", lambda *a, **k: None)
+    monkeypatch.setattr(pi._seat_uid, "read_in_h", lambda *a, **k: b"")
+    monkeypatch.setattr(pi, "_parent_auth_state", lambda *a: "healthy")
+    jail = SimpleNamespace(env={}, leg=vendor, provider_argv0="/seat/bin/" + vendor,
+        profile_digest="d", profile_id="p", filter_digest="f",
+        redacted_owner=lambda: [], pass_fds=())
+    seat = pi._JailedSeat(jail=jail, probe_jail=jail, holder_pid=1, token=b"fixture-token",
+        review_dir=tmp_path, seat_dir=tmp_path, expires_at=None)
+    monkeypatch.setattr(pi, "_run_leg_with_liveness", lambda *a, **k:
+        SimpleNamespace(returncode=exit_code, stdout="", stderr=""))
+    monkeypatch.setattr(pi, "_run_claude_tui_session", lambda **k:
+        (exit_code, "not logged in; please run claude login", "", ""))
+    @pi._retained_leg_exec
+    def run(leg):
+        if leg == "gemini":
+            return pi._exec_jailed_gemini_leg(seat, deadline_s=60, model="m", prompt="fixture", broker_evidence=None)
+        return pi._exec_jailed_claude_leg(seat, timeout_s=60, backstop_s=60,
+            model=None, effort=None, prompt="fixture", broker_evidence=None, failure_detail_sink=[])
+    assert run(vendor)[0] != "OK"
+    assert not seat.notices
+    record = json.loads(next((tmp_path / "state").rglob("leg-*.json")).read_text())
+    assert record["exit_code"] == exit_code
+    assert record["outcome"] == "leg_execution_failed"
+
+
+def test_seats_firstseat_exec_record_dependency_probe(monkeypatch):
+    from phase_loop_runtime import panel_invoker as pi
+    from phase_loop_runtime.executable_dependency_startup import ExecutableDependencyError
+    def unavailable(*a, **kw):
+        raise ExecutableDependencyError("dependency_route_unwired")
+    monkeypatch.setattr(pi, "run_provider", unavailable)
+    assert pi._parent_auth_state("claude") == "unavailable"
+    assert pi._parent_auth_state("codex") == "unavailable"
 
 
 @pytest.mark.parametrize("missing", [None, "claude", "gemini", "grok", "codex", "all"])

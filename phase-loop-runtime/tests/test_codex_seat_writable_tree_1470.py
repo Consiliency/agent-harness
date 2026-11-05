@@ -72,6 +72,7 @@ def _stage(base: Path, *, marked: bool = True) -> Path:
 
 
 def _clis(tmp_path: Path, monkeypatch, *, codex: str = "#!/bin/sh\nexit 0\n") -> dict[str, str]:
+    monkeypatch.setattr(pi, "grok_tool_gate", lambda *a: True)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     for name, body in (("codex", codex), ("grok", "#!/bin/sh\nexit 0\n")):

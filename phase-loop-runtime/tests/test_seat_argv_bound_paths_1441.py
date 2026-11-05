@@ -29,6 +29,11 @@ import pytest
 from phase_loop_runtime import panel_invoker as pi
 from phase_loop_runtime import review_stage
 
+
+@pytest.fixture(autouse=True)
+def _grok_definition_fixture(monkeypatch):
+    monkeypatch.setattr(pi, "grok_tool_gate", lambda *a: True)
+
 TREE = review_stage.REVIEW_STAGE_TREE_DIRNAME
 
 needs_owner = pytest.mark.skipif(

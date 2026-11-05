@@ -5664,7 +5664,7 @@ def _seat_command_profile(command, *, env, cwd, outputs=(), transcript_path=None
     else:
         harness, executable = "gemini", gemini_profile.executable
         dependency = current_dependency_for_provider(harness)
-    if (harness == "grok" and any(flag in command for flag in ("-p", "--prompt-file"))
+    if (harness == "grok" and not _grok_admin_command(command)
             and not grok_tool_gate(command, env)):
         raise _seat_jail.SeatSandboxRefused("grok_tool_surface_unverified")
     _require_dependency_profile_composition(
@@ -5846,6 +5846,11 @@ def _filtered_holder_namespace() -> int:
 
 def launch_owned(argv, *, role, profile: SeatProfile, supervisor=None, **kwargs):
     role = SeatLaunchRole(role)
+    if argv and Path(argv[0]).name == "grok" and not _grok_admin_command(argv):
+        if not grok_tool_gate(argv, kwargs.get("env")):
+            raise _seat_jail.SeatSandboxRefused("grok_tool_surface_unverified")
+        if role is SeatLaunchRole.EXECUTOR_TRUSTED:
+            argv = [_grok_binary_identity(argv, kwargs.get("env"))[0], *argv[1:]]
     if role is SeatLaunchRole.EXECUTOR_TRUSTED:
         from .executable_dependency_startup import refuse_unwired_dependency_route
         refuse_unwired_dependency_route("direct executor")
@@ -6474,6 +6479,10 @@ def _brokered_grok_command(
     either way.
     """
     tree = _require_staged_tree(staged_tree)
+    return _grok_brokered_form(model=model, out_dir=out_dir, grok_effort_args=grok_effort_args, tree=tree)
+
+
+def _grok_brokered_form(*, model, out_dir, grok_effort_args, tree):
     return [
         "grok", "--disable-web-search", "--no-memory", "--no-subagents",
         *(("--permission-mode", "plan") if tree is None else (
@@ -6486,6 +6495,22 @@ def _brokered_grok_command(
         *grok_effort_args,
         "--tools", "" if tree is None else GROK_SANDBOX_TOOLS,
     ]
+
+
+def _grok_review_form(*, model, review_dir, prompt, grok_effort_args):
+    return ["grok", "-p", prompt, "--output-format", "plain", "--cwd", str(review_dir),
+            "-m", model or DEFAULT_LEG_MODELS["grok"], *grok_effort_args,
+            "--tools", GROK_REVIEW_READONLY_TOOLS]
+
+
+def grok_runtime_forms(*, model=None, effort="high"):
+    effort_args = render_seat_invocation("grok", model or DEFAULT_LEG_MODELS["grok"], effort).effort_args
+    directory = Path("/definition-probe")
+    return {
+        "review": _grok_review_form(model=model, review_dir=directory, prompt="", grok_effort_args=effort_args),
+        "sealed": _grok_brokered_form(model=model, out_dir=directory, grok_effort_args=effort_args, tree=None),
+        "staged": _grok_brokered_form(model=model, out_dir=directory, grok_effort_args=effort_args, tree=directory),
+    }
 
 
 def _brokered_gemini_command(
@@ -8042,7 +8067,7 @@ def _classify_leg(
     if rc == 0 and body and _completion_ok(body, mode):
         return "OK"
     # FAILED. Everything below only labels.
-    if _leg_failure_kind(rc, review_text, log_text) in ("auth", "usage_limit", "env_failure"):
+    if _leg_failure_kind(rc, review_text, log_text) in ("usage_limit", "env_failure"):
         return "DEGRADED"
     if rc != 0:
         return "ERROR"
@@ -9203,6 +9228,11 @@ class _LegRun:
     stdout: str
     stderr: str
 
+    def __post_init__(self):
+        observation = _EXEC_OBSERVATION.get()
+        if observation is not None:
+            observation["returncode"] = self.returncode
+
 
 def _run_leg_with_liveness(
     cmd: "Sequence[str]",
@@ -9253,9 +9283,7 @@ def _run_leg_with_liveness(
     observation = _EXEC_OBSERVATION.get()
     if observation is not None:
         observation["argv"] = list(cmd)
-        if not observation.get("auth_probed"):
-            observation["auth_state"] = _parent_auth_state(observation["vendor"], env)
-            observation["auth_probed"] = True
+        observation["env"] = env
     if seat_jail is not None and gemini_profile is not None:
         raise ValueError("a jailed launch has no heartbeat profile")
     # agent-harness#1407: a Gemini seat whose agy login is short but not yet expired sleeps
@@ -9328,6 +9356,7 @@ def _run_leg_with_liveness(
             return
         try:
             _terminate_process_group(proc)
+            _note_exec_result(proc.returncode, cmd, env, actual=True)
         finally:
             if gemini_profile is not None and gemini_profile.identity is not None:
                 try:
@@ -10368,6 +10397,7 @@ def _run_claude_tui_session(
         try:
             if proc is not None:
                 _terminate_process_group(proc)
+                _note_exec_result(proc.returncode, command, env, actual=True)
                 if quiescence_latch is not None:
                     quiescence_latch.release(proc)
         finally:
@@ -11104,6 +11134,7 @@ def _run_claude_print_session(
         )
     except subprocess.TimeoutExpired:
         return 124, "", _HarnessCode(f"timeout after {backstop_s}s"), ""
+    _note_exec_result(run.returncode, command, env)
     stream.finish()
     if observed is not None:
         observed["api_key_source"] = stream.api_key_source
@@ -11215,6 +11246,7 @@ def _exec_claude_print_leg(
         stall_s=stall_s, backstop_s=backstop, quiescence_latch=quiescence_latch,
         review_monitor=review_monitor, observed=observed,
     )
+    _note_exec_result(rc, command, env)
     if broker_evidence is not None:
         broker_evidence["claude_api_key_source"] = observed.get("api_key_source")
     if quiescence_latch is not None:
@@ -11238,7 +11270,7 @@ def _exec_claude_print_leg(
             "advisor-panel claude print leg %s [%s]", status, log_text
         )
     if status in ("ERROR", "EMPTY"):
-        if _leg_failure_kind(rc, review_text, tail) in ("auth", "usage_limit", "env_failure"):
+        if _leg_failure_kind(rc, review_text, tail) in ("usage_limit", "env_failure"):
             status = "DEGRADED"
     seat_paths = (review_dir, out_dir, cwd, *((repo_dir,) if repo_dir else ()))
     if failure_detail_sink is not None and status != "OK":
@@ -11545,6 +11577,7 @@ def _exec_claude_tui_leg(
         review_text = provider_authority.read_expected_output(output_file.name).decode(
             "utf-8", errors="replace"
         )
+    _note_exec_result(rc, command, env)
     # #188 + ah#196/#223: a heartbeat-reclaimed wedge, an uncleared workspace-trust
     # gate, and a never-ready editor are all TYPED reviewer-liveness failures — surfaced
     # DEGRADED (not a bare ERROR). The diagnostic handling for these follows below (empty
@@ -11585,7 +11618,7 @@ def _exec_claude_tui_leg(
     # an existing DEGRADED), whether or not the caller asked for the detail.
     if status in ("ERROR", "EMPTY"):
         if _leg_failure_kind(rc, review_text, pty_tail) in (
-            "auth", "usage_limit", "env_failure",
+            "usage_limit", "env_failure",
         ):
             status = "DEGRADED"
     # The detail itself goes to a caller-owned sink so this function's (status, text) shape
@@ -11924,6 +11957,7 @@ def _exec_jailed_claude_leg(
         kept = transcript_snapshot.read_bytes()
     finally:
         _cleanup_jailed_seat(seat, snapshots=snapshots, primary=sys.exception())
+    _note_exec_result(rc, command, jail.env)
     if unsafe:
         return _jailed_failure("seat_sandbox_refused:output_unsafe", failure_detail_sink)
     pty_tail = str(pty_tail or "")
@@ -11943,16 +11977,13 @@ def _exec_jailed_claude_leg(
         status, text = "DEGRADED", ""
     else:
         status, text = _classify_leg(rc, review_text, str(log_text), "review"), review_text
-        # As on the sealed route: a labelled provider failure turns only ERROR / EMPTY into
-        # DEGRADED.
-        if status in ("ERROR", "EMPTY") and _leg_failure_kind(rc, review_text, pty_tail) in (
-                "auth", "usage_limit", "env_failure"):
-            status = "DEGRADED"
     if status != "OK" and failure_detail_sink is not None:
         # As on the sealed route: the provider's typed give-up (agent-harness#1194) IS the
         # reason, its reset time included; otherwise the shared tail classifier labels the
         # failure, and our own session code stands when the tail names nothing.
-        failure = _claude_leg_failure(status, rc, review_text, log_text, pty_tail)
+        failure = _claude_leg_failure(status, rc, "", log_text, pty_tail)
+        if failure is not None and failure.template == "auth_failure":
+            failure = _LegFailure(template="leg_execution_failed", unknown=True, rc=rc)
         if (failure is None or failure.unknown) and log_text and _is_harness_code(str(log_text)):
             failure = _LegFailure(template=str(log_text))
         if failure is not None:
@@ -11962,14 +11993,16 @@ def _exec_jailed_claude_leg(
             if _seat_jail.is_limit_detail(failure.template):
                 seat.notices.append("claude_seat_login_rate_limited" if login
                                     else "claude_seat_token_rate_limited")
-            elif failure.template == "auth_failure":
-                # P2 (claw, 2026-10-03): a token the provider rejects ends the jailed TUI
-                # with the classifier's auth class. A login token past its launch-time
-                # expiry is its own outcome, safe to relaunch with a fresh token.
+            elif (rc != 0 and ((login and seat.expires_at is not None and time.time() >= seat.expires_at)
+                  or (_EXEC_OBSERVATION.get() is not None
+                  and _EXEC_OBSERVATION.get().get("model_turn") is False
+                  and _EXEC_OBSERVATION.get().get("verdict") is False
+                  and _parent_auth_state("claude") == "signed_out"))):
                 if login and seat.expires_at is not None and time.time() >= seat.expires_at:
                     failure = _LegFailure(template="claude_seat_login_token_expired")
                     seat.notices.append("claude_seat_login_token_expired")
                 else:
+                    failure = _LegFailure(template="auth_failure")
                     seat.notices.append("claude_seat_login_rejected" if login
                                         else "claude_seat_token_rejected")
             failure_detail_sink.append(failure)
@@ -12243,6 +12276,8 @@ def _exec_jailed_gemini_leg(
         proc = None
     finally:
         _cleanup_jailed_seat(seat, primary=sys.exception())
+    if proc is not None:
+        _note_exec_result(proc.returncode, command, jail.env)
     if token_seen or (proc is not None and any(
             _seat_jail.contains_secret(f"{proc.stdout}{proc.stderr}".encode("utf-8", errors="replace"), secret)
             for secret in secrets)):
@@ -12492,12 +12527,21 @@ def _note_exec_signals(**signals):
                             if name in {"model_turn", "verdict"} and type(value) is bool})
 
 
+def _note_exec_result(rc, command, env, *, actual=False):
+    observation = _EXEC_OBSERVATION.get()
+    if observation is not None:
+        if actual or not observation.get("exit_observed"):
+            observation.update(returncode=rc, argv=list(command), env=env)
+        observation["exit_observed"] = True
+
+
 def _parent_auth_state(leg: str, env=None) -> str:
     """A host-side tri-state probe; unavailable observations are never sign-outs."""
     command = {"claude": ["claude", "auth", "status", "--json"],
                "codex": ["codex", "login", "status"]}.get(leg)
     if command is None:
         return "unavailable"
+    token = _EGRESS_LAUNCH_PREFIX.set(())
     try:
         with tempfile.TemporaryDirectory(prefix="pl-host-auth-") as directory:
             result = run_provider(command, cwd=directory, env=_subscription_env(env),
@@ -12513,8 +12557,10 @@ def _parent_auth_state(leg: str, env=None) -> str:
             return "healthy"
         if result.returncode != 0 and text in {"not logged in", "not signed in"}:
             return "signed_out"
-    except (OSError, ValueError, subprocess.SubprocessError):
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
         pass
+    finally:
+        _EGRESS_LAUNCH_PREFIX.reset(token)
     return "unavailable"
 
 
@@ -12540,9 +12586,9 @@ def leg_exec_record(leg, rc, argv, *, auth_state="unavailable", model_turn=None,
                     verdict=None, scan_secrets=None) -> dict[str, object]:
     state = auth_state if auth_state in {"healthy", "signed_out", "unavailable"} else "unavailable"
     outcome = "leg_execution_completed" if rc == 0 else "leg_execution_failed"
-    if rc != 0 and model_turn is False and verdict is False and state == "signed_out":
+    if type(rc) is int and rc != 0 and model_turn is False and verdict is False and state == "signed_out":
         outcome = "leg_auth_signed_out"
-    elif rc != 0 and (model_turn is None or verdict is None or state == "unavailable"):
+    elif type(rc) is int and rc != 0 and model_turn is False and verdict is False and state == "unavailable":
         outcome = "leg_auth_unavailable"
     flags = _scan_exec_field(sorted(set(argv) & _EXEC_FLAGS), scan_secrets)
     return {"schema": "leg_exec.v1", "attempt_id": uuid.uuid4().hex,
@@ -12565,8 +12611,6 @@ def _retain_panel_leg(result):
         record_digest = sha256(path.read_bytes()).hexdigest()
     except (OSError, ValueError):
         return replace(result, status="DEGRADED", text="", detail="leg_exec_record_unavailable")
-    if result.status != "OK" and result.detail in {None, "unknown failure; CLI output not retained"}:
-        result = replace(result, detail="leg_auth_unavailable")
     object.__setattr__(result, "_leg_exec_metadata", {
         "record_digest": record_digest, "outcome": record["outcome"],
         "attempt_id": record["attempt_id"],
@@ -12580,10 +12624,7 @@ def _retained_leg_exec(function):
         from .president_adapter import write_private_record
         # Nested launch helpers contribute to the parent's single leg record.
         if _EXEC_OBSERVATION.get() is not None:
-            result = function(leg, *args, **kwargs)
-            if result is not None and type(result[0]) is int:
-                _EXEC_OBSERVATION.get()["returncode"] = result[0]
-            return result
+            return function(leg, *args, **kwargs)
         observation = {"argv": [], "returncode": None, "model_turn": None, "verdict": None,
                        "vendor": leg, "auth_state": "unavailable", "auth_probed": False}
         token = _EXEC_OBSERVATION.set(observation)
@@ -12593,19 +12634,20 @@ def _retained_leg_exec(function):
         finally:
             _EXEC_OBSERVATION.reset(token)
             rc = observation["returncode"]
-            if rc is None and result is not None:
-                rc = result[0] if type(result[0]) is int else (0 if result[0] == "OK" else 1)
+            if (type(rc) is int and rc != 0 and observation["model_turn"] is False
+                    and observation["verdict"] is False and not observation["auth_probed"]):
+                observation["auth_state"] = _parent_auth_state(leg, observation.get("env"))
             record = leg_exec_record(leg, rc, observation["argv"], auth_state=observation["auth_state"],
                 model_turn=observation["model_turn"], verdict=observation["verdict"],
                 scan_secrets=observation.get("scan_secrets"))
             if result is not None and type(result[0]) is int and result[0] != 0:
                 detail = result[2] if len(result) > 2 else None
-                if type(detail) is not _HarnessCode:
+                if type(detail) is not _HarnessCode and record["outcome"].startswith("leg_auth_"):
                     result = (result[0], result[1], _HarnessCode(record["outcome"]))
             elif result is not None and result[0] in {"DEGRADED", "ERROR", "EMPTY"}:
                 detail = result[2] if len(result) > 2 else None
-                if (detail is None or type(detail) is str and detail not in _HARNESS_DETAIL_CODES
-                    or isinstance(detail, _LegFailure) and (detail.unknown or detail.template == "auth_failure")):
+                if (record["outcome"].startswith("leg_auth_")
+                    or isinstance(detail, _LegFailure) and detail.template == "auth_failure"):
                     result = _BrokeredSpawnResult(result[0], result[1], _HarnessCode(record["outcome"]),
                         evidence=getattr(result, "harden_isolation_evidence", None),
                         seat_notices=getattr(result, "seat_notices", ()),
@@ -12631,11 +12673,23 @@ def _retained_leg_exec(function):
 
 
 def _grok_binary_identity(command, env=None):
-    executable = shutil.which(command[0], path=(env or os.environ).get("PATH"))
-    if not executable:
-        raise ValueError("tool probe unavailable")
+    from .executable_dependency_startup import current_dependency_for_provider
+    dependency = current_dependency_for_provider(command=command)
+    executable = dependency.subject_source if dependency is not None else _seat_provider_source(command[0], env)[1]
     resolved = Path(executable).resolve(strict=True)
     return str(resolved), sha256(resolved.read_bytes()).hexdigest()
+
+
+def _grok_admin_command(command):
+    return (len(command) == 2 and command[1] in {"--help", "--version", "login", "logout"}) or (
+        "--list-tools" in command and not set(command) & {
+            "-p", "--prompt", "--prompt-file", "--prompt-json", "--single", "--single-turn", "--cwd"})
+
+
+def _grok_allowed_tools(command):
+    if "--tools" not in command:
+        return set()
+    return set(filter(None, command[command.index("--tools") + 1].split(",")))
 
 
 def _grok_argv_digest(command):
@@ -12650,10 +12704,10 @@ def record_tool_probe(command, definitions, *, allowed_tools, version="unavailab
     from .president_adapter import write_private_record
     try:
         _, binary = _grok_binary_identity(command)
-    except (OSError, ValueError):
+    except (OSError, ValueError, RuntimeError):
         binary = "0" * 64
     offered = definitions.get("tools") if type(definitions) is dict else None
-    passed = (isinstance(offered, list) and bool(offered)
+    passed = (isinstance(offered, list) and (bool(offered) or not allowed_tools)
               and all(type(tool) is str and tool in allowed_tools for tool in offered)
               and definitions.get("diagnostics") == [] and binary != "0" * 64
               and type(version) is str and bool(version.strip()) and version != "unavailable")
@@ -12709,18 +12763,18 @@ def grok_tool_gate(command, env=None) -> bool:
             os.close(directory)
         return (record.get("schema") == "tool_probe.v1" and record.get("passed") is True
                 and record.get("binary_digest") == binary and record.get("argv_digest") == argv_digest
-                and isinstance(record.get("tools"), list) and bool(record["tools"])
-                and all(type(tool) is str for tool in record["tools"])
+                and isinstance(record.get("tools"), list)
+                and all(type(tool) is str and tool in _grok_allowed_tools(command) for tool in record["tools"])
                 and isinstance(record.get("version_digest"), str)
                 and re.fullmatch(r"[0-9a-f]{64}", record["version_digest"]) is not None)
-    except (OSError, ValueError, TypeError):
+    except (OSError, ValueError, TypeError, AttributeError, IndexError, RuntimeError):
         return False
 
 
 def probe_grok_tools(command, *, allowed_tools, runner=None):
     """Definition-only introspection, with no staged tree or model turn."""
     if runner is None:
-        runner = lambda argv, **kw: run_provider(argv, executor=True,
+        runner = lambda argv, **kw: run_provider(argv,
             child_scratch=_sandbox_policy.CHILD_SCRATCH_RELOCATE, **kw)
     definitions = None
     version = "unavailable"
@@ -12736,7 +12790,7 @@ def probe_grok_tools(command, *, allowed_tools, runner=None):
                 version_result = runner([binary, "--version"], **options)
                 controls = []
                 for index, word in enumerate(command[1:], start=1):
-                    if word in {"--tools", "--disallowed-tools", "--permission-mode"}:
+                    if word in {"--tools", "--disallowed-tools", "--permission-mode", "-m", "--model", "--reasoning-effort"}:
                         if index + 1 >= len(command):
                             raise ValueError("tool probe form unavailable")
                         controls.extend((word, command[index + 1]))
@@ -12749,7 +12803,7 @@ def probe_grok_tools(command, *, allowed_tools, runner=None):
                     version = version_result.stdout
         if _grok_binary_identity(command)[1] != digest:
             definitions = None
-    except (OSError, ValueError, subprocess.SubprocessError):
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
         pass
     return record_tool_probe(command, definitions, allowed_tools=allowed_tools, version=version)
 
@@ -13398,21 +13452,8 @@ def _exec_leg(
         grok_effort_args = render_seat_invocation(
             "grok", model or DEFAULT_LEG_MODELS["grok"], effort or "high"
         ).effort_args
-        grok_tools = "" if brokered else GROK_REVIEW_READONLY_TOOLS
-        cmd = [
-            "grok",
-            "-p",
-            prompt,
-            "--output-format",
-            "plain",
-            "--cwd",
-            str(review_dir),
-            "-m",
-            model or DEFAULT_LEG_MODELS["grok"],
-            *grok_effort_args,
-            "--tools",
-            grok_tools,
-        ]
+        cmd = _grok_review_form(model=model, review_dir=review_dir, prompt=prompt,
+                                grok_effort_args=grok_effort_args)
         if brokered:
             # One sandbox decision, read by both the argv and the recorded controls.
             staged_tree = _sandbox_in(review_dir)

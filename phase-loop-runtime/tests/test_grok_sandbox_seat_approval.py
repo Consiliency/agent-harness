@@ -27,6 +27,70 @@ from phase_loop_runtime import panel_invoker as pi
 from phase_loop_runtime import review_stage
 
 
+def test_seats_firstseat_tool_surface_image(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    binary_dir, native_dir = tmp_path / "bin", tmp_path / "native"
+    binary_dir.mkdir()
+    native_dir.mkdir()
+    image = native_dir / "grok"
+    image.write_bytes(b"\x7fELFfixture-one")
+    image.chmod(0o700)
+    wrapper = binary_dir / "grok"
+    wrapper.write_text(f'#!/bin/sh\nexec {image} "$@"\n')
+    wrapper.chmod(0o700)
+    monkeypatch.setattr(pi, "_PROVIDER_SEARCH_PATH", str(binary_dir))
+    command = ["grok", "-p", "fixture", "--tools", "fixture_read"]
+    assert pi._grok_binary_identity(command)[0] == str(image)
+    pi.record_tool_probe(command, {"tools": ["fixture_read"], "diagnostics": []},
+                         allowed_tools={"fixture_read"}, version="fixture-v1")
+    assert pi.grok_tool_gate(command, {"PATH": "/other"})
+    image.write_bytes(b"\x7fELFfixture-two")
+    assert not pi.grok_tool_gate(command)
+
+
+def test_seats_firstseat_tool_surface_dependency_image(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    from phase_loop_runtime import executable_dependency_startup as startup
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    image = tmp_path / "grok"
+    image.write_bytes(b"fixture-image")
+    dependency = SimpleNamespace(subject_source=image)
+    monkeypatch.setattr(startup, "current_dependency_for_provider", lambda **kw: dependency)
+    command = ["grok", "-p", "fixture", "--tools", "fixture_read"]
+    def runner(argv, **kw):
+        assert argv[0] == str(image)
+        output = ("--list-tools Print tool definitions without running a model" if argv[-1] == "--help"
+                  else "fixture-v1" if argv[-1] == "--version"
+                  else '{"tools":["fixture_read"],"diagnostics":[]}')
+        return subprocess.CompletedProcess(argv, 0, output, "")
+    assert pi.probe_grok_tools(command, allowed_tools={"fixture_read"}, runner=runner)["passed"]
+    assert pi.grok_tool_gate(command)
+
+
+@pytest.mark.parametrize("value", [[], 1, None, {"tools": ["fixture_extra"]}])
+def test_seats_firstseat_tool_surface_receipt_fields(tmp_path, monkeypatch, value):
+    import json
+    from phase_loop_runtime import president_adapter as pa
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(pi, "_grok_binary_identity", lambda *a: ("/fixture/grok", "1" * 64))
+    command = ["grok", "-p", "fixture", "--tools", "fixture_read"]
+    receipt = pi.record_tool_probe(command, {"tools": ["fixture_read"], "diagnostics": []},
+                                  allowed_tools={"fixture_read"}, version="fixture-v1")
+    assert pi.grok_tool_gate(command)
+    path = pa.private_record_root() / ("grok-probe-" + "1" * 64 + "-" + pi._grok_argv_digest(command) + ".json")
+    path.write_text(json.dumps({**receipt, **value} if isinstance(value, dict) else value))
+    assert not pi.grok_tool_gate(command)
+
+
+@pytest.mark.parametrize("role", list(pi.SeatLaunchRole))
+def test_seats_firstseat_tool_surface_launch_roles(tmp_path, monkeypatch, role):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(pi, "_grok_binary_identity", lambda *a: ("/fixture/grok", "1" * 64))
+    with pytest.raises(pi._seat_jail.SeatSandboxRefused) as refusal:
+        pi.launch_owned(["grok", "--prompt", "fixture"], role=role, profile=pi.SeatProfile(env={}))
+    assert refusal.value.code == "grok_tool_surface_unverified"
+
+
 @pytest.mark.parametrize("definitions", [None, {}, {"tools": []},
     {"tools": ["fixture_extra"]}, {"tools": ["fixture_read"], "diagnostics": ["fixture"]},
     {"tools": ["fixture_read"], "diagnostics": []}])
@@ -123,8 +187,9 @@ def test_seats_firstseat_tool_surface_passing_route(tmp_path, monkeypatch, broke
     entered = []
     def measured(command, env=None):
         entered.append(command)
-        pi.record_tool_probe(command, {"tools": ["fixture_read"], "diagnostics": []},
-                             allowed_tools={"fixture_read"}, version="fixture-v1")
+        allowed = pi._grok_allowed_tools(command)
+        pi.record_tool_probe(command, {"tools": sorted(allowed), "diagnostics": []},
+                             allowed_tools=allowed, version="fixture-v1")
         return gate(command, env)
     monkeypatch.setattr(pi, "grok_tool_gate", measured)
     launched = []
@@ -157,8 +222,9 @@ def test_seats_firstseat_tool_surface_president(tmp_path, monkeypatch, passing):
     def measured(command, env=None):
         entered.append(command)
         if passing:
-            pi.record_tool_probe(command, {"tools": ["fixture_read"], "diagnostics": []},
-                                 allowed_tools={"fixture_read"}, version="fixture-v1")
+            allowed = pi._grok_allowed_tools(command)
+            pi.record_tool_probe(command, {"tools": sorted(allowed), "diagnostics": []},
+                                 allowed_tools=allowed, version="fixture-v1")
         return gate(command, env)
     monkeypatch.setattr(pi, "grok_tool_gate", measured)
     def run(command, **kw):
@@ -224,8 +290,9 @@ def _fixture_tool_probe(monkeypatch, root):
     monkeypatch.setattr(pi, "_grok_binary_identity", lambda *a: ("/fixture/grok", "1" * 64))
     gate = pi.grok_tool_gate
     def measured(command, env=None):
-        pi.record_tool_probe(command, {"tools": ["fixture_read"], "diagnostics": []},
-                             allowed_tools={"fixture_read"}, version="fixture-v1")
+        allowed = pi._grok_allowed_tools(command)
+        pi.record_tool_probe(command, {"tools": sorted(allowed), "diagnostics": []},
+                             allowed_tools=allowed, version="fixture-v1")
         return gate(command, env)
     monkeypatch.setattr(pi, "grok_tool_gate", measured)
 

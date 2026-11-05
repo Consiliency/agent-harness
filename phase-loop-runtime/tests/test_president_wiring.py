@@ -558,6 +558,7 @@ def test_non_native_rung_launches_only_through_launch_provider(tmp_path, monkeyp
     # This control replaces the launch seam; owner facts use the real caller cells.
     monkeypatch.setattr(panel_invoker, "_seat_provider_source", lambda *_: (None, "/usr/bin/true"))
     monkeypatch.setattr(panel_invoker, "_filtered_holder_namespace", lambda: 1)
+    monkeypatch.setattr(panel_invoker, "grok_tool_gate", lambda *a: True)
     def contract() -> None:
         class _Reached(Exception):
             pass

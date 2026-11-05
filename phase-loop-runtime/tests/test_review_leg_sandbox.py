@@ -37,6 +37,12 @@ import pytest
 
 from harden_tdd_guard import harden_require
 from phase_loop_runtime import launcher
+
+
+@pytest.fixture(autouse=True)
+def _grok_definition_fixture(monkeypatch):
+    from phase_loop_runtime import panel_invoker
+    monkeypatch.setattr(panel_invoker, "grok_tool_gate", lambda *a: True)
 from phase_loop_runtime.launcher import (
     GEMINI_REVIEW_STAGE_PREFIX,
     GROK_REVIEW_READONLY_TOOLS,

@@ -639,8 +639,7 @@ def test_claude_tui_status_does_not_depend_on_the_sink(monkeypatch, tmp_path):
 
 
 @pytest.mark.parametrize("marker,tail,expected", [
-    # auth now labels too (claude r5)
-    ("claude_tui_pty_eof_no_output", "Error: not logged in · Please run /login", "DEGRADED"),
+    ("claude_tui_pty_eof_no_output", "Error: not logged in · Please run /login", "ERROR"),
     # an existing DEGRADED typed-operational status is left alone, not rewritten
     ("claude_tui_stalled", "Usage limit reached", "DEGRADED"),
 ])
