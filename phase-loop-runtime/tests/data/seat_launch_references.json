@@ -777,7 +777,7 @@
   {"count": 4, "function": "_repo_path_is_safely_absent", "module": "roadmap_lint", "primitive": "io.stat", "role": "host-io"},
   {"count": 1, "function": "_tracked_roadmap_paths", "module": "roadmap_lint", "primitive": "subprocess.run", "role": "operator-out-of-scope"},
   {"count": 1, "function": "declared_active_roadmap", "module": "roadmap_lint", "primitive": "io.glob", "role": "host-io"},
-  {"count": 1, "function": "declared_active_roadmap", "module": "roadmap_lint", "primitive": "io.read_text", "role": "host-io"},
+  {"count": 2, "function": "declared_active_roadmap", "module": "roadmap_lint", "primitive": "io.read_text", "role": "host-io"},
   {"count": 1, "function": "lint_roadmap", "module": "roadmap_lint", "primitive": "io.read_text", "role": "host-io"},
   {"count": 1, "function": "lint_train_roadmap", "module": "roadmap_lint", "primitive": "io.read_text", "role": "host-io"},
   {"count": 1, "function": "main", "module": "roadmap_lint", "primitive": "io.read_text", "role": "host-io"},

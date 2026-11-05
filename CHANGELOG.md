@@ -6,6 +6,17 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- Roadmap registries accept lifecycle status `advisory` with a dated
+  `ADVISORY — not runner-selected` banner. Advisory roadmaps remain covered and
+  validated, but cannot be selected or dispatched (agent-harness#1824).
+  Older readers fail closed on advisory registry entries; without a registry,
+  older runtimes may treat advisory banners as legacy roadmaps and run them.
+  Advisory status requires the registry, which is the authority. Without one,
+  the exact line-3 advisory banner adds a refusal; existing malformed `STATUS`
+  declaration refusals remain, and other wording keeps legacy
+  behavior. `validate-roadmap` warns about advisory-looking text outside that
+  banner without blocking validation or selection. Ordinary advisory prose is valid.
+
 - OpenShell Stage 2 (OSCOORD2, agent-harness#1795): disabled coordinator v1 lifecycle,
   explicit mTLS and one-shot stock v0.1.4 exec, durable cleanup journals, ranked
   local admission and load/restrict/exec worker envelope. Retire the patched SDK

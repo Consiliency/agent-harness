@@ -100,7 +100,8 @@ def resolve_roadmap(repo: Path) -> Path:
 
     Delegates to `roadmap_lint.declared_active_roadmap`, which reads the registry
     at `specs/roadmap-status.json` -- the repository's own authority on which
-    roadmap is selected, with `delivered` and `superseded` ones recorded alongside.
+    roadmap is selected, with lifecycle statuses `delivered`, `superseded`, and
+    `advisory` recorded alongside.
 
     An earlier version of this function hand-rolled the choice: state.json, then
     the numerically highest `phase-plans-v*.md`. That picks a SUPERSEDED roadmap

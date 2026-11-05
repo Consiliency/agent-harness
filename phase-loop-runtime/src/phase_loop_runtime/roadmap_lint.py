@@ -492,14 +492,14 @@ def lint_train_roadmap(path: Path | str) -> List[str]:
 #
 # `specs/roadmap-status.json` (`roadmap_status_manifest.v1`) is a repo-owned
 # registry naming every tracked `specs/phase-plans-*.md` roadmap's lifecycle
-# status (`active`/`delivered`/`superseded`), never the sole unchecked
+# status (`active`/`delivered`/`superseded`/`advisory`), never the sole unchecked
 # authority: every registry value must agree with that same roadmap's own
 # committed primary-banner declaration (closed grammar below) before any
 # status read returns a value. See plans/phase-plan-v10-LEGIBLE.md.
 
 ROADMAP_STATUS_SCHEMA = "roadmap_status_manifest.v1"
 ROADMAP_STATUS_REGISTRY_REL = "specs/roadmap-status.json"
-ROADMAP_STATUSES = ("active", "delivered", "superseded")
+ROADMAP_STATUSES = ("active", "delivered", "superseded", "advisory")
 
 
 class RoadmapStatusError(RuntimeError):
@@ -544,6 +544,10 @@ class RoadmapStatus:
 # succeeding on a corrupted date).
 _BANNER_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
     (
+        "advisory",
+        re.compile(r"^> # ADVISORY — not runner-selected \((?P<date>\d{4}-\d{2}-\d{2})\)$"),
+    ),
+    (
         "active",
         re.compile(
             r"^> \*\*Status \((?P<date>\d{4}-\d{2}-\d{2})\): ACTIVE — created this date, "
@@ -578,13 +582,39 @@ _BANNER_PATTERNS: tuple[tuple[str, "re.Pattern[str]"], ...] = (
 )
 
 
+def has_exact_advisory_banner(text: str) -> bool:
+    """Recognize only the exact dated advisory declaration on line 3."""
+    pattern = next(pattern for status, pattern in _BANNER_PATTERNS if status == "advisory")
+    match = pattern.fullmatch(_declaration_line3(text))
+    if match is None:
+        return False
+    try:
+        date.fromisoformat(match.group("date"))
+    except ValueError:
+        return False
+    return True
+
+
+def advisory_text_warnings(text: str) -> List[str]:
+    """Broad, non-blocking author hints; never used by selection."""
+    return [
+        f"line {number}: advisory-looking text outside the exact line-3 banner; "
+        "advisory status requires specs/roadmap-status.json"
+        for number, line in enumerate(text.splitlines(), 1)
+        if re.search(r"advisory|not[ -]+runner[ -]+selected", line, re.IGNORECASE)
+        and not (number == 3 and has_exact_advisory_banner(text))
+    ]
+
+
 def parse_roadmap_banner_status(text: str, path: str) -> str:
     """Parse the closed primary-banner lifecycle declaration of roadmap ``text``.
 
     Requires a nonempty Markdown H1 on line 1 and an empty line 2, then scans
     only the leading banner (everything before the first ``## `` body heading)
-    for exactly one recognized full-line declaration at line 3. Returns
-    ``"active"``, ``"delivered"``, or ``"superseded"``; raises
+    for exactly one recognized full-line declaration at line 3. Advisory
+    declarations are recognized only on line 3; advisory text elsewhere is
+    advisory-text warning material, never a conflicting declaration. Returns
+    ``"active"``, ``"delivered"``, ``"superseded"``, or ``"advisory"``; raises
     :class:`MalformedBannerError` on a missing, malformed, ambiguous, or
     misplaced declaration.
     """
@@ -604,6 +634,8 @@ def parse_roadmap_banner_status(text: str, path: str) -> str:
     for index in range(banner_end):
         line = lines[index]
         for status, pattern in _BANNER_PATTERNS:
+            if status == "advisory" and index != 2:
+                continue
             match = pattern.match(line)
             if not match:
                 continue
@@ -1126,18 +1158,29 @@ def declared_active_roadmap(repo: Path) -> Path:
 
     candidates = sorted((repo / "specs").glob("phase-plans-v*.md"))
     if len(candidates) == 1:
+        rel = candidates[0].relative_to(repo).as_posix()
+        try:
+            text = candidates[0].read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise MalformedBannerError(f"{rel}: cannot read roadmap lifecycle banner") from exc
+        if has_exact_advisory_banner(text):
+            raise NonActiveSelectionError(f"{rel}: advisory roadmap cannot be selected")
         return candidates[0].resolve()
     active_candidates: List[Path] = []
     for candidate in candidates:
+        rel = candidate.relative_to(repo).as_posix()
         try:
-            rel = candidate.relative_to(repo).as_posix()
-            if parse_roadmap_banner_status(candidate.read_text(encoding="utf-8"), rel) == "active":
+            text = candidate.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise MalformedBannerError(f"{rel}: cannot read roadmap lifecycle banner") from exc
+        try:
+            if parse_roadmap_banner_status(text, rel) == "active":
                 active_candidates.append(candidate)
         except RoadmapStatusError:
             continue
     if len(active_candidates) == 1:
         return active_candidates[0].resolve()
-    raise NonActiveSelectionError(f"cannot determine the sole active roadmap in {repo}")
+    raise NonActiveSelectionError("cannot determine the sole active roadmap in specs/")
 
 
 def main(argv: List[str]) -> int:
@@ -1167,6 +1210,9 @@ def main(argv: List[str]) -> int:
     except OSError as exc:
         print(f"error: could not read {path}: {exc}", file=sys.stderr)
         return 2
+
+    for warning in advisory_text_warnings(text):
+        print(f"WARNING: {warning}", file=sys.stderr)
 
     if train_mode:
         errors = lint_train_roadmap_text(text)

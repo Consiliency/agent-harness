@@ -47,6 +47,33 @@ git clone https://github.com/Consiliency/agent-harness
 agent-harness/install-agent-harness.sh --harness claude   # or codex | gemini | opencode | all
 ```
 
+The optional `specs/roadmap-status.json` registry (`roadmap_status_manifest.v1`)
+records `active`, `delivered`, `superseded`, and `advisory` lifecycle statuses.
+It must cover every Git-tracked `specs/phase-plans-*.md` file exactly, with each
+status matching that roadmap's own banner and exactly one active roadmap named
+by `selected_roadmap`. Advisory roadmaps validate but are never selected or
+dispatched. Their exact line-3 banner, after an H1 and a blank line, is:
+
+```markdown
+> # ADVISORY — not runner-selected (2026-11-04)
+```
+
+Use a valid ISO calendar date. Advisory status requires the registry; it is the
+authority. A registry/banner mismatch is a typed refusal. Without a registry,
+only the exact advisory banner on line 3 is refused for selection and dispatch.
+Other advisory wording keeps main's legacy behavior, including near-miss banners.
+Existing malformed `STATUS` declaration refusals (such as `> Status: advisory`)
+still apply.
+`validate-roadmap` emits non-blocking WARNINGs for advisory-looking text outside
+the exact banner; these warnings never affect selection.
+
+Upgrade the runtime before registering advisory
+entries: with a registry present, older readers reject the unknown status even
+if an active roadmap is selected. Without a registry, older runtimes may treat
+an advisory banner as a legacy roadmap and run it. Promotion requires a separate
+owner decision and coherent changes to
+the banner, registry status, selected path, and previous active roadmap's status.
+
 With a roadmap in place, `phase-loop run` drives it unattended. Two defaults worth
 knowing before that first run:
 
