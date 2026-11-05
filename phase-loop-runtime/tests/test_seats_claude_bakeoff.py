@@ -1164,8 +1164,70 @@ def test_the_runner_launches_this_trees_board_from_the_w0_checkout(repo, tmp_pat
     assert seen["command"][4] == str(private / "bundle.md") and "--landing-tier" not in seen["command"]
     assert seen["cwd"] == repo and seen["timeout_s"] == 1800
     assert seen["env"][ct.ROUTE_ENV] == "print"
+    assert json.loads(seen["env"][ct.W0_LINEUP_ENV]) == list(SEATS)
     assert outcome.canonical_output == "admitted"
     assert set(outcome.admission.values()) == {"pass"}
+
+
+def _board_cli(monkeypatch, tmp_path, repo, *, pin_from_composed):
+    """``advisor-board`` through the real CLI and the real ``invoke_board``, with the composer
+    over a fixed availability and every seat launch counted, never run."""
+    from phase_loop_runtime import cli
+    from phase_loop_runtime import panel_invoker as pi
+    from phase_loop_runtime.advisor_board import composition
+
+    real = composition.compose_review_board
+    board = real(is_available=lambda vendor: vendor in {"claude", "codex", "grok", "gemini"})
+    monkeypatch.setattr(composition, "compose_review_board", lambda *a, **k: board)
+    launches: list[str] = []
+
+    def spawn(leg, artifact, **kwargs):
+        launches.append(leg)
+        return "UNAVAILABLE", "counted, not run"
+
+    monkeypatch.setattr(pi, "_default_spawn", spawn)
+    monkeypatch.setenv(ct.W0_LINEUP_ENV, json.dumps(pin_from_composed(
+        [seat.seat_key for seat in board.seats])))
+    artifact = tmp_path / "bundle.md"
+    artifact.write_text("# bundle\n")
+    monkeypatch.chdir(repo)  # the kit runs the board from the W0 checkout
+    rc = cli.main(["advisor-board", str(artifact), "--json", "--monitoring-policy", "bounded",
+                   "--pointer-brief"])
+    return rc, launches, board
+
+
+def test_a_board_composed_other_than_the_pinned_lineup_launches_no_seat(
+        monkeypatch, tmp_path, capsys, repo):
+    """Availability that changed after preflight makes the CLI compose a lineup the run plan
+    did not approve: the pinned W0 lineup refuses it before any seat launches."""
+    rc, launches, board = _board_cli(monkeypatch, tmp_path, repo,
+                                     pin_from_composed=lambda keys: keys[:-1])
+    out = capsys.readouterr().out
+    assert len(board.seats) > 1
+    assert launches == []
+    payload = json.loads(out[out.index("{"):])
+    legs = payload["legs"]
+    assert legs and {leg["status"] for leg in legs} == {"UNAVAILABLE"}
+    assert {leg["detail"] for leg in legs} == {ct.W0_LINEUP_MISMATCH}
+
+
+def test_the_pinned_lineup_lets_its_own_board_past_the_pin(monkeypatch, tmp_path, capsys, repo):
+    """The approved lineup is not refused by the pin: its legs carry the next guard's
+    refusal (here, the review path refusing the counted launch stand-in), never the pin's."""
+    _rc, launches, _board = _board_cli(monkeypatch, tmp_path, repo,
+                                       pin_from_composed=lambda keys: keys)
+    out = capsys.readouterr().out
+    legs = json.loads(out[out.index("{"):])["legs"]
+    assert legs and ct.W0_LINEUP_MISMATCH not in {leg["detail"] for leg in legs}
+    assert launches == []
+
+
+@pytest.mark.parametrize("raw", ["", "not json", "[]", "{}", '["a", 1]'])
+def test_a_malformed_lineup_pin_is_a_mismatch(raw):
+    assert ct.w0_lineup_problem(["a"], {ct.W0_LINEUP_ENV: raw}) == ct.W0_LINEUP_MISMATCH
+    assert ct.w0_lineup_problem(["a"], {}) is None
+    assert ct.w0_lineup_problem(["a", "b"], {ct.W0_LINEUP_ENV: '["a", "b"]'}) is None
+    assert ct.w0_lineup_problem(["b", "a"], {ct.W0_LINEUP_ENV: '["a", "b"]'}) == ct.W0_LINEUP_MISMATCH
 
 
 def test_a_run_past_its_timeout_records_timed_out(repo, tmp_path):

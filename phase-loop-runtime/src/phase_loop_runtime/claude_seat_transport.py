@@ -433,6 +433,33 @@ def _record_w0_observation(transport: str, seat: object, evidence: object,
         return
 
 
+#: Set only by the W0 kit: the exact lineup the run plan approved, as a JSON array of seat
+#: keys (``harness:model:effort[:lens]``, so each seat's model and effort too). While it is
+#: set, a board whose final composition is any other lineup launches no seat.
+W0_LINEUP_ENV = "PHASE_LOOP_CLAUDE_W0_LINEUP"
+W0_LINEUP_MISMATCH = "claude_w0_lineup_mismatch"
+
+
+def w0_lineup_problem(seat_keys: Sequence[str],
+                      env: Mapping[str, str] | None = None) -> str | None:
+    """``None`` when no W0 lineup is pinned or ``seat_keys`` is exactly it, else
+    :data:`W0_LINEUP_MISMATCH`. A pin that does not parse as a non-empty list of seat keys
+    is a mismatch, never no pin."""
+    env = os.environ if env is None else env
+    raw = env.get(W0_LINEUP_ENV)
+    if raw is None:
+        return None
+    try:
+        expected = json.loads(raw)
+    except ValueError:
+        return W0_LINEUP_MISMATCH
+    if (not isinstance(expected, list) or not expected
+            or not all(isinstance(key, str) for key in expected)
+            or list(seat_keys) != expected):
+        return W0_LINEUP_MISMATCH
+    return None
+
+
 # --------------------------------------------------------------------------------------
 # EC-CLAUDE-4: the ratification-order audit, by content on the landing's base tree.
 # --------------------------------------------------------------------------------------

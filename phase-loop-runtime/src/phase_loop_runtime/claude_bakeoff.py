@@ -1283,7 +1283,8 @@ def run_native(arm: str, *, repo: Path, artifact_copy: Path, observations: Path,
     plan's per-run timeout (OQ-3); past it, the run is ``timed_out``."""
     observations.unlink(missing_ok=True)
     env = {**os.environ, _transport.ROUTE_ENV: arm,
-           _transport.W0_OBSERVATION_ENV: str(observations)}
+           _transport.W0_OBSERVATION_ENV: str(observations),
+           _transport.W0_LINEUP_ENV: json.dumps(list(expected.seats))}
     try:
         stdout = runner(board_command(artifact_copy), cwd=repo, env=env, timeout_s=timeout_s)
     except subprocess.TimeoutExpired:

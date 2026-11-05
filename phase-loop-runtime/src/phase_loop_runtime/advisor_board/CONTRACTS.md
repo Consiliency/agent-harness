@@ -1837,7 +1837,9 @@ are recorded on agent-harness#1132.
   bake-off only, `PHASE_LOOP_CLAUDE_W0_OBSERVATIONS` names a private file (an absolute path in
   an operator-owned directory no one else can write) to which each jailed Claude launch
   appends one closed, credential-free observation (`claude-w0-observation.v1`); unset, nothing
-  is written.
+  is written. `PHASE_LOOP_CLAUDE_W0_LINEUP`, set by the kit to the run plan's exact seat keys
+  (model and effort included), makes `invoke_board` refuse every seat with
+  `claude_w0_lineup_mismatch` before any launch when the board's final composition differs.
 - **Notices.** `{code, seat_key, what, why, fix}`, rendered only from literals, on the
   `advisor-board` payload (`notices`, `legs[].notices`) and text summary, and on the
   governed path as one non-gating `seat_notice` finding per notice (L4b).

@@ -3053,6 +3053,8 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "review_monitoring_policy_mismatch", "review_monitoring_policy_invalid",
     "review_monitoring_timeout_conflict", "review_monitoring_unsupported_transport",
     "review_monitoring_unsupported_api_fallback",
+    # SEATS CLAUDE (agent-harness#1820): a W0 board composed other than its pinned lineup
+    "claude_w0_lineup_mismatch",
     # agent-harness#896: placement refusals
     "sandbox_placement_required_unavailable", "sandbox_placement_driver_unavailable",
     # agent-harness#896: the placement driver's codes (typed notices in seat_jail.NOTICES)
@@ -15779,6 +15781,12 @@ def invoke_board(
         finally:
             _unpin_brief(token)
     try:
+        # SEATS CLAUDE (IF-0-CLAUDE-2): a W0 run pins its approved lineup; any other final
+        # composition is refused here, before minting or any launch.
+        lineup_problem = _claude_seat_transport.w0_lineup_problem(
+            [seat.seat_key for seat in board.seats])
+        if lineup_problem is not None:
+            raise ValueError(lineup_problem)
         if review_authorization is not None and getattr(review_authorization, "monitoring_policy", "bounded") != monitoring_policy:
             raise ValueError("review_monitoring_policy_mismatch")
         _advisor_board_backing.resolve_review_monitoring_policy(
