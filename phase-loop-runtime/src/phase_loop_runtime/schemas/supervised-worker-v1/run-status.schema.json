@@ -1,0 +1,768 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:contract:supervised_run_status.v1",
+  "title": "supervised_run_status.v1 (provisional)",
+  "description": "Per-attempt run journal line, derived projection, bounded page and reader view. Harness-neutral and language-neutral. The journal is authoritative; the projection is replaceable and derived. Run status is a status record: it carries runtime state and native result references only, never a work outcome or requirement evidence. Status: provisional until the owning contract revision completes; a change needs reconciliation with every consumer.",
+  "$ref": "#/$defs/journal_line",
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "unit_id": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "attempt_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "assignment_digest",
+        "envelope_digest",
+        "run_id",
+        "attempt_id"
+      ],
+      "properties": {
+        "assignment_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "envelope_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "run_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "attempt_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        }
+      }
+    },
+    "units": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target_unit_ids",
+        "readonly_neighbor_unit_ids",
+        "snapshot_ref"
+      ],
+      "properties": {
+        "target_unit_ids": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/unit_id"
+          }
+        },
+        "readonly_neighbor_unit_ids": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/unit_id"
+          }
+        },
+        "snapshot_ref": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    },
+    "writer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "harness_id",
+        "harness_version",
+        "writer_instance_id",
+        "owner_pid",
+        "process_start_time"
+      ],
+      "properties": {
+        "harness_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "harness_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "writer_instance_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "owner_pid": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "process_start_time": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "ref": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "sha256",
+        "locator"
+      ],
+      "properties": {
+        "kind": {
+          "enum": [
+            "proposal_bytes",
+            "evidence_envelope",
+            "stdout",
+            "stderr",
+            "attempt_evidence_directory"
+          ]
+        },
+        "sha256": {
+          "type": "string",
+          "description": "A digest only. Inline content here is raw_output_in_record."
+        },
+        "locator": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "Repository-relative locator or null; a locator is never authority."
+        }
+      }
+    },
+    "journal_line": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "version",
+        "line_kind",
+        "seq",
+        "attempt",
+        "units",
+        "writer",
+        "observed_at",
+        "redaction_posture",
+        "body"
+      ],
+      "properties": {
+        "schema": {
+          "type": "string",
+          "description": "Must be supervised_run_status.v1; any other value is journal_unknown_version (checked semantically so a reader reaches its typed refusal)."
+        },
+        "version": {
+          "type": "string",
+          "description": "Line format version; must be 1."
+        },
+        "line_kind": {
+          "enum": [
+            "header",
+            "event",
+            "state",
+            "terminal"
+          ]
+        },
+        "seq": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Per-attempt, monotonic from 0 and gapless across segments. The only ordering."
+        },
+        "attempt": {
+          "$ref": "#/$defs/attempt_identity"
+        },
+        "units": {
+          "$ref": "#/$defs/units"
+        },
+        "writer": {
+          "$ref": "#/$defs/writer"
+        },
+        "observed_at": {
+          "type": "string",
+          "description": "Informational wall-clock time; never used for ordering."
+        },
+        "redaction_posture": {
+          "const": "digests_and_repo_relative_locators_only"
+        },
+        "body": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/header_body"
+            },
+            {
+              "$ref": "#/$defs/event_body"
+            },
+            {
+              "$ref": "#/$defs/state_body"
+            },
+            {
+              "$ref": "#/$defs/terminal_body"
+            }
+          ]
+        }
+      }
+    },
+    "header_body": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "body_kind",
+        "segment_index",
+        "previous_segment_sha256",
+        "previous_last_seq"
+      ],
+      "properties": {
+        "body_kind": {
+          "const": "header"
+        },
+        "segment_index": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "previous_segment_sha256": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/sha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "previous_last_seq": {
+          "type": [
+            "integer",
+            "null"
+          ]
+        }
+      }
+    },
+    "event_body": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "body_kind",
+        "message",
+        "refs"
+      ],
+      "properties": {
+        "body_kind": {
+          "const": "event"
+        },
+        "message": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "label",
+            "text"
+          ],
+          "properties": {
+            "label": {
+              "const": "untrusted_display_text"
+            },
+            "text": {
+              "type": "string",
+              "description": "Sanitized, at most 200 characters, no line breaks; rendered as plain text, never as markup or commands."
+            }
+          }
+        },
+        "refs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ref"
+          }
+        }
+      }
+    },
+    "state_body": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "body_kind",
+        "state",
+        "worker_invocations"
+      ],
+      "properties": {
+        "body_kind": {
+          "const": "state"
+        },
+        "state": {
+          "enum": [
+            "queued",
+            "running",
+            "cancelling"
+          ]
+        },
+        "worker_invocations": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "terminal_body": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "body_kind",
+        "state",
+        "worker_invocations",
+        "termination",
+        "refusal",
+        "result_binding"
+      ],
+      "properties": {
+        "body_kind": {
+          "const": "terminal"
+        },
+        "state": {
+          "enum": [
+            "finished",
+            "refused"
+          ]
+        },
+        "worker_invocations": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "termination": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason",
+                "signal",
+                "by"
+              ],
+              "properties": {
+                "reason": {
+                  "enum": [
+                    "completed",
+                    "cancelled",
+                    "timed_out",
+                    "failed_to_start"
+                  ]
+                },
+                "signal": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "by": {
+                  "enum": [
+                    "worker",
+                    "harness",
+                    "operator"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        "refusal": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "reason",
+                "constraint",
+                "tier"
+              ],
+              "properties": {
+                "reason": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "constraint": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                },
+                "tier": {
+                  "type": [
+                    "string",
+                    "null"
+                  ]
+                }
+              }
+            }
+          ]
+        },
+        "result_binding": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "envelope_digest",
+                "run_id",
+                "attempt_id",
+                "proposal_bytes_digest",
+                "evidence_envelope_digest"
+              ],
+              "properties": {
+                "envelope_digest": {
+                  "$ref": "#/$defs/sha256"
+                },
+                "run_id": {
+                  "type": "string"
+                },
+                "attempt_id": {
+                  "type": "string"
+                },
+                "proposal_bytes_digest": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/$defs/sha256"
+                    },
+                    {
+                      "type": "null"
+                    }
+                  ]
+                },
+                "evidence_envelope_digest": {
+                  "$ref": "#/$defs/sha256"
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "projection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "assignment_digest",
+        "attempts"
+      ],
+      "properties": {
+        "schema": {
+          "const": "supervised_run_status.v1/projection"
+        },
+        "assignment_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "attempts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "attempt",
+              "state",
+              "journal_seq",
+              "segment_index",
+              "segment_sha256"
+            ],
+            "properties": {
+              "attempt": {
+                "$ref": "#/$defs/attempt_identity"
+              },
+              "state": {
+                "enum": [
+                  "queued",
+                  "running",
+                  "cancelling",
+                  "finished",
+                  "refused"
+                ]
+              },
+              "journal_seq": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "segment_index": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "segment_sha256": {
+                "$ref": "#/$defs/sha256"
+              }
+            }
+          }
+        }
+      }
+    },
+    "page_request": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "assignment_digest",
+        "page_size",
+        "cursor"
+      ],
+      "properties": {
+        "assignment_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "page_size": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "description": "Required and at most 100; null is read_unbounded (checked semantically)."
+        },
+        "cursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "page": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "events",
+        "has_more",
+        "omitted"
+      ],
+      "properties": {
+        "events": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/journal_line"
+          }
+        },
+        "has_more": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "omitted": {
+          "anyOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "before",
+                "after",
+                "retention_dropped"
+              ],
+              "properties": {
+                "before": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "after": {
+                  "type": "integer",
+                  "minimum": 0
+                },
+                "retention_dropped": {
+                  "type": "integer",
+                  "minimum": 0
+                }
+              }
+            }
+          ]
+        }
+      }
+    },
+    "reader_view": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "What a reader shows for one attempt: three separate fields from three producers.",
+      "required": [
+        "row",
+        "run_record",
+        "display"
+      ],
+      "properties": {
+        "row": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "assignment_digest",
+            "snapshot_ref"
+          ],
+          "properties": {
+            "assignment_digest": {
+              "$ref": "#/$defs/sha256"
+            },
+            "snapshot_ref": {
+              "$ref": "#/$defs/sha256"
+            }
+          }
+        },
+        "run_record": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "attempt",
+            "units",
+            "state",
+            "termination_reason"
+          ],
+          "properties": {
+            "attempt": {
+              "$ref": "#/$defs/attempt_identity"
+            },
+            "units": {
+              "$ref": "#/$defs/units"
+            },
+            "state": {
+              "enum": [
+                "queued",
+                "running",
+                "cancelling",
+                "finished",
+                "refused"
+              ]
+            },
+            "termination_reason": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "display": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "runtime_state",
+            "work_outcome",
+            "evidence"
+          ],
+          "properties": {
+            "runtime_state": {
+              "type": "string"
+            },
+            "work_outcome": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "value",
+                    "source",
+                    "ref"
+                  ],
+                  "properties": {
+                    "value": {
+                      "type": "string"
+                    },
+                    "source": {
+                      "enum": [
+                        "work_result_reducer",
+                        "run_status"
+                      ]
+                    },
+                    "ref": {
+                      "anyOf": [
+                        {
+                          "$ref": "#/$defs/sha256"
+                        },
+                        {
+                          "type": "null"
+                        }
+                      ]
+                    }
+                  }
+                }
+              ]
+            },
+            "evidence": {
+              "anyOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "source",
+                    "ref"
+                  ],
+                  "properties": {
+                    "source": {
+                      "enum": [
+                        "requirement_admission",
+                        "run_status"
+                      ]
+                    },
+                    "ref": {
+                      "$ref": "#/$defs/sha256"
+                    }
+                  }
+                }
+              ]
+            }
+          }
+        }
+      }
+    }
+  },
+  "x-canonicalization": "Segment bytes are the lines joined by LF, each object line serialized as RFC 8785 (JCS) and each string line taken as its exact text, with a final LF unless the segment ends in a torn line. segment sha256 is over those UTF-8 bytes.",
+  "x-journal-rules": {
+    "location": "one immutable, append-only journal per attempt in the harness's per-user state directory (mode 0700), never in the target repository; local filesystems only",
+    "writers": "one writer per attempt file, under a lock, with atomic line appends and fsync",
+    "segments": "<attempt>/<nnnn>.jsonl read in index order; each begins with a header naming the previous segment's sha256 and last seq",
+    "lifecycle": {
+      "queued": [
+        "running",
+        "refused"
+      ],
+      "running": [
+        "cancelling",
+        "finished"
+      ],
+      "cancelling": [
+        "finished"
+      ],
+      "finished": [],
+      "refused": []
+    },
+    "bounds": {
+      "page_size_max": 100,
+      "event_message_max_chars": 200,
+      "per_attempt_event_cap": 10000,
+      "attempts_per_page_max": 20
+    },
+    "liveness": "for a non-terminal attempt the reader checks the recorded owner pid and process start time; an owner that is not live is shown stale and unknown, never running"
+  },
+  "x-semantic-rules": {
+    "journal_torn_line": "the last line has no terminating LF or does not parse; the attempt is shown unknown and the reader never truncates or repairs",
+    "journal_malformed_line": "a line other than the last does not parse",
+    "journal_unknown_version": "schema is not supervised_run_status.v1 or version is not 1",
+    "journal_foreign_writer": "a line's writer differs from the first header's writer",
+    "attempt_overwritten": "seq regresses or skips, a segment index is missing, or a header's previous_segment_sha256/previous_last_seq does not match the previous segment",
+    "attempt_provenance_mismatch": "a line's attempt identity differs from the header's, or a terminal result_binding differs from the line's attempt identity",
+    "attempt_evidence_copied": "a later attempt must not repeat an earlier attempt's evidence-envelope digest; equal proposal-bytes digests remain legitimate when each attempt binds its own envelope, run id and attempt id",
+    "refused_after_launch": "a refused terminal follows a running state or records worker_invocations above 0",
+    "lifecycle_invalid": "a state transition outside x-journal-rules.lifecycle, or finished without termination, or refused without refusal",
+    "raw_output_in_record": "a ref sha256 that is not a 64-hex digest, an event message over 200 characters or with a line break or control character, or any string over 512 characters",
+    "locator_not_repo_relative": "a locator that is empty, absolute, contains a '..' segment or a backslash",
+    "projection_behind_journal": "a projection attempt whose journal_seq is behind the journal tail, or an attempt missing from the projection; shown stale",
+    "projection_not_from_journal": "a projection attempt ahead of the journal, or naming a segment digest the journal does not have",
+    "owner_not_live": "a non-terminal attempt whose recorded owner is not live; shown stale and unknown, never running",
+    "run_record_foreign": "a run record whose assignment digest or snapshot reference differs from the row it is joined to",
+    "runtime_not_work_outcome": "a work outcome or evidence link whose source is run status; termination reason completed is runtime data only",
+    "read_unbounded": "a page request without a page size or above 100, a page with more events than requested, or a page without has_more and omitted counts"
+  }
+}

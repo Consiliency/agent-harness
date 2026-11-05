@@ -1,0 +1,2150 @@
+{
+  "contract": "supervised_run_status.v1",
+  "status": "provisional",
+  "note": "Golden valid and negative conformance vectors. Each negative is a JSON Patch (RFC 6902 add/remove/replace) applied to its paired valid control; when rehash is true, envelope_digest is recomputed afterwards, so the authority self-verifies. Expected diagnostics are exact sets. Journal segments list their lines; an object line is serialized with RFC 8785 (JCS) and a string line is the exact raw line text.",
+  "cases": [
+    {
+      "id": "V-two-attempts",
+      "kind": "journal",
+      "role": "control",
+      "input": {
+        "journal": {
+          "attempts": [
+            {
+              "segments": [
+                {
+                  "lines": [
+                    {
+                      "schema": "supervised_run_status.v1",
+                      "version": "1",
+                      "line_kind": "header",
+                      "seq": 0,
+                      "attempt": {
+                        "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                        "envelope_digest": "81b4a9b6bc1b5619ed98a22dc857209fa2d28e9ac1b382eec0560322a8ee86ef",
+                        "run_id": "run-1",
+                        "attempt_id": "attempt-1"
+                      },
+                      "units": {
+                        "target_unit_ids": [
+                          "unit:target"
+                        ],
+                        "readonly_neighbor_unit_ids": [
+                          "unit:neighbor"
+                        ],
+                        "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                      },
+                      "writer": {
+                        "harness_id": "example-harness",
+                        "harness_version": "1.0.0",
+                        "writer_instance_id": "writer-1",
+                        "owner_pid": 4242,
+                        "process_start_time": "2026-11-04T10:00:00Z"
+                      },
+                      "observed_at": "2026-11-04T10:00:00Z",
+                      "redaction_posture": "digests_and_repo_relative_locators_only",
+                      "body": {
+                        "segment_index": 0,
+                        "previous_segment_sha256": null,
+                        "previous_last_seq": null,
+                        "body_kind": "header"
+                      }
+                    },
+                    {
+                      "schema": "supervised_run_status.v1",
+                      "version": "1",
+                      "line_kind": "state",
+                      "seq": 1,
+                      "attempt": {
+                        "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                        "envelope_digest": "81b4a9b6bc1b5619ed98a22dc857209fa2d28e9ac1b382eec0560322a8ee86ef",
+                        "run_id": "run-1",
+                        "attempt_id": "attempt-1"
+                      },
+                      "units": {
+                        "target_unit_ids": [
+                          "unit:target"
+                        ],
+                        "readonly_neighbor_unit_ids": [
+                          "unit:neighbor"
+                        ],
+                        "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                      },
+                      "writer": {
+                        "harness_id": "example-harness",
+                        "harness_version": "1.0.0",
+                        "writer_instance_id": "writer-1",
+                        "owner_pid": 4242,
+                        "process_start_time": "2026-11-04T10:00:00Z"
+                      },
+                      "observed_at": "2026-11-04T10:01:00Z",
+                      "redaction_posture": "digests_and_repo_relative_locators_only",
+                      "body": {
+                        "state": "queued",
+                        "worker_invocations": 0,
+                        "body_kind": "state"
+                      }
+                    },
+                    {
+                      "schema": "supervised_run_status.v1",
+                      "version": "1",
+                      "line_kind": "state",
+                      "seq": 2,
+                      "attempt": {
+                        "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                        "envelope_digest": "81b4a9b6bc1b5619ed98a22dc857209fa2d28e9ac1b382eec0560322a8ee86ef",
+                        "run_id": "run-1",
+                        "attempt_id": "attempt-1"
+                      },
+                      "units": {
+                        "target_unit_ids": [
+                          "unit:target"
+                        ],
+                        "readonly_neighbor_unit_ids": [
+                          "unit:neighbor"
+                        ],
+                        "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                      },
+                      "writer": {
+                        "harness_id": "example-harness",
+                        "harness_version": "1.0.0",
+                        "writer_instance_id": "writer-1",
+                        "owner_pid": 4242,
+                        "process_start_time": "2026-11-04T10:00:00Z"
+                      },
+                      "observed_at": "2026-11-04T10:02:00Z",
+                      "redaction_posture": "digests_and_repo_relative_locators_only",
+                      "body": {
+                        "state": "running",
+                        "worker_invocations": 1,
+                        "body_kind": "state"
+                      }
+                    }
+                  ],
+                  "final_newline": true
+                },
+                {
+                  "lines": [
+                    {
+                      "schema": "supervised_run_status.v1",
+                      "version": "1",
+                      "line_kind": "header",
+                      "seq": 3,
+                      "attempt": {
+                        "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                        "envelope_digest": "81b4a9b6bc1b5619ed98a22dc857209fa2d28e9ac1b382eec0560322a8ee86ef",
+                        "run_id": "run-1",
+                        "attempt_id": "attempt-1"
+                      },
+                      "units": {
+                        "target_unit_ids": [
+                          "unit:target"
+                        ],
+                        "readonly_neighbor_unit_ids": [
+                          "unit:neighbor"
+                        ],
+                        "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                      },
+                      "writer": {
+                        "harness_id": "example-harness",
+                        "harness_version": "1.0.0",
+                        "writer_instance_id": "writer-1",
+                        "owner_pid": 4242,
+                        "process_start_time": "2026-11-04T10:00:00Z"
+                      },
+                      "observed_at": "2026-11-04T10:03:00Z",
+                      "redaction_posture": "digests_and_repo_relative_locators_only",
+                      "body": {
+                        "segment_index": 1,
+                        "previous_segment_sha256": "182db99649b7ee4c223bcf91e90572fa38e9efe89b5f2ee98f71c0ee02d7d839",
+                        "previous_last_seq": 2,
+                        "body_kind": "header"
+                      }
+                    },
+                    {
+                      "schema": "supervised_run_status.v1",
+                      "version": "1",
+                      "line_kind": "event",
+                      "seq": 4,
+                      "attempt": {
+                        "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                        "envelope_digest": "81b4a9b6bc1b5619ed98a22dc857209fa2d28e9ac1b382eec0560322a8ee86ef",
+                        "run_id": "run-1",
+                        "attempt_id": "attempt-1"
+                      },
+                      "units": {
+                        "target_unit_ids": [
+                          "unit:target"
+                        ],
+                        "readonly_neighbor_unit_ids": [
+                          "unit:neighbor"
+                        ],
+                        "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                      },
+                      "writer": {
+                        "harness_id": "example-harness",
+                        "harness_version": "1.0.0",
+                        "writer_instance_id": "writer-1",
+                        "owner_pid": 4242,
+                        "process_start_time": "2026-11-04T10:00:00Z"
+                      },
+                      "observed_at": "2026-11-04T10:04:00Z",
+                      "redaction_posture": "digests_and_repo_relative_locators_only",
+                      "body": {
+                        "message": {
+                          "label": "untrusted_display_text",
+                          "text": "worker returned a proposal"
+                        },
+                        "refs": [
+                          {
+                            "kind": "proposal_bytes",
+                            "sha256": "08fdd411380077b926551c5e4838c86e00b637a9cb433c0e1c35f7d5d72c90b6",
+                            "locator": null
+                          },
+                          {
+                            "kind": "stdout",
+                            "sha256": "f5a027b46c91cfc563f3f94f4227f3f9d032209c0acd537e9759afd8bb5fe451",
+                            "locator": null
+                          }
+                        ],
+                        "body_kind": "event"
+                      }
+                    },
+                    {
+                      "schema": "supervised_run_status.v1",
+                      "version": "1",
+                      "line_kind": "terminal",
+                      "seq": 5,
+                      "attempt": {
+                        "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                        "envelope_digest": "81b4a9b6bc1b5619ed98a22dc857209fa2d28e9ac1b382eec0560322a8ee86ef",
+                        "run_id": "run-1",
+                        "attempt_id": "attempt-1"
+                      },
+                      "units": {
+                        "target_unit_ids": [
+                          "unit:target"
+                        ],
+                        "readonly_neighbor_unit_ids": [
+                          "unit:neighbor"
+                        ],
+                        "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                      },
+                      "writer": {
+                        "harness_id": "example-harness",
+                        "harness_version": "1.0.0",
+                        "writer_instance_id": "writer-1",
+                        "owner_pid": 4242,
+                        "process_start_time": "2026-11-04T10:00:00Z"
+                      },
+                      "observed_at": "2026-11-04T10:05:00Z",
+                      "redaction_posture": "digests_and_repo_relative_locators_only",
+                      "body": {
+                        "state": "finished",
+                        "worker_invocations": 1,
+                        "termination": {
+                          "reason": "completed",
+                          "signal": null,
+                          "by": "worker"
+                        },
+                        "refusal": null,
+                        "result_binding": {
+                          "envelope_digest": "81b4a9b6bc1b5619ed98a22dc857209fa2d28e9ac1b382eec0560322a8ee86ef",
+                          "run_id": "run-1",
+                          "attempt_id": "attempt-1",
+                          "proposal_bytes_digest": "08fdd411380077b926551c5e4838c86e00b637a9cb433c0e1c35f7d5d72c90b6",
+                          "evidence_envelope_digest": "3118818d25a4475c6c0d4f397a7e050038734606e69a75a8cf5814f44afa2f7a"
+                        },
+                        "body_kind": "terminal"
+                      }
+                    }
+                  ],
+                  "final_newline": true
+                }
+              ]
+            },
+            {
+              "segments": [
+                {
+                  "lines": [
+                    {
+                      "schema": "supervised_run_status.v1",
+                      "version": "1",
+                      "line_kind": "header",
+                      "seq": 0,
+                      "attempt": {
+                        "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                        "envelope_digest": "484a253ed1d843c7529b4a0d8f2bbdf92475783d601386d374c7072c635ee4d6",
+                        "run_id": "run-2",
+                        "attempt_id": "attempt-2"
+                      },
+                      "units": {
+                        "target_unit_ids": [
+                          "unit:target"
+                        ],
+                        "readonly_neighbor_unit_ids": [
+                          "unit:neighbor"
+                        ],
+                        "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                      },
+                      "writer": {
+                        "harness_id": "example-harness",
+                        "harness_version": "1.0.0",
+                        "writer_instance_id": "writer-1",
+                        "owner_pid": 4242,
+                        "process_start_time": "2026-11-04T10:00:00Z"
+                      },
+                      "observed_at": "2026-11-04T10:00:00Z",
+                      "redaction_posture": "digests_and_repo_relative_locators_only",
+                      "body": {
+                        "segment_index": 0,
+                        "previous_segment_sha256": null,
+                        "previous_last_seq": null,
+                        "body_kind": "header"
+                      }
+                    },
+                    {
+                      "schema": "supervised_run_status.v1",
+                      "version": "1",
+                      "line_kind": "state",
+                      "seq": 1,
+                      "attempt": {
+                        "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                        "envelope_digest": "484a253ed1d843c7529b4a0d8f2bbdf92475783d601386d374c7072c635ee4d6",
+                        "run_id": "run-2",
+                        "attempt_id": "attempt-2"
+                      },
+                      "units": {
+                        "target_unit_ids": [
+                          "unit:target"
+                        ],
+                        "readonly_neighbor_unit_ids": [
+                          "unit:neighbor"
+                        ],
+                        "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                      },
+                      "writer": {
+                        "harness_id": "example-harness",
+                        "harness_version": "1.0.0",
+                        "writer_instance_id": "writer-1",
+                        "owner_pid": 4242,
+                        "process_start_time": "2026-11-04T10:00:00Z"
+                      },
+                      "observed_at": "2026-11-04T10:01:00Z",
+                      "redaction_posture": "digests_and_repo_relative_locators_only",
+                      "body": {
+                        "state": "queued",
+                        "worker_invocations": 0,
+                        "body_kind": "state"
+                      }
+                    },
+                    {
+                      "schema": "supervised_run_status.v1",
+                      "version": "1",
+                      "line_kind": "state",
+                      "seq": 2,
+                      "attempt": {
+                        "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                        "envelope_digest": "484a253ed1d843c7529b4a0d8f2bbdf92475783d601386d374c7072c635ee4d6",
+                        "run_id": "run-2",
+                        "attempt_id": "attempt-2"
+                      },
+                      "units": {
+                        "target_unit_ids": [
+                          "unit:target"
+                        ],
+                        "readonly_neighbor_unit_ids": [
+                          "unit:neighbor"
+                        ],
+                        "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                      },
+                      "writer": {
+                        "harness_id": "example-harness",
+                        "harness_version": "1.0.0",
+                        "writer_instance_id": "writer-1",
+                        "owner_pid": 4242,
+                        "process_start_time": "2026-11-04T10:00:00Z"
+                      },
+                      "observed_at": "2026-11-04T10:02:00Z",
+                      "redaction_posture": "digests_and_repo_relative_locators_only",
+                      "body": {
+                        "state": "running",
+                        "worker_invocations": 1,
+                        "body_kind": "state"
+                      }
+                    },
+                    {
+                      "schema": "supervised_run_status.v1",
+                      "version": "1",
+                      "line_kind": "event",
+                      "seq": 3,
+                      "attempt": {
+                        "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                        "envelope_digest": "484a253ed1d843c7529b4a0d8f2bbdf92475783d601386d374c7072c635ee4d6",
+                        "run_id": "run-2",
+                        "attempt_id": "attempt-2"
+                      },
+                      "units": {
+                        "target_unit_ids": [
+                          "unit:target"
+                        ],
+                        "readonly_neighbor_unit_ids": [
+                          "unit:neighbor"
+                        ],
+                        "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                      },
+                      "writer": {
+                        "harness_id": "example-harness",
+                        "harness_version": "1.0.0",
+                        "writer_instance_id": "writer-1",
+                        "owner_pid": 4242,
+                        "process_start_time": "2026-11-04T10:00:00Z"
+                      },
+                      "observed_at": "2026-11-04T10:03:00Z",
+                      "redaction_posture": "digests_and_repo_relative_locators_only",
+                      "body": {
+                        "message": {
+                          "label": "untrusted_display_text",
+                          "text": "retry attempt returned an identical proposal"
+                        },
+                        "refs": [
+                          {
+                            "kind": "proposal_bytes",
+                            "sha256": "08fdd411380077b926551c5e4838c86e00b637a9cb433c0e1c35f7d5d72c90b6",
+                            "locator": "src/module/target.ts"
+                          }
+                        ],
+                        "body_kind": "event"
+                      }
+                    },
+                    {
+                      "schema": "supervised_run_status.v1",
+                      "version": "1",
+                      "line_kind": "terminal",
+                      "seq": 4,
+                      "attempt": {
+                        "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                        "envelope_digest": "484a253ed1d843c7529b4a0d8f2bbdf92475783d601386d374c7072c635ee4d6",
+                        "run_id": "run-2",
+                        "attempt_id": "attempt-2"
+                      },
+                      "units": {
+                        "target_unit_ids": [
+                          "unit:target"
+                        ],
+                        "readonly_neighbor_unit_ids": [
+                          "unit:neighbor"
+                        ],
+                        "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                      },
+                      "writer": {
+                        "harness_id": "example-harness",
+                        "harness_version": "1.0.0",
+                        "writer_instance_id": "writer-1",
+                        "owner_pid": 4242,
+                        "process_start_time": "2026-11-04T10:00:00Z"
+                      },
+                      "observed_at": "2026-11-04T10:04:00Z",
+                      "redaction_posture": "digests_and_repo_relative_locators_only",
+                      "body": {
+                        "state": "finished",
+                        "worker_invocations": 1,
+                        "termination": {
+                          "reason": "completed",
+                          "signal": null,
+                          "by": "worker"
+                        },
+                        "refusal": null,
+                        "result_binding": {
+                          "envelope_digest": "484a253ed1d843c7529b4a0d8f2bbdf92475783d601386d374c7072c635ee4d6",
+                          "run_id": "run-2",
+                          "attempt_id": "attempt-2",
+                          "proposal_bytes_digest": "08fdd411380077b926551c5e4838c86e00b637a9cb433c0e1c35f7d5d72c90b6",
+                          "evidence_envelope_digest": "1782d82683b439b5683138c44cc6b510e86b915f12137261289f75ddc3289b37"
+                        },
+                        "body_kind": "terminal"
+                      }
+                    }
+                  ],
+                  "final_newline": true
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": [],
+      "expected_effect": {
+        "display": [
+          "finished",
+          "finished"
+        ]
+      }
+    },
+    {
+      "id": "V-running",
+      "kind": "journal",
+      "role": "control",
+      "input": {
+        "journal": {
+          "attempts": [
+            {
+              "segments": [
+                {
+                  "lines": [
+                    {
+                      "schema": "supervised_run_status.v1",
+                      "version": "1",
+                      "line_kind": "header",
+                      "seq": 0,
+                      "attempt": {
+                        "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                        "envelope_digest": "81b4a9b6bc1b5619ed98a22dc857209fa2d28e9ac1b382eec0560322a8ee86ef",
+                        "run_id": "run-1",
+                        "attempt_id": "attempt-1"
+                      },
+                      "units": {
+                        "target_unit_ids": [
+                          "unit:target"
+                        ],
+                        "readonly_neighbor_unit_ids": [
+                          "unit:neighbor"
+                        ],
+                        "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                      },
+                      "writer": {
+                        "harness_id": "example-harness",
+                        "harness_version": "1.0.0",
+                        "writer_instance_id": "writer-1",
+                        "owner_pid": 4242,
+                        "process_start_time": "2026-11-04T10:00:00Z"
+                      },
+                      "observed_at": "2026-11-04T10:00:00Z",
+                      "redaction_posture": "digests_and_repo_relative_locators_only",
+                      "body": {
+                        "segment_index": 0,
+                        "previous_segment_sha256": null,
+                        "previous_last_seq": null,
+                        "body_kind": "header"
+                      }
+                    },
+                    {
+                      "schema": "supervised_run_status.v1",
+                      "version": "1",
+                      "line_kind": "state",
+                      "seq": 1,
+                      "attempt": {
+                        "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                        "envelope_digest": "81b4a9b6bc1b5619ed98a22dc857209fa2d28e9ac1b382eec0560322a8ee86ef",
+                        "run_id": "run-1",
+                        "attempt_id": "attempt-1"
+                      },
+                      "units": {
+                        "target_unit_ids": [
+                          "unit:target"
+                        ],
+                        "readonly_neighbor_unit_ids": [
+                          "unit:neighbor"
+                        ],
+                        "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                      },
+                      "writer": {
+                        "harness_id": "example-harness",
+                        "harness_version": "1.0.0",
+                        "writer_instance_id": "writer-1",
+                        "owner_pid": 4242,
+                        "process_start_time": "2026-11-04T10:00:00Z"
+                      },
+                      "observed_at": "2026-11-04T10:01:00Z",
+                      "redaction_posture": "digests_and_repo_relative_locators_only",
+                      "body": {
+                        "state": "queued",
+                        "worker_invocations": 0,
+                        "body_kind": "state"
+                      }
+                    },
+                    {
+                      "schema": "supervised_run_status.v1",
+                      "version": "1",
+                      "line_kind": "state",
+                      "seq": 2,
+                      "attempt": {
+                        "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                        "envelope_digest": "81b4a9b6bc1b5619ed98a22dc857209fa2d28e9ac1b382eec0560322a8ee86ef",
+                        "run_id": "run-1",
+                        "attempt_id": "attempt-1"
+                      },
+                      "units": {
+                        "target_unit_ids": [
+                          "unit:target"
+                        ],
+                        "readonly_neighbor_unit_ids": [
+                          "unit:neighbor"
+                        ],
+                        "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                      },
+                      "writer": {
+                        "harness_id": "example-harness",
+                        "harness_version": "1.0.0",
+                        "writer_instance_id": "writer-1",
+                        "owner_pid": 4242,
+                        "process_start_time": "2026-11-04T10:00:00Z"
+                      },
+                      "observed_at": "2026-11-04T10:02:00Z",
+                      "redaction_posture": "digests_and_repo_relative_locators_only",
+                      "body": {
+                        "state": "running",
+                        "worker_invocations": 1,
+                        "body_kind": "state"
+                      }
+                    },
+                    {
+                      "schema": "supervised_run_status.v1",
+                      "version": "1",
+                      "line_kind": "event",
+                      "seq": 3,
+                      "attempt": {
+                        "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                        "envelope_digest": "81b4a9b6bc1b5619ed98a22dc857209fa2d28e9ac1b382eec0560322a8ee86ef",
+                        "run_id": "run-1",
+                        "attempt_id": "attempt-1"
+                      },
+                      "units": {
+                        "target_unit_ids": [
+                          "unit:target"
+                        ],
+                        "readonly_neighbor_unit_ids": [
+                          "unit:neighbor"
+                        ],
+                        "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                      },
+                      "writer": {
+                        "harness_id": "example-harness",
+                        "harness_version": "1.0.0",
+                        "writer_instance_id": "writer-1",
+                        "owner_pid": 4242,
+                        "process_start_time": "2026-11-04T10:00:00Z"
+                      },
+                      "observed_at": "2026-11-04T10:03:00Z",
+                      "redaction_posture": "digests_and_repo_relative_locators_only",
+                      "body": {
+                        "message": {
+                          "label": "untrusted_display_text",
+                          "text": "editing the granted unit"
+                        },
+                        "refs": [],
+                        "body_kind": "event"
+                      }
+                    }
+                  ],
+                  "final_newline": true
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": [],
+      "expected_effect": {
+        "display": [
+          "running"
+        ]
+      }
+    },
+    {
+      "id": "V-refused-before-launch",
+      "kind": "journal",
+      "role": "control",
+      "input": {
+        "journal": {
+          "attempts": [
+            {
+              "segments": [
+                {
+                  "lines": [
+                    {
+                      "schema": "supervised_run_status.v1",
+                      "version": "1",
+                      "line_kind": "header",
+                      "seq": 0,
+                      "attempt": {
+                        "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                        "envelope_digest": "81b4a9b6bc1b5619ed98a22dc857209fa2d28e9ac1b382eec0560322a8ee86ef",
+                        "run_id": "run-1",
+                        "attempt_id": "attempt-1"
+                      },
+                      "units": {
+                        "target_unit_ids": [
+                          "unit:target"
+                        ],
+                        "readonly_neighbor_unit_ids": [
+                          "unit:neighbor"
+                        ],
+                        "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                      },
+                      "writer": {
+                        "harness_id": "example-harness",
+                        "harness_version": "1.0.0",
+                        "writer_instance_id": "writer-1",
+                        "owner_pid": 4242,
+                        "process_start_time": "2026-11-04T10:00:00Z"
+                      },
+                      "observed_at": "2026-11-04T10:00:00Z",
+                      "redaction_posture": "digests_and_repo_relative_locators_only",
+                      "body": {
+                        "segment_index": 0,
+                        "previous_segment_sha256": null,
+                        "previous_last_seq": null,
+                        "body_kind": "header"
+                      }
+                    },
+                    {
+                      "schema": "supervised_run_status.v1",
+                      "version": "1",
+                      "line_kind": "state",
+                      "seq": 1,
+                      "attempt": {
+                        "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                        "envelope_digest": "81b4a9b6bc1b5619ed98a22dc857209fa2d28e9ac1b382eec0560322a8ee86ef",
+                        "run_id": "run-1",
+                        "attempt_id": "attempt-1"
+                      },
+                      "units": {
+                        "target_unit_ids": [
+                          "unit:target"
+                        ],
+                        "readonly_neighbor_unit_ids": [
+                          "unit:neighbor"
+                        ],
+                        "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                      },
+                      "writer": {
+                        "harness_id": "example-harness",
+                        "harness_version": "1.0.0",
+                        "writer_instance_id": "writer-1",
+                        "owner_pid": 4242,
+                        "process_start_time": "2026-11-04T10:00:00Z"
+                      },
+                      "observed_at": "2026-11-04T10:01:00Z",
+                      "redaction_posture": "digests_and_repo_relative_locators_only",
+                      "body": {
+                        "state": "queued",
+                        "worker_invocations": 0,
+                        "body_kind": "state"
+                      }
+                    },
+                    {
+                      "schema": "supervised_run_status.v1",
+                      "version": "1",
+                      "line_kind": "terminal",
+                      "seq": 2,
+                      "attempt": {
+                        "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                        "envelope_digest": "81b4a9b6bc1b5619ed98a22dc857209fa2d28e9ac1b382eec0560322a8ee86ef",
+                        "run_id": "run-1",
+                        "attempt_id": "attempt-1"
+                      },
+                      "units": {
+                        "target_unit_ids": [
+                          "unit:target"
+                        ],
+                        "readonly_neighbor_unit_ids": [
+                          "unit:neighbor"
+                        ],
+                        "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                      },
+                      "writer": {
+                        "harness_id": "example-harness",
+                        "harness_version": "1.0.0",
+                        "writer_instance_id": "writer-1",
+                        "owner_pid": 4242,
+                        "process_start_time": "2026-11-04T10:00:00Z"
+                      },
+                      "observed_at": "2026-11-04T10:02:00Z",
+                      "redaction_posture": "digests_and_repo_relative_locators_only",
+                      "body": {
+                        "state": "refused",
+                        "worker_invocations": 0,
+                        "termination": null,
+                        "refusal": {
+                          "reason": "constraint_unsupported",
+                          "constraint": "network_denial",
+                          "tier": "provider_readonly_patch_return_audit"
+                        },
+                        "result_binding": null,
+                        "body_kind": "terminal"
+                      }
+                    }
+                  ],
+                  "final_newline": true
+                }
+              ]
+            }
+          ]
+        }
+      },
+      "expected": [],
+      "expected_effect": {
+        "display": [
+          "refused"
+        ]
+      }
+    },
+    {
+      "id": "N04a-seq-skip",
+      "kind": "journal",
+      "role": "negative",
+      "control": "V-two-attempts",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/journal/attempts/1/segments/0/lines/4/seq",
+          "value": 5
+        }
+      ],
+      "expected": [
+        "attempt_overwritten"
+      ]
+    },
+    {
+      "id": "N04a-seq-regress",
+      "kind": "journal",
+      "role": "negative",
+      "control": "V-two-attempts",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/journal/attempts/1/segments/0/lines/3/seq",
+          "value": 2
+        },
+        {
+          "op": "replace",
+          "path": "/journal/attempts/1/segments/0/lines/4/seq",
+          "value": 3
+        }
+      ],
+      "expected": [
+        "attempt_overwritten"
+      ]
+    },
+    {
+      "id": "N04a-replaced-in-place",
+      "kind": "journal",
+      "role": "negative",
+      "control": "V-two-attempts",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/journal/attempts/0/segments/0/lines/2/observed_at",
+          "value": "2026-11-04T11:59:00Z"
+        }
+      ],
+      "expected": [
+        "attempt_overwritten"
+      ]
+    },
+    {
+      "id": "N04b-foreign-binding",
+      "kind": "journal",
+      "role": "negative",
+      "control": "V-two-attempts",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/journal/attempts/1/segments/0/lines/4/body/result_binding/envelope_digest",
+          "value": "81b4a9b6bc1b5619ed98a22dc857209fa2d28e9ac1b382eec0560322a8ee86ef"
+        },
+        {
+          "op": "replace",
+          "path": "/journal/attempts/1/segments/0/lines/4/body/result_binding/run_id",
+          "value": "run-1"
+        }
+      ],
+      "expected": [
+        "attempt_provenance_mismatch"
+      ]
+    },
+    {
+      "id": "S-evidence-copied",
+      "kind": "journal",
+      "role": "negative",
+      "control": "V-two-attempts",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/journal/attempts/1/segments/0/lines/4/body/result_binding/evidence_envelope_digest",
+          "value": "3118818d25a4475c6c0d4f397a7e050038734606e69a75a8cf5814f44afa2f7a"
+        }
+      ],
+      "expected": [
+        "attempt_evidence_copied"
+      ]
+    },
+    {
+      "id": "N15-torn-line",
+      "kind": "journal",
+      "role": "negative",
+      "control": "V-running",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/journal/attempts/0/segments/0/lines/3",
+          "value": "{\"attempt\":{\"assignment_digest\":\"4db7751"
+        },
+        {
+          "op": "replace",
+          "path": "/journal/attempts/0/segments/0/final_newline",
+          "value": false
+        }
+      ],
+      "expected": [
+        "journal_torn_line"
+      ],
+      "expected_effect": {
+        "display": [
+          "unknown"
+        ]
+      }
+    },
+    {
+      "id": "N15-no-final-newline",
+      "kind": "journal",
+      "role": "negative",
+      "control": "V-running",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/journal/attempts/0/segments/0/final_newline",
+          "value": false
+        }
+      ],
+      "expected": [
+        "journal_torn_line"
+      ],
+      "expected_effect": {
+        "display": [
+          "unknown"
+        ]
+      }
+    },
+    {
+      "id": "N15-unknown-version",
+      "kind": "journal",
+      "role": "negative",
+      "control": "V-running",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/journal/attempts/0/segments/0/lines/3/version",
+          "value": "2"
+        }
+      ],
+      "expected": [
+        "journal_unknown_version"
+      ],
+      "expected_effect": {
+        "display": [
+          "unknown"
+        ]
+      }
+    },
+    {
+      "id": "N15-foreign-writer",
+      "kind": "journal",
+      "role": "negative",
+      "control": "V-running",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/journal/attempts/0/segments/0/lines/3/writer/writer_instance_id",
+          "value": "writer-2"
+        }
+      ],
+      "expected": [
+        "journal_foreign_writer"
+      ],
+      "expected_effect": {
+        "display": [
+          "unknown"
+        ]
+      }
+    },
+    {
+      "id": "N19-refused-after-start",
+      "kind": "journal",
+      "role": "negative",
+      "control": "V-refused-before-launch",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/journal/attempts/0/segments/0/lines/2/body/worker_invocations",
+          "value": 1
+        }
+      ],
+      "expected": [
+        "refused_after_launch"
+      ]
+    },
+    {
+      "id": "N19-refused-after-running",
+      "kind": "journal",
+      "role": "negative",
+      "control": "V-refused-before-launch",
+      "patch": [
+        {
+          "op": "add",
+          "path": "/journal/attempts/0/segments/0/lines/2",
+          "value": {
+            "schema": "supervised_run_status.v1",
+            "version": "1",
+            "line_kind": "state",
+            "seq": 2,
+            "attempt": {
+              "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+              "envelope_digest": "81b4a9b6bc1b5619ed98a22dc857209fa2d28e9ac1b382eec0560322a8ee86ef",
+              "run_id": "run-1",
+              "attempt_id": "attempt-1"
+            },
+            "units": {
+              "target_unit_ids": [
+                "unit:target"
+              ],
+              "readonly_neighbor_unit_ids": [
+                "unit:neighbor"
+              ],
+              "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+            },
+            "writer": {
+              "harness_id": "example-harness",
+              "harness_version": "1.0.0",
+              "writer_instance_id": "writer-1",
+              "owner_pid": 4242,
+              "process_start_time": "2026-11-04T10:00:00Z"
+            },
+            "observed_at": "2026-11-04T10:02:00Z",
+            "redaction_posture": "digests_and_repo_relative_locators_only",
+            "body": {
+              "state": "running",
+              "worker_invocations": 1,
+              "body_kind": "state"
+            }
+          }
+        },
+        {
+          "op": "replace",
+          "path": "/journal/attempts/0/segments/0/lines/3/seq",
+          "value": 3
+        }
+      ],
+      "expected": [
+        "refused_after_launch"
+      ]
+    },
+    {
+      "id": "S-finished-without-termination",
+      "kind": "journal",
+      "role": "negative",
+      "control": "V-two-attempts",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/journal/attempts/1/segments/0/lines/4/body/termination",
+          "value": null
+        }
+      ],
+      "expected": [
+        "lifecycle_invalid"
+      ]
+    },
+    {
+      "id": "N20-raw-stdout-ref",
+      "kind": "journal",
+      "role": "negative",
+      "control": "V-two-attempts",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/journal/attempts/0/segments/1/lines/1/body/refs/1/sha256",
+          "value": "hello from the worker"
+        }
+      ],
+      "expected": [
+        "raw_output_in_record"
+      ]
+    },
+    {
+      "id": "N20-raw-message",
+      "kind": "journal",
+      "role": "negative",
+      "control": "V-running",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/journal/attempts/0/segments/0/lines/3/body/message/text",
+          "value": "Traceback (most recent call last):\n  File \"x\", line 1"
+        }
+      ],
+      "expected": [
+        "raw_output_in_record"
+      ]
+    },
+    {
+      "id": "N20-absolute-locator",
+      "kind": "journal",
+      "role": "negative",
+      "control": "V-two-attempts",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/journal/attempts/1/segments/0/lines/3/body/refs/0/locator",
+          "value": "/x"
+        }
+      ],
+      "expected": [
+        "locator_not_repo_relative"
+      ]
+    },
+    {
+      "id": "N20-parent-locator",
+      "kind": "journal",
+      "role": "negative",
+      "control": "V-two-attempts",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/journal/attempts/1/segments/0/lines/3/body/refs/0/locator",
+          "value": "../outside.txt"
+        }
+      ],
+      "expected": [
+        "locator_not_repo_relative"
+      ]
+    },
+    {
+      "id": "V-projection-at-tail",
+      "kind": "projection",
+      "role": "control",
+      "input": {
+        "journal": {
+          "attempts": [
+            {
+              "segments": [
+                {
+                  "lines": [
+                    {
+                      "schema": "supervised_run_status.v1",
+                      "version": "1",
+                      "line_kind": "header",
+                      "seq": 0,
+                      "attempt": {
+                        "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                        "envelope_digest": "81b4a9b6bc1b5619ed98a22dc857209fa2d28e9ac1b382eec0560322a8ee86ef",
+                        "run_id": "run-1",
+                        "attempt_id": "attempt-1"
+                      },
+                      "units": {
+                        "target_unit_ids": [
+                          "unit:target"
+                        ],
+                        "readonly_neighbor_unit_ids": [
+                          "unit:neighbor"
+                        ],
+                        "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                      },
+                      "writer": {
+                        "harness_id": "example-harness",
+                        "harness_version": "1.0.0",
+                        "writer_instance_id": "writer-1",
+                        "owner_pid": 4242,
+                        "process_start_time": "2026-11-04T10:00:00Z"
+                      },
+                      "observed_at": "2026-11-04T10:00:00Z",
+                      "redaction_posture": "digests_and_repo_relative_locators_only",
+                      "body": {
+                        "segment_index": 0,
+                        "previous_segment_sha256": null,
+                        "previous_last_seq": null,
+                        "body_kind": "header"
+                      }
+                    },
+                    {
+                      "schema": "supervised_run_status.v1",
+                      "version": "1",
+                      "line_kind": "state",
+                      "seq": 1,
+                      "attempt": {
+                        "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                        "envelope_digest": "81b4a9b6bc1b5619ed98a22dc857209fa2d28e9ac1b382eec0560322a8ee86ef",
+                        "run_id": "run-1",
+                        "attempt_id": "attempt-1"
+                      },
+                      "units": {
+                        "target_unit_ids": [
+                          "unit:target"
+                        ],
+                        "readonly_neighbor_unit_ids": [
+                          "unit:neighbor"
+                        ],
+                        "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                      },
+                      "writer": {
+                        "harness_id": "example-harness",
+                        "harness_version": "1.0.0",
+                        "writer_instance_id": "writer-1",
+                        "owner_pid": 4242,
+                        "process_start_time": "2026-11-04T10:00:00Z"
+                      },
+                      "observed_at": "2026-11-04T10:01:00Z",
+                      "redaction_posture": "digests_and_repo_relative_locators_only",
+                      "body": {
+                        "state": "queued",
+                        "worker_invocations": 0,
+                        "body_kind": "state"
+                      }
+                    },
+                    {
+                      "schema": "supervised_run_status.v1",
+                      "version": "1",
+                      "line_kind": "state",
+                      "seq": 2,
+                      "attempt": {
+                        "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                        "envelope_digest": "81b4a9b6bc1b5619ed98a22dc857209fa2d28e9ac1b382eec0560322a8ee86ef",
+                        "run_id": "run-1",
+                        "attempt_id": "attempt-1"
+                      },
+                      "units": {
+                        "target_unit_ids": [
+                          "unit:target"
+                        ],
+                        "readonly_neighbor_unit_ids": [
+                          "unit:neighbor"
+                        ],
+                        "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                      },
+                      "writer": {
+                        "harness_id": "example-harness",
+                        "harness_version": "1.0.0",
+                        "writer_instance_id": "writer-1",
+                        "owner_pid": 4242,
+                        "process_start_time": "2026-11-04T10:00:00Z"
+                      },
+                      "observed_at": "2026-11-04T10:02:00Z",
+                      "redaction_posture": "digests_and_repo_relative_locators_only",
+                      "body": {
+                        "state": "running",
+                        "worker_invocations": 1,
+                        "body_kind": "state"
+                      }
+                    }
+                  ],
+                  "final_newline": true
+                },
+                {
+                  "lines": [
+                    {
+                      "schema": "supervised_run_status.v1",
+                      "version": "1",
+                      "line_kind": "header",
+                      "seq": 3,
+                      "attempt": {
+                        "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                        "envelope_digest": "81b4a9b6bc1b5619ed98a22dc857209fa2d28e9ac1b382eec0560322a8ee86ef",
+                        "run_id": "run-1",
+                        "attempt_id": "attempt-1"
+                      },
+                      "units": {
+                        "target_unit_ids": [
+                          "unit:target"
+                        ],
+                        "readonly_neighbor_unit_ids": [
+                          "unit:neighbor"
+                        ],
+                        "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                      },
+                      "writer": {
+                        "harness_id": "example-harness",
+                        "harness_version": "1.0.0",
+                        "writer_instance_id": "writer-1",
+                        "owner_pid": 4242,
+                        "process_start_time": "2026-11-04T10:00:00Z"
+                      },
+                      "observed_at": "2026-11-04T10:03:00Z",
+                      "redaction_posture": "digests_and_repo_relative_locators_only",
+                      "body": {
+                        "segment_index": 1,
+                        "previous_segment_sha256": "182db99649b7ee4c223bcf91e90572fa38e9efe89b5f2ee98f71c0ee02d7d839",
+                        "previous_last_seq": 2,
+                        "body_kind": "header"
+                      }
+                    },
+                    {
+                      "schema": "supervised_run_status.v1",
+                      "version": "1",
+                      "line_kind": "event",
+                      "seq": 4,
+                      "attempt": {
+                        "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                        "envelope_digest": "81b4a9b6bc1b5619ed98a22dc857209fa2d28e9ac1b382eec0560322a8ee86ef",
+                        "run_id": "run-1",
+                        "attempt_id": "attempt-1"
+                      },
+                      "units": {
+                        "target_unit_ids": [
+                          "unit:target"
+                        ],
+                        "readonly_neighbor_unit_ids": [
+                          "unit:neighbor"
+                        ],
+                        "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                      },
+                      "writer": {
+                        "harness_id": "example-harness",
+                        "harness_version": "1.0.0",
+                        "writer_instance_id": "writer-1",
+                        "owner_pid": 4242,
+                        "process_start_time": "2026-11-04T10:00:00Z"
+                      },
+                      "observed_at": "2026-11-04T10:04:00Z",
+                      "redaction_posture": "digests_and_repo_relative_locators_only",
+                      "body": {
+                        "message": {
+                          "label": "untrusted_display_text",
+                          "text": "worker returned a proposal"
+                        },
+                        "refs": [
+                          {
+                            "kind": "proposal_bytes",
+                            "sha256": "08fdd411380077b926551c5e4838c86e00b637a9cb433c0e1c35f7d5d72c90b6",
+                            "locator": null
+                          },
+                          {
+                            "kind": "stdout",
+                            "sha256": "f5a027b46c91cfc563f3f94f4227f3f9d032209c0acd537e9759afd8bb5fe451",
+                            "locator": null
+                          }
+                        ],
+                        "body_kind": "event"
+                      }
+                    },
+                    {
+                      "schema": "supervised_run_status.v1",
+                      "version": "1",
+                      "line_kind": "terminal",
+                      "seq": 5,
+                      "attempt": {
+                        "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                        "envelope_digest": "81b4a9b6bc1b5619ed98a22dc857209fa2d28e9ac1b382eec0560322a8ee86ef",
+                        "run_id": "run-1",
+                        "attempt_id": "attempt-1"
+                      },
+                      "units": {
+                        "target_unit_ids": [
+                          "unit:target"
+                        ],
+                        "readonly_neighbor_unit_ids": [
+                          "unit:neighbor"
+                        ],
+                        "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                      },
+                      "writer": {
+                        "harness_id": "example-harness",
+                        "harness_version": "1.0.0",
+                        "writer_instance_id": "writer-1",
+                        "owner_pid": 4242,
+                        "process_start_time": "2026-11-04T10:00:00Z"
+                      },
+                      "observed_at": "2026-11-04T10:05:00Z",
+                      "redaction_posture": "digests_and_repo_relative_locators_only",
+                      "body": {
+                        "state": "finished",
+                        "worker_invocations": 1,
+                        "termination": {
+                          "reason": "completed",
+                          "signal": null,
+                          "by": "worker"
+                        },
+                        "refusal": null,
+                        "result_binding": {
+                          "envelope_digest": "81b4a9b6bc1b5619ed98a22dc857209fa2d28e9ac1b382eec0560322a8ee86ef",
+                          "run_id": "run-1",
+                          "attempt_id": "attempt-1",
+                          "proposal_bytes_digest": "08fdd411380077b926551c5e4838c86e00b637a9cb433c0e1c35f7d5d72c90b6",
+                          "evidence_envelope_digest": "3118818d25a4475c6c0d4f397a7e050038734606e69a75a8cf5814f44afa2f7a"
+                        },
+                        "body_kind": "terminal"
+                      }
+                    }
+                  ],
+                  "final_newline": true
+                }
+              ]
+            },
+            {
+              "segments": [
+                {
+                  "lines": [
+                    {
+                      "schema": "supervised_run_status.v1",
+                      "version": "1",
+                      "line_kind": "header",
+                      "seq": 0,
+                      "attempt": {
+                        "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                        "envelope_digest": "484a253ed1d843c7529b4a0d8f2bbdf92475783d601386d374c7072c635ee4d6",
+                        "run_id": "run-2",
+                        "attempt_id": "attempt-2"
+                      },
+                      "units": {
+                        "target_unit_ids": [
+                          "unit:target"
+                        ],
+                        "readonly_neighbor_unit_ids": [
+                          "unit:neighbor"
+                        ],
+                        "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                      },
+                      "writer": {
+                        "harness_id": "example-harness",
+                        "harness_version": "1.0.0",
+                        "writer_instance_id": "writer-1",
+                        "owner_pid": 4242,
+                        "process_start_time": "2026-11-04T10:00:00Z"
+                      },
+                      "observed_at": "2026-11-04T10:00:00Z",
+                      "redaction_posture": "digests_and_repo_relative_locators_only",
+                      "body": {
+                        "segment_index": 0,
+                        "previous_segment_sha256": null,
+                        "previous_last_seq": null,
+                        "body_kind": "header"
+                      }
+                    },
+                    {
+                      "schema": "supervised_run_status.v1",
+                      "version": "1",
+                      "line_kind": "state",
+                      "seq": 1,
+                      "attempt": {
+                        "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                        "envelope_digest": "484a253ed1d843c7529b4a0d8f2bbdf92475783d601386d374c7072c635ee4d6",
+                        "run_id": "run-2",
+                        "attempt_id": "attempt-2"
+                      },
+                      "units": {
+                        "target_unit_ids": [
+                          "unit:target"
+                        ],
+                        "readonly_neighbor_unit_ids": [
+                          "unit:neighbor"
+                        ],
+                        "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                      },
+                      "writer": {
+                        "harness_id": "example-harness",
+                        "harness_version": "1.0.0",
+                        "writer_instance_id": "writer-1",
+                        "owner_pid": 4242,
+                        "process_start_time": "2026-11-04T10:00:00Z"
+                      },
+                      "observed_at": "2026-11-04T10:01:00Z",
+                      "redaction_posture": "digests_and_repo_relative_locators_only",
+                      "body": {
+                        "state": "queued",
+                        "worker_invocations": 0,
+                        "body_kind": "state"
+                      }
+                    },
+                    {
+                      "schema": "supervised_run_status.v1",
+                      "version": "1",
+                      "line_kind": "state",
+                      "seq": 2,
+                      "attempt": {
+                        "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                        "envelope_digest": "484a253ed1d843c7529b4a0d8f2bbdf92475783d601386d374c7072c635ee4d6",
+                        "run_id": "run-2",
+                        "attempt_id": "attempt-2"
+                      },
+                      "units": {
+                        "target_unit_ids": [
+                          "unit:target"
+                        ],
+                        "readonly_neighbor_unit_ids": [
+                          "unit:neighbor"
+                        ],
+                        "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                      },
+                      "writer": {
+                        "harness_id": "example-harness",
+                        "harness_version": "1.0.0",
+                        "writer_instance_id": "writer-1",
+                        "owner_pid": 4242,
+                        "process_start_time": "2026-11-04T10:00:00Z"
+                      },
+                      "observed_at": "2026-11-04T10:02:00Z",
+                      "redaction_posture": "digests_and_repo_relative_locators_only",
+                      "body": {
+                        "state": "running",
+                        "worker_invocations": 1,
+                        "body_kind": "state"
+                      }
+                    },
+                    {
+                      "schema": "supervised_run_status.v1",
+                      "version": "1",
+                      "line_kind": "event",
+                      "seq": 3,
+                      "attempt": {
+                        "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                        "envelope_digest": "484a253ed1d843c7529b4a0d8f2bbdf92475783d601386d374c7072c635ee4d6",
+                        "run_id": "run-2",
+                        "attempt_id": "attempt-2"
+                      },
+                      "units": {
+                        "target_unit_ids": [
+                          "unit:target"
+                        ],
+                        "readonly_neighbor_unit_ids": [
+                          "unit:neighbor"
+                        ],
+                        "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                      },
+                      "writer": {
+                        "harness_id": "example-harness",
+                        "harness_version": "1.0.0",
+                        "writer_instance_id": "writer-1",
+                        "owner_pid": 4242,
+                        "process_start_time": "2026-11-04T10:00:00Z"
+                      },
+                      "observed_at": "2026-11-04T10:03:00Z",
+                      "redaction_posture": "digests_and_repo_relative_locators_only",
+                      "body": {
+                        "message": {
+                          "label": "untrusted_display_text",
+                          "text": "retry attempt returned an identical proposal"
+                        },
+                        "refs": [
+                          {
+                            "kind": "proposal_bytes",
+                            "sha256": "08fdd411380077b926551c5e4838c86e00b637a9cb433c0e1c35f7d5d72c90b6",
+                            "locator": "src/module/target.ts"
+                          }
+                        ],
+                        "body_kind": "event"
+                      }
+                    },
+                    {
+                      "schema": "supervised_run_status.v1",
+                      "version": "1",
+                      "line_kind": "terminal",
+                      "seq": 4,
+                      "attempt": {
+                        "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                        "envelope_digest": "484a253ed1d843c7529b4a0d8f2bbdf92475783d601386d374c7072c635ee4d6",
+                        "run_id": "run-2",
+                        "attempt_id": "attempt-2"
+                      },
+                      "units": {
+                        "target_unit_ids": [
+                          "unit:target"
+                        ],
+                        "readonly_neighbor_unit_ids": [
+                          "unit:neighbor"
+                        ],
+                        "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                      },
+                      "writer": {
+                        "harness_id": "example-harness",
+                        "harness_version": "1.0.0",
+                        "writer_instance_id": "writer-1",
+                        "owner_pid": 4242,
+                        "process_start_time": "2026-11-04T10:00:00Z"
+                      },
+                      "observed_at": "2026-11-04T10:04:00Z",
+                      "redaction_posture": "digests_and_repo_relative_locators_only",
+                      "body": {
+                        "state": "finished",
+                        "worker_invocations": 1,
+                        "termination": {
+                          "reason": "completed",
+                          "signal": null,
+                          "by": "worker"
+                        },
+                        "refusal": null,
+                        "result_binding": {
+                          "envelope_digest": "484a253ed1d843c7529b4a0d8f2bbdf92475783d601386d374c7072c635ee4d6",
+                          "run_id": "run-2",
+                          "attempt_id": "attempt-2",
+                          "proposal_bytes_digest": "08fdd411380077b926551c5e4838c86e00b637a9cb433c0e1c35f7d5d72c90b6",
+                          "evidence_envelope_digest": "1782d82683b439b5683138c44cc6b510e86b915f12137261289f75ddc3289b37"
+                        },
+                        "body_kind": "terminal"
+                      }
+                    }
+                  ],
+                  "final_newline": true
+                }
+              ]
+            }
+          ]
+        },
+        "projection": {
+          "schema": "supervised_run_status.v1/projection",
+          "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+          "attempts": [
+            {
+              "attempt": {
+                "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                "envelope_digest": "81b4a9b6bc1b5619ed98a22dc857209fa2d28e9ac1b382eec0560322a8ee86ef",
+                "run_id": "run-1",
+                "attempt_id": "attempt-1"
+              },
+              "state": "finished",
+              "journal_seq": 5,
+              "segment_index": 1,
+              "segment_sha256": "86c6c627053713391e444350d94115b3641ba9ee658ffd0883b4a5bbc9b6e559"
+            },
+            {
+              "attempt": {
+                "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                "envelope_digest": "484a253ed1d843c7529b4a0d8f2bbdf92475783d601386d374c7072c635ee4d6",
+                "run_id": "run-2",
+                "attempt_id": "attempt-2"
+              },
+              "state": "finished",
+              "journal_seq": 4,
+              "segment_index": 0,
+              "segment_sha256": "78203b93a71564dd3e6b6b05003968720aa31c8f549e86683a79fde27dcfe336"
+            }
+          ]
+        }
+      },
+      "expected": [],
+      "expected_effect": {
+        "display": "current"
+      }
+    },
+    {
+      "id": "N16-projection-behind",
+      "kind": "projection",
+      "role": "negative",
+      "control": "V-projection-at-tail",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/projection/attempts/0/journal_seq",
+          "value": 4
+        }
+      ],
+      "expected": [
+        "projection_behind_journal"
+      ],
+      "expected_effect": {
+        "display": "stale"
+      }
+    },
+    {
+      "id": "N16-attempt-missing",
+      "kind": "projection",
+      "role": "negative",
+      "control": "V-projection-at-tail",
+      "patch": [
+        {
+          "op": "remove",
+          "path": "/projection/attempts/1"
+        }
+      ],
+      "expected": [
+        "projection_behind_journal"
+      ],
+      "expected_effect": {
+        "display": "stale"
+      }
+    },
+    {
+      "id": "S-projection-ahead",
+      "kind": "projection",
+      "role": "negative",
+      "control": "V-projection-at-tail",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/projection/attempts/1/journal_seq",
+          "value": 9
+        }
+      ],
+      "expected": [
+        "projection_not_from_journal"
+      ]
+    },
+    {
+      "id": "V-owner-live",
+      "kind": "liveness",
+      "role": "control",
+      "input": {
+        "journal": {
+          "attempts": [
+            {
+              "segments": [
+                {
+                  "lines": [
+                    {
+                      "schema": "supervised_run_status.v1",
+                      "version": "1",
+                      "line_kind": "header",
+                      "seq": 0,
+                      "attempt": {
+                        "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                        "envelope_digest": "81b4a9b6bc1b5619ed98a22dc857209fa2d28e9ac1b382eec0560322a8ee86ef",
+                        "run_id": "run-1",
+                        "attempt_id": "attempt-1"
+                      },
+                      "units": {
+                        "target_unit_ids": [
+                          "unit:target"
+                        ],
+                        "readonly_neighbor_unit_ids": [
+                          "unit:neighbor"
+                        ],
+                        "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                      },
+                      "writer": {
+                        "harness_id": "example-harness",
+                        "harness_version": "1.0.0",
+                        "writer_instance_id": "writer-1",
+                        "owner_pid": 4242,
+                        "process_start_time": "2026-11-04T10:00:00Z"
+                      },
+                      "observed_at": "2026-11-04T10:00:00Z",
+                      "redaction_posture": "digests_and_repo_relative_locators_only",
+                      "body": {
+                        "segment_index": 0,
+                        "previous_segment_sha256": null,
+                        "previous_last_seq": null,
+                        "body_kind": "header"
+                      }
+                    },
+                    {
+                      "schema": "supervised_run_status.v1",
+                      "version": "1",
+                      "line_kind": "state",
+                      "seq": 1,
+                      "attempt": {
+                        "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                        "envelope_digest": "81b4a9b6bc1b5619ed98a22dc857209fa2d28e9ac1b382eec0560322a8ee86ef",
+                        "run_id": "run-1",
+                        "attempt_id": "attempt-1"
+                      },
+                      "units": {
+                        "target_unit_ids": [
+                          "unit:target"
+                        ],
+                        "readonly_neighbor_unit_ids": [
+                          "unit:neighbor"
+                        ],
+                        "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                      },
+                      "writer": {
+                        "harness_id": "example-harness",
+                        "harness_version": "1.0.0",
+                        "writer_instance_id": "writer-1",
+                        "owner_pid": 4242,
+                        "process_start_time": "2026-11-04T10:00:00Z"
+                      },
+                      "observed_at": "2026-11-04T10:01:00Z",
+                      "redaction_posture": "digests_and_repo_relative_locators_only",
+                      "body": {
+                        "state": "queued",
+                        "worker_invocations": 0,
+                        "body_kind": "state"
+                      }
+                    },
+                    {
+                      "schema": "supervised_run_status.v1",
+                      "version": "1",
+                      "line_kind": "state",
+                      "seq": 2,
+                      "attempt": {
+                        "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                        "envelope_digest": "81b4a9b6bc1b5619ed98a22dc857209fa2d28e9ac1b382eec0560322a8ee86ef",
+                        "run_id": "run-1",
+                        "attempt_id": "attempt-1"
+                      },
+                      "units": {
+                        "target_unit_ids": [
+                          "unit:target"
+                        ],
+                        "readonly_neighbor_unit_ids": [
+                          "unit:neighbor"
+                        ],
+                        "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                      },
+                      "writer": {
+                        "harness_id": "example-harness",
+                        "harness_version": "1.0.0",
+                        "writer_instance_id": "writer-1",
+                        "owner_pid": 4242,
+                        "process_start_time": "2026-11-04T10:00:00Z"
+                      },
+                      "observed_at": "2026-11-04T10:02:00Z",
+                      "redaction_posture": "digests_and_repo_relative_locators_only",
+                      "body": {
+                        "state": "running",
+                        "worker_invocations": 1,
+                        "body_kind": "state"
+                      }
+                    },
+                    {
+                      "schema": "supervised_run_status.v1",
+                      "version": "1",
+                      "line_kind": "event",
+                      "seq": 3,
+                      "attempt": {
+                        "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                        "envelope_digest": "81b4a9b6bc1b5619ed98a22dc857209fa2d28e9ac1b382eec0560322a8ee86ef",
+                        "run_id": "run-1",
+                        "attempt_id": "attempt-1"
+                      },
+                      "units": {
+                        "target_unit_ids": [
+                          "unit:target"
+                        ],
+                        "readonly_neighbor_unit_ids": [
+                          "unit:neighbor"
+                        ],
+                        "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+                      },
+                      "writer": {
+                        "harness_id": "example-harness",
+                        "harness_version": "1.0.0",
+                        "writer_instance_id": "writer-1",
+                        "owner_pid": 4242,
+                        "process_start_time": "2026-11-04T10:00:00Z"
+                      },
+                      "observed_at": "2026-11-04T10:03:00Z",
+                      "redaction_posture": "digests_and_repo_relative_locators_only",
+                      "body": {
+                        "message": {
+                          "label": "untrusted_display_text",
+                          "text": "editing the granted unit"
+                        },
+                        "refs": [],
+                        "body_kind": "event"
+                      }
+                    }
+                  ],
+                  "final_newline": true
+                }
+              ]
+            }
+          ]
+        },
+        "liveness": {
+          "observed_live": true,
+          "observed_start_time": "2026-11-04T10:00:00Z"
+        }
+      },
+      "expected": [],
+      "expected_effect": {
+        "display": [
+          "running"
+        ]
+      }
+    },
+    {
+      "id": "N17-owner-not-live",
+      "kind": "liveness",
+      "role": "negative",
+      "control": "V-owner-live",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/liveness/observed_live",
+          "value": false
+        }
+      ],
+      "expected": [
+        "owner_not_live"
+      ],
+      "expected_effect": {
+        "display": [
+          "stale_unknown"
+        ]
+      }
+    },
+    {
+      "id": "N17-pid-reused",
+      "kind": "liveness",
+      "role": "negative",
+      "control": "V-owner-live",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/liveness/observed_start_time",
+          "value": "2026-11-04T12:00:00Z"
+        }
+      ],
+      "expected": [
+        "owner_not_live"
+      ],
+      "expected_effect": {
+        "display": [
+          "stale_unknown"
+        ]
+      }
+    },
+    {
+      "id": "V-reader-view",
+      "kind": "reader_view",
+      "role": "control",
+      "input": {
+        "row": {
+          "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+          "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+        },
+        "run_record": {
+          "attempt": {
+            "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+            "envelope_digest": "484a253ed1d843c7529b4a0d8f2bbdf92475783d601386d374c7072c635ee4d6",
+            "run_id": "run-2",
+            "attempt_id": "attempt-2"
+          },
+          "units": {
+            "target_unit_ids": [
+              "unit:target"
+            ],
+            "readonly_neighbor_unit_ids": [
+              "unit:neighbor"
+            ],
+            "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+          },
+          "state": "finished",
+          "termination_reason": "completed"
+        },
+        "display": {
+          "runtime_state": "finished (completed)",
+          "work_outcome": {
+            "value": "outcome-token-from-reducer",
+            "source": "work_result_reducer",
+            "ref": "01319158a17d2f3560849d2991105e58ba366390e9db51060958903186d19c8e"
+          },
+          "evidence": {
+            "source": "requirement_admission",
+            "ref": "347ef5b96a73e1405ce5ade946aa537c5cc5f1d86a1c96140ee57547a24fdf8e"
+          }
+        }
+      },
+      "expected": []
+    },
+    {
+      "id": "N18-completed-as-outcome",
+      "kind": "reader_view",
+      "role": "negative",
+      "control": "V-reader-view",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/display/work_outcome",
+          "value": {
+            "value": "completed",
+            "source": "run_status",
+            "ref": null
+          }
+        }
+      ],
+      "expected": [
+        "runtime_not_work_outcome"
+      ]
+    },
+    {
+      "id": "N18-run-status-as-evidence",
+      "kind": "reader_view",
+      "role": "negative",
+      "control": "V-reader-view",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/display/evidence/source",
+          "value": "run_status"
+        }
+      ],
+      "expected": [
+        "runtime_not_work_outcome"
+      ]
+    },
+    {
+      "id": "RC24-foreign-assignment",
+      "kind": "reader_view",
+      "role": "negative",
+      "control": "V-reader-view",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/row/assignment_digest",
+          "value": "32f42004db693afc078375b4a2929076489abda36a76b7625fa52d31cf2db0b5"
+        }
+      ],
+      "expected": [
+        "run_record_foreign"
+      ]
+    },
+    {
+      "id": "RC24-foreign-snapshot",
+      "kind": "reader_view",
+      "role": "negative",
+      "control": "V-reader-view",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/row/snapshot_ref",
+          "value": "24dfea30df7d6af1e60c5aec671e0b60997121102feab1353e69633ae81f1834"
+        }
+      ],
+      "expected": [
+        "run_record_foreign"
+      ]
+    },
+    {
+      "id": "V-page",
+      "kind": "page",
+      "role": "control",
+      "input": {
+        "request": {
+          "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+          "page_size": 2,
+          "cursor": null
+        },
+        "page": {
+          "events": [
+            {
+              "schema": "supervised_run_status.v1",
+              "version": "1",
+              "line_kind": "state",
+              "seq": 1,
+              "attempt": {
+                "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                "envelope_digest": "81b4a9b6bc1b5619ed98a22dc857209fa2d28e9ac1b382eec0560322a8ee86ef",
+                "run_id": "run-1",
+                "attempt_id": "attempt-1"
+              },
+              "units": {
+                "target_unit_ids": [
+                  "unit:target"
+                ],
+                "readonly_neighbor_unit_ids": [
+                  "unit:neighbor"
+                ],
+                "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+              },
+              "writer": {
+                "harness_id": "example-harness",
+                "harness_version": "1.0.0",
+                "writer_instance_id": "writer-1",
+                "owner_pid": 4242,
+                "process_start_time": "2026-11-04T10:00:00Z"
+              },
+              "observed_at": "2026-11-04T10:01:00Z",
+              "redaction_posture": "digests_and_repo_relative_locators_only",
+              "body": {
+                "state": "queued",
+                "worker_invocations": 0,
+                "body_kind": "state"
+              }
+            },
+            {
+              "schema": "supervised_run_status.v1",
+              "version": "1",
+              "line_kind": "state",
+              "seq": 2,
+              "attempt": {
+                "assignment_digest": "4db77511ca854b659c5886fdb3638130b0fa0cb44ac8cde9d2dfdf119ba820ff",
+                "envelope_digest": "81b4a9b6bc1b5619ed98a22dc857209fa2d28e9ac1b382eec0560322a8ee86ef",
+                "run_id": "run-1",
+                "attempt_id": "attempt-1"
+              },
+              "units": {
+                "target_unit_ids": [
+                  "unit:target"
+                ],
+                "readonly_neighbor_unit_ids": [
+                  "unit:neighbor"
+                ],
+                "snapshot_ref": "34e6443f11e4328e716685e41d0182403df44a76f53d9b94f6dba4fe158a6b44"
+              },
+              "writer": {
+                "harness_id": "example-harness",
+                "harness_version": "1.0.0",
+                "writer_instance_id": "writer-1",
+                "owner_pid": 4242,
+                "process_start_time": "2026-11-04T10:00:00Z"
+              },
+              "observed_at": "2026-11-04T10:02:00Z",
+              "redaction_posture": "digests_and_repo_relative_locators_only",
+              "body": {
+                "state": "running",
+                "worker_invocations": 1,
+                "body_kind": "state"
+              }
+            }
+          ],
+          "has_more": true,
+          "omitted": {
+            "before": 1,
+            "after": 3,
+            "retention_dropped": 0
+          }
+        }
+      },
+      "expected": []
+    },
+    {
+      "id": "RC25-no-page-size",
+      "kind": "page",
+      "role": "negative",
+      "control": "V-page",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/request/page_size",
+          "value": null
+        }
+      ],
+      "expected": [
+        "read_unbounded"
+      ]
+    },
+    {
+      "id": "RC25-no-omitted",
+      "kind": "page",
+      "role": "negative",
+      "control": "V-page",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/page/omitted",
+          "value": null
+        }
+      ],
+      "expected": [
+        "read_unbounded"
+      ]
+    },
+    {
+      "id": "RC25-over-bound",
+      "kind": "page",
+      "role": "negative",
+      "control": "V-page",
+      "patch": [
+        {
+          "op": "replace",
+          "path": "/request/page_size",
+          "value": 101
+        }
+      ],
+      "expected": [
+        "read_unbounded"
+      ]
+    }
+  ]
+}

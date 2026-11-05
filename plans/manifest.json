@@ -14218,7 +14218,17 @@
         "SL-1",
         "SL-2"
       ],
-      "lifecycle": [],
+      "lifecycle": [
+        {
+          "at": "2026-11-05T04:40:00Z",
+          "by": "codex-execute-phase",
+          "metadata": {
+            "phase_alias": "SCHEMA",
+            "run_id": "v12-schema-impl"
+          },
+          "transition": "executing"
+        }
+      ],
       "owner_skill": "codex-plan-phase",
       "phase_alias": "SCHEMA",
       "reflection_ref": null,
@@ -14229,10 +14239,10 @@
         "type": "phase"
       },
       "slug": "v12-SCHEMA",
-      "status": "committed",
+      "status": "executing",
       "task_summary": "Execution-ready manual v1 SCHEMA intake for agent-harness#1818; byte-pin authority remains false pending published v2 reconciliation.",
       "type": "phase",
-      "updated_at": "2026-11-05T04:29:21.795212Z",
+      "updated_at": "2026-11-05T04:40:00Z",
       "frozen_inputs": {
         "plans/artifacts/v12-SCHEMA-inputs.md": {
           "sha256": "2c98eafb4950cf4106e1512515dca3199cc4c6095dd5c5d6971e7c0e9b62cf0b"

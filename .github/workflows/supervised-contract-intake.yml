@@ -1,0 +1,53 @@
+name: supervised-contract-intake
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  publication:
+    name: supervised contract publication
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SCHEMA_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@v6
+      - name: Install locked dependencies
+        run: uv sync --project phase-loop-runtime --group test --locked
+      - name: Compare public distribution
+        env:
+          PYTHONPATH: ${{ github.workspace }}/phase-loop-runtime/src
+        run: >-
+          phase-loop-runtime/.venv/bin/python phase-loop-runtime/scripts/verify_supervised_contract_publication.py
+          --repo . --output /tmp/schema-publication.json
+      - name: Build and extract wheel
+        run: |
+          uv build --wheel --out-dir /tmp/schema-wheel phase-loop-runtime
+          mkdir /tmp/schema-installed
+          phase-loop-runtime/.venv/bin/python -m zipfile -e /tmp/schema-wheel/*.whl /tmp/schema-installed
+      - name: Verify extracted package
+        env:
+          SCHEMA_WHEEL_ROOT: /tmp/schema-installed
+          PYTHONPATH: /tmp/schema-installed:${{ github.workspace }}/phase-loop-runtime/tests
+        run: >-
+          timeout 900 phase-loop-runtime/.venv/bin/python -m pytest -q -p no:cacheprovider
+          phase-loop-runtime/tests/test_supervised_contracts.py --junitxml=/tmp/schema-wheel.xml
+      - uses: actions/upload-artifact@v4
+        with:
+          name: schema-publication-${{ github.run_id }}
+          path: |
+            /tmp/schema-publication.json
+            /tmp/schema-wheel.xml
+          if-no-files-found: error
