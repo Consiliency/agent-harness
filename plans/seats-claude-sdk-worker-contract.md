@@ -57,10 +57,13 @@ for duplex traffic and owns a distinct host-worker launcher; SL-3 supplies the w
 transport. Queues, frames and awaits have caps/deadlines; close/end-input never substitute for
 raw EOF and reaping. SDK runtime code never constructs or subclasses the stock subprocess
 transport. SDK-owned process creation, downloads, host MCP, hooks, executable callbacks and
-runtime environment mutation are forbidden. The trusted launcher installs a fail-closed seccomp
-policy before SDK import, denying process creation and exec, network access and
-namespace/privilege changes; only explicitly listed runtime thread operations are allowed within
-the process limit. The filesystem and option gates enforce the remaining prohibitions. Namespace
+runtime environment mutation are forbidden. The launcher delivers, and the verified bootstrap
+installs in process, a fail-closed seccomp policy after the identity drop and before any
+non-stdlib import; a filter the sandbox wrapper applies before its final exec cannot deny exec.
+Install failure refuses startup. The policy denies process creation and exec, network access and
+namespace/privilege changes, and keeps the seat filter's key-management and `AF_ALG` denials;
+only explicitly listed runtime thread operations and the event loop's local `socketpair` are
+allowed within the process limit. The filesystem and option gates enforce the remaining prohibitions. Namespace
 isolation alone does not enforce a process-creation ban. Tests observe these runtime denies from
 outside the worker. Freeze `session_store`, `resume`, `continue_conversation`, `plugins`,
 `skills`, `stderr`, `env`, `agents` and tool callbacks absent/empty; disallow ambient imports
@@ -87,7 +90,8 @@ raw EOF and actual exit zero. SDK result/iterator completion has no admission au
 Outbound worker frames use the same bounded UTF-8, duplicate-key, depth and decoded-value rules
 and are checked by the parent against a stateful allowlist: one initialize with exact frozen
 empty fields, one sealed-prompt user envelope whose complete canonical envelope digest matches
-the parent template, and interrupt only on parent cancellation. Request IDs are correlated and
+the parent template, one end-input signal after that envelope, on which the parent closes CLI
+stdin, and interrupt only on parent cancellation. Request IDs are correlated and
 bounded; other controls or repeated/out-of-order frames refuse. No worker message confers launch
 or credential authority.
 
@@ -173,7 +177,11 @@ environment, project configuration, PATH or the subject tree. Before exec, the p
 the interpreter executable, `pyvenv.cfg`, stdlib, dynamic loader and required native runtime
 libraries against the platform/Python manifest. Origins, symlink targets and permissions must
 resolve inside the verified read-only snapshot. The receipt binds this runtime manifest as well
-as the SDK wheel/file manifests.
+as the SDK wheel/file manifests. SL-3 supplies the seal-and-register command that normalizes the
+install, builds that snapshot including interpreter, stdlib, loader and runtime libraries,
+verifies it and writes the registration; `uv pip sync` alone does not satisfy this section, and
+SL-6 documents both steps. Each runtime manifest qualifies one host class; another class or
+changed runtime bytes need their own manifest and proof.
 
 Package adapter/worker/bootstrap payloads in the dedicated
 `phase_loop_runtime/data/claude_sdk/worker/` root. Load them by verified path; never add harness
@@ -196,9 +204,12 @@ host class; and separate VB/VL junit digests and collected/passed/failed/skipped
 file/selector. Bind the twin launcher/gate and proof tests too. Source regions are
 schema-defined, not chosen by the producer; hash shared constants and called helper modules,
 with a fail-closed dependency inventory. Every required selector collects nonzero, all pass,
-none skip/fail. The receipt excludes only its own bytes, its packaged copy and schema-enumerated
-generated proof outputs from inputs (no producer-chosen exclusions); executable code, contract,
-schemas, workflows and tests remain included. VB/VL run against the final GL-2 executable tree,
+none skip/fail. Proof inputs are exactly the closed schema's enumerated files, regions and
+inventories, never the whole repository: a change outside them cannot stale the receipt, and a
+dependency the schema cannot classify fails closed. Within that set the receipt excludes only
+its own bytes, its packaged copy and schema-enumerated generated proof outputs (no
+producer-chosen exclusions); the enumerated executable code, contract, schemas, workflows and
+tests remain included. VB/VL run against the final GL-2 executable tree,
 including the activation literals; adding only the receipt, its identical packaged copy and
 proof-output metadata afterward is allowed. For receipt production, a test-local fixture
 supplies the pending receipt binding; development proof may also substitute admission in that
@@ -218,7 +229,7 @@ expression. Public receipts contain only digests, counts, host/interpreter vocab
 evidence IDs, not private paths or test names.
 
 A session-scoped proof fixture computes `proof_inputs_sha256` at session start from the
-executing tree, installed worker snapshot, frozen contract/schema and the complete
+executing tree's schema-enumerated inputs, installed worker snapshot, frozen contract/schema and the complete
 schema-defined public/private test and wrapper inventories. Canonical input JSON uses sorted
 named SHA-256 bindings, not a commit SHA. Each VB/VL public and private JUnit records this value
 through `record_testsuite_property`, the selector and worker-install digest; session end
@@ -256,11 +267,16 @@ refuses the route.
 
 SL-1's `audit_order` verifies the receipt at activation and on every PR while SDK is admitted,
 recomputing all repository-derived input digests from the head. An old receipt after a lock,
-helper, worker or fixture change fails. Required CI uses a base-defined workflow enforced by a
-repository ruleset before GL-2; the required audit job cannot be replaced, skipped or disabled
-by PR workflow edits. SL-1 delivers `.github/workflows/claude-sdk-audit.yml` and the base
-auditor; the owner enables the required-workflow rule and records its enforcement and private
-evidence-store readiness as GL-2 prerequisites. The workflow is defined on the trusted base,
+helper, worker or fixture change fails. A head that sets `ADMITTED = False` needs no receipt, and
+a control proves that de-admission passes the audit. Required CI uses a base-defined workflow
+under GitHub-side enforcement before GL-2; the required audit result cannot be replaced, skipped,
+disabled or impersonated by PR workflow edits. A required-workflow ruleset qualifies only where
+the organization's plan offers one. Otherwise a base-defined `pull_request_target` job reports
+the required check through a dedicated GitHub App, with that App set as the check's required
+source. A check required only by name does not qualify. SL-1 delivers
+`.github/workflows/claude-sdk-audit.yml` and the base auditor; the owner selects and enables the
+mechanism and records its enforcement, a drill PR whose same-named job leaves the requirement
+unmet, and private evidence-store readiness as GL-2 prerequisites. The workflow is defined on the trusted base,
 uses fixed artifact-store endpoints and treats head-supplied evidence IDs solely as bounded
 identifiers, never URLs or commands. Changes to that trusted policy require owner review. The
 job executes the auditor from the event's fetched base tree in isolation, never imports or
@@ -271,8 +287,8 @@ authority facts throughout module scope, including conditional mutations; head c
 out by presenting only an earlier literal. Controls cover changes to head auditor code and
 nonliteral admission declarations as well as missing/stale proof. Runtime/twin preflight also
 compares the receipt with installed artifact bindings; stale installations remain refused. G1
-follows offline fixture capture and pins the fixture sha256 in its section; the auditor compares
-that ratified value with the head fixture as well as the receipt. If a prior section was
+follows offline fixture capture and pins the fixture and contract sha256 in its section; the
+auditor compares those ratified values with the head fixture and contract as well as the receipt. If a prior section was
 ratified, append the next OD-3a section, update `SECTION_FOR` explicitly to that section, and
 reject citations to the superseded design. No future output commits are pinned.
 

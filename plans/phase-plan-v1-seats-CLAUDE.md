@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: CLAUDE
 roadmap: specs/phase-plans-seats-v1.md
-roadmap_sha256: 8a6fee8bdeef5aee0d0aa9495c26b6abaeb4f2f7441ca9b31b0f9434edfa9219
+roadmap_sha256: 1c9e2d40089c5f70b23ff6233ad06da3d8edcd69e643681bdc342e76298ca0c0
 automation:
   suite_command: ["timeout", "1800", "uv", "run", "--quiet", "--project", "phase-loop-runtime", "--group", "test", "--extra", "visual", "--with", "pytest-xdist==3.8.0", "--python", "3.14", "--locked", "python", "-m", "pytest", "-n", "0", "-p", "no:cacheprovider", "-q", "phase-loop-runtime/tests/test_seats_claude_login_proof.py", "phase-loop-runtime/tests/test_seats_claude_bakeoff.py", "phase-loop-runtime/tests/test_seats_claude_transport.py", "phase-loop-runtime/tests/test_seats_claude_order.py", "phase-loop-runtime/tests/test_seats_claude_records.py", "phase-loop-runtime/tests/test_seats_claude_print.py", "phase-loop-runtime/tests/test_seats_claude_print_observations.py", "phase-loop-runtime/tests/test_claude_transport_seam.py", "phase-loop-runtime/tests/test_panel_claude_print_route.py", "phase-loop-runtime/tests/test_seat_credentials.py", "phase-loop-runtime/tests/test_seat_login_wait_a3_1166.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py", "phase-loop-runtime/tests/test_executable_dependency_startup.py"]
 ---
@@ -21,7 +21,7 @@ Inputs are the roadmap's External Inputs, plus one pin from the print-route reco
 from its `## ` heading line to the line before the next `## ` heading.
 
 Worker contract: `plans/seats-claude-sdk-worker-contract.md`, sha256
-`61ba5d730d75240cdf853431260f514b611704a00b4287d1d74480dff106c8da` (EC-CLAUDE-3).
+`204d4ab83c7c1b9c0328a99e6934ee121d6e8269307d4547c1f6d5949481599d` (EC-CLAUDE-3).
 
 Amendment 2026-11-05: owner option A selects EC-CLAUDE-3. SL-3 remains pending.
 The regression command targets the implementation checkout, not this plan-only tree.
