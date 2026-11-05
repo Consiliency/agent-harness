@@ -14200,11 +14200,11 @@
               "SL-0",
               "SL-1",
               "SL-2",
-              "SL-4",
-              "SL-5"
+              "SL-4"
             ],
-            "lanes_stopped": [
-              "SL-3"
+            "lanes_pending": [
+              "SL-3",
+              "SL-5"
             ],
             "run_id": "seats-claude-impl-20261104"
           },
