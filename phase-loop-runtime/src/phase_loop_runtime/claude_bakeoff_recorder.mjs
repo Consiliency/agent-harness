@@ -7,29 +7,43 @@
 // header, a query, a body or an untemplated identifier. A front in front of srt splices only
 // a positively parsed TLS ClientHello whose SNI names the CONNECT target, so every recorded
 // connection is one srt terminated; any other first flight is closed and recorded as not
-// terminated. A set is complete only when every connection the recorder saw was terminated
-// and had a request parsed. Only traffic sent through this proxy is recorded.
+// terminated. Every accepted connection is recorded exactly once, when it closes or when the
+// recorder stops. srt's filterRequest names no connection, so a request is attributed only
+// when exactly one terminated connection to its host is open; otherwise every candidate is
+// marked ambiguous (never parsed) and an unattributed line is written. A set is complete only
+// when every connection was terminated and had a request attributed to it alone. Only
+// traffic sent through this proxy is recorded.
 //
 // argv: <srt dist/index.js> <config.json>. config: {ca_cert, ca_key, out}. One JSON line on
 // stdout when ready: {"port": N, "token": "..."} (the token goes only into the twin's proxy
 // variable). It exits when stdin closes. Output lines (appended to config.out, mode 0600):
 //   {"kind":"request","method":..., "host":..., "path_template":...}
+//   {"kind":"unattributed"}
 //   {"kind":"connection","terminated":bool,"parsed":bool}
+//   {"kind":"summary","accepted":N,"recorded":N}   (last, at shutdown)
 import { appendFileSync, readFileSync } from 'node:fs';
 import { createServer, connect } from 'node:net';
 
 const { SandboxManager } = await import(process.argv[2]);
 const config = JSON.parse(readFileSync(process.argv[3], 'utf8'));
 
-const IDENTIFIER = /^(?:[0-9a-f]{8}-[0-9a-f-]{27,}|[0-9]{4,}|[0-9a-f]{12,}|[A-Za-z0-9_-]{24,}|.*[0-9].*[0-9].*[0-9].*)$/i;
+const IDENTIFIER = /^(?:[0-9a-f]{8}-[0-9a-f-]{27,}|[0-9]{4,}|[0-9a-f]{12,}|[A-Za-z0-9_-]{24,}|.*[0-9].*[0-9].*[0-9].*|.*\..*)$/i;
 const LITERAL = /^(?:[a-z][a-z0-9._-]{0,63}|v[0-9]{1,3})$/;
+// Collections whose next segment names one member: always {id}, however word-like.
+const ID_PARENTS = new Set(['organizations', 'orgs', 'users', 'accounts', 'projects', 'workspaces',
+  'members', 'sessions', 'conversations', 'teams', 'customers', 'keys', 'api_keys', 'files',
+  'threads']);
 
 function template(pathname) {
+  let previous = '';
   const segments = pathname.split('/').slice(1).map(segment => {
-    if (segment === '') return '';
+    const parent = previous;
+    previous = '{id}';
+    if (segment === '') { previous = ''; return ''; }
     let decoded = segment;
     try { decoded = decodeURIComponent(segment); } catch { return '{id}'; }
-    if (IDENTIFIER.test(decoded) || !LITERAL.test(decoded)) return '{id}';
+    if (ID_PARENTS.has(parent) || IDENTIFIER.test(decoded) || !LITERAL.test(decoded)) return '{id}';
+    previous = decoded;
     return decoded;
   });
   return '/' + segments.join('/');
@@ -39,13 +53,22 @@ function record(line) {
   appendFileSync(config.out, JSON.stringify(line) + '\n', { mode: 0o600 });
 }
 
-const parsedHosts = new Map();
+// Every accepted connection's state, while it is open.
+const open = new Set();
+let accepted = 0;
+let recorded = 0;
 
 async function filterRequest(request) {
   let url;
-  try { url = new URL(request.url); } catch { return { action: 'allow' }; }
+  try { url = new URL(request.url); } catch { record({ kind: 'unattributed' }); return { action: 'allow' }; }
   const host = url.hostname.toLowerCase();
-  parsedHosts.set(host, (parsedHosts.get(host) || 0) + 1);
+  const candidates = [...open].filter(state => state.terminated && state.target === host);
+  if (candidates.length === 1) {
+    candidates[0].requests += 1;
+  } else {
+    for (const state of candidates) state.ambiguous = true;
+    record({ kind: 'unattributed' });
+  }
   record({ kind: 'request', method: String(request.method).toUpperCase(), host,
            path_template: template(url.pathname) });
   return { action: 'allow' };
@@ -114,14 +137,18 @@ function clientHelloSNI(buf) {
 function connection(state) {
   if (state.recorded) return;
   state.recorded = true;
-  const parsed = state.terminated && (parsedHosts.get(state.target) || 0) > state.before;
+  open.delete(state);
+  recorded += 1;
+  const parsed = state.terminated && state.requests > 0 && !state.ambiguous;
   record({ kind: 'connection', terminated: state.terminated, parsed });
 }
 
 const front = createServer(client => {
-  const state = { target: null, terminated: false, before: 0, recorded: false };
+  accepted += 1;
+  const state = { target: null, terminated: false, requests: 0, ambiguous: false, recorded: false };
+  open.add(state);
   client.on('error', () => client.destroy());
-  client.once('close', () => { if (state.target !== null) connection(state); });
+  client.once('close', () => connection(state));
   let buf = Buffer.alloc(0);
   let phase = 'connect';
   client.on('data', chunk => {
@@ -137,7 +164,6 @@ const front = createServer(client => {
       if (!auth || auth[1].trim() !== expectedAuth || !m) { client.destroy(); return; }
       state.target = m[1].toLowerCase();
       state.port = m[2];
-      state.before = parsedHosts.get(state.target) || 0;
       phase = 'firstflight';
       client.write('HTTP/1.1 200 Connection Established\r\n\r\n');
       if (buf.length === 0) return;
@@ -179,6 +205,12 @@ front.listen(0, '127.0.0.1', () => {
 process.stdin.resume();
 process.stdin.on('end', async () => {
   try { front.close(); } catch { /* closing */ }
+  // Let connections the client already closed finish closing here (bounded); one still open
+  // after that was never seen to finish: never parsed.
+  const deadline = Date.now() + 5000;
+  while (open.size && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 50));
+  for (const state of [...open]) { state.ambiguous = true; connection(state); }
+  record({ kind: 'summary', accepted, recorded });
   await SandboxManager.reset();
   process.exit(0);
 });

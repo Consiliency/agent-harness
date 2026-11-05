@@ -33,6 +33,7 @@ import importlib
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import urllib.error
@@ -287,26 +288,149 @@ def launch_jailed(
     raises is the outcome, and no other transport is tried."""
     pi = _panel_invoker()
     module = None
+    observing = W0_OBSERVATION_ENV in os.environ
+    staged = _staged_source_commit(seat) if observing else None
+    outcome: tuple[str, str] | None = None
+    refusal: str | None = None
     try:
-        if transport not in TRANSPORTS:
-            raise TransportRefused(ROUTE_INVALID)
-        if transport != "tui":
-            module = transport_module(transport)
-            if module is None:
-                raise TransportRefused(NOT_ADMITTED)
-        proof = prove_login()
-    except BaseException as exc:
-        pi._cleanup_jailed_seat(seat, primary=exc)
-        raise
-    evidence = kwargs.get("broker_evidence")
-    if isinstance(evidence, dict):
-        evidence["claude_transport"] = transport
-        as_evidence = getattr(proof, "as_evidence", None)
-        if callable(as_evidence):
-            evidence.update(as_evidence())
-    if module is None:
-        return pi._exec_jailed_claude_leg(seat, **kwargs)
-    return module.run_jailed(seat, **kwargs)
+        try:
+            if transport not in TRANSPORTS:
+                raise TransportRefused(ROUTE_INVALID)
+            if transport != "tui":
+                module = transport_module(transport)
+                if module is None:
+                    raise TransportRefused(NOT_ADMITTED)
+            proof = prove_login()
+        except BaseException as exc:
+            refusal = getattr(exc, "code", None)
+            pi._cleanup_jailed_seat(seat, primary=exc)
+            raise
+        evidence = kwargs.get("broker_evidence")
+        if isinstance(evidence, dict):
+            evidence["claude_transport"] = transport
+            as_evidence = getattr(proof, "as_evidence", None)
+            if callable(as_evidence):
+                evidence.update(as_evidence())
+        if module is None:
+            outcome = pi._exec_jailed_claude_leg(seat, **kwargs)
+        else:
+            outcome = module.run_jailed(seat, **kwargs)
+        return outcome
+    finally:
+        if observing:
+            _record_w0_observation(transport, seat, kwargs.get("broker_evidence"), outcome,
+                                   refusal, staged)
+
+
+# --------------------------------------------------------------------------------------
+# The W0 observation channel (IF-0-CLAUDE-2): what the bake-off kit reads of a native run.
+# --------------------------------------------------------------------------------------
+
+#: Set only by the W0 kit, to a private file it owns: each jailed Claude launch of the board
+#: appends one closed, credential-free observation line. Unset, nothing is written.
+W0_OBSERVATION_ENV = "PHASE_LOOP_CLAUDE_W0_OBSERVATIONS"
+W0_OBSERVATION_SCHEMA = "claude-w0-observation.v1"
+_SLUG_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
+_MODEL_RE = re.compile(r"claude-[a-z0-9-]{1,60}")
+_STAGE_TREE = "reviewed-tree"
+
+
+def _staged_source_commit(seat: object) -> str | None:
+    """The commit the seat's staged clone was made from, read before the launch."""
+    review_dir = getattr(seat, "review_dir", None)
+    if review_dir is None:
+        return None
+    path = Path(review_dir) / _STAGE_TREE / ".git" / "phase-loop-source-commit"
+    try:
+        descriptor = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
+        try:
+            raw = os.read(descriptor, 128)
+        finally:
+            os.close(descriptor)
+    except OSError:
+        return None
+    value = raw.decode("ascii", "replace").strip()
+    return value if re.fullmatch(r"[0-9a-f]{40}", value) else None
+
+
+def _slug(value: object) -> str | None:
+    return value if isinstance(value, str) and _SLUG_RE.fullmatch(value) else None
+
+
+def _digest(value: object) -> str | None:
+    return value if isinstance(value, str) and _HEX64.match(value) else None
+
+
+def w0_observation(transport: str, seat: object, evidence: object,
+                   outcome: tuple[str, str] | None, refusal: str | None,
+                   staged: str | None) -> dict[str, object]:
+    """One launch, reduced to closed values: slugs, digests, booleans and counts only."""
+    evidence = evidence if isinstance(evidence, dict) else {}
+    jail = getattr(seat, "jail", None)
+    env = getattr(jail, "env", None) or {}
+    admission = evidence.get("claude_admission")
+    admission = admission if isinstance(admission, dict) else {}
+    diagnostics = evidence.get("claude_item7_diagnostics")
+    diagnostics = diagnostics if isinstance(diagnostics, dict) else {}
+    tools = diagnostics.get("tools") if isinstance(diagnostics.get("tools"), list) else []
+    source = evidence.get("claude_api_key_source")
+    model = evidence.get("provider_model")
+    count = evidence.get("claude_result_count")
+    status = outcome[0] if outcome is not None else ("REFUSED" if refusal else "FAILED")
+    return {
+        "schema": W0_OBSERVATION_SCHEMA,
+        "transport": transport if transport in TRANSPORTS else None,
+        "status": _slug(str(status).lower()),
+        "code": _slug(refusal) or _slug(admission.get("code")),
+        "admission": _slug(admission.get("outcome")),
+        "api_key_source": source if source in ("none", "present") else None,
+        "entrypoint": _slug(evidence.get("claude_code_entrypoint")),
+        "filesystem_confined": evidence.get("sandbox_filesystem_confined") is True,
+        "jail_profile_digest": _digest(getattr(jail, "profile_digest", None)),
+        "dependency_projection_digest": _digest(
+            getattr(jail, "dependency_projection_digest", None)),
+        "token_pipe": (isinstance(env, dict) and "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR" in env
+                       and "CLAUDE_CODE_OAUTH_TOKEN" not in env),
+        "login_proof": [_slug(evidence.get(key)) for key in (
+            "claude_login_source", "claude_login_auth_method", "claude_login_api_key_source")],
+        "staged_source_commit": staged,
+        "session_matches": evidence.get("claude_session_id_matches") is True,
+        "result_count": count if type(count) is int and 0 <= count < 1000 else None,
+        "model": model if isinstance(model, str) and _MODEL_RE.fullmatch(model) else None,
+        "diagnostics_valid": diagnostics.get("valid") is True,
+        "diagnostics_truncated": diagnostics.get("truncated") is not False,
+        "model_status": _slug(diagnostics.get("model_status")),
+        "read_path_sha256": sorted({tool["path_sha256"] for tool in tools
+                                    if isinstance(tool, dict) and tool.get("read_completed") is True
+                                    and _digest(tool.get("path_sha256"))}),
+    }
+
+
+def _record_w0_observation(transport: str, seat: object, evidence: object,
+                           outcome: tuple[str, str] | None, refusal: str | None,
+                           staged: str | None) -> None:
+    """Append the observation to the kit's private file. The file must be an absolute
+    path in a directory the operator owns that no one else can write; a failure to write
+    is never a launch failure (the kit then sees no observation, which fails closed)."""
+    raw = os.environ.get(W0_OBSERVATION_ENV, "")
+    path = Path(raw)
+    if not raw or not path.is_absolute():
+        return
+    try:
+        info = os.lstat(path.parent)
+        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_mode & 0o022):
+            return
+        line = json.dumps(w0_observation(transport, seat, evidence, outcome, refusal, staged),
+                          sort_keys=True, separators=(",", ":")) + "\n"
+        descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW
+                             | os.O_CLOEXEC, 0o600)
+        try:
+            os.write(descriptor, line.encode("ascii"))
+        finally:
+            os.close(descriptor)
+    except (OSError, ValueError, TypeError):
+        return
 
 
 # --------------------------------------------------------------------------------------

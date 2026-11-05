@@ -428,6 +428,110 @@ def test_an_auth_jail_of_another_shape_is_a_failed_probe_and_launches_nothing(
     assert result.credential_sha256 == hashlib.sha256(ACCESS.encode()).hexdigest()
 
 
+# --------------------------------------------------------------------------------------
+# The W0 observation channel: what the bake-off kit reads of a native run.
+# --------------------------------------------------------------------------------------
+
+STAGED = "0123456789abcdef0123456789abcdef01234567"
+
+
+def _observed_seat(tmp_path, commit=STAGED):
+    stage = tmp_path / "stage"
+    marker = stage / "reviewed-tree" / ".git" / "phase-loop-source-commit"
+    marker.parent.mkdir(parents=True)
+    marker.write_text(commit + "\n")
+    jail = types.SimpleNamespace(profile_digest="d" * 64, dependency_projection_digest="",
+                                 env={seat_jail.CLAUDE_TOKEN_FD_ENV: "3", "HOME": "/seat/home"})
+    return types.SimpleNamespace(jail=jail, review_dir=stage, token=ACCESS.encode())
+
+
+def _evidence_from_print(seat, **kwargs):
+    kwargs["broker_evidence"].update({
+        "claude_admission": {"outcome": "admitted", "code": "none"},
+        "claude_api_key_source": "none", "claude_code_entrypoint": "unset",
+        "sandbox_filesystem_confined": True, "claude_session_id_matches": True,
+        "claude_result_count": 1, "provider_model": "claude-opus-5-5",
+        "claude_item7_diagnostics": {"valid": True, "truncated": False, "model_status": "match",
+                                     "tools": [{"path_sha256": "e" * 64, "read_completed": True,
+                                                "name": "Read"}]},
+        "provider_prompt_sha256": "f" * 64, "secret_text": ACCESS})
+    return "OK", "the review " + ACCESS + "\n\nAGREE"
+
+
+def test_a_w0_run_writes_one_closed_observation_per_launch(monkeypatch, tmp_path):
+    _install(monkeypatch, "print", run=_evidence_from_print)
+    private = tmp_path / "private"
+    private.mkdir(mode=0o700)
+    path = private / "observations.jsonl"
+    monkeypatch.setenv(ct.W0_OBSERVATION_ENV, str(path))
+    monkeypatch.setattr(pi, "_cleanup_jailed_seat", lambda seat, **k: None)
+    seat = _observed_seat(tmp_path)
+    evidence: dict = {}
+    assert ct.launch_jailed("print", seat, prove_login=lambda: PROVEN,
+                            broker_evidence=evidence)[0] == "OK"
+    raw = path.read_bytes()
+    assert ACCESS.encode() not in raw and b"review" not in raw
+    assert path.stat().st_mode & 0o777 == 0o600
+    (line,) = raw.splitlines()
+    seen = json.loads(line)
+    assert seen["schema"] == ct.W0_OBSERVATION_SCHEMA and seen["transport"] == "print"
+    assert (seen["status"], seen["admission"], seen["code"]) == ("ok", "admitted", "none")
+    assert seen["staged_source_commit"] == STAGED and seen["token_pipe"] is True
+    assert seen["login_proof"] == [sc.SOURCE_LOGIN, "oauth_token", "none"]
+    assert seen["jail_profile_digest"] == "d" * 64 and seen["read_path_sha256"] == ["e" * 64]
+    assert "secret_text" not in seen and "provider_prompt_sha256" not in seen
+
+
+def test_a_refused_w0_launch_is_observed_with_its_code(monkeypatch, tmp_path):
+    private = tmp_path / "private"
+    private.mkdir(mode=0o700)
+    path = private / "observations.jsonl"
+    monkeypatch.setenv(ct.W0_OBSERVATION_ENV, str(path))
+    monkeypatch.setattr(pi, "_cleanup_jailed_seat", lambda seat, **k: None)
+
+    def refuse():
+        raise ct.TransportRefused(sc.LOGIN_UNPROVEN)
+
+    with pytest.raises(ct.TransportRefused):
+        ct.launch_jailed("tui", _observed_seat(tmp_path, commit="HEAD"), prove_login=refuse,
+                         broker_evidence={})
+    seen = json.loads(path.read_text())
+    assert (seen["status"], seen["code"], seen["admission"]) == ("refused", sc.LOGIN_UNPROVEN, None)
+    assert seen["staged_source_commit"] is None  # no commit is claimed for an unreadable stage
+
+
+@pytest.mark.parametrize("where", ["unset", "relative", "shared-directory"])
+def test_no_observation_is_written_unless_the_kit_names_a_private_file(monkeypatch, tmp_path, where):
+    _install(monkeypatch, "print", run=_evidence_from_print)
+    monkeypatch.setattr(pi, "_cleanup_jailed_seat", lambda seat, **k: None)
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    shared.chmod(0o777)
+    if where == "relative":
+        monkeypatch.setenv(ct.W0_OBSERVATION_ENV, "observations.jsonl")
+    elif where == "shared-directory":
+        monkeypatch.setenv(ct.W0_OBSERVATION_ENV, str(shared / "observations.jsonl"))
+    else:
+        monkeypatch.delenv(ct.W0_OBSERVATION_ENV, raising=False)
+    monkeypatch.chdir(tmp_path)
+    ct.launch_jailed("print", _observed_seat(tmp_path), prove_login=lambda: PROVEN,
+                     broker_evidence={})
+    assert not (shared / "observations.jsonl").exists()
+    assert not (tmp_path / "observations.jsonl").exists()
+
+
+@pytest.mark.parametrize("marker", ["HEAD", "c" * 39, "../" + "c" * 40])
+def test_a_staged_commit_marker_that_is_not_a_commit_is_not_observed(tmp_path, marker):
+    assert ct._staged_source_commit(_observed_seat(tmp_path, commit=marker)) is None
+    assert ct._staged_source_commit(types.SimpleNamespace(review_dir=None)) is None
+
+
+def test_the_observation_reads_the_stage_tree_the_review_stage_writes():
+    from phase_loop_runtime import review_stage
+
+    assert ct._STAGE_TREE == review_stage.REVIEW_STAGE_TREE_DIRNAME
+
+
 @pytest.mark.parametrize("planted", [True, False])
 def test_an_auth_probe_past_its_cap_is_still_scanned(monkeypatch, tmp_path, planted):
     """A probe that writes past the cap is stopped, and what it wrote is still scanned for

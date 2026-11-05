@@ -32,10 +32,12 @@ import ipaddress
 import json
 import os
 import re
+import signal
+import stat
 import subprocess
 import sys
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 
@@ -99,9 +101,15 @@ _REFUSED_SHAPES: Mapping[str, re.Pattern[str]] = {
     "home_path": re.compile(r"/home/|/Users/|/root/|~/|\\\\Users\\\\"),
     "ipv4": re.compile(r"\b(?:[0-9]{1,3}\.){3}[0-9]{1,3}\b"),
 }
-#: A path segment that carries an identifier and must be ``{id}``.
+#: A path segment that carries an identifier and must be ``{id}``: an id-like run, or any
+#: dotted segment (a name, an address or a file name).
 _IDENTIFIER_SEGMENT = re.compile(
-    r"[0-9a-fA-F]{8}-[0-9a-fA-F-]{27,}|[0-9]{4,}|[0-9a-f]{12,}|[A-Za-z0-9_-]{24,}|.*[0-9].*[0-9].*[0-9].*")
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F-]{27,}|[0-9]{4,}|[0-9a-f]{12,}|[A-Za-z0-9_-]{24,}"
+    r"|.*[0-9].*[0-9].*[0-9].*|.*\..*")
+#: Collections whose next segment names one member: it is always ``{id}``, however word-like.
+ID_PARENTS = frozenset({"organizations", "orgs", "users", "accounts", "projects", "workspaces",
+                        "members", "sessions", "conversations", "teams", "customers", "keys",
+                        "api_keys", "files", "threads"})
 
 
 # --------------------------------------------------------------------------------------
@@ -126,6 +134,9 @@ def host_problem(host: object) -> str | None:
         return "single-label host"
     if any(not _HOST_LABEL.fullmatch(label) for label in labels):
         return "host"
+    if not re.fullmatch(r"[a-z][a-z0-9-]*", labels[-1]) or any(
+            re.fullmatch(r"0x[0-9a-f]+", label) for label in labels):
+        return "IP literal"  # a numeric or hex last label is an address spelling (127.1)
     if any(("." + host).endswith(suffix) for suffix in _PRIVATE_SUFFIXES):
         return "private-namespace host"
     return None
@@ -136,7 +147,11 @@ def path_problem(path: object) -> str | None:
         return "path"
     if any(c in path for c in "?#%@:;= \\"):
         return "path"
+    previous = ""
     for segment in path.split("/")[1:]:
+        if previous in ID_PARENTS and segment not in ("", "{id}"):
+            return "untemplated identifier in a path"
+        previous = segment
         if segment in ("", "{id}"):
             continue
         if _IDENTIFIER_SEGMENT.fullmatch(segment):
@@ -251,8 +266,13 @@ def validate_record(obj: object) -> list[str]:
     if obj["security_outcome"] not in SECURITY_OUTCOMES:
         problems.append("security_outcome: not a value")
     elif obj["security_outcome"] == "withheld_private" and (
-            obj["code"] != "none" or obj["canonical_output"] != "refused"):
-        problems.append("security_outcome: a withheld outcome publishes no code and no output")
+            obj["code"] != "none" or obj["canonical_output"] != "refused"
+            or obj["claude_api_key_source"] != "unknown"
+            or obj["claude_code_entrypoint"] != "unset"
+            or any(value != "fail" for value in (*_values(obj["admission"]),
+                                                 *_values(obj["item7"])))):
+        problems.append("security_outcome: a withheld outcome publishes no code, output or "
+                        "diagnostic")
     for text in _strings(obj):
         if _HEX64.fullmatch(text) or _HEX40.fullmatch(text):
             continue
@@ -260,6 +280,10 @@ def validate_record(obj: object) -> list[str]:
             if pattern.search(text):
                 problems.append(f"a string carries a refused shape ({shape})")
     return list(dict.fromkeys(problems))
+
+
+def _values(value: object) -> list[object]:
+    return list(value.values()) if isinstance(value, dict) else [None]
 
 
 def _request_set_problems(value: object) -> list[str]:
@@ -315,17 +339,76 @@ def _git_show(repo: Path, rev: str, path: str) -> bytes | None:
 _OD3B_DIGEST = re.compile(r"\*\*W0 evidence digest:\*\* `(?P<digest>[0-9a-f]{64})`")
 
 
+#: The architectures a W0 host may run; a W0 head's TUI digest is one per architecture.
+ARCHES = ("x86_64", "aarch64")
+
+
+def tui_digests_at(repo: Path, head: str) -> frozenset[str]:
+    """The TUI jail profile digests of ``head`` (one per architecture), derived from that
+    head's own runtime source in a separate interpreter. Empty when they cannot be derived."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory(prefix="pl-w0-tui-") as scratch:
+        try:
+            archive = subprocess.run(
+                ["git", "-C", str(repo), "archive", "--format=tar", head, "--",
+                 "phase-loop-runtime/src/phase_loop_runtime"],
+                capture_output=True, timeout=120, check=False)
+            if archive.returncode != 0:
+                return frozenset()
+            unpacked = subprocess.run(["tar", "-x", "-C", scratch], input=archive.stdout,
+                                      capture_output=True, timeout=120, check=False)
+            if unpacked.returncode != 0:
+                return frozenset()
+            source = Path(scratch) / "phase-loop-runtime" / "src"
+            code = ("import sys; sys.path.insert(0, sys.argv[1]); "
+                    "from phase_loop_runtime import seat_jail; "
+                    "print(' '.join(seat_jail.jail_profile_digest('claude', a) "
+                    "for a in sys.argv[2:]))")
+            done = subprocess.run([sys.executable, "-I", "-B", "-c", code, str(source), *ARCHES],
+                                  capture_output=True, text=True, timeout=120, check=False,
+                                  cwd=scratch)
+        except (OSError, subprocess.SubprocessError):
+            return frozenset()
+    digests = done.stdout.split() if done.returncode == 0 else []
+    if len(digests) != len(ARCHES) or not all(_HEX64.fullmatch(d) for d in digests):
+        return frozenset()
+    return frozenset(digests)
+
+
+def _directory_entries(directory: Path) -> tuple[list[Path], list[str]]:
+    """The record files of ``directory``, and every entry that may not be there: only
+    ``README.md`` and regular files named for a run id, no subdirectory and no link."""
+    records, problems = [], []
+    if not directory.is_dir():
+        return records, [f"{directory.name}: not a directory"]
+    for path in sorted(directory.iterdir()):
+        info = os.lstat(path)
+        regular = stat.S_ISREG(info.st_mode)
+        if path.name == "README.md" and regular:
+            continue
+        stem = path.name[:-5] if path.name.endswith(".json") else None
+        if regular and stem is not None and _RUN_ID.fullmatch(stem):
+            records.append(path)
+            continue
+        problems.append(f"{path.name}: only README.md and <run_id>.json records may be here")
+    return records, problems
+
+
 def validate_directory(directory: Path | str, *, repo: Path | str = ".",
                        record_text: bytes | None = None,
-                       tui_digest: str | None = None) -> list[str]:
+                       tui_digest: str | None = None,
+                       tui_digests: Callable[[Path, str], frozenset[str]] | None = None
+                       ) -> list[str]:
     """V7: every record's shape, then the rules across records. ``record_text`` is the
-    decision record as of now (default: the working tree's) for the OD-3b citation rule;
-    ``tui_digest``, when given, is the TUI jail profile digest every native record must
-    carry."""
+    decision record as of now (default: the working tree's) for the OD-3b citation rule.
+    Every native record must carry its W0 head's TUI jail profile digest: ``tui_digest``
+    when given, else the digests V7 derives itself from that head's source; a head whose
+    digest cannot be derived fails."""
     directory, repo = Path(directory), Path(repo)
-    problems: list[str] = []
+    paths, problems = _directory_entries(directory)
     records: list[dict] = []
-    for path in sorted(directory.glob("*.json")):
+    for path in paths:
         raw = path.read_bytes()
         try:
             obj = json.loads(raw)
@@ -361,8 +444,12 @@ def validate_directory(directory: Path | str, *, repo: Path | str = ".",
     for obj in records:
         if obj["arm"] in NATIVE_ARMS:
             native.setdefault(obj["w0_head"], set()).add(obj["jail_profile_digest"])
+    derive = tui_digests or tui_digests_at
     for head, digests in sorted(native.items()):
-        if len(digests) > 1 or (tui_digest is not None and digests != {tui_digest}):
+        expected = frozenset({tui_digest}) if tui_digest is not None else derive(repo, head)
+        if not expected:
+            problems.append("the TUI jail profile digest at a W0 head cannot be derived")
+        elif len(digests) > 1 or not digests <= expected:
             problems.append("a native record's jail_profile_digest is not the TUI's at its W0 head")
     for obj in records:
         if obj["arm"] not in NATIVE_ARMS:
@@ -404,8 +491,17 @@ class RunPlan:
 #: The phase plan's Execution Notes, fixed before the window.
 EXECUTION_NOTES = RunPlan()
 
-#: Fields of a run-plan file that the kit takes from the operator (not plan constants).
-OPERATOR_FIELDS = ("w0_head", "artifact", "landing_tier", "board", "model", "effort")
+#: Fields of a run-plan file that the kit takes from the operator (not plan constants). A W0
+#: board runs without a landing tier, so it has no president to place on any account.
+OPERATOR_FIELDS = ("w0_head", "artifact", "board", "model", "effort")
+
+
+def artifact_problem(artifact: object) -> str | None:
+    """The review artifact is a repo-relative path, read at the W0 head (never a host file)."""
+    if (not isinstance(artifact, str) or not artifact or artifact.startswith("/")
+            or "\\" in artifact or any(part in ("", ".", "..") for part in artifact.split("/"))):
+        return "run plan: artifact is not a repo-relative path"
+    return None
 
 
 def check_run_plan(plan: Mapping[str, object]) -> list[str]:
@@ -421,43 +517,50 @@ def check_run_plan(plan: Mapping[str, object]) -> list[str]:
     for key, value in expected.items():
         if plan.get(key) != value:
             problems.append(f"run plan: {key} differs from the phase plan's Execution Notes")
-    unknown = set(plan) - set(expected) - set(OPERATOR_FIELDS)
+    if "landing_tier" in plan:
+        problems.append("run plan: a W0 board runs without a landing tier (no president)")
+    unknown = set(plan) - set(expected) - set(OPERATOR_FIELDS) - {"landing_tier"}
     if unknown:
         problems.append("run plan: unknown field(s)")
     if not (isinstance(plan.get("w0_head"), str) and _HEX40.fullmatch(plan["w0_head"])):
         problems.append("run plan: w0_head is not a 40-hex commit")
+    problem = artifact_problem(plan.get("artifact"))
+    if problem:
+        problems.append(problem)
     return problems
 
 
-def composition_problems(board: Mapping[str, object]) -> list[str]:
-    """Refuse a board whose president or any co-seat would use the W0 Claude account. On the
-    W0 host every Claude seat runs on the operator's one login, so any Claude president or
-    Claude co-seat other than the arm's own jailed seat is refused, unless the run plan names
-    it on another operator account."""
-    problems = []
-    president = board.get("president") if isinstance(board, dict) else None
+def _seat_fields(seat_key: object) -> tuple[str, str, str] | None:
+    parts = seat_key.split(":") if isinstance(seat_key, str) else []
+    return (parts[0], parts[1], parts[2]) if len(parts) >= 3 and all(parts[:3]) else None
+
+
+def composition_problems(plan: Mapping[str, object]) -> list[str]:
+    """The run plan's board is the exact composed lineup (seat keys,
+    ``harness:model:effort[:lens]``). It holds exactly one Claude seat, the jailed arm, at the
+    plan's model and effort: on the W0 host every other Claude seat would use the W0 account."""
+    board = plan.get("board")
     seats = board.get("seats") if isinstance(board, dict) else None
-    if not isinstance(seats, list) or not isinstance(president, dict):
-        return ["board: must name its president and seats"]
-    if _uses_w0_claude(president):
-        problems.append("board: the president would use the W0 Claude account")
-    claude_seats = [seat for seat in seats if isinstance(seat, dict) and _is_claude(seat)]
-    if len(claude_seats) != 1:
-        problems.append("board: exactly one Claude seat, the arm under test")
-    for seat in seats:
-        if isinstance(seat, dict) and _is_claude(seat) and seat.get("role") != "w0_arm":
-            if _uses_w0_claude(seat):
-                problems.append("board: a co-seat would use the W0 Claude account")
-    return problems
+    if (not isinstance(board, dict) or set(board) != {"seats"} or not isinstance(seats, list)
+            or not seats or any(_seat_fields(seat) is None for seat in seats)):
+        return ["board: must list exactly its composed seat keys (harness:model:effort[:lens])"]
+    claude = [_seat_fields(seat) for seat in seats
+              if _seat_fields(seat)[0].lstrip("@") == "claude"  # type: ignore[index]
+              or _seat_fields(seat)[1].startswith("claude-")]  # type: ignore[index]
+    if len(claude) != 1 or claude[0][0] != "claude":  # type: ignore[index]
+        return ["board: exactly one Claude seat, the jailed arm; any other would use the W0 "
+                "Claude account"]
+    _harness, model, effort = claude[0]  # type: ignore[misc]
+    if plan.get("model") != model or plan.get("effort") != effort:
+        return ["board: the run plan's model and effort are not the Claude seat's"]
+    return []
 
 
-def _is_claude(seat: Mapping[str, object]) -> bool:
-    return str(seat.get("harness", "")).lower() == "claude" or str(
-        seat.get("model", "")).lower().startswith("claude-")
+def effective_composition() -> list[str]:
+    """The lineup ``phase-loop advisor-board`` composes on this host, by the same function."""
+    from .advisor_board.composition import compose_review_board
 
-
-def _uses_w0_claude(seat: Mapping[str, object]) -> bool:
-    return _is_claude(seat) and seat.get("account") != "other_operator"
+    return [seat.seat_key for seat in compose_review_board().seats]
 
 
 def head_on_main(repo: Path, head: str) -> bool:
@@ -467,6 +570,58 @@ def head_on_main(repo: Path, head: str) -> bool:
     except (OSError, subprocess.SubprocessError):
         return False
     return done.returncode == 0
+
+
+def checkout_problems(repo: Path, head: str) -> list[str]:
+    """The board runs from the W0 tree itself: the checkout is at the W0 head with no local
+    change (W0's own records excepted), and this runtime is that tree's."""
+    problems = []
+    try:
+        current = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                                 capture_output=True, text=True, timeout=60, check=False)
+        status = subprocess.run(["git", "-C", str(repo), "status", "--porcelain=v1", "-z",
+                                 "--untracked-files=all"], capture_output=True, timeout=120,
+                                check=False)
+    except (OSError, subprocess.SubprocessError):
+        return ["checkout: the W0 checkout cannot be read"]
+    if current.returncode != 0 or current.stdout.strip() != head:
+        problems.append("checkout: the repository is not at the W0 head")
+    entries = [entry for entry in status.stdout.split(b"\0") if entry]
+    if status.returncode != 0 or any(
+            not (entry[:3] == b"?? " and entry[3:].decode("utf-8", "replace").startswith(
+                EVIDENCE_DIR + "/")) for entry in entries):
+        problems.append("checkout: the W0 tree has local changes")
+    runtime = Path(_transport.__file__).resolve()
+    if not runtime.is_relative_to((Path(repo) / "phase-loop-runtime" / "src").resolve()):
+        problems.append("checkout: this runtime is not the W0 tree's")
+    return problems
+
+
+def bundle_artifact(repo: Path, head: str, artifact: object) -> bytes:
+    """The review artifact's bytes as committed at the W0 head (the twin's prompt and the
+    board's artifact alike)."""
+    problem = artifact_problem(artifact)
+    if problem:
+        raise ValueError(problem)
+    data = _git_show(repo, head, str(artifact))
+    if data is None:
+        raise ValueError("run plan: the artifact is not in the W0 head")
+    return data
+
+
+def staged_path_sha256(artifact: str) -> str:
+    """The digest the seat's observations give a completed Read of the artifact in its tree."""
+    return hashlib.sha256(f"/seat/tree/{artifact}".encode()).hexdigest()
+
+
+def cli_version_beside(image: Path) -> str:
+    """The Claude CLI version of the native image, from its own package manifest."""
+    try:
+        version = json.loads((Path(image).parent / "package.json").read_text(encoding="utf-8"))[
+            "version"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return "unknown"
+    return version if isinstance(version, str) and _CLI_VERSION.fullmatch(version) else "unknown"
 
 
 # --------------------------------------------------------------------------------------
@@ -551,6 +706,7 @@ TWIN_DELTA_KEYS = frozenset({"HTTPS_PROXY", "NODE_EXTRA_CA_CERTS"})
 TWIN_REMAPPED = frozenset({"HOME", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "XDG_DATA_HOME",
                            "XDG_STATE_HOME", "TMPDIR", "CLAUDE_CONFIG_DIR", "CLAUDE_CODE_TMPDIR",
                            "PATH"})
+_LOOPBACK_PROXY = re.compile(r"http://srt:[^@/:\s]{8,}@127\.0\.0\.1:[0-9]{1,5}")
 
 
 def twin_environment(jail_env: Mapping[str, str], *, home: Path, proxy: str, ca: Path,
@@ -571,16 +727,37 @@ def twin_environment(jail_env: Mapping[str, str], *, home: Path, proxy: str, ca:
     return env
 
 
-def twin_delta_problems(jail_env: Mapping[str, str], twin_env: Mapping[str, str]) -> list[str]:
+def _under(value: object, root: Path) -> bool:
+    try:
+        return isinstance(value, str) and Path(value).resolve().is_relative_to(Path(root).resolve())
+    except (OSError, ValueError):
+        return False
+
+
+def twin_delta_problems(jail_env: Mapping[str, str], twin_env: Mapping[str, str], *,
+                        home: Path, bin_dir: Path, ca_root: Path) -> list[str]:
+    """The twin's environment is the jailed one plus exactly the declared delta, with every
+    remapped path under the fresh home, the declared PATH, the loopback recorder as its only
+    proxy and the window's private CA."""
     problems = []
-    if set(twin_env) - set(jail_env) - TWIN_DELTA_KEYS:
+    if set(twin_env) - set(jail_env) - TWIN_DELTA_KEYS or TWIN_DELTA_KEYS - set(twin_env):
         problems.append("twin: an environment variable beyond the declared delta")
     if set(jail_env) - set(twin_env):
         problems.append("twin: a jailed environment variable is missing")
     for key, value in jail_env.items():
         if key in twin_env and key not in TWIN_REMAPPED and twin_env[key] != value:
             problems.append("twin: a jailed environment value changed")
-    return problems
+    for key in sorted(TWIN_REMAPPED & set(twin_env)):
+        if key == "PATH":
+            if twin_env[key] != f"{bin_dir}:/usr/bin:/bin":
+                problems.append("twin: PATH is not the declared form")
+        elif not _under(twin_env[key], home):
+            problems.append("twin: a remapped path is outside the fresh home")
+    if not _LOOPBACK_PROXY.fullmatch(twin_env.get("HTTPS_PROXY", "")):
+        problems.append("twin: the proxy is not the loopback recorder")
+    if not _under(twin_env.get("NODE_EXTRA_CA_CERTS"), ca_root):
+        problems.append("twin: the CA is not the window's private CA")
+    return list(dict.fromkeys(problems))
 
 
 def twin_command(arm: str, executable: Path, *, model: str | None, effort: str | None,
@@ -599,9 +776,75 @@ def twin_command(arm: str, executable: Path, *, model: str | None, effort: str |
     return [command[0], *claude_seat_print.CLI_DELTA, *command[1:]]
 
 
+def disposable_bundle(repo: Path, head: str, dest: Path) -> Path:
+    """A real, unlinked copy of the W0 head: the tree exported with ``git archive`` into
+    ``dest`` and a fresh repository there, with no link to (and no hook from) the owner's."""
+    dest.mkdir(mode=0o700)
+    archive = dest.parent / (dest.name + ".tar")
+    env = {key: value for key, value in os.environ.items() if not key.startswith("GIT_")}
+    try:
+        subprocess.run(["git", "-C", str(repo), "archive", "--format=tar", "-o", str(archive),
+                        head], check=True, capture_output=True, timeout=600, env=env)
+        subprocess.run(["tar", "-x", "-f", str(archive), "-C", str(dest)], check=True,
+                       capture_output=True, timeout=600, env=env)
+    finally:
+        archive.unlink(missing_ok=True)
+    identity = ["-c", "user.name=w0-bundle", "-c", "user.email=w0-bundle@invalid",
+                "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null"]
+    for args in (["init", "-q"], ["add", "-A"], [*identity, "commit", "-qm", "W0 bundle"]):
+        subprocess.run(["git", "-C", str(dest), *args], check=True, capture_output=True,
+                       timeout=600, env=env)
+    return dest
+
+
+def kill_group(process: "subprocess.Popen") -> None:
+    """Kill ``process``'s whole process group (it was started in its own session)."""
+    try:
+        os.killpg(process.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    try:
+        process.wait(timeout=30)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def launch_capture_twin(command: Sequence[str], *, cwd: Path, env: Mapping[str, str],
+                        token_fd: int, prompt: bytes, timeout_s: float) -> int | None:
+    """The capture twin's one provider launch: an owner-run measurement outside
+    ``launch_owned`` (principle 5), in its own session, whose whole process group is killed
+    on every exit. Its output is discarded. Returns the exit status, ``None`` past the
+    timeout."""
+    process = subprocess.Popen(list(command), cwd=cwd, env=dict(env), pass_fds=(token_fd,),
+                               stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                               stderr=subprocess.DEVNULL, start_new_session=True)
+    try:
+        try:
+            process.communicate(prompt, timeout=timeout_s)
+        except subprocess.TimeoutExpired:
+            return None
+        return process.returncode
+    finally:
+        kill_group(process)
+
+
+def create_window_ca(ca_dir: Path, node: str, srt_index: Path) -> Path:  # pragma: no cover
+    """The window's private CA, made fresh by srt's own ``ca.mjs``; a CA left by an earlier
+    window refuses (it is deleted at the end of every window)."""
+    from . import seat_egress_proxy
+
+    if ca_dir.exists():
+        raise ValueError(f"twin: a CA from an earlier window is still at {ca_dir}; remove it")
+    ca_dir.mkdir(mode=0o700, parents=False)
+    subprocess.run([node, str(seat_egress_proxy._data_path("ca.mjs")), str(srt_index),
+                    str(ca_dir)], check=True, capture_output=True, timeout=120)
+    return ca_dir
+
+
 def run_capture_twin(arm: str, plan: Mapping[str, object], *, root: Path, repo: Path,
-                     token: bytes, prompt: str, timeout_s: int, block: int,
-                     srt_index: Path | None = None) -> dict:  # pragma: no cover - owner window
+                     token: bytes, prompt: bytes, timeout_s: int, block: int, ca_dir: Path,
+                     srt_index: Path, node: str,
+                     dropped: list[str] | None = None) -> dict:  # pragma: no cover - owner window
     """One capture twin (principle 5): the block's transport, outside the seat, on a
     disposable copy of the W0 bundle at a head on ``main``, with the jailed argv, environment
     and token pipe; the delta is path remaps, a fresh empty home, the proxy variable and the
@@ -610,73 +853,76 @@ def run_capture_twin(arm: str, plan: Mapping[str, object], *, root: Path, repo: 
     import tempfile
     import uuid
 
-    from . import panel_invoker, seat_egress_proxy, seat_jail
+    from . import panel_invoker, seat_jail
 
     head = str(plan["w0_head"])
     if not head_on_main(repo, head):
         raise ValueError("twin: the W0 bundle head is not on main")
-    srt_index = srt_index or seat_egress_proxy.verify_install()
-    node = seat_egress_proxy._node()
     work = Path(tempfile.mkdtemp(prefix="pl-w0-twin-", dir=root))
-    ca_dir = root / "twin-ca"
+    recorder = None
     try:
-        if not (ca_dir / "ca.crt").exists():
-            ca_dir.mkdir(mode=0o700, exist_ok=True)
-            subprocess.run([node, str(seat_egress_proxy._data_path("ca.mjs")), str(srt_index),
-                            str(ca_dir)], check=True, capture_output=True, timeout=120)
-        bundle = work / "bundle"
-        subprocess.run(["git", "-C", str(repo), "worktree", "add", "--detach", str(bundle), head],
-                       check=True, capture_output=True, timeout=300)
+        bundle = disposable_bundle(repo, head, work / "bundle")
         out = work / "capture.jsonl"
         config = work / "recorder.json"
         write_private(config, json.dumps({"ca_cert": str(ca_dir / "ca.crt"),
                                           "ca_key": str(ca_dir / "ca.key"),
                                           "out": str(out)}).encode())
         recorder = subprocess.Popen([node, str(RECORDER), str(srt_index), str(config)],
-                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+                                    start_new_session=True)
+        ready = json.loads(recorder.stdout.readline())  # type: ignore[union-attr]
+        proxy = f"http://srt:{ready['token']}@127.0.0.1:{int(ready['port'])}"
+        home = work / "home"
+        home.mkdir(mode=0o700)
+        if any(home.iterdir()):
+            raise ValueError("twin: the fresh home is not empty")
+        executable = panel_invoker._resolve_claude_executable()
+        token_fd = seat_jail.token_pipe(token)
         try:
-            ready = json.loads(recorder.stdout.readline())
-            proxy = f"http://srt:{ready['token']}@127.0.0.1:{int(ready['port'])}"
-            home = work / "home"
-            home.mkdir(mode=0o700)
-            executable = panel_invoker._resolve_claude_executable()
-            token_fd = seat_jail.token_pipe(token)
-            try:
-                jail_env = seat_jail.seat_env("claude", token_fd=token_fd)
-                env = twin_environment(jail_env, home=home, proxy=proxy, ca=ca_dir / "ca.crt",
-                                       bin_dir=executable.parent)
-                problems = twin_delta_problems(jail_env, env)
-                if problems:
-                    raise ValueError("; ".join(problems))
-                command = twin_command(arm, executable, model=plan.get("model"),
-                                       effort=plan.get("effort"), session_id=str(uuid.uuid4()))
-                subprocess.run(command, input=prompt, text=True, cwd=bundle, env=env,
-                               pass_fds=(token_fd,), capture_output=True, timeout=timeout_s,
-                               check=False)  # the twin's output is discarded
-            finally:
-                os.close(token_fd)
+            jail_env = seat_jail.seat_env("claude", token_fd=token_fd)
+            env = twin_environment(jail_env, home=home, proxy=proxy, ca=ca_dir / "ca.crt",
+                                   bin_dir=executable.parent)
+            problems = twin_delta_problems(jail_env, env, home=home, bin_dir=executable.parent,
+                                           ca_root=ca_dir)
+            if problems:
+                raise ValueError("; ".join(problems))
+            command = twin_command(arm, executable, model=plan.get("model"),
+                                   effort=plan.get("effort"), session_id=str(uuid.uuid4()))
+            returncode = launch_capture_twin(command, cwd=bundle, env=env, token_fd=token_fd,
+                                             prompt=prompt, timeout_s=timeout_s)
         finally:
-            if recorder.stdin is not None:
-                recorder.stdin.close()
+            os.close(token_fd)
+        if recorder.stdin is not None:
+            recorder.stdin.close()
+        try:
             recorder.wait(timeout=60)
+        except subprocess.TimeoutExpired:
+            pass
         raw = out.read_bytes() if out.exists() else b""
-        return ingest_recorder_output(raw, token=token)
+        return ingest_recorder_output(raw, token=token, twin_returncode=returncode,
+                                      dropped=dropped)
     finally:
-        subprocess.run(["git", "-C", str(repo), "worktree", "remove", "--force",
-                        str(work / "bundle")], capture_output=True, timeout=300, check=False)
+        if recorder is not None:
+            kill_group(recorder)
         shutil.rmtree(work, ignore_errors=True)  # the raw capture goes with it
 
 
-def ingest_recorder_output(raw: bytes, *, token: bytes) -> dict:
+def ingest_recorder_output(raw: bytes, *, token: bytes, twin_returncode: int | None = 0,
+                           dropped: list[str] | None = None) -> dict:
     """The recorder's JSONL, reduced to a public request set. Refuses a line that holds a
-    header, a body, the token or an untemplated path; ``complete`` only when every connection
-    the recorder saw was terminated and parsed."""
+    header, a body, the token or an untemplated path. ``complete`` only with the recorder's
+    closing summary present, at least one connection, every accepted connection recorded,
+    every one terminated and parsed (attributed to that connection alone), no request it
+    could not attribute or publish, and the twin exiting 0. A host that cannot be published
+    goes to ``dropped`` (private storage) and makes the set ``partial``."""
     from . import seat_jail
 
     if seat_jail.contains_secret(raw, token):
         raise ValueError("recorder output carries the token")
     entries: set[tuple[str, str, str]] = set()
-    complete = True
+    complete = twin_returncode == 0
+    connections = 0
+    summary: dict | None = None
     for line in raw.splitlines():
         if not line.strip():
             continue
@@ -686,22 +932,42 @@ def ingest_recorder_output(raw: bytes, *, token: bytes) -> dict:
             raise ValueError("recorder output is not JSON lines") from None
         if not isinstance(item, dict):
             raise ValueError("recorder output is not JSON lines")
-        if item.get("kind") == "connection":
+        kind = item.get("kind")
+        if kind == "connection":
             if set(item) != {"kind", "terminated", "parsed"}:
                 raise ValueError("recorder connection line carries other fields")
+            connections += 1
             complete = complete and item["terminated"] is True and item["parsed"] is True
             continue
-        if set(item) != {"kind", "method", "host", "path_template"} or item.get("kind") != "request":
+        if kind == "summary":
+            if (set(item) != {"kind", "accepted", "recorded"} or summary is not None
+                    or type(item["accepted"]) is not int or type(item["recorded"]) is not int):
+                raise ValueError("recorder summary line is malformed")
+            summary = item
+            continue
+        if kind == "unattributed":
+            if set(item) != {"kind"}:
+                raise ValueError("recorder line carries other fields")
+            complete = False
+            continue
+        if set(item) != {"kind", "method", "host", "path_template"} or kind != "request":
             raise ValueError("recorder request line carries a header, a body or other fields")
-        if item["method"] not in METHODS or host_problem(item["host"]) == "host":
-            raise ValueError("recorder request line is malformed")
         if path_problem(item["path_template"]):
             raise ValueError("recorder request line has an untemplated path")
-        entries.add((item["method"], item["host"], item["path_template"]))
+        method, host = item["method"], item["host"]
+        if method not in METHODS or host_problem(host) is not None:
+            complete = False
+            if dropped is not None:
+                dropped.append(f"{str(method)[:16]} {str(host)[:253]}")
+            continue
+        entries.add((method, host, item["path_template"]))
+    if (summary is None or connections == 0 or summary["accepted"] != summary["recorded"]
+            or summary["recorded"] != connections):
+        complete = False
     ordered = [{"method": m, "host": h, "path_template": p} for m, h, p in sorted(entries)]
     capture = hashlib.sha256(json.dumps(ordered, sort_keys=True).encode()).hexdigest()
     return {"completeness": "complete" if complete else "partial", "capture_digest": capture,
-            "entries": [entry for entry in ordered if host_problem(entry["host"]) is None]}
+            "entries": ordered}
 
 
 # --------------------------------------------------------------------------------------
@@ -727,16 +993,20 @@ class RunOutcome:
 def build_record(*, arm: str, block: int, n: int, w0_head: str, outcome: RunOutcome,
                  billing: str, meter_digest: str, request_set: Mapping[str, object],
                  activation_section_sha256: str) -> dict:
+    """One record. A security-class outcome publishes only ``withheld_private``: no code, no
+    output and no diagnostic (every predicate ``fail``, key source ``unknown``, entrypoint
+    ``unset``), so no field says which outcome it was."""
     security = _transport.od10_class(outcome.code) == _transport.SECURITY
     record = {
         "run_id": f"w0-b{block}-r{n}", "arm": arm, "block": block, "w0_head": w0_head,
         "cli_version": outcome.cli_version,
         "canonical_output": "refused" if security else outcome.canonical_output,
         "code": "none" if security else outcome.code,
-        "admission": dict(outcome.admission), "item7": dict(outcome.item7),
+        "admission": _all("fail", ADMISSION_PREDICATES) if security else dict(outcome.admission),
+        "item7": _all("fail", ITEM7_PREDICATES) if security else dict(outcome.item7),
         "billing": billing, "meter_ref": f"w0-block-{block}", "meter_digest": meter_digest,
-        "claude_code_entrypoint": outcome.claude_code_entrypoint,
-        "claude_api_key_source": outcome.claude_api_key_source,
+        "claude_code_entrypoint": "unset" if security else outcome.claude_code_entrypoint,
+        "claude_api_key_source": "unknown" if security else outcome.claude_api_key_source,
         "request_set": dict(request_set),
         "jail_profile_digest": outcome.jail_profile_digest,
         "dependency_projection_digest": outcome.dependency_projection_digest,
@@ -822,57 +1092,149 @@ def ingest_control(raw: bytes) -> RunOutcome:
 # The native arm runner: one board through `phase-loop advisor-board`.
 # --------------------------------------------------------------------------------------
 
-def board_command(plan: Mapping[str, object]) -> list[str]:
-    command = ["phase-loop", "advisor-board", str(plan["artifact"]), "--json",
-               "--monitoring-policy", "bounded", "--pointer-brief"]
-    if plan.get("landing_tier"):
-        command += ["--landing-tier", str(plan["landing_tier"])]
-    return command
+@dataclass(frozen=True)
+class NativeExpectation:
+    """What one native run must show, fixed before the window: the arm, the W0 head and the
+    TUI jail digest at it, the plan's lineup and model, the artifact's staged-path digest and
+    the observed CLI version."""
+
+    arm: str
+    w0_head: str
+    tui_digest: str
+    seats: tuple[str, ...]
+    model: str
+    staged_path_sha256: str
+    cli_version: str
 
 
-def native_outcome(board: Mapping[str, object], *, timed_out: bool,
-                   tui_digest: str) -> RunOutcome:
-    """The Claude leg of one board result, reduced to closed values. ``tui_digest`` is the
-    TUI jail profile digest on this host: every native arm runs in that jail, and a run's own
-    recorded digest, when the board result carries one, is kept instead (V7 compares)."""
+def board_command(artifact_copy: Path) -> list[str]:
+    """The board of this W0 tree's own runtime (the checkout is checked to be the W0 head)."""
+    return [sys.executable, "-m", "phase_loop_runtime.cli", "advisor-board", str(artifact_copy),
+            "--json", "--monitoring-policy", "bounded", "--pointer-brief"]
+
+
+def read_observations(path: Path) -> list[dict]:
+    """The board's W0 observation lines; any malformed line means no usable observation."""
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return []
+    observations = []
+    for line in raw.splitlines():
+        try:
+            item = json.loads(line)
+        except ValueError:
+            return []
+        if not isinstance(item, dict) or item.get("schema") != _transport.W0_OBSERVATION_SCHEMA:
+            return []
+        observations.append(item)
+    return observations
+
+
+def co_seats_unconfined(board: Mapping[str, object]) -> tuple[str, ...]:
+    """The vendors of the co-seats the board ran unconfined, from its published seat modes."""
+    from . import seat_preflight
+
+    rows = board.get("seat_modes") if isinstance(board, dict) else None
+    vendors = []
+    for row in rows if isinstance(rows, list) else ():
+        if not isinstance(row, dict) or row.get("mode") != seat_preflight.MODE_UNCONFINED:
+            continue
+        vendor = str(row.get("leg", "")).lower()
+        if vendor == "claude":
+            continue
+        if vendor not in CO_SEAT_VENDORS:
+            raise ValueError("an unconfined co-seat's vendor is not in the record vocabulary")
+        vendors.append(vendor)
+    return tuple(sorted(set(vendors)))
+
+
+def _pass(value: bool) -> str:
+    return "pass" if value else "fail"
+
+
+def native_outcome(board: Mapping[str, object], observations: Sequence[Mapping[str, object]], *,
+                   timed_out: bool, expected: NativeExpectation) -> RunOutcome:
+    """One run, reduced to closed values, each predicate from its own observation. A run
+    whose jailed launch the board did not observe (no observation, another transport, an
+    unconfined filesystem or no jail digest) proves nothing: every predicate fails and it
+    records the W0 head's TUI digest only as the profile that head builds."""
+    co_seats = co_seats_unconfined(board) if isinstance(board, dict) else ()
+
+    def unobserved(output: str, code: str = "none") -> RunOutcome:
+        return RunOutcome(output, code, _all("fail", ADMISSION_PREDICATES),
+                          _all("fail", ITEM7_PREDICATES), cli_version=expected.cli_version,
+                          jail_profile_digest=expected.tui_digest,
+                          dependency_projection_digest="0" * 64 if expected.arm == "sdk"
+                          else "not_applicable", co_seats_unconfined=co_seats)
+
     if timed_out:
-        return RunOutcome("timed_out", "none", _all("fail", ADMISSION_PREDICATES),
-                          _all("fail", ITEM7_PREDICATES), jail_profile_digest=tui_digest)
+        return unobserved("timed_out")
+    composition = board.get("composition") if isinstance(board, dict) else None
+    seats = composition.get("seats") if isinstance(composition, dict) else None
+    if board and list(seats or ()) != list(expected.seats):
+        raise ValueError("the board ran another lineup than the run plan's")
     legs = [leg for leg in board.get("legs", ()) if isinstance(leg, dict)
             and str(leg.get("leg", "")).lower() == "claude"] if isinstance(board, dict) else []
-    if len(legs) != 1:
-        return RunOutcome("absent", "none", _all("fail", ADMISSION_PREDICATES),
-                          _all("fail", ITEM7_PREDICATES), jail_profile_digest=tui_digest)
-    leg = legs[0]
-    evidence = leg.get("broker_evidence") if isinstance(leg.get("broker_evidence"), dict) else {}
+    leg = legs[0] if len(legs) == 1 else {}
     detail = str(leg.get("detail") or "none")
-    code = detail if (_code_problem(detail) is None
-                      or _transport.od10_class(detail) == _transport.SECURITY) else "none"
-    admitted = leg.get("status") == "OK" and (evidence.get("claude_admission") or {}).get(
-        "outcome") in (None, "admitted")
-    output = "admitted" if admitted else ("refused" if code != "none" else "absent")
-    admission = _all("pass" if admitted else "fail", ADMISSION_PREDICATES)
-    item7 = _all("fail", ITEM7_PREDICATES)
-    diagnostics = evidence.get("claude_item7_diagnostics") if isinstance(evidence, dict) else None
-    if isinstance(diagnostics, dict):
-        item7.update({
-            "seat_diagnostics": "pass" if diagnostics.get("valid") and not diagnostics.get(
-                "truncated") else "fail",
-            "exact_model_match": "pass" if diagnostics.get("model_status") == "match" else "fail",
-            "read_completed": "pass" if any(t.get("read_completed") for t in diagnostics.get(
-                "tools", ()) if isinstance(t, dict)) else "fail",
-        })
-    for name in ("session", "subscription", "result", "exit", "verdict", "staged_path_digest"):
-        item7[name] = "pass" if admitted else "fail"
-    key_source = evidence.get("claude_api_key_source")
+    leg_code = detail if (_code_problem(detail) is None
+                          or _transport.od10_class(detail) == _transport.SECURITY) else "none"
+    if len(legs) != 1 or len(observations) != 1:
+        return unobserved("refused" if leg_code != "none" else "absent", leg_code)
+    seen = observations[0]
+    observed_code = str(seen.get("code") or "none")
+    code = observed_code if (_code_problem(observed_code) is None or _transport.od10_class(
+        observed_code) == _transport.SECURITY) else leg_code
+    digest = seen.get("jail_profile_digest")
+    projection = seen.get("dependency_projection_digest")
+    if (seen.get("transport") != expected.arm or seen.get("filesystem_confined") is not True
+            or not (isinstance(digest, str) and _HEX64.fullmatch(digest))
+            or (expected.arm == "sdk" and not (isinstance(projection, str)
+                                               and _HEX64.fullmatch(projection)))):
+        return unobserved("refused" if code != "none" else "absent", code)
+    admitted = (seen.get("admission") == "admitted" and seen.get("status") == "ok"
+                and leg.get("status") == "OK")
+    proof = seen.get("login_proof")
+    login = (isinstance(proof, list) and len(proof) == 3 and proof[0] in ("login", "override")
+             and proof[1:] == ["oauth_token", "none"])
+    reads = seen.get("read_path_sha256") if isinstance(seen.get("read_path_sha256"), list) else []
+    admission = {
+        "jail": _pass(digest == expected.tui_digest),
+        "staged_clone": _pass(seen.get("staged_source_commit") == expected.w0_head),
+        "token_pipe": _pass(seen.get("token_pipe") is True),
+        "login_proof": _pass(login),
+        "init_api_key_source_none": _pass(seen.get("api_key_source") == "none"),
+        "session_matches": _pass(seen.get("session_matches") is True),
+        "single_result": _pass(seen.get("result_count") == 1),
+        "result_success": _pass(admitted),
+        "exit_zero": _pass(admitted),
+        "verdict_conforming": _pass(admitted),
+    }
+    item7 = {
+        "seat_diagnostics": _pass(seen.get("diagnostics_valid") is True
+                                  and seen.get("diagnostics_truncated") is False),
+        "exact_model_match": _pass(seen.get("model_status") == "match"
+                                   and seen.get("model") == expected.model),
+        "staged_path_digest": _pass(expected.staged_path_sha256 in reads),
+        "read_completed": _pass(bool(reads)),
+        "session": _pass(seen.get("session_matches") is True),
+        "subscription": _pass(seen.get("api_key_source") == "none" and login),
+        "result": _pass(seen.get("result_count") == 1 and admitted),
+        "exit": _pass(admitted),
+        "verdict": _pass(admitted),
+    }
+    entrypoint = seen.get("entrypoint") or "unset"
+    source = seen.get("api_key_source")
     return RunOutcome(
-        canonical_output=output, code=code, admission=admission, item7=item7,
-        claude_code_entrypoint=str(evidence.get("claude_code_entrypoint") or "unset")[:32],
-        claude_api_key_source="none" if key_source == "none" else (
-            "present" if key_source else "unknown"),
-        jail_profile_digest=str(evidence.get("seat_jail_profile_digest") or tui_digest),
-        dependency_projection_digest=str(
-            evidence.get("executable_dependency_projection_sha256") or "not_applicable"),
+        canonical_output="admitted" if admitted else ("refused" if code != "none" else "absent"),
+        code="none" if admitted else code, admission=admission, item7=item7,
+        cli_version=expected.cli_version,
+        claude_code_entrypoint=entrypoint if _SLUG.fullmatch(str(entrypoint)) else "other",
+        claude_api_key_source=source if source in ("none", "present") else "unknown",
+        jail_profile_digest=digest,
+        dependency_projection_digest=projection if expected.arm == "sdk" else "not_applicable",
+        co_seats_unconfined=co_seats,
     )
 
 
@@ -880,22 +1242,39 @@ def _all(value: str, names: Sequence[str]) -> dict[str, str]:
     return {name: value for name in names}
 
 
-def run_native(arm: str, plan: Mapping[str, object], *, timeout_s: int, tui_digest: str,
-               runner: Callable[..., subprocess.CompletedProcess] = subprocess.run) -> RunOutcome:
-    """One run: the native board seat path through ``phase-loop advisor-board`` with the
-    arm's selector set, bounded by the plan's per-run timeout (OQ-3); past it, the run is
-    ``timed_out``."""
-    env = {**os.environ, _transport.ROUTE_ENV: arm}
+def run_board(command: Sequence[str], *, cwd: Path, env: Mapping[str, str],
+              timeout_s: float) -> str:  # pragma: no cover - owner window
+    """One board in its own session; its whole process group is killed on every exit.
+    Returns its stdout; raises ``subprocess.TimeoutExpired`` past the timeout."""
+    process = subprocess.Popen(list(command), cwd=cwd, env=dict(env), stdin=subprocess.DEVNULL,
+                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                               start_new_session=True)
     try:
-        done = runner(board_command(plan), capture_output=True, text=True, timeout=timeout_s,
-                      env=env, check=False)
+        stdout, _ = process.communicate(timeout=timeout_s)
+        return stdout or ""
+    finally:
+        kill_group(process)
+
+
+def run_native(arm: str, *, repo: Path, artifact_copy: Path, observations: Path,
+               expected: NativeExpectation, timeout_s: int,
+               runner: Callable[..., str] = run_board) -> RunOutcome:
+    """One run: this W0 tree's board through ``phase-loop advisor-board`` from the W0
+    checkout, with the arm's selector and the observation channel set, bounded by the
+    plan's per-run timeout (OQ-3); past it, the run is ``timed_out``."""
+    observations.unlink(missing_ok=True)
+    env = {**os.environ, _transport.ROUTE_ENV: arm,
+           _transport.W0_OBSERVATION_ENV: str(observations)}
+    try:
+        stdout = runner(board_command(artifact_copy), cwd=repo, env=env, timeout_s=timeout_s)
     except subprocess.TimeoutExpired:
-        return native_outcome({}, timed_out=True, tui_digest=tui_digest)
+        return native_outcome({}, [], timed_out=True, expected=expected)
     try:
-        board = json.loads(done.stdout or "{}")
+        board = json.loads(stdout or "{}")
     except ValueError:
         board = {}
-    return native_outcome(board, timed_out=False, tui_digest=tui_digest)
+    return native_outcome(board if isinstance(board, dict) else {}, read_observations(
+        observations), timed_out=False, expected=expected)
 
 
 # --------------------------------------------------------------------------------------
@@ -915,15 +1294,39 @@ class Window:
     control: Callable[[int, int], bytes] | None = None
     twin: Callable[[int, str], Mapping[str, object]] | None = None
     report: Callable[[str], None] = print
+    compose: Callable[[], Sequence[str]] = effective_composition
+    cli_version: str = "unknown"
     stopped_arms: set[str] = field(default_factory=set)
     private_notes: list[str] = field(default_factory=list)
 
     def preflight(self) -> list[str]:
+        """Everything that can refuse the window, before the first meter reading: the run
+        plan, the lineup (declared and as this host composes it), the W0 checkout, head and
+        artifact, the observed CLI version, and every arm's activation and admission."""
         problems = check_run_plan(self.plan)
-        problems += composition_problems(self.plan.get("board") or {})
+        problems += composition_problems(self.plan)
         head = str(self.plan.get("w0_head", ""))
-        if _HEX40.fullmatch(head) and not head_on_main(self.repo, head):
-            problems.append("run plan: the W0 bundle head is not on main")
+        if _HEX40.fullmatch(head):
+            if not head_on_main(self.repo, head):
+                problems.append("run plan: the W0 bundle head is not on main")
+            problems += checkout_problems(self.repo, head)
+            try:
+                bundle_artifact(self.repo, head, self.plan.get("artifact"))
+            except ValueError as exc:
+                problems.append(str(exc))
+            for arm in sorted(set(EXECUTION_NOTES.blocks) & set(NATIVE_ARMS)):
+                try:
+                    self.activation(arm)
+                except ValueError as exc:
+                    problems.append(str(exc))
+                if not _transport.is_admitted(arm):
+                    problems.append(f"the {arm} arm is not admitted on this tree")
+        if self.cli_version == "unknown" or not _CLI_VERSION.fullmatch(self.cli_version):
+            problems.append("the Claude CLI version cannot be observed")
+        if not problems:
+            board = self.plan.get("board")
+            if list(self.compose()) != list(board["seats"]):  # type: ignore[index]
+                problems.append("board: this host composes another lineup than the run plan's")
         return problems
 
     def activation(self, arm: str) -> str:
@@ -932,7 +1335,7 @@ class Window:
         section = "4b" if arm == "sdk" else "4a"
         raw = _git_show(self.repo, str(self.plan["w0_head"]), _transport.DECISION_RECORD) or b""
         found = _transport.record_sections(raw).get(section)
-        if found is None:
+        if found is None or (section == "4b" and not found[0].startswith("## 4b. OD-3a")):
             raise ValueError(f"the W0 head has no section {section} for the {arm} arm")
         return found[1]
 
@@ -953,6 +1356,9 @@ class Window:
                 for n in range(1, EXECUTION_NOTES.runs_per_block + 1):
                     outcomes.append(ingest_control(self.control(block, n)))  # type: ignore[misc]
             else:
+                changed = checkout_problems(self.repo, str(self.plan["w0_head"]))
+                if changed:
+                    raise ValueError("W0 stopped: " + "; ".join(changed))
                 if self.twin is not None:
                     request_set = dict(self.twin(block, arm))
                 for _n in range(EXECUTION_NOTES.runs_per_block):
@@ -986,7 +1392,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     validate = sub.add_parser("validate", help="V7: the shape check of the W0 records")
     validate.add_argument("directory", nargs="?", default=EVIDENCE_DIR)
     validate.add_argument("--repo", default=".")
-    validate.add_argument("--tui-digest", default=None)
+    validate.add_argument("--tui-digest", default=None,
+                          help="the TUI digest to require (default: derived per W0 head)")
     digest = sub.add_parser("digest", help="the W0 evidence digest an OD-3b section cites")
     digest.add_argument("directory", nargs="?", default=EVIDENCE_DIR)
     run = sub.add_parser("run", help="run W0 (an owner action)")
@@ -1003,7 +1410,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         for problem in problems:
             print(f"claude-bakeoff validate: FAIL: {problem}", file=sys.stderr)
         if not problems:
-            count = len(list(directory.glob("*.json")))
+            count = len(_directory_entries(directory)[0])
             print(f"claude-bakeoff validate: OK ({count} record(s))")
         return 1 if problems else 0
     if args.command == "digest":
@@ -1017,34 +1424,61 @@ def main(argv: Sequence[str] | None = None) -> int:
 
 
 def _run_window(plan: Mapping[str, object], repo: Path, window: str) -> int:  # pragma: no cover
-    from . import seat_credentials
+    import shutil
+
+    from . import panel_invoker, seat_credentials, seat_egress_proxy, seat_jail
 
     root = private_root(window)
-    credential = seat_credentials.resolve_claude_seat_credential(seat_credentials.DEFAULT_MARGIN_S)
+    root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(root, 0o700)
+    ca_dir = root / "twin-ca"
+    dropped: list[str] = []
+    try:
+        head = str(plan["w0_head"])
+        artifact = bundle_artifact(repo, head, plan.get("artifact"))
+        artifact_copy = root / "artifact" / Path(str(plan["artifact"])).name
+        write_private(artifact_copy, artifact)
+        credential = seat_credentials.resolve_claude_seat_credential(
+            seat_credentials.DEFAULT_MARGIN_S)
+        cli_version = cli_version_beside(panel_invoker._resolve_claude_executable())
+        expected = NativeExpectation(
+            arm="print", w0_head=head, tui_digest=seat_jail.jail_profile_digest("claude"),
+            seats=tuple(plan["board"]["seats"]), model=str(plan.get("model")),  # type: ignore[index]
+            staged_path_sha256=staged_path_sha256(str(plan["artifact"])), cli_version=cli_version)
+        srt_index = seat_egress_proxy.verify_install()
+        node = seat_egress_proxy._node()
+        create_window_ca(ca_dir, node, srt_index)
+    except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError) as exc:
+        shutil.rmtree(ca_dir, ignore_errors=True)
+        print(f"claude-bakeoff run: REFUSED: {exc}", file=sys.stderr)
+        return 1
 
     def control(block: int, n: int) -> bytes:
         path = input(f"control block {block} run {n}: path of the child's output file: ").strip()
         return Path(path).read_bytes()
 
-    from . import seat_jail
-
-    tui_digest = seat_jail.jail_profile_digest("claude")
-    prompt = Path(str(plan["artifact"])).read_text(encoding="utf-8")
-
     def twin(block: int, arm: str) -> Mapping[str, object]:
         return run_capture_twin(arm, plan, root=root, repo=repo, token=credential.token,
-                                prompt=prompt, timeout_s=EXECUTION_NOTES.timeout_s, block=block)
+                                prompt=artifact, timeout_s=EXECUTION_NOTES.timeout_s, block=block,
+                                ca_dir=ca_dir, srt_index=srt_index, node=node, dropped=dropped)
+
+    def native(arm: str, timeout: int) -> RunOutcome:
+        return run_native(arm, repo=repo, artifact_copy=artifact_copy,
+                          observations=root / "observations.jsonl",
+                          expected=replace(expected, arm=arm), timeout_s=timeout)
 
     window_run = Window(plan=plan, out_dir=repo / EVIDENCE_DIR, ledger=MeterLedger(root),
-                        token=credential.token, repo=repo,
-                        native=lambda arm, timeout: run_native(arm, plan, timeout_s=timeout,
-                                                               tui_digest=tui_digest),
-                        control=control, twin=twin)
+                        token=credential.token, repo=repo, native=native, control=control,
+                        twin=twin, cli_version=cli_version)
     try:
         written = window_run.run()
     except ValueError as exc:
         print(f"claude-bakeoff run: REFUSED: {exc}", file=sys.stderr)
         return 1
+    finally:
+        shutil.rmtree(ca_dir, ignore_errors=True)  # the per-window CA ends with the window
+        if dropped:
+            write_private(root / "dropped-hosts.txt", "\n".join(sorted(set(dropped))).encode())
     print(f"claude-bakeoff run: wrote {len(written)} record(s); review them before the records PR")
     return 0
 

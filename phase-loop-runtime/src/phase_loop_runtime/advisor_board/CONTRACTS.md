@@ -1833,7 +1833,11 @@ are recorded on agent-harness#1132.
   `claude_seat_transport.CODES` carries each code's OD-10 class; the mode line accepts
   `seat_jail.NOTICE_CODES | CODES`. The ratification order (EC-CLAUDE-4) is checked by
   `python -m phase_loop_runtime.claude_seat_transport audit-order`, a step of the required lint
-  job on every pull request and push to main, run from the base tree's copy.
+  job on every pull request and push to main, run from the base tree's copy. For the W0
+  bake-off only, `PHASE_LOOP_CLAUDE_W0_OBSERVATIONS` names a private file (an absolute path in
+  an operator-owned directory no one else can write) to which each jailed Claude launch
+  appends one closed, credential-free observation (`claude-w0-observation.v1`); unset, nothing
+  is written.
 - **Notices.** `{code, seat_key, what, why, fix}`, rendered only from literals, on the
   `advisor-board` payload (`notices`, `legs[].notices`) and text summary, and on the
   governed path as one non-gating `seat_notice` finding per notice (L4b).
@@ -1847,7 +1851,11 @@ are recorded on agent-harness#1132.
 
 Every review seat, the president and executor `review` start through one owner,
 `panel_invoker.launch_owned`. A jailed Claude seat (SEATJAIL) launches through its jail
-instead, and the jail is that launch's owner.
+instead, and the jail is that launch's owner. The W0 capture twin
+(`claude_bakeoff.launch_capture_twin`, SEATS CLAUDE) is not a review seat: it is the owner's
+measurement on a developer host (principle 5), outside `launch_owned`, classified
+`qualification`, in its own process group that is killed on every exit, on an unlinked copy
+of the W0 head; its output is discarded.
 
 - **Credentials, the narrowest each CLI runs with.** No seat receives a refresh token.
   - **Claude:** the one SEATJAIL decision. That is the bound override, else the login's
