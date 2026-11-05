@@ -20,7 +20,6 @@ route facts are passed in by the invoker.
 from __future__ import annotations
 
 import contextlib
-import fcntl
 import json
 import os
 import stat
@@ -262,6 +261,8 @@ def _modes_lock(stream_dir: Path):
     seat workers in any thread or process of the board serialize their read-modify-replace
     (an advisory ``flock`` on the directory: no lock file is left behind). A lock still held
     after :data:`MODES_LOCK_WAIT_S` raises ``ValueError``."""
+    import fcntl
+
     try:
         descriptor = os.open(stream_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     except OSError as exc:
