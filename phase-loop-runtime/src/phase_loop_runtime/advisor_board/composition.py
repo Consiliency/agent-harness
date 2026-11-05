@@ -33,7 +33,7 @@ gateway, which would defeat the point of keeping the reviewer count up.
 """
 from __future__ import annotations
 
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass, replace
@@ -179,11 +179,37 @@ class ExcludedSeat:
         return f"{self.seat_key} excluded [{self.code}]: {self.why} -- fix: {self.fix}{replaced}"
 
 
+@dataclass(frozen=True)
+class CompositionOutcome:
+    status: str
+    code: str | None
+    unmet_slots: tuple[str, ...]
+    fix: str
+
+
 class ReviewComposition(NamedTuple):
     """A composed board with every seat the composer left out of it."""
 
     board: Board
     excluded: tuple[ExcludedSeat, ...]
+
+    def policy_outcome(self, tier="plan", *, seat_aliases=None) -> CompositionOutcome:
+        """Validate the composed board against the unchanged landing policy."""
+        from .. import panel_invoker as pi
+
+        policy = pi.review_policy_for_tier(tier)
+        try:
+            pi._validate_review_board_policy(self.board, policy, seat_aliases)
+        except pi.PresidentPolicyError:
+            aliases = dict(pi.DEFAULT_REVIEW_SEAT_ALIASES)
+            aliases.update(seat_aliases or {})
+            actual = Counter(aliases.get(s.model, s.model) for s in self.board.seats)
+            unmet = tuple((Counter(policy.required_seats) - actual).elements())
+            return CompositionOutcome(
+                "policy_refused", "review_composition_refused", unmet,
+                "restore the required vendor subscription sessions and check the board policy, then re-run the board",
+            )
+        return CompositionOutcome("admitted", None, (), "")
 
 
 # The most recent composition of this context. ``compose_review_board`` keeps returning a

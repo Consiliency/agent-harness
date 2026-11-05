@@ -6,6 +6,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- Return typed review composition policy outcomes (agent-harness#1729).
+
 - Roadmap registries accept lifecycle status `advisory` with a dated
   `ADVISORY — not runner-selected` banner. Advisory roadmaps remain covered and
   validated, but cannot be selected or dispatched (agent-harness#1824).
