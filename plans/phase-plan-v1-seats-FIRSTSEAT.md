@@ -144,7 +144,8 @@ No future commit identity, count or topology is prescribed.
     measurement of §11; excess is `gemini_seat_token_scope_excess`. The in-jail
     projection check stays a shape check. Under §9, the trusted probe's bracket holds
     exactly one refused token-endpoint event and the leg window none; any other
-    token-endpoint event is `gemini_seat_token_refreshed_in_jail`. `refresh_detection` also
+    token-endpoint event on that instance, or an allowed one on the expired-copy instance
+    (§10), is `gemini_seat_token_refreshed_in_jail`. `refresh_detection` also
     needs no §10 credential event and a passing §10 expired-copy control. With no positive
     observation (§8), any missing channel makes the field `unavailable`.
   - Binding and admission (§12): results bind the listed digests and context. A
@@ -235,6 +236,13 @@ SL-4 — E: Window kit, matrix and documentation reducer
     §11's closed per-row bracket result, signature or `unavailable`; §14's quiet interval
     and a launch-bridge exit wait in `sandbox_egress.py`; `start_proxy(refuse_all=True)`
     (§15); and no proxy request from any probe outside the bracket (§9).
+  - impl: The §9 bracket POST follows §11's client rules and counts only when its client
+    reports the proxy's refusal (CONNECT 403). Without that, no bracket event is the probe's:
+    a matching event stays a §8 positive. Mutant: one refused matching event, POST not run.
+    §11 signatures name exact client exits; a certificate failure is never a refusal.
+    §7's seat-writable test uses resolved host backing, `.agy-rw` overlays included.
+    One §14 regression runs the real bridge, front and srt path; a 2 s failure is a contract
+    amendment, not a retune.
   - impl: Salvage only reproduced host fixes, including the resolver portion of
     agent-harness#1623. Supply panel call-site requirements to lane D. Track any
     qualification-key change as `candidate` for W1; do not use a heartbeat route
@@ -353,6 +361,10 @@ SL-4 — E: Window kit, matrix and documentation reducer
     board leg keeps EC-FIRSTSEAT-7's receipt and egress and adds §8 `loaded` results only.
     Call A's bridge wait before each end fence, close each watch before its §16 reads,
     scan launches 4 to 6, and hold §14's gap before the bracket.
+  - impl: For the qualify board only, the jailed Gemini seat's preamble and final
+    instructions ask for no read or command except reading `/seat/tree/window-read.txt`;
+    other frames stay byte-identical, and a test pins both. Each launch and board leg gets a
+    fresh seat directory. §5's tracer records paths only, never buffers or argv.
   - verify: Run V-D and V-G; replay B/C through the integrated native board and
     confirm the unchanged policy can admit W1 composition before any leg degrades.
 
@@ -385,10 +397,14 @@ SL-4 — E: Window kit, matrix and documentation reducer
     LA-2 remediation; it is not a jail falsifier and cannot trigger OD-9.
   - impl: `seat-window qualify` runs §15's launches and the board in each context, and
     alone assembles the reducer inputs; `containment` comes only from that reduction.
-    The board receives only §6's board input, its digest bound under §12; if no canonical
+    The board receives only §6's board input, in lane D's qualification frame, with its
+    digest bound under §12 and the complete delivered turn's digest in the record; if no canonical
     review is possible under it, the case goes to the owner and no open is exempted.
     Rows the window does not exercise stay `candidate`, recorded as unobserved; no
     procedure is added for them (EC-FIRSTSEAT-6).
+  - impl: A launch 4 with no write at §3's `home` row is final: no re-run, and any later
+    write is a change. The private record keeps the baseline and measured digests of that
+    row, and the owner summary states how many seat-writable `home` lookups §7 did not count.
   - impl: Prepare W1 with LA-1 host administration and managed released runtime,
     LA-2 logins and LA-3 attended runs. E owns provider-free qualification/egress
     installation and every live measurement supplied by A. Qualify writes only to
