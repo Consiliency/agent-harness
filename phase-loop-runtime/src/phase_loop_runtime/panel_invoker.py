@@ -8069,7 +8069,9 @@ def _classify_leg(
     if rc == 0 and body and _completion_ok(body, mode):
         return "OK"
     # FAILED. Everything below only labels.
-    if _leg_failure_kind(rc, review_text, log_text) in ("usage_limit", "env_failure"):
+    failure_kind = _leg_failure_kind(rc, review_text, log_text)
+    if (failure_kind in ("usage_limit", "env_failure")
+            or failure_kind == "auth" and type(log_text) is _HarnessCode):
         return "DEGRADED"
     if rc != 0:
         return "ERROR"
