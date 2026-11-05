@@ -4864,6 +4864,8 @@ _FRONTDOOR_EXEC = re.compile(
     r'exec /usr/bin/python3 -I (/[A-Za-z0-9._@+/-]+/source/lib/user_agent_tools\.py) launch'
     r' --provider ([a-z][a-z0-9-]*) --shared (/[A-Za-z0-9._@+/-]+)'
     r' --node-bin /[A-Za-z0-9._@+/-]+ -- "\$@"')
+#: The start of every guarded frontdoor's exec line, recognized or not.
+_FRONTDOOR_EXEC_PREFIX = "exec /usr/bin/python3 -I "
 #: Where guarded frontdoors' immutable, root-owned releases live.
 _FRONTDOOR_RELEASES = Path("/opt/consiliency/tooling/releases")
 #: Owners a frontdoor release may have: root only (tests substitute their own uid).
@@ -11737,6 +11739,11 @@ def _resolve_claude_executable() -> Path:
                 raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build"),
                                                     "claude frontdoor image is not trusted")
             return image
+        if lines and lines[-1].startswith(_FRONTDOOR_EXEC_PREFIX):
+            # A frontdoor of a shape this runtime does not know (a new flag, say) is never
+            # jailed as itself: the jail cannot run its release launcher.
+            raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build"),
+                                                "claude frontdoor is not a known shape")
         root = executable.parent.parent
         match = re.fullmatch(
             r"#!/bin/sh\nexport PATH=" + re.escape(str(root))

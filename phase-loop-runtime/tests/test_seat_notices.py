@@ -553,14 +553,17 @@ def test_the_jailed_claude_resolver_follows_a_guarded_frontdoor_to_its_native_im
     assert pi._resolve_claude_executable() == payload.resolve()
 
 
-@pytest.mark.parametrize("kind", ["outside-releases", "writable-image", "script-image"])
+@pytest.mark.parametrize("kind", ["outside-releases", "writable-image", "script-image",
+                                  "unknown-flag"])
 def test_an_untrusted_guarded_frontdoor_is_refused_not_jailed_as_itself(
         monkeypatch, tmp_path, kind):
-    _launcher, payload = _guarded_claude_frontdoor(tmp_path, monkeypatch)
+    launcher, payload = _guarded_claude_frontdoor(tmp_path, monkeypatch)
     if kind == "outside-releases":
         monkeypatch.setattr(pi, "_FRONTDOOR_RELEASES", tmp_path / "elsewhere")
     elif kind == "writable-image":
         payload.chmod(0o775)
+    elif kind == "unknown-flag":
+        launcher.write_text(launcher.read_text().replace(" -- \"$@\"", " --new-flag x -- \"$@\""))
     else:
         payload.write_text("#!/bin/sh\nexit 0\n")
     with pytest.raises(seat_jail.SeatSandboxRefused) as caught:
