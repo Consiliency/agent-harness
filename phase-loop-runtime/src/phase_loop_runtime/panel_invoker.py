@@ -13122,6 +13122,10 @@ def _exec_leg(
     ) if brokered else (
         scrub_subscription_env(os.environ) if env is None else dict(env)
     )
+    # SEATS CLAUDE (agent-harness#1820): W0 parent controls are consumed before a
+    # provider launch. The observation descriptor remains with the board parent.
+    env.pop(_claude_seat_transport.W0_OBSERVATION_ENV, None)
+    env.pop(_claude_seat_transport.W0_LINEUP_ENV, None)
     # The capture route runs in its own jail with a frozen env (agent-harness#1179); the
     # launch keeps it as built. Every other leg's scratch is relocated at the launch.
     leg_scratch = (_sandbox_policy.CHILD_SCRATCH_FROZEN_CAPTURE if agy_capture is not None

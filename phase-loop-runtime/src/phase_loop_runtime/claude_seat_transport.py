@@ -326,8 +326,9 @@ def launch_jailed(
 # The W0 observation channel (IF-0-CLAUDE-2): what the bake-off kit reads of a native run.
 # --------------------------------------------------------------------------------------
 
-#: Set only by the W0 kit, to a private file it owns: each jailed Claude launch of the board
-#: appends one closed, credential-free observation line. Unset, nothing is written.
+#: Set only by the W0 kit, to the number of a parent-created descriptor inherited by the
+#: board process: each jailed Claude launch appends one closed, credential-free observation
+#: line. The descriptor is never inherited by provider children. Unset, nothing is written.
 W0_OBSERVATION_ENV = "PHASE_LOOP_CLAUDE_W0_OBSERVATIONS"
 W0_OBSERVATION_SCHEMA = "claude-w0-observation.v1"
 _SLUG_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,63}")
@@ -409,26 +410,24 @@ def w0_observation(transport: str, seat: object, evidence: object,
 def _record_w0_observation(transport: str, seat: object, evidence: object,
                            outcome: tuple[str, str] | None, refusal: str | None,
                            staged: str | None) -> None:
-    """Append the observation to the kit's private file. The file must be an absolute
-    path in a directory the operator owns that no one else can write; a failure to write
-    is never a launch failure (the kit then sees no observation, which fails closed)."""
+    """Append the observation through the descriptor inherited from the W0 parent.
+
+    The kit owns the unnamed 0600 regular file behind the descriptor. No path is accepted.
+    A failure to write is never a launch failure (the kit then sees no observation, which
+    fails closed).
+    """
     raw = os.environ.get(W0_OBSERVATION_ENV, "")
-    path = Path(raw)
-    if not raw or not path.is_absolute():
+    if not re.fullmatch(r"[1-9][0-9]*", raw):
         return
     try:
-        info = os.lstat(path.parent)
-        if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
-                or info.st_mode & 0o022):
+        descriptor = int(raw)
+        info = os.fstat(descriptor)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) & 0o077):
             return
         line = json.dumps(w0_observation(transport, seat, evidence, outcome, refusal, staged),
                           sort_keys=True, separators=(",", ":")) + "\n"
-        descriptor = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW
-                             | os.O_CLOEXEC, 0o600)
-        try:
-            os.write(descriptor, line.encode("ascii"))
-        finally:
-            os.close(descriptor)
+        os.write(descriptor, line.encode("ascii"))
     except (OSError, ValueError, TypeError):
         return
 
