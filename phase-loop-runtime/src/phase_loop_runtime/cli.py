@@ -412,6 +412,8 @@ def build_parser() -> argparse.ArgumentParser:
     from .output_retention import register_parser as _retention_parser
 
     _retention_parser(subparsers)
+    from .seat_window import register_parser as _window_parser
+    _window_parser(subparsers)
     agy_qual_sub = subparsers.add_parser(
         "agy-qualification",
         help="First-use self-qualification of a genuine upstream agy release (agent-harness#1076)",
@@ -1311,6 +1313,9 @@ def main(argv: list[str] | None = None) -> int:
         from .seat_egress_proxy import cli_main as _seat_egress_main
 
         return _seat_egress_main(args)
+    if command == "seat-window":
+        from .seat_window import cli_main as _seat_window_main
+        return _seat_window_main(args)
     if command == "cli-qualification":
         from .cli_qualification import cli_main as _cli_qualification_main
 

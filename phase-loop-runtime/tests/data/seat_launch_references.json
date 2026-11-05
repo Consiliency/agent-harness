@@ -1191,5 +1191,11 @@
   {"count": 1, "function": "_retained_leg_exec.retained", "module": "panel_invoker", "primitive": "io.read_bytes", "role": "host-io"},
   {"count": 1, "function": "_grok_binary_identity", "module": "panel_invoker", "primitive": "io.read_bytes", "role": "host-io"},
   {"count": 1, "function": "grok_tool_gate", "module": "panel_invoker", "primitive": "io.open", "role": "host-io"},
-  {"count": 1, "function": "probe_grok_tools", "module": "panel_invoker", "primitive": "run_provider", "role": "owned"}
+  {"count": 1, "function": "probe_grok_tools", "module": "panel_invoker", "primitive": "run_provider", "role": "owned"},
+  {"count": 1, "function": "export_records", "module": "seat_window", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "_read_record", "module": "seat_window", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "account_isolation", "module": "seat_window", "primitive": "io.open", "role": "host-io"},
+  {"count": 3, "function": "runtime_digest", "module": "seat_window", "primitive": "io.glob", "role": "host-io"},
+  {"count": 1, "function": "runtime_digest", "module": "seat_window", "primitive": "io.read_bytes", "role": "host-io"},
+  {"count": 1, "function": "cli_main", "module": "seat_window", "primitive": "io.glob", "role": "host-io"}
 ]
