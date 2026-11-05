@@ -349,8 +349,9 @@ def validate_directory(directory: Path | str, *, repo: Path | str = ".",
     for block, arms in sorted(arms_by_block.items()):
         if len(arms) > 1:
             problems.append(f"block {block}: mixes arms")
-        elif next(iter(arms)) != EXECUTION_NOTES.blocks[block - 1]:
-            problems.append(f"block {block}: not the arm the run plan sets")
+    for obj in records:
+        if obj["arm"] != EXECUTION_NOTES.blocks[obj["block"] - 1]:
+            problems.append(f"{obj['run_id']}: not the arm the run plan sets for its block")
     for block, heads in sorted(heads_by_block.items()):
         if len(heads) > 1:
             problems.append(f"block {block}: more than one W0 head")

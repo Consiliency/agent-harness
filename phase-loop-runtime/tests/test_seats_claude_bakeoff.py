@@ -9,6 +9,7 @@ are stand-ins, which is the point -- W0 itself is an owner action.
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import re
 import subprocess
@@ -118,9 +119,12 @@ def test_the_shipped_evidence_directory_passes_v7():
 def test_the_evidence_digest_is_order_independent(repo, tmp_path):
     records = [native(repo), native(repo, n=2), control(repo)]
     one = write(tmp_path / "one", *records)
-    two = write(tmp_path / "two", *reversed(records))
-    for path, record in zip(sorted(two.glob("*.json")), ["x"] * 3):
-        path.rename(path.with_name("renamed-" + path.name))
+    two = write(tmp_path / "two", *records)
+    # Rename so that name order is the reverse of the first directory's.
+    for index, path in enumerate(sorted(two.glob("*.json"))):
+        path.rename(path.with_name(f"{9 - index}-{path.name}"))
+    assert [p.read_bytes() for p in sorted(one.glob("*.json"))] != [
+        p.read_bytes() for p in sorted(two.glob("*.json"))]
     assert bk.evidence_digest(one) == bk.evidence_digest(two)
     write(tmp_path / "three", *records[:2])
     assert bk.evidence_digest(tmp_path / "three") != bk.evidence_digest(one)
@@ -176,6 +180,8 @@ def test_a_malformed_record_fails_v7(repo, tmp_path, mutate):
     ("printer.lan", "host"),
     ("/v1/organizations/9f8e7d6c5b4a/usage", "path"),
     ("/v1/sessions/1234567/events", "path"),
+    ("/v1/sessions/sesn01abc23/events", "path"),
+    ("/v1/files/abcdefghijklmnopqrstuvwxyz", "path"),
     ("/v1/messages?beta=true", "path"),
 ])
 def test_a_planted_identifier_or_secret_shape_fails_v7(repo, tmp_path, planted, where):
@@ -549,6 +555,11 @@ def test_billing_follows_the_meter_bracket(tmp_path):
     assert [ledger.billing(block) for block in (1, 2, 3, 4)] == [
         "subscription", "extra_usage", "api", "unknown"]
     assert ledger.digest(1) != ledger.digest(2)
+    # The digest is salted with a private salt, so a public record cannot be checked
+    # against guessed readings.
+    bracket = json.dumps(ledger.readings[0:2], sort_keys=True).encode()
+    assert ledger.digest(1) != hashlib.sha256(bracket).hexdigest()
+    assert (tmp_path / "p" / "meter.salt").stat().st_mode & 0o777 == 0o600
 
 
 def test_the_native_outcome_reads_only_closed_values():
