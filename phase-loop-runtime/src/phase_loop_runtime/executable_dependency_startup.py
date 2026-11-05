@@ -80,6 +80,7 @@ _CLI_DEPENDENCY_WIRED_COMMANDS = frozenset({
     "resume",
     "run",
     "run-train",
+    "seat-window",
 })
 _CLI_DEPENDENCY_UNWIRED_COMMANDS = frozenset({
     "agy-canary-bootstrap-attest",

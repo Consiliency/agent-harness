@@ -323,6 +323,32 @@ def test_standalone_session_preserves_unknown_cli_parser_dispatch(monkeypatch) -
         session.close()
 
 
+@pytest.mark.parametrize("action", ("qualify", "verify", "export", "probe-tools", "matrix"))
+def test_seats_firstseat_window_managed_session(monkeypatch, action) -> None:
+    dependency = FakeDependency()
+    session = register_session(dependency)
+    monkeypatch.setattr(startup, "_validate_runtime_package", lambda package: None)
+    argv = ["--repo", "/synthetic", "seat-window", action, "--window", "W1"]
+    calls = []
+
+    def main(actual):
+        assert actual == argv
+        assert current_dependency_for_provider("synthetic") is dependency
+        calls.append(startup._CURRENT_TASK.get())
+        return 1
+
+    monkeypatch.setattr("phase_loop_runtime.cli.main", main)
+    try:
+        assert startup._classify_cli_route(argv) == "dependency_wired"
+        assert session.run_cli(argv) == 1
+        assert len(calls) == 1 and calls[0] is not None
+        # Entry and the provider lookup independently revalidate the lease.
+        assert dependency.revalidations == 2
+        assert not session._tasks
+    finally:
+        session.close()
+
+
 def test_cli_command_inventory_has_one_closed_dependency_classification(monkeypatch) -> None:
     from phase_loop_runtime import cli
 

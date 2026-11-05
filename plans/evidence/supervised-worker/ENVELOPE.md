@@ -144,16 +144,16 @@ files; this is a nonfatal ledger warning, not an ownership transfer.
   },
   "final_tree_validated": false,
   "runner_stamp": {
-    "observed_utc": "2026-11-04T23:05:24.194996+00:00",
-    "observed_input_head": "470cb7e528c961ef63db326ef994653e690a0994",
+    "observed_utc": "2026-11-05T06:15:55.801107+00:00",
+    "observed_input_head": "00c6c1e95960839e6a6299e14bbf8d54cb9707e0",
     "approved_plan_input_head": "c1aac3c19b711f9688bddc2bda11128d928b3ad9",
-    "source_tree_digest": "1950e2506e1d55e524141013bae10d0fa7cdcbea3ecec4da1845347484d4c19f"
+    "source_tree_digest": "08378d87c02ed00479e3e5cb8c37be9ec36cebdbc36e953568cee6222e9d0679"
   },
   "source_hashes": {
     "phase-loop-runtime/src/phase_loop_runtime/supervised_launch.py": "9c339674bef0b52bd6520d1e6d72bcee5157d5d80b4ba21f9baa425d4cfb0a22",
     "phase-loop-runtime/src/phase_loop_runtime/supervised_launch_binding.py": "d7f00ad8dcb5b979c6129c5836209497ee8e89ad20e3bfaed7bbe55b63b88958",
     "phase-loop-runtime/src/phase_loop_runtime/supervised_dependency.py": "7f465aee2193256b0816cfce7dad614d07af3f9e429f5f285c9e904157301713",
-    "phase-loop-runtime/src/phase_loop_runtime/executable_dependency_startup.py": "b43b489d606bf92b910dbc6ce8a23e40ac564553d60a0f807013e0e286e5594a",
+    "phase-loop-runtime/src/phase_loop_runtime/executable_dependency_startup.py": "9ca6943121027230e5db682999da826ccf2389f2169728c7221aa796b0cc8a65",
     "phase-loop-runtime/tests/test_supervised_launch.py": "75589c45c697c747407260c54a0ce9179cb32c458ea32937b3b1806c2acc1522",
     "phase-loop-runtime/tests/test_supervised_launch_mutations.py": "f91b77785ed63a31798ce8ba509bc712efa5c489d59532d53266d2db30337125",
     "phase-loop-runtime/tests/test_supervised_launch_binding.py": "c126cc082b541ba2bfcfce92b6df8e56a83ae990510fdbb4199d190b94b717a9",

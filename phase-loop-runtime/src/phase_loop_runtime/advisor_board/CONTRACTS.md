@@ -2169,3 +2169,49 @@ Not changed: the qualification gate, the review policy, the seat floor, the agy 
 and every seat sandbox profile. Nothing is qualified automatically by composition. `heartbeat_only` runs seat the frozen board and compose nothing; their whole-board
 preflight (`_preflight_gemini_heartbeat`) is still the only path that qualifies an agy build
 on first use.
+# FIRSTSEAT contracts
+
+IF-0-FIRSTSEAT-3: `leg_exec.v1` records a generated attempt id, vendor, a
+closed allowlist of argv flags (no values or prompts), integer exit code,
+typed outcome, tri-state parent auth (`healthy`, `signed_out`, `unavailable`),
+structured turn/verdict availability and a byte bound. Store outside the
+checkout in operator-owned 0700 directories, using exclusive, no-follow 0600
+files and descriptor ownership/mode checks. Scan before bounding. Unavailable
+scan assurance omits the field; no unscanned output is retained.
+Board returns that did not reach an observed process retain a record with a null
+exit code and `leg_execution_unobserved`; they do not invent a process exit.
+The provider wrapper preserves the record identity through board delivery.
+
+Auth classification requires a nonzero exit, independently observed absence
+of both turn and verdict, and a signed-out host probe. Reviewed text and
+`_leg_failure_kind` are never auth inputs. Claude uses its subscription probe,
+Codex its login-status probe. Gemini/Grok parent probes return unavailable
+until a supported, unambiguous host status is observed; neither plain output
+nor credential-file presence establishes login state.
+
+Typed mapping to IF-0-REVIEWTRUTH-1: successful canonical results remain
+`reviewed`; unavailable host evidence is non-auth `errored`; admission gates
+are `refused`; supervision is `timed_out`; cancellation stays cancellation.
+This phase adds no `PanelLegOutcome` variants.
+
+IF-0-FIRSTSEAT-4: composition yields admitted or a policy refusal with unmet
+slots and fix information. President events join start and terminal by attempt
+identity. Persist start before transport; bounded no-output supervision accepts
+only finite positive settings up to 1800 seconds. `heartbeat_only` has no
+silence kill. Events inherit IF-0-FIRSTSEAT-3 storage and closed-field rules.
+
+The parent carries one `leg_exec.v1` observation context across broker callbacks.
+Nested launch helpers contribute to that same record. A board leg retains its
+record digest as non-serializing metadata, computed when the leg returns.
+Records omit output and argv values entirely, including prompts. A detector
+error or unavailable credential assurance omits the flag field as well.
+
+`seat_window.v1` is the private per-context window record. Its closed fields
+are implemented in `seat_window.py`; `seat-window verify` joins the three W1
+contexts offline and rejects incomplete records. `seat-window export` is the
+reviewed public writer and emits only opaque labels, host classes, digests and
+closed row status/exception metadata. It never copies private record bodies.
+Offline fixture receipts validate this contract and do not establish W1.
+
+Production `seat-window qualify` collection is pending its window supplier; the
+current command fails closed with `candidate` and writes no window evidence.

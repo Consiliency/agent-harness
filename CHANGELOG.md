@@ -6,6 +6,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- Add seat-window matrix, private record verification, reviewed export and Grok probe commands (agent-harness#1820). Qualification remains pending; qualify and verify stay candidate and export remains unavailable until the production window supplier lands. Grok probes report each runtime argv form separately.
+
 - Retain closed-field leg execution records and require Grok tool probe receipts (agent-harness#1823, agent-harness#1821).
 
 - Supervised-worker contract intake (v12 SCHEMA, agent-harness#1818): vendors the

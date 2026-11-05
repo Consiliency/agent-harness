@@ -846,3 +846,12 @@ full vocabulary is in `advisor_board/CONTRACTS.md` ("SEATJAIL").
 under the leg's private 0700 scratch directory and the leg carries
 `seat_sandbox_retained_after_teardown`. Remove them with
 `phase-loop seat-sandbox reap PATH`; it accepts only a path recorded by that notice.
+
+**Seat windows.** `phase-loop seat-window matrix` lists vendor, remote and
+president rows. The shared `qualify`, `verify` and reviewed `export` commands
+use the [window kit](../plans/evidence/seat-qualification/README.md). `qualify` is pending its production window supplier and fails closed with
+`candidate` after preflight; no window launches are supplied by this landing.
+Incomplete measurements remain `candidate`; offline checks do not qualify hosts.
+W1 has not run. Owner host preparation, logins, attendance and reviewed evidence
+remain required. `bounded` president attempts have durable start/terminal records
+and a finite no-output bound; `heartbeat_only` keeps its no-silence-kill policy.
