@@ -2909,6 +2909,11 @@ def launch(
                 exec_status_read, exec_status_write = _supervisor_status_pipe()
             try:
                 if exec_status_write is not None:
+                    # The supervisor's argv does not name the provider: admit it first, and
+                    # run the image the receipt measured.
+                    from . import panel_invoker
+                    if action != "review" and panel_invoker.require_grok_admission(command, child_env):
+                        command = [panel_invoker._grok_binary_identity(command, child_env)[0], *command[1:]]
                     popen_command = _lease_supervisor_command(command, _supervisor_lease_fd, exec_status_write)
                     popen_kwargs.update(
                         close_fds=True,

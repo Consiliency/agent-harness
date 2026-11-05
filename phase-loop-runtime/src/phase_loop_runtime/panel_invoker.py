@@ -5846,11 +5846,8 @@ def _filtered_holder_namespace() -> int:
 
 def launch_owned(argv, *, role, profile: SeatProfile, supervisor=None, **kwargs):
     role = SeatLaunchRole(role)
-    if argv and Path(argv[0]).name == "grok" and not _grok_admin_command(argv):
-        if not grok_tool_gate(argv, kwargs.get("env")):
-            raise _seat_jail.SeatSandboxRefused("grok_tool_surface_unverified")
-        if role is SeatLaunchRole.EXECUTOR_TRUSTED:
-            argv = [_grok_binary_identity(argv, kwargs.get("env"))[0], *argv[1:]]
+    if require_grok_admission(argv, kwargs.get("env")) and role is SeatLaunchRole.EXECUTOR_TRUSTED:
+        argv = [_grok_binary_identity(argv, kwargs.get("env"))[0], *argv[1:]]
     if role is SeatLaunchRole.EXECUTOR_TRUSTED:
         from .executable_dependency_startup import refuse_unwired_dependency_route
         refuse_unwired_dependency_route("direct executor")
@@ -6506,7 +6503,12 @@ def _grok_review_form(*, model, review_dir, prompt, grok_effort_args):
 def grok_runtime_forms(*, model=None, effort="high"):
     effort_args = render_seat_invocation("grok", model or DEFAULT_LEG_MODELS["grok"], effort).effort_args
     directory = Path("/definition-probe")
+    from .launcher import build_grok_command
+    from .models import ModelSelection
+    selection = ModelSelection(model=model or DEFAULT_LEG_MODELS["grok"], effort=effort, profile="execute")
     return {
+        "execute": build_grok_command(directory, selection, action="execute", context_file="bundle"),
+        "workflow": build_grok_command(directory, selection, action="plan", context_file="bundle"),
         "review": _grok_review_form(model=model, review_dir=directory, prompt="", grok_effort_args=effort_args),
         "sealed": _grok_brokered_form(model=model, out_dir=directory, grok_effort_args=effort_args, tree=None),
         "staged": _grok_brokered_form(model=model, out_dir=directory, grok_effort_args=effort_args, tree=directory),
@@ -9735,6 +9737,7 @@ def _run_claude_tui_session(
     trust auto-answer is never armed (a modal refuses the leg), and ``transcript_refresh``
     re-snapshots the seat-owned transcript through the J10 in-H reader before each read."""
     if fcntl is None or pty is None or termios is None:
+        _note_exec_unlaunched(command, env)
         return 1, "", "claude_tui_unsupported_platform", ""
 
     profile_stack = contextlib.ExitStack()
@@ -10045,11 +10048,13 @@ def _run_claude_tui_session(
         profile_stack.close()
         if master_fd is not None:
             os.close(master_fd)
+        _note_exec_unlaunched(command, env)
         return 127, "", "missing_claude_cli", ""
     except Exception as exc:
         profile_stack.close()
         if master_fd is not None:
             os.close(master_fd)
+        _note_exec_unlaunched(command, env)
         if type(exc) is _seat_jail.SeatSandboxRefused:
             # A jailed launch's pre-launch refusal keeps its ONE code (J7/J13), never the
             # generic launch-error template.
@@ -11958,6 +11963,8 @@ def _exec_jailed_claude_leg(
     finally:
         _cleanup_jailed_seat(seat, snapshots=snapshots, primary=sys.exception())
     _note_exec_result(rc, command, jail.env)
+    model_turn = _journal_has_model_turn(kept)
+    _note_exec_signals(model_turn=model_turn, verdict=terminal_verdict(review_text) is not None)
     if unsafe:
         return _jailed_failure("seat_sandbox_refused:output_unsafe", failure_detail_sink)
     pty_tail = str(pty_tail or "")
@@ -11982,7 +11989,12 @@ def _exec_jailed_claude_leg(
         # reason, its reset time included; otherwise the shared tail classifier labels the
         # failure, and our own session code stands when the tail names nothing.
         failure = _claude_leg_failure(status, rc, "", log_text, pty_tail)
-        if failure is not None and failure.template == "auth_failure":
+        # The tail is seat-rendered once a model turn has run, so it can quote a reviewed
+        # tree: it names a credential's limit only with the provider's typed give-up, or
+        # when the parent-held journal shows no turn.
+        if failure is not None and (failure.template == "auth_failure" or (
+                _seat_jail.is_limit_detail(failure.template)
+                and model_turn and _claude_terminal_code(log_text) is None)):
             failure = _LegFailure(template="leg_execution_failed", unknown=True, rc=rc)
         if (failure is None or failure.unknown) and log_text and _is_harness_code(str(log_text)):
             failure = _LegFailure(template=str(log_text))
@@ -12527,6 +12539,28 @@ def _note_exec_signals(**signals):
                             if name in {"model_turn", "verdict"} and type(value) is bool})
 
 
+def _journal_has_model_turn(data: bytes) -> bool:
+    """Does the parent-held journal show a real model turn? A provider's own error record
+    is not one (``_claude_api_error_record``)."""
+    for line in data.splitlines():
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        message = record.get("message") if isinstance(record, dict) else None
+        if (isinstance(message, dict) and message.get("role") == "assistant"
+                and message.get("model") != "<synthetic>" and not _claude_api_error_record(record, message)):
+            return True
+    return False
+
+
+def _note_exec_unlaunched(command, env):
+    """Nothing started: the exit stays null whatever code the adapter then returns."""
+    observation = _EXEC_OBSERVATION.get()
+    if observation is not None and not observation.get("exit_observed"):
+        observation.update(returncode=None, argv=list(command), env=env, exit_observed=True)
+
+
 def _note_exec_result(rc, command, env, *, actual=False):
     observation = _EXEC_OBSERVATION.get()
     if observation is not None:
@@ -12680,6 +12714,15 @@ def _grok_binary_identity(command, env=None):
     return str(resolved), sha256(resolved.read_bytes()).hexdigest()
 
 
+def require_grok_admission(argv, env=None) -> bool:
+    """The shared Grok launch gate. True when ``argv`` is a Grok launch it admitted."""
+    if not argv or Path(argv[0]).name != "grok" or _grok_admin_command(argv):
+        return False
+    if not grok_tool_gate(argv, env):
+        raise _seat_jail.SeatSandboxRefused("grok_tool_surface_unverified")
+    return True
+
+
 def _grok_admin_command(command):
     return (len(command) == 2 and command[1] in {"--help", "--version", "login", "logout"}) or (
         "--list-tools" in command and not set(command) & {
@@ -12690,6 +12733,20 @@ def _grok_allowed_tools(command):
     if "--tools" not in command:
         return set()
     return set(filter(None, command[command.index("--tools") + 1].split(",")))
+
+
+def _grok_tools_admitted(command, offered, allowed=None):
+    """An allow-list form offers only what it lists. A workflow form has no allow-list
+    (``build_grok_command``): it offers anything its deny-list does not remove."""
+    if not isinstance(offered, list) or not all(type(tool) is str for tool in offered):
+        return False
+    allowed = _grok_allowed_tools(command) if allowed is None else set(allowed)
+    if "--tools" in command or allowed:
+        return all(tool in allowed for tool in offered)
+    denied = set()
+    if "--disallowed-tools" in command:
+        denied = set(filter(None, command[command.index("--disallowed-tools") + 1].split(",")))
+    return bool(offered) and not denied.intersection(offered)
 
 
 def _grok_argv_digest(command):
@@ -12707,8 +12764,7 @@ def record_tool_probe(command, definitions, *, allowed_tools, version="unavailab
     except (OSError, ValueError, RuntimeError):
         binary = "0" * 64
     offered = definitions.get("tools") if type(definitions) is dict else None
-    passed = (isinstance(offered, list) and (bool(offered) or not allowed_tools)
-              and all(type(tool) is str and tool in allowed_tools for tool in offered)
+    passed = (_grok_tools_admitted(command, offered, allowed_tools) and (bool(offered) or not allowed_tools)
               and definitions.get("diagnostics") == [] and binary != "0" * 64
               and type(version) is str and bool(version.strip()) and version != "unavailable")
     record = {"schema": "tool_probe.v1", "binary_digest": binary,
@@ -12763,8 +12819,7 @@ def grok_tool_gate(command, env=None) -> bool:
             os.close(directory)
         return (record.get("schema") == "tool_probe.v1" and record.get("passed") is True
                 and record.get("binary_digest") == binary and record.get("argv_digest") == argv_digest
-                and isinstance(record.get("tools"), list)
-                and all(type(tool) is str and tool in _grok_allowed_tools(command) for tool in record["tools"])
+                and _grok_tools_admitted(command, record.get("tools"))
                 and isinstance(record.get("version_digest"), str)
                 and re.fullmatch(r"[0-9a-f]{64}", record["version_digest"]) is not None)
     except (OSError, ValueError, TypeError, AttributeError, IndexError, RuntimeError):

@@ -19,6 +19,7 @@ allow-list, byte for byte.
 
 from __future__ import annotations
 
+import os
 import subprocess
 import pytest
 from pathlib import Path
@@ -433,3 +434,63 @@ def test_the_evidence_records_the_approval_mode_actually_in_force(tmp_path):
     assert "permission-bypass-inside-seat-sandbox" not in plain
     assert "disallowed-unlisted-builtins" in boxed
     assert "disallowed-unlisted-builtins" not in plain
+
+
+def _fixture_grok(tmp_path, monkeypatch):
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    marker = tmp_path / "launched"
+    binary = bin_dir / "grok"
+    binary.write_text(f"#!/bin/sh\necho launched >> {marker}\n")
+    binary.chmod(0o755)
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("PATH", f"{bin_dir}:{os.environ['PATH']}")
+    monkeypatch.setattr(pi, "_PROVIDER_SEARCH_PATH", str(bin_dir))
+    return binary, marker
+
+
+@pytest.mark.parametrize("action", ["execute", "plan", "repair"])
+def test_seats_firstseat_tool_surface_supervised_workflow(tmp_path, monkeypatch, action):
+    import fcntl
+    from phase_loop_runtime import launcher, seat_jail
+
+    class Lease:
+        generation = identity = "fixture"
+        def __init__(self, fd): self.fd = fd
+        def fileno(self): return self.fd
+
+    binary, marker = _fixture_grok(tmp_path, monkeypatch)
+    selection = launcher.ModelSelection(model="grok-4.7", effort="high", profile="execute")
+    command = launcher.build_grok_command(tmp_path, selection, action=action, context_file="bundle")
+    fd = os.open(tmp_path / "lease.lock", os.O_RDWR | os.O_CREAT, 0o600)
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        with pytest.raises(seat_jail.SeatSandboxRefused) as refusal:
+            launcher.launch(command, action=action, cwd=str(tmp_path), env=dict(os.environ),
+                            log_path=tmp_path / "log", lease_authority=Lease(fd))
+        assert refusal.value.code == "grok_tool_surface_unverified"
+        assert not marker.exists()
+        offered = {"tools": ["read_file", "write", "run_terminal_command"], "diagnostics": []}
+        assert pi.record_tool_probe(command, offered, allowed_tools=set(), version="fixture-v1")["passed"]
+        result = launcher.launch(command, action=action, cwd=str(tmp_path), env=dict(os.environ),
+                                 log_path=tmp_path / "log", lease_authority=Lease(fd))
+        assert result.returncode == 0 and marker.read_text() == "launched\n"
+        assert Path(result.command[0]) == binary.resolve()
+    finally:
+        os.close(fd)
+
+
+def test_seats_firstseat_tool_surface_workflow_deny_list(tmp_path, monkeypatch):
+    from phase_loop_runtime import launcher
+    _fixture_grok(tmp_path, monkeypatch)
+    selection = launcher.ModelSelection(model="grok-4.7", effort="high", profile="execute")
+    command = launcher.build_grok_command(tmp_path, selection, action="execute", context_file="bundle")
+    denied = command[command.index("--disallowed-tools") + 1].split(",")[0]
+    assert not pi.record_tool_probe(command, {"tools": ["write", denied], "diagnostics": []},
+                                    allowed_tools=set(), version="fixture-v1")["passed"]
+    assert not pi.grok_tool_gate(command)
+    assert not pi.record_tool_probe(command, {"tools": [], "diagnostics": []},
+                                    allowed_tools=set(), version="fixture-v1")["passed"]
+    assert pi.record_tool_probe(command, {"tools": ["write"], "diagnostics": []},
+                                allowed_tools=set(), version="fixture-v1")["passed"]
+    assert pi.grok_tool_gate(command)

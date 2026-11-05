@@ -484,3 +484,29 @@ class PanelInvokerTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@pytest.mark.parametrize("failure", ["refused", "missing", "launch"])
+def test_seats_firstseat_exec_record_tui_prelaunch(tmp_path, monkeypatch, failure):
+    from phase_loop_runtime import panel_invoker as pi
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setenv("PHASE_LOOP_PANEL_CLAUDE_ROUTE", "tui")
+    monkeypatch.setattr(pi, "_under_claude_code", lambda *a: False)
+    monkeypatch.setattr(pi, "_claude_code_support_status", lambda **k: (True, "supported"))
+    monkeypatch.setattr(pi, "_claude_subscription_auth_ok", lambda *a: (True, ""))
+    errors = {"refused": pi._seat_jail.SeatSandboxRefused("grok_tool_surface_unverified"),
+              "missing": FileNotFoundError("claude"), "launch": OSError("fixture")}
+    def refuse(*a, **k):
+        raise errors[failure]
+    monkeypatch.setattr(pi, "_seat_command_profile", refuse)
+    review, out = tmp_path / "review", tmp_path / "out"
+    review.mkdir()
+    out.mkdir()
+    (review / "review-bundle.md").write_text("fixture")
+    (review / "review-instructions.md").write_text("fixture")
+    @pi._retained_leg_exec
+    def run(leg):
+        return pi._exec_claude_tui_leg(review, out, 60, "fixture", env={})
+    assert run("claude")[0] != "OK"
+    record = json.loads(next((tmp_path / "state").rglob("leg-*.json")).read_text())
+    assert record["exit_code"] is None

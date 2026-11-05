@@ -1276,3 +1276,35 @@ def test_a_placed_legs_seat_notices_survive_the_placement_rewrap(monkeypatch):
     assert rewrapped.sandbox_placement_evidence == placement
     assert rewrapped.seat_notices == ("claude_seat_token_missing", "seat_filesystem_unconfined")
     assert tuple(rewrapped) == tuple(original)
+
+
+_JOURNAL_TURN = json.dumps({"type": "assistant", "message": {"role": "assistant", "model": "claude-opus-5-5",
+                            "content": [{"type": "text", "text": "reading"}]}}).encode() + b"\n"
+_JOURNAL_REJECTED = json.dumps({"type": "assistant", "isApiErrorMessage": True, "message": {
+    "role": "assistant", "model": "<synthetic>", "content": [{"type": "text", "text": "Invalid API key"}]}}).encode() + b"\n"
+
+
+@pytest.mark.parametrize("journal,tail,parent,notices", [
+    (_JOURNAL_TURN, "Usage limit reached. Try again at 5:00 PM", "healthy", []),
+    (_JOURNAL_TURN, "not logged in; please run claude login", "signed_out", []),
+    (b"", "Usage limit reached. Try again at 5:00 PM", "healthy", ["claude_seat_token_rate_limited"]),
+    (_JOURNAL_REJECTED, "Invalid API key · Please run /login", "signed_out", ["claude_seat_token_rejected"]),
+])
+def test_seats_firstseat_jailed_tail_needs_turnless_journal(monkeypatch, tmp_path, journal, tail, parent, notices):
+    # The real decorator supplies the observation: nothing seeds the turn signal.
+    seat = _FakeSeat(tmp_path)
+    seat.source, seat.expires_at = "seat_token", None
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(pi, "_parent_auth_state", lambda *a, **k: parent)
+    monkeypatch.setattr(pi._seat_uid, "read_in_h", lambda *a, **k: journal)
+    monkeypatch.setattr(pi._seat_uid, "teardown_in_h", lambda *a, **k: [])
+    monkeypatch.setattr(pi._seat_jail, "close_jail_fds", lambda jail: None)
+    monkeypatch.setattr(pi, "_broker_claude_tui_command", lambda **k: ["/seat/bin/claude"])
+    monkeypatch.setattr(pi, "_run_claude_tui_session", lambda **k: (
+        1, "", pi._HarnessCode("claude_tui_pty_eof_no_output"), tail))
+    @pi._retained_leg_exec
+    def run(leg):
+        return pi._exec_jailed_claude_leg(seat, timeout_s=5, backstop_s=5, model=None, effort=None,
+                                          prompt="p", broker_evidence={}, failure_detail_sink=[])
+    assert run("claude")[0] == "DEGRADED"
+    assert seat.notices == notices
