@@ -139,6 +139,23 @@ def test_inventory_matches_frozen_cases():
               for f, c in re.findall(r"^\| (envelope|status) \| `([^`]+)`", artifact, re.M)}
     assert published == frozen
     assert len(corpus(ENVELOPE)) == 16 and len(corpus(STATUS)) == 35
+    frozen_rules = {(identity, source, tuple(sorted(re.findall(r"`([^`]+)`", cases))), owner)
+                    for identity, source, cases, owner in re.findall(
+                        r"^\| `((?:envelope|status):[^`]+)` \| `([^`]+)` \| ([^|]+) \| ([^|]+) \|$", artifact, re.M)}
+    frozen_journal = {(source, owner) for source, owner in re.findall(
+        r"^\| `(run-status.schema.json#/x-journal-rules/[^`]+)` \| ([^|]+) \|", artifact, re.M)}
+    rows = semantic_inventory()
+    assert frozen_rules == {(r["id"], r["source_pointer"], tuple(r["vector_ids"]), r["owner"])
+                            for r in rows if not r["id"].startswith("journal:")}
+    assert frozen_journal == {(r["source_pointer"], r["owner"]) for r in rows if r["id"].startswith("journal:")}
+
+
+def test_default_status_definition():
+    bundle = load_contract_bundle()
+    records = examples()
+    validate_record(bundle, STATUS, encoded(records[STATUS, "journal_line"]))
+    with pytest.raises(ContractError, match="record_schema_invalid"):
+        validate_record(bundle, STATUS, encoded(records[STATUS, "page"]))
 
 
 def test_equal_proposal_independent_attempt_evidence():
@@ -198,13 +215,6 @@ def sha256_positions():
     for family, name in SCHEMAS.items():
         walk(family, json.loads(bundle.resource_bytes(name)), "")
     return positions
-
-
-def schema_target(path):
-    # Replace each reference position using a minimal record for its containing
-    # definition; schema reachability is separately exercised by corpus records.
-    parts = path.split("/")
-    return parts[2] if parts[1] == "$defs" else None
 
 
 @lru_cache(maxsize=2)

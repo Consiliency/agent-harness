@@ -14246,6 +14246,16 @@
             "verification_status": "blocked"
           },
           "transition": "failed"
+        },
+        {
+          "at": "2026-11-05T05:24:50Z",
+          "by": "codex-execute-phase",
+          "metadata": {
+            "phase_alias": "SCHEMA",
+            "run_id": "v12-schema-repair",
+            "supersedes_blocker": "CHANGELOG ownership and documentation update are present."
+          },
+          "transition": "executing"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -14258,10 +14268,10 @@
         "type": "phase"
       },
       "slug": "v12-SCHEMA",
-      "status": "failed",
+      "status": "executing",
       "task_summary": "Execution-ready manual v1 SCHEMA intake for agent-harness#1818; byte-pin authority remains false pending published v2 reconciliation.",
       "type": "phase",
-      "updated_at": "2026-11-05T04:59:20Z",
+      "updated_at": "2026-11-05T05:24:50Z",
       "frozen_inputs": {
         "plans/artifacts/v12-SCHEMA-inputs.md": {
           "sha256": "2c98eafb4950cf4106e1512515dca3199cc4c6095dd5c5d6971e7c0e9b62cf0b"

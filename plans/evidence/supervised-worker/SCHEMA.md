@@ -114,59 +114,12 @@ targets are the vendored schema directory and docs/supervised-worker-contracts.m
       "status": "upstream_phase_unmet"
     }
   ],
-  "hosted_job_evidence": {
-    "conclusion": "success",
-    "head": "5c814c074ad96590a512c38b5322db2134aa923c",
-    "job_id": 127057973696,
-    "run_id": "41970689855",
-    "wheel_junit_sha256": "b11fe02e29127159cf66b0350228f809f2569a3eff5d4de701e31f7e8a8ab657",
-    "wheel_tests_passed": 58
-  },
-  "hosted_publication": {
-    "default_branch": "main",
-    "default_branch_head": "93db4b4fcc4e3d40c62f6658b6a67b519c750491",
-    "hosted_head": "5c814c074ad96590a512c38b5322db2134aa923c",
-    "hosted_job": "publication",
-    "hosted_run_id": "41970689855",
-    "input_artifact_sha256": "2c98eafb4950cf4106e1512515dca3199cc4c6095dd5c5d6971e7c0e9b62cf0b",
-    "outcome": "passed",
-    "protected": true,
-    "resources": {
-      "admitted-launch-envelope.schema.json": {
-        "blob": "1abe40abbb1178295af86b3c6d64f9bffe5a0099",
-        "sha256": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d"
-      },
-      "conformance/README.md": {
-        "blob": "9051f4fcfa7bb91b896f3efe60b6a3b238545a75",
-        "sha256": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca"
-      },
-      "conformance/SHA256SUMS": {
-        "blob": "ff78301d393ef361f6c476a7117f0d2d97d2193b",
-        "sha256": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285"
-      },
-      "conformance/envelope.vectors.json": {
-        "blob": "4fcb908f0ed89f2206efc2fbf4c5a6c7bdbd7e56",
-        "sha256": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f"
-      },
-      "conformance/run-status.vectors.json": {
-        "blob": "4a156e4fbf56526d483f729c78b2e94eb6f48f93",
-        "sha256": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730"
-      },
-      "provenance.json": {
-        "blob": "cb2d905ba4fc12c9df1244f301c2624a656643ac",
-        "sha256": "9444d9285e4fbf9fa78c7e10fb474885c79f77cb65abec2f45527af2ec57ff42"
-      },
-      "run-status.schema.json": {
-        "blob": "8af75b390c1b6dcb5478ac16daec3bd38cb060d1",
-        "sha256": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
-      }
-    },
-    "source_commit": "93db4b4fcc4e3d40c62f6658b6a67b519c750491"
-  },
-  "hosted_result_artifact_sha256": "a3b4f35f4621dc1aab4f699e66f21b4a38338d77ef6736d49e6a641e5302a6d8",
-  "hosted_run_id": "41970689855",
+  "hosted_job_evidence": null,
+  "hosted_publication": null,
+  "hosted_result_artifact_sha256": null,
+  "hosted_run_id": null,
   "input_artifact_sha256": "2c98eafb4950cf4106e1512515dca3199cc4c6095dd5c5d6971e7c0e9b62cf0b",
-  "intake_gate_status": "verified",
+  "intake_gate_status": "awaiting_hosted_verification",
   "intake_results": [
     {
       "case_or_control_id": "test_frozen_input_and_production_pins",
@@ -809,6 +762,70 @@ targets are the vendored schema directory and docs/supervised-worker-contracts.m
       "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_strict_record_intake[SENTINEL]"
     },
     {
+      "case_or_control_id": "test_strict_record_intake[data11]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_strict_record_intake[data11]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_strict_record_intake[data11]"
+    },
+    {
+      "case_or_control_id": "test_strict_record_intake[{\"SENTINEL\":\"\\ud800\"}]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_strict_record_intake[{\"SENTINEL\":\"\\ud800\"}]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_strict_record_intake[{\"SENTINEL\":\"\\ud800\"}]"
+    },
+    {
+      "case_or_control_id": "test_strict_record_intake[{\"\\udfff\":1}]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_strict_record_intake[{\"\\udfff\":1}]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_strict_record_intake[{\"\\udfff\":1}]"
+    },
+    {
+      "case_or_control_id": "test_strict_record_intake[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_strict_record_intake[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_strict_record_intake[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[[]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]]"
+    },
+    {
       "case_or_control_id": "test_finite_numbers_preserve_types[0.5]",
       "group": "intake_results",
       "outcome": "passed",
@@ -1017,7 +1034,7 @@ targets are the vendored schema directory and docs/supervised-worker-contracts.m
       "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_schema_invalid_closed_error"
     },
     {
-      "case_or_control_id": "test_metadata_integrity[provenance]",
+      "case_or_control_id": "test_metadata_integrity[byte_pin_authority]",
       "group": "intake_results",
       "outcome": "passed",
       "resource_sha256": {
@@ -1029,8 +1046,104 @@ targets are the vendored schema directory and docs/supervised-worker-contracts.m
         "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
         "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
       },
-      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_metadata_integrity[provenance]",
-      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_metadata_integrity[provenance]"
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_metadata_integrity[byte_pin_authority]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_metadata_integrity[byte_pin_authority]"
+    },
+    {
+      "case_or_control_id": "test_metadata_integrity[commit]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_metadata_integrity[commit]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_metadata_integrity[commit]"
+    },
+    {
+      "case_or_control_id": "test_metadata_integrity[source_repository]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_metadata_integrity[source_repository]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_metadata_integrity[source_repository]"
+    },
+    {
+      "case_or_control_id": "test_metadata_integrity[root]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_metadata_integrity[root]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_metadata_integrity[root]"
+    },
+    {
+      "case_or_control_id": "test_metadata_integrity[upstream_resources]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_metadata_integrity[upstream_resources]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_metadata_integrity[upstream_resources]"
+    },
+    {
+      "case_or_control_id": "test_metadata_integrity[excluded_metadata]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_metadata_integrity[excluded_metadata]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_metadata_integrity[excluded_metadata]"
+    },
+    {
+      "case_or_control_id": "test_metadata_integrity[input_artifact_sha256]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_metadata_integrity[input_artifact_sha256]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_metadata_integrity[input_artifact_sha256]"
     },
     {
       "case_or_control_id": "test_metadata_integrity[manifest]",
@@ -1047,6 +1160,38 @@ targets are the vendored schema directory and docs/supervised-worker-contracts.m
       },
       "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_metadata_integrity[manifest]",
       "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_metadata_integrity[manifest]"
+    },
+    {
+      "case_or_control_id": "test_metadata_integrity[manifest-entry]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_metadata_integrity[manifest-entry]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_metadata_integrity[manifest-entry]"
+    },
+    {
+      "case_or_control_id": "test_metadata_integrity[manifest-encoding]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_metadata_integrity[manifest-encoding]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_metadata_integrity[manifest-encoding]"
     },
     {
       "case_or_control_id": "test_module_and_installed_resource_origin",
@@ -1095,10 +1240,538 @@ targets are the vendored schema directory and docs/supervised-worker-contracts.m
       },
       "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_no_public_injection_surface",
       "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_no_public_injection_surface"
+    },
+    {
+      "case_or_control_id": "test_packaged_resource_inventory[UNLISTED]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_packaged_resource_inventory[UNLISTED]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_packaged_resource_inventory[UNLISTED]"
+    },
+    {
+      "case_or_control_id": "test_packaged_resource_inventory[conformance/UNLISTED]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_packaged_resource_inventory[conformance/UNLISTED]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_packaged_resource_inventory[conformance/UNLISTED]"
+    },
+    {
+      "case_or_control_id": "test_packaged_resource_inventory[nested/file]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_packaged_resource_inventory[nested/file]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_packaged_resource_inventory[nested/file]"
+    },
+    {
+      "case_or_control_id": "test_bundle_input_contract[none]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_bundle_input_contract[none]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_bundle_input_contract[none]"
+    },
+    {
+      "case_or_control_id": "test_bundle_input_contract[text]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_bundle_input_contract[text]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_bundle_input_contract[text]"
+    },
+    {
+      "case_or_control_id": "test_bundle_input_contract[object]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_bundle_input_contract[object]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_bundle_input_contract[object]"
+    },
+    {
+      "case_or_control_id": "test_bundle_input_contract[empty]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_bundle_input_contract[empty]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_bundle_input_contract[empty]"
+    },
+    {
+      "case_or_control_id": "test_bundle_input_contract[altered]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_bundle_input_contract[altered]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_bundle_input_contract[altered]"
+    },
+    {
+      "case_or_control_id": "test_validation_runtime_diagnostic",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_validation_runtime_diagnostic",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_validation_runtime_diagnostic"
+    },
+    {
+      "case_or_control_id": "test_schema_identity_contract",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_schema_identity_contract",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_schema_identity_contract"
+    },
+    {
+      "case_or_control_id": "test_runtime_constructor_contract",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_runtime_constructor_contract",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_runtime_constructor_contract"
+    },
+    {
+      "case_or_control_id": "test_publication_sealed_inputs[baseline]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_sealed_inputs[baseline]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_sealed_inputs[baseline]"
+    },
+    {
+      "case_or_control_id": "test_publication_sealed_inputs[seal]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_sealed_inputs[seal]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_sealed_inputs[seal]"
+    },
+    {
+      "case_or_control_id": "test_publication_sealed_inputs[inventory]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_sealed_inputs[inventory]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_sealed_inputs[inventory]"
+    },
+    {
+      "case_or_control_id": "test_publication_sealed_inputs[commit]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_sealed_inputs[commit]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_sealed_inputs[commit]"
+    },
+    {
+      "case_or_control_id": "test_publication_runner_offline[success]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_runner_offline[success]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_runner_offline[success]"
+    },
+    {
+      "case_or_control_id": "test_publication_runner_offline[private]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_runner_offline[private]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_runner_offline[private]"
+    },
+    {
+      "case_or_control_id": "test_publication_runner_offline[default]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_runner_offline[default]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_runner_offline[default]"
+    },
+    {
+      "case_or_control_id": "test_publication_runner_offline[protection]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_runner_offline[protection]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_runner_offline[protection]"
+    },
+    {
+      "case_or_control_id": "test_publication_runner_offline[ancestry]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_runner_offline[ancestry]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_runner_offline[ancestry]"
+    },
+    {
+      "case_or_control_id": "test_publication_runner_offline[head]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_runner_offline[head]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_runner_offline[head]"
+    },
+    {
+      "case_or_control_id": "test_publication_runner_offline[advance]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_runner_offline[advance]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_runner_offline[advance]"
+    },
+    {
+      "case_or_control_id": "test_publication_runner_offline[bytes]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_runner_offline[bytes]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_runner_offline[bytes]"
+    },
+    {
+      "case_or_control_id": "test_publication_runner_offline[environment]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_runner_offline[environment]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_runner_offline[environment]"
+    },
+    {
+      "case_or_control_id": "test_publication_change_selection[changed0-False-False]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_change_selection[changed0-False-False]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_change_selection[changed0-False-False]"
+    },
+    {
+      "case_or_control_id": "test_publication_change_selection[changed1-False-False]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_change_selection[changed1-False-False]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_change_selection[changed1-False-False]"
+    },
+    {
+      "case_or_control_id": "test_publication_change_selection[changed2-True-True]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_change_selection[changed2-True-True]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_change_selection[changed2-True-True]"
+    },
+    {
+      "case_or_control_id": "test_publication_change_selection[changed3-False-True]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_change_selection[changed3-False-True]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_change_selection[changed3-False-True]"
+    },
+    {
+      "case_or_control_id": "test_publication_change_selection[changed4-False-True]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_change_selection[changed4-False-True]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_change_selection[changed4-False-True]"
+    },
+    {
+      "case_or_control_id": "test_publication_change_selection[changed5-False-True]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_change_selection[changed5-False-True]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_change_selection[changed5-False-True]"
+    },
+    {
+      "case_or_control_id": "test_publication_change_selection[changed6-False-True]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_change_selection[changed6-False-True]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_change_selection[changed6-False-True]"
+    },
+    {
+      "case_or_control_id": "test_publication_change_selection[changed7-False-True]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_change_selection[changed7-False-True]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_change_selection[changed7-False-True]"
+    },
+    {
+      "case_or_control_id": "test_publication_change_selection[changed8-False-True]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_change_selection[changed8-False-True]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_change_selection[changed8-False-True]"
     }
   ],
   "module_origin": "phase_loop_runtime/supervised_contracts.py",
-  "module_sha256": "c25bed3f2c2eb86c1f737631998e02d1f09f985bcbfe52885d3bc46971258c9b",
+  "module_sha256": "b6e5b2e926a5b65daab4bb4f6b924845127e30da1b7d1202a6a607d5bcc9544c",
   "mutation_results": [
     {
       "case_or_control_id": "test_production_control[digest]",
@@ -2193,6 +2866,22 @@ targets are the vendored schema directory and docs/supervised-worker-contracts.m
       },
       "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts_vectors.py::test_inventory_matches_frozen_cases",
       "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts_vectors.py::test_inventory_matches_frozen_cases"
+    },
+    {
+      "case_or_control_id": "test_default_status_definition",
+      "group": "schema_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts_vectors.py::test_default_status_definition",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts_vectors.py::test_default_status_definition"
     },
     {
       "case_or_control_id": "test_equal_proposal_independent_attempt_evidence",
@@ -4420,7 +5109,7 @@ targets are the vendored schema directory and docs/supervised-worker-contracts.m
     }
   ],
   "source_commit": "93db4b4fcc4e3d40c62f6658b6a67b519c750491",
-  "suite_artifact_sha256": "82ff0d7cde7a31589fd92194009776e3b8314c68336ed6bdee34edeaa9d4a8ec",
+  "suite_artifact_sha256": "4d8c293fbf456ab5648a020cffdec60639af0e97a8983c46637edea89536e2aa",
   "tier_basis": {
     "os_enforced": {
       "constraints": {

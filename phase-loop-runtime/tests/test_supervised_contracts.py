@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import shutil
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,6 +17,7 @@ from phase_loop_runtime.supervised_contracts import ContractError, load_contract
 ROOT = Path(__file__).resolve().parents[2]
 INPUT = ROOT / "plans/artifacts/v12-SCHEMA-inputs.md"
 MANIFEST_ANCHOR = "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285"
+COMMIT_ANCHOR = "93db4b4fcc4e3d40c62f6658b6a67b519c750491"
 
 
 def anchor(module=production):
@@ -27,6 +29,8 @@ def anchor(module=production):
     assert len(expected) == 7
     assert dict(module.PUBLICATION_PINS) == expected
     assert module.PUBLICATION_PINS["conformance/SHA256SUMS"][0] == MANIFEST_ANCHOR
+    commit = re.search(r"Source: public Consiliency/consiliency-contract, commit\n`([0-9a-f]{40})`", data.decode())
+    assert commit and commit[1] == module.SOURCE_COMMIT == COMMIT_ANCHOR
     bundle = module.load_contract_bundle()
     for name, (digest, _) in expected.items():
         if name != "provenance.json":
@@ -95,6 +99,15 @@ def test_single_read_same_buffer(tmp_path):
             self.path = path
         def joinpath(self, *names):
             return Resource(self.path.joinpath(*names))
+        @property
+        def name(self):
+            return self.path.name
+        def iterdir(self):
+            return (Resource(p) for p in self.path.iterdir())
+        def is_dir(self):
+            return self.path.is_dir()
+        def is_file(self):
+            return self.path.is_file()
         def read_bytes(self):
             reads[self.path] = reads.get(self.path, 0) + 1
             assert reads[self.path] == 1
@@ -125,7 +138,8 @@ def test_selector_refusal(family, definition):
 
 @pytest.mark.parametrize("data", [b'{"SENTINEL":1,"SENTINEL":2}', b'{"SENTINEL":NaN}', b'{"SENTINEL":Infinity}',
     b'{"SENTINEL":-Infinity}', b'{"SENTINEL":1e9999}', b'{"SENTINEL":9007199254740992}',
-    b'{"SENTINEL":-9007199254740992}', b'{"SENTINEL":', b'\xff', {}, "SENTINEL"])
+    b'{"SENTINEL":-9007199254740992}', b'{"SENTINEL":', b'\xff', {}, "SENTINEL",
+    bytearray(b'{}'), b'{"SENTINEL":"\\ud800"}', b'{"\\udfff":1}', b'[' * 2000 + b']' * 2000])
 def test_strict_record_intake(data):
     with pytest.raises(ContractError) as caught:
         validate_record(load_contract_bundle(), "admitted_launch_envelope.v1", data)
@@ -202,19 +216,22 @@ def test_schema_invalid_closed_error(tmp_path):
     assert caught.value.__context__ is None
 
 
-@pytest.mark.parametrize("kind", ["provenance", "manifest"])
+@pytest.mark.parametrize("kind", ["byte_pin_authority", "commit", "source_repository", "root", "upstream_resources",
+    "excluded_metadata", "input_artifact_sha256", "manifest", "manifest-entry", "manifest-encoding"])
 def test_metadata_integrity(tmp_path, kind):
     module = isolated_module(tmp_path)
     module.load_contract_bundle()
     root = tmp_path / "schemas/supervised-worker-v1"
-    if kind == "provenance":
+    if not kind.startswith("manifest"):
         path = root / "harness-provenance.json"
-        data = json.loads(path.read_bytes()); data["byte_pin_authority"] = True
+        data = json.loads(path.read_bytes()); data[kind] = "SENTINEL"
         raw = json.dumps(data).encode(); path.write_bytes(raw)
         module._PROVENANCE_SHA256 = sha256(raw).hexdigest()
     else:
         path = root / "conformance/SHA256SUMS"
-        repin(module, tmp_path, "conformance/SHA256SUMS", path.read_bytes() * 2)
+        data = path.read_bytes()
+        data = data * 2 if kind == "manifest" else (b'\xff' if kind == "manifest-encoding" else data.replace(b'../', b'./', 1))
+        repin(module, tmp_path, "conformance/SHA256SUMS", data)
     with pytest.raises(module.ContractError, match="manifest_invalid"):
         module.load_contract_bundle()
 
@@ -255,3 +272,173 @@ def test_no_public_injection_surface():
     import inspect
     assert str(inspect.signature(load_contract_bundle)) == "() -> 'ContractBundle'"
     assert list(inspect.signature(validate_record).parameters) == ["bundle", "family", "record", "definition"]
+
+
+@pytest.mark.parametrize("name", ["UNLISTED", "conformance/UNLISTED", "nested/file"])
+def test_packaged_resource_inventory(tmp_path, name):
+    module = isolated_module(tmp_path)
+    module.load_contract_bundle()
+    path = tmp_path / "schemas/supervised-worker-v1" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"SENTINEL")
+    with pytest.raises(module.ContractError) as caught:
+        module.load_contract_bundle()
+    assert str(caught.value) == "resource_unlisted"
+    assert caught.value.__context__ is None
+
+
+@pytest.mark.parametrize("kind", ["none", "text", "object", "empty", "altered"])
+def test_bundle_input_contract(kind):
+    bundle = load_contract_bundle()
+    captured = bundle._captured
+    if kind == "none": bundle = None
+    elif kind == "text": bundle = "SENTINEL"
+    elif kind == "object": bundle = SimpleNamespace(_captured=captured)
+    else:
+        bundle = object.__new__(production.ContractBundle)
+        if kind == "altered":
+            object.__setattr__(bundle, "_captured", ((captured[0][0], b'{}'), *captured[1:]))
+    with pytest.raises(ContractError) as caught:
+        validate_record(bundle, "admitted_launch_envelope.v1", b'{}')
+    assert str(caught.value) == "manifest_invalid" and caught.value.__context__ is None
+
+
+def test_validation_runtime_diagnostic(tmp_path, monkeypatch):
+    module = isolated_module(tmp_path)
+    bundle = module.load_contract_bundle()
+    def validator(*args, **kwargs):
+        raise ValueError("SENTINEL")
+    _, registry, schemas = module._schema_runtime(dict(bundle._captured))
+    monkeypatch.setattr(module, "_schema_runtime", lambda _: (validator, registry, schemas))
+    with pytest.raises(module.ContractError) as caught:
+        module.validate_record(bundle, "admitted_launch_envelope.v1", b'{}')
+    assert str(caught.value) == "record_schema_invalid:admitted-launch-envelope.schema.json"
+    assert caught.value.__context__ is None
+
+
+def test_schema_identity_contract(tmp_path):
+    module = isolated_module(tmp_path)
+    bundle = module.load_contract_bundle()
+    name = "run-status.schema.json"
+    schema = json.loads(bundle.resource_bytes(name))
+    schema["$id"] = "urn:contract:other"
+    repin(module, tmp_path, name, json.dumps(schema).encode())
+    sync_copy_metadata(module, tmp_path)
+    with pytest.raises(module.ContractError, match="^schema_invalid$"):
+        module.load_contract_bundle()
+
+
+def test_runtime_constructor_contract(tmp_path, monkeypatch):
+    module = isolated_module(tmp_path)
+    module.load_contract_bundle()
+    import jsonschema
+    class UnavailableValidator:
+        def __init__(self, *args, **kwargs):
+            raise TypeError("SENTINEL")
+    monkeypatch.setattr(jsonschema, "Draft202012Validator", UnavailableValidator)
+    module._cached_schema_runtime.cache_clear()
+    with pytest.raises(module.ContractError) as caught:
+        module.load_contract_bundle()
+    assert str(caught.value) == "runtime_unsupported" and caught.value.__context__ is None
+
+
+def publication_module():
+    spec = importlib.util.spec_from_file_location("publication_check", ROOT / "phase-loop-runtime/scripts/verify_supervised_contract_publication.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+@pytest.mark.parametrize("kind", ["baseline", "seal", "inventory", "commit"])
+def test_publication_sealed_inputs(tmp_path, monkeypatch, kind):
+    module = publication_module()
+    for name in ("plans/manifest.json", "plans/artifacts/v12-SCHEMA-inputs.md"):
+        path = tmp_path / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(ROOT / name, path)
+    module.verify_seal(tmp_path)
+    if kind == "baseline":
+        return
+    if kind == "seal":
+        path = tmp_path / "plans/artifacts/v12-SCHEMA-inputs.md"
+        path.write_bytes(path.read_bytes() + b' ')
+    elif kind == "inventory": monkeypatch.setattr(module, "MANIFEST_ANCHOR", "0" * 64)
+    else: monkeypatch.setattr(module, "SOURCE_COMMIT", "0" * 40)
+    with pytest.raises(ValueError, match="publication_mismatch"):
+        module.verify_seal(tmp_path)
+
+
+@pytest.mark.parametrize("condition", ["success", "seal", "private", "default", "protection", "ancestry", "head", "advance", "bytes", "environment"])
+def test_publication_runner_offline(tmp_path, monkeypatch, condition):
+    module = publication_module()
+    bundle = anchor()
+    upstream = {n: bundle.resource_bytes(n) for n in production._UPSTREAM}
+    upstream["provenance.json"] = b'{}'
+    pins = dict(production.PUBLICATION_PINS)
+    pins["provenance.json"] = (sha256(b'{}').hexdigest(), pins["provenance.json"][1])
+    monkeypatch.setattr(module, "PUBLICATION_PINS", pins)
+    verified = []
+    def verify_seal(repo):
+        verified.append(repo)
+        if condition == "seal": raise ValueError("publication_mismatch")
+    monkeypatch.setattr(module, "verify_seal", verify_seal)
+    head = "a" * 40
+    reads = []
+    def command(argv, **kwargs):
+        if argv[:2] == ["gh", "api"]:
+            if argv[2].endswith("/branches/main"):
+                reads.append(True)
+                observed = "b" * 40 if condition == "head" or (condition == "advance" and len(reads) == 1) else head
+                return json.dumps({"protected": condition != "protection", "commit": {"sha": observed}}).encode()
+            return json.dumps({"private": condition == "private", "default_branch": "other" if condition == "default" else "main"}).encode()
+        if argv[1] == "clone": return b''
+        if argv[1] == "merge-base":
+            if condition == "ancestry": raise module.subprocess.CalledProcessError(1, argv)
+            return b''
+        if argv[1:] == ["rev-parse", "origin/main"]: return head.encode()
+        name = argv[2].split(":core/supervised-run/", 1)[1]
+        if argv[1] == "show": return upstream[name] + (b' ' if condition == "bytes" else b'')
+        assert argv[1] == "rev-parse"
+        return pins[name][1].encode()
+    monkeypatch.setattr(module.subprocess, "check_output", command)
+    output = tmp_path / "publication.json"
+    monkeypatch.setattr(sys, "argv", ["publication", "--repo", str(ROOT), "--output", str(output)])
+    for key, value in {"GITHUB_RUN_ID": "123", "GITHUB_JOB": "publication", "GITHUB_SHA": head}.items():
+        monkeypatch.setenv(key, value)
+    if condition == "environment": monkeypatch.delenv("GITHUB_RUN_ID")
+    if condition in ("success", "advance"):
+        module.main()
+        assert json.loads(output.read_bytes())["outcome"] == "passed"
+    else:
+        with pytest.raises((ValueError, KeyError, module.subprocess.CalledProcessError)):
+            module.main()
+        assert not output.exists()
+    assert verified == [ROOT]
+
+
+@pytest.mark.parametrize("changed,seal_changed,expected", [
+    (["docs/guide.md"], False, False), (["plans/manifest.json"], False, False),
+    (["plans/manifest.json"], True, True),
+    (["phase-loop-runtime/src/phase_loop_runtime/schemas/supervised-worker-v1/conformance/SHA256SUMS"], False, True),
+    (["phase-loop-runtime/src/phase_loop_runtime/supervised_contracts.py"], False, True),
+    (["phase-loop-runtime/tests/test_supervised_contracts.py"], False, True),
+    (["phase-loop-runtime/scripts/verify_supervised_contract_publication.py"], False, True),
+    (["plans/artifacts/v12-SCHEMA-inputs.md"], False, True),
+    ([".github/workflows/supervised-contract-intake.yml"], False, True)])
+def test_publication_change_selection(tmp_path, monkeypatch, changed, seal_changed, expected):
+    workflow = (ROOT / ".github/workflows/supervised-contract-intake.yml").read_text()
+    import textwrap
+    script = textwrap.dedent(workflow.split("python3 - <<'PY'\n", 1)[1].split("          PY\n", 1)[0])
+    output = tmp_path / "outputs"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(output))
+    monkeypatch.setenv("BASE_SHA", "a" * 40)
+    monkeypatch.setenv("HEAD_SHA", "b" * 40)
+    def command(argv):
+        if argv[1] == "diff": return ("\0".join(changed) + "\0").encode()
+        assert argv[:2] == ["git", "show"]
+        seal = "changed" if seal_changed and argv[2].startswith("b") else "same"
+        return json.dumps({"plans": [{"slug": "v12-SCHEMA", "frozen_inputs": {"seal": seal}}]}).encode()
+    import subprocess
+    monkeypatch.setattr(subprocess, "check_output", command)
+    exec(compile(script, "workflow-selection", "exec"), {})
+    assert output.read_text() == "contract=" + str(expected).lower() + "\n"

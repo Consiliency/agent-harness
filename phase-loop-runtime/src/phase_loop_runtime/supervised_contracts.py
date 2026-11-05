@@ -65,7 +65,7 @@ def _strict_json(data: bytes, code: str, resource: str | None = None):
     def pairs(items):
         result = {}
         for key, value in items:
-            if key in result:
+            if key in result or any(0xD800 <= ord(c) <= 0xDFFF for c in key):
                 raise ValueError()
             result[key] = value
         return result
@@ -92,6 +92,16 @@ def _strict_json(data: bytes, code: str, resource: str | None = None):
             raise ValueError()
         value = json.loads(data.decode("utf-8"), object_pairs_hook=pairs,
                            parse_int=integer, parse_float=number, parse_constant=constant)
+        def strings(item):
+            if isinstance(item, str) and any(0xD800 <= ord(c) <= 0xDFFF for c in item):
+                raise ValueError()
+            if isinstance(item, dict):
+                for child in item.values():
+                    strings(child)
+            elif isinstance(item, list):
+                for child in item:
+                    strings(child)
+        strings(value)
     except (ValueError, UnicodeError, TypeError, RecursionError, InvalidOperation):
         failed = True
     if failed:
@@ -192,6 +202,28 @@ def _cached_schema_runtime(buffers):
 def load_contract_bundle() -> ContractBundle:
     captured = {}
     root = resources.files("phase_loop_runtime").joinpath("schemas", "supervised-worker-v1")
+    observed = set()
+    def inventory(directory, prefix=""):
+        for child in directory.iterdir():
+            name = prefix + child.name
+            if child.is_dir() and any(n.startswith(name + "/") for n in _NAMES):
+                inventory(child, name + "/")
+            elif child.is_file() and name in _NAMES:
+                observed.add(name)
+            else:
+                raise ContractError("resource_unlisted") from None
+    failed = False
+    try:
+        inventory(root)
+    except (OSError, ValueError) as error:
+        if isinstance(error, ContractError):
+            raise
+        failed = True
+    if failed:
+        raise ContractError("resource_missing") from None
+    for name in _NAMES:
+        if name not in observed:
+            raise ContractError("resource_missing", name) from None
     for name in _NAMES:
         failed = False
         try:
@@ -218,7 +250,13 @@ def load_contract_bundle() -> ContractBundle:
             or provenance.get("input_artifact_sha256") != INPUT_ARTIFACT_SHA256
             or provenance.get("byte_pin_authority") is not False):
         raise ContractError("manifest_invalid", "harness-provenance.json") from None
-    manifest = captured["conformance/SHA256SUMS"].decode("ascii")
+    invalid = False
+    try:
+        manifest = captured["conformance/SHA256SUMS"].decode("ascii")
+    except UnicodeError:
+        invalid = True
+    if invalid:
+        raise ContractError("manifest_invalid", "conformance/SHA256SUMS") from None
     expected_manifest = {("../" + n if not n.startswith("conformance/") else n.removeprefix("conformance/")): PUBLICATION_PINS[n][0]
                          for n in _UPSTREAM if n != "conformance/SHA256SUMS"}
     entries = {}
@@ -244,6 +282,13 @@ def validate_record(bundle: ContractBundle, family: str, record: bytes, *, defin
             family == "supervised_run_status.v1" and definition is not None
             and (not isinstance(definition, str) or definition not in _DEFINITIONS)):
         raise ContractError("selector_invalid") from None
+    captured = getattr(bundle, "_captured", None) if type(bundle) is ContractBundle else None
+    if (type(captured) is not tuple or len(captured) != len(_NAMES)
+            or any(type(row) is not tuple or len(row) != 2 or row[0] != name
+                   or type(row[1]) is not bytes
+                   or sha256(row[1]).hexdigest() != (_PROVENANCE_SHA256 if name == "harness-provenance.json" else PUBLICATION_PINS[name][0])
+                   for name, row in zip(_NAMES, captured))):
+        raise ContractError("manifest_invalid") from None
     instance = _strict_json(record, "record_json_invalid")
     validator, registry, schemas = _schema_runtime(dict(bundle._captured))
     name = _SCHEMAS[family]

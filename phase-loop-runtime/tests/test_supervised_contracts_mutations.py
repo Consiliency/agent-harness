@@ -67,6 +67,11 @@ def captured_assertion(module):
     class Once:
         def __init__(self, path): self.path = path
         def joinpath(self, *parts): return Once(self.path.joinpath(*parts))
+        @property
+        def name(self): return self.path.name
+        def iterdir(self): return (Once(p) for p in self.path.iterdir())
+        def is_dir(self): return self.path.is_dir()
+        def is_file(self): return self.path.is_file()
         def read_bytes(self):
             data = self.path.read_bytes()
             self.path.write_bytes(b"not JSON after capture")

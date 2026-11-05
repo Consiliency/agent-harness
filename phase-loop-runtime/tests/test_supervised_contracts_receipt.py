@@ -1,10 +1,12 @@
 """Receipt checks and explicit post-suite runner stamp (no predicted outcomes)."""
 from collections import Counter
+import ast
 from hashlib import sha256
 import inspect
 import json
 from pathlib import Path
 import re
+import sys
 import xml.etree.ElementTree as ET
 
 import pytest
@@ -158,9 +160,21 @@ def test_receipt_bindings_and_inventory():
     verify(read_receipt())
 
 
-@pytest.mark.parametrize("control", ["authority", "inventory", "case", "result", "coverage", "input", "runner"])
+@pytest.mark.parametrize("control", ["authority", "inventory", "case", "result", "coverage", "input", "runner",
+    "hosted-outcome", "hosted-source", "hosted-resources", "hosted-protection", "hosted-head", "hosted-job", "hosted-wheel"])
 def test_receipt_controls(control):
     data = read_receipt()
+    if control.startswith("hosted-") and data["hosted_publication"] is None:
+        # Synthetic metadata exercises the reducer while real hosted work is pending.
+        data.update(intake_gate_status="verified", hosted_run_id="123",
+                    hosted_result_artifact_sha256="a" * 64)
+        data["hosted_publication"] = {"outcome": "passed", "hosted_run_id": "123",
+            "hosted_job": "publication", "hosted_head": "a" * 40,
+            "source_commit": production.SOURCE_COMMIT, "input_artifact_sha256": production.INPUT_ARTIFACT_SHA256,
+            "protected": True, "default_branch": "main",
+            "resources": {n: {"sha256": d, "blob": b} for n, (d, b) in production.PUBLICATION_PINS.items()}}
+        data["hosted_job_evidence"] = {"run_id": "123", "head": "a" * 40, "conclusion": "success",
+            "job_id": 123, "wheel_tests_passed": sum(expected_functions(intake).values()), "wheel_junit_sha256": "a" * 64}
     verify(data)  # enter production before a temporary receipt mutation
     if control == "authority": data["byte_pin_authority"] = True
     elif control == "inventory": data["semantic_inventory"].pop()
@@ -169,6 +183,13 @@ def test_receipt_controls(control):
     elif control == "coverage": data["coverage_inventory"][0]["absent_keys"] = ["caller_context"]
     elif control == "input": data["input_artifact_sha256"] = "0" * 64
     elif control == "runner": data["schema_results"][0]["outcome"] = "skipped"
+    elif control == "hosted-outcome": data["hosted_publication"]["outcome"] = "failed"
+    elif control == "hosted-source": data["hosted_publication"]["source_commit"] = "0" * 40
+    elif control == "hosted-resources": data["hosted_publication"]["resources"].popitem()
+    elif control == "hosted-protection": data["hosted_publication"]["protected"] = False
+    elif control == "hosted-head": data["hosted_job_evidence"]["head"] = "0" * 40
+    elif control == "hosted-job": data["hosted_job_evidence"]["conclusion"] = "failure"
+    elif control == "hosted-wheel": data["hosted_job_evidence"]["wheel_tests_passed"] = 0
     with pytest.raises(AssertionError):
         verify(data)
 
@@ -179,7 +200,70 @@ def test_runtime_consumers_remain_independent():
     for path in root.rglob("*.py"):
         if path.name == "supervised_contracts.py":
             continue
-        assert not re.search(r"(?:from\s+[^\n]*supervised_contracts|import\s+[^\n]*supervised_contracts)", path.read_text()), path.name
+        assert independent_source(path.read_text()), path.name
+
+
+def independent_source(text):
+    for node in ast.walk(ast.parse(text)):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            names = [a.name for a in node.names]
+            if isinstance(node, ast.ImportFrom): names.append(node.module or "")
+            if any("supervised_contracts" in name.split(".") for name in names):
+                return False
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and "supervised_contracts" in node.value:
+            return False
+    return True
+
+
+@pytest.mark.parametrize("source", ["from . import (\n supervised_contracts,\n)",
+    "from phase_loop_runtime import (\n supervised_contracts as sc,\n)",
+    'importlib.import_module("phase_loop_runtime.supervised_contracts")'])
+def test_consumer_source_classification(source):
+    assert not independent_source(source)
+
+
+@pytest.mark.parametrize("outcome", ["passed", "failure", "error", "skipped"])
+def test_junit_outcomes(tmp_path, outcome):
+    path = tmp_path / "results.xml"
+    case = ET.Element("testcase", classname="test_supervised_contracts", name="test_example")
+    if outcome != "passed": ET.SubElement(case, outcome)
+    suite = ET.Element("testsuite")
+    suite.append(case)
+    path.write_bytes(ET.tostring(suite))
+    if outcome == "passed":
+        rows, raw = junit_rows([path])
+        assert len(rows["intake_results"]) == 1 and ET.fromstring(raw).tag == "testsuites"
+    else:
+        with pytest.raises(AssertionError): junit_rows([path])
+
+
+@pytest.mark.parametrize("mode", ["missing", "incomplete", "skipped"])
+def test_stamp_input_contract(tmp_path, monkeypatch, mode):
+    path = tmp_path / "results.xml"
+    if mode != "missing":
+        tag = "<skipped/>" if mode == "skipped" else ""
+        path.write_text('<testsuite><testcase classname="test_supervised_contracts" name="test_example">' + tag + '</testcase></testsuite>')
+    monkeypatch.setattr(sys.modules[__name__], "RECEIPT", tmp_path / "receipt.md")
+    with pytest.raises((AssertionError, FileNotFoundError)):
+        stamp([path], tmp_path / "suite.xml", bootstrap=True)
+    assert not (tmp_path / "receipt.md").exists()
+
+
+def test_stamp_round_trip(tmp_path, monkeypatch):
+    original = read_receipt()
+    suite = ET.Element("testsuite")
+    for group in GROUPS.values():
+        for row in original[group]:
+            module, name = row["test_node_id"].split("::", 1)
+            ET.SubElement(suite, "testcase", classname=Path(module).stem, name=name)
+    path = tmp_path / "results.xml"
+    path.write_bytes(ET.tostring(suite))
+    receipt_path = tmp_path / "receipt.md"
+    monkeypatch.setattr(sys.modules[__name__], "RECEIPT", receipt_path)
+    result = stamp([path], tmp_path / "suite.xml", bootstrap=True)
+    verify(read_receipt(receipt_path))
+    assert result["suite_artifact_sha256"] == sha256((tmp_path / "suite.xml").read_bytes()).hexdigest()
+    assert result["hosted_publication"] is None
 
 
 def junit_rows(paths):

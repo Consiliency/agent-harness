@@ -13,31 +13,74 @@ jobs:
     name: supervised contract publication
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    env:
-      GH_TOKEN: ${{ github.token }}
-      SCHEMA_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+      # Required check: always reports; non-contract changes are a successful no-op.
+      - name: Detect contract changes
+        id: changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import subprocess
+
+          # Exact contract path set, including the independent seal/anchor owners.
+          paths = {
+              "phase-loop-runtime/src/phase_loop_runtime/supervised_contracts.py",
+              "phase-loop-runtime/scripts/verify_supervised_contract_publication.py",
+              "phase-loop-runtime/tests/test_supervised_contracts.py",
+              "plans/artifacts/v12-SCHEMA-inputs.md",
+              ".github/workflows/supervised-contract-intake.yml",
+          }
+          resource_root = "phase-loop-runtime/src/phase_loop_runtime/schemas/supervised-worker-v1/"
+          base, head = os.environ["BASE_SHA"], os.environ["HEAD_SHA"]
+          required = not base or set(base) == {"0"}
+          if not required:
+              changed = set(subprocess.check_output([
+                  "git", "diff", "--no-renames", "--name-only", "-z", base, head,
+              ]).decode().rstrip("\0").split("\0"))
+              required = bool(paths & changed) or any(p.startswith(resource_root) for p in changed)
+              if "plans/manifest.json" in changed:
+                  def seal(ref):
+                      data = json.loads(subprocess.check_output(["git", "show", ref + ":plans/manifest.json"]))
+                      return next(r for r in data["plans"] if r["slug"] == "v12-SCHEMA")["frozen_inputs"]
+                  required = required or seal(base) != seal(head)
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write("contract=" + str(required).lower() + "\n")
+          print("Contract comparison required." if required else "Non-contract changes: successful no-op.")
+          PY
       - uses: actions/setup-python@v5
+        if: steps.changes.outputs.contract == 'true'
         with:
           python-version: '3.12'
       - uses: astral-sh/setup-uv@v6
+        if: steps.changes.outputs.contract == 'true'
       - name: Install locked dependencies
+        if: steps.changes.outputs.contract == 'true'
         run: uv sync --project phase-loop-runtime --group test --locked
       - name: Compare public distribution
+        if: steps.changes.outputs.contract == 'true'
         env:
+          GH_TOKEN: ${{ github.token }}
+          SCHEMA_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           PYTHONPATH: ${{ github.workspace }}/phase-loop-runtime/src
         run: >-
           phase-loop-runtime/.venv/bin/python phase-loop-runtime/scripts/verify_supervised_contract_publication.py
           --repo . --output /tmp/schema-publication.json
       - name: Build and extract wheel
+        if: steps.changes.outputs.contract == 'true'
         run: |
           uv build --wheel --out-dir /tmp/schema-wheel phase-loop-runtime
           mkdir /tmp/schema-installed
           phase-loop-runtime/.venv/bin/python -m zipfile -e /tmp/schema-wheel/*.whl /tmp/schema-installed
       - name: Verify extracted package
+        if: steps.changes.outputs.contract == 'true'
         env:
           SCHEMA_WHEEL_ROOT: /tmp/schema-installed
           PYTHONPATH: /tmp/schema-installed:${{ github.workspace }}/phase-loop-runtime/tests
@@ -45,6 +88,7 @@ jobs:
           timeout 900 phase-loop-runtime/.venv/bin/python -m pytest -q -p no:cacheprovider
           phase-loop-runtime/tests/test_supervised_contracts.py --junitxml=/tmp/schema-wheel.xml
       - uses: actions/upload-artifact@v4
+        if: steps.changes.outputs.contract == 'true'
         with:
           name: schema-publication-${{ github.run_id }}
           path: |

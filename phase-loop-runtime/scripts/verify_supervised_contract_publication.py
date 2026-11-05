@@ -15,6 +15,7 @@ from phase_loop_runtime.supervised_contracts import (
 )
 
 MANIFEST_ANCHOR = "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285"
+COMMIT_ANCHOR = "93db4b4fcc4e3d40c62f6658b6a67b519c750491"
 
 
 def compare_publication(upstream, blobs, bundle, *, include_excluded=True):
@@ -38,6 +39,9 @@ def verify_seal(repo):
     inventory = {n: (d, b) for n, d, b in re.findall(
         r"^\| `([^`]+)` \| `([0-9a-f]{64})` \| `([0-9a-f]{40})` \|$", artifact.decode(), re.M)}
     if inventory != dict(PUBLICATION_PINS) or inventory["conformance/SHA256SUMS"][0] != MANIFEST_ANCHOR:
+        raise ValueError("publication_mismatch")
+    commit = re.search(r"Source: public Consiliency/consiliency-contract, commit\n`([0-9a-f]{40})`", artifact.decode())
+    if commit is None or commit[1] != SOURCE_COMMIT or SOURCE_COMMIT != COMMIT_ANCHOR:
         raise ValueError("publication_mismatch")
 
 
@@ -63,7 +67,10 @@ def main():
         command(["git", "merge-base", "--is-ancestor", SOURCE_COMMIT, "origin/main"], clone)
         observed_head = command(["git", "rev-parse", "origin/main"], clone).decode().strip()
         if observed_head != branch["commit"]["sha"]:
-            raise ValueError("publication_mismatch")
+            # Reobserve once if main advanced between the metadata read and clone.
+            branch = json.loads(command(["gh", "api", "repos/Consiliency/consiliency-contract/branches/main"]))
+            if branch["protected"] is not True or observed_head != branch["commit"]["sha"]:
+                raise ValueError("publication_mismatch")
         upstream, blobs = {}, {}
         for name in PUBLICATION_PINS:
             ref = SOURCE_COMMIT + ":core/supervised-run/" + name

@@ -11,7 +11,7 @@ semantic evaluation. Launch and journal modules do not consume this seam.
 The families are `admitted_launch_envelope.v1` (no definition selector) and
 `supervised_run_status.v1` (default `journal_line`, also `projection`,
 `page_request`, `page`, `reader_view`). Strict JSON intake rejects duplicate
-keys, nonfinite numbers and integer literals outside the exact interoperable
+keys, lone Unicode surrogates, nonfinite numbers and integer literals outside the exact interoperable
 integer domain. Finite numeric forms keep their JSON Schema types. These
 conditions are distinct from the schemas' structural rules and from JCS byte
 canonicalization. Record objects must be supplied as UTF-8 JSON bytes.
@@ -41,12 +41,19 @@ only and is excluded from the runtime closure. The separately named
 `harness-provenance.json` is harness-authored, digest-pinned metadata, outside the
 six upstream files. The installed package carries the complete nested closure.
 
-The `supervised-contract-intake` hosted workflow runs on every pull request and
-push to main. It fetches the public commit read-only, checks protected default
+The `supervised contract publication` check is required and is a successful no-op
+on non-contract changes. Its `supervised-contract-intake` workflow runs on every
+pull request and every push to main with no path filter. The workflow pins the
+vendored resource subtree, loader, comparison script, independent anchor test,
+frozen artifact and workflow paths; manifest changes count only when the SCHEMA
+frozen-input seal changes. For contract changes it fetches the public commit
+read-only, checks protected default
 branch ancestry, compares actual vendor bytes/blobs and sealed inputs, and runs
 intake tests with an extracted wheel ahead of the checkout. Ordinary tests never
 fetch the network. Hosted run/job/head and result artifact identities belong in
 the receipt; a failed hosted comparison blocks intake completion and landing.
+The owner will add the check to branch protection after merge; this change does
+not modify repository settings.
 
 ## Authority and coverage
 
