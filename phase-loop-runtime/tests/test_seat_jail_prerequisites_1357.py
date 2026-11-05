@@ -311,7 +311,7 @@ def test_an_inventory_that_cannot_run_is_unknown_not_missing(monkeypatch):
 def test_the_snapshot_and_the_layout_identity_match_current_staging():
     """Current-tree staging has its own layout identity and requires qualification."""
     assert seat_jail.falsifier_layout_identity() == (
-        "execfind-falsifier-layout.v1:76686114d5bf2d38097156bca3b49aad5e65e584b917bfdea684168c3212bf3b")
+        "execfind-falsifier-layout.v1:7d9103e917279b7686fa0ead3358b978dc721f4d0ab3ff2214680c1743b3ec22")
 
 
 # --- the wrapper's imports are runtime dependencies -----------------------------------------

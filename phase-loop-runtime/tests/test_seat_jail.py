@@ -820,6 +820,7 @@ def test_seats_firstseat_teamhost_missing_blob(tmp_path):
     git("config", "remote.origin.url", "https://fixture.invalid/repo")
     git("config", "remote.origin.promisor", "true")
     (repo / ".git/objects" / identity[:2] / identity[2:]).unlink()
-    with pytest.raises(subprocess.CalledProcessError):
+    with pytest.raises(RuntimeError, match="^sandbox_source_partial_clone$") as refusal:
         review_stage.stage_review_tree(repo, tmp_path / "stages")
+    assert refusal.value.__suppress_context__ and str(repo) not in str(refusal.value)
     assert not list((tmp_path / "stages").iterdir())

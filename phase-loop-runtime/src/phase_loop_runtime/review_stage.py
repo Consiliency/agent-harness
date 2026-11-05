@@ -1093,9 +1093,14 @@ def stage_review_tree(repo: Path, parent: Path | None = None) -> Path:
         promisor = host_git(root, "config", "--get-regexp", r"^(remote\..*\.promisor|extensions\.partialclone)$",
                             capture_output=True, text=True, check=False, offline=True)
         depth = 1 if promisor.stdout.strip() else CLONE_DEPTH
-        host_git(root, "clone", "--quiet", "--no-checkout", "--depth", str(depth),
-                 "--single-branch", f"file://{root}", str(staged),
-                 capture_output=True, text=True, check=True, offline=True)
+        try:
+            host_git(root, "clone", "--quiet", "--no-checkout", "--depth", str(depth),
+                     "--single-branch", f"file://{root}", str(staged),
+                     capture_output=True, text=True, check=True, offline=True)
+        except subprocess.CalledProcessError:
+            if promisor.stdout.strip():
+                raise RuntimeError("sandbox_source_partial_clone") from None
+            raise
         # The staged checkout is independent and has no remotes or promisor source.
         remotes = _git(staged, "remote").splitlines()
         for remote in remotes:
