@@ -1,4 +1,5 @@
 [
+  {"count": 1, "function": "load_contract_bundle", "module": "supervised_contracts", "primitive": "io.read_bytes", "role": "host-io"},
   {"count": 2, "function": "_beneath", "module": "supervised_launch", "primitive": "io.stat", "role": "host-io"},
   {"count": 1, "function": "_identity", "module": "supervised_launch", "primitive": "io.stat", "role": "host-io"},
   {"count": 1, "function": "_read_file", "module": "supervised_launch", "primitive": "io.lstat", "role": "host-io"},
