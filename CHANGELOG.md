@@ -9,8 +9,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - The W0 bake-off kit (SEATS CLAUDE, agent-harness#1820): `python -m
   phase_loop_runtime.claude_bakeoff` writes one closed, metadata-only
   `claude-bakeoff-record.v1` record per run, validates a record directory (`validate`, V7,
-  which derives each W0 head's TUI jail digest itself) and prints the order-independent
-  evidence digest an OD-3b record cites (`digest`). Its `run` command is the owner's W0
+  which requires every W0 head to be on `main` and derives its TUI jail digest without running
+  that head's code) and prints the order-independent evidence digest an OD-3b record cites
+  (`digest`). Its `run` command is the owner's W0
   window. Before the first meter reading it refuses a run plan that differs from the phase
   plan, a lineup other than the plan's exact board (one Claude seat, no president), a checkout
   that is not the clean W0 head on `main`, an artifact not committed there, and an arm that is

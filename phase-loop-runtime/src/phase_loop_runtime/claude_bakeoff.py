@@ -343,35 +343,44 @@ _OD3B_DIGEST = re.compile(r"\*\*W0 evidence digest:\*\* `(?P<digest>[0-9a-f]{64}
 ARCHES = ("x86_64", "aarch64")
 
 
-def tui_digests_at(repo: Path, head: str) -> frozenset[str]:
-    """The TUI jail profile digests of ``head`` (one per architecture), derived from that
-    head's own runtime source in a separate interpreter. Empty when they cannot be derived."""
-    import tempfile
+#: The runtime sources the TUI jail profile digest is computed from (the package's
+#: ``__init__`` is loaded too, but declares nothing the digest reads).
+JAIL_PROFILE_SOURCES = ("seat_jail.py",)
+_RUNTIME_DIR = "phase-loop-runtime/src/phase_loop_runtime"
 
-    with tempfile.TemporaryDirectory(prefix="pl-w0-tui-") as scratch:
-        try:
-            archive = subprocess.run(
-                ["git", "-C", str(repo), "archive", "--format=tar", head, "--",
-                 "phase-loop-runtime/src/phase_loop_runtime"],
-                capture_output=True, timeout=120, check=False)
-            if archive.returncode != 0:
-                return frozenset()
-            unpacked = subprocess.run(["tar", "-x", "-C", scratch], input=archive.stdout,
-                                      capture_output=True, timeout=120, check=False)
-            if unpacked.returncode != 0:
-                return frozenset()
-            source = Path(scratch) / "phase-loop-runtime" / "src"
-            code = ("import sys; sys.path.insert(0, sys.argv[1]); "
-                    "from phase_loop_runtime import seat_jail; "
-                    "print(' '.join(seat_jail.jail_profile_digest('claude', a) "
-                    "for a in sys.argv[2:]))")
-            done = subprocess.run([sys.executable, "-I", "-B", "-c", code, str(source), *ARCHES],
-                                  capture_output=True, text=True, timeout=120, check=False,
-                                  cwd=scratch)
-        except (OSError, subprocess.SubprocessError):
+
+def tui_digests_at(repo: Path, head: str) -> frozenset[str]:
+    """The TUI jail profile digests of ``head`` (one per architecture), with no code of
+    ``head`` executed: this runtime computes them with its own copy of
+    :data:`JAIL_PROFILE_SOURCES`, and only when ``head``'s copy of each is byte-identical to
+    this one's and has no other importable form. Empty when they cannot be derived that
+    way; the operator then validates from a checkout at ``head`` or passes ``--tui-digest``."""
+    own = Path(__file__).resolve().parent
+    try:
+        entries = _transport._tree_entries(repo, head, f"{_RUNTIME_DIR}/", recursive=False)
+    except _transport.AuditError:
+        return frozenset()
+    for name in JAIL_PROFILE_SOURCES:
+        stem = name[:-3]
+        forms = [(mode, path.rsplit("/", 1)[-1]) for mode, _obj, path in entries
+                 if path.rsplit("/", 1)[-1] == stem
+                 or path.rsplit("/", 1)[-1].startswith(stem + ".")]
+        if forms != [("100644", name)]:
             return frozenset()
-    digests = done.stdout.split() if done.returncode == 0 else []
-    if len(digests) != len(ARCHES) or not all(_HEX64.fullmatch(d) for d in digests):
+        theirs = _git_show(repo, head, f"{_RUNTIME_DIR}/{name}")
+        try:
+            mine = (own / name).read_bytes()
+        except OSError:
+            return frozenset()
+        if theirs is None or theirs != mine:
+            return frozenset()
+    from . import seat_jail
+
+    try:
+        digests = [seat_jail.jail_profile_digest("claude", arch) for arch in ARCHES]
+    except Exception:  # an underivable digest fails V7, never passes it
+        return frozenset()
+    if not all(isinstance(d, str) and _HEX64.fullmatch(d) for d in digests):
         return frozenset()
     return frozenset(digests)
 
@@ -395,6 +404,10 @@ def _directory_entries(directory: Path) -> tuple[list[Path], list[str]]:
     return records, problems
 
 
+def heads_on(records: Sequence[Mapping[str, object]]) -> list[str]:
+    return sorted({str(obj["w0_head"]) for obj in records})
+
+
 def validate_directory(directory: Path | str, *, repo: Path | str = ".",
                        record_text: bytes | None = None,
                        tui_digest: str | None = None,
@@ -402,9 +415,10 @@ def validate_directory(directory: Path | str, *, repo: Path | str = ".",
                        ) -> list[str]:
     """V7: every record's shape, then the rules across records. ``record_text`` is the
     decision record as of now (default: the working tree's) for the OD-3b citation rule.
+    Every record's W0 head must be on ``main`` (an ancestor of ``origin/main`` in ``repo``).
     Every native record must carry its W0 head's TUI jail profile digest: ``tui_digest``
-    when given, else the digests V7 derives itself from that head's source; a head whose
-    digest cannot be derived fails."""
+    when given, else the digests :func:`tui_digests_at` derives without running that head's
+    code; a head whose digest cannot be derived fails."""
     directory, repo = Path(directory), Path(repo)
     paths, problems = _directory_entries(directory)
     records: list[dict] = []
@@ -444,15 +458,20 @@ def validate_directory(directory: Path | str, *, repo: Path | str = ".",
     for obj in records:
         if obj["arm"] in NATIVE_ARMS:
             native.setdefault(obj["w0_head"], set()).add(obj["jail_profile_digest"])
+    off_main = {head for head in heads_on(records) if not head_on_main(repo, head)}
+    if off_main:
+        problems.append("a record's W0 head is not on main")
     derive = tui_digests or tui_digests_at
     for head, digests in sorted(native.items()):
+        if head in off_main:
+            continue
         expected = frozenset({tui_digest}) if tui_digest is not None else derive(repo, head)
         if not expected:
             problems.append("the TUI jail profile digest at a W0 head cannot be derived")
         elif len(digests) > 1 or not digests <= expected:
             problems.append("a native record's jail_profile_digest is not the TUI's at its W0 head")
     for obj in records:
-        if obj["arm"] not in NATIVE_ARMS:
+        if obj["arm"] not in NATIVE_ARMS or obj["w0_head"] in off_main:
             continue
         section = "4b" if obj["arm"] == "sdk" else "4a"
         at_head = _git_show(repo, obj["w0_head"], _transport.DECISION_RECORD)
@@ -1393,7 +1412,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     validate.add_argument("directory", nargs="?", default=EVIDENCE_DIR)
     validate.add_argument("--repo", default=".")
     validate.add_argument("--tui-digest", default=None,
-                          help="the TUI digest to require (default: derived per W0 head)")
+                          help="the TUI digest to require (default: derived per W0 head "
+                               "without running its code)")
     digest = sub.add_parser("digest", help="the W0 evidence digest an OD-3b section cites")
     digest.add_argument("directory", nargs="?", default=EVIDENCE_DIR)
     run = sub.add_parser("run", help="run W0 (an owner action)")

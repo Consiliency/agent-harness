@@ -12,6 +12,8 @@ import hashlib
 import json
 import re
 import subprocess
+import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -44,7 +46,13 @@ def repo(tmp_path) -> Path:
     (root / "docs" / "bundle.md").write_text("# The W0 review bundle\n")
     _git(root, "add", "-A")
     _git(root, "-c", "commit.gpgsign=false", "commit", "-qm", "seed")
+    _publish(root)
     return root
+
+
+def _publish(repo: Path) -> None:
+    """Put the current HEAD on this disposable repository's ``main``."""
+    _git(repo, "update-ref", "refs/remotes/origin/main", "HEAD")
 
 
 def _head(repo: Path) -> str:
@@ -271,6 +279,7 @@ def test_an_sdk_record_whose_head_lacks_4b_fails(repo, tmp_path):
 def test_an_sdk_record_whose_head_has_4b_passes_that_check(repo, tmp_path):
     (repo / ct.DECISION_RECORD).write_text(RECORD_4A + SDK_4B)
     _git(repo, "-c", "commit.gpgsign=false", "commit", "-qam", "4b")
+    _publish(repo)
     record = native(repo, block=3, arm="sdk")
     assert validate(write(tmp_path / "w0", record), repo, "--tui-digest", TUI) == 0
 
@@ -343,32 +352,109 @@ def test_v7_derives_the_tui_digest_per_w0_head_when_none_is_given(repo, tmp_path
     assert validate(directory, repo) == 1  # this disposable head carries no runtime source
 
 
-REPO = Path(__file__).resolve().parents[2]
+RUNTIME = "phase-loop-runtime/src/phase_loop_runtime"
 
 
-def _real_head() -> str | None:
-    done = subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True,
-                          text=True, check=False)
-    return done.stdout.strip() if done.returncode == 0 else None
+def _runtime_head(repo: Path, tmp_path: Path, *, jail_source: bytes | None = None) -> tuple[str, Path]:
+    """A commit carrying this runtime's own ``seat_jail.py`` (or ``jail_source``) and a
+    package ``__init__`` that, if anything ever ran it, would write a marker file."""
+    marker = tmp_path / "executed.marker"
+    package = repo / RUNTIME
+    package.mkdir(parents=True, exist_ok=True)
+    (package / "__init__.py").write_text(
+        f"from pathlib import Path\nPath({str(marker)!r}).write_text('ran')\n")
+    own = Path(bk.__file__).with_name("seat_jail.py").read_bytes()
+    (package / "seat_jail.py").write_bytes(jail_source if jail_source is not None else own)
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "commit.gpgsign=false", "commit", "-qm", "runtime")
+    return _head(repo), marker
 
 
-def test_v7_through_the_documented_cli_refuses_a_wrong_but_consistent_digest(tmp_path):
-    """The exact V7 command (no --tui-digest) on records at this repository's HEAD: the
-    digest V7 derives from that head is accepted, a uniformly wrong one is refused."""
-    head = _real_head()
-    if head is None:
-        pytest.skip("not a git checkout")
+def _host_digests() -> frozenset[str]:
     from phase_loop_runtime import seat_jail
 
-    section = ct.record_sections((REPO / ct.DECISION_RECORD).read_bytes())["4a"][1]
-    right = seat_jail.jail_profile_digest("claude", "x86_64")
-    assert bk.tui_digests_at(REPO, head) == frozenset(
-        seat_jail.jail_profile_digest("claude", arch) for arch in bk.ARCHES)
+    return frozenset(seat_jail.jail_profile_digest("claude", arch) for arch in bk.ARCHES)
+
+
+def test_v7_through_the_documented_cli_refuses_a_wrong_but_consistent_digest(repo, tmp_path):
+    """The exact V7 command (no --tui-digest) on records at a head on main whose jail source
+    is this runtime's: the digest it derives is accepted, a uniformly wrong one is refused,
+    and nothing of that head runs."""
+    head, marker = _runtime_head(repo, tmp_path)
+    _publish(repo)
+    assert bk.tui_digests_at(repo, head) == _host_digests()
+    right = sorted(_host_digests())[0]
     for digest, expected in ((right, 0), ("0" * 64, 1)):
-        record = {**native(REPO, activation_section_sha256=section), "w0_head": head,
-                  "jail_profile_digest": digest}
+        record = {**native(repo), "w0_head": head, "jail_profile_digest": digest}
         directory = write(tmp_path / f"w0-{expected}", record)
-        assert bk.main(["validate", str(directory), "--repo", str(REPO)]) == expected
+        assert bk.main(["validate", str(directory), "--repo", str(repo)]) == expected
+    assert not marker.exists()
+
+
+def test_v7_refuses_a_head_off_main_and_runs_none_of_its_code(repo, tmp_path):
+    """A record naming a commit that is not on main, whose own jail source would vouch for
+    the record's digest, fails V7, with or without --tui-digest; that commit never runs."""
+    head, marker = _runtime_head(repo, tmp_path)
+    record = {**native(repo), "w0_head": head, "jail_profile_digest": sorted(_host_digests())[0]}
+    directory = write(tmp_path / "w0", record)
+    problems = bk.validate_directory(directory, repo=repo)
+    assert "a record's W0 head is not on main" in problems
+    assert validate(directory, repo) == 1
+    assert validate(directory, repo, "--tui-digest", record["jail_profile_digest"]) == 1
+    assert not marker.exists()
+
+
+def test_v7_will_not_derive_from_a_head_whose_jail_source_differs(repo, tmp_path):
+    """On main, but with a jail source other than this runtime's: V7 cannot derive the digest
+    without running that head, so it fails; --tui-digest remains the no-execution path."""
+    own = Path(bk.__file__).with_name("seat_jail.py").read_bytes()
+    head, marker = _runtime_head(repo, tmp_path, jail_source=own + b"\n# changed\n")
+    _publish(repo)
+    assert bk.tui_digests_at(repo, head) == frozenset()
+    record = {**native(repo), "w0_head": head, "jail_profile_digest": TUI}
+    directory = write(tmp_path / "w0", record)
+    assert validate(directory, repo) == 1
+    assert validate(directory, repo, "--tui-digest", TUI) == 0
+    assert not marker.exists()
+
+
+def test_v7_will_not_derive_when_another_form_could_shadow_the_jail_source(repo, tmp_path):
+    head, _marker = _runtime_head(repo, tmp_path)
+    (repo / RUNTIME / "seat_jail").mkdir()
+    (repo / RUNTIME / "seat_jail" / "__init__.py").write_text("")
+    _git(repo, "add", "-A")
+    _git(repo, "-c", "commit.gpgsign=false", "commit", "-qm", "package")
+    _publish(repo)
+    assert bk.tui_digests_at(repo, _head(repo)) == frozenset()
+
+
+def test_the_jail_digest_reads_only_the_declared_sources():
+    """Computing the TUI digest loads, of this package, only its ``__init__`` and
+    JAIL_PROFILE_SOURCES; a new dependency must be declared there."""
+    code = textwrap.dedent("""
+        import json, os, sys
+        package = os.path.join(sys.argv[1], "phase_loop_runtime")
+        opened = set()
+
+        def hook(event, args):
+            if event == "open" and isinstance(args[0], str):
+                path = os.path.abspath(args[0])
+                if path.startswith(package + os.sep) and "__pycache__" not in path:
+                    opened.add(os.path.relpath(path, package))
+
+        sys.addaudithook(hook)
+        sys.path.insert(0, sys.argv[1])
+        from phase_loop_runtime import seat_jail
+        for arch in ("x86_64", "aarch64"):
+            seat_jail.jail_profile_digest("claude", arch)
+        loaded = {os.path.relpath(m.__file__, package) for name, m in list(sys.modules.items())
+                  if name.startswith("phase_loop_runtime") and getattr(m, "__file__", None)}
+        print(json.dumps(sorted(opened | loaded)))
+    """)
+    source = str(Path(bk.__file__).resolve().parents[1])
+    done = subprocess.run([sys.executable, "-I", "-B", "-c", code, source], capture_output=True,
+                          text=True, timeout=120, check=True)
+    assert set(json.loads(done.stdout)) <= {"__init__.py", *bk.JAIL_PROFILE_SOURCES}
 
 
 # --------------------------------------------------------------------------------------
