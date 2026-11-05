@@ -23,7 +23,9 @@ import contextlib
 import fcntl
 import json
 import os
+import stat
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
@@ -248,17 +250,33 @@ def write_modes_record(stream_dir: Path, modes: Sequence[SeatMode]) -> Path:
     return path
 
 
+#: How long a republish waits for another writer's lock before it gives up. A republish is
+#: best effort for its caller, so a held lock costs a bounded wait, never a hung seat.
+MODES_LOCK_WAIT_S = 5.0
+_MODES_LOCK_POLL_S = 0.05
+
+
 @contextlib.contextmanager
 def _modes_lock(stream_dir: Path):
     """An exclusive lock on the stream directory itself, held across a whole republish, so
     seat workers in any thread or process of the board serialize their read-modify-replace
-    (an advisory ``flock`` on the directory: no lock file is left behind)."""
+    (an advisory ``flock`` on the directory: no lock file is left behind). A lock still held
+    after :data:`MODES_LOCK_WAIT_S` raises ``ValueError``."""
     try:
         descriptor = os.open(stream_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
     except OSError as exc:
         raise ValueError("no published seat modes to republish") from exc
     try:
-        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        deadline = time.monotonic() + MODES_LOCK_WAIT_S
+        while True:
+            try:
+                fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except BlockingIOError:
+                if time.monotonic() >= deadline:
+                    raise ValueError("the seat modes record stayed locked by another "
+                                     "writer") from None
+                time.sleep(_MODES_LOCK_POLL_S)
         yield
     finally:
         os.close(descriptor)
@@ -309,12 +327,18 @@ def _republish_locked(stream_dir: Path, mode: SeatMode) -> Path:
         raise ValueError("no published row for that seat")
     for index in targets:
         rows[index] = mode.as_json()
+    # The replacement keeps the published record's permission bits: a republish never widens
+    # (or narrows) who can read the record.
+    try:
+        permissions = stat.S_IMODE(os.stat(path).st_mode) & 0o777
+    except OSError as exc:
+        raise ValueError("no published seat modes to republish") from exc
     descriptor, name = tempfile.mkstemp(prefix=f".{MODES_FILE}.", suffix=".tmp", dir=stream_dir)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
             handle.write(json.dumps({"schema": MODES_SCHEMA, "modes": rows}, indent=2,
                                     sort_keys=True) + "\n")
-        os.chmod(name, 0o644)
+        os.chmod(name, permissions)
         os.replace(name, path)
     except BaseException:
         with contextlib.suppress(OSError):

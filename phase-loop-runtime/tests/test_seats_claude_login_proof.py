@@ -299,6 +299,59 @@ def test_concurrent_republishes_keep_every_seats_row(tmp_path, monkeypatch):
     assert sorted(path.name for path in stream.iterdir()) == [sp.MODES_FILE]
 
 
+def test_a_republish_keeps_the_published_records_mode(tmp_path):
+    """Under a private umask the record is published 0600; republishing keeps 0600."""
+    stream = tmp_path / "stream"
+    old = os.umask(0o077)
+    try:
+        _published(stream)
+    finally:
+        os.umask(old)
+    path = stream / sp.MODES_FILE
+    assert path.stat().st_mode & 0o777 == 0o600
+    sp.republish_seat_mode(stream, sp.SeatMode("panel-claude", "claude", sp.MODE_DEGRADED,
+                                               "claude_seat_token_missing", "w", "f", None, 0))
+    assert path.stat().st_mode & 0o777 == 0o600
+    os.chmod(path, 0o640)
+    sp.republish_seat_mode(stream, sp.SeatMode("panel-claude", "claude", sp.MODE_DEGRADED,
+                                               "claude_seat_token_missing", "w", "f", None, 0))
+    assert path.stat().st_mode & 0o777 == 0o640
+
+
+def test_a_lock_held_by_another_writer_bounds_the_republish(tmp_path, monkeypatch):
+    """Another process holding the stream directory's lock makes the republish give up with
+    ValueError after a bounded wait (its caller treats that as best effort); the record is
+    unchanged."""
+    import subprocess
+    import sys
+    import time
+
+    stream = tmp_path / "stream"
+    _published(stream)
+    before = (stream / sp.MODES_FILE).read_bytes()
+    holder = subprocess.Popen(
+        [sys.executable, "-c",
+         "import fcntl, os, sys, time\n"
+         "fd = os.open(sys.argv[1], os.O_RDONLY | os.O_DIRECTORY)\n"
+         "fcntl.flock(fd, fcntl.LOCK_EX)\n"
+         "print('held', flush=True)\n"
+         "time.sleep(60)\n", str(stream)],
+        stdout=subprocess.PIPE, text=True)
+    try:
+        assert holder.stdout.readline().strip() == "held"
+        monkeypatch.setattr(sp, "MODES_LOCK_WAIT_S", 0.5)
+        started = time.monotonic()
+        with pytest.raises(ValueError, match="locked"):
+            sp.republish_seat_mode(stream, sp.SeatMode(
+                "panel-claude", "claude", sp.MODE_DEGRADED, "claude_seat_token_missing", "w", "f",
+                None, 0))
+        assert time.monotonic() - started < 10
+    finally:
+        holder.kill()
+        holder.wait(timeout=30)
+    assert (stream / sp.MODES_FILE).read_bytes() == before
+
+
 def test_republish_without_a_matching_row_refuses_and_leaves_the_record(tmp_path):
     stream = tmp_path / "stream"
     _published(stream)
