@@ -131,6 +131,15 @@ is claimed. The optional manifest
 lifecycle write was withheld because plans/manifest.json is outside the plan's owned
 files; this is a nonfatal ledger warning, not an ownership transfer.
 
+Binding amendment (agent-harness#1818): this receipt starts from main's FIRSTSEAT
+L5 version (agent-harness#1837), retaining its updated executable_dependency_startup.py
+source binding and observation metadata. The rebased v2 CLOSEOUT plan changes the
+roadmap seal and probe and check handoff text in plans/phase-plan-v12-ENVELOPE.md.
+That plan's source_hashes row and the derived source_tree_digest below were
+recomputed by hand against the rebased tree. No producer was rerun for this binding
+amendment. Main's observed heads, times, outcomes and every other source row are
+unchanged; the record still says pending_hosted_ci and synthetic_fixture_only.
+
 ## Runner-stamped producer record
 
 ```json
@@ -147,7 +156,7 @@ files; this is a nonfatal ledger warning, not an ownership transfer.
     "observed_utc": "2026-11-05T06:15:55.801107+00:00",
     "observed_input_head": "00c6c1e95960839e6a6299e14bbf8d54cb9707e0",
     "approved_plan_input_head": "c1aac3c19b711f9688bddc2bda11128d928b3ad9",
-    "source_tree_digest": "08378d87c02ed00479e3e5cb8c37be9ec36cebdbc36e953568cee6222e9d0679"
+    "source_tree_digest": "105aa3fe62848af260fa9c937835e510321f76f04fd7f1d62aadf2f12b50d681"
   },
   "source_hashes": {
     "phase-loop-runtime/src/phase_loop_runtime/supervised_launch.py": "9c339674bef0b52bd6520d1e6d72bcee5157d5d80b4ba21f9baa425d4cfb0a22",
@@ -161,7 +170,7 @@ files; this is a nonfatal ledger warning, not an ownership transfer.
     "phase-loop-runtime/tests/test_supervised_launch_receipt.py": "13475dff1a4aebf4db2da694c36bafb4de58230c390008a7c126c62aade22073",
     "phase-loop-runtime/tests/fixtures/supervised_launch_local/envelope.json": "2c69f75c4bdcaf8f28b8ff40a92b9db21e4403bf7fd2ab8ff10d4df622463298",
     "docs/supervised-worker.md": "85e56c854b9cc860642f41742555bf99b5f7cfc5b953b9d911b2a7a521979f27",
-    "plans/phase-plan-v12-ENVELOPE.md": "342dfe2657db65fe7ac257394cc09f1b0ae78d9e07ec5b5d6fc2c8f2c7bbcb7e"
+    "plans/phase-plan-v12-ENVELOPE.md": "b4421f5c3fae3e855b0f9eb8e17e5f8949f6914f60f609c2a2925e4e8c79d4b0"
   },
   "producer_nodes": [
     "tests/test_supervised_launch.py::test_ambiguous_json_before_codec[{\"x\":1,\"x\":2}]",
