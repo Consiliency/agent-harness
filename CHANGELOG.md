@@ -7,8 +7,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 ## [Unreleased]
 
 - A candidate OD-3a amendment (§4b) is appended to the print-route decision record (SEATS CLAUDE,
-  agent-harness#1820). It takes effect only when the maintainer merges it in its own reviewed PR;
-  until then `sdk` stays refused on the jailed seat and the jailed default stays the TUI.
+  agent-harness#1820). It takes effect only when the maintainer merges it in its own reviewed PR,
+  and the jailed default stays the TUI. `sdk` was not implemented on the jailed seat: its planned
+  launch runs an interpreter other than the jailed subject, which the executable-dependency
+  projection contract does not allow. It stays refused, and its activation waits on a roadmap
+  amendment (the owner's 2026-11-05 decision plans `sdk` as SDK-on-host).
 
 - The W0 bake-off kit (SEATS CLAUDE, agent-harness#1820): `python -m
   phase_loop_runtime.claude_bakeoff` writes one closed, metadata-only
