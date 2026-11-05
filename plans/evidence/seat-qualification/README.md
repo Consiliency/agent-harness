@@ -74,7 +74,7 @@ measurements and staged-tree identity, and checks its digest. A digest-shaped
 value or a passing checklist without its matching source cannot qualify a row.
 The definition probe is separate from row qualification; a non-passing result
 does not admit a Grok launch. No fixed version list supplies a passing receipt.
-`probe-tools` reports separate `review`, `sealed` and `staged` form results.
+`probe-tools` reports separate `execute`, `workflow`, `review`, `sealed` and `staged` form results.
 Use `--model` and `--effort` to select configured forms; defaults match the
 runtime's default model and high effort. Installed-version measurements remain required.
 

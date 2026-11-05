@@ -70,12 +70,12 @@ def test_seats_firstseat_window_probe_cli(tmp_path, monkeypatch, capsys):
     calls = []
     monkeypatch.setattr(pi, "probe_grok_tools", lambda command, **kw: calls.append((command, kw)) or {"passed": False})
     assert cli.main(["seat-window", "probe-tools", "--vendor", "grok"]) == 1
-    assert len(calls) == 3
+    assert len(calls) == 5
     assert isinstance(calls[0][1]["allowed_tools"], set)
     import json
     result = json.loads(capsys.readouterr().out)
     assert result["status"] == "candidate"
-    assert {r["route"] for r in result["routes"]} == {"review", "sealed", "staged"}
+    assert {r["route"] for r in result["routes"]} == {"execute", "workflow", "review", "sealed", "staged"}
 
 
 def test_seats_firstseat_window_probe_launch_forms(tmp_path, monkeypatch, capsys):
@@ -91,7 +91,8 @@ def test_seats_firstseat_window_probe_launch_forms(tmp_path, monkeypatch, capsys
             text = "fixture-v1"
         else:
             assert "--reasoning-effort" in argv
-            text = json.dumps({"tools": sorted(pi._grok_allowed_tools(argv)), "diagnostics": []})
+            text = json.dumps({"tools": sorted(pi._grok_allowed_tools(argv)) if "--tools" in argv else ["write"],
+                               "diagnostics": []})
         return subprocess.CompletedProcess(argv, 0, text, "")
     monkeypatch.setattr(pi, "run_provider", runner)
     assert cli.main(["seat-window", "probe-tools"]) == 0
