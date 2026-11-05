@@ -9267,6 +9267,7 @@ def _run_leg_with_liveness(
     retain_caps: "Sequence[str]" = (),
     child_scratch: str | None = None,
     stdout_guard: Callable[[bytes], bool] | None = None,
+    stderr_guard: Callable[[bytes], bool] | None = None,
     writable_tree: "Path | None" = None,
     writable_tree_checked: bool = False,
     broker_evidence: dict[str, object] | None = None,
@@ -9292,6 +9293,8 @@ def _run_leg_with_liveness(
     ``stdout_guard`` (the Claude print route's in-band subscription guard) sees every
     stdout chunk as it arrives; when it returns True the whole process group is
     terminated at once and the run returns ``rc or 1``. The guard records its own reason.
+    ``stderr_guard`` does the same for stderr chunks (a jailed transport's stderr cap and
+    token scan).
 
     ``seat_jail`` (agent-harness#1170, the jailed Gemini seat) launches ``cmd`` inside that
     jail, probed through ``probe_jail``, exactly as the jailed Claude seat launches; its
@@ -9468,8 +9471,8 @@ def _run_leg_with_liveness(
                     fd_map[fd].extend(chunk)
                     last_heartbeat = time.monotonic()
                     last_output_progress = last_heartbeat
-                    if (stdout_guard is not None and fd_map[fd] is out_buf
-                            and stdout_guard(chunk)):
+                    guard = stdout_guard if fd_map[fd] is out_buf else stderr_guard
+                    if guard is not None and guard(chunk):
                         _terminate_process_group(proc)
                         out_s, err_s = _decode()
                         return _LegRun(proc.returncode or 1, out_s, err_s)
@@ -11952,11 +11955,13 @@ def _jailed_claude_auth_probe(
     directories = tuple(seat.seat_dir / name for name in _JAILED_CLAUDE_AUTH_DIRNAMES)
     jails: list["_seat_jail.SeatJail"] = []
     captured = bytearray()
-    overflow: list[bool] = []
+    overflow: list[bytes] = []
 
     def _guard(chunk: bytes) -> bool:
         if len(captured) + len(chunk) > _seat_credentials.PROBE_OUTPUT_CAP_BYTES:
-            overflow.append(True)
+            # The overflowing chunk is still scanned: a token in it is the security code,
+            # not an ordinary unproven login.
+            overflow.append(bytes(captured) + chunk)
             return True
         captured.extend(chunk)
         return False
@@ -11977,6 +11982,8 @@ def _jailed_claude_auth_probe(
             **({"quiescence_latch": quiescence_latch} if quiescence_latch is not None else {}),
         )
         if overflow:
+            if _seat_jail.contains_secret(overflow[0], token):
+                return _seat_credentials.AuthProbeResult(digest, 1, overflow[0])
             return failed
         return _seat_credentials.AuthProbeResult(digest, run.returncode, bytes(captured))
     except (ProviderProcessGroupQuiescenceError, _ReviewOperationCancelled):

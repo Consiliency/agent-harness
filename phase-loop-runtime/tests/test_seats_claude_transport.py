@@ -408,6 +408,50 @@ def test_an_auth_jail_of_another_shape_is_a_failed_probe_and_launches_nothing(
     assert result.credential_sha256 == hashlib.sha256(ACCESS.encode()).hexdigest()
 
 
+@pytest.mark.parametrize("planted", [True, False])
+def test_an_auth_probe_past_its_cap_is_still_scanned(monkeypatch, tmp_path, planted):
+    """A probe that writes past the cap is stopped, and what it wrote is still scanned for
+    the proof's security refusal."""
+    review = types.SimpleNamespace(profile_digest="a" * 64, filter_digest="b" * 64,
+                                   dependency_projection_digest="", provider_path="/x",
+                                   seat_ids=(1, 1), dependency=None)
+    seat = types.SimpleNamespace(jail=review, seat_dir=tmp_path, holder_pid=1, notices=[])
+    monkeypatch.setattr(pi, "_build_claude_auth_jail", lambda _s, _d, _t: types.SimpleNamespace(
+        **{**vars(review), "provider_argv0": "/seat/bin/claude", "env": {}}))
+    monkeypatch.setattr(pi._seat_jail, "close_jail_fds", lambda _j: None)
+    token = ACCESS.encode()
+
+    def run(_cmd, *, stdout_guard, **_k):
+        head = b"x" * (sc.PROBE_OUTPUT_CAP_BYTES - 8)
+        assert stdout_guard(head) is False
+        assert stdout_guard(b"y" * 4 + (token if planted else b"z" * len(token))) is True
+        return pi._LegRun(1, "", "")
+
+    monkeypatch.setattr(pi, "_run_leg_with_liveness", run)
+    result = pi._jailed_claude_auth_probe(seat, token)
+    assert result.returncode != 0
+    assert seat_jail.contains_secret(result.stdout, token) is planted
+    if not planted:
+        assert result.stdout == b""
+
+
+def test_the_leg_runner_stops_the_group_when_the_stderr_guard_says_so(tmp_path):
+    seen: list[bytes] = []
+
+    def guard(chunk: bytes) -> bool:
+        seen.append(chunk)
+        return True
+
+    started = time.monotonic()
+    run = pi._run_leg_with_liveness(
+        [sys.executable, "-c", "import sys, time; sys.stderr.write('e' * 64); sys.stderr.flush();"
+                               " time.sleep(60)"],
+        cwd=str(tmp_path), env=dict(os.environ), deadline_s=90.0, stall_threshold_s=90.0,
+        stderr_guard=guard)
+    assert time.monotonic() - started < 30
+    assert seen and run.returncode != 0
+
+
 def test_the_jailed_prepare_refuses_a_refused_selection_before_creating_anything(
         monkeypatch, tmp_path, none_admitted):
     seat_dir = tmp_path / "seat"
