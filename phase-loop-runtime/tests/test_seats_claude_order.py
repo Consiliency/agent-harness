@@ -9,8 +9,11 @@ by a fixed table, so no control needs the network.
 from __future__ import annotations
 
 import hashlib
+import importlib.util
 import json
 import os
+import py_compile
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -374,6 +377,126 @@ def test_an_admission_in_any_other_shape_fails(tree, shape):
 def test_a_default_set_in_any_other_shape_fails(tree, seam, extra):
     head = tree.commit(transport=transport_source() + extra)
     assert audit(tree, seam, head) == 1
+
+
+_RUNTIME_MUTATIONS = tuple(f"m{n:02d}" for n in range(1, 18))
+
+
+def _mutated_runtime(tmp_path: Path, mutation: str) -> tuple[Path, str]:
+    """Build one disposable runtime mutation and return its source root and assertion kind.
+
+    The identifiers stay deliberately neutral; the review report, not public test names, owns
+    the adversarial catalogue.  Each operand changes one effect the source-order audit cannot
+    safely infer, and the runtime must still reduce admission to its audited literals.
+    """
+    source = tmp_path / mutation / "src"
+    package = source / "phase_loop_runtime"
+    package.mkdir(parents=True)
+    shutil.copy2(Path(ct.__file__), package / "claude_seat_transport.py")
+    shutil.copy2(Path(ct.__file__).with_name("__init__.py"), package / "__init__.py")
+    cite = ('RecordCitation("plans/decision.md", "4b", "' + "a" * 64
+            + '", "agent-harness#1901")')
+    prefix = "from .claude_seat_transport import RecordCitation\n"
+    suffix = "\ndef run_jailed(*args, **kwargs):\n    return ('OK', '')\n"
+    sdk = package / "claude_seat_sdk.py"
+    prelude = ""
+    kind = "sdk"
+    if mutation == "m01":
+        sdk.write_text(prefix + f"ACTIVATION = {cite}\nif True:\n"
+                       "    def __getattr__(name):\n        return name == 'ADMITTED'\n" + suffix)
+    elif mutation == "m02":
+        sdk.write_text(prefix + f"ACTIVATION = {cite}\ntry:\n"
+                       "    def __getattr__(name):\n        return name == 'ADMITTED'\n"
+                       "except Exception:\n    pass\n" + suffix)
+    elif mutation == "m03":
+        sdk.write_text(prefix + f"ACTIVATION = {cite}\nfrom builtins import globals as g\n"
+                       "g().update(ADMITTED=True)\n" + suffix)
+    elif mutation == "m04":
+        sdk.write_text(prefix + f"ACTIVATION = {cite}\nimport builtins\n"
+                       "builtins.globals().update(ADMITTED=True)\n" + suffix)
+    elif mutation == "m05":
+        sdk.write_text(prefix + f"ACTIVATION = {cite}\nimport builtins\n"
+                       "builtins.exec('ADMITTED = True', builtins.globals())\n" + suffix)
+    elif mutation == "m06":
+        sdk.write_text(prefix + f"ACTIVATION = {cite}\nimport builtins, sys\n"
+                       "builtins.setattr(sys.modules[__name__], 'ADMITTED', True)\n" + suffix)
+    elif mutation == "m07":
+        sdk.write_text(prefix + f"ACTIVATION = {cite}\nimport builtins\n"
+                       "getattr(builtins, 'globals')().update(ADMITTED=True)\n" + suffix)
+    elif mutation == "m08":
+        sdk.write_text(prefix + f"ADMITTED = True\nACTIVATION = {cite}\nfrom sys import modules\n"
+                       "modules[__name__].__class__ = type('M', (type(modules[__name__]),), {})\n"
+                       + suffix)
+    elif mutation in ("m09", "m10"):
+        sdk.write_text(prefix + f"ADMITTED = False\nACTIVATION = {cite}\nfrom . import _modifier\n"
+                       + suffix)
+        operation = ("target.__dict__.update(ADMITTED=True)" if mutation == "m09" else
+                     "setattr(target, ''.join(('ADMIT', 'TED')), True)")
+        (package / "_modifier.py").write_text(
+            "import importlib\ntarget = importlib.import_module('phase_loop_runtime.claude_seat_sdk')\n"
+            + operation + "\n")
+    elif mutation == "m11":
+        prelude = ("import sys, types\n"
+                   "m = types.ModuleType('phase_loop_runtime.claude_seat_sdk')\n"
+                   "m.__file__ = str(source / 'phase_loop_runtime' / 'claude_seat_sdk.py')\n"
+                   "m.ADMITTED = True\nm.ACTIVATION = ct.RecordCitation('plans/decision.md', "
+                   "'4b', 'a' * 64, 'agent-harness#1901')\nm.run_jailed = lambda *a, **k: "
+                   "('OK', '')\nsys.modules[m.__name__] = m\n")
+    elif mutation == "m12":
+        init = package / "__init__.py"
+        init.write_text(init.read_text() + "\nimport os\n__path__.append(os.path.join(os.path.dirname(__file__), 'shadow'))\n")
+        shadow = package / "shadow"
+        shadow.mkdir()
+        (shadow / "claude_seat_sdk.py").write_text(
+            prefix + f"ADMITTED = True\nACTIVATION = {cite}\n" + suffix)
+    elif mutation == "m13":
+        malicious = package / "malicious.py"
+        malicious.write_text(prefix + f"ADMITTED = True\nACTIVATION = {cite}\n" + suffix)
+        sdk.write_text(prefix + f"ADMITTED = False\nACTIVATION = {cite}\n" + suffix)
+        pyc = Path(importlib.util.cache_from_source(str(sdk)))
+        pyc.parent.mkdir()
+        py_compile.compile(str(malicious), cfile=str(pyc), doraise=True,
+                           invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH)
+        malicious.unlink()
+    elif mutation in ("m14", "m15"):
+        kind = "default"
+        operation = ("vars(ct).update(JAILED_CLAUDE_DEFAULT='print')" if mutation == "m14"
+                     else "ct.__dict__.update(JAILED_CLAUDE_DEFAULT='print')")
+        prelude = operation + "\n"
+    elif mutation == "m16":
+        other = package / "claude_seat_other.py"
+        other.write_text(prefix + f"ADMITTED = True\nACTIVATION = {cite}\n" + suffix)
+        prelude = ("ct._TRANSPORT_MODULES = {'print': 'claude_seat_print', "
+                   "'sdk': 'claude_seat_other'}\n")
+    else:
+        kind = "default"
+        transport = package / "claude_seat_transport.py"
+        old = "value = JAILED_CLAUDE_DEFAULT if raw is None or not raw.strip() else raw.strip().lower()"
+        new = "value = 'print' if raw is None or not raw.strip() else raw.strip().lower()"
+        changed = transport.read_text().replace(old, new)
+        assert changed != transport.read_text()
+        transport.write_text(changed)
+    return source, prelude + f"kind = {kind!r}\n"
+
+
+@pytest.mark.parametrize("mutation", _RUNTIME_MUTATIONS)
+def test_runtime_admission_is_bound_to_the_audited_literals(tmp_path, mutation):
+    source, setup = _mutated_runtime(tmp_path, mutation)
+    code = ("import json, pathlib, sys\nsource = pathlib.Path(sys.argv[1])\n"
+            "sys.path.insert(0, str(source))\n"
+            "from phase_loop_runtime import claude_seat_transport as ct\n" + setup +
+            "if kind == 'sdk':\n"
+            "    result = [ct.is_admitted('sdk'), ct.resolve_jailed_claude_transport({ct.ROUTE_ENV: 'sdk'})]\n"
+            "else:\n"
+            "    result = ct.resolve_jailed_claude_transport({})\n"
+            "print(json.dumps(result))\n")
+    done = subprocess.run([sys.executable, "-I", "-B", "-c", code, str(source)],
+                          capture_output=True, text=True, timeout=120, check=True)
+    result = json.loads(done.stdout)
+    if mutation in ("m14", "m15", "m17"):
+        assert result == [None, ct.NOT_ADMITTED]
+    else:
+        assert result == [False, [None, ct.NOT_ADMITTED]]
 
 
 # --------------------------------------------------------------------------------------

@@ -39,7 +39,7 @@ import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
-from types import ModuleType
+from types import MappingProxyType, ModuleType
 from typing import Callable, Literal, Mapping, Sequence
 
 ClaudeTransport = Literal["tui", "print", "sdk"]
@@ -186,23 +186,45 @@ class TransportRefused(RuntimeError):
 # Admission and resolution.
 # --------------------------------------------------------------------------------------
 
-_TRANSPORT_MODULES: Mapping[str, str] = {"print": "claude_seat_print", "sdk": "claude_seat_sdk"}
+_CANONICAL_TRANSPORT_MODULES: Mapping[str, str] = MappingProxyType(
+    {"print": "claude_seat_print", "sdk": "claude_seat_sdk"})
+_TRANSPORT_MODULES: Mapping[str, str] = dict(_CANONICAL_TRANSPORT_MODULES)
+
+
+def _runtime_literal_facts(module_name: str, names: Sequence[str]) -> tuple[Path, dict[str, object]]:
+    """Read the admission facts from the source file beside this module."""
+    source = Path(__file__).resolve().with_name(f"{module_name}.py")
+    try:
+        raw = source.read_bytes()
+    except OSError as exc:
+        raise AuditError("an admitted transport's source is unreadable") from exc
+    return source, _module_facts(raw, names)
 
 
 def transport_module(transport: str) -> ModuleType | None:
     """The admitted module for ``print`` or ``sdk``, or ``None``. A module that does not
     import, or exports anything short of ``ADMITTED is True``, a :class:`RecordCitation`
     ``ACTIVATION`` and a callable ``run_jailed``, is not admitted."""
-    name = _TRANSPORT_MODULES.get(transport)
+    if dict(_TRANSPORT_MODULES) != dict(_CANONICAL_TRANSPORT_MODULES):
+        return None
+    name = _CANONICAL_TRANSPORT_MODULES.get(transport)
     if name is None:
         return None
     try:
         module = importlib.import_module(f"{__package__}.{name}")
-    except ImportError:
+        source, facts = _runtime_literal_facts(name, ("ADMITTED", "ACTIVATION"))
+        module_file = getattr(module, "__file__", None)
+        if (type(module) is not ModuleType or not isinstance(module_file, str)
+                or Path(module_file).resolve(strict=True) != source.resolve(strict=True)
+                or dict(_TRANSPORT_MODULES) != dict(_CANONICAL_TRANSPORT_MODULES)):
+            return None
+    except (AuditError, ImportError, OSError, ValueError):
         return None
-    if getattr(module, "ADMITTED", False) is not True:
+    activation = getattr(module, "ACTIVATION", None)
+    if facts.get("ADMITTED") is not True or getattr(module, "ADMITTED", False) is not True:
         return None
-    if not isinstance(getattr(module, "ACTIVATION", None), RecordCitation):
+    if (not isinstance(activation, RecordCitation)
+            or facts.get("ACTIVATION") != activation):
         return None
     if not callable(getattr(module, "run_jailed", None)):
         return None
@@ -220,8 +242,18 @@ def resolve_jailed_claude_transport(
 ) -> tuple[ClaudeTransport | None, str | None]:
     """``(transport, None)`` for an admitted selection, else ``(None, refusal)``."""
     env = os.environ if env is None else env
+    try:
+        _source, facts = _runtime_literal_facts(
+            Path(__file__).stem, ("JAILED_CLAUDE_DEFAULT", "JAILED_DEFAULT_AUTHORITY"))
+        literal_default = facts.get("JAILED_CLAUDE_DEFAULT")
+    except (AuditError, OSError, ValueError):
+        return None, NOT_ADMITTED
+    if literal_default not in TRANSPORTS or JAILED_CLAUDE_DEFAULT != literal_default:
+        return None, NOT_ADMITTED
     raw = env.get(ROUTE_ENV)
     value = JAILED_CLAUDE_DEFAULT if raw is None or not raw.strip() else raw.strip().lower()
+    if (raw is None or not raw.strip()) and value != literal_default:
+        return None, NOT_ADMITTED
     if value not in TRANSPORTS:
         return None, ROUTE_INVALID
     if not is_admitted(value):
@@ -414,6 +446,10 @@ def _module_facts(source: bytes | None, names: Sequence[str]) -> dict[str, objec
     except (SyntaxError, ValueError) as exc:
         raise AuditError("a transport module does not parse") from exc
     readable: dict[int, tuple[str, ast.expr]] = {}
+    parents: dict[int, ast.AST] = {}
+    for parent in ast.walk(tree):
+        for child in ast.iter_child_nodes(parent):
+            parents[id(child)] = parent
     for statement in tree.body:
         if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
             target, value = statement.targets[0], statement.value
@@ -433,9 +469,16 @@ def _module_facts(source: bytes | None, names: Sequence[str]) -> dict[str, objec
         if isinstance(node, ast.Attribute) and node.attr in _DYNAMIC_ATTRIBUTES:
             raise AuditError(f"an audited module uses .{node.attr}")
         for name in _bound_names(node):
-            if name == "__getattr__" and (any(node is s for s in tree.body)
-                                          or isinstance(node, (ast.Name, ast.alias))):
-                raise AuditError("an audited module defines a module-level __getattr__")
+            if name == "__getattr__":
+                parent = parents.get(id(node))
+                inside_class = False
+                while parent is not None:
+                    if isinstance(parent, ast.ClassDef):
+                        inside_class = True
+                        break
+                    parent = parents.get(id(parent))
+                if not inside_class:
+                    raise AuditError("an audited module defines a module-level __getattr__")
             if name not in names:
                 continue
             bound[name] = bound.get(name, 0) + 1

@@ -51,12 +51,21 @@ def _citation(section: str = "4a") -> ct.RecordCitation:
 
 def _install(monkeypatch, transport: str, *, admitted=True, activation=True, run=None,
              importable=True):
-    name = f"_test_seat_{transport}_{abs(hash((admitted, activation, importable)))}"
-    monkeypatch.setitem(ct._TRANSPORT_MODULES, transport, name)  # type: ignore[index]
+    name = ct._CANONICAL_TRANSPORT_MODULES[transport]
+    qualified = f"phase_loop_runtime.{name}"
     if not importable:
-        monkeypatch.delitem(sys.modules, f"phase_loop_runtime.{name}", raising=False)
+        monkeypatch.delitem(sys.modules, qualified, raising=False)
+        imported = ct.importlib.import_module
+
+        def refuse(target, *args, **kwargs):
+            if target == qualified:
+                raise ImportError(target)
+            return imported(target, *args, **kwargs)
+
+        monkeypatch.setattr(ct.importlib, "import_module", refuse)
         return None
-    module = types.ModuleType(f"phase_loop_runtime.{name}")
+    module = types.ModuleType(qualified)
+    module.__file__ = str(Path(ct.__file__))
     module.ADMITTED = admitted
     if activation:
         module.ACTIVATION = _citation("4a" if transport == "print" else "4b")
@@ -67,7 +76,18 @@ def _install(monkeypatch, transport: str, *, admitted=True, activation=True, run
         return run(seat, **kwargs) if run is not None else ("OK", "a review\n\nAGREE")
 
     module.run_jailed = run_jailed
-    monkeypatch.setitem(sys.modules, f"phase_loop_runtime.{name}", module)
+    literal_facts = ct._runtime_literal_facts
+
+    def facts(module_name, names):
+        if module_name != name:
+            return literal_facts(module_name, names)
+        values = {"ADMITTED": admitted}
+        if activation:
+            values["ACTIVATION"] = module.ACTIVATION
+        return Path(module.__file__), {key: value for key, value in values.items() if key in names}
+
+    monkeypatch.setattr(ct, "_runtime_literal_facts", facts)
+    monkeypatch.setitem(sys.modules, qualified, module)
     return module
 
 
