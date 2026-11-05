@@ -71,7 +71,8 @@ class Tree:
     def __init__(self, root: Path) -> None:
         self.root = root
         root.mkdir()
-        for args in (["init", "-q"], ["config", "user.email", "t@e.st"], ["config", "user.name", "t"]):
+        for args in (["init", "-q"], ["config", "user.email", "t@e.st"], ["config", "user.name", "t"],
+                     ["config", "core.excludesFile", "/dev/null"]):
             subprocess.run(["git", "-C", str(root), *args], check=True)
         self.files: dict[str, str] = {}
 
@@ -379,7 +380,7 @@ def test_a_default_set_in_any_other_shape_fails(tree, seam, extra):
     assert audit(tree, seam, head) == 1
 
 
-_RUNTIME_MUTATIONS = tuple(f"m{n:02d}" for n in range(1, 18))
+_RUNTIME_MUTATIONS = tuple(f"m{n:02d}" for n in range(1, 19))
 
 
 def _mutated_runtime(tmp_path: Path, mutation: str) -> tuple[Path, str]:
@@ -458,6 +459,14 @@ def _mutated_runtime(tmp_path: Path, mutation: str) -> tuple[Path, str]:
         py_compile.compile(str(malicious), cfile=str(pyc), doraise=True,
                            invalidation_mode=py_compile.PycInvalidationMode.UNCHECKED_HASH)
         malicious.unlink()
+    elif mutation == "m18":
+        sdk.write_text(
+            prefix + "from . import claude_seat_transport as _t\n"
+            f"ADMITTED = False\nACTIVATION = {cite}\n" + suffix
+            + "_read = _t._module_facts\n"
+              "_t._module_facts = lambda source, names: ({'ADMITTED': True, 'ACTIVATION': ACTIVATION}"
+              " if 'ADMITTED' in names else _read(source, names))\n"
+              "__builtins__['glo' 'bals']()['ADM' 'ITTED'] = True\n")
     elif mutation in ("m14", "m15"):
         kind = "default"
         operation = ("vars(ct).update(JAILED_CLAUDE_DEFAULT='print')" if mutation == "m14"
@@ -476,6 +485,11 @@ def _mutated_runtime(tmp_path: Path, mutation: str) -> tuple[Path, str]:
         changed = transport.read_text().replace(old, new)
         assert changed != transport.read_text()
         transport.write_text(changed)
+    if kind == "default":
+        # The value under test must be one this rig admits, so that only the seam's own
+        # comparison with its literal can refuse it.
+        (package / "claude_seat_print.py").write_text(
+            prefix + f"ADMITTED = True\nACTIVATION = {cite}\n" + suffix)
     return source, prelude + f"kind = {kind!r}\n"
 
 
@@ -497,6 +511,39 @@ def test_runtime_admission_is_bound_to_the_audited_literals(tmp_path, mutation):
         assert result == [None, ct.NOT_ADMITTED]
     else:
         assert result == [False, [None, ct.NOT_ADMITTED]]
+
+
+_RUNTIME_PATH = f"{ct.RUNTIME_DIR}/claude_seat_other.py"
+
+
+@pytest.mark.parametrize("line", [
+    "seam._CANONICAL_TRANSPORT_MODULES = {}",
+    "seam._TRANSPORT_MODULES = {}",
+    "seam._module_facts = None",
+    "seam._runtime_literal_facts = None",
+    "seam.transport_module = None",
+    "seam.is_admitted = None",
+    "seam.resolve_jailed_claude_transport = None",
+    "seam.launch_jailed = None",
+    "del seam.is_admitted",
+    "setattr(seam, 'is_admitted', None)",
+    "__path__.insert(0, 'other')",
+    "seam.__path__.append('other')",
+])
+def test_another_module_may_not_rebind_the_seams_readers(tree, seam, line):
+    head = tree.commit(raw={_RUNTIME_PATH: f"from . import claude_seat_transport as seam\n{line}\n"})
+    assert audit(tree, seam, head) == 1, line
+
+
+@pytest.mark.parametrize("path", [
+    f"{ct.RUNTIME_DIR}/__pycache__/claude_seat_transport.cpython-314.pyc",
+    f"{ct.RUNTIME_DIR}/__pycache__/__init__.cpython-314.pyc",
+    f"{ct.RUNTIME_DIR}/advisor_board/__pycache__/x.cpython-314.pyc",
+    f"{ct.RUNTIME_DIR}/data/x.pyc",
+])
+def test_tracked_compiled_code_under_the_runtime_fails(tree, seam, path):
+    head = tree.commit(raw={path: "compiled"})
+    assert audit(tree, seam, head) == 1, path
 
 
 # --------------------------------------------------------------------------------------
@@ -557,6 +604,7 @@ def test_the_required_lint_job_runs_audit_order_on_every_pull_request_and_push_t
                           " && github.ref == 'refs/heads/main')")
     assert step["env"]["BASE_SHA"] == ("${{ github.event_name == 'pull_request' && "
                                        "github.event.pull_request.base.sha || github.event.before }}")
+    assert step["env"]["HEAD_SHA"] == "${{ github.sha }}"
     run = step["run"]
     assert run.startswith("set -euo pipefail\n")
     assert '--base "$BASE_SHA"' in run and '--event "$GITHUB_EVENT_PATH"' in run

@@ -211,8 +211,12 @@ def transport_module(transport: str) -> ModuleType | None:
     if name is None:
         return None
     try:
-        module = importlib.import_module(f"{__package__}.{name}")
+        # The literal comes first: a module whose source does not say ``ADMITTED = True`` is
+        # never imported, so none of it runs before the check that refuses it.
         source, facts = _runtime_literal_facts(name, ("ADMITTED", "ACTIVATION"))
+        if facts.get("ADMITTED") is not True:
+            return None
+        module = importlib.import_module(f"{__package__}.{name}")
         module_file = getattr(module, "__file__", None)
         if (type(module) is not ModuleType or not isinstance(module_file, str)
                 or Path(module_file).resolve(strict=True) != source.resolve(strict=True)
@@ -221,7 +225,7 @@ def transport_module(transport: str) -> ModuleType | None:
     except (AuditError, ImportError, OSError, ValueError):
         return None
     activation = getattr(module, "ACTIVATION", None)
-    if facts.get("ADMITTED") is not True or getattr(module, "ADMITTED", False) is not True:
+    if getattr(module, "ADMITTED", False) is not True:
         return None
     if (not isinstance(activation, RecordCitation)
             or facts.get("ACTIVATION") != activation):
@@ -401,6 +405,12 @@ def _literal_citation(node: ast.expr) -> RecordCitation | None:
 #: Every name the admission and the default are read from, in any audited module.
 AUDITED_NAMES: tuple[str, ...] = (
     "ADMITTED", "ACTIVATION", "JAILED_CLAUDE_DEFAULT", "JAILED_DEFAULT_AUTHORITY")
+#: The seam's readers of those names. Rebinding one from another module changes what
+#: admission means without touching a literal the audit reads.
+SEAM_READERS: tuple[str, ...] = (
+    "_CANONICAL_TRANSPORT_MODULES", "_TRANSPORT_MODULES", "_module_facts",
+    "_runtime_literal_facts", "transport_module", "is_admitted",
+    "resolve_jailed_claude_transport", "launch_jailed")
 #: Constructs that can set a module attribute without a visible assignment. An audited
 #: module that uses one fails, whatever it does with it.
 _DYNAMIC_NAMES = frozenset({"globals", "locals", "vars", "setattr", "delattr", "exec", "eval",
@@ -513,8 +523,12 @@ def _tree_entries(repo: Path, commit: str, path: str, *, recursive: bool) -> lis
 
 def module_form_failures(repo: Path, commit: str) -> list[str]:
     """Each audited module is one regular ``<name>.py`` file or absent: no package, symlink,
-    compiled or other importable form of the same module name."""
+    compiled or other importable form of the same module name. No compiled file is tracked
+    anywhere under the runtime: the interpreter can prefer one to the source this audit reads."""
     problems = []
+    for _mode, _obj, path in _tree_entries(repo, commit, f"{RUNTIME_DIR}/", recursive=True):
+        if "__pycache__" in path.split("/") or path.endswith((".pyc", ".pyo")):
+            problems.append(f"{path}: compiled code is tracked under the runtime")
     entries = _tree_entries(repo, commit, f"{RUNTIME_DIR}/", recursive=False)
     for name in (Path(TRANSPORT_SOURCE).stem, *_TRANSPORT_MODULES.values()):
         for mode, _obj, path in entries:
@@ -549,8 +563,11 @@ def _blobs(repo: Path, objects: Sequence[str]) -> list[bytes]:
 
 
 def cross_module_failures(repo: Path, commit: str) -> list[str]:
-    """No runtime module sets an audited name on another module: no attribute assignment
-    or deletion of one, and no ``setattr``/``delattr`` naming one."""
+    """No runtime module sets an audited name or a seam reader on another object: no
+    attribute assignment or deletion of one, and no ``setattr``/``delattr`` naming one. None
+    touches ``__path__``, which can put another copy of the seam first. This reads declared
+    forms only: code a landing computes at run time is for review, not this audit."""
+    guarded = (*AUDITED_NAMES, *SEAM_READERS)
     sources = [(path, obj) for mode, obj, path in
                _tree_entries(repo, commit, f"{RUNTIME_DIR}/", recursive=True)
                if path.endswith(".py") and mode.startswith("100")]
@@ -562,13 +579,16 @@ def cross_module_failures(repo: Path, commit: str) -> list[str]:
             problems.append(f"{path}: a runtime module does not parse")
             continue
         for node in ast.walk(tree):
-            if (isinstance(node, ast.Attribute) and node.attr in AUDITED_NAMES
+            if ((isinstance(node, ast.Name) and node.id == "__path__")
+                    or (isinstance(node, ast.Attribute) and node.attr == "__path__")):
+                problems.append(f"{path}: touches the package search path")
+            elif (isinstance(node, ast.Attribute) and node.attr in guarded
                     and isinstance(node.ctx, (ast.Store, ast.Del))):
                 problems.append(f"{path}: sets {node.attr} on another object")
             elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
                     and node.func.id in ("setattr", "delattr") and len(node.args) >= 2
                     and isinstance(node.args[1], ast.Constant)
-                    and node.args[1].value in AUDITED_NAMES):
+                    and node.args[1].value in guarded):
                 problems.append(f"{path}: sets {node.args[1].value} through {node.func.id}")
     return problems
 
