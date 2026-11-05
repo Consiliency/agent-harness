@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: ENVELOPE
 roadmap: specs/phase-plans-v12.md
-roadmap_sha256: 8aea5fbcb0a8caa2b75d51ecb0147bd6f0e9e7db9bdeb9e58988d09bf12fdf2d
+roadmap_sha256: 98a5bc1994698c65a5a460872a4871a02bdd4b15ee7f0d3230891b6712640ac5
 automation:
   suite_command: ["python3", "-m", "pytest", "-q", "phase-loop-runtime/tests", "-k", "test_supervised_launch.py or test_supervised_launch_mutations.py or test_supervised_launch_binding.py or test_supervised_launch_route.py or test_supervised_launch_receipt.py"]
 ---
@@ -92,11 +92,11 @@ only after admission and capability checks; consume_admission verifies binding
 against the launch digest and atomically consumes its token once, after
 rechecking workspace classification/root device and inode plus executable/wrapper
 digests. Refuse changes. This is process-local: JOURNAL owns durable reservation,
-WORKER composes it before probes and repeats identity checks before each spawn;
-EC-JOURNAL-3 and EC-WORKER-2 govern cross-process replay and crash reservations. WORKER must call it immediately before
-any probe/launch sequence; its token authorizes one bounded attempt, not replay.
-Retries need a new attempt and fresh validation. Probe and worker invocations
-within that attempt share the immutable inputs; changed identity refuses.
+WORKER composes it before the launch chain and repeats identity checks before
+spawn; EC-JOURNAL-3 and EC-WORKER-2 govern cross-process replay and crash
+reservations. Its token authorizes one bounded attempt, not replay. The supported
+worker consumes independently collected pre-admission qualification and runs no
+probes. Retries need a new attempt and fresh validation; changed identity refuses.
 
 The matrix and workspace definition live in the roadmap. All three required
 constraint cells are unsupported for both local tiers; os_enforced always
@@ -111,7 +111,10 @@ group/world-writable component; pin wrapper realpaths/digests. Qualification
 SHA-256 matches govern provider eligibility. Audit-only readiness discloses that
 user-owned executables remain writable by same-login processes. Descriptor
 execution is preferred where supported; otherwise disclose the residual race.
-No version probe is run by ENVELOPE; WORKER owns bounded post-admission probes.
+No version probe is run by ENVELOPE or the supported WORKER path. Qualification
+collection is independent pre-admission work outside this phase. This v2 handoff
+supersedes the earlier fixture-only post-admission probe assignment; historical
+implementation evidence is unchanged.
 
 Repair amendment: ENVELOPE conservatively refuses symlink executable components
 and stores canonical absolute non-symlink paths rather than resolving symlinks.
@@ -267,7 +270,7 @@ required. Fixture API freeze is not authoritative contract acceptance.
 When the public contract differs, amend consumers and rerun production semantic
 vectors in CLOSEOUT; do not quietly reinterpret an EC.
 
-Readiness requires all six repository CI checks, exact observed-head Gate A,
+Readiness requires the live required checks plus full-path publication, Gate A,
 independent board and president review in CLOSEOUT. This plan does not dispatch
 them. Operational receipts live at plans/evidence/supervised-worker/ENVELOPE.md;
 runner-stamped amendments bind observed checks/heads later, never predicted

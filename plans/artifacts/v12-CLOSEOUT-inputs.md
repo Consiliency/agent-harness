@@ -52,7 +52,11 @@ schemas/supervised-worker-v2/, retaining relative names and byte identity.
 Inventory provenance.json by hash/blob only: its history text is outside the
 runtime closure and is not copied. Name new local metadata harness-provenance.json.
 Retain the separate original supervised-worker-v1 closure and SCHEMA receipt.
-Neither schema loader may resolve unlisted or remote references.
+Neither schema loader may resolve unlisted or remote references. Also vendor the
+three pinned version/package declaration files under version/ with their original
+repository-relative paths. They are inert metadata, not an installable package.
+The publisher provenance status is provisional; record that observed status,
+its verified source digest and pointer without copying its history text.
 
 ## Corpus accounting
 
@@ -93,8 +97,9 @@ input explanations, not harness or installed-route evidence.
    environment and opaque echo paths; never omit it or consult inherited data.
 3. **Whole-envelope secret safety:** inspect decoded names, nested values and
    arrays, including caller_context. Never redact, rewrite or drop echo to pass.
-   Prohibit secret values and their derived digests in envelope commitments,
-   argv, references, configuration, templates and grants. Known-secret/hash
+   Apply the complete pinned x-environment-commitment.no_secret_values_anywhere
+   rule, including instructions, references, source-tree contents, environment
+   policy and non-secret values, qualification evidence, templates and grants. Known-secret/hash
    controls are regressions, not proof against arbitrary derivation; trusted
    classification must establish suitability or refuse. Bind authorized source
    and presence, not value identity; same-source secret rotation leaves the
@@ -116,14 +121,20 @@ input explanations, not harness or installed-route evidence.
    after output refuse before any chain process. Supported stdin is the bound
    bytes once at start followed by EOF, or empty DEVNULL. A grant cannot override
    this exclusion. Existing panel PTY paths remain outside this worker.
-7. **Version window:** declare consiliency-contract>=0.7.0,<0.8.0, update its
-   conftest compatibility guard and lock together. Obtain the dependency from
-   the exact published Git revision using an immutable direct reference and
-   uv source/lock pin; retain exact-byte schema vendoring. Confirm distribution
-   metadata is 0.7.0 and installed package contents correspond to that commit.
-   Do not assume a registry release, floating main, tag or package-resource
-   equivalence. Failure to resolve/build that source blocks implementation
-   verification; it does not authorize restoring the old bound silently.
+7. **Version window:** v2 intake vendors only from the exact commit above and
+   enforces >=0.7.0,<0.8.0 by reading verified version/pyproject.toml's
+   project.version, version/package.json's version and the pinned version-skew
+   schema's contract_version/range constants. Require agreement at 0.7.0,
+   supported release syntax and the frozen range before exposing a bundle.
+   Missing, malformed, unequal, out-of-window or digest-drifted declarations
+   refuse manifest_invalid (digest mismatches remain digest_mismatch).
+   Never infer the bundle version from installed distribution metadata.
+   No pip/uv contract-package install, dependency upgrade, direct URL, source
+   override, lock change or registry/tag release is planned. Existing unrelated
+   package dependencies retain their current bounds; they supply no v2 authority.
+   Source and wheel tests read the same verified vendored bytes. Later source
+   revisions, even with the same declared version, require a separately reviewed
+   input amendment; compatibility is not byte provenance.
 
 ## Capture and launch boundary
 
@@ -141,7 +152,9 @@ per-run grants. Snapshot once and compare those same objects immediately at
 launch, extending consume_admission beyond its present inode/executable checks.
 Bind helper argv consumption, env transforms and cwd changes in the trusted
 template. Outer spawn env/cwd contains only declared transformation inputs.
-No late ambient variable, flag, config discovery or re-read may alter launch.
+The declared discovery set is captured and enforced; undeclared discovery remains
+an installed-route qualification obligation under the tier's stated limits,
+not an offline same-login containment claim.
 
 Sources map to workspace, declared_root or descriptor; keep physical paths and
 FDs local. External references are captured/rechecked in place, never copied
@@ -158,16 +171,15 @@ and enforce the actual environment, including scrub/scratch policy, not a hash
 of a different redacted map. Grants select raw_bytes or rfc8785 explicitly;
 retain ordered policy rules and independently held per-run coverage.
 
-Qualification probes are auxiliary pre-admission work, never worker invocations.
-The worker consumes held qualification; it need not launch probes. If a future
-qualified route probes, do so before capture/admission, or recapture/revalidate
-all affected material. Never call a worker a probe. Dependency/classification
-refusals remain before probes or envelope/credential/output effects. One
-monotonic deadline starts at the first chain process and never restarts at a
-helper. Bind seconds, deadline_action and config-based heartbeat/quiet behavior;
-review not_armed semantics must match the contract or the route refuses.
-Admission refusal means zero chain processes; helper failure after start is
-running → finished with failed_to_start, never refused.
+The supported v12 worker starts no qualification/identity probes, before or after
+admission. It consumes independently collected qualification evidence; collection
+is separate, pre-admission work outside this phase and cannot alter its captured
+material. Refusals cause zero auxiliary, chain and worker starts. A future route
+that requires probes needs a separate plan consistent with the public ordering.
+One monotonic deadline starts at the first launch-chain process and never restarts
+at a helper. Bind seconds, deadline_action and config-based heartbeat/quiet
+behavior; review not_armed semantics must match or the route refuses. Helper
+failure after chain start is running → finished/failed_to_start, never refused.
 
 ## Apply, identity and evidence boundaries
 
@@ -193,32 +205,235 @@ JOURNAL/WORKER paths. Schema validity alone proves none of these obligations.
 
 ## Authority transition and evidence ledger
 
-SCHEMA's historical receipt stays byte_pin_authority=false. The new CLOSEOUT
-receipt is false by default, with per-obligation status and owner. Only the
-terminal reducer may emit true for the explicitly named v2 bundle after:
+SCHEMA's receipt remains historical and false. Both versions' harness-provenance
+metadata always retain byte_pin_authority=false. CLOSEOUT's receipt is a scoped
+evidence assessment, never a runtime authorization input: no launch path reads
+its boolean. Production still requires independent authority, suitability and
+qualification for every attempt. The published provisional status keeps the v2
+assessment false at this pin. A non-provisional successor needs a separately
+reviewed input amendment, not a status rewrite. External evidence source and
+board publisher bindings below are also unresolved acceptance prerequisites.
+Thus true is unreachable in this revision; offline implementation may proceed
+after the existing upstream gates, but CLOSEOUT acceptance stays blocked.
 
-- fresh protected-main ancestry, per-file hash/blob and offline loader proof,
-  separate manifest/provenance seals, installed wheel/package-byte comparison,
-  and dependency-window/source-lock proof;
-- complete corpus/rule/named-obligation accounting with production path witnesses,
-  passing expected diagnostics/effects and independent per-guard bypass controls;
-- public envelope-to-attempt, durable replay, lifecycle/process-result,
-  baseline/proposal/evidence independence and external controller/consumer
-  reconciliation evidence, with no unresolved upstream_phase_unmet row;
-- six required CI checks, dispatched Gate A and the roadmap's independent board
-  and president results bound to the observed reviewed content/head.
+SL-3 owns verify_supervised_v2_evidence.py, run by the network-permitted
+supervised-v2-evidence workflow on hosted CI. Its metadata-only assessment,
+including every negative verdict, is independently reproducible. It resolves
+run/job/check IDs, repository, workflow identity, head, conclusion and downloaded
+artifact SHA-256 through the authenticated GitHub API, not receipt assertions.
+Read the live required check set from protected-main rules/branch protection;
+unavailable requirements or evidence fail closed. Require that entire set plus
+supervised contract publication, Gate A, and the separate evidence verifier.
+Publication must have run its full comparison, with contract=true in the
+API-resolved result artifact for the assessed content; no-op success is insufficient.
 
-Record source pointer, case/control IDs, production symbol, outcome, owner,
-resource digest, runner artifact digest and observed run/job/head for every row.
-Reject missing/skipped-only outcomes, unverifiable artifacts or stale content.
-Never store raw prompts/credentials/streams, private source paths or copied
-producer history. A runner-stamped post-verification amendment records newly
-observed evidence; it must not predict its own future commit or require a fixed
-commit count. Preserve prior receipts and bind evidence to the content actually
-tested. New changes invalidate affected claims. Gate and live authority are
-separate: true does not qualify installed providers or authorize execution.
+Board reports are private inputs; use metadata-only board-verdicts.json and
+president-verdict.json in a hosted board-evidence artifact, identifying seats,
+providers, verdicts, reviewed head/content identity and report digests. A plan
+amendment must name the authorized publisher, repository/workflow or detached
+signature trust root and immutable artifact identity before these are trusted.
+For external controller apply (all 13 cases) and display reconciliation, the
+owning controller/display maintainers must supply similarly authenticated
+producer evidence from a producer-owned repository/workflow or signature root
+outside the harness implementer's write authority. Those identities are not yet
+established here. Missing identities/evidence are unresolved upstream_phase_unmet;
+SL-2 outputs external_evidence_intake, never manufactures the external results.
+V3 checks offline structure/negative cases; it cannot itself authorize true.
 
-No unresolved contract-representation owner question remains. External evidence
-and upstream phase delivery are explicit dependencies, not permissions requested
-by this planning change. Live qualification, route expansion, release and merge
-remain separately owned.
+Content identity is SHA-256 of RFC 8785 over sorted [path, git-mode, blob-OID]
+rows from git ls-tree -r of the assessed tree, excluding exactly
+plans/evidence/supervised-worker/CLOSEOUT.md. No code, workflow, plan, input seal,
+readiness documentation or other path is excluded. The hosted verifier requires
+the tested head to be an ancestor of a proposed evidence-stamp commit and their
+entire delta to be confined to that one path, with equal content identities.
+It checks all required CI/Gate A/board/president evidence against the tested
+content. The verification job's artifact carries its own run identity from the
+runner/API; it does not require a self-referential artifact digest. A later
+read-only assessment resolves and hashes that artifact. Path-entered controls
+prove that a governing-content change invalidates the assessment.
+
+A receipt names tested head, content identity, governing file digests and the
+stamp head as observed externally; it never embeds a predicted own commit ID.
+After landing, an on-main verifier checks content identity and the recorded
+pre-merge ancestry/delta proof. Squash landing is accepted only with identical
+non-evidence content and API-confirmed PR/merge correspondence; it is not a
+claim that the tested head is an ancestor of a squash commit. Any subsequent
+non-evidence change makes the old assessment inapplicable, reports effective
+false and requires fresh evidence. Consumers must validate applicability, never
+read a historical true boolean as current. No fixed trailing-commit count.
+
+Each row records source pointer, case/control ID, production symbol, outcome,
+owner, resource digest and authenticated artifact/run/job/head identity. Include
+all schema rules, SCHEMA named obligations, replay, lifecycle/process result,
+proposal/baseline/attempt evidence independence and consumer reconciliation.
+Missing/skipped-only or unresolved outcomes block acceptance. No raw prompts,
+credentials, streams, private source paths or copied producer history are stored.
+Installed qualification, live use, route expansion, release and merge remain
+separate authority; no immediate owner decision is requested by this repair.
+
+## Frozen local interfaces
+
+These signatures and closed results supplement the phase plan; none are wire fields.
+JSONValue means a recursively immutable JSON tree; ParsedV2 carries that tree and
+its exact raw bytes, and V2Envelope additionally carries schema validation and
+raw/public-JCS digests. Secret-free types have no ambient lookup or lazy re-read.
+
+| Owner | Signature | Result / failure |
+| --- | --- | --- |
+| SL-0 supervised_contracts | load_contract_bundle(*, version: str = "v1") -> ContractBundle | Only v1/v2; otherwise ContractError(selector_invalid). v1 default/closure unchanged. |
+| SL-0 supervised_contracts | validate_record(bundle: ContractBundle, family: str, record: bytes, *, definition: str | None = None) -> None | Existing closed ContractError codes/selectors; add v2 family only with v2 bundle. No semantics. |
+| SL-1 supervised_envelope_v2 | parse_v2(raw: bytes) -> ParsedV2; canonicalize_v2(value: JSONValue) -> bytes | Both enforce the v2 domain; invalid input raises ContractError(record_json_invalid), with no payload in error/chain. |
+| SL-1 supervised_envelope_v2 | decode_v2(raw: bytes, *, bundle: ContractBundle) -> V2Envelope | Calls parse_v2 and validate_record; only public v2; existing ContractError codes. |
+| SL-1 supervised_launch_binding | load_v2_context(binding: Path, *, workspace: Path, target: Path, reference_roots: tuple[Path, ...]) -> ValidatorContext | Refused | Trusted snapshot or code-only refusal; never derives authority from envelope/caller arguments. |
+| SL-1 supervised_capture_v2 | capture_launch_v2(*, spec: TrustedLaunchSpec, context: ValidatorContext, attempt: AttemptBinding) -> CapturedLaunch | Refused | Captures declared material once; failures map to launch_input_unbound or the pinned first-stage diagnostic. |
+| SL-1 supervised_envelope_v2 | validate_v2_admission(envelope: V2Envelope, *, context: ValidatorContext, capture: CapturedLaunch, attempt: AttemptBinding) -> V2Decision | Immutable admitted flag and ordered diagnostic tuple; exact first reporting stage of pinned x-evaluation-order, no token/spawn. |
+| SL-1 supervised_launch | prepare_launch_v2(raw: bytes, *, binding: V2Binding, capture: CapturedLaunch, attempt: AttemptBinding) -> PreparedLaunch | Refused | Executes public validation then trusted Validator(view); requires typed Admit(local_digest, attempt_id), issues one-use token only on both successes. |
+| SL-1 supervised_capture_v2 | recheck_launch_v2(capture: CapturedLaunch, *, context: ValidatorContext) -> None | Refused | Compares every commitment with held material, returns no replacement inputs; failure permanently invalidates capture. |
+| SL-1 supervised_launch | consume_admission(prepared: PreparedLaunch) -> LaunchInputs | Refused | Existing signature; v2 rechecks and spends once, returns only admitted secret-free input view with an opaque spawn capability. |
+
+V2Decision diagnostics are the finite pinned schema/semantic diagnostic set;
+local binding failures use binding_unavailable, binding_invalid, codec_unavailable,
+launch_input_unbound, route_not_qualified or grant_unqualified. Existing token,
+typed-Admit and dependency preflight refusals remain code-only with their current
+reasons. Preserve the complete diagnostic tuple in local result metadata, while
+Refused.reason uses its first code; map local codes into schema-valid status
+refusal records with a tested closed mapping, never free-text substitution.
+
+AttemptBinding is immutable (assignment_digest, run_id, attempt_id) from the
+controller's trusted admission request. It is separate from public envelope and
+opaque echo, checked against ValidatorContext and durably reserved by JOURNAL.
+TrustedLaunchSpec is an operator-produced immutable final route specification
+containing the declared local roots, exact chain/argv, delivery, cwd, target map,
+classified environment, grants and policy bindings described above. The CLI
+obtains it from V2Binding's trusted configuration, never envelope-selected code.
+
+CapturedLaunch owns bounded byte snapshots, held read descriptors and immutable
+secret-free commitments for one attempt. It lives until one consume/spawn or
+refusal/cancel, then closes descriptors and revokes its capability; it cannot be
+serialized, copied to another attempt or reused. Secret values stay in a separate
+non-dataclass opaque delivery object accessible only by the final spawn owner;
+it has no value-bearing repr, asdict, validator-view or evidence exposure. Neither
+public nor local launch digest includes secret values or their derived hashes.
+Both bind authorized source/presence and non-secret inputs. A same-source rotation
+leaves both digests unchanged. Explicit controls cover every normative secret
+location and absence from repr, errors, validator views and evidence.
+
+## Trusted context, qualification and production entry
+
+ValidatorContext is a frozen operator/controller-held document with
+expected_assignment_digest, expected_snapshot_ref, expected_crosswalk_ref,
+timeout_max_seconds, qualified_routes, policy_epoch, revoked_record_ids and
+caller_context_suitability. Use component-wise no-follow regular-file reads,
+operator uid, private mode, byte caps, and exclusion of workspace, protected target
+and reference roots for this document and every referenced record. Read/hash/parse
+one snapshot. Envelope bytes, caller_context and launch CLI flags cannot supply
+or override it. Missing/malformed context refuses; real trusted-file tests cover
+foreign assignment and stale snapshot with pinned diagnostics.
+
+qualified_routes is a list, not a keyed map: preserve duplicates. Each record
+contains record_id, issuer_id, policy_epoch, valid_from, expires_at, evidence
+references/digests, the complete public route key, exact grant form/digest map
+and credential_sources. The independent trusted policy fixes accepted issuer
+identity, current epoch, time basis and revoked IDs. Require all records readable,
+well-formed, current, unrevoked and evidence-bound; any invalid record refuses the
+whole store, never skips a row. Then require exactly one matching route. Evidence
+must resolve to an approved qualification collector's authenticated record, not
+local assertion booleans. Provider proof includes demonstrated read-only refusal,
+proposal attribution, apply and audit limits; audit-tier proof includes actual
+before/after audit, error handling, result attribution and its detection-only
+limits. Missing installed evidence remains unqualified. Collection is not in scope.
+
+caller_context_suitability defaults to empty-object-only in trusted policy.
+Nonempty payloads require an independent per-attempt attestation binding exact
+JCS payload digest, assignment, attempt, trusted issuer and current policy epoch;
+absence/mismatch refuses launch_input_unbound. Generic secret checks still apply
+and echo stays opaque. The corpus test adapter explicitly provides positive
+attestations for controls; the same cases without that input refuse through the
+production binding. This never treats a successful scanner as suitability proof.
+
+Production CLI always selects the installed v2 binding from trusted operator
+configuration; envelope contents cannot choose a legacy decoder. V2Binding holds
+that context, public codec bundle and validator, with module absolute paths,
+verified wheel/module digests and current approved input seal outside the three
+excluded roots. Isolated imports must match that approved implementation set.
+Fixture-shaped records, public v1 and non-public codecs refuse at production entry.
+Legacy prepare_launch/decoder injection remains available only to offline tests.
+
+Every control has separate contract-level verdict and supported-route verdict
+with reason in the ledger. v2 provider write_scope opens only with authenticated
+apply/qualification evidence, including empty required_constraints; without it
+the provider route refuses. Audit-tier write_scope stays unsupported. Dependency,
+workspace-contained executable and interactive routes stay closed; affected
+controls are not counted as end-to-end launch passes. Unresolved runtime proof
+continues to block CLOSEOUT, not pressure a route expansion. SL-2 owns all six
+kind=echo cases through the real JOURNAL writer, with exact JCS bytes including
+S3-jcs-proto-echo-dropped and S2-jcs-echo-number-changed.
+
+## Corpus parsing and SCHEMA compatibility
+
+Resource hashes seal original bytes before parsing. Parse allowlisted *.vectors.json
+as corpus containers with duplicate-key/nonfinite rejection but lossless number
+tokens and escaped scalar strings, retaining raw token slices so deliberately
+invalid fixture values survive extraction. This private extractor has no public
+record API path and cannot emit an admissible ParsedV2. No normalization/replacement
+of invalid fixtures is allowed. Schemas, provenance and production record intake
+remain strict. Feed extracted raw cases to production parse_v2 and extracted
+values to its in-memory boundary; both must independently reject invalid domains.
+Share the v2 binary64/domain logic with validate_record for the v2 family, checking
+raw and rounded integer range, including fractional tie/exponent forms. v1 intake
+keeps its documented original behavior. Generalize ECMA-262 pattern semantics for
+every pattern in the verified schema; final-LF controls cover digest, ID and commit
+patterns, with production-entry controls. Never edit producer pattern bytes.
+
+SL-0 updates historical receipt checks to verify SCHEMA module hashes against the
+recorded historical Git blob, not the current changed module. Its receipt bytes
+remain untouched. Replace the blanket import ban with an exact production allowlist
+(supervised_envelope_v2, supervised_capture_v2, supervised_launch_binding), retaining
+all other exclusions; callers pass validated bundles rather than import elsewhere.
+Update the signature assertion for the explicit v1-default keyword; retain false
+harness-provenance enforcement for both versions. CLOSEOUT frozen_inputs uses the
+same path-keyed {path: {sha256}} shape as SCHEMA; readers reject other shapes.
+
+## Hosted verification surfaces
+
+SL-0 extends gate_a_cleanroom.sh's sparse allowlist with the CLOSEOUT artifact,
+receipt, plan, manifest, verification scripts and coupled assertions. Missing
+mandatory inputs fail, never skip. The GateAConformEvidenceScopeTest class in
+test_gate_a_wheel_isolation.py asserts the closure and installed-wheel imports. Source suites and Gate A both verify the
+vendored version declarations and exact resource bytes in their own interpreter;
+no contract-package install or environment workaround is introduced.
+
+The publication detector explicitly includes both vendor roots, the version/
+metadata, supervised_contracts.py, supervised_envelope_v2.py,
+supervised_capture_v2.py, test_supervised_contracts.py (v2 anchor assertions),
+this artifact, .gitleaks.toml, package-data/MANIFEST configuration, uv.lock
+(as a drift surface, not a new v2 pin), test.yml, Gate A, and both verification
+scripts/workflows. Compare the v12-CLOSEOUT frozen_inputs mapping separately from
+v12-SCHEMA. A gitleaks exception requires an exact inert fixture path and exact
+rule; no broader allowance. Base-ref policy requires a reviewed plan-only input
+amendment to land before implementation can use changed source pins/seals.
+A diff changing the CLOSEOUT artifact/seal/anchor identities together with vendor
+bytes, pins or loader fails. Compare old identities from the trusted base ref;
+protected-main ancestry alone cannot authorize a new input revision. The current
+repair changes plans only. Receipt authority requires the authenticated full-path
+publication artifact, not detector success alone.
+
+SL-0 owns verify_supervised_v2.sh, the explicit runner wrapper for V0–V3/all.
+It resolves the repo root from its own location, cd's there, requires the checkout's
+locked phase-loop-runtime/.venv/bin/python, sets absolute source/test PYTHONPATH,
+and asserts module provenance before exec of timeout 300 ... -m pytest -q -n 0
+-p no:cacheprovider with the phase plan's enumerated group. No installs or dynamic
+whole-repo discovery. Isolated child tests explicitly insert and assert that
+same source root. Gate A uses its clean-room installed interpreter and asserts
+wheel provenance instead; it never imports production from the sparse source.
+Record interpreter/module paths and byte proof with outcomes. Readiness names
+these tested source/wheel routes only; other install routes remain unqualified.
+
+### Verification group membership
+
+- V0: `phase-loop-runtime/tests/test_supervised_contracts.py`, `phase-loop-runtime/tests/test_supervised_contracts_vectors.py`, `phase-loop-runtime/tests/test_supervised_contracts_mutations.py`, `phase-loop-runtime/tests/test_supervised_contracts_receipt.py`, `phase-loop-runtime/tests/test_gate_a_wheel_isolation.py::GateAConformEvidenceScopeTest`, `phase-loop-runtime/tests/test_ci_chronology_scope.py`, `phase-loop-runtime/tests/test_ci_offload_lock.py`
+- V1: `phase-loop-runtime/tests/test_supervised_envelope_v2.py`, `phase-loop-runtime/tests/test_supervised_capture_v2.py`, `phase-loop-runtime/tests/test_supervised_launch.py`, `phase-loop-runtime/tests/test_supervised_launch_binding.py`, `phase-loop-runtime/tests/test_supervised_launch_route.py`, `phase-loop-runtime/tests/test_supervised_launch_mutations.py`, `phase-loop-runtime/tests/test_supervised_launch_receipt.py`
+- V2: `phase-loop-runtime/tests/test_supervised_worker.py`, `phase-loop-runtime/tests/test_run_status.py`, `phase-loop-runtime/tests/test_run_status_projection.py`, `phase-loop-runtime/tests/test_convergence_adapters.py`, `phase-loop-runtime/tests/test_output_retention.py`, `phase-loop-runtime/tests/test_executable_dependency_startup.py`
+- V3: `phase-loop-runtime/tests/test_supervised_v2_readiness.py`
+
+All is the deduplicated union above; the wrapper refuses unknown groups and missing files.

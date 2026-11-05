@@ -14319,12 +14319,11 @@
       "acceptance_criteria_count": 2,
       "created_at": "2026-11-05T06:49:20.443482+00:00",
       "file": "plans/phase-plan-v12-CLOSEOUT.md",
-      "frozen_inputs": [
-        {
-          "file": "plans/artifacts/v12-CLOSEOUT-inputs.md",
-          "sha256": "76d810e0e80cbe2201bd604c876ea4cc3e3ee8e695758c5b68c6a54f9a0b49bf"
+      "frozen_inputs": {
+        "plans/artifacts/v12-CLOSEOUT-inputs.md": {
+          "sha256": "95a2b4de340fc2755003ba4462e0cfe0b73089b468fe2a2377fa6abff101053e"
         }
-      ],
+      },
       "gate_status": "declared_not_produced",
       "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20261105-v12-envelope-v2-plan.md",
       "if_gates_produced": [
