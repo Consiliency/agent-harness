@@ -40,6 +40,26 @@ from phase_loop_runtime.advisor_board import composition as _composition
 ALL_VENDORS = ("grok", "claude", "codex", "gemini")
 
 
+def test_seats_firstseat_composition_policy_replay():
+    from phase_loop_runtime import panel_invoker as pi
+    policy = pi.review_policy_for_tier("plan")
+    assert policy.required_seats == ("fable", "sol", "gemini", "grok")
+    assert policy.requires_president is True
+    for absent in (None, *ALL_VENDORS, "all"):
+        report = _composition.compose_review_board_report(
+            is_available=lambda v: absent != "all" and v != absent, auth_ok=lambda v: True)
+        outcome = report.policy_outcome("plan")
+        if absent is None:
+            assert outcome.status == "admitted"
+            pi._validate_review_board_policy(report.board, policy, None)
+        else:
+            assert outcome.status == "policy_refused"
+            assert outcome.code == "review_composition_refused"
+            assert outcome.unmet_slots and outcome.fix
+            with __import__('pytest').raises(pi.PresidentPolicyError):
+                pi._validate_review_board_policy(report.board, policy, None)
+
+
 def _probe(up):
     up = set(up)
     return lambda vendor: vendor in up
