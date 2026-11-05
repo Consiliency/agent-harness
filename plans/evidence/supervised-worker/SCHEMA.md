@@ -114,11 +114,59 @@ targets are the vendored schema directory and docs/supervised-worker-contracts.m
       "status": "upstream_phase_unmet"
     }
   ],
-  "hosted_publication": null,
-  "hosted_result_artifact_sha256": null,
-  "hosted_run_id": null,
+  "hosted_job_evidence": {
+    "conclusion": "success",
+    "head": "5c814c074ad96590a512c38b5322db2134aa923c",
+    "job_id": 127057973696,
+    "run_id": "41970689855",
+    "wheel_junit_sha256": "b11fe02e29127159cf66b0350228f809f2569a3eff5d4de701e31f7e8a8ab657",
+    "wheel_tests_passed": 58
+  },
+  "hosted_publication": {
+    "default_branch": "main",
+    "default_branch_head": "93db4b4fcc4e3d40c62f6658b6a67b519c750491",
+    "hosted_head": "5c814c074ad96590a512c38b5322db2134aa923c",
+    "hosted_job": "publication",
+    "hosted_run_id": "41970689855",
+    "input_artifact_sha256": "2c98eafb4950cf4106e1512515dca3199cc4c6095dd5c5d6971e7c0e9b62cf0b",
+    "outcome": "passed",
+    "protected": true,
+    "resources": {
+      "admitted-launch-envelope.schema.json": {
+        "blob": "1abe40abbb1178295af86b3c6d64f9bffe5a0099",
+        "sha256": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d"
+      },
+      "conformance/README.md": {
+        "blob": "9051f4fcfa7bb91b896f3efe60b6a3b238545a75",
+        "sha256": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca"
+      },
+      "conformance/SHA256SUMS": {
+        "blob": "ff78301d393ef361f6c476a7117f0d2d97d2193b",
+        "sha256": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285"
+      },
+      "conformance/envelope.vectors.json": {
+        "blob": "4fcb908f0ed89f2206efc2fbf4c5a6c7bdbd7e56",
+        "sha256": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f"
+      },
+      "conformance/run-status.vectors.json": {
+        "blob": "4a156e4fbf56526d483f729c78b2e94eb6f48f93",
+        "sha256": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730"
+      },
+      "provenance.json": {
+        "blob": "cb2d905ba4fc12c9df1244f301c2624a656643ac",
+        "sha256": "9444d9285e4fbf9fa78c7e10fb474885c79f77cb65abec2f45527af2ec57ff42"
+      },
+      "run-status.schema.json": {
+        "blob": "8af75b390c1b6dcb5478ac16daec3bd38cb060d1",
+        "sha256": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      }
+    },
+    "source_commit": "93db4b4fcc4e3d40c62f6658b6a67b519c750491"
+  },
+  "hosted_result_artifact_sha256": "a3b4f35f4621dc1aab4f699e66f21b4a38338d77ef6736d49e6a641e5302a6d8",
+  "hosted_run_id": "41970689855",
   "input_artifact_sha256": "2c98eafb4950cf4106e1512515dca3199cc4c6095dd5c5d6971e7c0e9b62cf0b",
-  "intake_gate_status": "awaiting_hosted_verification",
+  "intake_gate_status": "verified",
   "intake_results": [
     {
       "case_or_control_id": "test_frozen_input_and_production_pins",
@@ -4372,7 +4420,7 @@ targets are the vendored schema directory and docs/supervised-worker-contracts.m
     }
   ],
   "source_commit": "93db4b4fcc4e3d40c62f6658b6a67b519c750491",
-  "suite_artifact_sha256": "20369a2c86cddbaf138c45989edc2b8f793a6612a767bf3f943c04a021d8f904",
+  "suite_artifact_sha256": "82ff0d7cde7a31589fd92194009776e3b8314c68336ed6bdee34edeaa9d4a8ec",
   "tier_basis": {
     "os_enforced": {
       "constraints": {
@@ -4380,7 +4428,6 @@ targets are the vendored schema directory and docs/supervised-worker-contracts.m
         "network_denial": "not_enforced",
         "write_scope": "not_enforced"
       },
-      "limits": "Reserved and unqualified. An envelope that requires it is refused.",
       "qualified": false,
       "workspace_kinds": []
     },
@@ -4390,7 +4437,6 @@ targets are the vendored schema directory and docs/supervised-worker-contracts.m
         "network_denial": "not_enforced",
         "write_scope": "not_enforced"
       },
-      "limits": "Detects after the write only. Applies when the workspace is not a separate clone or copy, for example a git worktree of the protected repository, which shares its object store and refs.",
       "qualified": true,
       "workspace_kinds": [
         "separate_clone",
@@ -4405,7 +4451,6 @@ targets are the vendored schema directory and docs/supervised-worker-contracts.m
         "network_denial": "not_enforced",
         "write_scope": "checked_before_apply"
       },
-      "limits": "The provider is asked to run read-only; that is the provider's own enforcement, not operating-system confinement. Changes return as proposal bytes that are checked before apply, followed by a post-run audit. A tool-action refusal is detection, not prevention. Network cannot be denied. A same-login process is not contained.",
       "qualified": true,
       "workspace_kinds": [
         "separate_clone",

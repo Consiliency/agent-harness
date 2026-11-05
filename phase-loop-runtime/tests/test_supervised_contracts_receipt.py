@@ -42,6 +42,11 @@ def case_inventory():
             for family in vectors.FILES for c in vectors.corpus(family)]
 
 
+def tier_inventory(bundle):
+    tiers = json.loads(bundle.resource_bytes("admitted-launch-envelope.schema.json"))["x-enforcement-tiers"]
+    return {name: {key: value[key] for key in ("qualified", "workspace_kinds", "constraints")} for name, value in tiers.items()}
+
+
 def coverage_inventory():
     # Each claimed absence has a resolvable parent pointer and explicit absent keys.
     dimensions = {
@@ -94,6 +99,11 @@ def check_results(data):
         assert counts == expected_functions(module)
     schema_nodes = {r["test_node_id"].split("::", 1)[1] for r in data["schema_results"]}
     assert {"test_published_schema_only[" + c["id"] + "]" for c in case_inventory()} <= schema_nodes
+    mutation_nodes = {r["case_or_control_id"] for r in data["mutation_results"]}
+    assert {"test_production_control[" + c + "]" for c in mutations.CONTROLS} <= mutation_nodes
+    assert {"test_every_definition_selector_control[" + c + "]" for c in production._DEFINITIONS} <= mutation_nodes
+    assert {"test_vector_helper_control[patch]", "test_vector_helper_control[rehash]",
+            "test_reference_integrity_complete_repin", "test_offline_reference_control"} <= mutation_nodes
 
 
 def verify(data):
@@ -117,7 +127,7 @@ def verify(data):
     for row in vectors.semantic_inventory():
         name, _, path = row["source_pointer"].partition("#")
         vectors.pointer(json.loads(bundle.resource_bytes(name)), path)
-    assert data["tier_basis"] == json.loads(bundle.resource_bytes("admitted-launch-envelope.schema.json"))["x-enforcement-tiers"]
+    assert data["tier_basis"] == tier_inventory(bundle)
     assert data["named_controls"] == ["E-admitted", "E-echo", "E-dependency-declared"]
     assert data["opaque_fields_do_not_prove_coverage"] == ["caller_context", "units.snapshot_ref", "units.crosswalk_ref", "obligations.definition_digests"]
     assert re.fullmatch(r"[0-9a-f]{64}", data["suite_artifact_sha256"])
@@ -137,6 +147,11 @@ def verify(data):
         assert hosted["input_artifact_sha256"] == production.INPUT_ARTIFACT_SHA256
         assert hosted["protected"] is True and hosted["default_branch"] == "main"
         assert hosted["resources"] == {n: {"sha256": d, "blob": b} for n, (d, b) in production.PUBLICATION_PINS.items()}
+        evidence = data["hosted_job_evidence"]
+        assert evidence["run_id"] == hosted["hosted_run_id"] and evidence["head"] == hosted["hosted_head"]
+        assert evidence["conclusion"] == "success" and evidence["job_id"] > 0
+        assert evidence["wheel_tests_passed"] == sum(expected_functions(intake).values())
+        assert re.fullmatch(r"[0-9a-f]{64}", evidence["wheel_junit_sha256"])
 
 
 def test_receipt_bindings_and_inventory():
@@ -186,7 +201,7 @@ def junit_rows(paths):
     return rows, ET.tostring(combined, encoding="utf-8", xml_declaration=True)
 
 
-def stamp(paths, suite_path, hosted_path=None, bootstrap=False):
+def stamp(paths, suite_path, hosted_path=None, bootstrap=False, hosted_run_path=None):
     rows, suite_bytes = junit_rows(paths)
     bundle = intake.anchor()
     resource_hashes = {n: sha256(bundle.resource_bytes(n)).hexdigest() for n in production._NAMES}
@@ -197,16 +212,33 @@ def stamp(paths, suite_path, hosted_path=None, bootstrap=False):
         for group in rows:
             assert previous[group] == rows[group]
     hosted = json.loads(hosted_path.read_bytes()) if hosted_path else None
+    job_evidence = None
+    if hosted is not None:
+        assert hosted_run_path is not None
+        run = json.loads(hosted_run_path.read_bytes())
+        assert run["status"] == "completed" and run["conclusion"] == "success"
+        assert str(run["databaseId"]) == hosted["hosted_run_id"] and run["headSha"] == hosted["hosted_head"]
+        job = next(j for j in run["jobs"] if j["name"] == "supervised contract publication")
+        assert job["conclusion"] == "success"
+        assert any(s["name"] == "Verify extracted package" and s["conclusion"] == "success" for s in job["steps"])
+        wheel_path = hosted_path.with_name("schema-wheel.xml")
+        wheel_cases = list(ET.fromstring(wheel_path.read_bytes()).iter("testcase"))
+        assert len(wheel_cases) == sum(expected_functions(intake).values())
+        assert all(not any(c.find(tag) is not None for tag in ("failure", "error", "skipped")) for c in wheel_cases)
+        job_evidence = {"run_id": str(run["databaseId"]), "head": run["headSha"], "job_id": job["databaseId"],
+                        "conclusion": run["conclusion"], "wheel_tests_passed": len(wheel_cases),
+                        "wheel_junit_sha256": sha256(wheel_path.read_bytes()).hexdigest()}
     data = {**rows, "source_commit": production.SOURCE_COMMIT, "byte_pin_authority": False,
             "input_artifact_sha256": production.INPUT_ARTIFACT_SHA256, "resource_sha256": resource_hashes,
             "module_sha256": sha256(Path(production.__file__).read_bytes()).hexdigest(),
             "module_origin": "phase_loop_runtime/supervised_contracts.py",
             "semantic_cases": case_inventory(), "semantic_inventory": vectors.semantic_inventory() + named_inventory(),
-            "coverage_inventory": coverage_inventory(), "tier_basis": json.loads(bundle.resource_bytes("admitted-launch-envelope.schema.json"))["x-enforcement-tiers"],
+            "coverage_inventory": coverage_inventory(), "tier_basis": tier_inventory(bundle),
             "named_controls": ["E-admitted", "E-echo", "E-dependency-declared"],
             "opaque_fields_do_not_prove_coverage": ["caller_context", "units.snapshot_ref", "units.crosswalk_ref", "obligations.definition_digests"],
             "suite_artifact_sha256": sha256(suite_bytes).hexdigest(),
             "hosted_publication": hosted, "hosted_run_id": hosted["hosted_run_id"] if hosted else None,
+            "hosted_job_evidence": job_evidence,
             "hosted_result_artifact_sha256": sha256(hosted_path.read_bytes()).hexdigest() if hosted else None,
             "intake_gate_status": "verified" if hosted else "awaiting_hosted_verification"}
     verify(data)
@@ -246,6 +278,7 @@ if __name__ == "__main__":
     parser.add_argument("--stamp", type=Path, nargs="+", required=True)
     parser.add_argument("--suite-artifact", type=Path, required=True)
     parser.add_argument("--hosted", type=Path)
+    parser.add_argument("--hosted-run", type=Path)
     parser.add_argument("--bootstrap", action="store_true")
     args = parser.parse_args()
-    stamp(args.stamp, args.suite_artifact, args.hosted, args.bootstrap)
+    stamp(args.stamp, args.suite_artifact, args.hosted, args.bootstrap, args.hosted_run)

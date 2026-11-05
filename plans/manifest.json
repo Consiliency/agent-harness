@@ -14227,6 +14227,25 @@
             "run_id": "v12-schema-impl"
           },
           "transition": "executing"
+        },
+        {
+          "at": "2026-11-05T04:59:20Z",
+          "by": "codex-execute-phase",
+          "metadata": {
+            "blocker_class": "contract_bug",
+            "blocker_summary": "Hosted docs-freshness audit requires an unowned release documentation update or decision record.",
+            "dirty_worktree_summary": "Only phase-owned receipt/test changes and manifest lifecycle control.",
+            "evidence_paths": [
+              "plans/evidence/supervised-worker/SCHEMA.md"
+            ],
+            "hosted_publication_run_id": "41970689855",
+            "if_gates_produced": [],
+            "local_tests_passed": 198,
+            "phase_alias": "SCHEMA",
+            "run_id": "v12-schema-impl",
+            "verification_status": "blocked"
+          },
+          "transition": "failed"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -14239,10 +14258,10 @@
         "type": "phase"
       },
       "slug": "v12-SCHEMA",
-      "status": "executing",
+      "status": "failed",
       "task_summary": "Execution-ready manual v1 SCHEMA intake for agent-harness#1818; byte-pin authority remains false pending published v2 reconciliation.",
       "type": "phase",
-      "updated_at": "2026-11-05T04:40:00Z",
+      "updated_at": "2026-11-05T04:59:20Z",
       "frozen_inputs": {
         "plans/artifacts/v12-SCHEMA-inputs.md": {
           "sha256": "2c98eafb4950cf4106e1512515dca3199cc4c6095dd5c5d6971e7c0e9b62cf0b"
