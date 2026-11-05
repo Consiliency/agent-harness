@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: CLAUDE
 roadmap: specs/phase-plans-seats-v1.md
-roadmap_sha256: 65a5143c1f2fd437235575124926beb0ed484d6bb5b6471a2a539a8c4ebefcfa
+roadmap_sha256: 9034ecb5bc0171c58cc3dec8b3325f7cc81a2330be1598c418a3abca7f3b033d
 automation:
   suite_command: ["timeout", "1800", "uv", "run", "--quiet", "--project", "phase-loop-runtime", "--group", "test", "--extra", "visual", "--with", "pytest-xdist==3.8.0", "--python", "3.14", "--locked", "python", "-m", "pytest", "-n", "0", "-p", "no:cacheprovider", "-q", "phase-loop-runtime/tests/test_seats_claude_login_proof.py", "phase-loop-runtime/tests/test_seats_claude_bakeoff.py", "phase-loop-runtime/tests/test_seats_claude_transport.py", "phase-loop-runtime/tests/test_seats_claude_order.py", "phase-loop-runtime/tests/test_seats_claude_records.py", "phase-loop-runtime/tests/test_seats_claude_print.py", "phase-loop-runtime/tests/test_seats_claude_print_observations.py", "phase-loop-runtime/tests/test_claude_transport_seam.py", "phase-loop-runtime/tests/test_panel_claude_print_route.py", "phase-loop-runtime/tests/test_seat_credentials.py", "phase-loop-runtime/tests/test_seat_login_wait_a3_1166.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py", "phase-loop-runtime/tests/test_executable_dependency_startup.py"]
 ---
@@ -36,8 +36,9 @@ builder or an egress allowlist.
   - **Selector types.** `ClaudeTransport = Literal["tui", "print", "sdk"]`.
     `RecordCitation(record, section, section_sha256, pr)`.
   - **Section per purpose.** `SECTION_FOR` maps `print` to §4a, `sdk` to the OD-3a amendment
-    (heading `## 4b. OD-3a`), and `default` to an OD-3b section (heading `## 4c. OD-3b`;
-    later switches take the next free letter, and every OD-3b heading carries `OD-3b`).
+    (heading `## 4b. OD-3a`), and `default` to an OD-3b section (initially `## 4c. OD-3b`;
+    use the next free letter if occupied, and every OD-3b heading carries `OD-3b`).
+    A superseding OD-3a section becomes `SECTION_FOR["sdk"]`; superseded citations refuse.
     Sections are append-only.
   - **Default.** `JAILED_CLAUDE_DEFAULT = "tui"` (§4a item 2), with
     `JAILED_DEFAULT_AUTHORITY: RecordCitation | None`. The default is `tui` (which may cite an
@@ -50,17 +51,18 @@ builder or an egress allowlist.
   - **Admission.** `tui` is always admitted. `print` or `sdk` is admitted only when its module
     (`claude_seat_print`, `claude_seat_sdk`) imports and exports `ADMITTED = True`,
     `ACTIVATION: RecordCitation` and `run_jailed(seat, **kwargs) -> tuple[str, str]`.
-    `run_jailed` takes the keywords of `_exec_jailed_claude_leg`. Only `sdk` may load
-    the host SDK after IF-0-CLAUDE-3 provenance preflight, before credential resolution.
+    `run_jailed` takes the keywords of `_exec_jailed_claude_leg`. SDK imports occur only
+    in the verified host worker under IF-0-CLAUDE-3; the board parent never imports it.
   - **Jail/CLI boundary.** EC-CLAUDE-1 and EC-CLAUDE-3 govern the owned launch.
     `SDK_CLI_DELTA` is the complete versioned fixture at
     `phase-loop-runtime/tests/data/seats_claude_sdk/launch-v1.json`, with its sha256
     recorded in the proof receipt. No SDK runtime projection or stock SDK spawn.
   - **`CODES`.** The typed codes these transports add, each with an OD-10 class and a fix
     line. Security: `claude_seat_token_in_output`, `claude_seat_api_key_source`,
-    `claude_sdk_closure_refused`. Ordinary: `claude_seat_login_unproven`,
+    `claude_sdk_provenance_refused`. Ordinary: `claude_seat_login_unproven`,
     `claude_seat_result_unproven`, `claude_seat_stream_unsafe`,
     `claude_sdk_dependency_unavailable`. None descends, and no fix line names an API key.
+    Missing-install and provenance fix lines follow EC-CLAUDE-3, replacing closure advice.
     The mode line accepts `seat_jail.NOTICE_CODES | CODES`; the table is JAILCORE's input
     for EC-JAILCORE-2's falsifier.
   - **No fall-through.** A refusal or post-launch terminal code launches no other transport.
@@ -74,9 +76,10 @@ builder or an egress allowlist.
     - a landing that changes an admission or the default also edits the decision record;
     - the cited PR is unmerged, or is the PR under check (read-only GitHub API);
     - the default breaks the rule above.
+    Enforce EC-CLAUDE-3 receipt/fact rules continuously using the base-tree auditor.
   - **Late binding.** Modules use the `panel_invoker` facade. SL-1 alone may extend its
     owned I/O helper for duplex SDK traffic, preserving launch, liveness and teardown;
-    no second launch path. SL-3 supplies requirements and tests to SL-1.
+    EC-CLAUDE-5 names the capture exception. SL-3 supplies worker requirements to SL-1.
 - [ ] IF-0-CLAUDE-2 — The roadmap's record, as a closed schema in the new `phase_loop_runtime/claude_bakeoff.py`.
   - **Record and digest.** `BakeoffRecord`, canonical JSON `claude-bakeoff-record.v1`, one
     file per run at `plans/evidence/seat-qualification/claude-w0/<run_id>.json`;
@@ -92,7 +95,7 @@ builder or an egress allowlist.
     (`completeness: complete | partial`, `capture_digest`, entries of `method`, `host`,
     `path_template`), `jail_profile_digest`, `dependency_projection_digest`
     (`not_applicable` without a subject projection, otherwise its actual digest),
-    `sdk_location` (`host_parent | t3_control | not_applicable`), `sdk_version` (semantic version or
+    `sdk_location` (`host_worker | t3_control | not_applicable`), `sdk_version` (semantic version or
     `not_applicable | self_reported`), `sdk_package_digest`, `sdk_delta_digest`, `sdk_boundary_proof_digest` (sha256 or
     `not_applicable`; control may use `self_reported`), `activation_section_sha256`, `co_seats_unconfined` (vendor
     slugs) and `security_outcome` (`none | withheld_private`).
@@ -105,7 +108,7 @@ builder or an egress allowlist.
     - a path segment that carries an identifier without templating (`{id}`);
     - a block that mixes arms, or a `meter_ref` shared across blocks;
     - a native record whose `jail_profile_digest` isn't the TUI's at its `w0_head`;
-    - an `sdk` record whose `w0_head` record lacks the §4b section named by
+    - an `sdk` record whose `w0_head` record lacks the current OD-3a section named by
       `activation_section_sha256`, or missing host SDK provenance/proof/delta metadata;
     - once an OD-3b section exists, one that doesn't cite this directory's
       `evidence_digest`.
@@ -115,17 +118,18 @@ builder or an egress allowlist.
     `self_reported` where it can't observe them.
   - **Private data.** Raw captures and meter readings live only in per-operator private
     storage (mode 0600); raw captures are deleted after templating.
-- [ ] IF-0-CLAUDE-3 — Host SDK and owned transport: EC-CLAUDE-3 is authoritative.
-  - **Preflight.** `claude_seat_sdk.preflight()` verifies trusted-install package/lock/import
-    provenance before credentials; absence refuses `claude_sdk_dependency_unavailable`.
-    Check a Claude-subject dependency session only when required; absence then refuses.
-  - **Interfaces.** `claude_sdk_adapter` exposes credential-free client/control operations.
-    `claude_seat_sdk.run_jailed` owns parent launch/admission and supplies an SDK-facing
-    transport of read/write/end-input/close operations, never credential-bearing objects.
-    `cli_path = jail.provider_argv0`; all process creation goes through `launch_provider`.
-  - **Freeze/proof.** SL-3 captures and re-pins `SDK_CLI_DELTA`; `VB` supplies the offline
-    proof receipt. Pin actual input digests, never future commits. A failed proof or
-    unresolved memory-control requirement stops SL-3 before GL-2, for G1 disposition.
+- [ ] IF-0-CLAUDE-3 — EC-CLAUDE-3 governs the dedicated host worker, install/provenance,
+  parent IPC gates, launcher, fixture and receipt verifier; EC-CLAUDE-5 governs its twin.
+  - **Preflight.** `claude_seat_sdk.preflight()` verifies worker readiness and provenance
+    before the leg's credential resolver. Require subject sessions only where applicable.
+  - **Interfaces.** `claude_sdk_adapter` runs only in the worker; `claude_seat_sdk.run_jailed`
+    owns parent admission. SL-1 owns worker launch and jailed duplex I/O in the leg context.
+    `build_sdk_cli_argv` supplies actual CLI flags; SDK `cli_path` is inert here.
+  - **Freeze/proof.** SL-3 captures `SDK_CLI_DELTA` before G1 and owns
+    `plans/evidence/seat-qualification/claude-sdk-boundary/receipt-v1.json`.
+    VB/VL and the base-tree verifier implement EC-CLAUDE-3. Failed proof or unresolved
+    memory control stops GL-2. The twin is the sole CLI launch exception, admission-checked
+    under EC-CLAUDE-5; pre-activation exercise uses only offline synthetic fixtures.
 - [ ] IF-0-CLAUDE-4 — A plan-local gate: the jailed login proof.
   - **Proof.** `seat_credentials.jailed_login_proof(credential, auth_probe, caller_env) -> LoginProof`
     applies the three checks the print and TUI routes hold (agent-harness#1532):
@@ -225,7 +229,8 @@ SL-6 — Docs and shared inventory reducer
     switch; a landing that edits the record; a default that breaks the rule; a card whose
     default statement omits the default, open egress or the row window. A recorded but
     unshipped OD-3b value must pass. SDK activation with a missing, failed or stale `VB`
-    receipt must fail; the positive control binds the receipt to current inputs.
+    receipt must fail; the positive control binds current inputs. Cover EC-CLAUDE-3
+    post-activation drift, base-auditor and declarative-facts controls.
   - impl: Resolver PR, first and on its own: agent-harness#1641's
     `_resolve_claude_executable` change rebased onto main, so the TUI and `print` both jail
     the native image. Its inventory row goes to SL-6.
@@ -235,11 +240,14 @@ SL-6 — Docs and shared inventory reducer
     refused until their modules land. The PR carries the existing tests' expectation updates
     for the jailed seat reading the selector (§4a item 3) and never weakens an assertion.
   - impl: Add `audit-order` as a step of an existing required job in `test.yml` (no new
-    required check). It runs on every pull request, fed from the event's
-    `pull_request.base.sha`, and fails rather than skips when the base is unavailable.
+    required check). Execute the auditor from `pull_request.base.sha`, with head trees
+    as data and no head imports. Land EC-CLAUDE-3 verifier/fact enforcement before GL-2;
+    missing base fails.
   - impl: Extend the owned I/O helper for IF-0-CLAUDE-3; test duplex exchange and
     cancellation at the real call site in `test_seats_claude_transport.py`. Keep launch
-    ownership and print/TUI behavior; integrate SL-3 broker metadata and activation audit.
+    ownership and print/TUI behavior. Replace `_prepare_jailed_claude`'s unconditional SDK
+    session refusal with worker preflight before credential resolution; retain genuine
+    subject-session enforcement. Spy-test resolver ordering and integrate SL-3 metadata.
   - verify: `V2`.
 
 ### SL-2 — Jailed print transport (lane B)
@@ -278,37 +286,30 @@ SL-6 — Docs and shared inventory reducer
 ### SL-3 — Host SDK, owned jailed transport and extra (lane C)
 
 - **Scope**: Write the seat-neutral `claude_sdk_adapter`, the `claude-sdk` extra and the Gate A clean-room fix, and `claude_seat_sdk` under IF-0-CLAUDE-3, which lands with `ADMITTED = False`. Then close agent-harness#1744.
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/claude_sdk_adapter.py`, `phase-loop-runtime/src/phase_loop_runtime/claude_seat_sdk.py`, `phase-loop-runtime/pyproject.toml`, `phase-loop-runtime/uv.lock`, `phase-loop-runtime/scripts/gate_a_cleanroom.sh`, `phase-loop-runtime/scripts/local_check.py`, `ci/dagger/src/agent_harness_ci/main.py`, `phase-loop-runtime/tests/test_seats_claude_sdk.py`, `phase-loop-runtime/tests/test_seats_claude_sdk_adapter.py`, `phase-loop-runtime/tests/test_local_check.py`, `phase-loop-runtime/tests/test_ci_xdist_adoption.py`, `phase-loop-runtime/tests/data/seats_claude_sdk/**`, `plans/phase-plan-v1-seats-CLAUDE.md`
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/claude_sdk_adapter.py`, `phase-loop-runtime/src/phase_loop_runtime/claude_seat_sdk.py`, `phase-loop-runtime/src/phase_loop_runtime/claude_sdk_worker.py`, `phase-loop-runtime/src/phase_loop_runtime/claude_sdk_bootstrap.py`, `phase-loop-runtime/src/phase_loop_runtime/data/claude_sdk/**`, `plans/evidence/seat-qualification/claude-sdk-boundary/**`, `phase-loop-runtime/pyproject.toml`, `phase-loop-runtime/uv.lock`, `phase-loop-runtime/scripts/gate_a_cleanroom.sh`, `phase-loop-runtime/scripts/local_check.py`, `ci/dagger/src/agent_harness_ci/main.py`, `phase-loop-runtime/tests/test_seats_claude_sdk.py`, `phase-loop-runtime/tests/test_seats_claude_sdk_adapter.py`, `phase-loop-runtime/tests/test_local_check.py`, `phase-loop-runtime/tests/test_ci_xdist_adoption.py`, `phase-loop-runtime/tests/data/seats_claude_sdk/**`, `plans/phase-plan-v1-seats-CLAUDE.md`
 - **Interfaces provided**: `claude_seat_sdk.run_jailed`, `IF-0-CLAUDE-3`
 - **Interfaces consumed**: `IF-0-CLAUDE-1`
 - **Parallel-safe**: yes
 - **Tasks**:
-  - test: `test_seats_claude_sdk.py`: `-k boundary_proof` enters at `_parent_infer`
-    with the real SDK, owned transport and fake Claude in the real jail. Assert the
-    EC-CLAUDE-3 receipt bindings and positive control, then mutate one input per case:
-    package hash/import origin, SDK-facing state/options/env, token forwarding, spawn
-    owner, argv/env fixture or profile digest. Each must refuse or fail its assertion.
-    Inspect synthetic-token and descriptor reachability at the SDK boundary; the fake CLI
-    reports only the synthetic token digest. Test session-required and session-free cases.
-  - test: In that file, `-k boundary_proof` also covers missing init, wrong session/key
-    source, malformed/oversized raw output, raw-reader bypass, second/late result, EOF
-    without exit zero, iterator completion before EOF, cancellation and stall. Assert no
-    admission on each negative path, raw checks before decoding/logging, and tree reaping.
-    Remove each guard in disposable mutation checks: the corresponding test must fail.
-    Keep any sensitive mechanism/results private (OD-10).
-  - test: `test_seats_claude_sdk_adapter.py`: no SDK subprocess/version spawn, host hooks,
-    MCP callbacks, environment mutation or solo-runner route; exercise initialize, prompt,
-    duplex control and graceful drain against the pinned fixture. A forbidden callback or
-    stock transport substituted at construction must fail.
-  - impl: Salvage agent-harness#1744's seat-neutral adapter, SDK 0.2.167 and markdown-it-py
-    4.2.0 pins and Gate A fix; rebuild the lock on the chosen base. Verify installed
-    provenance, not just RECORD consistency. No `launcher.py` change. CI install lines
-    and owned I/O changes go to SL-1; broker metadata goes through IF-0-CLAUDE-2.
-  - impl: Implement IF-0-CLAUDE-3 with `ADMITTED = False`. Produce the private `VB`
-    receipt and public metadata digest; coordinate SL-4's SDK capture twin. Restore both
-    SDK test operands to `suite_command` and prove nonzero collection before GL-2.
-  - impl: Give SL-6 inventory/docs changes; close agent-harness#1744 only after agreed
-    salvage/disposition lands. Dispatch Gate A for packaging/workflow changes.
+  - test: `test_seats_claude_sdk.py`: `-k boundary_proof` implements EC-CLAUDE-3's
+    proof and falsifiers at `_parent_infer`, plus EC-CLAUDE-5's twin controls. Include
+    the concurrent synthetic seat, worker readiness, negative preflight ordering,
+    forwarding/admission and independent teardown. Remove guards in disposable mutations;
+    each corresponding control must fail. Detailed cases/results remain private (OD-10).
+  - test: `test_seats_claude_sdk_adapter.py`: exercise all frozen transport operations,
+    bounded lifecycle, options and the test-only stock argv oracle; enforce EC-CLAUDE-3's
+    forbidden-call, import, logger and protocol requirements.
+  - impl: Salvage agent-harness#1744's adapter, pinned packages and Gate A fix. Supply
+    EC-CLAUDE-3's worker/bootstrap, immutable install manifest/export and receipt producer.
+    V4 must cover the documented hashed worker install as well as project-test provisioning.
+    No `launcher.py` change; owned launch, verifier and CI wiring go to SL-1.
+  - impl: Land with `ADMITTED = False`; capture the fixture before G1. Coordinate SL-4's
+    twin and produce VB/VL receipt metadata with private junit. Restore both SDK test
+    operands and `--extra claude-sdk` to `suite_command` before GL-2; require nonzero
+    collection per SDK file, without skips. The implemented-lanes command stays unchanged
+    until the extra and tests land.
+  - impl: Give SL-6 inventory/install docs; close agent-harness#1744 after disposition.
+    Dispatch Gate A for packaging/workflow changes.
   - verify: `V4`, `VB`, `VL`. Activation is only GL-2.
 
 ### SL-4 — Bake-off recorder and W0 kit (lane D, part 2)
@@ -329,9 +330,11 @@ SL-6 — Docs and shared inventory reducer
       environment beyond the declared delta or a bundle head off `main`; a `complete` set
       with an unparsed connection; an SDK twin using print, missing control traffic or
       mismatching the SDK fixture; incorrect SDK provenance or invented projection digest;
-    - a block mixing arms, shared meter refs, an `sdk` record whose head lacks §4b, or a
+    - a block mixing arms, shared meter refs, an `sdk` record whose head lacks the current OD-3a section, or a
       control record marking a non-permitted check `not_applicable`.
 
+    Exercise EC-CLAUDE-5 preflight before meters/credentials/twins and repeat it at twin
+    entry; unadmitted or stale SDK inputs launch nothing.
     The kit stops an arm on a security-class code and writes only `withheld_private`. Before
     any run, it refuses a run plan that differs from Execution Notes, or a board whose
     president or co-seat uses the W0 Claude account. A run past its timeout records
@@ -348,11 +351,11 @@ SL-6 — Docs and shared inventory reducer
     recorder (`claude_bakeoff_recorder.mjs`) runs on the verified srt install, with
     `seat_egress_proxy` unedited and a per-window private CA trusted only through that
     variable. It keeps method, host and templated path, never headers or bodies. The twin's
-    output is discarded, never a record. `complete` means every connection the recorder saw
-    was terminated and parsed; CLAUDENET consumes only complete sets.
+    output is discarded, never a record; SDK output first passes EC-CLAUDE-5 admission.
+    `complete` means every connection the recorder saw was terminated and parsed; CLAUDENET consumes only complete sets.
   - impl: Add the SDK-specific capture twin and EC-CLAUDE-5 metadata, coordinated with
-    SL-3 before GL-2. Record actual entrypoint (`unset` allowed), SDK location/version and
-    measured differences from T3; never assert parity by label. Give SL-6 inventory rows.
+    SL-3 before GL-2 using synthetic fixtures only. Record actual entrypoint (`unset` allowed),
+    SDK location/version and measured differences from T3; never assert parity by label. Give SL-6 inventory rows.
   - verify: `V5`.
 
 ### SL-5 — Decision records and v11 note (lane A, records)
@@ -363,7 +366,7 @@ SL-6 — Docs and shared inventory reducer
 - **Interfaces consumed**: none
 - **Parallel-safe**: yes
 - **Tasks**:
-  - test: `test_seats_claude_records.py`: §4b gives each EC-CLAUDE-8 responsibility exactly
+  - test: `test_seats_claude_records.py`: the current OD-3a section gives each EC-CLAUDE-8 responsibility exactly
     one owner, and each Stage 3 §3 condition one row (applies, replaced by a named jail
     control, or waived with a reason). Earlier sections are never edited. Once the v11 note
     has landed, `specs/phase-plans-v11.md` carries it. Path-entered controls through the records test's parser on disposable copies, each of
@@ -375,15 +378,16 @@ SL-6 — Docs and shared inventory reducer
       stays in v11);
     - EC-REVIEWTRUTH-18 amended for the jailed seat's `sdk` route, lifting Stage 3 §4's
       review exclusion for that route only;
-    - EC-CLAUDE-3's host-parent design, frozen delta, memory-control disposition and proof
-      gate; revise an unratified draft or append a new section if already ratified;
+    - EC-CLAUDE-3's dedicated host-process design, captured fixture sha256, memory-control
+      disposition and proof gate; revise an unratified draft or append a superseding
+      section and update `SECTION_FOR`. G1 follows fixture capture;
     - EC-CLAUDE-4's content order in place of §4a item 9 for every jailed-transport landing;
     - TUI last as operator selection only;
     - the open-egress exception, for the jailed Claude seat only, until CLAUDENET exits, with
       its expiry date set at GL-6 (OQ-8);
     - the condition table. Proposed rows: 1, 4 and 7 apply. 2 applies through IF-0-CLAUDE-4,
       with personal Pro/Max scoping for `sdk` put to the owner. 3 is replaced by the jail's
-      cleared environment and closed settings, plus `setting_sources=[]`, strict MCP and the
+      cleared environment and actual empty-settings/strict-empty-MCP argv flags, plus the
       EC-CLAUDE-3 memory-control disposition. 5 is replaced by parity with the jailed TUI command, importing
       neither the runner-CLI oracle nor the `allowed_tools` rule. 6 is replaced by the
       jailed seat's own lease, teardown and stall detection.
@@ -412,7 +416,7 @@ SL-6 — Docs and shared inventory reducer
   - impl: Per landing: the inventory rows and an `[Unreleased]` CHANGELOG entry; the card and
     CONTRACTS.md, which from the first `print` landing call the selection experimental,
     unqualified until its row window (§4a item 6) and on open egress; for `sdk`, the extra
-    and host-package provenance requirement (IF-0-CLAUDE-3), plus genuine Claude-subject
+    and documented hashed worker install (IF-0-CLAUDE-3), plus genuine Claude-subject
     dependency requirements in the projection doc. Skill text changes only if a skill names jailed-seat routing, regenerated with
     `regenerate_skills_bundle.py` and the launchspec golden in the same PR.
   - impl: GL-6: the EC-CLAUDE-6 card statement, and the exception's expiry handed to
@@ -430,13 +434,13 @@ ordered by content: `audit-order` finds §4a's digest on the base tree and
 agent-harness#1775 merged. It needs no merge mode, landing-time lookup or SHA in its
 message (OQ-6). SL-3 and SL-5 develop alongside; SL-4 follows SL-3. None blocks print.
 
-**Gated landings.** Each is made by the single writer of its files after that lane's
-development. No lane depends on one.
+**Gated landings.** Each is made by its single writer. G1 follows SL-3 fixture capture;
+activation and live SDK twins wait for GL-2.
 - **GL-1 (G1).** The maintainer merges SL-5's amendment PR: OD-3a ratified.
-- **GL-2.** SL-3 sets `ADMITTED = True`, with `ACTIVATION` citing §4b, in its own PR, which
-  edits no record. `audit-order` proves G1 in the base. Require passing `VB` and `VL`
-  receipts bound to current inputs, a named host/interpreter, restored SDK suite operands
-  with nonzero collection, and SL-4's matching SDK twin. Missing proof keeps SDK refused.
+- **GL-2.** SL-3 sets `ADMITTED = True`, citing the current OD-3a section, in a record-free
+  PR. EC-CLAUDE-3's base auditor/fact enforcement must already have landed. VB/VL run on
+  the final executable tree including activation, then commit receipt metadata. Require
+  the SDK-inclusive suite and SL-4 twin proof. Missing/stale proof keeps SDK refused.
 - **GL-3 (G2).** The owner runs W0 (LA-3). SL-4's owner lands the records in a reviewed PR,
   validated by `V7`.
 - **GL-4 (G3).** The owner answers OD-3b.
@@ -542,28 +546,29 @@ tested docs change, and a cross-vendor board on the exact head.
 `P` abbreviates the serial pytest prefix: `timeout 900 uv run --quiet --project
 phase-loop-runtime --group test --extra visual --with pytest-xdist==3.8.0 --python 3.14
 --locked python -m pytest -n 0 -p no:cacheprovider -q`. Each file below lives under
-`phase-loop-runtime/tests/`.
+`phase-loop-runtime/tests/`. `PS` is `P` with `--extra claude-sdk` added before
+`--with` (V4, VB and VL).
 
 Collection rule (agent-harness#1825): absent SDK files are pending, not passing coverage;
 every implemented selector must collect tests. `suite_command` is the implemented-lanes
 regression suite: only the two absent SDK operands were removed. SDK refusal coverage
 stays. Green automation cannot satisfy EC-CLAUDE-3 or close the phase. SL-3 restores both
-files; no placeholders, existence filtering or skip-to-success wrappers. On this plan-only
+files with `--extra claude-sdk`; no placeholders, filtering or skip-to-success wrappers. On this plan-only
 checkout, all nine new test files are absent: serial collect-only returned exit 4 for each,
 including `-k boundary_proof`. These are pending selectors, not passing test receipts.
 
 - `V1`: `P test_seats_claude_login_proof.py test_seat_credentials.py test_claude_seat_subscription_proof_1444.py test_seat_credential_refresh.py`
 - `V2`: `P test_seats_claude_transport.py test_seats_claude_order.py test_claude_transport_seam.py test_panel_claude_print_route.py test_seat_login_wait_a3_1166.py test_seat_login_wait_board_context_r12.py test_seat_notices.py test_seat_session_label.py test_seat_sandbox_permissions.py`
 - `V3`: `P test_seats_claude_print.py test_seats_claude_print_observations.py test_seats_claude_transport.py`
-- `V4`: `P test_seats_claude_sdk.py test_seats_claude_sdk_adapter.py test_local_check.py test_ci_xdist_adoption.py test_executable_dependency_startup.py test_seats_claude_transport.py`
-- `VB`: `PHASE_LOOP_REQUIRE_LIVE_JAIL=1 P test_seats_claude_sdk.py -k boundary_proof --junitxml=<private-receipt>`; provider-free, real SDK/jail, synthetic credentials. A skip or zero collection fails. Record interpreter, host class and EC-CLAUDE-3 input digests; retain evidence privately.
+- `V4`: `PS test_seats_claude_sdk.py test_seats_claude_sdk_adapter.py test_local_check.py test_ci_xdist_adoption.py test_executable_dependency_startup.py test_seats_claude_transport.py`
+- `VB`: `PHASE_LOOP_REQUIRE_LIVE_JAIL=1 PS test_seats_claude_sdk.py -k boundary_proof --junitxml=<private-receipt>`; provider-free, real SDK/jail, synthetic credentials. A skip or zero collection fails. Record interpreter, host class and EC-CLAUDE-3 input digests; retain evidence privately.
 - `V5`: `P test_seats_claude_bakeoff.py`
 - `V6`: `P test_seats_claude_records.py`
 - `V7`: `timeout 300 uv run --quiet --project phase-loop-runtime --python 3.14 --locked python -m phase_loop_runtime.claude_bakeoff validate plans/evidence/seat-qualification/claude-w0`.
 - `V8`: `P test_seat_reference_inventory.py`, plus the docs-freshness audit in hosted CI
 - `V9`: `automation.suite_command`. The full suite runs in hosted CI and dispatched Gate A only.
 - `V10`: `timeout 120 phase-loop validate-roadmap --repo . --roadmap specs/phase-plans-v11.md` and `timeout 120 phase-loop validate-roadmap --repo . --roadmap specs/phase-plans-seats-v1.md`
-- `VL`: `PHASE_LOOP_REQUIRE_LIVE_JAIL=1 P test_seats_claude_transport.py test_seats_claude_print.py test_seats_claude_sdk.py -k live_jail`, run on a named host class with the jail prerequisites. A skip fails. The activating PR cites the `--junitxml` receipt's digest and host class; the file stays private.
+- `VL`: `PHASE_LOOP_REQUIRE_LIVE_JAIL=1 PS test_seats_claude_transport.py test_seats_claude_print.py test_seats_claude_sdk.py -k live_jail --junitxml=<private-receipt>`, run on a named host class with jail prerequisites. Require nonzero collection per file; any skip fails. The activating PR cites the `--junitxml` receipt's digest and host class; the file stays private.
 
 ## Acceptance Criteria
 
