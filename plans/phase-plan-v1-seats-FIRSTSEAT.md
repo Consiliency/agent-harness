@@ -95,6 +95,69 @@ No future commit identity, count or topology is prescribed.
   bounds. Keep `heartbeat_only` semantics under OD-11. President records inherit
   IF-0-FIRSTSEAT-3 storage, scanning and closed-field rules; raw detail/exception
   text stays only in private logs.
+- [ ] IF-0-FIRSTSEAT-5 — Lane A's containment-supplier contract (amendment
+  2026-11-04, agent-harness#1829). Pinned method inputs, under
+  `plans/evidence/seat-jail-1132/`: `probe_p3_agy_tools.py`
+  (`51eced4937fe5a1c6f4b6dd72aad72daed60fd486adcff958f9f374bc624c552`), its record
+  `p3-agy-tools-workspace.json`
+  (`24c9bc9169b27cbfa452fca6734341f1cec974ed9c03e906e4554e0af1a54d4d`), `probe_p4.py`
+  (`68002edcefb9d66fe1eefb1c03cbd8ec61497a83af2756405d1dc07f5cb84ceb`) and
+  `probe_p4_containment_egress.py`
+  (`4f866e4f6cea84823a1a14d341a3cca1f9bebb3ddf77285e220d34c655c53910`), with records
+  `p4-agy-d7-credential.json`
+  (`121ef9386e1412d30d4d5b202a7b73b59e07dbd8679b1c4ac2425f25ab97b035`) and
+  `p4-containment-egress.json`
+  (`997844005a24e7c35d93943e91f45efe52ce81562e159b27e4274dce032799e0`). They fix
+  the method only. Their results belong to earlier images and are never W1 evidence.
+  - Plants: one committed qualification input, staged through the approved-stage path,
+    plants every loader path in P3's `PLANT` set and its recorded control `tree_opened`
+    list, plus the current `WINDOW_PLANT_PATHS`. Workspace/VCS markers and P3's read
+    marker are excluded, and a directory entry gets one file inside it. Each plant is a
+    valid instance of its role with a unique nonce. A command it names is an inert
+    executable plant, and an MCP plant also names an unlisted canary URL. Roles:
+    settings/config files are `project_settings`; `hooks.json` is `hooks`; MCP
+    configuration is `mcp_servers`; every other loader entry (context, rules,
+    workflows, skills, agents, plugins) is `provider_overrides`, which covers agy's
+    customization discovery. When the admitted image's measured help lists `plugin`,
+    a plugin plant must first pass that image's `plugin validate <copy> --strict --json`.
+    It runs from the sealed image, on a separate copy, before observation starts, and
+    needs zero error or warning findings and nonzero hooks, mcpServers, rules and skills
+    counts. This report is the only CLI self-report used; it proves format, never loading.
+  - Definition (the `definition_probe` result): a surface is defined only when a
+    control launch observes at least one of its plants opened. The control uses the
+    same sealed image digest, the same jail shape, a stage with an equal manifest
+    digest, and P3's control argv, which makes the tree the workspace. It runs first
+    credential-free, with no route off the host. Any surface still undefined gets one
+    credentialed control in W1. A constant, a fixture or documentation never defines a
+    production surface.
+  - Load result: each W1 context's measured jailed leg runs the same input on the
+    unchanged production argv. A defined surface is `not_loaded` only if the complete
+    watch sees no open of any of its plants during the whole leg, and no proxy
+    observation names its canary host. Any such open or canary request is `loaded`
+    (OD-10), including an open caused by a tool step. An undefined surface, an incomplete
+    watch, a digest mismatch, an error or a timeout is `unavailable`.
+  - Credential scope and refresh (W1 only): `credential_scope` comes from a
+    parent-side issuer measurement of the exact delivered copy. It must be a subset of
+    the set measured in the pinned P4 record; anything else is
+    `gemini_seat_token_scope_excess`. The in-jail projection check stays a shape check.
+    The trusted probe's unlisted control request targets the provider token endpoint
+    and must appear refused in complete proxy observations. Any other token-endpoint
+    request is `gemini_seat_token_refreshed_in_jail`. `refresh_detection` also needs no
+    credential events, an unchanged copy digest and P4's expired-copy control. Any
+    missing channel makes the field `unavailable`.
+  - Binding: results bind the image, admission-class and help digests, the manifest
+    and plant-layout digests, both argv digests, and the watch, proxy and validator
+    digests. A non-admitted image makes every field `unavailable`.
+  - Offline proof (V-A): a fixture image opens a surface's plants only under the
+    control argv. Five mutants must each fail the field they target: a constant
+    definition, a control argv equal to production, a missing surface plant, a watch
+    armed after launch, and a scope derived inside the jail.
+  - Split: lane A completes on code and these controls. The credential-free control is
+    the only real-image offline step; it is a provider-free E host step and gates no
+    lane. Load results, credentialed controls, scope and refresh are EC-FIRSTSEAT-7
+    containment fields in IF-0-FIRSTSEAT-2 records, not EC-FIRSTSEAT-5 sub-claims. An
+    `unavailable` field keeps the row `candidate`; only EC-FIRSTSEAT-7's OD-9 route
+    applies.
 - [ ] IF-0-VC-2 — Validate command argv with
   `phase_loop_runtime.verification_evidence.validate_verification_commands`.
   Run again after implementation for the new CLI forms; an unresolved executable,
@@ -139,10 +202,10 @@ SL-4 — E: Window kit, matrix and documentation reducer
 
 ### SL-0 — A: Gemini team-host path
 
-- **Scope**: Implement EC-FIRSTSEAT-5 at the existing Gemini jail and staging boundaries.
+- **Scope**: Implement EC-FIRSTSEAT-5 at the existing Gemini jail and staging boundaries, and supply IF-0-FIRSTSEAT-5 for EC-FIRSTSEAT-7's W1 containment fields.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_jail.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_egress_proxy.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_egress/proxy.mjs`, `phase-loop-runtime/src/phase_loop_runtime/sandbox_egress.py`, `phase-loop-runtime/tests/test_sandbox_egress.py`, `phase-loop-runtime/src/phase_loop_runtime/review_stage.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_jail_qualification.py`, `phase-loop-runtime/tests/test_seat_jail.py`, `phase-loop-runtime/tests/test_gemini_seat_egress_1170.py`, `phase-loop-runtime/tests/test_review_stage_binding.py`
 - **Ownership amendment (2026-11-04):** `seat_egress/proxy.mjs` is owned only to emit metadata-only request-observation events (method, host, templated path, decision) to its Python wrapper. Its allow/deny decisions, allowlist and readiness protocol stay byte-for-byte unchanged in behaviour, and existing egress tests must pass unmodified.
-- **Interfaces provided**: `gemini_teamhost_route`.
+- **Interfaces provided**: `gemini_teamhost_route`, IF-0-FIRSTSEAT-5.
 - **Interfaces consumed**: IF-0-FIRSTSEAT-1 (pre-existing roadmap contract), IF-0-FIRSTSEAT-2 (pre-existing roadmap contract), `stage_review_tree` (pre-existing), `seat-sandbox qualify` (pre-existing).
 - **Parallel-safe**: yes.
 - **Tasks**:
@@ -165,7 +228,8 @@ SL-4 — E: Window kit, matrix and documentation reducer
   - impl: Extend `seat_jail_qualification.py` to produce the per-context W1
     measurements: staged planted project settings, hooks, MCP servers and provider
     overrides must not load; remeasure credential scope, in-jail refresh detection,
-    unlisted-endpoint refusal and observed proxy traffic. E runs these on live hosts.
+    unlisted-endpoint refusal and observed proxy traffic, per IF-0-FIRSTSEAT-5.
+    E runs these on live hosts.
   - impl: Salvage only reproduced host fixes, including the resolver portion of
     agent-harness#1623. Supply panel call-site requirements to lane D. Track any
     qualification-key change as `candidate` for W1; do not use a heartbeat route
@@ -283,7 +347,7 @@ SL-4 — E: Window kit, matrix and documentation reducer
 - **Scope**: Implement EC-FIRSTSEAT-6 and EC-FIRSTSEAT-7 and reconcile all producer evidence.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_window.py`, `phase-loop-runtime/src/phase_loop_runtime/cli.py`, `phase-loop-runtime/tests/test_seat_jail_qualification_entry.py`, `phase-loop-runtime/tests/test_seat_qualification_host_context.py`, `docs/review-seats-readiness.md`, `phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md`, `docs/advisor-board-capabilities-card.md`, `plans/evidence/seat-qualification/*`, `CHANGELOG.md`
 - **Interfaces provided**: IF-0-FIRSTSEAT-1, IF-0-FIRSTSEAT-2, IF-0-FIRSTSEAT-3.
-- **Interfaces consumed**: `gemini_teamhost_route`, `composition_outcome`, `president_attempt_lifecycle`, `president_rung_inventory`, `leg_exec_record`, `tool_probe_receipt`, `integrated_board_outcome`.
+- **Interfaces consumed**: `gemini_teamhost_route`, IF-0-FIRSTSEAT-5, `composition_outcome`, `president_attempt_lifecycle`, `president_rung_inventory`, `leg_exec_record`, `tool_probe_receipt`, `integrated_board_outcome`.
 - **Parallel-safe**: no.
 - **Tasks**:
   - freeze: First, publish IF-0-FIRSTSEAT-1/2 and D's IF-0-FIRSTSEAT-3 with kit
@@ -374,7 +438,7 @@ Provider-free host commands: `timeout 300 phase-loop seat-sandbox qualify` and
 `timeout 300 phase-loop seat-egress install`. W1: execute the frozen qualify
 command sequentially on team-host account 1, team-host account 2 and one standard
 host, `timeout 7200` each. Run A's planted-config and containment/observed-egress
-measurements in every context; outer timeout is failed evidence, never a typed-success
+measurements (IF-0-FIRSTSEAT-5) in every context; outer timeout is failed evidence, never a typed-success
 substitute. Offline W1 verify:
 `timeout 300 phase-loop seat-window verify --window W1`.
 
