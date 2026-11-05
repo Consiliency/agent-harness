@@ -44,9 +44,10 @@ Vendor the eleven approved v2 resources, retaining all five frozen v1 payloads
 and the extended manifest; upstream provenance is hash-inventoried only. Preserve
 the separate v1 bundle. Vendor the three pinned version declaration files too.
 Enforce >=0.7.0,<0.8.0 against those hash-verified declarations, with exact agreement,
-not installed package metadata. Refuse version/hash/source drift. No pip/uv
+not installed package metadata. Refuse version/hash/source drift. No new pip/uv
 contract-package install, dependency-bound/lock change, URL/source override or
-registry release is planned; existing unrelated dependency bounds stay unchanged.
+registry release is planned. The existing consiliency-contract>=0.6.5,<0.7
+registry-reader dependency stays unchanged and never supplies v2 bytes or version.
 
 The seven adopted decisions and capture/apply/evidence rules in the artifact are
 mandatory. External controller/display reconciliation receipts are required input
@@ -147,7 +148,7 @@ SL-3 — Documentation and readiness reducer
 
 - **Scope**: Reconcile ENVELOPE through a distinct v2 production adapter and immutable launch capture.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/supervised_envelope_v2.py`, `phase-loop-runtime/src/phase_loop_runtime/supervised_capture_v2.py`, `phase-loop-runtime/src/phase_loop_runtime/supervised_launch.py`, `phase-loop-runtime/src/phase_loop_runtime/supervised_launch_binding.py`, `phase-loop-runtime/tests/test_supervised_envelope_v2.py`, `phase-loop-runtime/tests/test_supervised_capture_v2.py`, `phase-loop-runtime/tests/test_supervised_launch*.py`, `phase-loop-runtime/tests/fixtures/supervised_launch_local/**`
-- **Interfaces provided**: `parse_v2`, `canonicalize_v2`, `decode_v2`, `validate_v2_admission`, `capture_launch_v2`, `recheck_launch_v2`, `load_v2_context`, `prepare_launch_v2`, `consume_admission`, `admission_results`
+- **Interfaces provided**: `parse_v2`, `canonicalize_v2`, `decode_v2`, `validate_v2_admission`, `capture_launch_v2`, `recheck_launch_v2`, `load_v2_context`, `load_v2_binding`, `prepare_launch_v2`, `consume_admission`, `admission_results`
 - **Interfaces consumed**: `load_contract_bundle`, `validate_record`, `ContractBundle`, `intake_results`, ENVELOPE typed Admit/local identity trust checks (pre-existing)
 - **Parallel-safe**: no
 - **Tasks**:
@@ -183,7 +184,7 @@ SL-3 — Documentation and readiness reducer
 - **Scope**: Apply admitted v2 inputs at the shared worker boundary and reconcile runtime status/evidence.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/supervised_worker_cli.py`, `phase-loop-runtime/src/phase_loop_runtime/convergence/adapters/base.py`, `phase-loop-runtime/src/phase_loop_runtime/convergence/adapters/codex.py`, `phase-loop-runtime/src/phase_loop_runtime/convergence/adapters/patch_return.py`, `phase-loop-runtime/src/phase_loop_runtime/run_status.py`, `phase-loop-runtime/src/phase_loop_runtime/run_status_projection.py`, `phase-loop-runtime/tests/test_supervised_worker*.py`, `phase-loop-runtime/tests/test_run_status*.py`, `phase-loop-runtime/tests/test_convergence_adapters.py`, `phase-loop-runtime/tests/test_executable_dependency_startup.py`
 - **Interfaces provided**: `lifecycle_results`, `external_evidence_intake`
-- **Interfaces consumed**: `prepare_launch_v2`, `consume_admission`, `recheck_launch_v2`, `admission_results`, `IF-0-WORKER-1` (upstream), `IF-0-JOURNAL-1` (upstream), `output_retention.mark/prune` (pre-existing)
+- **Interfaces consumed**: `load_v2_binding`, `capture_launch_v2`, `prepare_launch_v2`, `consume_admission`, `recheck_launch_v2`, `admission_results`, `IF-0-WORKER-1` (upstream), `IF-0-JOURNAL-1` (upstream), `output_retention.mark/prune` (pre-existing)
 - **Parallel-safe**: no
 - **Tasks**:
   - test: Enter actual CLI/adapter/journal paths using offline subprocesses and
@@ -273,7 +274,7 @@ and the authenticated evidence assessment. Authorized maintainer dispatches
 `gh workflow run test.yml --ref <reviewed-branch> -f chronology=false` and records
 Gate A's actual tested head, run/job and artifacts. Board/president and external
 consumer receipts use the same observed content; never pin predicted hashes.
-The reducer validates their identities; proxy evidence requires roadmap amendment.
+The hosted verifier resolves their identities; proxy evidence requires roadmap amendment.
 Validator check (N) recognizes package/changelog ownership as release-shaped;
 this phase dispatches only verification, not a tag or release. SL-3 records
 post-verification evidence, so no separate release-dispatch reducer is applicable.

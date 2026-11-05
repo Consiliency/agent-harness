@@ -54,7 +54,9 @@ runtime closure and is not copied. Name new local metadata harness-provenance.js
 Retain the separate original supervised-worker-v1 closure and SCHEMA receipt.
 Neither schema loader may resolve unlisted or remote references. Also vendor the
 three pinned version/package declaration files under version/ with their original
-repository-relative paths. They are inert metadata, not an installable package.
+repository-relative paths, adding .pinned to pyproject.toml and package.json so
+dependency-manifest detection by basename ignores them. They are inert metadata,
+not an installable package.
 The publisher provenance status is provisional; record that observed status,
 its verified source digest and pointer without copying its history text.
 
@@ -122,16 +124,19 @@ input explanations, not harness or installed-route evidence.
    bytes once at start followed by EOF, or empty DEVNULL. A grant cannot override
    this exclusion. Existing panel PTY paths remain outside this worker.
 7. **Version window:** v2 intake vendors only from the exact commit above and
-   enforces >=0.7.0,<0.8.0 by reading verified version/pyproject.toml's
-   project.version, version/package.json's version and the pinned version-skew
-   schema's contract_version/range constants. Require agreement at 0.7.0,
+   enforces >=0.7.0,<0.8.0 by reading verified version/pyproject.toml.pinned's
+   project.version, version/package.json.pinned's version and the pinned version-skew
+   schema's contract_version and compatible_ranges.contract/package constants
+   (published spelling `>=0.7.0 <0.8.0`). Require agreement at 0.7.0,
    supported release syntax and the frozen range before exposing a bundle.
    Missing, malformed, unequal, out-of-window or digest-drifted declarations
    refuse manifest_invalid (digest mismatches remain digest_mismatch).
    Never infer the bundle version from installed distribution metadata.
-   No pip/uv contract-package install, dependency upgrade, direct URL, source
-   override, lock change or registry/tag release is planned. Existing unrelated
-   package dependencies retain their current bounds; they supply no v2 authority.
+   No new pip/uv install of the contract package, dependency upgrade, direct URL,
+   source override, lock change or registry/tag release is planned. The existing
+   consiliency-contract>=0.6.5,<0.7 dependency stays as it is for registry readers.
+   It is a separate input: this window never applies to it, and v2 code never reads
+   its bytes or metadata.
    Source and wheel tests read the same verified vendored bytes. Later source
    revisions, even with the same declared version, require a separately reviewed
    input amendment; compatibility is not byte provenance.
@@ -174,7 +179,9 @@ retain ordered policy rules and independently held per-run coverage.
 The supported v12 worker starts no qualification/identity probes, before or after
 admission. It consumes independently collected qualification evidence; collection
 is separate, pre-admission work outside this phase and cannot alter its captured
-material. Refusals cause zero auxiliary, chain and worker starts. A future route
+material. The process.probes rows in the 21 controls describe that earlier collection:
+the corpus adapter passes them to the contract check, and production never starts them.
+Refusals cause zero auxiliary, chain and worker starts. A future route
 that requires probes needs a separate plan consistent with the public ordering.
 One monotonic deadline starts at the first launch-chain process and never restarts
 at a helper. Bind seconds, deadline_action and config-based heartbeat/quiet
@@ -214,7 +221,9 @@ assessment false at this pin. A non-provisional successor needs a separately
 reviewed input amendment, not a status rewrite. External evidence source and
 board publisher bindings below are also unresolved acceptance prerequisites.
 Thus true is unreachable in this revision; offline implementation may proceed
-after the existing upstream gates, but CLOSEOUT acceptance stays blocked.
+after the existing upstream gates. Acceptance does not require true: EC-CLOSEOUT-1
+and EC-CLOSEOUT-2 can close with a validated false assessment, but stay blocked until
+those bindings and their evidence exist.
 
 SL-3 owns verify_supervised_v2_evidence.py, run by the network-permitted
 supervised-v2-evidence workflow on hosted CI. Its metadata-only assessment,
@@ -229,7 +238,11 @@ API-resolved result artifact for the assessed content; no-op success is insuffic
 
 Board reports are private inputs; use metadata-only board-verdicts.json and
 president-verdict.json in a hosted board-evidence artifact, identifying seats,
-providers, verdicts, reviewed head/content identity and report digests. A plan
+providers, verdicts, reviewed head/content identity and report digests. A T3 landing
+board also records vendors, author independence and any president stand-in. These
+artifacts and this repository are public: a security or containment failure keeps its
+code and detail in the private record and owner summary (OD-10), and its public row
+shows only a neutral unavailable outcome and the replacing seat. A plan
 amendment must name the authorized publisher, repository/workflow or detached
 signature trust root and immutable artifact identity before these are trusted.
 For external controller apply (all 13 cases) and display reconciliation, the
@@ -285,6 +298,7 @@ raw/public-JCS digests. Secret-free types have no ambient lookup or lazy re-read
 | SL-1 supervised_envelope_v2 | parse_v2(raw: bytes) -> ParsedV2; canonicalize_v2(value: JSONValue) -> bytes | Both enforce the v2 domain; invalid input raises ContractError(record_json_invalid), with no payload in error/chain. |
 | SL-1 supervised_envelope_v2 | decode_v2(raw: bytes, *, bundle: ContractBundle) -> V2Envelope | Calls parse_v2 and validate_record; only public v2; existing ContractError codes. |
 | SL-1 supervised_launch_binding | load_v2_context(binding: Path, *, workspace: Path, target: Path, reference_roots: tuple[Path, ...]) -> ValidatorContext | Refused | Trusted snapshot or code-only refusal; never derives authority from envelope/caller arguments. |
+| SL-1 supervised_launch_binding | load_v2_binding(path: Path, *, workspace: Path, target: Path, reference_roots: tuple[Path, ...]) -> V2Binding | Refused | Reads trusted operator configuration, including TrustedLaunchSpec, and calls load_v2_context. Code-only refusal; envelope content never selects it. |
 | SL-1 supervised_capture_v2 | capture_launch_v2(*, spec: TrustedLaunchSpec, context: ValidatorContext, attempt: AttemptBinding) -> CapturedLaunch | Refused | Captures declared material once; failures map to launch_input_unbound or the pinned first-stage diagnostic. |
 | SL-1 supervised_envelope_v2 | validate_v2_admission(envelope: V2Envelope, *, context: ValidatorContext, capture: CapturedLaunch, attempt: AttemptBinding) -> V2Decision | Immutable admitted flag and ordered diagnostic tuple; exact first reporting stage of pinned x-evaluation-order, no token/spawn. |
 | SL-1 supervised_launch | prepare_launch_v2(raw: bytes, *, binding: V2Binding, capture: CapturedLaunch, attempt: AttemptBinding) -> PreparedLaunch | Refused | Executes public validation then trusted Validator(view); requires typed Admit(local_digest, attempt_id), issues one-use token only on both successes. |
@@ -332,8 +346,9 @@ foreign assignment and stale snapshot with pinned diagnostics.
 
 qualified_routes is a list, not a keyed map: preserve duplicates. Each record
 contains record_id, issuer_id, policy_epoch, valid_from, expires_at, evidence
-references/digests, the complete public route key, exact grant form/digest map
-and credential_sources. The independent trusted policy fixes accepted issuer
+references/digests, the complete public route key, exact grant form/digest map,
+credential_sources and the observed version of each chain entry. The worker runs no
+probes, so EC-WORKER-2's version identity comes from this held record. The independent trusted policy fixes accepted issuer
 identity, current epoch, time basis and revoked IDs. Require all records readable,
 well-formed, current, unrevoked and evidence-bound; any invalid record refuses the
 whole store, never skips a row. Then require exactly one matching route. Evidence
@@ -387,7 +402,11 @@ patterns, with production-entry controls. Never edit producer pattern bytes.
 
 SL-0 updates historical receipt checks to verify SCHEMA module hashes against the
 recorded historical Git blob, not the current changed module. Its receipt bytes
-remain untouched. Replace the blanket import ban with an exact production allowlist
+remain untouched. SL-1 and SL-3 edit files listed in the ENVELOPE receipt's
+source_hashes, so SL-1 makes test_supervised_launch_receipt.py pin that receipt's
+whole-file SHA-256, read from the base ref before SL-1's first edit, and stop
+comparing its rows with live files. Its source_tree_digest, outcome and mutation
+checks stay, and no lane changes the ENVELOPE receipt's bytes. Replace the blanket import ban with an exact production allowlist
 (supervised_envelope_v2, supervised_capture_v2, supervised_launch_binding), retaining
 all other exclusions; callers pass validated bundles rather than import elsewhere.
 Update the signature assertion for the explicit v1-default keyword; retain false
@@ -412,8 +431,10 @@ scripts/workflows. Compare the v12-CLOSEOUT frozen_inputs mapping separately fro
 v12-SCHEMA. A gitleaks exception requires an exact inert fixture path and exact
 rule; no broader allowance. Base-ref policy requires a reviewed plan-only input
 amendment to land before implementation can use changed source pins/seals.
-A diff changing the CLOSEOUT artifact/seal/anchor identities together with vendor
-bytes, pins or loader fails. Compare old identities from the trusted base ref;
+A diff changing the CLOSEOUT artifact or seal together with vendor bytes, pins,
+anchors or loader fails. SL-0's first vendoring may add vendor bytes and anchor
+literals only when they equal the artifact and seal already on the trusted base ref;
+any later anchor change follows the same rule. Compare old identities from the trusted base ref;
 protected-main ancestry alone cannot authorize a new input revision. The current
 repair changes plans only. Receipt authority requires the authenticated full-path
 publication artifact, not detector success alone.
@@ -421,9 +442,13 @@ publication artifact, not detector success alone.
 SL-0 owns verify_supervised_v2.sh, the explicit runner wrapper for V0–V3/all.
 It resolves the repo root from its own location, cd's there, requires the checkout's
 locked phase-loop-runtime/.venv/bin/python, sets absolute source/test PYTHONPATH,
-and asserts module provenance before exec of timeout 300 ... -m pytest -q -n 0
--p no:cacheprovider with the phase plan's enumerated group. No installs or dynamic
-whole-repo discovery. Isolated child tests explicitly insert and assert that
+and asserts module provenance before exec of timeout 900 (1800 for all) ... -m pytest -q
+-p no:cacheprovider with the phase plan's enumerated group. The locked environment has
+no pytest-xdist and uv.lock stays unchanged, so the wrapper passes no -n flag and runs
+serially. test.yml has no such environment today; SL-0 adds a step that installs uv and
+runs uv sync --project phase-loop-runtime --group test --extra visual --locked before
+calling the wrapper. The wrapper itself does no installs or dynamic whole-repo
+discovery. Isolated child tests explicitly insert and assert that
 same source root. Gate A uses its clean-room installed interpreter and asserts
 wheel provenance instead; it never imports production from the sparse source.
 Record interpreter/module paths and byte proof with outcomes. Readiness names
