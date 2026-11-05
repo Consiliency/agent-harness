@@ -81,10 +81,12 @@ No future commit identity, count or topology is prescribed.
   Freeze each leg's parent-observed auth probe and structured turn/verdict signals;
   absent signals are unavailable, never inferred from review text. For Grok's plain
   output, require independent host auth corroboration; text alone cannot classify auth.
-  D freezes the per-leg sources: Claude's subscription-auth probe, Codex's login-status
-  probe, and new parent-side Gemini/Grok auth-state adapters outside the staged tree.
-  Each yields signed-out, healthy or unavailable; missing/ambiguous observations
-  yield unavailable. Freeze their invocation/result contracts before implementation.
+  D freezes the per-leg sources: Claude's subscription-auth probe and Codex's login-status
+  probe. Gemini/Grok parent adapters stay `unavailable` until an unambiguous host status is
+  measured, as EC-FIRSTSEAT-3's "where one exists" permits (amendment 2026-11-05). Their
+  failures type as non-auth `leg_auth_unavailable` with its fix line, never `unknown
+  failure`. Each source yields signed-out, healthy or unavailable; missing/ambiguous
+  observations yield unavailable.
   Agree typed outcome mapping with v11 IF-0-REVIEWTRUTH-1 before freezing;
   that pending interface is coordination, not a dependency on v11 completion.
 - [ ] IF-0-FIRSTSEAT-4 — Freeze composition refusal and president start/terminal
@@ -95,11 +97,12 @@ No future commit identity, count or topology is prescribed.
   bounds. Keep `heartbeat_only` semantics under OD-11. President records inherit
   IF-0-FIRSTSEAT-3 storage, scanning and closed-field rules; raw detail/exception
   text stays only in private logs.
-- [ ] IF-0-FIRSTSEAT-5 — Lane A's containment-supplier contract (amendment
-  2026-11-04, agent-harness#1829). Its frozen detail, cited below as §1–§13, is
+- [ ] IF-0-FIRSTSEAT-5 — Lane A's containment-supplier contract (amendments
+  2026-11-04 and 2026-11-05, agent-harness#1829). Its frozen detail, cited below as §1–§16, is
   `plans/seats-firstseat-containment-contract.md`
-  (`075a5d650d425be83ada0f03089d4eed48ce281e2a7d4add04da33b6dcf00617`);
-  changing it is a plan amendment. Pinned method inputs, under
+  (`8c0f9cc7093474e2681b1241fdd12179e5b9c03f9d855798bdccf04d0903ab71`);
+  changing it is a plan amendment. §14 is the proxy fence protocol, §15 the W1 launch
+  sequence and D's launcher, and §16 the seat-owned reads. Pinned method inputs, under
   `plans/evidence/seat-jail-1132/`: `probe_p3_agy_tools.py`
   (`51eced4937fe5a1c6f4b6dd72aad72daed60fd486adcff958f9f374bc624c552`), its record
   `p3-agy-tools-workspace.json`
@@ -129,9 +132,9 @@ No future commit identity, count or topology is prescribed.
     undefined gets one credentialed control in W1. A lookup outside the table makes the
     planted-config outcome `unavailable` (§7). A constant, a fixture or documentation
     never defines a production surface.
-  - Load result: each W1 context's measured jailed leg runs the planted tree and the §6
-    measured input on the unchanged production argv. A defined surface is `not_loaded`
-    only under §8: a complete §5 watch, no runtime-row change and a complete §9 proxy
+  - Load result: each W1 context's measured jailed leg (§15's launcher leg, not the board
+    leg) runs the planted tree and the §6 measured input on the unchanged production
+    argv. A defined surface is `not_loaded` only under §8: a complete §5 watch, no runtime-row change and a complete §9 proxy
     stream naming no canary. Any open, change or canary request is `loaded` (OD-10),
     including one caused by a tool step. An undefined surface, an incomplete watch or
     stream, a digest mismatch, an error or a timeout is `unavailable`.
@@ -198,8 +201,8 @@ SL-4 — E: Window kit, matrix and documentation reducer
 ### SL-0 — A: Gemini team-host path
 
 - **Scope**: Implement EC-FIRSTSEAT-5 at the existing Gemini jail and staging boundaries, and supply IF-0-FIRSTSEAT-5 for EC-FIRSTSEAT-7's W1 containment fields.
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_jail.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_egress_proxy.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_egress/proxy.mjs`, `phase-loop-runtime/src/phase_loop_runtime/sandbox_egress.py`, `phase-loop-runtime/tests/test_sandbox_egress.py`, `phase-loop-runtime/src/phase_loop_runtime/review_stage.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_jail_qualification.py`, `phase-loop-runtime/tests/test_seat_jail.py`, `phase-loop-runtime/tests/test_gemini_seat_egress_1170.py`, `phase-loop-runtime/tests/test_review_stage_binding.py`
-- **Ownership amendment (2026-11-04):** `seat_egress/proxy.mjs` is owned only to emit metadata-only request-observation events (method, host, templated path, decision) to its Python wrapper. Its allow/deny decisions, allowlist and readiness protocol stay byte-for-byte unchanged in behaviour, and existing egress tests must pass unmodified.
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_jail.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_egress_proxy.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_egress/proxy.mjs`, `phase-loop-runtime/src/phase_loop_runtime/sandbox_egress.py`, `phase-loop-runtime/tests/test_sandbox_egress.py`, `phase-loop-runtime/src/phase_loop_runtime/review_stage.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_jail_qualification.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_uid.py`, `phase-loop-runtime/tests/test_seat_jail.py`, `phase-loop-runtime/tests/test_gemini_seat_egress_1170.py`, `phase-loop-runtime/tests/test_review_stage_binding.py`
+- **Ownership amendment (2026-11-04, extended 2026-11-05):** `seat_egress/proxy.mjs` is owned only to emit metadata-only request-observation events (method, host, templated path, decision) to its Python wrapper and to acknowledge §14 fences. Its allow/deny decisions, allowlist and readiness protocol stay byte-for-byte unchanged in behaviour, and existing egress tests must pass unmodified; §14's regressions prove it. `seat_uid.py` is owned only to add §16's read-only `scan` verb; no other verb, hand-off or teardown changes.
 - **Interfaces provided**: `gemini_teamhost_route`, IF-0-FIRSTSEAT-5.
 - **Interfaces consumed**: IF-0-FIRSTSEAT-1 (pre-existing roadmap contract), IF-0-FIRSTSEAT-2 (pre-existing roadmap contract), `stage_review_tree` (pre-existing), `seat-sandbox qualify` (pre-existing).
 - **Parallel-safe**: yes.
@@ -218,7 +221,9 @@ SL-4 — E: Window kit, matrix and documentation reducer
   - test: Add `seats_firstseat_teamhost_containment` (selected by V-A), entering the
     measurement code with IF-0-FIRSTSEAT-5's §13 fixture images and mutants. Each
     mutant must fail its own field; a clean fixture is the path-entered control. These
-    cases run without a user namespace.
+    cases run without a user namespace and enter the `scan` walker directly.
+  - test: Add `seats_firstseat_proxy_fence` cases in `test_gemini_seat_egress_1170.py`
+    for §14's regressions, entering the production proxy through its wrapper.
   - impl: Extend `seat_jail_qualification.py` to produce the per-context W1
     measurements: staged planted project settings, hooks, MCP servers and provider
     overrides must not load; remeasure credential scope, in-jail refresh detection,
@@ -289,8 +294,8 @@ SL-4 — E: Window kit, matrix and documentation reducer
 
 - **Scope**: Implement EC-FIRSTSEAT-3 and the Grok tool-surface probe (EC-FIRSTSEAT-4), integrating lanes A–C.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `phase-loop-runtime/tests/test_panel_invoker.py`, `phase-loop-runtime/tests/test_grok_sandbox_seat_approval.py`
-- **Interfaces provided**: `leg_exec_record`, `tool_probe_receipt`, `integrated_board_outcome`.
-- **Interfaces consumed**: `gemini_teamhost_route`, `composition_outcome`, `president_attempt_lifecycle`, IF-0-FIRSTSEAT-3 (pre-existing roadmap contract).
+- **Interfaces provided**: `leg_exec_record`, `tool_probe_receipt`, `integrated_board_outcome`, `window_control_launch`.
+- **Interfaces consumed**: `gemini_teamhost_route`, IF-0-FIRSTSEAT-5, `composition_outcome`, `president_attempt_lifecycle`, IF-0-FIRSTSEAT-3 (pre-existing roadmap contract).
 - **Parallel-safe**: no.
 - **Tasks**:
   - freeze: First, publish IF-0-FIRSTSEAT-3 through E, give A notice definitions and
@@ -305,6 +310,9 @@ SL-4 — E: Window kit, matrix and documentation reducer
     directories, foreign owners and staging exclusion. Auth-like text with nonzero
     exit, no turn/verdict and healthy host auth must produce a non-auth outcome.
     Fix lines must never recommend `XAI_API_KEY` or another API-key lane.
+  - test: Add `seats_firstseat_exec_record_window_launch`, entering `window_control_launch`
+    with §13's fixture images: refuse-all controls, seeding and watches before the first
+    jailed launch, fenced windows, and the bracket before jail cleanup.
   - test: Add `seats_firstseat_tool_surface`: unprobed/inconclusive versions,
     timeout, empty/unparseable results, any probe diagnostic, changed binaries or
     argv, and non-passing tool sets launch nothing. A passing receipt launches
@@ -333,16 +341,20 @@ SL-4 — E: Window kit, matrix and documentation reducer
     public `grok_tool_surface_unverified` code/fix line; distinctions stay private.
     Offered tools appear in receipts only on a pass. Confirmed results take the
     private reporting route before any public record.
+  - impl: Provide `window_control_launch` (§15) at the sole launch boundary. Arm A's
+    watches before each seat's first jailed launch, the board leg's included (§16). The
+    board leg keeps EC-FIRSTSEAT-7's receipt and egress and adds §8 `loaded` results only.
   - verify: Run V-D and V-G; replay B/C through the integrated native board and
     confirm the unchanged policy can admit W1 composition before any leg degrades.
 
 ### SL-4 — E: Window kit, matrix and documentation reducer
 
 - **Scope**: Implement EC-FIRSTSEAT-6 and EC-FIRSTSEAT-7 and reconcile all producer evidence.
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_window.py`, `phase-loop-runtime/src/phase_loop_runtime/cli.py`, `phase-loop-runtime/src/phase_loop_runtime/executable_dependency_startup.py`, `phase-loop-runtime/tests/test_executable_dependency_startup.py`, `phase-loop-runtime/tests/test_seat_jail_qualification_entry.py`, `phase-loop-runtime/tests/test_seat_qualification_host_context.py`, `docs/review-seats-readiness.md`, `phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md`, `docs/advisor-board-capabilities-card.md`, `plans/evidence/seat-qualification/*`, `CHANGELOG.md`
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_window.py`, `phase-loop-runtime/src/phase_loop_runtime/cli.py`, `phase-loop-runtime/src/phase_loop_runtime/executable_dependency_startup.py`, `phase-loop-runtime/tests/test_executable_dependency_startup.py`, `phase-loop-runtime/tests/test_seat_jail_qualification_entry.py`, `phase-loop-runtime/tests/test_seat_qualification_host_context.py`, `docs/review-seats-readiness.md`, `phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md`, `docs/advisor-board-capabilities-card.md`, `plans/evidence/seat-qualification/*`, `CHANGELOG.md`, `phase-loop-runtime/tests/data/seat_launch_references.json`, `phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py`
 - **Ownership amendment (2026-11-05):** `executable_dependency_startup.py` is owned only to add the `seat-window` command to its closed CLI command inventory with the correct route class and a regression; no other inventory entry or rule changes.
+- **Ownership amendment (2026-11-05, inventories):** E owns `CHANGELOG.md`, `seat_launch_references.json` and the `INVENTORY` of `test_agent_cli_scratch_inventory_1147.py` entry by entry. Each lane's change carries the entries for its own sites, with existing roles; no other entry, rule or assertion changes.
 - **Interfaces provided**: IF-0-FIRSTSEAT-1, IF-0-FIRSTSEAT-2, IF-0-FIRSTSEAT-3.
-- **Interfaces consumed**: `gemini_teamhost_route`, IF-0-FIRSTSEAT-5, `composition_outcome`, `president_attempt_lifecycle`, `president_rung_inventory`, `leg_exec_record`, `tool_probe_receipt`, `integrated_board_outcome`.
+- **Interfaces consumed**: `gemini_teamhost_route`, IF-0-FIRSTSEAT-5, `window_control_launch`, `composition_outcome`, `president_attempt_lifecycle`, `president_rung_inventory`, `leg_exec_record`, `tool_probe_receipt`, `integrated_board_outcome`.
 - **Parallel-safe**: no.
 - **Tasks**:
   - freeze: First, publish IF-0-FIRSTSEAT-1/2 and D's IF-0-FIRSTSEAT-3 with kit
@@ -362,6 +374,10 @@ SL-4 — E: Window kit, matrix and documentation reducer
     `is_available` and `auth_ok` under EACH operator account before launching the
     plan-tier board. A composition refusal blocks that window attempt and routes
     LA-2 remediation; it is not a jail falsifier and cannot trigger OD-9.
+  - impl: `seat-window qualify` runs §15's launches and the board in each context, and
+    alone assembles the reducer inputs; `containment` comes only from that reduction.
+    Rows the window does not exercise stay `candidate`, recorded as unobserved. A row
+    needing its own procedure is EC-FIRSTSEAT-6's falsifier, so none is added.
   - impl: Prepare W1 with LA-1 host administration and managed released runtime,
     LA-2 logins and LA-3 attended runs. E owns provider-free qualification/egress
     installation and every live measurement supplied by A. Qualify writes only to
@@ -396,6 +412,11 @@ Existing unrelated companion tests, frozen goldens, skills, dependency/lockfiles
 and package indexes remain untouched: no new export or dependency is required.
 Any discovered additional touch path requires an ownership amendment first.
 
+A lane, or a part of one, may land as its own reviewed PR once its code and offline checks
+pass. Entries this plan assigns across lanes (notice rows, inventory and changelog entries)
+travel with the change that needs them. Lifecycle entries in `plans/manifest.json` are
+execution state, not lane output, and no landing carries them.
+
 ## Verification
 
 Use the project test environment with pytest-xdist available for explicit `-n 0`.
@@ -425,7 +446,8 @@ then GREEN. The combined new-test suite is the frontmatter command; its expected
 pre-implementation selection is also zero. Existing regression checks use only these explicit files,
 one at a time with `timeout 300` and `-n 0`: `test_president_heartbeat_1001.py`,
 `test_advisor_board_composition.py`, `test_gemini_seat_egress_1170.py`,
-`test_review_stage_binding.py`, `test_sandbox_egress.py`, `test_seat_notices.py`.
+`test_review_stage_binding.py`, `test_sandbox_egress.py`, `test_seat_notices.py`,
+`test_seat_reference_inventory.py`, `test_agent_cli_scratch_inventory_1147.py`.
 Hosted CI and hosted Gate A own full-suite
 verification; do not run `make check-full` or unscoped pytest locally.
 

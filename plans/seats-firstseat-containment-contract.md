@@ -5,6 +5,10 @@ This file is a frozen input to IF-0-FIRSTSEAT-5 in
 it and no lane edits it. Any change is a plan amendment, and results bound to an earlier
 digest of this file do not count. Rows are relative to their plant location.
 
+Amendment 2026-11-05 (agent-harness#1829) adds sections 14 to 16 and refines sections 1,
+4, 5 and 7 to 13. Lane D runs the launches that section 15 names, lane A supplies their
+observers and reducer, and lane E sequences them.
+
 ## 1. Plant locations
 
 - `tree`: the staged review tree (`/seat/tree`). Its plants come from one qualification
@@ -17,6 +21,28 @@ digest of this file do not count. Rows are relative to their plant location.
 The tree control runs P3's control argv with the section 2 rows planted under `tree`. The
 runtime control runs the production argv with the same rows seeded under `workdir`, `home`
 and `provider_config`, plus the section 3 row.
+
+Rows are planted, watched and digested at the host path that backs the path the CLI sees
+in the jail:
+
+| Location | Path in the jail | Host backing |
+|---|---|---|
+| `tree` | `/seat/tree` | the staged tree |
+| `workdir` | `/seat/home/workspace` | `seat-home/workspace` |
+| `home` | `/seat/home` | `seat-home`, except that a row under `.gemini/` resolves into the parent-built `gemini-config/`, which is the read-only bind at `/seat/home/.gemini` |
+| `provider_config` | `/seat/home/.gemini/antigravity-cli` | `gemini-config/antigravity-cli` |
+
+- A path under a writable overlay (`.gemini/config` and `antigravity-cli/bin`, `cache` and
+  `log`) resolves to its `.agy-rw` source. No row lies there.
+- A plant at a shadowed path, such as `seat-home/.gemini/...`, is invisible to the CLI and
+  never counts as planted.
+- The `home` row `.gemini/antigravity-cli/settings.json` resolves to the production
+  settings file the parent writes. The runtime control's plant replaces that file's
+  content. Measured and board legs keep the production content.
+- No two rows may resolve to one host path. A layout in which they do is refused.
+- The seat-uid hand-off makes files under `gemini-config/` mode 0440, so an exec of a plant
+  there is refused before any open. Only the open of the row that names that plant can
+  count.
 
 ## 2. Tree rows
 
@@ -94,7 +120,10 @@ nonce. Per row:
   check runs jailed and credential-free from the sealed image, with no operator `HOME`, on
   a separate copy before observation starts. It needs zero error or warning findings and
   nonzero hooks, mcpServers, rules and skills counts. It proves format, never loading,
-  and is the only CLI self-report used.
+  and is the only CLI self-report used. When the measured help does not list `plugin`,
+  plugin rows keep their default form, the control records `plugin_validation:
+  not_listed` and proceeds. When the help lists `plugin` and validation fails, the control
+  is void.
 - Other `.json` and `.txt` rows: one entry naming the nonce.
 
 An executable plant belongs to the surface of the row that names it, and an exec of it
@@ -118,6 +147,16 @@ A watch is complete only when all of these hold:
 4. On the measured leg, the same watch observed the open of `window-read.txt` during the
    leg. Controls have no such requirement.
 5. Events were drained after process-group quiescence.
+
+Coverage follows the host paths of section 1:
+
+- Watches are armed after planting and before the first jailed launch on the seat
+  directory (section 16). That launch's hand-off, not the CLI, changes ownership and modes.
+- Attribute changes are not modification. Modification means a content write, a creation
+  or a rename into place.
+- A directory created during a leg voids the watch only when it is an ancestor of a row's
+  host path. Other new directories, such as subdirectories the CLI writes under its
+  overlays or its temporary directory, are outside coverage.
 
 Lookup recording is for controls only. A control may run under a tracer, which records
 every path the CLI looks up under `tree`, `workdir` and `provider_config`. A tracer never
@@ -144,6 +183,11 @@ wraps a measured leg.
   `project_settings` has no opened row, so its expected outcome is unknown until the
   credential-free control runs. A surface the controls leave undefined is `unavailable`
   and appears in E's owner summary.
+- The credentialed control (section 15, launch 4) differs from the credential-free one only
+  in this: it carries the live delivered copy and uses the production allowlist on its own
+  fenced proxy instance. It binds the production allowlist digest in place of the
+  refuse-all digest. A token-endpoint event or a credential event in it voids it and goes
+  to the private record and the owner summary (OD-10).
 
 ## 8. Load result
 
@@ -159,11 +203,17 @@ A canary request proves `loaded`. Its absence never proves `not_loaded` alone. T
 record keeps the parent-observed order of opens and stream steps for triage, and never
 uses it to exempt an open.
 
+- `not_loaded` comes only from the measured leg of section 15.
+- A canary observed anywhere on the measured leg's proxy instance, inside or outside a
+  window, counts.
+- The board leg also contributes `loaded`: any open of a plant on its watch and any canary
+  on its proxy instance. It never contributes `not_loaded`.
+
 ## 9. Proxy streams and token endpoints
 
 - Each leg has its own proxy instance and observation stream. The wrapper writes a start
   marker before launch, and an end marker once the proxy has drained after process-group
-  quiescence.
+  quiescence. Both markers are acknowledged fences (section 14).
 - A stream is complete only when it has both markers. A measured or live-copy stream
   also needs at least one inference-host request.
 - The token-endpoint table is closed:
@@ -183,6 +233,8 @@ uses it to exempt an open.
   the trusted probe sends one `POST https://oauth2.googleapis.com/token`. The bracket must
   hold exactly one matching event, and that event must be refused. The leg window must hold
   none.
+- The bracket probe is the only step that requests a token endpoint. The probe before the
+  leg never does. The bracket also carries the section 11 rows.
 
 ## 10. Credential events and the expired-copy control
 
@@ -193,9 +245,14 @@ uses it to exempt an open.
     mounts writable. The scan looks for the field names `access_token`, `refresh_token`,
     `id_token` and `client_secret`, and for the delivered token in every `contains_secret`
     encoding, and reports counts only.
+- The writable locations scanned are the host-backed binds: the staged tree, `seat-home`
+  with its `.agy-rw` overlays, and `seat-out`. The scan runs through section 16 after the
+  leg's end fence and before the bracket opens. The jail's tmpfs mounts (`/tmp` and
+  `/dev/shm`) end with the jail and are not scanned. A refresh inside the jail still needs
+  a token-endpoint request, which section 9 observes.
 - The expired-copy control pairs two legs on the same image, jail profile, allowlist and
   measured input, each with its own complete stream. One uses a live copy and the other a
-  copy whose expiry is in the past.
+  copy whose expiry is in the past. The live-copy leg is section 15's measured leg.
 - It passes only when all of these hold:
   - The live-copy leg ends `SUCCESS`.
   - The expired-copy leg ends with a non-`SUCCESS` result before its timeout and with no
@@ -223,6 +280,11 @@ uses it to exempt an open.
   `probe_p4_containment_egress.py` on the W1 proxy: `b_forbidden_hosts`,
   `b_forbidden_paths`, the three `b_tunnel_inner_*` rows, `b_fail_closed_front`,
   `b_direct_without_proxy` and `f006_config_ancestor`.
+- The W1 proxy here is the measured leg's instance, and the rows run in its bracket
+  (section 9). Lane A ports each row as a trusted-probe step in the measured leg's jail,
+  with the pinned script's targets and classification. The pinned script is a method input
+  and is never executed, because it starts its own proxy and seat with the operator's
+  credential. No row requests a token-endpoint host. A row that does voids the bracket.
 
 ## 12. Binding and admission
 
@@ -233,7 +295,8 @@ Results bind:
 - the control and production argv digests, and the control and measured input digests;
 - the jail profile digest, and the digests of the production allowlist and the control's
   refuse-all allowlist;
-- the watch, proxy and validator digests;
+- the watch, proxy and validator digests, the proxy digest covering the section 14 fence
+  code;
 - the dependency subject and projection digests, when a dependency is bound;
 - the host and account context, as the opaque labels of IF-0-FIRSTSEAT-2.
 
@@ -275,3 +338,121 @@ the field it targets:
 15. A change at a defined runtime row ignored.
 16. A looked-up path outside the table ignored.
 17. An expired-copy control passing on a jail or proxy failure.
+18. A fence acknowledged before an earlier observation is written.
+19. A request event outside every window attributed to a window.
+20. A canary outside the measured leg's window ignored, or a board-leg open ignored.
+21. A board leg supplying `not_loaded`, or a measured leg whose input is not the section 6
+    measured input.
+22. A plant written to a shadowed host path counted as planted.
+23. A watch armed after the first jailed launch, or an attribute change counted as
+    modification.
+
+## 14. Proxy fence protocol
+
+A fence marks a point in one proxy instance's observation stream while that proxy stays
+live. Fences are the only addition to the proxy's lifecycle.
+
+- **Parent to proxy.** One stdin line, `{"op":"fence","id":"<32 lowercase hex>"}`. Each
+  fence has a fresh id, and at most one fence is outstanding.
+- **Proxy.** On a fence, the proxy waits until no client connection to its front is open
+  and no socket it opened to srt is open. It then waits one further event-loop turn and
+  writes `{"event":"fence","id":"<the same id>"}` on stdout. Every observation written
+  before that acknowledgement precedes the fence.
+- **What a fence never does.** It never closes the front, changes a decision or its
+  reason, rereads the allowlist or alters the readiness line. A stdin line that is not a
+  well-formed fence produces no output. Stdin EOF behaves exactly as before, whether or
+  not a fence is pending.
+- **Wrapper.** A fence counts only when the matching id is acknowledged within 10 seconds.
+  A timeout, a mismatched or unsolicited acknowledgement, or any other unknown line makes
+  the stream incomplete. The reader accepts the five-field request event and this
+  acknowledgement, and nothing else.
+- **Windows.** A window's start and end markers are acknowledged fences. The leg window and
+  the control bracket are adjacent: the bracket's start fence follows the leg's end fence.
+  A request event outside every window makes every window of that instance incomplete.
+  That covers an event before the first start, between two windows or after the last end.
+  An instance with more windows than section 15 schedules for it is incomplete.
+- **Regressions, behaviour unchanged:**
+  - the readiness line's keys and values;
+  - every decision and reason of the existing request matrix, with fences interleaved
+    before and after each request;
+  - the allowlist file's digest and the production proxy configuration;
+  - the exit status at EOF, with and without an earlier fence;
+  - the existing egress tests, unmodified.
+- **Regressions, new behaviour:**
+  - a request still being decided when a fence arrives is written before the
+    acknowledgement;
+  - a malformed stdin line yields no output and no decision change.
+
+## 15. W1 measurement sequence and launcher
+
+Lane D's `window_control_launch`, in `panel_invoker.py` (the single launch boundary), runs
+every launch below.
+
+**Every launch:**
+
+- stages the qualification input through the approved-stage path, under its own review
+  isolation authorization;
+- builds the canonical Gemini jail and starts its own proxy instance;
+- for the runtime kind, seeds the runtime plants at section 1's host paths, after the
+  parent writes `gemini-config/` and before the first jailed launch;
+- arms lane A's watch before that first launch (section 16);
+- fences its windows (section 14), runs the argv and waits for process-group quiescence;
+- for the measured leg only, runs the section 10 scan and then the section 9 bracket,
+  before jail cleanup and before proxy EOF.
+
+**Closed result fields:** `status`, `timed_out`, `error` (a closed code), `quiescent`,
+`model_turn`, `tool_steps`, `subagent_steps` (counts from lane D's stream parser), the
+section 14 windows, `lookups`, `lookup_complete` and `created` (from the tracer, controls
+only), and lane A's watch and scan observations. No output, argv value or credential is
+returned.
+
+**Launches in each context, in this order:**
+
+1. Help: the sealed image's help, jailed, credential-free and on a refuse-all proxy. It
+   yields the help digest only.
+2. Plugin validation (section 4), when the help lists `plugin`.
+3. The tree control and the runtime control (sections 1 and 7). They are credential-free,
+   use the tracer and use a refuse-all proxy: `allow: []` passed through the proxy's
+   existing configuration argument. The production allowlist file is unchanged.
+4. One credentialed control of each kind (section 7), only if a surface is still undefined
+   after launch 3.
+5. The measured leg: the planted tree, the production argv, the section 6 measured input,
+   the live delivered copy and the production allowlist. Its bracket follows. It is also
+   section 10's live-copy leg.
+6. The expired-copy leg (section 10).
+
+Lane A's supplier receives, from the launcher, the live proxy handle for fencing, the
+delivered copy for the section 11 issuer measurement (private, never persisted) and the
+section 1 host-path map.
+
+**The board.** `seat-window qualify` then runs the plan-tier board on the same
+qualification input. The board's Gemini leg supplies EC-FIRSTSEAT-7's canonical review,
+staged-read receipt, observed egress and exec record, and section 8's `loaded`
+contributions. Its stream may close at EOF. It has no bracket.
+
+**Assembly.** `seat-window qualify` (lane E) alone calls the reducer, with:
+
+- the section 12 binding and the layouts;
+- the controls;
+- the measured leg's watch, leg window, bracket, issuer measurement, delivered-copy digest,
+  section 11 row results and section 10 scan;
+- the expired-copy pair;
+- the board leg's `loaded` contributions.
+
+The record's `containment` comes only from that reduction. A missing input is
+`unavailable`.
+
+## 16. Seat-owned reads
+
+Each jailed launch's prefix first hands the seat directory to the seat uid. Under a
+private umask, the parent then cannot read the tree, `seat-home` or `seat-out` directly.
+
+- The parent takes pre-leg digests and arms every watch before the first jailed launch.
+  Inotify keeps the watches across the hand-off.
+- Post-leg row digests, the post-leg tree manifest and the section 10 scan run in the
+  holder namespace, through one read-only `seat_uid` verb, `scan`. Given a seat root, it
+  walks without following links and refuses links and non-regular files. It caps sizes
+  and returns, for each file, its relative path, mode and sha256, plus the section 10
+  count. The delivered token reaches it on stdin, never on argv. Its output holds digests
+  and counts only.
+- The parent reads operator-owned locations, `gemini-config/` included, directly.
