@@ -114,12 +114,59 @@ targets are the vendored schema directory and docs/supervised-worker-contracts.m
       "status": "upstream_phase_unmet"
     }
   ],
-  "hosted_job_evidence": null,
-  "hosted_publication": null,
-  "hosted_result_artifact_sha256": null,
-  "hosted_run_id": null,
+  "hosted_job_evidence": {
+    "conclusion": "success",
+    "head": "37262b2c9647abc3d8c936ef96c4afe079be4f5b",
+    "job_id": 127070141798,
+    "run_id": "41974509317",
+    "wheel_junit_sha256": "c9dc39d4f63024cad60cd1998c92686c9cc1386988d08eb9871ebbe3a3e166d2",
+    "wheel_tests_passed": 104
+  },
+  "hosted_publication": {
+    "default_branch": "main",
+    "default_branch_head": "93db4b4fcc4e3d40c62f6658b6a67b519c750491",
+    "hosted_head": "37262b2c9647abc3d8c936ef96c4afe079be4f5b",
+    "hosted_job": "publication",
+    "hosted_run_id": "41974509317",
+    "input_artifact_sha256": "2c98eafb4950cf4106e1512515dca3199cc4c6095dd5c5d6971e7c0e9b62cf0b",
+    "outcome": "passed",
+    "protected": true,
+    "resources": {
+      "admitted-launch-envelope.schema.json": {
+        "blob": "1abe40abbb1178295af86b3c6d64f9bffe5a0099",
+        "sha256": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d"
+      },
+      "conformance/README.md": {
+        "blob": "9051f4fcfa7bb91b896f3efe60b6a3b238545a75",
+        "sha256": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca"
+      },
+      "conformance/SHA256SUMS": {
+        "blob": "ff78301d393ef361f6c476a7117f0d2d97d2193b",
+        "sha256": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285"
+      },
+      "conformance/envelope.vectors.json": {
+        "blob": "4fcb908f0ed89f2206efc2fbf4c5a6c7bdbd7e56",
+        "sha256": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f"
+      },
+      "conformance/run-status.vectors.json": {
+        "blob": "4a156e4fbf56526d483f729c78b2e94eb6f48f93",
+        "sha256": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730"
+      },
+      "provenance.json": {
+        "blob": "cb2d905ba4fc12c9df1244f301c2624a656643ac",
+        "sha256": "9444d9285e4fbf9fa78c7e10fb474885c79f77cb65abec2f45527af2ec57ff42"
+      },
+      "run-status.schema.json": {
+        "blob": "8af75b390c1b6dcb5478ac16daec3bd38cb060d1",
+        "sha256": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      }
+    },
+    "source_commit": "93db4b4fcc4e3d40c62f6658b6a67b519c750491"
+  },
+  "hosted_result_artifact_sha256": "7c0d2db33859e9742bfcae0a179a5805e0baf579f5c3fe9950e61ba2f4a2f824",
+  "hosted_run_id": "41974509317",
   "input_artifact_sha256": "2c98eafb4950cf4106e1512515dca3199cc4c6095dd5c5d6971e7c0e9b62cf0b",
-  "intake_gate_status": "awaiting_hosted_verification",
+  "intake_gate_status": "verified",
   "intake_results": [
     {
       "case_or_control_id": "test_frozen_input_and_production_pins",
@@ -1496,6 +1543,22 @@ targets are the vendored schema directory and docs/supervised-worker-contracts.m
       },
       "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_runner_offline[success]",
       "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_runner_offline[success]"
+    },
+    {
+      "case_or_control_id": "test_publication_runner_offline[seal]",
+      "group": "intake_results",
+      "outcome": "passed",
+      "resource_sha256": {
+        "admitted-launch-envelope.schema.json": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d",
+        "conformance/README.md": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca",
+        "conformance/SHA256SUMS": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285",
+        "conformance/envelope.vectors.json": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f",
+        "conformance/run-status.vectors.json": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730",
+        "harness-provenance.json": "da50fae8312129c4db8996320247e4edb229fb50d8eaa20584d1d6a055476d4a",
+        "run-status.schema.json": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+      },
+      "runner_artifact_ref": "schema-suite-junit.xml#phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_runner_offline[seal]",
+      "test_node_id": "phase-loop-runtime/tests/test_supervised_contracts.py::test_publication_runner_offline[seal]"
     },
     {
       "case_or_control_id": "test_publication_runner_offline[private]",
@@ -5109,7 +5172,7 @@ targets are the vendored schema directory and docs/supervised-worker-contracts.m
     }
   ],
   "source_commit": "93db4b4fcc4e3d40c62f6658b6a67b519c750491",
-  "suite_artifact_sha256": "4d8c293fbf456ab5648a020cffdec60639af0e97a8983c46637edea89536e2aa",
+  "suite_artifact_sha256": "49f9cb9bdfdde8bd9750c53ac89f14ac2034184619ea4998de0e026a8e279727",
   "tier_basis": {
     "os_enforced": {
       "constraints": {

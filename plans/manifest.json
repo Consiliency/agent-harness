@@ -14256,6 +14256,43 @@
             "supersedes_blocker": "CHANGELOG ownership and documentation update are present."
           },
           "transition": "executing"
+        },
+        {
+          "at": "2026-11-05T05:33:51Z",
+          "by": "codex-execute-phase",
+          "metadata": {
+            "dirty_worktree_summary": "Phase-owned receipt and lifecycle control update; frozen input seal unchanged.",
+            "doc_delta_decision": "docs_updated",
+            "evidence_paths": [
+              "plans/evidence/supervised-worker/SCHEMA.md"
+            ],
+            "hosted_publication_run_id": "41974509317",
+            "if_gates_produced": [
+              "IF-0-SCHEMA-1"
+            ],
+            "issue_dispositions": [],
+            "issue_inventory": [],
+            "local_tests_passed": 263,
+            "phase_alias": "SCHEMA",
+            "run_id": "v12-schema-repair",
+            "spec_delta_closeout": {
+              "decision": "canonical_spec_update",
+              "downstream_handling": "none",
+              "evidence_paths": [
+                "plans/evidence/supervised-worker/SCHEMA.md"
+              ],
+              "redaction_posture": "metadata_only",
+              "schema": "spec_delta_closeout.v1",
+              "target_surfaces": [
+                "phase-loop-runtime/src/phase_loop_runtime/schemas/supervised-worker-v1/",
+                "docs/supervised-worker-contracts.md"
+              ]
+            },
+            "supersedes_blocker": "CHANGELOG ownership and release documentation requirement are satisfied.",
+            "verification_scope": "Targeted SCHEMA suite and hosted publication/extracted-wheel verification; full regression and Gate A remain hosted CI responsibilities.",
+            "verification_status": "passed"
+          },
+          "transition": "completed"
         }
       ],
       "owner_skill": "codex-plan-phase",
@@ -14268,10 +14305,10 @@
         "type": "phase"
       },
       "slug": "v12-SCHEMA",
-      "status": "executing",
+      "status": "completed",
       "task_summary": "Execution-ready manual v1 SCHEMA intake for agent-harness#1818; byte-pin authority remains false pending published v2 reconciliation.",
       "type": "phase",
-      "updated_at": "2026-11-05T05:24:50Z",
+      "updated_at": "2026-11-05T05:33:51Z",
       "frozen_inputs": {
         "plans/artifacts/v12-SCHEMA-inputs.md": {
           "sha256": "2c98eafb4950cf4106e1512515dca3199cc4c6095dd5c5d6971e7c0e9b62cf0b"
