@@ -169,6 +169,9 @@ INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
     ("train_runner.py", "_live_post_merge_prune"): (
         NOT_AGENT, "bash running the generated post-merge git prune script"),
     # Dynamic imports: a computed module name may be any module, so each is classified.
+    ("supervised_launch_binding.py", "_load_absolute"): (
+        NOT_AGENT, "executes verified operator-owned validator/codec module bytes, not an "
+                   "agent CLI; external implementation code is trusted, not sandboxed"),
     ("cli.py", "_profile_command_registrars"): (
         NOT_AGENT, "dynamic import of a registered CLI profile module; launches nothing"),
     ("closeout_validators.py", "_import_builtin_validator"): (
@@ -234,6 +237,8 @@ INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
 #: A classification covers the launches it was made for: one more launch in a listed
 #: function -- say a `claude` call added to a NOT_AGENT helper -- fails until reviewed.
 LAUNCH_COUNTS: dict[tuple[str, str], int] = {
+    # Both compile() and exec() of the verified binding bytes are inventoried.
+    ('supervised_launch_binding.py', '_load_absolute'): 2,
     ('agy_canary_evidence.py', '_bootstrap_attest_opened'): 2,
     ('agy_canary_evidence.py', 'probe_capability'): 3,
     # agent-harness#1132: the jailed seat's launch beside every other provider launch.

@@ -1,0 +1,903 @@
+# ENVELOPE local seam receipt
+
+Runner-observed offline repair results for agent-harness#1828 within agent-harness#1818.
+IF-0-ENVELOPE-1 remains a local interface; final repair validation is pending hosted CI.
+This grants no public contract or live-use authority.
+The observed input head identifies the repair input; source hashes bind the
+implementation without predicting its eventual commit.
+
+## Round-2 verification
+
+The president-directed repair was checked serially in the normal checkout:
+admission 115, mutation 80, binding 45, route 12, startup 16 and receipt 8 passed
+(276 total, no skips). The mutation file covers 40 intact witnesses and 40
+killed source-copy mutants; binding retains 13 killed mutants.
+The current producer rows below supersede the historical rows. Source hashes
+bind this repair snapshot; hosted full-suite and exact-head gates remain pending.
+Receipt validation additionally checks the current collected producer inventory
+before accepting a final stamp. Current-inventory collection and its source-copy
+mutant passed, as did the narrowed mutation exception oracle. A sparse source
+copy under a mode-1777 ancestor observed admission 115, mutation 80, binding 45,
+route 12 and startup 16 passes, with all 8 receipt tests skipped because the
+repository evidence manifest is absent (268 passes total). This is a layout
+simulation using Python 3.14.4 and source imports, not the hosted wheel Gate A.
+The new workspace guard's mutant was killed; root and nested repository-shaped
+directories refused, and a real clean clone remained separate in both layouts.
+An initial receipt-stamping script omitted filename suffixes; receipt validation
+rejected those rows. The corrected rows below and the rerun passed.
+No hosted final-tree pass is claimed by these observations.
+
+The two prior hosted runs named by the president have now failed: besides the
+removed host-load assertion, they report unclassified binding-loader references
+in the agent-CLI scratch and seat-reference inventories. Those inventories are
+outside this repair's owned files and remain a maintainer follow-up before
+hosted acceptance. Gate A was skipped in the observed hosted rollup.
+
+## Historical verification
+
+Run from the repository root with the locked venv and absolute source/test PYTHONPATH.
+The repair ran individual targeted files serially, under `timeout 900` with
+`-p no:cacheprovider`, checking host load and I/O pressure before each command.
+Admission: 91 passed. Mutations: 62 passed (31 intact witnesses and 31 killed
+source-copy mutants). Binding: 45 passed, including 13 killed mutants.
+These were 198 observed passes with no selected skips in the previous record.
+They precede the final codec type-equality tightening, excluded-root kind check,
+git-config inspection scope adjustment and receipt revision;
+the source hashes describe the final snapshot, not a claim those runs tested it.
+No final-tree pass or EC completion is claimed.
+
+Local tests stopped when host I/O pressure reached approximately 35% some-avg10
+and 32% full-avg10. Final-tree admission, mutation and binding revalidation,
+route, startup and receipt tests are deferred to hosted CI, along with the full
+repository suite and Gate A. Broad-selector deselected counts are deliberately
+omitted; no full repository collection was run for this repair.
+
+Historical pre-implementation union collection: zero matches, pytest exit 5.
+The approved plan review separately recorded all three distinct selector expressions as
+zero; each of the five command locations is a subset of that verified empty union.
+The repair record covers only the files actually run. Receipt validation checks
+per-node outcomes, arithmetic and source bindings; it refuses completion claims
+for this partial record. Collection length is not pass evidence.
+
+Commands (use `python3` from the locked venv):
+
+Each command uses `timeout 900 python3 -m pytest -q -p no:cacheprovider` and one
+file under `phase-loop-runtime/tests/`: `test_supervised_launch.py`,
+`test_supervised_launch_mutations.py`, `test_supervised_launch_binding.py`,
+`test_supervised_launch_route.py`, `test_executable_dependency_startup.py`, or
+`test_supervised_launch_receipt.py`. Run files sequentially, checking host health
+before each; do not run local suites on a degraded host.
+
+## Mutation witnesses
+
+SL-0 removes each named production guard from an isolated compiled copy of the actual
+module. Each unchanged rejection assertion passes against the intact module and turns
+red against its mutant. No test-only admission model is used. The list below names
+all 40 controls, including verdict digest/attempt binding, exact typed admit, identity-only launch
+digest, atomic single-use consumption, qualification, workspace classification, tier,
+constraints, reference digest, five separate consumption checks and six reference/size
+checks, shared physical storage, unreadable storage and root/operator executable ownership,
+single parse/hash capture, finite numeric capture, codec capture equality,
+canonical locations, location and ancestor identity, root storage, gitfile and
+repository-shape checks, configuration grammar, callback values and link counts.
+The FIFO witness is synthetic and nonblocking; consumption device/inode witnesses
+patch `os.stat` metadata while retaining the production classifier. Location and
+root alias cases also substitute real fixture stat/fstat metadata; no live mount
+trial ran. Reference cap witnesses isolate the cap from the
+digest comparison. All copies are discarded; production sources stay intact.
+
+SL-1's binding run kills uid and mode mutants independently for binding, validator, codec,
+qualification, template and config (12 cases); one absolute import resolution mutant;
+route classification, declared-dependency and direct required-session controls
+also passed locally. UID mismatches are synthetic fstat metadata, without chown.
+The binding witness stops at the loader to avoid an intact downstream recheck masking
+a removed loader guard. Isolated Python children assert and print their checkout
+module path, which resolves to
+`phase-loop-runtime/src/phase_loop_runtime/__init__.py` here. Ambient stdlib,
+validator, package and codec shadows never supply the trusted implementation.
+Mode-sensitive fixtures pin umask 077 and restore it; unsafe modes use chmod.
+
+SL-2's revised tests consume a production admission, prove refusal and falsify
+source bindings, missing/failed outcomes, authority and readiness claims. They
+passed locally; fixture text is not a behavior oracle.
+
+## Limitations and handoff
+
+Public codec/schema reconciliation, production semantic vectors, installed-tool
+qualification, lifecycle activation, exact-head CI/Gate A and independent CLOSEOUT
+review remain pending. JOURNAL must add durable replay reservation; WORKER must add
+the module CLI, safe envelope-file ingestion, bounded probes/subprocesses and immediate
+pre-spawn identity checks. No live providers, credentials, network, sandbox or mounts
+were exercised. No private contract or repository is required.
+
+Both tiers refuse all requested constraint cells, and os_enforced always refuses.
+Standalone routing preserves task_unbound and dependency_route_unwired. There is no
+same-login containment, network denial, journal authenticity against same-login
+writers or protection of on-disk git/gh credentials. Descriptor execution is absent
+from this process-free seam; the future check-to-exec race must remain disclosed.
+Consumed attempts are reserved only in process. Executable paths with symlink
+components refuse rather than being resolved; this stricter local restriction is
+an explicit plan amendment. Trusted/executable capture still has a 1 MiB cap;
+reads now loop to EOF/cap, and WORKER must reconcile real binary sizes and
+interpreter chains.
+
+Doc decision: docs_updated for the local API guide. README/release notes need no delta;
+WORKER owns the integrated CHANGELOG update. Spec closeout: spec_delta_closeout.v1,
+canonical_spec_update, target docs/supervised-worker.md, redaction_posture metadata_only.
+The plan amendment names evidence as test results/receipt artifacts rather than
+nonexistent Python symbols, records the executable restriction and applies the
+owner's serial verification policy. No roadmap amendment or public-schema acceptance
+is claimed. The optional manifest
+lifecycle write was withheld because plans/manifest.json is outside the plan's owned
+files; this is a nonfatal ledger warning, not an ownership transfer.
+
+## Runner-stamped producer record
+
+```json
+{
+  "authority": "synthetic_fixture_only",
+  "gate": "IF-0-ENVELOPE-1",
+  "ec_status": {
+    "EC-ENVELOPE-1": "pending_hosted_ci",
+    "EC-ENVELOPE-2": "pending_hosted_ci",
+    "EC-ENVELOPE-3": "pending_hosted_ci"
+  },
+  "final_tree_validated": false,
+  "runner_stamp": {
+    "observed_utc": "2026-11-04T23:05:24.194996+00:00",
+    "observed_input_head": "470cb7e528c961ef63db326ef994653e690a0994",
+    "approved_plan_input_head": "c1aac3c19b711f9688bddc2bda11128d928b3ad9",
+    "source_tree_digest": "1950e2506e1d55e524141013bae10d0fa7cdcbea3ecec4da1845347484d4c19f"
+  },
+  "source_hashes": {
+    "phase-loop-runtime/src/phase_loop_runtime/supervised_launch.py": "9c339674bef0b52bd6520d1e6d72bcee5157d5d80b4ba21f9baa425d4cfb0a22",
+    "phase-loop-runtime/src/phase_loop_runtime/supervised_launch_binding.py": "d7f00ad8dcb5b979c6129c5836209497ee8e89ad20e3bfaed7bbe55b63b88958",
+    "phase-loop-runtime/src/phase_loop_runtime/supervised_dependency.py": "7f465aee2193256b0816cfce7dad614d07af3f9e429f5f285c9e904157301713",
+    "phase-loop-runtime/src/phase_loop_runtime/executable_dependency_startup.py": "b43b489d606bf92b910dbc6ce8a23e40ac564553d60a0f807013e0e286e5594a",
+    "phase-loop-runtime/tests/test_supervised_launch.py": "75589c45c697c747407260c54a0ce9179cb32c458ea32937b3b1806c2acc1522",
+    "phase-loop-runtime/tests/test_supervised_launch_mutations.py": "f91b77785ed63a31798ce8ba509bc712efa5c489d59532d53266d2db30337125",
+    "phase-loop-runtime/tests/test_supervised_launch_binding.py": "c126cc082b541ba2bfcfce92b6df8e56a83ae990510fdbb4199d190b94b717a9",
+    "phase-loop-runtime/tests/test_supervised_launch_route.py": "9353ef72842b0a0cadf748f2622c279970ce7ee4453b816b7be8f348a66893d4",
+    "phase-loop-runtime/tests/test_supervised_launch_receipt.py": "13475dff1a4aebf4db2da694c36bafb4de58230c390008a7c126c62aade22073",
+    "phase-loop-runtime/tests/fixtures/supervised_launch_local/envelope.json": "2c69f75c4bdcaf8f28b8ff40a92b9db21e4403bf7fd2ab8ff10d4df622463298",
+    "docs/supervised-worker.md": "85e56c854b9cc860642f41742555bf99b5f7cfc5b953b9d911b2a7a521979f27",
+    "plans/phase-plan-v12-ENVELOPE.md": "342dfe2657db65fe7ac257394cc09f1b0ae78d9e07ec5b5d6fc2c8f2c7bbcb7e"
+  },
+  "producer_nodes": [
+    "tests/test_supervised_launch.py::test_ambiguous_json_before_codec[{\"x\":1,\"x\":2}]",
+    "tests/test_supervised_launch.py::test_ambiguous_json_before_codec[{\"x\":Infinity}]",
+    "tests/test_supervised_launch.py::test_ambiguous_json_before_codec[{\"x\":NaN}]",
+    "tests/test_supervised_launch.py::test_audit_worktree_and_in_place",
+    "tests/test_supervised_launch.py::test_callback_refusal[KeyboardInterrupt-decoder]",
+    "tests/test_supervised_launch.py::test_callback_refusal[KeyboardInterrupt-validator]",
+    "tests/test_supervised_launch.py::test_callback_refusal[SystemExit-decoder]",
+    "tests/test_supervised_launch.py::test_callback_refusal[SystemExit-validator]",
+    "tests/test_supervised_launch.py::test_callback_values[admit_fields]",
+    "tests/test_supervised_launch.py::test_callback_values[codec_invalid]",
+    "tests/test_supervised_launch.py::test_callback_values[outer_refusal]",
+    "tests/test_supervised_launch.py::test_callback_values[registry_inputs]",
+    "tests/test_supervised_launch.py::test_canonical_locations[executable]",
+    "tests/test_supervised_launch.py::test_canonical_locations[target]",
+    "tests/test_supervised_launch.py::test_canonical_locations[workspace]",
+    "tests/test_supervised_launch.py::test_canonical_locations[wrappers]",
+    "tests/test_supervised_launch.py::test_codec_capture_agreement[constraints]",
+    "tests/test_supervised_launch.py::test_codec_capture_agreement[dependency_declaration]",
+    "tests/test_supervised_launch.py::test_codec_capture_agreement[executable]",
+    "tests/test_supervised_launch.py::test_codec_capture_agreement[numeric_type]",
+    "tests/test_supervised_launch.py::test_codec_capture_agreement[tier]",
+    "tests/test_supervised_launch.py::test_codec_capture_agreement[timeout]",
+    "tests/test_supervised_launch.py::test_config_clean_clone",
+    "tests/test_supervised_launch.py::test_config_grammar[[\"core\"]\\n bare = false]",
+    "tests/test_supervised_launch.py::test_config_grammar[[core]\\n filemode = \"true\"]",
+    "tests/test_supervised_launch.py::test_config_grammar[[core]\\n filemode = true\\\\\\n bare = false]",
+    "tests/test_supervised_launch.py::test_config_grammar[[core]\\n fsmonitor = true]",
+    "tests/test_supervised_launch.py::test_config_grammar[[include]\\n path = config]",
+    "tests/test_supervised_launch.py::test_config_grammar[[other]\\n key = value]",
+    "tests/test_supervised_launch.py::test_constraint_matrix[False-command_denial]",
+    "tests/test_supervised_launch.py::test_constraint_matrix[False-network_denial]",
+    "tests/test_supervised_launch.py::test_constraint_matrix[False-unknown]",
+    "tests/test_supervised_launch.py::test_constraint_matrix[False-write_scope]",
+    "tests/test_supervised_launch.py::test_constraint_matrix[True-command_denial]",
+    "tests/test_supervised_launch.py::test_constraint_matrix[True-network_denial]",
+    "tests/test_supervised_launch.py::test_constraint_matrix[True-unknown]",
+    "tests/test_supervised_launch.py::test_constraint_matrix[True-write_scope]",
+    "tests/test_supervised_launch.py::test_consumption_rechecks[consume_class]",
+    "tests/test_supervised_launch.py::test_consumption_rechecks[consume_device]",
+    "tests/test_supervised_launch.py::test_consumption_rechecks[consume_executable]",
+    "tests/test_supervised_launch.py::test_consumption_rechecks[consume_inode]",
+    "tests/test_supervised_launch.py::test_consumption_rechecks[consume_wrapper]",
+    "tests/test_supervised_launch.py::test_every_launch_input_substitution[baseline]",
+    "tests/test_supervised_launch.py::test_every_launch_input_substitution[constraints]",
+    "tests/test_supervised_launch.py::test_every_launch_input_substitution[executable]",
+    "tests/test_supervised_launch.py::test_every_launch_input_substitution[instruction]",
+    "tests/test_supervised_launch.py::test_every_launch_input_substitution[target]",
+    "tests/test_supervised_launch.py::test_every_launch_input_substitution[tier]",
+    "tests/test_supervised_launch.py::test_every_launch_input_substitution[timeout]",
+    "tests/test_supervised_launch.py::test_every_launch_input_substitution[workspace]",
+    "tests/test_supervised_launch.py::test_every_launch_input_substitution[wrappers]",
+    "tests/test_supervised_launch.py::test_exception_and_unavailable_validator",
+    "tests/test_supervised_launch.py::test_excluded_root_kind[references]",
+    "tests/test_supervised_launch.py::test_excluded_root_kind[target]",
+    "tests/test_supervised_launch.py::test_excluded_root_kind[workspace]",
+    "tests/test_supervised_launch.py::test_executable_path_refusal[empty_path]",
+    "tests/test_supervised_launch.py::test_executable_path_refusal[missing]",
+    "tests/test_supervised_launch.py::test_executable_path_refusal[relative_path]",
+    "tests/test_supervised_launch.py::test_executable_path_refusal[symlink]",
+    "tests/test_supervised_launch.py::test_executable_path_refusal[workspace]",
+    "tests/test_supervised_launch.py::test_executable_path_refusal[writable]",
+    "tests/test_supervised_launch.py::test_file_capture_metadata_before_read",
+    "tests/test_supervised_launch.py::test_file_capture_reads_to_eof",
+    "tests/test_supervised_launch.py::test_identity_only_launch_digest",
+    "tests/test_supervised_launch.py::test_location_identity[executable]",
+    "tests/test_supervised_launch.py::test_location_identity[trusted]",
+    "tests/test_supervised_launch.py::test_location_identity[wrapper]",
+    "tests/test_supervised_launch.py::test_non_admit[1]",
+    "tests/test_supervised_launch.py::test_non_admit[None]",
+    "tests/test_supervised_launch.py::test_non_admit[True]",
+    "tests/test_supervised_launch.py::test_non_admit[admit]",
+    "tests/test_supervised_launch.py::test_numeric_capture[-1e400]",
+    "tests/test_supervised_launch.py::test_numeric_capture[1e400]",
+    "tests/test_supervised_launch.py::test_path_spelling_refusal[alias]",
+    "tests/test_supervised_launch.py::test_path_spelling_refusal[ancestor]",
+    "tests/test_supervised_launch.py::test_process_attempt_reservation",
+    "tests/test_supervised_launch.py::test_provider_physical_shared_storage",
+    "tests/test_supervised_launch.py::test_provider_uninspectable_storage",
+    "tests/test_supervised_launch.py::test_qualification_missing_mismatched_and_positive",
+    "tests/test_supervised_launch.py::test_reference_controls[aggregate_cap]",
+    "tests/test_supervised_launch.py::test_reference_controls[envelope_cap]",
+    "tests/test_supervised_launch.py::test_reference_controls[reference_cap]",
+    "tests/test_supervised_launch.py::test_reference_controls[reference_nofollow]",
+    "tests/test_supervised_launch.py::test_reference_controls[reference_regular]",
+    "tests/test_supervised_launch.py::test_reference_controls[reference_root]",
+    "tests/test_supervised_launch.py::test_reference_link_identity[baseline]",
+    "tests/test_supervised_launch.py::test_reference_link_identity[instruction]",
+    "tests/test_supervised_launch.py::test_registry_binding",
+    "tests/test_supervised_launch.py::test_root_owned_executable_identity",
+    "tests/test_supervised_launch.py::test_side_channels_and_missing_inputs",
+    "tests/test_supervised_launch.py::test_single_use_immutable_snapshots_and_identities",
+    "tests/test_supervised_launch.py::test_tier_refusal[os_enforced]",
+    "tests/test_supervised_launch.py::test_tier_refusal[unknown]",
+    "tests/test_supervised_launch.py::test_trusted_links[config]",
+    "tests/test_supervised_launch.py::test_trusted_links[executable]",
+    "tests/test_supervised_launch.py::test_trusted_links[template]",
+    "tests/test_supervised_launch.py::test_trusted_links[wrapper]",
+    "tests/test_supervised_launch.py::test_verdict_binding[attempt_id]",
+    "tests/test_supervised_launch.py::test_verdict_binding[launch_digest]",
+    "tests/test_supervised_launch.py::test_workspace_ancestor_identity",
+    "tests/test_supervised_launch.py::test_workspace_git_data[extensions]",
+    "tests/test_supervised_launch.py::test_workspace_git_data[http-alternates]",
+    "tests/test_supervised_launch.py::test_workspace_git_data[include]",
+    "tests/test_supervised_launch.py::test_workspace_git_data[includeif]",
+    "tests/test_supervised_launch.py::test_workspace_git_data[nested]",
+    "tests/test_supervised_launch.py::test_workspace_git_data[worktree]",
+    "tests/test_supervised_launch.py::test_workspace_provider_storage[alternates]",
+    "tests/test_supervised_launch.py::test_workspace_provider_storage[commondir]",
+    "tests/test_supervised_launch.py::test_workspace_provider_storage[gitfile]",
+    "tests/test_supervised_launch.py::test_workspace_provider_storage[hardlink]",
+    "tests/test_supervised_launch.py::test_workspace_provider_storage[symlink]",
+    "tests/test_supervised_launch.py::test_workspace_real_clone",
+    "tests/test_supervised_launch.py::test_workspace_repository_shape[False]",
+    "tests/test_supervised_launch.py::test_workspace_repository_shape[True]",
+    "tests/test_supervised_launch.py::test_workspace_root_identity",
+    "tests/test_supervised_launch_binding.py::test_binding_absent_and_unisolated",
+    "tests/test_supervised_launch_binding.py::test_binding_callback_refusal[KeyboardInterrupt-codec]",
+    "tests/test_supervised_launch_binding.py::test_binding_callback_refusal[KeyboardInterrupt-validator]",
+    "tests/test_supervised_launch_binding.py::test_binding_callback_refusal[SystemExit-codec]",
+    "tests/test_supervised_launch_binding.py::test_binding_callback_refusal[SystemExit-validator]",
+    "tests/test_supervised_launch_binding.py::test_binding_isolated_absolute_and_transitive_shadowing",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_import_mutation",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[group-binding]",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[group-codec]",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[group-config]",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[group-qualification]",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[group-template]",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[group-validator]",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[owner-binding]",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[owner-codec]",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[owner-config]",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[owner-qualification]",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[owner-template]",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[owner-validator]",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[symlink-binding]",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[symlink-codec]",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[symlink-config]",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[symlink-qualification]",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[symlink-template]",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[symlink-validator]",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[world-binding]",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[world-codec]",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[world-config]",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[world-qualification]",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[world-template]",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[world-validator]",
+    "tests/test_supervised_launch_binding.py::test_binding_uid_mode_mutations[trusted_mode-binding]",
+    "tests/test_supervised_launch_binding.py::test_binding_uid_mode_mutations[trusted_mode-codec]",
+    "tests/test_supervised_launch_binding.py::test_binding_uid_mode_mutations[trusted_mode-config]",
+    "tests/test_supervised_launch_binding.py::test_binding_uid_mode_mutations[trusted_mode-qualification]",
+    "tests/test_supervised_launch_binding.py::test_binding_uid_mode_mutations[trusted_mode-template]",
+    "tests/test_supervised_launch_binding.py::test_binding_uid_mode_mutations[trusted_mode-validator]",
+    "tests/test_supervised_launch_binding.py::test_binding_uid_mode_mutations[trusted_uid-binding]",
+    "tests/test_supervised_launch_binding.py::test_binding_uid_mode_mutations[trusted_uid-codec]",
+    "tests/test_supervised_launch_binding.py::test_binding_uid_mode_mutations[trusted_uid-config]",
+    "tests/test_supervised_launch_binding.py::test_binding_uid_mode_mutations[trusted_uid-qualification]",
+    "tests/test_supervised_launch_binding.py::test_binding_uid_mode_mutations[trusted_uid-template]",
+    "tests/test_supervised_launch_binding.py::test_binding_uid_mode_mutations[trusted_uid-validator]",
+    "tests/test_supervised_launch_binding.py::test_binding_workspace_location",
+    "tests/test_supervised_launch_binding.py::test_external_binding_non_admit",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[admit_binding]",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[admit_fields]",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[aggregate_cap]",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[canonical_path_required]",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[capture_once]",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[codec_changed_envelope]",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[codec_invalid]",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[constraints_unsupported]",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[consume_class]",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[consume_device]",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[consume_executable]",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[consume_inode]",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[consume_wrapper]",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[envelope_cap]",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[executable_links]",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[executable_owner_policy]",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[identity_digest]",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[nonfinite]",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[outer_refusal]",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[path_symlink]",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[qualification]",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[reference_cap]",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[reference_digest]",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[reference_nofollow]",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[reference_regular]",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[reference_root]",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[registry_inputs]",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[tier_unsupported]",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[token]",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[trusted_links]",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[typed_admit]",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[untrusted_location]",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[workspace]",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[workspace_ancestry]",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[workspace_gitconfig]",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[workspace_gitdir]",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[workspace_gitfile]",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[workspace_root_shared]",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[workspace_shared]",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[workspace_uninspectable]",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[admit_binding]",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[admit_fields]",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[aggregate_cap]",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[canonical_path_required]",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[capture_once]",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[codec_changed_envelope]",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[codec_invalid]",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[constraints_unsupported]",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[consume_class]",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[consume_device]",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[consume_executable]",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[consume_inode]",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[consume_wrapper]",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[envelope_cap]",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[executable_links]",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[executable_owner_policy]",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[identity_digest]",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[nonfinite]",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[outer_refusal]",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[path_symlink]",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[qualification]",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[reference_cap]",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[reference_digest]",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[reference_nofollow]",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[reference_regular]",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[reference_root]",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[registry_inputs]",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[tier_unsupported]",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[token]",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[trusted_links]",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[typed_admit]",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[untrusted_location]",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[workspace]",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[workspace_ancestry]",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[workspace_gitconfig]",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[workspace_gitdir]",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[workspace_gitfile]",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[workspace_root_shared]",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[workspace_shared]",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[workspace_uninspectable]",
+    "tests/test_supervised_launch_route.py::test_classification_and_status_preserve_generic_inventory",
+    "tests/test_supervised_launch_route.py::test_declared_dependency_mutation",
+    "tests/test_supervised_launch_route.py::test_direct_api_guard_before_decode[False-task_unbound]",
+    "tests/test_supervised_launch_route.py::test_direct_api_guard_before_decode[True-dependency_route_unwired]",
+    "tests/test_supervised_launch_route.py::test_direct_api_guard_mutation[False-task_unbound]",
+    "tests/test_supervised_launch_route.py::test_direct_api_guard_mutation[True-dependency_route_unwired]",
+    "tests/test_supervised_launch_route.py::test_required_route_before_effects[supervised-cancel-False-task_unbound]",
+    "tests/test_supervised_launch_route.py::test_required_route_before_effects[supervised-cancel-True-dependency_route_unwired]",
+    "tests/test_supervised_launch_route.py::test_required_route_before_effects[supervised-launch-False-task_unbound]",
+    "tests/test_supervised_launch_route.py::test_required_route_before_effects[supervised-launch-True-dependency_route_unwired]",
+    "tests/test_supervised_launch_route.py::test_route_classification_mutation",
+    "tests/test_supervised_launch_route.py::test_standalone_dependency_declaration"
+  ],
+  "producer_outcomes": {
+    "tests/test_supervised_launch.py::test_ambiguous_json_before_codec[{\"x\":1,\"x\":2}]": "passed",
+    "tests/test_supervised_launch.py::test_ambiguous_json_before_codec[{\"x\":Infinity}]": "passed",
+    "tests/test_supervised_launch.py::test_ambiguous_json_before_codec[{\"x\":NaN}]": "passed",
+    "tests/test_supervised_launch.py::test_audit_worktree_and_in_place": "passed",
+    "tests/test_supervised_launch.py::test_callback_refusal[KeyboardInterrupt-decoder]": "passed",
+    "tests/test_supervised_launch.py::test_callback_refusal[KeyboardInterrupt-validator]": "passed",
+    "tests/test_supervised_launch.py::test_callback_refusal[SystemExit-decoder]": "passed",
+    "tests/test_supervised_launch.py::test_callback_refusal[SystemExit-validator]": "passed",
+    "tests/test_supervised_launch.py::test_callback_values[admit_fields]": "passed",
+    "tests/test_supervised_launch.py::test_callback_values[codec_invalid]": "passed",
+    "tests/test_supervised_launch.py::test_callback_values[outer_refusal]": "passed",
+    "tests/test_supervised_launch.py::test_callback_values[registry_inputs]": "passed",
+    "tests/test_supervised_launch.py::test_canonical_locations[executable]": "passed",
+    "tests/test_supervised_launch.py::test_canonical_locations[target]": "passed",
+    "tests/test_supervised_launch.py::test_canonical_locations[workspace]": "passed",
+    "tests/test_supervised_launch.py::test_canonical_locations[wrappers]": "passed",
+    "tests/test_supervised_launch.py::test_codec_capture_agreement[constraints]": "passed",
+    "tests/test_supervised_launch.py::test_codec_capture_agreement[dependency_declaration]": "passed",
+    "tests/test_supervised_launch.py::test_codec_capture_agreement[executable]": "passed",
+    "tests/test_supervised_launch.py::test_codec_capture_agreement[numeric_type]": "passed",
+    "tests/test_supervised_launch.py::test_codec_capture_agreement[tier]": "passed",
+    "tests/test_supervised_launch.py::test_codec_capture_agreement[timeout]": "passed",
+    "tests/test_supervised_launch.py::test_config_clean_clone": "passed",
+    "tests/test_supervised_launch.py::test_config_grammar[[\"core\"]\\n bare = false]": "passed",
+    "tests/test_supervised_launch.py::test_config_grammar[[core]\\n filemode = \"true\"]": "passed",
+    "tests/test_supervised_launch.py::test_config_grammar[[core]\\n filemode = true\\\\\\n bare = false]": "passed",
+    "tests/test_supervised_launch.py::test_config_grammar[[core]\\n fsmonitor = true]": "passed",
+    "tests/test_supervised_launch.py::test_config_grammar[[include]\\n path = config]": "passed",
+    "tests/test_supervised_launch.py::test_config_grammar[[other]\\n key = value]": "passed",
+    "tests/test_supervised_launch.py::test_constraint_matrix[False-command_denial]": "passed",
+    "tests/test_supervised_launch.py::test_constraint_matrix[False-network_denial]": "passed",
+    "tests/test_supervised_launch.py::test_constraint_matrix[False-unknown]": "passed",
+    "tests/test_supervised_launch.py::test_constraint_matrix[False-write_scope]": "passed",
+    "tests/test_supervised_launch.py::test_constraint_matrix[True-command_denial]": "passed",
+    "tests/test_supervised_launch.py::test_constraint_matrix[True-network_denial]": "passed",
+    "tests/test_supervised_launch.py::test_constraint_matrix[True-unknown]": "passed",
+    "tests/test_supervised_launch.py::test_constraint_matrix[True-write_scope]": "passed",
+    "tests/test_supervised_launch.py::test_consumption_rechecks[consume_class]": "passed",
+    "tests/test_supervised_launch.py::test_consumption_rechecks[consume_device]": "passed",
+    "tests/test_supervised_launch.py::test_consumption_rechecks[consume_executable]": "passed",
+    "tests/test_supervised_launch.py::test_consumption_rechecks[consume_inode]": "passed",
+    "tests/test_supervised_launch.py::test_consumption_rechecks[consume_wrapper]": "passed",
+    "tests/test_supervised_launch.py::test_every_launch_input_substitution[baseline]": "passed",
+    "tests/test_supervised_launch.py::test_every_launch_input_substitution[constraints]": "passed",
+    "tests/test_supervised_launch.py::test_every_launch_input_substitution[executable]": "passed",
+    "tests/test_supervised_launch.py::test_every_launch_input_substitution[instruction]": "passed",
+    "tests/test_supervised_launch.py::test_every_launch_input_substitution[target]": "passed",
+    "tests/test_supervised_launch.py::test_every_launch_input_substitution[tier]": "passed",
+    "tests/test_supervised_launch.py::test_every_launch_input_substitution[timeout]": "passed",
+    "tests/test_supervised_launch.py::test_every_launch_input_substitution[workspace]": "passed",
+    "tests/test_supervised_launch.py::test_every_launch_input_substitution[wrappers]": "passed",
+    "tests/test_supervised_launch.py::test_exception_and_unavailable_validator": "passed",
+    "tests/test_supervised_launch.py::test_excluded_root_kind[references]": "passed",
+    "tests/test_supervised_launch.py::test_excluded_root_kind[target]": "passed",
+    "tests/test_supervised_launch.py::test_excluded_root_kind[workspace]": "passed",
+    "tests/test_supervised_launch.py::test_executable_path_refusal[empty_path]": "passed",
+    "tests/test_supervised_launch.py::test_executable_path_refusal[missing]": "passed",
+    "tests/test_supervised_launch.py::test_executable_path_refusal[relative_path]": "passed",
+    "tests/test_supervised_launch.py::test_executable_path_refusal[symlink]": "passed",
+    "tests/test_supervised_launch.py::test_executable_path_refusal[workspace]": "passed",
+    "tests/test_supervised_launch.py::test_executable_path_refusal[writable]": "passed",
+    "tests/test_supervised_launch.py::test_file_capture_metadata_before_read": "passed",
+    "tests/test_supervised_launch.py::test_file_capture_reads_to_eof": "passed",
+    "tests/test_supervised_launch.py::test_identity_only_launch_digest": "passed",
+    "tests/test_supervised_launch.py::test_location_identity[executable]": "passed",
+    "tests/test_supervised_launch.py::test_location_identity[trusted]": "passed",
+    "tests/test_supervised_launch.py::test_location_identity[wrapper]": "passed",
+    "tests/test_supervised_launch.py::test_non_admit[1]": "passed",
+    "tests/test_supervised_launch.py::test_non_admit[None]": "passed",
+    "tests/test_supervised_launch.py::test_non_admit[True]": "passed",
+    "tests/test_supervised_launch.py::test_non_admit[admit]": "passed",
+    "tests/test_supervised_launch.py::test_numeric_capture[-1e400]": "passed",
+    "tests/test_supervised_launch.py::test_numeric_capture[1e400]": "passed",
+    "tests/test_supervised_launch.py::test_path_spelling_refusal[alias]": "passed",
+    "tests/test_supervised_launch.py::test_path_spelling_refusal[ancestor]": "passed",
+    "tests/test_supervised_launch.py::test_process_attempt_reservation": "passed",
+    "tests/test_supervised_launch.py::test_provider_physical_shared_storage": "passed",
+    "tests/test_supervised_launch.py::test_provider_uninspectable_storage": "passed",
+    "tests/test_supervised_launch.py::test_qualification_missing_mismatched_and_positive": "passed",
+    "tests/test_supervised_launch.py::test_reference_controls[aggregate_cap]": "passed",
+    "tests/test_supervised_launch.py::test_reference_controls[envelope_cap]": "passed",
+    "tests/test_supervised_launch.py::test_reference_controls[reference_cap]": "passed",
+    "tests/test_supervised_launch.py::test_reference_controls[reference_nofollow]": "passed",
+    "tests/test_supervised_launch.py::test_reference_controls[reference_regular]": "passed",
+    "tests/test_supervised_launch.py::test_reference_controls[reference_root]": "passed",
+    "tests/test_supervised_launch.py::test_reference_link_identity[baseline]": "passed",
+    "tests/test_supervised_launch.py::test_reference_link_identity[instruction]": "passed",
+    "tests/test_supervised_launch.py::test_registry_binding": "passed",
+    "tests/test_supervised_launch.py::test_root_owned_executable_identity": "passed",
+    "tests/test_supervised_launch.py::test_side_channels_and_missing_inputs": "passed",
+    "tests/test_supervised_launch.py::test_single_use_immutable_snapshots_and_identities": "passed",
+    "tests/test_supervised_launch.py::test_tier_refusal[os_enforced]": "passed",
+    "tests/test_supervised_launch.py::test_tier_refusal[unknown]": "passed",
+    "tests/test_supervised_launch.py::test_trusted_links[config]": "passed",
+    "tests/test_supervised_launch.py::test_trusted_links[executable]": "passed",
+    "tests/test_supervised_launch.py::test_trusted_links[template]": "passed",
+    "tests/test_supervised_launch.py::test_trusted_links[wrapper]": "passed",
+    "tests/test_supervised_launch.py::test_verdict_binding[attempt_id]": "passed",
+    "tests/test_supervised_launch.py::test_verdict_binding[launch_digest]": "passed",
+    "tests/test_supervised_launch.py::test_workspace_ancestor_identity": "passed",
+    "tests/test_supervised_launch.py::test_workspace_git_data[extensions]": "passed",
+    "tests/test_supervised_launch.py::test_workspace_git_data[http-alternates]": "passed",
+    "tests/test_supervised_launch.py::test_workspace_git_data[include]": "passed",
+    "tests/test_supervised_launch.py::test_workspace_git_data[includeif]": "passed",
+    "tests/test_supervised_launch.py::test_workspace_git_data[nested]": "passed",
+    "tests/test_supervised_launch.py::test_workspace_git_data[worktree]": "passed",
+    "tests/test_supervised_launch.py::test_workspace_provider_storage[alternates]": "passed",
+    "tests/test_supervised_launch.py::test_workspace_provider_storage[commondir]": "passed",
+    "tests/test_supervised_launch.py::test_workspace_provider_storage[gitfile]": "passed",
+    "tests/test_supervised_launch.py::test_workspace_provider_storage[hardlink]": "passed",
+    "tests/test_supervised_launch.py::test_workspace_provider_storage[symlink]": "passed",
+    "tests/test_supervised_launch.py::test_workspace_real_clone": "passed",
+    "tests/test_supervised_launch.py::test_workspace_repository_shape[False]": "passed",
+    "tests/test_supervised_launch.py::test_workspace_repository_shape[True]": "passed",
+    "tests/test_supervised_launch.py::test_workspace_root_identity": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_absent_and_unisolated": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_callback_refusal[KeyboardInterrupt-codec]": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_callback_refusal[KeyboardInterrupt-validator]": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_callback_refusal[SystemExit-codec]": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_callback_refusal[SystemExit-validator]": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_isolated_absolute_and_transitive_shadowing": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_import_mutation": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[group-binding]": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[group-codec]": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[group-config]": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[group-qualification]": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[group-template]": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[group-validator]": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[owner-binding]": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[owner-codec]": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[owner-config]": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[owner-qualification]": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[owner-template]": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[owner-validator]": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[symlink-binding]": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[symlink-codec]": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[symlink-config]": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[symlink-qualification]": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[symlink-template]": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[symlink-validator]": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[world-binding]": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[world-codec]": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[world-config]": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[world-qualification]": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[world-template]": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_trusted_inputs[world-validator]": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_uid_mode_mutations[trusted_mode-binding]": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_uid_mode_mutations[trusted_mode-codec]": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_uid_mode_mutations[trusted_mode-config]": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_uid_mode_mutations[trusted_mode-qualification]": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_uid_mode_mutations[trusted_mode-template]": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_uid_mode_mutations[trusted_mode-validator]": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_uid_mode_mutations[trusted_uid-binding]": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_uid_mode_mutations[trusted_uid-codec]": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_uid_mode_mutations[trusted_uid-config]": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_uid_mode_mutations[trusted_uid-qualification]": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_uid_mode_mutations[trusted_uid-template]": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_uid_mode_mutations[trusted_uid-validator]": "passed",
+    "tests/test_supervised_launch_binding.py::test_binding_workspace_location": "passed",
+    "tests/test_supervised_launch_binding.py::test_external_binding_non_admit": "passed",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[admit_binding]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[admit_fields]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[aggregate_cap]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[canonical_path_required]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[capture_once]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[codec_changed_envelope]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[codec_invalid]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[constraints_unsupported]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[consume_class]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[consume_device]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[consume_executable]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[consume_inode]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[consume_wrapper]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[envelope_cap]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[executable_links]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[executable_owner_policy]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[identity_digest]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[nonfinite]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[outer_refusal]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[path_symlink]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[qualification]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[reference_cap]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[reference_digest]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[reference_nofollow]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[reference_regular]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[reference_root]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[registry_inputs]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[tier_unsupported]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[token]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[trusted_links]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[typed_admit]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[untrusted_location]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[workspace]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[workspace_ancestry]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[workspace_gitconfig]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[workspace_gitdir]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[workspace_gitfile]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[workspace_root_shared]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[workspace_shared]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_production_control_witness[workspace_uninspectable]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[admit_binding]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[admit_fields]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[aggregate_cap]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[canonical_path_required]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[capture_once]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[codec_changed_envelope]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[codec_invalid]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[constraints_unsupported]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[consume_class]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[consume_device]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[consume_executable]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[consume_inode]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[consume_wrapper]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[envelope_cap]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[executable_links]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[executable_owner_policy]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[identity_digest]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[nonfinite]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[outer_refusal]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[path_symlink]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[qualification]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[reference_cap]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[reference_digest]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[reference_nofollow]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[reference_regular]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[reference_root]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[registry_inputs]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[tier_unsupported]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[token]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[trusted_links]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[typed_admit]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[untrusted_location]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[workspace]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[workspace_ancestry]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[workspace_gitconfig]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[workspace_gitdir]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[workspace_gitfile]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[workspace_root_shared]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[workspace_shared]": "passed",
+    "tests/test_supervised_launch_mutations.py::test_supervised_launch_mutations[workspace_uninspectable]": "passed",
+    "tests/test_supervised_launch_route.py::test_classification_and_status_preserve_generic_inventory": "passed",
+    "tests/test_supervised_launch_route.py::test_declared_dependency_mutation": "passed",
+    "tests/test_supervised_launch_route.py::test_direct_api_guard_before_decode[False-task_unbound]": "passed",
+    "tests/test_supervised_launch_route.py::test_direct_api_guard_before_decode[True-dependency_route_unwired]": "passed",
+    "tests/test_supervised_launch_route.py::test_direct_api_guard_mutation[False-task_unbound]": "passed",
+    "tests/test_supervised_launch_route.py::test_direct_api_guard_mutation[True-dependency_route_unwired]": "passed",
+    "tests/test_supervised_launch_route.py::test_required_route_before_effects[supervised-cancel-False-task_unbound]": "passed",
+    "tests/test_supervised_launch_route.py::test_required_route_before_effects[supervised-cancel-True-dependency_route_unwired]": "passed",
+    "tests/test_supervised_launch_route.py::test_required_route_before_effects[supervised-launch-False-task_unbound]": "passed",
+    "tests/test_supervised_launch_route.py::test_required_route_before_effects[supervised-launch-True-dependency_route_unwired]": "passed",
+    "tests/test_supervised_launch_route.py::test_route_classification_mutation": "passed",
+    "tests/test_supervised_launch_route.py::test_standalone_dependency_declaration": "passed"
+  },
+  "producer_passed": 252,
+  "producer_skipped": 0,
+  "preimplementation_selected": 0,
+  "observed_checks": {
+    "admission": {
+      "artifact": "g-repair-normal-admission.xml",
+      "artifact_sha256": "323e748b16c6943d3af0a76911c195e2155e956a0fc216e3c757c003223d98b7",
+      "passed": 115,
+      "skipped": 0,
+      "seconds": 0.531,
+      "final_tree_validated": false
+    },
+    "mutations": {
+      "artifact": "g-repair-normal-mutations.xml",
+      "artifact_sha256": "22347a4eb937e14226ee9d5255f518983f0d8572b568fe9bc3fa949cf3d14798",
+      "passed": 80,
+      "skipped": 0,
+      "seconds": 1.029,
+      "final_tree_validated": false
+    },
+    "binding": {
+      "artifact": "g-repair-normal-binding.xml",
+      "artifact_sha256": "e163dcea537b81ce97bb080d90b9127c6a293ac56e8417b708d46ddc450f7d91",
+      "passed": 45,
+      "skipped": 0,
+      "seconds": 8.016,
+      "final_tree_validated": false
+    },
+    "route": {
+      "artifact": "g-repair-normal-route.xml",
+      "artifact_sha256": "483de0cf64a44d7b06e0bd5dc286ec691ecf5c255e0079df1f39d5fce7ca4b0e",
+      "passed": 12,
+      "skipped": 0,
+      "seconds": 0.173,
+      "final_tree_validated": false
+    },
+    "normal-admission": {
+      "artifact": "g-repair-normal-admission.xml",
+      "artifact_sha256": "323e748b16c6943d3af0a76911c195e2155e956a0fc216e3c757c003223d98b7",
+      "passed": 115,
+      "skipped": 0,
+      "seconds": 0.531,
+      "final_tree_validated": false
+    },
+    "normal-mutations": {
+      "artifact": "g-repair-normal-mutations.xml",
+      "artifact_sha256": "22347a4eb937e14226ee9d5255f518983f0d8572b568fe9bc3fa949cf3d14798",
+      "passed": 80,
+      "skipped": 0,
+      "seconds": 1.029,
+      "final_tree_validated": false
+    },
+    "normal-binding": {
+      "artifact": "g-repair-normal-binding.xml",
+      "artifact_sha256": "e163dcea537b81ce97bb080d90b9127c6a293ac56e8417b708d46ddc450f7d91",
+      "passed": 45,
+      "skipped": 0,
+      "seconds": 8.016,
+      "final_tree_validated": false
+    },
+    "normal-route": {
+      "artifact": "g-repair-normal-route.xml",
+      "artifact_sha256": "483de0cf64a44d7b06e0bd5dc286ec691ecf5c255e0079df1f39d5fce7ca4b0e",
+      "passed": 12,
+      "skipped": 0,
+      "seconds": 0.173,
+      "final_tree_validated": false
+    },
+    "normal-startup": {
+      "artifact": "g-repair-normal-startup.xml",
+      "artifact_sha256": "9f6f680ab4e1cb217b3a75940cecf45616615d017e27592b0eda6eefa97b87b5",
+      "passed": 16,
+      "skipped": 0,
+      "seconds": 0.12,
+      "final_tree_validated": false
+    },
+    "normal-receipt": {
+      "artifact": "g-repair-normal-receipt.xml",
+      "artifact_sha256": "b79f86a3e895b41e64d9d29f4291be93797615855ee4577bd1f77771cd87f766",
+      "passed": 8,
+      "skipped": 0,
+      "seconds": 7.332,
+      "final_tree_validated": false
+    },
+    "gate-a-admission": {
+      "artifact": "g-repair-gate-a-admission.xml",
+      "artifact_sha256": "b6bf6ad79d3ebbeb6e08bf7b94a5f7b8ac71aaa816ba5e058e914cb51f76eca4",
+      "passed": 115,
+      "skipped": 0,
+      "seconds": 0.419,
+      "final_tree_validated": false
+    },
+    "gate-a-mutations": {
+      "artifact": "g-repair-gate-a-mutations.xml",
+      "artifact_sha256": "4e65565f0488249c08ce075d5003a1841a119fb44df3ff995341f5999363065a",
+      "passed": 80,
+      "skipped": 0,
+      "seconds": 0.701,
+      "final_tree_validated": false
+    },
+    "gate-a-binding": {
+      "artifact": "g-repair-gate-a-binding.xml",
+      "artifact_sha256": "fd5967a53eae5e05e8b8f86440b15c4045db6a877e0b5d94d20548ead16dc288",
+      "passed": 45,
+      "skipped": 0,
+      "seconds": 6.803,
+      "final_tree_validated": false
+    },
+    "gate-a-route": {
+      "artifact": "g-repair-gate-a-route.xml",
+      "artifact_sha256": "9f0b8fc6aceff6001c3db76a7f1800f66f15ad15ba4452e50b0756f8b115cda5",
+      "passed": 12,
+      "skipped": 0,
+      "seconds": 0.234,
+      "final_tree_validated": false
+    },
+    "gate-a-startup": {
+      "artifact": "g-repair-gate-a-startup.xml",
+      "artifact_sha256": "daed378af38c5bad4ce03878715afa684a17204047fc68dc57c9155dadee6773",
+      "passed": 16,
+      "skipped": 0,
+      "seconds": 0.258,
+      "final_tree_validated": false
+    },
+    "gate-a-receipt": {
+      "artifact": "g-repair-gate-a-receipt.xml",
+      "artifact_sha256": "d96a4443562a57cecff4cb2a34f067ba83bb78c407494d7c965604e99904868f",
+      "passed": 0,
+      "skipped": 8,
+      "seconds": 0.11,
+      "final_tree_validated": false
+    }
+  },
+  "mutation_controls": [
+    "admit_binding",
+    "admit_fields",
+    "aggregate_cap",
+    "canonical_path_required",
+    "capture_once",
+    "codec_changed_envelope",
+    "codec_invalid",
+    "constraints_unsupported",
+    "consume_class",
+    "consume_device",
+    "consume_executable",
+    "consume_inode",
+    "consume_wrapper",
+    "envelope_cap",
+    "executable_links",
+    "executable_owner_policy",
+    "identity_digest",
+    "nonfinite",
+    "outer_refusal",
+    "path_symlink",
+    "qualification",
+    "reference_cap",
+    "reference_digest",
+    "reference_nofollow",
+    "reference_regular",
+    "reference_root",
+    "registry_inputs",
+    "tier_unsupported",
+    "token",
+    "trusted_links",
+    "typed_admit",
+    "untrusted_location",
+    "workspace",
+    "workspace_ancestry",
+    "workspace_gitconfig",
+    "workspace_gitdir",
+    "workspace_gitfile",
+    "workspace_root_shared",
+    "workspace_shared",
+    "workspace_uninspectable"
+  ],
+  "mutation_outcomes": {
+    "admit_binding": "killed",
+    "admit_fields": "killed",
+    "aggregate_cap": "killed",
+    "canonical_path_required": "killed",
+    "capture_once": "killed",
+    "codec_changed_envelope": "killed",
+    "codec_invalid": "killed",
+    "constraints_unsupported": "killed",
+    "consume_class": "killed",
+    "consume_device": "killed",
+    "consume_executable": "killed",
+    "consume_inode": "killed",
+    "consume_wrapper": "killed",
+    "envelope_cap": "killed",
+    "executable_links": "killed",
+    "executable_owner_policy": "killed",
+    "identity_digest": "killed",
+    "nonfinite": "killed",
+    "outer_refusal": "killed",
+    "path_symlink": "killed",
+    "qualification": "killed",
+    "reference_cap": "killed",
+    "reference_digest": "killed",
+    "reference_nofollow": "killed",
+    "reference_regular": "killed",
+    "reference_root": "killed",
+    "registry_inputs": "killed",
+    "tier_unsupported": "killed",
+    "token": "killed",
+    "trusted_links": "killed",
+    "typed_admit": "killed",
+    "untrusted_location": "killed",
+    "workspace": "killed",
+    "workspace_ancestry": "killed",
+    "workspace_gitconfig": "killed",
+    "workspace_gitfile": "killed",
+    "workspace_root_shared": "killed",
+    "workspace_shared": "killed",
+    "workspace_uninspectable": "killed",
+    "workspace_gitdir": "killed"
+  },
+  "binding_mutants_killed": 13,
+  "pending": [
+    "final_tree_revalidation",
+    "full_repository_suite",
+    "exact_head_gate_a",
+    "independent_closeout_review",
+    "public_schema_reconciliation",
+    "installed_tool_qualification",
+    "registry_activation",
+    "hosted_inventory_integration"
+  ]
+}
+```
