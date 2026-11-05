@@ -112,9 +112,11 @@ turns this into the maintained matrix (IF-0-FIRSTSEAT-1).
 1. The per-seat jail (`seat_jail.py`, `seat_uid.py`, the J7 route decision and EC-EXECFIND-2
    passes) is the local boundary for every vendor. A vendor whose CLI cannot run in it gets
    a recorded can't-hold determination (principle 6), not a parallel boundary.
-2. Executable-dependency projection (agent-harness#1782) can carry each vendor's launcher
-   closure: the Node/Python runtime, packages and native images. That includes the Agent SDK
-   and its Python dependencies.
+2. Executable-dependency projection (agent-harness#1782) carries only closures supported
+   by its selected-subject contract; it does not authorize a non-subject interpreter.
+   Owner decision 2026-11-05 selects a dedicated host worker for the Agent SDK in CLAUDE,
+   refining the host-SDK choice; G1 must explicitly ratify that refinement. Only `claude`
+   is the jailed subject, with no interpreter projected, under EC-CLAUDE-3 and OD-3a.
 3. Under a subscription login, `print` and `sdk` both draw on subscription limits. This is
    a dated external input (see External Inputs), not a guarantee. The bake-off checks it.
 4. Stage 2 activation waits on the owner's live gateway qualification and ai-stack Unit 7.
@@ -414,11 +416,12 @@ bake-off and record the owner's default, with TUI as the last fallback. This pha
 no jail profile digest; CLAUDENET owns the Claude digest.
 
 **Exit criteria**
-- [ ] EC-CLAUDE-1 — The jailed seat reads the IF-0-CLAUDE-1 selector. `print`, `sdk` and `tui` each launch inside the same jail, staged clone, tool set and teardown. A refused value launches nothing. Falsified by a transport that widens the tools, binds, environment, descriptors or credential delivery, that changes the jail profile digest, or that falls back silently.
+- [ ] EC-CLAUDE-1 — The jailed seat reads the IF-0-CLAUDE-1 selector. `print`, `sdk` and `tui` each launch the Claude CLI inside the same jail, staged clone, tool set and teardown. The `sdk` client/control code runs in a dedicated unprivileged host subprocess through an owned transport; its only CLI/protocol differences are the frozen EC-CLAUDE-3 delta. A refused value launches nothing. Falsified by a transport that widens the tools, binds, environment, descriptors or credential delivery, that changes the jail profile digest, or that falls back silently.
 - [ ] EC-CLAUDE-2 — `print` runs `claude -p --output-format stream-json` in the jail under §4a items 4 and 5 of the print-route decision record, as amended by OD-3a. The jailed print diff of agent-harness#1740 is mined onto current main, and agent-harness#1740 is closed citing the PR that carries it. Falsified by an admitted result that breaks an item 4 or item 5 rule.
-- [ ] EC-CLAUDE-3 — `sdk` runs the Agent SDK inside the jail. The SDK and its Python dependencies are projected under the agent-harness#1782 contract. The system `claude` is pinned as its CLI, the credential arrives by the token pipe (or an alternative OD-3a approves), and the same admission rules apply. agent-harness#1744's adapter is salvaged as a seat-neutral adapter, and agent-harness#1744 is closed. Falsified by an ambient-host dependency, an unprojected import, or a token in the environment, SDK options or seat home.
+- [ ] EC-CLAUDE-3 — `sdk` runs Agent SDK 0.2.167 in a dedicated, credential-free, unprivileged host subprocess, separate from the trusted board parent. Only the selected system `claude` runs in the existing jail. No interpreter or SDK dependency is projected. Genuine Claude-subject projections still obey agent-harness#1782, including required dependency sessions. Salvage agent-harness#1744's seat-neutral adapter, package pins and Gate A fix; complete its disposition before closure. Before activation (GL-2), the offline proof below must pass under ratified OD-3a (G1).
+  - **Frozen contract.** `plans/seats-claude-sdk-worker-contract.md`, sha256 `204d4ab83c7c1b9c0328a99e6934ee121d6e8269307d4547c1f6d5949481599d`, is normative for the worker sandbox, IPC/admission, install resources, proof bindings, continuous audit and OD-10 failure classes. Its generic falsifiers are required before GL-2; failed or absent proof leaves SDK unadmitted. G1 explicitly ratifies the dedicated host worker and this contract, not an in-parent SDK. Contract changes require renewed proof and authority under EC-CLAUDE-4.
 - [ ] EC-CLAUDE-4 — Ratification order, by content. A landing is the merge into `main`, and its base tree is `main`'s tip just before that merge. A landing that activates `sdk` or changes the jailed default does not edit the decision record. Its base tree already holds the ratified amendment, and the landing cites the record path, the sha256 of that amendment section and the merged PR that landed the section, whose merge state an auditor reads. The OD-3b value lands in its own reviewed PR before the change that ships it, and every later switch does the same. This roadmap adds no SHA or ancestry requirement. Falsified by a landing that edits the record and the default together, a landing whose base lacks the cited section, or one PR that carries both the record and the switch, in any merge mode.
-- [ ] EC-CLAUDE-5 — Bake-off window W0 records one IF-0-CLAUDE-2 record per run, for a run count fixed in the phase plan before the window. It covers `print`, `sdk` and the control: T3 Code's SDK route, known to be billed to the subscription. Each record measures (a) whether canonical output actually came back (the agent-harness#1461 failure mode), (b) where billing landed, against the owner's account usage meter, (c) the §4a item 7 qualification checks on the W0 head, and (d) the provider request set, which feeds CLAUDENET. Each also records `CLAUDE_CODE_ENTRYPOINT`. Falsified by a run without its entrypoint tag, meter observation or item 7 outcome.
+- [ ] EC-CLAUDE-5 — Bake-off window W0 records one IF-0-CLAUDE-2 record per run, for a run count fixed in the phase plan before the window. It covers `print`, `sdk` and the control: T3 Code's SDK route, known to be billed to the subscription. Each record measures (a) whether canonical output actually came back (the agent-harness#1461 failure mode), (b) where billing landed, against the owner's account usage meter, (c) the §4a item 7 qualification checks on the W0 head, and (d) the provider request set, which feeds CLAUDENET. Each also records observed `CLAUDE_CODE_ENTRYPOINT` (including `unset`), SDK execution location/version and package provenance where applicable, and measured launch-boundary differences. A native SDK capture twin uses the same dedicated worker, provenance preflight, parent forwarding/admission gate, outbound allowlist and frozen delta; a print twin relabeled SDK is invalid. The twin is the sole named exception to the jailed CLI launch path: a parent-owned developer-host capture launcher supplies only the declared path/home/proxy/CA delta and token pipe. Its output is admission-checked before discard, never used as a board result. Kit preflight checks `is_admitted("sdk")`, ratified G1 and a current GL-2 receipt before the first meter reading, credential resolution or twin launch, and the twin entry point repeats the check. Pre-GL-2 SDK twin execution is limited to the synthetic offline VB fixture; no live SDK twin can run. VB covers that path and proves unadmitted/stale inputs launch nothing. Record no projection when absent, or the real Claude-subject projection digest when used. Falsified by a run without its observed boundary metadata, meter observation or item 7 outcome; T3 parity is measured, never inferred from topology.
 - [ ] EC-CLAUDE-6 — OD-3b is recorded in the decision record, citing W0's evidence digest. It is either a default among the admitted transports, or a record that none was admitted. In the second case the Claude row stays typed-degraded on the jailed seat until CLAUDENET records OD-9 (EC-CLAUDENET-4). When a default is chosen, the shipped setting equals it, and the capabilities card says the default is chosen, runs on open egress until CLAUDENET exits, and awaits its row window. A later switch changes the setting and the record only, in the EC-CLAUDE-4 order, and returns the row to `candidate`. Falsified by a default that disagrees with the record.
 - [ ] EC-CLAUDE-7 — The jailed route holds the same login proof as the print and TUI routes (agent-harness#1532). A timed-out login wait republishes the seat mode (agent-harness#1255).
 - [ ] EC-CLAUDE-8 — Ownership transfer. The OD-3a amendment names each responsibility it moves from v11 PANEL to this roadmap: the jailed transport seam (CLAUDE), jailed-seat live qualification (CLAUDENET) and jailed-default promotion (CLAUDE). PANELSPLIT's mechanical module extraction stays in v11. A v11 roadmap amendment marks the affected EC-PANEL-6 items as consumed from these EC IDs and notes OD-3a's departure from EC-REVIEWTRUTH-15. Falsified by a responsibility with two owners or none.
@@ -429,16 +432,17 @@ no jail profile digest; CLAUDENET owns the Claude digest.
     v11 amendment. It publishes IF-0-CLAUDE-1 on day one.
   - **Lane B** owns `print`, mined from agent-harness#1740 onto current main. It does not
     start from that branch.
-  - **Lane C** owns `sdk`: agent-harness#1744's adapter plus the projection declaration.
+  - **Lane C** owns the host `sdk` adapter, owned transport and EC-CLAUDE-3 proof.
   - **Lane D** owns IF-0-CLAUDE-2, the bake-off recorder, and EC-CLAUDE-7.
-  - Lanes B and C own disjoint transport modules and start against lane A's freeze.
+  - Lane B owns the shared parsed-admission interface and preserves print behavior; lane C consumes it after lane B, with disjoint modules otherwise, against lane A's freeze.
 - Until OD-3b, the shipped default stays as §4a sets it (the TUI). Operators may select
-  `print` explicitly, or `sdk` once OD-3a is ratified, as the agent-harness#1461 workaround.
+  `print` explicitly, or `sdk` once OD-3a is ratified and EC-CLAUDE-3's proof passes, as the agent-harness#1461 workaround.
 - A transport whose W0 runs land on extra usage or API billing ranks behind one that lands
   on subscription limits; OD-3b still decides.
 - Single writers: lane A alone edits the decision record. The seat-launch module of
-  `panel_invoker.py` (or its PANELSPLIT successor) is edited only at the selector call site,
-  by lane A. No lane edits a jail profile builder.
+  `panel_invoker.py` (or its PANELSPLIT successor) is edited only by lane A at the selector call site and
+  the owned duplex I/O primitive and worker launcher (existing `seat_uid`/seat-owner primitives) needed by lane C. No lane edits a
+  jail profile builder.
 - W0 may share an owner session with W1. Neither waits for the other.
 - Absorbs agent-harness#1391 (jailed scope), agent-harness#1422, agent-harness#1494,
   agent-harness#1254, agent-harness#1531, agent-harness#1585 and agent-harness#1682.
@@ -446,7 +450,8 @@ no jail profile digest; CLAUDENET owns the Claude digest.
 **Governance**
 - Principle 2.
 - OD-3a must be ratified before W0's `sdk` runs and before any landing that activates `sdk`
-  or changes the default.
+  or changes the default. G1 includes the dedicated host-process design and EC-CLAUDE-3 proof gate;
+  GL-2 additionally requires its passing offline receipt before activation.
 - OD-3b is required to exit. W0 is owner action LA-3.
 
 **Non-goals**
@@ -458,7 +463,8 @@ no jail profile digest; CLAUDENET owns the Claude digest.
 - `specs/phase-plans-v11.md`
 - `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`
 - `phase-loop-runtime/src/phase_loop_runtime/claude_print_observations.py` (new, mined from agent-harness#1740)
-- `phase-loop-runtime/src/phase_loop_runtime/claude_sdk_adapter.py` (new, salvaged from agent-harness#1744)
+- `phase-loop-runtime/src/phase_loop_runtime/data/claude_sdk/worker/` (new; adapter salvaged from agent-harness#1744)
+- `plans/seats-claude-sdk-worker-contract.md`
 - `phase-loop-runtime/src/phase_loop_runtime/seat_credentials.py`
 - `phase-loop-runtime/src/phase_loop_runtime/executable_dependency.py`
 - `phase-loop-runtime/pyproject.toml`
@@ -643,9 +649,9 @@ Hold the jailed Claude seat to the same egress and update policy as the other ve
 one batched profile-digest change, and live-qualify the Claude row.
 
 **Exit criteria**
-- [ ] EC-CLAUDENET-1 — Claude's allowlist under IF-0-JAILCORE-2 is built from the request sets W0 measured for each admitted transport (`print`, `sdk`, and `tui` only if CLAUDETUI repairs it). The jailed Claude seat launches only through its per-seat proxy. Falsified by a jailed Claude seat, or a tool it runs, reaching an unlisted host or another provider's listed host.
+- [ ] EC-CLAUDENET-1 — Claude's allowlist under IF-0-JAILCORE-2 is built from the request sets W0 measured for each admitted transport (`print`, `sdk`, and `tui` only if CLAUDETUI repairs it). The jailed Claude seat launches only through its per-seat proxy. The dedicated SDK worker retains EC-CLAUDE-3's networkless sandbox, including for capture twins; it receives no proxy or open-egress exception. Falsified by a jailed Claude seat, or a tool it runs, reaching an unlisted host or another provider's listed host.
 - [ ] EC-CLAUDENET-2 — One profile-digest change carries both the proxy wiring and `DISABLE_UPDATES=1` in the jailed seat environment (agent-harness#1804), and names the row window that requalifies it. Falsified by a Claude digest change landed in any other phase, or not named to a window.
-- [ ] EC-CLAUDENET-3 — Claude's containment evidence under EC-JAILCORE-6: credential scope measured, in-jail refresh detected, an unlisted endpoint refused, and the planted-config falsifier run per admitted transport. Falsified by a refresh or an unlisted request that goes undetected, or a planted config that loads on any admitted transport.
+- [ ] EC-CLAUDENET-3 — Claude's containment evidence under EC-JAILCORE-6: credential scope measured, in-jail refresh detected, an unlisted endpoint refused, and the planted-config falsifier run per admitted transport. Falsified by a refresh or an unlisted request that goes undetected, or a planted config that loads on any admitted transport, or an SDK worker reaching host-loopback or external network. Repeat the worker probes on the qualified installation.
 - [ ] EC-CLAUDENET-4 — Claude row. In the first row window after EC-CLAUDENET-1 to EC-CLAUDENET-3 hold, Claude qualifies on its OD-3b default with this phase's egress in place (principle 1) and reads `done-local`. If OD-3b recorded no admitted transport, or the jail fails a falsifier on a named host class, OD-9 routes the row to `remote-pending` (principle 6). Falsified by a `done-local` Claude row with no window record on its current qualification key.
 
 **Scope notes**
