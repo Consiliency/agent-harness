@@ -15,7 +15,9 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   the exact credential, agent-harness#1532), and a seat that will not run republishes its row in
   `seat-modes.json` (agent-harness#1255). The new typed codes carry their OD-10 class on the mode
   line. `python -m phase_loop_runtime.claude_seat_transport audit-order` checks the ratification
-  order by content and runs as a step of the required lint job on pull requests.
+  order by content, keeps every decision-record section append-only, and reads admissions and
+  the default only from one module-level literal each. It runs, from the base tree's copy, as a
+  step of the required lint job on every pull request and push to main.
 
 - The jailed Claude seat is handed the native Claude image behind a managed release launcher
   (agent-harness#1641) or a guarded frontdoor (agent-harness#1798) (SEATS CLAUDE,

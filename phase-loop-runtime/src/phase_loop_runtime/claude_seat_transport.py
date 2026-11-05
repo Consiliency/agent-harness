@@ -366,35 +366,168 @@ def _literal_citation(node: ast.expr) -> RecordCitation | None:
     return RecordCitation(**out)
 
 
+#: Every name the admission and the default are read from, in any audited module.
+AUDITED_NAMES: tuple[str, ...] = (
+    "ADMITTED", "ACTIVATION", "JAILED_CLAUDE_DEFAULT", "JAILED_DEFAULT_AUTHORITY")
+#: Constructs that can set a module attribute without a visible assignment. An audited
+#: module that uses one fails, whatever it does with it.
+_DYNAMIC_NAMES = frozenset({"globals", "locals", "vars", "setattr", "delattr", "exec", "eval",
+                            "__import__", "compile"})
+_DYNAMIC_ATTRIBUTES = frozenset({"__dict__", "__setattr__", "__delattr__", "modules",
+                                 "meta_path", "path_hooks", "__getattr__"})
+
+
+def _bound_names(node: ast.AST) -> list[str]:
+    """The names ``node`` binds in its scope, whatever the binding form."""
+    if isinstance(node, ast.Name) and isinstance(node.ctx, (ast.Store, ast.Del)):
+        return [node.id]
+    if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+        return [node.name]
+    if isinstance(node, ast.alias):
+        return [node.asname or node.name.split(".")[0]]
+    if isinstance(node, (ast.Global, ast.Nonlocal)):
+        return list(node.names)
+    if isinstance(node, ast.arg):
+        return [node.arg]
+    if isinstance(node, ast.ExceptHandler) and node.name:
+        return [node.name]
+    if isinstance(node, (ast.MatchAs, ast.MatchStar)) and node.name:
+        return [node.name]
+    if isinstance(node, ast.MatchMapping) and node.rest:
+        return [node.rest]
+    return []
+
+
 def _module_facts(source: bytes | None, names: Sequence[str]) -> dict[str, object]:
-    """Module-level literal assignments of ``names``, read with ``ast`` (never executed).
-    A name assigned to anything but a literal, or assigned twice, fails the audit."""
+    """The literal values of ``names`` in one audited module, read with ``ast`` (never
+    executed).
+
+    Fails closed on anything but the one shape the audit can read: each name is bound at
+    most once in the whole module, by a module-level ``NAME = literal`` (or annotated)
+    assignment with that name as its only target. A nested, tuple, augmented, imported,
+    deleted or otherwise bound name fails, as does a module-level ``__getattr__``, a star
+    import, or any construct that sets attributes without a visible assignment."""
     if source is None:
         return {}
     try:
         tree = ast.parse(source)
     except (SyntaxError, ValueError) as exc:
         raise AuditError("a transport module does not parse") from exc
+    readable: dict[int, tuple[str, ast.expr]] = {}
+    for statement in tree.body:
+        if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+            target, value = statement.targets[0], statement.value
+        elif isinstance(statement, ast.AnnAssign) and statement.value is not None:
+            target, value = statement.target, statement.value
+        else:
+            continue
+        if isinstance(target, ast.Name) and target.id in names:
+            readable[id(target)] = (target.id, value)
+    bound: dict[str, int] = {}
     facts: dict[str, object] = {}
-    for node in tree.body:
-        targets: list[ast.expr] = []
-        value: ast.expr | None = None
-        if isinstance(node, ast.Assign):
-            targets, value = list(node.targets), node.value
-        elif isinstance(node, ast.AnnAssign) and node.value is not None:
-            targets, value = [node.target], node.value
-        for target in targets:
-            if not isinstance(target, ast.Name) or target.id not in names:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and any(alias.name == "*" for alias in node.names):
+            raise AuditError("an audited module uses a star import")
+        if isinstance(node, ast.Name) and node.id in _DYNAMIC_NAMES:
+            raise AuditError(f"an audited module uses {node.id}")
+        if isinstance(node, ast.Attribute) and node.attr in _DYNAMIC_ATTRIBUTES:
+            raise AuditError(f"an audited module uses .{node.attr}")
+        for name in _bound_names(node):
+            if name == "__getattr__" and (any(node is s for s in tree.body)
+                                          or isinstance(node, (ast.Name, ast.alias))):
+                raise AuditError("an audited module defines a module-level __getattr__")
+            if name not in names:
                 continue
-            if target.id in facts:
-                raise AuditError(f"{target.id} is assigned twice")
-            assert value is not None
+            bound[name] = bound.get(name, 0) + 1
+            if bound[name] > 1:
+                raise AuditError(f"{name} is bound more than once")
+            if id(node) not in readable:
+                raise AuditError(f"{name} is bound other than by one module-level literal "
+                                 "assignment")
+            value = readable[id(node)][1]
             if isinstance(value, ast.Constant) and (value.value is None
                                                     or isinstance(value.value, (bool, str))):
-                facts[target.id] = value.value
+                facts[name] = value.value
             else:
-                facts[target.id] = _literal_citation(value)
+                facts[name] = _literal_citation(value)
     return facts
+
+
+def _tree_entries(repo: Path, commit: str, path: str, *, recursive: bool) -> list[tuple[str, str, str]]:
+    """``(mode, object, path)`` for each entry under ``path`` at ``commit``."""
+    out = _git(repo, "ls-tree", "-z", *(("-r",) if recursive else ()), commit, "--", path)
+    if out is None:
+        raise AuditError("the tree cannot be listed")
+    entries = []
+    for record in out.split(b"\0"):
+        if not record:
+            continue
+        meta, _tab, name = record.partition(b"\t")
+        mode, _kind, obj = meta.decode().split(" ")
+        entries.append((mode, obj, name.decode("utf-8", "surrogateescape")))
+    return entries
+
+
+def module_form_failures(repo: Path, commit: str) -> list[str]:
+    """Each audited module is one regular ``<name>.py`` file or absent: no package, symlink,
+    compiled or other importable form of the same module name."""
+    problems = []
+    entries = _tree_entries(repo, commit, f"{RUNTIME_DIR}/", recursive=False)
+    for name in (Path(TRANSPORT_SOURCE).stem, *_TRANSPORT_MODULES.values()):
+        for mode, _obj, path in entries:
+            base = path.rsplit("/", 1)[-1]
+            if base != name and not base.startswith(name + "."):
+                continue
+            if base != f"{name}.py" or mode != "100644":
+                problems.append(f"{name}: an importable form other than one regular "
+                                f"{name}.py file ({base}, mode {mode})")
+    return problems
+
+
+def _blobs(repo: Path, objects: Sequence[str]) -> list[bytes]:
+    try:
+        done = subprocess.run(["git", "-C", str(repo), "cat-file", "--batch"],
+                              input=b"".join(o.encode() + b"\n" for o in objects),
+                              capture_output=True, timeout=300, check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise AuditError("the runtime sources cannot be read") from exc
+    if done.returncode != 0:
+        raise AuditError("the runtime sources cannot be read")
+    data, blobs, at = done.stdout, [], 0
+    try:
+        for _obj in objects:
+            end = data.index(b"\n", at)
+            size = int(data[at:end].split(b" ")[2])
+            blobs.append(data[end + 1:end + 1 + size])
+            at = end + 1 + size + 1
+    except (ValueError, IndexError) as exc:
+        raise AuditError("the runtime sources cannot be read") from exc
+    return blobs
+
+
+def cross_module_failures(repo: Path, commit: str) -> list[str]:
+    """No runtime module sets an audited name on another module: no attribute assignment
+    or deletion of one, and no ``setattr``/``delattr`` naming one."""
+    sources = [(path, obj) for mode, obj, path in
+               _tree_entries(repo, commit, f"{RUNTIME_DIR}/", recursive=True)
+               if path.endswith(".py") and mode.startswith("100")]
+    problems = []
+    for (path, _obj), source in zip(sources, _blobs(repo, [obj for _p, obj in sources])):
+        try:
+            tree = ast.parse(source)
+        except (SyntaxError, ValueError):
+            problems.append(f"{path}: a runtime module does not parse")
+            continue
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Attribute) and node.attr in AUDITED_NAMES
+                    and isinstance(node.ctx, (ast.Store, ast.Del))):
+                problems.append(f"{path}: sets {node.attr} on another object")
+            elif (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+                    and node.func.id in ("setattr", "delattr") and len(node.args) >= 2
+                    and isinstance(node.args[1], ast.Constant)
+                    and node.args[1].value in AUDITED_NAMES):
+                problems.append(f"{path}: sets {node.args[1].value} through {node.func.id}")
+    return problems
 
 
 @dataclass(frozen=True)
@@ -520,6 +653,22 @@ def _citation_failures(purpose: str, citation: object, record: bytes | None, pr:
     return problems
 
 
+def append_only_failures(base_record: bytes | None, head_record: bytes | None) -> list[str]:
+    """Sections are append-only, for every section and the preamble, cited yet or not: the
+    base record's bytes are a prefix of the head's, and anything added starts a new
+    ``## `` section, so no section on the base changes its bytes or digest."""
+    if base_record is None or head_record == base_record:
+        return []
+    if head_record is None:
+        return ["a landing removes the decision record"]
+    added = head_record[len(base_record):]
+    if (not head_record.startswith(base_record) or not base_record.endswith(b"\n")
+            or not added.startswith(b"## ")):
+        return ["a landing edits the decision record's existing bytes (sections are "
+                "append-only)"]
+    return []
+
+
 def audit_order(
     base: str | None, head: str | None, pr: int | None, *,
     repo: Path | str = ".",
@@ -547,21 +696,17 @@ def audit_order(
     record = _blob(repo, base_commit, DECISION_RECORD)
     head_record = _blob(repo, head_commit, DECISION_RECORD)
     problems: list[str] = []
+    try:
+        problems.extend(module_form_failures(repo, head_commit))
+        problems.extend(cross_module_failures(repo, head_commit))
+    except AuditError as exc:
+        return (str(exc),)
     changed = (dict(before.admissions) != dict(after.admissions)
                or before.default != after.default or before.authority != after.authority)
     if changed and record != head_record:
         problems.append("a landing that changes an admission or the default also edits the "
                         "decision record")
-    # Sections are append-only: no landing edits or removes a section an admission or the
-    # default cites, so a citation verified on a base stays true on every later tree.
-    base_sections = record_sections(record) if record is not None else {}
-    head_sections = record_sections(head_record) if head_record is not None else {}
-    cited = {c.section for c in (*before.admissions.values(), *after.admissions.values(),
-                                 before.authority, after.authority)
-             if isinstance(c, RecordCitation)}
-    for section in sorted(cited):
-        if section in base_sections and head_sections.get(section) != base_sections[section]:
-            problems.append(f"a landing edits cited section {section} of the decision record")
+    problems.extend(append_only_failures(record, head_record))
     for transport, citation in sorted(after.admissions.items()):
         problems.extend(_citation_failures(transport, citation, record, pr, pr_merged))
     if after.authority is not None:
