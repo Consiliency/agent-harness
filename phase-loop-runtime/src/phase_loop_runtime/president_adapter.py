@@ -44,11 +44,16 @@ the ladder walk beside the ruling (or beside the refusal).
 from __future__ import annotations
 
 import contextlib
+import contextvars
 import hashlib
 import json
+import math
+import os
+import stat
 import subprocess
 import tempfile
 import threading
+import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
@@ -71,6 +76,71 @@ PRESIDENT_ROUTE_UNAVAILABLE = "president_execution_route_unavailable"
 PRESIDENT_NATIVE_FILL_DEFERRED = "native_fill_deferred"
 # agent-harness#1001: a cancelled operation stops the walk (no later rung launches).
 PRESIDENT_OPERATION_CANCELLED = "president_operation_cancelled"
+
+_ATTEMPT_PROGRESS = contextvars.ContextVar("president_attempt_progress", default=None)
+
+
+class _AttemptTimeout(int):
+    pass
+
+
+_ATTEMPT_TIMED_OUT = _AttemptTimeout(124)
+
+
+def note_attempt_output() -> None:
+    progress = _ATTEMPT_PROGRESS.get()
+    if progress is not None:
+        progress[0] = time.monotonic()
+
+
+def private_record_root() -> Path:
+    from .seat_jail import state_home
+    return state_home() / "agent-harness" / "seat-records"
+
+
+def write_private_record(name: str, record: Mapping[str, object], *, root: Path | None = None) -> Path:
+    """Persist a closed-field operator record using descriptor-checked storage."""
+    root = private_record_root() if root is None else Path(root)
+    if not root.is_absolute() or Path(name).name != name or not name.endswith(".json"):
+        raise ValueError("operator record path unavailable")
+    for parent in (root, *root.parents):
+        if (parent / ".git").exists():
+            raise ValueError("operator record storage must be outside a checkout")
+    directory = os.open("/", os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        for component in root.parts[1:]:
+            if component in {".", ".."}:
+                raise ValueError("operator record directory unavailable")
+            try:
+                os.mkdir(component, 0o700, dir_fd=directory)
+            except FileExistsError:
+                pass
+            child = os.open(component, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC,
+                            dir_fd=directory)
+            os.close(directory)
+            directory = child
+        info = os.fstat(directory)
+        if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) != 0o700:
+            raise ValueError("operator record directory unavailable")
+        encoded = (json.dumps(record, sort_keys=True, separators=(",", ":")) + "\n").encode()
+        if len(encoded) > 16384:
+            raise ValueError("operator record exceeds its bound")
+        fd = os.open(name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
+                     0o600, dir_fd=directory)
+        try:
+            info = os.fstat(fd)
+            if info.st_uid != os.getuid() or not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o600:
+                raise ValueError("operator record file unavailable")
+            with os.fdopen(os.dup(fd), "wb") as output:
+                output.write(encoded)
+                output.flush()
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+    return root / name
 
 _PROMPT_PREFIX = panel_invoker._president_prompt(())
 _REASK_SUFFIX = panel_invoker._president_prompt((), format_reask=True)[len(_PROMPT_PREFIX):]
@@ -144,6 +214,16 @@ class PresidentInvoke:
     cancel_event: threading.Event | None = None
     invocation: str = field(default_factory=lambda: uuid.uuid4().hex)
     attempts: list[PresidentAttempt] = field(default_factory=list)
+    no_output_bound_s: float = 300.0
+
+    def __post_init__(self) -> None:
+        if self.monitoring_policy not in {"bounded", "heartbeat_only"}:
+            raise ValueError("unknown president monitoring policy")
+        if self.monitoring_policy == "bounded" and (
+            type(self.no_output_bound_s) not in (int, float)
+            or not math.isfinite(self.no_output_bound_s) or not 0 < self.no_output_bound_s <= 1800
+        ):
+            raise ValueError("bounded president requires a finite no-output setting in (0, 1800]")
 
     def _record(
         self, rung: str, seat: Seat | None, status: str, code: str | None, detail: str | None, chars: int = 0
@@ -161,6 +241,43 @@ class PresidentInvoke:
         )
 
     def __call__(self, rung: str, prompt: str) -> Mapping[str, str]:
+        self.__post_init__()
+        attempt = uuid.uuid4().hex
+        record = {"schema": "president_attempt.v1", "attempt_id": attempt,
+                  "rung": rung if rung in panel_invoker.PRESIDENT_LADDER else "other",
+                  "policy": self.monitoring_policy, "event": "start",
+                  "invocation_digest": hashlib.sha256(self.invocation.encode()).hexdigest(),
+                  "observed_at": time.time()}
+        try:
+            write_private_record(attempt + "-start.json", record)
+        except (OSError, ValueError):
+            return {"status": "failed", "code": "president_record_unavailable"}
+        response = None
+        try:
+            response = self._invoke(rung, prompt)
+            return response
+        except PresidentPolicyError as exc:
+            response = {"status": "cancelled" if exc.code == PRESIDENT_OPERATION_CANCELLED else "refused"}
+            raise
+        except panel_invoker.ProviderProcessGroupQuiescenceError:
+            response = {"status": "failed", "code": "president_quiescence_unproven"}
+            raise
+        finally:
+            status = response.get("status") if response else "cancelled"
+            record.update(event="terminal", status=status if status in {
+                "ok", "failed", "unavailable", "native_fill_deferred", "cancelled", "refused"} else "failed")
+            if response and response.get("code") == "president_attempt_timed_out":
+                record.update(status="timed_out", code="president_attempt_timed_out")
+            elif response and response.get("code") == "president_quiescence_unproven":
+                record["code"] = "president_quiescence_unproven"
+            try:
+                write_private_record(attempt + "-terminal.json", record)
+            except (OSError, ValueError):
+                if isinstance(response, dict):
+                    response.clear()
+                    response.update(status="failed", code="president_record_unavailable")
+
+    def _invoke(self, rung: str, prompt: str) -> Mapping[str, str]:
         seat = seat_for_rung(self.board, rung, seat_aliases=self.seat_aliases)
         if seat is None:
             detail = f"no seat on board {self.board.name!r} matches ladder rung {rung!r}"
@@ -177,7 +294,7 @@ class PresidentInvoke:
                 # A launch the cancellation ended is a cancellation, not a rung failure.
                 self._raise_if_cancelled(rung, seat)
             return response
-        except PresidentPolicyError:
+        except (PresidentPolicyError, panel_invoker.ProviderProcessGroupQuiescenceError):
             raise
         except Exception as exc:  # a broken route is a typed failure, never a descent
             # A cancelled operation stops the whole walk: no later rung may launch.
@@ -232,19 +349,61 @@ class PresidentInvoke:
                     out_dir = Path(scratch) / "out"
                     stage.mkdir()
                     out_dir.mkdir()
-                    rc, text, log = self._transport(harness, routes[harness], prompt, stage, out_dir)
+                    rc, text, log = self._supervise_transport(harness, routes[harness], prompt, stage, out_dir)
             else:
                 rc, text, log = self._launch_brokered(
                     rung, harness, routes[harness], prompt, authorization
                 )
         finally:
             backing.close_president_isolation_authorization(authorization)
+        if rc is _ATTEMPT_TIMED_OUT:
+            self._record(rung, seat, "timed_out", "president_attempt_timed_out", None)
+            return {"status": "failed", "code": "president_attempt_timed_out"}
         if rc != 0 or not (text or "").strip():
             detail = f"president {rung!r} ({harness}) returned rc={rc}: {(log or '')[-400:]}"
             self._record(rung, seat, "failed", "president_invocation_failed", detail)
             return {"status": "failed", "code": "president_invocation_failed", "detail": detail}
         self._record(rung, seat, "ok", None, None, len(text))
         return {"status": "ok", "text": text}
+
+    def _supervise_transport(self, *args, latch=None, **kwargs) -> tuple[int, str, str]:
+        if self.monitoring_policy == "heartbeat_only":
+            return self._transport(*args, latch=latch, **kwargs)
+        latch = latch or panel_invoker._ProviderQuiescenceLatch()
+        progress = [time.monotonic()]
+        finished = threading.Event()
+        outcome = []
+        def transport():
+            token = _ATTEMPT_PROGRESS.set(progress)
+            try:
+                outcome.append(self._transport(*args, latch=latch, **kwargs))
+            except BaseException as exc:
+                outcome.append(exc)
+            finally:
+                _ATTEMPT_PROGRESS.reset(token)
+                finished.set()
+        context = contextvars.copy_context()
+        worker = threading.Thread(target=lambda: context.run(transport), daemon=True)
+        worker.start()
+        while not finished.wait(min(0.05, self.no_output_bound_s / 10)):
+            self._raise_cancelled_transport(latch)
+            if time.monotonic() - progress[0] >= self.no_output_bound_s:
+                latch.cancel()
+                worker.join(5)
+                if worker.is_alive() or not latch.is_quiescent():
+                    raise panel_invoker.ProviderProcessGroupQuiescenceError("president transport did not quiesce")
+                if outcome and isinstance(outcome[0], panel_invoker.ProviderProcessGroupQuiescenceError):
+                    raise outcome[0]
+                return _ATTEMPT_TIMED_OUT, "", "president_attempt_timed_out"
+        latch.raise_if_set()
+        if isinstance(outcome[0], BaseException):
+            raise outcome[0]
+        return outcome[0]
+
+    def _raise_cancelled_transport(self, latch) -> None:
+        if self.cancel_event is not None and self.cancel_event.is_set():
+            latch.cancel()
+            raise PresidentPolicyError(PRESIDENT_OPERATION_CANCELLED, "the president operation was cancelled")
 
     def _transport(
         self,
@@ -359,7 +518,7 @@ class PresidentInvoke:
                 latch = panel_invoker._ProviderQuiescenceLatch()
 
                 def infer() -> tuple[str, str]:
-                    rc, text, log = self._transport(
+                    rc, text, log = self._supervise_transport(
                         harness, route_model, prompt, stage, out_dir, monitor=monitor, latch=latch,
                     )
                     outcome.update(rc=rc, log=log)
@@ -371,11 +530,15 @@ class PresidentInvoke:
                     adapter, deadline_s=None if deadline_s is None else float(deadline_s),
                     **({"cancel_event": cancel} if cancel is not None else {}),
                 )
-                latch.raise_if_set()
+                if outcome.get("rc") is not _ATTEMPT_TIMED_OUT:
+                    latch.raise_if_set()
+                self._raise_cancelled_transport(latch)
             finally:
                 broker.close()
         if response is None:
             return 1, "", "president broker completed without a response"
+        if outcome.get("rc") is _ATTEMPT_TIMED_OUT:
+            return _ATTEMPT_TIMED_OUT, "", "president_attempt_timed_out"
         rc = int(outcome.get("rc", 1)) if response["status"] == "OK" else (int(outcome.get("rc", 1)) or 1)
         return rc, str(response["text"]), str(outcome.get("log", ""))
 
@@ -622,3 +785,13 @@ def build_president_invoke(
         ladder=None if ladder is None else validate_president_ladder(ladder),
         cancel_event=cancel_event,
     )
+
+
+def president_rung_inventory() -> list[dict[str, object]]:
+    """Runtime-named routes for the readiness reducer; not host evidence."""
+    routes = {"fable": ("native_fill_deferred", "_launch_claude:print", "_launch_claude:tui"),
+              "sol": ("_exec_leg:codex",), "grok": ("_exec_leg:grok",),
+              "gemini": ("_launch_gemini",)}
+    return [{"rung": rung, "route": route, "tool_mode": "sealed", "bound_s": 300,
+             "host_classes": ["team", "standard"], "status": "candidate"}
+            for rung in panel_invoker.PRESIDENT_LADDER for route in routes[rung]]
