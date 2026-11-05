@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: CLAUDE
 roadmap: specs/phase-plans-seats-v1.md
-roadmap_sha256: 9034ecb5bc0171c58cc3dec8b3325f7cc81a2330be1598c418a3abca7f3b033d
+roadmap_sha256: 8a6fee8bdeef5aee0d0aa9495c26b6abaeb4f2f7441ca9b31b0f9434edfa9219
 automation:
   suite_command: ["timeout", "1800", "uv", "run", "--quiet", "--project", "phase-loop-runtime", "--group", "test", "--extra", "visual", "--with", "pytest-xdist==3.8.0", "--python", "3.14", "--locked", "python", "-m", "pytest", "-n", "0", "-p", "no:cacheprovider", "-q", "phase-loop-runtime/tests/test_seats_claude_login_proof.py", "phase-loop-runtime/tests/test_seats_claude_bakeoff.py", "phase-loop-runtime/tests/test_seats_claude_transport.py", "phase-loop-runtime/tests/test_seats_claude_order.py", "phase-loop-runtime/tests/test_seats_claude_records.py", "phase-loop-runtime/tests/test_seats_claude_print.py", "phase-loop-runtime/tests/test_seats_claude_print_observations.py", "phase-loop-runtime/tests/test_claude_transport_seam.py", "phase-loop-runtime/tests/test_panel_claude_print_route.py", "phase-loop-runtime/tests/test_seat_credentials.py", "phase-loop-runtime/tests/test_seat_login_wait_a3_1166.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py", "phase-loop-runtime/tests/test_executable_dependency_startup.py"]
 ---
@@ -19,6 +19,9 @@ name follows the manifest pattern (root maintainer's decision).
 Inputs are the roadmap's External Inputs, plus one pin from the print-route record: §4a, merged by agent-harness#1775, has section sha256
 `7af0fb700ef10d444a904b01169c8b08aa056ba25ca496c7adcca7c646852cdb`. A section's bytes run
 from its `## ` heading line to the line before the next `## ` heading.
+
+Worker contract: `plans/seats-claude-sdk-worker-contract.md`, sha256
+`61ba5d730d75240cdf853431260f514b611704a00b4287d1d74480dff106c8da` (EC-CLAUDE-3).
 
 Amendment 2026-11-05: owner option A selects EC-CLAUDE-3. SL-3 remains pending.
 The regression command targets the implementation checkout, not this plan-only tree.
@@ -56,13 +59,13 @@ builder or an egress allowlist.
   - **Jail/CLI boundary.** EC-CLAUDE-1 and EC-CLAUDE-3 govern the owned launch.
     `SDK_CLI_DELTA` is the complete versioned fixture at
     `phase-loop-runtime/tests/data/seats_claude_sdk/launch-v1.json`, with its sha256
-    recorded in the proof receipt. No SDK runtime projection or stock SDK spawn.
+    recorded in the proof receipt; runtime uses its identical packaged copy. No SDK projection or stock spawn.
   - **`CODES`.** The typed codes these transports add, each with an OD-10 class and a fix
     line. Security: `claude_seat_token_in_output`, `claude_seat_api_key_source`,
-    `claude_sdk_provenance_refused`. Ordinary: `claude_seat_login_unproven`,
+    `claude_sdk_provenance_refused`, `claude_sdk_worker_contract_violation`. Ordinary: `claude_seat_login_unproven`,
     `claude_seat_result_unproven`, `claude_seat_stream_unsafe`,
-    `claude_sdk_dependency_unavailable`. None descends, and no fix line names an API key.
-    Missing-install and provenance fix lines follow EC-CLAUDE-3, replacing closure advice.
+    `claude_sdk_dependency_unavailable`, `claude_sdk_worker_unavailable`. None descends, and no fix line names an API key.
+    Classes and fix lines follow EC-CLAUDE-3's contract.
     The mode line accepts `seat_jail.NOTICE_CODES | CODES`; the table is JAILCORE's input
     for EC-JAILCORE-2's falsifier.
   - **No fall-through.** A refusal or post-launch terminal code launches no other transport.
@@ -155,11 +158,11 @@ SL-1 — Jailed seam, resolver and order audit (lane A, code)
 
 SL-2 — Jailed print transport (lane B)
   Depends on: SL-1
-  Blocks: SL-6
+  Blocks: SL-3, SL-6
   Parallel-safe: yes
 
 SL-3 — Host SDK, owned jailed transport and extra (lane C)
-  Depends on: SL-1
+  Depends on: SL-1, SL-2
   Blocks: SL-4, SL-6
   Parallel-safe: yes
 
@@ -204,7 +207,7 @@ SL-6 — Docs and shared inventory reducer
 ### SL-1 — Jailed seam, resolver and order audit (lane A, code)
 
 - **Scope**: Make the jailed seat read IF-0-CLAUDE-1 with `print` and `sdk` refused, wire IF-0-CLAUDE-4 into the jailed launch, land agent-harness#1641's resolver fix, and run the order audit in CI.
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/claude_seat_transport.py`, `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `.github/workflows/test.yml`, `phase-loop-runtime/tests/test_seats_claude_transport.py`, `phase-loop-runtime/tests/test_seats_claude_order.py`, `phase-loop-runtime/tests/test_panel_invoker.py`, `phase-loop-runtime/tests/test_claude_transport_seam.py`, `phase-loop-runtime/tests/test_panel_claude_print_route.py`, `phase-loop-runtime/tests/test_seat_login_wait_a3_1166.py`, `phase-loop-runtime/tests/test_seat_login_wait_board_context_r12.py`, `phase-loop-runtime/tests/test_seat_notices.py`, `phase-loop-runtime/tests/test_seat_session_label.py`, `phase-loop-runtime/tests/test_seat_sandbox_permissions.py`
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/claude_seat_transport.py`, `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `.github/workflows/test.yml`, `.github/workflows/claude-sdk-audit.yml`, `phase-loop-runtime/tests/test_seats_claude_transport.py`, `phase-loop-runtime/tests/test_seats_claude_order.py`, `phase-loop-runtime/tests/test_panel_invoker.py`, `phase-loop-runtime/tests/test_claude_transport_seam.py`, `phase-loop-runtime/tests/test_panel_claude_print_route.py`, `phase-loop-runtime/tests/test_seat_login_wait_a3_1166.py`, `phase-loop-runtime/tests/test_seat_login_wait_board_context_r12.py`, `phase-loop-runtime/tests/test_seat_notices.py`, `phase-loop-runtime/tests/test_seat_session_label.py`, `phase-loop-runtime/tests/test_seat_sandbox_permissions.py`
 - **Interfaces provided**: `IF-0-CLAUDE-1`
 - **Interfaces consumed**: `IF-0-CLAUDE-4`
 - **Parallel-safe**: no
@@ -239,10 +242,11 @@ SL-6 — Docs and shared inventory reducer
     preparing the jail, dispatch through it and wire IF-0-CLAUDE-4. `print` and `sdk` stay
     refused until their modules land. The PR carries the existing tests' expectation updates
     for the jailed seat reading the selector (§4a item 3) and never weakens an assertion.
-  - impl: Add `audit-order` as a step of an existing required job in `test.yml` (no new
-    required check). Execute the auditor from `pull_request.base.sha`, with head trees
-    as data and no head imports. Land EC-CLAUDE-3 verifier/fact enforcement before GL-2;
-    missing base fails.
+  - impl: Deliver EC-CLAUDE-3's base-defined required audit workflow, proof checker and
+    declarative-fact enforcement before GL-2. Head trees are data; missing base/evidence
+    fails. Owner-enforced workflow policy is a GL-2 prerequisite.
+  - impl: Implement the sandboxed worker launcher through existing `seat_uid`/seat-owner
+    primitives; test isolation, parent death and cleanup under EC-CLAUDE-3.
   - impl: Extend the owned I/O helper for IF-0-CLAUDE-3; test duplex exchange and
     cancellation at the real call site in `test_seats_claude_transport.py`. Keep launch
     ownership and print/TUI behavior. Replace `_prepare_jailed_claude`'s unconditional SDK
@@ -254,7 +258,7 @@ SL-6 — Docs and shared inventory reducer
 
 - **Scope**: Write `claude_seat_print` against current main from §4a items 4 and 5, then close agent-harness#1740 citing the landing PR. This landing makes `PHASE_LOOP_PANEL_CLAUDE_ROUTE=print` usable at once.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/claude_seat_print.py`, `phase-loop-runtime/src/phase_loop_runtime/claude_print_observations.py`, `phase-loop-runtime/tests/test_seats_claude_print.py`, `phase-loop-runtime/tests/test_seats_claude_print_observations.py`
-- **Interfaces provided**: `claude_seat_print.run_jailed`
+- **Interfaces provided**: `claude_seat_print.run_jailed`, parsed `StreamAdmission`
 - **Interfaces consumed**: `IF-0-CLAUDE-1`
 - **Parallel-safe**: yes
 - **Tasks**:
@@ -280,29 +284,27 @@ SL-6 — Docs and shared inventory reducer
     `ADMITTED = True` with `ACTIVATION` citing §4a (the Context pin and agent-harness#1775).
     A needed `panel_invoker.py` change goes to SL-1 in this landing PR, limited to the seam
     call site; anything wider stops the lane.
+  - impl: Refactor parsed `StreamAdmission` for SL-3 with route-specific policy; retain
+    print semantics/authority and verify V3. This is not print re-activation.
   - impl: Give SL-6 the inventory rows and docs text. Close agent-harness#1740 after landing.
   - verify: `V3`, `VL`.
 
 ### SL-3 — Host SDK, owned jailed transport and extra (lane C)
 
 - **Scope**: Write the seat-neutral `claude_sdk_adapter`, the `claude-sdk` extra and the Gate A clean-room fix, and `claude_seat_sdk` under IF-0-CLAUDE-3, which lands with `ADMITTED = False`. Then close agent-harness#1744.
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/claude_sdk_adapter.py`, `phase-loop-runtime/src/phase_loop_runtime/claude_seat_sdk.py`, `phase-loop-runtime/src/phase_loop_runtime/claude_sdk_worker.py`, `phase-loop-runtime/src/phase_loop_runtime/claude_sdk_bootstrap.py`, `phase-loop-runtime/src/phase_loop_runtime/data/claude_sdk/**`, `plans/evidence/seat-qualification/claude-sdk-boundary/**`, `phase-loop-runtime/pyproject.toml`, `phase-loop-runtime/uv.lock`, `phase-loop-runtime/scripts/gate_a_cleanroom.sh`, `phase-loop-runtime/scripts/local_check.py`, `ci/dagger/src/agent_harness_ci/main.py`, `phase-loop-runtime/tests/test_seats_claude_sdk.py`, `phase-loop-runtime/tests/test_seats_claude_sdk_adapter.py`, `phase-loop-runtime/tests/test_local_check.py`, `phase-loop-runtime/tests/test_ci_xdist_adoption.py`, `phase-loop-runtime/tests/data/seats_claude_sdk/**`, `plans/phase-plan-v1-seats-CLAUDE.md`
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/claude_seat_sdk.py`, `phase-loop-runtime/src/phase_loop_runtime/data/claude_sdk/**`, `plans/evidence/seat-qualification/claude-sdk-boundary/**`, `phase-loop-runtime/pyproject.toml`, `phase-loop-runtime/uv.lock`, `phase-loop-runtime/scripts/gate_a_cleanroom.sh`, `phase-loop-runtime/scripts/local_check.py`, `ci/dagger/src/agent_harness_ci/main.py`, `phase-loop-runtime/tests/test_seats_claude_sdk.py`, `phase-loop-runtime/tests/test_seats_claude_sdk_adapter.py`, `phase-loop-runtime/tests/test_local_check.py`, `phase-loop-runtime/tests/test_ci_xdist_adoption.py`, `phase-loop-runtime/tests/data/seats_claude_sdk/**`, `plans/phase-plan-v1-seats-CLAUDE.md`, `plans/seats-claude-sdk-worker-contract.md`
 - **Interfaces provided**: `claude_seat_sdk.run_jailed`, `IF-0-CLAUDE-3`
-- **Interfaces consumed**: `IF-0-CLAUDE-1`
+- **Interfaces consumed**: `IF-0-CLAUDE-1`, parsed `StreamAdmission`
 - **Parallel-safe**: yes
 - **Tasks**:
-  - test: `test_seats_claude_sdk.py`: `-k boundary_proof` implements EC-CLAUDE-3's
-    proof and falsifiers at `_parent_infer`, plus EC-CLAUDE-5's twin controls. Include
-    the concurrent synthetic seat, worker readiness, negative preflight ordering,
-    forwarding/admission and independent teardown. Remove guards in disposable mutations;
-    each corresponding control must fail. Detailed cases/results remain private (OD-10).
-  - test: `test_seats_claude_sdk_adapter.py`: exercise all frozen transport operations,
-    bounded lifecycle, options and the test-only stock argv oracle; enforce EC-CLAUDE-3's
-    forbidden-call, import, logger and protocol requirements.
-  - impl: Salvage agent-harness#1744's adapter, pinned packages and Gate A fix. Supply
-    EC-CLAUDE-3's worker/bootstrap, immutable install manifest/export and receipt producer.
-    V4 must cover the documented hashed worker install as well as project-test provisioning.
-    No `launcher.py` change; owned launch, verifier and CI wiring go to SL-1.
+  - test: `test_seats_claude_sdk.py` implements EC-CLAUDE-3's generic falsifiers and
+    EC-CLAUDE-5's twin controls through `_parent_infer`; private suites are separately bound.
+    Disposable guard mutations must fail their controls.
+  - test: `test_seats_claude_sdk_adapter.py` covers the contract's transport, lifecycle,
+    configuration and forbidden-call controls, including no solo route or stock transport.
+  - impl: Salvage agent-harness#1744's adapter, pins and Gate A fix. Supply the contract's
+    packaged worker payload, install resources and proof producer. V4/VB/VL use the
+    documented worker install. No `launcher.py` change; SL-1 owns launch/audit wiring.
   - impl: Land with `ADMITTED = False`; capture the fixture before G1. Coordinate SL-4's
     twin and produce VB/VL receipt metadata with private junit. Restore both SDK test
     operands and `--extra claude-sdk` to `suite_command` before GL-2; require nonzero
@@ -378,13 +380,13 @@ SL-6 — Docs and shared inventory reducer
       stays in v11);
     - EC-REVIEWTRUTH-18 amended for the jailed seat's `sdk` route, lifting Stage 3 §4's
       review exclusion for that route only;
-    - EC-CLAUDE-3's dedicated host-process design, captured fixture sha256, memory-control
+    - EC-CLAUDE-3's dedicated host-worker refinement and contract digest, fixture sha256, memory-control
       disposition and proof gate; revise an unratified draft or append a superseding
       section and update `SECTION_FOR`. G1 follows fixture capture;
     - EC-CLAUDE-4's content order in place of §4a item 9 for every jailed-transport landing;
     - TUI last as operator selection only;
     - the open-egress exception, for the jailed Claude seat only, until CLAUDENET exits, with
-      its expiry date set at GL-6 (OQ-8);
+      its expiry date set at GL-6 (OQ-8); the worker remains networkless;
     - the condition table. Proposed rows: 1, 4 and 7 apply. 2 applies through IF-0-CLAUDE-4,
       with personal Pro/Max scoping for `sdk` put to the owner. 3 is replaced by the jail's
       cleared environment and actual empty-settings/strict-empty-MCP argv flags, plus the
@@ -438,8 +440,8 @@ message (OQ-6). SL-3 and SL-5 develop alongside; SL-4 follows SL-3. None blocks 
 activation and live SDK twins wait for GL-2.
 - **GL-1 (G1).** The maintainer merges SL-5's amendment PR: OD-3a ratified.
 - **GL-2.** SL-3 sets `ADMITTED = True`, citing the current OD-3a section, in a record-free
-  PR. EC-CLAUDE-3's base auditor/fact enforcement must already have landed. VB/VL run on
-  the final executable tree including activation, then commit receipt metadata. Require
+  PR. EC-CLAUDE-3's base workflow policy and proof/fact enforcement must already hold. VB/VL run on
+  the final executable tree including activation, then commit receipt/package metadata. Require
   the SDK-inclusive suite and SL-4 twin proof. Missing/stale proof keeps SDK refused.
 - **GL-3 (G2).** The owner runs W0 (LA-3). SL-4's owner lands the records in a reviewed PR,
   validated by `V7`.
@@ -508,7 +510,7 @@ owner answers OQ-1 to OQ-5 otherwise before this plan merges.
 - **OQ-8, open-egress expiry, needed at GL-6.** The switch date plus 90 days, renewable by an
   owner record in the matrix.
 
-**Single writers.** SL-1: `panel_invoker.py`, `claude_seat_transport.py`, `test.yml`. SL-5:
+**Single writers.** SL-1: `panel_invoker.py`, `claude_seat_transport.py`, `test.yml`, `claude-sdk-audit.yml`. SL-5:
 the decision record and the v11 files. SL-6: the inventory and docs. Producer lanes hand
 changes to these owners inside their own landing PRs.
 
@@ -547,7 +549,8 @@ tested docs change, and a cross-vendor board on the exact head.
 phase-loop-runtime --group test --extra visual --with pytest-xdist==3.8.0 --python 3.14
 --locked python -m pytest -n 0 -p no:cacheprovider -q`. Each file below lives under
 `phase-loop-runtime/tests/`. `PS` is `P` with `--extra claude-sdk` added before
-`--with` (V4, VB and VL).
+`--with` (V4, VB and VL). VB/VL also require the contract's documented worker install,
+private-suite operands and session-bound JUnit; CI and board run its proof checker.
 
 Collection rule (agent-harness#1825): absent SDK files are pending, not passing coverage;
 every implemented selector must collect tests. `suite_command` is the implemented-lanes
