@@ -8,7 +8,7 @@
 // a positively parsed TLS ClientHello whose SNI names the CONNECT target, so every recorded
 // connection is one srt terminated; any other first flight is closed and recorded as not
 // terminated. A set is complete only when every connection the recorder saw was terminated
-// and had a request parsed. Traffic that bypasses the proxy is not seen at all.
+// and had a request parsed. Only traffic sent through this proxy is recorded.
 //
 // argv: <srt dist/index.js> <config.json>. config: {ca_cert, ca_key, out}. One JSON line on
 // stdout when ready: {"port": N, "token": "..."} (the token goes only into the twin's proxy
