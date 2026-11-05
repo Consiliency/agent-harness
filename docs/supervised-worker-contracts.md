@@ -44,9 +44,9 @@ six upstream files. The installed package carries the complete nested closure.
 The `supervised contract publication` check is required and is a successful no-op
 on non-contract changes. Its `supervised-contract-intake` workflow runs on every
 pull request and every push to main with no path filter. The workflow pins the
-vendored resource subtree, loader, comparison script, independent anchor test,
-frozen artifact and workflow paths; manifest changes count only when the SCHEMA
-frozen-input seal changes. For contract changes it fetches the public commit
+vendored resource subtree, loader, packaging declarations, comparison script,
+independent anchor test, frozen artifact and workflow paths; manifest changes
+count only when the SCHEMA frozen-input seal changes. For contract changes it fetches the public commit
 read-only, checks protected default
 branch ancestry, compares actual vendor bytes/blobs and sealed inputs, and runs
 intake tests with an extracted wheel ahead of the checkout. Ordinary tests never

@@ -3,6 +3,7 @@ from dataclasses import FrozenInstanceError
 from hashlib import sha256
 import importlib.util
 import json
+import os
 from pathlib import Path
 import re
 import shutil
@@ -16,13 +17,16 @@ from phase_loop_runtime.supervised_contracts import ContractError, load_contract
 
 ROOT = Path(__file__).resolve().parents[2]
 INPUT = ROOT / "plans/artifacts/v12-SCHEMA-inputs.md"
+WORKFLOW = ROOT / ".github/workflows/supervised-contract-intake.yml"
+# Gate A deliberately omits the repository manifest and supplies its bytes by path.
+SOURCE_MANIFEST = Path(os.environ.get("PHASE_LOOP_LEGIBLE_AUTHORITY_MANIFEST", ROOT / "plans/manifest.json"))
 MANIFEST_ANCHOR = "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285"
 COMMIT_ANCHOR = "93db4b4fcc4e3d40c62f6658b6a67b519c750491"
 
 
 def anchor(module=production):
     data = INPUT.read_bytes()
-    seal = next(r for r in json.loads((ROOT / "plans/manifest.json").read_bytes())["plans"] if r["slug"] == "v12-SCHEMA")["frozen_inputs"]["plans/artifacts/v12-SCHEMA-inputs.md"]["sha256"]
+    seal = next(r for r in json.loads(SOURCE_MANIFEST.read_bytes())["plans"] if r["slug"] == "v12-SCHEMA")["frozen_inputs"]["plans/artifacts/v12-SCHEMA-inputs.md"]["sha256"]
     assert sha256(data).hexdigest() == seal == module.INPUT_ARTIFACT_SHA256
     expected = {n: (d, b) for n, d, b in re.findall(
         r"^\| `([^`]+)` \| `([0-9a-f]{64})` \| `([0-9a-f]{40})` \|$", data.decode(), re.M)}
@@ -270,6 +274,8 @@ def test_publication_comparison_offline(tmp_path):
 
 def test_no_public_injection_surface():
     import inspect
+    assert Path(production.__file__).name == "supervised_contracts.py"
+    assert load_contract_bundle.__module__ == validate_record.__module__ == "phase_loop_runtime.supervised_contracts"
     assert str(inspect.signature(load_contract_bundle)) == "() -> 'ContractBundle'"
     assert list(inspect.signature(validate_record).parameters) == ["bundle", "family", "record", "definition"]
 
@@ -352,10 +358,10 @@ def publication_module():
 @pytest.mark.parametrize("kind", ["baseline", "seal", "inventory", "commit"])
 def test_publication_sealed_inputs(tmp_path, monkeypatch, kind):
     module = publication_module()
-    for name in ("plans/manifest.json", "plans/artifacts/v12-SCHEMA-inputs.md"):
+    for name, source in (("plans/manifest.json", SOURCE_MANIFEST), ("plans/artifacts/v12-SCHEMA-inputs.md", INPUT)):
         path = tmp_path / name
         path.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(ROOT / name, path)
+        shutil.copyfile(source, path)
     module.verify_seal(tmp_path)
     if kind == "baseline":
         return
@@ -416,6 +422,7 @@ def test_publication_runner_offline(tmp_path, monkeypatch, condition):
     assert verified == [ROOT]
 
 
+@pytest.mark.skipif(not WORKFLOW.is_file(), reason="workflow is not in this checkout")
 @pytest.mark.parametrize("changed,seal_changed,expected", [
     (["docs/guide.md"], False, False), (["plans/manifest.json"], False, False),
     (["plans/manifest.json"], True, True),
@@ -426,7 +433,9 @@ def test_publication_runner_offline(tmp_path, monkeypatch, condition):
     (["plans/artifacts/v12-SCHEMA-inputs.md"], False, True),
     ([".github/workflows/supervised-contract-intake.yml"], False, True)])
 def test_publication_change_selection(tmp_path, monkeypatch, changed, seal_changed, expected):
-    workflow = (ROOT / ".github/workflows/supervised-contract-intake.yml").read_text()
+    workflow = WORKFLOW.read_text()
+    assert '"phase-loop-runtime/pyproject.toml"' in workflow and '"phase-loop-runtime/MANIFEST.in"' in workflow
+    assert "types: [opened, synchronize, reopened, edited]" in workflow
     import textwrap
     script = textwrap.dedent(workflow.split("python3 - <<'PY'\n", 1)[1].split("          PY\n", 1)[0])
     output = tmp_path / "outputs"

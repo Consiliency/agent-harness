@@ -2,6 +2,8 @@ name: supervised-contract-intake
 
 on:
   pull_request:
+    # `edited` re-evaluates the no-op when a stacked pull request is retargeted.
+    types: [opened, synchronize, reopened, edited]
   push:
     branches: [main]
 
@@ -34,6 +36,8 @@ jobs:
           paths = {
               "phase-loop-runtime/src/phase_loop_runtime/supervised_contracts.py",
               "phase-loop-runtime/scripts/verify_supervised_contract_publication.py",
+              "phase-loop-runtime/pyproject.toml",
+              "phase-loop-runtime/MANIFEST.in",
               "phase-loop-runtime/tests/test_supervised_contracts.py",
               "plans/artifacts/v12-SCHEMA-inputs.md",
               ".github/workflows/supervised-contract-intake.yml",
