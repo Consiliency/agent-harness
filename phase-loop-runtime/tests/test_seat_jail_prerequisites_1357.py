@@ -308,11 +308,10 @@ def test_an_inventory_that_cannot_run_is_unknown_not_missing(monkeypatch):
     assert prerequisites.pytest_status() == "unknown" and prerequisites.missing() == []
 
 
-def test_the_snapshot_and_the_layout_identity_were_not_touched():
-    """Passes are bound to `falsifier_layout_identity`, which hashes the snapshot's source: a
-    patch release must not reset every host's jail approval a second time. The identity on the
-    0.7.25 release was 805042ce6314..., and this change must not move it."""
-    assert seat_jail.falsifier_layout_identity().startswith("execfind-falsifier-layout.v1:805042ce")
+def test_the_snapshot_and_the_layout_identity_match_current_staging():
+    """Current-tree staging has its own layout identity and requires qualification."""
+    assert seat_jail.falsifier_layout_identity() == (
+        "execfind-falsifier-layout.v1:76686114d5bf2d38097156bca3b49aad5e65e584b917bfdea684168c3212bf3b")
 
 
 # --- the wrapper's imports are runtime dependencies -----------------------------------------

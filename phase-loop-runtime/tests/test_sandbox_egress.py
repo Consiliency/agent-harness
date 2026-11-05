@@ -872,6 +872,8 @@ def test_a_retained_setfcap_lets_a_nested_sandbox_start_and_nothing_else():
     assert int(kept[0], 16) == 1 << 31, f"only CAP_SETFCAP (bit 31) may be retained: {kept}"
     assert kept[1] == "REFUSED", f"the seat withdrew its own firewall: {kept}"
     assert kept[2] == "NESTED-OK", f"codex's own sandbox still cannot start: {kept}"
+
+
 def test_seats_firstseat_resolver_private_umask(tmp_path):
     import os
     import stat
