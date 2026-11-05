@@ -103,6 +103,10 @@ input_artifact_sha256, suite_artifact_sha256, hosted_run_id and byte_pin_authori
 Outcomes must match runner-produced JUnit node/results and artifact digest,
 plus hosted run/job/head identity where applicable. Collection is not outcome
 proof. Intermediate JUnit remains runner-owned scratch, not a tracked artifact.
+A separate post-suite stamp step compares that JUnit with the rows, then writes
+its digest. V3 always checks row shape and completeness; it compares the artifact
+only in the stamp step, where a missing artifact fails. The digest describes the
+suite run before the stamp, never a later head.
 
 ## Lane Index & Dependencies
 
@@ -137,8 +141,10 @@ SL-2 — Contract documentation and receipt reducer
     closed codes and sanitized exception chains using sentinel-bearing records.
     Verify artifact seal, production hashes/blob IDs and independent manifest
     anchor. Include source-copy reference-integrity controls and installed
-    package resources. Reference-integrity controls cover the entire closure and
-    its metadata together. Test hosted comparison logic offline in V0.
+    package resources. Reference-integrity controls cover the entire closure, its
+    metadata and the code-owned expected pins together. With all of them regenerated
+    consistently, the anchor assertion against the unmodified sealed artifact must
+    still fail. Test hosted comparison logic offline in V0.
   - impl: Fresh-fetch the canonical pinned commit; verify protected-default-branch
     ancestry and every expected raw digest/blob. Vendor the six approved files.
     Add harness-provenance.json naming public source, full commit, hashes/blob IDs
@@ -147,8 +153,10 @@ SL-2 — Contract documentation and receipt reducer
     package-data glob. Keep dependencies, lockfile, init and generated bundles
     unchanged. If gitleaks requires it, add only narrow path/digest allowlists,
     preserving vendor bytes. Add a network-enabled hosted publication workflow
-    and script that independently fetch the pinned commit and compare vendor
-    bytes/blobs and sealed inventory; ordinary tests remain offline.
+    and script, run on every pull_request and push to main with no path filter,
+    that independently fetch the pinned commit, re-verify default-branch ancestry
+    and compare vendor bytes/blobs and sealed inventory. A red run blocks the
+    receipt and landing; ordinary tests remain offline.
   - verify: Run V0. The hosted job runs the publication script, records branch
     provenance and observed run/job/head, and fails on any comparison difference.
     Hosted packaging verification builds/extracts the wheel to scratch and runs
