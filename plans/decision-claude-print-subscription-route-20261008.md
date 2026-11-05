@@ -146,3 +146,80 @@ bounded official-SDK exception and explicit solo-runner rollout defined there.
 Its conditions supersede this record's SDK exclusion for that scope only;
 the panel `sdk` selector remains refused. Until that ratification, section 6
 continues to apply without an SDK exception.
+## 4b. OD-3a: the jailed Claude transports, proposed 2026-11-04
+
+**Status:** CANDIDATE — effective only upon the maintainer's merge of this section to `main`
+after review, in its own reviewed PR that carries no other change (OD-3a, G1). Sections 1 to 8
+above stay as written; this section amends §4a and §6 prospectively, for the scope below only.
+Roadmap: `specs/phase-plans-seats-v1.md` (SEATS, agent-harness#1820), phase CLAUDE.
+
+1. **Scope.** The existing tooled/pointer Claude seat inside its per-seat jail (§4a item 1).
+   Capture and research seats, brokered and direct seats, and the president's Fable rung keep
+   §2, §4 and §4a unchanged.
+2. **Selection.** `PHASE_LOOP_PANEL_CLAUDE_ROUTE` selects `tui`, `print` or `sdk` for the jailed
+   seat, through one seam (`claude_seat_transport`, IF-0-CLAUDE-1). `print` and `sdk` are
+   selectable once their transport is admitted; `sdk` is admitted only in a later landing that
+   cites this section and edits no record. A refused value launches nothing and never falls
+   back. The shipped jailed default stays `tui` (§4a item 2) until an OD-3b section records a
+   default and a separate landing ships it.
+3. **The bake-off.** This section authorises the W0 bake-off of EC-CLAUDE-5 on the jailed seat:
+   `print`, `sdk` and the T3 Code SDK-route control, under the phase plan's run plan, with its
+   records landed in a reviewed PR.
+4. **TUI last.** "TUI last" is operator selection only. No refusal and no terminal code of one
+   transport launches another, the TUI included.
+5. **Credential delivery.** Every jailed transport receives the credential only through the
+   existing seat-token pipe (`CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR`). For `sdk` the pipe is
+   added to the inference spawn alone, by a repo-owned SDK transport, and the helper's copy is
+   closed right after that spawn. The token never moves into the environment, the SDK options,
+   argv or the seat home. Any other delivery for `sdk` needs its own ratified amendment.
+6. **Login proof.** Every jailed transport launches only after the jailed login proof
+   (IF-0-CLAUDE-4): caller-credential rejection, the subscription check on the same login
+   context, and a single-use auth-status probe on the exact credential (agent-harness#1532).
+7. **EC-REVIEWTRUTH-18 and Stage 3 §4.** EC-REVIEWTRUTH-18 is amended for the jailed seat's `sdk`
+   route only: the official Agent SDK, running inside the jail with the system `claude` pinned
+   as its CLI, is admitted for that route under the conditions in item 11. Stage 3 §4's review
+   exclusion is lifted for that route only; every other SDK review use stays excluded, and the
+   no-API-key, direct-HTTP, gateway and alternate-endpoint clause stays in force.
+8. **Ratification order.** For every jailed-transport landing, EC-CLAUDE-4's content order
+   replaces §4a item 9: a landing that admits a transport or changes the jailed default edits
+   no decision record; its base tree already holds the section it cites, by that section's
+   sha256; the PR that landed the section is merged; and an OD-3b value lands in its own PR
+   before the change that ships it. `audit-order` checks this on every pull request. This is
+   OD-3a's named departure from v11's EC-REVIEWTRUTH-15, which keeps the merge-ancestry form
+   for every other landing.
+9. **A default before its row window.** A default chosen by OD-3b may ship before its row
+   window, provided the capabilities card says the default is chosen, runs on open egress until
+   CLAUDENET exits, and awaits its row window (EC-CLAUDE-6).
+10. **Open egress, a named exception.** The jailed Claude seat runs on open egress until
+    CLAUDENET exits. This is a named exception for the jailed Claude seat only, under the
+    roadmap's principle 3. Its expiry date is set in the switch landing (GL-6, OQ-8) and is
+    renewable only by an owner record in the readiness matrix; an expired exception resolves
+    degraded.
+11. **Stage 3 §3 conditions on the jailed `sdk` route.** One row per condition.
+
+    | Condition | Disposition on the jailed `sdk` route |
+    |---|---|
+    | 1. Executable identity | applies: the system `claude`, resolved to its native image, is the SDK `cli_path` at `/seat/bin/claude`; the SDK's bundled CLI is never projected or used |
+    | 2. Subscription provenance | applies, through IF-0-CLAUDE-4 on the exact credential; personal Pro/Max scoping for `sdk` is put to the owner at G1 |
+    | 3. Process environment | replaced by a named jail control: the jail's cleared environment and closed settings, plus `setting_sources=[]`, `strict_mcp_config=True` and the documented auto-memory disable |
+    | 4. In-band evidence | applies: one `system/init` with `apiKeySource == "none"` for the run's session, read by the parent on the CLI's raw frames |
+    | 5. Capabilities | replaced by a named jail control: parity with the jailed TUI command (tool universe, permission mode, settings, MCP and agents); neither the runner-CLI oracle nor the `allowed_tools` rule is imported |
+    | 6. Lifecycle | replaced by a named jail control: the jailed seat's own seat-id lease, teardown and stall detection |
+    | 7. Evidence limits | applies |
+
+12. **Ownership (EC-CLAUDE-8).** Each responsibility has exactly one owner.
+
+    | Responsibility | Owner |
+    |---|---|
+    | The jailed transport seam | SEATS CLAUDE |
+    | Jailed-seat live qualification | SEATS CLAUDENET |
+    | Jailed-default promotion | SEATS CLAUDE |
+    | The mechanical module extraction of `panel_invoker.py` | v11 PANELSPLIT |
+
+    §4a item 8's ownership of the jailed-seat move by PANELSPLIT/PANEL is superseded for the
+    first three rows. A v11 roadmap amendment marks the affected EC-PANEL-6 items as consumed by
+    EC-CLAUDE-1, EC-CLAUDE-4, EC-CLAUDE-6 and EC-CLAUDENET-1, and notes this section's departure
+    from EC-REVIEWTRUTH-15.
+13. **Experimental and unqualified.** Item 6 of §4a holds for every jailed transport until its
+    row window: documentation and release notes call an explicit selection experimental and
+    unqualified, and diagnostics alone never admit a result.
