@@ -122,6 +122,21 @@ CLAUDE_TOKEN_FD_ENV = "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR"
 REFUSED_PREFIX = "seat_sandbox_refused:"
 
 NOTICES: Mapping[str, tuple[str, str, str]] = {
+    "grok_tool_surface_unverified": (
+        "leg deferred", "installed tool surface has no passing receipt",
+        "run phase-loop seat-window probe-tools --vendor grok and review the private result"),
+    "leg_exec_record_unavailable": (
+        "leg deferred", "exec record could not be retained",
+        "check private operator storage and re-run"),
+    "leg_auth_signed_out": (
+        "leg unavailable", "host subscription session is signed out",
+        "log in to the vendor CLI as the operator and re-run"),
+    "leg_auth_unavailable": (
+        "leg unavailable", "host subscription state is unavailable",
+        "check the vendor CLI subscription status as the operator and re-run"),
+    "leg_execution_failed": (
+        "leg ended", "provider execution did not complete",
+        "check the private operator record and re-run"),
     "seat_sandbox_unavailable_host": (
         "inline fallback", "host capability missing",
         "install bwrap, slirp4netns and unshare; enable unprivileged user namespaces"),

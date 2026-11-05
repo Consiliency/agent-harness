@@ -264,6 +264,8 @@ LAUNCH_COUNTS: dict[tuple[str, str], int] = {
 PROVIDER_ENTRY_POINTS = frozenset({"launch_provider", "run_provider", "launch_owned",
                                    "_run_leg_with_liveness"})
 PROVIDER_CALLS_WITHOUT_ENV: dict[tuple[str, str], str] = {
+    ("panel_invoker.py", "probe_grok_tools"): (
+        "runner forwards decided env from probe options and relocates child scratch"),
     # agent-harness#1222: the owner forwards its caller's kwargs (env included) and replaces
     # a seat's env with the seat's own, decided as CHILD_SCRATCH_PRIVATE_TMP.
     ("panel_invoker.py", "launch_owned"): "forwards its caller's env; decides the seat's own",

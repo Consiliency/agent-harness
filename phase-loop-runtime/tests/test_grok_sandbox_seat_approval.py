@@ -20,14 +20,175 @@ allow-list, byte for byte.
 from __future__ import annotations
 
 import subprocess
+import pytest
 from pathlib import Path
 
 from phase_loop_runtime import panel_invoker as pi
 from phase_loop_runtime import review_stage
 
 
+@pytest.mark.parametrize("definitions", [None, {}, {"tools": []},
+    {"tools": ["fixture_extra"]}, {"tools": ["fixture_read"], "diagnostics": ["fixture"]},
+    {"tools": ["fixture_read"], "diagnostics": []}])
+def test_seats_firstseat_tool_surface_gate(tmp_path, monkeypatch, definitions):
+    command = ["grok", "-p", "fixture", "--tools", "fixture_read"]
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(pi, "_grok_binary_identity", lambda *a: ("/fixture/grok", "1" * 64))
+    receipt = pi.record_tool_probe(command, definitions, allowed_tools={"fixture_read"}, version="fixture-v1")
+    passed = definitions == {"tools": ["fixture_read"], "diagnostics": []}
+    assert pi.grok_tool_gate(command) is passed
+    assert ("tools" in receipt) is passed
+    assert receipt["public_code"] == (None if passed else "grok_tool_surface_unverified")
+    if passed:
+        assert not pi.grok_tool_gate([*command, "--no-memory"])
+        monkeypatch.setattr(pi, "_grok_binary_identity", lambda *a: ("/fixture/grok", "2" * 64))
+        assert not pi.grok_tool_gate(command)
+
+
+@pytest.mark.parametrize("brokered", [False, True])
+def test_seats_firstseat_tool_surface_unprobed_route(tmp_path, monkeypatch, brokered):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(pi, "_parent_auth_state", lambda *a: "healthy")
+    monkeypatch.setattr(pi, "_leg_auth_ok", lambda *a: (True, ""))
+    monkeypatch.setattr(pi, "_run_leg_with_liveness", lambda *a, **k: pytest.fail("provider launched"))
+    out = tmp_path / "out"
+    out.mkdir()
+    result = pi._exec_leg("grok", tmp_path, out, artifact="fixture",
+                          **({"broker_prompt": "fixture", "broker_evidence": {}} if brokered else {}))
+    assert result == (1, "", "grok_tool_surface_unverified")
+
+
+def test_seats_firstseat_tool_surface_reprobe(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(pi, "_grok_binary_identity", lambda *a: ("/fixture/grok", "1" * 64))
+    command = ["grok", "--tools", "fixture_read"]
+    pi.record_tool_probe(command, {"tools": ["fixture_read"], "diagnostics": []},
+                         allowed_tools={"fixture_read"}, version="fixture-v1")
+    assert pi.grok_tool_gate(command)
+    pi.record_tool_probe(command, None, allowed_tools={"fixture_read"})
+    assert not pi.grok_tool_gate(command)
+
+
+def test_seats_firstseat_tool_surface_workflow_route(tmp_path, monkeypatch):
+    from phase_loop_runtime import seat_jail
+    monkeypatch.setattr(pi, "_seat_provider_source", lambda *a: ("grok", "/fixture/grok"))
+    calls = []
+    def gate(command, env):
+        calls.append(command)
+        return False
+    monkeypatch.setattr(pi, "grok_tool_gate", gate)
+    command = ["grok", "-p", "fixture workflow", "--tools", "fixture_read"]
+    with pytest.raises(seat_jail.SeatSandboxRefused) as refusal:
+        with pi._seat_command_profile(command, env={}, cwd=tmp_path):
+            pytest.fail("profile admitted")
+    assert refusal.value.code == "grok_tool_surface_unverified"
+    assert calls == [command]
+
+
+@pytest.mark.parametrize("failure", ["timeout", "empty", "malformed", "diagnostic", "version_diagnostic"])
+def test_seats_firstseat_tool_surface_probe(tmp_path, monkeypatch, failure):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(pi, "_grok_binary_identity", lambda *a: ("/fixture/grok", "1" * 64))
+    calls = []
+    def runner(argv, **options):
+        assert not list(Path(options["cwd"]).iterdir())
+        calls.append(argv)
+        if argv[-1] == "--help":
+            return subprocess.CompletedProcess(argv, 0,
+                "--list-tools Print tool definitions without running a model", "")
+        if argv[-1] == "--version":
+            return subprocess.CompletedProcess(argv, 0, "fixture-v1",
+                "fixture" if failure == "version_diagnostic" else "")
+        if failure == "timeout":
+            raise subprocess.TimeoutExpired(argv, 30)
+        return subprocess.CompletedProcess(argv, 0,
+            "" if failure == "empty" else "{" if failure == "malformed" else
+            '{"tools":["fixture_read"],"diagnostics":[]}',
+            "fixture" if failure == "diagnostic" else "")
+    result = pi.probe_grok_tools(["grok", "--tools", "fixture_read"],
+                                allowed_tools={"fixture_read"}, runner=runner)
+    assert not result["passed"]
+    assert result["public_code"] == "grok_tool_surface_unverified"
+    assert "tools" not in result
+    assert len(calls) == 3
+
+
+@pytest.mark.parametrize("brokered", [False, True])
+def test_seats_firstseat_tool_surface_passing_route(tmp_path, monkeypatch, brokered):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(pi, "_parent_auth_state", lambda *a: "healthy")
+    monkeypatch.setattr(pi, "_leg_auth_ok", lambda *a: (True, ""))
+    monkeypatch.setattr(pi, "_grok_binary_identity", lambda *a: ("/fixture/grok", "1" * 64))
+    gate = pi.grok_tool_gate
+    entered = []
+    def measured(command, env=None):
+        entered.append(command)
+        pi.record_tool_probe(command, {"tools": ["fixture_read"], "diagnostics": []},
+                             allowed_tools={"fixture_read"}, version="fixture-v1")
+        return gate(command, env)
+    monkeypatch.setattr(pi, "grok_tool_gate", measured)
+    launched = []
+    def run(command, **kw):
+        launched.append(command)
+        return pi._LegRun(0, "AGREE", "")
+    monkeypatch.setattr(pi, "_run_leg_with_liveness", run)
+    out = tmp_path / "out"
+    out.mkdir()
+    result = pi._exec_leg("grok", tmp_path, out, artifact="fixture",
+        **({"broker_prompt": "fixture", "broker_evidence": {}} if brokered else {}))
+    assert result[:2] == (0, "AGREE")
+    assert launched == entered and len(launched) == 1
+
+
 # Built-ins that act rather than read. Under a mode that asks first, a headless run cancels them.
 _ACTING_TOOLS = {"run_terminal_command", "run_terminal_cmd", "write", "search_replace"}
+
+
+@pytest.mark.parametrize("passing", [False, True])
+def test_seats_firstseat_tool_surface_president(tmp_path, monkeypatch, passing):
+    from phase_loop_runtime import president_adapter as pa
+    from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(pi, "_parent_auth_state", lambda *a: "healthy")
+    monkeypatch.setattr(pi, "_leg_auth_ok", lambda *a: (True, ""))
+    monkeypatch.setattr(pi, "_grok_binary_identity", lambda *a: ("/fixture/grok", "1" * 64))
+    entered, launched = [], []
+    gate = pi.grok_tool_gate
+    def measured(command, env=None):
+        entered.append(command)
+        if passing:
+            pi.record_tool_probe(command, {"tools": ["fixture_read"], "diagnostics": []},
+                                 allowed_tools={"fixture_read"}, version="fixture-v1")
+        return gate(command, env)
+    monkeypatch.setattr(pi, "grok_tool_gate", measured)
+    def run(command, **kw):
+        launched.append(command)
+        return pi._LegRun(0, "FORCING DECISION: LAND", "")
+    monkeypatch.setattr(pi, "_run_leg_with_liveness", run)
+    seam = pa.PresidentInvoke(DEFAULT_BOARD, base_env={})
+    result = seam._transport("grok", pi.HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["grok"],
+                             "fixture", tmp_path, tmp_path)
+    assert entered
+    assert bool(launched) is passing
+    assert result[0] == (0 if passing else 1)
+    if not passing:
+        assert result[2] == "grok_tool_surface_unverified"
+
+
+def test_seats_firstseat_tool_surface_probe_controls(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(pi, "_grok_binary_identity", lambda *a: ("/fixture/grok", "1" * 64))
+    def runner(argv, **options):
+        if argv[-1] == "--help":
+            return subprocess.CompletedProcess(argv, 0, "--list-tools Print tool definitions without running a model", "")
+        if argv[-1] == "--version":
+            return subprocess.CompletedProcess(argv, 0, "fixture-v1", "")
+        assert "--tools" in argv and argv[argv.index("--tools") + 1] == "fixture_read"
+        assert "private-prompt" not in argv
+        return subprocess.CompletedProcess(argv, 0, '{"tools":["fixture_read"],"diagnostics":[]}', "")
+    command = ["grok", "-p", "private-prompt", "--tools", "fixture_read"]
+    result = pi.probe_grok_tools(command, allowed_tools={"fixture_read"}, runner=runner)
+    assert result["passed"] and pi.grok_tool_gate(command)
 # Modes in which grok asks before it acts. With no approver, headless grok cancels the call.
 _ASKING_MODES = {"plan", "default"}
 
@@ -58,6 +219,17 @@ def _granted_acting_tools(argv: list[str]) -> set[str]:
     return set(_value(argv, "--tools").split(",")) & _ACTING_TOOLS
 
 
+def _fixture_tool_probe(monkeypatch, root):
+    monkeypatch.setenv("XDG_STATE_HOME", str(root / "state"))
+    monkeypatch.setattr(pi, "_grok_binary_identity", lambda *a: ("/fixture/grok", "1" * 64))
+    gate = pi.grok_tool_gate
+    def measured(command, env=None):
+        pi.record_tool_probe(command, {"tools": ["fixture_read"], "diagnostics": []},
+                             allowed_tools={"fixture_read"}, version="fixture-v1")
+        return gate(command, env)
+    monkeypatch.setattr(pi, "grok_tool_gate", measured)
+
+
 def _launched_grok_argv(monkeypatch, review_dir: Path, out_dir: Path) -> list[str]:
     """The argv the product hands the launch boundary for the brokered grok leg."""
     seen: list[list[str]] = []
@@ -68,6 +240,7 @@ def _launched_grok_argv(monkeypatch, review_dir: Path, out_dir: Path) -> list[st
 
     monkeypatch.setattr(pi, "_run_leg_with_liveness", fake_liveness)
     monkeypatch.setattr(pi, "_leg_auth_ok", lambda *a, **k: (True, ""))
+    _fixture_tool_probe(monkeypatch, out_dir.parent)
     out_dir.mkdir(parents=True, exist_ok=True)
     pi._exec_leg("grok", review_dir, out_dir, broker_prompt="P", broker_evidence={})
     assert len(seen) == 1, seen
@@ -147,6 +320,7 @@ def test_the_unsandboxed_and_read_only_routes_still_deliver_a_verdict(tmp_path, 
 
     monkeypatch.setattr(pi, "_run_leg_with_liveness", fake_liveness)
     monkeypatch.setattr(pi, "_leg_auth_ok", lambda *a, **k: (True, ""))
+    _fixture_tool_probe(monkeypatch, tmp_path)
     review_dir = tmp_path / "sealed-review"
     review_dir.mkdir()
     for brokered, out in ((True, tmp_path / "o1"), (False, tmp_path / "o2")):
