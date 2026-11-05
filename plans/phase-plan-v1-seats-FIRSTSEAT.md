@@ -96,7 +96,10 @@ No future commit identity, count or topology is prescribed.
   IF-0-FIRSTSEAT-3 storage, scanning and closed-field rules; raw detail/exception
   text stays only in private logs.
 - [ ] IF-0-FIRSTSEAT-5 — Lane A's containment-supplier contract (amendment
-  2026-11-04, agent-harness#1829). Pinned method inputs, under
+  2026-11-04, agent-harness#1829). Its frozen detail, cited below as §1–§13, is
+  `plans/seats-firstseat-containment-contract.md`
+  (`075a5d650d425be83ada0f03089d4eed48ce281e2a7d4add04da33b6dcf00617`);
+  changing it is a plan amendment. Pinned method inputs, under
   `plans/evidence/seat-jail-1132/`: `probe_p3_agy_tools.py`
   (`51eced4937fe5a1c6f4b6dd72aad72daed60fd486adcff958f9f374bc624c552`), its record
   `p3-agy-tools-workspace.json`
@@ -108,52 +111,44 @@ No future commit identity, count or topology is prescribed.
   (`121ef9386e1412d30d4d5b202a7b73b59e07dbd8679b1c4ac2425f25ab97b035`) and
   `p4-containment-egress.json`
   (`997844005a24e7c35d93943e91f45efe52ce81562e159b27e4274dce032799e0`). They fix
-  the method only. Their results belong to earlier images and are never W1 evidence.
-  - Plants: one committed qualification input, staged through the approved-stage path,
-    plants every loader path in P3's `PLANT` set and its recorded control `tree_opened`
-    list, plus the current `WINDOW_PLANT_PATHS`. Workspace/VCS markers and P3's read
-    marker are excluded, and a directory entry gets one file inside it. Each plant is a
-    valid instance of its role with a unique nonce. A command it names is an inert
-    executable plant, and an MCP plant also names an unlisted canary URL. Roles:
-    settings/config files are `project_settings`; `hooks.json` is `hooks`; MCP
-    configuration is `mcp_servers`; every other loader entry (context, rules,
-    workflows, skills, agents, plugins) is `provider_overrides`, which covers agy's
-    customization discovery. When the admitted image's measured help lists `plugin`,
-    a plugin plant must first pass that image's `plugin validate <copy> --strict --json`.
-    It runs from the sealed image, on a separate copy, before observation starts, and
-    needs zero error or warning findings and nonzero hooks, mcpServers, rules and skills
-    counts. This report is the only CLI self-report used; it proves format, never loading.
-  - Definition (the `definition_probe` result): a surface is defined only when a
-    control launch observes at least one of its plants opened. The control uses the
-    same sealed image digest, the same jail shape, a stage with an equal manifest
-    digest, and P3's control argv, which makes the tree the workspace. It runs first
-    credential-free, with no route off the host. Any surface still undefined gets one
-    credentialed control in W1. A constant, a fixture or documentation never defines a
-    production surface.
-  - Load result: each W1 context's measured jailed leg runs the same input on the
-    unchanged production argv. A defined surface is `not_loaded` only if the complete
-    watch sees no open of any of its plants during the whole leg, and no proxy
-    observation names its canary host. Any such open or canary request is `loaded`
-    (OD-10), including an open caused by a tool step. An undefined surface, an incomplete
-    watch, a digest mismatch, an error or a timeout is `unavailable`.
-  - Credential scope and refresh (W1 only): `credential_scope` comes from a
-    parent-side issuer measurement of the exact delivered copy. It must be a subset of
-    the set measured in the pinned P4 record; anything else is
-    `gemini_seat_token_scope_excess`. The in-jail projection check stays a shape check.
-    The trusted probe's unlisted control request targets the provider token endpoint
-    and must appear refused in complete proxy observations. Any other token-endpoint
-    request is `gemini_seat_token_refreshed_in_jail`. `refresh_detection` also needs no
-    credential events, an unchanged copy digest and P4's expired-copy control. Any
-    missing channel makes the field `unavailable`.
-  - Binding: results bind the image, admission-class and help digests, the manifest
-    and plant-layout digests, both argv digests, and the watch, proxy and validator
-    digests. A non-admitted image makes every field `unavailable`.
-  - Offline proof (V-A): a fixture image opens a surface's plants only under the
-    control argv. Five mutants must each fail the field they target: a constant
-    definition, a control argv equal to production, a missing surface plant, a watch
-    armed after launch, and a scope derived inside the jail.
-  - Split: lane A completes on code and these controls. The credential-free control is
-    the only real-image offline step; it is a provider-free E host step and gates no
+  the method only: P3 supplies plant evidence and the control argv, never the observer.
+  Their results belong to earlier images and are never W1 evidence; P4's
+  `tokeninfo.scope` serves only as the §11 ceiling.
+  - Plants: every §2 and §3 row is planted at its §1 locations, in the §4 form, with a
+    unique nonce: the staged tree and, for the runtime control, the production working
+    directory, the seat home and its provider configuration directory. §2 assigns each
+    row one roadmap surface (`project_settings`, `hooks`, `mcp_servers` or
+    `provider_overrides`, the last covering agy's customization discovery). Canary
+    URLs use reserved `.invalid` hosts.
+  - Definition (the `definition_probe` result): a surface is defined only by an
+    open-class event on its plants in a control given the §6 no-tool input. A `stat` or
+    `access` never defines, and a tool or subagent step voids the control (§7). Controls
+    use the same sealed image digest, jail shape, a stage with an equal manifest digest,
+    and the §1 argv. They run first credential-free in each context, on the same proxy
+    code with a refuse-all allowlist and no route off the host. Any surface still
+    undefined gets one credentialed control in W1. A lookup outside the table makes the
+    planted-config outcome `unavailable` (§7). A constant, a fixture or documentation
+    never defines a production surface.
+  - Load result: each W1 context's measured jailed leg runs the planted tree and the §6
+    measured input on the unchanged production argv. A defined surface is `not_loaded`
+    only under §8: a complete §5 watch, no runtime-row change and a complete §9 proxy
+    stream naming no canary. Any open, change or canary request is `loaded` (OD-10),
+    including one caused by a tool step. An undefined surface, an incomplete watch or
+    stream, a digest mismatch, an error or a timeout is `unavailable`.
+  - Credential scope and refresh (W1 only): `credential_scope` is the parent-side issuer
+    measurement of §11; excess is `gemini_seat_token_scope_excess`. The in-jail
+    projection check stays a shape check. Under §9, the trusted probe's bracket holds
+    exactly one refused token-endpoint event and the leg window none; anything else is
+    `gemini_seat_token_refreshed_in_jail`. `refresh_detection` also needs no §10
+    credential event and a passing §10 expired-copy control. Any missing channel makes
+    the field `unavailable`.
+  - Binding and admission (§12): results bind the listed digests and context. A
+    non-admitted image makes the public fields `unavailable`; observed security results
+    still take the private route.
+  - Offline proof (V-A): both §13 fixture images and every §13 mutant, each failing
+    the field it targets.
+  - Split: lane A completes on code and these controls. The credential-free controls are
+    the only real-image offline steps; they are provider-free E host steps and gate no
     lane. Load results, credentialed controls, scope and refresh are EC-FIRSTSEAT-7
     containment fields in IF-0-FIRSTSEAT-2 records, not EC-FIRSTSEAT-5 sub-claims. An
     `unavailable` field keeps the row `candidate`; only EC-FIRSTSEAT-7's OD-9 route
@@ -221,10 +216,9 @@ SL-4 — E: Window kit, matrix and documentation reducer
     while allowlisted proxied requests succeed. Never add an uplink or DNS forwarder;
     this route's DNS falsifier means failure of the proxied provider request.
   - test: Add `seats_firstseat_teamhost_containment` (selected by V-A), entering the
-    measurement code with fixture providers that load each planted surface, or show
-    excess scope, a refresh, an unlisted request or no proxy traffic. Each must fail
-    its own field; a clean fixture is the path-entered control. A constant-pass
-    measurement must fail these cases, which run without a user namespace.
+    measurement code with IF-0-FIRSTSEAT-5's §13 fixture images and mutants. Each
+    mutant must fail its own field; a clean fixture is the path-entered control. These
+    cases run without a user namespace.
   - impl: Extend `seat_jail_qualification.py` to produce the per-context W1
     measurements: staged planted project settings, hooks, MCP servers and provider
     overrides must not load; remeasure credential scope, in-jail refresh detection,
