@@ -9,6 +9,10 @@
       "status": "delivered"
     },
     {
+      "path": "specs/phase-plans-seats-v1.md",
+      "status": "superseded"
+    },
+    {
       "path": "specs/phase-plans-v1-task-message-sourcebroker.md",
       "status": "delivered"
     },
