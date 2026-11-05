@@ -83,10 +83,11 @@ No future commit identity, count or topology is prescribed.
   output, require independent host auth corroboration; text alone cannot classify auth.
   D freezes the per-leg sources: Claude's subscription-auth probe and Codex's login-status
   probe. Gemini/Grok parent adapters stay `unavailable` until an unambiguous host status is
-  measured, as EC-FIRSTSEAT-3's "where one exists" permits (amendment 2026-11-05). Their
-  failures type as non-auth `leg_auth_unavailable` with its fix line, never `unknown
-  failure`. Each source yields signed-out, healthy or unavailable; missing/ambiguous
-  observations yield unavailable.
+  measured, as EC-FIRSTSEAT-3's "where one exists" permits (amendment 2026-11-05).
+  A Gemini or Grok leg inside EC-FIRSTSEAT-3's classification gate types as non-auth
+  `leg_auth_unavailable`, never `unknown failure`; existing typed codes take precedence.
+  Its fix line names the provider's sign-in check, never `XAI_API_KEY`. Each source yields
+  signed-out, healthy or unavailable; missing/ambiguous observations yield unavailable.
   Agree typed outcome mapping with v11 IF-0-REVIEWTRUTH-1 before freezing;
   that pending interface is coordination, not a dependency on v11 completion.
 - [ ] IF-0-FIRSTSEAT-4 — Freeze composition refusal and president start/terminal
@@ -100,7 +101,7 @@ No future commit identity, count or topology is prescribed.
 - [ ] IF-0-FIRSTSEAT-5 — Lane A's containment-supplier contract (amendments
   2026-11-04 and 2026-11-05, agent-harness#1829). Its frozen detail, cited below as §1–§16, is
   `plans/seats-firstseat-containment-contract.md`
-  (`8c0f9cc7093474e2681b1241fdd12179e5b9c03f9d855798bdccf04d0903ab71`);
+  (`a57d46f722e22973f0522a8bc254856e6224d50b1b67893cab2b80522c4942a6`);
   changing it is a plan amendment. §14 is the proxy fence protocol, §15 the W1 launch
   sequence and D's launcher, and §16 the seat-owned reads. Pinned method inputs, under
   `plans/evidence/seat-jail-1132/`: `probe_p3_agy_tools.py`
@@ -129,22 +130,23 @@ No future commit identity, count or topology is prescribed.
     use the same sealed image digest, jail shape, a stage with an equal manifest digest,
     and the §1 argv. They run first credential-free in each context, on the same proxy
     code with a refuse-all allowlist and no route off the host. Any surface still
-    undefined gets one credentialed control in W1. A lookup outside the table makes the
-    planted-config outcome `unavailable` (§7). A constant, a fixture or documentation
+    undefined, or §3's `home` row without a baseline, gets one credentialed control in W1.
+    A lookup §7 counts makes the planted-config outcome `unavailable`. A constant, a fixture or documentation
     never defines a production surface.
   - Load result: each W1 context's measured jailed leg (§15's launcher leg, not the board
     leg) runs the planted tree and the §6 measured input on the unchanged production
     argv. A defined surface is `not_loaded` only under §8: a complete §5 watch, no runtime-row change and a complete §9 proxy
     stream naming no canary. Any open, change or canary request is `loaded` (OD-10),
-    including one caused by a tool step. An undefined surface, an incomplete watch or
-    stream, a digest mismatch, an error or a timeout is `unavailable`.
+    including one caused by a tool step, whatever the completeness of the channel that
+    observed it (§8). With no such observation, an undefined surface, an incomplete watch
+    or stream, a digest mismatch, an error or a timeout is `unavailable`.
   - Credential scope and refresh (W1 only): `credential_scope` is the parent-side issuer
     measurement of §11; excess is `gemini_seat_token_scope_excess`. The in-jail
     projection check stays a shape check. Under §9, the trusted probe's bracket holds
-    exactly one refused token-endpoint event and the leg window none; anything else is
-    `gemini_seat_token_refreshed_in_jail`. `refresh_detection` also needs no §10
-    credential event and a passing §10 expired-copy control. Any missing channel makes
-    the field `unavailable`.
+    exactly one refused token-endpoint event and the leg window none; any other
+    token-endpoint event is `gemini_seat_token_refreshed_in_jail`. `refresh_detection` also
+    needs no §10 credential event and a passing §10 expired-copy control. With no positive
+    observation (§8), any missing channel makes the field `unavailable`.
   - Binding and admission (§12): results bind the listed digests and context. A
     non-admitted image makes the public fields `unavailable`; observed security results
     still take the private route.
@@ -229,6 +231,10 @@ SL-4 — E: Window kit, matrix and documentation reducer
     overrides must not load; remeasure credential scope, in-jail refresh detection,
     unlisted-endpoint refusal and observed proxy traffic, per IF-0-FIRSTSEAT-5.
     E runs these on live hosts.
+  - impl: Supply with IF-0-FIRSTSEAT-5: §16's `scan` output, including `scan_complete`;
+    §11's closed per-row bracket result, signature or `unavailable`; §14's quiet interval
+    and a launch-bridge exit wait in `sandbox_egress.py`; `start_proxy(refuse_all=True)`
+    (§15); and no proxy request from any probe outside the bracket (§9).
   - impl: Salvage only reproduced host fixes, including the resolver portion of
     agent-harness#1623. Supply panel call-site requirements to lane D. Track any
     qualification-key change as `candidate` for W1; do not use a heartbeat route
@@ -312,7 +318,8 @@ SL-4 — E: Window kit, matrix and documentation reducer
     Fix lines must never recommend `XAI_API_KEY` or another API-key lane.
   - test: Add `seats_firstseat_exec_record_window_launch`, entering `window_control_launch`
     with §13's fixture images: refuse-all controls, seeding and watches before the first
-    jailed launch, fenced windows, and the bracket before jail cleanup.
+    jailed launch, fenced windows, a scan on launches 4 to 6, the bracket before jail
+    cleanup, and the reads after a timed-out end fence.
   - test: Add `seats_firstseat_tool_surface`: unprobed/inconclusive versions,
     timeout, empty/unparseable results, any probe diagnostic, changed binaries or
     argv, and non-passing tool sets launch nothing. A passing receipt launches
@@ -344,6 +351,8 @@ SL-4 — E: Window kit, matrix and documentation reducer
   - impl: Provide `window_control_launch` (§15) at the sole launch boundary. Arm A's
     watches before each seat's first jailed launch, the board leg's included (§16). The
     board leg keeps EC-FIRSTSEAT-7's receipt and egress and adds §8 `loaded` results only.
+    Call A's bridge wait before each end fence, close each watch before its §16 reads,
+    scan launches 4 to 6, and hold §14's gap before the bracket.
   - verify: Run V-D and V-G; replay B/C through the integrated native board and
     confirm the unchanged policy can admit W1 composition before any leg degrades.
 
@@ -364,7 +373,7 @@ SL-4 — E: Window kit, matrix and documentation reducer
     entering the CLI and all-candidate selector, and `seats_firstseat_w1_receipt`
     to `test_seat_qualification_host_context.py` entering the evidence verifier.
     Include two-account isolation, missing/co-seat disclosures, stale digests,
-    incomplete host coverage and exception expiry. Require one missing/failed
+    incomplete host coverage, exception expiry and a board input other than §6's. Require one missing/failed
     negative control per containment/observed-egress field; refuse `done-local`.
     Containment failures produce no public file. Export refuses hostnames, absolute
     paths, usernames and tokens; only reviewed closed-field passing metadata passes.
@@ -376,8 +385,10 @@ SL-4 — E: Window kit, matrix and documentation reducer
     LA-2 remediation; it is not a jail falsifier and cannot trigger OD-9.
   - impl: `seat-window qualify` runs §15's launches and the board in each context, and
     alone assembles the reducer inputs; `containment` comes only from that reduction.
-    Rows the window does not exercise stay `candidate`, recorded as unobserved. A row
-    needing its own procedure is EC-FIRSTSEAT-6's falsifier, so none is added.
+    The board receives only §6's board input, its digest bound under §12; if no canonical
+    review is possible under it, the case goes to the owner and no open is exempted.
+    Rows the window does not exercise stay `candidate`, recorded as unobserved; no
+    procedure is added for them (EC-FIRSTSEAT-6).
   - impl: Prepare W1 with LA-1 host administration and managed released runtime,
     LA-2 logins and LA-3 attended runs. E owns provider-free qualification/egress
     installation and every live measurement supplied by A. Qualify writes only to
