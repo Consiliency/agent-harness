@@ -6,6 +6,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- The jailed Claude seat is handed the native Claude image behind a managed release launcher
+  (agent-harness#1641) or a guarded frontdoor (agent-harness#1798) (SEATS CLAUDE,
+  agent-harness#1820); a frontdoor whose release checks fail refuses `jail_build`.
+
 - The jailed Claude login proof (SEATS CLAUDE, agent-harness#1820):
   `seat_credentials.jailed_login_proof` rejects a caller-supplied Claude credential (any
   `ANTHROPIC_*` variable included), checks the subscription on the same login context, and runs

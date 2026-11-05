@@ -11727,6 +11727,16 @@ def _resolve_claude_executable() -> Path:
             if header == b"\x7fELF":
                 return executable
             launcher = (header + handle.read()).decode("utf-8", errors="replace")
+        # agent-harness#1798: a guarded frontdoor re-enters a release-pinned launcher the
+        # jail cannot see. It is followed, under the frontdoor's release and ownership
+        # checks, to the native image its `--shared` names; one that fails them refuses.
+        lines = [line.strip() for line in launcher.splitlines() if line.strip()]
+        if lines and _FRONTDOOR_EXEC.fullmatch(lines[-1]):
+            image = _shell_wrapper_target(executable, "claude")
+            if image is None or not os.access(image, os.X_OK):
+                raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build"),
+                                                    "claude frontdoor image is not trusted")
+            return image
         root = executable.parent.parent
         match = re.fullmatch(
             r"#!/bin/sh\nexport PATH=" + re.escape(str(root))
