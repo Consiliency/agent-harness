@@ -14209,7 +14209,7 @@
       "acceptance_criteria_count": 3,
       "created_at": "2026-11-05T03:15:51.039669Z",
       "file": "plans/phase-plan-v12-SCHEMA.md",
-      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20261104-v12-schema-plan.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20261105-v12-schema-plan-repair.md",
       "if_gates_produced": [
         "IF-0-SCHEMA-1"
       ],
@@ -14221,7 +14221,7 @@
       "lifecycle": [],
       "owner_skill": "codex-plan-phase",
       "phase_alias": "SCHEMA",
-      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/49dc5401/t3-v12-schema-plan/20261104-v12-schema-plan.md",
+      "reflection_ref": null,
       "roadmap_ref": {
         "file": "specs/phase-plans-v12.md",
         "slug": "phase-plans-v12",
@@ -14230,9 +14230,14 @@
       },
       "slug": "v12-SCHEMA",
       "status": "committed",
-      "task_summary": "Plan public supervised-run contract intake and schema-only conformance for agent-harness#1818; execution prerequisites remain unresolved.",
+      "task_summary": "Execution-ready manual v1 SCHEMA intake for agent-harness#1818; byte-pin authority remains false pending published v2 reconciliation.",
       "type": "phase",
-      "updated_at": "2026-11-05T03:15:51.039669Z"
+      "updated_at": "2026-11-05T04:29:21.795212Z",
+      "frozen_inputs": {
+        "plans/artifacts/v12-SCHEMA-inputs.md": {
+          "sha256": "2c98eafb4950cf4106e1512515dca3199cc4c6095dd5c5d6971e7c0e9b62cf0b"
+        }
+      }
     }
   ],
   "schema_version": 1

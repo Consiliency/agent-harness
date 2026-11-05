@@ -11,78 +11,98 @@ automation:
 
 ## Context
 
-Detailed phase-four plan for agent-harness#1818 (Spec–Greenfield supervised
-worker). The roadmap's EC-SCHEMA IDs remain the sole acceptance authority.
-ENVELOPE landed through agent-harness#1828; its synthetic codec is not public
-conformance. WORKER remains this phase's prerequisite. Planning neither changes
-that edge nor activates the advisory v12 roadmap.
+Detailed phase-four plan for agent-harness#1818. The roadmap EC-SCHEMA IDs remain
+acceptance authority. ENVELOPE landed through agent-harness#1828. The owner
+authorizes manual SCHEMA execution now against frozen v1; the roadmap WORKER
+edge still governs automatic selection, not these independent intake lanes.
+Advisory registry status and the roadmap DAG remain unchanged.
 
-The published provisional contract is now available, but availability is not
-adequacy. The input artifact below records missing launch coverage and divergent
-tier annotations. IF-0-SCHEMA-1 stays unproduced until those questions are
-resolved against EC-SCHEMA-3. A schema-valid negative is not a successful
-semantic conformance result. This plan authorizes no provider execution,
-controller implementation, upstream edit, release or local wire extension.
+IF-0-SCHEMA-1 records completion of the v1 loader, verified six-file closure and
+receipt. Its distinct byte_pin_authority field remains false pending published
+v2 and coverage reconciliation. Coverage/identity obligations and absent future
+test files are not work-start blockers. Schema validity is not semantic proof.
+No provider execution, controller implementation, upstream edit, release or
+local wire extension is authorized by this phase.
 
 Inspected seams: supervised_launch.py, supervised_launch_binding.py,
-conformance/outside_agent_imports.py, pyproject.toml package-data and the existing
-ENVELOPE receipt. jsonschema is already a runtime dependency. The current
-schemas/*.json package-data pattern does not include the new nested closure.
+conformance/outside_agent_imports.py, pyproject.toml and the ENVELOPE receipt.
+The current schemas/*.json package-data pattern needs the nested closure.
 
 ## External Inputs
 
-- Public repository: Consiliency/consiliency-contract; full immutable commit in
-  the frozen inventory below; root `core/supervised-run/`.
-- Independently computed SHA256SUMS hash:
-  `b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285`.
-- Frozen inventory and research findings:
-  `plans/artifacts/v12-SCHEMA-inputs.md`. It records every fetched file's raw-byte
-  sha256 and git blob id, branch-protection/ancestry observations, resource
-  closure, vector routing and unresolved coverage. Expected values come from
-  that reviewed inventory, checked against the published manifest; never bless
-  newly fetched bytes by regenerating expected pins.
+Public repository: Consiliency/consiliency-contract; full immutable v1 commit and
+all seven raw-byte hashes/blob IDs are in `plans/artifacts/v12-SCHEMA-inputs.md`.
+Root: `core/supervised-run/`. Independently verified SHA256SUMS hash:
+`b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285`.
+The owner accepts the verified publication as the maintainer inventory.
 
-Vendor the six schema/vector/README/manifest files byte-identically. The seventh
-file, upstream provenance.json, is inventoried by digest only: it is distribution
-metadata, outside the schema reference closure, and embeds source-history
-metadata excluded by the roadmap. Do not copy that content or sanitize it into
-a purported byte-identical file. Supply public harness provenance separately.
-No private inputs are fetched. Keep consiliency-contract>=0.6.5,<0.7 and its
-conftest floor unchanged; dependency version alone is not provenance. Switching
-to package resources or changing upstream bytes requires a reviewed amendment.
+The SCHEMA manifest entry's frozen_inputs extension seals this artifact's
+SHA-256. V0 verifies the seal, production pin/blob table and an independent
+literal SHA256SUMS anchor against the frozen table. Expected values come from
+reviewed inputs, never from regenerating the payload under verification.
+
+Vendor the six schema/vector/README/manifest resources byte-identically,
+preserving relative names. Upstream provenance.json is inventoried by digest
+only, outside the reference closure; its source-history content is excluded.
+Name the separate harness-authored metadata harness-provenance.json, explicitly
+outside the upstream six-file set. No private inputs are fetched or published.
+Keep consiliency-contract>=0.6.5,<0.7 and its conftest floor unchanged.
+Importing these schemas from the installed consiliency-contract distribution
+requires an amendment; importlib.resources inside phase_loop_runtime is the
+required vendored loader. Changed upstream bytes require reviewed repinning.
 
 ## Interface Freeze Gates
 
-- [ ] IF-0-SCHEMA-1 — `supervised_contracts.py:load_contract_bundle`,
-  `validate_record`, `ContractBundle`, `ContractError`; byte-identical resource
-  closure under `schemas/supervised-worker-v1/`; public provenance and
-  `plans/evidence/supervised-worker/SCHEMA.md` bound to the frozen inventory.
+- [ ] IF-0-SCHEMA-1 — supervised_contracts.py exports load_contract_bundle,
+  validate_record, ContractBundle.resource_bytes and ContractError; verified
+  resources live under schemas/supervised-worker-v1/; public harness provenance
+  and plans/evidence/supervised-worker/SCHEMA.md complete the intake freeze.
+  The receipt separately records byte_pin_authority=false for this v1 intake.
 
-Harness-local API: load_contract_bundle() returns an immutable ContractBundle
-or raises ContractError(code, resource), without network, subprocess or fallback.
-validate_record(bundle, family, record, *, definition=None) returns normally
-only for JSON Schema validity; otherwise raises ContractError with a stable
-schema-validation code. It does not admit a launch or evaluate x-semantic-rules.
-The closed families are admitted_launch_envelope.v1 and supervised_run_status.v1.
-The latter defaults to journal_line and permits only projection, page_request,
-page and reader_view as alternate definitions. Unknown selectors refuse.
+load_contract_bundle() returns an immutable ContractBundle or raises
+ContractError(code, resource). bundle.resource_bytes(name) returns captured
+immutable bytes for an exact allowlisted name. validate_record(bundle, family,
+record: bytes, *, definition=None) strictly parses JSON, returning None only for
+schema validity. It implements no launch admission or x-semantic-rules.
+Families: admitted_launch_envelope.v1 and supervised_run_status.v1. Envelope
+permits only definition=None; status defaults to journal_line and also permits
+projection, page_request, page and reader_view. Other selectors refuse.
 
-Read each allowed resource once through importlib.resources, hash captured
-bytes before parsing, and retain immutable bytes/private parsed validators.
-Verify the complete allowlist against code-owned expected digests, including
-SHA256SUMS and a digest-pinned harness provenance.json; the provenance file
-cannot supply its own expected pins. Cross-check its public commit/blob inventory.
-Missing files, mismatches, malformed manifests, unexpected resource names and
-unlisted references refuse the entire bundle before returning a validator.
-Reject duplicate JSON keys and nonfinite values. Do not reread a path for parsing
-or expose mutable schema/registry objects that bypass verified snapshots.
+Closed error codes: resource_missing, digest_mismatch, manifest_invalid,
+resource_unlisted, reference_unlisted, resource_json_invalid, schema_invalid,
+runtime_unsupported, selector_invalid, record_json_invalid, record_schema_invalid.
+resource is an allowlisted name or None. Messages contain only code/resource;
+translate underlying exceptions with raise ... from None. Instance values and
+nested exception text must not enter errors, logs or receipt metadata.
 
-Use Draft202012Validator and an offline registry with only verified schema IDs.
-The published $refs are fragment-local; permit these plus listed IDs, deny all
-other retrieval, including file/http/https URIs. The $schema annotation selects
-the installed draft implementation, never a download. No environment override,
-cwd discovery, editable expected-pin argument or latest-version fallback exists
-in the production API. Tests inject resource readers privately.
+Read each resource once; hash and parse identical captured bytes. Compare the
+complete allowlist with code-owned expected digests and sealed input identities,
+including SHA256SUMS and separately named harness-provenance.json. Metadata
+cannot provide its own expected pin. Strict JSON parsing applies to resources
+and record bytes: reject duplicate keys, nonfinite numbers and integers outside
+[-9007199254740991, 9007199254740991]. Preserve finite numbers without coercing
+schema types. Parsed Python objects are not accepted by the public record API;
+these intake conditions are distinct from JSON Schema semantics.
+
+Use Draft202012Validator with ECMA-262 pattern end-anchor semantics without
+changing vendor bytes. Every schema-declared sha256 position accepts exactly
+64 lowercase hex characters. The production pattern compatibility and every
+relevant position must have conformance tests. Resolve only verified IDs/local
+fragments in an offline registry. Before construction, check registry API
+support: jsonschema before 4.18 or unavailable compatible referencing yields
+runtime_unsupported, with no legacy resolver. The dependency floor/lock remains
+unchanged; increasing the floor requires a separate amendment. No public
+injection argument, mutable validator escape or environment/cwd override exists.
+
+intake_results, schema_results and mutation_results are runner evidence groups,
+not extra APIs. Rows carry group, test_node_id, case_or_control_id,
+resource_sha256, outcome and runner_artifact_ref. semantic_inventory rows carry
+id, source_pointer, vector_ids, owner, status and required_proof. SL-2 serializes
+these metadata-only groups in plans/evidence/supervised-worker/SCHEMA.md, with
+input_artifact_sha256, suite_artifact_sha256, hosted_run_id and byte_pin_authority.
+Outcomes must match runner-produced JUnit node/results and artifact digest,
+plus hosted run/job/head identity where applicable. Collection is not outcome
+proof. Intermediate JUnit remains runner-owned scratch, not a tracked artifact.
 
 ## Lane Index & Dependencies
 
@@ -105,146 +125,163 @@ SL-2 — Contract documentation and receipt reducer
 
 ### SL-0 — Pinned resource intake and loader
 
-- **Scope**: Vendor the approved public closure and build the fail-closed offline schema API.
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/supervised_contracts.py`, `phase-loop-runtime/src/phase_loop_runtime/schemas/supervised-worker-v1/**`, `phase-loop-runtime/pyproject.toml`, `phase-loop-runtime/tests/test_supervised_contracts.py`
-- **Interfaces provided**: `load_contract_bundle`, `validate_record`, `ContractBundle`, `ContractError`, `intake_results`
+- **Scope**: Vendor the approved closure and build the fail-closed offline schema API.
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/supervised_contracts.py`, `phase-loop-runtime/src/phase_loop_runtime/schemas/supervised-worker-v1/**`, `phase-loop-runtime/pyproject.toml`, `phase-loop-runtime/tests/test_supervised_contracts.py`, `phase-loop-runtime/scripts/verify_supervised_contract_publication.py`, `.github/workflows/supervised-contract-intake.yml`, `.gitleaks.toml`
+- **Interfaces provided**: `load_contract_bundle`, `validate_record`, `ContractBundle`, `ContractError`, `resource_bytes`, `intake_results`
 - **Interfaces consumed**: `jsonschema` (pre-existing)
 - **Parallel-safe**: no
 - **Tasks**:
-  - test: First add tests for absent/altered bytes, manifest/provenance drift,
-    unavailable resources, unknown family/definition, remote/unlisted refs,
-    duplicate keys, mutable-return substitution and replacement between read
-    and parse. Enter the production loader and assert refusal, not a test-only
-    checksum helper. Cover installed package resources as well as source files.
-  - impl: Fresh-fetch the pinned commit from the canonical public repository;
-    verify protected-default-branch ancestry and every expected raw digest/blob.
-    Vendor only the approved six files with their relative layout preserved.
-    Add harness provenance.json naming the public source, full commit, file
-    hashes/blob ids and explicitly excluded distribution metadata. Freeze its
-    expected hash in the loader after review. Implement the frozen API and add
-    schemas/supervised-worker-v1/** to package-data. Keep unrelated dependencies,
-    lockfile, init modules and generated skill bundles unchanged.
-  - verify: Run V0; record individual failure cases and same-buffer witnesses.
-    Hosted packaging verification must build/extract the wheel into scratch
-    and run V0 with the extracted package ahead of the source checkout; assert
-    module/resource provenance and identical vendored bytes. No package-version
-    change or release dispatch is part of this phase.
+  - test: Exercise missing/altered resources, manifest/provenance integrity,
+    every selector, offline resolution, duplicate/nonfinite JSON, strict record
+    intake and immutable same-buffer parsing through the production API. Assert
+    closed codes and sanitized exception chains using sentinel-bearing records.
+    Verify artifact seal, production hashes/blob IDs and independent manifest
+    anchor. Include source-copy reference-integrity controls and installed
+    package resources. Reference-integrity controls cover the entire closure and
+    its metadata together. Test hosted comparison logic offline in V0.
+  - impl: Fresh-fetch the canonical pinned commit; verify protected-default-branch
+    ancestry and every expected raw digest/blob. Vendor the six approved files.
+    Add harness-provenance.json naming public source, full commit, hashes/blob IDs
+    and excluded metadata; freeze its expected digest in the loader. Implement
+    the APIs, pattern compatibility and runtime support check. Add the nested
+    package-data glob. Keep dependencies, lockfile, init and generated bundles
+    unchanged. If gitleaks requires it, add only narrow path/digest allowlists,
+    preserving vendor bytes. Add a network-enabled hosted publication workflow
+    and script that independently fetch the pinned commit and compare vendor
+    bytes/blobs and sealed inventory; ordinary tests remain offline.
+  - verify: Run V0. The hosted job runs the publication script, records branch
+    provenance and observed run/job/head, and fails on any comparison difference.
+    Hosted packaging verification builds/extracts the wheel to scratch and runs
+    V0 with the extracted package ahead of the source checkout. Assert actual
+    module/resource origins and identical bytes. No version bump or release.
 
 ### SL-1 — Schema corpus and mutation proof
 
-- **Scope**: Exercise pinned structural cases and inventory every deferred semantic obligation.
+- **Scope**: Exercise pinned structural cases and inventory every semantic obligation.
 - **Owned files**: `phase-loop-runtime/tests/test_supervised_contracts_vectors.py`, `phase-loop-runtime/tests/test_supervised_contracts_mutations.py`
 - **Interfaces provided**: `schema_results`, `semantic_inventory`, `mutation_results`
-- **Interfaces consumed**: `load_contract_bundle`, `validate_record`, `ContractBundle`, `ContractError`, `intake_results`
+- **Interfaces consumed**: `load_contract_bundle`, `validate_record`, `ContractBundle`, `ContractError`, `resource_bytes`, `intake_results`
 - **Parallel-safe**: no
 - **Tasks**:
-  - test: Parameterize every published case ID: 16 envelope and 35 status cases.
-    Expand negative patches from their named controls using RFC 6901/6902;
-    preserve raw torn-line strings and final-newline flags. Apply rehash only as
-    specified, using the vectors' restricted ASCII/integer JCS domain. Project
-    envelopes, parseable journal lines, projection, request/page and reader_view
-    objects into the appropriate schema definition; never validate the wrapper
-    as a record or silently drop a component. Malformed raw lines stay semantic
-    obligations, not invented schema failures. Add labelled local structural
-    negatives for required fields, wrong types and closed enums/properties in
-    both families. Do not alter the published vectors.
-  - impl: Keep patch/extraction helpers test-local; validate_record remains JSON
-    Schema only. Inventory each expected diagnostic/effect with its exact case
-    ID, component mapping, producer owner and unresolved upstream_phase_unmet
-    status for CLOSEOUT. All published semantic negatives must remain structurally
-    valid where a JSON object exists. Do not count that result as proof of their
-    expected diagnostic. Include the positive controls' deferred runtime effects.
-    Explicitly pair S-evidence-copied with V-two-attempts: copied evidence-envelope
-    digest requires attempt_evidence_copied; identical proposal bytes with
-    distinct evidence, envelope, run and attempt provenance remain legitimate.
-    Also retain N20-raw-stdout-ref and N18-run-status-as-evidence to distinguish
-    inline evidence/output from producer-owned references and work authority.
-  - verify: Run V1 then V2. Mutate the production digest comparison and
-    Draft202012 validation invocation separately; each previously passing test
-    must fail with a path-entered witness. Also bypass the offline resolver,
-    allowlist and captured-buffer parsing separately. For resolver mutation,
-    inject a synthetic resource behind a controlled verified-read seam so the
-    digest guard cannot mask whether reference denial was entered. Restore each
-    mutant before the next run. Semantic bypass mutants belong to the actual
-    ENVELOPE/JOURNAL/WORKER paths in CLOSEOUT, never a parallel semantic model.
+  - test: Consume vectors only through resource_bytes; compare case IDs with the
+    frozen artifact (16 envelope, 35 status). Expand RFC 6901/6902 patches from
+    named controls, asserting every declared pointer effect and a changed value.
+    Assert specified rehash results and S-digest-not-rehashed's expected digest
+    relation using the corpus's ASCII/integer JCS domain. Preserve raw lines and
+    final-newline flags. Map all components to the proper definitions; malformed
+    raw lines remain semantic obligations. Add labelled structural negatives for
+    each definition and nested reference, including every sha256-typed position.
+  - impl: Keep extraction/patch helpers test-local. All parseable published
+    semantic negatives remain structurally valid; that proves no diagnostic.
+    Inventory the union of all x-semantic-rules codes, all x-journal-rules entries
+    and named coverage obligations in the artifact, each mapped to zero or more
+    vectors. Zero-vector rows remain unresolved upstream_phase_unmet and withhold
+    byte-pin authority, not SCHEMA execution. Include controls' runtime effects.
+    Preserve S-evidence-copied and V-two-attempts as the evidence/identity pair,
+    plus N20-raw-stdout-ref and N18-run-status-as-evidence. Producer evidence,
+    baseline identity and acceptance remain independently bound per attempt.
+  - verify: Run V1 then V2. Require path-entered production controls for digest,
+    validation, selector, pattern compatibility, offline resolution, allowlist
+    and captured-buffer parsing. Include reference-integrity and patch-expansion
+    controls. Use isolated source copies; no public API permits test injection.
+    Each control must change a passing assertion to failure. Restore each copy
+    independently. Semantic controls belong to actual runtime paths at CLOSEOUT.
 
 ### SL-2 — Contract documentation and receipt reducer
 
-- **Scope**: Reconcile both producers into public documentation and an honest metadata-only gate receipt.
+- **Scope**: Reconcile both producers into documentation and an accurate authority receipt.
 - **Owned files**: `docs/supervised-worker-contracts.md`, `plans/evidence/supervised-worker/SCHEMA.md`, `phase-loop-runtime/tests/test_supervised_contracts_receipt.py`
 - **Interfaces provided**: `plans/evidence/supervised-worker/SCHEMA.md`
 - **Interfaces consumed**: `intake_results`, `schema_results`, `semantic_inventory`, `mutation_results`, `load_contract_bundle`, `validate_record`
 - **Parallel-safe**: no
 - **Tasks**:
-  - test: Test receipt bindings against the production loader, actual per-node
-    results and the complete case inventory. Omitted S-evidence-copied or
-    V-two-attempts, a semantic case relabelled satisfied by schema validity,
-    missing mutation evidence or an unresolved coverage blocker labelled passed
-    must fail. Enter production before falsifying a temporary receipt binding.
-  - impl: Document the APIs, package resource closure and exact input pins.
-    Record coverage of instruction/reference, argv, executable/dependency
-    identity, workspace source/baseline, timeout, tiers, lifecycle, identity,
-    projection and bounds using public JSON pointers or explicit absence.
-    Track input-artifact questions individually, preserve unresolved semantic
-    ownership and withhold IF-0-SCHEMA-1 while coverage is inadequate. Actual
-    outcomes, module provenance, nodes and mutants are runner-stamped here;
-    never prefill passes or predicted repository heads. No-doc-change decision:
-    CHANGELOG/README/release notes remain current because this internal schema seam adds no user CLI or
-    release; WORKER owns integrated-feature documentation. No UI is introduced.
-  - verify: Run V3 and the effective phase suite. Check the receipt rejects
-    stale input/results and false readiness. Confirm both producer lanes are
-    consumed and no unresolved question was replaced with an invented wire key.
+  - test: Compare receipt bindings with production loader observations, actual
+    JUnit/run evidence and the complete schema-derived rule/entry inventory.
+    Require every named obligation and case, correct schema-only classifications
+    and false byte-pin authority. Resolve coverage pointers and verify asserted
+    absences in captured schemas; opaque context/snapshot/obligation fields do not
+    establish launch coverage. Enter production before temporary receipt controls.
+    Check no production launch/journal module imports supervised_contracts while
+    byte_pin_authority is false. Missing or skipped required results fail.
+  - impl: Document APIs, pins, all coverage dimensions and owner decisions from
+    the artifact. Produce IF-0-SCHEMA-1 for completed intake, recording
+    byte_pin_authority=false until published v2 and identity/lifecycle/evidence
+    obligations are reconciled. Bind actual node/control outcomes and module
+    provenance to runner evidence; never prefill outcomes or predicted heads.
+    No-doc-change decision: CHANGELOG/README/release notes remain current because
+    this internal seam adds no public CLI or release; WORKER owns integrated
+    feature documentation. No UI is introduced.
+  - verify: Run V3 and the effective phase suite; verify both producer groups,
+    coverage inventory and evidence bindings. Require accurate withheld authority
+    independently of successful schema tests. No local wire additions are made.
 
 ## Verification
 
-V0–V3 and the effective suite are future implementation commands, not run by
-this planning task. Use locked Python 3.12+ with absolute checkout source/test
-PYTHONPATH per CONTRIBUTING.md. Check uptime, free -g and /proc/pressure/io
-before each command; stop if degraded. Run serially under timeout, with -n 0
-and no cacheprovider; no full local suites, make check or unbounded parallelism.
+V0–V3 and the frontmatter suite are future implementation commands. Use locked
+Python 3.12+ and absolute checkout source/test PYTHONPATH per CONTRIBUTING.md.
+Check uptime, free -g and /proc/pressure/io before each command; stop if degraded.
+Run serially under timeout, -n 0 and no cacheprovider. No full local suites,
+make check or unbounded parallelism.
 
 - V0: `timeout 300 python3 -m pytest -q -n 0 -p no:cacheprovider phase-loop-runtime/tests/test_supervised_contracts.py`
 - V1: `timeout 300 python3 -m pytest -q -n 0 -p no:cacheprovider phase-loop-runtime/tests/test_supervised_contracts_vectors.py`
 - V2: `timeout 300 python3 -m pytest -q -n 0 -p no:cacheprovider phase-loop-runtime/tests/test_supervised_contracts_mutations.py`
 - V3: `timeout 300 python3 -m pytest -q -n 0 -p no:cacheprovider phase-loop-runtime/tests/test_supervised_contracts_receipt.py`
 
-The frontmatter suite runs exactly these four owned files, serially, and is the
-whole-phase regression command. Collect each file individually after creation;
-require every required case and mutant, no missing/skipped-only nodes or exit 5.
-Report multiple failures; flag proof cost above roughly five minutes on one node.
+The effective whole-phase suite runs exactly these four owned files serially.
+Collect each individually after creation; require every case/control, with no
+missing/skipped-only required nodes or exit 5. Report multiple failures; flag
+proof cost exceeding roughly five minutes on one node.
 
-Validate all four argv lists and automation.suite_command through
-verification_evidence.validate_verification_commands (IF-0-VC-2). Planning must
-record missing future test paths honestly; repeat after implementation and
-require zero findings before execution handoff. Do not create empty test files
-or use whole-repository collection to manufacture a pass.
-Hosted CI owns full regression, wheel packaging proof and the repository's six
+Validate all argv and automation.suite_command through
+verification_evidence.validate_verification_commands (IF-0-VC-2). Missing paths
+owned by these lanes are expected pre-implementation state, not a work-start
+blocker. Repeat after creation and require zero findings before verification and
+closeout. Do not create empty tests or use whole-repository collection.
+Hosted CI owns publication comparison, wheel proof, full regression and the six
 required checks. CLOSEOUT owns observed-head Gate A and independent review.
-Operational evidence is recorded through runner-stamped amendments to the SCHEMA
-receipt; proxy evidence requires a roadmap amendment. No future SHA/count is
-an acceptance condition.
+Runner-stamped receipt amendments bind JUnit artifacts and hosted run/job/head
+identities. Proxy evidence requires a roadmap amendment. No future SHA/count
+is an acceptance condition.
 
 ## Acceptance Criteria
 
-- [ ] EC-SCHEMA-1 — proven by `timeout 300 python3 -m pytest -q -n 0 -p no:cacheprovider phase-loop-runtime/tests/test_supervised_contracts.py`; falsified by digest-comparison bypass at production load_contract_bundle with path-entered tampered-resource refusal assertions.
-- [ ] EC-SCHEMA-2 — proven by `timeout 300 python3 -m pytest -q -n 0 -p no:cacheprovider phase-loop-runtime/tests/test_supervised_contracts_vectors.py phase-loop-runtime/tests/test_supervised_contracts_mutations.py`; falsified by production validate_record validation bypass with path-entered structural-negative assertions and a semantic case falsely marked satisfied.
-- [ ] EC-SCHEMA-3 — proven by `timeout 300 python3 -m pytest -q -n 0 -p no:cacheprovider phase-loop-runtime/tests/test_supervised_contracts_receipt.py`; falsified by stale input/result bindings or uncovered launch inputs marked accepted after entering production load_contract_bundle and validate_record.
+- [ ] EC-SCHEMA-1 — proven by `timeout 300 python3 -m pytest -q -n 0 -p no:cacheprovider phase-loop-runtime/tests/test_supervised_contracts.py`; falsified by a path-entered production load_contract_bundle reference-integrity control failing its refusal assertion.
+- [ ] EC-SCHEMA-2 — proven by `timeout 300 python3 -m pytest -q -n 0 -p no:cacheprovider phase-loop-runtime/tests/test_supervised_contracts_vectors.py phase-loop-runtime/tests/test_supervised_contracts_mutations.py`; falsified by path-entered production validate_record pattern/selector controls or incorrect schema-only evidence classification.
+- [ ] EC-SCHEMA-3 — proven by `timeout 300 python3 -m pytest -q -n 0 -p no:cacheprovider phase-loop-runtime/tests/test_supervised_contracts_receipt.py`; falsified by incorrect receipt bindings or byte_pin_authority after entering production load_contract_bundle and validate_record.
 
 ## Execution Notes
 
-Owned-file sets are disjoint; SL-0 owns shared package metadata, SL-2 consumes
-both producer lanes. All lanes are sequential; no subagents or worktree fanout.
-Do not edit the roadmap, ENVELOPE implementation, journal/worker code, installed
-contract package, conftest, dependency locks or generated bundles. In particular,
-phase-loop-runtime/uv.lock stays untouched because only package-data discovery
-changes, with no dependency/version/resolution change; check (R) is advisory.
-The input
-artifact is read-only; upstream repair requires an explicit plan/input amendment.
-No post-dispatch reducer is needed; package-data ownership is not a release.
+File sets are disjoint: SL-0 owns shared package/workflow configuration; SL-2
+consumes both producers. All lanes are sequential, with no subagents or worktree
+fanout. ENVELOPE, journal/worker, conftest, dependencies and generated bundles
+stay untouched. phase-loop-runtime/uv.lock stays unchanged because only package
+data changes; check (R) is advisory. The input artifact and its manifest seal
+are read-only execution inputs. No release dispatch or post-dispatch reducer
+is needed; package-data ownership accounts for check (N).
 
-Next phase: SCHEMA - blocked: WORKER prerequisite, unresolved public coverage,
-and future verification paths; advisory activation is a separate owner decision.
-Next command: none - preserve prerequisites and resolve public coverage first.
+Next phase: SCHEMA - execution ready for owner-authorized manual v1 intake.
+Next command: codex-execute-phase plans/phase-plan-v12-SCHEMA.md.
+
+## V2 follow-up in CLOSEOUT
+
+Plan a separate sequential reconciliation lane after reviewed v2 publication and
+inventory from a squash-merged consiliency-contract PR; no tag is required. Pin
+no v2 revision/digest yet. The follow-up covers supervised_launch.py,
+supervised_launch_binding.py, their launch/binding/route/mutation/receipt tests,
+public fixtures, supervised-worker documentation and CLOSEOUT evidence. Its
+execution plan must enumerate journal/worker integration companions before
+writing them. This future lane does not delay current SCHEMA work.
+
+The owner-defined v2 binds instruction/reference digests, argv as SHA-256 of the
+UTF-8 RFC 8785 JCS array, executable/wrapper identity, workspace source and integer
+seconds in [1, declared_bound], with declared_bound <= 3600. Reconcile effective
+environment, trusted policy/qualification, action/route/delivery and conditional
+execution-view/egress grants through digest/references, keeping host details local.
+Tier annotations confer no provider qualification. v2 has no caller_context or
+harness-local fields. Explicitly reconcile the exact-key ENVELOPE seam, preserving
+v1 bytes and conservative tier/dependency guards. Use the artifact's public-codec
+identity/replay, lifecycle and evidence obligations before granting authority.
 
 ## Spec Closeout Plan
 
@@ -255,5 +292,6 @@ Next command: none - preserve prerequisites and resolve public coverage first.
 - redaction posture: `metadata_only`
 - downstream handling: `none`
 
-Malformed evidence is a repairable contract_bug; unresolved upstream coverage
-is upstream_phase_unmet. Neither can be waived by a schema-only green run.
+Malformed evidence is a repairable contract_bug. Unresolved coverage/semantic rows
+retain upstream_phase_unmet for subsequent authority decisions; they do not
+block v1 execution or an accurate false-authority receipt.

@@ -51,25 +51,47 @@ content is outside the roadmap's public-input scope. Runtime harness provenance
 must cite only the public distribution repository/commit and this six-file
 closure, with an explicit exclusion entry for distribution metadata. Do not
 copy private-source metadata, fetch its origin or mutate a vendored source file.
-A separately reviewed harness provenance.json will itself be digest-pinned in
+A separately reviewed harness-provenance.json, explicitly outside the six upstream
+resources, will itself be digest-pinned in
 supervised_contracts.py. The implementation receipt must distinguish that
 harness metadata from the byte-identical upstream files.
 
-## Coverage findings that prevent premature gate completion
+## Owner decisions and byte-pin authority
 
-| Finding | Public evidence | Required disposition |
-| --- | --- | --- |
-| Launch payload coverage | Envelope /properties and closed /additionalProperties contain no instruction bytes/reference, argv, executable/wrapper identity, workspace source or timeout. /workspace has only kind and repo_relative_locators; /units/snapshot_ref is opaque. | Upstream contract owner must resolve how every launch-determining input is bound. No invented fields or caller_context side channel; IF-0-SCHEMA-1 remains blocked under EC-SCHEMA-3. |
-| Tier basis | Envelope /x-enforcement-tiers marks local tiers qualified and provider write_scope checked_before_apply; roadmap matrix marks required write_scope unsupported and requires installed-tool qualification. | Reconcile upstream semantics with harness obligations; annotations alone cannot qualify a provider or silently relax the roadmap. |
-| Attempt identity | Envelope has no explicit run_id/attempt_id or version property; status /$defs/attempt_identity and journal_line carry their own identity/version shape. | CLOSEOUT must reconcile the trusted codec/local API and bind identity; no public codec is wired in SCHEMA. |
-| Lifecycle and bounds | Status /x-journal-rules declares lifecycle, liveness, page/event/attempt limits. Many are semantic annotations; page_size and version are deliberately weak structurally. | Inventory JOURNAL/WORKER production obligations, including all four numeric limits, rather than declaring schema validation sufficient. |
-| Provisional distribution | Both schemas and vector files declare provisional status. | Treat this revision as a pinned input, not authoritative runtime readiness. Future changes need reviewed consumer reconciliation and explicit repinning. |
-| Maintainer inventory | Published SHA256SUMS pins five files; the owner supplies the public commit and manifest prefix; independent full hashes/blob ids are recorded above. | Confirm whether the owner considers this reviewed publication sufficient for the roadmap's maintainer inventory requirement; do not claim signed provenance. |
+Manual SCHEMA intake proceeds now against the frozen v1 publication. The verified
+publication satisfies the maintainer inventory requirement; the owner has confirmed
+the existing published-inventory record. No additional signature or record is required.
+The pin table above distinguishes published expected values from local verification.
 
-The missing launch coverage already prevents a passing byte-pin gate even if
-all hash checks pass. Resolve upstream and amend these frozen inputs if necessary;
-never manufacture local wire extensions. WORKER is still the declared SCHEMA
-prerequisite; this planning artifact does not amend ordering or registry state.
+IF-0-SCHEMA-1 freezes the v1 loader, six-file input and accurate receipt.
+byte_pin_authority is a separate receipt boolean and remains false for this intake.
+WORKER remains the roadmap automatic-selection edge; owner-authorized manual intake
+does not wait for WORKER or for the test files this phase creates.
+
+The contract owner will publish admitted_launch_envelope.v2 alongside unchanged v1
+through a reviewed squash merge of a consiliency-contract PR, without a tag. No
+v2 commit or digest is assumed. The five bindings are instruction/reference byte
+digests, argv (SHA-256 of UTF-8 RFC 8785 JCS array), executable/wrapper identity,
+workspace source and integer timeout seconds in [1, declared_bound], bound <=3600.
+Reconciliation also covers effective environment, trusted policy/qualification,
+action/route/delivery and conditional execution-view/egress grants. Host-local
+identities stay local; public fields carry digest/reference bindings. v2 has no
+caller_context or harness-local fields. The harness owns ENVELOPE reconciliation
+in the publication-gated CLOSEOUT follow-up, including exact-key codec handling.
+
+| Dimension | Required reconciliation and receipt treatment |
+| --- | --- |
+| Launch coverage | Verify each of the five bindings against published v2, then the four additional groups against the effective local launch snapshot. Resolve every cited schema pointer and verify every asserted absence. Opaque context, snapshot or obligation references alone do not establish launch coverage. |
+| Tier basis | v1 annotates provider_readonly_patch_return_audit and post_write_audit_only qualified=true, and os_enforced qualified=false; provider write_scope is checked_before_apply, the others not_enforced. Annotations describe semantics/limits only; independently qualified tool evidence is still required. Preserve the harness matrix and route_not_qualified outcome when qualification is not established. |
+| Named controls | Inventory E-admitted, E-dependency-declared and E-echo separately for required write_scope reconciliation. E-dependency-declared also requires an owner-approved dependency-route mapping. Preserve standalone dependency refusal; schema validity is not permission to queue these controls on that route. |
+| Identity | Require the public-codec envelope-to-attempt join, fresh attempt identity, sequential/concurrent/restart replay proof, and invariant unit/snapshot/crosswalk provenance. Resolve the public mapping for EC-JOURNAL-4 correlation without adding fields or reinstating caller_context in v2. |
+| Lifecycle and bounds | Require the semantic/journal entries and named coverage obligations below, including all four numeric limits and every lifecycle edge. |
+| Distribution | v1 remains provisional and byte-identical. Reconcile and explicitly repin any later publication; no local wire additions. |
+
+These are authority conditions recorded by the v1 receipt, not execution blockers.
+Unresolved rows retain upstream_phase_unmet for CLOSEOUT and keep
+byte_pin_authority=false even when all structural tests pass. V2 publication is
+necessary but does not alone satisfy unresolved identity/lifecycle/evidence proof.
 
 ## Structural and semantic evidence separation
 
@@ -78,8 +100,8 @@ There are 16 envelope cases (4 controls, 12 negatives) and 35 status cases
 (7 controls, 28 negatives). The case table below records original IDs and
 expected diagnostics, not observed semantic results. Every row remains
 unresolved upstream_phase_unmet for runtime proof, including controls' effects.
-SCHEMA tests project structural components and add explicitly local structural
-negatives; those local cases do not become upstream vectors.
+SCHEMA consumes verified bundle buffers, projects structural components and adds
+explicitly local structural negatives per definition and nested reference; those local cases do not become upstream vectors.
 
 Extraction: envelope cases validate input.envelope; echoed context and injected
 validator_context are semantic inputs. Journal cases validate every object line
@@ -159,3 +181,116 @@ to this inventory. Unknown versions, broken chains, torn tails, stale projection
 foreign records, unbounded pages and copied evidence must not be marked proven
 by a structurally green record. Do not implement a second semantic evaluator in
 supervised_contracts.py or in this planning task.
+
+## Schema-derived obligation inventory
+
+The 51 case rows are one index, not the full semantic inventory. The required union
+is every x-semantic-rules code, every recursive x-journal-rules member and every
+named obligation below. Tests derive those sets from verified resource_bytes and
+require exact coverage. Each receipt row carries id, source_pointer, vector_ids
+(possibly empty), owner, status and required_proof. All semantic results remain
+unresolved upstream_phase_unmet until production proof; zero-vector rows remain
+explicit authority conditions. Expected effects are recorded independently of
+expected diagnostic sets. SCHEMA does not implement new semantic rules.
+
+| Rule ID | Source pointer | Published diagnostic vectors | Owner |
+| --- | --- | --- | --- |
+| `envelope:envelope_digest_mismatch` | `admitted-launch-envelope.schema.json#/x-semantic-rules/envelope_digest_mismatch` | `S-digest-not-rehashed` | ENVELOPE/WORKER |
+| `envelope:authority_foreign` | `admitted-launch-envelope.schema.json#/x-semantic-rules/authority_foreign` | `RC17-foreign-assignment-rehashed`, `RC17-foreign-project-rehashed` | ENVELOPE/WORKER |
+| `envelope:authority_baseline_stale` | `admitted-launch-envelope.schema.json#/x-semantic-rules/authority_baseline_stale` | `RC16-stale-rehashed` | ENVELOPE/WORKER |
+| `envelope:tier_unqualified` | `admitted-launch-envelope.schema.json#/x-semantic-rules/tier_unqualified` | `S-os-enforced-unqualified` | ENVELOPE/WORKER |
+| `envelope:constraint_unsupported` | `admitted-launch-envelope.schema.json#/x-semantic-rules/constraint_unsupported` | `N21-network-required`, `N21-command-required` | ENVELOPE/WORKER |
+| `envelope:workspace_not_separate_copy` | `admitted-launch-envelope.schema.json#/x-semantic-rules/workspace_not_separate_copy` | `N21-worktree-under-patch-return` | ENVELOPE/WORKER |
+| `envelope:locator_not_repo_relative` | `admitted-launch-envelope.schema.json#/x-semantic-rules/locator_not_repo_relative` | `S-envelope-absolute-locator` | ENVELOPE/WORKER |
+| `envelope:dependency_digest_required` | `admitted-launch-envelope.schema.json#/x-semantic-rules/dependency_digest_required` | `S-dependency-without-digest` | ENVELOPE/WORKER |
+| `envelope:raw_output_in_record` | `admitted-launch-envelope.schema.json#/x-semantic-rules/raw_output_in_record` | `S-envelope-raw-output` | ENVELOPE/WORKER |
+| `envelope:caller_context_interpreted` | `admitted-launch-envelope.schema.json#/x-semantic-rules/caller_context_interpreted` | `S-caller-context-interpreted` | ENVELOPE/WORKER |
+| `envelope:refusal_zero_invocations` | `admitted-launch-envelope.schema.json#/x-semantic-rules/refusal_zero_invocations` | (none; explicit unresolved obligation) | ENVELOPE/WORKER |
+| `status:journal_torn_line` | `run-status.schema.json#/x-semantic-rules/journal_torn_line` | `N15-torn-line`, `N15-no-final-newline` | JOURNAL/WORKER |
+| `status:journal_malformed_line` | `run-status.schema.json#/x-semantic-rules/journal_malformed_line` | (none; explicit unresolved obligation) | JOURNAL/WORKER |
+| `status:journal_unknown_version` | `run-status.schema.json#/x-semantic-rules/journal_unknown_version` | `N15-unknown-version` | JOURNAL/WORKER |
+| `status:journal_foreign_writer` | `run-status.schema.json#/x-semantic-rules/journal_foreign_writer` | `N15-foreign-writer` | JOURNAL/WORKER |
+| `status:attempt_overwritten` | `run-status.schema.json#/x-semantic-rules/attempt_overwritten` | `N04a-seq-skip`, `N04a-seq-regress`, `N04a-replaced-in-place` | JOURNAL/WORKER |
+| `status:attempt_provenance_mismatch` | `run-status.schema.json#/x-semantic-rules/attempt_provenance_mismatch` | `N04b-foreign-binding` | JOURNAL/WORKER |
+| `status:attempt_evidence_copied` | `run-status.schema.json#/x-semantic-rules/attempt_evidence_copied` | `S-evidence-copied` | JOURNAL/WORKER |
+| `status:refused_after_launch` | `run-status.schema.json#/x-semantic-rules/refused_after_launch` | `N19-refused-after-start`, `N19-refused-after-running` | JOURNAL/WORKER |
+| `status:lifecycle_invalid` | `run-status.schema.json#/x-semantic-rules/lifecycle_invalid` | `S-finished-without-termination` | JOURNAL/WORKER |
+| `status:raw_output_in_record` | `run-status.schema.json#/x-semantic-rules/raw_output_in_record` | `N20-raw-stdout-ref`, `N20-raw-message` | JOURNAL/WORKER |
+| `status:locator_not_repo_relative` | `run-status.schema.json#/x-semantic-rules/locator_not_repo_relative` | `N20-absolute-locator`, `N20-parent-locator` | JOURNAL/WORKER |
+| `status:projection_behind_journal` | `run-status.schema.json#/x-semantic-rules/projection_behind_journal` | `N16-projection-behind`, `N16-attempt-missing` | JOURNAL/WORKER |
+| `status:projection_not_from_journal` | `run-status.schema.json#/x-semantic-rules/projection_not_from_journal` | `S-projection-ahead` | JOURNAL/WORKER |
+| `status:owner_not_live` | `run-status.schema.json#/x-semantic-rules/owner_not_live` | `N17-owner-not-live`, `N17-pid-reused` | JOURNAL/WORKER |
+| `status:run_record_foreign` | `run-status.schema.json#/x-semantic-rules/run_record_foreign` | `RC24-foreign-assignment`, `RC24-foreign-snapshot` | JOURNAL/WORKER |
+| `status:runtime_not_work_outcome` | `run-status.schema.json#/x-semantic-rules/runtime_not_work_outcome` | `N18-completed-as-outcome`, `N18-run-status-as-evidence` | JOURNAL/WORKER |
+| `status:read_unbounded` | `run-status.schema.json#/x-semantic-rules/read_unbounded` | `RC25-no-page-size`, `RC25-no-omitted`, `RC25-over-bound` | JOURNAL/WORKER |
+
+The envelope refusal_zero_invocations obligation additionally consumes refusal
+expected_effect assertions; diagnostic-vector absence never removes that obligation.
+
+| Journal entry | Owner | Required evidence |
+| --- | --- | --- |
+| `run-status.schema.json#/x-journal-rules/location` | JOURNAL/WORKER | Production proof, mapped to zero or more case IDs; unresolved until observed. |
+| `run-status.schema.json#/x-journal-rules/writers` | JOURNAL/WORKER | Production proof, mapped to zero or more case IDs; unresolved until observed. |
+| `run-status.schema.json#/x-journal-rules/segments` | JOURNAL/WORKER | Production proof, mapped to zero or more case IDs; unresolved until observed. |
+| `run-status.schema.json#/x-journal-rules/lifecycle` | JOURNAL/WORKER | Production proof, mapped to zero or more case IDs; unresolved until observed. |
+| `run-status.schema.json#/x-journal-rules/lifecycle/queued` | JOURNAL/WORKER | Production proof, mapped to zero or more case IDs; unresolved until observed. |
+| `run-status.schema.json#/x-journal-rules/lifecycle/queued/0` | JOURNAL/WORKER | Production proof, mapped to zero or more case IDs; unresolved until observed. |
+| `run-status.schema.json#/x-journal-rules/lifecycle/queued/1` | JOURNAL/WORKER | Production proof, mapped to zero or more case IDs; unresolved until observed. |
+| `run-status.schema.json#/x-journal-rules/lifecycle/running` | JOURNAL/WORKER | Production proof, mapped to zero or more case IDs; unresolved until observed. |
+| `run-status.schema.json#/x-journal-rules/lifecycle/running/0` | JOURNAL/WORKER | Production proof, mapped to zero or more case IDs; unresolved until observed. |
+| `run-status.schema.json#/x-journal-rules/lifecycle/running/1` | JOURNAL/WORKER | Production proof, mapped to zero or more case IDs; unresolved until observed. |
+| `run-status.schema.json#/x-journal-rules/lifecycle/cancelling` | JOURNAL/WORKER | Production proof, mapped to zero or more case IDs; unresolved until observed. |
+| `run-status.schema.json#/x-journal-rules/lifecycle/cancelling/0` | JOURNAL/WORKER | Production proof, mapped to zero or more case IDs; unresolved until observed. |
+| `run-status.schema.json#/x-journal-rules/lifecycle/finished` | JOURNAL/WORKER | Production proof, mapped to zero or more case IDs; unresolved until observed. |
+| `run-status.schema.json#/x-journal-rules/lifecycle/refused` | JOURNAL/WORKER | Production proof, mapped to zero or more case IDs; unresolved until observed. |
+| `run-status.schema.json#/x-journal-rules/bounds` | JOURNAL/WORKER | Production proof, mapped to zero or more case IDs; unresolved until observed. |
+| `run-status.schema.json#/x-journal-rules/bounds/page_size_max` | JOURNAL/WORKER | Production proof, mapped to zero or more case IDs; unresolved until observed. |
+| `run-status.schema.json#/x-journal-rules/bounds/event_message_max_chars` | JOURNAL/WORKER | Production proof, mapped to zero or more case IDs; unresolved until observed. |
+| `run-status.schema.json#/x-journal-rules/bounds/per_attempt_event_cap` | JOURNAL/WORKER | Production proof, mapped to zero or more case IDs; unresolved until observed. |
+| `run-status.schema.json#/x-journal-rules/bounds/attempts_per_page_max` | JOURNAL/WORKER | Production proof, mapped to zero or more case IDs; unresolved until observed. |
+| `run-status.schema.json#/x-journal-rules/liveness` | JOURNAL/WORKER | Production proof, mapped to zero or more case IDs; unresolved until observed. |
+
+## Named coverage obligations
+
+These are required outcomes for publication reconciliation and runtime proof, not
+new harness wire rules. The public contract owner supplies any necessary normative
+rule/vector coverage; the harness implements only the reconciled contract.
+
+| ID | Required behavior / publication decision | Proof owner |
+| --- | --- | --- |
+| status-digest-text | All digest-typed positions have exact lexical identity; settle the status-wide control-character policy with the owner. | Contract owner; JOURNAL |
+| lifecycle-shape | line_kind and body_kind agree; each terminal state has its owner-defined termination/refusal/result-binding combination, with no contradictory state data. | Contract owner; JOURNAL |
+| lifecycle-transitions | Enforce every allowed transition and terminal-state requirement, including required refusal data and malformed nonterminal-line handling; publish corresponding cases where needed. | Contract owner; JOURNAL |
+| lifecycle-process-result | Completed runtime results bind actual invocation and owner-defined result evidence; publish the required invocation/result relationship. | Contract owner; WORKER/JOURNAL |
+| identity-units | Unit IDs, snapshot and crosswalk provenance remain consistent across an attempt and its admitted envelope. | Contract owner; ENVELOPE/JOURNAL |
+| identity-public-replay | Public-codec path joins attempt.envelope_digest to the admitted envelope and repeats sequential, concurrent and restart replay tests with fresh identities. | Contract owner; ENVELOPE/JOURNAL/WORKER |
+| identity-journal-correlation | Resolve public status crosswalk and EC-JOURNAL-4 correlation mapping, respecting v2's lack of caller_context and prohibiting local fields. | Contract owner; JOURNAL |
+| route-public-controls | Reconcile E-admitted, E-echo and E-dependency-declared effects with required write_scope, qualification and supported dependency routes; preserve standalone refusal. | Contract owner; ENVELOPE/WORKER |
+| evidence-producer-binding | Resolve producer-owned evidence and verify its contents bind envelope, run and attempt; define coverage for both terminal result_binding and event evidence_envelope references. | Contract owner; JOURNAL/WORKER |
+| proposal-attempt-independence | Equal proposal digests never transfer acceptance, deduplicate attempt evidence or establish freshness. Preserve separately proven baseline identity and per-attempt evidence; publish the baseline/result mapping. | Contract owner; WORKER/JOURNAL |
+
+## Verification requirements
+
+- The production validator supplies ECMA-262 pattern end-anchor behavior, without
+  editing upstream bytes. Label local conformance negatives at all schema-declared
+  sha256 positions. Source-copy controls cover pattern-keyword compatibility and
+  every definition selector, with production path-entry witnesses.
+- Vector expansion asserts every patch operation's effect, changed addressed value,
+  specified rehash and the S-digest-not-rehashed relation. Source-copy helper controls
+  must affect these assertions. Record all raw-line components without claiming
+  that parsing them is semantic proof.
+- Verify the artifact seal in the SCHEMA manifest frozen_inputs extension, production pin/blob
+  table and the independent published SHA256SUMS anchor. Reference-integrity controls
+  cover the entire closure and its metadata together. A separate hosted job fetches
+  the frozen public commit and checks actual vendor bytes and blob IDs; its run/job/head
+  and result artifact digest are required receipt evidence. Offline tests use no network.
+- Record inputs are strict JSON bytes, with duplicate-key/nonfinite/exact-integer
+  domain checks. Test finite numeric forms without coercing schema types; never
+  infer canonical JCS byte identity from Python serialization. jsonschema/referencing
+  API support is checked explicitly and unsupported runtimes refuse with code-only
+  errors; dependencies remain unchanged in this phase.
+- Coverage-pointer tests resolve the verified schemas and check each claimed absence.
+  Receipt tests compare complete rule/entry/obligation sets and actual runner JUnit
+  outcomes; node collection alone is insufficient. Runtime modules do not import
+  the schema-only seam while byte-pin authority is false. Public API surfaces expose
+  no test injection path. Errors and chains contain only approved code/resource data.
