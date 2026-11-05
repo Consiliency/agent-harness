@@ -696,6 +696,11 @@ def audit_order(
     record = _blob(repo, base_commit, DECISION_RECORD)
     head_record = _blob(repo, head_commit, DECISION_RECORD)
     problems: list[str] = []
+    if (_blob(repo, base_commit, TRANSPORT_SOURCE) is not None
+            and _blob(repo, head_commit, TRANSPORT_SOURCE) is None):
+        # Once the seam has landed, every later landing is audited by the base's copy; a
+        # landing that removes it would leave the next one to audit itself.
+        problems.append("a landing removes the auditor (claude_seat_transport.py)")
     try:
         problems.extend(module_form_failures(repo, head_commit))
         problems.extend(cross_module_failures(repo, head_commit))

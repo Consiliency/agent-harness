@@ -445,7 +445,8 @@ def _run_step(tree: "Tree", tmp_path: Path, base: str, head: str, event: str) ->
     hosted remote, is replaced; ``python`` is this interpreter."""
     run = _audit_step()["run"]
     fetch = 'git fetch --no-tags --depth=1 origin "$BASE_SHA" "$HEAD_SHA"'
-    assert fetch in run
+    fetch_main = 'git fetch --no-tags --depth=1 origin "+refs/heads/main:refs/remotes/origin/main"'
+    assert fetch in run and fetch_main in run
     shim = tmp_path / "bin"
     shim.mkdir(exist_ok=True)
     (shim / "python").unlink(missing_ok=True)
@@ -457,8 +458,8 @@ def _run_step(tree: "Tree", tmp_path: Path, base: str, head: str, event: str) ->
     env = {"PATH": f"{shim}:{os.environ['PATH']}", "HOME": str(tmp_path), "EVENT_NAME": event,
            "BASE_SHA": base, "HEAD_SHA": head, "GITHUB_EVENT_PATH": str(payload),
            "RUNNER_TEMP": str(temp)}
-    return subprocess.run(["bash", "-c", run.replace(fetch, "true")], cwd=tree.root, env=env,
-                          capture_output=True, text=True, timeout=300)
+    return subprocess.run(["bash", "-c", run.replace(fetch, "true").replace(fetch_main, "true")],
+                          cwd=tree.root, env=env, capture_output=True, text=True, timeout=300)
 
 
 @pytest.mark.parametrize("event", ["pull_request", "push"])
@@ -487,6 +488,33 @@ def test_the_ci_step_runs_the_heads_auditor_only_for_the_seam_landing(tree, tmp_
     done = _run_step(tree, tmp_path, base, head, "pull_request")
     assert done.returncode == 0, done.stdout + done.stderr
     assert "the base has no auditor yet" in done.stdout
+
+
+def test_a_landing_that_removes_the_auditor_fails(tree, seam):
+    """Once the seam has landed, a landing may not delete the auditor: the next landing
+    would otherwise find no base copy and run its own."""
+    head = tree.commit(transport=None)
+    assert audit(tree, seam, head) == 1
+
+
+def test_the_ci_step_runs_protected_mains_auditor_when_the_base_has_none(tree, tmp_path):
+    """A base without the auditor does not fall back to the head's copy while protected
+    main has one: main's copy audits the landing."""
+    auditor = Path(ct.__file__).read_text()
+    main = tree.commit(record=RECORD_HEAD, transport=auditor,
+                       print=module_source(False, None), sdk=module_source(False, None))
+    subprocess.run(["git", "-C", str(tree.root), "update-ref", "refs/remotes/origin/main", main],
+                   check=True)
+    base = tree.commit(transport=None)
+    tampered = auditor.replace('JAILED_CLAUDE_DEFAULT: ClaudeTransport = "tui"',
+                               'JAILED_CLAUDE_DEFAULT: ClaudeTransport = "sdk"').replace(
+        "    repo = Path(repo)\n    pr_merged = pr_merged or github_pr_merged\n",
+        "    return ()\n", 1)
+    head = tree.commit(transport=tampered)
+    done = _run_step(tree, tmp_path, base, head, "pull_request")
+    assert done.returncode == 1, done.stdout + done.stderr
+    assert "running protected main's copy" in done.stdout
+    assert "the shipped default `sdk` has no authority" in done.stderr
 
 
 def test_the_shipped_tree_satisfies_the_default_rule():
