@@ -6,8 +6,9 @@ rung. Every row includes `id`, `vendor`, `route`, `claude_transport`,
 `credential_lane`, `projection`, `host_classes`, `qualification_record`,
 `live_evidence_digest`, `status`, `exception`, `expiry`, `renewal_record`,
 `end_condition` and `interim_route`. President rows also include `rung`,
-`tool_mode` and `bound_s`. Status is `candidate` until the window verifier admits
-retained evidence. Changing a qualification key returns the row to `candidate`.
+`tool_mode` and `bound_s`. Status stays `candidate` while the production window
+supplier is pending. The offline verifier checks retained source consistency,
+including context and qualification-key bindings; it does not qualify a host.
 
 `seat-window qualify` is pending its production window supplier and fails closed
 with `candidate`; this landing supplies the matrix and offline validators only.

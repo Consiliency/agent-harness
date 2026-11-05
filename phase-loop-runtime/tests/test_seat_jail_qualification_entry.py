@@ -24,6 +24,18 @@ def test_seats_firstseat_window_cli(tmp_path, monkeypatch, capsys):
     assert "candidate" in capsys.readouterr().out
 
 
+@pytest.mark.parametrize("attended", [False, True])
+def test_seats_firstseat_window_real_cli(tmp_path, monkeypatch, capsys, attended):
+    from types import SimpleNamespace
+    from phase_loop_runtime import cli, seat_window as w, president_adapter as pa
+    monkeypatch.setattr(w, "preflight", lambda: SimpleNamespace(status="admitted"))
+    monkeypatch.setattr(w.seat_jail, "execfind_pass_recorded", lambda *a: True)
+    monkeypatch.setattr(w.seat_egress_proxy, "unavailable_reason", lambda: None)
+    monkeypatch.setattr(pa, "write_private_record", lambda *a, **k: pytest.fail("record written"))
+    assert cli.main(["seat-window", "qualify", *(["--attended"] if attended else [])]) == 1
+    assert ("window_supplier_unavailable" if attended else "window_attendance_required") in capsys.readouterr().out
+
+
 def test_seats_firstseat_window_candidates_and_preflight(monkeypatch):
     from phase_loop_runtime import seat_window as window
     rows = window.readiness_rows()
@@ -58,9 +70,45 @@ def test_seats_firstseat_window_probe_cli(tmp_path, monkeypatch, capsys):
     calls = []
     monkeypatch.setattr(pi, "probe_grok_tools", lambda command, **kw: calls.append((command, kw)) or {"passed": False})
     assert cli.main(["seat-window", "probe-tools", "--vendor", "grok"]) == 1
-    assert len(calls) == 1
+    assert len(calls) == 3
     assert isinstance(calls[0][1]["allowed_tools"], set)
-    assert capsys.readouterr().out.strip() == '{"status": "candidate"}'
+    import json
+    result = json.loads(capsys.readouterr().out)
+    assert result["status"] == "candidate"
+    assert {r["route"] for r in result["routes"]} == {"review", "sealed", "staged"}
+
+
+def test_seats_firstseat_window_probe_launch_forms(tmp_path, monkeypatch, capsys):
+    import json
+    import subprocess
+    from phase_loop_runtime import cli, panel_invoker as pi
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(pi, "_grok_binary_identity", lambda *a: ("/fixture/grok", "1" * 64))
+    def runner(argv, **kw):
+        if argv[-1] == "--help":
+            text = "--list-tools Print tool definitions without running a model"
+        elif argv[-1] == "--version":
+            text = "fixture-v1"
+        else:
+            assert "--reasoning-effort" in argv
+            text = json.dumps({"tools": sorted(pi._grok_allowed_tools(argv)), "diagnostics": []})
+        return subprocess.CompletedProcess(argv, 0, text, "")
+    monkeypatch.setattr(pi, "run_provider", runner)
+    assert cli.main(["seat-window", "probe-tools"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert all(route["passed"] for route in result["routes"])
+    monkeypatch.setattr(pi, "_leg_auth_ok", lambda *a: (True, ""))
+    launched = []
+    def run(command, **kw):
+        launched.append(command)
+        return pi._LegRun(0, "AGREE", "")
+    monkeypatch.setattr(pi, "_run_leg_with_liveness", run)
+    for brokered in (False, True):
+        output = tmp_path / str(brokered)
+        output.mkdir()
+        assert pi._exec_leg("grok", tmp_path, output, artifact="fixture",
+            **({"broker_prompt": "fixture", "broker_evidence": {}} if brokered else {}))[:2] == (0, "AGREE")
+    assert len(launched) == 2
 
 
 def test_seats_firstseat_window_row_observations():
@@ -337,7 +385,8 @@ def test_seats_firstseat_window_supplier_pending(monkeypatch):
     monkeypatch.setattr(window, "preflight", lambda: SimpleNamespace(status="admitted"))
     monkeypatch.setattr(window.seat_jail, "execfind_pass_recorded", lambda _: True)
     monkeypatch.setattr(window.seat_egress_proxy, "unavailable_reason", lambda: None)
-    monkeypatch.setattr(window.president_adapter, "write_private_record",
+    from phase_loop_runtime import president_adapter
+    monkeypatch.setattr(president_adapter, "write_private_record",
                         lambda *args: pytest.fail("pending supplier must not write evidence"))
     assert window.qualify(window="W1", monitoring_policy="bounded", attended=True) == {
         "status": "candidate", "code": "window_supplier_unavailable"}

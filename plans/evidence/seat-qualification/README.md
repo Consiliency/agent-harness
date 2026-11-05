@@ -2,8 +2,9 @@
 
 `seat-window qualify` is pending: its production supplier is unavailable in this
 landing and it fails closed with `candidate`. The sequence below is the intended
-owner workflow once the supplier lands; matrix, verify/export and probe-tools are
-available now.
+owner workflow once the supplier lands. Matrix and probe-tools are available now;
+verify reports offline record consistency with `candidate`, and export refuses
+publication until the production supplier is available.
 
 W1 is an attended owner window, not a source-checkout test. Do not execute it
 until LA-1 host administration and managed release, LA-2 logins under each
@@ -63,8 +64,8 @@ No incomplete record is exported, and a non-passing result exits nonzero.
 
 The offline reducer requires two distinct operator IDs on the same team host
 and a separate standard host. It checks unique opaque context/account labels,
-qualification keys captured before launch against keys observed as the Gemini
-leg ends, receipt digests, complete candidate selection, canonical review and
+qualification keys and context identities against retained source bindings,
+receipt digests, complete candidate selection, canonical review and
 staged-read observations, co-seat disclosures and each measurement separately.
 Records expire after 30 days; named exceptions have their own earlier expiry.
 Missing producer observations remain unavailable and leave the row `candidate`.
@@ -73,6 +74,9 @@ measurements and staged-tree identity, and checks its digest. A digest-shaped
 value or a passing checklist without its matching source cannot qualify a row.
 The definition probe is separate from row qualification; a non-passing result
 does not admit a Grok launch. No fixed version list supplies a passing receipt.
+`probe-tools` reports separate `review`, `sealed` and `staged` form results.
+Use `--model` and `--effort` to select configured forms; defaults match the
+runtime's default model and high effort. Installed-version measurements remain required.
 
 The production measurement supplier and launch sequence are pending. Offline
 fixture receipts exercise validation only and cannot qualify a host. Missing

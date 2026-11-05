@@ -52,19 +52,23 @@ def _window_records():
         path = pa.write_private_record("leg-" + execution["attempt_id"] + ".json", execution)
         import hashlib
         record["exec_record_digest"] = hashlib.sha256(path.read_bytes()).hexdigest()
+        binding = {k: record[k] for k in w.SOURCE_BINDING_FIELDS}
+        source = {"window_binding": binding, "source_attempt": execution["attempt_id"],
+                  "exec_record_digest": record["exec_record_digest"]}
         observation = {"schema": "seat_window_observation.v1", "context_id": record["context_id"],
+            **source,
             "tree_digest": "d" * 64,
             "final_tree_digest": "d" * 64, "stopped": True, "watch_complete": True,
             "proxy_complete": True, "allowed_requests": 1, "refused_requests": 1,
             "before": {"direct_dns": "refused", "direct_ip": "refused", "unlisted_status": "refused"},
             "after": {"direct_dns": "refused", "direct_ip": "refused", "unlisted_status": "refused"},
-            "contract_observation": {"binding": {"profile_digest": record["profile_digest"],
-                "allowlist_digest": record["allowlist_digest"]},
+            "contract_observation": {"binding": {k: record[k] for k in (*w.KEY_FIELDS, "board_digest")},
                 "outcomes": {**dict.fromkeys(w.CONTAINMENT_FIELDS[2:], "not_loaded"),
                     "credential_scope": "no wider than the recorded baseline", "refresh_detection": "passed"}}}
         identity = w.digest(observation)
         pa.write_private_record("window-observation-" + identity + ".json", observation)
         read = {"schema": "seat_window_read.v1", "tree_digest": "d" * 64,
+            **source,
             "observation_digest": identity, "access_observed": True, "tool_observed": True}
         record["tool_receipt_digest"] = w.digest(read)
         pa.write_private_record("window-read-" + w.digest(read) + ".json", read)
@@ -83,7 +87,7 @@ def _window_records():
 def test_seats_firstseat_w1_receipt_observation_digest(change):
     from phase_loop_runtime import seat_window as w
     records = _window_records()
-    assert w.verify_records(records)["passed"]
+    assert w.verify_records(records)["records_valid"]
     value = records[0]["containment"]
     if change == "missing":
         del value["observation_digest"]
@@ -91,7 +95,7 @@ def test_seats_firstseat_w1_receipt_observation_digest(change):
         value["observation_digest"] = "unavailable" if change == "malformed" else "f" * 64
     records[0].pop("record_digest")
     records[0]["record_digest"] = w.digest(records[0])
-    assert not w.verify_records(records)["passed"]
+    assert not w.verify_records(records)["records_valid"]
 
 
 @pytest.mark.parametrize("group,field", [(g, f) for g, fields in (
@@ -101,7 +105,7 @@ def test_seats_firstseat_w1_receipt_observation_digest(change):
 def test_seats_firstseat_w1_receipt_measurements(group, field, negative):
     from phase_loop_runtime import seat_window as w
     records = _window_records()
-    assert w.verify_records(records)["passed"]
+    assert w.verify_records(records)["records_valid"]
     if negative == "missing":
         del records[0][group]["checks"][field]
     else:
@@ -109,7 +113,7 @@ def test_seats_firstseat_w1_receipt_measurements(group, field, negative):
     records[0][group] = w.measurement(records[0][group]["checks"])
     records[0].pop("record_digest")
     records[0]["record_digest"] = w.digest(records[0])
-    assert not w.verify_records(records)["passed"]
+    assert not w.verify_records(records)["records_valid"]
 
 
 @pytest.mark.parametrize("change", ["account", "isolation", "disclosure", "stale", "coverage", "expiry", "canonical", "route", "admission", "row", "digest"])
@@ -133,7 +137,7 @@ def test_seats_firstseat_w1_receipt_boundaries(change):
         for r in records:
             r.pop("record_digest")
             r["record_digest"] = w.digest(r)
-    assert not w.verify_records(records)["passed"]
+    assert not w.verify_records(records)["records_valid"]
 
 
 @pytest.mark.parametrize("value", ["/home/fixture/file", "operator@fixture.invalid", "fixture-host", "sk-fixture123456789"])
@@ -147,15 +151,47 @@ def test_seats_firstseat_w1_receipt_export(tmp_path, value):
     with pytest.raises(ValueError):
         w.export_records(bad, tmp_path / "out.json", reviewed=True)
     assert not (tmp_path / "out.json").exists()
-    w.export_records(records, tmp_path / "out.json", reviewed=True)
-    text = (tmp_path / "out.json").read_text()
-    assert "host_digest" not in text and "operator_id" not in text
+    assert w.verify_records(records)["status"] == "candidate"
+    with pytest.raises(ValueError):
+        w.export_records(records, tmp_path / "out.json", reviewed=True)
+    assert not (tmp_path / "out.json").exists()
 
 
 def test_seats_firstseat_w1_receipt_exception_expiry():
     from phase_loop_runtime import seat_window as w
     records = _window_records()
-    assert not w.verify_records(records, now=dt.datetime(2026, 12, 4, tzinfo=dt.timezone.utc))["passed"]
+    assert not w.verify_records(records, now=dt.datetime(2026, 12, 4, tzinfo=dt.timezone.utc))["records_valid"]
+
+
+@pytest.mark.parametrize("field", ["context_id", "account_label", "host_digest", "operator_id",
+                                  "runtime_digest", "board_digest"])
+def test_seats_firstseat_w1_receipt_source_identity(field):
+    from phase_loop_runtime import seat_window as w
+    records = _window_records()
+    record = records[0]
+    assert w._reconcile_sources(record)
+    record[field] = 9 if field == "operator_id" else (
+        "c" + "f" * 31 if field == "context_id" else "a" + "f" * 31
+        if field == "account_label" else "f" * 64)
+    record["qualification_keys"] = {k: record[k] for k in w.KEY_FIELDS}
+    record.pop("record_digest")
+    record["record_digest"] = w.digest(record)
+    assert not w._reconcile_sources(record)
+    assert not w.verify_records(records)["records_valid"]
+
+
+def test_seats_firstseat_w1_receipt_source_contexts():
+    from phase_loop_runtime import seat_window as w
+    records = _window_records()
+    assert w.verify_records(records)["records_valid"]
+    for record in records[1:]:
+        for key in ("source_attempt", "exec_record_digest", "tool_receipt_digest", "containment", "egress"):
+            record[key] = copy.deepcopy(records[0][key])
+        next(r for r in record["row_observations"] if r["id"] == "vendor:gemini")[
+            "exec_record_digest"] = record["exec_record_digest"]
+        record.pop("record_digest")
+        record["record_digest"] = w.digest(record)
+    assert not w.verify_records(records)["records_valid"]
 
 
 @pytest.mark.parametrize("source", ["exec", "read", "observation"])
@@ -164,7 +200,7 @@ def test_seats_firstseat_w1_receipt_retained_sources(tmp_path, monkeypatch, sour
     from phase_loop_runtime import seat_window as w
     from phase_loop_runtime import president_adapter as pa
     records = _window_records()
-    assert w.verify_records(records)["passed"]
+    assert w.verify_records(records)["records_valid"]
     record = records[0]
     names = {"exec": "leg-" + record["source_attempt"],
         "read": "window-read-" + record["tool_receipt_digest"],
@@ -203,7 +239,7 @@ def test_seats_firstseat_w1_receipt_retained_sources(tmp_path, monkeypatch, sour
         record["record_digest"] = w.digest(record)
     if change != "missing":
         pa.write_private_record(path.name, value)
-    assert not w.verify_records(records)["passed"]
+    assert not w.verify_records(records)["records_valid"]
 
 
 def test_seats_firstseat_w1_receipt_cli(tmp_path, capsys):
@@ -216,13 +252,13 @@ def test_seats_firstseat_w1_receipt_cli(tmp_path, capsys):
         shutil.copyfile(source, root / source.name)
         (root / source.name).chmod(0o600)
     args = [arg for path in paths for arg in ("--record", str(path))]
-    assert cli.main(["seat-window", "verify", *args]) == 0
-    assert '"passed": true' in capsys.readouterr().out
+    assert cli.main(["seat-window", "verify", *args]) == 1
+    assert '"records_valid": true' in capsys.readouterr().out
     target = tmp_path / "export.json"
     assert cli.main(["seat-window", "export", *args, "--output", str(target)]) == 1
     assert not target.exists()
-    assert cli.main(["seat-window", "export", *args, "--output", str(target), "--reviewed"]) == 0
-    assert target.exists()
+    assert cli.main(["seat-window", "export", *args, "--output", str(target), "--reviewed"]) == 1
+    assert not target.exists()
 
 
 def test_seats_firstseat_w1_receipt_failed_export(tmp_path):

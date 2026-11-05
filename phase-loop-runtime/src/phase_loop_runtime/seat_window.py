@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 import stat
 
-from . import president_adapter, seat_egress_proxy, seat_jail
+from . import seat_egress_proxy, seat_jail
 
 SCHEMA = "seat_window.v1"
 VENDORS = ("claude", "gemini", "codex", "grok", "pi")
@@ -17,6 +17,8 @@ CONTAINMENT_FIELDS = ("credential_scope", "refresh_detection", "project_settings
                       "mcp_servers", "provider_overrides")
 EGRESS_FIELDS = ("allowed_proxy", "refused_proxy", "direct_dns", "direct_ip")
 KEY_FIELDS = ("runtime_digest", "profile_digest", "allowlist_digest")
+SOURCE_BINDING_FIELDS = ("context_id", "account_label", "host_class", "host_digest", "operator_id",
+                         *KEY_FIELDS, "board_digest", "qualification_keys")
 DIGEST_FIELDS = (*KEY_FIELDS, "board_digest", "exec_record_digest", "tool_receipt_digest")
 _HEX = re.compile(r"[0-9a-f]{64}\Z")
 _LABEL = re.compile(r"[ac][0-9a-f]{31}\Z")
@@ -44,6 +46,7 @@ def measurement(checks: dict, *, observation_digest=None) -> dict:
 
 def readiness_rows() -> list[dict]:
     """The complete inventory; no source-checkout result qualifies a host."""
+    from . import president_adapter
     rows = []
     exceptions = {"claude": "open egress", "codex": "unconfined", "grok": "unconfined"}
     for kind in ("vendor", "remote"):
@@ -118,6 +121,7 @@ def _check_measurement(value, fields):
 
 def _source_record(name, expected, *, root=None, file_digest=False):
     """Read bounded retained receipts through the same operator-storage checks."""
+    from . import president_adapter
     if not _is_digest(expected) or Path(name).name != name:
         raise ValueError("window source unavailable")
     observed = []
@@ -152,6 +156,13 @@ def _reconcile_sources(record, *, root=None):
             or read["tree_digest"] != observation.get("tree_digest")
             or read["tree_digest"] != observation.get("final_tree_digest")):
             return False
+        source_binding = {k: record[k] for k in SOURCE_BINDING_FIELDS}
+        if (observation.get("context_id") != record["context_id"]
+            or any(source.get("window_binding") != source_binding
+                   or source.get("source_attempt") != attempt
+                   or source.get("exec_record_digest") != record["exec_record_digest"]
+                   for source in (observation, read))):
+            return False
         contract = observation.get("contract_observation") or {}
         if type(contract) is not dict:
             return False
@@ -159,7 +170,7 @@ def _reconcile_sources(record, *, root=None):
             "credential_scope": "no wider than the recorded baseline", "refresh_detection": "passed"}
         binding = contract.get("binding", {})
         if (type(binding) is not dict or contract.get("outcomes") != expected
-            or any(binding.get(k) != record[k] for k in ("profile_digest", "allowlist_digest"))):
+            or any(binding.get(k) != record[k] for k in (*KEY_FIELDS, "board_digest"))):
             return False
         return (observation.get("schema") == "seat_window_observation.v1"
             and all(observation.get(k) is True for k in ("stopped", "watch_complete", "proxy_complete"))
@@ -230,12 +241,14 @@ def verify_records(records, *, now=None, source_root=None) -> dict:
         team_hosts = {r["host_digest"] for r in team}
         coverage = (len(team_hosts) == 1 and len({r["operator_id"] for r in team}) >= 2
                     and any(r["host_class"] == "standard" and r["host_digest"] not in team_hosts for r in records)
-                    and len(contexts) == len(records) == len(pairs) == len(labels))
+                    and len(contexts) == len(records) == len(pairs) == len(labels)
+                    == len({r["source_attempt"] for r in records})
+                    == len({r["exec_record_digest"] for r in records}))
         passed = bool(valid and coverage)
     except (KeyError, TypeError, ValueError):
         passed = False
-    return {"schema": "seat_window_verification.v1", "window": "W1", "passed": passed,
-            "status": "done-local" if passed else "candidate"}
+    return {"schema": "seat_window_verification.v1", "window": "W1", "passed": False,
+            "records_valid": passed, "status": "candidate", "code": "window_supplier_unavailable"}
 
 
 def export_records(records, destination: Path, *, reviewed=False, source_root=None):
@@ -247,6 +260,7 @@ def export_records(records, destination: Path, *, reviewed=False, source_root=No
         "rows": [{"id": r["id"], "status": "done-local" if r["id"] == "vendor:gemini" else r["status"],
                   "exception": r["exception"], "expiry": r["expiry"]} for r in readiness_rows()]}
     fd = os.open(destination, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+    os.fchmod(fd, 0o644)
     with os.fdopen(fd, "w") as output:
         json.dump(public, output, sort_keys=True, indent=2)
         output.write("\n")
@@ -302,6 +316,7 @@ def run_native_window(*, repo, monitoring_policy, host_class):
 
 
 def qualify(*, window, monitoring_policy, repo=".", host_class="team", attended=False, peer_record=None):
+    from . import president_adapter
     if window != "W1" or monitoring_policy != "bounded":
         raise ValueError("window policy unavailable")
     outcome = preflight()
@@ -335,9 +350,12 @@ def register_parser(subparsers):
     parser.add_argument("--peer-record")
     parser.add_argument("--vendor", choices=("grok",), default="grok")
     parser.add_argument("--output")
+    parser.add_argument("--model")
+    parser.add_argument("--effort", default="high")
 
 
 def cli_main(args):
+    from . import president_adapter
     try:
         if args.action == "matrix":
             print(json.dumps(readiness_rows(), sort_keys=True))
@@ -348,10 +366,13 @@ def cli_main(args):
                 peer_record=args.peer_record)
         elif args.action == "probe-tools":
             from . import panel_invoker as pi
-            command = pi._brokered_grok_command(model=None, out_dir=Path("/definition-probe"),
-                                                grok_effort_args=())
-            receipt = pi.probe_grok_tools(command, allowed_tools=set(pi.GROK_SANDBOX_TOOLS.split(",")))
-            result = {"status": "passed" if receipt.get("passed") else "candidate"}
+            forms = pi.grok_runtime_forms(model=args.model, effort=args.effort)
+            routes = []
+            for route, command in forms.items():
+                receipt = pi.probe_grok_tools(command, allowed_tools=pi._grok_allowed_tools(command))
+                routes.append({"route": route, "passed": receipt.get("passed") is True})
+            result = {"status": "passed" if all(r["passed"] for r in routes) else "candidate",
+                      "routes": routes}
         else:
             paths = [Path(p) for p in args.record] or sorted(
                 president_adapter.private_record_root().glob("window-W1-*.json"))
@@ -367,6 +388,6 @@ def cli_main(args):
                 export_records(records, Path(args.output), reviewed=args.reviewed, source_root=source_root)
         print(json.dumps(result, sort_keys=True))
         return 0 if result.get("passed") or result.get("status") == "passed" else 1
-    except (OSError, ValueError, TypeError):
+    except (OSError, ValueError, TypeError, RuntimeError):
         print(json.dumps({"status": "candidate", "code": "window_record_unavailable"}))
         return 1
