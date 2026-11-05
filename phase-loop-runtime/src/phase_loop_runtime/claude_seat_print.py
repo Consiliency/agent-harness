@@ -14,12 +14,17 @@ reads every frame as it arrives and admits exactly one result:
   ``claude_seat_api_key_source``) for this run's session;
 * exactly one ``result`` frame, ``success`` and not an error, for that session, with a
   conforming verdict, and the CLI exiting 0 -- anything else is
-  ``claude_seat_result_unproven``. No transcript, output file or assistant turn is salvaged;
-* a stream past :data:`STREAM_CAP_BYTES`, a line past :data:`LINE_CAP_BYTES`, invalid UTF-8,
+  ``claude_seat_result_unproven``. Nothing may follow that result: a further line, valid,
+  malformed, partial or oversized, stops the run with the same code. No transcript, output
+  file or assistant turn is salvaged;
+* a stream past :data:`STREAM_CAP_BYTES`, a line past :data:`LINE_CAP_BYTES`, stderr past
+  :data:`STDERR_CAP_BYTES`, invalid UTF-8, a line that opens a JSON value but does not parse,
   a duplicate key or nesting past :data:`NESTING_BOUND` in any ``system`` or ``result``
-  frame, or a parser ``RecursionError``, is ``claude_seat_stream_unsafe``;
+  frame, a result text that is not valid Unicode, a parser ``RecursionError`` or any other
+  failure reading a frame, is ``claude_seat_stream_unsafe``;
 * the seat token, in any encoding the jail's scan knows, anywhere in what the parent reads
-  is ``claude_seat_token_in_output``.
+  -- the raw stdout and stderr, and the result text it keeps -- is
+  ``claude_seat_token_in_output``.
 
 Observations (:mod:`claude_print_observations`) are bounded and metadata-only, and never
 change admission. The selection is experimental and unqualified (§4a item 6).
@@ -64,6 +69,8 @@ STREAM_CAP_BYTES = 64 << 20
 LINE_CAP_BYTES = 16 << 20
 #: JSON nesting in one frame.
 NESTING_BOUND = 64
+#: The CLI's stderr, which the parent reads only to scan.
+STDERR_CAP_BYTES = 4 << 20
 
 API_KEY_SOURCE = "claude_seat_api_key_source"
 RESULT_UNPROVEN = "claude_seat_result_unproven"
@@ -118,9 +125,12 @@ class StreamAdmission:
     def __init__(self, *, token: bytes, session_id: str,
                  observations: ClaudePrintObservations | None = None,
                  stream_cap: int | None = None, line_cap: int | None = None) -> None:
+        self._token = token
         self._forms = _seat_jail.secret_encodings(token)
         self._overlap = max(map(len, self._forms), default=1) - 1
         self._tail = b""
+        self._err_tail = b""
+        self.stderr_bytes = 0
         self._carry = bytearray()
         self._stream_cap = STREAM_CAP_BYTES if stream_cap is None else stream_cap
         self._line_cap = LINE_CAP_BYTES if line_cap is None else line_cap
@@ -160,17 +170,32 @@ class StreamAdmission:
         while True:
             end = self._carry.find(b"\n")
             if end < 0:
+                if self.results and self._carry.strip():
+                    return self._stop(RESULT_UNPROVEN)  # nothing may follow the one result
                 if len(self._carry) > self._line_cap:
                     return self._stop(STREAM_UNSAFE)
                 break
             line = bytes(self._carry[:end])
             del self._carry[:end + 1]
+            if self.results and line.strip():
+                return self._stop(RESULT_UNPROVEN)
             if len(line) > self._line_cap:
                 return self._stop(STREAM_UNSAFE)
             self._frame(line)
             if self.violation is not None:
                 return True
         return False
+
+    def feed_stderr(self, chunk: bytes) -> bool:
+        """The CLI's stderr, scanned for the token across chunk boundaries and capped."""
+        window = self._err_tail + chunk
+        if any(form in window for form in self._forms):
+            return self._stop(TOKEN_IN_OUTPUT)
+        self._err_tail = window[-self._overlap:] if self._overlap else b""
+        self.stderr_bytes += len(chunk)
+        if self.stderr_bytes > STDERR_CAP_BYTES:
+            return self._stop(STREAM_UNSAFE)
+        return self.violation is not None
 
     def finish(self) -> None:
         if self.violation is None and self._carry:
@@ -188,9 +213,9 @@ class StreamAdmission:
             return
         try:
             self._parse(raw)
-        except _Unsafe:
+        except (_Unsafe, RecursionError):
             self._stop(STREAM_UNSAFE)
-        except RecursionError:
+        except Exception:  # any hostile value is a typed refusal, never an untyped failure
             self._stop(STREAM_UNSAFE)
 
     def _parse(self, raw: bytes) -> None:
@@ -218,6 +243,8 @@ class StreamAdmission:
         except ValueError:
             if not strict:
                 raise _Unsafe("utf-8") from None
+            if raw.lstrip()[:1] in (b"{", b"["):
+                raise _Unsafe("malformed") from None  # a frame that does not parse
             return  # not a frame; it supplies nothing and admits nothing
         if not isinstance(event, dict):
             return
@@ -248,7 +275,10 @@ class StreamAdmission:
                 self.violation = API_KEY_SOURCE
             return
         if kind == "system" and subtype == "api_retry":
-            if event.get("error") in _AUTH_DRIFT_ERRORS:
+            error = event.get("error")
+            if error is not None and not isinstance(error, str):
+                raise _Unsafe("retry error")  # a retry category is text; anything else is hostile
+            if error in _AUTH_DRIFT_ERRORS:
                 self.violation = AUTH_DRIFT
             return
         if kind == "result":
@@ -261,8 +291,17 @@ class StreamAdmission:
                 self.init_seen and subtype == "success" and event.get("is_error") is False
                 and isinstance(text, str) and event.get("session_id") == self.session_id)
             if isinstance(text, str):
+                # The text is scanned as the parent will keep it, not only as it was read.
+                if _seat_jail.contains_secret(text.encode("utf-8", errors="surrogatepass"),
+                                              self._token):
+                    self._stop(TOKEN_IN_OUTPUT)
+                    return
+                try:
+                    encoded = text.encode("utf-8")
+                except UnicodeEncodeError:
+                    raise _Unsafe("result text") from None
                 self.result_text = text
-                self.result_sha256 = sha256(text.encode("utf-8")).hexdigest()
+                self.result_sha256 = sha256(encoded).hexdigest()
 
     def admitted(self, returncode: int) -> bool:
         """Every predicate: no violation, one proven init for this session with no key
@@ -385,6 +424,7 @@ def run_jailed(
                 command, cwd=Path(_seat_jail.SEAT_TREE), env=dict(jail.env),
                 deadline_s=float(max(1, int(backstop_s))), stall_threshold_s=stall_s,
                 input_text=transport, stdout_guard=stream.feed,
+                stderr_guard=stream.feed_stderr,
                 seat_jail=jail, probe_jail=seat.probe_jail,  # type: ignore[attr-defined]
                 **({"quiescence_latch": quiescence_latch} if quiescence_latch is not None else {}),
                 **({"review_monitor": review_monitor} if review_monitor is not None else {}),
@@ -395,7 +435,7 @@ def run_jailed(
     finally:
         pi._cleanup_jailed_seat(seat, primary=sys.exception())
     return _outcome(pi, stream, run, timed_out, broker_evidence, failure_detail_sink,
-                    seat=seat)
+                    seat=seat, review_monitor=review_monitor)
 
 
 def _classify_error(pi: ModuleType, text: str) -> str:
@@ -405,7 +445,8 @@ def _classify_error(pi: ModuleType, text: str) -> str:
         return "unknown"
 
 
-def _outcome(pi, stream, run, timed_out, broker_evidence, sink, *, seat) -> tuple[str, str]:
+def _outcome(pi, stream, run, timed_out, broker_evidence, sink, *, seat,
+             review_monitor=None) -> tuple[str, str]:
     def fail(code: str, status: str = "DEGRADED") -> tuple[str, str]:
         if sink is not None:
             sink.append(pi._LegFailure(template=code))
@@ -429,13 +470,17 @@ def _outcome(pi, stream, run, timed_out, broker_evidence, sink, *, seat) -> tupl
     if timed_out:
         _admission(broker_evidence, "timed_out", RESULT_UNPROVEN)
         return fail(RESULT_UNPROVEN, "TIMEOUT")
-    if stderr == "review_operation_cancelled":
+    # The monitor's own cancel event, never text the CLI could write, means cancelled.
+    if review_monitor is not None and review_monitor.cancel.is_set():
         return "UNAVAILABLE", "review_operation_cancelled"
     returncode = int(getattr(run, "returncode", 1))
     if not stream.admitted(returncode):
         _admission(broker_evidence, "absent", RESULT_UNPROVEN)
         return fail(RESULT_UNPROVEN)
     text = (stream.result_text or "").strip()
+    if _seat_jail.contains_secret(text.encode("utf-8", errors="surrogatepass"), seat.token):
+        _admission(broker_evidence, "refused", TOKEN_IN_OUTPUT)
+        return fail(TOKEN_IN_OUTPUT)
     status = pi._classify_leg(returncode, text, "claude_print_result", "review")
     if status != "OK":
         _admission(broker_evidence, "absent", RESULT_UNPROVEN)
