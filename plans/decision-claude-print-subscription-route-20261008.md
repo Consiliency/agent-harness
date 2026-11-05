@@ -152,6 +152,10 @@ continues to apply without an SDK exception.
 after review, in its own reviewed PR that carries no other change (OD-3a, G1). Sections 1 to 8
 above stay as written; this section amends §4a and §6 prospectively, for the scope below only.
 Roadmap: `specs/phase-plans-seats-v1.md` (SEATS, agent-harness#1820), phase CLAUDE.
+The jailed `sdk` transport this section covers was not implemented: its planned launch runs an
+interpreter other than the jailed subject, which the executable-dependency projection contract
+does not allow, so its activation waits on a roadmap amendment (the owner's 2026-11-05 decision
+plans `sdk` as SDK-on-host).
 
 1. **Scope.** The existing tooled/pointer Claude seat inside its per-seat jail (§4a item 1).
    Capture and research seats, brokered and direct seats, and the president's Fable rung keep
