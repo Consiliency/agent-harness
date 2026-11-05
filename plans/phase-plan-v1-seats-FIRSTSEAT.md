@@ -339,7 +339,8 @@ SL-4 — E: Window kit, matrix and documentation reducer
 ### SL-4 — E: Window kit, matrix and documentation reducer
 
 - **Scope**: Implement EC-FIRSTSEAT-6 and EC-FIRSTSEAT-7 and reconcile all producer evidence.
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_window.py`, `phase-loop-runtime/src/phase_loop_runtime/cli.py`, `phase-loop-runtime/tests/test_seat_jail_qualification_entry.py`, `phase-loop-runtime/tests/test_seat_qualification_host_context.py`, `docs/review-seats-readiness.md`, `phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md`, `docs/advisor-board-capabilities-card.md`, `plans/evidence/seat-qualification/*`, `CHANGELOG.md`
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_window.py`, `phase-loop-runtime/src/phase_loop_runtime/cli.py`, `phase-loop-runtime/src/phase_loop_runtime/executable_dependency_startup.py`, `phase-loop-runtime/tests/test_executable_dependency_startup.py`, `phase-loop-runtime/tests/test_seat_jail_qualification_entry.py`, `phase-loop-runtime/tests/test_seat_qualification_host_context.py`, `docs/review-seats-readiness.md`, `phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md`, `docs/advisor-board-capabilities-card.md`, `plans/evidence/seat-qualification/*`, `CHANGELOG.md`
+- **Ownership amendment (2026-11-05):** `executable_dependency_startup.py` is owned only to add the `seat-window` command to its closed CLI command inventory with the correct route class and a regression; no other inventory entry or rule changes.
 - **Interfaces provided**: IF-0-FIRSTSEAT-1, IF-0-FIRSTSEAT-2, IF-0-FIRSTSEAT-3.
 - **Interfaces consumed**: `gemini_teamhost_route`, IF-0-FIRSTSEAT-5, `composition_outcome`, `president_attempt_lifecycle`, `president_rung_inventory`, `leg_exec_record`, `tool_probe_receipt`, `integrated_board_outcome`.
 - **Parallel-safe**: no.
