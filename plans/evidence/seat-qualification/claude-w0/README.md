@@ -9,4 +9,6 @@ digests. `python -m phase_loop_runtime.claude_bakeoff validate` is the shape che
 section cites. V7 never runs a W0 head's code: each record's head must be on `main`, and
 the TUI jail digest is computed by the validating runtime itself, for a head whose jail
 source is byte-identical to its own. For any other head, validate from a checkout at that
-head or pass `--tui-digest`. No record is here until W0 runs.
+head or pass `--tui-digest`. Native observations travel only over the launching parent's
+inherited descriptor, and capture-twin descendants are gone before a native run begins.
+No record is here until W0 runs.

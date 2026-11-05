@@ -537,6 +537,15 @@ def test_a_request_that_cannot_be_published_makes_the_set_partial_and_stays_priv
     assert len(dropped) == 1 and line["host"] in dropped[0]
 
 
+def test_an_oversized_path_template_makes_the_set_partial_and_stays_private():
+    dropped: list[str] = []
+    line = {**REQUEST, "path_template": "/" + "a" * 513}
+    result = bk.ingest_recorder_output(_rec(REQUEST, line, DONE), token=TOKEN, dropped=dropped)
+    assert result["completeness"] == "partial"
+    assert result["entries"] == [{k: v for k, v in REQUEST.items() if k != "kind"}]
+    assert dropped == ["path-template-too-long"]
+
+
 def _jail_env():
     from phase_loop_runtime import seat_jail
 
@@ -654,11 +663,34 @@ def test_the_twin_launch_kills_its_whole_group_on_every_exit(tmp_path, timeout_s
     assert _pid_gone(int(pidfile.read_text()))
 
 
+def test_the_twin_launch_reaps_a_descendant_that_starts_another_session(tmp_path):
+    import os
+    import sys
+
+    pidfile = tmp_path / "descendant.pid"
+    descendant = ("import os, sys, time; os.setsid(); "
+                  "open(sys.argv[1], 'w').write(str(os.getpid())); time.sleep(120)")
+    parent = ("import subprocess, sys, time; "
+              "subprocess.Popen([sys.executable, '-c', sys.argv[1], sys.argv[2]]); "
+              "time.sleep(0.5)")
+    read_fd, write_fd = os.pipe()
+    try:
+        returncode = bk.launch_capture_twin(
+            [sys.executable, "-c", parent, descendant, str(pidfile)], cwd=tmp_path,
+            env=dict(os.environ), token_fd=read_fd, prompt=b"", timeout_s=30)
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+    assert returncode == 0
+    assert _pid_gone(int(pidfile.read_text()))
+
+
 def test_a_ca_left_by_an_earlier_window_refuses(tmp_path):
     ca_dir = tmp_path / "twin-ca"
     ca_dir.mkdir()
     with pytest.raises(ValueError, match="earlier window"):
         bk.create_window_ca(ca_dir, "node", tmp_path / "srt.js")
+    assert ca_dir.is_dir()
 
 
 def test_the_recorder_records_no_header_query_or_body():
@@ -842,6 +874,18 @@ def test_a_board_that_would_use_the_w0_account_or_another_model_is_refused(repo,
     assert bk.composition_problems(_plan(repo)) == []
 
 
+def test_preflight_retains_the_host_modes_when_a_board_result_is_unavailable(monkeypatch):
+    from phase_loop_runtime.advisor_board import composition
+
+    board = composition.compose_review_board(
+        is_available=lambda vendor: vendor in {"claude", "codex", "grok", "gemini"})
+    monkeypatch.setattr(composition, "compose_review_board", lambda *args, **kwargs: board)
+    monkeypatch.delenv("PHASE_LOOP_SANDBOX_DISABLE", raising=False)
+    assert bk.effective_unconfined_co_seats() == ("codex", "grok")
+    monkeypatch.setenv("PHASE_LOOP_SANDBOX_DISABLE", "1")
+    assert bk.effective_unconfined_co_seats() == ()
+
+
 def test_the_artifact_is_read_at_the_w0_head_never_from_the_working_tree(repo):
     head = _head(repo)
     (repo / "docs" / "bundle.md").write_text("an edit that was never committed\n")
@@ -993,6 +1037,27 @@ def test_every_arm_and_the_lineup_are_checked_before_the_first_meter_reading(
     assert calls == [] and not (tmp_path / "private" / "meter.json").exists()
 
 
+@pytest.mark.parametrize(("changed_on", "message", "native_calls"), [
+    (3, "after the capture twin", 0),
+    (4, "after the block's runs", 3),
+])
+def test_a_checkout_change_during_a_native_block_stops_the_window(
+        repo, tmp_path, monkeypatch, changed_on, message, native_calls):
+    window, calls = _window(
+        repo, tmp_path, monkeypatch=monkeypatch, native_outcomes=[_ok()] * 3)
+    checks = 0
+
+    def changed(_repo, _head):
+        nonlocal checks
+        checks += 1
+        return ["checkout: changed"] if checks >= changed_on else []
+
+    monkeypatch.setattr(bk, "checkout_problems", changed)
+    with pytest.raises(ValueError, match=message):
+        window.run()
+    assert len(calls) == native_calls
+
+
 def test_billing_follows_the_meter_bracket(tmp_path):
     answers = ["10%", "$0", "$0", "20%", "$0", "$0", "20%", "$5", "$0", "20%", "$5", "$9",
                "20%", "$5", "$9"]
@@ -1020,7 +1085,8 @@ HEAD = "c" * 40
 def _expected(**overrides) -> bk.NativeExpectation:
     values = {"arm": "print", "w0_head": HEAD, "tui_digest": TUI, "seats": tuple(SEATS),
               "model": "claude-opus-5-5", "staged_path_sha256": bk.staged_path_sha256(
-                  "docs/bundle.md"), "cli_version": "2.1.318"}
+                  "docs/bundle.md"), "cli_version": "2.1.318",
+              "co_seats_unconfined": ("codex",)}
     values.update(overrides)
     return bk.NativeExpectation(**values)
 
@@ -1114,6 +1180,15 @@ def test_a_refusal_keeps_its_typed_code():
     assert (outcome.canonical_output, outcome.code) == ("refused", "claude_seat_stream_unsafe")
 
 
+def test_a_seat_deadline_is_recorded_as_timed_out():
+    seen = _seen(status="timeout", admission="timed_out", code="claude_seat_result_unproven")
+    outcome = bk.native_outcome(
+        _payload(status="TIMEOUT", detail="claude_seat_result_unproven"), [seen],
+        timed_out=False, expected=_expected())
+    assert outcome.canonical_output == "timed_out"
+    assert outcome.code == "claude_seat_result_unproven"
+
+
 def test_a_board_that_ran_another_lineup_stops_the_window():
     with pytest.raises(ValueError, match="another lineup"):
         bk.native_outcome(_payload(seats=SEATS[:3] + ["gemini:gemini-4-argon:high:x"]),
@@ -1127,8 +1202,9 @@ def test_the_runner_launches_this_trees_board_from_the_w0_checkout(repo, tmp_pat
 
     seen: dict = {}
 
-    def board(command, *, cwd, env, timeout_s):
-        seen.update(command=command, cwd=cwd, env=env, timeout_s=timeout_s)
+    def board(command, *, cwd, env, timeout_s, pass_fds):
+        seen.update(command=command, cwd=cwd, env=env, timeout_s=timeout_s,
+                    pass_fds=pass_fds)
         evidence = {"claude_admission": {"outcome": "admitted", "code": "none"},
                     "claude_api_key_source": "none", "claude_code_entrypoint": "unset",
                     "sandbox_filesystem_confined": True, "claude_login_source": "login",
@@ -1147,6 +1223,7 @@ def test_the_runner_launches_this_trees_board_from_the_w0_checkout(repo, tmp_pat
         seat = type("S", (), {"jail": jail, "review_dir": tmp_path / "stage"})()
         import os
 
+        assert pass_fds == (int(env[ct.W0_OBSERVATION_ENV]),)
         os.environ[ct.W0_OBSERVATION_ENV] = env[ct.W0_OBSERVATION_ENV]
         try:
             ct._record_w0_observation("print", seat, evidence, ("OK", "x"), None,
@@ -1164,6 +1241,7 @@ def test_the_runner_launches_this_trees_board_from_the_w0_checkout(repo, tmp_pat
     assert seen["command"][4] == str(private / "bundle.md") and "--landing-tier" not in seen["command"]
     assert seen["cwd"] == repo and seen["timeout_s"] == 1800
     assert seen["env"][ct.ROUTE_ENV] == "print"
+    assert seen["pass_fds"] == (int(seen["env"][ct.W0_OBSERVATION_ENV]),)
     assert json.loads(seen["env"][ct.W0_LINEUP_ENV]) == list(SEATS)
     assert outcome.canonical_output == "admitted"
     assert set(outcome.admission.values()) == {"pass"}
@@ -1239,6 +1317,7 @@ def test_a_run_past_its_timeout_records_timed_out(repo, tmp_path):
                             timeout_s=1800, runner=slow)
     assert outcome.canonical_output == "timed_out"
     assert set(outcome.admission.values()) == {"fail"}
+    assert outcome.co_seats_unconfined == ("codex",)
     record = bk.build_record(arm="print", block=1, n=1, w0_head=_head(repo), outcome=outcome,
                              billing="unknown", meter_digest="d" * 64, request_set=_set(),
                              activation_section_sha256=_section(repo, "4a"))

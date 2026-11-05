@@ -1834,10 +1834,12 @@ are recorded on agent-harness#1132.
   `seat_jail.NOTICE_CODES | CODES`. The ratification order (EC-CLAUDE-4) is checked by
   `python -m phase_loop_runtime.claude_seat_transport audit-order`, a step of the required lint
   job on every pull request and push to main, run from the base tree's copy. For the W0
-  bake-off only, `PHASE_LOOP_CLAUDE_W0_OBSERVATIONS` names a private file (an absolute path in
-  an operator-owned directory no one else can write) to which each jailed Claude launch
-  appends one closed, credential-free observation (`claude-w0-observation.v1`); unset, nothing
-  is written. `PHASE_LOOP_CLAUDE_W0_LINEUP`, set by the kit to the run plan's exact seat keys
+  bake-off only, `PHASE_LOOP_CLAUDE_W0_OBSERVATIONS` names a parent-created inherited
+  descriptor backed by an unnamed 0600 file. The board parent appends one closed,
+  credential-free observation (`claude-w0-observation.v1`); provider children inherit neither
+  the descriptor nor its environment entry, and unset writes nothing. Capture twins run under
+  a dedicated descendant supervisor which kills and reaps the tree before the window
+  continues. `PHASE_LOOP_CLAUDE_W0_LINEUP`, set by the kit to the run plan's exact seat keys
   (model and effort included), makes `invoke_board` refuse every seat with
   `claude_w0_lineup_mismatch` before any launch when the board's final composition differs.
 - **Notices.** `{code, seat_key, what, why, fix}`, rendered only from literals, on the

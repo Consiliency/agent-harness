@@ -27,6 +27,7 @@ Nothing here runs a provider by itself; the kit drives ``phase-loop advisor-boar
 from __future__ import annotations
 
 import argparse
+import base64
 import hashlib
 import ipaddress
 import json
@@ -36,6 +37,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -582,6 +584,29 @@ def effective_composition() -> list[str]:
     return [seat.seat_key for seat in compose_review_board().seats]
 
 
+def effective_unconfined_co_seats() -> tuple[str, ...]:
+    """The non-Claude vendors this host's production preflight marks unconfined.
+
+    This runs before W0's first meter reading.  A timed-out run or malformed board payload
+    can therefore retain the preflight observation instead of publishing an unobserved empty
+    list.
+    """
+    from . import panel_invoker, sandbox_policy
+    from .advisor_board.composition import compose_review_board
+
+    if not sandbox_policy.sandbox_enabled():
+        return ()
+    board = compose_review_board()
+    # In the production review route, non-Claude legs without their own jail use the staged
+    # tree directly when their tool surface can act on it.  This is the same host predicate
+    # the board's pre-launch mode publication uses, evaluated without minting an operation or
+    # qualifying a jail.
+    return tuple(sorted({str(seat.harness).lower() for seat in board.seats
+                         if str(seat.harness).lower() in CO_SEAT_VENDORS
+                         and panel_invoker.sandbox_usable_by(
+                             str(seat.harness).lower(), True, jailed=False)}))
+
+
 def head_on_main(repo: Path, head: str) -> bool:
     try:
         done = subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", head,
@@ -828,35 +853,129 @@ def kill_group(process: "subprocess.Popen") -> None:
         pass
 
 
+_TWIN_SUPERVISOR = r"""
+import base64
+import ctypes
+import json
+import os
+import signal
+import subprocess
+import sys
+import time
+
+cfg = json.loads(sys.stdin.buffer.read())
+libc = ctypes.CDLL(None, use_errno=True)
+if libc.prctl(36, 1, 0, 0, 0) != 0:  # PR_SET_CHILD_SUBREAPER
+    print(json.dumps({"error": "subreaper unavailable", "survivors": []}))
+    raise SystemExit(0)
+
+try:
+    child = subprocess.Popen(
+        cfg["command"], cwd=cfg["cwd"], env=cfg["env"], pass_fds=(cfg["token_fd"],),
+        stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+except Exception:
+    print(json.dumps({"error": "twin launch failed", "survivors": []}))
+    raise SystemExit(0)
+
+timed_out = False
+try:
+    try:
+        child.communicate(base64.b64decode(cfg["prompt"]), timeout=cfg["timeout_s"])
+    except subprocess.TimeoutExpired:
+        timed_out = True
+finally:
+    try:
+        os.killpg(child.pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    try:
+        child.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        pass
+
+
+def children():
+    try:
+        raw = open(f"/proc/{os.getpid()}/task/{os.getpid()}/children").read()
+    except OSError:
+        return []
+    return [int(value) for value in raw.split() if value.isdigit()]
+
+
+deadline = time.monotonic() + 30
+while time.monotonic() < deadline:
+    for pid in children():
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    while True:
+        try:
+            pid, _status = os.waitpid(-1, os.WNOHANG)
+        except ChildProcessError:
+            pid = -1
+        if pid <= 0:
+            break
+    remaining = children()
+    if not remaining:
+        break
+    time.sleep(0.01)
+survivors = children()
+print(json.dumps({"returncode": None if timed_out else child.returncode,
+                  "survivors": survivors}))
+"""
+
+
 def launch_capture_twin(command: Sequence[str], *, cwd: Path, env: Mapping[str, str],
                         token_fd: int, prompt: bytes, timeout_s: float) -> int | None:
     """The capture twin's one provider launch: an owner-run measurement outside
-    ``launch_owned`` (principle 5), in its own session, whose whole process group is killed
-    on every exit. Its output is discarded. Returns the exit status, ``None`` past the
-    timeout."""
-    process = subprocess.Popen(list(command), cwd=cwd, env=dict(env), pass_fds=(token_fd,),
-                               stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-                               stderr=subprocess.DEVNULL, start_new_session=True)
+    ``launch_owned`` (principle 5), under a dedicated subreaper. The supervisor kills and
+    reaps the whole descendant tree, including a descendant that starts another session,
+    before returning. Its output is discarded. Returns the exit status, ``None`` past the
+    timeout; a survivor stops the window."""
+    config = json.dumps({"command": list(command), "cwd": str(cwd), "env": dict(env),
+                         "token_fd": token_fd, "prompt": base64.b64encode(prompt).decode(),
+                         "timeout_s": timeout_s}, sort_keys=True).encode()
+    process = subprocess.Popen([sys.executable, "-I", "-B", "-c", _TWIN_SUPERVISOR],
+                               pass_fds=(token_fd,), stdin=subprocess.PIPE,
+                               stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                               start_new_session=True)
     try:
         try:
-            process.communicate(prompt, timeout=timeout_s)
+            stdout, _stderr = process.communicate(config, timeout=timeout_s + 45)
         except subprocess.TimeoutExpired:
-            return None
-        return process.returncode
+            raise ValueError("twin: descendant supervisor did not finish") from None
     finally:
         kill_group(process)
+    try:
+        result = json.loads(stdout)
+    except (TypeError, ValueError):
+        raise ValueError("twin: descendant supervisor returned no result") from None
+    if not isinstance(result, dict) or result.get("error") or result.get("survivors"):
+        raise ValueError("twin: descendant containment failed")
+    returncode = result.get("returncode")
+    if returncode is not None and type(returncode) is not int:
+        raise ValueError("twin: descendant supervisor returned an invalid status")
+    return returncode
 
 
 def create_window_ca(ca_dir: Path, node: str, srt_index: Path) -> Path:  # pragma: no cover
     """The window's private CA, made fresh by srt's own ``ca.mjs``; a CA left by an earlier
     window refuses (it is deleted at the end of every window)."""
     from . import seat_egress_proxy
+    import shutil
 
     if ca_dir.exists():
         raise ValueError(f"twin: a CA from an earlier window is still at {ca_dir}; remove it")
     ca_dir.mkdir(mode=0o700, parents=False)
-    subprocess.run([node, str(seat_egress_proxy._data_path("ca.mjs")), str(srt_index),
-                    str(ca_dir)], check=True, capture_output=True, timeout=120)
+    try:
+        subprocess.run([node, str(seat_egress_proxy._data_path("ca.mjs")), str(srt_index),
+                        str(ca_dir)], check=True, capture_output=True, timeout=120)
+    except BaseException:
+        shutil.rmtree(ca_dir, ignore_errors=True)
+        raise
     return ca_dir
 
 
@@ -971,7 +1090,13 @@ def ingest_recorder_output(raw: bytes, *, token: bytes, twin_returncode: int | N
             continue
         if set(item) != {"kind", "method", "host", "path_template"} or kind != "request":
             raise ValueError("recorder request line carries a header, a body or other fields")
-        if path_problem(item["path_template"]):
+        path_template = item["path_template"]
+        if isinstance(path_template, str) and len(path_template) > 512:
+            complete = False
+            if dropped is not None:
+                dropped.append("path-template-too-long")
+            continue
+        if path_problem(path_template):
             raise ValueError("recorder request line has an untemplated path")
         method, host = item["method"], item["host"]
         if method not in METHODS or host_problem(host) is not None:
@@ -979,7 +1104,7 @@ def ingest_recorder_output(raw: bytes, *, token: bytes, twin_returncode: int | N
             if dropped is not None:
                 dropped.append(f"{str(method)[:16]} {str(host)[:253]}")
             continue
-        entries.add((method, host, item["path_template"]))
+        entries.add((method, host, path_template))
     if (summary is None or connections == 0 or summary["accepted"] != summary["recorded"]
             or summary["recorded"] != connections):
         complete = False
@@ -1124,6 +1249,7 @@ class NativeExpectation:
     model: str
     staged_path_sha256: str
     cli_version: str
+    co_seats_unconfined: tuple[str, ...] = ()
 
 
 def board_command(artifact_copy: Path) -> list[str]:
@@ -1132,11 +1258,12 @@ def board_command(artifact_copy: Path) -> list[str]:
             "--json", "--monitoring-policy", "bounded", "--pointer-brief"]
 
 
-def read_observations(path: Path) -> list[dict]:
-    """The board's W0 observation lines; any malformed line means no usable observation."""
-    try:
-        raw = path.read_bytes()
-    except OSError:
+_OBSERVATION_CAP = 1 << 20
+
+
+def read_observations(raw: bytes) -> list[dict]:
+    """The board's bounded W0 observation bytes; malformed input proves nothing."""
+    if len(raw) > _OBSERVATION_CAP:
         return []
     observations = []
     for line in raw.splitlines():
@@ -1178,7 +1305,9 @@ def native_outcome(board: Mapping[str, object], observations: Sequence[Mapping[s
     whose jailed launch the board did not observe (no observation, another transport, an
     unconfined filesystem or no jail digest) proves nothing: every predicate fails and it
     records the W0 head's TUI digest only as the profile that head builds."""
-    co_seats = co_seats_unconfined(board) if isinstance(board, dict) else ()
+    modes = board.get("seat_modes") if isinstance(board, dict) else None
+    co_seats = (co_seats_unconfined(board) if isinstance(modes, list)
+                else expected.co_seats_unconfined)
 
     def unobserved(output: str, code: str = "none") -> RunOutcome:
         return RunOutcome(output, code, _all("fail", ADMISSION_PREDICATES),
@@ -1205,6 +1334,8 @@ def native_outcome(board: Mapping[str, object], observations: Sequence[Mapping[s
     observed_code = str(seen.get("code") or "none")
     code = observed_code if (_code_problem(observed_code) is None or _transport.od10_class(
         observed_code) == _transport.SECURITY) else leg_code
+    if seen.get("status") == "timeout" or seen.get("admission") == "timed_out":
+        return unobserved("timed_out", code)
     digest = seen.get("jail_profile_digest")
     projection = seen.get("dependency_projection_digest")
     if (seen.get("transport") != expected.arm or seen.get("filesystem_confined") is not True
@@ -1262,12 +1393,12 @@ def _all(value: str, names: Sequence[str]) -> dict[str, str]:
 
 
 def run_board(command: Sequence[str], *, cwd: Path, env: Mapping[str, str],
-              timeout_s: float) -> str:  # pragma: no cover - owner window
+              timeout_s: float, pass_fds: Sequence[int] = ()) -> str:  # pragma: no cover
     """One board in its own session; its whole process group is killed on every exit.
     Returns its stdout; raises ``subprocess.TimeoutExpired`` past the timeout."""
     process = subprocess.Popen(list(command), cwd=cwd, env=dict(env), stdin=subprocess.DEVNULL,
                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
-                               start_new_session=True)
+                               start_new_session=True, pass_fds=tuple(pass_fds))
     try:
         stdout, _ = process.communicate(timeout=timeout_s)
         return stdout or ""
@@ -1280,21 +1411,35 @@ def run_native(arm: str, *, repo: Path, artifact_copy: Path, observations: Path,
                runner: Callable[..., str] = run_board) -> RunOutcome:
     """One run: this W0 tree's board through ``phase-loop advisor-board`` from the W0
     checkout, with the arm's selector and the observation channel set, bounded by the
-    plan's per-run timeout (OQ-3); past it, the run is ``timed_out``."""
-    observations.unlink(missing_ok=True)
-    env = {**os.environ, _transport.ROUTE_ENV: arm,
-           _transport.W0_OBSERVATION_ENV: str(observations),
-           _transport.W0_LINEUP_ENV: json.dumps(list(expected.seats))}
+    plan's per-run timeout (OQ-3); past it, the run is ``timed_out``.  The observation
+    channel is an unnamed 0600 file opened by this parent and inherited only by the board;
+    ``observations`` supplies its trusted 0700 parent, never a child-visible path."""
+    parent = observations.parent
     try:
-        stdout = runner(board_command(artifact_copy), cwd=repo, env=env, timeout_s=timeout_s)
-    except subprocess.TimeoutExpired:
-        return native_outcome({}, [], timed_out=True, expected=expected)
+        info = os.lstat(parent)
+    except OSError as exc:
+        raise ValueError("the W0 observation directory is unavailable") from exc
+    if (not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid()
+            or stat.S_IMODE(info.st_mode) & 0o077):
+        raise ValueError("the W0 observation directory is not private")
+    with tempfile.TemporaryFile(prefix=".claude-w0-observation-", dir=parent) as channel:
+        os.fchmod(channel.fileno(), 0o600)
+        env = {**os.environ, _transport.ROUTE_ENV: arm,
+               _transport.W0_OBSERVATION_ENV: str(channel.fileno()),
+               _transport.W0_LINEUP_ENV: json.dumps(list(expected.seats))}
+        try:
+            stdout = runner(board_command(artifact_copy), cwd=repo, env=env,
+                            timeout_s=timeout_s, pass_fds=(channel.fileno(),))
+        except subprocess.TimeoutExpired:
+            return native_outcome({}, [], timed_out=True, expected=expected)
+        channel.seek(0)
+        observed = channel.read(_OBSERVATION_CAP + 1)
     try:
         board = json.loads(stdout or "{}")
     except ValueError:
         board = {}
-    return native_outcome(board if isinstance(board, dict) else {}, read_observations(
-        observations), timed_out=False, expected=expected)
+    return native_outcome(board if isinstance(board, dict) else {}, read_observations(observed),
+                          timed_out=False, expected=expected)
 
 
 # --------------------------------------------------------------------------------------
@@ -1381,6 +1526,10 @@ class Window:
                     raise ValueError("W0 stopped: " + "; ".join(changed))
                 if self.twin is not None:
                     request_set = dict(self.twin(block, arm))
+                    changed = checkout_problems(self.repo, str(self.plan["w0_head"]))
+                    if changed:
+                        raise ValueError("W0 stopped after the capture twin: "
+                                         + "; ".join(changed))
                 for _n in range(EXECUTION_NOTES.runs_per_block):
                     outcome = self.native(arm, EXECUTION_NOTES.timeout_s)  # type: ignore[misc]
                     outcomes.append(outcome)
@@ -1388,6 +1537,10 @@ class Window:
                         self.stopped_arms.add(arm)
                         self.private_notes.append(f"{arm} block {block}: {outcome.code}")
                         break
+                changed = checkout_problems(self.repo, str(self.plan["w0_head"]))
+                if changed:
+                    raise ValueError("W0 stopped after the block's runs: "
+                                     + "; ".join(changed))
             self.ledger.read(block, settle_s=EXECUTION_NOTES.settle_s)
             billing = self.ledger.billing(block)
             for n, outcome in enumerate(outcomes, start=1):
@@ -1453,6 +1606,7 @@ def _run_window(plan: Mapping[str, object], repo: Path, window: str) -> int:  # 
     root.mkdir(parents=True, exist_ok=True, mode=0o700)
     os.chmod(root, 0o700)
     ca_dir = root / "twin-ca"
+    ca_created = False
     dropped: list[str] = []
     try:
         head = str(plan["w0_head"])
@@ -1465,12 +1619,15 @@ def _run_window(plan: Mapping[str, object], repo: Path, window: str) -> int:  # 
         expected = NativeExpectation(
             arm="print", w0_head=head, tui_digest=seat_jail.jail_profile_digest("claude"),
             seats=tuple(plan["board"]["seats"]), model=str(plan.get("model")),  # type: ignore[index]
-            staged_path_sha256=staged_path_sha256(str(plan["artifact"])), cli_version=cli_version)
+            staged_path_sha256=staged_path_sha256(str(plan["artifact"])),
+            cli_version=cli_version, co_seats_unconfined=effective_unconfined_co_seats())
         srt_index = seat_egress_proxy.verify_install()
         node = seat_egress_proxy._node()
         create_window_ca(ca_dir, node, srt_index)
+        ca_created = True
     except (ValueError, KeyError, TypeError, OSError, subprocess.SubprocessError) as exc:
-        shutil.rmtree(ca_dir, ignore_errors=True)
+        if ca_created:
+            shutil.rmtree(ca_dir, ignore_errors=True)
         print(f"claude-bakeoff run: REFUSED: {exc}", file=sys.stderr)
         return 1
 
@@ -1497,7 +1654,8 @@ def _run_window(plan: Mapping[str, object], repo: Path, window: str) -> int:  # 
         print(f"claude-bakeoff run: REFUSED: {exc}", file=sys.stderr)
         return 1
     finally:
-        shutil.rmtree(ca_dir, ignore_errors=True)  # the per-window CA ends with the window
+        if ca_created:
+            shutil.rmtree(ca_dir, ignore_errors=True)  # this window's CA ends with it
         if dropped:
             write_private(root / "dropped-hosts.txt", "\n".join(sorted(set(dropped))).encode())
     print(f"claude-bakeoff run: wrote {len(written)} record(s); review them before the records PR")
