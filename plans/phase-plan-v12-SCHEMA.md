@@ -130,7 +130,7 @@ SL-2 — Contract documentation and receipt reducer
 ### SL-0 — Pinned resource intake and loader
 
 - **Scope**: Vendor the approved closure and build the fail-closed offline schema API.
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/supervised_contracts.py`, `phase-loop-runtime/src/phase_loop_runtime/schemas/supervised-worker-v1/**`, `phase-loop-runtime/pyproject.toml`, `phase-loop-runtime/tests/test_supervised_contracts.py`, `phase-loop-runtime/scripts/verify_supervised_contract_publication.py`, `.github/workflows/supervised-contract-intake.yml`, `.gitleaks.toml`
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/supervised_contracts.py`, `phase-loop-runtime/src/phase_loop_runtime/schemas/supervised-worker-v1/**`, `phase-loop-runtime/pyproject.toml`, `phase-loop-runtime/tests/test_supervised_contracts.py`, `phase-loop-runtime/scripts/verify_supervised_contract_publication.py`, `phase-loop-runtime/scripts/gate_a_cleanroom.sh`, `phase-loop-runtime/tests/test_agy_self_qualification.py`, `.github/workflows/supervised-contract-intake.yml`, `.gitleaks.toml`
 - **Interfaces provided**: `load_contract_bundle`, `validate_record`, `ContractBundle`, `ContractError`, `resource_bytes`, `intake_results`
 - **Interfaces consumed**: `jsonschema` (pre-existing)
 - **Parallel-safe**: no
@@ -153,10 +153,16 @@ SL-2 — Contract documentation and receipt reducer
     package-data glob. Keep dependencies, lockfile, init and generated bundles
     unchanged. If gitleaks requires it, add only narrow path/digest allowlists,
     preserving vendor bytes. Add a network-enabled hosted publication workflow
-    and script, run on every pull_request and push to main with no path filter,
-    that independently fetch the pinned commit, re-verify default-branch ancestry
-    and compare vendor bytes/blobs and sealed inventory. A red run blocks the
-    receipt and landing; ordinary tests remain offline.
+    and script with the required `supervised contract publication` check, run on
+    every pull_request and every push to main with no path filter. The check is a
+    successful no-op on non-contract changes, using the exact contract path set
+    pinned in the workflow, including vendored resources, the loader, packaging
+    declarations, and seal/anchor owners. For contract changes, independently
+    fetch the pinned commit, re-verify protected-default-branch ancestry, and
+    compare vendor bytes/blobs and sealed inventory, failing closed on any error
+    or difference. A red contract run blocks the receipt and landing; ordinary
+    tests remain offline. The owner adds the check to branch protection after
+    merge; implementation does not change repository settings.
   - verify: Run V0. The hosted job runs the publication script, records branch
     provenance and observed run/job/head, and fails on any comparison difference.
     Hosted packaging verification builds/extracts the wheel to scratch and runs
@@ -247,8 +253,10 @@ verification_evidence.validate_verification_commands (IF-0-VC-2). Missing paths
 owned by these lanes are expected pre-implementation state, not a work-start
 blocker. Repeat after creation and require zero findings before verification and
 closeout. Do not create empty tests or use whole-repository collection.
-Hosted CI owns publication comparison, wheel proof, full regression and the six
-required checks. CLOSEOUT owns observed-head Gate A and independent review.
+Hosted CI owns publication comparison, wheel proof, full regression and the
+required checks, including `supervised contract publication`, which is a
+successful no-op on non-contract changes.
+CLOSEOUT owns observed-head Gate A and independent review.
 Runner-stamped receipt amendments bind JUnit artifacts and hosted run/job/head
 identities. Proxy evidence requires a roadmap amendment. No future SHA/count
 is an acceptance condition.

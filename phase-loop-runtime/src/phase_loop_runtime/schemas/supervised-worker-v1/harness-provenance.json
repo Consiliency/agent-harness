@@ -1,0 +1,40 @@
+{
+  "byte_pin_authority": false,
+  "commit": "93db4b4fcc4e3d40c62f6658b6a67b519c750491",
+  "excluded_metadata": {
+    "provenance.json": {
+      "blob": "cb2d905ba4fc12c9df1244f301c2624a656643ac",
+      "sha256": "9444d9285e4fbf9fa78c7e10fb474885c79f77cb65abec2f45527af2ec57ff42"
+    }
+  },
+  "input_artifact_sha256": "2c98eafb4950cf4106e1512515dca3199cc4c6095dd5c5d6971e7c0e9b62cf0b",
+  "metadata_origin": "harness-authored; outside the six-file upstream closure",
+  "root": "core/supervised-run/",
+  "source_repository": "https://github.com/Consiliency/consiliency-contract",
+  "upstream_resources": {
+    "admitted-launch-envelope.schema.json": {
+      "blob": "1abe40abbb1178295af86b3c6d64f9bffe5a0099",
+      "sha256": "0273f7a5d80eab95ee84660cd657445e881431bca3b8f91cec61015a5d39d41d"
+    },
+    "conformance/README.md": {
+      "blob": "9051f4fcfa7bb91b896f3efe60b6a3b238545a75",
+      "sha256": "2d5045245105af88f1f45f720aa8bc3f366efc95c25e25a9c50e402a175533ca"
+    },
+    "conformance/SHA256SUMS": {
+      "blob": "ff78301d393ef361f6c476a7117f0d2d97d2193b",
+      "sha256": "b9c2dad7ca32d32b9860e56c2e14141827955a50b52a54c8088760d9756e1285"
+    },
+    "conformance/envelope.vectors.json": {
+      "blob": "4fcb908f0ed89f2206efc2fbf4c5a6c7bdbd7e56",
+      "sha256": "876d322c313b444e49d7a95ee8f7ca39eef13c45864c67a0b3877235e1db6d7f"
+    },
+    "conformance/run-status.vectors.json": {
+      "blob": "4a156e4fbf56526d483f729c78b2e94eb6f48f93",
+      "sha256": "5bf9dfbf65805f7340290586d546038fc88659785e60e2f55532df4ac6696730"
+    },
+    "run-status.schema.json": {
+      "blob": "8af75b390c1b6dcb5478ac16daec3bd38cb060d1",
+      "sha256": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+    }
+  }
+}

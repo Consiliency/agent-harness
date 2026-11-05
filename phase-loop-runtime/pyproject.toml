@@ -157,6 +157,8 @@ phase_loop_runtime = [
     "contracts/placement/**",
     "route_policy/fixtures/*.json",
     "schemas/*.json",
+    "schemas/supervised-worker-v1/*.json",
+    "schemas/supervised-worker-v1/conformance/*",
     "_contract_docs/**",
     "_test_fixtures/**",
     "skills_bundle/**",

@@ -6,6 +6,16 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- Supervised-worker contract intake (v12 SCHEMA, agent-harness#1818): vendors the
+  shared run-status and admitted-launch-envelope v1 schemas and conformance vectors
+  from consiliency-contract, pinned by commit and per-file sha256, behind a loader
+  that fails closed on any digest mismatch. A new hosted workflow,
+  `supervised-contract-intake.yml`, re-fetches the pinned publication and compares
+  bytes and the sealed inventory. Its required check is a successful no-op on
+  non-contract changes. Byte-pin authority stays withheld until the v2 launch
+  envelope is published and identity, lifecycle and evidence obligations are
+  reconciled.
+
 - Return typed review composition policy outcomes (agent-harness#1729).
 - Persist president attempt lifecycle and validate bounded monitoring (agent-harness#1822).
 

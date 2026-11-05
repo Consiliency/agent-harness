@@ -1371,6 +1371,8 @@ def test_legs_and_president_never_qualify(world):
 def _watch_repo(tmp_path):
     """A minimal prepared-tree layout copied from this checkout."""
     root = Path(__file__).resolve().parents[2]
+    if not (root / "plans/evidence/qualified-provider-images.json").is_file():
+        pytest.skip("qualification catalog absent from repository fixture")
     tree = tmp_path / "tree"
     for rel in ("phase-loop-runtime/src/phase_loop_runtime", "phase-loop-runtime/scripts", "plans/evidence"):
         src = root / rel
