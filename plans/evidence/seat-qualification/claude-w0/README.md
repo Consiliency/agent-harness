@@ -10,5 +10,8 @@ section cites. V7 never runs a W0 head's code: each record's head must be on `ma
 the TUI jail digest is computed by the validating runtime itself, for a head whose jail
 source is byte-identical to its own. For any other head, validate from a checkout at that
 head or pass `--tui-digest`. Native observations travel only over the launching parent's
-inherited descriptor, and capture-twin descendants are gone before a native run begins.
+inherited descriptor, and capture-twin descendants are gone before a native run begins. That
+boundary is against the jailed seat: a process of the owner's own uid stays outside it, so an
+observation is sound only if no such process misbehaved in the window, and a record names its
+unconfined co-seats in `co_seats_unconfined`.
 No record is here until W0 runs.

@@ -1837,7 +1837,10 @@ are recorded on agent-harness#1132.
   bake-off only, `PHASE_LOOP_CLAUDE_W0_OBSERVATIONS` names a parent-created inherited
   descriptor backed by an unnamed 0600 file. The board parent appends one closed,
   credential-free observation (`claude-w0-observation.v1`); provider children inherit neither
-  the descriptor nor its environment entry, and unset writes nothing. Capture twins run under
+  the descriptor nor its environment entry, and unset writes nothing. This boundary is against
+  the jailed seat: a process of the owner's own uid stays outside it, so an observation is sound
+  only if no such process misbehaved in the window, and `co_seats_unconfined` names the boards
+  that ran one. Capture twins run under
   a dedicated descendant supervisor which kills and reaps the tree before the window
   continues. `PHASE_LOOP_CLAUDE_W0_LINEUP`, set by the kit to the run plan's exact seat keys
   (model and effort included), makes `invoke_board` refuse every seat with
