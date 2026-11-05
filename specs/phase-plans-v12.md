@@ -19,8 +19,9 @@ contract publication gates authoritative acceptance, not work start.
 
 ## Architecture North Star
 
-An injected validator admits a deployment-neutral envelope before any child
-process, including capability probes. A compatible patch-return extension uses
+An injected validator admits a deployment-neutral envelope before any launch-chain
+process. CLOSEOUT reconciles v2 auxiliary qualification probes as described below.
+A compatible patch-return extension uses
 `convergence/adapters/base.py:run_bounded` and `codex.py:run_codex_adapter`.
 The worker returns proposal bytes, baseline blob identities, proposal digest,
 and attempt identity. The external controller owns patch, post-image, span,
@@ -49,28 +50,29 @@ exist today or fork another process runner.
 
 ## External Inputs
 
-The new pinned input is a **future published commit** of the public repository
-`Consiliency/consiliency-contract` containing only the
-`admitted_launch_envelope.v1`, `supervised_run_status.v1` schemas and their
-conformance vectors/resource closure. Pin that commit plus per-file sha256;
-the commit and digest inventory do not exist yet. Their absence blocks SCHEMA,
-acceptance/qualification and CLOSEOUT, not ENVELOPE/JOURNAL/WORKER seam authoring.
-These are external inputs, never pins of this roadmap's outputs.
-A tag/release needs separate owner approval and is not assumed or requested.
+SCHEMA retains the frozen v1 intake from Consiliency/consiliency-contract
+`93db4b4fcc4e3d40c62f6658b6a67b519c750491`, its inventory and false byte-pin
+authority receipt (agent-harness#1838, agent-harness#1839). Its original dependency
+bound remains scoped to that historical intake.
+
+CLOSEOUT owns adoption of published admitted_launch_envelope.v2 at
+`2b91ef85bfdc76239ae52806b3318513951543ab`, including retargeted pins/corpus,
+codec and runtime reconciliation, and consiliency-contract>=0.7.0,<0.8.0.
+`plans/artifacts/v12-CLOSEOUT-inputs.md` freezes independently verified per-file
+SHA-256/blob IDs, corpus accounting and acceptance evidence requirements. This
+is a successor intake, not a rewrite of SCHEMA's v1 receipt. It requires SCHEMA
+implementation landing, as well as the existing WORKER/JOURNAL dependencies.
 
 Vendor byte-identical public resources with provenance naming the full commit,
-git blob ids and per-file sha256 from a maintainer-supplied expected inventory.
-Fresh-fetch the canonical repository's protected default branch and check
-`git merge-base --is-ancestor`; record branch/protection evidence and the method.
-Never generate expected digests from the fetched payload. The loader hashes
-and parses the same in-memory bytes, offline, denying unlisted/remote resources.
-Keep `consiliency-contract>=0.6.5,<0.7` and its conftest floor check unchanged;
-the floor is not provenance. Switching to package resources requires a plan
-amendment addressing the dependency bound/lock; no release is awaited.
-Only installed `jsonschema` may be marked pre-existing in a later SCHEMA plan;
-the unpublished commit/inventory belongs solely in its External Inputs gate.
-No change inside consiliency-contract is planned. No private path, repository,
-revision, dependency or source text enters public artifacts.
+git blob ids and per-file sha256 from the owner-accepted expected inventory.
+Fresh-fetch canonical protected main and verify git merge-base --is-ancestor;
+record observed branch/protection evidence. Hash and parse identical captured
+bytes offline; deny unlisted/remote resolution. Published provenance history is
+hash-inventoried, not copied. No tag, registry release or upstream change is
+assumed. CLOSEOUT owns the exact-commit dependency source/lock and package-byte
+proof; an unverified package or range alone cannot establish provenance.
+No private path, repository, revision, dependency or source text enters public
+artifacts. These are input pins, never pins of future harness outputs.
 
 ## Non-Goals
 
@@ -118,8 +120,10 @@ Provider-tier eligibility requires an operator-owned qualification record
 bound to the executable/wrapper digests, version and closed template, with a
 demonstrated write-attempt refusal; argv flags alone prove nothing. Missing,
 stale or mismatched evidence refuses the requested tier before worker launch.
-Bounded identity probes occur only after admission and cannot upgrade a matrix
-cell. Offline injected fixtures prove mechanics, not installed-tool eligibility.
+The initial fixture seam placed probes after admission. At v2 reconciliation,
+qualification probes are trusted auxiliary work before capture/admission; they
+cannot alter captured material without recapture and revalidation. They never
+upgrade a matrix cell. Offline fixtures do not establish installed eligibility.
 A separate clone/copy has no shared object/ref storage, alternates, gitfile
 pointing outside, hard-linked files/objects, or symlinks into protected storage;
 use no-local/no-hardlinks copying and inspect the actual result. A worktree
@@ -431,8 +435,9 @@ Collect independently reviewable evidence without implying permission to run.
 
 **Scope notes**
 
-Reconciliation and evidence phase; decompose into 2 lanes: offline regression
-and mutation evidence, then dependent review/readiness reducer. Landing is
+Reconciliation and evidence phase; decompose into 4 sequential lanes: pinned
+intake/package preamble, v2 admission/capture, worker/journal reconciliation,
+then the dependent review/readiness reducer. Landing is
 maintainer-owned. The readiness mapping must distinguish admission, workspace/proposal,
 tier, execution evidence, cancellation/tool qualification, journal, reviewed
 main, local dependencies and shared-vector conformance. External controller
@@ -443,7 +448,28 @@ and match pinned expectations, with path-entered mutations. Bind observed result
 to the SCHEMA inventory; unresolved `upstream_phase_unmet` entries block acceptance.
 Update consumer code/tests/docs for any fixture-to-public differences by amendment,
 including the trusted public codec binding in supervised_launch_binding.py.
-The later CLOSEOUT plan must enumerate that complete touch set before execution.
+The CLOSEOUT plan enumerates that complete touch set before execution.
+
+The published v2 reconciliation supersedes provisional fixture semantics only
+when their production obligations pass: RFC 8785 and safe-number intake,
+ordinary __proto__ members, whole-envelope secret safety including opaque
+caller_context, ancestor-safe tree capture, unique qualification for both tiers,
+no interactive terminal, and the >=0.7.0,<0.8.0 version window. Preserve raw,
+semantic and local launch digests as distinct commitments; bind public status to
+local attempts without adding wire fields. Capture/recheck sources, cwd,
+environment, helper transformations and exact per-run grants at the true spawn
+boundary. Qualified probes precede admission; one deadline covers the full
+chain, and helper failures after start are finished/failed_to_start, not refused.
+Provider write_scope applies even with empty required_constraints; external
+controller apply evidence is required, not fabricated by harness fixtures.
+The earlier conservative matrix stays closed until the corresponding supported
+v2 path and evidence exist; os_enforced and denial guarantees remain unsupported.
+
+SCHEMA's historical byte_pin_authority remains false. Only the CLOSEOUT reducer
+may issue a distinct v2 true receipt after verified input/package bytes, complete
+production corpus/rule/identity/replay/lifecycle/evidence proof, external consumer
+reconciliation and the required checks/reviews. Missing evidence blocks the gate.
+This grants neither installed-tool qualification nor live execution authority.
 
 **Non-goals**
 
@@ -452,8 +478,17 @@ No live qualification, live monitoring acceptance, dispatch of a release or merg
 **Key files**
 
 - `plans/evidence/supervised-worker/CLOSEOUT.md`
-- `phase-loop-runtime/src/phase_loop_runtime/supervised_launch_binding.py`
-- `phase-loop-runtime/tests/test_supervised_launch*.py`
+- `phase-loop-runtime/src/phase_loop_runtime/supervised_launch*.py`
+- `phase-loop-runtime/src/phase_loop_runtime/supervised_contracts.py`
+- `phase-loop-runtime/src/phase_loop_runtime/supervised_envelope_v2.py`
+- `phase-loop-runtime/src/phase_loop_runtime/supervised_capture_v2.py`
+- `phase-loop-runtime/src/phase_loop_runtime/schemas/supervised-worker-v2/`
+- `phase-loop-runtime/pyproject.toml`, `phase-loop-runtime/uv.lock`
+- `phase-loop-runtime/tests/conftest.py`
+- `phase-loop-runtime/src/phase_loop_runtime/run_status*.py`
+- `phase-loop-runtime/src/phase_loop_runtime/convergence/adapters/`
+- `phase-loop-runtime/tests/test_supervised_*.py`
+- `docs/supervised-worker-contracts.md`, `docs/supervised-worker.md`, `docs/supervised-run-status.md`
 - `phase-loop-runtime/tests/test_run_status*.py`
 - `phase-loop-runtime/tests/test_supervised_worker*.py`
 - `docs/supervised-worker-readiness.md`
@@ -492,8 +527,10 @@ ENVELOPE/JOURNAL/WORKER phase completion and their IF gates are local seam
 freezes based on the labelled fixtures. References to pinned behavior in their
 ECs are final acceptance obligations discharged by CLOSEOUT, not prerequisites
 for those local gates. Their receipts must list each deferred pinned obligation.
-SCHEMA follows the seam and waits for the public commit/inventory; CLOSEOUT
-runs semantic reconciliation and blocks acceptance until all pinned vectors
+SCHEMA records the frozen v1 intake; its owner-authorized manual intake can
+precede WORKER while the automatic DAG remains unchanged. CLOSEOUT waits for
+SCHEMA implementation landing and the seam gates, then runs v2 reconciliation
+and blocks acceptance until all pinned vectors
 pass. Publication differences require consumer amendments, never local schema
 invention. Qualification further needs reviewed main, external conformance
 and installed-tool evidence; live use needs fresh admission and owner authority.
