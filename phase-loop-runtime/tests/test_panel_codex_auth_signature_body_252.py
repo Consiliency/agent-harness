@@ -90,7 +90,7 @@ def test_clean_review_mentioning_rate_limit_exceeded_is_ok_not_degraded(tmp_path
     assert pi._classify_leg(rc, review_text, log_text) == "OK"
 
 
-def test_genuine_auth_failure_nonzero_exit_still_degrades(tmp_path, monkeypatch):
+def test_nonzero_exit_without_parent_observations_is_execution_failure(tmp_path, monkeypatch):
     # A real CLI auth banner, hard failure (non-zero exit, no review body).
     rc, review_text, log_text = _run_codex(
         tmp_path, monkeypatch,
@@ -99,7 +99,7 @@ def test_genuine_auth_failure_nonzero_exit_still_degrades(tmp_path, monkeypatch)
     )
     assert not review_text.strip()
     status = pi._classify_leg(rc, review_text, log_text)
-    assert status == "DEGRADED"  # fail-closed: a real auth banner is still caught
+    assert status == "ERROR"
 
 
 def test_genuine_auth_failure_rc_zero_empty_body_still_degrades(tmp_path, monkeypatch):
@@ -110,7 +110,7 @@ def test_genuine_auth_failure_rc_zero_empty_body_still_degrades(tmp_path, monkey
         stdout="", stderr="401 Unauthorized: token expired",
         returncode=0,
     )
-    assert pi._classify_leg(rc, review_text, log_text) == "DEGRADED"
+    assert pi._classify_leg(rc, review_text, log_text) == "EMPTY"
 
 
 def test_genuine_auth_failure_rc_zero_nonconforming_body_still_degrades(tmp_path, monkeypatch):
@@ -131,8 +131,7 @@ def test_classify_leg_unit_matrix_ok_before_auth_scan():
     assert pi._classify_leg(0, conforming, "note: rate limit exceeded earlier") == "OK"
     # non-conforming body + auth phrase → still degraded (unchanged behavior).
     assert pi._classify_leg(0, "no verdict here", "unauthorized") == "DEGRADED"
-    # hard failure + auth phrase → still degraded even with a conforming-looking body.
-    assert pi._classify_leg(1, conforming, "unauthorized") == "DEGRADED"
+    assert pi._classify_leg(1, conforming, "unauthorized") == "ERROR"
 
 
 def test_advisory_mode_keeps_auth_scan_first_no_fail_open():

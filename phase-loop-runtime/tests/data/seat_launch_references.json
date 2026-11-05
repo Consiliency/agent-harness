@@ -1185,5 +1185,11 @@
   {"count": 1, "function": "refuse_fork_entries", "module": "openshell_journal", "primitive": "io.glob", "role": "host-io"},
   {"count": 1, "function": "refuse_fork_entries", "module": "openshell_journal", "primitive": "io.open", "role": "host-io"},
   {"count": 3, "function": "write_private_record", "module": "president_adapter", "primitive": "io.open", "role": "host-io"},
-  {"count": 1, "function": "_write_namespace_resolver", "module": "sandbox_egress", "primitive": "io.open", "role": "host-io"}
+  {"count": 1, "function": "_write_namespace_resolver", "module": "sandbox_egress", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "_parent_auth_state", "module": "panel_invoker", "primitive": "run_provider", "role": "owned"},
+  {"count": 1, "function": "_retain_panel_leg", "module": "panel_invoker", "primitive": "io.read_bytes", "role": "host-io"},
+  {"count": 1, "function": "_retained_leg_exec.retained", "module": "panel_invoker", "primitive": "io.read_bytes", "role": "host-io"},
+  {"count": 1, "function": "_grok_binary_identity", "module": "panel_invoker", "primitive": "io.read_bytes", "role": "host-io"},
+  {"count": 1, "function": "grok_tool_gate", "module": "panel_invoker", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "probe_grok_tools", "module": "panel_invoker", "primitive": "run_provider", "role": "owned"}
 ]

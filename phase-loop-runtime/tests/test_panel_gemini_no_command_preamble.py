@@ -61,6 +61,7 @@ def test_gemini_keeps_the_pointer_form_bundle_never_inlined(monkeypatch, staged)
 def test_other_legs_are_untouched(monkeypatch, staged):
     """Only the gemini leg gets the preamble; the shared prompt (and every other leg's
     byte-identical argv golden) must be unchanged."""
+    monkeypatch.setattr(pi, "grok_tool_gate", lambda *a: True)
     review_dir, out_dir = staged
     seen: list[list[str]] = []
     monkeypatch.setattr(

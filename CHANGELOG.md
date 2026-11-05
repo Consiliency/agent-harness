@@ -6,6 +6,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- Retain closed-field leg execution records and require Grok tool probe receipts (agent-harness#1823, agent-harness#1821).
+
 - Supervised-worker contract intake (v12 SCHEMA, agent-harness#1818): vendors the
   shared run-status and admitted-launch-envelope v1 schemas and conformance vectors
   from consiliency-contract, pinned by commit and per-file sha256, behind a loader

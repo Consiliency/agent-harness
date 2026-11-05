@@ -99,6 +99,7 @@ def test_the_owned_auth_preflight_does_not_pre_empt_the_typed_refusal(monkeypatc
 # -- end to end: a host that cannot own a seat (president M3) ----------------------------------
 
 def _fake_clis(tmp_path, monkeypatch):
+    monkeypatch.setattr(pi, "grok_tool_gate", lambda *a: True)
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     for name in ("codex", "grok"):
