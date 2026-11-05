@@ -251,6 +251,54 @@ def test_a_timed_out_wait_republishes_a_degraded_row_with_the_notice_text(tmp_pa
     assert codex == before == rows[1].as_json()
 
 
+def test_concurrent_republishes_keep_every_seats_row(tmp_path, monkeypatch):
+    """Two seats republish at once (both login waits end together): each worker's read is
+    held at a barrier until the other has read too. Serialized, the second read waits for
+    the first replace, so both degraded rows survive, and the unrelated row is untouched."""
+    import threading
+
+    stream = tmp_path / "stream"
+    rows = [
+        sp.SeatMode("panel-claude", "claude", sp.MODE_JAILED, None, "why", "fix", sc.SOURCE_LOGIN, 0),
+        sp.SeatMode("panel-claude-2", "claude", sp.MODE_JAILED, None, "why", "fix", sc.SOURCE_LOGIN, 1),
+        sp.SeatMode("panel-codex", "codex", sp.MODE_UNCONFINED, None, "why", "", None, 2),
+    ]
+    sp.write_modes_record(stream, rows)
+    unrelated = json.loads((stream / sp.MODES_FILE).read_text())["modes"][2]
+    barrier = threading.Barrier(2)
+    real_read = sp._read_modes
+
+    def read(path):
+        record = real_read(path)
+        try:
+            barrier.wait(timeout=1.0)  # unserialized, both reads meet here
+        except threading.BrokenBarrierError:
+            pass
+        return record
+
+    monkeypatch.setattr(sp, "_read_modes", read)
+    errors: list[BaseException] = []
+
+    def worker(key, position):
+        try:
+            sp.republish_seat_mode(stream, sp.SeatMode(
+                key, "claude", sp.MODE_DEGRADED, "claude_seat_token_missing", "w", "f", None, position))
+        except BaseException as exc:  # noqa: BLE001 -- reported below
+            errors.append(exc)
+
+    threads = [threading.Thread(target=worker, args=("panel-claude", 0)),
+               threading.Thread(target=worker, args=("panel-claude-2", 1))]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+    assert errors == []
+    modes = json.loads((stream / sp.MODES_FILE).read_text())["modes"]
+    assert [row["mode"] for row in modes[:2]] == [sp.MODE_DEGRADED, sp.MODE_DEGRADED]
+    assert modes[2] == unrelated
+    assert sorted(path.name for path in stream.iterdir()) == [sp.MODES_FILE]
+
+
 def test_republish_without_a_matching_row_refuses_and_leaves_the_record(tmp_path):
     stream = tmp_path / "stream"
     _published(stream)

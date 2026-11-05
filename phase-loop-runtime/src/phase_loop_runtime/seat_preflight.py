@@ -19,7 +19,11 @@ route facts are passed in by the invoker.
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
+import os
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
@@ -244,6 +248,26 @@ def write_modes_record(stream_dir: Path, modes: Sequence[SeatMode]) -> Path:
     return path
 
 
+@contextlib.contextmanager
+def _modes_lock(stream_dir: Path):
+    """An exclusive lock on the stream directory itself, held across a whole republish, so
+    seat workers in any thread or process of the board serialize their read-modify-replace
+    (an advisory ``flock`` on the directory: no lock file is left behind)."""
+    try:
+        descriptor = os.open(stream_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    except OSError as exc:
+        raise ValueError("no published seat modes to republish") from exc
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(descriptor)
+
+
+def _read_modes(path: Path) -> object:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
 def republish_seat_mode(stream_dir: Path, mode: SeatMode) -> Path:
     """Replace ONE seat's row in the published ``seat-modes.json`` (agent-harness#1255).
 
@@ -251,10 +275,18 @@ def republish_seat_mode(stream_dir: Path, mode: SeatMode) -> Path:
     transport) is republished, so the record never shows a seat as running that did not.
     The row is the one at ``mode.position`` when that is set (its seat key and leg must
     match), else the rows of that seat key and leg. A missing or malformed record, or no
-    matching row, raises ``ValueError``; every other row is kept byte for byte."""
-    path = Path(stream_dir) / MODES_FILE
+    matching row, raises ``ValueError``; every other row is kept byte for byte.
+
+    Concurrent seats republish one at a time: the read, the edit and the replace run under
+    one lock on the stream directory, through a uniquely named temporary file."""
+    with _modes_lock(Path(stream_dir)):
+        return _republish_locked(Path(stream_dir), mode)
+
+
+def _republish_locked(stream_dir: Path, mode: SeatMode) -> Path:
+    path = stream_dir / MODES_FILE
     try:
-        record = json.loads(path.read_text(encoding="utf-8"))
+        record = _read_modes(path)
     except (OSError, ValueError) as exc:
         raise ValueError("no published seat modes to republish") from exc
     if not isinstance(record, dict) or record.get("schema") != MODES_SCHEMA:
@@ -277,8 +309,15 @@ def republish_seat_mode(stream_dir: Path, mode: SeatMode) -> Path:
         raise ValueError("no published row for that seat")
     for index in targets:
         rows[index] = mode.as_json()
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps({"schema": MODES_SCHEMA, "modes": rows}, indent=2,
-                              sort_keys=True) + "\n", encoding="utf-8")
-    tmp.replace(path)
+    descriptor, name = tempfile.mkstemp(prefix=f".{MODES_FILE}.", suffix=".tmp", dir=stream_dir)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            handle.write(json.dumps({"schema": MODES_SCHEMA, "modes": rows}, indent=2,
+                                    sort_keys=True) + "\n")
+        os.chmod(name, 0o644)
+        os.replace(name, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.unlink(name)
+        raise
     return path

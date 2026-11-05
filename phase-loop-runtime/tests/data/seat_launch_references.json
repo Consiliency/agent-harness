@@ -1198,5 +1198,6 @@
   {"count": 3, "function": "runtime_digest", "module": "seat_window", "primitive": "io.glob", "role": "host-io"},
   {"count": 1, "function": "runtime_digest", "module": "seat_window", "primitive": "io.read_bytes", "role": "host-io"},
   {"count": 1, "function": "cli_main", "module": "seat_window", "primitive": "io.glob", "role": "host-io"},
-  {"count": 1, "function": "republish_seat_mode", "module": "seat_preflight", "primitive": "io.read_text", "role": "host-io"}
+  {"count": 1, "function": "_read_modes", "module": "seat_preflight", "primitive": "io.read_text", "role": "host-io"},
+  {"count": 1, "function": "_modes_lock", "module": "seat_preflight", "primitive": "io.open", "role": "host-io"}
 ]
