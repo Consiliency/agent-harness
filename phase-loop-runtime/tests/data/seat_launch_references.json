@@ -1183,5 +1183,6 @@
   {"count": 1, "function": "MTLSConfig.validate", "module": "openshell_channel", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "<module>", "module": "openshell_transport", "primitive": "io.read_text", "role": "host-io"},
   {"count": 1, "function": "refuse_fork_entries", "module": "openshell_journal", "primitive": "io.glob", "role": "host-io"},
-  {"count": 1, "function": "refuse_fork_entries", "module": "openshell_journal", "primitive": "io.open", "role": "host-io"}
+  {"count": 1, "function": "refuse_fork_entries", "module": "openshell_journal", "primitive": "io.open", "role": "host-io"},
+  {"count": 3, "function": "write_private_record", "module": "president_adapter", "primitive": "io.open", "role": "host-io"}
 ]

@@ -53,6 +53,123 @@ RULING = "FINDING F001: DEFERRED — ok\nFORCING DECISION: LAND"
 PROVIDER_RUNGS = ("sol", "fable", "grok", "gemini")
 
 
+@pytest.mark.parametrize("bound", [None, 0, -1, float("inf"), float("nan"), 1801])
+def test_seats_firstseat_president_bound_validation(bound):
+    with pytest.raises(ValueError):
+        president_adapter.PresidentInvoke(DEFAULT_BOARD, no_output_bound_s=bound)
+
+
+@pytest.mark.parametrize("policy", ["bounded", "heartbeat_only"])
+def test_seats_firstseat_president_controlled_clock(tmp_path, monkeypatch, policy):
+    from types import SimpleNamespace
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    clock = [100.0]
+    monkeypatch.setattr(president_adapter, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    entered, release, late = threading.Event(), threading.Event(), threading.Event()
+    def transport(*a, **kw):
+        entered.set()
+        release.wait(3)
+        late.set()
+        return 0, RULING, ""
+    seam = president_adapter.PresidentInvoke(DEFAULT_BOARD, monitoring_policy=policy, no_output_bound_s=10)
+    monkeypatch.setattr(seam, "_transport", transport)
+    result = []
+    worker = threading.Thread(target=lambda: result.append(seam._supervise_transport()))
+    worker.start()
+    assert entered.wait(1)
+    clock[0] += 1000
+    if policy == "bounded":
+        worker.join(1)
+        assert result == [(124, "", "president_attempt_timed_out")]
+        release.set()
+        assert late.wait(1)
+        assert result == [(124, "", "president_attempt_timed_out")]
+    else:
+        assert not result and worker.is_alive()
+        release.set()
+        worker.join(1)
+        assert result == [(0, RULING, "")]
+
+
+@pytest.mark.parametrize("rung", ["fable", "absent"])
+def test_seats_firstseat_president_native_and_missing_records(tmp_path, monkeypatch, rung):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(panel_invoker, "_under_claude_code", lambda *a: True)
+    seam = president_adapter.PresidentInvoke(DEFAULT_BOARD, base_env={})
+    result = seam(rung, "fixture-token-in-prompt")
+    assert result["status"] == ("native_fill_deferred" if rung == "fable" else "unavailable")
+    records = list((tmp_path / "state").rglob("*.json"))
+    assert len(records) == 2
+    assert all("fixture-token" not in p.read_text() for p in records)
+    assert {json.loads(p.read_text())["event"] for p in records} == {"start", "terminal"}
+
+
+def test_seats_firstseat_president_quiescence(monkeypatch):
+    entered, release = threading.Event(), threading.Event()
+    seam = president_adapter.PresidentInvoke(DEFAULT_BOARD, no_output_bound_s=0.01)
+    def transport(**kw):
+        entered.set()
+        release.wait(2)
+        return 0, RULING, ""
+    monkeypatch.setattr(seam, "_transport", transport)
+    class Latch:
+        cancelled = False
+        def cancel(self): self.cancelled = True
+        def is_quiescent(self): return False
+    latch = Latch()
+    try:
+        with pytest.raises(RuntimeError, match="did not quiesce"):
+            seam._supervise_transport(latch=latch)
+        assert entered.is_set() and latch.cancelled
+    finally:
+        release.set()
+
+
+@pytest.mark.parametrize("rung", PROVIDER_RUNGS)
+@pytest.mark.parametrize("policy", ["bounded", "heartbeat_only"])
+def test_seats_firstseat_president_start_and_terminal(tmp_path, monkeypatch, rung, policy):
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    monkeypatch.setattr(president_adapter, "_injected_president_seam", lambda: True)
+    auth = type("Authorization", (), {"routes": dict((x, "fixture") for x in
+                             ("claude", "codex", "grok", "gemini"))})()
+    monkeypatch.setattr(backing, "prepare_president_isolation_authorization", lambda *a, **k: auth)
+    monkeypatch.setattr(backing, "revalidate_president_isolation_authorization", lambda *a, **k: None)
+    monkeypatch.setattr(backing, "close_president_isolation_authorization", lambda *a: None)
+    entered, release = threading.Event(), threading.Event()
+    def transport(self, *a, **k):
+        entered.set()
+        release.wait(2)
+        return 0, RULING, ""
+    monkeypatch.setattr(president_adapter.PresidentInvoke, "_transport", transport)
+    seam = president_adapter.PresidentInvoke(DEFAULT_BOARD, base_env={},
+        monitoring_policy=policy, no_output_bound_s=0.05)
+    # The heartbeat route keeps the real adapter entry while this test supplies
+    # its outer broker, so no host qualification is needed for the control.
+    monkeypatch.setattr(seam, "_launch_brokered", lambda rung, h, m, p, auth:
+                        seam._supervise_transport(h, m, p, tmp_path, tmp_path))
+    result = {}
+    worker = threading.Thread(target=lambda: result.update(seam(rung, "fixture")))
+    worker.start()
+    assert entered.wait(1)
+    starts = list((tmp_path / "state").rglob("*-start.json"))
+    assert len(starts) == 1
+    start = json.loads(starts[0].read_text())
+    assert start["event"] == "start"
+    time.sleep(0.15)
+    if policy == "bounded":
+        worker.join(1)
+        assert result["code"] == "president_attempt_timed_out"
+    else:
+        assert worker.is_alive()
+    release.set()
+    worker.join(1)
+    assert not worker.is_alive()
+    terminals = list((tmp_path / "state").rglob("*-terminal.json"))
+    assert len(terminals) == 1
+    assert json.loads(terminals[0].read_text())["attempt_id"] == start["attempt_id"]
+    assert all(p.stat().st_mode & 0o777 == 0o600 for p in starts + terminals)
+
+
 def _git_repo(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
     repo.mkdir()
