@@ -201,7 +201,7 @@ def test_seats_firstseat_president_broker_progress(tmp_path, monkeypatch, rung, 
             completed.append(True)
     monkeypatch.setattr(president_adapter.PresidentInvoke, "_transport", transport)
     seam = president_adapter.PresidentInvoke(DEFAULT_BOARD, repo_dir=_git_repo(tmp_path),
-        base_env={}, no_output_bound_s=.4)
+        base_env={}, no_output_bound_s=5)
     result = seam(rung, "F001: [x] y")
     assert completed == [True]
     assert result["status"] == ("ok" if chatty else "failed")
@@ -209,6 +209,52 @@ def test_seats_firstseat_president_broker_progress(tmp_path, monkeypatch, rung, 
         assert result["code"] == "president_attempt_timed_out"
     terminal = json.loads(next((tmp_path / "state").rglob("*-terminal.json")).read_text())
     assert terminal["status"] == ("ok" if chatty else "timed_out")
+
+
+def test_seats_firstseat_president_tui_open_turn_resets_clock(tmp_path, monkeypatch):
+    import os
+    import sys
+
+    monkeypatch.setattr(panel_invoker, "_seat_command_profile", lambda command, **kw:
+        contextlib.nullcontext((command, panel_invoker.SeatProfile(env=kw["env"]))))
+    launched = []
+    def launch(command, *, profile, role, **kw):
+        kw.update(stdin=profile.terminal_fd, stdout=profile.terminal_fd, stderr=profile.terminal_fd)
+        proc = subprocess.Popen(command, **kw)
+        launched.append(proc)
+        return proc
+    monkeypatch.setattr(panel_invoker, "launch_owned", launch)
+    source = r'''
+import json, sys, time
+from pathlib import Path
+transcript = Path("claude-" + sys.argv[1] + ".jsonl")
+started = time.monotonic()
+for i in range(30):
+    transcript.write_text(json.dumps({"type": "assistant", "uuid": "fixture-record",
+        "message": {"id": "fixture-message", "role": "assistant", "stop_reason": None,
+                    "content": [{"type": "text", "text": "An open turn " + str(i)}]}}) + "\n")
+    print("Novel provider progress line " + chr(65 + i) * 20, flush=True)
+    time.sleep(.05)
+Path("stream-duration").write_text(str(time.monotonic() - started))
+'''
+    monkeypatch.setattr(panel_invoker, "_broker_claude_tui_command", lambda **kw:
+        [sys.executable, "-c", source, kw["session_id"]])
+    # Keep the real transport, Claude adapter, session reader and transcript classifier.
+    outcomes = []
+    classify = panel_invoker._claude_transcript_outcome
+    def observe(*args, **kwargs):
+        outcome = classify(*args, **kwargs)
+        outcomes.append(outcome)
+        return outcome
+    monkeypatch.setattr(panel_invoker, "_claude_transcript_outcome", observe)
+    monkeypatch.setattr(panel_invoker, "_CLAUDE_TUI_TRANSCRIPT_INTERVAL_S", .05)
+    seam = president_adapter.PresidentInvoke(DEFAULT_BOARD, base_env=dict(os.environ), no_output_bound_s=.8)
+    result = seam._supervise_transport("claude", "fixture", "rule on F001", tmp_path, tmp_path)
+    assert result[0] is not president_adapter._ATTEMPT_TIMED_OUT, result
+    assert len(launched) == 1, result
+    assert float((tmp_path / "stream-duration").read_text()) >= 1
+    assert outcomes and all(not outcome.text and not outcome.ended for outcome in outcomes)
+    assert len(launched) == 1 and launched[0].poll() is not None
 
 
 def test_seats_firstseat_president_policy_and_provider_exit(tmp_path, monkeypatch):
