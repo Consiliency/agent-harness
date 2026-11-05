@@ -6,6 +6,13 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- The jailed Claude login proof (SEATS CLAUDE, agent-harness#1820):
+  `seat_credentials.jailed_login_proof` rejects a caller-supplied Claude credential (any
+  `ANTHROPIC_*` variable included), checks the subscription on the same login context, and runs
+  a single-use auth-status probe on the exact credential, keeping only `authMethod` and
+  `apiKeySource` (agent-harness#1532). `seat_preflight.republish_seat_mode` replaces one seat's
+  row in `seat-modes.json` (agent-harness#1255); seats that republish at once are serialized.
+
 - Add seat-window matrix, private record verification, reviewed export and Grok probe commands (agent-harness#1820). Qualification remains pending; qualify and verify stay candidate and export remains unavailable until the production window supplier lands. Grok probes report each runtime argv form separately.
 
 - Retain closed-field leg execution records and require Grok tool probe receipts (agent-harness#1823, agent-harness#1821).

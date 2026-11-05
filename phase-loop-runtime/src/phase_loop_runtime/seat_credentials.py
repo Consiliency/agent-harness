@@ -815,3 +815,151 @@ def await_login_margin(
 
 class LoginWaitCancelled(RuntimeError):
     """The board was cancelled while a seat waited for its login to be renewed."""
+
+
+# --------------------------------------------------------------------------------------
+# IF-0-CLAUDE-4 (SEATS CLAUDE): the jailed seat's login proof, the same three checks the
+# print and TUI routes hold (agent-harness#1532), for every jailed Claude transport.
+# --------------------------------------------------------------------------------------
+
+#: The typed refusal of a jailed launch whose login is not proven. Ordinary under OD-10.
+LOGIN_UNPROVEN = "claude_seat_login_unproven"
+#: The typed refusal of a probe that echoed the credential it was handed. Security under OD-10.
+TOKEN_IN_OUTPUT = "claude_seat_token_in_output"
+
+#: The caller-side credentials that put a caller off the route this proof vouches for.
+_CALLER_TOKEN_ENV_VARS = frozenset({
+    "CLAUDE_CODE_OAUTH_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR",
+    "CLAUDE_CODE_OAUTH_REFRESH_TOKEN",
+})
+#: The probe's output bound: an auth status is a few hundred bytes.
+PROBE_OUTPUT_CAP_BYTES = 64 << 10
+_PROBE_AUTH_METHOD = "oauth_token"
+
+
+@dataclass(frozen=True)
+class AuthProbeResult:
+    """What ONE single-use auth-status probe hands back to the proof.
+
+    ``credential_sha256`` is the digest of the exact bytes the probe delivered to the CLI,
+    so the proof can tell a probe of the credential under proof from a probe of any other.
+    ``stdout`` is the probe's raw output; the proof reduces it and never keeps it."""
+
+    credential_sha256: str
+    returncode: int
+    stdout: bytes = field(repr=False)
+
+
+@dataclass(frozen=True)
+class LoginProof:
+    """A proven jailed login. Closed: it has no identity field, and the probe's output is
+    reduced to ``authMethod`` and ``apiKeySource`` before anything is kept."""
+
+    source: str
+    auth_method: str
+    api_key_source: str
+
+    def __post_init__(self) -> None:
+        if self.source not in (SOURCE_OVERRIDE, SOURCE_LOGIN):
+            raise ValueError("unknown credential source")
+        if self.auth_method != _PROBE_AUTH_METHOD or self.api_key_source != "none":
+            raise ValueError("a login proof records only a proven subscription login")
+
+    def as_evidence(self) -> dict[str, str]:
+        return {"claude_login_source": self.source, "claude_login_auth_method": self.auth_method,
+                "claude_login_api_key_source": self.api_key_source}
+
+
+class LoginUnproven(RuntimeError):
+    """The jailed login proof failed. ``code`` is :data:`LOGIN_UNPROVEN` or
+    :data:`TOKEN_IN_OUTPUT`; ``reason`` is a fixed slug, never probe text."""
+
+    def __init__(self, code: str, reason: str) -> None:
+        if code not in (LOGIN_UNPROVEN, TOKEN_IN_OUTPUT):
+            raise ValueError(f"unknown login proof code {code!r}")
+        super().__init__(f"{code}: {reason}")
+        self.code = code
+        self.reason = reason
+
+
+def caller_supplied_credential(caller_env: Mapping[str, str]) -> bool:
+    """A caller whose own environment carries a Claude token or any ``ANTHROPIC_*``
+    variable is not on the route the proof vouches for (the jail never sees either)."""
+    return any(key in _CALLER_TOKEN_ENV_VARS or key.startswith("ANTHROPIC_") for key in caller_env)
+
+
+def _reduce_probe_output(raw: bytes) -> tuple[str, str] | None:
+    """``(authMethod, apiKeySource)`` from one auth-status reply, or ``None``. A reply that
+    is not one JSON object, carries a duplicate key, nests too deeply or does not report a
+    first-party login is ``None``. Nothing else of the reply is kept."""
+    if len(raw) > PROBE_OUTPUT_CAP_BYTES:
+        return None
+
+    def unique(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        keys = [key for key, _value in pairs]
+        if len(keys) != len(set(keys)):
+            raise ValueError("duplicate key")
+        return dict(pairs)
+
+    try:
+        status = json.loads(raw.decode("utf-8", errors="strict"), object_pairs_hook=unique)
+    except (ValueError, UnicodeError, RecursionError):
+        return None
+    if not isinstance(status, dict):
+        return None
+    if status.get("loggedIn") is not True or status.get("apiProvider") != "firstParty":
+        return None
+    method = status.get("authMethod")
+    if not isinstance(method, str):
+        return None
+    # The CLI reports `apiKeySource` only when it sees a key: present at all, it is a key.
+    return method, ("present" if "apiKeySource" in status else "none")
+
+
+def jailed_login_proof(
+    credential: SeatCredential,
+    auth_probe: Callable[[bytes], AuthProbeResult],
+    caller_env: Mapping[str, str],
+) -> LoginProof:
+    """Prove the login a jailed Claude launch will use, before it launches.
+
+    Three checks, in order, each failing closed with :class:`LoginUnproven`:
+
+    1. caller-credential rejection: ``caller_env`` carries no Claude token and no
+       ``ANTHROPIC_*`` variable;
+    2. the subscription check on the same login context: the login of ``caller_env``'s
+       session is a first-party subscription (:func:`login_subscription_proven`), and an
+       override credential is still bound to that session's account, with the same bytes;
+    3. a single-use auth-status probe on that exact credential: ``auth_probe`` is handed
+       ``credential.token`` and must report the digest of those bytes, exit 0, and a
+       first-party ``oauth_token`` login with no API key visible.
+
+    A probe whose output carries the credential refuses :data:`TOKEN_IN_OUTPUT`."""
+    if caller_supplied_credential(caller_env):
+        raise LoginUnproven(LOGIN_UNPROVEN, "caller_credential")
+    session = _session_env(caller_env)
+    if not login_subscription_proven(session):
+        raise LoginUnproven(LOGIN_UNPROVEN, "subscription")
+    if credential.source == SOURCE_OVERRIDE:
+        decision = override_decision(ClaudeCredentialAdapter(session))
+        if not decision.applies or decision.token != credential.token:
+            raise LoginUnproven(LOGIN_UNPROVEN, "override_binding")
+    elif credential.source != SOURCE_LOGIN:
+        raise LoginUnproven(LOGIN_UNPROVEN, "source")
+    expected = hashlib.sha256(credential.token).hexdigest()
+    result = auth_probe(credential.token)
+    if not isinstance(result, AuthProbeResult) or result.credential_sha256 != expected:
+        raise LoginUnproven(LOGIN_UNPROVEN, "probe_credential")
+    raw = result.stdout if isinstance(result.stdout, bytes) else b""
+    if seat_jail.contains_secret(raw, credential.token):
+        raise LoginUnproven(TOKEN_IN_OUTPUT, "probe_output")
+    if result.returncode != 0:
+        raise LoginUnproven(LOGIN_UNPROVEN, "probe_exit")
+    reduced = _reduce_probe_output(raw)
+    del raw
+    if reduced is None:
+        raise LoginUnproven(LOGIN_UNPROVEN, "probe_output")
+    method, source = reduced
+    if method != _PROBE_AUTH_METHOD or source != "none":
+        raise LoginUnproven(LOGIN_UNPROVEN, "probe_auth_method")
+    return LoginProof(source=credential.source, auth_method=method, api_key_source=source)
