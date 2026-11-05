@@ -16,6 +16,7 @@ from __future__ import annotations
 import os
 import tempfile
 import unittest
+import pytest
 from pathlib import Path
 from unittest.mock import patch
 
@@ -55,8 +56,12 @@ def test_seats_firstseat_composition_policy_replay():
         else:
             assert outcome.status == "policy_refused"
             assert outcome.code == "review_composition_refused"
-            assert outcome.unmet_slots and outcome.fix
-            with __import__('pytest').raises(pi.PresidentPolicyError):
+            expected = policy.required_seats if absent == "all" else ({
+                "claude": "fable", "codex": "sol", "gemini": "gemini", "grok": "grok",
+            }[absent],)
+            assert outcome.unmet_slots == expected
+            assert outcome.fix
+            with pytest.raises(pi.PresidentPolicyError):
                 pi._validate_review_board_policy(report.board, policy, None)
 
 

@@ -206,9 +206,8 @@ class ReviewComposition(NamedTuple):
             actual = Counter(aliases.get(s.model, s.model) for s in self.board.seats)
             unmet = tuple((Counter(policy.required_seats) - actual).elements())
             return CompositionOutcome(
-                "policy_refused", "review_composition_refused", unmet or policy.required_seats,
-                "restore the required vendor subscription sessions, then re-run the board; "
-                "use the authorized T3 landing board while native composition is unavailable",
+                "policy_refused", "review_composition_refused", unmet,
+                "restore the required vendor subscription sessions and check the board policy, then re-run the board",
             )
         return CompositionOutcome("admitted", None, (), "")
 
