@@ -14449,6 +14449,38 @@
       "task_summary": null,
       "type": "phase",
       "updated_at": "2026-11-06T17:20:46Z"
+    },
+    {
+      "acceptance_criteria_count": 5,
+      "created_at": "2026-11-06T16:59:04Z",
+      "file": "plans/phase-plan-v1-seats-PI.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20261106T165904Z-seats-pi-plan.md",
+      "if_gates_produced": [
+        "IF-0-PI-1",
+        "IF-0-PI-2",
+        "IF-0-PI-3"
+      ],
+      "lanes": [
+        "SL-1",
+        "SL-2",
+        "SL-3",
+        "SL-4"
+      ],
+      "lifecycle": [],
+      "owner_skill": "codex-plan-phase",
+      "phase_alias": "PI",
+      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/912293d6683d/t3-seats-plan-pi/20261106T165904Z-seats-pi-plan.md",
+      "roadmap_ref": {
+        "file": "specs/phase-plans-seats-v1.md",
+        "slug": "phase-plans-seats-v1",
+        "status": "committed",
+        "type": "phase"
+      },
+      "slug": "v1-seats-PI",
+      "status": "committed",
+      "task_summary": "Plan the jailed Pi REVIEW SEAT for agent-harness#1820",
+      "type": "phase",
+      "updated_at": "2026-11-06T16:59:04Z"
     }
   ],
   "schema_version": 1
