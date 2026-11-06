@@ -56,9 +56,10 @@ into this PR's roadmap amendment; no later plan or code amendment enables it.
 in CPU or in disk bandwidth ("Pressure gates + per-sandbox caps"). SL-5 owns the per-seat caps
 half as an additive lane after SL-3. No other lane's scope, shape or test changes.
 `plans/seats-jailcore-caps-contract.md` is normative for SL-5, at sha256
-`859ac2fbff1326c8c9492e4f72bb1050d0a3fb331d030e95553a9be635749727`. The route contract and its digest above are unchanged, and the roadmap is not edited, so
+`a2fe08ef0e3a6b7d888e948a10e22f7c70c11258db355a551063cf69c2c2a1f2`. The route contract and its digest above are unchanged, and the roadmap is not edited, so
 every pin of either stands. AC-7 is therefore a plan-local criterion. Pressure gates stay with
-v13 (EC-PLACECLI-5 on agent-harness#1853).
+v13 (EC-PLACECLI-5 on agent-harness#1853). The owner accepted the caps contract §1 default caps
+as written (2026-11-06).
 
 ## Interface Freeze Gates
 
@@ -330,7 +331,9 @@ the host prerequisite and the probe. `docs/TEAM-ONBOARDING.md` gains one pointer
   Its inventory, CHANGELOG and capability-doc rows ride its landing PR through SL-docs.2 (SL-4's
   per-landing rule), so SL-4's final sweep does not wait for SL-5. Check (M)'s warning on this is
   accepted: a `Depends on` edge would hold JAILCORE's closeout on the host gate below.
-- **Host gate (SL-5).** Once SL-5 lands, a host lacking the caps contract §8 prerequisite degrades
+- **Host gate (SL-5).** Owner ruling, 2026-11-06: roll out by drop-in first, then enforce. SL-5
+  merges only after the first host's `VC` passes and the caps contract §8 drop-in has been
+  requested from `Consiliency/dotfiles`. Once SL-5 lands, a host lacking that prerequisite degrades
   every local seat. Mark SL-5 ready only after `VC` passes, not skips, on every host that runs
   review seats. This is an owner action outside this repository.
 - **Interfaces downstream phases add.** Each later phase adds exactly the following, with no

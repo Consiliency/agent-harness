@@ -75,8 +75,10 @@ entry. A host whose workspace volume differs from its staging root lists that vo
 - a partition maps to its whole disk, through `/sys/dev/block/MAJ:MIN/partition` and the parent
   directory, because `io.max` takes whole devices only;
 - a device-mapper device is used as it is;
-- major 0 (tmpfs, overlay and other anonymous devices) cannot carry `io.max`: refusal, and the
-  fix line names `io_paths`.
+- major 0 (tmpfs, overlay and other anonymous devices) has no block device to verify, so it cannot
+  carry `io.max`. An automatic path (staging root or child scratch) on major 0 refuses explicitly:
+  that host is unsupported for local seats until both sit on a block-backed filesystem. An
+  `io_paths` entry never substitutes for an automatic path, and one on major 0 refuses too.
 
 ## 2. Host sources
 
@@ -128,11 +130,12 @@ run for it. The launch boundary (§4) covers that leg: it ends with `CODE` as a 
 
 ## 4. Enforcement at the launch boundary
 
-Seat start sites call `launch_owned` or `launch_provider` with a new keyword, `seat_caps=<seat
-key>`. With it set, `launch_provider` starts the provider through `capped_popen` in place of
-`subprocess.Popen`, at both the jailed and the owned start. A `SeatJail` owner with no
-`seat_caps` refuses with `CODE`. Other `launch_provider` callers are unchanged, because the
-function also serves executors and helpers.
+A local seat attempt creates exactly one transient capped parent cgroup, identified by its
+`seat_key`, before any provider or worker target can run. `launch_owned`, `launch_provider`,
+and every Capped site pass that same seat key to `capped_popen`. Each launch may use its own
+transient child scope, but every such scope is a descendant of the one capped parent; a second
+independent capped parent for the same live seat is a refusal. The parent remains live until
+every child of the seat is reaped, then is collected.
 
 | Class | Sites (function names at the base; successors after PANELSPLIT) |
 |---|---|
@@ -141,38 +144,23 @@ function also serves executors and helpers.
 | Exempt: not a seat | executor launches, `launcher.*`, `skill_eval_runner.*`, `convergence/adapters/base.run_bounded`, `output_retention.*`, `executor_availability.*`, `claude_agent_view.*` |
 | Exempt: helpers and qualification | egress holder, slirp and bridge, the keyring helper, the jail qualification kit |
 
-`capped_popen` runs these steps:
+`capped_popen` first runs `load_caps`, `io_devices`, and `readiness_code`; a refusal raises
+before any process starts. It creates or joins the seat's transient parent, starts the command
+in a child scope beneath it, and runs the trusted `seat_resource_caps_enter` helper before the
+target. The helper reads its cgroup membership, resolves the capped parent, and reads back
+`memory.max`, `cpu.weight`, `cpu.max`, `io.weight`, `io.max` for every device, and `pids.max`
+from that parent. Any absent or differing value exits without attesting, so the target never
+runs. On EOF or the 15-second timeout, the launch and any empty parent are ended and reaped,
+and `SeatSandboxRefused(CODE, ...)` is raised.
 
-1. `load_caps`, `io_devices` and `readiness_code`. A refusal raises before any process starts.
-2. It creates one attestation pipe and spawns
-   `systemd-run --user --scope --quiet --collect --unit=phase-loop-seat-<nonce>.scope <-p
-   properties> -- <helper> <expected values> -- <command>`, with the helper built by
-   `seat_uid.trusted_module_argv("phase_loop_runtime.seat_resource_caps_enter", ...)`. The scope
-   is outermost, in front of every namespace entry.
-3. It waits up to `SCOPE_ENTER_TIMEOUT_S = 15` for one byte on the pipe. On EOF or timeout it ends
-   the process group, reaps it and raises.
-4. It returns the `Popen`.
+Child-side readback is the proof. A launcher status or accepted property submission is never
+treated as evidence that a controller value took effect.
 
-`seat_resource_caps_enter` is a stdlib-only module. It reads its cgroup from `/proc/self/cgroup`
-and reads back `memory.max`, `cpu.weight`, `cpu.max`, `io.weight`, `io.max` (one line per
-device) and `pids.max`. Any missing or differing value exits without writing the byte, so the
-provider never runs. Readback is the proof, not the `systemd-run` exit status: `systemd-run`
-exits 0 and leaves `io.weight` and `io.max` absent when the `io` controller is not delegated,
-measured on systemd 259.
-
-On a match it restores the environment the caller decided, byte for byte. `systemd-run` needs
-the bus location and adds `INVOCATION_ID`, and neither may reach the chain unless the caller's
-environment already held it. It then writes the byte, closes the pipe and calls `execv`.
-
-Scope mode runs the command in place, so the `Popen` pid, process group, session, inherited
-descriptors, working directory and terminal stay the caller's (measured). Existing teardown and
-`--die-with-parent` are unaffected. The refusal is `seat_jail.SeatSandboxRefused(CODE, ...)`,
-which `panel_invoker` already classifies, and a leg's failure detail carries the code.
-
-Each launch gets its own scope, and the scope ends with its last process. One seat has one live
-launch, with one exception: the SDK route's CLI and host worker each run in a scope under the same
-record, so that route's ceiling is twice the record. A cap breach ends or fails the process
-through the leg's existing exit path; there is no new post-launch code.
+On a match the helper restores the exact caller-selected target environment, writes the
+attestation byte, closes the pipe, and calls `execv`. The caller's process-group, descriptor,
+working-directory, terminal, and teardown contracts remain unchanged. The SDK route's CLI and
+host worker are separate launches beneath the same capped parent, so their combined use—not
+each process independently—is bounded by one effective `seat_resource_caps.v1` record.
 
 ## 5. Refusal code
 
@@ -202,10 +190,15 @@ starts. If a cited ID changed meaning, SL-5 STOPs and reports the exact sentence
 | `io.weight` or `io.max` | `io_weight` and `io_max`; SEATS sets both, which satisfies "either" |
 | (not in v13) | `cpu_max_percent`, `pids_max`, `io_paths` |
 
-- **Binding.** `caps_sha256` is canonical over the effective record, so v13's host
-  `config_sha256` can bind it by value. v13's `LocalHeadroomConfig` has no cap field at this
-  freeze; these caps are the record for it to adopt.
-- **Reservation.** One scope per launch is at least as narrow as v13's per-reservation cgroup.
+- **Binding.** `seat_resource_caps.v1` is the shared cap schema. A v13 local configuration loads
+  it through §2, applies the documented v13 subset, and includes
+  `seat_caps_sha256 = caps_sha256(effective_caps)` in the canonical host configuration hashed as
+  `config_sha256`. `LocalHeadroomConfig` remains the pressure/headroom projection and does not
+  define a second cap record.
+- **Reservation.** The one capped parent per live `seat_key` is the SEATS equivalent of v13's
+  per-reservation cgroup. When a coordinator reservation fronts the seat, the reservation and
+  `seat_key` identify that same single parent; all provider and SDK-worker child scopes remain
+  below it.
 - **Refusal.** The SEATS route code is `CODE`. When a coordinator reservation fronts a local
   seat launch, that client reports the same refusal as `sandbox_placement_capability_unmet`.
   That mapping lands with the first coordinator-routed local seat launch and is not part of
@@ -220,24 +213,34 @@ fake `systemd-run` executable:
 - (a) Defaults equal the §1 table literally, and every field is finite.
 - (b) Record sources: managed wins and suppresses the operator file; operator overrides apply;
   each §2 rejection (unknown key, `max`, zero, negative, boolean, float, out of bound, link, wrong
-  owner, wrong mode) refuses and never falls back to defaults.
+  owner, wrong mode) refuses and never falls back to defaults. A stricter root-managed record
+  beside a wider operator record gives effective caps and `caps_sha256` from the managed record
+  only; an unsafe managed record refuses and never falls through to the operator record.
 - (c) Readiness: a tree without the unified hierarchy, without the user manager cgroup, without
   each `REQUIRED_CONTROLLERS` member in turn, without `systemd-run`, or without the bus socket
   each returns `CODE`; the complete tree returns `None`.
 - (d) Devices: a whole disk, a partition mapped to its parent, a device-mapper device, and major 0
-  refusing.
+  refusing, including an automatic path on major 0 beside a block-backed `io_paths` entry.
 - (e) Readback through the real helper: each §4 file absent or differing in turn, including
   `io.weight` and `io.max` absent while `memory.max` matches, writes no byte, and the target
   marker never runs.
 - (f) `capped_popen` through the real helper: the returned pid is the target's pid, a passed
   descriptor survives, and the target's environment equals an uncapped launch's. A fake
   `systemd-run` that fails, hangs, or exits 0 without running the helper ends in `CODE`, with the
-  process reaped and no target marker.
+  process reaped and no target marker. Two concurrent launches for one fixture `seat_key`,
+  including the CLI plus `_launch_claude_sdk_worker` shape, have distinct child scopes but the same
+  capped parent; a mutation that creates two capped parents fails. A request for a second
+  independent capped parent for a live `seat_key` refuses with `CODE` and starts no target.
 - (g) Boundary: every row of `phase-loop-runtime/tests/data/seat_launch_references.json` with a
   process-start primitive in `panel_invoker` is classified by a table in the test, mirroring §4;
   an unclassified row fails, so a later launch site must choose. Each Capped site reaches
   `capped_popen`, path-entered. Mutation control: a capped site restored to raw `subprocess.Popen`
-  fails. A `SeatJail` launch with no `seat_caps` refuses.
+  fails. A `SeatJail` launch with no `seat_caps` refuses. The test requires the inventory tuple
+  `(panel_invoker, _launch_claude_sdk_worker, subprocess.Popen)` or its named successor, so a role
+  or filter change cannot exempt it. The path-entered SDK case asserts that
+  `_launch_claude_sdk_worker` receives the live seat key, reaches `capped_popen`, and joins the
+  CLI's capped parent; removing the key, bypassing `capped_popen`, or creating a second parent
+  fails.
 - (h) Route, through `_seat_route_for_spawn`, with recording rungs: a refusing host gives
   `degraded` with `CODE` at L6, and neither rung is entered. `CODE` is in no descend set, its
   `OD10_CLASSES` class is `ordinary`, and a synthetic profile carries the precondition with no
