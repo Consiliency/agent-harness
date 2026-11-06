@@ -11,6 +11,7 @@ from __future__ import annotations
 import hashlib
 import importlib.util
 import json
+import re
 import os
 import py_compile
 import shutil
@@ -351,12 +352,339 @@ def _sdk_shapes() -> dict[str, dict]:
     }
 
 
-def test_a_plain_literal_sdk_activation_on_a_ratified_base_passes(tree):
-    """The control for the shapes below: the one readable shape, §4b on the base."""
-    base = tree.commit(record=SDK_RECORD, transport=transport_source(),
+# --------------------------------------------------------------------------------------
+# EC-CLAUDE-3: the boundary receipt an admitted `sdk` head must carry, current.
+# --------------------------------------------------------------------------------------
+
+def _sha(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+#: The proof files the disposable tree's own named paths carry (``Tree.commit`` kwargs).
+_MODULE_FILES = {ct.TRANSPORT_SOURCE: "transport", ct.MODULE_SOURCES["print"]: "print",
+                 ct.MODULE_SOURCES["sdk"]: "sdk"}
+
+
+def _bound_files() -> dict[str, str]:
+    """A file at every proof input the receipt binds (valid Python where it is Python), and
+    each region a small function of its own."""
+    files: dict[str, str] = {}
+    for rel in ct.SDK_PROOF_FILES:
+        if rel not in _MODULE_FILES:
+            files[rel] = f"# {rel} v1\n"
+    for rel, names in ct.SDK_PROOF_REGIONS.items():
+        files[rel] = "".join(f"def {name}():\n    return 1\n\n\n" for name in names)
+    return files
+
+
+EXTRAS = {"worker_install_sha256": "c" * 64, "instrumentation_wrapper_sha256": "d" * 64,
+          "private_suite_sha256": "f" * 64}
+def _junit_counts() -> dict:
+    """Fresh each time: a receipt mutation must never leak into the next receipt."""
+    return {"test_seats_claude_sdk.py": {"collected": 2, "passed": 2, "failed": 0,
+                                         "skipped": 0}}
+
+
+def _junit(*, proof: str, install="c" * 64, skipped=False) -> bytes:
+    case = '<testcase classname="tests.test_seats_claude_sdk" name="test_{n}"{tail}'
+    cases = case.format(n="one", tail="/>") + case.format(
+        n="two", tail="><skipped/></testcase>" if skipped else "/>")
+    return (f'<testsuites><testsuite name="pytest"><properties>'
+            f'<property name="{ct.SDK_PROOF_PROPERTY}" value="{proof}"/>'
+            f'<property name="{ct.SDK_INSTALL_PROPERTY}" value="{install}"/>'
+            f"</properties>{cases}</testsuite></testsuites>").encode()
+
+
+def _blobs(files: dict[str, str], sdk_source: str) -> dict[str, str]:
+    return {**files, ct.TRANSPORT_SOURCE: transport_source(),
+            ct.MODULE_SOURCES["print"]: module_source(False, None),
+            ct.MODULE_SOURCES["sdk"]: sdk_source}
+
+
+def _receipt_dict(files: dict[str, str], sdk_source: str) -> dict:
+    """A receipt whose every binding -- the canonical proof-input digest included -- is
+    computed by the auditor's own functions from these exact inputs."""
+    blobs = _blobs(files, sdk_source)
+    bindings = ct.sdk_proof_bindings(lambda rel: blobs[rel].encode() if rel in blobs else None)
+    proof = ct.sdk_proof_inputs_sha256(bindings, EXTRAS)
+    junit = _junit(proof=proof)
+    return {
+        "schema": ct.SDK_RECEIPT_SCHEMA, "sdk_version": "0.2.167",
+        "lock_sha256": bindings[ct.SDK_LOCK], "contract_sha256": bindings[ct.SDK_CONTRACT],
+        "proof_inputs_sha256": proof,
+        "installed_bindings": {name: _sha(blobs[path])
+                               for name, path in ct.SDK_INSTALLED_BINDINGS.items()},
+        "source_regions": {key: value for key, value in bindings.items() if "::" in key},
+        "runtime_manifest_sha256": ["b" * 64],
+        "worker_install_sha256": EXTRAS["worker_install_sha256"],
+        "instrumentation_wrapper_sha256": EXTRAS["instrumentation_wrapper_sha256"],
+        "profile_digest": "e" * 64,
+        "interpreter": {"implementation": "cpython", "version": "3.14.4"},
+        "host_class": "linux-x86_64-cp314",
+        "public_junit": {s: {"sha256": hashlib.sha256(junit).hexdigest(),
+                             "files": _junit_counts()} for s in ct.SDK_JUNIT_SELECTORS},
+        "private_suite": {"suite_sha256": EXTRAS["private_suite_sha256"],
+                          "evidence_ids": ["ev-" + "1" * 32],
+                          "junit": {s: {"sha256": "f" * 64, "selectors": {
+                              "ev-" + "2" * 32: _junit_counts()["test_seats_claude_sdk.py"]}}
+                              for s in ct.SDK_JUNIT_SELECTORS}},
+    }
+
+
+def _receipt(files: dict[str, str], sdk_source: str) -> str:
+    return json.dumps(_receipt_dict(files, sdk_source), sort_keys=True)
+
+
+SDK_SOURCE = module_source(True, citation(SDK_RECORD, "4b", 1901))
+
+
+def _admitted(tree, *, receipt: str | None = "current", packaged: str | None = "same",
+              files: dict[str, str] | None = None, sdk_source: str = SDK_SOURCE,
+              transport: str | None = None, print_source: str | None = None):
+    """A ratified base and a head that admits `sdk`, carrying a receipt computed from
+    :func:`_bound_files` (current unless ``files`` or a module source says otherwise)."""
+    base_files = _bound_files()
+    base = tree.commit(base_files, record=SDK_RECORD, transport=transport_source(),
                        print=module_source(False, None), sdk=module_source(False, None))
-    head = tree.commit(sdk=module_source(True, citation(SDK_RECORD, "4b", 1901)))
+    body = _receipt(base_files, SDK_SOURCE) if receipt == "current" else receipt
+    raw = {**(files or {}), ct.SDK_RECEIPT: body,
+           ct.SDK_PACKAGED_RECEIPT: body if packaged == "same" else packaged}
+    changes = {"sdk": sdk_source}
+    if transport is not None:
+        changes["transport"] = transport
+    if print_source is not None:
+        changes["print"] = print_source
+    head = tree.commit(raw, **changes)
+    return base, head, base_files, body
+
+
+def _verify(tree, head, junit: dict[str, bytes] | None = None) -> int:
+    argv = ["verify-proof", "--repo", str(tree.root), "--head", head]
+    for selector, data in (junit or {}).items():
+        path = tree.root.parent / f"{selector}.xml"
+        path.write_bytes(data)
+        argv += ["--junit", f"{selector}={path}"]
+    return ct.main(argv)
+
+
+def _good_junit(body: str) -> dict[str, bytes]:
+    proof = json.loads(body)["proof_inputs_sha256"] if body else "0" * 64
+    return {s: _junit(proof=proof) for s in ct.SDK_JUNIT_SELECTORS}
+
+
+def _both_fail(tree, monkeypatch, base, head, body):
+    """A mutation must fail the repository audit and, with evidence, verify-proof."""
+    monkeypatch.setattr(ct, "SDK_PRIVATE_EVIDENCE_STORE", "configured-by-owner")
+    return audit(tree, base, head) == 1 and _verify(tree, head, _good_junit(body)) == 1
+
+
+def test_a_plain_literal_sdk_activation_on_a_ratified_base_passes(tree):
+    """The control for the shapes below: the one readable shape, §4b on the base, and a
+    boundary receipt that binds the head's current inputs, its canonical proof-input digest
+    included."""
+    base, head, _files, _body = _admitted(tree)
     assert audit(tree, base, head) == 0
+    assert ct.sdk_proof_failures(tree.root, head, require_evidence=False) == []
+
+
+def test_verify_proof_binds_current_inputs_and_matching_junit(tree, monkeypatch):
+    """The positive control: a configured store (the owner's), current inputs, and public
+    JUnit whose digest, properties and counts are the receipt's."""
+    _base, head, _files, body = _admitted(tree)
+    monkeypatch.setattr(ct, "SDK_PRIVATE_EVIDENCE_STORE", "configured-by-owner")
+    assert _verify(tree, head, _good_junit(body)) == 0
+
+
+def test_an_sdk_activation_without_its_receipt_fails(tree):
+    base, head, _files, _body = _admitted(tree, receipt=None, packaged=None)
+    assert audit(tree, base, head) == 1
+
+
+def test_a_receipt_whose_packaged_copy_differs_fails(tree, monkeypatch):
+    base, head, _files, body = _admitted(tree, packaged="{}")
+    assert _both_fail(tree, monkeypatch, base, head, body)
+
+
+_REGIONS = [(rel, name) for rel, names in ct.SDK_PROOF_REGIONS.items() for name in names]
+
+
+@pytest.mark.parametrize("rel, name", _REGIONS, ids=[f"{r.rsplit('/', 1)[-1]}::{n}"
+                                                    for r, n in _REGIONS])
+def test_a_change_to_any_bound_region_stales_the_receipt(tree, monkeypatch, rel, name):
+    changed = _bound_files()[rel].replace(f"def {name}():\n    return 1",
+                                         f"def {name}():\n    return 2")
+    base, head, _files, body = _admitted(tree, files={rel: changed})
+    assert _both_fail(tree, monkeypatch, base, head, body)
+
+
+@pytest.mark.parametrize("rel", ct.SDK_PROOF_FILES)
+def test_a_change_to_any_proof_file_stales_the_receipt(tree, monkeypatch, rel):
+    kind = _MODULE_FILES.get(rel)
+    if kind == "transport":
+        base, head, _files, body = _admitted(tree, transport=transport_source() + "# changed\n")
+    elif kind == "print":
+        base, head, _files, body = _admitted(
+            tree, print_source=module_source(False, None) + "# changed\n")
+    elif kind == "sdk":
+        base, head, _files, body = _admitted(tree, sdk_source=SDK_SOURCE + "# changed\n")
+    else:
+        base, head, _files, body = _admitted(tree, files={rel: f"# {rel} v2\n"})
+    assert _both_fail(tree, monkeypatch, base, head, body), rel
+
+
+def _nested(mutate):
+    receipt = _receipt_dict(_bound_files(), SDK_SOURCE)
+    mutate(receipt)
+    return json.dumps(receipt, sort_keys=True)
+
+
+@pytest.mark.parametrize("label, mutate", [
+    ("top-level extra", lambda r: r.update(note="x")),
+    ("installed binding extra", lambda r: r["installed_bindings"].update(extra="a" * 64)),
+    ("installed binding missing", lambda r: r["installed_bindings"].pop("export_sha256")),
+    ("source region missing", lambda r: r["source_regions"].pop(next(iter(r["source_regions"])))),
+    ("source region extra", lambda r: r["source_regions"].update({"x::y": "a" * 64})),
+    ("public junit extra", lambda r: r["public_junit"]["VB"].update(extra=1)),
+    ("public junit count skipped", lambda r: r["public_junit"]["VL"]["files"][
+        "test_seats_claude_sdk.py"].update(skipped=1, passed=1)),
+    ("private selector not opaque", lambda r: r["private_suite"]["junit"]["VB"].update(
+        selectors={"test_private": {"collected": 1, "passed": 1, "failed": 0, "skipped": 0}})),
+    ("private extra", lambda r: r["private_suite"].update(path="/home/x")),
+    ("interpreter extra", lambda r: r["interpreter"].update(build="x")),
+    ("runtime manifest not a digest", lambda r: r.update(runtime_manifest_sha256=["x"])),
+    ("proof digest not current", lambda r: r.update(proof_inputs_sha256="9" * 64)),
+    ("extras not current", lambda r: r.update(worker_install_sha256="9" * 64)),
+])
+def test_a_malformed_or_inconsistent_nested_receipt_fails(tree, monkeypatch, label, mutate):
+    base, head, _files, body = _admitted(tree, receipt=_nested(mutate))
+    assert _both_fail(tree, monkeypatch, base, head, body), label
+
+
+def test_an_import_outside_the_dependency_inventory_fails_closed(tree, monkeypatch):
+    base, head, _files, body = _admitted(tree, sdk_source="import socket\n" + SDK_SOURCE)
+    assert _both_fail(tree, monkeypatch, base, head, body)
+    assert any("dependency inventory" in p for p in ct.sdk_proof_failures(tree.root, head))
+
+
+def test_an_unclassified_region_dependency_fails_closed(tree, monkeypatch):
+    rel = ct.SDK_PROOF_REGIONS and next(iter(ct.SDK_PROOF_REGIONS))
+    changed = _bound_files()[rel].replace(
+        "def _run_claude_sdk_leg():\n    return 1",
+        "def _run_claude_sdk_leg():\n    return _new_helper()") + "def _new_helper():\n    return 1\n"
+    base, head, _files, body = _admitted(tree, files={rel: changed})
+    assert _both_fail(tree, monkeypatch, base, head, body)
+    assert any("unclassified dependency" in p for p in ct.sdk_proof_failures(tree.root, head))
+
+
+def test_a_de_admission_needs_no_receipt(tree):
+    _base, admitted, _files, _body = _admitted(tree)
+    head = tree.commit({ct.SDK_RECEIPT: None, ct.SDK_PACKAGED_RECEIPT: None},
+                       sdk=module_source(False, None))
+    assert audit(tree, admitted, head) == 0
+    assert ct.sdk_proof_failures(tree.root, head) == []
+
+
+def test_verify_proof_passes_an_unadmitted_head(tree, seam, capsys):
+    assert _verify(tree, seam) == 0
+    assert "verify-proof: OK" in capsys.readouterr().out
+
+
+def test_verify_proof_fails_closed_without_the_private_evidence_store(tree, monkeypatch):
+    _base, head, _files, body = _admitted(tree)
+    monkeypatch.setattr(ct, "SDK_PRIVATE_EVIDENCE_STORE", None)
+    assert _verify(tree, head, _good_junit(body)) == 1
+
+
+def test_verify_proof_refuses_junit_from_another_input_set(tree, monkeypatch):
+    _base, head, _files, body = _admitted(tree)
+    other = _bound_files()
+    other[ct.SDK_LOCK] = "# another lock\n"
+    elsewhere = _receipt_dict(other, SDK_SOURCE)["proof_inputs_sha256"]
+    monkeypatch.setattr(ct, "SDK_PRIVATE_EVIDENCE_STORE", "configured-by-owner")
+    assert _verify(tree, head, {s: _junit(proof=elsewhere) for s in ct.SDK_JUNIT_SELECTORS}) == 1
+
+
+@pytest.mark.parametrize("label", ["one selector", "skipped", "another install", "other bytes"])
+def test_verify_proof_refuses_junit_that_is_not_the_receipts(tree, monkeypatch, label):
+    _base, head, _files, body = _admitted(tree)
+    proof = json.loads(body)["proof_inputs_sha256"]
+    junit = {
+        "one selector": {"VB": _junit(proof=proof)},
+        "skipped": {s: _junit(proof=proof, skipped=True) for s in ("VB", "VL")},
+        "another install": {s: _junit(proof=proof, install="9" * 64) for s in ("VB", "VL")},
+        "other bytes": {s: _junit(proof=proof) + b" " for s in ("VB", "VL")},
+    }[label]
+    monkeypatch.setattr(ct, "SDK_PRIVATE_EVIDENCE_STORE", "configured-by-owner")
+    assert _verify(tree, head, junit) == 1
+
+
+def test_the_seat_module_shares_the_auditors_receipt_schema_and_proof_inputs():
+    from phase_loop_runtime import claude_seat_sdk as sdk
+
+    assert sdk.RECEIPT_FIELDS is ct.SDK_RECEIPT_FIELDS and sdk.RECEIPT_PATH == ct.SDK_RECEIPT
+    assert sdk.PROOF_FILES is ct.SDK_PROOF_FILES and sdk.PROOF_REGIONS is ct.SDK_PROOF_REGIONS
+    assert sdk.DEPENDENCY_INVENTORY is ct.SDK_DEPENDENCY_INVENTORY
+    assert sdk.validate_receipt({}) == ct.validate_sdk_receipt({})
+    assert set(sdk.installed_bindings()) == set(ct.SDK_INSTALLED_BINDINGS)
+    assert sdk.CONTRACT == ct.SDK_CONTRACT
+
+
+def test_the_real_tree_binds_every_input_and_classifies_every_dependency():
+    repo = Path(__file__).resolve().parents[2]
+    if not all((repo / rel).is_file() for rel in (*ct.SDK_PROOF_FILES, *ct.SDK_PROOF_REGIONS)):
+        pytest.skip("the proof inputs are repository-only files")
+    bindings = ct.sdk_proof_bindings(lambda rel: (repo / rel).read_bytes())
+    regions = sum(len(names) for names in ct.SDK_PROOF_REGIONS.values())
+    assert len(bindings) == len(ct.SDK_PROOF_FILES) + regions
+    for rel, unbound in ct.SDK_PROOF_UNBOUND.items():
+        assert not set(unbound) & set(ct.SDK_PROOF_REGIONS[rel]), rel
+
+
+SDK_AUDIT_WORKFLOW = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "claude-sdk-audit.yml"
+_CREDENTIAL_NAME = re.compile(r"TOKEN|SECRET|PASSWORD|CREDENTIAL|KEY", re.IGNORECASE)
+
+
+def test_no_credential_reaches_the_step_that_reads_head_content():
+    """The head-audit job: read-only contents permission and nothing else, at every level,
+    and no token, secret or credential-named variable in any env, input or command."""
+    import yaml
+
+    if not SDK_AUDIT_WORKFLOW.is_file():
+        pytest.skip("CI plumbing is absent from the standalone consumer layout")
+    text = SDK_AUDIT_WORKFLOW.read_text()
+    document = yaml.safe_load(text)
+    assert document["permissions"] == {"contents": "read"}
+    assert "env" not in document
+    for job in document["jobs"].values():
+        assert job.get("permissions", {"contents": "read"}) == {"contents": "read"}
+        assert not any(_CREDENTIAL_NAME.search(key) for key in job.get("env", {}))
+        for step in job["steps"]:
+            env = step.get("env", {})
+            assert not any(_CREDENTIAL_NAME.search(key) for key in env), env
+            values = [str(v) for v in (*env.values(), *step.get("with", {}).values(),
+                                       step.get("run", ""))]
+            for value in values:
+                assert "github.token" not in value and "secrets." not in value, value
+            if step.get("uses", "").startswith("actions/checkout"):
+                assert step["with"]["persist-credentials"] is False
+                assert "token" not in step["with"]
+    assert "github.token" not in text and "secrets." not in text
+
+
+def test_the_sdk_audit_is_base_defined_and_reads_the_head_as_data():
+    if not SDK_AUDIT_WORKFLOW.is_file():
+        pytest.skip("CI plumbing is absent from the standalone consumer layout")
+    text = SDK_AUDIT_WORKFLOW.read_text()
+    assert "pull_request_target:" in text and "\n  pull_request:" not in text
+    assert "ref: ${{ github.event.pull_request.base.sha }}" in text
+    assert "persist-credentials: false" in text
+    assert "pull_request.head.ref" not in text and "ref: ${{ github.event.pull_request.head" not in text
+    assert 'git show "$BASE_SHA:$AUDITOR"' in text
+    assert "verify-proof --repo . --head \"$HEAD_SHA\"" in text and "audit-order --repo ." in text
+    for hook in ("TODO(owner, GL-2 prerequisite): the enforcement route",
+                 "TODO(owner, GL-2 prerequisite): the private evidence store"):
+        assert hook in text
+    assert "SDK_PRIVATE_EVIDENCE_STORE: str | None = None" in Path(ct.__file__).read_text()
 
 
 @pytest.mark.parametrize("shape", sorted(_sdk_shapes()))

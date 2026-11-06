@@ -6,6 +6,34 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- The jailed Claude seat's `sdk` host worker gets its launcher and duplex leg, still
+  unadmitted (SEATS CLAUDE SL-1, agent-harness#1820). `panel_invoker._run_claude_sdk_leg`
+  leases the worker its own seat id and starts it inside the leg's seat-uid holder:
+  - `prlimit` sets the fixture's limits;
+  - a fresh session keyring is joined;
+  - `bwrap` builds the worker's own network, PID, IPC and UTS namespaces, a root of the
+    sealed runtime, the verified closure, size-bounded private tmpfs directories and the
+    payload copied from sealed memfds, and dies with its parent;
+  - the seat jail's `setpriv` drop runs before the bootstrap.
+
+  The jailed CLI then launches exactly as for the other transports, through
+  `_run_leg_with_liveness`, which can now carry the parent bridge in its loop (`duplex`).
+
+  An admitted `sdk` runs its worker preflight at the spawn, before any credential-store
+  read (the seat-mode preflight too). The preflight reads the worker payload once and
+  verifies it, and that prepared launch (`claude_seat_sdk.PreparedSdkLaunch`) is carried
+  through the jail to the launcher. The launcher seals exactly those bytes and never
+  reopens the package. `_prepare_jailed_claude` no longer requires a dependency session for
+  `sdk`.
+
+  On the audit side:
+  - The boundary receipt binds the launcher's whole dependency closure, with a fail-closed
+    inventory of every bound region's references.
+  - `audit-order` recomputes the canonical proof-input digest from an admitted head and
+    validates the receipt's nested closed schema.
+  - The new `verify-proof` command and the base-defined, credential-free `claude-sdk-audit`
+    workflow fail closed on an admitted head until the owner's enforcement route and private
+    evidence store exist.
 - The jailed print transport's stream admission takes a route-specific parse policy
   (SEATS CLAUDE SL-2, agent-harness#1820): `claude_seat_print.ParsePolicy`, with `print`'s own
   `PRINT_POLICY` as the default, and an `on_frame` receiver that gets each frame's parsed object

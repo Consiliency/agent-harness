@@ -128,6 +128,12 @@ INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
     ("sandbox_egress.py", "egress_isolation_available"): (
         NOT_AGENT, "trusted unshare / slirp4netns / iptables capability probe"),
     ("sandbox_egress.py", "host_addresses"): (NOT_AGENT, "trusted `ip` address listing"),
+    # SEATS CLAUDE SL-1 (IF-0-CLAUDE-3): the `sdk` transport's host worker. Its argv is
+    # prlimit, the keyring helper, the seat-uid holder entry, bwrap and setpriv around the
+    # sealed interpreter running the SDK worker bootstrap -- never an agent CLI -- with an
+    # explicit two-variable environment; bwrap clears it and sets the fixture's own.
+    ("panel_invoker.py", "_launch_claude_sdk_worker"): (
+        NOT_AGENT, "the sdk host worker's sandbox (a Python bootstrap, not an agent CLI)"),
     ("seat_keyring_exec.py", "execute"): (
         NOT_AGENT, "the owned seat's final link: execs the chain `launch_owned` hands it, "
                    "with that launch's decided env"),
