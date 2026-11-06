@@ -35,7 +35,6 @@ enforcement prerequisites.
 from __future__ import annotations
 
 import argparse
-import ast
 import base64
 import dataclasses
 import errno
@@ -54,6 +53,7 @@ from pathlib import Path
 from types import MappingProxyType
 from typing import Mapping, Sequence
 
+from . import claude_seat_transport as _ct
 from .claude_seat_transport import RecordCitation, TransportRefused
 
 ADMITTED = False
@@ -1234,19 +1234,23 @@ PARENT_LEG_HELPER = "_run_claude_sdk_leg"
 BWRAP = "/usr/bin/bwrap"
 
 
-def payload_digests() -> dict[str, str]:
-    return {name: sha256_hex(read_packaged(f"worker/{name}")) for name in WORKER_PAYLOAD}
+def payload_digests(payload: Mapping[str, bytes] | None = None) -> dict[str, str]:
+    payload = payload if payload is not None else {
+        name: read_packaged(f"worker/{name}") for name in WORKER_PAYLOAD}
+    return {name: sha256_hex(payload[name]) for name in WORKER_PAYLOAD}
 
 
-def installed_bindings() -> dict[str, str]:
-    """The installed artifacts a receipt must bind, recomputed from the package."""
+def installed_bindings(payload: Mapping[str, bytes] | None = None) -> dict[str, str]:
+    """The installed artifacts a receipt must bind, recomputed from the package (the
+    payload from ``payload`` when the caller already read it)."""
     bindings = {
         "launch_fixture_sha256": sha256_hex(read_packaged(LAUNCH_FIXTURE)),
         "export_sha256": sha256_hex(read_packaged(EXPORT)),
         "closure_manifest_sha256": manifest_digest(),
         "seat_module_sha256": sha256_hex(Path(__file__).read_bytes()),
     }
-    bindings.update({f"payload:{name}": digest for name, digest in payload_digests().items()})
+    bindings.update({f"payload:{name}": digest
+                     for name, digest in payload_digests(payload).items()})
     return bindings
 
 
@@ -1261,12 +1265,29 @@ def packaged_receipt() -> dict:
     return value
 
 
-def preflight(directory: Path | None = None) -> WorkerInstall:
-    """Worker readiness and provenance, in order, before any credential is read: the
-    packaged data and its receipt bindings, the registered snapshot, then the worker's
-    launch prerequisites. Raises :class:`SDKRefused` with the first typed code."""
+@dataclasses.dataclass(frozen=True)
+class PreparedSdkLaunch:
+    """What one leg's preflight verified, carried to its launch: the verified install, the
+    worker payload's exact bytes (read once and checked against the receipt), and the
+    receipt bindings they were checked against. The launch seals these bytes into the
+    worker's memfds; nothing re-reads the packaged payload after the credential."""
+
+    install: WorkerInstall
+    payload_bytes: Mapping[str, bytes] = dataclasses.field(repr=False)
+    bindings: Mapping[str, str]
+    directory: Path | None = None
+    #: The closure manifest the install was verified against (``None``: the packaged one).
+    manifest_raw: bytes | None = dataclasses.field(default=None, repr=False)
+
+
+def preflight(directory: Path | None = None) -> PreparedSdkLaunch:
+    """Worker readiness and provenance, in order, before any credential-store read: the
+    packaged data and its receipt bindings (the worker payload read once, here), the
+    registered snapshot, then the worker's launch prerequisites. Returns the prepared
+    launch; raises :class:`SDKRefused` with the first typed code."""
     sdk_cli_delta()
-    bindings = installed_bindings()
+    payload = {name: read_packaged(f"worker/{name}") for name in WORKER_PAYLOAD}
+    bindings = installed_bindings(payload)
     receipt = packaged_receipt()
     if any(receipt["installed_bindings"].get(name) != digest
            for name, digest in bindings.items()):
@@ -1281,7 +1302,24 @@ def preflight(directory: Path | None = None) -> WorkerInstall:
         raise _refuse(WORKER_UNAVAILABLE)
     if not callable(getattr(_pi(), PARENT_LEG_HELPER, None)):
         raise _refuse(WORKER_UNAVAILABLE)
-    return install
+    return PreparedSdkLaunch(install=install, payload_bytes=MappingProxyType(payload),
+                             bindings=MappingProxyType(bindings), directory=directory)
+
+
+def still_current(prepared: object) -> PreparedSdkLaunch:
+    """The prepared launch, if it is one and its install still verifies (the snapshot's
+    signature, re-checked); else a typed refusal. Its payload bytes are never re-read."""
+    if not isinstance(prepared, PreparedSdkLaunch):
+        raise _refuse(WORKER_UNAVAILABLE)
+    for name in WORKER_PAYLOAD:
+        data = prepared.payload_bytes.get(name)
+        if not isinstance(data, bytes) or sha256_hex(data) != prepared.bindings.get(
+                f"payload:{name}"):
+            raise _refuse(PROVENANCE_REFUSED)
+    current = verify_install(prepared.directory, manifest_raw=prepared.manifest_raw)
+    if current.snapshot_sha256 != prepared.install.snapshot_sha256:
+        raise _refuse(PROVENANCE_REFUSED)
+    return prepared
 
 
 # --------------------------------------------------------------------------------------
@@ -1337,179 +1375,63 @@ def frozen_options(*, model: str, effort: str | None, session_id: str, settings:
 # The boundary receipt (closed schema ``claude-sdk-boundary.v1``).
 # --------------------------------------------------------------------------------------
 
-RECEIPT_SCHEMA = "claude-sdk-boundary.v1"
-RECEIPT_PATH = "plans/evidence/seat-qualification/claude-sdk-boundary/receipt-v1.json"
-#: The closed field set, field -> kind.
-RECEIPT_FIELDS: Mapping[str, str] = MappingProxyType({
-    "schema": "literal", "sdk_version": "version", "lock_sha256": "sha256",
-    "contract_sha256": "sha256", "proof_inputs_sha256": "sha256",
-    "installed_bindings": "bindings", "source_regions": "bindings",
-    "runtime_manifest_sha256": "sha256_list", "worker_install_sha256": "sha256",
-    "instrumentation_wrapper_sha256": "sha256", "profile_digest": "sha256",
-    "interpreter": "interpreter", "host_class": "slug",
-    "public_junit": "junit", "private_suite": "private",
-})
-_SELECTORS = ("VB", "VL")
-_COUNTS = ("collected", "passed", "failed", "skipped")
-_HEX = re.compile(r"[0-9a-f]{64}")
-_SLUG = re.compile(r"[a-z0-9][a-z0-9_.-]{0,63}")
-_OPAQUE = re.compile(r"ev-[0-9a-f]{32}")
-
-
-def _counts_ok(value: object) -> bool:
-    return (isinstance(value, dict) and set(value) == set(_COUNTS)
-            and all(type(value[k]) is int and value[k] >= 0 for k in _COUNTS)
-            and value["collected"] > 0 and value["passed"] == value["collected"]
-            and value["failed"] == 0 and value["skipped"] == 0)
+RECEIPT_SCHEMA = _ct.SDK_RECEIPT_SCHEMA
+RECEIPT_PATH = _ct.SDK_RECEIPT
+#: The closed field set (``claude_seat_transport`` holds the one definition the base
+#: auditor and this module share).
+RECEIPT_FIELDS: tuple[str, ...] = _ct.SDK_RECEIPT_FIELDS
+PROOF_FILES: tuple[str, ...] = _ct.SDK_PROOF_FILES
+PROOF_REGIONS: Mapping[str, tuple[str, ...]] = _ct.SDK_PROOF_REGIONS
+PROOF_EXTRAS: tuple[str, ...] = _ct.SDK_PROOF_EXTRAS
+DEPENDENCY_INVENTORY: tuple[str, ...] = _ct.SDK_DEPENDENCY_INVENTORY
 
 
 def validate_receipt(value: object) -> list[str]:
-    """Every way ``value`` is not a passing ``claude-sdk-boundary.v1`` receipt. Only
-    digests, counts, host and interpreter vocabulary and opaque evidence IDs are allowed."""
-    if not isinstance(value, dict):
-        return ["the receipt is not an object"]
-    problems = []
-    if set(value) != set(RECEIPT_FIELDS):
-        problems.append("the receipt's fields are not the closed set")
-    for name, kind in RECEIPT_FIELDS.items():
-        item = value.get(name)
-        ok = {
-            "literal": item == RECEIPT_SCHEMA,
-            "version": item == SDK_VERSION,
-            "sha256": isinstance(item, str) and bool(_HEX.fullmatch(item)),
-            "sha256_list": isinstance(item, list) and bool(item)
-            and all(isinstance(i, str) and _HEX.fullmatch(i) for i in item),
-            "bindings": isinstance(item, dict) and bool(item)
-            and all(isinstance(k, str) and _SLUG.fullmatch(k.replace(":", "-").replace("/", "-"))
-                    and isinstance(v, str) and _HEX.fullmatch(v) for k, v in item.items()),
-            "interpreter": isinstance(item, dict) and set(item) == {"implementation", "version"}
-            and item["implementation"] == "cpython"
-            and isinstance(item["version"], str) and bool(re.fullmatch(r"3\.\d+\.\d+", item["version"])),
-            "slug": isinstance(item, str) and bool(_SLUG.fullmatch(item)),
-            "junit": isinstance(item, dict) and set(item) == set(_SELECTORS)
-            and all(isinstance(item[s], dict) and set(item[s]) == {"sha256", "files"}
-                    and isinstance(item[s]["sha256"], str) and _HEX.fullmatch(item[s]["sha256"])
-                    and isinstance(item[s]["files"], dict) and item[s]["files"]
-                    and all(_counts_ok(c) for c in item[s]["files"].values())
-                    for s in _SELECTORS),
-            "private": isinstance(item, dict) and set(item) == {"suite_sha256", "evidence_ids",
-                                                                 "junit"}
-            and isinstance(item["suite_sha256"], str) and bool(_HEX.fullmatch(item["suite_sha256"]))
-            and isinstance(item["evidence_ids"], list) and bool(item["evidence_ids"])
-            and all(isinstance(e, str) and _OPAQUE.fullmatch(e) for e in item["evidence_ids"])
-            and isinstance(item["junit"], dict) and set(item["junit"]) == set(_SELECTORS)
-            and all(isinstance(item["junit"][s], dict) and set(item["junit"][s]) == {"sha256", "selectors"}
-                    and _HEX.fullmatch(str(item["junit"][s]["sha256"]))
-                    and isinstance(item["junit"][s]["selectors"], dict) and item["junit"][s]["selectors"]
-                    and all(_OPAQUE.fullmatch(k) and _counts_ok(c)
-                            for k, c in item["junit"][s]["selectors"].items())
-                    for s in _SELECTORS),
-        }[kind]
-        if not ok:
-            problems.append(f"{name} is not a valid {kind}")
-    return problems
-
-
-#: The proof inputs, exactly: whole files, and named source regions of shared modules.
-#: Nothing outside this set can stale the receipt; a change inside it always does.
-PROOF_FILES: tuple[str, ...] = (
-    "plans/seats-claude-sdk-worker-contract.md",
-    "phase-loop-runtime/uv.lock",
-    "phase-loop-runtime/src/phase_loop_runtime/claude_seat_sdk.py",
-    "phase-loop-runtime/src/phase_loop_runtime/claude_seat_transport.py",
-    "phase-loop-runtime/src/phase_loop_runtime/claude_seat_print.py",
-    "phase-loop-runtime/src/phase_loop_runtime/data/claude_sdk/launch-v1.json",
-    "phase-loop-runtime/src/phase_loop_runtime/data/claude_sdk/requirements-v1.txt",
-    "phase-loop-runtime/src/phase_loop_runtime/data/claude_sdk/closure-linux-x86_64-cp314-v1.json",
-    "phase-loop-runtime/src/phase_loop_runtime/data/claude_sdk/worker/claude_sdk_bootstrap.py",
-    "phase-loop-runtime/src/phase_loop_runtime/data/claude_sdk/worker/claude_sdk_worker.py",
-    "phase-loop-runtime/src/phase_loop_runtime/data/claude_sdk/worker/claude_sdk_adapter.py",
-    "phase-loop-runtime/tests/data/seats_claude_sdk/launch-v1.json",
-    "phase-loop-runtime/tests/test_seats_claude_sdk.py",
-    "phase-loop-runtime/tests/test_seats_claude_sdk_adapter.py",
-)
-PROOF_REGIONS: Mapping[str, tuple[str, ...]] = MappingProxyType({
-    "phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py": (
-        "_broker_claude_tui_command", "_claude_panel_settings", "_prepare_jailed_claude",
-        "_run_leg_with_liveness", "launch_provider", "_cleanup_jailed_seat",
-        "_JailedSeat", "_BROKER_CLAUDE_DIRECT_REQUEST", "_JAILED_CLAUDE_TOOL_CONTROLS"),
-    "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py": (
-        "seat_env", "secret_encodings", "contains_secret", "build_seat_jail"),
-    "phase-loop-runtime/src/phase_loop_runtime/seat_uid.py": (
-        "lease_seat_id", "seat_uid_available", "teardown_in_h"),
-})
-#: Every module this one imports; an import outside it fails closed.
-DEPENDENCY_INVENTORY: tuple[str, ...] = (
-    "__future__", "argparse", "ast", "base64", "dataclasses", "errno", "hashlib",
-    "importlib", "json", "os", "platform", "pwd", "re", "secrets", "shutil", "stat",
-    "struct", "sys", "tempfile", "pathlib", "types", "typing", "uuid", "zipfile",
-    ".claude_seat_transport", ".claude_seat_print", ".seat_jail", ".seat_uid",
-    ".panel_invoker", ".",
-)
+    """Every way ``value`` is not a passing ``claude-sdk-boundary.v1`` receipt, nested
+    levels included (``claude_seat_transport.validate_sdk_receipt``)."""
+    return _ct.validate_sdk_receipt(value)
 
 
 def module_dependencies(source: bytes) -> set[str]:
-    found = set()
-    for node in ast.walk(ast.parse(source)):
-        if isinstance(node, ast.Import):
-            found.update(alias.name.split(".")[0] for alias in node.names)
-        elif isinstance(node, ast.ImportFrom):
-            if node.level:
-                base = "." + (node.module or "")
-                found.add(base if node.module else ".")
-                if not node.module:
-                    found.update("." + alias.name for alias in node.names)
-            else:
-                found.add((node.module or "").split(".")[0])
-    return found
+    return _ct.module_dependencies(source)
 
 
 def source_region(source: bytes, name: str) -> bytes:
     """The bytes of one top-level function, class or assignment named ``name``."""
-    tree = ast.parse(source)
-    lines = source.splitlines(keepends=True)
-    for node in tree.body:
-        names = []
-        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
-            names = [node.name]
-        elif isinstance(node, ast.Assign):
-            names = [t.id for t in node.targets if isinstance(t, ast.Name)]
-        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
-            names = [node.target.id]
-        if name in names:
-            start = min([node.lineno, *(d.lineno for d in getattr(node, "decorator_list", []))])
-            return b"".join(lines[start - 1:node.end_lineno])
-    raise _refuse(PROVENANCE_REFUSED)
+    region = _ct.source_region(source, name)
+    if region is None:
+        raise _refuse(PROVENANCE_REFUSED)
+    return region
+
+
+def _checkout_reader(repo: Path):
+    def read(rel: str) -> bytes | None:
+        path = repo / rel
+        if not path.is_file() or path.is_symlink():
+            return None
+        return path.read_bytes()
+
+    return read
 
 
 def proof_inputs(repo: Path) -> dict[str, str]:
-    """``{input: sha256}`` over :data:`PROOF_FILES` and :data:`PROOF_REGIONS`. A missing
-    input, or an import outside :data:`DEPENDENCY_INVENTORY`, fails closed."""
-    out = {}
-    for rel in PROOF_FILES:
-        path = repo / rel
-        if not path.is_file() or path.is_symlink():
-            raise _refuse(PROVENANCE_REFUSED)
-        out[rel] = file_sha256(path)
-    for rel, names in PROOF_REGIONS.items():
-        source = (repo / rel).read_bytes()
-        for name in names:
-            out[f"{rel}::{name}"] = sha256_hex(source_region(source, name))
-    own = (repo / "phase-loop-runtime/src/phase_loop_runtime/claude_seat_sdk.py").read_bytes()
-    if not module_dependencies(own) <= set(DEPENDENCY_INVENTORY):
-        raise _refuse(PROVENANCE_REFUSED)
-    return dict(sorted(out.items()))
+    """``{input: sha256}`` over every proof input of a checkout, the base auditor's own
+    computation; a missing input, an unclassified region dependency or an import outside
+    the inventory fails closed."""
+    try:
+        return _ct.sdk_proof_bindings(_checkout_reader(repo))
+    except _ct.AuditError:
+        raise _refuse(PROVENANCE_REFUSED) from None
 
 
-def proof_inputs_sha256(repo: Path, *, extra: Mapping[str, str] | None = None) -> str:
-    """The canonical binding: sorted named sha256 values (never a commit SHA), plus the
-    installed worker snapshot and the private suite and wrapper inventories in ``extra``."""
-    bindings = proof_inputs(repo)
-    for key, value in dict(extra or {}).items():
-        if key in bindings or not _HEX.fullmatch(str(value)):
-            raise _refuse(PROVENANCE_REFUSED)
-        bindings[key] = value
-    return sha256_hex(canonical(dict(sorted(bindings.items()))))
+def proof_inputs_sha256(repo: Path, *, extras: Mapping[str, str]) -> str:
+    """The canonical binding the receipt and every VB/VL JUnit carry: the checkout's
+    proof inputs joined with the receipt-named install and private bindings
+    (:data:`PROOF_EXTRAS`), never a commit SHA."""
+    try:
+        return _ct.sdk_proof_inputs_sha256(proof_inputs(repo), extras)
+    except _ct.AuditError:
+        raise _refuse(PROVENANCE_REFUSED) from None
 
 
 # --------------------------------------------------------------------------------------
@@ -1532,8 +1454,9 @@ def run_jailed(
     session_name: str | None = None,
     **_unused: object,
 ) -> tuple[str, str]:
-    """The ``sdk`` transport on a prepared, login-proven jailed seat. While the parent
-    leg helper (:data:`PARENT_LEG_HELPER`) is absent, it refuses
+    """The ``sdk`` transport on a prepared, login-proven jailed seat, launched from the
+    seat's pre-credential preflight (``seat.sdk_prepared``); an absent or no longer current
+    one refuses. Without the parent leg helper (:data:`PARENT_LEG_HELPER`) it refuses
     ``claude_sdk_worker_unavailable`` and launches nothing. Tears the seat down whatever
     happens."""
     from . import seat_jail as _seat_jail
@@ -1556,9 +1479,12 @@ def run_jailed(
                                     "claude_sdk_location": "host_worker",
                                     "claude_sdk_version": SDK_VERSION})
         try:
-            install = preflight()
+            # The launch the pre-credential preflight prepared (``seat.sdk_prepared``),
+            # still current; never a new preflight or new payload bytes after the credential.
+            prepared = still_current(getattr(seat, "sdk_prepared", None))
         except SDKRefused as refusal:
             return fail(refusal.code)
+        install = prepared.install
         helper = getattr(pi, PARENT_LEG_HELPER, None)
         if not callable(helper):
             return fail(WORKER_UNAVAILABLE)
@@ -1576,10 +1502,13 @@ def run_jailed(
         effort_value = command[command.index("--effort") + 1] if "--effort" in command else None
         options = frozen_options(model=requested, effort=effort_value, session_id=session_id,
                                  settings=pi._claude_panel_settings(env))
-        run = helper(command, spec=spec, bridge=bridge, install=install, options=options,
-                     cwd=Path(_seat_jail.SEAT_TREE), env=cli_env(jail),
-                     deadline_s=float(max(1, int(backstop_s))), seat=seat,
-                     quiescence_latch=quiescence_latch, review_monitor=review_monitor)
+        try:
+            run = helper(command, spec=spec, bridge=bridge, prepared=prepared, options=options,
+                         cwd=Path(_seat_jail.SEAT_TREE), env=cli_env(jail),
+                         deadline_s=float(max(1, int(backstop_s))), seat=seat,
+                         quiescence_latch=quiescence_latch, review_monitor=review_monitor)
+        except TransportRefused as refusal:
+            return fail(refusal.code)
         verdict, value = bridge.outcome(int(getattr(run, "returncode", 1)))
         if verdict != "admitted":
             return fail(value)

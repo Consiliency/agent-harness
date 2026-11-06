@@ -73,19 +73,21 @@ def register_provider_executable(leg: str, executable: str) -> None  # today's l
   regular file owned by uid 0, not group- or world-writable, with every ancestor owned by
   uid 0 and not group- or world-writable. It is reached by an `O_PATH|O_NOFOLLOW` walk from
   `/` and read from that one descriptor. It is RFC 8785 JSON:
-  `{"schema":"seat_authority_pin.v1","releases":{"<release_id>":{"<leg>":"<sha256>"}}}`.
+  `{"schema":"seat_authority_pin.v2","releases":{"<release_id>":{"<leg>":{"authority_sha256":"<sha256>","authority_id":"<sha256>","base_profile_sha256":"<sha256>"}}}}`.
   The release's own bytes never establish their authority.
 - `SeatSubject.requirement` is built independently of the release bytes:
   - `provider` comes from the leg;
   - `selected_executable` comes from the resolved `subject_path`;
-  - `expected_authority_sha256` comes from the pin;
+  - `authority_id` and `base_profile_sha256` come from the pin entry;
+  - `expected_authority_sha256` comes from the pin entry's `authority_sha256`;
   - the adapter and policy fields are runtime constants.
 - `open_managed_authority` returns a caller-owned, read-only descriptor on the leg's
   `authority.json` and the pin's digest. The caller lends it to `admit_executable_dependency`
   (which duplicates it) and then closes it.
 - A missing pin, or no entry for (release, leg), gives `authority_missing`. An unsafe pin or a
-  digest mismatch gives `authority_invalid`. A subject that differs from the declaration's
-  gives `subject_mismatch`. These are the existing `ExecutableDependencyError` codes.
+  digest mismatch gives `authority_invalid`. A malformed pin entry, or one missing any of its
+  three fields, gives `authority_invalid`. A subject that differs from the declaration's gives
+  `subject_mismatch`. These are the existing `ExecutableDependencyError` codes.
 - A `managed_release` resolution never falls back to `standalone` or to an ambient path.
 
 **`deployment_kind()`** inspects paths only and spawns nothing.
@@ -426,10 +428,11 @@ TEAMHOST runs no window.
 ## 7. Cross-repo (IF-XR-1)
 
 Each vendor phase specifies its own leg's declaration content: the runtime file list and its
-pin entry. For the Claude and Gemini legs that exist today, lane A3 (plan SL-8) supplies that
-specification together with the switch-on. The coordinator routes each specification to
-Consiliency/dotfiles. Dotfiles builds the managed releases, and every release that serves
-review seats ships §1's per-leg `authority.json` and `declaration.json`. The host
+pin entry. The pin entry emits all three §1 fields: `authority_sha256`, `authority_id` and
+`base_profile_sha256`. For the Claude and Gemini legs that exist today, lane A3 (plan SL-8)
+supplies that specification together with the switch-on. The coordinator routes each
+specification to Consiliency/dotfiles. Dotfiles builds the managed releases, and every release
+that serves review seats ships §1's per-leg `authority.json` and `declaration.json`. The host
 administrator writes §1's pin file (LA1-AUTHORITY-PIN). From gate G-A on, until both exist on a host:
 - that host's seats resolve `managed_release` and refuse with `authority_missing`;
 - the doctor reports the checklist item.

@@ -266,6 +266,16 @@ def test_install(tmp_path_factory, record_testsuite_property) -> SealedInstall:
     return SealedInstall(install, state, manifest_raw, venv)
 
 
+#: This offline session's named extras. It is no boundary-proof run: no registered worker
+#: install and no private suite, so their bindings are fixed markers, and its JUnit can never
+#: match a receipt produced by VB or VL.
+OFFLINE_EXTRAS = {
+    "worker_install_sha256": hashlib.sha256(b"offline: no registered worker install").hexdigest(),
+    "instrumentation_wrapper_sha256": hashlib.sha256(OBSERVER.read_bytes()).hexdigest(),
+    "private_suite_sha256": hashlib.sha256(b"offline: no private suite").hexdigest(),
+}
+
+
 def _proof_inputs_present() -> bool:
     return all((REPO / rel).is_file() for rel in (*sdk.PROOF_FILES, *sdk.PROOF_REGIONS))
 
@@ -278,10 +288,11 @@ def proof_binding(record_testsuite_property):
     if not _proof_inputs_present():
         yield None
         return
-    before = sdk.proof_inputs_sha256(REPO)
+    before = sdk.proof_inputs_sha256(REPO, extras=OFFLINE_EXTRAS)
     record_testsuite_property("claude_sdk_proof_inputs_sha256", before)
     yield before
-    assert sdk.proof_inputs_sha256(REPO) == before, "the proof inputs changed during the session"
+    assert sdk.proof_inputs_sha256(REPO, extras=OFFLINE_EXTRAS) == before, (
+        "the proof inputs changed during the session")
 
 
 # --------------------------------------------------------------------------------------
@@ -1319,9 +1330,10 @@ def test_run_jailed_refuses_and_tears_down_without_the_proven_install(monkeypatc
                                   prompt=PROMPT, broker_evidence=evidence,
                                   failure_detail_sink=sink)
     assert (status, text) == ("DEGRADED", "")
-    assert torn == [seat] and sink[0].template == sdk.DEPENDENCY_UNAVAILABLE
+    # No launch prepared by a pre-credential preflight on the seat: nothing is selected now.
+    assert torn == [seat] and sink[0].template == sdk.WORKER_UNAVAILABLE
     assert evidence["claude_admission"] == {"outcome": "refused",
-                                            "code": sdk.DEPENDENCY_UNAVAILABLE}
+                                            "code": sdk.WORKER_UNAVAILABLE}
     assert evidence["claude_code_entrypoint"] == "unset"
 
 
@@ -1379,7 +1391,9 @@ def _receipt() -> dict:
     return {
         "schema": sdk.RECEIPT_SCHEMA, "sdk_version": sdk.SDK_VERSION, "lock_sha256": digest,
         "contract_sha256": digest, "proof_inputs_sha256": digest,
-        "installed_bindings": {"export_sha256": digest}, "source_regions": {"x": digest},
+        "installed_bindings": {name: digest for name in ct.SDK_INSTALLED_BINDINGS},
+        "source_regions": {f"{rel}::{name}": digest
+                           for rel, names in sdk.PROOF_REGIONS.items() for name in names},
         "runtime_manifest_sha256": [digest], "worker_install_sha256": digest,
         "instrumentation_wrapper_sha256": digest, "profile_digest": digest,
         "interpreter": {"implementation": "cpython", "version": "3.14.4"},
@@ -1427,29 +1441,29 @@ def _proof_tree(tmp_path: Path) -> Path:
 
 def test_the_proof_binding_moves_only_with_its_inputs(tmp_path):
     tree = _proof_tree(tmp_path)
-    before = sdk.proof_inputs_sha256(tree)
+    before = sdk.proof_inputs_sha256(tree, extras=OFFLINE_EXTRAS)
     (tree / "unrelated.md").write_text("outside the proof inputs\n")
-    assert sdk.proof_inputs_sha256(tree) == before
+    assert sdk.proof_inputs_sha256(tree, extras=OFFLINE_EXTRAS) == before
     lock = tree / "phase-loop-runtime" / "uv.lock"
     lock.write_text(lock.read_text() + "\n")
-    assert sdk.proof_inputs_sha256(tree) != before
+    assert sdk.proof_inputs_sha256(tree, extras=OFFLINE_EXTRAS) != before
 
 
 def test_a_changed_shared_region_stales_the_proof(tmp_path):
     tree = _proof_tree(tmp_path)
-    before = sdk.proof_inputs_sha256(tree)
+    before = sdk.proof_inputs_sha256(tree, extras=OFFLINE_EXTRAS)
     jail = tree / "phase-loop-runtime/src/phase_loop_runtime/seat_jail.py"
     source = jail.read_text()
     jail.write_text(source.replace('"DISABLE_AUTOUPDATER": "1",',
                                    '"DISABLE_AUTOUPDATER": "1", "EXTRA": "1",', 1))
-    assert sdk.proof_inputs_sha256(tree) != before
+    assert sdk.proof_inputs_sha256(tree, extras=OFFLINE_EXTRAS) != before
 
 
 def test_a_missing_proof_input_fails_closed(tmp_path):
     tree = _proof_tree(tmp_path)
     (tree / sdk.PROOF_FILES[-1]).unlink()
     with pytest.raises(sdk.SDKRefused):
-        sdk.proof_inputs_sha256(tree)
+        sdk.proof_inputs_sha256(tree, extras=OFFLINE_EXTRAS)
 
 
 # --------------------------------------------------------------------------------------
