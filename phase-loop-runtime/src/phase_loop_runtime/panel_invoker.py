@@ -12637,8 +12637,7 @@ def _open_window_launch(spec: WindowLaunchSpec):
         staged = _review_stage.stage_review_tree(source, parent=review_dir)
         tree = review_dir / _seat_jail.HOST_TREE_DIRNAME
         os.replace(staged, tree)
-        marker = tree / ".git" / "phase-loop-source-commit"
-        if marker.read_text(encoding="utf-8").strip() != commit:
+        if _review_stage.staged_source_commit(tree) != commit:
             raise ValueError("stage_refused")
         uids = _seat_uid.subordinate_range(_seat_uid.SUBUID_FILE)
         gids = _seat_uid.subordinate_range(_seat_uid.SUBGID_FILE)
