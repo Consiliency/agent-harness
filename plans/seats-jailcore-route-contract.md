@@ -294,10 +294,11 @@ Otherwise the seat keeps today's behaviour for a capacity code: `degraded` with
 R-routed: a vendor in `routed_remote` skips the local rung with one step (`L`, `skipped`,
 `seat_route_row_remote`) and walks R, then N, then D.
 
-Shipped state: no grants, the rung inactive and `REMOTE_DESCEND_CODES` empty. With that,
-the walk satisfies EC-JAILCORE-2's "never capacity overflow" as written today. The owner's
-capacity ruling becomes effective through a host overlay and REMOTE's receipt, with no code
-change, once the roadmap sentences listed in the plan are amended.
+Shipped state: no grants, the rung inactive and `REMOTE_DESCEND_CODES` empty, so no seat
+offloads for capacity. The owner's capacity rulings of 2026-11-06 (EC-JAILCORE-2 as amended,
+§8) take effect per host through an overlay and REMOTE's receipt, with no code change.
+Owner-controlled targets need the generic probe receipt. Third-party clouds need it and
+that vendor's OD-7 activation (condition 4); after OD-7 they may take capacity offload.
 
 ## 7. Per-provider egress (IF-0-JAILCORE-2)
 
@@ -316,13 +317,22 @@ with `.code` set to a §3 egress code. `egress_evidence(proxy)` adds `allowlist_
 `unavailable_reason()`, which the CLI and doctor keep using. A seat never shares a proxy
 process or token. One proxy never serves two allowlists.
 
-## 8. Roadmap sentences the pending capacity ruling amends
+## 8. Roadmap sentences amended for the capacity rulings (2026-11-06)
 
-The owner's pending ruling: on owner-controlled hosts, review seats may offload for capacity
-once the remote route passes one generic egress-and-credential probe set, and the per-vendor
-OD-7 review stays only for third-party clouds. This contract implements the ruling as a
-policy input (§6) that ships disabled. It does not amend the roadmap. The coordinator amends
-these sentences in `specs/phase-plans-seats-v1.md`, quoted verbatim; the rest of each EC stays.
+The owner's rulings of 2026-11-06:
+
+- On owner-controlled hosts, review seats may offload for capacity once the remote route
+  passes one generic egress-and-credential probe set.
+- Third-party clouds need the vendor's per-vendor OD-7 activation. After OD-7 they may also
+  take capacity offload.
+- Capacity offload ships disabled. Each host enables it by policy plus a probe receipt (§6).
+
+This contract implements the rulings as a policy input (§6) that ships disabled. The
+sentences below, quoted as they stood before the amendment, were amended in place in
+`specs/phase-plans-seats-v1.md` on the JAILCORE plan branch. The rest of each EC is
+unchanged. The owner also confirmed the vendor-neutral egress split codes (§3) and the
+separate seat-id capacity code (§2, L9). The CLAUDENET scope notes record the Claude
+open-egress exception's 2026-12-04 expiry as a known date.
 
 Capacity (required before any grant is honoured):
 
@@ -361,5 +371,5 @@ stays for third-party clouds):
     no local jail, has a remote route activated per vendor under OD-7, after the Stage 2 proof
     amendment."
 
-Open for the owner: whether third-party targets may take capacity offload at all, even after
-OD-7 activation. §6 can express either answer, and both ship disabled.
+Resolved 2026-11-06: third-party targets may take capacity offload after that vendor's OD-7
+activation (§6 condition 4). Both target classes ship disabled.

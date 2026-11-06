@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: JAILCORE
 roadmap: specs/phase-plans-seats-v1.md
-roadmap_sha256: 1c9e2d40089c5f70b23ff6233ad06da3d8edcd69e643681bdc342e76298ca0c0
+roadmap_sha256: 013bdb0ae6bd0cd057531e93eb68f3123f832a825ae4f4a863b0f237dbde75ae
 automation:
   suite_command: ["timeout", "900", "env", "PYTEST_ADDOPTS=", "python3", "-m", "pytest", "-p", "no:cacheprovider", "-q", "phase-loop-runtime/tests/test_seat_route_contract.py", "phase-loop-runtime/tests/test_seat_egress_allowlists_jailcore.py", "phase-loop-runtime/tests/test_seat_qualification_key.py", "phase-loop-runtime/tests/test_seat_profiles.py", "phase-loop-runtime/tests/test_seat_route.py", "phase-loop-runtime/tests/test_seat_jail.py", "phase-loop-runtime/tests/test_seat_notices.py", "phase-loop-runtime/tests/test_seat_jail_autoqualify.py", "phase-loop-runtime/tests/test_gemini_seat_egress_1170.py", "phase-loop-runtime/tests/test_sealed_seat_never_counts.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py"]
 ---
@@ -20,7 +20,7 @@ INVENTORY and CLAUDE plans.
 **Frozen artifact.** `plans/seats-jailcore-route-contract.md` is normative for the profile
 fields, the resolver walk, the descend list, route codes, the qualification key, the route
 policy and per-provider egress, at sha256
-`e42079f4ce68f19d1b0abab4662dcd005764454b7f8698ce9ee78c7dacd8882e`. This plan points at its
+`e7a3b245bf586837c93409b21f7a043c2e27fee28384f05c76d7dc2ec549a06f`. This plan points at its
 sections (§1–§8) and does not repeat them. CODEX, GROK, PI, CLAUDENET and REMOTE plan against that file in parallel straight away.
 
 **Base (current main).** FIRSTSEAT L1–L5 and the CLAUDE lanes have landed. FIRSTSEAT lanes A,
@@ -45,10 +45,16 @@ D and E are finishing. The construction sites are:
 profile is consumed as W1 left it. JAILCORE changes no profile digest and no allowlist bytes
 (principle 4).
 
-**Pending owner ruling (capacity).** The resolver takes capacity offload as a policy input
-that ships disabled (contract §6). Code needs no change when the ruling lands. Section §8
-lists the exact roadmap sentences the coordinator must amend first. This plan does not amend
-the roadmap.
+**Owner rulings (capacity, 2026-11-06).** The resolver takes capacity offload as a policy
+input that ships disabled (contract §6). Each host enables it with an operator policy record
+plus a current probe receipt.
+
+- An owner-controlled target needs only the generic egress-and-credential probe set.
+- A third-party cloud needs that vendor's OD-7 activation. After OD-7 it may also take
+  capacity offload.
+
+EC-JAILCORE-2 and the REMOTE activation sentences are amended in place on this plan's
+branch (contract §8), and this plan pins the amended roadmap.
 
 ## Interface Freeze Gates
 
@@ -192,8 +198,9 @@ seat-mode builder, with recording fakes for the remote and native rungs.
 - (g) No free seat id gives `seat_local_capacity_exhausted`, not a descend code.
 - (h) Capacity gate: off by default. An unsafe overlay is ignored with
   `seat_route_policy_ignored`. A valid owner-controlled grant with a current receipt reaches
-  the fake rung. A third-party grant without `activation_refs` does not. An expired receipt
-  does not.
+  the fake rung. A third-party grant reaches it only with that vendor's OD-7
+  `activation_refs` (allowed after OD-7, ruling 2026-11-06), and without them it does not. An
+  expired receipt does not.
 - (i) Store: a v2 pass under key K is refused under K′ for each part. A v1 record is not
   honoured.
 - (j) `advisory_document`, `qualification_candidate` and `under_claude_code` keep their
@@ -291,7 +298,7 @@ The fix belongs to CLAUDENET (digest) or CLAUDE (transport argv), not here.
 - target surfaces: `phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md`, `docs/advisor-board-capabilities-card.md`, `plans/seats-jailcore-route-contract.md`
 - evidence paths: `plans/evidence/seat-jailcore/digest-equality.json`, `plans/evidence/seat-jailcore/terminal-codes.json`
 - redaction posture: `metadata_only`
-- downstream handling: `roadmap amendment` (contract §8, coordinator-owned; JAILCORE ships capacity offload disabled, so execution does not wait on it)
+- downstream handling: `roadmap amendment` (the contract §8 sentences, amended on this plan's branch; JAILCORE ships capacity offload disabled, so execution does not wait on it)
 
 ## Acceptance Criteria
 

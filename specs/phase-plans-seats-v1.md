@@ -91,13 +91,13 @@ turns this into the maintained matrix (IF-0-FIRSTSEAT-1).
         ▼
  seat route resolver (JAILCORE): one decision, one typed code per failed step
         │   any code off the descend list ──► 4. degraded; nothing launches
-        │   only the closed descend list (host capability) descends, only before launch
+        │   only the closed descend list (host capability) or the capacity gate descends, only before launch
   1. local seat jail: profile[V] = tools + projection + per-seat provider-only egress
         │              + closed config surface + EC-EXECFIND-2 pass on this host
         │   Claude only: ClaudeTransport = default (owner bake-off) → other admitted → tui last
         │ host capability missing, or the matrix routes this row remote
   2. remote sandbox: OpenShell review-runner + per-provider vector + bounded credential
-        │              (per-vendor owner activation; REMOTE). Never used for capacity.
+        │              (activation under OD-7; REMOTE). Capacity only via the capacity gate.
         │ unavailable (typed code)
   3. native fill: labelled stand-in for V; the president is told
         │ unavailable
@@ -191,7 +191,7 @@ All pins are inputs. None is an output of this roadmap.
      seat harness, or a board run that bypasses the landing policy, is not a real board. The
      evidence digest goes into the matrix.
 
-   A remote row means the same on the remote rung after per-vendor activation. Row statuses
+   A remote row means the same on the remote rung after activation under OD-7. Row statuses
    are `not-started`, `candidate`, `done-local`, `remote-pending` and `done-remote`.
    `remote-pending` is an open deferral, not done.
 2. **Governance, every phase.**
@@ -269,7 +269,7 @@ All pins are inputs. None is an output of this roadmap.
 | OD-3b | Pick the jailed Claude default from W0 evidence, or record that no local transport was admitted | CLAUDE's exit | The transport that returned admitted canonical output on every W0 run and landed on subscription limits. If both did, `print`, which projects fewer dependencies. |
 | OD-4 | Make the jail Codex's only boundary, with its inner sandbox off, superseding the nested-AppArmor route. This decision is informed by EC-CODEX-2, EC-CODEX-3 and EC-CODEX-5: the auth file is readable by tools, and tool commands inherit the seat's egress. If rejected, the Codex exception runs to its expiry and then resolves degraded, agent-harness#1644 and agent-harness#1731 reopen as CODEX input, and OD-9 may route the row remote. | CODEX lane A enabling the route | Accept, on the condition that EC-CODEX-2, EC-CODEX-3 and EC-CODEX-5 hold first |
 | OD-5 | Pi's credential lane, provider narrowing, aggregator use, spend cap and board slot | PI lane C, and so the Pi leg's enablement | Use the provider-scoped credential the Pi executor already uses for its routed provider, with no aggregator and a spend cap if API-billed. Make no plan or production slot change in v1: Pi qualifies on a board that composes it explicitly, counted as its routed vendor. |
-| OD-7 | Approve the remote design; later, activate each vendor, binding the digests EC-REMOTE-3 lists | REMOTE lanes A and B landing; each vendor's activation | None. Security-gated by the binding decision. |
+| OD-7 | Approve the remote design; later, activate each vendor on a third-party cloud, binding the digests EC-REMOTE-3 lists. An owner-controlled target activates by passing the generic egress-and-credential probe set (owner ruling 2026-11-06) | REMOTE lanes A and B landing; each vendor's activation | None. Security-gated by the binding decision. |
 | OD-8 | Remove the sealed review routes and the president's sealed last resort (agent-harness#1250) | CLOSEOUT lanes A and B | Approve once the matrix's president rows meet EC-CLOSEOUT-4 and EC-FIRSTSEAT-2 holds |
 | OD-11 | Whether `heartbeat_only` president rungs also get a no-output bound. That would reverse the operator's no-silence-kill policy (agent-harness#826, `advisor_board/CONTRACTS.md`, the capabilities card). | Any change to the `heartbeat_only` president path; not FIRSTSEAT's exit | DECIDED 2026-11-04: keep the policy. It is an explicit opt-in, agent-harness#1822 happened on `bounded`, and the start entry makes a wedged attempt visible. |
 
@@ -321,7 +321,8 @@ All pins are inputs. None is an output of this roadmap.
    these fields: argv builder, binds, environment, projection requirement, credential
    delivery (channel and measured scope), closed configuration surface, post-launch auth
    classifier, output secret refusal, containment evidence and notice codes. It also fixes
-   the closed descend list, the only codes that may move to a later rung:
+   the closed descend list, the only codes that may move to a later rung outside
+   EC-JAILCORE-2's capacity gate:
    `seat_sandbox_unavailable_host`, `seat_sandbox_unavailable_tiocsti`,
    `seat_sandbox_unavailable_seat_uid`, and the not-installed half of
    `gemini_seat_egress_unavailable` once EC-JAILCORE-2 splits it. Adding a code is a
@@ -541,7 +542,7 @@ resolver, and make "no profile" mean degraded, never unconfined.
 
 **Exit criteria**
 - [ ] EC-JAILCORE-1 — The Claude and Gemini profiles are registered under IF-0-JAILCORE-1 by a digest-invariant refactor: on the same base, each profile digest is equal before and after the registry change. Vendor digest changes belong to vendor ECs (principle 4). Falsified by a refactor that changes a digest, or by a profile needing a branch in the route decision.
-- [ ] EC-JAILCORE-2 — The resolver walks local jail → remote → native fill → degraded and emits one typed code per failed step. Only codes on IF-0-JAILCORE-1's descend list move to a later rung, and only before launch (the agent-harness#1250 precedent). Any other code goes straight to degraded, and nothing launches on a later rung. That includes `seat_sandbox_refused:identity`, `token_file_unsafe`, `stage_changed`, `output_unsafe`, every token-in-output code, and the `gemini_seat_*` containment codes (`token_scope_excess`, `egress_unconfined`, `token_refreshed_in_jail`, `credential_unusable`). `gemini_seat_egress_unavailable` splits into not-installed and integrity-failed, and integrity-failed is terminal. The remote rung serves only rows and host classes the matrix routes there, never capacity overflow. No review seat selects a sealed command for any `SEALED_FALLBACK_CODES` code (agent-harness#1288), and no fix line recommends a sealed or inline route. Falsified by the agent-harness#1282 falsifier (a sealed command selected for a review seat), or by any `seat_jail.NOTICES` code off the descend list that launches anything on a later rung.
+- [ ] EC-JAILCORE-2 — The resolver walks local jail → remote → native fill → degraded and emits one typed code per failed step. Only codes on IF-0-JAILCORE-1's descend list, and local capacity exhaustion through the capacity gate below, move to a later rung, and only before launch (the agent-harness#1250 precedent). Any other code goes straight to degraded, and nothing launches on a later rung. That includes `seat_sandbox_refused:identity`, `token_file_unsafe`, `stage_changed`, `output_unsafe`, every token-in-output code, and the `gemini_seat_*` containment codes (`token_scope_excess`, `egress_unconfined`, `token_refreshed_in_jail`, `credential_unusable`). `gemini_seat_egress_unavailable` splits into not-installed and integrity-failed, and integrity-failed is terminal. The remote rung serves the rows and host classes the matrix routes there, and capacity overflow only through the capacity gate (owner ruling 2026-11-06). The gate ships disabled and opens per host only by an operator policy record plus a current probe receipt: for an owner-controlled target once it passes the generic egress-and-credential probe set, and for a third-party cloud only after that vendor's OD-7 activation. No review seat selects a sealed command for any `SEALED_FALLBACK_CODES` code (agent-harness#1288), and no fix line recommends a sealed or inline route. Falsified by the agent-harness#1282 falsifier (a sealed command selected for a review seat), or by any `seat_jail.NOTICES` code off the descend list that launches anything on a later rung.
 - [ ] EC-JAILCORE-3 — The host proxy serves per-provider allowlists under IF-0-JAILCORE-2, with Gemini first. Each seat gets one proxy process and token, bound to one allowlist, with TLS terminated. A mode that cannot terminate TLS degrades the seat. A registered profile without its allowlist resolves degraded, never unconfined; jailed Claude's open egress is the one named exception (EC-JAILCORE-5). Falsified by a jailed seat, or a tool it runs, reaching an unlisted host or another provider's listed host, or by a profile without an allowlist launching outside that exception.
 - [ ] EC-JAILCORE-4 — Dependency projection works for any registered profile. Qualification passes are keyed by profile digest, allowlist content digest, falsifier layout (agent-harness#1287), any projected profile's `dependency_projection_digest` and, for Claude, the transport. Falsified by a pass carried across any key part, for example a widened allowlist or a switched Claude transport that keeps its pass.
 - [ ] EC-JAILCORE-5 — A leg with no registered profile resolves DEGRADED, never `MODE_UNCONFINED`. Codex and Grok keep their current unconfined route, and jailed Claude its open egress, only as named exceptions in the matrix with an expiry (principle 3). Each ends when its phase (CODEX, GROK, CLAUDENET) exits, as `jailed` or as degraded under OD-9, or earlier at expiry, when it resolves degraded. Falsified by a leg without a profile, Pi included, reaching an unconfined launch outside a named, unexpired exception.
@@ -660,6 +661,9 @@ one batched profile-digest change, and live-qualify the Claude row.
   containment evidence and the row window.
 - Until this phase exits, the matrix shows Claude's egress as open. The Claude row cannot
   read `done-local` before then.
+- Known date: the matrix's jailed Claude open-egress exception expires 2026-12-04 UTC. If
+  this phase has not exited by then, the jailed Claude seat resolves degraded
+  (EC-JAILCORE-5) unless an owner record in the matrix renews it (principle 3).
 - If OD-3b recorded no admitted transport, EC-CLAUDENET-1 to EC-CLAUDENET-3 do not apply,
   and the phase exits through EC-CLAUDENET-4's OD-9 branch.
 
@@ -868,17 +872,18 @@ schema: `spec_delta_closeout.v1`; expected decision: `canonical_spec_update`; ta
 
 **Objective**
 Give each row the matrix routes remote, and each host class without jail prerequisites, a
-remote sandbox seat with provider-only egress, behind security review and per-vendor owner
-activation. The order is: amend Stage 2's activation proof for provider egress, then
+remote sandbox seat with provider-only egress, behind security review and activation under OD-7
+(per vendor on a third-party cloud, by the generic probe set on an owner-controlled target).
+The order is: amend Stage 2's activation proof for provider egress, then
 activate these per-provider vectors. No runner activated under the no-egress proof gains
 provider egress.
 
 **Exit criteria**
 - [ ] EC-REMOTE-1 — One vector per provider (IF-0-REMOTE-1), in its own vectors file with per-vector `pending_qualification`, so Stage 2's flip of its no-egress vectors cannot touch them. A vector map keyed on leg and routed provider replaces the single worker pin. `full-remote-pi-runner` and every existing vector digest stay unchanged. Each provider vector equals `full-remote-pi-runner` except in `network_policies` and the paths the security review lists. A local validator fails any other difference, and requires network enforcement `ENFORCE`, TLS `TERMINATE`, L7 rules equal to the measured request set, `allow_uninspected_credentials: false` and pinned binaries. The C5 amendment adds only public provider hosts, and keeps `inbound_closed`, `one_shot_secret_channel`, `private_ranges_unreachable` and the empty private allowlist. Falsified by a changed existing vector digest, a vector that passes the validator in AUDIT or PASSTHROUGH mode or with a difference outside its permitted fields, or one vector serving two providers.
 - [ ] EC-REMOTE-2 — Credential projection follows the IF-0-REMOTE-2 table. A token whose remaining lifetime exceeds the seat deadline plus a margin is refused, unless OD-7 records a ceiling for that vendor. A token whose scope exceeds the table, or that refreshes inside the sandbox, ends the seat with a typed terminal code. `release_unconfirmed` and `lost_after_launch` trigger the revocation step. API keys are refused unless OD-7 approves them per vendor. The renewal token never leaves the launching host. Falsified by an over-lifetime or over-scope token delivered, an in-sandbox refresh not ended typed, a credential left unrevoked after `release_unconfirmed`, or an API key delivered without per-vendor approval.
-- [ ] EC-REMOTE-3 — A security-review packet is recorded and approved under OD-7. It covers the threat model, falsifiers and method denials. It names everyone who can read the ExecSandbox stdin stream or the plaintext behind TLS termination, and states each vendor's actual token lifetime. It weighs a proxy-held credential against a guest-held one; proxy-held needs a coordinator revision, because `providers` is `maxItems: 0`. It declares the residual channels, including exfiltration through an allowed provider endpoint using a foreign credential, and source-code exposure to the remote host. Each vendor's activation approval binds the digests of the vectors, the vector map, the validator, the image, EC-REMOTE-6's guest invocation and delivered runtime, and the credential module, plus the OpenShell and gateway versions. Any change voids it, and re-approval re-runs the EC-REMOTE-5 probes. Weaknesses are reported privately. Falsified by an activation whose bound digests or versions differ from the approval.
-- [ ] EC-REMOTE-4 — The remote rung is the resolver's step 2, disabled until per-vendor activation, and refuses unwired dependency routes (agent-harness#1787). Each seat gets one sandbox, one lease and one credential copy. A tested deactivation path turns a vendor's rung off. The rung refuses a vector with no activation record for its vendor. Falsified by two seats sharing a sandbox or credential copy, a deactivated vendor launching remotely, or a vector launching without its activation record.
-- [ ] EC-REMOTE-5 — Stage 2's activation proof is first amended to scope its no-egress claim to Stage 2's own vectors. Then, with Stage 2's infrastructure live (LA-4) and per-vendor activation under OD-7, every row the matrix routes remote reads `done-remote` from the activation window. In that window, in-guest probes run as the pinned binary and from a tool command. They are refused for an unlisted host, another provider's host, a same-front-end host (the agent-harness#1170 `iam` case), a denied method or path on a listed host, a raw IP, DNS, private ranges and metadata. The runs exercise EC-REMOTE-6's invocation. Falsified by any probe request that reaches upstream.
+- [ ] EC-REMOTE-3 — A security-review packet is recorded and approved under OD-7. It covers the threat model, falsifiers and method denials. It names everyone who can read the ExecSandbox stdin stream or the plaintext behind TLS termination, and states each vendor's actual token lifetime. It weighs a proxy-held credential against a guest-held one; proxy-held needs a coordinator revision, because `providers` is `maxItems: 0`. It declares the residual channels, including exfiltration through an allowed provider endpoint using a foreign credential, and source-code exposure to the remote host. Each activation approval (per vendor on a third-party cloud, or per owner-controlled target through the generic probe set) binds the digests of the vectors, the vector map, the validator, the image, EC-REMOTE-6's guest invocation and delivered runtime, and the credential module, plus the OpenShell and gateway versions. Any change voids it, and re-approval re-runs the EC-REMOTE-5 probes. Weaknesses are reported privately. Falsified by an activation whose bound digests or versions differ from the approval.
+- [ ] EC-REMOTE-4 — The remote rung is the resolver's step 2, disabled until activation under OD-7, and refuses unwired dependency routes (agent-harness#1787). Each seat gets one sandbox, one lease and one credential copy. A tested deactivation path turns a vendor's rung off. The rung refuses a vector with no activation record covering its vendor and target. Falsified by two seats sharing a sandbox or credential copy, a deactivated vendor launching remotely, or a vector launching without its activation record.
+- [ ] EC-REMOTE-5 — Stage 2's activation proof is first amended to scope its no-egress claim to Stage 2's own vectors. Then, with Stage 2's infrastructure live (LA-4) and activation under OD-7, every row the matrix routes remote reads `done-remote` from the activation window. In that window, in-guest probes run as the pinned binary and from a tool command. They are refused for an unlisted host, another provider's host, a same-front-end host (the agent-harness#1170 `iam` case), a denied method or path on a listed host, a raw IP, DNS, private ranges and metadata. The runs exercise EC-REMOTE-6's invocation. Falsified by any probe request that reaches upstream.
 - [ ] EC-REMOTE-6 — A trusted per-vendor review invocation runs in the guest. It delivers the runtime and dependencies, returns the admitted verdict and tool evidence under the board's contract, and uses only the credential lanes the IF-0-REMOTE-2 table supports. Unsupported lanes stay typed and pending. Falsified by a remote seat result admitted without tool evidence.
 
 **Scope notes**
@@ -894,7 +899,8 @@ provider egress.
 **Governance**
 - Principle 2.
 - OD-7 is needed twice: design approval of the EC-REMOTE-3 packet before lanes A and B land;
-  and per-vendor activation, which binds the EC-REMOTE-3 digests, before EC-REMOTE-5 (a later
+  and activation (per vendor on a third-party cloud, by the generic probe set on an
+  owner-controlled target), which binds the EC-REMOTE-3 digests, before EC-REMOTE-5 (a later
   change to any bound digest voids it).
 - Security review is required.
 
@@ -1041,7 +1047,7 @@ schema: `spec_delta_closeout.v1`; expected decision: `canonical_spec_update`; ta
 - [ ] No review seat can reach a sealed, toolless or unconfined route, and every president rung meets EC-CLOSEOUT-4.
 - [ ] A plan-tier native board on `bounded` monitoring on a team host always terminates with a typed outcome, and every leg leaves an exec record.
 - [ ] The jailed Claude default equals OD-3b, which cites W0 evidence; TUI is last.
-- [ ] Each row the matrix routes remote, and each host class with no local jail, has a remote route activated per vendor under OD-7, after the Stage 2 proof amendment. A vendor that reached `done-local` needs no remote activation.
+- [ ] Each row the matrix routes remote, and each host class with no local jail, has a remote route activated under OD-7, after the Stage 2 proof amendment. A vendor that reached `done-local` needs no remote activation.
 
 ---
 
