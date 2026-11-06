@@ -39,7 +39,7 @@
     "stderr": "Empty for schema-valid protocol outcomes; bounded closed harness diagnostics only for invocation or internal failures; never input values, credentials, policy documents or exception chains.",
     "exit_codes": {
       "0": "Schema-valid and settled: version response emitted; reserve outcome admitted; release state released; or reap state complete.",
-      "10": "Schema-valid and nothing held by this attempt: reserve outcome at_capacity, refused or unreachable; or release state unknown_reservation. Do not allocate a new request_id for a retry of that same reserve attempt.",
+      "10": "Schema-valid and this call created no lease: reserve outcome at_capacity, refused or unreachable; or release state unknown_reservation or rejected. unknown_reservation means no stored lease. rejected means the release body did not match the stored reservation, the stored lease and flags are unchanged, and no barrier is armed; send a new request_id with the stored reservation. Do not allocate a new request_id for a retry of that same reserve attempt.",
       "20": "Schema-valid and an effect may remain: reserve outcome timeout, release state cleanup_pending, or reap state cleanup_pending. Reserve/release barriers key on selected client plus reservation_id, or selected client plus request_id until a reservation_id is known; each reap-pending journal entry keeps its own such key. Retry that request_id or release that reservation. Other reservations, including concurrent reservations for the same client, remain admissible.",
       "70": "Internal or protocol failure. Stdout is absent. Retry the same request_id once. Reap is caller-inventory maintenance, not recovery for one lost reserve response."
     }
@@ -129,7 +129,7 @@
     ],
     "workload_rank_policy": "pi-runner is the only workload on agent_and_executor_order. leg, qualification and implementation are the existing seat workloads. For those three, reserve does not rank and does not probe. It admits only the single target already chosen by the landed SEATS JAILCORE route decision in trusted operator configuration. A missing decision refuses with sandbox_placement_workload_unsupported before any probe. An owned-host remote seat target also requires the current generic egress-and-credential probe receipt. A third-party seat target also requires that vendor's OD-7 record. The request carries no target, rank, certificate or route decision.",
     "reserve_idempotency": "The same request_id and the same canonical request body return the original response and do not create a second reservation. The same request_id with a different canonical body refuses with sandbox_placement_refused and creates nothing. Reap is not the retry path for one lost reserve response.",
-    "release_binding": "release loads the stored reservation by reservation_id from the inventory selected by --client. A client mismatch or any supplied field that differs from the stored record refuses with sandbox_placement_refused, releases nothing and leaves the stored lease held. A repeated release of the same journaled reservation returns released while its tombstone remains, or unknown_reservation after tombstone expiry; neither state creates an admission barrier.",
+    "release_binding": "release loads the stored reservation by reservation_id from the inventory selected by --client. A client mismatch or any supplied reservation field that differs from the stored record returns state rejected and code sandbox_placement_refused, releases nothing, changes no stored flag, arms no barrier and leaves the lease held. A repeated release of the same journaled reservation returns released while its tombstone remains, or unknown_reservation after tombstone expiry; neither state creates an admission barrier.",
     "outcomes_and_effects": "unreachable means a certain failure with nothing held. timeout means an effect may be held. A failure after a request may have been sent is timeout, never unreachable. Its barrier applies only to that reservation in the selected client inventory; it blocks later targets or retries for that reserve walk until release confirms the barrier, but never blocks another reservation, another client or the host.",
     "bridge_bytes": "For pi-runner on openshell the runtime creates one directory in its own state directory, mode 0700, containing one Unix socket, mode 0600. The socket is a bidirectional raw byte pipe of the admitted ForwardTcp stream. The toolkit keeps link framing, relay and credentials. The caller does not supply the path, service name, host or port. Every other reservation has bridge null.",
     "reap_scope_and_order": "reap examines only the inventory selected by --client and returns exactly one InventoryReapResult whose client and inventory match that selection. It can never inspect or mutate the other client's inventory. Within that inventory, eligible journal entries are attempted by created_at then reservation_id, max_items bounds attempts, and an uncertain item remains cleanup_pending without creating a host-wide or client-wide admission barrier.",
@@ -949,7 +949,8 @@
           "enum": [
             "released",
             "cleanup_pending",
-            "unknown_reservation"
+            "unknown_reservation",
+            "rejected"
           ]
         },
         "code": {
@@ -1056,6 +1057,23 @@
                     "const": true
                   }
                 }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "rejected"
+              }
+            },
+            "required": ["state"]
+          },
+          "then": {
+            "properties": {
+              "code": {
+                "const": "sandbox_placement_refused"
               }
             }
           }
