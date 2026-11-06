@@ -126,9 +126,10 @@ and nothing on main can reach the route early.
   `seat_profile_codex.register_codex()` is the whole registration:
   `seat_profiles.register(CODEX_PROFILE)`, `register_provider_executable("codex", "codex")` and
   `seat_admission.register("codex", codex_admission_gate)`. Its one call site is the Codex
-  entry in `seat_profiles.py`. The gate runs the three preconditions in order and then
-  `codex_cli_shape_problem`, which refuses `codex_seat_tools_unavailable`. With `execute=False`
-  that last check returns `unknown` with reason `launch_measurement`.
+  entry in `seat_profiles.py`, at import. The gate runs the three preconditions in order and
+  then `codex_cli_shape_problem`. A shape miss refuses `codex_seat_cli_shape`. It does not
+  refuse `codex_seat_tools_unavailable`. With `execute=False` that last check returns
+  `unknown` with reason `launch_measurement`.
 - [ ] IF-0-CODEX-2 — Runtime and credential.
 
   ```python
@@ -157,10 +158,13 @@ and nothing on main can reach the route early.
   `id_token`, `account_id` and an empty `refresh_token`. Any other key is dropped unless SL-1
   measures the CLI needing it. It lands at `seat-home/.codex/auth.json`, mode 0600, before the
   hand-off. `resolve_seat_subject("codex", env)` selects the path. A `standalone` subject's
-  `subject_path` goes to `resolve_runtime`. A `session_lease` or `managed_release` subject is
-  admitted through the profile's projection, at the same destinations under
-  `CODEX_RUNTIME_ROOT`, with no fallback. Its closure is the release's declaration (IF-XR-1),
-  not this phase's. `codex-resources/` is never projected.
+  `subject_path` goes to `resolve_runtime`. A `session_lease` subject is admitted through the
+  profile's projection on that lease's own closure, at the same destinations under
+  `CODEX_RUNTIME_ROOT`, with no fallback to `standalone`. A `managed_release` subject is
+  admitted the same way and never falls back. This phase specifies its declaration:
+  `CODEX_RUNTIME_FILES` at those destinations, never `codex-resources/`. Consiliency/dotfiles
+  builds that `declaration.json` (IF-XR-1). No lane here edits dotfiles. `codex-resources/`
+  is never projected.
 - [ ] IF-0-CODEX-3 — `seat_egress/codex-allowlist.json`, schema
   `phase_loop_seat_egress_allowlist.v1`, `leg: "codex"`, id `codex`, loaded only through
   `allowlist_ref("codex")`. Each `allow` rule has `host`, `port` 443, `method` and one of
@@ -176,14 +180,18 @@ and nothing on main can reach the route early.
       turn_completed: bool
       commands_completed: int   # status completed, exit_code 0, non-empty output
       commands_failed: int
+      unknown_event: bool       # a top-level event whose name is outside CODEX_TOOL_EVENTS
   def read_tool_record(stream: bytes) -> CodexToolRecord
-  def tools_ran_code(record: CodexToolRecord) -> str | None   # None or the one code
+  def tools_ran_code(record: CodexToolRecord) -> str | None
   ```
 
-  It reads only the parent-held `--json` stdout, never the reply or the output file. A leg
-  counts only with `stream_valid`, `turn_completed` and `commands_completed >= 1`. An unknown
-  event shape sets `stream_valid` false, which is fail-closed. Event names are bound in
-  `CODEX_TOOL_EVENTS` from SL-3.1's measurement.
+  It reads only the parent-held `--json` stdout, never the reply or the output file. Command
+  output inside an event is not parsed as a further event. A leg counts only with
+  `stream_valid`, `turn_completed`, `commands_completed >= 1` and `unknown_event` false.
+  `tools_ran_code` returns `codex_seat_unknown_event` when `unknown_event` is set,
+  `codex_seat_tools_unavailable` when the stream is truncated or no command completed, and
+  `None` when the leg counts. Event names are bound in `CODEX_TOOL_EVENTS` from SL-3.1's
+  measurement.
 
   Post-launch order, first match ends the leg:
   1. a copied secret or the proxy credential in any kept byte: `codex_seat_token_in_output`;
@@ -191,8 +199,8 @@ and nothing on main can reach the route early.
   3. a non-zero exit after `expires_at`: `codex_seat_token_expiring`;
   4. `tools_ran_code`;
   5. `_classify_leg`.
-- [ ] IF-0-CODEX-5 — New codes, in `seat_jail.NOTICES`, each with one additive `OD10_CLASSES`
-  entry (contract §1). All are terminal. No existing entry changes, and neither do
+- [ ] IF-0-CODEX-5 — Nine new `codex_seat_*` codes, in `seat_jail.NOTICES`, each with one
+  additive `OD10_CLASSES` entry (contract §1). All are terminal. No existing entry changes, and neither do
   `DESCEND_CODES`, `REMOTE_DESCEND_CODES` or `CAPACITY_CODES`. An unsafe auth file reuses
   `seat_sandbox_refused:token_file_unsafe`.
 
@@ -204,7 +212,9 @@ and nothing on main can reach the route early.
   | `codex_seat_token_scope_excess` | security | L6 | report the outcome privately; the seat stays degraded |
   | `codex_seat_token_in_output` | security | post-launch | report the outcome privately |
   | `codex_seat_token_refreshed_in_jail` | security | post-launch | report the outcome privately |
+  | `codex_seat_cli_shape` | ordinary | admission gate | upgrade the codex CLI so `codex exec --help` matches the jailed argv, then re-run |
   | `codex_seat_tools_unavailable` | ordinary | post-launch | read the leg's exec record; the seat did not count as a review |
+  | `codex_seat_unknown_event` | security | post-launch | report the outcome privately |
 
 ## Lane Index & Dependencies
 
@@ -245,7 +255,7 @@ SL-4 — Documentation, inventory and row reducer (SL-docs)
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-0.1 | test | — | `phase-loop-runtime/tests/test_seat_codex_vocabulary.py` | Every table code has a what/why/fix row and the table's class. No fix line names a sealed, inline or key route. Removing the `codex_seat_*` entries leaves `OD10_CLASSES` equal to its base, and the three descend sets equal their literal values. The `seat_route` import closure passes. | `V0` |
+| SL-0.1 | test | — | `phase-loop-runtime/tests/test_seat_codex_vocabulary.py` | Each of the nine table codes has a what/why/fix row, one additive `OD10_CLASSES` entry and the table's class. No fix line names a sealed, inline or key route. Removing the `codex_seat_*` entries leaves `OD10_CLASSES` equal to its base, and the three descend sets equal their literal values. The `seat_route` import closure passes. | `V0` |
 | SL-0.2 | impl | SL-0.1 | `phase-loop-runtime/src/phase_loop_runtime/seat_jail.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_route_contract.py` | — | — |
 | SL-0.3 | verify | SL-0.2 | SL-0 files | all SL-0 tests | `V0` |
 
@@ -261,11 +271,12 @@ SL-4 — Documentation, inventory and row reducer (SL-docs)
 |---|---|---|---|---|---|
 | SL-1.1 | test | — | `phase-loop-runtime/tests/test_seat_codex_runtime.py` | Two synthetic layouts resolve the same file set. A missing file gives `seat_provider_unavailable`. A linked, group-writable or wrongly owned file gives `seat_sandbox_refused:identity`. No bind names `codex-resources` or the target directory itself. A `managed_release` subject never reaches `resolve_runtime`. | `V1` |
 | SL-1.2 | impl | SL-1.1 | `phase-loop-runtime/src/phase_loop_runtime/seat_codex_runtime.py` | — | — |
-| SL-1.3 | test | SL-1.2 | `phase-loop-runtime/tests/test_seat_codex_credential.py`, `phase-loop-runtime/tests/test_executor_availability.py` | An `OPENAI_API_KEY` value, `auth_mode` other than `chatgpt`, or absent `tokens` gives `codex_seat_api_key_refused`. The copy has an empty `refresh_token`, no dropped key, and no secret in `repr`. Margin and scope each give their one code. `tokens_changed` is false on an identical read and true when any token differs. `Not logged in`, in either case, is a logged-out probe (agent-harness#1528). | `V1` |
+| SL-1.3 | test | SL-1.2 | `phase-loop-runtime/tests/test_seat_codex_credential.py`, `phase-loop-runtime/tests/test_executor_availability.py` | An `OPENAI_API_KEY` value, `auth_mode` other than `chatgpt`, or absent `tokens` gives `codex_seat_api_key_refused`. The copy has an empty `refresh_token`, no dropped key, and no secret in `repr`. Margin and scope each give their one code. An access token whose claims cannot be decoded gives `codex_seat_token_scope_excess`, and the check calls no issuer. `tokens_changed` is false on an identical read and true when any token differs. `Not logged in`, in either case, is a logged-out probe (agent-harness#1528). Every `codex_seat_*` code this lane raises is one of the nine IF-0-CODEX-5 codes, with its `OD10_CLASSES` entry from SL-0. | `V1` |
 | SL-1.4 | impl | SL-1.3 | `phase-loop-runtime/src/phase_loop_runtime/seat_codex_credential.py`, `phase-loop-runtime/src/phase_loop_runtime/executor_availability.py` | — | — |
 | SL-1.5 | verify | SL-1.4 | SL-1 files, `plans/evidence/seat-codex/credential-scope.json` | Measure the narrowest copy the CLI runs with, its refresh threshold (`CODEX_LOGIN_MIN_S`) and the scope ceiling on a developer host. The record holds field names and counts only. | `V1`, `VM` |
 
-The scope check decodes the access token's claims on the host and calls no issuer. Its pass is
+The scope check decodes the access token's claims on the host and calls no issuer. A token
+whose claims cannot be decoded refuses `codex_seat_token_scope_excess`. Its pass is
 labelled `no wider than the recorded baseline`.
 
 ### SL-2 — Allowlist measurement and probes (lane C)
@@ -300,13 +311,13 @@ the jailed route, and `seat_cli_qualification[]` reports it through the Codex ga
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-3.1 | test | — | `phase-loop-runtime/tests/test_seat_profile_codex.py`, `phase-loop-runtime/tests/test_seat_codex_evidence.py` | Field values and argv literal, including the forbidden flags. The profile registers in a fixture with no core edit. `CODEX_WINDOW_ROWS` reach the window kit with no kit-code edit. `read_tool_record` on recorded CLI streams: a tooled run counts; zero commands, all commands failed, a truncated stream and an unknown event each give `codex_seat_tools_unavailable`. | `V3` |
+| SL-3.1 | test | — | `phase-loop-runtime/tests/test_seat_profile_codex.py`, `phase-loop-runtime/tests/test_seat_codex_evidence.py` | Field values and argv literal, including the forbidden flags. The profile registers in a fixture with no core edit. `CODEX_WINDOW_ROWS` reach the window kit with no kit-code edit. `read_tool_record` on recorded CLI streams: a tooled run counts; zero commands, all commands failed, and a truncated stream give `codex_seat_tools_unavailable`; an unknown top-level event gives `codex_seat_unknown_event`. A forged event inside a command-output string does not count. | `V3` |
 | SL-3.2 | impl | SL-3.1 | `phase-loop-runtime/src/phase_loop_runtime/seat_profile_codex.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_codex_evidence.py` | — | — |
 | SL-3.3 | test | SL-3.2 | `phase-loop-runtime/tests/test_seat_codex_leg.py`, `phase-loop-runtime/tests/test_seat_jail_qualification_entry.py` | With a fixture-registered profile, path-entered through `_default_spawn` and the real output read: each post-launch step gives its code in order; a verdict with no completed command is not counted (the agent-harness#1335 record); `qualify("codex")` records a v2 pass; the production and probe views agree. | `V3` |
 | SL-3.4 | impl | SL-3.3 | `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_jail_qualification.py` | — | — |
-| SL-3.5 | test | SL-3.4 | `phase-loop-runtime/tests/test_seat_codex_provider_free.py`, `phase-loop-runtime/tests/fixtures/codex_fixture_provider.py` | `live_jail` cases with the real CLI and a synthetic auth copy, on `jailed_codex_command` plus the fixture provider's `-c` keys: a scripted tool call reads a tree sentinel; no planted marker reaches the fixture's request body; a rewritten `auth.json` gives the refresh code. Mutation control: the same run with `--sandbox workspace-write` is typed unavailable. | `VL` |
+| SL-3.5 | test | SL-3.4 | `phase-loop-runtime/tests/test_seat_codex_provider_free.py`, `phase-loop-runtime/tests/fixtures/codex_fixture_provider.py` | `live_jail` cases with the real CLI and a synthetic auth copy, on `jailed_codex_command` plus the fixture provider's `-c` keys: a scripted tool call reads a tree sentinel; no planted marker reaches the fixture's request body; a rewritten `auth.json` gives the refresh code. One jailed `unshare` or `bwrap` attempt is refused by the seat filter and creates no nested namespace. Mutation control: the same run with `--sandbox workspace-write` is typed unavailable. | `VL` |
 | SL-3.6 | verify | SL-3.5 | SL-3 files, `plans/evidence/seat-codex/provider-free-team.json`, `plans/evidence/seat-codex/refresh-detection.json` | `VL` on a team host where agent-harness#1335 reproduces. OD-4 goes to the owner with this evidence. Stop here until it is recorded. | `V3`, `VL` |
-| SL-3.7 | test | SL-3.6 | `phase-loop-runtime/tests/test_seat_codex_route_gate.py`, `phase-loop-runtime/tests/test_codex_seat_tool_sandbox_1335.py`, `phase-loop-runtime/tests/test_codex_seat_writable_tree_1470.py`, `phase-loop-runtime/tests/test_broker_staged_tree_delivery.py`, `phase-loop-runtime/tests/test_sandbox_egress.py`, `phase-loop-runtime/tests/test_panel_invoker.py` | Registered: every `containment` field and `scope_evidence` resolves to a committed record, `allowlist_ref("codex")` has rows, and `plans/decision-seats-codex-boundary.md` records OD-4 accepted. The mode line reads `jailed` on a capable host. `seat_filesystem_unconfined` is unreachable for a `review` seat. L3 failures walk R, N, D. `setfcap` is absent. Agreement rows cover each L5 and L6 code through the gate. Repo-only reads skip on an installed wheel. | `V4` |
+| SL-3.7 | test | SL-3.6 | `phase-loop-runtime/tests/test_seat_codex_route_gate.py`, `phase-loop-runtime/tests/test_codex_seat_tool_sandbox_1335.py`, `phase-loop-runtime/tests/test_codex_seat_writable_tree_1470.py`, `phase-loop-runtime/tests/test_broker_staged_tree_delivery.py`, `phase-loop-runtime/tests/test_sandbox_egress.py`, `phase-loop-runtime/tests/test_panel_invoker.py` | Registered: every `containment` field and `scope_evidence` resolves to a committed record, `allowlist_ref("codex")` has rows, and `plans/decision-seats-codex-boundary.md` records OD-4 accepted. The mode line reads `jailed` on a capable host. `seat_filesystem_unconfined` is unreachable for a `review` seat. L3 failures walk R, N, D. `setfcap` is absent. Agreement rows cover each L5 and L6 code and `codex_seat_cli_shape` through the gate. Repo-only reads skip on an installed wheel. | `V4` |
 | SL-3.8 | impl | SL-3.7 | `phase-loop-runtime/src/phase_loop_runtime/seat_profiles.py`, `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `phase-loop-runtime/src/phase_loop_runtime/sandbox_egress.py`, `plans/decision-seats-codex-boundary.md` | — | — |
 | SL-3.9 | verify | SL-3.8 | SL-3 files | all SL-3 tests | `V3`, `V4`, `V5`, `VL` |
 
@@ -382,7 +393,7 @@ leaves it no path once the profile is registered. `advisory_document` and
 
 ## Acceptance Criteria
 
-- [ ] EC-CODEX-1 — proven by `V3`, `V4` and `VL` (`test_seat_codex_route_gate.py`, `test_seat_codex_provider_free.py`). Falsified by the `--sandbox workspace-write` mutation control passing, by `seat_filesystem_unconfined` on a capable host, or by registration with any unresolved evidence field. Path-entered control: the seat enters through `_default_spawn` and the real jail.
+- [ ] EC-CODEX-1 — proven by `V3`, `V4` and `VL` (`test_seat_codex_route_gate.py`, `test_seat_codex_provider_free.py`). Falsified by a nested namespace attempt inside the jailed seat, by `seat_filesystem_unconfined` on a capable host, or by enabling the route before egress is confined. The `--sandbox workspace-write` mutation passing, and registration with any unresolved evidence field, are the same failures. Path-entered control: the seat enters through `_default_spawn` and the real jail, and `VL` includes the nested-namespace attempt while the argv keeps `--sandbox danger-full-access`.
 - [ ] EC-CODEX-2 — proven by `V1` and `plans/evidence/seat-codex/credential-scope.json`. Falsified by an API-key auth file reaching a copy, a `Not logged in` probe read as logged in, or a bind outside `CODEX_RUNTIME_FILES`. Path-entered control: the file enters through `auth_path` and `build_seat_copy`; the probe through the real availability check.
 - [ ] EC-CODEX-3 — proven by `V2` and `VL` (`test_seat_egress_allowlist_codex.py`). Falsified by a jailed tool command or the CLI reaching an unlisted host or a Gemini-listed host. Path-entered control: requests enter through the real `proxy.mjs` and a jailed tool command.
 - [ ] EC-CODEX-4 — proven by `VL` on a team host where agent-harness#1335 reproduces, then the row-window record under `plans/evidence/seat-qualification/`. Falsified by a `done-local` row with no window record on its current qualification key. Path-entered control: through `seat_window.verify_records` on the exported record.
