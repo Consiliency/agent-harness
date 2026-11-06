@@ -19,7 +19,7 @@ roadmap depends on REMOTE.
 **Frozen artifact.** `plans/seats-remote-contract.md` is normative for the vectors, the map, the
 probe set, the credential table, the proxy and link, the codes, the rung, the invocation, the
 receipt and the window record. Its sha256 is
-`398beb8751b21173cb06b91358a3f1a4c87f7e84a7f87aeb08512f7f905f3cd0`.
+`65af8f197a5c843a946cfa40e55821844e6f58ca9e40699a7455c2d649a990f2`.
 This plan points at its sections (§0–§8) and does not repeat them.
 
 **Consumed, not rebuilt.** REMOTE adds only the review-seat layer.
@@ -47,9 +47,9 @@ This plan points at its sections (§0–§8) and does not repeat them.
 
   The inputs are consumed at these content digests:
   - roadmap `specs/phase-plans-v13.md`, sha256
-    `6c147d6583d653cf12d4b3c50f7eb8656fc3390f32c5b5895890c6a31d86397a`;
+    `8f34d506a8172e4d868b8f23bc0d2b7f228b1894575f75fff93c92dfb15ce679`;
   - artifact `plans/artifacts/v13-PLACECLI-contract-v1.schema.json`, sha256
-    `82668b3871d6697444bc3da2cbdbf910d3c63d541b5d2cedeeabc8856949592a`.
+    `7bf7781dd30de55e7b30200d70f6b90b49a7c7a9b73804892408fa7667181105`.
 
   If different bytes land, the plan is repinned before execution.
 - **The rest.** The guest wrapper is `landlock-exec` (agent-harness#1795 revision 14), the
@@ -111,16 +111,16 @@ This plan points at its sections (§0–§8) and does not repeat them.
 These are non-human work-start gates unless marked live. None of them is an amendment to the
 other roadmap.
 
-- **XR-1 (v13, blocks SL-2.4, SL-4 and SL-5 integration).** The PLACECLI artifact gives a
-  `ForwardTcpUnixBridge` only to `pi-runner` on `openshell`, and `bridge: null` to every other
-  reservation. REMOTE needs the same reservation-scoped bridge for workload `leg` on
-  `openshell`. This plan names the change and does not make it. The v13 owner applies it before
-  REMOTE's integration lanes start.
+- **XR-1 (v13, consumed).** The pinned PLACECLI artifact gives workload `leg` on `openshell` one
+  reservation-scoped `ForwardTcpUnixBridge` (EC-PLACECLI-4); every other seat reservation has
+  `bridge: null`. It leaves the `leg` policy vector unconstrained, and R6 binds
+  `full-remote-pi-runner` (contract §6).
 - **XR-2 (v13).** The agent-harness client configuration names one seat `openshell` target, and
   REMOTE's activation file names the same one. Its provider allowlist references
   `seat-provider-vectors.json`, and its owner-controlled clearance reads REMOTE's probe receipt.
   REMOTE writes the data, and PLACECLI reads it.
-- **XR-3 (v13).** IF-0-LANEEXEC-1 accepts workload `leg` with the following inputs:
+- **XR-3 (v13, open; closes before SL-4 and SL-5 start).** IF-0-LANEEXEC-1 accepts workload
+  `leg` with the following inputs:
   - a fixed per-vendor argv template;
   - snapshot mode `full` under its size cap;
   - one bounded non-patch result, as a non-writer route (EC-LANEEXEC-1).
@@ -199,7 +199,7 @@ SL-6 — Evidence, inventories and documentation reducer (SL-docs)
 
 | Task | Type | Depends on | Action | Proof |
 |---|---|---|---|---|
-| SL-1.1 | test | — | Path-enter the real files and assert no findings. Each mutation must yield a finding: a field outside `network_policies`, AUDIT, PASSTHROUGH, `allow_uninspected_credentials: true`, an extra L7 rule, each listed field set, a second provider's host in an entry, a duplicate provider, a stale digest, an edited baseline digest, and a map row naming a missing provider. Hash `policies.json`, `policy-digests.json` and `full-remote-pi-runner` before and after. | `V1` |
+| SL-1.1 | test | — | Path-enter the real files and assert no findings. Each mutation must yield a finding: a field outside `network_policies`, AUDIT, PASSTHROUGH, `allow_uninspected_credentials: true`, an extra L7 rule, `allow_uninspected_credentials` not false, an empty or multi-path `binaries`, each listed field set, a second provider's host in an entry, a duplicate provider, a stale digest, an edited baseline digest, and a map row naming a missing provider. Hash `policies.json`, `policy-digests.json` and `full-remote-pi-runner` before and after. | `V1` |
 | SL-1.2 | evidence | — | For each vendor, measure the guest-direct request set with the CLI's API base on the relay and record metadata only. | request-set records |
 | SL-1.3 | impl | SL-1.1, SL-1.2 | Author the vectors, the map and the probe set per contract §1–§2, and implement `validate`. | `V1` |
 | SL-1.4 | docs | SL-1.3 | Amend C5 in the placement README. Amend the Stage 2 activation-proof text so that its no-egress and no-exposure claim covers Stage 2's own vectors only and names the reservation bridge for seat reservations. | `V1` |
@@ -214,7 +214,7 @@ SL-6 — Evidence, inventories and documentation reducer (SL-docs)
 
 | Task | Type | Depends on | Action | Proof |
 |---|---|---|---|---|
-| SL-2.1 | test | — | Use a socketpair standing in for the bridge and the real proxy and link code. Prove these refusals: an expired placeholder, a non-placeholder bearer, a refresh-matcher request and a host credential in any downlink encoding, each ending typed. Prove a scope above evidence and an API key without an OD-7 reference are refused before reserve. Prove a missing allowlist yields `seat_egress_allowlist_missing`. Prove an unknown frame, an oversize frame and the per-connection and overall bounds. Prove `revoke()` is idempotent and invalidates the placeholder, and that no frame ever carries the renewal token. | `V2` |
+| SL-2.1 | test | — | Use a socketpair standing in for the bridge and the real proxy and link code. Prove the placeholder is accepted through `deadline + 60s` and refused after that instant, plus these refusals: a non-placeholder bearer, a refresh-matcher request and a host credential in any downlink encoding, each ending typed. Prove a scope above evidence and an API key without an OD-7 reference are refused before reserve. Prove a missing allowlist yields `seat_egress_allowlist_missing`. Prove an unknown frame, an oversize frame and the per-connection and overall bounds. Prove `revoke()` is idempotent and invalidates the placeholder, and that no frame ever carries the renewal token. | `V2` |
 | SL-2.2 | evidence | — | Measure each vendor's base-URL and placeholder behaviour and its credential scope, and record metadata only. A vendor with no record stays `unsupported`. | scope records |
 | SL-2.3 | impl | SL-2.1, SL-2.2 | Implement the table, `open_session`, the proxy, link, relay and revocation. | `V2` |
 | SL-2.4 | verify | SL-2.3 | Once XR-1 holds, rerun SL-2.1 against the real v13 bridge descriptor from a fake coordinator. | `V2` |
@@ -230,7 +230,7 @@ SL-6 — Evidence, inventories and documentation reducer (SL-docs)
 | Task | Type | Depends on | Action | Proof |
 |---|---|---|---|---|
 | SL-3.1 | evidence | — | Write the EC-REMOTE-3 packet in the operator-private store. It covers every item EC-REMOTE-3 lists, records the proxy-held choice (contract §4), and reviews IF-0-REMOTE-3. Commit only its receipt. | receipt digest |
-| SL-3.2 | test | — | Path-enter real files. Prove the following are refused: an unsafe or malformed activation file (ignored, not trusted), an expired receipt, a receipt bound to another target, class or probe-set digest, evidence that does not re-hash, and evidence missing the provider. For third-party, prove that changing each bound digest or version flips the verdict; the digested files are temporary packaged copies. Prove an owner-controlled entry binds no digest list. | `V3` |
+| SL-3.2 | test | — | Path-enter real files. Prove the following are refused: an unsafe or malformed activation file (ignored, not trusted), an expired receipt, a receipt bound to another target or class, a receipt or evidence whose probe-set digest differs from the installed probe set's, evidence that does not re-hash, evidence missing the provider or any probe id and origin row, and a third-party capacity entry without a current receipt. For third-party, prove that changing each bound digest or version flips the verdict; the digested files are temporary packaged copies. Prove an owner-controlled entry binds no digest list. | `V3` |
 | SL-3.3 | impl | SL-3.2 | Implement the verifier per contract §6–§7. | `V3` |
 
 ### SL-4 — Remote review invocation and image targets (lane E)
@@ -256,7 +256,7 @@ SL-6 — Evidence, inventories and documentation reducer (SL-docs)
 
 | Task | Type | Depends on | Action | Proof |
 |---|---|---|---|---|
-| SL-5.1 | test | — | Drive `seat_route.resolve` through the real construction site, the placement console entry and a fake coordinator, covering each of the following. Each R0–R6 failure yields its code, and nothing is reserved before R5. For each of `at_capacity` and `unreachable`, the walk descends to native fill, and each other R5 outcome resolves degraded. A wrong target, kind, client, provider list, bridge or `egress_sha256` releases, then resolves degraded. The packaged default stays `INACTIVE_REMOTE_RUNG`-equivalent with no activation file. Two concurrent seats never share a reservation, sandbox, proxy session or bridge. `deactivate` turns the vendor off for the next admission. | `V5` |
+| SL-5.1 | test | — | Drive `seat_route.resolve` through the real construction site, the placement console entry and a fake coordinator, covering each of the following. Each R0–R6 failure yields its code, and nothing is reserved before R5. For each of `at_capacity` and `unreachable`, the walk descends to native fill, and each other R5 outcome resolves degraded. A wrong workload, target, kind, client, image digest, policy vector, policy digest, provider list, bridge or `egress_sha256` releases, then resolves degraded. The packaged default stays `INACTIVE_REMOTE_RUNG`-equivalent with no activation file. Two concurrent seats never share a reservation, sandbox, proxy session or bridge. `deactivate` turns the vendor off for the next admission. | `V5` |
 | SL-5.2 | impl | SL-5.1 | Implement the rung. Make two narrow edits at the construction site: one rung per `resolve` call, and mode `remote` dispatching to `run_remote_seat`. Register the CLI group. | `V5` |
 | SL-5.3 | verify | SL-5.2 | With XR-1 to XR-3 met, run SL-5.1 against the landed v13 entry, bridge and launch service. | `V5` |
 
@@ -276,9 +276,9 @@ SL-6 — Evidence, inventories and documentation reducer (SL-docs)
 
 ## Execution Notes
 
-- **Order.** SL-0 starts once JAILCORE SL-0 has published `seat_route_contract.py`. SL-3 starts
-  straight away, from the frozen contract. SL-1 and SL-2 are developed offline in parallel with
-  it. SL-4 waits on LANEEXEC and XR-3. SL-5 waits on the JAILCORE
+- **Order.** SL-0 starts once JAILCORE SL-0 has published `seat_route_contract.py`. SL-3.1 (the design packet) starts
+  straight away from the frozen contract; SL-3.2–SL-3.3 follow SL-0. SL-1 and SL-2 start only
+  after SL-3 lands with the owner-approved OD-7 receipt. SL-4 waits on LANEEXEC and XR-3. SL-5 waits on the JAILCORE
   resolver, PLACECLI and XR-1 to XR-3. Each of these is a non-human work-start gate
   (`blocker_class=upstream_phase_unmet`).
 - **OD-7 order.** SL-1 and SL-2 land only after OD-7 approves the SL-3.1 packet and its receipt
@@ -316,12 +316,18 @@ SL-6 — Evidence, inventories and documentation reducer (SL-docs)
 
 ## Acceptance Criteria
 
-- [ ] EC-REMOTE-1 — proven by `V1` and IF-0-REMOTE-1. Falsified by a mutated vector that still validates in AUDIT or PASSTHROUGH mode, with a field outside `network_policies`, or with a second provider, or by any changed existing vector digest. Path-entered control: the real packaged vectors, map and `policies.json` load through `seat_remote_vectors.validate`.
-- [ ] EC-REMOTE-2 — proven by `V2` and IF-0-REMOTE-2. Falsified by an expired placeholder, a foreign bearer or a refresh request reaching upstream, by host credential bytes crossing the downlink, by an API key without an OD-7 reference, or by `revoke()` not running on `release_unconfirmed`. Path-entered control: requests enter through the real link and proxy over the bridge socket.
-- [ ] EC-REMOTE-3 — proven by `V3` and the receipt. Falsified by a third-party activation accepted after changing any bound digest or version, or by an owner-controlled activation accepted with a missing, expired or foreign probe-set receipt. Path-entered control: the real activation file and receipt store are read through the real loader.
-- [ ] EC-REMOTE-4 — proven by `V5`. Falsified by two seats sharing a reservation or proxy session, by a deactivated vendor reserving, by a vector launching without an activation, or by a projected dependency reaching R5. Path-entered control: seats enter through `seat_route.resolve` at its production construction site.
-- [ ] EC-REMOTE-5 — proven by `VL1`, the window record under `plans/evidence/seats-remote/windows/`. Falsified by any probe row whose outcome is not `refused`, or by a `done-remote` row without a current receipt. Path-entered control: probes run as the pinned binary and from a tool command through `run_probe_set`.
-- [ ] EC-REMOTE-6 — proven by `V4`. Falsified by a remote result admitted without staged-tree tool evidence, or by an `unsupported` lane launching. Path-entered control: results enter through the real LANEEXEC bounded return and `run_remote_seat`.
+- [ ] EC-REMOTE-1 — roadmap reference; proof: `V1` and IF-0-REMOTE-1.
+  Falsifier: EC-REMOTE-1's roadmap falsifier, by reference, through the path-entered `V1` suite.
+- [ ] EC-REMOTE-2 — roadmap reference; proof: `V2` and IF-0-REMOTE-2.
+  Falsifier: EC-REMOTE-2's roadmap falsifier, by reference, through the path-entered `V2` suite.
+- [ ] EC-REMOTE-3 — roadmap reference; proof: `V3` and `seat_remote_review_receipt.v1`.
+  Falsifier: EC-REMOTE-3's roadmap falsifier, by reference, through the path-entered `V3` suite.
+- [ ] EC-REMOTE-4 — roadmap reference; proof: `V5`.
+  Falsifier: EC-REMOTE-4's roadmap falsifier, by reference, through the path-entered `V5` suite.
+- [ ] EC-REMOTE-5 — roadmap reference; proof: `VL1` and `seat_remote_window.v1`.
+  Falsifier: EC-REMOTE-5's roadmap falsifier, by reference, through the path-entered `VL1` suite.
+- [ ] EC-REMOTE-6 — roadmap reference; proof: `V4`.
+  Falsifier: EC-REMOTE-6's roadmap falsifier, by reference, through the path-entered `V4` suite.
 
 ## Verification
 

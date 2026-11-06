@@ -71,8 +71,9 @@ It is the reviewed provider artifact that the v13 agent-harness client configura
   never changes an entry. Only that entry's activation-window record (§8) changes its status.
 - **Validator.** `seat_remote_vectors.validate(vectors, vector_map, policies) ->
   tuple[VectorFinding, ...]` returns a finding for: any difference outside `network_policies`; a
-  rule off ENFORCE or TERMINATE (AUDIT and PASSTHROUGH included); a listed field set; rules not
-  equal to the request set; a map key that is not the entry's provider; a duplicate provider; a
+  rule off ENFORCE or TERMINATE (AUDIT and PASSTHROUGH included); a listed field set; `allow_uninspected_credentials` not false; `binaries` other than exactly one
+  absolute in-image path; an endpoint host that another entry also lists; rules not equal to the
+  request set; a map key that is not the entry's provider; a duplicate provider; a
   digest that does not re-hash; or a `policies.json` baseline digest change. `policies.json`,
   `policy-digests.json` and `full-remote-pi-runner` are never written.
 
@@ -131,7 +132,7 @@ class RemoteCredentialRow:
     delivery: Literal["requester_proxy", "unsupported"]
     host_lane: str                 # the existing host credential lane the local profile reads
     scope_evidence: str | None     # measured-scope record id; None keeps delivery "unsupported"
-    placeholder_margin_s: int      # 60
+    placeholder_margin_s: Literal[60]  # fixed; not vendor-configurable
     refresh_matchers: tuple[str, ...]   # request (method, path) patterns the proxy refuses
     revocation: Literal["session_close", "session_close_and_upstream"]
     od7_api_key_ref: str | None    # required, and only allowed, when shape == "api_key"
@@ -149,9 +150,10 @@ class RemoteCredentialRow:
 - **Placeholder.** For each seat, `open_session(row, reservation, deadline) -> ProxySession`
   mints one random placeholder. The placeholder is the only credential-shaped value the guest
   receives. It reaches the guest through its home or environment, and the CLI's API base is
-  `http://127.0.0.1:<port>/<provider>`. The proxy accepts it only until `deadline +
-  placeholder_margin_s`, or the OD-7 ceiling where one is recorded. This is the EC-REMOTE-2
-  lifetime bound for every credential the guest can reach.
+  `http://127.0.0.1:<port>/<provider>`. The proxy accepts it only through `deadline + 60s` and
+  refuses it after that instant. This is the EC-REMOTE-2 lifetime bound, and it applies to the
+  placeholder—the only credential the guest can reach. An `od7_lifetime_ceiling_s`, where
+  recorded, cannot extend the placeholder's expiry.
 - **Pre-launch checks.** The host credential's scope must not exceed `scope_evidence`. An
   `api_key` row needs `od7_api_key_ref`. Both checks run before any reserve.
 - **Swap and forward.** The proxy replaces the placeholder with the host credential and forwards
@@ -222,6 +224,9 @@ Post-launch codes never re-enter the walk (W5).
 implements `RemoteRung`. The JAILCORE construction site of `seat_route.resolve` builds one
 instance per call. `routed_provider` comes from the leg's launch configuration: for Pi it is
 `PiRoutedIdentity.launch_provider`, and for any other leg it is that leg's single map row.
+- `RemoteRequest` keeps JAILCORE's five frozen fields (`leg`, `vendor`, `host_class`, `trigger`,
+  `trigger_code`) and carries no target (JAILCORE ruling S2). For trigger `capacity`, the rung
+  resolves the target from the matching `CapacityGrant` in the `RoutePolicy` it was built with.
 
 - `admit` reserves at most once. After a placed admission, `held() -> RemoteSeat | None` returns
   the seat. The caller calls `release_unused()` on every exit that does not launch.
@@ -230,12 +235,12 @@ instance per call. `routed_provider` comes from the leg's launch configuration: 
 | Step | Check |
 |---|---|
 | R0 | an activation entry for vendor and host class, and the vendor not deactivated. Trigger `capacity` takes the entry from the matching `CapacityGrant`; any other trigger takes it from the activation file. Otherwise `seat_remote_rung_inactive` (JAILCORE skip). |
-| R1 | owner-controlled: the receipt passes JAILCORE §6 condition 3 and its evidence covers the row's provider. Third-party: the vendor's OD-7 record and `activation_digests(vendor)` equal it. |
+| R1 | Owner-controlled, and every trigger `capacity`: the receipt passes JAILCORE §6 condition 3; the receipt's and its evidence's `probe_set_digest` both equal the digest computed from the installed `remote-probe-set.json`; and the evidence has a `refused` row for every probe id and origin for the row's provider. Third-party: the vendor's OD-7 record and `activation_digests(vendor)` equal it; for trigger `capacity`, both the receipt checks and the OD-7 checks apply. |
 | R2 | a vector-map row for `(leg, routed_provider)`, with `validate()` returning no findings. |
 | R3 | a delivering credential row, scope within its evidence, and an allowlist present. |
 | R4 | `projection == "none"`, else `refuse_unwired_dependency_route`. |
 | R5 | `reserve`: `{schema, request_id (fresh), workload: "leg", ttl_s, image_digest, policy_vector: "full-remote-pi-runner", providers: [row.provider], deadline_ms, caller_context: {"route": "seat_remote"}}`. Outcome `admitted` goes to R6. `at_capacity`, `unreachable`, `refused` and `timeout` map to the R5 codes. Exit 70 retries once with the same `request_id`. |
-| R6 | the reservation has `target.kind == "openshell"`, `target.name` equal to the activation target, `client` and `inventory` `agent-harness`, `rank_policy` `seats_single_target`, `providers == [row.provider]`, a non-null `bridge`, and `egress_sha256` equal to the v13 resolver's digest for the row. Otherwise release, then return `seat_remote_target_mismatch`. |
+| R6 | the reservation has `workload == "leg"`, `target.kind == "openshell"`, `target.name` equal to the R0 entry's target (the `CapacityGrant.target` for trigger `capacity`), `client` and `inventory` `agent-harness`, `rank_policy` `seats_single_target`, `image_digest == row.image_digest`, `policy_vector == "full-remote-pi-runner"`, `policy_digest == REVIEW_POLICY_DIGEST`, `providers == [row.provider]`, a non-null `bridge`, and `egress_sha256` equal to the v13 resolver's digest for the row. Otherwise release, then return `seat_remote_target_mismatch`. |
 
 **Activation file.** `<state_home>/phase-loop/seat-remote-activation.json`, schema
 `seat_remote_activation.v1`:
