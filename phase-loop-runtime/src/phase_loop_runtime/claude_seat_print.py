@@ -40,10 +40,11 @@ import json
 import subprocess
 import sys
 import uuid
+from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from types import ModuleType
-from typing import Mapping
+from typing import Callable, Mapping
 
 from . import seat_jail as _seat_jail
 from .claude_print_observations import ClaudePrintObservations
@@ -79,6 +80,43 @@ TOKEN_IN_OUTPUT = "claude_seat_token_in_output"
 #: The retry categories that mean the credential stopped being a working subscription.
 AUTH_DRIFT = "claude_print_auth_drift"
 _AUTH_DRIFT_ERRORS = frozenset({"authentication_failed", "billing_error", "oauth_org_not_allowed"})
+
+
+@dataclass(frozen=True)
+class ParsePolicy:
+    """How one route parses a stream-json line before admission reads it. The parse happens
+    once, here; a route that needs the frame afterwards takes the parsed object through
+    :class:`StreamAdmission`'s ``on_frame`` and never reparses the line.
+
+    :data:`PRINT_POLICY` is ``print``'s own (§4a items 4 and 5): a duplicate key refuses only
+    in a ``system`` or ``result`` frame, and the token is scanned in the raw stream and the
+    result text. A stricter route may refuse a duplicate key in every frame and scan every
+    decoded key and string value (JSON escapes resolved), with ``frame_violation`` as the
+    code for a frame only that policy refuses."""
+
+    name: str
+    duplicates_everywhere: bool = False
+    scan_decoded: bool = False
+    frame_violation: str = STREAM_UNSAFE
+
+
+#: ``print``'s parse policy. It is the default, and print's admission does not change with it.
+PRINT_POLICY = ParsePolicy("print")
+
+
+def decoded_strings(value: object):
+    """Every decoded key and string value of one parsed frame, JSON escapes resolved."""
+    pending = [value]
+    while pending:
+        item = pending.pop()
+        if isinstance(item, str):
+            yield item
+        elif isinstance(item, dict):
+            for key, child in item.items():
+                yield key
+                pending.append(child)
+        elif isinstance(item, list):
+            pending.extend(item)
 
 
 def _pi() -> ModuleType:
@@ -120,11 +158,17 @@ class StreamAdmission:
 
     ``feed`` sees raw chunks as they arrive and returns True to stop the run at once (the
     runner then kills the process group). ``finish`` reads a final unterminated line. The
-    admission predicates are :meth:`admitted` and :attr:`violation`."""
+    admission predicates are :meth:`admitted` and :attr:`violation`.
+
+    ``policy`` is the route's :class:`ParsePolicy` (``print``'s by default). ``on_frame``
+    receives each frame's parsed object after admission read it, only while no violation
+    stands -- the same object, so a route that forwards frames never parses a line twice."""
 
     def __init__(self, *, token: bytes, session_id: str,
                  observations: ClaudePrintObservations | None = None,
-                 stream_cap: int | None = None, line_cap: int | None = None) -> None:
+                 stream_cap: int | None = None, line_cap: int | None = None,
+                 policy: ParsePolicy = PRINT_POLICY,
+                 on_frame: Callable[[dict], None] | None = None) -> None:
         self._token = token
         self._forms = _seat_jail.secret_encodings(token)
         self._overlap = max(map(len, self._forms), default=1) - 1
@@ -136,6 +180,11 @@ class StreamAdmission:
         self._line_cap = LINE_CAP_BYTES if line_cap is None else line_cap
         self.session_id = session_id
         self.observations = observations
+        if not isinstance(policy, ParsePolicy):
+            raise TypeError("policy must be a ParsePolicy")
+        self.policy = policy
+        self._on_frame = on_frame
+        self._parsed: dict | None = None
         self.bytes = 0
         self.frames = 0
         self.violation: str | None = None
@@ -211,12 +260,21 @@ class StreamAdmission:
     def _frame(self, raw: bytes) -> None:
         if not raw.strip():
             return
+        self._parsed = None
         try:
             self._parse(raw)
         except (_Unsafe, RecursionError):
             self._stop(STREAM_UNSAFE)
         except Exception:  # any hostile value is a typed refusal, never an untyped failure
             self._stop(STREAM_UNSAFE)
+        parsed, self._parsed = self._parsed, None
+        if parsed is None or self.violation is not None or self._on_frame is None:
+            return
+        try:
+            # The admission's own parse, handed on: the caller never reparses the line.
+            self._on_frame(parsed)
+        except Exception:
+            self._stop(self.policy.frame_violation)
 
     def _parse(self, raw: bytes) -> None:
         duplicate = False
@@ -261,7 +319,16 @@ class StreamAdmission:
             raise _Unsafe("frame")
         if not strict:
             raise _Unsafe("utf-8")
+        if duplicate and self.policy.duplicates_everywhere:
+            self._stop(self.policy.frame_violation)
+            return
+        if self.policy.scan_decoded and any(
+                any(form in text.encode("utf-8", errors="surrogatepass") for form in self._forms)
+                for text in decoded_strings(event)):
+            self._stop(TOKEN_IN_OUTPUT)
+            return
         self.frames += 1
+        self._parsed = event
         if self.observations is not None:
             try:
                 if duplicate:

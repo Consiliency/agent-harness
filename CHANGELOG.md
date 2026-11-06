@@ -6,6 +6,12 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- The jailed print transport's stream admission takes a route-specific parse policy
+  (SEATS CLAUDE SL-2, agent-harness#1820): `claude_seat_print.ParsePolicy`, with `print`'s own
+  `PRINT_POLICY` as the default, and an `on_frame` receiver that gets each frame's parsed object
+  after admission read it, so a route that forwards frames parses each line once. `print`'s
+  admission is unchanged.
+
 - The jailed Claude seat's `sdk` transport lands offline and unadmitted (SEATS CLAUDE SL-3,
   agent-harness#1820): `claude_seat_sdk` (`ADMITTED = False`) and its credential-free host
   worker under `phase_loop_runtime/data/claude_sdk/worker/` -- a trusted `-I -S -B` bootstrap

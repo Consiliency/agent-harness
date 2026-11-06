@@ -430,6 +430,107 @@ def test_a_token_wins_over_an_earlier_violation():
 
 
 # --------------------------------------------------------------------------------------
+# The parse policy: one parse per line, handed on to a route that forwards frames.
+# --------------------------------------------------------------------------------------
+
+def _assistant(session, text="thinking"):
+    return {"type": "assistant", "session_id": session,
+            "message": {"role": "assistant", "content": [{"type": "text", "text": text}]}}
+
+
+def test_print_reads_with_its_own_policy_by_default():
+    stream = cp.StreamAdmission(token=TOKEN, session_id="s")
+    assert stream.policy is cp.PRINT_POLICY
+    assert (cp.PRINT_POLICY.duplicates_everywhere, cp.PRINT_POLICY.scan_decoded,
+            cp.PRINT_POLICY.frame_violation) == (False, False, cp.STREAM_UNSAFE)
+    with pytest.raises(TypeError):
+        cp.StreamAdmission(token=TOKEN, session_id="s", policy="strict")
+
+
+def test_print_run_jailed_reads_with_the_print_policy(monkeypatch):
+    seen = []
+    real = cp.StreamAdmission
+
+    def spy(**kwargs):
+        stream = real(**kwargs)
+        seen.append(stream.policy)
+        return stream
+
+    monkeypatch.setattr(cp, "StreamAdmission", spy)
+    status, *_rest = drive(monkeypatch, lambda session: _lines(_init(session), _result(session)))
+    assert status == "OK" and seen == [cp.PRINT_POLICY]
+
+
+def test_each_line_is_parsed_once_and_the_parse_is_handed_on(monkeypatch):
+    calls = []
+    real_loads = cp.json.loads
+    monkeypatch.setattr(cp.json, "loads", lambda *a, **k: calls.append(1) or real_loads(*a, **k))
+    handed: list = []
+    stream = cp.StreamAdmission(token=TOKEN, session_id="s", on_frame=handed.append)
+    frames = [_init("s"), _assistant("s"), _result("s")]
+    stream.feed(_lines(*frames))
+    stream.finish()
+    assert stream.violation is None and stream.admitted(0)
+    assert len(calls) == len(frames)
+    assert handed == frames
+
+
+def test_nothing_is_handed_on_once_a_violation_stands():
+    handed: list = []
+    stream = cp.StreamAdmission(token=TOKEN, session_id="s", on_frame=handed.append)
+    stream.feed(_lines(_assistant("s"), _init("s", apiKeySource="ANTHROPIC_API_KEY"),
+                       _assistant("s", "after")))
+    assert stream.violation == cp.API_KEY_SOURCE
+    assert handed == [_assistant("s")]
+
+
+def test_a_non_frame_line_is_never_handed_on():
+    handed: list = []
+    stream = cp.StreamAdmission(token=TOKEN, session_id="s", on_frame=handed.append)
+    stream.feed(b"plain diagnostic text\n" + _lines(_init("s")) + b"[1, 2]\n")
+    assert handed == [_init("s")]
+
+
+STRICT = cp.ParsePolicy("strict", duplicates_everywhere=True, scan_decoded=True,
+                        frame_violation="strict_frame_refused")
+
+
+def test_a_strict_policy_refuses_a_duplicate_key_in_any_frame_with_its_code():
+    handed: list = []
+    stream = cp.StreamAdmission(token=TOKEN, session_id="s", policy=STRICT,
+                                on_frame=handed.append)
+    stream.feed(_lines(_init("s"), b'{"type":"assistant","x":1,"x":2}'))
+    assert stream.violation == "strict_frame_refused"
+    assert handed == [_init("s")]
+
+
+def test_print_keeps_tolerating_a_duplicate_key_outside_system_and_result():
+    stream = cp.StreamAdmission(token=TOKEN, session_id="s")
+    stream.feed(_lines(_init("s"), b'{"type":"assistant","x":1,"x":2}', _result("s")))
+    assert stream.violation is None and stream.admitted(0)
+
+
+def test_a_strict_policy_scans_every_decoded_value():
+    escaped = "".join(f"\\u{c:04x}" for c in TOKEN)
+    handed: list = []
+    stream = cp.StreamAdmission(token=TOKEN, session_id="s", policy=STRICT,
+                                on_frame=handed.append)
+    stream.feed(_lines(_init("s"), ('{"type":"assistant","message":{"content":"%s"}}'
+                                    % escaped).encode()))
+    assert stream.violation == cp.TOKEN_IN_OUTPUT
+    assert handed == [_init("s")]
+
+
+def test_a_failing_receiver_stops_the_stream_with_the_policy_code():
+    def refuse(_frame):
+        raise ValueError("refused")
+
+    stream = cp.StreamAdmission(token=TOKEN, session_id="s", policy=STRICT, on_frame=refuse)
+    assert stream.feed(_lines(_init("s"))) is True
+    assert stream.violation == "strict_frame_refused"
+
+
+# --------------------------------------------------------------------------------------
 # live_jail: `print` at the real call site in a real jail.
 # --------------------------------------------------------------------------------------
 
