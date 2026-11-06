@@ -23,9 +23,9 @@ is advisory (OD-1) and the runner refuses it, so lanes land as governed PRs unde
   `JailProfile`, one allowlist file, its own `codex_seat_*` codes with one additive
   `OD10_CLASSES` entry each, and its window rows as data on the profile. It adds no branch in
   a core builder or the resolver, and no edit to the window kit.
-- TEAMHOST. The roadmap declares no `IF-0-TEAMHOST-*` gate, so this plan cites ECs only:
-  EC-TEAMHOST-1 for the managed release's declared closure, EC-TEAMHOST-2 for concurrent
-  accounts, and EC-TEAMHOST-3 and EC-TEAMHOST-5 for qualification and doctor reporting.
+- TEAMHOST. The roadmap declares no `IF-0-TEAMHOST-*` gate; its draft plan, agent-harness#1859,
+  does. This plan consumes IF-0-TEAMHOST-1 (seat subject) and IF-0-TEAMHOST-3 (admission gates)
+  by ID, pins no digest of that draft, and cites EC-TEAMHOST-2 for concurrent accounts.
 - IF-0-FIRSTSEAT-1, IF-0-FIRSTSEAT-2 and IF-0-FIRSTSEAT-3.
 
 **Read-only facts, codex-cli 0.167.0.** No provider request was made.
@@ -47,7 +47,7 @@ is advisory (OD-1) and the runner refuses it, so lanes land as governed PRs unde
   covers `seat-home` recursively. A `codex-config/` sibling would need `seat_uid` changes
   outside IF-0-JAILCORE-1, and EC-CODEX-2 states the delivery as seat home.
 - **Subject.** The native image is the jailed subject. The launcher is resolved and
-  trust-checked on the host (`_seat_provider_source`, agent-harness#1798). No interpreter
+  trust-checked on the host (`resolve_seat_subject`, agent-harness#1798). No interpreter
   enters the view (roadmap assumption 2). This is the coordinator's confirmed reading of
   EC-CODEX-2.
 
@@ -122,6 +122,13 @@ and nothing on main can reach the route early.
   `--add-dir`, `--worktree`, `--oss` or `--profile`. Attested controls are
   `_JAILED_CODEX_TOOL_CONTROLS`, which name `inner-sandbox-off-inside-seat-jail`,
   `workspace-empty-cwd`, `tree-not-a-workspace`, `egress-allowlisting-proxy` and `seat-jail`.
+
+  `seat_profile_codex.register_codex()` is the whole registration:
+  `seat_profiles.register(CODEX_PROFILE)`, `register_provider_executable("codex", "codex")` and
+  `seat_admission.register("codex", codex_admission_gate)`. Its one call site is the Codex
+  entry in `seat_profiles.py`. The gate runs the three preconditions in order and then
+  `codex_cli_shape_problem`, which refuses `codex_seat_tools_unavailable`. With `execute=False`
+  that last check returns `unknown` with reason `launch_measurement`.
 - [ ] IF-0-CODEX-2 — Runtime and credential.
 
   ```python
@@ -149,9 +156,11 @@ and nothing on main can reach the route early.
   `auth_mode`, `last_refresh`, a null `OPENAI_API_KEY`, and `tokens` with `access_token`,
   `id_token`, `account_id` and an empty `refresh_token`. Any other key is dropped unless SL-1
   measures the CLI needing it. It lands at `seat-home/.codex/auth.json`, mode 0600, before the
-  hand-off. An admitted dependency uses the same destinations under `CODEX_RUNTIME_ROOT`, and
-  its closure is declared by the deployment, not by this phase. `codex-resources/` is never
-  projected.
+  hand-off. `resolve_seat_subject("codex", env)` selects the path. A `standalone` subject's
+  `subject_path` goes to `resolve_runtime`. A `session_lease` or `managed_release` subject is
+  admitted through the profile's projection, at the same destinations under
+  `CODEX_RUNTIME_ROOT`, with no fallback. Its closure is the release's declaration (IF-XR-1),
+  not this phase's. `codex-resources/` is never projected.
 - [ ] IF-0-CODEX-3 — `seat_egress/codex-allowlist.json`, schema
   `phase_loop_seat_egress_allowlist.v1`, `leg: "codex"`, id `codex`, loaded only through
   `allowlist_ref("codex")`. Each `allow` rule has `host`, `port` 443, `method` and one of
@@ -245,12 +254,12 @@ SL-4 — Documentation, inventory and row reducer (SL-docs)
 - **Scope**: Provide the runtime file set, the credential copy and its measured scope, and fix the logged-out probe, independent of OD-4.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_codex_runtime.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_codex_credential.py`, `phase-loop-runtime/src/phase_loop_runtime/executor_availability.py`, `phase-loop-runtime/tests/test_seat_codex_runtime.py`, `phase-loop-runtime/tests/test_seat_codex_credential.py`, `phase-loop-runtime/tests/test_executor_availability.py`, `plans/evidence/seat-codex/credential-scope.json`
 - **Interfaces provided**: IF-0-CODEX-2; evidence id `codex-credential-scope`
-- **Interfaces consumed**: IF-0-CODEX-5 (SL-0), `seat_jail.read_regular_file_at` (pre-existing), `_seat_provider_source` (pre-existing)
+- **Interfaces consumed**: IF-0-CODEX-5 (SL-0), `seat_jail.read_regular_file_at` (pre-existing), IF-0-TEAMHOST-1 (pre-existing)
 - **Parallel-safe**: yes
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-1.1 | test | — | `phase-loop-runtime/tests/test_seat_codex_runtime.py` | Two synthetic layouts resolve the same file set. A missing file gives `seat_provider_unavailable`. A linked, group-writable or wrongly owned file gives `seat_sandbox_refused:identity`. No bind names `codex-resources` or the target directory itself. | `V1` |
+| SL-1.1 | test | — | `phase-loop-runtime/tests/test_seat_codex_runtime.py` | Two synthetic layouts resolve the same file set. A missing file gives `seat_provider_unavailable`. A linked, group-writable or wrongly owned file gives `seat_sandbox_refused:identity`. No bind names `codex-resources` or the target directory itself. A `managed_release` subject never reaches `resolve_runtime`. | `V1` |
 | SL-1.2 | impl | SL-1.1 | `phase-loop-runtime/src/phase_loop_runtime/seat_codex_runtime.py` | — | — |
 | SL-1.3 | test | SL-1.2 | `phase-loop-runtime/tests/test_seat_codex_credential.py`, `phase-loop-runtime/tests/test_executor_availability.py` | An `OPENAI_API_KEY` value, `auth_mode` other than `chatgpt`, or absent `tokens` gives `codex_seat_api_key_refused`. The copy has an empty `refresh_token`, no dropped key, and no secret in `repr`. Margin and scope each give their one code. `tokens_changed` is false on an identical read and true when any token differs. `Not logged in`, in either case, is a logged-out probe (agent-harness#1528). | `V1` |
 | SL-1.4 | impl | SL-1.3 | `phase-loop-runtime/src/phase_loop_runtime/seat_codex_credential.py`, `phase-loop-runtime/src/phase_loop_runtime/executor_availability.py` | — | — |
@@ -269,24 +278,24 @@ labelled `no wider than the recorded baseline`.
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-2.1 | test | — | `phase-loop-runtime/tests/test_seat_egress_allowlist_codex.py`, `phase-loop-runtime/tests/test_seat_codex_cli_shape.py` | The IF-0-CODEX-3 shape rules. Every `probe_rows` entry, path-entered through the real `proxy.mjs`: each allowed row reaches a fixture upstream, and refused, unlisted and Gemini-listed hosts do not. `gemini-allowlist.json` bytes are unchanged. The shape check names a missing flag, sandbox value or event. | `V2` |
+| SL-2.1 | test | — | `phase-loop-runtime/tests/test_seat_egress_allowlist_codex.py`, `phase-loop-runtime/tests/test_seat_codex_cli_shape.py` | The IF-0-CODEX-3 shape rules. Every `probe_rows` entry, path-entered through the real `proxy.mjs`: each allowed row reaches a fixture upstream, and refused, unlisted and Gemini-listed hosts do not. A fixture upstream silent past `FRONT_IDLE_MS` keeps its stream. `gemini-allowlist.json` bytes are unchanged. The shape check names a missing flag, sandbox value or event. | `V2` |
 | SL-2.2 | impl | SL-2.1 | `phase-loop-runtime/src/phase_loop_runtime/seat_egress/codex-allowlist.json`, `phase-loop-runtime/src/phase_loop_runtime/seat_codex_cli_shape.py` | — | — |
 | SL-2.3 | verify | SL-2.2 | SL-2 files, `plans/evidence/seat-codex/allowlist-probes.json` | One real tooled turn, with upgrades refused, through the proxy (`VM`). Then each refused row from a jailed tool command under a fixture-registered profile (`VL`). SL-3.9 repeats `VL` on the real profile. | `V2`, `VM`, `VL` |
 
-**STOP condition.** If a turn cannot complete over HTTPS with upgrades refused, SL-2 stops and
-reports the sentence to change. WebSocket inspection is an IF-0-JAILCORE-2 amendment, not a
-CODEX edit to `proxy.mjs` or the srt pin.
+**STOP condition.** If a turn cannot complete over HTTPS with upgrades refused, or the front's
+idle bound closes a healthy stream, SL-2 stops and reports the sentence to change. WebSocket
+inspection is an IF-0-JAILCORE-2 amendment, not a CODEX edit to `proxy.mjs` or the srt pin.
 
 agent-harness#1472 disposition: the shape check replaces the `codex sandbox` shape binding on
-the jailed route, and TEAMHOST's `seat_cli_qualification[]` (EC-TEAMHOST-5) reports it. The
-non-brokered route keeps the agent-harness#1469 probe unchanged.
+the jailed route, and `seat_cli_qualification[]` reports it through the Codex gate
+(IF-0-TEAMHOST-3). The non-brokered route keeps the agent-harness#1469 probe unchanged.
 
 ### SL-3 — Profile, leg and route enablement (lane A)
 
 - **Scope**: Build the profile and jailed leg, prove EC-CODEX-5 from the branch head, then on OD-4 register the profile, record the agent-harness#1480 decision and retire the inner-sandbox retention.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_profile_codex.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_codex_evidence.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_profiles.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_jail_qualification.py`, `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `phase-loop-runtime/src/phase_loop_runtime/sandbox_egress.py`, `phase-loop-runtime/tests/test_seat_profile_codex.py`, `phase-loop-runtime/tests/test_seat_profiles.py`, `phase-loop-runtime/tests/test_seat_codex_evidence.py`, `phase-loop-runtime/tests/test_seat_codex_leg.py`, `phase-loop-runtime/tests/test_seat_codex_route_gate.py`, `phase-loop-runtime/tests/test_seat_codex_provider_free.py`, `phase-loop-runtime/tests/fixtures/codex_fixture_provider.py`, `phase-loop-runtime/tests/test_seat_jail_qualification_entry.py`, `phase-loop-runtime/tests/test_codex_seat_tool_sandbox_1335.py`, `phase-loop-runtime/tests/test_codex_seat_writable_tree_1470.py`, `phase-loop-runtime/tests/test_broker_staged_tree_delivery.py`, `phase-loop-runtime/tests/test_sandbox_egress.py`, `phase-loop-runtime/tests/test_panel_invoker.py`, `plans/decision-seats-codex-boundary.md`, `plans/evidence/seat-codex/refresh-detection.json`, `plans/evidence/seat-codex/provider-free-team.json`
 - **Interfaces provided**: IF-0-CODEX-1, IF-0-CODEX-4; evidence id `codex-refresh-detection`
-- **Interfaces consumed**: IF-0-CODEX-2 (SL-1), IF-0-CODEX-3 (SL-2), `codex_cli_shape_problem` (SL-2), IF-0-CODEX-5 (SL-0), IF-0-JAILCORE-1 (pre-existing), IF-0-JAILCORE-3 (pre-existing), IF-0-FIRSTSEAT-3 (pre-existing), the profile-sourced window kit `seat_window` (pre-existing)
+- **Interfaces consumed**: IF-0-CODEX-2 (SL-1), IF-0-CODEX-3 (SL-2), `codex_cli_shape_problem` (SL-2), IF-0-CODEX-5 (SL-0), IF-0-JAILCORE-1 (pre-existing), IF-0-JAILCORE-3 (pre-existing), IF-0-FIRSTSEAT-3 (pre-existing), IF-0-TEAMHOST-1 (pre-existing), IF-0-TEAMHOST-3 (pre-existing), the profile-sourced window kit `seat_window` (pre-existing)
 - **Parallel-safe**: no
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
@@ -297,7 +306,7 @@ non-brokered route keeps the agent-harness#1469 probe unchanged.
 | SL-3.4 | impl | SL-3.3 | `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_jail_qualification.py` | — | — |
 | SL-3.5 | test | SL-3.4 | `phase-loop-runtime/tests/test_seat_codex_provider_free.py`, `phase-loop-runtime/tests/fixtures/codex_fixture_provider.py` | `live_jail` cases with the real CLI and a synthetic auth copy, on `jailed_codex_command` plus the fixture provider's `-c` keys: a scripted tool call reads a tree sentinel; no planted marker reaches the fixture's request body; a rewritten `auth.json` gives the refresh code. Mutation control: the same run with `--sandbox workspace-write` is typed unavailable. | `VL` |
 | SL-3.6 | verify | SL-3.5 | SL-3 files, `plans/evidence/seat-codex/provider-free-team.json`, `plans/evidence/seat-codex/refresh-detection.json` | `VL` on a team host where agent-harness#1335 reproduces. OD-4 goes to the owner with this evidence. Stop here until it is recorded. | `V3`, `VL` |
-| SL-3.7 | test | SL-3.6 | `phase-loop-runtime/tests/test_seat_codex_route_gate.py`, `phase-loop-runtime/tests/test_codex_seat_tool_sandbox_1335.py`, `phase-loop-runtime/tests/test_codex_seat_writable_tree_1470.py`, `phase-loop-runtime/tests/test_broker_staged_tree_delivery.py`, `phase-loop-runtime/tests/test_sandbox_egress.py`, `phase-loop-runtime/tests/test_panel_invoker.py` | Registered: every `containment` field and `scope_evidence` resolves to a committed record, `allowlist_ref("codex")` has rows, and `plans/decision-seats-codex-boundary.md` records OD-4 accepted. The mode line reads `jailed` on a capable host. `seat_filesystem_unconfined` is unreachable for a `review` seat. L3 failures walk R, N, D. `setfcap` is absent. Repo-only reads skip on an installed wheel. | `V4` |
+| SL-3.7 | test | SL-3.6 | `phase-loop-runtime/tests/test_seat_codex_route_gate.py`, `phase-loop-runtime/tests/test_codex_seat_tool_sandbox_1335.py`, `phase-loop-runtime/tests/test_codex_seat_writable_tree_1470.py`, `phase-loop-runtime/tests/test_broker_staged_tree_delivery.py`, `phase-loop-runtime/tests/test_sandbox_egress.py`, `phase-loop-runtime/tests/test_panel_invoker.py` | Registered: every `containment` field and `scope_evidence` resolves to a committed record, `allowlist_ref("codex")` has rows, and `plans/decision-seats-codex-boundary.md` records OD-4 accepted. The mode line reads `jailed` on a capable host. `seat_filesystem_unconfined` is unreachable for a `review` seat. L3 failures walk R, N, D. `setfcap` is absent. Agreement rows cover each L5 and L6 code through the gate. Repo-only reads skip on an installed wheel. | `V4` |
 | SL-3.8 | impl | SL-3.7 | `phase-loop-runtime/src/phase_loop_runtime/seat_profiles.py`, `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `phase-loop-runtime/src/phase_loop_runtime/sandbox_egress.py`, `plans/decision-seats-codex-boundary.md` | — | — |
 | SL-3.9 | verify | SL-3.8 | SL-3 files | all SL-3 tests | `V3`, `V4`, `V5`, `VL` |
 
@@ -305,7 +314,7 @@ non-brokered route keeps the agent-harness#1469 probe unchanged.
 order: tree re-hash, provider, login, copy, CA, jail, probe jail, then `stdout_guard` over every
 secret and the proxy credential. The leg holds `RouteDecision.lease` throughout.
 
-**SL-3.8 scope.** One line registers `CODEX_PROFILE`. It also removes
+**SL-3.8 scope.** One line in `seat_profiles.py` calls `register_codex()`. It also removes
 `_BROKER_CODEX_SANDBOX_RETAINED_CAPS`, the `setfcap` entry in `SEAT_RETAINABLE_CAPS`, the staged
 branch of `_brokered_codex_command` and its writable-tree grant (agent-harness#1470). The
 agent-harness#1469 probe stays for the non-brokered route. The decision record states:
@@ -344,6 +353,15 @@ leaves it no path once the profile is registered. `advisory_document` and
 - **Coordinator rulings.** Vendor codes follow contract §1's additive rule. JAILCORE owns the
   vendor-parametric window kit (its SL-3.5), so this phase adds only `CODEX_WINDOW_ROWS`, as
   data on the profile. EC-CODEX-2 is read as Context's Subject decision states.
+- **Open with TEAMHOST.** Its contract §6 item 5 says "An idle front connection closes after
+  `FRONT_IDLE_MS = 30000`" and that the bound cannot be disabled. It does not say the bound ends
+  at the splice. The runtime records healthy Codex transcript silences of about 73 seconds, and
+  the network gap inside a turn is unmeasured. The sentence should limit the close to before
+  the splice.
+- **Cross-repo (IF-XR-1).** On a managed host, EC-CODEX-4's team-host run needs a release whose
+  Codex `declaration.json` lists `CODEX_RUNTIME_FILES` at these destinations, plus its pin
+  entry. From TEAMHOST's gate G-A on, the seat refuses `authority_missing` until both exist. No
+  lane here edits Consiliency/dotfiles, which builds those releases.
 - **Shared-host limits.** Before each test command, check `uptime` and `/proc/pressure/io`.
   Run targeted files serially, with no `-n`, under `timeout 900`, using system python3.14.4 for
   jail tests. The full suite runs only in hosted CI and Gate A.
