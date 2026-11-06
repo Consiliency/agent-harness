@@ -12,9 +12,11 @@ later; the worker payload under ``data/claude_sdk/worker/`` runs only in the wor
   jailed TUI command with the frozen launch delta of ``launch-v1.json``
   (:func:`sdk_cli_delta`). The SDK's ``cli_path`` and CLI options are inert.
 * :class:`SDKBridge` -- the parent stream gate and the outbound allowlist. Every complete
-  CLI stdout line goes through ``print``'s :class:`~.claude_seat_print.StreamAdmission`, is
-  parsed once more under the strict frame rules for forwarding, has every decoded key and
-  value scanned, and must be in the frozen inbound vocabulary before the parsed object (and
+  CLI stdout line goes through ``print``'s :class:`~.claude_seat_print.StreamAdmission`
+  under this route's parse policy (:func:`parse_policy`), which parses it once -- strict
+  UTF-8, bounded nesting, no duplicate key in any frame, every decoded key and value
+  scanned -- and hands that parsed object to the bridge (``on_frame``). The bridge never
+  reparses the line: the object must be in the frozen inbound vocabulary before it (and
   only it) crosses to the worker. Every worker frame is checked against a stateful
   allowlist; the parent writes CLI-bound bytes from its own templates, never the worker's.
   Final text comes only from ``StreamAdmission.result_text``.
@@ -366,19 +368,21 @@ def parse_strict(raw: bytes) -> dict:
     return value
 
 
-def decoded_strings(value: object):
-    """Every decoded key and string value in a parsed frame, JSON escapes resolved."""
-    pending = [value]
-    while pending:
-        item = pending.pop()
-        if isinstance(item, str):
-            yield item
-        elif isinstance(item, dict):
-            for key, child in item.items():
-                yield key
-                pending.append(child)
-        elif isinstance(item, list):
-            pending.extend(item)
+def parse_policy():
+    """This route's :class:`~.claude_seat_print.ParsePolicy` for the CLI's stdout (contract
+    "Parent stream gate"): a duplicate key refuses in every frame, every decoded key and
+    string value is scanned for the token (JSON escapes resolved, including a value a
+    duplicate key drops), and a frame only this policy refuses -- or one the bridge's
+    inbound vocabulary refuses -- is ``claude_sdk_worker_contract_violation``."""
+    from .claude_seat_print import ParsePolicy
+
+    return ParsePolicy(TRANSPORT, duplicates_everywhere=True, scan_decoded=True,
+                       frame_violation=CONTRACT_VIOLATION)
+
+
+class _InboundRefused(Exception):
+    """A parsed CLI frame the inbound vocabulary refuses; admission records it as this
+    route's ``frame_violation``."""
 
 
 def _render(template: object, values: Mapping[str, str]) -> object:
@@ -420,20 +424,22 @@ class SDKBridge:
         self._protocol = protocol
         self._token = token
         self._forms = seat_jail.secret_encodings(token)
+        # The one parse of every CLI stdout line is admission's; its parsed object comes
+        # back through ``on_frame`` and is what the worker receives.
         self.admission = StreamAdmission(token=token, session_id=session_id,
-                                         stream_cap=stream_cap, line_cap=line_cap)
+                                         stream_cap=stream_cap, line_cap=line_cap,
+                                         policy=parse_policy(), on_frame=self._cli_frame)
+        self._pending: list[tuple] = []
         self.session_id = session_id
         self.prompt = prompt
         self.nonce = nonce if nonce is not None else secrets.token_hex(32)
         if not re.fullmatch(r"[0-9a-f]{64}", self.nonce):
             raise ValueError("a launch nonce is 64 lowercase hex digits")
         self._request_id = re.compile(protocol["request_id_pattern"])
-        self._line_cap = FRAME_CAP_BYTES if line_cap is None else line_cap
         self.state = "new"
         self._sent = 0
         self._received = 0
         self._worker_buffer = bytearray()
-        self._cli_buffer = bytearray()
         self._outstanding: dict[str, str] = {}
         self.violation: str | None = None
         self.cancelled = False
@@ -457,6 +463,8 @@ class SDKBridge:
         return data
 
     def _scan(self, value: object) -> bool:
+        from .claude_seat_print import decoded_strings
+
         return any(any(form in text.encode("utf-8", errors="surrogatepass")
                        for form in self._forms) for text in decoded_strings(value))
 
@@ -600,73 +608,59 @@ class SDKBridge:
         return []
 
     def cli_stdout(self, chunk: bytes) -> list[tuple]:
+        """Raw CLI stdout: admission reads it, and each frame it parses comes back through
+        :meth:`_cli_frame`; the actions those frames produced are returned in order, then
+        the stop if admission refused."""
         if self.violation is not None:
             return [(STOP, self.violation)]
-        self._cli_buffer.extend(chunk)
-        actions: list[tuple] = []
-        while True:
-            end = self._cli_buffer.find(b"\n")
-            if end < 0:
-                if len(self._cli_buffer) > self._line_cap:
-                    actions.extend(self._stop(STREAM_UNSAFE))
-                return actions
-            line = bytes(self._cli_buffer[:end + 1])
-            del self._cli_buffer[:end + 1]
-            actions.extend(self._cli_line(line))
-            if self.violation is not None:
-                return actions
+        stopped = self.admission.feed(chunk)
+        return self._admitted_actions(stopped)
 
     def cli_stdout_eof(self) -> list[tuple]:
         """Raw EOF on the CLI's stdout: a final unterminated line is read, then the worker
         is told the stream ended."""
         actions: list[tuple] = []
-        if self.violation is None and self._cli_buffer:
-            line = bytes(self._cli_buffer)
-            self._cli_buffer.clear()
-            actions.extend(self._cli_line(line))
-        self.admission.finish()
+        if self.violation is None:
+            self.admission.finish()
+            actions = self._admitted_actions(self.admission.violation is not None)
         self.cli_eof = True
-        if self.violation is None and self.admission.violation is not None:
-            actions.extend(self._stop(self.admission.violation))
         if self.violation is None and self.state not in ("new", "hello", "ready"):
             actions.append((TO_WORKER, self._frame("eof", {})))
         return actions
 
-    def _cli_line(self, line: bytes) -> list[tuple]:
-        # 1. print's raw admission: the token in any encoding, caps, init and result.
-        if self.admission.feed(line):
-            return self._stop(self.admission.violation or STREAM_UNSAFE)
-        raw = line.rstrip(b"\n")
-        if not raw.strip() or not raw.lstrip().startswith(b"{"):
-            return []  # not a frame: it reaches neither admission nor the SDK
-        # 2. one strict parse for forwarding; 3. every decoded key and value scanned.
-        try:
-            frame = parse_strict(raw.strip())
-        except ValueError:
-            return self._stop(CONTRACT_VIOLATION)
-        if self._scan(frame):
-            return self._stop(TOKEN_IN_OUTPUT)
-        # 4. the frozen inbound vocabulary.
+    def _admitted_actions(self, stopped: bool) -> list[tuple]:
+        actions, self._pending = self._pending, []
+        if stopped:
+            actions.extend(self._stop(self.admission.violation or STREAM_UNSAFE))
+        return actions
+
+    def _cli_frame(self, frame: dict) -> None:
+        """``on_frame``: one CLI frame, as admission parsed and scanned it under
+        :func:`parse_policy`. The frozen inbound vocabulary decides whether this object --
+        never the line -- crosses to the worker; a refusal raises, and admission records
+        this route's ``frame_violation``."""
+        if self.violation is not None:
+            return
         kind = frame.get("type")
         if kind in self._protocol["inbound"]["refused"]:
-            return self._stop(CONTRACT_VIOLATION)
+            raise _InboundRefused(kind)
         if kind == "control_response":
             response = frame.get("response")
             request_id = response.get("request_id") if isinstance(response, dict) else None
             if (set(frame) != {"type", "response"} or not isinstance(request_id, str)
                     or request_id not in self._outstanding
                     or response.get("subtype") not in ("success", "error")):
-                return self._stop(CONTRACT_VIOLATION)
+                raise _InboundRefused(kind)
             if self._outstanding.pop(request_id) == "initialize":
                 if self.state != "init_sent" or response.get("subtype") != "success":
-                    return self._stop(CONTRACT_VIOLATION)
+                    raise _InboundRefused(kind)
                 self.state = "init_answered"
         elif kind not in self._protocol["inbound"]["forward"]:
-            return self._stop(CONTRACT_VIOLATION)
+            raise _InboundRefused(kind)
         if self.state in ("new", "hello", "ready"):
-            return self._stop(CONTRACT_VIOLATION)
+            raise _InboundRefused(kind)
         self.forwarded += 1
-        return [(TO_WORKER, self._frame("cli", frame))]
+        self._pending.append((TO_WORKER, self._frame("cli", frame)))
 
     # -- the outcome ----------------------------------------------------------------
 

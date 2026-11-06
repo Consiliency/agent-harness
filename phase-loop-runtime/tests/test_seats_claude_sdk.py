@@ -7,14 +7,19 @@ and lifecycle, not real CLI compatibility, billing or memory behaviour, and they
 replace the boundary proof (``VB``/``VL``) that GL-2 requires.
 
 ``python tests/test_seats_claude_sdk.py capture`` rewrites the launch fixture and its
-packaged copy from a fresh offline capture; ``test_the_fixture_is_the_offline_capture``
-fails until the committed fixture is that capture.
+packaged copy from a fresh offline capture through the owned launcher
+(``panel_invoker._run_claude_sdk_leg``, the worker in its sandbox in a seat-uid holder); it
+refuses on a host without the live worker's prerequisites rather than record anything else.
+``test_the_fixture_is_the_owned_launcher_capture`` fails until the committed fixture is that
+capture, and ``test_an_unsandboxed_leg_reproduces_every_recorded_frame`` checks the recorded
+protocol on every host.
 """
 
 from __future__ import annotations
 
 import ast
 import base64
+import contextlib
 import copy
 import dataclasses
 import hashlib
@@ -471,6 +476,168 @@ def _lines(chunks) -> list[dict]:
 
 
 # --------------------------------------------------------------------------------------
+# The owned launcher: the same leg, with the worker in its sandbox in a seat-uid holder.
+# --------------------------------------------------------------------------------------
+
+REQUIRE_LIVE = os.environ.get("PHASE_LOOP_REQUIRE_LIVE_JAIL") == "1"
+
+
+def live_worker_missing() -> list[str]:
+    """What this host lacks to run the owned launcher's sandboxed worker."""
+    from phase_loop_runtime import sandbox_egress, seat_uid
+
+    missing = []
+    if not hasattr(os, "memfd_create"):
+        missing.append("this interpreter has no os.memfd_create")
+    if not seat_uid.seat_uid_available():
+        missing.append("needs newuidmap/newgidmap and a subordinate uid/gid range")
+    if not sandbox_egress.egress_isolation_available():
+        missing.append("needs unshare + slirp4netns + iptables")
+    for tool in (pi._PRLIMIT, seat_jail.BWRAP, pi._CLAUDE_SDK_WORKER_DROP_TOOL):
+        if not os.access(tool, os.X_OK):
+            missing.append(f"needs {tool}")
+    return missing
+
+
+def require_live_worker() -> None:
+    """Skip only when PHASE_LOOP_REQUIRE_LIVE_JAIL is unset; with it set, a missing
+    prerequisite fails the test."""
+    missing = live_worker_missing()
+    if missing:
+        message = "live worker unavailable: " + "; ".join(missing)
+        if REQUIRE_LIVE:
+            pytest.fail(message)
+        pytest.skip(message)
+
+
+@contextlib.contextmanager
+def _replaced(module, name: str, value):
+    original = getattr(module, name)
+    setattr(module, name, value)
+    try:
+        yield
+    finally:
+        setattr(module, name, original)
+
+
+def _sandbox_tree(pid: int) -> list[int]:
+    found, pending = [], [pid]
+    while pending:
+        current = pending.pop()
+        found.append(current)
+        try:
+            pending += [int(c) for c in Path(f"/proc/{current}/task/{current}/children")
+                        .read_text().split()]
+        except OSError:
+            pass
+    return found
+
+
+def _observed_worker(worker) -> dict:
+    """The running worker's identity and confinement, read from outside its sandbox while
+    the leg runs: host-independent values only."""
+    from phase_loop_runtime import seat_uid
+
+    pythons = [pid for pid in _sandbox_tree(worker.process.pid)
+               if Path(f"/proc/{pid}/comm").read_text().startswith("python")]
+    status: dict[str, str] = {}
+    for line in Path(f"/proc/{pythons[0]}/status").read_text().splitlines():
+        key, _sep, value = line.partition(":")
+        status[key] = value.strip()
+    leased = str(seat_uid.subordinate_host_uid(worker.worker_id))
+    uids = status["Uid"].split()
+    return {
+        "worker_processes": len(pythons),
+        "uid": ("leased seat id" if uids == [leased] * 4 and leased != str(os.getuid())
+                else "other"),
+        "groups": status["Groups"],
+        "capabilities": ("empty" if all(int(status[k], 16) == 0 for k in
+                                        ("CapInh", "CapPrm", "CapEff", "CapBnd", "CapAmb"))
+                         else "present"),
+        "seccomp": status["Seccomp"],
+        "no_new_privs": status["NoNewPrivs"],
+        "pid_namespace": "own" if len(status["NSpid"].split()) >= 2 else "host",
+    }
+
+
+def drive_owned(test: SealedInstall, tmp_path: Path, *, mode: str = "ok",
+                token: bytes = SEAT_TOKEN, deadline_s: float = 120.0) -> Run:
+    """One leg through the owned launcher, offline: ``panel_invoker._run_claude_sdk_leg``
+    leases the worker its own id and starts it in its sandbox inside a seat-uid holder from
+    the prepared launch, then runs the CLI leg with the bridge in its loop. The fake CLI
+    stands in for the jailed CLI: its launch is the one call replaced. Both channel
+    directions are recorded as they cross, and the worker is observed from outside."""
+    from phase_loop_runtime import sandbox_egress
+
+    require_live_worker()
+    assert sdk.sdk_cli_delta()["worker"] == json.loads(json.dumps(DECLARED["worker"])), (
+        "the packaged worker section is not the declared one: the owned launcher would "
+        "start the worker under other rules than the capture records")
+    prompt = pi._BROKER_CLAUDE_DIRECT_REQUEST + PROMPT
+    bridge = sdk.SDKBridge(token=token, session_id=SESSION_ID, prompt=prompt,
+                           fixture=DECLARED)
+    to_worker: list[bytes] = []
+    from_worker: list[bytes] = []
+    observed: dict = {}
+    workers: list = []
+    record = tmp_path / "cli-record.json"
+    real_worker_bytes = bridge.worker_bytes
+
+    def worker_bytes(chunk: bytes):
+        from_worker.append(bytes(chunk))
+        return real_worker_bytes(chunk)
+
+    bridge.worker_bytes = worker_bytes
+    real_launch_worker = pi._launch_claude_sdk_worker
+    real_launch = pi.launch_provider
+
+    def launch_worker(spec, **kwargs):
+        worker = real_launch_worker(spec, **kwargs)
+        real_send = worker.send
+
+        def send(data: bytes) -> None:
+            to_worker.append(bytes(data))
+            real_send(data)
+
+        worker.send = send
+        workers.append(worker)
+        return worker
+
+    def launch_cli(argv, **kwargs):
+        if "process_owner" not in kwargs:  # the holder's own infrastructure
+            return real_launch(argv, **kwargs)
+        observed.update(_observed_worker(workers[-1]))
+        return subprocess.Popen(
+            [sys.executable, "-I", str(FAKE_CLI), *argv[1:]],
+            env={**kwargs["env"], "FAKE_CLI_MODE": mode, "FAKE_CLI_RECORD": str(record),
+                 "FAKE_CLI_TOKEN": token.decode()},
+            stdin=kwargs["stdin"], stdout=kwargs["stdout"], stderr=kwargs["stderr"],
+            start_new_session=kwargs["start_new_session"], cwd=tmp_path)
+
+    install = test.install
+    prepared = sdk.PreparedSdkLaunch(
+        install=install, payload_bytes={name: (PAYLOAD / name).read_bytes()
+                                        for name in sdk.WORKER_PAYLOAD},
+        bindings={}, directory=test.state, manifest_raw=test.manifest_raw)
+    seat = types.SimpleNamespace(jail=types.SimpleNamespace(seat_ids=None), probe_jail=None)
+    with contextlib.ExitStack() as stack:
+        stack.enter_context(_replaced(pi, "_launch_claude_sdk_worker", launch_worker))
+        stack.enter_context(_replaced(pi, "launch_provider", launch_cli))
+        prefix = stack.enter_context(sandbox_egress.isolated_network(
+            timeout_s=None, required=True, seat_uid_map=True))
+        holder = pi._EGRESS_LAUNCH_PREFIX.set(tuple(prefix))
+        stack.callback(pi._EGRESS_LAUNCH_PREFIX.reset, holder)
+        run = pi._run_claude_sdk_leg(
+            owned_argv(), spec=sdk.worker_launch_spec(install), bridge=bridge,
+            prepared=prepared, options=leg_options(), cwd=tmp_path,
+            env=sdk.cli_env(fake_jail()), deadline_s=deadline_s, seat=seat)
+    verdict, value = bridge.outcome(run.returncode)
+    cli_record = json.loads(record.read_text()) if record.exists() else None
+    return Run(verdict, value, bridge, to_worker, from_worker, cli_record, None,
+               run.returncode, b"", observed)
+
+
+# --------------------------------------------------------------------------------------
 # The capture: what the fixture records.
 # --------------------------------------------------------------------------------------
 
@@ -548,8 +715,20 @@ def _pairs(argv: list[str]) -> list[list]:
     return sorted(out, key=lambda pair: (pair[0], str(pair[1])))
 
 
-def capture(test: SealedInstall, tmp_path: Path) -> dict:
-    run = drive(test, tmp_path)
+#: How the fixture's capture was made: the owned launcher, as the contract's "Frozen launch
+#: delta" requires.
+OWNED_CAPTURE = ("offline: real pinned SDK in the real worker payload, started by the owned "
+                 "launcher (panel_invoker._run_claude_sdk_leg) in its sandbox in a seat-uid "
+                 "holder; fake CLI; parent bridge")
+#: What only the owned launcher's capture records.
+LAUNCHER_ONLY = ("method", "worker_observed")
+
+
+def capture(test: SealedInstall, tmp_path: Path, *, launcher: bool = True) -> dict:
+    """The fixture from one fresh offline leg: through the owned launcher, or (``launcher``
+    false) with the worker started unsandboxed, which records every field but
+    :data:`LAUNCHER_ONLY`."""
+    run = drive_owned(test, tmp_path) if launcher else drive(test, tmp_path)
     assert run.verdict == "admitted", run.value
     norm = _normalizer(run)
     fixture = copy.deepcopy(DECLARED)
@@ -562,7 +741,6 @@ def capture(test: SealedInstall, tmp_path: Path) -> dict:
     owned = owned_argv()
     stock = oracle(leg_options())
     fixture["capture"] = {
-        "method": "offline: real pinned SDK in the real worker payload, fake CLI, parent bridge",
         "cli_argv": norm([DECLARED["cli"]["argv0"], *run.cli_record["argv"]]),
         "cli_env": norm(cli_env),
         "cli_stdin": [norm(json.loads(line)) for line in run.cli_record["stdin"]],
@@ -571,6 +749,9 @@ def capture(test: SealedInstall, tmp_path: Path) -> dict:
         "worker_to_parent": norm(_lines(run.from_worker)),
         "outcome": [run.verdict, "<RESULT_TEXT>"],
     }
+    if launcher:
+        fixture["capture"].update({"method": OWNED_CAPTURE,
+                                   "worker_observed": run.worker_status})
     fixture["oracle"] = {
         "provenance": "SubprocessCLITransport._build_command() on the frozen options (test-only)",
         "argv": norm(stock["argv"]),
@@ -597,11 +778,29 @@ def test_the_packaged_launch_data_is_the_test_fixture_byte_for_byte():
     assert sdk.read_packaged(sdk.LAUNCH_FIXTURE) == FIXTURE.read_bytes()
 
 
-def test_the_fixture_is_the_offline_capture(test_install, tmp_path):
+def test_the_fixture_is_the_owned_launcher_capture(test_install, tmp_path):
     fresh = fixture_bytes(capture(test_install, tmp_path))
     assert fresh == FIXTURE.read_bytes(), (
-        "the launch fixture is not the offline capture; rerun "
+        "the launch fixture is not the owned launcher's offline capture; rerun "
         "`python tests/test_seats_claude_sdk.py capture` and review the diff")
+
+
+def test_an_unsandboxed_leg_reproduces_every_recorded_frame(test_install, tmp_path):
+    """On every host: the same leg with the worker started unsandboxed records exactly what
+    the owned launcher's capture recorded, but for what only the launcher can."""
+    fresh = json.loads(fixture_bytes(capture(test_install, tmp_path, launcher=False)))
+    recorded = json.loads(FIXTURE.read_text())
+    assert set(LAUNCHER_ONLY) <= set(recorded["capture"])
+    for name in LAUNCHER_ONLY:
+        del recorded["capture"][name]
+    assert fresh == recorded
+
+
+def test_the_capture_records_the_sandboxed_worker():
+    observed = json.loads(FIXTURE.read_text())["capture"]["worker_observed"]
+    assert observed == {"worker_processes": 1, "uid": "leased seat id", "groups": "",
+                        "capabilities": "empty", "seccomp": "2", "no_new_privs": "1",
+                        "pid_namespace": "own"}
 
 
 def test_the_fixture_declares_the_contract_freeze():
@@ -994,6 +1193,69 @@ def test_a_token_hidden_in_json_escapes_is_caught_after_decoding():
     actions = bridge.cli_stdout(
         b'{"type":"assistant","message":{"content":"' + escaped.encode() + b'"}}\n')
     assert actions == [(sdk.STOP, sdk.TOKEN_IN_OUTPUT)]
+
+
+def test_a_token_in_a_value_a_duplicate_key_drops_is_still_caught():
+    bridge = _bridge()
+    _through_user(bridge)
+    escaped = "".join(f"\\u{c:04x}" for c in SEAT_TOKEN).encode()
+    actions = bridge.cli_stdout(
+        b'{"type":"assistant","message":{"a":"' + escaped + b'","a":"clean"}}\n')
+    assert actions == [(sdk.STOP, sdk.TOKEN_IN_OUTPUT)]
+
+
+def test_the_cli_stream_is_admitted_under_the_sdk_parse_policy():
+    from phase_loop_runtime import claude_seat_print as cp
+
+    bridge = _bridge()
+    policy = bridge.admission.policy
+    assert policy == sdk.parse_policy()
+    assert (policy.name, policy.duplicates_everywhere, policy.scan_decoded,
+            policy.frame_violation) == ("sdk", True, True, sdk.CONTRACT_VIOLATION)
+    # print's own policy, and so print's admission, is untouched.
+    assert (cp.PRINT_POLICY.duplicates_everywhere, cp.PRINT_POLICY.scan_decoded,
+            cp.PRINT_POLICY.frame_violation) == (False, False, cp.STREAM_UNSAFE)
+
+
+def test_each_cli_line_is_parsed_once_and_that_object_is_forwarded(monkeypatch):
+    bridge = _bridge()
+    worker = _through_user(bridge)
+    bridge.worker_bytes(worker.frame("end_input", {}))
+    parsed, forwarded = [], []
+    real_loads = json.loads
+
+    def loads(*args, **kwargs):
+        value = real_loads(*args, **kwargs)
+        parsed.append(value)
+        return value
+
+    real_frame = bridge._frame
+
+    def frame(kind, body):
+        if kind == "cli":
+            forwarded.append(body)
+        return real_frame(kind, body)
+
+    monkeypatch.setattr(json, "loads", loads)
+    monkeypatch.setattr(bridge, "_frame", frame)
+    actions = bridge.cli_stdout(_stream())
+    monkeypatch.undo()
+    assert len(parsed) == 3 and len(forwarded) == 3
+    assert all(sent is read for sent, read in zip(forwarded, parsed))
+    assert [a[0] for a in actions] == [sdk.TO_WORKER] * 3
+
+
+def test_a_refused_frame_stops_admission_and_forwards_nothing_after_it():
+    bridge = _bridge()
+    _through_user(bridge)
+    chunk = (_cli({"type": "assistant", "session_id": SESSION_ID, "message": {}})
+             + _cli({"type": "control_request", "request_id": "x", "request": {}})
+             + _cli({"type": "assistant", "session_id": SESSION_ID, "message": {}}))
+    actions = bridge.cli_stdout(chunk)
+    assert [a[0] for a in actions] == [sdk.TO_WORKER, sdk.STOP]
+    assert actions[-1] == (sdk.STOP, sdk.CONTRACT_VIOLATION)
+    assert bridge.admission.violation == sdk.CONTRACT_VIOLATION
+    assert bridge.cli_stdout(_stream()) == [(sdk.STOP, sdk.CONTRACT_VIOLATION)]
 
 
 def test_stderr_is_scanned_and_never_forwarded():
@@ -1481,6 +1743,10 @@ def _write_capture() -> None:
         test = SealedInstall(install, root / "state", manifest_raw, venv)
         leg = root / "leg"
         leg.mkdir()
+        missing = live_worker_missing()
+        if missing:
+            raise SystemExit("the capture runs only through the owned launcher; this host "
+                             "lacks: " + "; ".join(missing))
         data = fixture_bytes(capture(test, leg))
         for path in (FIXTURE, PACKAGE / "data" / "claude_sdk" / sdk.LAUNCH_FIXTURE):
             path.write_bytes(data)
