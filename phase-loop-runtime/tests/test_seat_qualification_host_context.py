@@ -141,6 +141,29 @@ def test_seats_firstseat_w1_receipt_measurements(group, field, negative):
     assert not w.verify_records(records)["records_valid"]
 
 
+@pytest.mark.parametrize("field,value", [
+    ("credential_scope", "not_loaded"),
+    ("refresh_detection", "not_loaded"),
+    ("project_settings", "pass"),
+    ("hooks", "pass"),
+    ("mcp_servers", "pass"),
+    ("provider_overrides", "pass"),
+])
+def test_seats_firstseat_w1_receipt_rejects_cross_field_containment_vocabularies(
+    tmp_path, field, value,
+):
+    from phase_loop_runtime import seat_window as w
+
+    records = _window_records()
+    records[0]["containment_outcomes"][field] = value
+    records[0].pop("record_digest")
+    records[0]["record_digest"] = w.digest(records[0])
+    assert w.verify_records(records)["records_valid"] is False
+    with pytest.raises(ValueError):
+        w.export_records(records, tmp_path / "out.json", reviewed=True)
+    assert not (tmp_path / "out.json").exists()
+
+
 @pytest.mark.parametrize("change", ["account", "isolation", "disclosure", "stale", "coverage", "expiry", "canonical", "route", "admission", "row", "digest"])
 def test_seats_firstseat_w1_receipt_boundaries(change):
     from phase_loop_runtime import seat_window as w

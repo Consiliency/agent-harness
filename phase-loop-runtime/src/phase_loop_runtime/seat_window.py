@@ -161,6 +161,17 @@ def _check_measurement(value, fields_):
                 {key: value[key] for key in ("checks", "observation_digest")}))
 
 
+def _containment_outcomes_valid(value):
+    return (type(value) is dict
+        and set(value) == set(CONTAINMENT_FIELDS)
+        and value["credential_scope"] in {
+            "pass", "gemini_seat_token_scope_excess", "unavailable"}
+        and value["refresh_detection"] in {
+            "pass", "gemini_seat_token_refreshed_in_jail", "unavailable"}
+        and all(value[field] in {"not_loaded", "loaded", "unavailable"}
+                for field in CONTAINMENT_FIELDS[2:]))
+
+
 def _json_value(value):
     """Convert frozen producer values to closed JSON without retaining secret bytes."""
     if is_dataclass(value):
@@ -301,7 +312,8 @@ def _reconcile_sources(record, *, root=None):
             or not _is_digest(read.get("tree_digest"))):
             return False
         if (not _private_observation_valid(observation)
-            or record["containment_outcomes"].keys() != record["containment"]["checks"].keys()
+            or not _containment_outcomes_valid(record["containment_outcomes"])
+            or set(record["containment_outcomes"]) != set(record["containment"]["checks"])
             or record["containment"]["checks"] != {
                 key: value in {"not_loaded", "pass"}
                 for key, value in record["containment_outcomes"].items()}):
@@ -365,8 +377,7 @@ def _valid_record(record, now, source_root=None):
         or next(row for row in observations if row["id"] == "vendor:gemini")[
             "exec_record_digest"] != record["exec_record_digest"]):
         return False
-    if (type(record["containment_outcomes"]) is not dict
-            or set(record["containment_outcomes"]) != set(CONTAINMENT_FIELDS)):
+    if not _containment_outcomes_valid(record["containment_outcomes"]):
         return False
     try:
         observed = dt.datetime.fromisoformat(record["observed_at"])
@@ -570,12 +581,12 @@ def run_native_window(*, repo, monitoring_policy, host_class, model=None):
     checks = _json_value(reduction.checks)
     binding = _json_value(reduction.binding)
     owner = _json_value(reduction.owner_summary)
-    if (type(private) is not dict or tuple(private) != PRIVATE_FIELDS
+    if (type(private) is not dict or set(private) != set(PRIVATE_FIELDS)
         or digest(private) != reduction.observation_sha256
-        or type(outcomes) is not dict or set(outcomes) != set(CONTAINMENT_FIELDS)
+        or not _containment_outcomes_valid(outcomes)
         or type(checks) is not dict or checks != {
             key: value in {"not_loaded", "pass"} for key, value in outcomes.items()}
-        or type(binding) is not dict or tuple(binding) != BINDING_FIELDS
+        or type(binding) is not dict or set(binding) != set(BINDING_FIELDS)
         or binding["context_id"] != context_id or binding["account_label"] != account_label
         or binding["contract_sha256"] != CONTAINMENT_CONTRACT_SHA256
         or board.gemini.input_sha256 != binding["board_input_sha256"]
