@@ -573,19 +573,219 @@ class BracketStep(Protocol):
     def __call__(self, run: JailedRun) -> str | None: ...
 
 
-def _bracket_step_not_ported(name: str) -> BracketStep:
-    def step(run: JailedRun) -> str | None:
-        raise NotImplementedError(f"bracket step {name} is not ported yet")
-    step.__name__ = f"bracket_step_{name}"
-    return step
+_CURL_WRITE_OUT: Final = "\nPHASE_LOOP_CURL %{http_code} %{http_connect}\n"
+_PROXY_ERROR_HEADER: Final = b"x-proxy-error: blocked-by-sandbox-runtime"
+_CURL_OK: Final = 0
+_CURL_COULDNT_RESOLVE_HOST: Final = 6
+_CURL_COULDNT_CONNECT: Final = 7
+_CURL_SSL_CONNECT_ERROR: Final = 35
+_CURL_RECV_ERROR: Final = 56
+
+
+def _curl_step(run: JailedRun, url: str, *extra: str,
+               use_proxy: bool = True) -> JailedStep:
+    return run(
+        ("/usr/bin/curl", "-q", "--silent", "--show-error", "--max-time", "15",
+         "--output", "/dev/null", "--dump-header", "-", "--write-out",
+         _CURL_WRITE_OUT, *extra, url),
+        env=BRACKET_STEP_ENV,
+        use_proxy=use_proxy,
+        timeout_s=60.0,
+    )
+
+
+def _curl_refusal(done: JailedStep) -> str | None:
+    if done.timed_out or done.exit_code is None:
+        return None
+    head, marker, raw_codes = done.stdout.rpartition(b"\nPHASE_LOOP_CURL ")
+    codes = raw_codes.strip().split()
+    if not marker or len(codes) != 2:
+        return None
+    http_code, connect_code = codes
+    if done.exit_code == _CURL_RECV_ERROR and connect_code == b"403":
+        return "proxy_connect_refused"
+    if (done.exit_code == _CURL_OK and http_code == b"403" and connect_code == b"200"
+            and _PROXY_ERROR_HEADER in head.lower()):
+        return "request_filter_refused"
+    if (done.exit_code == _CURL_SSL_CONNECT_ERROR
+            and http_code == b"000" and connect_code == b"200"):
+        return "handshake_refused"
+    return None
+
+
+def _token_post(run: JailedRun) -> str | None:
+    refusal = _curl_refusal(_curl_step(
+        run, "https://oauth2.googleapis.com/token", "--request", "POST"))
+    return TOKEN_POST_SIGNATURE if refusal == TOKEN_POST_SIGNATURE else None
+
+
+def _forbidden_hosts(run: JailedRun) -> str | None:
+    targets = (
+        "https://storage.googleapis.com/",
+        "https://cloudresourcemanager.googleapis.com/",
+        "https://compute.googleapis.com/",
+        "https://iam.googleapis.com/",
+    )
+    refusals = tuple(_curl_refusal(_curl_step(run, target)) for target in targets)
+    return ("proxy_connect_refused"
+            if all(item == "proxy_connect_refused" for item in refusals) else None)
+
+
+def _forbidden_paths(run: JailedRun) -> str | None:
+    targets = (
+        "https://www.googleapis.com/storage/v1/b",
+        "https://www.googleapis.com/compute/v1/projects",
+    )
+    refusals = tuple(_curl_refusal(_curl_step(run, target)) for target in targets)
+    if not all(item in BRACKET_SIGNATURES["b_forbidden_paths"] for item in refusals):
+        return None
+    return ("request_filter_refused" if "request_filter_refused" in refusals
+            else "proxy_connect_refused")
+
+
+def _tunnel_inner_host(run: JailedRun) -> str | None:
+    return _curl_refusal(_curl_step(
+        run,
+        "https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist",
+        "--request", "POST", "--header", "Host: storage.googleapis.com",
+    ))
+
+
+def _tunnel_inner_sni_and_host(run: JailedRun) -> str | None:
+    return _curl_refusal(_curl_step(
+        run,
+        "https://storage.googleapis.com/v1internal:loadCodeAssist",
+        "--request", "POST", "--connect-to",
+        "storage.googleapis.com:443:daily-cloudcode-pa.googleapis.com:443",
+    ))
+
+
+def _tunnel_inner_sni_only(run: JailedRun) -> str | None:
+    return _curl_refusal(_curl_step(
+        run,
+        "https://storage.googleapis.com/v1internal:loadCodeAssist",
+        "--request", "POST", "--header", "Host: daily-cloudcode-pa.googleapis.com",
+        "--connect-to", "storage.googleapis.com:443:daily-cloudcode-pa.googleapis.com:443",
+    ))
+
+
+_FAIL_CLOSED_FRONT = r'''
+import base64, os, socket, urllib.parse
+
+proxy = urllib.parse.urlsplit(os.environ.get("HTTPS_PROXY", ""))
+if (proxy.scheme != "http" or proxy.hostname != "127.0.0.1" or proxy.port is None
+        or proxy.username is None or proxy.password is None):
+    raise SystemExit(2)
+username = urllib.parse.unquote(proxy.username)
+password = urllib.parse.unquote(proxy.password)
+auth = base64.b64encode(f"{username}:{password}".encode()).decode()
+allowed = b"daily-cloudcode-pa.googleapis.com"
+sni = b"storage.googleapis.com"
+
+def attempt(record_version):
+    extension = (b"\x00\x00" + (len(sni) + 5).to_bytes(2, "big")
+                 + (len(sni) + 3).to_bytes(2, "big") + b"\x00"
+                 + len(sni).to_bytes(2, "big") + sni)
+    body = (b"\x03\x03" + b"\x00" * 32 + b"\x00" + b"\x00\x02\x13\x01"
+            + b"\x01\x00" + len(extension).to_bytes(2, "big") + extension)
+    handshake = b"\x01" + len(body).to_bytes(3, "big") + body
+    record = (b"\x16\x03" + bytes([record_version])
+              + len(handshake).to_bytes(2, "big") + handshake)
+    sock = socket.create_connection((proxy.hostname, proxy.port), 5)
+    sock.settimeout(8)
+    request = (b"CONNECT " + allowed + b":443 HTTP/1.1\r\nHost: " + allowed
+               + b":443\r\nProxy-Authorization: Basic " + auth.encode() + b"\r\n\r\n")
+    sock.sendall(request)
+    response = b""
+    while b"\r\n\r\n" not in response and len(response) < 4096:
+        chunk = sock.recv(4096 - len(response))
+        if not chunk:
+            break
+        response += chunk
+    if not (response.startswith(b"HTTP/1.1 200 ") or response.startswith(b"HTTP/1.0 200 ")):
+        raise SystemExit(3)
+    sock.sendall(record)
+    try:
+        reply = sock.recv(4096)
+    except OSError:
+        reply = b""
+    finally:
+        sock.close()
+    return len(reply)
+
+print("UPSTREAM_BYTES", attempt(4), attempt(3))
+'''
+
+
+def _fail_closed_front(run: JailedRun) -> str | None:
+    done = run(
+        ("/usr/bin/python3", "-I", "-c", _FAIL_CLOSED_FRONT),
+        env=BRACKET_STEP_ENV,
+        use_proxy=True,
+        timeout_s=60.0,
+    )
+    if (not done.timed_out and done.exit_code == _CURL_OK
+            and done.stdout.strip() == b"UPSTREAM_BYTES 0 0"):
+        return "no_upstream_bytes"
+    return None
+
+
+def _direct_without_proxy(run: JailedRun) -> str | None:
+    targets = (
+        "https://1.1.1.1/",
+        "https://daily-cloudcode-pa.googleapis.com/",
+    )
+    results = tuple(_curl_step(run, target, use_proxy=False) for target in targets)
+    refusal_exits = {_CURL_COULDNT_RESOLVE_HOST, _CURL_COULDNT_CONNECT}
+    if any(done.timed_out or done.exit_code not in refusal_exits for done in results):
+        return None
+    return ("resolve_refused"
+            if any(done.exit_code == _CURL_COULDNT_RESOLVE_HOST for done in results)
+            else "connect_refused")
+
+
+_CONFIG_ANCESTOR_CHECK = (
+    'C=/seat/home/.gemini; '
+    'mv "$C" "$C.x" 2>/dev/null && echo RENAMED || echo rename-refused; '
+    'mkdir "$C/antigravity-cli/evil" 2>/dev/null && echo MKDIR || echo mkdir-refused; '
+    'echo x > "$C/antigravity-cli/antigravity-oauth-token" 2>/dev/null '
+    '&& echo WROTE || echo write-refused; '
+    'for d in bin cache log; do echo x > "$C/antigravity-cli/$d/probe" 2>/dev/null '
+    '&& echo "writable:$d" || echo "ro:$d"; done'
+)
+_CONFIG_ANCESTOR_EXPECTED: Final = (
+    b"rename-refused", b"mkdir-refused", b"write-refused",
+    b"writable:bin", b"writable:cache", b"writable:log",
+)
+
+
+def _config_ancestor(run: JailedRun) -> str | None:
+    done = run(
+        ("/bin/sh", "-c", _CONFIG_ANCESTOR_CHECK),
+        env=BRACKET_STEP_ENV,
+        use_proxy=False,
+        timeout_s=60.0,
+    )
+    if (not done.timed_out and done.exit_code == _CURL_OK
+            and tuple(done.stdout.splitlines()) == _CONFIG_ANCESTOR_EXPECTED):
+        return "config_ancestor_read_only"
+    return None
 
 
 #: The bracket's steps, in run order: section 9's token POST, then section 11's rows,
 #: each ported from plans/evidence/seat-jail-1132/probe_p4_containment_egress.py (pinned
-#: method input; that script is never executed). EMPTY until the port lands: every entry
-#: raises NotImplementedError, which :func:`run_bracket` reports as ``unavailable``.
+#: method input; that script is never executed).
 BRACKET_STEPS: Final[Mapping[str, BracketStep]] = MappingProxyType({
-    name: _bracket_step_not_ported(name) for name in (TOKEN_POST_STEP, *BRACKET_ROW_NAMES)})
+    TOKEN_POST_STEP: _token_post,
+    "b_forbidden_hosts": _forbidden_hosts,
+    "b_forbidden_paths": _forbidden_paths,
+    "b_tunnel_inner_host": _tunnel_inner_host,
+    "b_tunnel_inner_sni_and_host": _tunnel_inner_sni_and_host,
+    "b_tunnel_inner_sni_only": _tunnel_inner_sni_only,
+    "b_fail_closed_front": _fail_closed_front,
+    "b_direct_without_proxy": _direct_without_proxy,
+    "f006_config_ancestor": _config_ancestor,
+})
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
