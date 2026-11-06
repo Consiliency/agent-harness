@@ -140,7 +140,9 @@ from . import seat_credentials as _seat_credentials
 from . import seat_egress_proxy as _seat_egress_proxy
 from . import seat_jail as _seat_jail
 from . import seat_jail_autoqualify as _seat_jail_autoqualify
+from . import seat_host_namespace as _seat_host_namespace
 from . import seat_session_label as _seat_session_label
+from . import seat_subject as _seat_subject
 from . import seat_tool_evidence as _seat_tool_evidence
 from . import seat_uid as _seat_uid
 from . import seat_preflight as _seat_preflight
@@ -1345,10 +1347,12 @@ class PresidentNativeFillDeferred(PresidentPolicyError):
 
 
 def _write_json_atomically(path: Path, payload: Mapping[str, object]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
-    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    os.replace(tmp, path)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    _seat_host_namespace.write_private_atomic(
+        path.parent,
+        path.name,
+        (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+    )
 
 
 def _persist_president_ruling(
@@ -4925,9 +4929,12 @@ _FRONTDOOR_EXEC = re.compile(
 #: The start of every guarded frontdoor's exec line, recognized or not.
 _FRONTDOOR_EXEC_PREFIX = "exec /usr/bin/python3 -I "
 #: Where guarded frontdoors' immutable, root-owned releases live.
-_FRONTDOOR_RELEASES = Path("/opt/consiliency/tooling/releases")
+_FRONTDOOR_RELEASES = _seat_subject.MANAGED_RELEASES_ROOT
 #: Owners a frontdoor release may have: root only (tests substitute their own uid).
 _FRONTDOOR_OWNERS = frozenset({0})
+#: Compatibility override for callers that previously patched the import-time snapshot.
+#: Production leaves it unset and resolves the supplied environment at each call.
+_PROVIDER_SEARCH_PATH: str | None = None
 
 _PROVIDER_HARNESSES = {"agy": "gemini", "gemini": "gemini", "codex.js": "codex",
                        "claude.exe": "claude", "grok-native": "grok", "opencode.exe": "opencode"}
@@ -5066,7 +5073,15 @@ def _frontdoor_target(line: str, provider: str | None) -> Path | None:
 def _seat_provider_source(command, env):
     name = Path(command).name.lower()
     harness = _PROVIDER_HARNESSES.get(name, name)
-    source = shutil.which(str(command), path=_PROVIDER_SEARCH_PATH)
+    search_path = _PROVIDER_SEARCH_PATH or env.get("PATH", os.defpath)
+    if not Path(command).is_absolute() and harness in {"claude", "gemini"}:
+        subject_env = dict(env)
+        subject_env["PATH"] = search_path
+        subject = integrated_seat_subject(harness, subject_env)
+        if subject.subject_path is None:
+            raise _sandbox_egress.SeatIdentityUnverified("seat_provider_unavailable")
+        return harness, _seat_bind_source(subject.subject_path)
+    source = shutil.which(str(command), path=search_path)
     if source is None:
         raise FileNotFoundError("seat_provider_unavailable")
     source = Path(source).resolve(strict=True)
@@ -5080,6 +5095,12 @@ def _seat_provider_source(command, env):
         if source is None:
             raise _sandbox_egress.SeatIdentityUnverified("seat_provider_unavailable")
     return harness, _seat_bind_source(source)
+
+
+def integrated_seat_subject(leg: str, env: Mapping[str, str]) -> _seat_subject.SeatSubject:
+    """Resolve the subject used by an integrated seat launch."""
+
+    return _seat_subject.resolve_seat_subject(leg, env)
 
 
 _ISO_FRACTION = re.compile(r"(\.\d{1,6})\d*")
@@ -5295,6 +5316,16 @@ def seat_profile(*, harness, executable, env, cwd, readonly_paths=(), outputs=()
 
     ``needs_login`` is False only for a launch that makes no provider request
     (:func:`_gemini_launch_needs_login`): the freshness of the login is then not asked."""
+    if (
+        dependency is None
+        and gemini_profile is None
+        and harness in {"claude", "gemini"}
+        and not Path(executable).is_absolute()
+    ):
+        subject = integrated_seat_subject(harness, env)
+        if subject.subject_path is None:
+            raise _sandbox_egress.SeatIdentityUnverified("seat_provider_unavailable")
+        executable = subject.subject_path
     if dependency is None and harness in {"codex", "claude", "grok", "gemini", "opencode"}:
         from .executable_dependency_startup import current_dependency_for_provider
 
@@ -5952,7 +5983,7 @@ def launch_owned(argv, *, role, profile: SeatProfile, supervisor=None, **kwargs)
                     filtered_network = True
                 from . import seat_keyring_exec, seat_seccomp
 
-                key_source = str(Path(seat_keyring_exec.__file__).resolve())
+                key_source = _seat_bind_source(Path(seat_keyring_exec.__file__).resolve())
                 key_destination = "/run/phase-loop-seat/keyring.py"
                 cwd = kwargs.get("cwd", os.getcwd())
                 view = _seat_filesystem_view(
@@ -6020,9 +6051,6 @@ def launch_owned(argv, *, role, profile: SeatProfile, supervisor=None, **kwargs)
 
 _PROVIDER_BASENAMES = frozenset({"codex", "codex.js", "claude", "claude.exe", "grok",
                                 "grok-native", "agy", "gemini", "opencode", "opencode.exe"})
-_PROVIDER_SEARCH_PATH = os.environ.get("PATH", os.defpath)
-
-
 def _provider_file_hash(path):
     digest = sha256()
     with open(path, "rb") as source:
@@ -6033,14 +6061,15 @@ def _provider_file_hash(path):
 
 @lru_cache(maxsize=1)
 def _recorded_provider_hashes():
+    search_path = _PROVIDER_SEARCH_PATH or os.environ.get("PATH", os.defpath)
     hashes = set()
     for name in ("codex", "claude", "grok", "agy", "opencode"):
-        source = shutil.which(name, path=_PROVIDER_SEARCH_PATH)
+        source = shutil.which(name, path=search_path)
         if source is None:
             continue
         try:
             hashes.add(_provider_file_hash(source))
-            _, native = _seat_provider_source(source, {"PATH": _PROVIDER_SEARCH_PATH})
+            _, native = _seat_provider_source(source, {"PATH": search_path})
             hashes.add(_provider_file_hash(native))
         except (OSError, _sandbox_egress.EgressUnavailable):
             continue
@@ -6050,7 +6079,8 @@ def _recorded_provider_hashes():
 def _provider_entry(command):
     if Path(command).name.lower() in _PROVIDER_BASENAMES:
         return True
-    source = shutil.which(str(command), path=_PROVIDER_SEARCH_PATH)
+    search_path = _PROVIDER_SEARCH_PATH or os.environ.get("PATH", os.defpath)
+    source = shutil.which(str(command), path=search_path)
     if source is None:
         return False
     try:
@@ -7446,17 +7476,37 @@ def _broker_leg_env(
     return _sandbox_policy.child_scratch_env(env, _sandbox_policy.CHILD_SCRATCH_RELOCATE)
 
 
-def _preflight_gemini_heartbeat(board, monitoring_policy, env=None, cancel_event=None, stream_dir=None):
-    if monitoring_policy == "heartbeat_only" and any(str(seat.harness or "").lower() == "gemini" for seat in board.seats):
-        # agent-harness#1076: the whole-board preflight is the ONLY caller that may
-        # self-qualify a genuine upstream agy release on first use; legs and the
-        # president admit by lookup only (gemini_heartbeat.admit).
-        # agent-harness#1782: guarded here, not in the qualification-pinned route core.
-        from .executable_dependency_startup import refuse_unwired_dependency_route
-        refuse_unwired_dependency_route("Gemini heartbeat image admission")
-        from . import agy_qualification
-        agy_qualification.ensure_admitted(_broker_subscription_env(env), cancel_event,
-                                          agy_qualification.board_heartbeat(stream_dir)).close()
+def board_preflight_requalify(
+    board, env=None, cancel_event=None, stream_dir=None, *, heartbeat=False
+) -> None:
+    """Requalify a Gemini subject once, before the board composition is fixed."""
+
+    if not any(str(seat.harness or "").lower() == "gemini" for seat in board.seats):
+        return
+    from . import agy_qualification
+
+    subscription_env = _broker_subscription_env(env)
+    subject = integrated_seat_subject("gemini", subscription_env)
+    if subject.subject_path is not None:
+        subscription_env["PATH"] = os.pathsep.join(
+            (str(subject.subject_path.parent), subscription_env.get("PATH", os.defpath))
+        )
+    admission = agy_qualification.requalify_once(
+        subscription_env,
+        cancel_event=cancel_event,
+        heartbeat=agy_qualification.board_heartbeat(stream_dir) if heartbeat else None,
+    )
+    if admission is not None:
+        admission.close()
+
+
+def _preflight_gemini_heartbeat(
+    board, monitoring_policy, env=None, cancel_event=None, stream_dir=None
+):
+    if monitoring_policy == "heartbeat_only":
+        board_preflight_requalify(
+            board, env, cancel_event, stream_dir, heartbeat=True
+        )
 
 
 def _broker_agy_settings_bytes():
@@ -12421,54 +12471,76 @@ def _cleanup_jailed_seat(
         raise first
 
 
-def _resolve_claude_executable() -> Path:
-    found = shutil.which("claude", path="/usr/local/bin:/usr/bin:/bin:" + os.environ.get("PATH", ""))
-    if found is None:
-        raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build"), "claude not found")
-    executable = Path(os.path.realpath(found))
-    # agent-harness#1641: a managed release installs `claude` as a two-line shell launcher in
-    # front of the native image. The jail runs one file, so it is handed the native image the
-    # launcher would exec -- only when the launcher is exactly that shape; any other wrapper
-    # is jailed as it is.
+def _resolve_claude_executable(env: Mapping[str, str] | None = None) -> Path:
+    selected_env = os.environ if env is None else env
+    if _PROVIDER_SEARCH_PATH is not None:
+        selected_env = {**selected_env, "PATH": _PROVIDER_SEARCH_PATH}
+    try:
+        subject = integrated_seat_subject("claude", selected_env)
+    except FileNotFoundError as exc:
+        raise _seat_jail.SeatSandboxRefused(
+            _seat_jail.refused("jail_build"), "claude not found"
+        ) from exc
+    if subject.subject_path is None:
+        raise _seat_jail.SeatSandboxRefused(
+            _seat_jail.refused("jail_build"), "claude subject unavailable"
+        )
+    if subject.source == "standalone":
+        found = shutil.which("claude", path=selected_env.get("PATH", os.defpath))
+        if found is None:
+            raise _seat_jail.SeatSandboxRefused(
+                _seat_jail.refused("jail_build"), "claude not found"
+            )
+        return _standalone_claude_executable(Path(os.path.realpath(found)))
+    return subject.subject_path
+
+
+def _standalone_claude_executable(executable: Path) -> Path:
+    """Apply the pre-TEAMHOST Claude launcher checks to a standalone subject."""
+
     try:
         with executable.open("rb") as handle:
             header = handle.read(4)
             if header == b"\x7fELF":
                 return executable
             launcher = (header + handle.read()).decode("utf-8", errors="replace")
-        # agent-harness#1798: a guarded frontdoor re-enters a release-pinned launcher the
-        # jail cannot see. It is followed, under the frontdoor's release and ownership
-        # checks, to the native image its `--shared` names; one that fails them refuses.
         lines = [line.strip() for line in launcher.splitlines() if line.strip()]
         if lines and _FRONTDOOR_EXEC.fullmatch(lines[-1]):
             image = _shell_wrapper_target(executable, "claude")
             if image is None or not os.access(image, os.X_OK):
-                raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build"),
-                                                    "claude frontdoor image is not trusted")
+                raise _seat_jail.SeatSandboxRefused(
+                    _seat_jail.refused("jail_build"),
+                    "claude frontdoor image is not trusted",
+                )
             return image
         if lines and lines[-1].startswith(_FRONTDOOR_EXEC_PREFIX):
-            # A frontdoor of a shape this runtime does not know (a new flag, say) is never
-            # jailed as itself: the jail cannot run its release launcher.
-            raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build"),
-                                                "claude frontdoor is not a known shape")
+            raise _seat_jail.SeatSandboxRefused(
+                _seat_jail.refused("jail_build"), "claude frontdoor is not a known shape"
+            )
         root = executable.parent.parent
         match = re.fullmatch(
-            r"#!/bin/sh\nexport PATH=" + re.escape(str(root))
+            r"#!/bin/sh\nexport PATH="
+            + re.escape(str(root))
             + r'/node-v\d+\.\d+\.\d+-linux-(?P<arch>x64|arm64)/bin:"\$PATH"\n'
-            + r"export DISABLE_AUTOUPDATER=1\nexec " + re.escape(str(root))
+            + r"export DISABLE_AUTOUPDATER=1\nexec "
+            + re.escape(str(root))
             + r'/npm/node_modules/@anthropic-ai/claude-code-linux-(?P=arch)/claude "\$@"\n',
             launcher,
         )
         if match is None:
             return executable
-        payload = root / f"npm/node_modules/@anthropic-ai/claude-code-linux-{match['arch']}/claude"
+        payload = root / (
+            f"npm/node_modules/@anthropic-ai/claude-code-linux-{match['arch']}/claude"
+        )
         if not os.access(payload, os.X_OK):
-            raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build"),
-                                                "claude native image is not executable")
+            raise _seat_jail.SeatSandboxRefused(
+                _seat_jail.refused("jail_build"), "claude native image is not executable"
+            )
         with payload.open("rb") as handle:
             if handle.read(4) != b"\x7fELF":
-                raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build"),
-                                                    "claude native image is not ELF")
+                raise _seat_jail.SeatSandboxRefused(
+                    _seat_jail.refused("jail_build"), "claude native image is not ELF"
+                )
         return payload.resolve()
     except OSError as exc:
         raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build")) from exc
@@ -12548,7 +12620,9 @@ def _prepare_jailed_claude(
     dependency = current_dependency_for_provider("claude")
     _validate_jail_dependency("claude", dependency)
     executable = (
-        Path(dependency.subject_source) if dependency is not None else None
+        Path(dependency.subject_source)
+        if dependency is not None
+        else _resolve_claude_executable()
     )
     tree = review_dir / _seat_jail.HOST_TREE_DIRNAME
     try:
@@ -12577,8 +12651,6 @@ def _prepare_jailed_claude(
         # build, the pre-seed, the probe jail) still says when a stored override was ignored --
         # the credential's notices as siblings of its one refusal code.
         try:
-            if executable is None:
-                executable = _resolve_claude_executable()
             token = credential.token
             jail = _build_jail_with_owned_inputs(
                 "claude", seat_dir, executable, tree=tree,
@@ -12996,9 +13068,17 @@ def _prepare_jailed_gemini(
         raise ValueError("contract_bug")
     dependency = current_dependency_for_provider("gemini")
     _validate_jail_dependency("gemini", dependency)
+    subscription_env = _broker_subscription_env(env)
+    if dependency is None:
+        subject = integrated_seat_subject("gemini", subscription_env)
+        if subject.subject_path is None:
+            raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build"))
+        subject_path = subject.subject_path
+    else:
+        subject_path = Path(dependency.subject_source)
     if dependency is not None and credential != "none":
         from .executable_dependency import ExecutableDependencyError
-        home = Path(_broker_subscription_env(env).get("HOME", str(Path.home())))
+        home = Path(subscription_env.get("HOME", str(Path.home())))
         if not _gemini_credential_fresh(home):
             raise ExecutableDependencyError("dependency_route_unwired", "Gemini host credential refresh")
     try:
@@ -13007,25 +13087,27 @@ def _prepare_jailed_gemini(
         raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build")) from exc
     try:
         tree = _approved_stage_or_refuse(review_dir, review_authorization)
-        subscription_env = _broker_subscription_env(env)
         home = Path(subscription_env.get("HOME", str(Path.home())))
-        if dependency is None:
-            admission = gemini_heartbeat.admit(subscription_env)
-            try:
-                if admission.path is None:
-                    raise ValueError("gemini_heartbeat_capability_unavailable")
-                executable = Path(os.path.realpath(admission.path))
-                image_sha256, admission_class = admission.image.sha256, admission.admission_class
-                if credential != "none":
-                    _await_gemini_login(["agy"], {"HOME": str(home)}, review_monitor=review_monitor,
-                                        quiescence_latch=quiescence_latch)
-                    if not _gemini_credential_fresh(home):
-                        _refresh_gemini_credential(home, admission.image)
-            finally:
-                admission.close()
-        else:
-            executable = Path(dependency.subject_source)
-            image_sha256, admission_class = dependency.subject_sha256, "executable_dependency"
+        admission = gemini_heartbeat.admit(subscription_env, subject_path=subject_path)
+        try:
+            admitted_path = admission.path or subject_path
+            executable = (
+                Path(dependency.subject_source)
+                if dependency is not None
+                else Path(os.path.realpath(admitted_path))
+            )
+            image_sha256, admission_class = admission.image.sha256, admission.admission_class
+            if credential != "none":
+                _await_gemini_login(
+                    ["agy"],
+                    {"HOME": str(home)},
+                    review_monitor=review_monitor,
+                    quiescence_latch=quiescence_latch,
+                )
+                if not _gemini_credential_fresh(home):
+                    _refresh_gemini_credential(home, admission.image)
+        finally:
+            admission.close()
         copy, token, expires_at = b"", b"", None
         if credential != "none":
             copy = _seat_jail.build_gemini_seat_copy(
@@ -17494,6 +17576,10 @@ def invoke_board(
             # here, before minting or any launch (agent-harness#908 board r4 (d)).
             native_fill_requested=bool(native_leg_fills),
         )
+        if monitoring_policy != "heartbeat_only":
+            board_preflight_requalify(
+                board, base_env, cancel_event, stream_dir, heartbeat=False
+            )
         _preflight_gemini_heartbeat(board, monitoring_policy, base_env, cancel_event, stream_dir)
     except ValueError as exc:
         refused = PanelResult(tuple(PanelLegResult(
