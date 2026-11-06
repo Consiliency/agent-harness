@@ -1272,7 +1272,8 @@ def _duplex_leg(monkeypatch, tmp_path, sealed_install, *, mode="ok", cli=None, d
     workers: list[object] = []
 
     def fake_launch(argv, *, process_owner, probe_owner, env, stdin, stdout, stderr,
-                    start_new_session):
+                    start_new_session, trace_output=None):
+        assert trace_output is None  # the duplex leg is never traced
         launched.append(list(argv))
         script = cli if cli is not None else str(sdk_tests.FAKE_CLI)
         return subprocess.Popen([sys.executable, "-I", script, *argv[1:]],

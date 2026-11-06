@@ -1015,7 +1015,9 @@ SDK_PROOF_REGIONS: Mapping[str, tuple[str, ...]] = MappingProxyType({
         # Teardown: the process-group termination the launcher and the CLI rely on.
         "_PROCESS_GROUP_TERM_GRACE_S", "_PROCESS_GROUP_KILL_GRACE_S", "_process_group_exists",
         "_wait_for_process_group_exit", "_terminate_process_group_windows",
-        "_PROCESS_GROUP_POLL_S"),
+        "_PROCESS_GROUP_POLL_S",
+        # The launch path's optional trace wrapper.
+        "_window_trace_argv", "_WINDOW_TRACE_SYSCALLS"),
     _JAIL: (
         "seat_env", "secret_encodings", "contains_secret", "build_seat_jail",
         "setpriv_drop", "BWRAP", "JAIL_CAP_ADD", "memfd_with", "_F_ADD_SEALS"),
