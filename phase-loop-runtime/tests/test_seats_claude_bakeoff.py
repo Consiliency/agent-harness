@@ -14,6 +14,7 @@ import re
 import subprocess
 import sys
 import textwrap
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -702,6 +703,12 @@ def test_the_recorder_records_no_header_query_or_body():
                             for r in recorded)
     assert "path_template: template(url.pathname)" in text  # never url.search or url.href
     assert "parsedHosts" not in text  # completeness is never inferred from a host counter
+
+
+def test_the_recorder_ships_with_the_runtime_package():
+    pyproject = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text())
+    package_data = pyproject["tool"]["setuptools"]["package-data"]["phase_loop_runtime"]
+    assert "claude_bakeoff_recorder.mjs" in package_data
 
 
 # --------------------------------------------------------------------------------------
