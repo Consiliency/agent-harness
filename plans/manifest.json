@@ -14114,6 +14114,11 @@
       "acceptance_criteria_count": null,
       "created_at": "2026-11-04T21:23:24.970786+00:00",
       "file": "plans/phase-plan-v1-seats-FIRSTSEAT.md",
+      "frozen_inputs": {
+        "plans/artifacts/seats-firstseat-interfaces.md": {
+          "sha256": "e4a58873de633947185cc731514b8c4cda26da290730acf39d14cd8e1b153a1d"
+        }
+      },
       "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20261104T212324Z-firstseat.md",
       "if_gates_produced": [
         "IF-0-FIRSTSEAT-1",
