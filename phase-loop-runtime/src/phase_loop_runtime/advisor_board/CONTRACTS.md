@@ -1812,6 +1812,28 @@ are recorded on agent-harness#1132.
   `sandbox_filesystem_confined: true` and the jail profile id and digests;
   `verify_harden_evidence.py` reports EC-HARDEN-5 UNMET (accepted residual
   agent-harness#361, D3) on every such record.
+- **Jailed Claude transports (SEATS CLAUDE, IF-0-CLAUDE-1, agent-harness#1820).**
+  `claude_seat_transport.resolve_jailed_claude_transport` reads `PHASE_LOOP_PANEL_CLAUDE_ROUTE`
+  for the jailed seat before any wait or staging: unset or blank is `JAILED_CLAUDE_DEFAULT`
+  (`tui`); an unknown value refuses `panel_claude_route_invalid`; `print` or `sdk` whose module
+  does not export `ADMITTED = True`, a `RecordCitation` `ACTIVATION` and `run_jailed` refuses
+  `panel_claude_transport_not_admitted`. A refusal launches nothing and republishes the seat's
+  row in `seat-modes.json`. `launch_jailed` runs the jailed login proof
+  (`seat_credentials.jailed_login_proof`, IF-0-CLAUDE-4) and then exactly the selected
+  transport; no refusal or terminal code launches another, and "TUI last" is operator
+  selection only. Every transport keeps the same `_JailedSeat`, teardown, profile digest, jail
+  environment and the token pipe as its only provider-visible descriptor past stdio, and
+  `--tools default` under `bypassPermissions`. `claude_transport` is recorded in the broker
+  evidence. `print` (`claude_seat_print`, admitted citing §4a, agent-harness#1775) is the
+  jailed TUI command plus `CLI_DELTA`; it is experimental and unqualified, and runs on open
+  egress until CLAUDENET. Its parent-side reader admits one successful `result` after an
+  `apiKeySource: "none"` init for its session; anything after that result does not admit. It
+  refuses a stream past its byte or line cap, stderr past its cap, invalid UTF-8, a frame it
+  cannot read, a duplicate key or nesting past its bound (`claude_seat_stream_unsafe`).
+  `claude_seat_transport.CODES` carries each code's OD-10 class; the mode line accepts
+  `seat_jail.NOTICE_CODES | CODES`. The ratification order (EC-CLAUDE-4) is checked by
+  `python -m phase_loop_runtime.claude_seat_transport audit-order`, a step of the required lint
+  job on every pull request and push to main, run from the base tree's copy.
 - **Notices.** `{code, seat_key, what, why, fix}`, rendered only from literals, on the
   `advisor-board` payload (`notices`, `legs[].notices`) and text summary, and on the
   governed path as one non-gating `seat_notice` finding per notice (L4b).
