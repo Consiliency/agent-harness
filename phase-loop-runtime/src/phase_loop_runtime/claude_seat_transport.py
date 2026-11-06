@@ -93,10 +93,10 @@ SECURITY = "security"
 ORDINARY = "ordinary"
 OD10_CLASSES = (SECURITY, ORDINARY)
 
-_SDK_CLOSURE_FIX = (
-    "rebuild the closure with `python -m phase_loop_runtime.claude_seat_sdk "
-    "build-closure`, supply its authority digest, then re-run; report the outcome "
-    "privately")
+#: The `sdk` transport's verified-install fix line (plans/seats-claude-sdk-worker-contract.md).
+_SDK_INSTALL_FIX = (
+    "reinstall the documented `claude-sdk` worker and reseal it with `python -m "
+    "phase_loop_runtime.claude_seat_sdk seal`, then re-run; report the outcome privately")
 
 CODES: Mapping[str, tuple[str, str, str, str]] = {
     "claude_seat_token_in_output": (
@@ -106,10 +106,14 @@ CODES: Mapping[str, tuple[str, str, str, str]] = {
         "the seat's CLI reported a credential source other than its subscription login",
         "run `claude auth login` in the launching session, then re-run; report the "
         "outcome privately"),
-    "claude_sdk_closure_refused": (
+    "claude_sdk_provenance_refused": (
         SECURITY, "leg refused",
-        "the sdk transport's projected closure did not verify against its declared authority",
-        _SDK_CLOSURE_FIX),
+        "the sdk transport's worker install or packaged binding did not verify",
+        _SDK_INSTALL_FIX),
+    "claude_sdk_worker_contract_violation": (
+        SECURITY, "leg rejected",
+        "the sdk transport's worker or stream broke the worker contract",
+        "stop this route; use private owner review before requalification"),
     "claude_seat_login_unproven": (
         ORDINARY, "leg refused",
         "the seat's login is not a proven subscription login on the credential it would use",
@@ -124,9 +128,12 @@ CODES: Mapping[str, tuple[str, str, str, str]] = {
         "re-run the seat; to compare, select `tui` explicitly"),
     "claude_sdk_dependency_unavailable": (
         ORDINARY, "leg refused",
-        "the sdk transport needs an admitted dependency session that carries its closure",
-        "start the board in a dependency session that declares the sdk closure, or select "
-        "`print` or `tui`"),
+        "the sdk transport's worker install, or a package it needs, is missing",
+        "install the documented `claude-sdk` worker, or select `print` or `tui`"),
+    "claude_sdk_worker_unavailable": (
+        ORDINARY, "leg refused",
+        "the sdk transport's host worker could not be started on this host",
+        "install the documented worker prerequisites and retry"),
 }
 
 

@@ -225,7 +225,9 @@ if [ "${PHASE_LOOP_SKIP_GATE_A_SUITE:-0}" = "1" ]; then
   echo "-- full standalone suite: SKIPPED (PHASE_LOOP_SKIP_GATE_A_SUITE=1) --"
 else
   echo "-- full standalone suite: pytest -m 'not dotfiles_integration' vs installed wheel --"
-  env -u PYTHONPATH "$PY" -m pip install --quiet pytest build "setuptools>=68" >/dev/null
+  # The base-install probes above must run before adding optional SDK test
+  # dependencies. Install the extra from this same wheel for the SDK suite.
+  env -u PYTHONPATH "$PY" -m pip install --quiet "${WHEEL}[claude-sdk]" pytest build "setuptools>=68" >/dev/null
   set +e
   env -u PYTHONPATH PYTHONNOUSERSITE=1 "$PY" - <<'PYEOF'
 import importlib.util

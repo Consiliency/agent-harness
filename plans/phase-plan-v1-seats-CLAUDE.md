@@ -4,7 +4,7 @@ phase: CLAUDE
 roadmap: specs/phase-plans-seats-v1.md
 roadmap_sha256: 1c9e2d40089c5f70b23ff6233ad06da3d8edcd69e643681bdc342e76298ca0c0
 automation:
-  suite_command: ["timeout", "1800", "uv", "run", "--quiet", "--project", "phase-loop-runtime", "--group", "test", "--extra", "visual", "--with", "pytest-xdist==3.8.0", "--python", "3.14", "--locked", "python", "-m", "pytest", "-n", "0", "-p", "no:cacheprovider", "-q", "phase-loop-runtime/tests/test_seats_claude_login_proof.py", "phase-loop-runtime/tests/test_seats_claude_bakeoff.py", "phase-loop-runtime/tests/test_seats_claude_transport.py", "phase-loop-runtime/tests/test_seats_claude_order.py", "phase-loop-runtime/tests/test_seats_claude_records.py", "phase-loop-runtime/tests/test_seats_claude_print.py", "phase-loop-runtime/tests/test_seats_claude_print_observations.py", "phase-loop-runtime/tests/test_claude_transport_seam.py", "phase-loop-runtime/tests/test_panel_claude_print_route.py", "phase-loop-runtime/tests/test_seat_credentials.py", "phase-loop-runtime/tests/test_seat_login_wait_a3_1166.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py", "phase-loop-runtime/tests/test_executable_dependency_startup.py"]
+  suite_command: ["timeout", "1800", "uv", "run", "--quiet", "--project", "phase-loop-runtime", "--group", "test", "--extra", "visual", "--extra", "claude-sdk", "--with", "pytest-xdist==3.8.0", "--python", "3.14", "--locked", "python", "-m", "pytest", "-n", "0", "-p", "no:cacheprovider", "-q", "phase-loop-runtime/tests/test_seats_claude_login_proof.py", "phase-loop-runtime/tests/test_seats_claude_bakeoff.py", "phase-loop-runtime/tests/test_seats_claude_transport.py", "phase-loop-runtime/tests/test_seats_claude_order.py", "phase-loop-runtime/tests/test_seats_claude_records.py", "phase-loop-runtime/tests/test_seats_claude_print.py", "phase-loop-runtime/tests/test_seats_claude_print_observations.py", "phase-loop-runtime/tests/test_claude_transport_seam.py", "phase-loop-runtime/tests/test_panel_claude_print_route.py", "phase-loop-runtime/tests/test_seats_claude_sdk.py", "phase-loop-runtime/tests/test_seats_claude_sdk_adapter.py", "phase-loop-runtime/tests/test_seat_credentials.py", "phase-loop-runtime/tests/test_seat_login_wait_a3_1166.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py", "phase-loop-runtime/tests/test_executable_dependency_startup.py"]
 ---
 
 # CLAUDE: Claude Seat Transports and Bake-off
@@ -26,6 +26,9 @@ Worker contract: `plans/seats-claude-sdk-worker-contract.md`, sha256
 Amendment 2026-11-05: owner option A selects EC-CLAUDE-3. SL-3 remains pending.
 The regression command targets the implementation checkout, not this plan-only tree.
 This amendment authorizes planning only.
+
+Amendment 2026-11-06 (SL-3 landing): `suite_command` regains both SDK operands and
+`--extra claude-sdk`. `sdk` stays unadmitted; GL-2 still needs every gate below.
 
 Owner decisions obeyed: the print-vs-SDK bake-off with T3 Code's SDK route as the control;
 OD-3a in its own reviewed PR before any `sdk` activation, W0 `sdk` run or default change;
