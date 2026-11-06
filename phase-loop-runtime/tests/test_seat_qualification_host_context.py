@@ -38,46 +38,71 @@ def _window_records():
     for index, (host, account) in enumerate((("team", 1), ("team", 2), ("standard", 1))):
         checks = {name: True for name in w.CONTAINMENT_FIELDS}
         egress = {name: True for name in w.EGRESS_FIELDS}
+        context_id = f"c{index:031x}"
+        account_label = f"a{account:031x}"
         record = {"schema": w.SCHEMA, "window": "W1", "context_id": f"c{index:031x}",
-            "account_label": f"a{account:031x}", "host_class": host,
+            "account_label": account_label, "host_class": host,
             "host_digest": ("a" if host == "team" else "b") * 64, "operator_id": account,
             "board_outcome": "terminated", "admission": "admitted", "canonical_gemini": True,
             "staged_read": True, "gemini_route": "jailed", "account_isolation": True,
-            "co_seats": ["codex", "grok"], "containment": w.measurement(checks),
-            "egress": w.measurement(egress), "rows": [r["id"] for r in w.candidates(w.readiness_rows(), host)],
+            "co_seats": ["codex", "grok"],
+            "rows": [r["id"] for r in w.candidates(w.readiness_rows(), host)],
             "observed_at": w._now().isoformat(),
             **{key: "c" * 64 for key in w.DIGEST_FIELDS}}
-        record["qualification_keys"] = {key: record[key] for key in w.KEY_FIELDS}
         execution = pi.leg_exec_record("gemini", 0, [], model_turn=True, verdict=True)
         path = pa.write_private_record("leg-" + execution["attempt_id"] + ".json", execution)
         import hashlib
         record["exec_record_digest"] = hashlib.sha256(path.read_bytes()).hexdigest()
-        binding = {k: record[k] for k in w.SOURCE_BINDING_FIELDS}
-        source = {"window_binding": binding, "source_attempt": execution["attempt_id"],
-                  "exec_record_digest": record["exec_record_digest"]}
-        observation = {"schema": "seat_window_observation.v1", "context_id": record["context_id"],
-            **source,
-            "tree_digest": "d" * 64,
-            "final_tree_digest": "d" * 64, "stopped": True, "watch_complete": True,
-            "proxy_complete": True, "allowed_requests": 1, "refused_requests": 1,
-            "before": {"direct_dns": "refused", "direct_ip": "refused", "unlisted_status": "refused"},
-            "after": {"direct_dns": "refused", "direct_ip": "refused", "unlisted_status": "refused"},
-            "contract_observation": {"binding": {k: record[k] for k in (*w.KEY_FIELDS, "board_digest")},
-                "outcomes": {**dict.fromkeys(w.CONTAINMENT_FIELDS[2:], "not_loaded"),
-                    "credential_scope": "no wider than the recorded baseline", "refresh_detection": "passed"}}}
+        record["board_digest"] = (str(index + 1) * 64)
+        record["tool_receipt_digest"] = "0" * 64
+        record["board_input_digest"] = "d" * 64
+        record["delivered_turn_digest"] = (str(index + 4) * 64)
+        record["runtime_digest"] = "c" * 64
+        record["profile_digest"] = "e" * 64
+        record["allowlist_digest"] = "f" * 64
+        outcomes = {name: "pass" if name in w.CONTAINMENT_FIELDS[:2] else "not_loaded"
+                    for name in w.CONTAINMENT_FIELDS}
+        observation = {"rows": {"context": index}, "canaries": [],
+            "token_endpoint_events": {}, "credential_events": {}, "lookups": {},
+            "home_row": {"baseline": "1" * 64, "measured": "1" * 64},
+            "manifest_differences": False, "delivered_copy_sha256": "2" * 64,
+            "bracket": {}, "issuer": {}, "unavailable_reasons": {}}
         identity = w.digest(observation)
         pa.write_private_record("window-observation-" + identity + ".json", observation)
-        read = {"schema": "seat_window_read.v1", "tree_digest": "d" * 64,
-            **source,
-            "observation_digest": identity, "access_observed": True, "tool_observed": True}
+        read = {"schema": "seat_window_read.v1", "tree_digest": ("def"[index] * 64),
+            "access_observed": True, "tool_observed": True}
         record["tool_receipt_digest"] = w.digest(read)
         pa.write_private_record("window-read-" + w.digest(read) + ".json", read)
+        egress_source = {"schema": "seat_window_egress.v1", "context_id": context_id,
+            "measured_decisions": ["allow", "deny"], "board_decisions": ["allow"],
+            "direct_without_proxy": "refused", "board_sha256": record["board_digest"],
+            "board_input_sha256": record["board_input_digest"],
+            "delivered_turn_sha256": record["delivered_turn_digest"],
+            "exec_record_sha256": record["exec_record_digest"],
+            "tool_receipt_sha256": record["tool_receipt_digest"]}
+        egress_identity = w.digest(egress_source)
+        pa.write_private_record("window-egress-" + egress_identity + ".json", egress_source)
         record["source_attempt"] = execution["attempt_id"]
-        leg = pi.PanelLegResult("gemini", "OK", "AGREE")
-        object.__setattr__(leg, "_leg_exec_metadata", {"record_digest": record["exec_record_digest"]})
-        record["row_observations"] = w.candidate_observations(w.candidates(w.readiness_rows(), host), [leg])
+        leg_records = {"claude": "6" * 64, "gemini": record["exec_record_digest"],
+                       "codex": "7" * 64, "grok": "8" * 64}
+        record["row_observations"] = w.candidate_observations(
+            w.candidates(w.readiness_rows(), host), leg_records)
         record["containment"] = w.measurement(checks, observation_digest=identity)
-        record["egress"] = w.measurement(egress, observation_digest=identity)
+        record["containment_outcomes"] = outcomes
+        record["containment_binding"] = {
+            key: ("release_qualified" if key == "admission_class"
+                  else None if key in {"dependency_subject_sha256",
+                                       "dependency_projection_sha256"}
+                  else context_id if key == "context_id"
+                  else account_label if key == "account_label"
+                  else w.CONTAINMENT_CONTRACT_SHA256 if key == "contract_sha256"
+                  else record["profile_digest"] if key == "jail_profile_sha256"
+                  else record["allowlist_digest"] if key == "production_allowlist_sha256"
+                  else record["board_input_digest"] if key == "board_input_sha256"
+                  else "9" * 64)
+            for key in w.BINDING_FIELDS}
+        record["egress"] = w.measurement(egress, observation_digest=egress_identity)
+        record["qualification_keys"] = {key: record[key] for key in w.KEY_FIELDS}
         record["record_digest"] = w.digest(record)
         records.append(record)
     return records
@@ -116,6 +141,29 @@ def test_seats_firstseat_w1_receipt_measurements(group, field, negative):
     assert not w.verify_records(records)["records_valid"]
 
 
+@pytest.mark.parametrize("field,value", [
+    ("credential_scope", "not_loaded"),
+    ("refresh_detection", "not_loaded"),
+    ("project_settings", "pass"),
+    ("hooks", "pass"),
+    ("mcp_servers", "pass"),
+    ("provider_overrides", "pass"),
+])
+def test_seats_firstseat_w1_receipt_rejects_cross_field_containment_vocabularies(
+    tmp_path, field, value,
+):
+    from phase_loop_runtime import seat_window as w
+
+    records = _window_records()
+    records[0]["containment_outcomes"][field] = value
+    records[0].pop("record_digest")
+    records[0]["record_digest"] = w.digest(records[0])
+    assert w.verify_records(records)["records_valid"] is False
+    with pytest.raises(ValueError):
+        w.export_records(records, tmp_path / "out.json", reviewed=True)
+    assert not (tmp_path / "out.json").exists()
+
+
 @pytest.mark.parametrize("change", ["account", "isolation", "disclosure", "stale", "coverage", "expiry", "canonical", "route", "admission", "row", "digest"])
 def test_seats_firstseat_w1_receipt_boundaries(change):
     from phase_loop_runtime import seat_window as w
@@ -151,10 +199,10 @@ def test_seats_firstseat_w1_receipt_export(tmp_path, value):
     with pytest.raises(ValueError):
         w.export_records(bad, tmp_path / "out.json", reviewed=True)
     assert not (tmp_path / "out.json").exists()
-    assert w.verify_records(records)["status"] == "candidate"
-    with pytest.raises(ValueError):
-        w.export_records(records, tmp_path / "out.json", reviewed=True)
-    assert not (tmp_path / "out.json").exists()
+    assert w.verify_records(records)["status"] == "done-local"
+    exported = w.export_records(records, tmp_path / "out.json", reviewed=True)
+    assert (tmp_path / "out.json").exists()
+    assert any(row["status"] == "done-local" for row in exported["rows"])
 
 
 def test_seats_firstseat_w1_receipt_exception_expiry():
@@ -163,16 +211,16 @@ def test_seats_firstseat_w1_receipt_exception_expiry():
     assert not w.verify_records(records, now=dt.datetime(2026, 12, 4, tzinfo=dt.timezone.utc))["records_valid"]
 
 
-@pytest.mark.parametrize("field", ["context_id", "account_label", "host_digest", "operator_id",
-                                  "runtime_digest", "board_digest"])
+@pytest.mark.parametrize("field", ["context_id", "account_label", "profile_digest",
+                                  "allowlist_digest", "board_digest", "board_input_digest",
+                                  "delivered_turn_digest"])
 def test_seats_firstseat_w1_receipt_source_identity(field):
     from phase_loop_runtime import seat_window as w
     records = _window_records()
     record = records[0]
     assert w._reconcile_sources(record)
-    record[field] = 9 if field == "operator_id" else (
-        "c" + "f" * 31 if field == "context_id" else "a" + "f" * 31
-        if field == "account_label" else "f" * 64)
+    record[field] = ("c" + "f" * 31 if field == "context_id" else "a" + "f" * 31
+                     if field == "account_label" else "0" * 64)
     record["qualification_keys"] = {k: record[k] for k in w.KEY_FIELDS}
     record.pop("record_digest")
     record["record_digest"] = w.digest(record)
@@ -194,7 +242,7 @@ def test_seats_firstseat_w1_receipt_source_contexts():
     assert not w.verify_records(records)["records_valid"]
 
 
-@pytest.mark.parametrize("source", ["exec", "read", "observation"])
+@pytest.mark.parametrize("source", ["exec", "read", "observation", "egress"])
 @pytest.mark.parametrize("change", ["missing", "digest", "content"])
 def test_seats_firstseat_w1_receipt_retained_sources(tmp_path, monkeypatch, source, change):
     from phase_loop_runtime import seat_window as w
@@ -204,7 +252,8 @@ def test_seats_firstseat_w1_receipt_retained_sources(tmp_path, monkeypatch, sour
     record = records[0]
     names = {"exec": "leg-" + record["source_attempt"],
         "read": "window-read-" + record["tool_receipt_digest"],
-        "observation": "window-observation-" + record["containment"]["observation_digest"]}
+        "observation": "window-observation-" + record["containment"]["observation_digest"],
+        "egress": "window-egress-" + record["egress"]["observation_digest"]}
     path = pa.private_record_root() / (names[source] + ".json")
     import json
     value = json.loads(path.read_text())
@@ -214,7 +263,8 @@ def test_seats_firstseat_w1_receipt_retained_sources(tmp_path, monkeypatch, sour
     elif change == "content":
         if source == "exec": value["model_turn"] = False
         if source == "read": value["access_observed"] = False
-        if source == "observation": value["contract_observation"]["outcomes"]["hooks"] = "loaded"
+        if source == "observation": value["home_row"]["baseline"] = "loaded"
+        if source == "egress": value["board_input_sha256"] = "f" * 64
         if source == "exec":
             import hashlib
             record["exec_record_digest"] = hashlib.sha256(
@@ -226,15 +276,9 @@ def test_seats_firstseat_w1_receipt_retained_sources(tmp_path, monkeypatch, sour
             path = pa.private_record_root() / ("window-read-" + w.digest(value) + ".json")
         else:
             identity = w.digest(value)
-            for group in ("containment", "egress"):
-                record[group] = w.measurement(record[group]["checks"], observation_digest=identity)
-            path = pa.private_record_root() / ("window-observation-" + identity + ".json")
-            read_path = pa.private_record_root() / ("window-read-" + record["tool_receipt_digest"] + ".json")
-            read = json.loads(read_path.read_text())
-            read_path.unlink()
-            read["observation_digest"] = identity
-            record["tool_receipt_digest"] = w.digest(read)
-            pa.write_private_record("window-read-" + w.digest(read) + ".json", read)
+            group = "egress" if source == "egress" else "containment"
+            record[group] = w.measurement(record[group]["checks"], observation_digest=identity)
+            path = pa.private_record_root() / (f"window-{source}-" + identity + ".json")
         record.pop("record_digest")
         record["record_digest"] = w.digest(record)
     if change != "missing":
@@ -252,13 +296,22 @@ def test_seats_firstseat_w1_receipt_cli(tmp_path, capsys):
         shutil.copyfile(source, root / source.name)
         (root / source.name).chmod(0o600)
     args = [arg for path in paths for arg in ("--record", str(path))]
-    assert cli.main(["seat-window", "verify", *args]) == 1
+    assert cli.main(["seat-window", "verify", *args]) == 0
     assert '"records_valid": true' in capsys.readouterr().out
     target = tmp_path / "export.json"
     assert cli.main(["seat-window", "export", *args, "--output", str(target)]) == 1
     assert not target.exists()
-    assert cli.main(["seat-window", "export", *args, "--output", str(target), "--reviewed"]) == 1
-    assert not target.exists()
+    assert cli.main(["seat-window", "export", *args, "--output", str(target), "--reviewed"]) == 0
+    assert target.exists()
+
+
+def test_seats_firstseat_w1_receipt_matrix_reducer_leaves_unobserved_rows_candidate():
+    from phase_loop_runtime import seat_window as w
+    rows = w.reduce_readiness(_window_records())
+    assert {row["vendor"] for row in rows if row["kind"] == "vendor"
+            and row["status"] == "done-local"} == {"claude", "gemini", "codex", "grok"}
+    assert next(row for row in rows if row["id"] == "vendor:pi")["status"] == "candidate"
+    assert all(row["status"] == "candidate" for row in rows if row["kind"] == "president")
 
 
 def test_seats_firstseat_w1_receipt_failed_export(tmp_path):

@@ -885,9 +885,12 @@ under the leg's private 0700 scratch directory and the leg carries
 
 **Seat windows.** `phase-loop seat-window matrix` lists vendor, remote and
 president rows. The shared `qualify`, `verify` and reviewed `export` commands
-use the [window kit](../plans/evidence/seat-qualification/README.md). `qualify` is pending its production window supplier and fails closed with
-`candidate` after preflight; no window launches are supplied by this landing.
-Incomplete measurements remain `candidate`; offline checks do not qualify hosts.
-W1 has not run. Owner host preparation, logins, attendance and reviewed evidence
-remain required. `bounded` president attempts have durable start/terminal records
-and a finite no-output bound; `heartbeat_only` keeps its no-silence-kill policy.
+use the [window kit](../plans/evidence/seat-qualification/README.md). `qualify`
+implements the frozen control, measured, expired-copy and board order and derives
+containment only from the frozen reducer. The live owner gate remains closed and
+returns `window_owner_approval_required` before preflight or any provider call.
+Verified reduction changes only rows observed in all three W1 contexts; unobserved
+rows remain `candidate`. W1 has not run. Owner host preparation, logins, attendance
+and reviewed evidence remain required. `bounded` president attempts have durable
+start/terminal records and a finite no-output bound; `heartbeat_only` keeps its
+no-silence-kill policy.

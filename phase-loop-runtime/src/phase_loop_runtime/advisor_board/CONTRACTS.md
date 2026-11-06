@@ -2250,5 +2250,15 @@ reviewed public writer and emits only opaque labels, host classes, digests and
 closed row status/exception metadata. It never copies private record bodies.
 Offline fixture receipts validate this contract and do not establish W1.
 
-Production `seat-window qualify` collection is pending its window supplier; the
-current command fails closed with `candidate` and writes no window evidence.
+`seat-window qualify` implements I-15 against the frozen lane-A/lane-D interfaces.
+The board receives the same measured qualification input used by the final controls;
+the record binds that input and the complete delivered turn. Containment is copied
+only from `reduce_containment`. Its private observation and `OwnerSummary`, including
+the final launch-4 home baseline and per-control uncounted-home lookup totals, are
+separate private records. The owner summary is never verified or exported.
+
+Live W1 remains hard-disabled until a reviewed owner-approval source change. The
+default command returns `window_owner_approval_required` before composition preflight,
+authentication, storage or provider launch. Missing frozen producers also fail closed.
+The matrix reducer changes only rows observed in every context of a complete verified
+W1 set; all unexercised rows retain `candidate` (remote rows retain `remote-pending`).
