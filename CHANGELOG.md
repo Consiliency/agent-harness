@@ -60,7 +60,7 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   `apiKeySource` (agent-harness#1532). `seat_preflight.republish_seat_mode` replaces one seat's
   row in `seat-modes.json` (agent-harness#1255); seats that republish at once are serialized.
 
-- Add seat-window matrix, private record verification, reviewed export and Grok probe commands (agent-harness#1820). Qualification remains pending; qualify and verify stay candidate and export remains unavailable until the production window supplier lands. Grok probes report each runtime argv form separately.
+- Complete the seat-window qualification orchestrator and reducer-backed matrix (agent-harness#1820). The attended path follows frozen I-15, gives the board the measured qualification input, records the complete delivered-turn digest, derives containment only from `reduce_containment`, and retains E5 owner-summary lookup counts. Live W1 remains hard-disabled until a reviewed owner-approval source change; offline verification and reviewed export accept only complete three-context retained evidence. Grok probes report each runtime argv form separately.
 
 - Retain closed-field leg execution records and require Grok tool probe receipts (agent-harness#1823, agent-harness#1821).
 

@@ -6,13 +6,16 @@ rung. Every row includes `id`, `vendor`, `route`, `claude_transport`,
 `credential_lane`, `projection`, `host_classes`, `qualification_record`,
 `live_evidence_digest`, `status`, `exception`, `expiry`, `renewal_record`,
 `end_condition` and `interim_route`. President rows also include `rung`,
-`tool_mode` and `bound_s`. Status stays `candidate` while the production window
-supplier is pending. The offline verifier checks retained source consistency,
-including context and qualification-key bindings; it does not qualify a host.
+`tool_mode` and `bound_s`. The documentation reducer changes a row to
+`done-local` only when that row is observed in every context of a complete,
+passing three-context W1 set. Unobserved vendor, remote and president rows retain
+their prior status.
 
-`seat-window qualify` is pending its production window supplier and fails closed
-with `candidate`; this landing supplies the matrix and offline validators only.
-No W1 evidence has been collected. LA-1, LA-2 and LA-3 remain owner gates.
+`seat-window qualify` now implements the frozen per-context launch, board and
+containment-reduction sequence. Live use remains closed: it returns
+`window_owner_approval_required` before preflight or a provider call until an
+owner-approved source change opens W1. No W1 evidence has been collected. LA-1,
+LA-2 and LA-3 remain owner gates.
 Runtime and profile digests must come from the installed runtime on each host;
 source-checkout tests do not establish host readiness.
 
@@ -55,6 +58,8 @@ between its two distinct operator accounts. Public account labels are opaque.
 Reviews retain the T3 fallback under OD-10; offline checks do not close W1.
 Expired exceptions cannot support a passing window. Renewal requires a new
 owner record and matrix update; rerunning a command does not extend an expiry.
-The pending window supplier must retain observation and staged-read receipts privately;
-offline verification checks the measurement digest bindings. Installed-provider and attended
-host validation remain required before any candidate status changes.
+Qualification retains reducer observation, egress, leg-exec and staged-read receipts
+privately. The owner summary is private-only and is neither selected by verification nor
+exported. Offline verification checks board input, delivered-turn and measurement digest
+bindings. Installed-provider and attended host validation remain required before any
+candidate status changes.

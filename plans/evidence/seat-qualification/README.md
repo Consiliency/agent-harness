@@ -1,10 +1,11 @@
 # Seat window kit — IF-0-FIRSTSEAT-2
 
-`seat-window qualify` is pending: its production supplier is unavailable in this
-landing and it fails closed with `candidate`. The sequence below is the intended
-owner workflow once the supplier lands. Matrix and probe-tools are available now;
-verify reports offline record consistency with `candidate`, and export refuses
-publication until the production supplier is available.
+`seat-window qualify` implements the frozen I-15 production orchestration, but its
+live W1 owner gate is deliberately closed. Until a reviewed source change records
+owner approval, it returns `window_owner_approval_required` before preflight,
+authentication, storage or any provider launch. Matrix, offline verification,
+reviewed export and probe-tools are implemented; no fixture or source-checkout run
+opens the live gate.
 
 W1 is an attended owner window, not a source-checkout test. Do not execute it
 until LA-1 host administration and managed release, LA-2 logins under each
@@ -19,7 +20,8 @@ phase-loop seat-egress install
 phase-loop seat-window probe-tools --vendor grok
 phase-loop seat-window qualify --window W1 --monitoring-policy bounded
 phase-loop seat-window verify --window W1
-phase-loop seat-window export --window W1
+phase-loop seat-window export --window W1 --reviewed \
+  --output plans/evidence/seat-qualification/W1.json
 ```
 
 `seat_window.v1` holds the window, opaque context/account identifiers, host
@@ -43,10 +45,16 @@ leaves a neutral `candidate` status and follows OD-10 privately.
 
 No fixture receipt is live evidence. No W1 run or export has been performed.
 
-`qualify` currently performs preflight and attendance/host-readiness checks only.
-Even with those checks satisfied it returns `window_supplier_unavailable` and
-writes no window record. Production collection and its launch sequence remain
-pending. The future attended workflow uses `--attended`, `--host-class team|standard`
+After explicit owner approval, `qualify` performs preflight and attendance/host-readiness
+checks, builds the nested input, runs help and either plugin validation or the
+`plugin_json` fallback, then the tree/runtime controls. If the frozen definition
+probe requires launch 4, each credentialed control runs exactly once; a no-write
+`home` baseline is final and is not replayed. Measured, expired-copy and board
+launches follow on the same qualification input. A composition refusal ends the
+attempt. Otherwise containment is copied only from `reduce_containment`, and the
+reducer's private observation and `owner-summary-W1-*.json` (including counted and
+uncounted-home lookup totals) are retained separately. The attended workflow uses
+`--attended`, `--host-class team|standard`
 and reciprocal `--peer-record PATH` observations under two real accounts.
 Never substitute a same-account file for that check.
 
@@ -78,6 +86,7 @@ does not admit a Grok launch. No fixed version list supplies a passing receipt.
 Use `--model` and `--effort` to select configured forms; defaults match the
 runtime's default model and high effort. Installed-version measurements remain required.
 
-The production measurement supplier and launch sequence are pending. Offline
-fixture receipts exercise validation only and cannot qualify a host. Missing
-observations or source receipts leave the window unqualified.
+The orchestration consumes the frozen lane-A and lane-D producer interfaces.
+Offline fixture receipts exercise validation only and cannot qualify a host.
+Missing producer interfaces, observations or source receipts leave the window
+unqualified. No live W1 run or reviewed export has been performed.
