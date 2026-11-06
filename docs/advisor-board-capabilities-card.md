@@ -663,11 +663,13 @@ reported privately to the owner, never in a public issue.
 |---|---|---|
 | `claude_seat_token_in_output` | security | the seat's output carried its credential |
 | `claude_seat_api_key_source` | security | the CLI reported a credential source other than the subscription login |
-| `claude_sdk_closure_refused` | security | the `sdk` closure did not verify against its declared authority |
+| `claude_sdk_provenance_refused` | security | the sdk worker install or packaged binding did not verify |
+| `claude_sdk_worker_contract_violation` | security | the sdk worker or stream broke the worker contract |
 | `claude_seat_login_unproven` | ordinary | the login proof did not hold |
 | `claude_seat_result_unproven` | ordinary | the stream did not end in exactly one admitted result |
 | `claude_seat_stream_unsafe` | ordinary | the stream broke a parser bound |
-| `claude_sdk_dependency_unavailable` | ordinary | `sdk` needs a dependency session carrying its closure |
+| `claude_sdk_dependency_unavailable` | ordinary | the sdk worker install, or a package it needs, is missing |
+| `claude_sdk_worker_unavailable` | ordinary | the sdk host worker could not be started on this host |
 
 A jailed launch needs an EC-EXECFIND-2 falsifier
 pass recorded **on this host** for the jail's profile digest. The pass is stored per user,
