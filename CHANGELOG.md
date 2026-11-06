@@ -34,6 +34,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   - The new `verify-proof` command and the base-defined, credential-free `claude-sdk-audit`
     workflow fail closed on an admitted head until the owner's enforcement route and private
     evidence store exist.
+- The jailed print transport's stream admission takes a route-specific parse policy
+  (SEATS CLAUDE SL-2, agent-harness#1820): `claude_seat_print.ParsePolicy`, with `print`'s own
+  `PRINT_POLICY` as the default, and an `on_frame` receiver that gets each frame's parsed object
+  after admission read it, so a route that forwards frames parses each line once. `print`'s
+  admission is unchanged.
 
 - The jailed Claude seat's `sdk` transport lands offline and unadmitted (SEATS CLAUDE SL-3,
   agent-harness#1820): `claude_seat_sdk` (`ADMITTED = False`) and its credential-free host
