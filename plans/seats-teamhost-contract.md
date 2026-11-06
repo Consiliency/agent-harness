@@ -413,7 +413,7 @@ red.
 | 2 CA key | Closed. Build the jailed Gemini seat view and scan every seat-visible bound file: the CA key bytes appear nowhere. Mutant: the CA writer places the key in the bound CA directory. |
 | 3 Docs | Closed. (a) `run_mutation_receipts_1170.py` labels each run with the base it ran on; runs the file cannot attribute read `unattributed` and cite agent-harness#1555, with no head invented. (b) The red-on-main counts are recorded only for runs the file holds. (c) The J7 step-4 wording matches the resolver as landed; SL-docs edits CONTRACTS.md from text lane D supplies. |
 | 4 Strict lengths | Closed. An extension or `server_name_list` length that exceeds its enclosing length is refused, never clamped. Mutant: restore the clamp. |
-| 5 Bounds | Closed. Before the splice the front buffers at most one ClientHello record (`FRONT_MAX_HELLO_BYTES = 16389`), and after it nothing. An idle front connection closes after `FRONT_IDLE_MS = 30000`. This is a proxy argument with that default, which the production wrapper never passes. A value outside 1–30000 refuses startup, so the bound cannot be disabled. |
+| 5 Bounds | Closed. Before the splice the front buffers at most one ClientHello record (`FRONT_MAX_HELLO_BYTES = 16389`), and after it nothing. The idle bound applies only before the splice, that is, to the front-connection handshake and the first flight. A front connection idle for `FRONT_IDLE_MS = 30000` in that phase closes, and the front handler cancels the timer before it splices. An established, spliced provider stream never has this bound, because providers have healthy mid-turn silences longer than 30 s (about 73 s recorded for Codex). `FRONT_IDLE_MS` is a proxy argument with that default, which the production wrapper never passes. A value outside 1–30000 refuses startup, so the pre-splice bound cannot be disabled. Proof: with a test-scaled bound, an idle pre-splice connection closes, and a spliced stream that stays silent past the bound stays open. Mutant: keep the timer after the splice. |
 | 6 Overlay | Closed if measured. The writable `.gemini/config` overlay is narrowed to the subpaths agy writes, measured on a developer host with the developer's own login (principle 5) and recorded as metadata in `plans/evidence/seat-teamhost/gemini-config-writes.json`. If no measurement can be made, the item is deferred with that reason recorded. Lands under gate G-D. |
 | 7 Probe | Shape-(b) row: closed as a row in the behavioural front suite, with an offline fixture plus a live variant where the egress layer is installed. The pinned FIRSTSEAT probes are unchanged. Live re-witness: deferred to the first Gemini row window, because the window kit (IF-0-FIRSTSEAT-2) is the single qualification procedure and the p4 probe is a pinned FIRSTSEAT method input. |
 
@@ -425,13 +425,16 @@ TEAMHOST runs no window.
 
 ## 7. Cross-repo (IF-XR-1)
 
-Consiliency/dotfiles builds the managed releases. A release that serves review seats ships
-§1's per-leg `authority.json` and `declaration.json`. The host administrator writes §1's pin
-file (LA1-AUTHORITY-PIN). From gate G-A on, until both exist on a host:
+Each vendor phase specifies its own leg's declaration content: the runtime file list and its
+pin entry. For the Claude and Gemini legs that exist today, lane A3 (plan SL-8) supplies that
+specification together with the switch-on. The coordinator routes each specification to
+Consiliency/dotfiles. Dotfiles builds the managed releases, and every release that serves
+review seats ships §1's per-leg `authority.json` and `declaration.json`. The host
+administrator writes §1's pin file (LA1-AUTHORITY-PIN). From gate G-A on, until both exist on a host:
 - that host's seats resolve `managed_release` and refuse with `authority_missing`;
 - the doctor reports the checklist item.
 
-TEAMHOST lands no dotfiles change.
+Neither TEAMHOST nor a vendor phase lands a dotfiles change.
 
 ## 8. Cross-phase edit scopes and gates
 

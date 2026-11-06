@@ -19,7 +19,7 @@ PRs under principle 2. The file name follows the manifest pattern of the sibling
 2026-11-06.
 
 **Frozen artifact.** `plans/seats-teamhost-contract.md` is normative for every interface below
-(§1–§8) at sha256 `0ceeed6f9bdfbb0d23498e516466d22b234bc88fc4c0191747ad1c45c4eb4f3e`. This plan points at its sections and does not repeat
+(§1–§8) at sha256 `fccdf91d5bdf8d6aeec9e05da95d9a052a30b0164eef5915bb66ff7b5ad76846`. This plan points at its sections and does not repeat
 them. Its input pins include the JAILCORE route contract
 (`235f1faded1d7f15d0ff69668b6a451cee7167e6438d258da57257faf7bdae81`). TEAMHOST consumes it
 only through IF-0-JAILCORE-1, IF-0-JAILCORE-2 and EC-JAILCORE-4.
@@ -65,8 +65,10 @@ from day one.
   `SeatSubject`, `open_managed_authority`, `deployment_kind`, `register_provider_executable`,
   `MANAGED_RELEASES_ROOT` and `MANAGED_AUTHORITY_PIN`. The resolution order is session lease →
   managed release → standalone. A managed release, or a failed guarded frontdoor, never falls
-  back. Downstream vendor phases add a release declaration and one
-  `register_provider_executable` call in their own module, and never edit `seat_subject.py`.
+  back. Each downstream vendor phase specifies its leg's release declaration content (the
+  runtime file list and its pin entry) and adds one `register_provider_executable` call in
+  its own module; it never edits `seat_subject.py`. Consiliency/dotfiles builds and ships the
+  declaration under IF-XR-1.
 - [ ] IF-0-TEAMHOST-2 — Operator state (contract §2): `seat_host_namespace.operator_private_dir`,
   `write_private_atomic`, `subordinate_ranges_disjoint`, `scratch_root_allowed`, plus the closed
   agent-harness#1108 disposition table.
@@ -89,11 +91,17 @@ from day one.
 
 ## Cross-Repo Gates
 
-- [ ] IF-XR-1 — Managed-release seat declarations (contract §7). Consiliency/dotfiles ships
-  per-leg `authority.json` and `declaration.json` in each managed release that serves seats,
-  and the host administrator writes the root-owned pin (LA1-AUTHORITY-PIN). TEAMHOST lands no
-  dotfiles change. Until both exist, a host's managed-release seats refuse
-  `authority_missing` and the doctor names the item. LA-1 is not required to land code.
+- [ ] IF-XR-1 — Managed-release seat declarations (contract §7).
+  - Each vendor phase specifies its leg's declaration content: the runtime file list and its
+    pin entry. SL-8 does this for Claude and Gemini.
+  - The coordinator routes each specification to Consiliency/dotfiles.
+  - Dotfiles builds and ships the per-leg `authority.json` and `declaration.json` in each
+    managed release that serves seats.
+  - The host administrator writes the root-owned pin (LA1-AUTHORITY-PIN).
+  - Neither TEAMHOST nor a vendor phase lands a dotfiles change. From gate G-A on, until the
+    declaration and the pin exist, a host's managed-release seats refuse `authority_missing`,
+    and the doctor names the item.
+  - LA-1 is not required to land code.
 
 ## Lane Index & Dependencies
 
@@ -344,7 +352,7 @@ Without a recorded measurement, item 6 is deferred with the contract's reason, a
 
 ### SL-8 — A3: Managed-release switch-on (gate G-A)
 
-- **Scope**: The contract §1 switch-on and the §3 authority gate, on a base that holds EC-JAILCORE-4's per-profile projection.
+- **Scope**: The contract §1 switch-on and the §3 authority gate, on a base that holds EC-JAILCORE-4's per-profile projection, plus the Claude and Gemini declaration specifications that contract §7 routes to Consiliency/dotfiles.
 - **Owned files**: `phase-loop-runtime/tests/test_seats_teamhost_switchon.py`
 - **Ownership note**: Serial after SL-4; edited only at the contract §8 names. SL-8 also edits `panel_invoker.py`, but only after SL-4 has merged and only at those names. The file is listed under SL-4 alone because `validate_plan_doc` check (D) has no form for serial ownership (coordinator decision, 2026-11-06).
 - **Interfaces provided**: (none)
