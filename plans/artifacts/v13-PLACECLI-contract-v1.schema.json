@@ -113,11 +113,22 @@
     }
   ],
   "x-local-headroom-defaults": {
-    "memory_available_bytes_minimum": 1073741824,
-    "load_per_cpu_percent_maximum_exclusive": 100,
+    "configuration_scope": "per_host_operator_config",
+    "config_binding": "These values are defaults. Each host may override every threshold in operator configuration; config_sha256 binds the effective values and version reports them.",
+    "memory_available_bytes_minimum_floor": 4294967296,
+    "memory_available_total_ram_fraction_minimum": 0.1,
+    "memory_available_threshold_rule": "MemAvailable_bytes >= max(memory_available_bytes_minimum_floor, ceil(MemTotal_bytes * memory_available_total_ram_fraction_minimum))",
+    "load_per_cpu_percent_maximum_exclusive": 70,
+    "io_pressure_full_avg10_percent_maximum_exclusive": 10,
+    "memory_pressure_some_avg10_percent_maximum_exclusive": 10,
+    "pressure_sources": {
+      "io": "/proc/pressure/io full avg10",
+      "memory": "/proc/pressure/memory some avg10"
+    },
     "live_sandboxes_maximum_exclusive": 4,
     "observation_age_seconds_maximum": 5,
     "unknown_or_stale_dimension": "at_capacity",
+    "missing_unreadable_or_malformed_psi": "at_capacity",
     "source": "phase-loop-runtime/src/phase_loop_runtime/advisor_board/fixtures/placement-driver.defaults.toml"
   },
   "x-placement-semantics": {
@@ -132,6 +143,8 @@
     "release_binding": "release loads the stored reservation by reservation_id from the inventory selected by --client. A client mismatch or any supplied reservation field that differs from the stored record returns state rejected and code sandbox_placement_refused, releases nothing, changes no stored flag, arms no barrier and leaves the lease held. A repeated release of the same journaled reservation returns released while its tombstone remains, or unknown_reservation after tombstone expiry; neither state creates an admission barrier.",
     "outcomes_and_effects": "unreachable means a certain failure with nothing held. timeout means an effect may be held. A failure after a request may have been sent is timeout, never unreachable. Its barrier applies only to that reservation in the selected client inventory; it blocks later targets or retries for that reserve walk until release confirms the barrier, but never blocks another reservation, another client or the host.",
     "bridge_bytes": "For pi-runner on openshell the runtime creates one directory in its own state directory, mode 0700, containing one Unix socket, mode 0600. The socket is a bidirectional raw byte pipe of the admitted ForwardTcp stream. The toolkit keeps link framing, relay and credentials. The caller does not supply the path, service name, host or port. Every other reservation has bridge null.",
+    "local_pressure_admission": "A local target admits only when one observation, no older than the configured maximum age, satisfies every threshold from the selected host's operator configuration: MemAvailable is at least max(the byte floor, ceil(MemTotal times the configured fraction)); one-minute load per online CPU as percent is below its exclusive cap; /proc/pressure/io full avg10 and /proc/pressure/memory some avg10 are each below their exclusive caps; and live sandboxes are below their exclusive cap. Any unknown or stale dimension, or missing, unreadable or malformed PSI file/line, is at_capacity.",
+    "local_cgroup_execution": "Every local reservation runs in its own delegated cgroup. Host operator configuration supplies memory.max, cpu.weight and either io.weight or an io.max bandwidth cap. The effective config_sha256 binds those caps. Before local admission, missing cgroup delegation, a missing required cpu/memory/io controller or an invalid cap refuses with outcome refused and code sandbox_placement_capability_unmet; the workload never runs uncapped. LANEEXEC applies the caps to placed workloads. The SEATS seat launcher must apply the same host caps before the coordinator may route a local seat launch.",
     "reap_scope_and_order": "reap examines only the inventory selected by --client and returns exactly one InventoryReapResult whose client and inventory match that selection. It can never inspect or mutate the other client's inventory. Within that inventory, eligible journal entries are attempted by created_at then reservation_id, max_items bounds attempts, and an uncertain item remains cleanup_pending without creating a host-wide or client-wide admission barrier.",
     "before_admission": "reserve may make a fresh admission attempt at each ranked target and records every attempt in trail. A typed at_capacity result authorizes only a new admission attempt.",
     "after_admission": "The reservation binds exactly one target and transport_id. The admitted launch envelope must name that transport_id. No route, transport, executable, environment, policy or deadline fallback is allowed after admission; a change requires a new envelope and a new reserve request_id.",
@@ -190,6 +203,53 @@
             "type": "null"
           }
         ]
+      }
+    },
+    "LocalHeadroomConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "memory_available_bytes_minimum_floor",
+        "memory_available_total_ram_fraction_minimum",
+        "load_per_cpu_percent_maximum_exclusive",
+        "io_pressure_full_avg10_percent_maximum_exclusive",
+        "memory_pressure_some_avg10_percent_maximum_exclusive",
+        "live_sandboxes_maximum_exclusive",
+        "observation_age_seconds_maximum"
+      ],
+      "properties": {
+        "memory_available_bytes_minimum_floor": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "memory_available_total_ram_fraction_minimum": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "load_per_cpu_percent_maximum_exclusive": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "io_pressure_full_avg10_percent_maximum_exclusive": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "memory_pressure_some_avg10_percent_maximum_exclusive": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "live_sandboxes_maximum_exclusive": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "observation_age_seconds_maximum": {
+          "type": "number",
+          "minimum": 0
+        }
       }
     },
     "Workload": {
@@ -1237,7 +1297,8 @@
         "schema",
         "client",
         "protocol_schema_sha256",
-        "config_sha256"
+        "config_sha256",
+        "local_headroom"
       ],
       "properties": {
         "schema": {
@@ -1251,6 +1312,9 @@
         },
         "config_sha256": {
           "$ref": "#/$defs/HexSha256"
+        },
+        "local_headroom": {
+          "$ref": "#/$defs/LocalHeadroomConfig"
         }
       }
     }

@@ -64,7 +64,7 @@ target already selected by SEATS JAILCORE and never enter that ladder.
 
 | Input | Pin |
 | --- | --- |
-| Placement process protocol v1 | `plans/artifacts/v13-PLACECLI-contract-v1.schema.json`, sha256 `316cd3de6c463ebf1c9fe4cea1a4bcf539d1b9bcffd81e3dd519e68b7881d150` |
+| Placement process protocol v1 | `plans/artifacts/v13-PLACECLI-contract-v1.schema.json`, sha256 `fcb45536d18fe074d00b3607dc20a05bfce296ba71536f0d294667e30b2370a0` |
 | Shared placement BAML | `phase-loop-runtime/src/phase_loop_runtime/baml_src/placement_contract.baml`, sha256 `f662ea044dbe37a65c8bd782aeb7a5b2dd75b5851944c05b4f055061fcd27ace` |
 | Placement policy vectors | `phase-loop-runtime/src/phase_loop_runtime/contracts/placement/vectors/policies.json`, sha256 `5b3bc7f515bd2a4cbc10a18d98465d511f65e8089213ceb8c21f9cce2409020f` |
 | Admitted launch envelope v2 | Consiliency/consiliency-contract commit `2b91ef85bfdc76239ae52806b3318513951543ab`, schema sha256 `6d6b2f89c55d160c2c132c29b3aa330a0a91c40ab017707040478a60b469194f` |
@@ -113,6 +113,12 @@ no plan pins a future implementation commit, commit count or landing topology.
 8. **Machine-checkable plans.** Each phase plan has an effective
    `automation.suite_command`, validates through IF-0-VC-2 and names any later
    operational evidence plus its amendment mechanism.
+9. **Local admission and confinement fail closed.** Every host reads its effective
+   pressure thresholds and per-reservation cgroup caps from operator configuration;
+   the host `config_sha256` binds both. Every local reservation runs in its own
+   delegated cgroup with `memory.max`, `cpu.weight` and either `io.weight` or an
+   `io.max` bandwidth cap. Missing delegation or a required controller refuses
+   `sandbox_placement_capability_unmet`; no local workload runs uncapped.
 
 ## Owner Rulings (2026-11-06)
 
@@ -129,6 +135,12 @@ no plan pins a future implementation commit, commit count or landing topology.
 - The toolkit switches only when all three are true: L0–L9 evidence parity, its
   fixtures pass as black-box tests, and one end-to-end Pi run on `ai` succeeds
   through the toolkit shim.
+- Local headroom thresholds are per-host operator configuration. The published
+  defaults are MemAvailable at least max(4 GiB, 10% of total RAM), one-minute load
+  per online CPU below 70%, `/proc/pressure/io` `full avg10` below 10%,
+  `/proc/pressure/memory` `some avg10` below 10%, fewer than four live sandboxes
+  and observations no older than five seconds. Unknown or stale dimensions and
+  missing, unreadable or malformed PSI are `at_capacity`.
 
 ## External Readiness Gates
 
@@ -141,14 +153,21 @@ no plan pins a future implementation commit, commit count or landing topology.
   certificates/grants and the required image allowlist are complete.
 - **EXT-SEATS** — the SEATS JAILCORE planner's owner-approved capacity-offload
   outcome is landed before the review-seat policy consumes it.
+- **XREQ-SEATS-LOCAL-CGROUP-1** — before the coordinator routes a local SEATS
+  launch, the SEATS seat launcher applies the selected host's `memory.max`,
+  `cpu.weight` and `io.weight` or `io.max` cap in a per-reservation delegated
+  cgroup. Missing delegation or a required controller refuses
+  `sandbox_placement_capability_unmet` and launches nothing. This roadmap records
+  the cross-roadmap requirement for coordinator routing; it does not amend SEATS.
 
 ## Top Interface-Freeze Gates
 
 - IF-0-PLACECLI-1 — Frozen placement process messages, stable console entry,
   version response, closed code vocabularies, named-policy lookup, explicit
   client/config selection, target binding and exit classes.
-- IF-0-PLACECLI-2 — Reservation lifecycle, caller-scoped reap, published local
-  headroom defaults, ForwardTcp bridge and black-box parity evidence.
+- IF-0-PLACECLI-2 — Reservation lifecycle, caller-scoped reap, per-host local
+  headroom configuration and published defaults, ForwardTcp bridge and black-box
+  parity evidence.
 - IF-0-LANEEXEC-1 — Generic approved-client reservation, snapshot/upload,
   restricted exec, optional bridge, release/reap and patch-return evidence with
   fail-closed disabled activation.
@@ -171,7 +190,7 @@ disabled for live routes until later activation.
 - [ ] EC-PLACECLI-2 — Reserve finishes before envelope construction. `pi-runner` tries `ai` by authoritative capacity, then an actually reserved local slot only when every published headroom threshold admits, then disabled E2B. `leg`, `qualification` and `implementation` do not rank: each admits only the single trusted SEATS route target, or refuses `sandbox_placement_workload_unsupported` before any probe. Pending-qualification policy names resolve for offline work but no live endpoint is reachable. Each attempt has a `TrailEntry`; one admitted reservation binds one target, transport, image, policy digest, rank policy and trusted configuration digest. Falsified by a seat workload entering the agent order, request-supplied routing, informational local telemetry treated as a reservation, or fallback after admission.
 - [ ] EC-PLACECLI-3 — Release and reap reconcile definite and uncertain effects in the inventory selected by `--client`. Exit 20 creates only a `(client, reservation_id)` barrier, using request ID until reservation ID is known; independent reservations continue. Reap returns exactly the caller's inventory and cannot inspect the other client. Release is idempotent for a journaled reservation and a repeat returns `released` or `unknown_reservation` without blocking admission. A mismatched echo returns `rejected` and leaves the lease held. Falsified by a host/client-wide barrier, cross-client reap, a mismatched echo returning `unknown_reservation` or `released`, or crash/restart losing a held local slot, lease or bridge.
 - [ ] EC-PLACECLI-4 — `pi-runner` on OpenShell receives one ForwardTcp-to-Unix bridge in a 0700 directory with a 0600 socket, scoped to its reservation. The toolkit's L0–L9 fixture set and fake coordinator/TLS cases run unchanged as black-box process tests and preserve closed outcomes. Falsified by the shim needing an agent-harness import, a public listener, a shared socket, or fixture-specific production branching.
-- [ ] EC-PLACECLI-5 — Local-headroom defaults are published from one source and consumed by both the process CLI and hand-run Pi guidance: at least 1 GiB available, load-per-online-CPU below 100%, fewer than four live sandboxes and a reading no older than five seconds; unknown/stale is `at_capacity`. A local Pi reservation resolves `minimal-without-app`, has `bridge: null` and counts toward `live_sandboxes`. Live activation and E2B remain disabled. Falsified by divergent thresholds, a local Pi escaping the shared gate, or any offline test enabling a live route.
+- [ ] EC-PLACECLI-5 — Local-headroom thresholds come from the selected host's operator configuration, whose `config_sha256` binds the effective values; `version` reports them. Defaults are MemAvailable at least max(4 GiB, 10% of total RAM), one-minute load per online CPU below 70%, `/proc/pressure/io` `full avg10` below 10%, `/proc/pressure/memory` `some avg10` below 10%, fewer than four live sandboxes and one observation no older than five seconds. Any unknown or stale dimension, or missing, unreadable or malformed PSI, is `at_capacity`. A local Pi reservation resolves `minimal-without-app`, has `bridge: null` and counts toward `live_sandboxes`. Live activation and E2B remain disabled. Falsified by a threshold not coming from host config, a version response omitting effective thresholds, permissive PSI failure, a local Pi escaping the shared gate, or any offline test enabling a live route.
 
 **Scope notes**
 
@@ -209,7 +228,7 @@ stays `pending_qualification`.
 **Produces**
 
 - IF-0-PLACECLI-1 — Frozen placement process messages, stable console entry, version response, closed code vocabularies, named-policy lookup, explicit client/config selection, target binding and exit classes.
-- IF-0-PLACECLI-2 — Reservation lifecycle, caller-scoped reap, published local headroom defaults, ForwardTcp bridge and black-box parity evidence.
+- IF-0-PLACECLI-2 — Reservation lifecycle, caller-scoped reap, per-host local headroom configuration and published defaults, ForwardTcp bridge and black-box parity evidence.
 
 **Spec closeout policy**
 
@@ -230,8 +249,8 @@ executor. It lands after the worker CLI and before any OpenShell activation.
 **Exit criteria**
 
 - [ ] EC-LANEEXEC-1 — Every approved client—the Pi shim, a phase-loop lane, Claude or Codex—uses the same shared lifecycle: reserve; snapshot upload; one restricted exec of a client-supplied command; optional bridge; release and caller-scoped reap. A writable phase-loop LANE resolves its existing Pi default before envelope admission and launches exactly that reservation or refuses typed. Falsified by any client bypassing the lifecycle, a second route decision after admission, or a reducer/review unit entering the writer route.
-- [ ] EC-LANEEXEC-2 — The shared service owns snapshot construction and upload using git-visible files plus `.git` with masks by default, following Consiliency/agent-toolkit commit `9304a5b` `writer-snapshot.mjs`; a workload policy may select optional `full` mode only under a size cap. It owns admitted launch envelope v2 naming the reserved transport ID, exactly one restricted `supervised_worker_cli launch`, bridge attachment, status/cancel/release and bounded patch/audit return. Clients supply only an allowlisted `image_digest`, a fixed argv template per workload or policy, a named `policy_vector`, snapshot root and masks, and `caller_context`. Falsified by a client owning snapshot upload or worker launch, undeclared launch input, steering after output, an unbounded attempt, direct protected-tree apply or an OS-enforced claim.
-- [ ] EC-LANEEXEC-3 — Every `pi-runner` target uses the OU=`agent-toolkit` key/inventory. OpenShell alone receives the ForwardTcp bridge; local Pi uses `minimal-without-app`, `bridge: null` and shared headroom accounting. Dependency projection, executable/image/policy chain, scratch ownership and caller-scoped release/reap satisfy agent-harness#1787, agent-harness#1788, agent-harness#1789 and agent-harness#1790 offline controls. Falsified by review-seat identity, cross-client reap, a local bridge, shared inventory or an unwired dependency route.
+- [ ] EC-LANEEXEC-2 — The shared service owns snapshot construction and upload using git-visible files plus `.git` with masks by default, following Consiliency/agent-toolkit commit `9304a5b` `writer-snapshot.mjs`; a workload policy may select optional `full` mode only under a size cap. It owns admitted launch envelope v2 naming the reserved transport ID, exactly one restricted `supervised_worker_cli launch`, bridge attachment, status/cancel/release and bounded patch/audit return. For every LOCAL reservation it creates a distinct delegated cgroup and applies the selected host's `memory.max`, `cpu.weight` and `io.weight` or `io.max` cap before exec. Clients supply only an allowlisted `image_digest`, a fixed argv template per workload or policy, a named `policy_vector`, snapshot root and masks, and `caller_context`. Falsified by a client owning snapshot upload or worker launch, undeclared launch input, a local workload executing before all caps apply, steering after output, an unbounded attempt, direct protected-tree apply or an OS-enforced claim.
+- [ ] EC-LANEEXEC-3 — Every `pi-runner` target uses the OU=`agent-toolkit` key/inventory. OpenShell alone receives the ForwardTcp bridge; local Pi uses `minimal-without-app`, `bridge: null` and shared headroom accounting. A local target without cgroup delegation or a required cpu, memory or io controller refuses `sandbox_placement_capability_unmet` and runs nothing. Dependency projection, executable/image/policy chain, scratch ownership and caller-scoped release/reap satisfy agent-harness#1787, agent-harness#1788, agent-harness#1789 and agent-harness#1790 offline controls. Falsified by review-seat identity, cross-client reap, a local bridge, shared inventory, uncapped local execution or an unwired dependency route.
 - [ ] EC-LANEEXEC-4 — Fake coordinator, local-headroom, bridge loss, cancel, timeout, crash/restart and patch-return mutations exercise the production construction sites. No fixture or proxy evidence enables the live route. Falsified by any live adapter being reachable before ACTIVATE or by tests replacing the route constructor under test.
 - [ ] EC-LANEEXEC-5 — The phase lands after PLACECLI and EXT-WORKER, but before OpenShell activation; existing local Pi execution remains the typed interim route until activation. Falsified by reversing either ordering edge or removing local fallback before live authority.
 
@@ -252,6 +271,9 @@ declared image, argv-template, policy, snapshot-root/masks and caller-context
 inputs. agent-toolkit keeps only its `pi-runner` image recipe, `remote-inner` and
 thin shim. The legacy OpenShell/coordinator client tracked by agent-toolkit#35 is
 the L0–L9 oracle until the switch condition and retires fully when it passes.
+LANEEXEC owns per-reservation cgroup creation and cap application for every placed
+LOCAL workload. The SEATS seat launcher owns the equivalent work for seat launches;
+the coordinator must satisfy XREQ-SEATS-LOCAL-CGROUP-1 before routing them locally.
 
 **Non-goals**
 
