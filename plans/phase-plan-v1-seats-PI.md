@@ -32,13 +32,11 @@ attempt. The separate Pi LANE-executor placement plan owns remote placement, adm
 return and retry. This phase is only the Pi REVIEW SEAT: it does not edit `launcher.py`, placement
 profiles, `supervised_worker_cli`, runner images or remote-executor policy.
 
-**Owner gate.** OD-5 must record the credential lane, one routed provider id, aggregator
-disposition, spend cap for an API-billed lane, and board slot (explicit composition only). Lane C
-measures the request set and credential scope under that record. The roadmap default is the current routed provider credential, no
-aggregator, a spend cap and no plan/production slot. The agent-toolkit candidate is provider
-`lithos`, model `deepseek-ai/DeepSeek-V4.1-Flash`, endpoint `api.lithosai.cloud`; it is evidence,
-not a decision. Lane C stops before landing until OD-5 resolves every field. Lanes A and B may
-land disabled.
+**Owner ruling (OD-5, 2026-11-06).** The roadmap default is accepted. Pi uses the
+provider-scoped credential its executor already uses for the routed provider, with no aggregator
+and a spend cap when that route is API-billed. V1 changes no plan or production board slot: Pi
+qualifies only on a board that explicitly composes it and counts as its routed vendor. Lane C binds
+the current executor route and measures its request set and credential scope under this ruling.
 
 ## Interface Freeze Gates
 
@@ -136,7 +134,7 @@ SL-4 — Evidence and documentation reducer (SL-docs)
 
 | Task | Type | Depends on | Action | Proof |
 |---|---|---|---|---|
-| SL-3.1 | decision | SL-2, OD-5 record | Consume OD-5. Measure the provider request/refusal set and scope; create one `pi-allowlist.json`, never a second provider file. | receipt digest |
+| SL-3.1 | evidence | SL-2 | Implement the settled OD-5 ruling. Bind the current executor route, measure its provider request/refusal set and credential scope, and create one `pi-allowlist.json`, never a second provider file. | receipt digest |
 | SL-3.2 | test | SL-2; SL-3.1 for provider fixture | Path-enter launch config plus terminal provider response. Refuse mismatch, absent response provider/model, model-name vendor inference, `(model)`-only alias lookup, a Pi `gemini-*` alias fill, same-routed-vendor independence and every other-provider/unlisted endpoint. Mutation controls neutralise each check. | `V3` |
 | SL-3.3 | impl | SL-3.2 | Add the private provider config, IF-0-PI-3 identity, tuple-key aliases, independence check and sole allowlist. Store no credential or response body in evidence. | `V3` |
 | SL-3.4 | verify | SL-3.3 | Re-hash the allowlist into the qualification key; run the real proxy refusals and a redaction scan. | `V3`, `VL0` |
@@ -154,9 +152,9 @@ SL-4 — Evidence and documentation reducer (SL-docs)
 
 ## Execution Notes
 
-- Lane A and lane B start without OD-5. Lane A lands its adapter disabled; SL-1.3 and SL-1.4
-  resume only after lane C publishes IF-0-PI-3. Lane C's tests start after lane B; SL-3.1,
-  SL-3.3 and SL-3.4 need OD-5, and nothing in lane C lands without it. SL-4 is terminal.
+- Lane A and lane B start in parallel. Lane A lands its adapter disabled; SL-1.3 and SL-1.4
+  resume only after lane C publishes IF-0-PI-3. With OD-5 settled, lane C starts after lane B.
+  TEAMHOST's IF-0-TEAMHOST-1/2/3 publication is the sole remaining execution gate. SL-4 is terminal.
 - `panel_invoker.py` is lane A's single-writer surface. `seat_profiles.py` is lane B's. The
   identity functions named in lane C are its narrow v11 PANEL/ROUTE sharing boundary; the
   second landing rebases. Lane B's only JAILCORE-file edits are the additive Pi entries frozen in
