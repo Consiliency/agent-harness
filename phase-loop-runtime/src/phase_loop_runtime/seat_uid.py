@@ -550,8 +550,12 @@ SCAN_FIELD_NAMES: tuple[bytes, ...] = (b"access_token", b"refresh_token", b"id_t
 _SCAN_BASES = ("tree", "seat")
 _SCAN_SEAT_DIRS = (seat_jail.HOST_HOME_DIRNAME, seat_jail.HOST_OUT_DIRNAME)
 _SCAN_MAX_ROWS = 512
-_SCAN_O_FILE = os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
-_SCAN_O_DIR = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC
+_SCAN_FLAGS_AVAILABLE = all(hasattr(os, name) for name in (
+    "O_NOFOLLOW", "O_NONBLOCK", "O_CLOEXEC", "O_DIRECTORY"))
+_SCAN_O_FILE = (os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                | getattr(os, "O_NONBLOCK", 0) | getattr(os, "O_CLOEXEC", 0))
+_SCAN_O_DIR = (os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+               | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_CLOEXEC", 0))
 
 
 class _Walk:
@@ -724,6 +728,16 @@ def scan(seat_root: str, tree: str, rows: Mapping[str, tuple[str, str]], *,
     unwalked entry clears ``scan_complete``; a nonzero count stands regardless. ``rows``
     maps a parent-chosen key to ``(base, relpath)``, base ``tree`` or ``seat``; no
     seat-chosen path is returned."""
+    if not _SCAN_FLAGS_AVAILABLE:
+        return {
+            "schema": SCAN_SCHEMA,
+            "rows": {key: {"kind": "other", "digest": None, "mode": None}
+                     for key in rows},
+            "tree_manifest": None,
+            "scan_complete": False,
+            "entries": 0,
+            "counts": {"field_names": 0, "delivered_token": 0},
+        }
     walk = _Walk(int(cap_bytes), float(time_limit_s),
                  seat_jail.secret_encodings(token) if token else ())
     result: dict[str, object] = {"schema": SCAN_SCHEMA, "rows": {}, "tree_manifest": None}
@@ -775,6 +789,8 @@ def tree_manifest_digest(tree, *, cap_bytes: int = SCAN_CAP_BYTES,
                          time_limit_s: float = SCAN_TIME_LIMIT_S) -> str | None:
     """The manifest :func:`scan` computes, for the parent's own pre-leg reading of a tree
     it can still read. ``None`` when the walk was not complete."""
+    if not _SCAN_FLAGS_AVAILABLE:
+        return None
     walk = _Walk(int(cap_bytes), float(time_limit_s), ())
     try:
         fd = seat_jail.open_dir_nofollow(str(tree))

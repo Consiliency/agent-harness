@@ -17,10 +17,14 @@ from __future__ import annotations
 
 import base64
 import binascii
+import dataclasses
 import errno
+import hashlib
 import json
 import os
 import platform
+import shutil
+import stat
 import struct
 import subprocess
 import sys
@@ -824,3 +828,699 @@ def test_seats_firstseat_teamhost_missing_blob(tmp_path):
         review_stage.stage_review_tree(repo, tmp_path / "stages")
     assert refusal.value.__suppress_context__ and str(repo) not in str(refusal.value)
     assert not list((tmp_path / "stages").iterdir())
+
+
+def _firstseat_paths(tmp_path):
+    from phase_loop_runtime import seat_jail_qualification as q
+
+    tree = tmp_path / "tree"
+    seat_home = tmp_path / "seat-home"
+    gemini_config = tmp_path / "gemini-config"
+    agy_rw = seat_home / ".agy-rw"
+    seat_out = tmp_path / "seat-out"
+    for path in (tree, seat_home / "workspace", gemini_config / "antigravity-cli",
+                 agy_rw / "config", seat_out):
+        path.mkdir(parents=True, exist_ok=True)
+    return q.HostPathMap(tree=tree, seat_home=seat_home, gemini_config=gemini_config,
+                         agy_rw=agy_rw, seat_out=seat_out, delivered_credential=None)
+
+
+def test_seats_firstseat_teamhost_containment_layout_and_input(tmp_path):
+    from phase_loop_runtime import seat_jail_qualification as q
+
+    layout = q.plant_layout(plugin_form="nested")
+    expected = {f"{location}:{row}" for location in q._LOCATIONS for row in q.TREE_ROWS}
+    expected.update(f"{location}:{row}" for location, row in q.RUNTIME_ROWS)
+    assert {row.row_id for row in layout.rows} == expected
+    assert len({row.nonce for row in layout.rows}) == len(layout.rows)
+    assert all(len(value) == 40 and value.endswith(".invalid")
+               for values in layout.canary_hosts.values() for value in values)
+    qualification = q.build_qualification_input(layout, tmp_path / "inputs")
+    assert qualification.commit == subprocess.run(
+        ["git", "-C", str(qualification.repo), "rev-parse", "HEAD"], check=True,
+        capture_output=True, text=True).stdout.strip()
+    assert (qualification.repo / q.WINDOW_READ_PATH).is_file()
+    assert (qualification.repo / q.WATCH_EXEC_SENTINEL).stat().st_mode & 0o111
+    assert not (qualification.repo / ".git/config").read_text().count("remote ")
+    for plugin in (".agent/plugins/p", ".agents/plugins/p"):
+        root = qualification.repo / plugin
+        manifest = json.loads((root / "plugin.json").read_text())
+        assert manifest["skills"] == ["./skills/s"]
+        assert json.loads((root / "hooks.json").read_text())
+        assert json.loads((root / "mcp_config.json").read_text())["mcpServers"]
+        assert "trigger: always_on" in (root / "rules/r.md").read_text()
+
+
+def test_seats_firstseat_teamhost_containment_runtime_paths(tmp_path):
+    from phase_loop_runtime import seat_jail_qualification as q
+
+    layout = q.plant_layout(plugin_form="plugin_json")
+    paths = _firstseat_paths(tmp_path)
+    q.seed_runtime_plants(layout, paths)
+    assert (paths.seat_home / "workspace" / "AGENTS.md").is_file()
+    assert (paths.gemini_config / "antigravity-cli" / "settings.json").is_file()
+    assert (paths.agy_rw / "config" / "mcp_config.json").is_file()
+    assert not (paths.seat_home / ".gemini").exists()
+    for row in layout.rows:
+        if row.location == "tree":
+            continue
+        relative = row.row_id.partition(":")[2]
+        target = q._host_path(paths, row.location, relative)
+        assert stat.S_IMODE(target.stat().st_mode) == (
+            0o700 if relative.endswith("/") else 0o600)
+    for row in layout.rows:
+        if (row.location == "tree"
+                or row.row_id.partition(":")[2] != ".gemini/settings.json"):
+            continue
+        target = q._host_path(paths, row.location, ".gemini/settings.json")
+        settings = json.loads(target.read_text())
+        assert settings["mcpServers"][row.nonce]["url"] == f"https://{row.nonce}.invalid/"
+    duplicate = dataclasses.replace(layout, rows=(*layout.rows, layout.rows[-1]))
+    with pytest.raises(q.PlantLayoutRefused):
+        q.seed_runtime_plants(duplicate, _firstseat_paths(tmp_path / "duplicate"))
+
+
+def test_seats_firstseat_teamhost_containment_watch(tmp_path):
+    from phase_loop_runtime import seat_jail_qualification as q
+
+    layout = q.plant_layout(plugin_form="plugin_json")
+    source = q.build_qualification_input(layout, tmp_path / "input")
+    paths = _firstseat_paths(tmp_path / "seat")
+    shutil.copytree(source.repo, paths.tree, dirs_exist_ok=True,
+                    ignore=shutil.ignore_patterns(".git"))
+    q.seed_runtime_plants(layout, paths)
+    watch = q.arm_watch(layout, paths, kind="measured")
+
+    class Run:
+        def __call__(self, argv, *, env, use_proxy, timeout_s):
+            assert not use_proxy and env["LC_ALL"] == "C" and timeout_s == 30.0
+            target = paths.tree / Path(argv[-1]).name
+            if argv[0] == "/bin/cat":
+                target.read_bytes()
+            else:
+                subprocess.run([str(target)], check=True)
+            return q.JailedStep(exit_code=0, timed_out=False, stdout=b"")
+
+    assert watch.prove_sentinel(Run())
+    selected = next(row for row in layout.rows if row.location == "tree")
+    (paths.tree / selected.row_id.partition(":")[2].rstrip("/")).read_bytes()
+    (paths.tree / q.WINDOW_READ_PATH).read_bytes()
+    runtime = next(row for row in layout.rows if row.location == "workdir"
+                   and not row.row_id.endswith("/"))
+    runtime_path = q._host_path(paths, runtime.location, runtime.row_id.partition(":")[2])
+    runtime_path.write_bytes(runtime_path.read_bytes() + b"change")
+    attribute_only = next(row for row in layout.rows if row.location == "provider_config")
+    attribute_path = q._host_path(
+        paths, attribute_only.location, attribute_only.row_id.partition(":")[2])
+    attribute_path.chmod(0o640)
+    observation = watch.drain_and_close(quiescent=True)
+    assert observation.sentinel_observed and observation.read_marker_opened
+    assert selected.row_id in observation.opened_rows
+    assert runtime.row_id in observation.changed_rows
+    assert attribute_only.row_id not in observation.changed_rows
+    assert observation.drained_after_quiescence and not observation.overflow
+
+
+def test_seats_firstseat_teamhost_containment_watch_arms_before_runtime_seed_and_ignores_stat(
+        tmp_path):
+    from phase_loop_runtime import seat_jail_qualification as q
+
+    layout = q.plant_layout(plugin_form="plugin_json")
+    source = q.build_qualification_input(layout, tmp_path / "input")
+    paths = _firstseat_paths(tmp_path / "seat")
+    shutil.copytree(source.repo, paths.tree, dirs_exist_ok=True,
+                    ignore=shutil.ignore_patterns(".git"))
+    watch = q.arm_watch(layout, paths, kind="tree_control")
+    selected = next(row for row in layout.rows
+                    if row.location == "tree" and not row.row_id.endswith("/"))
+    target = paths.tree / selected.row_id.partition(":")[2]
+    target.stat()
+    assert os.access(target, os.R_OK)
+    observation = watch.drain_and_close(quiescent=True)
+    assert selected.row_id not in observation.opened_rows
+    assert not observation.row_ancestor_created
+
+
+def test_seats_firstseat_teamhost_containment_watch_reports_ancestor_and_credential_rename(
+        tmp_path):
+    from phase_loop_runtime import seat_jail_qualification as q
+
+    layout = q.plant_layout(plugin_form="plugin_json")
+    source = q.build_qualification_input(layout, tmp_path / "input")
+    paths = _firstseat_paths(tmp_path / "seat")
+    shutil.copytree(source.repo, paths.tree, dirs_exist_ok=True,
+                    ignore=shutil.ignore_patterns(".git"))
+    credential = paths.seat_out / "delivered.json"
+    credential.write_text("old\n")
+    paths = dataclasses.replace(paths, delivered_credential=credential)
+    watch = q.arm_watch(layout, paths, kind="credentialed_tree_control")
+    (paths.seat_home / "workspace" / ".agent").mkdir()
+    replacement = paths.seat_out / "replacement.json"
+    replacement.write_text("new\n")
+    replacement.replace(credential)
+    observation = watch.drain_and_close(quiescent=True)
+    assert observation.row_ancestor_created
+    assert any(row.startswith("workdir:.agent/") for row in observation.changed_rows)
+    assert observation.credential_path_events > 0
+
+
+def test_seats_firstseat_teamhost_containment_scan_wrapper(tmp_path, monkeypatch):
+    from phase_loop_runtime import seat_jail_qualification as q
+
+    layout = q.plant_layout(plugin_form="plugin_json")
+    paths = _firstseat_paths(tmp_path)
+    q.seed_runtime_plants(layout, paths)
+    token = b'{"token":{"access_token":"fixture-access"}}'
+    delivered = q.DeliveredCopy(content=token, sha256=hashlib.sha256(token).hexdigest())
+
+    def scan_in_h(holder, seat_root, tree, rows, *, token, **_kw):
+        assert holder == 17 and seat_root == str(paths.seat_home.parent)
+        assert token == b"fixture-access"
+        return {"schema": "seat_scan.v1", "scan_complete": True, "entries": 1,
+                "tree_manifest": "a" * 64,
+                "counts": {"field_names": 0, "delivered_token": 0},
+                "rows": {row_id: {"kind": "dir" if row_id.endswith("/") else "file",
+                                  "digest": "b" * 64, "mode": 0o700 if row_id.endswith("/") else 0o600}
+                         for row_id in rows}}
+
+    monkeypatch.setattr(q.seat_uid, "scan_in_h", scan_in_h)
+    result = q.scan_seat(17, str(paths.seat_home.parent), layout, paths, delivered=delivered)
+    assert result.scan_complete and result.tree_manifest_sha256 == "a" * 64
+    assert result.credential_counts == q.CredentialCounts(field_names=0, token=0)
+    assert set(result.rows) == {row.row_id for row in layout.rows if row.location != "tree"}
+    assert any(state.state == "directory" for state in result.rows.values())
+
+
+def test_seats_firstseat_teamhost_containment_scan_walker_is_bounded_and_counts_names(
+        tmp_path, monkeypatch):
+    from phase_loop_runtime import seat_uid
+
+    tree = tmp_path / "tree"
+    seat = tmp_path / "seat"
+    home = seat / seat_jail.HOST_HOME_DIRNAME
+    out = seat / seat_jail.HOST_OUT_DIRNAME
+    for path in (tree, home / "workspace" / "plant", out):
+        path.mkdir(parents=True)
+    token = b"fixture-access"
+    (tree / "row.txt").write_text("row\n")
+    (home / "workspace" / "plant" / token.decode()).write_text("x")
+    (out / "access_token").write_text("x")
+    rows = {
+        "workdir:plant/": ("seat", f"{seat_jail.HOST_HOME_DIRNAME}/workspace/plant"),
+        "workdir:missing": ("seat", f"{seat_jail.HOST_HOME_DIRNAME}/workspace/missing"),
+    }
+    result = seat_uid.scan(str(seat), str(tree), rows, token=token)
+    assert result["scan_complete"] is True
+    assert result["rows"]["workdir:plant/"]["kind"] == "dir"
+    assert result["rows"]["workdir:missing"]["kind"] == "missing"
+    assert result["counts"]["delivered_token"] >= 1
+    assert result["counts"]["field_names"] >= 1
+    over_cap = seat_uid.scan(str(seat), str(tree), rows, token=token, cap_bytes=0)
+    assert over_cap["scan_complete"] is False and over_cap["tree_manifest"] is None
+    monkeypatch.setattr(seat_uid, "_SCAN_FLAGS_AVAILABLE", False)
+    unavailable = seat_uid.scan(str(seat), str(tree), rows, token=token)
+    assert unavailable["scan_complete"] is False and unavailable["tree_manifest"] is None
+    assert all(row["kind"] == "other" for row in unavailable["rows"].values())
+
+
+def test_seats_firstseat_teamhost_containment_scan_wrapper_fails_closed(
+        tmp_path, monkeypatch):
+    from phase_loop_runtime import seat_jail_qualification as q
+
+    layout = q.plant_layout(plugin_form="plugin_json")
+    paths = _firstseat_paths(tmp_path)
+    q.seed_runtime_plants(layout, paths)
+    monkeypatch.setattr(q.seat_uid, "scan_in_h", lambda *_a, **_kw: (_ for _ in ()).throw(
+        OSError("unavailable")))
+    result = q.scan_seat(17, str(paths.seat_home.parent), layout, paths, delivered=None)
+    assert result.scan_complete is False
+    assert result.tree_manifest_sha256 is None and result.credential_counts is None
+    assert result.rows and all(row.state == "unread" for row in result.rows.values())
+
+
+@pytest.mark.parametrize("change, outcome", [
+    (None, "pass"), ("empty", "unavailable"), ("aud", "unavailable"),
+    ("azp", "unavailable"), ("expiry", "unavailable"),
+    ("excess", "gemini_seat_token_scope_excess"),
+])
+def test_seats_firstseat_teamhost_containment_issuer(monkeypatch, change, outcome):
+    from phase_loop_runtime import seat_jail_qualification as q
+
+    token = b'{"token":{"access_token":"fixture-access"}}'
+    delivered = q.DeliveredCopy(content=token, sha256=hashlib.sha256(token).hexdigest())
+    response = {"scope": next(iter(q._ISSUER_SCOPE_CEILING)), "aud": q._ISSUER_AUD,
+                "azp": q._ISSUER_AZP, "expires_in": 60}
+    if change == "empty": response["scope"] = ""
+    if change in ("aud", "azp"): response[change] = "other"
+    if change == "expiry": response["expires_in"] = "60"
+    if change == "excess": response["scope"] += " extra"
+    monkeypatch.setattr(q, "_issuer_response", lambda access: response)
+    measured = q.measure_issuer(delivered)
+    assert measured.outcome == outcome
+    assert measured.measured_sha256 == delivered.sha256
+
+
+def _firstseat_stream(*, bracket=False, outside=(), protocol_error=False):
+    from phase_loop_runtime import seat_egress_proxy as proxy
+
+    inference = proxy.RequestEvent(method="POST", host="daily-cloudcode-pa.googleapis.com",
+                                   path="/v1internal:*", decision="allow")
+    windows = [proxy.ProxyWindow(label="leg", start_acked=True, end_acked=True,
+                                 events=(inference,))]
+    if bracket:
+        token = proxy.RequestEvent(method="POST", host="oauth2.googleapis.com",
+                                   path="<other>", decision="deny")
+        windows.append(proxy.ProxyWindow(label="bracket", start_acked=True, end_acked=True,
+                                         events=(token,)))
+    return proxy.ProxyStream(final=True, protocol_error=protocol_error, windows=tuple(windows),
+                             outside_events=tuple(outside), allowlist_sha256="d" * 64)
+
+
+def _firstseat_reducer_input():
+    from phase_loop_runtime import seat_egress_proxy as proxy
+    from phase_loop_runtime import seat_jail_qualification as q
+
+    layout = q.plant_layout(plugin_form="plugin_json")
+    selected = tuple(next(row for row in layout.rows
+                          if row.location == "tree" and row.role == surface)
+                     for surface in q._SURFACES)
+    tree_manifest = "e" * 64
+    row_states = {}
+    for row in layout.rows:
+        if row.location == "tree":
+            continue
+        relative = row.row_id.partition(":")[2]
+        directory = relative.endswith("/")
+        readonly = (row.location == "provider_config"
+                    or row.location == "home" and relative.startswith(".gemini/")
+                    and not relative.startswith(".gemini/config/"))
+        row_states[row.row_id] = q.RowState(
+            state="directory" if directory else "regular",
+            sha256=hashlib.sha256(row.nonce.encode()).hexdigest(),
+            mode=(0o550 if directory else 0o440) if readonly
+            else (0o700 if directory else 0o600))
+    scan = q.ScanResult(rows=row_states, tree_manifest_sha256=tree_manifest,
+                        credential_counts=q.CredentialCounts(field_names=0, token=0),
+                        scan_complete=True)
+    pre = {row_id: state.sha256 for row_id, state in row_states.items()}
+    control_watch = q.WatchObservation(
+        armed_ns=1, closed_ns=3, sentinel_observed=True, overflow=False,
+        read_marker_opened=False, drained_after_quiescence=True,
+        opened_rows=tuple(row.row_id for row in selected), changed_rows=(),
+        row_ancestor_created=False, credential_path_events=0,
+        pre_row_sha256=pre, pre_tree_manifest_sha256=tree_manifest)
+    measured_watch = dataclasses.replace(control_watch, read_marker_opened=True,
+                                         opened_rows=())
+    refuse_binding = q.LaunchBinding(
+        image_sha256="1" * 64, admission_class="release_qualified",
+        stage_manifest_sha256="2" * 64, argv_sha256="3" * 64,
+        input_sha256=hashlib.sha256(q.CONTROL_INPUT.encode()).hexdigest(),
+        jail_profile_sha256="4" * 64, allowlist_sha256="5" * 64)
+    production_binding = dataclasses.replace(
+        refuse_binding, argv_sha256="6" * 64,
+        input_sha256=hashlib.sha256(q.MEASURED_INPUT.encode()).hexdigest(),
+        allowlist_sha256="7" * 64)
+
+    def launch(kind, *, watch=control_watch, stream=None, binding=refuse_binding,
+               status="SUCCESS", model_turn=False, issuer=None, bracket=None,
+               delivered=None, created=()):
+        return q.WindowLaunchResult(
+            kind=kind, status=status, timed_out=False, error=None, quiescent=True,
+            model_turn=model_turn, tool_steps=0, subagent_steps=0,
+            stream=stream or _firstseat_stream(), bridge_exited=True,
+            lookups=(), created=created, lookup_complete=True, watch=watch, scan=scan,
+            first_jailed_launch_ns=2, bracket=bracket, issuer=issuer,
+            delivered_copy_sha256=delivered, help_sha256=None, help_lists_plugin=None,
+            plugin_validation=None, binding=binding)
+
+    controls = (launch("tree_control"),
+                launch("runtime_control", binding=dataclasses.replace(
+                    refuse_binding, argv_sha256="6" * 64)),
+                launch("credentialed_tree_control", binding=dataclasses.replace(
+                    refuse_binding, allowlist_sha256="7" * 64), created=(
+                    q.TracedPath(location="home", relpath=".gemini/config/mcp_config.json"),)),
+                launch("credentialed_runtime_control", binding=dataclasses.replace(
+                    refuse_binding, argv_sha256="6" * 64, allowlist_sha256="7" * 64)))
+    delivered = "8" * 64
+    fence = proxy.FenceResult(fence_id="9" * 32, acknowledged=True, acked_ns=10)
+    bracket = q.BracketResult(start=fence, end=fence, post_refused=True,
+                              rows=tuple(q.BracketRow(row=name, outcome="refused",
+                                  signature=next(iter(q.BRACKET_SIGNATURES[name])))
+                                  for name in q.BRACKET_ROW_NAMES))
+    measured = launch("measured", watch=measured_watch, stream=_firstseat_stream(bracket=True),
+                      binding=production_binding, issuer=q.IssuerMeasurement(
+                          outcome="pass", measured_sha256=delivered), bracket=bracket,
+                      delivered=delivered, model_turn=True)
+    expired = launch("expired_copy", watch=measured_watch,
+                     binding=production_binding, status="FAILURE", model_turn=False)
+    help_result = dataclasses.replace(
+        launch("help", watch=None, stream=None, binding=dataclasses.replace(
+            refuse_binding, input_sha256=None)),
+        help_sha256="a" * 64, help_lists_plugin=False, scan=None,
+        first_jailed_launch_ns=None, lookup_complete=None, lookups=None, created=None)
+    return q.ContainmentInputs(
+        context=q.ContextBinding(context_id="fixture-context", account_label="fixture-account",
+                                 dependency_subject_sha256=None,
+                                 dependency_projection_sha256=None),
+        layout=layout, help=help_result, plugin_validation=None, controls=controls,
+        measured=measured, expired_copy=expired, board=None)
+
+
+def test_seats_firstseat_teamhost_containment_reducer_control():
+    from phase_loop_runtime import seat_jail_qualification as q
+
+    result = q.reduce_containment(_firstseat_reducer_input())
+    assert result.admitted
+    assert result.containment == {
+        "credential_scope": "pass", "refresh_detection": "pass",
+        "project_settings": "not_loaded", "hooks": "not_loaded",
+        "mcp_servers": "not_loaded", "provider_overrides": "not_loaded",
+    }
+    assert all(result.checks.values())
+    assert result.owner_summary.schema == "seat_window_owner_summary.v1"
+    assert set(result.binding) == set(q._BINDING_KEYS)
+    assert result.owner_summary.private_route is False
+
+
+def test_seats_firstseat_teamhost_containment_admission_routes_positive_observations():
+    from phase_loop_runtime import seat_jail_qualification as q
+
+    inputs = _firstseat_reducer_input()
+    measured = inputs.measured
+    assert measured is not None and measured.watch is not None
+    row = next(row for row in inputs.layout.rows if row.role == "project_settings")
+    measured = dataclasses.replace(
+        measured, watch=dataclasses.replace(measured.watch, opened_rows=(row.row_id,)))
+
+    def admission(item, value):
+        if item is None or item.binding is None:
+            return item
+        return dataclasses.replace(
+            item, binding=dataclasses.replace(item.binding, admission_class=value))
+
+    controls = tuple(admission(item, "candidate") for item in inputs.controls)
+    not_admitted = dataclasses.replace(
+        inputs, help=admission(inputs.help, "candidate"), controls=controls,
+        measured=admission(measured, "candidate"),
+        expired_copy=admission(inputs.expired_copy, "candidate"))
+    result = q.reduce_containment(not_admitted)
+    assert not result.admitted and set(result.containment.values()) == {"unavailable"}
+    assert result.owner_summary.outcomes["project_settings"] == "loaded"
+    assert result.owner_summary.private_route
+
+    dependency = dataclasses.replace(
+        inputs.context, dependency_subject_sha256=measured.binding.image_sha256)
+    controls = tuple(admission(item, "executable_dependency") for item in inputs.controls)
+    executable = dataclasses.replace(
+        inputs, context=dependency, help=admission(inputs.help, "executable_dependency"),
+        controls=controls, measured=admission(inputs.measured, "executable_dependency"),
+        expired_copy=admission(inputs.expired_copy, "executable_dependency"))
+    assert q.reduce_containment(executable).admitted
+
+
+_FIRSTSEAT_MUTANTS = (
+    "01_constant_definition", "02_control_argv_equals_production",
+    "03_row_dropped_per_surface", "04_watch_armed_after_launch",
+    "05_scope_derived_in_jail", "06_stat_or_access_counted_as_open",
+    "07_tool_or_subagent_control", "08_missing_sentinel_or_staged_read",
+    "09_missing_or_unended_stream", "10_canary_ignored", "11_empty_issuer_scope",
+    "12_wrong_issuer_audience", "13_token_endpoint_ignored", "14_credential_write_ignored",
+    "15_runtime_change_ignored", "16_unknown_lookup_ignored",
+    "17_expired_copy_error_passes", "18_early_fence_ack", "19_outside_event_attributed",
+    "20_board_or_outside_positive_ignored", "21_board_not_loaded_or_wrong_measured_input",
+    "22_shadowed_plant_counted", "23_late_watch_or_attribute_event",
+    "24_positive_lost_on_incomplete_channel", "25_failed_bracket_row_passes",
+    "26_incomplete_scan_or_token_ignored", "27_tree_manifest_change_ignored",
+    "28_home_change_or_lookup_ignored", "29_missing_credential_scan_passes",
+    "30_wrong_board_input",
+)
+
+
+def _firstseat_map_controls(inputs, mutate):
+    return dataclasses.replace(inputs, controls=tuple(mutate(item) for item in inputs.controls))
+
+
+def _firstseat_leg_event(result, event):
+    stream = result.stream
+    assert stream is not None
+    windows = tuple(dataclasses.replace(window, events=(*window.events, event))
+                    if window.label == "leg" else window for window in stream.windows)
+    return dataclasses.replace(result, stream=dataclasses.replace(stream, windows=windows))
+
+
+@pytest.mark.parametrize("mutant", _FIRSTSEAT_MUTANTS)
+def test_seats_firstseat_teamhost_containment_mutants(mutant, tmp_path):
+    """Each section 13 mutation loses assurance or preserves its positive observation."""
+    from phase_loop_runtime import seat_egress_proxy as proxy
+    from phase_loop_runtime import seat_jail_qualification as q
+
+    inputs = _firstseat_reducer_input()
+    measured = inputs.measured
+    expired = inputs.expired_copy
+    assert measured is not None and measured.watch is not None and measured.scan is not None
+    assert measured.binding is not None and expired is not None
+
+    if mutant == "01_constant_definition":
+        inputs = _firstseat_map_controls(inputs, lambda item: dataclasses.replace(
+            item, watch=dataclasses.replace(item.watch, opened_rows=()) if item.watch else None))
+        assert q.reduce_containment(inputs).containment["project_settings"] == "unavailable"
+    elif mutant == "02_control_argv_equals_production":
+        inputs = _firstseat_map_controls(inputs, lambda item: dataclasses.replace(
+            item, binding=dataclasses.replace(item.binding, argv_sha256="6" * 64)))
+        assert not any(q.reduce_containment(inputs).checks.values())
+    elif mutant == "03_row_dropped_per_surface":
+        for surface in q._SURFACES:
+            dropped = next(row for row in inputs.layout.rows if row.role == surface)
+            layout = dataclasses.replace(
+                inputs.layout, rows=tuple(row for row in inputs.layout.rows if row != dropped))
+            assert q.reduce_containment(dataclasses.replace(inputs, layout=layout)).containment[
+                surface] == "unavailable"
+    elif mutant == "04_watch_armed_after_launch":
+        late_controls = _firstseat_map_controls(inputs, lambda item: dataclasses.replace(
+            item, watch=dataclasses.replace(item.watch, armed_ns=3) if item.watch else None))
+        assert q.reduce_containment(late_controls).containment["hooks"] == "unavailable"
+        late_measured = dataclasses.replace(
+            inputs, measured=dataclasses.replace(
+                measured, watch=dataclasses.replace(measured.watch, armed_ns=3)))
+        assert q.reduce_containment(late_measured).containment["hooks"] == "unavailable"
+    elif mutant == "05_scope_derived_in_jail":
+        result = q.reduce_containment(
+            dataclasses.replace(inputs, measured=dataclasses.replace(measured, issuer=None)))
+        assert result.containment["credential_scope"] == "unavailable"
+    elif mutant == "06_stat_or_access_counted_as_open":
+        known = q.TracedPath(location="tree", relpath="AGENTS.md")
+        inputs = _firstseat_map_controls(inputs, lambda item: dataclasses.replace(
+            item, watch=dataclasses.replace(item.watch, opened_rows=()) if item.watch else None,
+            lookups=(known,)))
+        assert q.reduce_containment(inputs).containment["provider_overrides"] == "unavailable"
+    elif mutant == "07_tool_or_subagent_control":
+        for field in ("tool_steps", "subagent_steps"):
+            changed = _firstseat_map_controls(
+                inputs, lambda item, field=field: dataclasses.replace(item, **{field: 1}))
+            assert q.reduce_containment(changed).containment["mcp_servers"] == "unavailable"
+    elif mutant == "08_missing_sentinel_or_staged_read":
+        controls = _firstseat_map_controls(inputs, lambda item: dataclasses.replace(
+            item, watch=dataclasses.replace(item.watch, sentinel_observed=False)
+            if item.watch else None))
+        assert q.reduce_containment(controls).containment["hooks"] == "unavailable"
+        changed = dataclasses.replace(inputs, measured=dataclasses.replace(
+            measured, watch=dataclasses.replace(measured.watch, read_marker_opened=False)))
+        assert q.reduce_containment(changed).containment["hooks"] == "unavailable"
+    elif mutant == "09_missing_or_unended_stream":
+        for stream in (None, dataclasses.replace(measured.stream, final=False)):
+            changed = dataclasses.replace(inputs, measured=dataclasses.replace(measured, stream=stream))
+            assert q.reduce_containment(changed).containment["hooks"] == "unavailable"
+    elif mutant == "10_canary_ignored":
+        event = proxy.RequestEvent(method="GET", host=inputs.layout.canary_hosts["mcp_servers"][0],
+                                   path="<other>", decision="deny")
+        stream = dataclasses.replace(measured.stream, outside_events=(event,), protocol_error=True)
+        changed = dataclasses.replace(inputs, measured=dataclasses.replace(measured, stream=stream))
+        assert q.reduce_containment(changed).containment["mcp_servers"] == "loaded"
+    elif mutant in ("11_empty_issuer_scope", "12_wrong_issuer_audience"):
+        issuer = q.IssuerMeasurement(outcome="unavailable",
+                                     measured_sha256=measured.delivered_copy_sha256)
+        changed = dataclasses.replace(inputs, measured=dataclasses.replace(measured, issuer=issuer))
+        assert q.reduce_containment(changed).containment["credential_scope"] == "unavailable"
+    elif mutant == "13_token_endpoint_ignored":
+        event = proxy.RequestEvent(method="POST", host="oauth2.googleapis.com",
+                                   path="<other>", decision="deny")
+        changed = dataclasses.replace(inputs, measured=_firstseat_leg_event(measured, event))
+        assert q.reduce_containment(changed).containment[
+            "refresh_detection"] == "gemini_seat_token_refreshed_in_jail"
+        userinfo = proxy.RequestEvent(method="POST", host="www.googleapis.com",
+                                      path="/oauth2/v2/userinfo", decision="deny")
+        changed = dataclasses.replace(inputs, measured=_firstseat_leg_event(measured, userinfo))
+        assert q.reduce_containment(changed).containment[
+            "refresh_detection"] == "gemini_seat_token_refreshed_in_jail"
+        get_userinfo = dataclasses.replace(userinfo, method="GET")
+        changed = dataclasses.replace(inputs, measured=_firstseat_leg_event(
+            measured, get_userinfo))
+        assert q.reduce_containment(changed).containment["refresh_detection"] == "pass"
+        allowed = dataclasses.replace(event, decision="allow")
+        stream = dataclasses.replace(expired.stream, outside_events=(allowed,))
+        changed = dataclasses.replace(inputs, expired_copy=dataclasses.replace(
+            expired, stream=stream))
+        assert q.reduce_containment(changed).containment[
+            "refresh_detection"] == "gemini_seat_token_refreshed_in_jail"
+    elif mutant == "14_credential_write_ignored":
+        watch = dataclasses.replace(measured.watch, credential_path_events=1)
+        changed = dataclasses.replace(inputs, measured=dataclasses.replace(measured, watch=watch))
+        assert q.reduce_containment(changed).containment[
+            "refresh_detection"] == "gemini_seat_token_refreshed_in_jail"
+        counts = q.CredentialCounts(field_names=1, token=0)
+        scan = dataclasses.replace(measured.scan, credential_counts=counts)
+        changed = dataclasses.replace(inputs, measured=dataclasses.replace(
+            measured, scan=scan))
+        assert q.reduce_containment(changed).containment[
+            "refresh_detection"] == "gemini_seat_token_refreshed_in_jail"
+    elif mutant == "15_runtime_change_ignored":
+        row = next(row for row in inputs.layout.rows if row.location == "workdir")
+        watch = dataclasses.replace(measured.watch, changed_rows=(row.row_id,))
+        changed = dataclasses.replace(inputs, measured=dataclasses.replace(measured, watch=watch))
+        assert q.reduce_containment(changed).containment[row.role] == "loaded"
+    elif mutant == "16_unknown_lookup_ignored":
+        lookup = q.TracedPath(location="tree", relpath=".agents/unknown-loader.json")
+        changed = _firstseat_map_controls(inputs, lambda item: dataclasses.replace(
+            item, lookups=(lookup,)))
+        result = q.reduce_containment(changed)
+        assert result.containment["project_settings"] == "unavailable"
+        assert all(value == 1 for value in result.owner_summary.counted_lookups.values())
+    elif mutant == "17_expired_copy_error_passes":
+        changed = dataclasses.replace(inputs, expired_copy=dataclasses.replace(
+            expired, error="jail_unavailable"))
+        assert q.reduce_containment(changed).containment["refresh_detection"] == "unavailable"
+    elif mutant == "18_early_fence_ack":
+        stream = dataclasses.replace(measured.stream, protocol_error=True)
+        changed = dataclasses.replace(inputs, measured=dataclasses.replace(measured, stream=stream))
+        assert q.reduce_containment(changed).containment["hooks"] == "unavailable"
+    elif mutant == "19_outside_event_attributed":
+        event = proxy.RequestEvent(method="POST", host="daily-cloudcode-pa.googleapis.com",
+                                   path="/v1internal:*", decision="allow")
+        stream = dataclasses.replace(measured.stream, outside_events=(event,))
+        changed = dataclasses.replace(inputs, measured=dataclasses.replace(measured, stream=stream))
+        assert q.reduce_containment(changed).containment["hooks"] == "unavailable"
+    elif mutant == "20_board_or_outside_positive_ignored":
+        canary = proxy.RequestEvent(method="GET",
+            host=inputs.layout.canary_hosts["mcp_servers"][0], path="<other>", decision="deny")
+        outside = dataclasses.replace(measured.stream, outside_events=(canary,))
+        assert q.reduce_containment(dataclasses.replace(
+            inputs, measured=dataclasses.replace(measured, stream=outside))).containment[
+                "mcp_servers"] == "loaded"
+        row = next(row for row in inputs.layout.rows if row.role == "project_settings")
+        board_watch = dataclasses.replace(measured.watch, opened_rows=(row.row_id,))
+        board = q.BoardLegObservation(
+            watch=board_watch, stream=None, input_sha256=hashlib.sha256(
+                q.BOARD_INPUT.encode()).hexdigest(), binding=measured.binding)
+        assert q.reduce_containment(dataclasses.replace(inputs, board=board)).containment[
+            "project_settings"] == "loaded"
+    elif mutant == "21_board_not_loaded_or_wrong_measured_input":
+        assert "containment" not in {item.name for item in dataclasses.fields(q.BoardLegObservation)}
+        binding = dataclasses.replace(measured.binding, input_sha256="0" * 64)
+        changed = dataclasses.replace(inputs, measured=dataclasses.replace(measured, binding=binding))
+        assert not any(q.reduce_containment(changed).checks.values())
+    elif mutant == "22_shadowed_plant_counted":
+        base = tmp_path / "shadow"
+        seat_home, agy_rw, real_config = base / "seat", base / "agy", base / "real-config"
+        for path in (seat_home / "workspace", agy_rw / "config", real_config, base / "out",
+                     base / "tree"):
+            path.mkdir(parents=True, exist_ok=True)
+        shadow = base / "gemini-config"
+        shadow.symlink_to(real_config, target_is_directory=True)
+        paths = q.HostPathMap(tree=base / "tree", seat_home=seat_home,
+                              gemini_config=shadow, agy_rw=agy_rw, seat_out=base / "out",
+                              delivered_credential=None)
+        with pytest.raises(q.PlantLayoutRefused):
+            q.seed_runtime_plants(q.plant_layout(plugin_form="plugin_json"), paths)
+    elif mutant == "23_late_watch_or_attribute_event":
+        watch = dataclasses.replace(measured.watch, armed_ns=3)
+        changed = dataclasses.replace(inputs, measured=dataclasses.replace(measured, watch=watch))
+        assert q.reduce_containment(changed).containment["hooks"] == "unavailable"
+    elif mutant == "24_positive_lost_on_incomplete_channel":
+        row = next(row for row in inputs.layout.rows if row.role == "project_settings")
+        incomplete = dataclasses.replace(measured.watch, opened_rows=(row.row_id,),
+                                         sentinel_observed=False, overflow=True)
+        changed = dataclasses.replace(inputs, measured=dataclasses.replace(
+            measured, watch=incomplete, stream=None, scan=None))
+        assert q.reduce_containment(changed).containment["project_settings"] == "loaded"
+        credential = dataclasses.replace(incomplete, credential_path_events=1)
+        changed = dataclasses.replace(inputs, measured=dataclasses.replace(
+            measured, watch=credential, stream=None, scan=None))
+        assert q.reduce_containment(changed).containment[
+            "refresh_detection"] == "gemini_seat_token_refreshed_in_jail"
+        issuer = q.IssuerMeasurement(outcome="gemini_seat_token_scope_excess",
+                                     measured_sha256=measured.delivered_copy_sha256)
+        changed = dataclasses.replace(inputs, measured=dataclasses.replace(
+            measured, issuer=issuer, stream=None, scan=None))
+        assert q.reduce_containment(changed).containment[
+            "credential_scope"] == "gemini_seat_token_scope_excess"
+    elif mutant == "25_failed_bracket_row_passes":
+        rows = list(measured.bracket.rows)
+        rows[0] = dataclasses.replace(rows[0], outcome="unavailable", signature=None)
+        bracket = dataclasses.replace(measured.bracket, rows=tuple(rows))
+        changed = dataclasses.replace(inputs, measured=dataclasses.replace(measured, bracket=bracket))
+        assert q.reduce_containment(changed).containment["credential_scope"] == "unavailable"
+    elif mutant == "26_incomplete_scan_or_token_ignored":
+        incomplete = dataclasses.replace(measured.scan, scan_complete=False)
+        changed = dataclasses.replace(inputs, measured=dataclasses.replace(measured, scan=incomplete))
+        assert q.reduce_containment(changed).containment["hooks"] == "unavailable"
+        row = next(row for row in inputs.layout.rows if row.location == "workdir")
+        rows = dict(measured.scan.rows)
+        rows[row.row_id] = dataclasses.replace(rows[row.row_id], state="non_regular", sha256=None)
+        nonregular = dataclasses.replace(measured.scan, rows=rows)
+        assert q.reduce_containment(dataclasses.replace(
+            inputs, measured=dataclasses.replace(measured, scan=nonregular))).containment[
+                row.role] == "loaded"
+        rows[row.row_id] = dataclasses.replace(rows[row.row_id], state="unread")
+        unread = dataclasses.replace(measured.scan, rows=rows, scan_complete=True)
+        assert q.reduce_containment(dataclasses.replace(
+            inputs, measured=dataclasses.replace(measured, scan=unread))).containment[
+                row.role] == "unavailable"
+        counts = q.CredentialCounts(field_names=0, token=1)
+        token_scan = dataclasses.replace(incomplete, credential_counts=counts)
+        assert q.reduce_containment(dataclasses.replace(
+            inputs, measured=dataclasses.replace(measured, scan=token_scan))).containment[
+                "refresh_detection"] == "gemini_seat_token_refreshed_in_jail"
+    elif mutant == "27_tree_manifest_change_ignored":
+        scan = dataclasses.replace(measured.scan, tree_manifest_sha256="f" * 64)
+        changed = dataclasses.replace(inputs, measured=dataclasses.replace(measured, scan=scan))
+        result = q.reduce_containment(changed)
+        assert result.containment["hooks"] == "unavailable"
+        assert result.private["manifest_differences"] is True
+    elif mutant == "28_home_change_or_lookup_ignored":
+        home = "home:.gemini/config/mcp_config.json"
+        controls = _firstseat_map_controls(inputs, lambda item: dataclasses.replace(item, created=()))
+        watch = dataclasses.replace(measured.watch, changed_rows=(home,))
+        changed = dataclasses.replace(controls, measured=dataclasses.replace(measured, watch=watch))
+        assert q.reduce_containment(changed).containment["mcp_servers"] == "loaded"
+        lookup = q.TracedPath(location="home", relpath="private/mcp_config.json")
+        changed = _firstseat_map_controls(inputs, lambda item: dataclasses.replace(
+            item, lookups=(lookup,)))
+        assert q.reduce_containment(changed).containment["mcp_servers"] == "unavailable"
+    elif mutant == "29_missing_credential_scan_passes":
+        changed = dataclasses.replace(inputs, expired_copy=dataclasses.replace(expired, scan=None))
+        assert q.reduce_containment(changed).containment["refresh_detection"] == "unavailable"
+        no_counts = dataclasses.replace(expired.scan, credential_counts=None)
+        changed = dataclasses.replace(inputs, expired_copy=dataclasses.replace(
+            expired, scan=no_counts))
+        assert q.reduce_containment(changed).containment["refresh_detection"] == "unavailable"
+        controls = _firstseat_map_controls(inputs, lambda item: dataclasses.replace(
+            item, scan=dataclasses.replace(item.scan, credential_counts=None))
+            if item.kind.startswith("credentialed_") else item)
+        definition = q.definition_probe(controls.layout, controls.controls)
+        assert any(item.reason == "incomplete_watch" for item in definition.voided)
+        assert definition.home_row_baseline == "absent"
+    elif mutant == "30_wrong_board_input":
+        row = next(row for row in inputs.layout.rows if row.role == "project_settings")
+        board = q.BoardLegObservation(
+            watch=dataclasses.replace(measured.watch, opened_rows=(row.row_id,)), stream=None,
+            input_sha256="0" * 64, binding=measured.binding)
+        measured_incomplete = dataclasses.replace(measured, stream=None)
+        result = q.reduce_containment(dataclasses.replace(
+            inputs, measured=measured_incomplete, board=board))
+        assert result.containment["project_settings"] == "unavailable"
+        assert "binding_mismatch" in result.owner_summary.unavailable_reasons["project_settings"]
+        assert result.owner_summary.outcomes["project_settings"] == "loaded"
+        assert result.owner_summary.private_route
+        assert row.row_id in result.private["rows"]["board_opened"]
+    else:  # pragma: no cover - the closed parameter table is exhaustive
+        raise AssertionError(mutant)

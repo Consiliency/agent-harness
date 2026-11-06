@@ -492,6 +492,83 @@ def test_the_egress_evidence_records_tls_inspection():
     assert "http://srt:t@" not in json.dumps(evidence)
 
 
+def _firstseat_proxy_fixture():
+    proxy = seat_egress_proxy.SeatEgressProxy(
+        socket="/fixture", proxy_url="http://srt:fixture@127.0.0.1:3128",
+        ca_cert=Path("/fixture-ca"), ca_sha256="a" * 64, inner_sni_check=True,
+        process=None, allowlist_sha256="b" * 64)
+
+    class Input:
+        def __init__(self):
+            self.lines = []
+
+        def write(self, line):
+            self.lines.append(line)
+            fence_id = json.loads(line)["id"]
+            seat_egress_proxy._accept(
+                proxy, json.dumps({"event": "fence", "id": fence_id}) + "\n")
+
+        def flush(self):
+            return None
+
+    stdin = Input()
+    proxy.process = types.SimpleNamespace(stdin=stdin)
+    return proxy, stdin
+
+
+def test_seats_firstseat_proxy_fence_orders_events_and_closes_windows():
+    proxy, stdin = _firstseat_proxy_fixture()
+    start = seat_egress_proxy.fence(proxy, "start", "leg")
+    seat_egress_proxy._accept(proxy, json.dumps({
+        "event": "request", "method": "POST", "host": "oauth2.googleapis.com",
+        "path": "<other>", "decision": "deny",
+    }) + "\n")
+    end = seat_egress_proxy.fence(proxy, "end", "leg")
+    proxy._eof = proxy._exited = True
+    stream = seat_egress_proxy.proxy_stream(proxy)
+    assert start.acknowledged and end.acknowledged
+    assert [json.loads(line)["op"] for line in stdin.lines] == ["fence", "fence"]
+    assert stream.final and not stream.protocol_error and not stream.outside_events
+    assert len(stream.windows) == 1 and len(stream.windows[0].events) == 1
+
+
+def test_seats_firstseat_proxy_fence_rejects_mismatched_and_unknown_lines():
+    proxy, _stdin = _firstseat_proxy_fixture()
+    proxy._outstanding = "0" * 32
+    seat_egress_proxy._accept(
+        proxy, json.dumps({"event": "fence", "id": "1" * 32}) + "\n")
+    seat_egress_proxy._accept(proxy, "not-json\n")
+    assert seat_egress_proxy.proxy_stream(proxy).protocol_error
+
+
+def test_seats_firstseat_proxy_fence_keeps_outside_events_outside():
+    proxy, _stdin = _firstseat_proxy_fixture()
+    event = json.dumps({
+        "event": "request", "method": "POST", "host": "oauth2.googleapis.com",
+        "path": "<other>", "decision": "deny",
+    }) + "\n"
+    seat_egress_proxy._accept(proxy, event)
+    seat_egress_proxy.fence(proxy, "start", "leg")
+    seat_egress_proxy.fence(proxy, "end", "leg")
+    seat_egress_proxy._accept(proxy, event)
+    stream = seat_egress_proxy.proxy_stream(proxy)
+    assert len(stream.outside_events) == 2 and not stream.windows[0].events
+
+
+def test_seats_firstseat_proxy_fence_live_wrapper_round_trip():
+    _layer_or_skip()
+    with seat_egress_proxy.start_proxy(refuse_all=True) as proxy:
+        assert proxy.process.stdin is not None
+        proxy.process.stdin.write("malformed\n")
+        proxy.process.stdin.flush()
+        start = seat_egress_proxy.fence(proxy, "start", "leg")
+        end = seat_egress_proxy.fence(proxy, "end", "leg")
+    stream = seat_egress_proxy.proxy_stream(proxy)
+    assert start.acknowledged and end.acknowledged
+    assert stream.final and not stream.protocol_error
+    assert stream.allowlist_sha256 == seat_egress_proxy._digest([])
+
+
 # --------------------------------------------------------------------------------------
 # Live: the containment rows, through the real proxy (a host with the layer installed).
 # --------------------------------------------------------------------------------------
