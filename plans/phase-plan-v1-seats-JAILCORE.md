@@ -4,7 +4,7 @@ phase: JAILCORE
 roadmap: specs/phase-plans-seats-v1.md
 roadmap_sha256: 9dc889c61a8d682dde30af65bf1597c1dca9a0df094fac747194d3629939b16e
 automation:
-  suite_command: ["timeout", "900", "env", "PYTEST_ADDOPTS=", "python3", "-m", "pytest", "-p", "no:cacheprovider", "-q", "phase-loop-runtime/tests/test_seat_route_contract.py", "phase-loop-runtime/tests/test_seat_egress_allowlists_jailcore.py", "phase-loop-runtime/tests/test_seat_qualification_key.py", "phase-loop-runtime/tests/test_seat_profiles.py", "phase-loop-runtime/tests/test_seat_route.py", "phase-loop-runtime/tests/test_seat_jail.py", "phase-loop-runtime/tests/test_seat_qualification_host_context.py", "phase-loop-runtime/tests/test_seat_notices.py", "phase-loop-runtime/tests/test_seat_jail_autoqualify.py", "phase-loop-runtime/tests/test_gemini_seat_egress_1170.py", "phase-loop-runtime/tests/test_sealed_seat_never_counts.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py"]
+  suite_command: ["timeout", "900", "env", "PYTEST_ADDOPTS=", "python3", "-m", "pytest", "-p", "no:cacheprovider", "-q", "phase-loop-runtime/tests/test_seat_route_contract.py", "phase-loop-runtime/tests/test_seat_egress_allowlists_jailcore.py", "phase-loop-runtime/tests/test_seat_qualification_key.py", "phase-loop-runtime/tests/test_seat_profiles.py", "phase-loop-runtime/tests/test_seat_route.py", "phase-loop-runtime/tests/test_seat_jail.py", "phase-loop-runtime/tests/test_seat_qualification_host_context.py", "phase-loop-runtime/tests/test_seat_notices.py", "phase-loop-runtime/tests/test_seat_jail_autoqualify.py", "phase-loop-runtime/tests/test_gemini_seat_egress_1170.py", "phase-loop-runtime/tests/test_sealed_seat_never_counts.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py", "phase-loop-runtime/tests/test_seat_resource_caps.py"]
 ---
 
 # JAILCORE: Jail Profile Registry and Route Resolver
@@ -52,6 +52,14 @@ class, and one current generic egress-and-credential probe receipt binds the tar
 third-party target additionally requires that vendor's OD-7 activation. The ruling is folded
 into this PR's roadmap amendment; no later plan or code amendment enables it.
 
+**Owner ruling (resource caps, 2026-11-06).** Local sandboxes must not swamp a shared machine,
+in CPU or in disk bandwidth ("Pressure gates + per-sandbox caps"). SL-5 owns the per-seat caps
+half as an additive lane after SL-3. No other lane's scope, shape or test changes.
+`plans/seats-jailcore-caps-contract.md` is normative for SL-5, at sha256
+`859ac2fbff1326c8c9492e4f72bb1050d0a3fb331d030e95553a9be635749727`. The route contract and its digest above are unchanged, and the roadmap is not edited, so
+every pin of either stands. AC-7 is therefore a plan-local criterion. Pressure gates stay with
+v13 (EC-PLACECLI-5 on agent-harness#1853).
+
 ## Interface Freeze Gates
 
 - [ ] IF-0-JAILCORE-1 — the leg-profile contract, frozen in contract §1–§4 and published as
@@ -82,12 +90,17 @@ into this PR's roadmap amendment; no later plan or code amendment enables it.
   schema `seat_jail_pass.v2`, `RoutePolicy`, `NamedException`, `CapacityGrant`, the host overlay
   path and validation, and receipt schema `seat_remote_probe_receipt.v1`. Lane C owns the key's
   semantics. Its shape ships in SL-0.
+- [ ] IF-0-JAILCORE-4 (plan-internal) — per-seat resource caps, frozen in
+  `plans/seats-jailcore-caps-contract.md`. It covers the `seat_resource_caps.v1` record and its
+  host sources (§1, §2), `readiness_code`, the route precondition (§3), `capped_popen`, the
+  seat-start classification (§4), the refusal code (§5) and the v13 subset mapping (§6). SL-5
+  owns it and ships it; the lanes in flight need none of it.
 
 ## Lane Index & Dependencies
 
 SL-0 — Route contract module (lane A, day one)
   Depends on: (none)
-  Blocks: SL-1, SL-2, SL-3, SL-4
+  Blocks: SL-1, SL-2, SL-3, SL-4, SL-5
   Parallel-safe: no
 
 SL-1 — Per-provider egress (lane B)
@@ -102,11 +115,16 @@ SL-2 — Qualification key and projection (lane C)
 
 SL-3 — Registry, resolver and integration (lane A)
   Depends on: SL-0, SL-1, SL-2
-  Blocks: SL-4
+  Blocks: SL-4, SL-5
   Parallel-safe: no
 
 SL-4 — Documentation and inventory reducer (SL-docs)
   Depends on: SL-0, SL-1, SL-2, SL-3
+  Blocks: (none)
+  Parallel-safe: no
+
+SL-5 — Per-seat resource caps
+  Depends on: SL-0, SL-3
   Blocks: (none)
   Parallel-safe: no
 
@@ -251,6 +269,26 @@ The fix belongs to CLAUDENET (digest) or CLAUDE (transport argv), not here.
 | SL-docs.3 | docs | SL-docs.2 | `plans/seats-jailcore-route-contract.md` | Append `### Post-execution amendments` only if a freeze proved wrong, by section and date. The roadmap is not edited here (see §8). |
 | SL-docs.4 | verify | SL-docs.3 | — | `V6` and the hosted docs-freshness audit. |
 
+### SL-5 — Per-seat resource caps
+
+- **Scope**: Run every local seat launch in a per-seat transient cgroup carrying the host record's caps, and refuse typed when that cannot be proven. Seats never run uncapped, and there is no fallback.
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_resource_caps.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_resource_caps_enter.py`, `phase-loop-runtime/tests/test_seat_resource_caps.py`, `phase-loop-runtime/tests/conftest.py`, `phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py`, `phase-loop-runtime/tests/test_seat_launch_helpers_trusted.py`, `docs/seat-resource-caps.md`, `docs/TEAM-ONBOARDING.md`, `plans/seats-jailcore-caps-contract.md`
+- **Interfaces provided**: IF-0-JAILCORE-4 implementation: `SeatResourceCaps`, `load_caps`, `caps_sha256`, `readiness_code`, `capped_popen`, and the additive code `seat_resource_caps_unavailable`
+- **Interfaces consumed**: `OD10_CLASSES` (SL-0), `seat_profiles` registry (SL-3), `seat_route.resolve` (SL-3); `seat_uid.trusted_module_argv` (pre-existing), `seat_jail.pass_store_dir_problem` (pre-existing), `seat_jail.SeatSandboxRefused` (pre-existing), `sandbox_policy.staging_root` (pre-existing), `launch_provider` (pre-existing)
+- **Parallel-safe**: no
+
+| Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
+|---|---|---|---|---|---|
+| SL-5.1 | test | — | `phase-loop-runtime/tests/test_seat_resource_caps.py`, `phase-loop-runtime/tests/conftest.py` | Caps contract §7 cases (a)–(i) on a fake cgroupfs, plus the opt-in host probe, which skips when delegation is absent. | `V7` |
+| SL-5.2 | impl | SL-5.1 | `phase-loop-runtime/src/phase_loop_runtime/seat_resource_caps.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_resource_caps_enter.py` | — | — |
+| SL-5.3 | impl | SL-5.2 | the named edits below; `phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py`, `phase-loop-runtime/tests/test_seat_launch_helpers_trusted.py` | — | — |
+| SL-5.4 | impl | SL-5.3 | `docs/seat-resource-caps.md`, `docs/TEAM-ONBOARDING.md` | — | — |
+| SL-5.5 | verify | SL-5.4 | SL-5 files, the named edits | all SL-5 tests; `VC` on each host in the host gate | `V7`, `V4`, `V5`, `VC` |
+
+Before SL-5.1, re-read the v13 IDs in caps contract §6. If one changed meaning, STOP and report
+the exact sentence. `docs/seat-resource-caps.md` documents the record, its defaults, the sources,
+the host prerequisite and the probe. `docs/TEAM-ONBOARDING.md` gains one pointer to it.
+
 ## Execution Notes
 
 - **Critical path.** SL-0 lands first, on day one. SL-1 and SL-2 then run in parallel. SL-3
@@ -277,6 +315,24 @@ The fix belongs to CLAUDENET (digest) or CLAUDE (transport argv), not here.
   - `phase-loop-runtime/tests/data/seat_profile_digests_jailcore.json`: Gemini entries only.
 
   Whichever of JAILCORE and TEAMHOST lands second rebases.
+- **SL-5 named edits (caps contract §3–§5).** Check (D) forbids shared ownership even across a
+  dependency, so these files stay with SL-0 and SL-3. After SL-3 merges, SL-5 may edit only these
+  named parts of them, and nothing else:
+  - `seat_route_contract.py`: one `OD10_CLASSES` entry (class `ordinary`);
+  - `seat_jail.py`: one `NOTICES` entry, plus one `JAIL_NOT_RUN_CODES` member if `SeatRoute`
+    survives SL-3;
+  - `seat_profiles.py`: `register` only;
+  - `panel_invoker.py`: the `seat_caps` keyword on `launch_owned` and `launch_provider`, the
+    jailed and owned `Popen` calls in `launch_provider`, the Capped sites in caps contract §4,
+    and the code in `_HARNESS_DETAIL_CODES` only if SL-3's derivation does not already cover it.
+
+  If PANELSPLIT has moved the seat-launch code, SL-5 edits the named successors, as SL-3 does.
+  Its inventory, CHANGELOG and capability-doc rows ride its landing PR through SL-docs.2 (SL-4's
+  per-landing rule), so SL-4's final sweep does not wait for SL-5. Check (M)'s warning on this is
+  accepted: a `Depends on` edge would hold JAILCORE's closeout on the host gate below.
+- **Host gate (SL-5).** Once SL-5 lands, a host lacking the caps contract §8 prerequisite degrades
+  every local seat. Mark SL-5 ready only after `VC` passes, not skips, on every host that runs
+  review seats. This is an owner action outside this repository.
 - **Interfaces downstream phases add.** Each later phase adds exactly the following, with no
   core edit:
   - CODEX, GROK and PI each add one `JailProfile` in `seat_profiles.py` and one
@@ -313,13 +369,13 @@ The fix belongs to CLAUDENET (digest) or CLAUDE (transport argv), not here.
 - **Skill deviations (planning).** Reconnaissance and architecture ran in-thread rather than
   through Explore and Plan teammates, because the context was already gathered. The
   `advisor()` step is unavailable in this harness, so the plan goes to the cross-vendor
-  review round instead.
+  review round instead. The SL-5 amendment ran the same way.
 
 ## Spec Closeout Plan
 
 - schema: `spec_delta_closeout.v1`
 - decision: `canonical_spec_update`
-- target surfaces: `phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md`, `docs/advisor-board-capabilities-card.md`, `plans/seats-jailcore-route-contract.md`
+- target surfaces: `phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md`, `docs/advisor-board-capabilities-card.md`, `plans/seats-jailcore-route-contract.md`, `plans/seats-jailcore-caps-contract.md`, `docs/seat-resource-caps.md`
 - evidence paths: `plans/evidence/seat-jailcore/digest-equality.json`, `plans/evidence/seat-jailcore/terminal-codes.json`
 - redaction posture: `metadata_only`
 - downstream handling: `none` (the binding capacity ruling and its roadmap reconciliation land with this plan; packaged grants remain empty)
@@ -332,12 +388,13 @@ The fix belongs to CLAUDENET (digest) or CLAUDE (transport argv), not here.
 - [ ] EC-JAILCORE-4 — proven by `V2` (`test_seat_qualification_key.py`) and `V4` case i. Falsified by a pass honoured across any changed key part. Path-entered control: through `pass_record_verdict` on a private fixture store.
 - [ ] EC-JAILCORE-5 — proven by `V4` case e. Falsified by Pi or any profile-less leg reaching `unconfined` outside an unexpired exception. Path-entered control: through the seat-mode builder and `_default_spawn` with an injected clock.
 - [ ] EC-JAILCORE-6 — proven by `V3` (declarations), `V4` (output secret refusal through the real output read) and `VL` (planted config, real CLI). Falsified by a planted config marker appearing, or a planted credential in any `contains_secret` encoding not ending the leg typed. Path-entered control: the planted tree enters through `stage_review_tree`.
+- [ ] AC-7 — proven by `V7` (`test_seat_resource_caps.py`, caps contract §7) and a passing `VC` on each host in the host gate. Falsified by a Capped site reaching raw `subprocess.Popen`, by a provider starting when a readback file is absent or differs, or by a record expressing no limit being accepted. Path-entered control: a fake cgroupfs and fake `systemd-run` enter through the real `launch_provider` and `_seat_route_for_spawn`.
 
 ## Verification
 
 `P` is `timeout 900 env PYTEST_ADDOPTS= python3 -m pytest -p no:cacheprovider -q`, with
 system python3.14.4 and file paths under `phase-loop-runtime/tests/`. On this plan-only
-checkout the five new test files are absent, so these are pending selectors, not receipts.
+checkout the six new test files are absent, so these are pending selectors, not receipts.
 
 - `V0`: `P test_seat_route_contract.py`
 - `V1`: `P test_seat_egress_allowlists_jailcore.py test_sandbox_egress.py test_seat_egress_rules.py`
@@ -347,4 +404,6 @@ checkout the five new test files are absent, so these are pending selectors, not
 - `V5`: `P test_agent_cli_scratch_inventory_1147.py test_seat_launch_helpers_trusted.py test_seat_reference_inventory.py`
 - `V6`: `P test_seat_reference_inventory.py`, then `timeout 120 phase-loop validate-roadmap --repo . --roadmap specs/phase-plans-seats-v1.md`
 - `VL`: `PHASE_LOOP_REQUIRE_LIVE_JAIL=1 P test_seat_profiles.py test_seat_route.py -k live_jail --junitxml=<private-receipt>`, provider-free, on a host class with jail prerequisites. A skip or zero collection fails.
+- `V7`: `P test_seat_resource_caps.py`
+- `VC`: `PHASE_LOOP_SEAT_CAPS_PROBE=1 P test_seat_resource_caps.py -k host_probe`, on a host that meets caps contract §8. It skips where delegation is absent; the host gate requires a pass.
 - Full suite: hosted CI and dispatched Gate A only.

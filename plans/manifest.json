@@ -14387,14 +14387,16 @@
       "if_gates_produced": [
         "IF-0-JAILCORE-1",
         "IF-0-JAILCORE-2",
-        "IF-0-JAILCORE-3"
+        "IF-0-JAILCORE-3",
+        "IF-0-JAILCORE-4"
       ],
       "lanes": [
         "SL-0",
         "SL-1",
         "SL-2",
         "SL-3",
-        "SL-4"
+        "SL-4",
+        "SL-5"
       ],
       "lifecycle": [],
       "owner_skill": "claude-plan-phase",
@@ -14410,7 +14412,7 @@
       "status": "committed",
       "task_summary": null,
       "type": "phase",
-      "updated_at": "2026-11-06T16:11:12Z"
+      "updated_at": "2026-11-06T18:00:00Z"
     },
     {
       "acceptance_criteria_count": null,
