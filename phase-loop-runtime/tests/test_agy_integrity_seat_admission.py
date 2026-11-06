@@ -90,7 +90,7 @@ def _seed(world):
     """A real ``locally_qualified`` record for the world's image (provenance + qualified)."""
     store = q.Store()
     store.create()
-    runtime = q.runtime_identity()
+    runtime = q.agy_profile_digest()
     asset = SimpleNamespace(name=HOST.asset, version="9.9.9", digest="sha256:" + "0" * 64)
     store.put_provenance(SimpleNamespace(image_sha256=world.digest, platform=HOST.name, asset=asset), runtime)
     store.put_qualified(world.digest, sha256(HELP).hexdigest(), HOST, runtime, "9.9.9")
@@ -153,7 +153,7 @@ def test_every_non_admission_is_the_typed_refusal(world, monkeypatch, state):
     if state != "absent":
         store = _seed(world)
         if state == "failed":
-            store.put_failed(world.digest, sha256(HELP).hexdigest(), HOST, q.runtime_identity(),
+            store.put_failed(world.digest, sha256(HELP).hexdigest(), HOST, q.agy_profile_digest(),
                              "completion", "synthetic")
         elif state == "tampered":
             _flip(store)

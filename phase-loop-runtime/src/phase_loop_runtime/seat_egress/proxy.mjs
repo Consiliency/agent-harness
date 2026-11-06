@@ -28,6 +28,11 @@ import { join } from 'node:path';
 
 const { SandboxManager } = await import(process.argv[2]);
 const config = JSON.parse(readFileSync(process.argv[3], 'utf8'));
+const FRONT_IDLE_MS = config.front_idle_ms ?? 30000;
+if (!Number.isInteger(FRONT_IDLE_MS) || FRONT_IDLE_MS < 1 || FRONT_IDLE_MS > 30000) {
+  process.stderr.write('front idle bound is invalid\n');
+  process.exit(3);
+}
 const rules = config.allow;
 const hosts = new Set(rules.map(rule => rule.host.toLowerCase()));
 
@@ -163,7 +168,7 @@ const expectedAuth = 'Basic ' + Buffer.from(`srt:${token}`, 'utf8').toString('ba
 
 // --- the fail-closed inspecting front -------------------------------------------------
 const MAX_HEADER = 16 * 1024;
-const MAX_FIRST_RECORD = 18 * 1024; // a ClientHello record; larger is refused, not grown
+const FRONT_MAX_HELLO_BYTES = 16389; // TLS header plus the maximum one-record payload
 
 // Parse ONE complete TLS handshake record holding a ClientHello and return its SNI host, or
 // null when the bytes are not positively a ClientHello, or 'need-more' when a longer
@@ -172,7 +177,7 @@ function clientHelloSNI(buf) {
   if (buf.length < 5) return 'need-more';
   if (buf[0] !== 0x16 || buf[1] !== 0x03 || buf[2] > 0x03) return null; // not a TLS handshake record
   const recLen = (buf[3] << 8) | buf[4];
-  if (recLen < 4 || recLen > MAX_FIRST_RECORD) return null;
+  if (recLen < 4 || 5 + recLen > FRONT_MAX_HELLO_BYTES) return null;
   if (buf.length < 5 + recLen) return 'need-more';
   let p = 5;
   if (buf[p] !== 0x01) return null; // not ClientHello
@@ -188,21 +193,25 @@ function clientHelloSNI(buf) {
   if (p + 1 > hsEnd) return null;
   p += 1 + buf[p]; // compression_methods
   if (p + 2 > hsEnd) return null;
-  let extEnd = p + 2 + ((buf[p] << 8) | buf[p + 1]);
+  const extEnd = p + 2 + ((buf[p] << 8) | buf[p + 1]);
   p += 2;
-  if (extEnd > hsEnd) extEnd = hsEnd;
+  if (extEnd > hsEnd) return null;
   while (p + 4 <= extEnd) {
     const type = (buf[p] << 8) | buf[p + 1];
     const len = (buf[p + 2] << 8) | buf[p + 3];
     p += 4;
     if (p + len > extEnd) return null;
     if (type === 0x0000) { // server_name
-      let q = p + 2; // skip server_name_list length
-      while (q + 3 <= p + len) {
+      if (len < 2) return null;
+      const listLen = (buf[p] << 8) | buf[p + 1];
+      const listEnd = p + 2 + listLen;
+      if (listEnd !== p + len) return null;
+      let q = p + 2;
+      while (q + 3 <= listEnd) {
         const nameType = buf[q];
         const nameLen = (buf[q + 1] << 8) | buf[q + 2];
         q += 3;
-        if (q + nameLen > p + len) return null;
+        if (q + nameLen > listEnd) return null;
         if (nameType === 0x00) return buf.slice(q, q + nameLen).toString('ascii').toLowerCase();
         q += nameLen;
       }
@@ -210,6 +219,7 @@ function clientHelloSNI(buf) {
     }
     p += len;
   }
+  if (p !== extEnd) return null;
   return null; // no SNI: cannot positively inspect an allowed-SNI ClientHello -> refuse
 }
 
@@ -250,12 +260,15 @@ function spliceToSrt(client, target, firstFlight) {
 const front = createServer(client => {
   openFront += 1;
   activity();
-  client.once('close', () => { openFront -= 1; activity(); });
+  const idle = setTimeout(() => client.destroy(), FRONT_IDLE_MS);
+  idle.unref();
+  client.once('close', () => { clearTimeout(idle); openFront -= 1; activity(); });
   client.on('error', () => client.destroy());
   let buf = Buffer.alloc(0);
   let phase = 'connect';
   let target = null;
   client.on('data', chunk => {
+    idle.refresh();
     buf = Buffer.concat([buf, chunk]);
     if (phase === 'connect') {
       const idx = buf.indexOf('\r\n\r\n');
@@ -283,15 +296,16 @@ const front = createServer(client => {
   function inspect() {
     const sni = clientHelloSNI(buf);
     if (sni === 'need-more') {
-      if (buf.length > MAX_FIRST_RECORD) { // never grow unbounded; fail closed
+      if (buf.length > FRONT_MAX_HELLO_BYTES) { // never grow unbounded; fail closed
         phase = 'refused';
         observe('CONNECT', target, null, 'deny');
         client.destroy();
       }
       return;
     }
-    if (sni && hosts.has(sni)) {
+    if (sni && sni === target && hosts.has(sni)) {
       phase = 'spliced';
+      clearTimeout(idle); // the idle bound is PRE-SPLICE only
       spliceToSrt(client, target, buf);
     } else {
       phase = 'refused';

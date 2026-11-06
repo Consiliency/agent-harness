@@ -1,7 +1,8 @@
 {
   "schema": "seat_jail_mutation_receipts.v1",
   "issue": "agent-harness#1170",
-  "head": "952b30e9e9d2725a3571394284ea9c8d375598e9",
+  "base": "unattributed",
+  "attribution_note": "Historical run base unavailable; see agent-harness#1555.",
   "receipts": [
     {
       "id": "probe-widen-allowlist",

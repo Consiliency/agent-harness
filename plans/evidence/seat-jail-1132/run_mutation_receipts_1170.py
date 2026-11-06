@@ -55,7 +55,7 @@ FRONT_FORWARDS_ANYTHING = (
     "      client.destroy(); // not a positively-inspected allowed-SNI ClientHello: no bytes upstream",
     "      phase = 'spliced'; spliceToSrt(client, target, buf); // neutralised guard")
 # both SNI walls: the front's allow-check and srt's SNICallback hook.
-FRONT_ANY_SNI = ("    if (sni && hosts.has(sni)) {", "    if (sni) {")
+FRONT_ANY_SNI = ("    if (sni && sni === target && hosts.has(sni)) {", "    if (sni) {")
 
 MUTATIONS: list[dict[str, object]] = [
     # -- live probe rows -------------------------------------------------------------------
@@ -253,12 +253,15 @@ def main(argv: list[str]) -> int:
         receipt["result"] = "red_as_required" if red else "SURVIVED"
         print(mutation["id"], receipt["result"], flush=True)
         receipts.append(receipt)
-    head = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True,
-                          text=True).stdout.strip()
+    base = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True,
+                          text=True).stdout.strip() or "unattributed"
     order = [m["id"] for m in MUTATIONS]
     receipts.sort(key=lambda r: order.index(r["id"]))
-    OUT.write_text(json.dumps({"schema": "seat_jail_mutation_receipts.v1", "issue": "agent-harness#1170",
-                               "head": head, "receipts": receipts}, indent=2) + "\n")
+    document = {"schema": "seat_jail_mutation_receipts.v1", "issue": "agent-harness#1170",
+                "base": base, "receipts": receipts}
+    if base == "unattributed":
+        document["attribution_note"] = "Run base unavailable; see agent-harness#1555."
+    OUT.write_text(json.dumps(document, indent=2) + "\n")
     survived = [r["id"] for r in receipts if r["result"] != "red_as_required"]
     print("survived:", survived)
     return 1 if survived else 0

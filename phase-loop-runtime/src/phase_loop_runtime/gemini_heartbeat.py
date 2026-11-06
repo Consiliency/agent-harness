@@ -128,10 +128,13 @@ def _fd_digest(fd):
 class Admission:
     """The image a Gemini heartbeat leg executes, with exactly one admission class."""
 
-    def __init__(self, image, help_sha256, admission_class, path=None):
+    def __init__(self, image, help_sha256, admission_class, path=None, *, source="subject"):
         if admission_class not in ADMISSION_CLASSES:
             raise ValueError(_CAPABILITY)
-        self.image, self.help_sha256, self.admission_class, self.path = image, help_sha256, admission_class, path
+        if source not in {"subject", "lkg"}:
+            raise ValueError(_CAPABILITY)
+        self.image, self.help_sha256, self.admission_class = image, help_sha256, admission_class
+        self.path, self.source = path, source
 
     def close(self):
         self.image.close()
@@ -176,7 +179,7 @@ def _local_capabilities():
         os.close(fd)
 
 
-def admit(env, *, keep_miss=False):
+def admit(env, *, subject_path=None, keep_miss=False):
     """Admission, lookup only; never qualifies, never touches the network.
 
     1. A release-qualified digest is admitted before any config, store or network read (I6).
@@ -190,20 +193,26 @@ def admit(env, *, keep_miss=False):
         if _CANDIDATE is not None:
             return Admission(VerifiedImage(_CANDIDATE.reopen(), _CANDIDATE.sha256),
                              QUALIFIED_IMAGES.get(_CANDIDATE.sha256), "qualification_candidate")
-        path = shutil.which("agy", path=env.get("PATH", os.defpath))
+        path = (os.fspath(subject_path) if subject_path is not None
+                else shutil.which("agy", path=env.get("PATH", os.defpath)))
         if path is None:
             raise ValueError(_CAPABILITY)
         data = _read_image(path)
         digest = sha256(data).hexdigest()
         if digest in QUALIFIED_IMAGES:
             image = VerifiedImage.from_bytes(data, path)
-            return Admission(image, QUALIFIED_IMAGES[digest], "release_qualified", Path(path))
+            return Admission(image, QUALIFIED_IMAGES[digest], "release_qualified", Path(path),
+                             source="subject")
     except (OSError, AgyCanaryEvidenceError, ValueError) as exc:
         raise ValueError(_CAPABILITY) from exc
     from . import agy_qualification
     try:
         return agy_qualification.lookup(env, data, path)
     except AdmissionMiss as miss:
+        fallback = agy_qualification._admit_last_known_good(env)
+        if fallback is not None:
+            miss.image.close()
+            return fallback
         # Only ensure_admitted takes the miss's image for first use; every lookup-only
         # caller closes it here, so a refusal never leaks a memfd (codex B2).
         if keep_miss:
