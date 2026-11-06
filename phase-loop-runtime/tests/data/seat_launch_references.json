@@ -1,4 +1,5 @@
 [
+  {"count": 1, "function": "_checkout_reader.read", "module": "claude_seat_sdk", "primitive": "io.read_bytes", "role": "host-io"},
   {"count": 1, "function": "main", "module": "claude_seat_transport", "primitive": "io.read_bytes", "role": "host-io"},
   {"count": 1, "function": "_launch_claude_sdk_worker", "module": "panel_invoker", "primitive": "subprocess.Popen", "role": "python-worker"},
   {"count": 1, "function": "_trusted_host_file", "module": "panel_invoker", "primitive": "io.stat", "role": "host-io"},
@@ -14,7 +15,6 @@
   {"count": 1, "function": "file_sha256", "module": "claude_seat_sdk", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "installed_bindings", "module": "claude_seat_sdk", "primitive": "io.read_bytes", "role": "host-io"},
   {"count": 1, "function": "main", "module": "claude_seat_sdk", "primitive": "io.glob", "role": "host-io"},
-  {"count": 2, "function": "proof_inputs", "module": "claude_seat_sdk", "primitive": "io.read_bytes", "role": "host-io"},
   {"count": 1, "function": "read_packaged", "module": "claude_seat_sdk", "primitive": "io.open", "role": "host-io"},
   {"count": 2, "function": "runtime_files", "module": "claude_seat_sdk", "primitive": "io.rglob", "role": "host-io"},
   {"count": 1, "function": "seal", "module": "claude_seat_sdk", "primitive": "io.open", "role": "host-io"},

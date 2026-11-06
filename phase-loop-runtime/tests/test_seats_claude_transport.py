@@ -1148,6 +1148,16 @@ _FAKE_RESULT = "VERDICT: approve\nNo blocking findings."
 _ENTER_H = ["/usr/bin/nsenter", "--net", "--mount", "-t", "4242", "-U", "--preserve-credentials"]
 
 
+def _prepared(sealed, payload=None):
+    """The launch a preflight would prepare for the sealed test install."""
+    payload = payload or {name: sdk.read_packaged(f"worker/{name}") for name in sdk.WORKER_PAYLOAD}
+    return sdk.PreparedSdkLaunch(
+        install=sealed.install, payload_bytes=dict(payload),
+        bindings={f"payload:{name}": hashlib.sha256(data).hexdigest()
+                  for name, data in payload.items()},
+        directory=sealed.state, manifest_raw=sealed.manifest_raw)
+
+
 def _worker_argv(sealed_install, *, worker_id=7):
     spec = sdk.worker_launch_spec(sealed_install.install)
     fds = {name: 20 + index for index, name in enumerate(sdk.WORKER_PAYLOAD)}
@@ -1206,7 +1216,7 @@ def test_a_worker_needs_the_seat_uid_holder(sealed_install, monkeypatch):
         token = pi._EGRESS_LAUNCH_PREFIX.set(prefix)
         try:
             with pytest.raises(ct.TransportRefused) as caught:
-                pi._launch_claude_sdk_worker(spec, worker_id=3)
+                pi._launch_claude_sdk_worker(spec, worker_id=3, prepared=_prepared(sealed_install))
         finally:
             pi._EGRESS_LAUNCH_PREFIX.reset(token)
         assert caught.value.code == "claude_sdk_worker_unavailable"
@@ -1269,7 +1279,7 @@ def _duplex_leg(monkeypatch, tmp_path, sealed_install, *, mode="ok", cli=None, d
                                 env={**env, "FAKE_CLI_MODE": mode}, stdin=stdin, stdout=stdout,
                                 stderr=stderr, start_new_session=start_new_session, cwd=tmp_path)
 
-    def launch_worker(spec, *, worker_id):
+    def launch_worker(spec, *, worker_id, prepared):
         made = worker(tmp_path) if worker is not None else _unsandboxed_worker(tmp_path)
         workers.append(made)
         return made
@@ -1291,9 +1301,9 @@ def _duplex_leg(monkeypatch, tmp_path, sealed_install, *, mode="ok", cli=None, d
                            prompt=pi._BROKER_CLAUDE_DIRECT_REQUEST + sdk_tests.PROMPT)
     seat = types.SimpleNamespace(jail=types.SimpleNamespace(seat_ids=(5, 5)), probe_jail=None)
     run = pi._run_claude_sdk_leg(
-        sdk_tests.owned_argv(sdk.sdk_cli_delta()), spec=spec, bridge=bridge, install=install,
-        options=sdk_tests.leg_options(sdk.sdk_cli_delta()), cwd=tmp_path,
-        env=sdk.cli_env(sdk_tests.fake_jail()), deadline_s=deadline_s, seat=seat)
+        sdk_tests.owned_argv(sdk.sdk_cli_delta()), spec=spec, bridge=bridge,
+        prepared=_prepared(sealed_install), options=sdk_tests.leg_options(sdk.sdk_cli_delta()),
+        cwd=tmp_path, env=sdk.cli_env(sdk_tests.fake_jail()), deadline_s=deadline_s, seat=seat)
     return run, bridge, launched, workers
 
 
@@ -1399,15 +1409,21 @@ def _status(pid: int) -> dict[str, str]:
     return fields
 
 
-def test_live_worker_runs_as_its_own_identity_and_is_reaped(sealed_install):
+def test_live_worker_runs_as_its_own_identity_and_is_reaped(sealed_install, monkeypatch):
     require_live_worker()
     install = sealed_install.install
     spec = sdk.worker_launch_spec(install)
+    prepared = _prepared(sealed_install)
+    # The packaged payload changes after the preflight: the worker still runs the verified
+    # bytes, because the launcher never reopens the package.
+    real_read = sdk.read_packaged
+    monkeypatch.setattr(sdk, "read_packaged", lambda name, **k: (
+        b"raise SystemExit(99)\n" if name.startswith("worker/") else real_read(name, **k)))
     with _seat_uid_holder():
         bridge = sdk.SDKBridge(token=sdk_tests.SEAT_TOKEN, session_id=sdk_tests.SESSION_ID,
                                prompt="the sealed prompt")
         with pi._seat_uid.lease_seat_id(pi._claude_sdk_worker_count()) as worker_id:
-            worker = pi._launch_claude_sdk_worker(spec, worker_id=worker_id)
+            worker = pi._launch_claude_sdk_worker(spec, worker_id=worker_id, prepared=prepared)
             try:
                 closure = next(d for d, s in spec.read_only.items()
                                if Path(s) == install.closure_root)
@@ -1457,7 +1473,8 @@ def test_live_sdk_leg_admits_through_the_sandboxed_worker(monkeypatch, tmp_path,
         seat = types.SimpleNamespace(jail=types.SimpleNamespace(seat_ids=None), probe_jail=None)
         run = pi._run_claude_sdk_leg(
             sdk_tests.owned_argv(sdk.sdk_cli_delta()), spec=sdk.worker_launch_spec(install),
-            bridge=bridge, install=install, options=sdk_tests.leg_options(sdk.sdk_cli_delta()),
+            bridge=bridge, prepared=_prepared(sealed_install),
+            options=sdk_tests.leg_options(sdk.sdk_cli_delta()),
             cwd=tmp_path, env=sdk.cli_env(sdk_tests.fake_jail()), deadline_s=120.0, seat=seat)
     assert bridge.outcome(run.returncode) == ("admitted", _FAKE_RESULT)
 
@@ -1479,7 +1496,9 @@ def test_live_parent_death_reaps_the_worker(tmp_path, sealed_install):
             pi._EGRESS_LAUNCH_PREFIX.set(tuple(prefix))
             bridge = sdk.SDKBridge(token=T.SEAT_TOKEN, session_id=T.SESSION_ID, prompt="p")
             with seat_uid.lease_seat_id(pi._claude_sdk_worker_count()) as worker_id:
-                worker = pi._launch_claude_sdk_worker(spec, worker_id=worker_id)
+                payload = {{n: sdk.read_packaged(f"worker/{{n}}") for n in sdk.WORKER_PAYLOAD}}
+                prepared = sdk.PreparedSdkLaunch(install=install, payload_bytes=payload, bindings={{}})
+                worker = pi._launch_claude_sdk_worker(spec, worker_id=worker_id, prepared=prepared)
                 closure = next(d for d, s in spec.read_only.items() if s == str(install.closure_root))
                 worker.send(bridge.hello(filter_program=spec.filter_program, roots=[closure],
                                          inventory=install.inventory, excluded=list(install.excluded),
@@ -1507,3 +1526,163 @@ def test_live_parent_death_reaps_the_worker(tmp_path, sealed_install):
         if board.poll() is None:
             os.killpg(board.pid, 9)
             board.wait()
+
+
+# -- the review's repair round: prepared bytes, currency and ordering -----------------------
+
+def test_the_launcher_seals_only_the_prepared_bytes(sealed_install, monkeypatch):
+    """The packaged payload changes after the preflight: the memfds hold the verified bytes
+    and the launcher never reopens the package."""
+    spec = sdk.worker_launch_spec(sealed_install.install)
+    prepared = _prepared(sealed_install)
+    reopened, sealed = [], {}
+    monkeypatch.setattr(sdk, "read_packaged", lambda name, **k: reopened.append(name) or b"x")
+    real_memfd = seat_jail.memfd_with
+
+    def memfd(name, data):
+        sealed[name] = bytes(data)
+        return real_memfd(name, data)
+
+    monkeypatch.setattr(pi._seat_jail, "memfd_with", memfd)
+
+    class Started:
+        pid = os.getpid()
+        stderr = None
+
+    monkeypatch.setattr(pi.subprocess, "Popen", lambda *a, **k: Started())
+    monkeypatch.setattr(pi, "_anchor_process_group", lambda process: None)
+    monkeypatch.setattr(pi, "_drain_bounded", lambda pipe: None)
+    monkeypatch.setattr(pi, "_claude_sdk_drop_tool_files", lambda root: {})
+    token = pi._EGRESS_LAUNCH_PREFIX.set((*_ENTER_H, "/usr/bin/setpriv", "--"))
+    try:
+        worker = pi._launch_claude_sdk_worker(spec, worker_id=3, prepared=prepared)
+    finally:
+        pi._EGRESS_LAUNCH_PREFIX.reset(token)
+    worker.feeder.close()
+    os.close(worker.read_fd)
+    assert reopened == []
+    assert {name.removeprefix("claude-sdk-"): data for name, data in sealed.items()} == dict(
+        prepared.payload_bytes)
+
+
+def test_run_jailed_needs_the_seats_prepared_launch_and_never_rereads_it(sealed_install,
+                                                                         monkeypatch):
+    torn: list = []
+    monkeypatch.setattr(pi, "_cleanup_jailed_seat", lambda seat, **k: torn.append(seat))
+    prepared = _prepared(sealed_install)
+    tampered = dataclasses_replace(prepared, payload_bytes={
+        **prepared.payload_bytes, "claude_sdk_worker.py": b"# changed\n"})
+    for value, code in ((None, sdk.WORKER_UNAVAILABLE), ("not-a-launch", sdk.WORKER_UNAVAILABLE),
+                        (tampered, sdk.PROVENANCE_REFUSED)):
+        sink: list = []
+        seat = types.SimpleNamespace(jail=sdk_tests.fake_jail(), token=sdk_tests.SEAT_TOKEN,
+                                     sdk_prepared=value)
+        assert sdk.run_jailed(seat, timeout_s=1, backstop_s=1, model=None, effort=None,
+                              prompt="p", broker_evidence={}, failure_detail_sink=sink) == (
+            "DEGRADED", "")
+        assert sink[0].template == code
+    assert sdk.still_current(prepared) is prepared
+
+
+def dataclasses_replace(value, **changes):
+    import dataclasses
+
+    return dataclasses.replace(value, **changes)
+
+
+def test_the_real_spawn_runs_the_sdk_preflight_before_any_credential_read(monkeypatch, tmp_path):
+    """Transport resolution, then the worker preflight, then the login-store read, then the
+    credential (``_prepare_jailed_claude``), then the login proof and the launch."""
+    from test_seat_login_wait_a3_1166 import _spawn
+
+    events: list[str] = []
+    prepared = object()
+    module = _install(monkeypatch, "sdk", run=lambda seat, **k: events.append("launch") or (
+        "OK", "a review\n\nAGREE"))
+    module.preflight = lambda: events.append("preflight") or prepared
+    real_wait = sc.LoginWait
+    monkeypatch.setattr(sc, "LoginWait", lambda *a, **k: events.append("login-store") or real_wait(*a, **k))
+    monkeypatch.setenv(ct.ROUTE_ENV, "sdk")
+
+    def prepare(*_a, **kwargs):
+        events.append("credential")
+        assert kwargs["sdk_prepared"] is prepared
+        return types.SimpleNamespace(notices=[])
+
+    _spawned, calls = _spawn(
+        monkeypatch, tmp_path, sc.LOGIN_READY, jailed_leg=lambda seat, **k: ("OK", "x"),
+        prepare=prepare, login_proof=lambda seat, *a, **k: events.append("login-proof") or sc.LoginProof(
+            sc.SOURCE_LOGIN, "oauth_token", "none"))
+    assert events == ["preflight", "login-store", "credential", "login-proof", "launch"]
+
+
+@pytest.mark.parametrize("code", ["claude_sdk_worker_unavailable", "claude_sdk_provenance_refused"])
+def test_a_refused_sdk_preflight_at_the_spawn_reads_no_credential(monkeypatch, tmp_path, code):
+    from test_seat_login_wait_a3_1166 import _spawn
+
+    module = _install(monkeypatch, "sdk")
+
+    def preflight():
+        raise ct.TransportRefused(code)
+
+    module.preflight = preflight
+    monkeypatch.setattr(sc, "LoginWait", lambda *a, **k: (_ for _ in ()).throw(AssertionError))
+    monkeypatch.setenv(ct.ROUTE_ENV, "sdk")
+    spawned, calls = _spawn(monkeypatch, tmp_path, sc.LOGIN_READY,
+                            jailed_leg=lambda seat, **k: ("OK", "x"))
+    assert calls == {"prepare": 0, "launched": 0}
+    assert tuple(spawned)[:2] == ("DEGRADED", "") and str(tuple(spawned)[2]) == code
+
+
+def _modes_board():
+    from phase_loop_runtime.advisor_board.fixtures import DEFAULT_SEATS
+    from phase_loop_runtime.advisor_board.schema import Board
+
+    claude = next(seat for seat in DEFAULT_SEATS if seat.harness == "claude")
+    return Board(name="claude-only", purpose="premerge-review", seats=(claude,))
+
+
+def _modes(monkeypatch, events):
+    from phase_loop_runtime import seat_jail_autoqualify as aq
+
+    monkeypatch.setattr(aq, "ensure_qualified", lambda *a: aq.Outcome(aq.QUALIFIED))
+    monkeypatch.setattr(aq, "recent_outcome", lambda digest: None)
+    monkeypatch.setattr(pi, "_under_claude_code", lambda *a: False)
+    monkeypatch.setattr(pi, "_claude_code_support_status", lambda *a, **k: (True, "supported"))
+    monkeypatch.setattr(seat_jail, "decide_seat_route", lambda *a, **k: seat_jail.SeatRoute(True))
+    monkeypatch.setattr(sc, "override_decision",
+                        lambda *a, **k: events.append("credential") or types.SimpleNamespace(
+                            applies=False, refusal=None, notice=None))
+    monkeypatch.setattr(sc, "login_seconds_left", lambda margin: None)
+    return pi._seat_launch_modes(_modes_board(), mode="review",
+                                 review_authorization=types.SimpleNamespace(
+                                     staged_tree_sha256="a" * 64),
+                                 base_env={}, timeouts_by_leg={"claude": 300})
+
+
+def test_seat_modes_refuse_an_unadmitted_sdk_before_any_credential(monkeypatch, none_admitted):
+    events: list[str] = []
+    monkeypatch.setenv(ct.ROUTE_ENV, "sdk")
+    modes = _modes(monkeypatch, events)
+    assert (modes[0].mode, modes[0].code) == ("degraded", ct.NOT_ADMITTED)
+    assert events == []
+
+
+def test_seat_modes_run_the_sdk_preflight_before_any_credential(monkeypatch):
+    events: list[str] = []
+    module = _install(monkeypatch, "sdk")
+    module.preflight = lambda: events.append("preflight") or object()
+    monkeypatch.setenv(ct.ROUTE_ENV, "sdk")
+    modes = _modes(monkeypatch, events)
+    assert modes[0].mode == "jailed"
+    assert events[0] == "preflight" and set(events[1:]) == {"credential"}
+    events.clear()
+
+    def refused():
+        events.append("preflight")
+        raise ct.TransportRefused("claude_sdk_worker_unavailable")
+
+    module.preflight = refused
+    modes = _modes(monkeypatch, events)
+    assert (modes[0].mode, modes[0].code) == ("degraded", "claude_sdk_worker_unavailable")
+    assert events == ["preflight"]

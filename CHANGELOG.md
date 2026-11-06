@@ -18,11 +18,22 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
   The jailed CLI then launches exactly as for the other transports, through
   `_run_leg_with_liveness`, which can now carry the parent bridge in its loop (`duplex`).
-  `_prepare_jailed_claude` runs the `sdk` worker preflight before the credential is
-  resolved and no longer requires a dependency session for `sdk`. `audit-order` checks an
-  admitted `sdk` head's boundary receipt against the head's current inputs, and the new
-  `verify-proof` command and base-defined `claude-sdk-audit` workflow fail closed on an
-  admitted head until the owner's enforcement route and private evidence store exist.
+
+  An admitted `sdk` runs its worker preflight at the spawn, before any credential-store
+  read (the seat-mode preflight too). The preflight reads the worker payload once and
+  verifies it, and that prepared launch (`claude_seat_sdk.PreparedSdkLaunch`) is carried
+  through the jail to the launcher. The launcher seals exactly those bytes and never
+  reopens the package. `_prepare_jailed_claude` no longer requires a dependency session for
+  `sdk`.
+
+  On the audit side:
+  - The boundary receipt binds the launcher's whole dependency closure, with a fail-closed
+    inventory of every bound region's references.
+  - `audit-order` recomputes the canonical proof-input digest from an admitted head and
+    validates the receipt's nested closed schema.
+  - The new `verify-proof` command and the base-defined, credential-free `claude-sdk-audit`
+    workflow fail closed on an admitted head until the owner's enforcement route and private
+    evidence store exist.
 
 - The jailed Claude seat's `sdk` transport lands offline and unadmitted (SEATS CLAUDE SL-3,
   agent-harness#1820): `claude_seat_sdk` (`ADMITTED = False`) and its credential-free host

@@ -30,10 +30,10 @@ on:
   pull_request_target:
     types: [opened, synchronize, reopened, ready_for_review]
 
+# No credential reaches the step that reads head content: the merge state of a cited PR is
+# read anonymously, and an unverifiable state fails the audit.
 permissions:
   contents: read
-  # audit-order reads the merge state of the PRs that landed a cited record section.
-  pull-requests: read
 
 concurrency:
   group: claude-sdk-audit-${{ github.event.pull_request.number }}
@@ -62,9 +62,9 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          unset GH_TOKEN GITHUB_TOKEN
           # The head's objects only: `refs/pull/N/head` also serves a fork's head.
           git fetch --no-tags --depth=1 origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/pr/head"
           test "$(git rev-parse refs/remotes/pr/head)" = "$HEAD_SHA"

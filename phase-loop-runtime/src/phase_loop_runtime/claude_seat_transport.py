@@ -974,15 +974,106 @@ SDK_INSTALLED_BINDINGS: Mapping[str, str] = MappingProxyType({
     "payload:claude_sdk_worker.py": f"{_SDK_DATA}/worker/claude_sdk_worker.py",
     "payload:claude_sdk_adapter.py": f"{_SDK_DATA}/worker/claude_sdk_adapter.py",
 })
+_PI = f"{RUNTIME_DIR}/panel_invoker.py"
+_JAIL = f"{RUNTIME_DIR}/seat_jail.py"
+_UID = f"{RUNTIME_DIR}/seat_uid.py"
+#: The proof inputs, exactly (EC-CLAUDE-3 "Receipt and verification"): whole files, then
+#: named regions of shared modules. Nothing outside this set can stale a receipt; a change
+#: inside it always does. ``claude_seat_sdk`` re-exports these; this is their one source.
+SDK_PROOF_FILES: tuple[str, ...] = (
+    SDK_CONTRACT,
+    SDK_LOCK,
+    ".github/workflows/claude-sdk-audit.yml",
+    f"{RUNTIME_DIR}/claude_seat_sdk.py",
+    f"{RUNTIME_DIR}/claude_seat_transport.py",
+    f"{RUNTIME_DIR}/claude_seat_print.py",
+    *(path for name, path in SDK_INSTALLED_BINDINGS.items() if name != "seat_module_sha256"),
+    "phase-loop-runtime/tests/data/seats_claude_sdk/launch-v1.json",
+    "phase-loop-runtime/tests/data/seats_claude_sdk/fake_cli.py",
+    "phase-loop-runtime/tests/data/seats_claude_sdk/filter_observer.py",
+    "phase-loop-runtime/tests/test_seats_claude_sdk.py",
+    "phase-loop-runtime/tests/test_seats_claude_sdk_adapter.py",
+    "phase-loop-runtime/tests/test_seats_claude_transport.py",
+    "phase-loop-runtime/tests/test_seats_claude_order.py",
+)
 SDK_PROOF_REGIONS: Mapping[str, tuple[str, ...]] = MappingProxyType({
-    f"{RUNTIME_DIR}/panel_invoker.py": (
+    _PI: (
+        # The jailed CLI's command, launch, liveness and teardown.
         "_broker_claude_tui_command", "_claude_panel_settings", "_prepare_jailed_claude",
         "_run_leg_with_liveness", "launch_provider", "_cleanup_jailed_seat",
-        "_JailedSeat", "_BROKER_CLAUDE_DIRECT_REQUEST", "_JAILED_CLAUDE_TOOL_CONTROLS"),
-    f"{RUNTIME_DIR}/seat_jail.py": (
-        "seat_env", "secret_encodings", "contains_secret", "build_seat_jail"),
-    f"{RUNTIME_DIR}/seat_uid.py": ("lease_seat_id", "seat_uid_available", "teardown_in_h"),
+        "_JailedSeat", "_BROKER_CLAUDE_DIRECT_REQUEST", "_JAILED_CLAUDE_TOOL_CONTROLS",
+        # The host worker's launcher and duplex leg, and what they call.
+        "_CLAUDE_SDK_WORKER_DROP_TOOL", "_CLAUDE_SDK_WORKER_SETTLE", "_PRLIMIT",
+        "_CLAUDE_SDK_READY_TIMEOUT_S", "_CLAUDE_SDK_DRAIN_TIMEOUT_S", "_claude_sdk_refused",
+        "_trusted_host_file", "_HOST_LIBRARY_DIRS", "_claude_sdk_drop_tool_files",
+        "_claude_sdk_root_binds", "_claude_sdk_worker_argv", "_PipeFeeder", "_fd_writer",
+        "_file_writer", "_ClaudeSdkWorker", "_launch_claude_sdk_worker", "_drain_bounded",
+        "_ClaudeSdkDuplex", "_await_claude_sdk_ready", "_drain_claude_sdk_worker",
+        "_claude_sdk_worker_count", "_run_claude_sdk_leg", "_claude_sdk_preflight",
+        "_claude_mode_transport_refusal", "_EGRESS_LAUNCH_PREFIX", "_enters_namespace",
+        "_anchor_process_group", "_terminate_process_group", "_LegRun",
+        # Teardown: the process-group termination the launcher and the CLI rely on.
+        "_PROCESS_GROUP_TERM_GRACE_S", "_PROCESS_GROUP_KILL_GRACE_S", "_process_group_exists",
+        "_wait_for_process_group_exit", "_terminate_process_group_windows",
+        "_PROCESS_GROUP_POLL_S"),
+    _JAIL: (
+        "seat_env", "secret_encodings", "contains_secret", "build_seat_jail",
+        "setpriv_drop", "BWRAP", "JAIL_CAP_ADD", "memfd_with", "_F_ADD_SEALS"),
+    _UID: (
+        "lease_seat_id", "seat_uid_available", "teardown_in_h", "trusted_module_argv",
+        "seat_id_count", "subordinate_range", "SUBUID_FILE", "SUBGID_FILE",
+        "SeatIdsExhausted", "_PACKAGE_ROOT", "_TRUSTED_BOOT", "MAX_SEAT_IDS",
+        "seat_runtime_dir", "SubordinateRange", "_operator_name"),
 })
+#: The module aliases a bound region reaches other bound modules through.
+SDK_PROOF_ALIASES: Mapping[str, Mapping[str, str]] = MappingProxyType({
+    _PI: MappingProxyType({"_seat_jail": _JAIL, "_seat_uid": _UID}),
+})
+#: Reviewed, closed: the module-level names the bound regions reference that are outside the
+#: worker boundary -- type names, and the provider-launch, egress, Gemini and login
+#: machinery of the other transports. A reference that is neither bound nor listed here
+#: fails closed, so a new dependency of a bound region is a review, not a silent gap.
+SDK_PROOF_UNBOUND: Mapping[str, frozenset[str]] = MappingProxyType({
+    _PI: frozenset({
+        "ProviderProcessGroupQuiescenceError", "SeatLaunchRole", "_EXEC_OBSERVATION",
+        "_JAIL_PROBE_DIRNAME", "_LEG_LIVENESS_CPU_SAMPLE_S", "_LEG_LIVENESS_READ_INTERVAL_S",
+        "_LEG_POST_EXIT_GRACE_S", "_LEG_STALL_THRESHOLD_S", "_OWNED_LAUNCH",
+        "_ProviderQuiescenceLatch", "_ReviewMonitor", "_ReviewOperationCancelled",
+        "_await_gemini_login", "_build_jail_with_owned_inputs", "_child_scratch_kwargs",
+        "_claude_seat_login_margin_s", "_compose_launch_prefix", "_compose_seat_jail_prefix",
+        "_count_provider_spawn", "_dedupe", "_jail_launch_env", "_names_provider",
+        "_note_exec_result", "_probes_seat", "_redact_seat_credentials",
+        "_require_jailed_seat_identity", "_require_qualified_jail", "_require_seat_identity",
+        "_resolve_claude_executable", "_seat_command_profile", "_validate_jail_dependency",
+        "launch_owned",
+    }),
+    _JAIL: frozenset({
+        "CLAUDE_PRESEED", "CLAUDE_TOKEN_FD_ENV", "GEMINI_WRITABLE_CONFIG_DIRS",
+        "GEMINI_WRITABLE_DOTDIR_DIRS", "HOST_GEMINI_WRITABLE_DIRNAME", "HOST_HOME_DIRNAME",
+        "HOST_OUT_DIRNAME", "HOST_TREE_DIRNAME", "PROFILE_ID", "SEAT_BIN",
+        "SEAT_CLAUDE_CONFIG", "SEAT_EGRESS_CA", "SEAT_HOME", "SEAT_OUT", "SEAT_TMP",
+        "SEAT_TMP_DIRNAME", "SEAT_TREE", "SeatJail", "SeatSandboxRefused", "_owner_argv",
+        "_require_safe_dependency_destinations", "actual_profile_digest",
+        "build_seccomp_filter", "close_jail_fds", "filter_digest", "host_arch",
+        "open_dir_nofollow", "refused", "tree_manifest_sha256_at", "write_new_file_at",
+    }),
+    _UID: frozenset({
+        "NEWGIDMAP", "NEWUIDMAP", "SEAT_DIR_NAMES", "_privileged_helper", "_pythonpath_env",
+        "in_h_argv", "record_retention",
+    }),
+})
+#: Every module the seat module imports; any other import fails closed.
+SDK_DEPENDENCY_INVENTORY: tuple[str, ...] = (
+    "__future__", "argparse", "ast", "base64", "dataclasses", "errno", "hashlib",
+    "importlib", "json", "os", "platform", "pwd", "re", "secrets", "shutil", "stat",
+    "struct", "sys", "tempfile", "pathlib", "types", "typing", "uuid", "zipfile",
+    ".claude_seat_transport", ".claude_seat_print", ".seat_jail", ".seat_uid",
+    ".panel_invoker", ".",
+)
+#: The install and private bindings the canonical digest joins to the repository's, each
+#: named by the receipt and retrieved through the trusted evidence route.
+SDK_PROOF_EXTRAS: tuple[str, ...] = (
+    "worker_install_sha256", "instrumentation_wrapper_sha256", "private_suite_sha256")
 SDK_JUNIT_SELECTORS = ("VB", "VL")
 SDK_PROOF_PROPERTY = "claude_sdk_proof_inputs_sha256"
 SDK_INSTALL_PROPERTY = "claude_sdk_worker_install_sha256"
@@ -1084,17 +1175,205 @@ def _junit_failures(selector: str, raw: bytes, expected: Mapping[str, object],
     return problems
 
 
+def _top_level(tree: ast.Module) -> dict[str, ast.AST]:
+    defs: dict[str, ast.AST] = {}
+    for node in tree.body:
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            defs.setdefault(node.name, node)
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    defs.setdefault(target.id, node)
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            defs.setdefault(node.target.id, node)
+    return defs
+
+
+def module_dependencies(source: bytes) -> set[str]:
+    """Every module one source imports (``.x`` for package-relative ones)."""
+    found: set[str] = set()
+    for node in ast.walk(ast.parse(source)):
+        if isinstance(node, ast.Import):
+            found.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level:
+                found.add("." + node.module if node.module else ".")
+                if not node.module:
+                    found.update("." + alias.name for alias in node.names)
+            else:
+                found.add((node.module or "").split(".")[0])
+    return found
+
+
+def sdk_proof_bindings(read: Callable[[str], bytes | None]) -> dict[str, str]:
+    """``{input: sha256}`` over :data:`SDK_PROOF_FILES` and :data:`SDK_PROOF_REGIONS`, read
+    through ``read`` (a head tree or a checkout, as data). Fails closed (``AuditError``) on a
+    missing input or region, on a bound region's reference -- in its module, or through a
+    :data:`SDK_PROOF_ALIASES` alias -- that is neither bound nor in
+    :data:`SDK_PROOF_UNBOUND`, and on a seat-module import outside
+    :data:`SDK_DEPENDENCY_INVENTORY`."""
+    out: dict[str, str] = {}
+    for rel in SDK_PROOF_FILES:
+        data = read(rel)
+        if data is None:
+            raise AuditError(f"an sdk proof input is missing: {rel}")
+        out[rel] = _sha256(data)
+    trees: dict[str, tuple[bytes, ast.Module, dict[str, ast.AST]]] = {}
+    for rel in SDK_PROOF_REGIONS:
+        source = read(rel)
+        if source is None:
+            raise AuditError(f"an sdk proof input is missing: {rel}")
+        try:
+            tree = ast.parse(source)
+        except (SyntaxError, ValueError) as exc:
+            raise AuditError(f"an sdk proof input does not parse: {rel}") from exc
+        trees[rel] = (source, tree, _top_level(tree))
+    for rel, names in SDK_PROOF_REGIONS.items():
+        source, _tree, defs = trees[rel]
+        aliases = SDK_PROOF_ALIASES.get(rel, {})
+        for name in names:
+            region = source_region(source, name)
+            if region is None or name not in defs:
+                raise AuditError(f"an sdk proof region is missing: {rel}::{name}")
+            out[f"{rel}::{name}"] = _sha256(region)
+            for node in ast.walk(defs[name]):
+                if isinstance(node, ast.Name) and isinstance(node.ctx, ast.Load):
+                    target, ref = rel, node.id
+                    if ref not in defs or ref == name:
+                        continue
+                elif (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+                        and node.value.id in aliases):
+                    target, ref = aliases[node.value.id], node.attr
+                else:
+                    continue
+                if ref not in SDK_PROOF_REGIONS.get(target, ()) and \
+                        ref not in SDK_PROOF_UNBOUND.get(target, frozenset()):
+                    raise AuditError(f"an unclassified dependency of {rel}::{name}: "
+                                     f"{target}::{ref}")
+    seat = read(f"{RUNTIME_DIR}/claude_seat_sdk.py") or b""
+    try:
+        imported = module_dependencies(seat)
+    except (SyntaxError, ValueError) as exc:
+        raise AuditError("the sdk seat module does not parse") from exc
+    if not imported <= set(SDK_DEPENDENCY_INVENTORY):
+        raise AuditError("the sdk seat module imports outside its dependency inventory")
+    return dict(sorted(out.items()))
+
+
+def sdk_proof_inputs_sha256(bindings: Mapping[str, str], extras: Mapping[str, str]) -> str:
+    """The canonical binding: sorted named sha256 values (repository bindings, then the
+    receipt-named :data:`SDK_PROOF_EXTRAS` as ``extra:<name>``), canonical JSON, sha256."""
+    if set(extras) != set(SDK_PROOF_EXTRAS) or not all(
+            isinstance(value, str) and _HEX64.match(value) for value in extras.values()):
+        raise AuditError("the sdk proof extras are not the closed set")
+    merged = dict(bindings)
+    merged.update({f"extra:{name}": extras[name] for name in SDK_PROOF_EXTRAS})
+    return _sha256(json.dumps(dict(sorted(merged.items())), sort_keys=True,
+                              separators=(",", ":"), ensure_ascii=True).encode("ascii"))
+
+
+_RECEIPT_SLUG = re.compile(r"[a-z0-9][a-z0-9_.-]{0,63}")
+_RECEIPT_OPAQUE = re.compile(r"ev-[0-9a-f]{32}")
+_RECEIPT_COUNTS = ("collected", "passed", "failed", "skipped")
+
+
+def _hex(value: object) -> bool:
+    return isinstance(value, str) and bool(_HEX64.match(value))
+
+
+def _counts_pass(value: object) -> bool:
+    return (isinstance(value, dict) and set(value) == set(_RECEIPT_COUNTS)
+            and all(type(value[k]) is int and value[k] >= 0 for k in _RECEIPT_COUNTS)
+            and value["collected"] > 0 and value["passed"] == value["collected"]
+            and value["failed"] == 0 and value["skipped"] == 0)
+
+
+def sdk_receipt_extras(receipt: Mapping[str, object]) -> dict[str, str]:
+    private = receipt.get("private_suite")
+    return {"worker_install_sha256": receipt.get("worker_install_sha256"),
+            "instrumentation_wrapper_sha256": receipt.get("instrumentation_wrapper_sha256"),
+            "private_suite_sha256": private.get("suite_sha256") if isinstance(private, dict)
+            else None}
+
+
+def validate_sdk_receipt(value: object) -> list[str]:
+    """Every way ``value`` is not a passing ``claude-sdk-boundary.v1`` receipt, nested
+    levels included: closed key sets everywhere, digests, counts that all pass, host and
+    interpreter vocabulary and opaque evidence IDs only. ``claude_seat_sdk`` uses this."""
+    if not isinstance(value, dict):
+        return ["the receipt is not an object"]
+    problems: list[str] = []
+    if set(value) != set(SDK_RECEIPT_FIELDS):
+        problems.append("the receipt's fields are not the closed set")
+    regions = {f"{rel}::{name}" for rel, names in SDK_PROOF_REGIONS.items() for name in names}
+    checks = {
+        "schema": value.get("schema") == SDK_RECEIPT_SCHEMA,
+        "sdk_version": value.get("sdk_version") == "0.2.167",
+        "lock_sha256": _hex(value.get("lock_sha256")),
+        "contract_sha256": _hex(value.get("contract_sha256")),
+        "proof_inputs_sha256": _hex(value.get("proof_inputs_sha256")),
+        "worker_install_sha256": _hex(value.get("worker_install_sha256")),
+        "instrumentation_wrapper_sha256": _hex(value.get("instrumentation_wrapper_sha256")),
+        "profile_digest": _hex(value.get("profile_digest")),
+        "installed_bindings": isinstance(value.get("installed_bindings"), dict)
+        and set(value["installed_bindings"]) == set(SDK_INSTALLED_BINDINGS)
+        and all(_hex(v) for v in value["installed_bindings"].values()),
+        "source_regions": isinstance(value.get("source_regions"), dict)
+        and set(value["source_regions"]) == regions
+        and all(_hex(v) for v in value["source_regions"].values()),
+        "runtime_manifest_sha256": isinstance(value.get("runtime_manifest_sha256"), list)
+        and bool(value["runtime_manifest_sha256"])
+        and all(_hex(v) for v in value["runtime_manifest_sha256"]),
+        "interpreter": isinstance(value.get("interpreter"), dict)
+        and set(value["interpreter"]) == {"implementation", "version"}
+        and value["interpreter"]["implementation"] == "cpython"
+        and isinstance(value["interpreter"]["version"], str)
+        and bool(re.fullmatch(r"3\.\d+\.\d+", value["interpreter"]["version"])),
+        "host_class": isinstance(value.get("host_class"), str)
+        and bool(_RECEIPT_SLUG.fullmatch(value["host_class"])),
+    }
+    public = value.get("public_junit")
+    checks["public_junit"] = (
+        isinstance(public, dict) and set(public) == set(SDK_JUNIT_SELECTORS)
+        and all(isinstance(public[s], dict) and set(public[s]) == {"sha256", "files"}
+                and _hex(public[s]["sha256"]) and isinstance(public[s]["files"], dict)
+                and bool(public[s]["files"])
+                and all(isinstance(k, str) and re.fullmatch(r"test_[a-z0-9_]+\.py", k)
+                        and _counts_pass(c) for k, c in public[s]["files"].items())
+                for s in SDK_JUNIT_SELECTORS))
+    private = value.get("private_suite")
+    checks["private_suite"] = (
+        isinstance(private, dict) and set(private) == {"suite_sha256", "evidence_ids", "junit"}
+        and _hex(private["suite_sha256"]) and isinstance(private["evidence_ids"], list)
+        and bool(private["evidence_ids"])
+        and all(isinstance(e, str) and _RECEIPT_OPAQUE.fullmatch(e)
+                for e in private["evidence_ids"])
+        and isinstance(private["junit"], dict) and set(private["junit"]) == set(SDK_JUNIT_SELECTORS)
+        and all(isinstance(private["junit"][s], dict)
+                and set(private["junit"][s]) == {"sha256", "selectors"}
+                and _hex(private["junit"][s]["sha256"])
+                and isinstance(private["junit"][s]["selectors"], dict)
+                and bool(private["junit"][s]["selectors"])
+                and all(isinstance(k, str) and _RECEIPT_OPAQUE.fullmatch(k) and _counts_pass(c)
+                        for k, c in private["junit"][s]["selectors"].items())
+                for s in SDK_JUNIT_SELECTORS))
+    problems.extend(f"{name} is not valid" for name, ok in checks.items() if not ok)
+    return problems
+
+
 def sdk_proof_failures(repo: Path | str, head: str, *,
                        junit: Mapping[str, bytes] | None = None,
                        require_evidence: bool = True) -> list[str]:
     """EC-CLAUDE-3 for one head tree, read as data: empty when `sdk` is not admitted
     there (a de-admission needs no receipt). While it is admitted, the committed receipt
-    and its packaged copy must be byte-identical, of the closed schema, and current for
-    every repository-derived binding (lock, contract, installed artifacts and source
-    regions recomputed from the head). With ``require_evidence`` (``verify-proof``, the
-    base-defined workflow) the public VB/VL JUnit must match it and the private evidence
-    must be retrievable; ``audit-order`` checks the repository half on every landing.
-    Anything unverifiable fails."""
+    and its packaged copy must be byte-identical and a valid closed receipt, its named
+    bindings must be the head's (lock, contract, installed artifacts, every source region),
+    and the canonical proof-input digest recomputed from every head proof input and the
+    receipt's named extras must equal its ``proof_inputs_sha256``. With
+    ``require_evidence`` (``verify-proof``, the base-defined workflow) each public VB/VL
+    JUnit must carry that same digest and match the receipt, and the private evidence must
+    be retrievable; ``audit-order`` checks the repository half on every landing. Anything
+    unverifiable fails."""
     repo = Path(repo)
     commit = _commit(repo, head)
     if commit is None:
@@ -1115,39 +1394,39 @@ def sdk_proof_failures(repo: Path | str, head: str, *,
         receipt = _strict_json(raw)
     except (UnicodeDecodeError, ValueError):
         return [*problems, "the sdk receipt does not parse"]
-    if not isinstance(receipt, dict) or set(receipt) != set(SDK_RECEIPT_FIELDS) \
-            or receipt.get("schema") != SDK_RECEIPT_SCHEMA:
-        return [*problems, "the sdk receipt is not the closed claude-sdk-boundary.v1 schema"]
+    invalid = validate_sdk_receipt(receipt)
+    if invalid:
+        return [*problems, *(f"the sdk receipt is not a valid claude-sdk-boundary.v1 "
+                             f"receipt: {item}" for item in invalid)]
+    try:
+        bindings = sdk_proof_bindings(lambda rel: _blob(repo, commit, rel))
+    except AuditError as exc:
+        return [*problems, str(exc)]
     for name, path in (("lock_sha256", SDK_LOCK), ("contract_sha256", SDK_CONTRACT)):
-        blob = _blob(repo, commit, path)
-        if blob is None or receipt.get(name) != _sha256(blob):
+        if receipt[name] != bindings[path]:
             problems.append(f"the sdk receipt is stale: {name}")
-    bindings = receipt.get("installed_bindings")
-    bindings = bindings if isinstance(bindings, dict) else {}
     for name, path in SDK_INSTALLED_BINDINGS.items():
         blob = _blob(repo, commit, path)
-        if blob is None or bindings.get(name) != _sha256(blob):
+        if blob is None or receipt["installed_bindings"][name] != _sha256(blob):
             problems.append(f"the sdk receipt is stale: {name}")
-    regions = receipt.get("source_regions")
-    regions = regions if isinstance(regions, dict) else {}
-    for path, names in SDK_PROOF_REGIONS.items():
-        source = _blob(repo, commit, path)
-        for name in names:
-            region = source_region(source, name) if source is not None else None
-            if region is None or regions.get(f"{path}::{name}") != _sha256(region):
-                problems.append(f"the sdk receipt is stale: {path}::{name}")
+    for key, digest in receipt["source_regions"].items():
+        if bindings.get(key) != digest:
+            problems.append(f"the sdk receipt is stale: {key}")
+    try:
+        recomputed = sdk_proof_inputs_sha256(bindings, sdk_receipt_extras(receipt))
+    except AuditError as exc:
+        return [*problems, str(exc)]
+    if recomputed != receipt["proof_inputs_sha256"]:
+        problems.append("the sdk receipt is stale: proof_inputs_sha256")
     if not require_evidence:
         return problems
-    public = receipt.get("public_junit")
-    public = public if isinstance(public, dict) else {}
     for selector in SDK_JUNIT_SELECTORS:
         data = (junit or {}).get(selector)
         if data is None:
             problems.append(f"sdk {selector}: the public JUnit was not supplied")
             continue
-        expected = public.get(selector)
-        problems.extend(_junit_failures(selector, data, expected if isinstance(expected, dict)
-                                        else {}, receipt))
+        problems.extend(_junit_failures(selector, data, receipt["public_junit"][selector],
+                                        {**receipt, "proof_inputs_sha256": recomputed}))
     if SDK_PRIVATE_EVIDENCE_STORE is None:
         problems.append("the sdk private evidence store is not configured (owner TODO): the "
                         "private VB/VL evidence cannot be verified")

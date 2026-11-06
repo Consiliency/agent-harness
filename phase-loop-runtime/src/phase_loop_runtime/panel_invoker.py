@@ -2106,6 +2106,25 @@ def _publish_seat_preflight(
     return notices
 
 
+def _claude_mode_transport_refusal(cache: dict[str, object]) -> str | None:
+    """The jailed Claude transport's refusal for a seat mode, read before any credential:
+    the selector's own, or an `sdk` worker preflight's typed code (run once per call)."""
+    transport, refusal = _claude_seat_transport.resolve_jailed_claude_transport()
+    selected = (os.environ.get(_claude_seat_transport.ROUTE_ENV) or "").strip().lower()
+    if refusal is not None:
+        # An unadmitted `sdk` is refused here; any other refused value is the spawn's to
+        # refuse and republish, as before.
+        return refusal if selected == "sdk" else None
+    if transport != "sdk":
+        return None
+    if "sdk" not in cache:
+        try:
+            cache["sdk"] = _claude_sdk_preflight()
+        except _claude_seat_transport.TransportRefused as exc:
+            cache["sdk"] = exc.code
+    return cache["sdk"] if isinstance(cache["sdk"], str) else None
+
+
 def _seat_launch_modes(
     board: Board, *, mode: str | None,
     review_authorization: "ReviewIsolationAuthorization | None",
@@ -2155,6 +2174,8 @@ def _seat_launch_modes(
                                           ignored)
         return credential[margin]
 
+    sdk_ready: dict[str, object] = {}
+    sdk_refused: set[int] = set()
     modes = []
     for position, seat in enumerate(board.seats):
         leg = (getattr(seat, "harness", None) or "").lower()
@@ -2204,6 +2225,16 @@ def _seat_launch_modes(
             # reach this.
             modes.append(_coded(sp.MODE_SEALED, str(route.code)))
         else:
+            if leg == "claude":
+                # IF-0-CLAUDE-1/3: the selected jailed transport, then (for `sdk`) its worker
+                # preflight, both before any credential-store read.
+                refusal = _claude_mode_transport_refusal(sdk_ready)
+                if refusal is not None:
+                    what, why, fix = _claude_seat_transport.notice_text(refusal)
+                    modes.append(sp.SeatMode(key, leg, sp.MODE_DEGRADED, refusal, why, fix,
+                                             None, position))
+                    sdk_refused.add(position)
+                    continue
             kind, code, source, left, also = (_claude_credential(leg) if leg == "claude"
                                               else (sp.MODE_JAILED, None, None, None, ()))
             if leg not in qualified_now:
@@ -2236,7 +2267,10 @@ def _seat_launch_modes(
     # agent-harness#1253 round 1: every Claude seat's mode says when a stored override was
     # ignored -- above all when the seat does not run -- as a sibling notice, never as a
     # second refusal code.
-    ignored = _ignored_override("claude") if any(m.leg == "claude" for m in modes) else ()
+    # A seat refused before any credential read (an unready or unadmitted `sdk`) reads none
+    # here either.
+    ignored = _ignored_override("claude") if any(
+        m.leg == "claude" and m.position not in sdk_refused for m in modes) else ()
     if ignored:
         modes = [replace(m, also=(*m.also, *ignored))
                  if (m.leg == "claude" and m.mode in (sp.MODE_JAILED, sp.MODE_DEGRADED)
@@ -9886,9 +9920,11 @@ class _ClaudeSdkWorker:
             self.feeder.join(5.0)
 
 
-def _launch_claude_sdk_worker(spec, *, worker_id: int) -> _ClaudeSdkWorker:
-    """Start one worker in its sandbox, inside the seat-uid holder the leg holds. A missing
-    holder, tool or interpreter is ``claude_sdk_worker_unavailable``; nothing has started."""
+def _launch_claude_sdk_worker(spec, *, worker_id: int, prepared) -> _ClaudeSdkWorker:
+    """Start one worker in its sandbox, inside the seat-uid holder the leg holds. Its payload
+    is ``prepared.payload_bytes`` -- the bytes the pre-credential preflight read and verified
+    -- sealed into memfds; the packaged payload is never reopened here. A missing holder,
+    tool or interpreter is ``claude_sdk_worker_unavailable``; nothing has started."""
     egress = list(_EGRESS_LAUNCH_PREFIX.get())
     lockdown = next((index for index, item in enumerate(egress) if Path(item).name == "setpriv"),
                     None)
@@ -9902,13 +9938,11 @@ def _launch_claude_sdk_worker(spec, *, worker_id: int) -> _ClaudeSdkWorker:
     payload_fds: dict[str, int] = {}
     try:
         for name in _sdk.WORKER_PAYLOAD:
-            payload_fds[name] = _seat_jail.memfd_with(
-                f"claude-sdk-{name}", _sdk.read_packaged(f"worker/{name}"))
-    except (OSError, _claude_seat_transport.TransportRefused) as exc:
+            payload = prepared.payload_bytes[name]
+            payload_fds[name] = _seat_jail.memfd_with(f"claude-sdk-{name}", payload)
+    except (OSError, KeyError, AttributeError) as exc:
         for fd in payload_fds.values():
             os.close(fd)
-        if isinstance(exc, _claude_seat_transport.TransportRefused):
-            raise
         raise _claude_sdk_refused("claude_sdk_worker_unavailable") from exc
     parent_to_worker = os.pipe()
     worker_to_parent = os.pipe()
@@ -10070,7 +10104,7 @@ def _run_claude_sdk_leg(
     *,
     spec,
     bridge,
-    install,
+    prepared,
     options: Mapping[str, object],
     cwd: "Path | str",
     env: Mapping[str, str],
@@ -10084,7 +10118,9 @@ def _run_claude_sdk_leg(
     (``_run_leg_with_liveness`` with the seat's jail) with the bridge in its loop; then read
     the worker's last frames and tear the worker down. The bridge alone decides admission
     (``SDKBridge.outcome``); this returns the CLI's run. A worker that cannot be leased or
-    started refuses ``claude_sdk_worker_unavailable`` before the CLI launches."""
+    started refuses ``claude_sdk_worker_unavailable`` before the CLI launches. ``prepared``
+    is the pre-credential preflight's launch (``claude_seat_sdk.PreparedSdkLaunch``)."""
+    install = prepared.install
     count = _claude_sdk_worker_count()
     with contextlib.ExitStack() as stack:
         try:
@@ -10093,7 +10129,7 @@ def _run_claude_sdk_leg(
             raise _claude_sdk_refused("claude_sdk_worker_unavailable") from exc
         if worker_id in (seat.jail.seat_ids or ()):
             raise _claude_sdk_refused("claude_sdk_worker_unavailable")
-        worker = _launch_claude_sdk_worker(spec, worker_id=worker_id)
+        worker = _launch_claude_sdk_worker(spec, worker_id=worker_id, prepared=prepared)
         stack.callback(worker.terminate)
         closure = next(destination for destination, source in spec.read_only.items()
                        if Path(source) == Path(install.closure_root))
@@ -12331,8 +12367,9 @@ class _JailedSeat:
     #: The access-only credential document delivered to this Gemini seat. It remains in
     #: memory so the launcher can pass the same bytes to the issuer and scan suppliers.
     delivered_copy: bytes = field(default=b"", repr=False)
-    #: The ``sdk`` transport's verified worker install, from its preflight (IF-0-CLAUDE-3).
-    sdk_install: object | None = None
+    #: The ``sdk`` transport's prepared launch, from its pre-credential preflight
+    #: (IF-0-CLAUDE-3): the verified install and the worker payload's verified bytes.
+    sdk_prepared: object | None = None
 
 
 def _cleanup_jailed_seat(
@@ -12457,6 +12494,16 @@ def _build_jail_with_owned_inputs(leg, directory, executable, *, artifact, instr
         return jail
 
 
+def _claude_sdk_preflight():
+    """IF-0-CLAUDE-3: the admitted ``sdk`` module's worker preflight -- packaged bindings
+    with the payload read once, the sealed install, the worker prerequisites -- before any
+    credential-store read. Returns its prepared launch; refuses typed."""
+    module = _claude_seat_transport.transport_module("sdk")
+    if module is None:
+        raise _claude_seat_transport.TransportRefused(_claude_seat_transport.NOT_ADMITTED)
+    return module.preflight()
+
+
 def _validate_jail_dependency(leg, dependency):
     if dependency is not None:
         _seat_jail._require_safe_dependency_destinations(
@@ -12470,6 +12517,7 @@ def _prepare_jailed_claude(
     review_dir: Path, seat_dir: Path, review_authorization: "ReviewIsolationAuthorization",
     seat_id: int, holder_pid: int, prompt_parts: tuple[str, str],
     *, timeout_s: int | None = None, transport: str | None = None,
+    sdk_prepared: object | None = None,
 ) -> _JailedSeat:
     """J7 step 5, in order: the jailed transport (IF-0-CLAUDE-1), the pre-exec tree
     re-hash, the token read, the jail build (the seccomp filter included), the pre-seed and
@@ -12477,10 +12525,10 @@ def _prepare_jailed_claude(
 
     ``transport`` is the one the spawn resolved; ``None`` resolves it here. A refused
     selection raises ``claude_seat_transport.TransportRefused`` before anything is created.
-    ``sdk`` runs its admitted module's worker preflight (``claude_seat_sdk.preflight``:
-    packaged bindings, the sealed install, the worker prerequisites) before the credential
-    is resolved; its typed refusal is the leg's. A subject dependency session is enforced
-    as for every transport, and ``sdk`` requires none of its own.
+    ``sdk`` carries the launch its worker preflight prepared (``sdk_prepared``, run by the
+    spawn before any credential-store read; run here, still before the credential, when a
+    caller supplies none); a typed refusal is the leg's. A subject dependency session is
+    enforced as for every transport, and ``sdk`` requires none of its own.
 
     ``seat_dir`` (0700, operator-owned, beside the broker's stage rather than inside it)
     holds ``seat-home/`` and ``seat-out/``; the tree is the approved stage in
@@ -12494,13 +12542,9 @@ def _prepare_jailed_claude(
     artifact, instructions = prompt_parts
     from .executable_dependency_startup import current_dependency_for_provider
 
-    sdk_install = None
-    if transport == "sdk":
-        module = _claude_seat_transport.transport_module("sdk")
-        if module is None:
-            raise _claude_seat_transport.TransportRefused(_claude_seat_transport.NOT_ADMITTED)
+    if transport == "sdk" and sdk_prepared is None:
         # IF-0-CLAUDE-3: worker readiness and provenance, before the leg's credential.
-        sdk_install = module.preflight()
+        sdk_prepared = _claude_sdk_preflight()
     dependency = current_dependency_for_provider("claude")
     _validate_jail_dependency("claude", dependency)
     executable = (
@@ -12574,7 +12618,7 @@ def _prepare_jailed_claude(
             return _JailedSeat(jail=jail, probe_jail=probe, holder_pid=holder_pid, token=token,
                                review_dir=review_dir, seat_dir=seat_dir, source=credential.source,
                                expires_at=credential.expires_at, notices=list(credential.notices),
-                               sdk_install=sdk_install)
+                               sdk_prepared=sdk_prepared if transport == "sdk" else None)
         except _seat_jail.SeatSandboxRefused as exc:
             if not credential.notices:
                 raise
@@ -15778,6 +15822,23 @@ def _default_spawn(
                 shutil.rmtree(base, ignore_errors=True)
             return _BrokeredSpawnResult("DEGRADED", "", _HarnessCode(transport_refusal),
                                         seat_notices=_ignored_override(leg))
+    # IF-0-CLAUDE-3: an admitted `sdk` runs its worker preflight here, before the login wait
+    # or anything else reads the credential store, and its prepared launch is carried to the
+    # jail and the transport. A refusal launches nothing and never falls back.
+    sdk_prepared: object | None = None
+    if claude_transport == "sdk":
+        try:
+            sdk_prepared = _claude_sdk_preflight()
+        except _claude_seat_transport.TransportRefused as exc:
+            logging.getLogger(__name__).warning(
+                "seat claude [%s]: the sdk worker is not ready; the seat will not run", exc.code)
+            _republish_jailed_claude_mode(exc.code)
+            if base is not None:
+                shutil.rmtree(base, ignore_errors=True)
+            # No credential store is read for a seat whose worker is not ready.
+            notices = ((exc.code,) if exc.code in _claude_seat_transport.CODES else ())
+            return _BrokeredSpawnResult("DEGRADED", "", _HarnessCode(exc.code),
+                                        seat_notices=notices)
     # Plan amendment A3: a jailed Claude seat whose login is short of the launch margin
     # waits, read-only, for it to be renewed -- before staging, so no seat id or namespace is
     # held. A wait that ends short leaves the seat degraded and not run (A3b); nothing is run
@@ -16162,6 +16223,7 @@ def _default_spawn(
                                 _seat_uid.holder_pid_from_prefix(_EGRESS_LAUNCH_PREFIX.get()),
                                 (staged_bundle, staged_instructions),
                                 timeout_s=timeout_s, transport=claude_transport,
+                                sdk_prepared=sdk_prepared,
                             )
                         except _seat_jail.SeatSandboxRefused as exc:
                             leg_detail = _LegFailure(template=exc.code)
