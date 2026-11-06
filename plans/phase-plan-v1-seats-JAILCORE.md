@@ -4,7 +4,7 @@ phase: JAILCORE
 roadmap: specs/phase-plans-seats-v1.md
 roadmap_sha256: 9dc889c61a8d682dde30af65bf1597c1dca9a0df094fac747194d3629939b16e
 automation:
-  suite_command: ["timeout", "900", "env", "PYTEST_ADDOPTS=", "python3", "-m", "pytest", "-p", "no:cacheprovider", "-q", "phase-loop-runtime/tests/test_seat_route_contract.py", "phase-loop-runtime/tests/test_seat_egress_allowlists_jailcore.py", "phase-loop-runtime/tests/test_seat_qualification_key.py", "phase-loop-runtime/tests/test_seat_profiles.py", "phase-loop-runtime/tests/test_seat_route.py", "phase-loop-runtime/tests/test_seat_jail.py", "phase-loop-runtime/tests/test_seat_notices.py", "phase-loop-runtime/tests/test_seat_jail_autoqualify.py", "phase-loop-runtime/tests/test_gemini_seat_egress_1170.py", "phase-loop-runtime/tests/test_sealed_seat_never_counts.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py"]
+  suite_command: ["timeout", "900", "env", "PYTEST_ADDOPTS=", "python3", "-m", "pytest", "-p", "no:cacheprovider", "-q", "phase-loop-runtime/tests/test_seat_route_contract.py", "phase-loop-runtime/tests/test_seat_egress_allowlists_jailcore.py", "phase-loop-runtime/tests/test_seat_qualification_key.py", "phase-loop-runtime/tests/test_seat_profiles.py", "phase-loop-runtime/tests/test_seat_route.py", "phase-loop-runtime/tests/test_seat_jail.py", "phase-loop-runtime/tests/test_seat_qualification_host_context.py", "phase-loop-runtime/tests/test_seat_notices.py", "phase-loop-runtime/tests/test_seat_jail_autoqualify.py", "phase-loop-runtime/tests/test_gemini_seat_egress_1170.py", "phase-loop-runtime/tests/test_sealed_seat_never_counts.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py"]
 ---
 
 # JAILCORE: Jail Profile Registry and Route Resolver
@@ -20,7 +20,7 @@ INVENTORY and CLAUDE plans.
 **Frozen artifact.** `plans/seats-jailcore-route-contract.md` is normative for the profile
 fields, the resolver walk, the descend list, route codes, the qualification key, the route
 policy and per-provider egress, at sha256
-`001ed2e853aa00aae9406434c0945add701d71c15b0710f66a62a2cf573339d9`. This plan points at its
+`235f1faded1d7f15d0ff69668b6a451cee7167e6438d258da57257faf7bdae81`. This plan points at its
 sections (§1–§8) and does not repeat them. CODEX, GROK, PI, CLAUDENET and REMOTE plan against that file in parallel straight away.
 
 **Base (current main).** FIRSTSEAT L1–L5 and the CLAUDE lanes have landed. FIRSTSEAT lanes A,
@@ -165,8 +165,8 @@ subject, and it stays inside the agent-harness#1782 selected-subject contract.
 ### SL-3 — Registry, resolver and integration (lane A)
 
 - **Scope**: Register the Claude and Gemini profiles digest-invariantly, replace J7 with the contract §2 walk, bind the v2 pass store, enforce the named exceptions, and wire every seat-route call site.
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_jail.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_profiles.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_route.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_uid.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_jail_qualification.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_jail_autoqualify.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_preflight.py`, `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `phase-loop-runtime/tests/test_seat_profiles.py`, `phase-loop-runtime/tests/test_seat_route.py`, `phase-loop-runtime/tests/test_seat_jail.py`, `phase-loop-runtime/tests/test_seat_notices.py`, `phase-loop-runtime/tests/test_seat_jail_autoqualify.py`, `phase-loop-runtime/tests/test_seat_jail_qualification_entry.py`, `phase-loop-runtime/tests/test_gemini_seat_egress_1170.py`, `phase-loop-runtime/tests/test_sealed_seat_never_counts.py`, `phase-loop-runtime/tests/test_seat_preflight_1204.py`, `phase-loop-runtime/tests/test_panel_invoker.py`, `phase-loop-runtime/tests/test_codex_seat_tool_sandbox_1335.py`, `phase-loop-runtime/tests/data/seat_profile_digests_jailcore.json`, `phase-loop-runtime/tests/data/seat_jail_1132_sealed_golden.json`, `phase-loop-runtime/tests/data/seat_jail_1132_sealed_tui_session_golden.json`, `plans/evidence/seat-jailcore/**`
-- **Interfaces provided**: `seat_profiles` registry, `seat_route.resolve`, `seat_route.load_route_policy`, `seat_route.mode_line_codes`, `INACTIVE_REMOTE_RUNG`, the native-fill rung adapter, the production `SeatCapacity` adapter, `MODE_REMOTE`, the v2 pass store, `python -m phase_loop_runtime.seat_profiles digest-receipt`
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_jail.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_profiles.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_route.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_uid.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_jail_qualification.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_jail_autoqualify.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_preflight.py`, `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `phase-loop-runtime/tests/test_seat_profiles.py`, `phase-loop-runtime/tests/test_seat_route.py`, `phase-loop-runtime/tests/test_seat_jail.py`, `phase-loop-runtime/tests/test_seat_notices.py`, `phase-loop-runtime/tests/test_seat_jail_autoqualify.py`, `phase-loop-runtime/tests/test_seat_jail_qualification_entry.py`, `phase-loop-runtime/tests/test_gemini_seat_egress_1170.py`, `phase-loop-runtime/tests/test_sealed_seat_never_counts.py`, `phase-loop-runtime/tests/test_seat_preflight_1204.py`, `phase-loop-runtime/tests/test_panel_invoker.py`, `phase-loop-runtime/tests/test_codex_seat_tool_sandbox_1335.py`, `phase-loop-runtime/tests/data/seat_profile_digests_jailcore.json`, `phase-loop-runtime/tests/data/seat_jail_1132_sealed_golden.json`, `phase-loop-runtime/tests/data/seat_jail_1132_sealed_tui_session_golden.json`, `plans/evidence/seat-jailcore/**`, `phase-loop-runtime/src/phase_loop_runtime/seat_window.py`, `phase-loop-runtime/tests/test_seat_qualification_host_context.py`
+- **Interfaces provided**: `seat_profiles` registry, `seat_route.resolve`, `seat_route.load_route_policy`, `seat_route.mode_line_codes`, `INACTIVE_REMOTE_RUNG`, the native-fill rung adapter, the production `SeatCapacity` adapter, the profile-sourced window kit (`seat_window`), `MODE_REMOTE`, the v2 pass store, `python -m phase_loop_runtime.seat_profiles digest-receipt`
 - **Interfaces consumed**: everything SL-0 provides; SL-1's `allowlist_ref`, `start_proxy(*, allowlist_id)`, `unavailable_code`, opt-out predicate; SL-2's `key_for_launch`, `admit_profile_projection`; `seat_window.readiness_rows()` (pre-existing); `claude_seat_transport.resolve_jailed_claude_transport` (pre-existing), `claude_seat_transport.CODES` (pre-existing); `leg_exec_record` (pre-existing, IF-0-FIRSTSEAT-3)
 - **Parallel-safe**: no
 
@@ -176,7 +176,8 @@ subject, and it stays inside the agent-harness#1782 selected-subject contract.
 | SL-3.2 | impl | SL-3.1 | `phase-loop-runtime/src/phase_loop_runtime/seat_profiles.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_jail.py` | — | — |
 | SL-3.3 | test | SL-3.2 | `phase-loop-runtime/tests/test_seat_route.py` | See "SL-3.3 cases" below. | `V4` |
 | SL-3.4 | impl | SL-3.3 | `phase-loop-runtime/src/phase_loop_runtime/seat_route.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_uid.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_jail.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_jail_qualification.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_jail_autoqualify.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_preflight.py`, `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py` | — | — |
-| SL-3.5 | verify | SL-3.4 | SL-3 files, `plans/evidence/seat-jailcore/digest-equality.json`, `plans/evidence/seat-jailcore/terminal-codes.json` | all SL-3 tests; the digest receipt; `VL` on a jail-capable host | `V3`, `V4`, `V5`, `VL` |
+| SL-3.5 | impl | SL-3.1 | `phase-loop-runtime/src/phase_loop_runtime/seat_window.py`, `phase-loop-runtime/tests/test_seat_qualification_host_context.py` | Window kit made vendor-neutral: `seat_window`'s vendor gate and its per-vendor path rows are read from the registered `JailProfile.window`, not `vendor == "gemini"` literals. Gemini's records, matrix rows and exports are byte-identical on the FIRSTSEAT lane E base, against a golden captured before the edit. A synthetic profile's rows reach the kit with no kit-code edit. | `V3` |
+| SL-3.6 | verify | SL-3.5 | SL-3 files, `plans/evidence/seat-jailcore/digest-equality.json`, `plans/evidence/seat-jailcore/terminal-codes.json` | all SL-3 tests; the digest receipt; `VL` on a jail-capable host | `V3`, `V4`, `V5`, `VL` |
 
 **SL-3.3 cases.** Each is path-entered through `panel_invoker._seat_route_for_spawn` and the
 seat-mode builder, with recording fakes for the remote and native rungs.
@@ -225,7 +226,7 @@ executor-owned and may change under review, rebase or squash:
    wording and any fix that names those routes, without editing digests;
 6. `JAILED_LEGS` derived from the registry.
 
-**SL-3.5 VL.** VL runs the real CLIs provider-free on a host class with jail prerequisites:
+**SL-3.6 VL.** VL runs the real CLIs provider-free on a host class with jail prerequisites:
 
 - Gemini planted-config and planted-output falsifiers;
 - Claude's planted-config falsifier per admitted transport;
@@ -262,7 +263,8 @@ The fix belongs to CLAUDENET (digest) or CLAUDE (transport argv), not here.
   plan amendment, except the additive `OD10_CLASSES` entries for their own codes (below). `panel_invoker.py` is also written by TEAMHOST lane A and v11 PANELSPLIT;
   whichever lands second rebases. If PANELSPLIT has moved the seat-launch code, SL-3 edits
   the named successor modules and records the path change in its PR.
-  `docs/review-seats-readiness.md` and `seat_window.py` are read-only here.
+  `docs/review-seats-readiness.md` is read-only here. `seat_window.py` joins SL-3 for SL-3.5
+  only; FIRSTSEAT lane E's landed code is its base.
 - **TEAMHOST shared edits (agent-harness#1859, its contract §8).** TEAMHOST may edit only
   these named parts of JAILCORE-owned files, and nothing else in them:
   - `seat_uid.py`: `seat_runtime_dir`, and the `subordinate_range` conjunct of the L3
@@ -280,6 +282,8 @@ The fix belongs to CLAUDENET (digest) or CLAUDE (transport argv), not here.
   - CODEX, GROK and PI each add one `JailProfile` in `seat_profiles.py` and one
     `seat_egress/<id>-allowlist.json`, and its own `<leg>_seat_*` codes in `seat_jail.NOTICES`, each with one additive `OD10_CLASSES` entry; no existing entry or descend set changes.
   - CLAUDENET sets Claude's `allowlist_id` and containment fields.
+  - CODEX, GROK, PI and CLAUDENET each add their profile's window rows as data only, under
+    the same additive rule as their codes; the window kit's code does not change.
   - REMOTE replaces `INACTIVE_REMOTE_RUNG`, and fills `REMOTE_DESCEND_CODES` only under
     security review.
 - **Known destructive changes**: none. Every lane is additive or an in-place refactor, and no
@@ -338,7 +342,7 @@ checkout the five new test files are absent, so these are pending selectors, not
 - `V0`: `P test_seat_route_contract.py`
 - `V1`: `P test_seat_egress_allowlists_jailcore.py test_sandbox_egress.py test_seat_egress_rules.py`
 - `V2`: `P test_seat_qualification_key.py test_executable_dependency.py`
-- `V3`: `P test_seat_profiles.py test_seat_jail.py`
+- `V3`: `P test_seat_profiles.py test_seat_jail.py test_seat_qualification_host_context.py`
 - `V4`: `P test_seat_route.py test_seat_notices.py test_seat_jail_autoqualify.py test_seat_jail_qualification_entry.py test_gemini_seat_egress_1170.py test_sealed_seat_never_counts.py test_seat_preflight_1204.py test_codex_seat_tool_sandbox_1335.py`
 - `V5`: `P test_agent_cli_scratch_inventory_1147.py test_seat_launch_helpers_trusted.py test_seat_reference_inventory.py`
 - `V6`: `P test_seat_reference_inventory.py`, then `timeout 120 phase-loop validate-roadmap --repo . --roadmap specs/phase-plans-seats-v1.md`

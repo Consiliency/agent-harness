@@ -14,7 +14,7 @@ module. Names below are normative.
 
 A vendor joins the jail by adding one `JailProfile` to the registry in
 `phase_loop_runtime/seat_profiles.py` (`register(profile)`, `profile_for(leg)`,
-`registered_legs()`) and one `seat_egress/<id>-allowlist.json`, and its own `<leg>_seat_*` codes in `seat_jail.NOTICES`, each with one additive `OD10_CLASSES` entry; no existing entry or descend set changes. `seat_jail.JAILED_LEGS` becomes `frozenset(registered_legs())`.
+`registered_legs()`) and one `seat_egress/<id>-allowlist.json`, and its own `<leg>_seat_*` codes in `seat_jail.NOTICES`, each with one additive `OD10_CLASSES` entry; no existing entry or descend set changes. Its window rows are data on that profile, added under the same rule. `seat_jail.JAILED_LEGS` becomes `frozenset(registered_legs())`.
 
 ```python
 @dataclass(frozen=True)
@@ -50,6 +50,7 @@ class JailProfile:
     # Variant selector (Claude only today): returns (variant, None) or (None, refusal).
     variant: Callable[[Mapping[str, str]], tuple[str | None, str | None]] | None
     notice_codes: frozenset[str]  # every code this profile may emit
+    window: WindowRows | None     # window-kit vendor gate and path rows (data only)
 ```
 
 Supporting shapes, all frozen dataclasses:
@@ -64,6 +65,10 @@ Supporting shapes, all frozen dataclasses:
   unlisted_endpoint_refused: str | None, deferred_to: str | None)`. Each field names an evidence
   record id, never a value. Claude sets `deferred_to="EC-CLAUDENET-3"` and leaves the rest `None`.
 - `Precondition(name: str, check: Callable[[], str | None])`.
+- `WindowRows`: the profile's data for `seat_window`'s vendor gate and per-vendor path rows,
+  meaning its record-field names, its route literal, and its plant-location and tree rows.
+  Gemini's are the FIRSTSEAT containment contract §1–§2 rows, unchanged, so the kit's Gemini
+  records, matrix rows and exports stay byte-identical.
 - `OwnerPaths`, `EnvInputs`, `ArgvInputs`: the per-launch values `_owner_argv`, `seat_env` and the
   provider launch take today (tree, home, out, provider, fds, egress CA, proxy URL, transport).
 
