@@ -6046,6 +6046,7 @@ def _child_scratch_kwargs(kwargs: dict, decision: str) -> None:
 def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None, dependency=None,
                     probe_pass_fds=(),
                     child_scratch=_sandbox_policy.CHILD_SCRATCH_RELOCATE,
+                    trace_output: str | None = None,
                     **kwargs) -> "subprocess.Popen[bytes]":
     """THE one place a review provider process is started. Popen form.
 
@@ -6115,7 +6116,12 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
         kwargs["pass_fds"] = tuple(process_owner.pass_fds)
         kwargs["close_fds"] = True
         kwargs["env"] = env
-        jailed_process = subprocess.Popen([*prefix, *argv], **kwargs)
+        if trace_output is not None:
+            jailed_process = subprocess.Popen(
+                _window_trace_argv(trace_output, prefix, argv), **kwargs,
+            )
+        else:
+            jailed_process = subprocess.Popen([*prefix, *argv], **kwargs)
         # A jailed provider is a local provider spawn like any other (agent-harness#896's
         # placement record counts it); counted once the process exists.
         _count_provider_spawn()
@@ -9313,6 +9319,7 @@ def _run_leg_with_liveness(
     broker_evidence: dict[str, object] | None = None,
     seat_jail: "_seat_jail.SeatJail | None" = None,
     probe_jail: "_seat_jail.SeatJail | None" = None,
+    trace_output: str | None = None,
 ) -> "_LegRun":
     """Run a print-mode CLI leg, killing it on HEARTBEAT EXTINCTION, not a blind clock.
 
@@ -9374,6 +9381,7 @@ def _run_leg_with_liveness(
                 list(cmd), process_owner=seat_jail, probe_owner=probe_jail, env=dict(env),
                 stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
+                trace_output=trace_output,
             )
             return proc
         # The request's own refusals (an unavailable profile) come before the host's.
@@ -11715,6 +11723,9 @@ _WINDOW_CONTROL_KINDS = frozenset({
     "tree_control", "runtime_control", "credentialed_tree_control",
     "credentialed_runtime_control",
 })
+_WINDOW_TREE_CONTROL_KINDS = frozenset({
+    "tree_control", "credentialed_tree_control",
+})
 _WINDOW_RUNTIME_KINDS = frozenset({"runtime_control", "credentialed_runtime_control"})
 _WINDOW_LAUNCH_KINDS = frozenset({
     "help", "plugin_validation", *_WINDOW_CONTROL_KINDS, "measured", "expired_copy",
@@ -12505,11 +12516,26 @@ _WINDOW_PROXY_ENV = frozenset({
     "all_proxy", "no_proxy", "SSL_CERT_FILE",
 })
 _WINDOW_TRACE_FILE = "window-trace"
+_WINDOW_ENV_WRAPPER = (
+    "import os, sys\n"
+    "raw = sys.stdin.buffer.read()\n"
+    "if raw.endswith(b'\\0'):\n"
+    "    raw = raw[:-1]\n"
+    "env = {}\n"
+    "for item in raw.split(b'\\0'):\n"
+    "    if b'=' not in item:\n"
+    "        raise SystemExit(78)\n"
+    "    key, value = item.split(b'=', 1)\n"
+    "    env[os.fsdecode(key)] = os.fsdecode(value)\n"
+    "if len(sys.argv) < 2:\n"
+    "    raise SystemExit(78)\n"
+    "os.execvpe(sys.argv[1], sys.argv[1:], env)\n"
+)
 _WINDOW_TRACE_SYSCALLS = (
-    "access,chdir,chmod,chown,chroot,creat,faccessat,faccessat2,fchmodat,fchownat,"
-    "lchown,link,linkat,lstat,mkdir,mkdirat,mknod,mknodat,mount,newfstatat,open,"
-    "open_tree,openat,openat2,pivot_root,quotactl,readlink,readlinkat,rename,renameat,"
-    "renameat2,rmdir,stat,statfs,statx,symlink,symlinkat,truncate,umount2,unlink,"
+    "access,chdir,chmod,chown,creat,faccessat,faccessat2,fchmodat,fchownat,"
+    "lchown,link,linkat,lstat,mkdir,mkdirat,mknod,mknodat,newfstatat,open,"
+    "open_tree,openat,openat2,readlink,readlinkat,rename,renameat,"
+    "renameat2,rmdir,stat,statfs,statx,symlink,symlinkat,truncate,unlink,"
     "unlinkat,utime,utimensat,utimes"
 )
 
@@ -12537,8 +12563,21 @@ class _WindowJailedRun:
                 name: value for name, value in self.seat.jail.env.items()
                 if name in _WINDOW_PROXY_ENV
             })
-        command = ["/usr/bin/env", "-i", *(f"{name}={exact[name]}" for name in sorted(exact)),
-                   *map(str, argv)]
+
+        def _env_bad(name: str, value: str) -> bool:
+            if "\0" in name or "\0" in value or "=" in name:
+                return True
+            try:
+                name.encode("utf-8", errors="strict")
+                value.encode("utf-8", errors="strict")
+            except UnicodeError:
+                return True
+            return False
+
+        if any(_env_bad(name, value) for name, value in exact.items()):
+            return qualification.JailedStep(exit_code=None, timed_out=False, stdout=b"")
+        command = ["/usr/bin/python3", "-I", "-S", "-c", _WINDOW_ENV_WRAPPER, *map(str, argv)]
+        payload = "\0".join(f"{name}={exact[name]}" for name in sorted(exact)) + "\0"
         kept = 0
 
         def _cap(chunk: bytes) -> bool:
@@ -12551,7 +12590,7 @@ class _WindowJailedRun:
             try:
                 done = _run_leg_with_liveness(
                     command, cwd=_seat_jail.SEAT_TREE, env=dict(self.seat.jail.env),
-                    deadline_s=float(timeout_s), stdout_guard=_cap,
+                    deadline_s=float(timeout_s), input_text=payload, stdout_guard=_cap,
                     quiescence_latch=self.quiescence_latch,
                     seat_jail=self.seat.jail, probe_jail=self.seat.probe_jail,
                 )
@@ -12577,6 +12616,7 @@ class _WindowLaunchSession:
     paths: object
     authorization: ReviewIsolationAuthorization
     quiescence_latch: _ProviderQuiescenceLatch
+    trace_path: Path | None = None
     cleaned: bool = False
 
     def cleanup(self) -> None:
@@ -12670,12 +12710,19 @@ def _open_window_launch(spec: WindowLaunchSpec):
             _seat_uid.holder_pid_from_prefix(prefix), (artifact, ""), proxy,
             quiescence_latch=latch, credential=credential,
         )
+        trace_path = None
+        if spec.kind in _WINDOW_CONTROL_KINDS:
+            trace_path = base / _WINDOW_TRACE_FILE
+            fd = os.open(
+                trace_path, os.O_CREAT | os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW, 0o600,
+            )
+            os.close(fd)
         session = _WindowLaunchSession(
             seat=seat, proxy=proxy, prefix=prefix,
             paths=_window_host_paths(
                 qualification, seat, credential=spec.kind in _WINDOW_CREDENTIAL_KINDS,
             ),
-            authorization=authorization, quiescence_latch=latch,
+            authorization=authorization, quiescence_latch=latch, trace_path=trace_path,
         )
         yield session
     finally:
@@ -12693,19 +12740,19 @@ def _open_window_launch(spec: WindowLaunchSpec):
 
 def _window_control_command(kind: str, model: str) -> list[str]:
     production = _jailed_gemini_command(model)
-    if kind in _WINDOW_CONTROL_KINDS:
+    if kind in _WINDOW_TREE_CONTROL_KINDS:
         return ["/usr/bin/env", f"--chdir={_seat_jail.SEAT_TREE}", *production[2:],
                 "--add-dir", _seat_jail.SEAT_TREE]
     return production
 
 
-def _window_traced_command(command: Sequence[str]) -> list[str]:
-    # Only path-taking syscalls are selected. In particular execve is absent, so the
-    # trace cannot contain the provider argv or prompt.
+def _window_trace_argv(
+    trace_output: str, prefix: Sequence[str], argv: Sequence[str],
+) -> list[str]:
+    """Run strace as the parent; ``-DDD`` leaves the tracee as the waited child."""
     return [
-        "/usr/bin/strace", "-f", "-qq", "-yy", "-s", "4096", "-e",
-        f"trace={_WINDOW_TRACE_SYSCALLS}", "-o", f"{_seat_jail.SEAT_OUT}/{_WINDOW_TRACE_FILE}",
-        "--", *command,
+        "/usr/bin/strace", "-DDD", "-f", "-qq", "-yy", "-s", "4096", "-e",
+        f"trace={_WINDOW_TRACE_SYSCALLS}", "-o", trace_output, "--", *prefix, *argv,
     ]
 
 
@@ -12757,13 +12804,20 @@ def _window_trace_paths(raw: bytes, qualification) -> tuple[tuple[object, ...], 
 
 
 def _read_window_trace(session: _WindowLaunchSession, qualification):
+    path = session.trace_path
+    if path is None:
+        return (), (), False
     try:
-        raw = _seat_uid.read_in_h(
-            session.seat.holder_pid, str(session.paths.seat_out), _WINDOW_TRACE_FILE,
-            _WINDOW_TRACE_CAP,
-        )
-    except (_seat_uid.SeatObjectMissing, _seat_jail.UnsafeSeatObject, OSError,
-            subprocess.SubprocessError):
+        info = path.lstat()
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or stat.S_IMODE(info.st_mode) != 0o600 or info.st_size > _WINDOW_TRACE_CAP):
+            return (), (), False
+        if path.resolve().is_relative_to(Path(session.seat.seat_dir).resolve()):
+            return (), (), False
+        raw = path.read_bytes()
+    except (OSError, ValueError):
+        return (), (), False
+    if b"<unfinished" in raw:
         return (), (), False
     return _window_trace_paths(raw, qualification)
 
@@ -12772,8 +12826,13 @@ def _window_stream_facts(raw: str) -> tuple[str, bool | None, int | None, int | 
     status = "NONE"
     model_turn = False
     tools = subagents = 0
+    saw_result = False
+    if not raw.strip():
+        return "NONE", None, None, None
     try:
         for line in raw.splitlines():
+            if not line.strip():
+                continue
             event = json.loads(line)
             if not isinstance(event, dict) or event.get("event") not in {"init", "step_update", "result"}:
                 raise ValueError("unknown event")
@@ -12792,8 +12851,11 @@ def _window_stream_facts(raw: str) -> tuple[str, bool | None, int | None, int | 
                     raise ValueError("malformed result")
                 status = "SUCCESS" if result.get("status") == "SUCCESS" else "FAILURE"
                 model_turn = model_turn or isinstance(result.get("response"), str)
+                saw_result = True
     except (TypeError, ValueError, json.JSONDecodeError):
-        return status, None, None, None
+        return "NONE", (True if model_turn else None), None, None
+    if not saw_result:
+        return "NONE", (True if model_turn else None), None, None
     return status, model_turn, tools, subagents
 
 
@@ -12860,7 +12922,7 @@ class _WindowProcess:
 
 def _run_window_process(
     session: _WindowLaunchSession, command: Sequence[str], *, timeout_s: float,
-    input_text: str | None = None,
+    input_text: str | None = None, trace_output: str | None = None,
 ) -> _WindowProcess:
     secrets = _jailed_gemini_secrets(session.seat)
     carry = b""
@@ -12882,6 +12944,7 @@ def _run_window_process(
                 input_text=input_text, stdout_guard=_guard, stderr_guard=_guard,
                 quiescence_latch=session.quiescence_latch,
                 seat_jail=session.seat.jail, probe_jail=session.seat.probe_jail,
+                trace_output=trace_output,
             )
         except subprocess.TimeoutExpired as exc:
             output = exc.output if isinstance(exc.output, str) else ""
@@ -12993,10 +13056,7 @@ def window_control_launch(spec: WindowLaunchSpec) -> WindowLaunchResult:
                             )
                             protocol = _broker_gemini_stream_protocol(prompt, tooled=True)
                             command = _window_control_command(spec.kind, spec.model)
-                            commands = [
-                                _window_traced_command(command)
-                                if spec.kind in _WINDOW_CONTROL_KINDS else command
-                            ]
+                            commands = [command]
                         if spec.kind == "measured" and session.seat.delivered_copy:
                             delivered = qualification.DeliveredCopy(
                                 content=session.seat.delivered_copy,
@@ -13007,6 +13067,10 @@ def window_control_launch(spec: WindowLaunchSpec) -> WindowLaunchResult:
                             outputs.append(_run_window_process(
                                 session, command, timeout_s=spec.timeout_s,
                                 input_text=protocol.transport if protocol is not None else None,
+                                trace_output=(
+                                    str(session.trace_path)
+                                    if spec.kind in _WINDOW_CONTROL_KINDS else None
+                                ),
                             ))
                             if outputs[-1].timed_out:
                                 break
