@@ -1,0 +1,75 @@
+name: claude-sdk-audit
+
+# SEATS CLAUDE (agent-harness#1820, EC-CLAUDE-3): the base-defined admission audit for the
+# jailed Claude `sdk` transport. It runs the BASE tree's auditor
+# (`claude_seat_transport.py`, one stdlib-only file) against the pull request's head, which
+# it fetches as git objects and reads only as data: no head code is checked out, imported
+# or executed, so a pull request cannot change, skip or impersonate the result by editing
+# this workflow or the auditor.
+#
+# - A head that does not admit `sdk` (`ADMITTED = False`) passes: a de-admission needs no
+#   receipt.
+# - A head that admits `sdk` must carry a current boundary receipt (`verify-proof`) and
+#   pass the ratification order (`audit-order`). It fails closed until the private evidence
+#   store below exists.
+#
+# TODO(owner, GL-2 prerequisite): the enforcement route. Make this job's result a required
+# check that a pull request's own workflows cannot satisfy: a required-workflow ruleset
+# where the organization's plan offers one, otherwise this `pull_request_target` job
+# reporting through a dedicated GitHub App set as the check's required source. A check
+# required only by name does not qualify. Record the enforcement and a drill pull request
+# whose same-named job leaves the requirement unmet.
+#
+# TODO(owner, GL-2 prerequisite): the private evidence store. Fixed artifact-store
+# endpoints and a trusted, read-only credential, used here to retrieve the private VB/VL
+# JUnit and suite inventory by the receipt's opaque evidence IDs (bounded identifiers,
+# never URLs or commands). Until then `SDK_PRIVATE_EVIDENCE_STORE` is unset in the auditor
+# and an admitted head fails.
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  # audit-order reads the merge state of the PRs that landed a cited record section.
+  pull-requests: read
+
+concurrency:
+  group: claude-sdk-audit-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  claude-sdk-audit:
+    name: claude-sdk-audit (base-defined, EC-CLAUDE-3)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out the base tree only
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Audit the head as data with the base auditor
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          # The head's objects only: `refs/pull/N/head` also serves a fork's head.
+          git fetch --no-tags --depth=1 origin "+refs/pull/${PR_NUMBER}/head:refs/remotes/pr/head"
+          test "$(git rev-parse refs/remotes/pr/head)" = "$HEAD_SHA"
+          AUDITOR=phase-loop-runtime/src/phase_loop_runtime/claude_seat_transport.py
+          git show "$BASE_SHA:$AUDITOR" > "$RUNNER_TEMP/claude_sdk_audit.py"
+          python -I "$RUNNER_TEMP/claude_sdk_audit.py" verify-proof --repo . --head "$HEAD_SHA"
+          python -I "$RUNNER_TEMP/claude_sdk_audit.py" audit-order --repo . \
+            --base "$BASE_SHA" --head "$HEAD_SHA" --pr "$PR_NUMBER"

@@ -19,6 +19,7 @@ import mimetypes
 import os
 import posixpath
 import re
+import queue
 import select
 import socket
 import shutil
@@ -9320,6 +9321,7 @@ def _run_leg_with_liveness(
     seat_jail: "_seat_jail.SeatJail | None" = None,
     probe_jail: "_seat_jail.SeatJail | None" = None,
     trace_output: str | None = None,
+    duplex: "_ClaudeSdkDuplex | None" = None,
 ) -> "_LegRun":
     """Run a print-mode CLI leg, killing it on HEARTBEAT EXTINCTION, not a blind clock.
 
@@ -9346,7 +9348,15 @@ def _run_leg_with_liveness(
     ``seat_jail`` (agent-harness#1170, the jailed Gemini seat) launches ``cmd`` inside that
     jail, probed through ``probe_jail``, exactly as the jailed Claude seat launches; its
     login was checked when its credential copy was made, so nothing is awaited here.
+
+    ``duplex`` (IF-0-CLAUDE-3, the jailed ``sdk`` transport) keeps the CLI's stdin open for
+    the parent bridge and adds the host worker's channel to this same loop: the CLI is
+    launched, timed, stalled and torn down exactly as above, its stdin carries only the
+    bytes the bridge writes from its own templates, and the bridge's stop ends the run.
+    Worker traffic is not a heartbeat of the CLI.
     """
+    if duplex is not None and (input_text is not None or gemini_profile is not None):
+        raise ValueError("a duplex leg takes no stdin text and no heartbeat profile")
     if gemini_profile is not None and review_monitor is None:
         raise ValueError("gemini_heartbeat_monitor_required")
     observation = _EXEC_OBSERVATION.get()
@@ -9379,7 +9389,8 @@ def _run_leg_with_liveness(
             # environment and descriptors with the jail's declared ones.
             proc = launch_provider(
                 list(cmd), process_owner=seat_jail, probe_owner=probe_jail, env=dict(env),
-                stdin=subprocess.PIPE if input_text is not None else subprocess.DEVNULL,
+                stdin=(subprocess.PIPE if input_text is not None or duplex is not None
+                       else subprocess.DEVNULL),
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True,
                 trace_output=trace_output,
             )
@@ -9458,6 +9469,10 @@ def _run_leg_with_liveness(
                         pipe.close()
         raise
     try:
+        if duplex is not None and duplex.attach(proc):
+            # The bridge refused before the CLI said anything (its start action).
+            _terminate_process_group(proc)
+            return _LegRun(proc.returncode or 1, "", "")
         if input_text is not None and proc.stdin is not None:
 
             def _feed() -> None:
@@ -9473,6 +9488,7 @@ def _run_leg_with_liveness(
         err_buf = bytearray()
         fd_map = {proc.stdout.fileno(): out_buf, proc.stderr.fileno(): err_buf}
         open_fds = set(fd_map)
+        worker_fds = set(duplex.fds()) if duplex is not None else set()
         start = time.monotonic()
         last_heartbeat = start
         last_output_progress: float | None = None
@@ -9499,9 +9515,9 @@ def _run_leg_with_liveness(
                     list(cmd), deadline_s, output=out_s, stderr=err_s,
                 )
             # (2) drain available output; any byte is a heartbeat.
-            if open_fds:
+            if open_fds or worker_fds:
                 readable, _, _ = select.select(
-                    list(open_fds), [], [], _LEG_LIVENESS_READ_INTERVAL_S
+                    list(open_fds | worker_fds), [], [], _LEG_LIVENESS_READ_INTERVAL_S
                 )
             else:
                 readable = []
@@ -9513,6 +9529,14 @@ def _run_leg_with_liveness(
                     chunk = os.read(fd, 65536)
                 except OSError:
                     chunk = b""
+                if fd in worker_fds:
+                    if not chunk:
+                        worker_fds.discard(fd)
+                    if duplex.worker(chunk):
+                        _terminate_process_group(proc)
+                        out_s, err_s = _decode()
+                        return _LegRun(proc.returncode or 1, out_s, err_s)
+                    continue
                 if chunk:
                     from .president_adapter import note_attempt_output
                     note_attempt_output()
@@ -9526,6 +9550,11 @@ def _run_leg_with_liveness(
                         return _LegRun(proc.returncode or 1, out_s, err_s)
                 else:
                     open_fds.discard(fd)  # EOF on this pipe
+                    if (duplex is not None and fd_map[fd] is out_buf
+                            and duplex.cli_stdout_eof()):
+                        _terminate_process_group(proc)
+                        out_s, err_s = _decode()
+                        return _LegRun(proc.returncode or 1, out_s, err_s)
             # (3) secondary CPU heartbeat — reset only, never a kill trigger.
             now = time.monotonic()
             if now - last_cpu_sample >= _LEG_LIVENESS_CPU_SAMPLE_S:
@@ -9577,6 +9606,516 @@ def _run_leg_with_liveness(
             profile_stack.close()
         if quiescence_latch is not None:
             quiescence_latch.raise_if_set()
+
+
+# --------------------------------------------------------------------------------------
+# The jailed ``sdk`` transport's host worker: its launcher and its duplex leg (SEATS CLAUDE
+# SL-1, IF-0-CLAUDE-3; plans/seats-claude-sdk-worker-contract.md "Process contract").
+# --------------------------------------------------------------------------------------
+
+#: The worker's identity drop is the seat jail's own (``seat_jail.setpriv_drop``): the
+#: host's root-owned ``setpriv``, the one step inside ``bwrap`` that may switch uid (on
+#: hosts with Ubuntu's ``unpriv_bwrap`` confinement, through the seat-jail AppArmor
+#: override, agent-harness#1276). It is bound into the worker root at its own path with the
+#: libraries it needs that the sealed runtime lacks; nothing else of the host is.
+_CLAUDE_SDK_WORKER_DROP_TOOL = "/usr/bin/setpriv"
+
+#: Runs right after the drop, as the worker's id, by the sealed interpreter (``-I -S -B``):
+#: it proves the drop -- the leased id everywhere, no supplementary group, every capability
+#: set empty, no-new-privileges -- sets the process limit on that id, closes every
+#: descriptor but the channel, and execs the bootstrap. A failed proof exits before the
+#: bootstrap runs, so the parent sees no readiness.
+_CLAUDE_SDK_WORKER_SETTLE = (
+    "import os,resource,sys\n"
+    "n=int(sys.argv[1]);nproc=int(sys.argv[2])\n"
+    "keep={0,1,2}|{int(x) for x in sys.argv[3].split(',') if x}\n"
+    "status={}\n"
+    "for line in open('/proc/self/status').read().splitlines():\n"
+    " key,sep,value=line.partition(':')\n"
+    " status[key]=value.strip()\n"
+    "if any(int(status[k],16) for k in ('CapInh','CapPrm','CapEff','CapBnd','CapAmb')):\n"
+    " sys.exit(96)\n"
+    "if os.getresuid()!=(n,n,n) or os.getresgid()!=(n,n,n) or os.getgroups():\n"
+    " sys.exit(96)\n"
+    "if status.get('NoNewPrivs')!='1':\n"
+    " sys.exit(96)\n"
+    "resource.setrlimit(resource.RLIMIT_NPROC,(nproc,nproc))\n"
+    "for name in os.listdir('/proc/self/fd'):\n"
+    " fd=int(name)\n"
+    " if fd not in keep:\n"
+    "  try: os.close(fd)\n"
+    "  except OSError: pass\n"
+    "os.execv(sys.argv[4],sys.argv[4:])\n"
+)
+_PRLIMIT = "/usr/bin/prlimit"
+_CLAUDE_SDK_READY_TIMEOUT_S = 120.0
+_CLAUDE_SDK_DRAIN_TIMEOUT_S = 10.0
+
+
+def _claude_sdk_refused(code: str) -> "_claude_seat_transport.TransportRefused":
+    return _claude_seat_transport.TransportRefused(code)
+
+
+def _trusted_host_file(path: str) -> str:
+    """The resolved path of a root-owned regular file nobody else can write, or refuse."""
+    real = os.path.realpath(path)
+    try:
+        info = os.stat(real)
+    except OSError as exc:
+        raise _claude_sdk_refused("claude_sdk_worker_unavailable") from exc
+    if not stat.S_ISREG(info.st_mode) or info.st_uid != 0 or info.st_mode & 0o022:
+        raise _claude_sdk_refused("claude_sdk_worker_unavailable")
+    return real
+
+
+_HOST_LIBRARY_DIRS = ("/lib/x86_64-linux-gnu", "/usr/lib/x86_64-linux-gnu", "/lib64",
+                      "/usr/lib64", "/lib", "/usr/lib")
+
+
+def _claude_sdk_drop_tool_files(runtime_root: Path) -> dict[str, str]:
+    """``{worker path: host file}`` for the drop tool and every library it needs that the
+    sealed runtime does not already hold at a loader search path."""
+    from . import claude_seat_sdk as _sdk
+
+    tool = _trusted_host_file(_CLAUDE_SDK_WORKER_DROP_TOOL)
+    files = {_CLAUDE_SDK_WORKER_DROP_TOOL: tool}
+    try:
+        _interp, needed, _runpath = _sdk._elf_needed(Path(tool))
+    except (OSError, ValueError) as exc:
+        raise _claude_sdk_refused("claude_sdk_worker_unavailable") from exc
+    for name in needed:
+        if any((runtime_root / directory.lstrip("/") / name).exists()
+               for directory in _HOST_LIBRARY_DIRS):
+            continue
+        host = next((f"{directory}/{name}" for directory in _HOST_LIBRARY_DIRS
+                     if os.path.exists(f"{directory}/{name}")), None)
+        if host is None:
+            raise _claude_sdk_refused("claude_sdk_worker_unavailable")
+        files[host] = _trusted_host_file(host)
+    return files
+
+
+def _claude_sdk_root_binds(runtime_root: Path, extra: Mapping[str, str]) -> list[str]:
+    """The worker root: the sealed runtime's entries bound read-only at their own paths,
+    plus each ``extra`` file at its path. A directory on the way to an extra file is made
+    in bwrap's own root and its entries are bound one by one; every other directory is
+    bound whole. The root is remounted read-only afterwards."""
+
+    def walk(relative: str) -> list[str]:
+        here = runtime_root / relative if relative else runtime_root
+        names = set(os.listdir(here)) if here.is_dir() else set()
+        prefix = f"/{relative}" if relative else ""
+        for destination in extra:
+            if destination.startswith(prefix + "/"):
+                names.add(destination[len(prefix) + 1:].split("/", 1)[0])
+        out: list[str] = []
+        for name in sorted(names):
+            destination = f"{prefix}/{name}"
+            if destination in extra:
+                out += ["--ro-bind", extra[destination], destination]
+            elif any(item.startswith(destination + "/") for item in extra):
+                out += ["--perms", "0755", "--dir", destination, *walk(destination.lstrip("/"))]
+            else:
+                out += ["--ro-bind", str(runtime_root / destination.lstrip("/")), destination]
+        return out
+
+    return walk("")
+
+
+def _claude_sdk_worker_argv(spec, *, worker_id: int, in_fd: int, out_fd: int,
+                            enter_h: "Sequence[str]",
+                            payload_fds: Mapping[str, int]) -> list[str]:
+    """The worker's whole launch, outermost first:
+
+    1. ``prlimit`` sets the fixture's memory, descriptor, CPU, file-size and core limits,
+       inherited by everything below (the process limit is set after the drop, on the
+       worker's own id);
+    2. ``seat_keyring_exec`` joins a fresh anonymous session keyring;
+    3. ``nsenter`` enters H, the seat-uid holder, as H-root;
+    4. ``bwrap`` builds the worker's own network, PID, IPC and UTS namespaces and a root
+       holding only the sealed runtime, the payload (copied read-only from sealed memfds of
+       the bytes preflight verified, never read from the installation by the worker), the
+       verified closure, size-bounded
+       private tmpfs directories, minimal devices, its own proc and the drop tool, with every
+       capability dropped but the three the drop needs, and dies with its parent;
+    5. ``setpriv`` drops to the worker's leased id with every capability set empty, and the
+       settle step (:data:`_CLAUDE_SDK_WORKER_SETTLE`) proves it and sets the process limit;
+    6. the bootstrap runs, with the channel's two descriptors as its only arguments.
+    No credential, token pipe, jail, subject tree or host home is part of it."""
+    limits = dict(spec.limits)
+    read_only = dict(spec.read_only)
+    runtime_root = Path(read_only.pop("/"))
+    binds = _claude_sdk_root_binds(runtime_root, _claude_sdk_drop_tool_files(runtime_root))
+    payload = str(Path(spec.argv[-1]).parent)
+    # bwrap makes an implicit parent 0700 and owned by H-root, which the worker could not
+    # traverse: every directory above a worker mount is made explicitly, world-searchable.
+    parents = sorted({str(parent) for destination in (*read_only, *spec.private_tmpfs)
+                      for parent in Path(destination).parents if str(parent) != "/"})
+    for parent in parents:
+        binds += ["--perms", "0755", "--dir", parent]
+    for destination, source in sorted(read_only.items()):
+        if destination == payload:
+            binds += ["--perms", "0755", "--dir", destination]
+            for name, fd in sorted(payload_fds.items()):
+                binds += ["--perms", "0444", "--ro-bind-data", str(int(fd)),
+                          f"{destination}/{name}"]
+            continue
+        binds += ["--ro-bind", str(source), destination]
+    private = [item for path, size in sorted(spec.private_tmpfs.items())
+               for item in ("--perms", "1777", "--size", str(int(size)), "--tmpfs", path)]
+    env = [item for key in sorted(spec.env) for item in ("--setenv", key, spec.env[key])]
+    cwd = next((path for path in sorted(spec.private_tmpfs) if path.endswith("/cwd")), "/")
+    interpreter = spec.argv[0]
+    return [
+        _PRLIMIT, f"--as={int(limits['memory_bytes'])}", f"--nofile={int(limits['descriptors'])}",
+        f"--cpu={int(limits['cpu_seconds'])}", f"--fsize={int(limits['file_bytes'])}",
+        f"--core={int(limits['core_bytes'])}", "--",
+        *_seat_uid.trusted_module_argv("phase_loop_runtime.seat_keyring_exec", "--"),
+        *enter_h,
+        _seat_jail.BWRAP, *spec.namespaces,
+        *(item for cap in _seat_jail.JAIL_CAP_ADD for item in ("--cap-add", cap)),
+        *binds, *private, "--dev", "/dev", "--proc", "/proc", "--remount-ro", "/",
+        "--clearenv", *env, "--chdir", cwd, "--",
+        *_seat_jail.setpriv_drop(int(worker_id)),
+        interpreter, "-I", "-S", "-B", "-c", _CLAUDE_SDK_WORKER_SETTLE, str(int(worker_id)),
+        str(int(limits["processes"])), f"{in_fd},{out_fd}", *spec.argv, str(in_fd), str(out_fd),
+    ]
+
+
+class _PipeFeeder:
+    """Writes queued bytes to one pipe on its own thread, so neither the CLI nor the worker
+    can block the parent's loop; ``close`` closes the pipe after everything queued."""
+
+    _CLOSE = object()
+
+    def __init__(self, write) -> None:
+        self._write = write
+        self._queue: "queue.SimpleQueue[object]" = queue.SimpleQueue()
+        self._closed = False
+        self._thread = threading.Thread(target=self._run, daemon=True,
+                                        name="claude-sdk-feeder")
+        self._thread.start()
+
+    def _run(self) -> None:
+        while True:
+            item = self._queue.get()
+            if item is self._CLOSE:
+                self._write(None)
+                return
+            try:
+                self._write(item)
+            except (BrokenPipeError, OSError, ValueError):
+                self._write(None)
+                return
+
+    def send(self, data: bytes) -> None:
+        if not self._closed:
+            self._queue.put(bytes(data))
+
+    def close(self) -> None:
+        if not self._closed:
+            self._closed = True
+            self._queue.put(self._CLOSE)
+
+    def join(self, timeout: float) -> None:
+        self._thread.join(timeout)
+
+
+def _fd_writer(fd: int):
+    state = {"open": True}
+
+    def write(data: bytes | None) -> None:
+        if data is None:
+            if state["open"]:
+                state["open"] = False
+                try:
+                    os.close(fd)
+                except OSError:
+                    pass
+            return
+        view = memoryview(data)
+        while view:
+            view = view[os.write(fd, view):]
+
+    return write
+
+
+def _file_writer(handle):
+    def write(data: bytes | None) -> None:
+        if data is None:
+            try:
+                handle.close()
+            except (OSError, ValueError):
+                pass
+            return
+        handle.write(data)
+        handle.flush()
+
+    return write
+
+
+@dataclass
+class _ClaudeSdkWorker:
+    """One running host worker: its sandbox's operator-owned ``bwrap`` process, the parent's
+    ends of the channel, and its teardown. Killing ``bwrap``'s group ends the sandbox through
+    ``--die-with-parent`` and its PID namespace: no signal crosses to the worker's id."""
+
+    process: "subprocess.Popen[bytes]"
+    read_fd: int
+    feeder: _PipeFeeder
+    worker_id: int
+
+    def send(self, data: bytes) -> None:
+        self.feeder.send(data)
+
+    def terminate(self) -> None:
+        self.feeder.close()
+        try:
+            _terminate_process_group(self.process)
+        finally:
+            for pipe in (self.process.stderr,):
+                try:
+                    if pipe is not None:
+                        pipe.close()
+                except OSError:
+                    pass
+            try:
+                os.close(self.read_fd)
+            except OSError:
+                pass
+            self.feeder.join(5.0)
+
+
+def _launch_claude_sdk_worker(spec, *, worker_id: int) -> _ClaudeSdkWorker:
+    """Start one worker in its sandbox, inside the seat-uid holder the leg holds. A missing
+    holder, tool or interpreter is ``claude_sdk_worker_unavailable``; nothing has started."""
+    egress = list(_EGRESS_LAUNCH_PREFIX.get())
+    lockdown = next((index for index, item in enumerate(egress) if Path(item).name == "setpriv"),
+                    None)
+    if not _enters_namespace(egress) or lockdown is None:
+        raise _claude_sdk_refused("claude_sdk_worker_unavailable")
+    for tool in (_PRLIMIT, _seat_jail.BWRAP):
+        if not os.access(tool, os.X_OK):
+            raise _claude_sdk_refused("claude_sdk_worker_unavailable")
+    from . import claude_seat_sdk as _sdk
+
+    payload_fds: dict[str, int] = {}
+    try:
+        for name in _sdk.WORKER_PAYLOAD:
+            payload_fds[name] = _seat_jail.memfd_with(
+                f"claude-sdk-{name}", _sdk.read_packaged(f"worker/{name}"))
+    except (OSError, _claude_seat_transport.TransportRefused) as exc:
+        for fd in payload_fds.values():
+            os.close(fd)
+        if isinstance(exc, _claude_seat_transport.TransportRefused):
+            raise
+        raise _claude_sdk_refused("claude_sdk_worker_unavailable") from exc
+    parent_to_worker = os.pipe()
+    worker_to_parent = os.pipe()
+    child_ends = (parent_to_worker[0], worker_to_parent[1])
+    try:
+        argv = _claude_sdk_worker_argv(
+            spec, worker_id=worker_id, in_fd=child_ends[0], out_fd=child_ends[1],
+            enter_h=egress[:lockdown], payload_fds=payload_fds)
+        process = subprocess.Popen(
+            argv, pass_fds=(*child_ends, *payload_fds.values()), close_fds=True, cwd="/",
+            env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"},
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+    except (OSError, ValueError, KeyError) as exc:
+        for fd in (*parent_to_worker, *worker_to_parent, *payload_fds.values()):
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+        raise _claude_sdk_refused("claude_sdk_worker_unavailable") from exc
+    for fd in (*child_ends, *payload_fds.values()):
+        os.close(fd)
+    _anchor_process_group(process)
+    _drain_bounded(process.stderr)
+    return _ClaudeSdkWorker(process=process, read_fd=worker_to_parent[0],
+                            feeder=_PipeFeeder(_fd_writer(parent_to_worker[1])),
+                            worker_id=worker_id)
+
+
+def _drain_bounded(pipe, cap: int = 64 << 10) -> None:
+    """Read and discard a worker's stderr on its own thread, bounded: it is never sent to
+    the SDK, never kept, and never blocks the worker."""
+
+    def run() -> None:
+        seen = 0
+        try:
+            while True:
+                chunk = pipe.read1(65536) if hasattr(pipe, "read1") else pipe.read(65536)
+                if not chunk:
+                    return
+                seen += len(chunk)
+                if seen > cap:
+                    continue
+        except (OSError, ValueError):
+            return
+
+    threading.Thread(target=run, daemon=True, name="claude-sdk-stderr").start()
+
+
+class _ClaudeSdkDuplex:
+    """The duplex half of :func:`_run_leg_with_liveness` for the ``sdk`` transport: every
+    byte between the CLI and the worker passes through the parent bridge
+    (``claude_seat_sdk.SDKBridge``), which returns the actions to perform. A ``STOP`` ends
+    the leg; the CLI's stdin carries only bytes the bridge wrote from its templates."""
+
+    def __init__(self, bridge, worker: _ClaudeSdkWorker) -> None:
+        from . import claude_seat_sdk as _sdk
+
+        self._sdk = _sdk
+        self.bridge = bridge
+        self._worker = worker
+        self._cli: _PipeFeeder | None = None
+        self.stopped = False
+
+    def fds(self) -> tuple[int, ...]:
+        return (self._worker.read_fd,)
+
+    def attach(self, proc: "subprocess.Popen[bytes]") -> bool:
+        if proc.stdin is None:
+            self.stopped = True
+            return True
+        self._cli = _PipeFeeder(_file_writer(proc.stdin))
+        return self._apply(self.bridge.start())
+
+    def worker(self, chunk: bytes) -> bool:
+        return self._apply(self.bridge.worker_bytes(chunk) if chunk else self.bridge.worker_eof())
+
+    def cli_stdout(self, chunk: bytes) -> bool:
+        return self._apply(self.bridge.cli_stdout(chunk))
+
+    def cli_stderr(self, chunk: bytes) -> bool:
+        return self._apply(self.bridge.cli_stderr(chunk))
+
+    def cli_stdout_eof(self) -> bool:
+        return self._apply(self.bridge.cli_stdout_eof())
+
+    def _apply(self, actions) -> bool:
+        sdk = self._sdk
+        for action in actions:
+            kind = action[0]
+            if kind == sdk.TO_WORKER:
+                self._worker.send(action[1])
+            elif kind == sdk.TO_CLI and self._cli is not None:
+                self._cli.send(action[1])
+            elif kind == sdk.CLOSE_CLI_STDIN and self._cli is not None:
+                self._cli.close()
+            else:  # STOP, or anything the bridge did not define
+                self.stopped = True
+                return True
+        return False
+
+    def close(self) -> None:
+        if self._cli is not None:
+            self._cli.close()
+            self._cli.join(5.0)
+
+
+def _await_claude_sdk_ready(worker: _ClaudeSdkWorker, bridge, timeout_s: float) -> bool:
+    """Read the worker until it is ready, refuses or goes away, within ``timeout_s``."""
+    deadline = time.monotonic() + timeout_s
+    while bridge.state != "ready" and bridge.violation is None:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        readable, _, _ = select.select([worker.read_fd], [], [], min(remaining, 0.5))
+        if not readable:
+            continue
+        try:
+            chunk = os.read(worker.read_fd, 65536)
+        except OSError:
+            chunk = b""
+        if not chunk:
+            bridge.worker_eof()
+            return False
+        bridge.worker_bytes(chunk)
+    return bridge.state == "ready" and bridge.violation is None
+
+
+def _drain_claude_sdk_worker(worker: _ClaudeSdkWorker, bridge, timeout_s: float) -> None:
+    """After the CLI ended: the worker's last frames (its ``done``), until EOF, bounded."""
+    deadline = time.monotonic() + timeout_s
+    while bridge.violation is None and time.monotonic() < deadline:
+        readable, _, _ = select.select([worker.read_fd], [], [], 0.2)
+        if not readable:
+            if worker.process.poll() is not None:
+                return
+            continue
+        try:
+            chunk = os.read(worker.read_fd, 65536)
+        except OSError:
+            return
+        if not chunk:
+            bridge.worker_eof()
+            return
+        bridge.worker_bytes(chunk)
+
+
+def _claude_sdk_worker_count() -> int:
+    uids = _seat_uid.subordinate_range(_seat_uid.SUBUID_FILE)
+    gids = _seat_uid.subordinate_range(_seat_uid.SUBGID_FILE)
+    if uids is None or gids is None:
+        raise _claude_sdk_refused("claude_sdk_worker_unavailable")
+    return _seat_uid.seat_id_count(uids, gids)
+
+
+def _run_claude_sdk_leg(
+    command: "Sequence[str]",
+    *,
+    spec,
+    bridge,
+    install,
+    options: Mapping[str, object],
+    cwd: "Path | str",
+    env: Mapping[str, str],
+    deadline_s: float,
+    seat: "_JailedSeat",
+    quiescence_latch: _ProviderQuiescenceLatch | None = None,
+    review_monitor: _ReviewMonitor | None = None,
+) -> "_LegRun":
+    """One ``sdk`` leg: lease the worker its own id, start it, hand it the bounded hello
+    and wait for readiness; then launch the jailed CLI exactly as the other transports do
+    (``_run_leg_with_liveness`` with the seat's jail) with the bridge in its loop; then read
+    the worker's last frames and tear the worker down. The bridge alone decides admission
+    (``SDKBridge.outcome``); this returns the CLI's run. A worker that cannot be leased or
+    started refuses ``claude_sdk_worker_unavailable`` before the CLI launches."""
+    count = _claude_sdk_worker_count()
+    with contextlib.ExitStack() as stack:
+        try:
+            worker_id = stack.enter_context(_seat_uid.lease_seat_id(count))
+        except (_seat_uid.SeatIdsExhausted, OSError) as exc:
+            raise _claude_sdk_refused("claude_sdk_worker_unavailable") from exc
+        if worker_id in (seat.jail.seat_ids or ()):
+            raise _claude_sdk_refused("claude_sdk_worker_unavailable")
+        worker = _launch_claude_sdk_worker(spec, worker_id=worker_id)
+        stack.callback(worker.terminate)
+        closure = next(destination for destination, source in spec.read_only.items()
+                       if Path(source) == Path(install.closure_root))
+        worker.send(bridge.hello(filter_program=spec.filter_program, roots=[closure],
+                                 inventory=install.inventory, excluded=list(install.excluded),
+                                 options=options))
+        if not _await_claude_sdk_ready(worker, bridge, _CLAUDE_SDK_READY_TIMEOUT_S):
+            if bridge.violation is None:
+                raise _claude_sdk_refused("claude_sdk_worker_unavailable")
+            return _LegRun(1, "", "")
+        duplex = _ClaudeSdkDuplex(bridge, worker)
+        stack.callback(duplex.close)
+        run = _run_leg_with_liveness(
+            list(command), cwd=cwd, env=dict(env), deadline_s=deadline_s,
+            stdout_guard=duplex.cli_stdout, stderr_guard=duplex.cli_stderr,
+            seat_jail=seat.jail, probe_jail=seat.probe_jail, duplex=duplex,
+            **({"quiescence_latch": quiescence_latch} if quiescence_latch is not None else {}),
+            **({"review_monitor": review_monitor} if review_monitor is not None else {}),
+        )
+        if not duplex.stopped:
+            _drain_claude_sdk_worker(worker, bridge, _CLAUDE_SDK_DRAIN_TIMEOUT_S)
+        return run
 
 
 # #188 — de-animation of the Claude TUI's cosmetic status line. While the model
@@ -11792,6 +12331,8 @@ class _JailedSeat:
     #: The access-only credential document delivered to this Gemini seat. It remains in
     #: memory so the launcher can pass the same bytes to the issuer and scan suppliers.
     delivered_copy: bytes = field(default=b"", repr=False)
+    #: The ``sdk`` transport's verified worker install, from its preflight (IF-0-CLAUDE-3).
+    sdk_install: object | None = None
 
 
 def _cleanup_jailed_seat(
@@ -11935,9 +12476,11 @@ def _prepare_jailed_claude(
     the probe jail. The first failure raises its ONE code and nothing has launched.
 
     ``transport`` is the one the spawn resolved; ``None`` resolves it here. A refused
-    selection raises ``claude_seat_transport.TransportRefused`` before anything is created;
-    ``sdk`` without an admitted dependency session refuses
-    ``claude_sdk_dependency_unavailable`` before the credential is resolved.
+    selection raises ``claude_seat_transport.TransportRefused`` before anything is created.
+    ``sdk`` runs its admitted module's worker preflight (``claude_seat_sdk.preflight``:
+    packaged bindings, the sealed install, the worker prerequisites) before the credential
+    is resolved; its typed refusal is the leg's. A subject dependency session is enforced
+    as for every transport, and ``sdk`` requires none of its own.
 
     ``seat_dir`` (0700, operator-owned, beside the broker's stage rather than inside it)
     holds ``seat-home/`` and ``seat-out/``; the tree is the approved stage in
@@ -11951,9 +12494,14 @@ def _prepare_jailed_claude(
     artifact, instructions = prompt_parts
     from .executable_dependency_startup import current_dependency_for_provider
 
+    sdk_install = None
+    if transport == "sdk":
+        module = _claude_seat_transport.transport_module("sdk")
+        if module is None:
+            raise _claude_seat_transport.TransportRefused(_claude_seat_transport.NOT_ADMITTED)
+        # IF-0-CLAUDE-3: worker readiness and provenance, before the leg's credential.
+        sdk_install = module.preflight()
     dependency = current_dependency_for_provider("claude")
-    if transport == "sdk" and dependency is None:
-        raise _claude_seat_transport.TransportRefused("claude_sdk_dependency_unavailable")
     _validate_jail_dependency("claude", dependency)
     executable = (
         Path(dependency.subject_source) if dependency is not None else None
@@ -12025,7 +12573,8 @@ def _prepare_jailed_claude(
                 raise
             return _JailedSeat(jail=jail, probe_jail=probe, holder_pid=holder_pid, token=token,
                                review_dir=review_dir, seat_dir=seat_dir, source=credential.source,
-                               expires_at=credential.expires_at, notices=list(credential.notices))
+                               expires_at=credential.expires_at, notices=list(credential.notices),
+                               sdk_install=sdk_install)
         except _seat_jail.SeatSandboxRefused as exc:
             if not credential.notices:
                 raise

@@ -6,6 +6,24 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- The jailed Claude seat's `sdk` host worker gets its launcher and duplex leg, still
+  unadmitted (SEATS CLAUDE SL-1, agent-harness#1820). `panel_invoker._run_claude_sdk_leg`
+  leases the worker its own seat id and starts it inside the leg's seat-uid holder:
+  - `prlimit` sets the fixture's limits;
+  - a fresh session keyring is joined;
+  - `bwrap` builds the worker's own network, PID, IPC and UTS namespaces, a root of the
+    sealed runtime, the verified closure, size-bounded private tmpfs directories and the
+    payload copied from sealed memfds, and dies with its parent;
+  - the seat jail's `setpriv` drop runs before the bootstrap.
+
+  The jailed CLI then launches exactly as for the other transports, through
+  `_run_leg_with_liveness`, which can now carry the parent bridge in its loop (`duplex`).
+  `_prepare_jailed_claude` runs the `sdk` worker preflight before the credential is
+  resolved and no longer requires a dependency session for `sdk`. `audit-order` checks an
+  admitted `sdk` head's boundary receipt against the head's current inputs, and the new
+  `verify-proof` command and base-defined `claude-sdk-audit` workflow fail closed on an
+  admitted head until the owner's enforcement route and private evidence store exist.
+
 - The jailed Claude seat's `sdk` transport lands offline and unadmitted (SEATS CLAUDE SL-3,
   agent-harness#1820): `claude_seat_sdk` (`ADMITTED = False`) and its credential-free host
   worker under `phase_loop_runtime/data/claude_sdk/worker/` -- a trusted `-I -S -B` bootstrap

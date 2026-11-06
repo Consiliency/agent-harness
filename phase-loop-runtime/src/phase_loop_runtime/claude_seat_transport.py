@@ -942,7 +942,216 @@ def audit_order(
     problems.extend(default_rule_failures(after.default, after.authority, record,
                                           sorted(after.admissions)))
     problems.extend(card_failures(after.default, _blob(repo, head_commit, CARD)))
+    if "sdk" in after.admissions:
+        # Continuously while `sdk` is admitted (EC-CLAUDE-3); a de-admission needs none.
+        problems.extend(sdk_proof_failures(repo, head_commit, require_evidence=False))
     return tuple(dict.fromkeys(problems))
+
+
+# --------------------------------------------------------------------------------------
+# EC-CLAUDE-3: the `sdk` boundary receipt, checked continuously while `sdk` is admitted.
+# Standalone like the rest of this audit (the CI step runs one copied file), so the closed
+# schema and proof inputs below mirror `claude_seat_sdk` and a test holds them equal.
+# --------------------------------------------------------------------------------------
+
+SDK_RECEIPT = "plans/evidence/seat-qualification/claude-sdk-boundary/receipt-v1.json"
+SDK_PACKAGED_RECEIPT = f"{RUNTIME_DIR}/data/claude_sdk/receipt-v1.json"
+SDK_CONTRACT = "plans/seats-claude-sdk-worker-contract.md"
+SDK_LOCK = "phase-loop-runtime/uv.lock"
+SDK_RECEIPT_SCHEMA = "claude-sdk-boundary.v1"
+SDK_RECEIPT_FIELDS: tuple[str, ...] = (
+    "schema", "sdk_version", "lock_sha256", "contract_sha256", "proof_inputs_sha256",
+    "installed_bindings", "source_regions", "runtime_manifest_sha256",
+    "worker_install_sha256", "instrumentation_wrapper_sha256", "profile_digest",
+    "interpreter", "host_class", "public_junit", "private_suite")
+_SDK_DATA = f"{RUNTIME_DIR}/data/claude_sdk"
+SDK_INSTALLED_BINDINGS: Mapping[str, str] = MappingProxyType({
+    "launch_fixture_sha256": f"{_SDK_DATA}/launch-v1.json",
+    "export_sha256": f"{_SDK_DATA}/requirements-v1.txt",
+    "closure_manifest_sha256": f"{_SDK_DATA}/closure-linux-x86_64-cp314-v1.json",
+    "seat_module_sha256": f"{RUNTIME_DIR}/claude_seat_sdk.py",
+    "payload:claude_sdk_bootstrap.py": f"{_SDK_DATA}/worker/claude_sdk_bootstrap.py",
+    "payload:claude_sdk_worker.py": f"{_SDK_DATA}/worker/claude_sdk_worker.py",
+    "payload:claude_sdk_adapter.py": f"{_SDK_DATA}/worker/claude_sdk_adapter.py",
+})
+SDK_PROOF_REGIONS: Mapping[str, tuple[str, ...]] = MappingProxyType({
+    f"{RUNTIME_DIR}/panel_invoker.py": (
+        "_broker_claude_tui_command", "_claude_panel_settings", "_prepare_jailed_claude",
+        "_run_leg_with_liveness", "launch_provider", "_cleanup_jailed_seat",
+        "_JailedSeat", "_BROKER_CLAUDE_DIRECT_REQUEST", "_JAILED_CLAUDE_TOOL_CONTROLS"),
+    f"{RUNTIME_DIR}/seat_jail.py": (
+        "seat_env", "secret_encodings", "contains_secret", "build_seat_jail"),
+    f"{RUNTIME_DIR}/seat_uid.py": ("lease_seat_id", "seat_uid_available", "teardown_in_h"),
+})
+SDK_JUNIT_SELECTORS = ("VB", "VL")
+SDK_PROOF_PROPERTY = "claude_sdk_proof_inputs_sha256"
+SDK_INSTALL_PROPERTY = "claude_sdk_worker_install_sha256"
+
+#: TODO(owner, GL-2 prerequisite): the private evidence store. CI retrieves the private
+#: VB/VL JUnit and the private suite inventory by the receipt's opaque evidence IDs from a
+#: fixed endpoint with a trusted, read-only credential. Until the owner provides it, a head
+#: that admits `sdk` cannot be verified here and fails -- never a skip.
+SDK_PRIVATE_EVIDENCE_STORE: str | None = None
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _strict_json(raw: bytes) -> object:
+    def unique(pairs):
+        keys = [key for key, _value in pairs]
+        if len(keys) != len(set(keys)):
+            raise ValueError("duplicate key")
+        return dict(pairs)
+
+    return json.loads(raw.decode("utf-8"), object_pairs_hook=unique)
+
+
+def source_region(source: bytes, name: str) -> bytes | None:
+    """One top-level function, class or assignment named ``name``, as bytes (read with
+    ``ast``, never executed); ``None`` when absent. ``claude_seat_sdk.source_region`` is
+    the same rule."""
+    tree = ast.parse(source)
+    lines = source.splitlines(keepends=True)
+    for node in tree.body:
+        names: list[str] = []
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            names = [node.name]
+        elif isinstance(node, ast.Assign):
+            names = [target.id for target in node.targets if isinstance(target, ast.Name)]
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            names = [node.target.id]
+        if name in names:
+            start = min([node.lineno, *(item.lineno for item in
+                                        getattr(node, "decorator_list", []))])
+            return b"".join(lines[start - 1:node.end_lineno])
+    return None
+
+
+def _junit_file(case) -> str:
+    """The test file a JUnit case came from: its ``file`` attribute's name, else the
+    ``test_*`` module in its dotted ``classname``."""
+    path = case.get("file")
+    if path:
+        return path.replace("\\", "/").rsplit("/", 1)[-1]
+    parts = (case.get("classname") or "").split(".")
+    module = next((part for part in parts if part.startswith("test_")), parts[-1] if parts else "")
+    return f"{module}.py"
+
+
+def _junit_failures(selector: str, raw: bytes, expected: Mapping[str, object],
+                    receipt: Mapping[str, object]) -> list[str]:
+    """One public VB/VL JUnit against the receipt: its digest, its unique suite
+    properties (the proof-input binding and the worker install) and every file's counts,
+    all collected, all passed, none failed or skipped."""
+    import xml.etree.ElementTree as ElementTree
+
+    problems: list[str] = []
+    if _sha256(raw) != expected.get("sha256"):
+        problems.append(f"sdk {selector}: the JUnit is not the one the receipt binds")
+    try:
+        root = ElementTree.fromstring(raw)
+    except ElementTree.ParseError:
+        return [*problems, f"sdk {selector}: the JUnit does not parse"]
+    suites = [root] if root.tag == "testsuite" else list(root.iter("testsuite"))
+    properties: dict[str, list[str]] = {}
+    counts: dict[str, dict[str, int]] = {}
+    for suite in suites:
+        for prop in suite.iter("property"):
+            properties.setdefault(prop.get("name") or "", []).append(prop.get("value") or "")
+        for case in suite.iter("testcase"):
+            entry = counts.setdefault(_junit_file(case),
+                                      {"collected": 0, "passed": 0, "failed": 0, "skipped": 0})
+            entry["collected"] += 1
+            if case.find("skipped") is not None:
+                entry["skipped"] += 1
+            elif case.find("failure") is not None or case.find("error") is not None:
+                entry["failed"] += 1
+            else:
+                entry["passed"] += 1
+    for name, value in ((SDK_PROOF_PROPERTY, receipt.get("proof_inputs_sha256")),
+                        (SDK_INSTALL_PROPERTY, receipt.get("worker_install_sha256"))):
+        if properties.get(name) != [value]:
+            problems.append(f"sdk {selector}: the JUnit's {name} is missing, repeated or "
+                            "not the receipt's")
+    if counts != expected.get("files"):
+        problems.append(f"sdk {selector}: the JUnit's per-file counts are not the receipt's")
+    for name, entry in counts.items():
+        if not entry["collected"] or entry["failed"] or entry["skipped"] \
+                or entry["passed"] != entry["collected"]:
+            problems.append(f"sdk {selector}: {name} did not collect and pass every test")
+    return problems
+
+
+def sdk_proof_failures(repo: Path | str, head: str, *,
+                       junit: Mapping[str, bytes] | None = None,
+                       require_evidence: bool = True) -> list[str]:
+    """EC-CLAUDE-3 for one head tree, read as data: empty when `sdk` is not admitted
+    there (a de-admission needs no receipt). While it is admitted, the committed receipt
+    and its packaged copy must be byte-identical, of the closed schema, and current for
+    every repository-derived binding (lock, contract, installed artifacts and source
+    regions recomputed from the head). With ``require_evidence`` (``verify-proof``, the
+    base-defined workflow) the public VB/VL JUnit must match it and the private evidence
+    must be retrievable; ``audit-order`` checks the repository half on every landing.
+    Anything unverifiable fails."""
+    repo = Path(repo)
+    commit = _commit(repo, head)
+    if commit is None:
+        return ["the head commit is unavailable"]
+    try:
+        facts = _tree_facts(repo, commit)
+    except AuditError as exc:
+        return [str(exc)]
+    if "sdk" not in facts.admissions:
+        return []
+    raw = _blob(repo, commit, SDK_RECEIPT)
+    if raw is None:
+        return ["sdk is admitted but its boundary receipt is missing"]
+    problems: list[str] = []
+    if _blob(repo, commit, SDK_PACKAGED_RECEIPT) != raw:
+        problems.append("the packaged sdk receipt is not the committed receipt")
+    try:
+        receipt = _strict_json(raw)
+    except (UnicodeDecodeError, ValueError):
+        return [*problems, "the sdk receipt does not parse"]
+    if not isinstance(receipt, dict) or set(receipt) != set(SDK_RECEIPT_FIELDS) \
+            or receipt.get("schema") != SDK_RECEIPT_SCHEMA:
+        return [*problems, "the sdk receipt is not the closed claude-sdk-boundary.v1 schema"]
+    for name, path in (("lock_sha256", SDK_LOCK), ("contract_sha256", SDK_CONTRACT)):
+        blob = _blob(repo, commit, path)
+        if blob is None or receipt.get(name) != _sha256(blob):
+            problems.append(f"the sdk receipt is stale: {name}")
+    bindings = receipt.get("installed_bindings")
+    bindings = bindings if isinstance(bindings, dict) else {}
+    for name, path in SDK_INSTALLED_BINDINGS.items():
+        blob = _blob(repo, commit, path)
+        if blob is None or bindings.get(name) != _sha256(blob):
+            problems.append(f"the sdk receipt is stale: {name}")
+    regions = receipt.get("source_regions")
+    regions = regions if isinstance(regions, dict) else {}
+    for path, names in SDK_PROOF_REGIONS.items():
+        source = _blob(repo, commit, path)
+        for name in names:
+            region = source_region(source, name) if source is not None else None
+            if region is None or regions.get(f"{path}::{name}") != _sha256(region):
+                problems.append(f"the sdk receipt is stale: {path}::{name}")
+    if not require_evidence:
+        return problems
+    public = receipt.get("public_junit")
+    public = public if isinstance(public, dict) else {}
+    for selector in SDK_JUNIT_SELECTORS:
+        data = (junit or {}).get(selector)
+        if data is None:
+            problems.append(f"sdk {selector}: the public JUnit was not supplied")
+            continue
+        expected = public.get(selector)
+        problems.extend(_junit_failures(selector, data, expected if isinstance(expected, dict)
+                                        else {}, receipt))
+    if SDK_PRIVATE_EVIDENCE_STORE is None:
+        problems.append("the sdk private evidence store is not configured (owner TODO): the "
+                        "private VB/VL evidence cannot be verified")
+    return problems
 
 
 def github_pr_merged(number: int, *, repository: str | None = None, timeout: float = 20) -> bool:
@@ -984,7 +1193,30 @@ def main(argv: Sequence[str] | None = None, *,
     audit.add_argument("--pr", type=int, default=None, help="the PR under check")
     audit.add_argument("--event", default=None,
                        help="a pull_request event payload; its base.sha must be --base")
+    proof = sub.add_parser("verify-proof", help="check the sdk boundary receipt (EC-CLAUDE-3)")
+    proof.add_argument("--repo", default=".")
+    proof.add_argument("--head", default="HEAD")
+    proof.add_argument("--junit", action="append", default=[], metavar="SELECTOR=PATH",
+                       help="a public VB or VL JUnit file")
     args = parser.parse_args(argv)
+    if args.command == "verify-proof":
+        supplied: dict[str, bytes] = {}
+        for item in args.junit:
+            selector, _sep, path = item.partition("=")
+            if selector not in SDK_JUNIT_SELECTORS or not path:
+                print(f"verify-proof: FAIL: unknown JUnit selector {selector!r}", file=sys.stderr)
+                return 1
+            try:
+                supplied[selector] = Path(path).read_bytes()
+            except OSError:
+                print(f"verify-proof: FAIL: {selector} JUnit is unreadable", file=sys.stderr)
+                return 1
+        problems = sdk_proof_failures(args.repo, args.head, junit=supplied)
+        for problem in problems:
+            print(f"verify-proof: FAIL: {problem}", file=sys.stderr)
+        if not problems:
+            print("verify-proof: OK")
+        return 1 if problems else 0
     try:
         event = _event(args.event)
     except AuditError as exc:

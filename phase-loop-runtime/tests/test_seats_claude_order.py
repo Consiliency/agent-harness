@@ -351,12 +351,200 @@ def _sdk_shapes() -> dict[str, dict]:
     }
 
 
-def test_a_plain_literal_sdk_activation_on_a_ratified_base_passes(tree):
-    """The control for the shapes below: the one readable shape, §4b on the base."""
-    base = tree.commit(record=SDK_RECORD, transport=transport_source(),
+# --------------------------------------------------------------------------------------
+# EC-CLAUDE-3: the boundary receipt an admitted `sdk` head must carry, current.
+# --------------------------------------------------------------------------------------
+
+def _sha(text: str) -> str:
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def _bound_files() -> dict[str, str]:
+    """A file at every path the receipt binds, each region a small function."""
+    files = {ct.SDK_LOCK: "lock v1\n", ct.SDK_CONTRACT: "contract v1\n"}
+    for name, path in ct.SDK_INSTALLED_BINDINGS.items():
+        if path != ct.MODULE_SOURCES["sdk"]:
+            files[path] = f"# {name} v1\n"
+    for path, names in ct.SDK_PROOF_REGIONS.items():
+        files[path] = "".join(f"def {name}():\n    return 1\n\n\n" for name in names)
+    return files
+
+
+JUNIT_COUNTS = {"test_seats_claude_sdk.py": {"collected": 2, "passed": 2, "failed": 0,
+                                             "skipped": 0}}
+
+
+def _junit(*, proof="a" * 64, install="c" * 64, skipped=False) -> bytes:
+    case = '<testcase classname="tests.test_seats_claude_sdk" name="test_{n}"{tail}'
+    cases = case.format(n="one", tail="/>") + case.format(
+        n="two", tail="><skipped/></testcase>" if skipped else "/>")
+    return (f'<testsuites><testsuite name="pytest"><properties>'
+            f'<property name="{ct.SDK_PROOF_PROPERTY}" value="{proof}"/>'
+            f'<property name="{ct.SDK_INSTALL_PROPERTY}" value="{install}"/>'
+            f"</properties>{cases}</testsuite></testsuites>").encode()
+
+
+def _receipt(files: dict[str, str], sdk_source: str, **overrides) -> str:
+    blobs = {**files, ct.MODULE_SOURCES["sdk"]: sdk_source}
+    junit = _junit()
+    receipt = {
+        "schema": ct.SDK_RECEIPT_SCHEMA, "sdk_version": "0.2.167",
+        "lock_sha256": _sha(blobs[ct.SDK_LOCK]), "contract_sha256": _sha(blobs[ct.SDK_CONTRACT]),
+        "proof_inputs_sha256": "a" * 64,
+        "installed_bindings": {name: _sha(blobs[path])
+                               for name, path in ct.SDK_INSTALLED_BINDINGS.items()},
+        "source_regions": {f"{path}::{name}": hashlib.sha256(
+            ct.source_region(blobs[path].encode(), name)).hexdigest()
+            for path, names in ct.SDK_PROOF_REGIONS.items() for name in names},
+        "runtime_manifest_sha256": ["b" * 64], "worker_install_sha256": "c" * 64,
+        "instrumentation_wrapper_sha256": "d" * 64, "profile_digest": "e" * 64,
+        "interpreter": {"implementation": "cpython", "version": "3.14.4"},
+        "host_class": "linux-x86_64-cp314",
+        "public_junit": {s: {"sha256": hashlib.sha256(junit).hexdigest(), "files": JUNIT_COUNTS}
+                         for s in ct.SDK_JUNIT_SELECTORS},
+        "private_suite": {"suite_sha256": "f" * 64, "evidence_ids": ["ev-" + "1" * 32],
+                          "junit": {s: {"sha256": "f" * 64, "selectors": {
+                              "ev-" + "2" * 32: JUNIT_COUNTS["test_seats_claude_sdk.py"]}}
+                              for s in ct.SDK_JUNIT_SELECTORS}},
+    }
+    receipt.update(overrides)
+    return json.dumps(receipt, sort_keys=True)
+
+
+def _admitted(tree, *, receipt: str | None = "current", packaged: str | None = "same",
+              files: dict[str, str] | None = None) -> tuple[str, str, dict[str, str], str]:
+    """A ratified base and a head that admits `sdk` with every bound file and a receipt."""
+    files = _bound_files() if files is None else files
+    base = tree.commit(files, record=SDK_RECORD, transport=transport_source(),
                        print=module_source(False, None), sdk=module_source(False, None))
-    head = tree.commit(sdk=module_source(True, citation(SDK_RECORD, "4b", 1901)))
+    source = module_source(True, citation(SDK_RECORD, "4b", 1901))
+    body = _receipt(files, source) if receipt == "current" else receipt
+    raw = {ct.SDK_RECEIPT: body, ct.SDK_PACKAGED_RECEIPT: body if packaged == "same" else packaged}
+    head = tree.commit(raw, sdk=source)
+    return base, head, files, source
+
+
+def test_a_plain_literal_sdk_activation_on_a_ratified_base_passes(tree):
+    """The control for the shapes below: the one readable shape, §4b on the base, and a
+    boundary receipt that binds the head's current inputs."""
+    base, head, _files, _source = _admitted(tree)
     assert audit(tree, base, head) == 0
+
+
+def test_an_sdk_activation_without_its_receipt_fails(tree):
+    base, head, _files, _source = _admitted(tree, receipt=None, packaged=None)
+    assert audit(tree, base, head) == 1
+
+
+def test_a_receipt_whose_packaged_copy_differs_fails(tree):
+    base, head, _files, _source = _admitted(tree, packaged="{}")
+    assert audit(tree, base, head) == 1
+
+
+@pytest.mark.parametrize("stale", ["lock", "contract", "payload", "fixture", "region",
+                                   "extra-field"])
+def test_a_stale_receipt_fails(tree, stale):
+    files = _bound_files()
+    source = module_source(True, citation(SDK_RECORD, "4b", 1901))
+    receipt = _receipt(files, source)
+    changed = dict(files)
+    if stale == "lock":
+        changed[ct.SDK_LOCK] = "lock v2\n"
+    elif stale == "contract":
+        changed[ct.SDK_CONTRACT] = "contract v2\n"
+    elif stale == "payload":
+        changed[ct.SDK_INSTALLED_BINDINGS["payload:claude_sdk_worker.py"]] = "# worker v2\n"
+    elif stale == "fixture":
+        changed[ct.SDK_INSTALLED_BINDINGS["launch_fixture_sha256"]] = "# fixture v2\n"
+    elif stale == "region":
+        path = f"{RUNTIME}/panel_invoker.py"
+        changed[path] = changed[path].replace("def launch_provider():\n    return 1",
+                                              "def launch_provider():\n    return 2")
+    else:
+        receipt = json.dumps({**json.loads(receipt), "note": "x"}, sort_keys=True)
+    base, head, _files, _source = _admitted(tree, receipt=receipt, files=changed)
+    assert audit(tree, base, head) == 1, stale
+
+
+def test_a_de_admission_needs_no_receipt(tree):
+    _base, admitted, files, _source = _admitted(tree)
+    head = tree.commit({ct.SDK_RECEIPT: None, ct.SDK_PACKAGED_RECEIPT: None},
+                       sdk=module_source(False, None))
+    assert audit(tree, admitted, head) == 0
+    assert ct.sdk_proof_failures(tree.root, head) == []
+
+
+def _verify(tree, head, junit: dict[str, bytes] | None = None) -> int:
+    argv = ["verify-proof", "--repo", str(tree.root), "--head", head]
+    for selector, data in (junit or {}).items():
+        path = tree.root.parent / f"{selector}.xml"
+        path.write_bytes(data)
+        argv += ["--junit", f"{selector}={path}"]
+    return ct.main(argv)
+
+
+def test_verify_proof_passes_an_unadmitted_head(tree, seam, capsys):
+    assert _verify(tree, seam) == 0
+    assert "verify-proof: OK" in capsys.readouterr().out
+
+
+def test_verify_proof_fails_closed_without_the_private_evidence_store(tree, monkeypatch):
+    _base, head, _files, _source = _admitted(tree)
+    monkeypatch.setattr(ct, "SDK_PRIVATE_EVIDENCE_STORE", None)
+    assert _verify(tree, head, {s: _junit() for s in ct.SDK_JUNIT_SELECTORS}) == 1
+
+
+def test_verify_proof_binds_current_inputs_and_matching_junit(tree, monkeypatch):
+    """The positive control: a configured store (the owner's), current inputs, and public
+    JUnit whose digest, properties and counts are the receipt's."""
+    _base, head, _files, _source = _admitted(tree)
+    monkeypatch.setattr(ct, "SDK_PRIVATE_EVIDENCE_STORE", "configured-by-owner")
+    assert _verify(tree, head, {s: _junit() for s in ct.SDK_JUNIT_SELECTORS}) == 0
+
+
+@pytest.mark.parametrize("junit", [
+    {"VB": _junit()},
+    {s: _junit(skipped=True) for s in ("VB", "VL")},
+    {s: _junit(proof="9" * 64) for s in ("VB", "VL")},
+    {s: _junit(install="9" * 64) for s in ("VB", "VL")},
+    {s: _junit() + b" " for s in ("VB", "VL")},
+])
+def test_verify_proof_refuses_junit_that_is_not_the_receipts(tree, monkeypatch, junit):
+    _base, head, _files, _source = _admitted(tree)
+    monkeypatch.setattr(ct, "SDK_PRIVATE_EVIDENCE_STORE", "configured-by-owner")
+    assert _verify(tree, head, junit) == 1
+
+
+def test_the_checker_mirrors_the_sdk_receipt_schema():
+    from phase_loop_runtime import claude_seat_sdk as sdk
+
+    assert tuple(sdk.RECEIPT_FIELDS) == ct.SDK_RECEIPT_FIELDS
+    assert sdk.RECEIPT_SCHEMA == ct.SDK_RECEIPT_SCHEMA
+    assert sdk.RECEIPT_PATH == ct.SDK_RECEIPT
+    assert dict(sdk.PROOF_REGIONS) == dict(ct.SDK_PROOF_REGIONS)
+    assert set(sdk.installed_bindings()) == set(ct.SDK_INSTALLED_BINDINGS)
+    assert sdk.CONTRACT == ct.SDK_CONTRACT and ct.SDK_LOCK in sdk.PROOF_FILES
+    source = Path(sdk.__file__).read_bytes()
+    assert ct.source_region(source, "preflight") == sdk.source_region(source, "preflight")
+
+
+SDK_AUDIT_WORKFLOW = Path(__file__).resolve().parents[2] / ".github" / "workflows" / "claude-sdk-audit.yml"
+
+
+def test_the_sdk_audit_is_base_defined_and_reads_the_head_as_data():
+    if not SDK_AUDIT_WORKFLOW.is_file():
+        pytest.skip("CI plumbing is absent from the standalone consumer layout")
+    text = SDK_AUDIT_WORKFLOW.read_text()
+    assert "pull_request_target:" in text and "\n  pull_request:" not in text
+    assert "ref: ${{ github.event.pull_request.base.sha }}" in text
+    assert "persist-credentials: false" in text
+    assert "pull_request.head.ref" not in text and "ref: ${{ github.event.pull_request.head" not in text
+    assert 'git show "$BASE_SHA:$AUDITOR"' in text
+    assert "verify-proof --repo . --head \"$HEAD_SHA\"" in text and "audit-order --repo ." in text
+    for hook in ("TODO(owner, GL-2 prerequisite): the enforcement route",
+                 "TODO(owner, GL-2 prerequisite): the private evidence store"):
+        assert hook in text
+    assert "SDK_PRIVATE_EVIDENCE_STORE: str | None = None" in Path(ct.__file__).read_text()
 
 
 @pytest.mark.parametrize("shape", sorted(_sdk_shapes()))
