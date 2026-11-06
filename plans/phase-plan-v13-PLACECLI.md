@@ -2,9 +2,9 @@
 phase_loop_plan_version: 1
 phase: PLACECLI
 roadmap: specs/phase-plans-v13.md
-roadmap_sha256: eb15634609183e5d16d098892f5be8c236123cc1b3d955205b920a262bb7acfd
+roadmap_sha256: b3331fa13a9671f411c2bd333fa1da7b1857bd373fb1f629d72cef06accd985d
 automation:
-  suite_command: ["bash", "-lc", "cd phase-loop-runtime && PYTHONPATH=$PWD/src:$PWD/tests timeout 900 .venv/bin/python -m pytest -q -n 0 -p no:cacheprovider tests/test_placement_process_contract.py tests/test_placement_lifecycle_process.py tests/test_placement_bridge.py tests/test_placement_cli.py tests/test_sandbox_placement.py tests/test_placement_driver.py tests/test_placement_ladder_model.py tests/test_placement_lease.py tests/test_openshell_backend.py tests/test_openshell_journal.py tests/test_openshell_transport.py tests/test_openshell_worker.py tests/test_advisor_board_config.py tests/test_sandbox_policy.py tests/test_agent_cli_scratch_inventory_1147.py tests/test_seat_launch_helpers_trusted.py tests/test_seat_reference_inventory.py tests/test_gate_a_wheel_isolation.py"]
+  suite_command: ["bash", "-lc", "cd phase-loop-runtime && PYTHONPATH=$PWD/src:$PWD/tests timeout 900 .venv/bin/python -m pytest -q -n 0 -p no:cacheprovider tests/test_placement_process_contract.py tests/test_placement_lifecycle_process.py tests/test_placement_bridge.py tests/test_placement_cli.py tests/test_sandbox_placement.py tests/test_placement_driver.py tests/test_placement_ladder_model.py tests/test_placement_lease.py tests/test_openshell_backend.py tests/test_openshell_channel.py tests/test_openshell_journal.py tests/test_openshell_transport.py tests/test_openshell_worker.py tests/test_advisor_board_config.py tests/test_sandbox_policy.py tests/test_agent_cli_scratch_inventory_1147.py tests/test_seat_launch_helpers_trusted.py tests/test_seat_reference_inventory.py tests/test_gate_a_wheel_isolation.py"]
 ---
 
 # PLACECLI: Placement process boundary and lifecycle
@@ -15,9 +15,10 @@ This is the first phase of the owner-priority v13 placement consolidation. It
 implements the process boundary that agent-toolkit can consume without importing
 agent-harness Python. The frozen input is
 `plans/artifacts/v13-PLACECLI-contract-v1.schema.json`, sha256
-`cb5870a71ef607345cc28262d77b40f7209a8c770eab22b55917afd3aa29566c`.
-The artifact fixes command transport, exact message shapes, code vocabularies,
-policy names, two identities/inventories, local-headroom defaults, bridge
+`5af305ffa4e47cd1eae81da322f66906a3728ce4af2f04b25783478cbf74c3d9`.
+The artifact fixes the stable console entry, required client/config flag,
+version response, exact message shapes, code vocabularies, target-bound policy
+names, two isolated identities/inventories, local-headroom defaults, bridge
 descriptor and lifecycle semantics. It is read-only during execution; a needed
 contract change routes back through a roadmap/artifact amendment.
 
@@ -28,11 +29,20 @@ reconciled with this plan. Until then PLACECLI is planned but blocked with
 activation gate and does not prevent black-box fixture preparation in a later
 authorized execution; the phase still lands as one coherent disabled feature.
 
-The process module is `python -I -m phase_loop_runtime.placement_cli
-reserve|release|reap`. It reads one bounded JSON object from stdin and writes one
-response object to stdout. The existing human-facing `phase-loop placement reap`
-delegates to the same lifecycle rather than keeping a second reaper. Requests do
-not carry owner, client, target lists, certificate selection or policy JSON.
+The process boundary is `agent-harness-placement --client
+agent-toolkit|agent-harness reserve|release|reap|version`. The flag is required,
+selects exactly one per-client operator config/certificate/inventory and is never
+derived from the environment. Placement verbs read one bounded JSON object and
+write one response object; `version` reads empty stdin and writes the protocol
+schema SHA-256 plus selected config SHA-256. The human-facing `phase-loop
+placement reap` delegates with an explicit client rather than keeping a second
+reaper. Requests do not carry owner, client, target lists, certificate selection
+or inline policy.
+
+PLACECLI stops at reservation, release/reap and bridge construction. LANEEXEC
+owns the harness-side snapshot upload, admitted envelope, one restricted worker
+exec, bridge attachment, status/cancel/release and patch return. The toolkit shim
+keeps only the Pi-specific runner/controller pieces enumerated in the roadmap.
 
 ## External Inputs
 
@@ -53,14 +63,18 @@ pinned. Any changed external bytes require reviewed repinning before execution.
 - [ ] IF-0-PLACECLI-1 — `placement_process_contract.py` loads the packaged v1
   schema, verifies byte equality with the frozen planning artifact in source-tree
   checks, and exposes strict parse/validate/encode functions plus immutable typed
-  request/response records. `placement_cli.py` accepts only the artifact's three
-  verbs, stdin/stdout rules and exit classes. Unknown input refuses before any
-  configuration, capacity or lease effect.
+  request/response records. The installed `agent-harness-placement` console
+  script accepts only the artifact's required `--client` flag, four subcommands,
+  stdin/stdout rules and exit classes. `version` returns the packaged artifact
+  digest and selected config digest. Unknown input or client/workload mismatch
+  refuses before any configuration, capacity or lease effect.
 - [ ] IF-0-PLACECLI-2 — One lifecycle service resolves named policy vectors and
-  trusted ranks, maps workload to the correct OU/inventory, reserves/releases or
-  reaps authoritative resources, publishes the frozen local thresholds, and owns
-  a reservation-scoped ForwardTcp-to-0600-Unix bridge for remote `pi-runner`.
-  Uncertain cleanup blocks overflow and survives restart.
+  trusted workload rank policy, maps every target to the correct OU/inventory,
+  reserves/releases or reaps only the selected client's authoritative resources,
+  publishes the frozen local thresholds, and owns a reservation-scoped
+  ForwardTcp-to-0600-Unix bridge for remote `pi-runner`. Exit-20 state is scoped
+  to one reservation within one client and survives restart without blocking
+  independent reservations.
 
 Production signatures freeze at implementation review as:
 
@@ -73,6 +87,7 @@ PlacementLifecycle.reap(request, *, cancelled) -> ReapResponse
 ForwardTcpUnixBridge.open(reservation, exposure, *, cancelled) -> BridgeHandle
 ForwardTcpUnixBridge.close(handle, *, cancelled) -> LeaseFlags
 placement_cli.main(argv: Sequence[str] | None = None) -> int
+placement_cli.version_response(client_config) -> VersionResponse
 ```
 
 Names may not be changed in execution without amending this plan. Concrete record
@@ -87,7 +102,7 @@ SL-0 — Packaged process contract and strict codec
   Blocks: SL-1, SL-2, SL-3
   Parallel-safe: no
 
-SL-1 — Reservation, identity and two-inventory lifecycle
+SL-1 — Reservation, identity and caller-scoped lifecycle
   Depends on: SL-0
   Blocks: SL-3
   Parallel-safe: no
@@ -112,20 +127,20 @@ SL-3 — Process CLI, documentation and evidence reducer
 - **Interfaces consumed**: `plans/artifacts/v13-PLACECLI-contract-v1.schema.json`, Python JSON, `jsonschema` (pre-existing)
 - **Parallel-safe**: no
 - **Tasks**:
-  - test: Add valid examples for all six message families and path-entered negatives for every closed enum/conditional. Exercise duplicate keys, trailing bytes, invalid UTF-8, the 64 KiB bound, non-finite/unsafe numbers, nested/oversized caller context, unknown fields, bridge permissions, identity/workload mismatch and admitted/non-admitted reservation conditionals. Compare the packaged schema bytes with the frozen artifact and test the installed wheel path.
-  - impl: Copy the reviewed artifact byte-for-byte into package data, load it through `importlib.resources`, check its built-in pins, and implement strict decode/encode without accepting already-parsed objects. Capture bytes once; validate and construct records from that same capture. Keep schema diagnostics closed and value-free.
+  - test: Add valid examples for all seven message families and path-entered negatives for every closed enum/conditional. Exercise duplicate keys, trailing bytes, invalid UTF-8, the 64 KiB bound, non-finite/unsafe numbers, nested/oversized caller context, unknown fields, bridge permissions, identity/workload mismatch and admitted/non-admitted reservation conditionals. Compare packaged schema bytes with the frozen artifact and test the installed wheel path.
+  - impl: Copy the reviewed artifact byte-for-byte into package data, load it through `importlib.resources`, and check byte equality only for pins that do not set `runtime_equality` to false. The BAML, `policies.json`, envelope v2 and run-status pins stay equality checks. The `sandbox_placement.py` and driver-defaults hashes are planning baselines; SL-1 may edit those files and must keep the published headroom numbers. Implement strict decode/encode without accepting already-parsed objects. Capture bytes once; validate and construct records from that same capture. Keep schema diagnostics closed and value-free.
   - verify: Run V0 and the installed-wheel portion of V4. A mutation that changes the packaged schema while updating only a test expectation must still fail the frozen-artifact byte comparison.
 
-### SL-1 — Reservation, identity and two-inventory lifecycle
+### SL-1 — Reservation, identity and caller-scoped lifecycle
 
-- **Scope**: Adapt the existing ranked walk and OpenShell lease machinery into one restart-safe process lifecycle while preserving local reservation authority.
+- **Scope**: Adapt the ranked Pi walk and single-target SEATS route into one restart-safe, per-client lifecycle while preserving local reservation authority.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/sandbox_placement.py`, `phase-loop-runtime/src/phase_loop_runtime/sandbox_policy.py`, `phase-loop-runtime/src/phase_loop_runtime/placement_lease.py`, `phase-loop-runtime/src/phase_loop_runtime/openshell_backend.py`, `phase-loop-runtime/src/phase_loop_runtime/openshell_channel.py`, `phase-loop-runtime/src/phase_loop_runtime/openshell_journal.py`, `phase-loop-runtime/src/phase_loop_runtime/openshell_transport.py`, `phase-loop-runtime/src/phase_loop_runtime/advisor_board/config.py`, `phase-loop-runtime/src/phase_loop_runtime/advisor_board/fixtures/placement-driver.defaults.toml`, `phase-loop-runtime/tests/test_placement_lifecycle_process.py`, `phase-loop-runtime/tests/test_sandbox_placement.py`, `phase-loop-runtime/tests/test_sandbox_policy.py`, `phase-loop-runtime/tests/test_placement_driver.py`, `phase-loop-runtime/tests/test_placement_ladder_model.py`, `phase-loop-runtime/tests/test_placement_lease.py`, `phase-loop-runtime/tests/test_openshell_backend.py`, `phase-loop-runtime/tests/test_openshell_channel.py`, `phase-loop-runtime/tests/test_openshell_journal.py`, `phase-loop-runtime/tests/test_openshell_transport.py`, `phase-loop-runtime/tests/test_advisor_board_config.py`
-- **Interfaces provided**: `PlacementLifecycle`, trusted target policy, local reservation adapter, workload-to-client mapping, two-inventory reap
+- **Interfaces provided**: `PlacementLifecycle`, trusted workload rank policy, local reservation adapter, workload-to-client mapping, caller-scoped reap
 - **Interfaces consumed**: `PlacementRequestMessage`, `PlacementResponseMessage` (SL-0); `sandbox_placement` walk, coordinator wire, lease flags, operator configuration (pre-existing)
 - **Parallel-safe**: no
 - **Tasks**:
-  - test: Drive `ai` capacity, local authoritative admission and disabled E2B through production constructors. Pin 1 GiB/100%/4/5 s threshold semantics and stale/unknown=`at_capacity`. Cover a capacity response as a new pre-envelope admission, then forbid any post-admission fallback. Exercise lost replies before/after send, late local handles, release barriers, duplicate binding, restart recovery, idempotent release/reap and cross-inventory isolation. Assert `pi-runner` selects OU/inventory `agent-toolkit`; other workloads select `agent-harness`; request data cannot override either.
-  - impl: Add `pi-runner` to the closed placement workload only through the lifecycle mapping. Resolve policy names to the exact pinned vector and digest. Bind reservations to target/transport/config/image/policy. Store enough metadata to release after caller death without storing credentials or caller-context authority. Reuse the existing answer bound and fail-closed release semantics; do not fork a second walk.
+  - test: Drive `pi-runner` through `ai` capacity, an actually reserved local slot and disabled E2B using the existing walk. Drive `leg`, `qualification` and `implementation` only through one trusted SEATS target and show a missing decision refuses before any probe. Pin 1 GiB, load strictly below 100%, fewer than four live sandboxes and age at most 5 s; stale or unknown is `at_capacity`. Prove local Pi resolves `minimal-without-app`, returns `bridge: null` and holds a live-sandbox slot. Cover a 900000 ms reserve budget, capacity as a new pre-envelope admission, no post-admission fallback, lost replies, late handles, restart, same-request retry, mutated release echo and repeat release. Assert every Pi target uses OU/inventory `agent-toolkit`, seats use `agent-harness`, exit 20 blocks only its `(client, reservation)` and caller-scoped reap cannot observe the other inventory.
+  - impl: Add `pi-runner` only through the lifecycle mapping. Keep one walk state machine and select trusted rank config from the frozen workload rule; seats consume one preselected target without ranking. Resolve `valid` policy names while `pending_qualification` still refuses live coordinator, image-pull and E2B effects. Bind remote Pi to `full-remote-pi-runner` and local Pi to `minimal-without-app`; bind reservations to target, transport, config, image, policy and rank policy. Journal same-request responses and release tombstones so release repeats return `released` or `unknown_reservation` without blocking admission. Key uncertain barriers by selected client and reservation/request, never host. Reap only the `--client` inventory in deterministic journal order. Keep `_NONLOCAL_EXECUTION_DRIVER` false, register no production OpenShell backend and leave `policies.json` at `pending_qualification`. Treat a mismatched release echo as a refusal that leaves the lease held.
   - verify: Run V1. Mutation controls bypass the fresh-headroom recheck, merge inventories, relabel timeout as unreachable and advance after unconfirmed release; each must fail through a production path.
 
 ### SL-2 — ForwardTcp bridge and toolkit black-box fixtures
@@ -136,20 +151,20 @@ SL-3 — Process CLI, documentation and evidence reducer
 - **Interfaces consumed**: reservation and bridge records (SL-0); OpenShell service exposure, channel seams, toolkit fixture behavior (pre-existing)
 - **Parallel-safe**: no
 - **Tasks**:
-  - test: Port only request/response scenario vectors for L0–L9, unavailable/deadline/lost reply, snapshot expiry and duplicate binding. Start the real CLI as a subprocess against the fake coordinator; never import its internals into the shim test. Prove one 0700 directory and 0600 Unix socket per reservation, no public listener, peer teardown on release/cancel, bounded setup, stale-socket refusal, and cleanup-pending retention. A fake that branches on case ID is forbidden.
+  - test: Port only request/response scenario vectors for L0–L9, unavailable/deadline/lost reply, snapshot expiry and duplicate binding. Start the real CLI as a subprocess against the fake coordinator; never import its internals into the shim test. Prove one 0700 directory and 0600 Unix socket per remote Pi reservation, no public listener, peer teardown on release/cancel, bounded setup, stale-socket refusal, cleanup-pending retention, and `bridge: null` for local Pi and every seat. A fake that branches on case ID is forbidden.
   - impl: Bridge exactly the admitted ForwardTcp service to one Unix socket and return the frozen descriptor. Use trusted service exposure, not request-supplied host/port. Bind lifetime to reservation release/reap, scrub descriptors/env, and record metadata-only bridge evidence. Keep toolkit link framing, relay and credentials outside this repository.
   - verify: Run V2. Negative controls weaken directory/socket mode, reuse a socket, swap service exposure and drop teardown; production-path tests must fail.
 
 ### SL-3 — Process CLI, documentation and evidence reducer
 
 - **Scope**: Wire the producers into the isolated process module, delegate the legacy maintenance entry point, and publish thresholds/compatibility evidence.
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/placement_cli.py`, `phase-loop-runtime/src/phase_loop_runtime/cli.py`, `phase-loop-runtime/tests/test_placement_cli.py`, `phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py`, `phase-loop-runtime/tests/test_seat_launch_helpers_trusted.py`, `phase-loop-runtime/tests/test_seat_reference_inventory.py`, `phase-loop-runtime/tests/data/seat_launch_references.json`, `phase-loop-runtime/README.md`, `docs/placement-process-cli.md`, `plans/evidence/placement/PLACECLI.md`, `CHANGELOG.md`, `.doc-decisions.json`, `plans/manifest.json`
-- **Interfaces provided**: `python -I -m phase_loop_runtime.placement_cli`, delegated `phase-loop placement reap`, public headroom table, IF-0-PLACECLI-1/2 receipt
+- **Owned files**: `phase-loop-runtime/pyproject.toml`, `phase-loop-runtime/uv.lock`, `phase-loop-runtime/src/phase_loop_runtime/placement_cli.py`, `phase-loop-runtime/src/phase_loop_runtime/cli.py`, `phase-loop-runtime/tests/test_placement_cli.py`, `phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py`, `phase-loop-runtime/tests/test_seat_launch_helpers_trusted.py`, `phase-loop-runtime/tests/test_seat_reference_inventory.py`, `phase-loop-runtime/tests/data/seat_launch_references.json`, `phase-loop-runtime/README.md`, `docs/placement-process-cli.md`, `plans/evidence/placement/PLACECLI.md`, `CHANGELOG.md`, `.doc-decisions.json`, `plans/manifest.json`
+- **Interfaces provided**: `agent-harness-placement --client … reserve|release|reap|version`, delegated client-explicit `phase-loop placement reap`, public headroom table, IF-0-PLACECLI-1/2 receipt
 - **Interfaces consumed**: `decode_request`, `encode_response` (SL-0); `PlacementLifecycle` (SL-1); `ForwardTcpUnixBridge`, toolkit fixture results (SL-2)
 - **Parallel-safe**: no
 - **Tasks**:
-  - test: Spawn all verbs with an isolated import path, controlled HOME/config and bounded stdin/stdout. Assert exact exit classes, one JSON line, empty ordinary stderr, zero effects on invalid input and no secret/exception/path sentinel leakage. Verify old reap reaches the same service. Update launch/scratch/reference inventories for every new subprocess, file and dynamic import; helpers use trusted module argv. Bind the receipt to actual V0–V4 runner results and artifact hashes.
-  - impl: Assemble the CLI without reading ambient owner/client/target settings from request fields. Publish JSON examples, code-stage separation, two inventories, ForwardTcp boundary and exact local thresholds. State that live routes/E2B remain disabled and toolkit cutover waits on all three conditions. Add one Unreleased changelog entry; use `.doc-decisions.json` only if the docs audit requires an explicit no-change decision for another release surface. Record actual outcomes in the PLACECLI evidence artifact and append lifecycle metadata to the existing manifest entry; do not hand-edit the frozen input.
+  - test: Spawn the installed console script and module path with an isolated import path, controlled HOME/config and hostile client-selection environment variables. Require `--client`, reject client/workload mismatch before effects, and compare both paths. Assert exact exit classes, one JSON line, empty ordinary stderr, zero effects on invalid input and no secret/exception/path sentinel leakage. Verify `version` reads empty stdin and reports the packaged protocol schema SHA-256 plus selected config SHA-256. Verify legacy reap reaches the same service with an explicit client and returns exactly that inventory. Update launch/scratch/reference inventories for every new subprocess, file and dynamic import; bind the receipt to actual V0–V4 results and artifact hashes.
+  - impl: Register the stable `agent-harness-placement` console script and assemble the CLI without reading client/config/target settings from environment or request fields. Compute `version` from the installed schema bytes and canonical selected config. Publish JSON examples, exit/flag semantics, per-reservation barriers, caller-scoped reap, target-bound local/remote Pi policies, ForwardTcp boundary and exact local thresholds. State that live routes/E2B remain disabled and toolkit cutover waits on all three conditions. Add one Unreleased changelog entry; record actual outcomes in the PLACECLI evidence artifact and append lifecycle metadata to the existing manifest entry without editing the frozen input.
   - verify: Run V3, then V4 and the effective suite. The reducer depends on all producers and refuses missing/skipped-only results, stale hashes, unqualified policy status or any live-activation claim.
 
 ## Verification
@@ -171,9 +186,9 @@ minutes. Full-suite and Gate A execution stay with hosted CI under sprint policy
 
 ## Acceptance Criteria
 
-- [ ] EC-PLACECLI-1 — proven by V0 and V3 against `decode_request`, `placement_cli.main` and isolated subprocess controls; falsified by a path-entered malformed request reaching SL-1's injected capacity-effect counter.
+- [ ] EC-PLACECLI-1 — proven by V0 and V3 against `decode_request`, the installed `agent-harness-placement` entry, `placement_cli.main`, version/client-selection cases and isolated subprocess controls; falsified by a path-entered malformed request or hostile environment reaching SL-1's injected capacity-effect counter.
 - [ ] EC-PLACECLI-2 — proven by `V1` against production lifecycle and reservation binding cases; falsified by a path-entered post-admission target substitution or request-supplied target-policy mutation.
-- [ ] EC-PLACECLI-3 — proven by V1 restart, uncertain cleanup and cross-inventory cases; falsified by a path-entered late-handle/lost-reply mutation allowing another admission before `barrier_confirmed`.
+- [ ] EC-PLACECLI-3 — proven by V1 restart, repeat-release, per-reservation barrier and caller-scoped reap cases; falsified by cross-client inventory access, host/client-wide blocking, or a path-entered late-handle mutation advancing the same reserve walk before `barrier_confirmed`.
 - [ ] EC-PLACECLI-4 — proven by `V2` plus the unchanged black-box fixture driver in `V3`; falsified by a path-entered mode/listener/service-swap mutation or a shim importing agent-harness modules.
 - [ ] EC-PLACECLI-5 — proven by `V1` threshold boundaries and `V3` documentation/disabled-config receipt; falsified by a path-entered threshold-source divergence or live adapter reachable under the shipped default.
 
@@ -181,17 +196,19 @@ minutes. Full-suite and Gate A execution stay with hosted CI under sprint policy
 
 Owned paths are disjoint. SL-3 is the only reducer and depends on all producers.
 SL-0 owns the package-data construction site; existing package-data globs already
-cover `contracts/placement/**`, so `pyproject.toml` and `MANIFEST.in` stay untouched
-unless V4 disproves that assumption, in which case amend ownership before editing.
-No `__init__.py` export is required for module invocation. No generated skill tree,
-lockfile, policy vector or BAML source changes in this phase. If the landed v12
+cover `contracts/placement/**`, so `MANIFEST.in` stays untouched unless V4
+disproves that assumption. SL-3 owns `pyproject.toml` for the console entry;
+console-script metadata should not change dependencies, so SL-3 owns `uv.lock` but
+keeps it byte-identical when the lock check agrees; V4 checks the installed wheel.
+No `__init__.py` export is required. No generated skill tree, policy vector or BAML
+source changes in this phase. If landed v12
 worker adds a shared CLI registry or companion snapshots, reconcile and amend the
 complete ownership list before execution.
 
-Next phase: PLACECLI — blocked pending landed v12 IF-0-WORKER-1 and
+This phase is PLACECLI. Execution is blocked pending landed v12 IF-0-WORKER-1 and
 IF-0-JOURNAL-1. Next command: none until those upstream gates are verified; then
 `codex-execute-phase plans/phase-plan-v13-PLACECLI.md` under separate execution
-authority.
+authority. The following roadmap phase is LANEEXEC; this PR does not plan it.
 
 ## Spec Closeout Plan
 

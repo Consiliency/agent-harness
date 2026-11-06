@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/Consiliency/agent-harness/plans/artifacts/v13-PLACECLI-contract-v1.schema.json",
   "title": "agent-harness placement process protocol v1",
-  "description": "Frozen JSON-in/JSON-out process contract for placement reserve, release and reap. This planning artifact is not a live activation record.",
+  "description": "Frozen JSON process contract for placement reserve, release, reap and version. This planning artifact is not a live activation record.",
   "oneOf": [
     {
       "$ref": "#/$defs/ReserveRequest"
@@ -21,24 +21,27 @@
     },
     {
       "$ref": "#/$defs/ReapResponse"
+    },
+    {
+      "$ref": "#/$defs/VersionResponse"
     }
   ],
   "x-cli": {
     "argv": [
-      "python",
-      "-I",
-      "-m",
-      "phase_loop_runtime.placement_cli",
-      "<reserve|release|reap>"
+      "agent-harness-placement",
+      "--client",
+      "<agent-harness|agent-toolkit>",
+      "<reserve|release|reap|version>"
     ],
-    "input": "Exactly one UTF-8 JSON object on stdin, followed by EOF; maximum 65536 bytes; duplicate keys, non-finite numbers, trailing data and invalid UTF-8 refuse before effects.",
-    "output": "Exactly one compact UTF-8 JSON response object followed by LF on stdout; stdout carries no other text.",
+    "client_flag": "--client is required and selects exactly one per-client operator configuration, certificate and inventory. agent-toolkit accepts only pi-runner; agent-harness accepts only leg, qualification and implementation. Environment variables never select or override client, configuration, certificate or inventory.",
+    "input": "reserve, release and reap read exactly one UTF-8 JSON object from stdin followed by EOF, maximum 65536 bytes; duplicate keys, non-finite numbers, trailing data and invalid UTF-8 refuse before effects. version requires empty stdin.",
+    "output": "Exactly one compact UTF-8 JSON response object followed by LF on stdout; stdout carries no other text. version emits VersionResponse before any placement effect.",
     "stderr": "Empty for schema-valid protocol outcomes; bounded closed harness diagnostics only for invocation or internal failures; never input values, credentials, policy documents or exception chains.",
     "exit_codes": {
-      "0": "A schema-valid definitive response; inspect the response outcome or state.",
-      "10": "Refused with nothing held; stdout is a schema-valid response.",
-      "20": "Uncertain cleanup; stdout is a schema-valid response and the caller must release or reap before another admission.",
-      "70": "Internal or protocol failure; stdout is absent or must not be trusted. The caller must reap if an effect may have started."
+      "0": "Schema-valid and settled: version response emitted; reserve outcome admitted; release state released; or reap state complete.",
+      "10": "Schema-valid and nothing held by this attempt: reserve outcome at_capacity, refused or unreachable; or release state unknown_reservation. Do not allocate a new request_id for a retry of that same reserve attempt.",
+      "20": "Schema-valid and an effect may remain: reserve outcome timeout, release state cleanup_pending, or reap state cleanup_pending. Reserve/release barriers key on selected client plus reservation_id, or selected client plus request_id until a reservation_id is known; each reap-pending journal entry keeps its own such key. Retry that request_id or release that reservation. Other reservations, including concurrent reservations for the same client, remain admissible.",
+      "70": "Internal or protocol failure. Stdout is absent. Retry the same request_id once. Reap is caller-inventory maintenance, not recovery for one lost reserve response."
     }
   },
   "x-contract-pins": {
@@ -48,7 +51,8 @@
     },
     "sandbox_placement": {
       "path": "phase-loop-runtime/src/phase_loop_runtime/sandbox_placement.py",
-      "sha256": "67cc485236c57f1f70ea67062a54e4008248da94e16a414ff50bbbb9611ca6e6"
+      "sha256": "67cc485236c57f1f70ea67062a54e4008248da94e16a414ff50bbbb9611ca6e6",
+      "runtime_equality": false
     },
     "policy_vectors": {
       "path": "phase-loop-runtime/src/phase_loop_runtime/contracts/placement/vectors/policies.json",
@@ -56,7 +60,8 @@
     },
     "placement_driver_defaults": {
       "path": "phase-loop-runtime/src/phase_loop_runtime/advisor_board/fixtures/placement-driver.defaults.toml",
-      "sha256": "0d587cbe6d5943e368bbcc4f0809e2af7e34cb47443a4fade1245d9680e06e24"
+      "sha256": "0d587cbe6d5943e368bbcc4f0809e2af7e34cb47443a4fade1245d9680e06e24",
+      "runtime_equality": false
     },
     "admitted_launch_envelope_v2": {
       "repository": "Consiliency/consiliency-contract",
@@ -78,7 +83,14 @@
       "minimal-without-app",
       "full-remote-pi-runner"
     ],
-    "rule": "policy_vector is a name, never an inline policy. The CLI resolves exactly one valid vector, verifies its recorded digest and refuses an unknown, refused or non-qualified vector before admission. Adding or renaming a vector requires a new protocol artifact version."
+    "rule": "policy_vector is a name, never an inline policy. A name in valid resolves to that vector's recorded digest, including while file status is pending_qualification. An unknown name, or a name in refused, refuses before any capacity probe or lease call. pending_qualification refuses a live coordinator connection, an image pull and any E2B call. Adding a name, renaming a name, or moving a name between valid and refused requires a new protocol artifact version. A status change belongs to ACTIVATE and repins this artifact.",
+    "pi_runner_target_bindings": {
+      "openshell": "full-remote-pi-runner",
+      "local": "minimal-without-app",
+      "e2b": "disabled"
+    },
+    "pi_runner_request": "A pi-runner ReserveRequest names full-remote-pi-runner as the ranked-workload policy profile. Before admission, the trusted target binding resolves an openshell attempt to that vector and a local attempt to minimal-without-app. The admitted Reservation is authoritative and records the actual resolved name and digest; no policy changes after admission.",
+    "pi_runner_local": "The local admission uses minimal-without-app, returns bridge null, consumes one live_sandboxes slot before success, and remains subject to every shared local-headroom threshold. The reservation policy_vector and policy_digest name that resolved local vector."
   },
   "x-identity-inventories": [
     {
@@ -109,22 +121,27 @@
     "source": "phase-loop-runtime/src/phase_loop_runtime/advisor_board/fixtures/placement-driver.defaults.toml"
   },
   "x-placement-semantics": {
-    "trusted_configuration": "The request contains no owner, client, target, target list, certificate selector, inline policy or fallback list. Those values come from operator-owned configuration bound by config_sha256.",
+    "trusted_configuration": "The request contains no owner, client, target, target list, certificate selector, inline policy or fallback list. The required --client flag selects exactly one operator-owned configuration bound by config_sha256; the environment is ignored for selection.",
     "agent_and_executor_order": [
       "ai by authoritative capacity",
       "local only when every published headroom threshold admits",
       "e2b only after a later owner account-and-spend activation"
     ],
-    "review_seat_order": "Consume the landed SEATS JAILCORE route-policy outcome. On owned hosts, remote capacity use additionally requires the generic egress and credential probes. Per-vendor OD-7 applies only to third-party clouds.",
+    "workload_rank_policy": "pi-runner is the only workload on agent_and_executor_order. leg, qualification and implementation are the existing seat workloads. For those three, reserve does not rank and does not probe. It admits only the single target already chosen by the landed SEATS JAILCORE route decision in trusted operator configuration. A missing decision refuses with sandbox_placement_workload_unsupported before any probe. An owned-host remote seat target also requires the current generic egress-and-credential probe receipt. A third-party seat target also requires that vendor's OD-7 record. The request carries no target, rank, certificate or route decision.",
+    "reserve_idempotency": "The same request_id and the same canonical request body return the original response and do not create a second reservation. The same request_id with a different canonical body refuses with sandbox_placement_refused and creates nothing. Reap is not the retry path for one lost reserve response.",
+    "release_binding": "release loads the stored reservation by reservation_id from the inventory selected by --client. A client mismatch or any supplied field that differs from the stored record refuses with sandbox_placement_refused, releases nothing and leaves the stored lease held. A repeated release of the same journaled reservation returns released while its tombstone remains, or unknown_reservation after tombstone expiry; neither state creates an admission barrier.",
+    "outcomes_and_effects": "unreachable means a certain failure with nothing held. timeout means an effect may be held. A failure after a request may have been sent is timeout, never unreachable. Its barrier applies only to that reservation in the selected client inventory; it blocks later targets or retries for that reserve walk until release confirms the barrier, but never blocks another reservation, another client or the host.",
+    "bridge_bytes": "For pi-runner on openshell the runtime creates one directory in its own state directory, mode 0700, containing one Unix socket, mode 0600. The socket is a bidirectional raw byte pipe of the admitted ForwardTcp stream. The toolkit keeps link framing, relay and credentials. The caller does not supply the path, service name, host or port. Every other reservation has bridge null.",
+    "reap_scope_and_order": "reap examines only the inventory selected by --client and returns exactly one InventoryReapResult whose client and inventory match that selection. It can never inspect or mutate the other client's inventory. Within that inventory, eligible journal entries are attempted by created_at then reservation_id, max_items bounds attempts, and an uncertain item remains cleanup_pending without creating a host-wide or client-wide admission barrier.",
     "before_admission": "reserve may make a fresh admission attempt at each ranked target and records every attempt in trail. A typed at_capacity result authorizes only a new admission attempt.",
     "after_admission": "The reservation binds exactly one target and transport_id. The admitted launch envelope must name that transport_id. No route, transport, executable, environment, policy or deadline fallback is allowed after admission; a change requires a new envelope and a new reserve request_id.",
-    "uncertain_cleanup": "A bare failure after a request may have taken effect blocks every later target until release or reap confirms the barrier.",
+    "uncertain_cleanup": "A bare failure after a request may have taken effect blocks every later target of that reserve walk until release confirms its per-reservation, per-client barrier. Independent reservations continue.",
     "caller_context": "Opaque metadata echoed exactly and never used for identity, authority, routing, policy, correlation or launch input. It must contain no secret value or secret-derived digest.",
     "remote_writer_tier": "provider_readonly_patch_return_audit",
     "e2b": "Represented but disabled until ai is live and the owner supplies an account and spend cap."
   },
   "x-cross-process-vocabulary": {
-    "placement": "Reserve trails and terminal placement results use AdmissionOutcome, AdmissionReason, CoordinatorErrorCode and PlacementCode only.",
+    "placement": "Reserve trails and terminal placement results use AdmissionOutcome, AdmissionReason, CoordinatorErrorCode and PlacementCode only. TrailEntry.code is a required ResultCode, never null. A refusal before any target uses target preflight. seat_placement_waiting is a walk notice and is not a ResultCode.",
     "admission": "supervised_worker_cli admission uses AdmissionDiagnostic only; placement does not relabel admission failures.",
     "run": "Run status uses RunState and Termination. sandbox_placement_lost_after_launch and sandbox_placement_release_unconfirmed are attempt-evidence codes, not invented run states."
   },
@@ -391,14 +408,7 @@
           "$ref": "#/$defs/AdmissionOutcome"
         },
         "code": {
-          "oneOf": [
-            {
-              "$ref": "#/$defs/ResultCode"
-            },
-            {
-              "type": "null"
-            }
-          ]
+          "$ref": "#/$defs/ResultCode"
         },
         "reason": {
           "oneOf": [
@@ -503,6 +513,7 @@
         "policy_digest",
         "client",
         "inventory",
+        "rank_policy",
         "lease_id",
         "expires_at",
         "config_sha256",
@@ -538,6 +549,12 @@
         },
         "inventory": {
           "$ref": "#/$defs/Client"
+        },
+        "rank_policy": {
+          "enum": [
+            "agent_executor",
+            "seats_single_target"
+          ]
         },
         "lease_id": {
           "oneOf": [
@@ -579,19 +596,9 @@
             "properties": {
               "workload": {
                 "const": "pi-runner"
-              },
-              "target": {
-                "properties": {
-                  "kind": {
-                    "const": "openshell"
-                  }
-                }
               }
             },
-            "required": [
-              "workload",
-              "target"
-            ]
+            "required": ["workload"]
           },
           "then": {
             "properties": {
@@ -601,8 +608,118 @@
               "inventory": {
                 "const": "agent-toolkit"
               },
+              "rank_policy": {
+                "const": "agent_executor"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "workload": {
+                "enum": [
+                  "leg",
+                  "qualification",
+                  "implementation"
+                ]
+              }
+            },
+            "required": ["workload"]
+          },
+          "then": {
+            "properties": {
+              "client": {
+                "const": "agent-harness"
+              },
+              "inventory": {
+                "const": "agent-harness"
+              },
+              "rank_policy": {
+                "const": "seats_single_target"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "workload": {
+                "const": "pi-runner"
+              },
+              "target": {
+                "properties": {
+                  "kind": {
+                    "const": "openshell"
+                  }
+                },
+                "required": ["kind"]
+              }
+            },
+            "required": ["workload", "target"]
+          },
+          "then": {
+            "properties": {
               "bridge": {
                 "$ref": "#/$defs/ForwardTcpUnixBridge"
+              },
+              "policy_vector": {
+                "const": "full-remote-pi-runner"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "workload": {
+                "const": "pi-runner"
+              },
+              "target": {
+                "properties": {
+                  "kind": {
+                    "const": "local"
+                  }
+                },
+                "required": ["kind"]
+              }
+            },
+            "required": ["workload", "target"]
+          },
+          "then": {
+            "properties": {
+              "bridge": {
+                "type": "null"
+              },
+              "policy_vector": {
+                "const": "minimal-without-app"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "not": {
+              "properties": {
+                "workload": {
+                  "const": "pi-runner"
+                },
+                "target": {
+                  "properties": {
+                    "kind": {
+                      "const": "openshell"
+                    }
+                  },
+                  "required": ["kind"]
+                }
+              },
+              "required": ["workload", "target"]
+            }
+          },
+          "then": {
+            "properties": {
+              "bridge": {
+                "type": "null"
               }
             }
           }
@@ -646,12 +763,32 @@
         "deadline_ms": {
           "type": "integer",
           "minimum": 1,
-          "maximum": 30000
+          "maximum": 900000,
+          "description": "Budget for the whole reserve walk, in milliseconds. The cap is admit_wait_s plus transfer_allowance_s from the pinned driver defaults (600s + 300s). Each coordinator RPC uses a shorter deadline that does not exceed the remaining budget."
         },
         "caller_context": {
           "$ref": "#/$defs/CallerContext"
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "workload": {
+                "const": "pi-runner"
+              }
+            },
+            "required": ["workload"]
+          },
+          "then": {
+            "properties": {
+              "policy_vector": {
+                "const": "full-remote-pi-runner"
+              }
+            }
+          }
+        }
+      ]
     },
     "ReserveResponse": {
       "type": "object",
@@ -868,6 +1005,60 @@
               }
             }
           }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "cleanup_pending"
+              }
+            },
+            "required": ["state"]
+          },
+          "then": {
+            "properties": {
+              "flags": {
+                "properties": {
+                  "cleanup_pending": {
+                    "const": true
+                  },
+                  "barrier_confirmed": {
+                    "const": false
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "unknown_reservation"
+              }
+            },
+            "required": ["state"]
+          },
+          "then": {
+            "properties": {
+              "code": {
+                "const": "sandbox_placement_refused"
+              },
+              "flags": {
+                "properties": {
+                  "reserved": {
+                    "const": false
+                  },
+                  "cleanup_pending": {
+                    "const": false
+                  },
+                  "barrier_confirmed": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          }
         }
       ]
     },
@@ -911,7 +1102,43 @@
             }
           ]
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "client": {
+                "const": "agent-harness"
+              }
+            },
+            "required": ["client"]
+          },
+          "then": {
+            "properties": {
+              "inventory": {
+                "const": "agent-harness"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "client": {
+                "const": "agent-toolkit"
+              }
+            },
+            "required": ["client"]
+          },
+          "then": {
+            "properties": {
+              "inventory": {
+                "const": "agent-toolkit"
+              }
+            }
+          }
+        }
+      ]
     },
     "ReapRequest": {
       "type": "object",
@@ -932,7 +1159,7 @@
           "$ref": "#/$defs/RequestId"
         },
         "scope": {
-          "const": "configured_inventories"
+          "const": "caller_inventory"
         },
         "deadline_ms": {
           "type": "integer",
@@ -974,14 +1201,38 @@
         },
         "inventories": {
           "type": "array",
-          "minItems": 2,
-          "maxItems": 2,
+          "minItems": 1,
+          "maxItems": 1,
           "items": {
             "$ref": "#/$defs/InventoryReapResult"
           }
         },
         "caller_context": {
           "$ref": "#/$defs/CallerContext"
+        }
+      }
+    },
+    "VersionResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "client",
+        "protocol_schema_sha256",
+        "config_sha256"
+      ],
+      "properties": {
+        "schema": {
+          "const": "placement.version.response.v1"
+        },
+        "client": {
+          "$ref": "#/$defs/Client"
+        },
+        "protocol_schema_sha256": {
+          "$ref": "#/$defs/HexSha256"
+        },
+        "config_sha256": {
+          "$ref": "#/$defs/HexSha256"
         }
       }
     }

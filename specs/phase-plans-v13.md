@@ -28,18 +28,21 @@ schema, fake-coordinator and refusal-path work is plannable offline now.
 
 ```text
 agent-toolkit shim ─┐
-phase-loop LANE ────┼─► placement_cli reserve ─► one reservation / one target
-review-seat route ──┘             │
+phase-loop LANE ────┼─► agent-harness-placement --client … reserve
+review-seat route ──┘             │                 │
+                                  │                 └─► one reservation / one target
                                   ├─► supervised_worker_cli launch|status|cancel
                                   ├─► ForwardTcp ↔ 0600 Unix socket (Pi link only)
-                                  └─► placement_cli release|reap ─► two inventories
+                                  └─► release|reap ─► selected client's inventory only
 ```
 
-The trusted placement configuration owns target ranks, identity selection and
-policy-vector lookup. Requests never supply a target list, inline policy, owner,
-client or certificate. Agent and executor admissions rank `ai`, then local when
-all published headroom thresholds admit, then a disabled E2B rung. Review seats
-consume the SEATS JAILCORE outcome rather than restating it here.
+The required `--client` flag selects one per-client trusted placement
+configuration, certificate and inventory; the environment never selects them.
+That configuration owns target ranks, identity selection and policy-vector
+lookup. Requests never supply a target list, inline policy, owner, client or
+certificate. `pi-runner` admissions rank `ai`, then local when all published
+headroom thresholds admit, then a disabled E2B rung. Seat workloads consume one
+target already selected by SEATS JAILCORE and never enter that ladder.
 
 ## Assumptions
 
@@ -58,7 +61,7 @@ consume the SEATS JAILCORE outcome rather than restating it here.
 
 | Input | Pin |
 | --- | --- |
-| Placement process protocol v1 | `plans/artifacts/v13-PLACECLI-contract-v1.schema.json`, sha256 `cb5870a71ef607345cc28262d77b40f7209a8c770eab22b55917afd3aa29566c` |
+| Placement process protocol v1 | `plans/artifacts/v13-PLACECLI-contract-v1.schema.json`, sha256 `5af305ffa4e47cd1eae81da322f66906a3728ce4af2f04b25783478cbf74c3d9` |
 | Shared placement BAML | `phase-loop-runtime/src/phase_loop_runtime/baml_src/placement_contract.baml`, sha256 `f662ea044dbe37a65c8bd782aeb7a5b2dd75b5851944c05b4f055061fcd27ace` |
 | Placement policy vectors | `phase-loop-runtime/src/phase_loop_runtime/contracts/placement/vectors/policies.json`, sha256 `5b3bc7f515bd2a4cbc10a18d98465d511f65e8089213ceb8c21f9cce2409020f` |
 | Admitted launch envelope v2 | Consiliency/consiliency-contract commit `2b91ef85bfdc76239ae52806b3318513951543ab`, schema sha256 `6d6b2f89c55d160c2c132c29b3aa330a0a91c40ab017707040478a60b469194f` |
@@ -85,15 +88,20 @@ no plan pins a future implementation commit, commit count or landing topology.
 
 1. **One target per envelope.** Placement finishes before envelope construction.
    `at_capacity` starts a new admission; after admission no fallback is allowed.
-2. **Closed JSON boundary.** One bounded JSON object enters and one bounded JSON
-   object exits. Unknown members, values, codes and policy names fail closed.
-3. **Named policy only.** `policy_vector` resolves from the pinned policies file;
-   neither the request nor caller context can carry policy or authority.
-4. **Identity follows the workload.** Pi placements use the operator-configured
-   OU=`agent-toolkit` certificate and inventory. agent-harness manages that key and
-   inventory separately from OU=`agent-harness`.
-5. **Cleanup before overflow.** An uncertain create, lost reply or unconfirmed
-   release blocks every later target until the release barrier is confirmed.
+2. **Closed JSON boundary.** Placement verbs accept one bounded JSON object;
+   `version` accepts empty stdin; every command emits one bounded JSON object.
+   Unknown members, values, codes and policy names fail closed.
+3. **Named policy only.** Every resolved `policy_vector` is a name from the
+   pinned policies file; neither the request nor caller context can carry inline
+   policy or authority. Local Pi uses `minimal-without-app`; remote Pi uses
+   `full-remote-pi-runner`.
+4. **Identity follows the workload.** Every Pi target uses the operator-configured
+   OU=`agent-toolkit` certificate and inventory. agent-harness manages that key
+   and inventory separately from OU=`agent-harness`.
+5. **Cleanup is reservation-scoped.** An uncertain create, lost reply or
+   unconfirmed release blocks later targets only for that reservation in the
+   selected client inventory. Other reservations and the other client continue;
+   reap can inspect only its caller's inventory.
 6. **Honest records.** Placement outcomes, v2 admission diagnostics and run-status
    termination remain separate closed vocabularies; raw output and secrets never
    become placement evidence.
@@ -111,6 +119,8 @@ no plan pins a future implementation commit, commit count or landing topology.
   owned hosts may use remote capacity after one generic egress-and-credential probe
   set; per-vendor OD-7 applies only to third-party clouds.
 - Pi uses OU=`agent-toolkit`; agent-harness manages two keys and inventories.
+- `--client agent-toolkit|agent-harness` is required and selects operator config;
+  no environment variable may select identity or configuration.
 - Remote writers carry `provider_readonly_patch_return_audit`.
 - E2B is parked as stated in Non-Goals.
 - The toolkit switches only when all three are true: L0–L9 evidence parity, its
@@ -131,9 +141,10 @@ no plan pins a future implementation commit, commit count or landing topology.
 
 ## Top Interface-Freeze Gates
 
-- IF-0-PLACECLI-1 — Frozen placement process messages, closed code vocabularies,
-  named-policy lookup, identity mapping, target binding and exit classes.
-- IF-0-PLACECLI-2 — Reservation lifecycle, two-inventory reap, published local
+- IF-0-PLACECLI-1 — Frozen placement process messages, stable console entry,
+  version response, closed code vocabularies, named-policy lookup, explicit
+  client/config selection, target binding and exit classes.
+- IF-0-PLACECLI-2 — Reservation lifecycle, caller-scoped reap, published local
   headroom defaults, ForwardTcp bridge and black-box parity evidence.
 - IF-0-LANEEXEC-1 — Phase-loop LANE executor reservation, bounded admitted launch,
   patch-return evidence and fail-closed disabled activation.
@@ -152,11 +163,11 @@ disabled for live routes until later activation.
 
 **Exit criteria**
 
-- [ ] EC-PLACECLI-1 — Every reserve, release and reap request/response validates against the pinned process artifact through the production codec; unknown fields, duplicate keys, trailing data, oversized input, invalid UTF-8, non-finite/unsafe numbers, unknown policy names and unknown codes refuse before effects. Falsified by any malformed black-box request reaching a capacity probe or lease call.
-- [ ] EC-PLACECLI-2 — Reserve applies the owner-ranked policy before envelope construction: agent and executor work tries `ai`, then an actually reserved local slot only when every published headroom threshold admits, then disabled E2B. Each attempt has a `TrailEntry`; one admitted reservation binds one target, transport, image, policy digest and trusted configuration digest. Falsified by request-supplied routing, informational local telemetry treated as a reservation, or fallback after admission.
-- [ ] EC-PLACECLI-3 — Release and reap reconcile definite and uncertain effects across separate OU=`agent-harness` and OU=`agent-toolkit` journals/inventories. A timeout, lost reply or unconfirmed barrier blocks another target; idempotent retry and crash/restart cannot lose a held local slot, lease or bridge. Falsified by overflow before confirmed cleanup or one client reaping the other's inventory.
+- [ ] EC-PLACECLI-1 — The stable `agent-harness-placement --client agent-toolkit|agent-harness reserve|release|reap|version` entry validates every process message through the pinned artifact. The required flag alone selects per-client operator config; `version` emits the protocol schema and config SHA-256 values. Unknown fields, duplicate keys, trailing data, oversized input, invalid UTF-8, non-finite/unsafe numbers, unknown policies/codes and client/workload mismatch refuse before effects. Falsified by environment-selected config, a malformed request reaching a probe, or an installed entry point differing from module behavior.
+- [ ] EC-PLACECLI-2 — Reserve finishes before envelope construction. `pi-runner` tries `ai` by authoritative capacity, then an actually reserved local slot only when every published headroom threshold admits, then disabled E2B. `leg`, `qualification` and `implementation` do not rank: each admits only the single trusted SEATS route target, or refuses `sandbox_placement_workload_unsupported` before any probe. Pending-qualification policy names resolve for offline work but no live endpoint is reachable. Each attempt has a `TrailEntry`; one admitted reservation binds one target, transport, image, policy digest, rank policy and trusted configuration digest. Falsified by a seat workload entering the agent order, request-supplied routing, informational local telemetry treated as a reservation, or fallback after admission.
+- [ ] EC-PLACECLI-3 — Release and reap reconcile definite and uncertain effects in the inventory selected by `--client`. Exit 20 creates only a `(client, reservation_id)` barrier, using request ID until reservation ID is known; independent reservations continue. Reap returns exactly the caller's inventory and cannot inspect the other client. Release is idempotent for a journaled reservation and a repeat returns `released` or `unknown_reservation` without blocking admission. Falsified by a host/client-wide barrier, cross-client reap, divergent release echo freeing a lease, or crash/restart losing a held local slot, lease or bridge.
 - [ ] EC-PLACECLI-4 — `pi-runner` on OpenShell receives one ForwardTcp-to-Unix bridge in a 0700 directory with a 0600 socket, scoped to its reservation. The toolkit's L0–L9 fixture set and fake coordinator/TLS cases run unchanged as black-box process tests and preserve closed outcomes. Falsified by the shim needing an agent-harness import, a public listener, a shared socket, or fixture-specific production branching.
-- [ ] EC-PLACECLI-5 — Local-headroom defaults are published from one source and consumed by both the process CLI and hand-run Pi guidance: at least 1 GiB available, load-per-online-CPU below 100%, fewer than four live sandboxes and a reading no older than five seconds; unknown/stale is `at_capacity`. Live activation and E2B remain disabled. Falsified by divergent thresholds or any offline test enabling a live route.
+- [ ] EC-PLACECLI-5 — Local-headroom defaults are published from one source and consumed by both the process CLI and hand-run Pi guidance: at least 1 GiB available, load-per-online-CPU below 100%, fewer than four live sandboxes and a reading no older than five seconds; unknown/stale is `at_capacity`. A local Pi reservation resolves `minimal-without-app`, has `bridge: null` and counts toward `live_sandboxes`. Live activation and E2B remain disabled. Falsified by divergent thresholds, a local Pi escaping the shared gate, or any offline test enabling a live route.
 
 **Scope notes**
 
@@ -169,11 +180,14 @@ SEATS policy as an injected named route decision, never by editing that roadmap.
 **Non-goals**
 
 LANE integration, live target activation, E2B backend implementation, toolkit
-controller changes or a new enforcement tier.
+controller changes or a new enforcement tier. `_NONLOCAL_EXECUTION_DRIVER` stays
+false. No production OpenShell backend is registered, and `policies.json` status
+stays `pending_qualification`.
 
 **Key files**
 
 - `plans/artifacts/v13-PLACECLI-contract-v1.schema.json`
+- `phase-loop-runtime/pyproject.toml`
 - `phase-loop-runtime/src/phase_loop_runtime/placement_cli.py`
 - `phase-loop-runtime/src/phase_loop_runtime/sandbox_placement.py`
 - `phase-loop-runtime/src/phase_loop_runtime/openshell_*.py`
@@ -190,8 +204,8 @@ controller changes or a new enforcement tier.
 
 **Produces**
 
-- IF-0-PLACECLI-1 — Frozen placement process messages, closed code vocabularies, named-policy lookup, identity mapping, target binding and exit classes.
-- IF-0-PLACECLI-2 — Reservation lifecycle, two-inventory reap, published local headroom defaults, ForwardTcp bridge and black-box parity evidence.
+- IF-0-PLACECLI-1 — Frozen placement process messages, stable console entry, version response, closed code vocabularies, named-policy lookup, explicit client/config selection, target binding and exit classes.
+- IF-0-PLACECLI-2 — Reservation lifecycle, caller-scoped reap, published local headroom defaults, ForwardTcp bridge and black-box parity evidence.
 
 **Spec closeout policy**
 
@@ -211,8 +225,8 @@ default executor, after the worker CLI and before any OpenShell activation.
 **Exit criteria**
 
 - [ ] EC-LANEEXEC-1 — A writable phase-loop LANE resolves its existing Pi default through one placement reservation before envelope admission, records the route decision, and either launches exactly that reservation or refuses typed. Falsified by a Pi lane bypassing placement, a second route decision after admission, or a reducer/review unit entering the writer route.
-- [ ] EC-LANEEXEC-2 — The lane launch uses admitted launch envelope v2, a separate clone/copy, one-shot input, at most 3600 seconds per attempt and the `provider_readonly_patch_return_audit` tier. It returns bounded proposal bytes and audit evidence; apply stays controller-side. Falsified by steering after output, a worktree claiming the tier, an unbounded attempt, direct protected-tree apply or an OS-enforced claim.
-- [ ] EC-LANEEXEC-3 — `pi-runner` is a supported placement workload only through the OU=`agent-toolkit` key/inventory and ForwardTcp bridge. Its dependency projection, executable/image/policy chain, scratch ownership and release/reap path satisfy agent-harness#1787, agent-harness#1788, agent-harness#1789 and agent-harness#1790 offline controls. Falsified by using review-seat capacity identity, sharing an inventory, or launching an unwired dependency route.
+- [ ] EC-LANEEXEC-2 — The harness launch site owns the git-visible-plus-`.git` masked snapshot, upload, admitted launch envelope v2 naming the reserved transport ID, exactly one restricted `supervised_worker_cli launch`, bridge attachment, status/cancel/release and bounded patch/audit return. The attempt uses a separate clone/copy, lasts at most 3600 seconds and carries `provider_readonly_patch_return_audit`; apply stays controller-side. Falsified by toolkit ownership of snapshot upload or worker launch, steering after output, a worktree claiming the tier, an unbounded attempt, direct protected-tree apply or an OS-enforced claim.
+- [ ] EC-LANEEXEC-3 — Every `pi-runner` target uses the OU=`agent-toolkit` key/inventory. OpenShell alone receives the ForwardTcp bridge; local Pi uses `minimal-without-app`, `bridge: null` and shared headroom accounting. Dependency projection, executable/image/policy chain, scratch ownership and caller-scoped release/reap satisfy agent-harness#1787, agent-harness#1788, agent-harness#1789 and agent-harness#1790 offline controls. Falsified by review-seat identity, cross-client reap, a local bridge, shared inventory or an unwired dependency route.
 - [ ] EC-LANEEXEC-4 — Fake coordinator, local-headroom, bridge loss, cancel, timeout, crash/restart and patch-return mutations exercise the production construction sites. No fixture or proxy evidence enables the live route. Falsified by any live adapter being reachable before ACTIVATE or by tests replacing the route constructor under test.
 - [ ] EC-LANEEXEC-5 — The phase lands after PLACECLI and EXT-WORKER, but before OpenShell activation; existing local Pi execution remains the typed interim route until activation. Falsified by reversing either ordering edge or removing local fallback before live authority.
 
@@ -224,10 +238,22 @@ reducer. Keep lane file ownership disjoint. The phase consumes IF-0-PLACECLI-1 a
 IF-0-PLACECLI-2 and treats EXT-LAUNCHSITE as an activation prerequisite, with all
 available offline refusal work completed here.
 
+LANEEXEC owns the agent-harness side of the launch path: snapshot construction
+and upload, envelope admission, one restricted exec, bridge attachment,
+status/cancel/release and patch-return evidence. Under agent-toolkit#35,
+agent-toolkit retains the vendor Pi agents/toolsets, Pi runner image and policy
+inputs, Pi link and credential proxy, writer import, controller-side apply, the
+thin `runnerLauncher` shim that invokes the two harness CLIs, and production of
+the pinned `landlock-exec` until agent-harness#1704 extracts it. Its existing
+OpenShell CLI/coordinator client stays frozen as the L0–L9 differential oracle
+until the three-part switch condition, then retires.
+
 **Non-goals**
 
 Live `ai` use, toolkit client retirement, review-seat route changes, E2B or remote
-application of a proposal.
+application of a proposal. `_NONLOCAL_EXECUTION_DRIVER` stays false. No production
+OpenShell backend is registered, and `policies.json` status stays
+`pending_qualification`.
 
 **Key files**
 
