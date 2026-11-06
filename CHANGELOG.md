@@ -6,6 +6,21 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- The jailed Claude seat's `sdk` transport lands offline and unadmitted (SEATS CLAUDE SL-3,
+  agent-harness#1820): `claude_seat_sdk` (`ADMITTED = False`) and its credential-free host
+  worker under `phase_loop_runtime/data/claude_sdk/worker/` -- a trusted `-I -S -B` bootstrap
+  that installs a delivered syscall filter and verifies its exhaustive closure inventory
+  before any non-stdlib import, and a seat-neutral adapter that runs the pinned Claude Agent
+  SDK (0.2.167) over a custom transport on inherited pipes. The parent keeps launch and
+  admission: `build_sdk_cli_argv` supplies the CLI flags from the frozen launch fixture
+  (`launch-v1.json`), and the parent gate admits only print's `StreamAdmission` result
+  after a stateful allowlist of the SDK's frames. The new `claude-sdk` extra installs the
+  SDK as a test oracle; the worker installs from the hashed export
+  (`requirements-v1.txt`) and `python -m phase_loop_runtime.claude_seat_sdk seal`. The
+  typed codes gain `claude_sdk_provenance_refused`, `claude_sdk_worker_contract_violation`
+  and `claude_sdk_worker_unavailable`; `claude_sdk_closure_refused` is retired. Selecting
+  `sdk` still refuses `panel_claude_transport_not_admitted`.
+
 - `sdk` stays refused on the jailed seat (SEATS CLAUDE, agent-harness#1820), and the jailed default
   stays the TUI. Its host-side worker (EC-CLAUDE-3) is a later landing, and it needs the ratified
   OD-3a amendment first.

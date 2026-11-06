@@ -59,7 +59,7 @@ PARALLEL_FLAGS = "-n auto --dist loadfile --max-worker-restart=0"
 
 # The hosted lane's suite-environment install line, verbatim.
 HOSTED_INSTALL_LINE = (
-    '        run: python -m pip install "./phase-loop-runtime[visual]" pytest '
+    '        run: python -m pip install "./phase-loop-runtime[visual,claude-sdk]" pytest '
     '"pytest-xdist==3.8.0" "build==1.6.1" "setuptools>=70.1"'
 )
 
@@ -184,7 +184,7 @@ def dagger_install_pins(source: str) -> list[str]:
     for node in ast.walk(ast.parse(source)):
         if isinstance(node, ast.List):
             elts = [e.value for e in node.elts if isinstance(e, ast.Constant) and isinstance(e.value, str)]
-            if "pip" in elts and "install" in elts and "./phase-loop-runtime[visual]" in elts:
+            if "pip" in elts and "install" in elts and "./phase-loop-runtime[visual,claude-sdk]" in elts:
                 installs += 1
             pins.extend(e for e in elts if _mentions_xdist(e))
     assert installs == 1, f"expected one suite-environment install argv, found {installs}"
@@ -361,9 +361,9 @@ HOSTED_MUTATIONS = (
      "          CHRONOLOGY: ${{ steps.scope.outputs.chronology }}\n          PYTEST_ADDOPTS: -n0\n"),
     ("install line: xdist pin dropped", ' "pytest-xdist==3.8.0"', ""),
     ("advisor: a second install upgrades xdist",
-     "        run: python -m pip install \"./phase-loop-runtime[visual]\"",
+     "        run: python -m pip install \"./phase-loop-runtime[visual,claude-sdk]\"",
      "        run: python -m pip install \"pytest-xdist==3.9.0\"\n      - name: x\n"
-     "        run: python -m pip install \"./phase-loop-runtime[visual]\""),
+     "        run: python -m pip install \"./phase-loop-runtime[visual,claude-sdk]\""),
 )
 
 DAGGER_MUTATIONS = (

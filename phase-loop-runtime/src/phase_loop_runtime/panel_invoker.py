@@ -3038,9 +3038,10 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     # the transport seam (Stage 2): `sdk` is named but not admitted (EC-REVIEWTRUTH-18)
     "panel_claude_transport_not_admitted",
     # the jailed transport seam (SEATS CLAUDE, IF-0-CLAUDE-1): `claude_seat_transport.CODES`
-    "claude_seat_api_key_source", "claude_sdk_closure_refused", "claude_seat_login_unproven",
+    "claude_seat_api_key_source", "claude_sdk_provenance_refused",
+    "claude_sdk_worker_contract_violation", "claude_seat_login_unproven",
     "claude_seat_result_unproven", "claude_seat_stream_unsafe",
-    "claude_sdk_dependency_unavailable",
+    "claude_sdk_dependency_unavailable", "claude_sdk_worker_unavailable",
     # route / authorization refusals
     "missing HARDEN review authorization", "missing or forged HARDEN review authorization",
     "harden_advisory_execution_refused", "harden_review_capture_route_refused",

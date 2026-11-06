@@ -112,7 +112,7 @@ def test_the_ci_mirrors_match_the_workflow(lc):
     """RUFF_PIN and CI_TEST_DEPS are copied from test.yml by hand; keep them honest."""
     text = WORKFLOW.read_text()
     assert f"'{lc.RUFF_PIN}'" in text
-    install = next(line for line in text.splitlines() if "pip install \"./phase-loop-runtime[visual]\"" in line)
+    install = next(line for line in text.splitlines() if "pip install \"./phase-loop-runtime[visual,claude-sdk]\"" in line)
     for dep in lc.CI_TEST_DEPS:
         assert (f'"{dep}"' if dep != "pytest" else " pytest ") in install, dep
 

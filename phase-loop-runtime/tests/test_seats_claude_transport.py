@@ -175,12 +175,13 @@ _KEY_WORDING = re.compile(r"api[\s_-]*key|anthropic_api|x-api-key", re.IGNORECAS
 
 def test_the_codes_table_is_the_frozen_set_with_classes():
     assert set(ct.CODES) == {
-        "claude_seat_token_in_output", "claude_seat_api_key_source", "claude_sdk_closure_refused",
+        "claude_seat_token_in_output", "claude_seat_api_key_source",
+        "claude_sdk_provenance_refused", "claude_sdk_worker_contract_violation",
         "claude_seat_login_unproven", "claude_seat_result_unproven", "claude_seat_stream_unsafe",
-        "claude_sdk_dependency_unavailable"}
+        "claude_sdk_dependency_unavailable", "claude_sdk_worker_unavailable"}
     security = {code for code, entry in ct.CODES.items() if entry[0] == ct.SECURITY}
     assert security == {"claude_seat_token_in_output", "claude_seat_api_key_source",
-                        "claude_sdk_closure_refused"}
+                        "claude_sdk_provenance_refused", "claude_sdk_worker_contract_violation"}
     assert all(entry[0] in ct.OD10_CLASSES for entry in ct.CODES.values())
 
 

@@ -1,0 +1,698 @@
+{
+ "argv_template": [
+  "/seat/bin/claude",
+  "--output-format",
+  "stream-json",
+  "--verbose",
+  "--input-format",
+  "stream-json",
+  "--no-session-persistence",
+  "--ax-screen-reader",
+  "--safe-mode",
+  "--no-chrome",
+  "--disable-slash-commands",
+  "--model",
+  "<MODEL>",
+  "--session-id=<SESSION_ID>",
+  "--effort",
+  "high",
+  "--setting-sources=",
+  "--settings",
+  "<SETTINGS>",
+  "--strict-mcp-config",
+  "--mcp-config",
+  "{\"mcpServers\": {}}",
+  "--agents",
+  "{}",
+  "--permission-mode",
+  "bypassPermissions",
+  "--tools",
+  "default"
+ ],
+ "capture": {
+  "cli_argv": [
+   "/seat/bin/claude",
+   "--output-format",
+   "stream-json",
+   "--verbose",
+   "--input-format",
+   "stream-json",
+   "--no-session-persistence",
+   "--ax-screen-reader",
+   "--safe-mode",
+   "--no-chrome",
+   "--disable-slash-commands",
+   "--model",
+   "<MODEL>",
+   "--session-id=<SESSION_ID>",
+   "--effort",
+   "high",
+   "--setting-sources=",
+   "--settings",
+   "<SETTINGS>",
+   "--strict-mcp-config",
+   "--mcp-config",
+   "{\"mcpServers\": {}}",
+   "--agents",
+   "{}",
+   "--permission-mode",
+   "bypassPermissions",
+   "--tools",
+   "default"
+  ],
+  "cli_env": {
+   "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR": "<TOKEN_FD>",
+   "CLAUDE_CODE_TMPDIR": "/seat/home/.tmp",
+   "CLAUDE_CONFIG_DIR": "/seat/home/.claude",
+   "DISABLE_AUTOUPDATER": "1",
+   "HOME": "/seat/home",
+   "LANG": "C.UTF-8",
+   "PATH": "/seat/bin:/usr/bin:/bin",
+   "TERM": "xterm-256color",
+   "TMPDIR": "/seat/home/.tmp",
+   "XDG_CACHE_HOME": "/seat/home/.cache",
+   "XDG_CONFIG_HOME": "/seat/home/.config",
+   "XDG_DATA_HOME": "/seat/home/.local/share",
+   "XDG_STATE_HOME": "/seat/home/.local/state"
+  },
+  "cli_stdin": [
+   {
+    "request": {
+     "hooks": null,
+     "subtype": "initialize"
+    },
+    "request_id": "<REQUEST_ID>",
+    "type": "control_request"
+   },
+   {
+    "message": {
+     "content": "<PROMPT>",
+     "role": "user"
+    },
+    "parent_tool_use_id": null,
+    "session_id": "default",
+    "type": "user"
+   }
+  ],
+  "cli_stdin_closed_after": "end_input",
+  "method": "offline: real pinned SDK in the real worker payload, fake CLI, parent bridge",
+  "outcome": [
+   "admitted",
+   "<RESULT_TEXT>"
+  ],
+  "parent_to_worker": [
+   {
+    "body": {
+     "excluded": [],
+     "filter": "<FILTER>",
+     "inventory": "<INVENTORY>",
+     "options": {
+      "add_dirs": [],
+      "agents": null,
+      "allowed_tools": [],
+      "betas": [],
+      "can_use_tool": null,
+      "cli_path": null,
+      "continue_conversation": false,
+      "cwd": null,
+      "debug_stderr": null,
+      "disallowed_tools": [],
+      "effort": "high",
+      "enable_file_checkpointing": false,
+      "env": {},
+      "extra_args": {},
+      "fallback_model": null,
+      "fork_session": false,
+      "forward_subagent_text": false,
+      "hooks": null,
+      "include_hook_events": false,
+      "include_partial_messages": false,
+      "load_timeout_ms": 60000,
+      "max_budget_usd": null,
+      "max_buffer_size": null,
+      "max_thinking_tokens": null,
+      "max_turns": null,
+      "mcp_servers": {},
+      "model": "<MODEL>",
+      "output_format": null,
+      "permission_mode": "bypassPermissions",
+      "permission_prompt_tool_name": null,
+      "plugins": [],
+      "resume": null,
+      "resume_drops_turn": null,
+      "resume_session_at": null,
+      "sandbox": null,
+      "session_id": "<SESSION_ID>",
+      "session_store": null,
+      "session_store_flush": "batched",
+      "setting_sources": [],
+      "settings": "<SETTINGS>",
+      "skills": null,
+      "stderr": null,
+      "strict_mcp_config": true,
+      "system_prompt": {
+       "preset": "claude_code",
+       "type": "preset"
+      },
+      "task_budget": null,
+      "thinking": null,
+      "tools": {
+       "preset": "claude_code",
+       "type": "preset"
+      },
+      "user": null,
+      "verbatim_prompts": false
+     },
+     "prompt": "<PROMPT>",
+     "roots": [
+      "<CLOSURE_ROOT>"
+     ],
+     "timers": {
+      "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": "600000",
+      "CLAUDE_CODE_STREAM_CLOSE_TIMEOUT": "60000"
+     }
+    },
+    "kind": "hello",
+    "launch": "<NONCE>",
+    "seq": 0
+   },
+   {
+    "body": {},
+    "kind": "start",
+    "launch": "<NONCE>",
+    "seq": 1
+   },
+   {
+    "body": {
+     "response": {
+      "request_id": "<REQUEST_ID>",
+      "response": {
+       "commands": [],
+       "models": []
+      },
+      "subtype": "success"
+     },
+     "type": "control_response"
+    },
+    "kind": "cli",
+    "launch": "<NONCE>",
+    "seq": 2
+   },
+   {
+    "body": {
+     "apiKeySource": "none",
+     "cwd": "/seat/tree",
+     "mcp_servers": [],
+     "model": "<MODEL>",
+     "permissionMode": "bypassPermissions",
+     "session_id": "<SESSION_ID>",
+     "subtype": "init",
+     "tools": [],
+     "type": "system"
+    },
+    "kind": "cli",
+    "launch": "<NONCE>",
+    "seq": 3
+   },
+   {
+    "body": {
+     "message": {
+      "content": [
+       {
+        "text": "VERDICT: approve\nNo blocking findings.",
+        "type": "text"
+       }
+      ],
+      "model": "<MODEL>",
+      "role": "assistant"
+     },
+     "parent_tool_use_id": null,
+     "session_id": "<SESSION_ID>",
+     "type": "assistant"
+    },
+    "kind": "cli",
+    "launch": "<NONCE>",
+    "seq": 4
+   },
+   {
+    "body": {
+     "duration_api_ms": 1,
+     "duration_ms": 1,
+     "is_error": false,
+     "num_turns": 1,
+     "result": "VERDICT: approve\nNo blocking findings.",
+     "session_id": "<SESSION_ID>",
+     "subtype": "success",
+     "total_cost_usd": 0.0,
+     "type": "result",
+     "usage": {
+      "input_tokens": 1,
+      "output_tokens": 1
+     }
+    },
+    "kind": "cli",
+    "launch": "<NONCE>",
+    "seq": 5
+   },
+   {
+    "body": {},
+    "kind": "eof",
+    "launch": "<NONCE>",
+    "seq": 6
+   }
+  ],
+  "worker_to_parent": [
+   {
+    "body": {},
+    "kind": "ready",
+    "launch": "<NONCE>",
+    "seq": 0
+   },
+   {
+    "body": {
+     "request": {
+      "hooks": null,
+      "subtype": "initialize"
+     },
+     "request_id": "<REQUEST_ID>",
+     "type": "control_request"
+    },
+    "kind": "cli",
+    "launch": "<NONCE>",
+    "seq": 1
+   },
+   {
+    "body": {
+     "message": {
+      "content": "<PROMPT>",
+      "role": "user"
+     },
+     "parent_tool_use_id": null,
+     "session_id": "default",
+     "type": "user"
+    },
+    "kind": "cli",
+    "launch": "<NONCE>",
+    "seq": 2
+   },
+   {
+    "body": {},
+    "kind": "end_input",
+    "launch": "<NONCE>",
+    "seq": 3
+   },
+   {
+    "body": {
+     "outcome": "result"
+    },
+    "kind": "done",
+    "launch": "<NONCE>",
+    "seq": 4
+   }
+  ]
+ },
+ "cli": {
+  "argv0": "/seat/bin/claude",
+  "delta": {
+   "equals_form": [
+    "--session-id",
+    "--setting-sources"
+   ],
+   "insert_after_argv0": [
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--input-format",
+    "stream-json",
+    "--no-session-persistence"
+   ],
+   "refuse": [
+    "-p",
+    "--print",
+    "--bare",
+    "--continue",
+    "--resume",
+    "--fork-session",
+    "--session-mirror",
+    "--plugin-dir",
+    "--add-dir",
+    "--system-prompt",
+    "--system-prompt-file",
+    "--append-system-prompt",
+    "--include-partial-messages",
+    "--include-hook-events",
+    "--permission-prompt-tool",
+    "--allowedTools",
+    "--disallowedTools",
+    "--resume-session-at",
+    "--json-schema",
+    "--max-turns"
+   ],
+   "require": {
+    "--agents": "{}",
+    "--mcp-config": "{\"mcpServers\": {}}",
+    "--no-session-persistence": null,
+    "--permission-mode": "bypassPermissions",
+    "--setting-sources": "",
+    "--strict-mcp-config": null,
+    "--tools": "default"
+   },
+   "value_flags": [
+    "--model",
+    "--session-id",
+    "--effort",
+    "--setting-sources",
+    "--settings",
+    "--mcp-config",
+    "--agents",
+    "--permission-mode",
+    "--tools",
+    "--name"
+   ]
+  },
+  "env": {
+   "additions": {},
+   "removals": [],
+   "source": "jail"
+  }
+ },
+ "normalized": [
+  "<CLOSURE_ROOT>",
+  "<FILTER>",
+  "<INVENTORY>",
+  "<MODEL>",
+  "<NONCE>",
+  "<PROMPT>",
+  "<REQUEST_ID>",
+  "<RESULT_TEXT>",
+  "<SESSION_ID>",
+  "<SETTINGS>",
+  "<TOKEN_FD>"
+ ],
+ "options": {
+  "add_dirs": [],
+  "agents": null,
+  "allowed_tools": [],
+  "betas": [],
+  "can_use_tool": null,
+  "cli_path": null,
+  "continue_conversation": false,
+  "cwd": null,
+  "debug_stderr": null,
+  "disallowed_tools": [],
+  "effort": "<EFFORT>",
+  "enable_file_checkpointing": false,
+  "env": {},
+  "extra_args": {},
+  "fallback_model": null,
+  "fork_session": false,
+  "forward_subagent_text": false,
+  "hooks": null,
+  "include_hook_events": false,
+  "include_partial_messages": false,
+  "load_timeout_ms": 60000,
+  "max_budget_usd": null,
+  "max_buffer_size": null,
+  "max_thinking_tokens": null,
+  "max_turns": null,
+  "mcp_servers": {},
+  "model": "<MODEL>",
+  "output_format": null,
+  "permission_mode": "bypassPermissions",
+  "permission_prompt_tool_name": null,
+  "plugins": [],
+  "resume": null,
+  "resume_drops_turn": null,
+  "resume_session_at": null,
+  "sandbox": null,
+  "session_id": "<SESSION_ID>",
+  "session_store": null,
+  "session_store_flush": "batched",
+  "setting_sources": [],
+  "settings": "<SETTINGS>",
+  "skills": null,
+  "stderr": null,
+  "strict_mcp_config": true,
+  "system_prompt": {
+   "preset": "claude_code",
+   "type": "preset"
+  },
+  "task_budget": null,
+  "thinking": null,
+  "tools": {
+   "preset": "claude_code",
+   "type": "preset"
+  },
+  "user": null,
+  "verbatim_prompts": false
+ },
+ "oracle": {
+  "argv": [
+   "/seat/bin/claude",
+   "--output-format",
+   "stream-json",
+   "--verbose",
+   "--tools",
+   "default",
+   "--model",
+   "<MODEL>",
+   "--permission-mode",
+   "bypassPermissions",
+   "--session-id=<SESSION_ID>",
+   "--settings",
+   "<SETTINGS>",
+   "--strict-mcp-config",
+   "--setting-sources=",
+   "--effort",
+   "high",
+   "--input-format",
+   "stream-json"
+  ],
+  "differences": {
+   "env": "the owned CLI env is the jail env exactly; the oracle inherits and adds",
+   "oracle_only": [],
+   "owned_only": [
+    [
+     "--agents",
+     "{}"
+    ],
+    [
+     "--ax-screen-reader",
+     null
+    ],
+    [
+     "--disable-slash-commands",
+     null
+    ],
+    [
+     "--mcp-config",
+     "{\"mcpServers\": {}}"
+    ],
+    [
+     "--no-chrome",
+     null
+    ],
+    [
+     "--no-session-persistence",
+     null
+    ],
+    [
+     "--safe-mode",
+     null
+    ]
+   ]
+  },
+  "env_additions": [
+   "CLAUDE_AGENT_SDK_VERSION",
+   "CLAUDE_CODE_ENABLE_SDK_FILE_CHECKPOINTING",
+   "CLAUDE_CODE_ENTRYPOINT",
+   "CLAUDE_CODE_SDK_READS_SESSION_STATE"
+  ],
+  "provenance": "SubprocessCLITransport._build_command() on the frozen options (test-only)"
+ },
+ "protocol": {
+  "frame_cap_bytes": 16777216,
+  "framing": "ndjson-canonical",
+  "hello_cap_bytes": 8388608,
+  "inbound": {
+   "correlated": [
+    "control_response"
+   ],
+   "forward": [
+    "assistant",
+    "rate_limit_event",
+    "result",
+    "system",
+    "user"
+   ],
+   "refused": [
+    "control_request",
+    "control_cancel_request",
+    "transcript_mirror"
+   ]
+  },
+  "nesting_bound": 64,
+  "outbound": {
+   "initialize": {
+    "request": {
+     "hooks": null,
+     "subtype": "initialize"
+    },
+    "request_id": "<REQUEST_ID>",
+    "type": "control_request"
+   },
+   "interrupt": {
+    "request": {
+     "subtype": "interrupt"
+    },
+    "request_id": "<REQUEST_ID>",
+    "type": "control_request"
+   },
+   "sequence": [
+    "initialize",
+    "user",
+    "end_input"
+   ],
+   "user": {
+    "message": {
+     "content": "<PROMPT>",
+     "role": "user"
+    },
+    "parent_tool_use_id": null,
+    "session_id": "default",
+    "type": "user"
+   }
+  },
+  "parent_frames": [
+   "hello",
+   "start",
+   "cli",
+   "eof",
+   "cancel"
+  ],
+  "request_id_pattern": "req_[1-9][0-9]{0,5}_[0-9a-f]{8}",
+  "worker_frames": [
+   "ready",
+   "cli",
+   "end_input",
+   "done",
+   "failed"
+  ]
+ },
+ "schema": "claude-sdk-launch.v1",
+ "sdk": {
+  "bundled_cli_version": "2.1.300",
+  "package": "claude-agent-sdk",
+  "transport": "ClaudeSDKClient(options, transport=IPCTransport)",
+  "version": "0.2.167"
+ },
+ "worker": {
+  "env": {
+   "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": "600000",
+   "CLAUDE_CODE_STREAM_CLOSE_TIMEOUT": "60000",
+   "HOME": "/worker/home",
+   "LANG": "C.UTF-8",
+   "PATH": "/nonexistent",
+   "TMPDIR": "/worker/tmp"
+  },
+  "filter": {
+   "architecture": "x86_64",
+   "clone": "CLONE_THREAD only",
+   "clone3": "ENOSYS",
+   "denied": [
+    "accept",
+    "accept4",
+    "add_key",
+    "bind",
+    "bpf",
+    "capset",
+    "chroot",
+    "connect",
+    "delete_module",
+    "execve",
+    "execveat",
+    "finit_module",
+    "fork",
+    "fsconfig",
+    "fsmount",
+    "fsopen",
+    "fspick",
+    "init_module",
+    "io_uring_enter",
+    "io_uring_register",
+    "io_uring_setup",
+    "kexec_file_load",
+    "kexec_load",
+    "keyctl",
+    "listen",
+    "mount",
+    "mount_setattr",
+    "move_mount",
+    "name_to_handle_at",
+    "open_by_handle_at",
+    "open_tree",
+    "perf_event_open",
+    "pidfd_getfd",
+    "pidfd_open",
+    "pidfd_send_signal",
+    "pivot_root",
+    "process_vm_readv",
+    "process_vm_writev",
+    "ptrace",
+    "request_key",
+    "setfsgid",
+    "setfsuid",
+    "setgid",
+    "setgroups",
+    "setns",
+    "setregid",
+    "setresgid",
+    "setresuid",
+    "setreuid",
+    "setuid",
+    "socket",
+    "umount2",
+    "unshare",
+    "userfaultfd",
+    "vfork"
+   ],
+   "socketpair": "AF_UNIX only"
+  },
+  "interpreter_flags": [
+   "-I",
+   "-S",
+   "-B"
+  ],
+  "limits": {
+   "core_bytes": 0,
+   "cpu_seconds": 1800,
+   "descriptors": 64,
+   "file_bytes": 16777216,
+   "memory_bytes": 1073741824,
+   "processes": 32
+  },
+  "mounts": {
+   "closure": "/worker/closure",
+   "payload": "/worker/payload"
+  },
+  "namespaces": [
+   "--unshare-net",
+   "--unshare-pid",
+   "--unshare-ipc",
+   "--unshare-uts",
+   "--die-with-parent",
+   "--new-session",
+   "--cap-drop",
+   "ALL"
+  ],
+  "timers": {
+   "CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS": "600000",
+   "CLAUDE_CODE_STREAM_CLOSE_TIMEOUT": "60000"
+  },
+  "tmpfs": {
+   "/worker/cwd": 1048576,
+   "/worker/home": 16777216,
+   "/worker/tmp": 16777216
+  }
+ }
+}

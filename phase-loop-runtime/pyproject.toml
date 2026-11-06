@@ -89,6 +89,10 @@ dependencies = [
 # every other command. Missing Pillow blocks the opt-in blocking gate;
 # warning mode intentionally stays silent without image decoding.
 visual = ["Pillow>=10,<13"]
+# SEATS CLAUDE SL-3: the `sdk` jailed-seat transport's host worker closure, exactly pinned
+# (plans/seats-claude-sdk-worker-contract.md). It installs the SDK as a test oracle only:
+# the worker runs from its own sealed, hash-verified install (`claude_seat_sdk seal`).
+claude-sdk = ["claude-agent-sdk==0.2.167", "markdown-it-py==4.2.0"]
 
 [dependency-groups]
 # Keep build aligned with hosted pytest and Dagger _base. Gate A's inner
@@ -171,6 +175,11 @@ phase_loop_runtime = [
     "conformance/_contract/**",
     # The pinned egress proxy of a jailed Gemini seat (agent-harness#1170).
     "seat_egress/*",
+    # The `sdk` transport's frozen launch fixture, worker closure export and manifests, and
+    # its worker payload (SEATS CLAUDE SL-3), read only through importlib.resources.
+    "data/claude_sdk/*.json",
+    "data/claude_sdk/*.txt",
+    "data/claude_sdk/worker/*.py",
 ]
 
 # TESTDECOUPLE SL-0: the dotfiles_integration marker. Integration-bucket tests
