@@ -1,9 +1,12 @@
 """model-routing-v1 P2 — panel-invoker (IF-0-P2-2). No live CLI calls."""
 import unittest
-from dataclasses import fields
+from contextlib import contextmanager
+from dataclasses import dataclass, field, fields
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import patch
+import hashlib
 import json
 import pytest
 
@@ -20,6 +23,126 @@ from phase_loop_runtime.panel_invoker import (
     invoke_panel_request,
     panel_leg_timeout_seconds,
 )
+
+
+def _install_firstseat_supplier_double(monkeypatch):
+    """Install only lane A's frozen constructors and observation verbs."""
+    from phase_loop_runtime import seat_jail_qualification as qualification
+
+    @dataclass(frozen=True, slots=True, kw_only=True)
+    class JailedStep:
+        exit_code: int | None
+        timed_out: bool
+        stdout: bytes = field(repr=False)
+
+    @dataclass(frozen=True, slots=True, kw_only=True)
+    class DeliveredCopy:
+        content: bytes = field(repr=False)
+        sha256: str = field(repr=False)
+
+    @dataclass(frozen=True, slots=True, kw_only=True)
+    class TracedPath:
+        location: str
+        relpath: str = field(repr=False)
+
+    @dataclass(frozen=True, slots=True, kw_only=True)
+    class LaunchBinding:
+        image_sha256: str
+        admission_class: str
+        stage_manifest_sha256: str
+        argv_sha256: str
+        input_sha256: str | None
+        jail_profile_sha256: str
+        allowlist_sha256: str
+
+    @dataclass(frozen=True, slots=True, kw_only=True)
+    class WindowLaunchResult:
+        kind: str
+        status: str
+        timed_out: bool
+        error: str | None
+        quiescent: bool
+        model_turn: bool | None
+        tool_steps: int | None
+        subagent_steps: int | None
+        stream: object | None
+        bridge_exited: bool | None
+        lookups: tuple | None
+        created: tuple | None
+        lookup_complete: bool | None
+        watch: object | None
+        scan: object | None
+        first_jailed_launch_ns: int | None
+        bracket: object | None
+        issuer: object | None
+        delivered_copy_sha256: str | None = field(default=None, repr=False)
+        help_sha256: str | None
+        help_lists_plugin: bool | None
+        plugin_validation: str | None
+        binding: object | None
+
+    @dataclass(frozen=True, slots=True, kw_only=True)
+    class BoardLegObservation:
+        watch: object | None
+        stream: object | None
+        input_sha256: str
+        binding: object | None
+
+    @dataclass(frozen=True, slots=True, kw_only=True)
+    class HostPathMap:
+        tree: Path = field(repr=False)
+        seat_home: Path = field(repr=False)
+        gemini_config: Path = field(repr=False)
+        agy_rw: Path = field(repr=False)
+        seat_out: Path = field(repr=False)
+        delivered_credential: Path | None = field(default=None, repr=False)
+
+    for name, value in {
+        "JailedStep": JailedStep,
+        "DeliveredCopy": DeliveredCopy,
+        "WindowLaunchResult": WindowLaunchResult,
+        "BoardLegObservation": BoardLegObservation,
+        "LaunchBinding": LaunchBinding,
+        "TracedPath": TracedPath,
+        "HostPathMap": HostPathMap,
+        "PlantLayoutRefused": type("PlantLayoutRefused", (ValueError,), {}),
+        "WatchUnavailable": type("WatchUnavailable", (RuntimeError,), {}),
+    }.items():
+        monkeypatch.setattr(qualification, name, value, raising=False)
+    return qualification
+
+
+def _window_session(events, *, delivered=b'{"token":{"access_token":"fixture","expiry":"2099-01-01T00:00:00+00:00"}}'):
+    class Session(SimpleNamespace):
+        def cleanup(self):
+            if not getattr(self, "cleaned", False):
+                events.append("cleanup")
+                self.cleaned = True
+
+    jail = SimpleNamespace(
+        env={"HOME": "/seat/home", "HTTPS_PROXY": "http://u:p@127.0.0.1:3128",
+             "SSL_CERT_FILE": "/seat/ca.pem", "DBUS_SESSION_BUS_ADDRESS": "drop"},
+        profile_digest="f" * 64,
+    )
+    seat = SimpleNamespace(
+        jail=jail, probe_jail=jail, holder_pid=71, seat_dir=Path("/host/seat"),
+        review_dir=Path("/host/review"), token=b"fixture", delivered_copy=delivered,
+        image_sha256="a" * 64, admission_class="fixture",
+        expires_at=None,
+    )
+    paths = SimpleNamespace(
+        tree=Path("/host/review/reviewed-tree"), seat_home=Path("/host/seat/seat-home"),
+        gemini_config=Path("/host/seat/gemini-config"),
+        agy_rw=Path("/host/seat/seat-home/.agy-rw"), seat_out=Path("/host/seat/seat-out"),
+        delivered_credential=Path("/host/seat/gemini-config/antigravity-cli/antigravity-oauth-token"),
+    )
+    return Session(
+        seat=seat, proxy=SimpleNamespace(allowlist_sha256="b" * 64),
+        prefix=("ns",), paths=paths,
+        authorization=SimpleNamespace(staged_tree_sha256="c" * 64),
+        quiescence_latch=SimpleNamespace(is_quiescent=lambda: True),
+        trace_path=None, cleaned=False,
+    )
 
 
 @pytest.mark.parametrize("vendor", ["claude", "gemini", "codex", "grok"])
@@ -321,6 +444,875 @@ def test_seats_firstseat_exec_record_board_storage(monkeypatch):
     result = pi._retain_panel_leg(pi.PanelLegResult("gemini", "OK", "AGREE"))
     assert result.status == "DEGRADED" and not result.text
     assert result.detail == "leg_exec_record_unavailable"
+
+
+def test_seats_firstseat_exec_record_window_jailed_run_exact_env(monkeypatch):
+    from phase_loop_runtime import panel_invoker as pi
+    qualification = _install_firstseat_supplier_double(monkeypatch)
+    session = _window_session([])
+    seen = {}
+
+    def run(command, **kwargs):
+        seen.update(command=command, kwargs=kwargs)
+        return SimpleNamespace(returncode=7, stdout="x" * 70000, stderr="")
+
+    monkeypatch.setattr(pi, "_run_leg_with_liveness", run)
+    done = pi._WindowJailedRun(session.seat, session.quiescence_latch)(
+        ["/usr/bin/fixture", "arg"], env={"PATH": "/usr/bin", "MARK": "ok"},
+        use_proxy=True, timeout_s=4.0,
+    )
+    assert isinstance(done, qualification.JailedStep)
+    assert done.exit_code == 7 and not done.timed_out and len(done.stdout) == 65536
+    assert seen["kwargs"]["cwd"] == pi._seat_jail.SEAT_TREE
+    command = seen["command"]
+    assert command[:4] == ["/usr/bin/python3", "-I", "-S", "-c"]
+    rendered = "\n".join(command)
+    assert "://" not in rendered and "u:p" not in rendered and "HTTPS_PROXY=" not in rendered
+    payload = seen["kwargs"]["input_text"]
+    got = {}
+    for item in payload.encode("utf-8").split(b"\0"):
+        if not item:
+            continue
+        key, value = item.split(b"=", 1)
+        got[key.decode()] = value.decode()
+    assert got == {
+        "HTTPS_PROXY": "http://u:p@127.0.0.1:3128",
+        "MARK": "ok",
+        "PATH": "/usr/bin",
+        "SSL_CERT_FILE": "/seat/ca.pem",
+    }
+    assert "HOME" not in got and "DBUS_SESSION_BUS_ADDRESS" not in got
+
+
+@pytest.mark.parametrize("bad_env", [
+    {"BAD\0NAME": "value"}, {"BAD=NAME": "value"}, {"NAME": "bad\0value"},
+    {"NAME": "\ud800"},
+])
+def test_seats_firstseat_exec_record_window_jailed_run_bad_env_fails_closed(
+    monkeypatch, bad_env,
+):
+    from phase_loop_runtime import panel_invoker as pi
+    qualification = _install_firstseat_supplier_double(monkeypatch)
+    session = _window_session([])
+    monkeypatch.setattr(
+        pi, "_run_leg_with_liveness", lambda *a, **k: pytest.fail("launched"),
+    )
+    done = pi._WindowJailedRun(session.seat, session.quiescence_latch)(
+        ["/usr/bin/fixture"], env=bad_env, use_proxy=False, timeout_s=4.0,
+    )
+    assert done == qualification.JailedStep(exit_code=None, timed_out=False, stdout=b"")
+
+
+def test_seats_firstseat_exec_record_window_expired_copy_changes_only_expiry():
+    from phase_loop_runtime import panel_invoker as pi
+    source = {
+        "account": "fixture", "token": {
+            "access_token": "not-a-live-token", "expiry": "2099-01-01T00:00:00+00:00",
+            "scope": "fixture-scope",
+        },
+    }
+    raw, expires_at = pi._window_expired_gemini_copy(json.dumps(source).encode())
+    expired = json.loads(raw)
+    assert expires_at < pi.time.time()
+    assert expired["token"].pop("expiry") != source["token"]["expiry"]
+    expected = json.loads(json.dumps(source))
+    expected["token"].pop("expiry")
+    assert expired == expected
+
+
+@pytest.mark.parametrize("kind,tree", [
+    ("tree_control", True),
+    ("credentialed_tree_control", True),
+    ("runtime_control", False),
+    ("credentialed_runtime_control", False),
+    ("measured", False),
+    ("expired_copy", False),
+])
+def test_seats_firstseat_exec_record_window_control_argv(kind, tree):
+    from phase_loop_runtime import panel_invoker as pi
+    command = pi._window_control_command(kind, "fixture-model")
+    production = pi._jailed_gemini_command("fixture-model")
+    if tree:
+        assert command[0] == "/usr/bin/env"
+        assert f"--chdir={pi._seat_jail.SEAT_TREE}" in command
+        assert command[-2:] == ["--add-dir", pi._seat_jail.SEAT_TREE]
+        assert command != production
+    else:
+        assert command == production
+        assert "--add-dir" not in command
+
+
+def test_seats_firstseat_exec_record_window_stream_facts_fail_closed():
+    from phase_loop_runtime import panel_invoker as pi
+    assert pi._window_stream_facts("") == ("NONE", None, None, None)
+    success = json.dumps({"event": "result", "result": {
+        "status": "SUCCESS", "response": "READY"}})
+    assert pi._window_stream_facts(success + "\nNOT JSON\n") == ("NONE", True, None, None)
+    partial = json.dumps({
+        "event": "step_update", "step_update": {"step_type": "agent_response"},
+    })
+    assert pi._window_stream_facts(partial) == ("NONE", True, None, None)
+    failure = json.dumps({"event": "result", "result": {"status": "FAILURE"}})
+    assert pi._window_stream_facts(failure) == ("FAILURE", False, 0, 0)
+
+
+def test_seats_firstseat_exec_record_window_tracer_is_path_only(tmp_path, monkeypatch):
+    from phase_loop_runtime import panel_invoker as pi
+    qualification = _install_firstseat_supplier_double(monkeypatch)
+    seat = tmp_path / "seat"
+    seat.mkdir()
+    parent = tmp_path / "window-trace"
+    parent.write_bytes(b"")
+    parent.chmod(0o600)
+    traced = pi._window_trace_argv(
+        str(parent), ("ns",), ["/seat/bin/gemini", "--model", "fixture"],
+    )
+    syscall_filter = traced[traced.index("-e") + 1]
+    assert traced[0] == "/usr/bin/strace" and "-DDD" in traced
+    assert "execve" not in syscall_filter
+    for banned in ("mount", "quotactl", "pivot_root", "chroot", "umount2"):
+        assert banned not in syscall_filter.split("trace=")[-1].split(",")
+    assert f"{pi._seat_jail.SEAT_OUT}/window-trace" not in traced
+    raw = "\n".join((
+        'openat(AT_FDCWD</seat/tree>, ".gemini/settings.json", O_RDONLY) = 3',
+        'mkdirat(AT_FDCWD</seat/home>, "created", 0700) = 0',
+        'statx(AT_FDCWD</outside>, "/outside/ignored", 0, 0, {}) = 0',
+    )).encode()
+    parent.write_bytes(raw)
+    session = _window_session([])
+    session.trace_path = parent
+    session.seat.seat_dir = seat
+    looked, created, complete = pi._read_window_trace(session, qualification)
+    assert complete
+    assert {(item.location, item.relpath) for item in looked} == {
+        ("tree", ".gemini/settings.json"), ("home", "created"),
+    }
+    assert {(item.location, item.relpath) for item in created} == {("home", "created")}
+    forged = seat / "seat-out"
+    forged.mkdir()
+    (forged / "window-trace").write_text(
+        'openat(AT_FDCWD</seat/tree>, "forged", O_RDONLY) = 3\n')
+    session.trace_path = forged / "window-trace"
+    assert pi._read_window_trace(session, qualification) == ((), (), False)
+    parent.write_bytes(raw + b"\nopenat(AT_FDCWD</seat/tree>, <unfinished ...>\n")
+    session.trace_path = parent
+    assert pi._read_window_trace(session, qualification)[2] is False
+
+
+def test_seats_firstseat_exec_record_window_launch_uses_fresh_seat_directory(
+    tmp_path, monkeypatch,
+):
+    from phase_loop_runtime import panel_invoker as pi
+
+    _install_firstseat_supplier_double(monkeypatch)
+    commit = "d" * 40
+    bases = iter((tmp_path / "launch-1", tmp_path / "launch-2"))
+    prepared = []
+
+    @dataclass(frozen=True, slots=True)
+    class Completed:
+        stdout: str
+
+    @dataclass(frozen=True, slots=True)
+    class Authorization:
+        staged_tree_sha256: str
+
+    @dataclass(frozen=True, slots=True)
+    class Proxy:
+        socket: str
+        allowlist_sha256: str
+
+    @dataclass(frozen=True, slots=True)
+    class Seat:
+        review_dir: Path
+        seat_dir: Path
+        notices: tuple = ()
+
+    def mkdtemp(*, prefix, dir):
+        assert prefix == "pl-window-launch-"
+        assert Path(dir) == tmp_path
+        base = next(bases)
+        base.mkdir()
+        return str(base)
+
+    def host_git(source, *args, **kwargs):
+        assert Path(source) == tmp_path
+        return Completed(stdout=commit + "\n")
+
+    def prepare_authorization(
+        board, artifact, *, mode, canonical_repo_authority, stage_review_tree,
+    ):
+        return Authorization(staged_tree_sha256="c" * 64)
+
+    def activate_authorization(
+        authorization, board, artifact, *, mode, canonical_repo_authority,
+    ):
+        return None
+
+    def close_authorization(authorization):
+        return None
+
+    def stage_review_tree(source, *, parent):
+        staged = Path(parent) / "staged"
+        staged.mkdir()
+        return staged
+
+    def staged_source_commit(tree):
+        return commit
+
+    @contextmanager
+    def lease_seat_id(count):
+        yield 2
+
+    @contextmanager
+    def start_proxy(*, refuse_all=False):
+        yield Proxy(socket="proxy.sock", allowlist_sha256="b" * 64)
+
+    @contextmanager
+    def isolated_network(
+        *, timeout_s, required, seat_uid_map, proxy_socket, proxy_port,
+    ):
+        yield ("namespace",)
+
+    def prepare_gemini(
+        review_dir, seat_dir, authorization, seat_id, holder_pid, prompt_parts, egress,
+        *, env=None, review_monitor=None, quiescence_latch=None, credential="live",
+    ):
+        prepared.append(Path(seat_dir))
+        return Seat(review_dir=Path(review_dir), seat_dir=Path(seat_dir))
+
+    monkeypatch.setattr(pi.tempfile, "mkdtemp", mkdtemp)
+    monkeypatch.setattr(pi._sandbox_policy, "staging_root", lambda: tmp_path)
+    monkeypatch.setattr(pi._review_stage, "host_git", host_git)
+    monkeypatch.setattr(pi, "prepare_review_isolation_authorization", prepare_authorization)
+    monkeypatch.setattr(pi, "activate_review_isolation_authorization", activate_authorization)
+    monkeypatch.setattr(pi, "close_review_isolation_authorization", close_authorization)
+    monkeypatch.setattr(pi._review_stage, "stage_review_tree", stage_review_tree)
+    monkeypatch.setattr(pi._review_stage, "staged_source_commit", staged_source_commit)
+    monkeypatch.setattr(pi._review_stage, "remove_review_stage", lambda path: None)
+    monkeypatch.setattr(pi._seat_uid, "subordinate_range", lambda path: (1, 2))
+    monkeypatch.setattr(pi._seat_uid, "seat_id_count", lambda uids, gids: 1)
+    monkeypatch.setattr(pi._seat_uid, "lease_seat_id", lease_seat_id)
+    monkeypatch.setattr(pi._seat_uid, "holder_pid_from_prefix", lambda prefix: 71)
+    monkeypatch.setattr(pi._seat_egress_proxy, "start_proxy", start_proxy)
+    monkeypatch.setattr(pi._sandbox_egress, "isolated_network", isolated_network)
+    monkeypatch.setattr(pi, "_prepare_jailed_gemini", prepare_gemini)
+    monkeypatch.setattr(pi, "_cleanup_jailed_seat", lambda seat: None)
+
+    spec = pi.WindowLaunchSpec(
+        kind="runtime_control",
+        qualification_input=SimpleNamespace(
+            repo=tmp_path, commit=commit, layout=SimpleNamespace(rows=()),
+        ),
+        model="fixture",
+        timeout_s=2.0,
+    )
+    with pi._open_window_launch(spec):
+        pass
+    with pi._open_window_launch(spec):
+        pass
+    assert prepared == [tmp_path / "launch-1" / "seat", tmp_path / "launch-2" / "seat"]
+    assert prepared[0].parent != prepared[1].parent
+
+
+def test_seats_firstseat_exec_record_window_board_uses_fresh_gemini_seat(
+    tmp_path, monkeypatch,
+):
+    from phase_loop_runtime import panel_invoker as pi
+    from phase_loop_runtime import sandbox_policy
+    from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
+
+    _install_firstseat_supplier_double(monkeypatch)
+    board_bases = iter((tmp_path / "board-1", tmp_path / "board-2"))
+    panel_bases = iter((tmp_path / "panel-1", tmp_path / "panel-2"))
+    board_allocations = []
+    panel_allocations = []
+    prepared_seats = []
+    invocation_errors = []
+
+    @dataclass(frozen=True, slots=True)
+    class Authorization:
+        staged_tree_sha256: str
+
+    @dataclass(frozen=True, slots=True)
+    class Route:
+        jailed: bool
+
+    @dataclass(frozen=True, slots=True)
+    class Proxy:
+        socket: str
+        allowlist_sha256: str
+
+    @dataclass(frozen=True, slots=True)
+    class Prepared:
+        review_dir: Path
+        local_tree: Path
+        snapshot_sha256: str
+        sandbox_ref: str
+
+    @dataclass(frozen=True, slots=True)
+    class Backend:
+        name: str = "local"
+
+        def commit(self, prepared, request):
+            return None
+
+        def release(self, prepared):
+            return None
+
+    @dataclass(frozen=True, slots=True)
+    class Placement:
+        backend: object
+        prepared: object
+        authorization_sha256: str
+
+        def record_backend_receipt(self, receipt):
+            return None
+
+    @dataclass(frozen=True, slots=True)
+    class Seat:
+        review_dir: Path
+        seat_dir: Path
+        notices: tuple = ()
+
+    class Broker:
+        def __init__(self, *args, **kwargs):
+            self.evidence = {}
+
+        def run_credentialless_client(self, adapter, *, deadline_s, cancel_event=None):
+            status, text = adapter.invoke()
+            return {
+                "schema": "parent_unix_broker_v1", "status": status, "text": text,
+            }, {"fake": True}
+
+        def close(self):
+            return None
+
+    authorization = Authorization(staged_tree_sha256="c" * 64)
+    backend = Backend()
+
+    def mkdtemp(*, prefix, dir):
+        assert Path(dir) == tmp_path
+        if prefix == "pl-window-board-":
+            path = next(board_bases)
+            board_allocations.append(path)
+        elif prefix == "pl-panel-":
+            path = next(panel_bases)
+            panel_allocations.append(path)
+        else:
+            raise AssertionError(prefix)
+        path.mkdir()
+        return str(path)
+
+    def prepare_local_stage(repo, review_dir, *, floor_bytes, mark):
+        tree = Path(review_dir) / pi._review_stage.REVIEW_STAGE_TREE_DIRNAME
+        git = tree / ".git"
+        git.mkdir(parents=True)
+        (git / "phase-loop-source-commit").write_text("d" * 40, encoding="utf-8")
+        return Prepared(
+            review_dir=Path(review_dir), local_tree=tree,
+            snapshot_sha256="c" * 64, sandbox_ref="local:fixture",
+        )
+
+    @contextmanager
+    def lease_seat_id(count):
+        yield 2
+
+    @contextmanager
+    def start_proxy(*, refuse_all=False):
+        yield Proxy(socket="proxy.sock", allowlist_sha256="b" * 64)
+
+    @contextmanager
+    def isolated_network(
+        *, timeout_s, seat_uid_map=False, required=False,
+        proxy_socket=None, proxy_port=None,
+    ):
+        yield ("namespace",)
+
+    def prepare_gemini(
+        review_dir, seat_dir, review_authorization, seat_id, holder_pid,
+        prompt_parts, egress, *, env=None, review_monitor=None,
+        quiescence_latch=None, credential="live",
+    ):
+        prepared_seats.append(Path(seat_dir))
+        return Seat(review_dir=Path(review_dir), seat_dir=Path(seat_dir))
+
+    def exec_gemini(
+        seat, *, deadline_s, model, prompt, broker_evidence,
+        egress_evidence=None, failure_detail_sink=None, quiescence_latch=None,
+        review_monitor=None, window_board=None, review_authorization=None,
+    ):
+        return "OK", "review\nAGREE"
+
+    report = SimpleNamespace(
+        board=DEFAULT_BOARD,
+        policy_outcome=lambda tier: SimpleNamespace(status="admitted"),
+    )
+    monkeypatch.setattr(
+        "phase_loop_runtime.advisor_board.composition.compose_review_board_report",
+        lambda: report,
+    )
+    monkeypatch.setattr(pi.tempfile, "mkdtemp", mkdtemp)
+    monkeypatch.setattr(pi._sandbox_policy, "staging_root", lambda: tmp_path)
+    monkeypatch.setattr(pi, "prepare_review_isolation_authorization", lambda *a, **k: authorization)
+    monkeypatch.setattr(pi, "close_review_isolation_authorization", lambda value: None)
+    monkeypatch.setattr(pi, "set_review_instruction_digest", lambda value: object())
+    monkeypatch.setattr(pi, "reset_review_instruction_digest", lambda token: None)
+    monkeypatch.setattr(
+        "phase_loop_runtime.president_adapter.build_president_invoke", lambda *a, **k: object(),
+    )
+    monkeypatch.setattr(pi, "_gc_stale_panel_scratch", lambda: None)
+    monkeypatch.setattr(pi, "_canonical_review_repo_authority", lambda path: tmp_path)
+    monkeypatch.setattr(pi, "_has_injected_review_execution_seam", lambda *, leg=None: False)
+    monkeypatch.setattr(pi, "_seat_route_for_spawn", lambda *a, **k: (Route(True), [], None))
+    monkeypatch.setattr(pi._sandbox_policy, "effective_floor_bytes", lambda path: 1)
+    monkeypatch.setattr(pi._sandbox_retention, "reap_until_free", lambda *a, **k: None)
+    monkeypatch.setattr(pi, "_refuse_unless_executed_remotely", lambda *a, **k: None)
+    monkeypatch.setattr(
+        pi._sandbox_policy, "select_sandbox_root",
+        lambda **kwargs: sandbox_policy.SandboxRootChoice(None, tmp_path, False),
+    )
+    monkeypatch.setattr(pi._sandbox_placement, "resolve_backend", lambda choice: backend)
+    monkeypatch.setattr(pi, "_placement_gate", lambda value: None)
+    monkeypatch.setattr(pi._sandbox_placement, "prepare_local_stage", prepare_local_stage)
+    monkeypatch.setattr(
+        pi._sandbox_placement, "LegPlacement",
+        lambda value, prepared, *, scheme, authorization_sha256: Placement(
+            value, prepared, authorization_sha256,
+        ),
+    )
+    monkeypatch.setattr(pi, "_record_sandbox_facts", lambda *a, **k: None)
+    monkeypatch.setattr(pi._advisor_board_backing, "_revalidate_staged_tree", lambda *a, **k: None)
+    monkeypatch.setattr(pi, "revalidate_review_isolation_authorization", lambda *a, **k: None)
+    monkeypatch.setattr(pi._seat_uid, "subordinate_range", lambda path: (1, 2))
+    monkeypatch.setattr(pi._seat_uid, "seat_id_count", lambda uids, gids: 1)
+    monkeypatch.setattr(pi._seat_uid, "lease_seat_id", lease_seat_id)
+    monkeypatch.setattr(pi._seat_uid, "holder_pid_from_prefix", lambda prefix: 71)
+    monkeypatch.setattr(pi._seat_egress_proxy, "start_proxy", start_proxy)
+    monkeypatch.setattr(pi._seat_egress_proxy, "egress_evidence", lambda proxy: {})
+    monkeypatch.setattr(pi._sandbox_egress, "isolated_network", isolated_network)
+    monkeypatch.setattr(pi._sandbox_egress, "egress_required", lambda: False)
+    monkeypatch.setattr(pi._sandbox_egress, "enforcement_report", lambda *, applied: {})
+    monkeypatch.setattr(pi, "harden_subscription_model", lambda leg, model, effort=None: model)
+    monkeypatch.setattr(
+        pi, "derive_review_leg_authorization",
+        lambda *a, **k: SimpleNamespace(expires_monotonic_ns=10**30),
+    )
+    monkeypatch.setattr(pi, "ParentUnixBroker", Broker)
+    monkeypatch.setattr(pi, "_render_broker_pointer_prompt", lambda *a, **k: "frame")
+    monkeypatch.setattr(pi, "_prepare_jailed_gemini", prepare_gemini)
+    monkeypatch.setattr(pi, "_exec_jailed_gemini_leg", exec_gemini)
+    monkeypatch.setattr(pi._review_stage, "remove_review_stage", lambda path: None)
+    classify_exception = pi._exception_failure
+
+    def capture_exception(exc):
+        invocation_errors.append(repr(exc))
+        return classify_exception(exc)
+
+    monkeypatch.setattr(pi, "_exception_failure", capture_exception)
+
+    receipt = "e" * 64
+
+    def invoke(board, artifact, **kwargs):
+        try:
+            spawned = pi._default_spawn(
+                "gemini", artifact, repo_dir=tmp_path, mode="review", model="fixture",
+                review_authorization=kwargs["review_authorization"],
+                canonical_repo_authority=tmp_path,
+            )
+            assert spawned[:2] == ("OK", "review\nAGREE"), tuple(spawned)
+        except BaseException as exc:
+            invocation_errors.append(repr(exc))
+            raise
+        run = pi._registered_window_board(kwargs["review_authorization"])
+        run.watch = SimpleNamespace(read_marker_opened=True)
+        run.stream = SimpleNamespace(final=True)
+        run.binding = SimpleNamespace(image_sha256="a" * 64)
+        run.tool_steps = 1
+        legs = []
+        for seat in board.seats:
+            leg = pi.PanelLegResult(
+                seat.harness, "OK", "review\nAGREE", seat_key=seat.seat_key,
+            )
+            object.__setattr__(leg, "_leg_exec_metadata", {"record_digest": receipt})
+            legs.append(leg)
+        return pi.PanelResult(tuple(legs), president=SimpleNamespace())
+
+    monkeypatch.setattr(pi, "invoke_board", invoke)
+    spec = pi.WindowBoardSpec(
+        qualification_input=SimpleNamespace(repo=tmp_path, layout=SimpleNamespace()),
+        monitoring_policy="bounded",
+    )
+    first = pi.window_board_launch(spec)
+    second = pi.window_board_launch(spec)
+    assert not invocation_errors
+    assert first.canonical_gemini and second.canonical_gemini
+    assert board_allocations == [tmp_path / "board-1", tmp_path / "board-2"]
+    assert panel_allocations == [tmp_path / "panel-1", tmp_path / "panel-2"]
+    assert prepared_seats == [
+        tmp_path / "panel-1" / "seat", tmp_path / "panel-2" / "seat",
+    ]
+    assert prepared_seats[0].parent != prepared_seats[1].parent
+
+
+@pytest.mark.parametrize(
+    "kind,seeded,credential,bracketed",
+    [
+        ("tree_control", False, False, False),
+        ("credentialed_tree_control", False, True, False),
+        ("runtime_control", True, False, False),
+        ("credentialed_runtime_control", True, True, False),
+        ("measured", False, True, True),
+        ("expired_copy", False, True, False),
+    ],
+)
+def test_seats_firstseat_exec_record_window_launch_order(
+    tmp_path, monkeypatch, kind, seeded, credential, bracketed,
+):
+    from phase_loop_runtime import panel_invoker as pi
+    qualification = _install_firstseat_supplier_double(monkeypatch)
+    events = []
+    session = _window_session(events)
+
+    @contextmanager
+    def opened(spec):
+        events.append("open")
+        try:
+            yield session
+        finally:
+            events.append("proxy_exit")
+
+    class Watch:
+        def prove_sentinel(self, run):
+            events.append("sentinel")
+            return True
+        def drain_and_close(self, *, quiescent):
+            events.append("watch_close")
+            return SimpleNamespace(read_marker_opened=kind == "measured")
+
+    def fence(proxy, marker, window):
+        events.append(f"fence:{marker}:{window}")
+        return SimpleNamespace(acknowledged=True, acked_ns=1, fence_id=marker)
+
+    def process(*args, **kwargs):
+        events.append("provider")
+        raw = "\n".join((
+            json.dumps({"event": "init", "conversation_id": "c"}),
+            json.dumps({"event": "result", "conversation_id": "c", "result": {
+                "conversation_id": "c", "status": "SUCCESS", "response": "READY"}}),
+        ))
+        return pi._WindowProcess(0, False, raw)
+
+    monkeypatch.setattr(pi, "_open_window_launch", opened)
+    monkeypatch.setattr(pi, "_run_window_process", process)
+    monkeypatch.setattr(pi, "_read_window_trace", lambda *a: ((), (), True))
+    monkeypatch.setattr(pi, "_hold_window_fence_gap", lambda ns: events.append("quiet"))
+    monkeypatch.setattr(pi._seat_egress_proxy, "fence", fence, raising=False)
+    monkeypatch.setattr(pi._seat_egress_proxy, "proxy_stream",
+        lambda proxy: events.append("stream") or SimpleNamespace(final=True), raising=False)
+    monkeypatch.setattr(pi._sandbox_egress, "wait_bridge_exit",
+        lambda prefix: events.append("bridge") or True, raising=False)
+    def seed_runtime_plants(layout, paths):
+        events.append("seed")
+
+    def arm_watch(layout, paths, *, kind):
+        events.append("arm")
+        return Watch()
+
+    monkeypatch.setattr(
+        qualification, "seed_runtime_plants", seed_runtime_plants, raising=False,
+    )
+    monkeypatch.setattr(qualification, "arm_watch", arm_watch, raising=False)
+    monkeypatch.setattr(qualification, "measure_issuer",
+        lambda delivered: events.append("issuer") or SimpleNamespace(outcome="pass"), raising=False)
+    def scan(holder_pid, seat_root, layout, paths, *, delivered):
+        events.append("scan:credential" if delivered is not None else "scan:none")
+        return SimpleNamespace(scan_complete=True)
+    monkeypatch.setattr(qualification, "scan_seat", scan, raising=False)
+    monkeypatch.setattr(qualification, "run_bracket",
+        lambda proxy, run: events.append("bracket") or SimpleNamespace(), raising=False)
+    monkeypatch.setattr(pi, "_broker_gemini_stream_protocol",
+        lambda *a, **k: SimpleNamespace(transport="input"))
+    monkeypatch.setattr(pi, "_render_broker_pointer_prompt", lambda *a, **k: "frame")
+
+    spec = pi.WindowLaunchSpec(
+        kind=kind, qualification_input=SimpleNamespace(
+            layout=SimpleNamespace(rows=()), commit="d" * 40, repo=tmp_path,
+        ), model="fixture", timeout_s=12.0,
+    )
+    result = pi.window_control_launch(spec)
+    assert result.status == "SUCCESS" and result.error is None
+    assert ("seed" in events) is seeded
+    assert ("scan:credential" in events) is credential
+    assert ("bracket" in events) is bracketed
+    assert events.index("arm") < events.index("sentinel") < events.index("fence:start:leg")
+    if kind == "measured":
+        assert events.index("issuer") < events.index("provider")
+    assert events.index("provider") < events.index("bridge") < events.index("fence:end:leg")
+    assert events.index("fence:end:leg") < events.index("watch_close")
+    scans = [i for i, item in enumerate(events) if item.startswith("scan:")]
+    assert bool(scans) is credential
+    if credential:
+        assert events.index("watch_close") < min(scans)
+    if bracketed:
+        assert events.index("scan:credential") < events.index("bracket") < events.index("cleanup")
+    assert events.index("cleanup") < events.index("proxy_exit") < events.index("stream")
+
+
+@pytest.mark.parametrize("failed,expected", [("bridge", "bridge_wait_timeout"), ("end", "fence_unacknowledged")])
+def test_seats_firstseat_exec_record_window_failed_end_still_reads(
+    tmp_path, monkeypatch, failed, expected,
+):
+    from phase_loop_runtime import panel_invoker as pi
+    qualification = _install_firstseat_supplier_double(monkeypatch)
+    events = []
+    session = _window_session(events)
+
+    @contextmanager
+    def opened(spec):
+        yield session
+
+    class Watch:
+        def prove_sentinel(self, run): return True
+        def drain_and_close(self, *, quiescent):
+            events.append("watch_close")
+            return SimpleNamespace(read_marker_opened=True)
+
+    def fence(proxy, marker, window):
+        events.append(marker)
+        return SimpleNamespace(acknowledged=not (failed == "end" and marker == "end"),
+                               acked_ns=1, fence_id=marker)
+
+    monkeypatch.setattr(pi, "_open_window_launch", opened)
+    monkeypatch.setattr(pi, "_run_window_process", lambda *a, **k: pi._WindowProcess(
+        0, False, json.dumps({"event": "result", "result": {
+            "status": "SUCCESS", "response": "marker"}})))
+    monkeypatch.setattr(pi._seat_egress_proxy, "fence", fence, raising=False)
+    monkeypatch.setattr(pi._seat_egress_proxy, "proxy_stream",
+        lambda p: SimpleNamespace(final=True), raising=False)
+    monkeypatch.setattr(pi._sandbox_egress, "wait_bridge_exit",
+        lambda p: events.append("bridge") or failed != "bridge", raising=False)
+    def arm_watch(layout, paths, *, kind):
+        return Watch()
+
+    def scan_seat(holder_pid, seat_root, layout, paths, *, delivered):
+        events.append("scan")
+        return SimpleNamespace()
+
+    def measure_issuer(delivered):
+        return SimpleNamespace()
+
+    def run_bracket(proxy, run):
+        events.append("bracket")
+        return SimpleNamespace()
+
+    monkeypatch.setattr(qualification, "arm_watch", arm_watch, raising=False)
+    monkeypatch.setattr(qualification, "scan_seat", scan_seat, raising=False)
+    monkeypatch.setattr(qualification, "measure_issuer", measure_issuer, raising=False)
+    monkeypatch.setattr(qualification, "run_bracket", run_bracket, raising=False)
+    monkeypatch.setattr(pi, "_broker_gemini_stream_protocol",
+        lambda *a, **k: SimpleNamespace(transport="input"))
+    monkeypatch.setattr(pi, "_render_broker_pointer_prompt", lambda *a, **k: "frame")
+    result = pi.window_control_launch(pi.WindowLaunchSpec(
+        kind="measured", qualification_input=SimpleNamespace(
+            layout=SimpleNamespace(rows=()), commit="d" * 40, repo=tmp_path),
+        model="fixture", timeout_s=2,
+    ))
+    assert result.error == expected
+    assert "watch_close" in events and "scan" in events and "bracket" not in events
+    assert ("end" in events) is (failed == "end")
+
+
+def test_seats_firstseat_exec_record_window_help_and_plugin(tmp_path, monkeypatch):
+    from phase_loop_runtime import panel_invoker as pi
+    qualification = _install_firstseat_supplier_double(monkeypatch)
+    outputs = ["usage: gemini plugin\n", json.dumps({
+        "findings": [], "counts": {"hooks": 1, "mcpServers": 1, "rules": 1, "skills": 1},
+    })]
+    monkeypatch.setattr(pi, "_window_plugin_copies", lambda *a: ("/seat/out/p",))
+    monkeypatch.setattr(pi, "_run_window_process",
+        lambda *a, **k: pi._WindowProcess(0, False, outputs.pop(0)))
+    monkeypatch.setattr(pi._sandbox_egress, "wait_bridge_exit", lambda p: True, raising=False)
+
+    def fence(proxy, marker, window):
+        return SimpleNamespace(acknowledged=True, acked_ns=1, fence_id="f")
+
+    class Watch:
+        def prove_sentinel(self, run):
+            return True
+
+        def drain_and_close(self, *, quiescent):
+            return SimpleNamespace(read_marker_opened=False)
+
+    def arm_watch(layout, paths, *, kind):
+        return Watch()
+
+    def scan_seat(holder_pid, seat_root, layout, paths, *, delivered):
+        return SimpleNamespace()
+
+    monkeypatch.setattr(pi._seat_egress_proxy, "fence", fence, raising=False)
+    monkeypatch.setattr(pi._seat_egress_proxy, "proxy_stream", lambda p: SimpleNamespace(final=True), raising=False)
+    monkeypatch.setattr(qualification, "arm_watch", arm_watch, raising=False)
+    monkeypatch.setattr(qualification, "scan_seat", scan_seat, raising=False)
+    for kind in ("help", "plugin_validation"):
+        session = _window_session([])
+        @contextmanager
+        def opened(spec, session=session):
+            yield session
+        monkeypatch.setattr(pi, "_open_window_launch", opened)
+        result = pi.window_control_launch(pi.WindowLaunchSpec(
+            kind=kind, qualification_input=SimpleNamespace(
+                layout=SimpleNamespace(rows=()), commit="d" * 40, repo=tmp_path),
+            model="fixture", timeout_s=2,
+        ))
+        assert result.status == "SUCCESS"
+        if kind == "help":
+            assert result.help_lists_plugin is True
+            assert result.help_sha256 == hashlib.sha256(b"usage: gemini plugin\n").hexdigest()
+        else:
+            assert result.plugin_validation == "valid"
+
+
+def test_seats_firstseat_exec_record_window_board_frame_is_opt_in():
+    from phase_loop_runtime import panel_invoker as pi
+    jail = pi._seat_jail
+    normal = pi._broker_review_jail_preamble(model_only_network=True)
+    assert normal == pi._broker_review_jail_preamble(
+        model_only_network=True, qualification_board=False)
+    assert normal.startswith(
+        "You are a reviewer with a private sandbox. Produce exactly one report.\n")
+    assert f"DISPOSABLE CLONE at {jail.SEAT_TREE}" in normal
+    assert f"read-only file {jail.SEAT_BUNDLE}" in normal
+    assert "window-read.txt" not in normal
+    plain = pi._broker_review_jail_preamble(model_only_network=False)
+    assert "There is no network beyond your own model" not in plain
+    assert "You MAY run commands and read and write files inside that clone" in plain
+    qualified = pi._broker_review_jail_preamble(
+        model_only_network=True, qualification_board=True)
+    assert qualified != normal
+    assert f"{jail.SEAT_TREE}/window-read.txt" in qualified
+    assert "DISPOSABLE CLONE" not in qualified
+    assert "review-bundle.md" not in qualified
+    tooled = json.loads(pi._broker_gemini_stream_protocol(
+        "frame", tooled=True, qualification_board=False).transport)
+    tooled_body = tooled["message"]["content"]
+    assert (
+        f"Review with your tools: read {jail.SEAT_BUNDLE} in full and the code at "
+        f"{jail.SEAT_TREE}, and run commands there to check claims."
+    ) in tooled_body
+    assert "window-read.txt" not in tooled_body
+    board = json.loads(pi._broker_gemini_stream_protocol(
+        "frame", tooled=True, qualification_board=True).transport)
+    board_body = board["message"]["content"]
+    assert f"{jail.SEAT_TREE}/window-read.txt" in board_body
+    assert f"read {jail.SEAT_BUNDLE} in full" not in board_body
+    untouched = json.loads(pi._broker_gemini_stream_protocol(
+        "frame", tooled=False).transport)
+    untouched_body = untouched["message"]["content"]
+    assert "Do not use or request tools, commands, files, network, browser, MCP" in untouched_body
+    assert "window-read.txt" not in untouched_body
+
+
+def test_seats_firstseat_exec_record_window_board_hooks_real_gemini_leg(monkeypatch):
+    from phase_loop_runtime import panel_invoker as pi
+    events = []
+    session = _window_session(events)
+    observer = SimpleNamespace(proxy=object(), tool_steps=None)
+    observer.start = lambda *a: events.append("watch_start") or True
+    observer.finish = lambda *a: events.append("watch_finish")
+    monkeypatch.setattr(pi, "_record_broker_provider_evidence", lambda *a, **k: None)
+    monkeypatch.setattr(pi, "_record_executable_dependency_evidence", lambda *a, **k: None)
+    monkeypatch.setattr(pi, "_cleanup_jailed_seat", lambda *a, **k: events.append("cleanup"))
+    monkeypatch.setattr(pi, "_note_exec_result", lambda *a, **k: None)
+    monkeypatch.setattr(pi, "_broker_gemini_stream_protocol",
+        lambda *a, **k: events.append(f"qualify:{k.get('qualification_board')}")
+        or SimpleNamespace(transport="input", protocol="fixture", chunk_sha256=(),
+                           chunk_bytes=(), final_event_sha256="f" * 64))
+    monkeypatch.setattr(pi, "_run_leg_with_liveness",
+        lambda *a, **k: events.append("provider")
+        or SimpleNamespace(returncode=0, stdout="stream", stderr=""))
+    monkeypatch.setattr(pi, "_broker_gemini_stream_result",
+        lambda *a, **k: (0, "review\nAGREE", "", {"provider_stream_tool_steps": 1}))
+    monkeypatch.setattr(pi, "_classify_leg", lambda *a: "OK")
+    result = pi._exec_jailed_gemini_leg(
+        session.seat, deadline_s=3, model="fixture", prompt="frame",
+        broker_evidence=None, quiescence_latch=session.quiescence_latch,
+        window_board=observer,
+        review_authorization=SimpleNamespace(staged_tree_sha256="c" * 64),
+    )
+    assert result == ("OK", "review\nAGREE") and observer.tool_steps == 1
+    assert events == [
+        "qualify:True", "watch_start", "provider", "watch_finish", "cleanup",
+    ]
+
+
+def test_seats_firstseat_exec_record_window_board_launch(tmp_path, monkeypatch):
+    from phase_loop_runtime import panel_invoker as pi
+    from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
+    qualification = _install_firstseat_supplier_double(monkeypatch)
+    report = SimpleNamespace(
+        board=DEFAULT_BOARD,
+        policy_outcome=lambda tier: SimpleNamespace(status="admitted"),
+    )
+    monkeypatch.setattr(
+        "phase_loop_runtime.advisor_board.composition.compose_review_board_report",
+        lambda: report,
+    )
+    authorization = SimpleNamespace(staged_tree_sha256="c" * 64)
+    monkeypatch.setattr(pi, "prepare_review_isolation_authorization", lambda *a, **k: authorization)
+    monkeypatch.setattr(pi, "set_review_instruction_digest", lambda value: object())
+    monkeypatch.setattr(pi, "reset_review_instruction_digest", lambda token: None)
+    monkeypatch.setattr(
+        "phase_loop_runtime.president_adapter.build_president_invoke", lambda *a, **k: object())
+    monkeypatch.setattr(pi._sandbox_policy, "staging_root", lambda: tmp_path)
+    receipt = "e" * 64
+
+    def invoke(board, artifact, **kwargs):
+        run = pi._registered_window_board(kwargs["review_authorization"])
+        run.watch = SimpleNamespace(read_marker_opened=True)
+        run.stream = SimpleNamespace(final=True)
+        run.binding = SimpleNamespace(image_sha256="a" * 64)
+        run.tool_steps = 1
+        legs = []
+        for seat in board.seats:
+            leg = pi.PanelLegResult(seat.harness, "OK", "review\nAGREE", seat_key=seat.seat_key)
+            object.__setattr__(leg, "_leg_exec_metadata", {"record_digest": receipt})
+            legs.append(leg)
+        return pi.PanelResult(tuple(legs), president=SimpleNamespace())
+
+    monkeypatch.setattr(pi, "invoke_board", invoke)
+    result = pi.window_board_launch(pi.WindowBoardSpec(
+        qualification_input=SimpleNamespace(repo=tmp_path, layout=SimpleNamespace()),
+        monitoring_policy="bounded",
+    ))
+    assert isinstance(result, pi.WindowBoardResult)
+    assert result.composition == "admitted" and result.board_outcome == "terminated"
+    assert result.canonical_gemini and result.staged_read
+    assert result.exec_record_sha256 == receipt
+    with pytest.raises(TypeError):
+        result.leg_exec_records["gemini"] = None
+    assert result.gemini.watch.read_marker_opened and result.gemini.stream.final
+    assert result.gemini.input_sha256 == hashlib.sha256(pi._WINDOW_BOARD_INPUT.encode()).hexdigest()
+
+
+def test_seats_firstseat_exec_record_window_board_refusal(tmp_path, monkeypatch):
+    from phase_loop_runtime import panel_invoker as pi
+    _install_firstseat_supplier_double(monkeypatch)
+    report = SimpleNamespace(
+        board=None,
+        policy_outcome=lambda tier: SimpleNamespace(status="policy_refused"),
+    )
+    monkeypatch.setattr(
+        "phase_loop_runtime.advisor_board.composition.compose_review_board_report",
+        lambda: report,
+    )
+    monkeypatch.setattr(pi, "invoke_board", lambda *a, **k: pytest.fail("launched"))
+    result = pi.window_board_launch(pi.WindowBoardSpec(
+        qualification_input=SimpleNamespace(repo=tmp_path, layout=SimpleNamespace()),
+        monitoring_policy="bounded",
+    ))
+    assert result.composition == "refused" and result.board_outcome == "not_terminated"
+    assert result.gemini.watch is None and result.gemini.stream is None
 
 
 

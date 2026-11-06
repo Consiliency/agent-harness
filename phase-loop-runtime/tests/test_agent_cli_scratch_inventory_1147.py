@@ -262,7 +262,7 @@ LAUNCH_COUNTS: dict[tuple[str, str], int] = {
     ('agy_canary_evidence.py', '_bootstrap_attest_opened'): 2,
     ('agy_canary_evidence.py', 'probe_capability'): 3,
     # agent-harness#1132: the jailed seat's launch beside every other provider launch.
-    ('panel_invoker.py', 'launch_provider'): 2,
+    ('panel_invoker.py', 'launch_provider'): 3,
     # The timed holder (unshare) and its slirp4netns, the rules install and the name check
     # (nsenter). The long-lived holders and their slirp4netns, the seat-uid-mapped pair of
     # agent-harness#1132 included, go through `launch_provider` under
