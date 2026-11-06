@@ -190,6 +190,12 @@ INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
         NOT_AGENT, "dynamic import of a roadmap-declared module to read a value"),
     ("skill_inventory.py", "_iter_skill_source_roots_cached"): (
         NOT_AGENT, "dynamic import of a skill-bundle package to locate its files"),
+    ("claude_seat_transport.py", "_panel_invoker"): (
+        NOT_AGENT, "imports the in-package panel invoker; launches remain at its inventoried "
+                   "provider interface"),
+    ("claude_seat_transport.py", "transport_module"): (
+        NOT_AGENT, "imports only the statically mapped in-package transport after checking "
+                   "its admission literals"),
     ("publishing.py", "_source_path_evidence"): (
         NOT_AGENT, "compile() of a parsed AST to validate publication source; never executed"),
     ("observability.py", "run_notification_command"): (

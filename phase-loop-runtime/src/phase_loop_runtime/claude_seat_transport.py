@@ -92,6 +92,11 @@ SECURITY = "security"
 ORDINARY = "ordinary"
 OD10_CLASSES = (SECURITY, ORDINARY)
 
+_SDK_CLOSURE_FIX = (
+    "rebuild the closure with `python -m phase_loop_runtime.claude_seat_sdk "
+    "build-closure`, supply its authority digest, then re-run; report the outcome "
+    "privately")
+
 CODES: Mapping[str, tuple[str, str, str, str]] = {
     "claude_seat_token_in_output": (
         SECURITY, "leg rejected", "seat tried to publish its credential", "revoke the token"),
@@ -103,9 +108,7 @@ CODES: Mapping[str, tuple[str, str, str, str]] = {
     "claude_sdk_closure_refused": (
         SECURITY, "leg refused",
         "the sdk transport's projected closure did not verify against its declared authority",
-        "rebuild the closure with `python -m phase_loop_runtime.claude_seat_sdk "
-        "build-closure`, supply its authority digest, then re-run; report the outcome "
-        "privately"),
+        _SDK_CLOSURE_FIX),
     "claude_seat_login_unproven": (
         ORDINARY, "leg refused",
         "the seat's login is not a proven subscription login on the credential it would use",
