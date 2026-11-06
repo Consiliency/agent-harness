@@ -44,6 +44,7 @@ from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
 
 from . import claude_seat_transport as _transport
+from . import seat_uid as _seat_uid
 
 EVIDENCE_DIR = "plans/evidence/seat-qualification/claude-w0"
 RECORD_FORMAT = "claude-bakeoff-record.v1"
@@ -1254,8 +1255,9 @@ class NativeExpectation:
 
 def board_command(artifact_copy: Path) -> list[str]:
     """The board of this W0 tree's own runtime (the checkout is checked to be the W0 head)."""
-    return [sys.executable, "-m", "phase_loop_runtime.cli", "advisor-board", str(artifact_copy),
-            "--json", "--monitoring-policy", "bounded", "--pointer-brief"]
+    return _seat_uid.trusted_module_argv(
+        "phase_loop_runtime.cli", "advisor-board", str(artifact_copy),
+        "--json", "--monitoring-policy", "bounded", "--pointer-brief")
 
 
 _OBSERVATION_CAP = 1 << 20

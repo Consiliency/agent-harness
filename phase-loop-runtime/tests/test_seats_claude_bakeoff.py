@@ -20,6 +20,7 @@ import pytest
 
 from phase_loop_runtime import claude_bakeoff as bk
 from phase_loop_runtime import claude_seat_transport as ct
+from phase_loop_runtime import seat_uid
 
 TOKEN = b"fake-w0-credential-" + b"q" * 32
 TUI = "a" * 64
@@ -1198,8 +1199,6 @@ def test_a_board_that_ran_another_lineup_stops_the_window():
 def test_the_runner_launches_this_trees_board_from_the_w0_checkout(repo, tmp_path):
     """Through run_native: the command, cwd, selector and observation channel are bound; the
     fake board writes its observation through the transport module's real writer."""
-    import sys
-
     seen: dict = {}
 
     def board(command, *, cwd, env, timeout_s, pass_fds):
@@ -1237,8 +1236,10 @@ def test_the_runner_launches_this_trees_board_from_the_w0_checkout(repo, tmp_pat
     outcome = bk.run_native("print", repo=repo, artifact_copy=private / "bundle.md",
                             observations=private / "observations.jsonl",
                             expected=_expected(), timeout_s=1800, runner=board)
-    assert seen["command"][:4] == [sys.executable, "-m", "phase_loop_runtime.cli", "advisor-board"]
-    assert seen["command"][4] == str(private / "bundle.md") and "--landing-tier" not in seen["command"]
+    assert seen["command"] == seat_uid.trusted_module_argv(
+        "phase_loop_runtime.cli", "advisor-board", str(private / "bundle.md"),
+        "--json", "--monitoring-policy", "bounded", "--pointer-brief")
+    assert "--landing-tier" not in seen["command"]
     assert seen["cwd"] == repo and seen["timeout_s"] == 1800
     assert seen["env"][ct.ROUTE_ENV] == "print"
     assert seen["pass_fds"] == (int(seen["env"][ct.W0_OBSERVATION_ENV]),)
