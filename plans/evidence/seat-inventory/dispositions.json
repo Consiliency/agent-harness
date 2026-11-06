@@ -1,0 +1,102 @@
+{
+  "roadmap_sha256": "1c9e2d40089c5f70b23ff6233ad06da3d8edcd69e643681bdc342e76298ca0c0",
+  "comments": [],
+  "closures": [],
+  "pi_issue_number": null,
+  "pi_issue_url": null,
+  "retirement_reviewed": false,
+  "pending_actions": [
+    {
+      "action": "disposition_comment",
+      "number": 1740,
+      "owner_ec": "EC-INVENTORY-3",
+      "body_sha256": "1ba2b956b58f34a4c90618adc1084b70a93476678a0331bee1aeda867c9024d6",
+      "status": "pending"
+    },
+    {
+      "action": "owner_closure",
+      "number": 1740,
+      "owner_ec": "EC-CLAUDE-2",
+      "status": "pending"
+    },
+    {
+      "action": "disposition_comment",
+      "number": 1744,
+      "owner_ec": "EC-INVENTORY-3",
+      "body_sha256": "d10c36b79823de1be1807bdadcb4e49ed17ec62bb2cbc82cc657719e86a5e893",
+      "status": "pending"
+    },
+    {
+      "action": "owner_closure",
+      "number": 1744,
+      "owner_ec": "EC-CLAUDE-3",
+      "status": "pending"
+    },
+    {
+      "action": "disposition_comment",
+      "number": 1641,
+      "owner_ec": "EC-INVENTORY-3",
+      "body_sha256": "8e92aeeaf5c4e60889be4aff469ef9ab152e2bb302b21e8d2b72b9c4d9c35ac2",
+      "status": "pending"
+    },
+    {
+      "action": "owner_closure",
+      "number": 1641,
+      "owner_ec": "EC-CLAUDETUI-1",
+      "status": "pending"
+    },
+    {
+      "action": "disposition_comment",
+      "number": 1623,
+      "owner_ec": "EC-INVENTORY-3",
+      "body_sha256": "3bf772ef9542417c5b8ffd7f6d195a8f4b58863cc748e3107c75169ee60d75ef",
+      "status": "pending"
+    },
+    {
+      "action": "owner_closure",
+      "number": 1623,
+      "owner_ec": "EC-CLAUDETUI-1",
+      "status": "pending"
+    },
+    {
+      "action": "disposition_comment",
+      "number": 1644,
+      "owner_ec": "EC-INVENTORY-3",
+      "body_sha256": "ea9c1dd960064a41b8a5c297904f1850064e232d514cda65c53e5e725cbd1f40",
+      "status": "pending"
+    },
+    {
+      "action": "phase_closure",
+      "number": 1644,
+      "owner_ec": "EC-INVENTORY-3",
+      "status": "pending"
+    },
+    {
+      "action": "disposition_comment",
+      "number": 1731,
+      "owner_ec": "EC-INVENTORY-3",
+      "body_sha256": "2f7d4e546e1fe52aafe19b520689d6d629cb917b16b4be4ede9a94829f1084db",
+      "status": "pending"
+    },
+    {
+      "action": "phase_closure",
+      "number": 1731,
+      "owner_ec": "EC-INVENTORY-3",
+      "status": "pending"
+    },
+    {
+      "action": "file_issue",
+      "number": null,
+      "owner_ec": "EC-INVENTORY-4",
+      "body_sha256": "3dfa7f9f2f1636b75e4a7b4816df9c7853f9dbc55e2c33e842e877fd6c4c1418",
+      "status": "pending"
+    },
+    {
+      "action": "retirement_comment",
+      "number": 896,
+      "owner_ec": "EC-INVENTORY-6",
+      "body_sha256": "a53b8f88cbbba1c6ace7074d8b0b9199b5469f76d6acc13e7a575324a9432aa8",
+      "status": "pending"
+    }
+  ]
+}

@@ -1,5 +1,7 @@
 # Proposal: review-seat sandbox roadmap phases
 
+> This proposal is superseded by specs/phase-plans-seats-v1.md.
+
 > **Status (2026-10-14): stale as written.** `specs/phase-plans-v10.md` has since been
 > resealed and is now `superseded` by `specs/phase-plans-v11.md`, and v10 Phases 14–16 are
 > taken. The pinned digest, the verification recipe and the promotion rule below therefore
