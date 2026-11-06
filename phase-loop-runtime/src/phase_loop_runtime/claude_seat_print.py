@@ -91,13 +91,21 @@ class ParsePolicy:
     :data:`PRINT_POLICY` is ``print``'s own (§4a items 4 and 5): a duplicate key refuses only
     in a ``system`` or ``result`` frame, and the token is scanned in the raw stream and the
     result text. A stricter route may refuse a duplicate key in every frame and scan every
-    decoded key and string value (JSON escapes resolved), with ``frame_violation`` as the
-    code for a frame only that policy refuses."""
+    decoded key and string value (JSON escapes resolved), including a value a duplicate key
+    then drops. A token found that way is ``claude_seat_token_in_output``, which wins over
+    ``frame_violation``. ``frame_violation`` is the code for a frame only that policy
+    refuses, and it has to be a non-empty string."""
 
     name: str
     duplicates_everywhere: bool = False
     scan_decoded: bool = False
     frame_violation: str = STREAM_UNSAFE
+
+    def __post_init__(self) -> None:
+        if type(self.duplicates_everywhere) is not bool or type(self.scan_decoded) is not bool:
+            raise TypeError("duplicates_everywhere and scan_decoded must be bool")
+        if type(self.frame_violation) is not str or self.frame_violation == "":
+            raise ValueError("frame_violation must be a non-empty string")
 
 
 #: ``print``'s parse policy. It is the default, and print's admission does not change with it.
@@ -276,12 +284,25 @@ class StreamAdmission:
         except Exception:
             self._stop(self.policy.frame_violation)
 
+    def _secret_in_decoded(self, value: object) -> bool:
+        """True when ``value`` carries the seat token after JSON decoding."""
+        return any(
+            any(form in text.encode("utf-8", errors="surrogatepass") for form in self._forms)
+            for text in decoded_strings(value))
+
     def _parse(self, raw: bytes) -> None:
         duplicate = False
+        decoded_hit = False
 
         def unique(pairs):
-            nonlocal duplicate
-            keys = [key for key, _value in pairs]
+            nonlocal duplicate, decoded_hit
+            keys = []
+            for key, value in pairs:
+                keys.append(key)
+                # Walk the pair before ``dict`` drops an earlier duplicate value.
+                if self.policy.scan_decoded and not decoded_hit and (
+                        self._secret_in_decoded(key) or self._secret_in_decoded(value)):
+                    decoded_hit = True
             if len(keys) != len(set(keys)):
                 duplicate = True
             return dict(pairs)
@@ -314,6 +335,12 @@ class StreamAdmission:
             return  # not a frame; it supplies nothing and admits nothing
         if not isinstance(event, dict):
             return
+        # Before the system/result duplicate raise, so a decoded token is not relabeled
+        # ``claude_seat_stream_unsafe``. ``print`` leaves ``scan_decoded`` false, so this
+        # assignment does not run and that raise stays where it is.
+        if decoded_hit:
+            self._stop(TOKEN_IN_OUTPUT)
+            return
         kind = event.get("type")
         if kind in ("system", "result") and (duplicate or not strict):
             raise _Unsafe("frame")
@@ -321,11 +348,6 @@ class StreamAdmission:
             raise _Unsafe("utf-8")
         if duplicate and self.policy.duplicates_everywhere:
             self._stop(self.policy.frame_violation)
-            return
-        if self.policy.scan_decoded and any(
-                any(form in text.encode("utf-8", errors="surrogatepass") for form in self._forms)
-                for text in decoded_strings(event)):
-            self._stop(TOKEN_IN_OUTPUT)
             return
         self.frames += 1
         self._parsed = event

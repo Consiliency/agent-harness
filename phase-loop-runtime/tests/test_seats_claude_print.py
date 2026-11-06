@@ -462,17 +462,24 @@ def test_print_run_jailed_reads_with_the_print_policy(monkeypatch):
 
 
 def test_each_line_is_parsed_once_and_the_parse_is_handed_on(monkeypatch):
-    calls = []
+    seen = []
     real_loads = cp.json.loads
-    monkeypatch.setattr(cp.json, "loads", lambda *a, **k: calls.append(1) or real_loads(*a, **k))
+
+    def spy(*args, **kwargs):
+        value = real_loads(*args, **kwargs)
+        seen.append(value)
+        return value
+
+    monkeypatch.setattr(cp.json, "loads", spy)
     handed: list = []
     stream = cp.StreamAdmission(token=TOKEN, session_id="s", on_frame=handed.append)
     frames = [_init("s"), _assistant("s"), _result("s")]
     stream.feed(_lines(*frames))
     stream.finish()
     assert stream.violation is None and stream.admitted(0)
-    assert len(calls) == len(frames)
+    assert len(seen) == len(frames)
     assert handed == frames
+    assert all(left is right for left, right in zip(handed, seen))
 
 
 def test_nothing_is_handed_on_once_a_violation_stands():
@@ -555,3 +562,50 @@ def test_live_jail_print_admits_one_result_from_the_jailed_subject(monkeypatch, 
     assert print_shape == [*cp.CLI_DELTA, *tui_shape]
     assert evidence["claude_admission"] == {"outcome": "admitted", "code": "none"}
     assert evidence["claude_transport"] == "print"
+
+
+
+def _escaped_token():
+    return "".join(f"\\u{c:04x}" for c in TOKEN)
+
+
+def test_print_still_admits_a_decoded_token_outside_the_result_text():
+    stream = cp.StreamAdmission(token=TOKEN, session_id="s")
+    stream.feed(_lines(
+        _init("s"),
+        ('{"type":"assistant","message":{"content":"%s"}}' % _escaped_token()).encode(),
+        _result("s")))
+    assert stream.violation is None and stream.admitted(0)
+
+
+def test_a_decoded_scan_sees_a_token_a_duplicate_key_drops():
+    handed: list = []
+    policy = cp.ParsePolicy("scan", scan_decoded=True)
+    stream = cp.StreamAdmission(token=TOKEN, session_id="s", policy=policy,
+                                on_frame=handed.append)
+    stream.feed(_lines(
+        _init("s"),
+        ('{"type":"assistant","message":{"content":"%s","content":"safe"}}'
+         % _escaped_token()).encode(),
+        _result("s")))
+    assert stream.violation == cp.TOKEN_IN_OUTPUT
+    assert handed == [_init("s")]
+    assert stream.admitted(0) is False
+
+
+def test_a_decoded_token_wins_over_the_policy_frame_code():
+    stream = cp.StreamAdmission(token=TOKEN, session_id="s", policy=STRICT)
+    stream.feed(_lines(
+        _init("s"),
+        ('{"type":"assistant","message":{"content":"%s","content":"safe"}}'
+         % _escaped_token()).encode()))
+    assert stream.violation == cp.TOKEN_IN_OUTPUT
+
+
+def test_a_policy_refusal_code_must_be_a_non_empty_string():
+    with pytest.raises(ValueError):
+        cp.ParsePolicy("broken", duplicates_everywhere=True, frame_violation=None)
+    with pytest.raises(ValueError):
+        cp.ParsePolicy("broken", frame_violation="")
+    with pytest.raises(TypeError):
+        cp.ParsePolicy("broken", scan_decoded=1)
