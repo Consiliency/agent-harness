@@ -69,10 +69,7 @@ outcomes differ only in whether a window can later admit it.
 - [ ] **IF-0-CLAUDETUI-3 — diagnosis record and OD-6 rule.**
   `plans/evidence/seat-tui/startup-diagnosis.json`, schema `seat_tui_startup_diagnosis.v1`,
   holds `runtime_head`, `host_class`, `runs` (at most 3), each run's marker, `cause_class`,
-  `bounded_fix` and `private_evidence_sha256[]`. `bounded_fix` is true only if the cause
-  reproduces as a failing offline test, and the fix stays in `panel_invoker.py`'s TUI session
-  code with no added bind, environment, tool, descriptor or credential path and no digest
-  change. True means `pending_window`. False means `retired`. Unknown after 3 runs is false.
+  `bounded_fix` and `private_evidence_sha256[]`. `bounded_fix` is true only when an offline reproducer fails on the unmodified SL-1 base, passes with the candidate, and the fix stays in `panel_invoker.py`'s TUI session code with no added bind, environment, tool, descriptor or credential path and no digest change. True means `pending_window`. False means `retired`. Unknown after 3 runs is false.
 
 ## Lane Index & Dependencies
 
@@ -104,10 +101,10 @@ SL-3 — Documentation, closures and matrix reducer (SL-docs)
 |---|---|---|---|---|
 | SL-1.1 | test | — | Path-enter `_exec_jailed_claude_leg` and `_run_claude_tui_session`. Prove: the jailed launch carries the terminal step; only a supplied terminal attaches; another session's terminal refuses before the provider; the token descriptor survives; the `_FD_CLOSER` sha holds. The banner cases (flag, env, settings) do not arm the editor. An unknown tail reaches the private leg log, a token tail does not, and the public detail stays the marker. | `V1` |
 | SL-1.2 | impl | SL-1.1 | Land IF-0-CLAUDETUI-1. Port the banner check and the `_LegFailure` prefix retention onto main. Add the `claude_tui_degraded` literal to the closed detail list. | `V1`, `VL`, `V3` |
-| SL-1.3 | evidence | SL-1.2 | Run `VD` on the branch head. Keep raw evidence private. Write the diagnosis record. A containment cause stops the lane and goes to the owner privately (OD-10); the public record says `withheld_private` and nothing else. | `VD` |
-| SL-1.4 | test | SL-1.3 | Only if the salvage did not settle the cause and `bounded_fix` is true: write the failing offline reproduction. | `V1` |
-| SL-1.5 | impl | SL-1.4 | Apply that repair inside the IF-0-CLAUDETUI-3 bound. | `V1`, `V3` |
-| SL-1.6 | docs | SL-1.5 | Append a decision-record section whose heading names OD-6 and not OD-3b. It states the outcome, cites the diagnosis digest, and amends §4a item 3 for the jailed `tui`. | `V3` |
+| SL-1.3 | evidence | SL-1.2 | Run `VD` at most three times on the branch head. Keep raw evidence private and retain only the schema's metadata for the final diagnosis record. Select a candidate cause and outcome, but do not set `bounded_fix=true` yet. A containment cause stops the lane and goes to the owner privately (OD-10); the public record later says `withheld_private` and nothing else. | `VD` |
+| SL-1.4 | test | SL-1.3 | On a proposed repair outcome, identify the SL-1.1 red/green test that reproduces the diagnosed cause or add an offline reproducer that fails before the candidate fix. If no bounded offline reproducer exists after the capped diagnosis, select `retired`. | `V1` |
+| SL-1.5 | impl | SL-1.4 | Repair branch only: apply the repair inside the IF-0-CLAUDETUI-3 bound and make the diagnosis reproducer pass. Retired branch: make no repair. | `V1`, `V3` |
+| SL-1.6 | evidence/docs | SL-1.3; repair branch: SL-1.5 | Finalize the diagnosis record. Set `bounded_fix=true` only after the red/green reproduction and bound checks pass; otherwise set it false, including an unknown cause after three runs. Append a decision-record section whose heading names OD-6 and not OD-3b; it states the outcome, cites the diagnosis digest, and amends §4a item 3 for the jailed `tui`. | `V1`, `V3`, `VD` |
 
 ### SL-2 — Degraded path and notice (lane B)
 
@@ -139,8 +136,9 @@ SL-3 — Documentation, closures and matrix reducer (SL-docs)
 
 ## Execution Notes
 
-- **Critical path.** SL-1, SL-2, SL-3, one PR each. SL-2's base must hold SL-1's OD-6 section.
-  This keeps the record and the gate apart, as EC-CLAUDE-4 does by content.
+- **Critical path.** SL-1 → SL-2 → SL-3. SL-2 starts only from a base whose tree contains
+  SL-1's OD-6 section. This keeps the record and the gate apart, as EC-CLAUDE-4 does by
+  content.
 - **OD-6.** Defaulted. An owner objection during SL-1's review overrides the IF-0-CLAUDETUI-3
   rule.
 - **`tui` as default.** If OD-3b recorded that no transport was admitted, the default stays
@@ -152,12 +150,23 @@ SL-3 — Documentation, closures and matrix reducer (SL-docs)
   sets `admitted`, records the matrix result and closes agent-harness#1461.
 - **Open with CLAUDENET.** EC-CLAUDENET-1 reads `tui` only in the repaired outcome. Any new
   allowlist row is an amendment there, batched with its window. `VD` measures no allowlist.
-- **Single writers.** `panel_invoker.py` is shared with CODEX, GROK, PI, FIRSTSEAT and v11
-  PANELSPLIT, and `seat_window.py` with JAILCORE's kit. Whichever lands second rebases; if
-  PANELSPLIT moved the code, SL-1 edits the named successor and records the path. SL-1's
-  `seat_launch_references.json` edit is the only inventory change.
-- **Known destructive changes**: none — every lane is purely additive.
-- **Expected add/add conflicts**: none. Union-resolve `CHANGELOG.md`.
+- **Single writers.** `panel_invoker.py` is shared with JAILCORE SL-3, TEAMHOST SL-4/SL-8,
+  CLAUDENET SL-2, CODEX, GROK, PI, FIRSTSEAT and v11 PANELSPLIT; `seat_window.py` is shared
+  with JAILCORE SL-3.5. `docs/advisor-board-capabilities-card.md`,
+  `docs/review-seats-readiness.md` and `CHANGELOG.md` are shared with JAILCORE SL-4,
+  TEAMHOST SL-6 and CLAUDENET SL-4. The later lander rebases. CLAUDETUI edits only the TUI
+  session and leg sites in `panel_invoker.py`, the TUI scope around `window_board_launch` in
+  `seat_window.py`, its own Claude TUI state text in shared docs, and its own changelog and
+  inventory entries; it preserves every other landed section. It does not edit
+  `seat_jail.py`, profile fields or profile-digest data, so CLAUDENET retains the sole Claude
+  digest change. If PANELSPLIT moved the code, SL-1 edits the named successor and records the
+  path. SL-1's `seat_launch_references.json` edit is the only launch-reference inventory
+  change.
+- **Known destructive changes**: none. SL-3 moves the two owner-closure rows from
+  `pending_actions` to `closures` while preserving their comment receipts; the remaining
+  changes are additive or explicit state updates.
+- **Expected conflicts**: rebase and preserve the named shared-file sections above.
+  Union-resolve `CHANGELOG.md` under the sprint rule.
 - **Stale-base guidance.** Lane teammates working in isolated worktrees do not see sibling-lane
   merges automatically. If a lane finds its worktree base is pre-SL-1, it MUST stop and report
   rather than committing. Silent `git reset --hard` or `git checkout HEAD~N -- …` in a stale
@@ -183,7 +192,7 @@ SL-3 — Documentation, closures and matrix reducer (SL-docs)
 system python3.14.4 and file paths under `phase-loop-runtime/tests/`. New test files are absent
 on this plan-only checkout, so these are pending selectors, not receipts.
 
-- `V1`: `P test_claude_tui_terminal.py test_panel_tui_workspace_trust_223.py test_panel_tui_liveness_188.py test_panel_tui_eof_48.py test_seat_notices.py`
+- `V1`: `P test_claude_tui_terminal.py test_panel_tui_workspace_trust_223.py test_panel_tui_liveness_188.py test_panel_tui_eof_48.py test_seat_notices.py`, then `P test_panel_invoker.py -k claude`
 - `V2`: `P test_claude_tui_gate.py test_seats_claude_transport.py test_claude_transport_seam.py`, then `PYTHONPATH=phase-loop-runtime/src python3 -m phase_loop_runtime.claude_seat_transport audit-order --repo . --base origin/main`
 - `V3`: `P test_agent_cli_scratch_inventory_1147.py test_seat_launch_helpers_trusted.py test_seat_reference_inventory.py test_python_floor_1546.py`
 - `V4`: `timeout 120 phase-loop validate-roadmap --repo . --roadmap specs/phase-plans-seats-v1.md`
