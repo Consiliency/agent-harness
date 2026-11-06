@@ -4,7 +4,7 @@ phase: CLAUDENET
 roadmap: specs/phase-plans-seats-v1.md
 roadmap_sha256: 9dc889c61a8d682dde30af65bf1597c1dca9a0df094fac747194d3629939b16e
 automation:
-  suite_command: ["timeout", "900", "env", "PYTEST_ADDOPTS=", "python3", "-m", "pytest", "-p", "no:cacheprovider", "-q", "phase-loop-runtime/tests/test_seat_egress_allowlist_claude.py", "phase-loop-runtime/tests/test_seat_claude_credential_scope.py", "phase-loop-runtime/tests/test_seat_profile_claude_egress.py", "phase-loop-runtime/tests/test_seat_claude_containment.py", "phase-loop-runtime/tests/test_seat_profiles.py", "phase-loop-runtime/tests/test_seat_notices.py", "phase-loop-runtime/tests/test_seat_route_contract.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py"]
+  suite_command: ["timeout", "900", "env", "PYTEST_ADDOPTS=", "uv", "run", "--quiet", "--project", "phase-loop-runtime", "--group", "test", "--python", "/usr/bin/python3", "--python-preference", "only-system", "--locked", "python", "-m", "pytest", "-p", "no:cacheprovider", "-q", "phase-loop-runtime/tests/test_seat_egress_allowlist_claude.py", "phase-loop-runtime/tests/test_seat_claude_credential_scope.py", "phase-loop-runtime/tests/test_seat_profile_claude_egress.py", "phase-loop-runtime/tests/test_seat_claude_containment.py", "phase-loop-runtime/tests/test_seat_profiles.py", "phase-loop-runtime/tests/test_seat_notices.py", "phase-loop-runtime/tests/test_seat_route_contract.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py", "phase-loop-runtime/tests/test_seat_egress_allowlists_jailcore.py", "phase-loop-runtime/tests/test_seat_jail.py", "phase-loop-runtime/tests/test_seat_route.py", "phase-loop-runtime/tests/test_panel_invoker.py", "phase-loop-runtime/tests/test_seat_claude_provider_free.py", "phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py", "phase-loop-runtime/tests/test_seat_launch_helpers_trusted.py"]
 ---
 
 # CLAUDENET: Claude Seat Egress and Row Qualification
@@ -50,8 +50,10 @@ allowlist. The same single digest change adds `DISABLE_UPDATES=1` (agent-harness
   edited.
 - **Credential scope.** This phase measures and records the scope. It adds no precondition.
 - **SDK worker.** It is unchanged: `--unshare-net`, with no proxy, no CA and no exception. Its
-  boundary receipt binds `profile_digest`, so when `sdk` is admitted, SL-2's PR also renews
-  that receipt. Otherwise the continuous admission audit fails that PR.
+  boundary receipt binds `profile_digest` and the schema-defined shared proof regions changed by
+  SL-2. If `sdk` is admitted on SL-2's landing base or head, SL-2 runs the worker contract's
+  final-head `VB`/`VL`, renews the committed and packaged `receipt-v1.json` byte-identically, and
+  passes the base-tree continuous admission audit. Missing or stale proof blocks the PR.
 - **Release declaration (IF-XR-1).** This phase specifies Claude's declaration content as
   exactly what TEAMHOST SL-8 specifies. The CA bind and the environment are not release files,
   so nothing new goes to Consiliency/dotfiles.
@@ -167,12 +169,12 @@ SL-4 — Row window and documentation reducer (SL-docs)
 - **Scope**: Derive and ship the Claude allowlist from W0, prove its refusals at the proxy, and record the credential scope.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_egress/claude-allowlist.json`, `phase-loop-runtime/tests/test_seat_egress_allowlist_claude.py`, `phase-loop-runtime/tests/test_seat_claude_credential_scope.py`, `plans/evidence/seat-claude/allowlist-probes.json`, `plans/evidence/seat-claude/credential-scope.json`
 - **Interfaces provided**: IF-0-CLAUDENET-2; evidence id `claude-credential-scope`
-- **Interfaces consumed**: IF-0-JAILCORE-2 `allowlist_ref` and `start_proxy(*, allowlist_id)` (pre-existing), IF-0-CLAUDE-2 records (pre-existing), the OD-3b section (pre-existing), `seat_credentials.resolve_claude_seat_credential` (pre-existing)
+- **Interfaces consumed**: IF-0-JAILCORE-2 `allowlist_ref` and `start_proxy(*, allowlist_id)` (pre-existing), IF-0-CLAUDE-2 records (pre-existing), `seat_credentials.resolve_claude_seat_credential` (pre-existing)
 - **Parallel-safe**: yes
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-1.1 | test | — | `phase-loop-runtime/tests/test_seat_egress_allowlist_claude.py` | The IF-0-CLAUDENET-2 shape rules. The committed `allow` equals the mapping of the committed source records, less the refused hosts, and every source entry is allowed or refused. Fixture W0 records cover an `{id}` prefix, a `/` prefix stop, a control record that is ignored, and a `partial` set that is refused. The token-endpoint row matches no `allow` rule. Every probe row is path-entered through the real `proxy.mjs` under `start_proxy(allowlist_id="claude")`: allowed rows reach a fixture upstream, while refused, unlisted, Gemini-listed and Codex-listed hosts do not. `gemini-allowlist.json` bytes are unchanged. Repo-only reads skip on an installed wheel. | `V1` |
+| SL-1.1 | test | — | `phase-loop-runtime/tests/test_seat_egress_allowlist_claude.py` | The IF-0-CLAUDENET-2 shape rules. The committed `allow` equals the mapping of the committed source records, less the refused hosts, and every source entry is allowed or refused. Fixture W0 records cover an `{id}` prefix, a `/` prefix stop, a control record that is ignored, and a `partial` set that is refused. The token-endpoint probe is path-entered through the real proxy and reaches no fixture upstream; adding one fixture rule that matches its exact method, host and path turns this case red by reaching the upstream. Every probe row is path-entered through the real `proxy.mjs` under `start_proxy(allowlist_id="claude")`: allowed rows reach a fixture upstream, while refused, unlisted, Gemini-listed and Codex-listed hosts do not. `gemini-allowlist.json` bytes are unchanged. Repo-only reads skip on an installed wheel. | `V1` |
 | SL-1.2 | impl | SL-1.1 | `phase-loop-runtime/src/phase_loop_runtime/seat_egress/claude-allowlist.json` | — | — |
 | SL-1.3 | test | SL-1.2 | `phase-loop-runtime/tests/test_seat_claude_credential_scope.py` | The record holds the source vocabulary, scope names, `refresh_token_delivered: false` and counts, and nothing token-shaped. Path-entered through `resolve_claude_seat_credential` with a synthetic store, the delivered `SeatCredential` carries no refresh token. | `V1` |
 | SL-1.4 | verify | SL-1.3 | SL-1 files | `VM` runs one canonical review per admitted transport, with IF-0-CLAUDENET-1's proxy and CA variables, through the proxy with this allowlist and the refused hosts refused. It also measures the token endpoint and the persisted-login path. Then all SL-1 tests run. | `V1`, `VM` |
@@ -185,7 +187,7 @@ seat CA through `NODE_EXTRA_CA_CERTS`, the sentence is in IF-0-CLAUDENET-1.
 ### SL-2 — Claude profile change (lane A)
 
 - **Scope**: Land IF-0-CLAUDENET-1 and IF-0-CLAUDENET-3 as the phase's one Claude digest change.
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_profiles.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_jail.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_route_contract.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_claude_containment.py`, `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `phase-loop-runtime/tests/data/seat_profile_digests_jailcore.json`, `phase-loop-runtime/tests/test_seat_profile_claude_egress.py`, `phase-loop-runtime/tests/test_seat_claude_containment.py`, `phase-loop-runtime/tests/test_seat_profiles.py`, `phase-loop-runtime/tests/test_seat_jail.py`, `phase-loop-runtime/tests/test_seat_notices.py`, `phase-loop-runtime/tests/test_seat_route_contract.py`, `phase-loop-runtime/tests/test_panel_invoker.py`, `plans/evidence/seat-qualification/claude-sdk-boundary/receipt-v1.json`
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_profiles.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_jail.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_route_contract.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_claude_containment.py`, `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `phase-loop-runtime/tests/data/seat_profile_digests_jailcore.json`, `phase-loop-runtime/tests/test_seat_profile_claude_egress.py`, `phase-loop-runtime/tests/test_seat_claude_containment.py`, `phase-loop-runtime/tests/test_seat_profiles.py`, `phase-loop-runtime/tests/test_seat_jail.py`, `phase-loop-runtime/tests/test_seat_notices.py`, `phase-loop-runtime/tests/test_seat_route_contract.py`, `phase-loop-runtime/tests/test_panel_invoker.py`, `plans/evidence/seat-qualification/claude-sdk-boundary/receipt-v1.json`, `phase-loop-runtime/src/phase_loop_runtime/data/claude_sdk/receipt-v1.json`
 - **Interfaces provided**: IF-0-CLAUDENET-1, IF-0-CLAUDENET-3; evidence id `claude-refresh-detection` (named; SL-3 records it)
 - **Interfaces consumed**: IF-0-CLAUDENET-2 (SL-1), IF-0-JAILCORE-1 Claude registration (pre-existing), IF-0-JAILCORE-2 (pre-existing), IF-0-CLAUDE-1 (pre-existing), the profile-sourced window kit `seat_window` (pre-existing), the SDK worker launcher and receipt verifier (pre-existing)
 - **Parallel-safe**: no
@@ -196,7 +198,7 @@ seat CA through `NODE_EXTRA_CA_CERTS`, the sentence is in IF-0-CLAUDENET-1.
 | SL-2.2 | impl | SL-2.1 | `phase-loop-runtime/src/phase_loop_runtime/seat_profiles.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_jail.py`, `phase-loop-runtime/tests/data/seat_profile_digests_jailcore.json` | — | — |
 | SL-2.3 | test | SL-2.2 | `phase-loop-runtime/tests/test_seat_claude_containment.py`, `phase-loop-runtime/tests/test_seat_notices.py`, `phase-loop-runtime/tests/test_seat_route_contract.py`, `phase-loop-runtime/tests/test_panel_invoker.py` | The code has a what/why/fix row, its class and one additive `OD10_CLASSES` entry. Removing it leaves `OD10_CLASSES` equal to its base. `refreshed_in_jail` is false when nothing exists, and true for a regular file, a link or a directory, read without following links. Path-entered through `_exec_jailed_claude_leg` with a fixture transport, for `print` and `sdk`: a token in output wins over a credential file, a credential file gives the refresh code, and neither gives the transport's classification. | `V3` |
 | SL-2.4 | impl | SL-2.3 | `phase-loop-runtime/src/phase_loop_runtime/seat_claude_containment.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_jail.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_route_contract.py`, `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py` | — | — |
-| SL-2.5 | verify | SL-2.4 | SL-2 files | All SL-2 tests, the inventory checks and `audit-order` on the head. If `claude_seat_sdk.ADMITTED` is true on the base, the worker contract's `VB`/`VL` renew the receipt on this head, and it ships in this PR. | `V2`, `V3`, `V4` |
+| SL-2.5 | verify | SL-2.4 | SL-2 files | All SL-2 tests, inventory checks and `audit-order` on the final head. If `claude_seat_sdk.ADMITTED` is true on the landing base or head, run the worker contract's `VB`/`VL`, renew both receipt copies byte-identically, verify their installed-package binding, and rerun the continuous base-tree audit. Missing, skipped, stale or zero-collection proof blocks landing. | `V2`, `V3`, `V4`, conditional `VB`, conditional `VL` |
 
 **`panel_invoker.py` scope.** The Claude leg's post-launch call (IF-0-CLAUDENET-3). If the base
 still selects the Claude network namespace by leg rather than from `allowlist_id`, SL-2 makes
@@ -232,19 +234,29 @@ that one selection profile-driven. Nothing else.
 
 ## Execution Notes
 
-- **Critical path to the date.** W0 (LA-3), then the OD-3b section, then SL-1, SL-2, SL-3 and
-  the Claude row window. Nothing else is on the path. Once SL-2 is on `main`, L7 finds the
-  allowlist, so the open-egress exception's 2026-12-04 UTC expiry no longer routes the seat.
-  If SL-2 is not on `main` by then, the jailed Claude seat resolves degraded unless an owner
-  record renews the exception (principle 3).
+- **Critical path to the date.** W0 (LA-3) is the first gate. If W0 holds a complete source
+  record for at least one admitted native transport, SL-1 starts immediately and runs in
+  parallel with the OD-3b record/default landing; SL-2, SL-3 and the Claude row window follow.
+  If W0 has no admitted transport, wait only for OD-3b's no-transport record and take the
+  no-transport branch. Once SL-2 is on `main`, L7 finds the allowlist, so the open-egress
+  exception's 2026-12-04 UTC expiry no longer routes the seat. If SL-2 is not on `main` by then,
+  the jailed Claude seat resolves degraded unless an owner record renews the exception
+  (principle 3).
 - **Content gates.** A lane starts when its base holds what it consumes, not when a whole
   upstream phase exits:
-  - SL-1 needs IF-0-JAILCORE-2, the W0 records and the OD-3b section.
+  - SL-1 needs IF-0-JAILCORE-2, the landed W0 records, and current transport-admission facts;
+    it does not need OD-3b when at least one transport is admitted.
   - SL-2 needs JAILCORE's Claude registration and SL-1.
   - SL-3 needs SL-2.
   - The row window needs CLAUDE, JAILCORE and TEAMHOST to have exited, since principle 1
     needs a team host under two accounts, and it needs SL-3's receipts.
-  - SL-1 and SL-2 tests may be written against fixtures before their gates open.
+  - SL-1, SL-2 and SL-3 tests may be authored against their frozen interfaces before their
+    landing gates open.
+- **Stale-base guidance.** Lane teammates working in isolated worktrees do not see
+  sibling-lane merges automatically. If a lane finds its worktree base is pre-<first upstream
+  dependency's merge>, it MUST stop and report rather than committing; the orchestrator will
+  re-spawn or rebase. Silent `git reset --hard` or `git checkout HEAD~N -- …` in a stale
+  worktree produces commits that destroy peer-lane work on `--no-ff` merge.
 - **Batching.** If TEAMHOST SL-8's switch-on also returns the Claude row to `candidate`, one
   row window requalifies both changes. Neither waits for the other.
 - **Open with JAILCORE (GROK plan S-2).** `seat_window.readiness_rows()` still names Claude
@@ -254,8 +266,10 @@ that one selection profile-driven. Nothing else.
   that date does.
 - **Single writers.** `seat_jail.py`, `seat_route_contract.py`, `seat_profiles.py` and
   `panel_invoker.py` are shared with CODEX, GROK, PI, TEAMHOST and v11 PANELSPLIT, and the
-  first two take additive rows only. Whichever lands second rebases. In the digest data file,
-  SL-2 edits Claude entries only. `claude-allowlist.json` and the Claude profile fields are
+  first two take additive rows only. Whichever lands second rebases. In either landing order,
+  SL-2 adds only the Claude profile fields, notice row and post-launch call, and keeps TEAMHOST
+  contract §8's `_prepare_jailed_claude` managed-subject seam and its Gemini-only profile edits.
+  In the digest data file, SL-2 edits Claude entries only. `claude-allowlist.json` and the Claude profile fields are
   qualification-pinned, and this phase owns their digests (principle 4).
 - **Shared-host limits.** Check `uptime` and `/proc/pressure/io` before each test command. Run
   targeted files serially under `timeout 900` without `-n`, with system python3.14.4 for jail
@@ -283,10 +297,12 @@ that one selection profile-driven. Nothing else.
 
 ## Verification
 
-`P` is `timeout 900 env PYTEST_ADDOPTS= python3 -m pytest -p no:cacheprovider -q`, with file
-paths under `phase-loop-runtime/tests/`. Jail tests run it on system python3.14.4 through
-`uv run --group test --python /usr/bin/python3 -m pytest`. On this plan-only checkout the new
-test files are absent, so these are pending selectors, not receipts.
+`P` is `timeout 900 env PYTEST_ADDOPTS= uv run --quiet --project phase-loop-runtime
+--group test --python /usr/bin/python3 --python-preference only-system --locked python -m
+pytest -p no:cacheprovider -q`, with repo-relative file paths under
+`phase-loop-runtime/tests/`. Every jail-touching selector uses `P` directly; it is never
+re-expanded to bare `python3 -m pytest`. On this plan-only checkout the new test files are
+absent, so these are pending selectors, not receipts.
 
 - `V1`: `P test_seat_egress_allowlist_claude.py test_seat_claude_credential_scope.py test_seat_egress_allowlists_jailcore.py`
 - `V2`: `P test_seat_profile_claude_egress.py test_seat_profiles.py test_seat_jail.py test_seat_route.py`
