@@ -14116,7 +14116,7 @@
       "file": "plans/phase-plan-v1-seats-FIRSTSEAT.md",
       "frozen_inputs": {
         "plans/artifacts/seats-firstseat-interfaces.md": {
-          "sha256": "e4a58873de633947185cc731514b8c4cda26da290730acf39d14cd8e1b153a1d"
+          "sha256": "b50a3a85e2f89d47b0d83f7a7cea117fc52ad04616e6616a7c4064816654ec79"
         }
       },
       "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20261104T212324Z-firstseat.md",

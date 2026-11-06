@@ -82,10 +82,18 @@ Proxy stdout carries one JSON object per line, after the unchanged readiness lin
 
 - FROZEN-NEW request event: exactly the keys `event`, `method`, `host`, `path` and
   `decision`, as in
-  `{"event":"request","method":"<METHOD>","host":"<lowercase host>","path":"<path>"|null,"decision":"allow"|"deny"}`.
-  `path` is the request path with the query and fragment removed (the plan's templated
-  path). It is `null` when the proxy observed no request line. `decision` is the existing
-  `action`. No reason is emitted.
+  `{"event":"request","method":"<METHOD>","host":"<host>","path":"<template>"|null,"decision":"allow"|"deny"}`,
+  in a closed vocabulary. `method` is one of GET, POST, PUT, PATCH, DELETE, HEAD, OPTIONS
+  and CONNECT, else `<other>`. `host` is the lowercase host when it is an allowlist host, a
+  §9 table host or a canary `<32 lowercase hex>.invalid`, else `<other>`. `path` is the
+  templated path: the matching allowlist rule's `path`, or its `path_prefix` followed by
+  `*`; else `/oauth2/v2/userinfo` when it is exactly that path; else `/oauth2/*` for any
+  other `/oauth2/` path; else `<other>`. It is `null` when the proxy observed no request
+  line (a CONNECT-level decision). `decision` is the existing `action`. No reason, query or
+  fragment is emitted. The proxy emits one event per decision on an authenticated client:
+  a front CONNECT refusal, a front first-flight refusal (`CONNECT`, `null`, `deny`) and each
+  inner request. It emits none for a 407, so the namespace bridge's unauthenticated
+  self-check, which precedes every fence, is never an outside event.
 - The fence acknowledgement `{"event":"fence","id":"<32 lowercase hex>"}` and the stdin line
   `{"op":"fence","id":"<id>"}` are as given in §14.
 
@@ -203,7 +211,7 @@ the output holds only the fields of `ScanResult`.
 def scan_seat(holder_pid: int, seat_root: str, layout: PlantLayout, paths: HostPathMap,
               *, delivered: DeliveredCopy | None) -> ScanResult
 
-class RowState:          state: Literal["regular", "absent", "non_regular", "unread"]
+class RowState:          state: Literal["regular", "directory", "absent", "non_regular", "unread"]
                          sha256: Digest | None; mode: int | None
 class CredentialCounts:  field_names: int; token: int                # §10 counts
 class ScanResult:        rows: Mapping[RowId, RowState]; tree_manifest_sha256: Digest | None
@@ -212,8 +220,10 @@ class ScanResult:        rows: Mapping[RowId, RowState]; tree_manifest_sha256: D
 
 - `rows` covers every non-`tree` row of the layout. A merges in operator-owned locations,
   which it reads directly (§16).
-- `non_regular` means a link or a non-regular entry at the row path or at a row ancestor.
-  It counts as a change.
+- `directory` is a directory at a §2 row spelled with a trailing `/`. Its `sha256` is the
+  manifest digest, in the tree-manifest form, of the entries under it.
+- `non_regular` means a link or a non-regular entry at the row path or at a row ancestor,
+  including a directory at a row not spelled with a trailing `/`. It counts as a change.
 - `unread` means an entry that was over the cap, unreadable or unwalked. It sets
   `scan_complete=False`.
 - `credential_counts` is `None` when `delivered` is `None`. Otherwise it counts the §10 field

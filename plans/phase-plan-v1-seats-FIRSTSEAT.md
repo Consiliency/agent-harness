@@ -105,7 +105,7 @@ No future commit identity, count or topology is prescribed.
   changing it is a plan amendment. §14 is the proxy fence protocol, §15 the W1 launch
   sequence and D's launcher, and §16 the seat-owned reads. The A, D and E call
   interfaces are frozen input `plans/artifacts/seats-firstseat-interfaces.md`
-  (`e4a58873de633947185cc731514b8c4cda26da290730acf39d14cd8e1b153a1d`); changing it is a
+  (`b50a3a85e2f89d47b0d83f7a7cea117fc52ad04616e6616a7c4064816654ec79`); changing it is a
   plan amendment. Pinned method inputs, under
   `plans/evidence/seat-jail-1132/`: `probe_p3_agy_tools.py`
   (`51eced4937fe5a1c6f4b6dd72aad72daed60fd486adcff958f9f374bc624c552`), its record
