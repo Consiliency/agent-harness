@@ -317,7 +317,7 @@ class BrokerEvidenceStore:
 
     @property
     def epoch_blocked(self) -> bool:
-        if any(r.state is TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED for r in self.replay().values()):
+        if self.blocking_keys:
             return True
         # FABPUB: permanent ambiguity survives the legacy cutover.  A retired
         # legacy store whose archived history held an outcome_ambiguous_blocked
@@ -326,6 +326,29 @@ class BrokerEvidenceStore:
         # partition, carried forward by that partition's receipt.  Absent a
         # receipt this is a no-op, so pre-FABPUB stores behave exactly as before.
         return self._legacy_partition_blocked()
+
+    @property
+    def blocking_keys(self) -> tuple[str, ...]:
+        """The unresolved ambiguity keys after the exact-PR effective overlay.
+
+        The reader is deliberately lock-free: admission callbacks invoke
+        ``epoch_blocked`` while already holding ``admissions.lock``.
+        """
+        from .exact_pr_reconciliation import (
+            effective_blocking_keys,
+            snapshot_exact_pr_store,
+        )
+
+        return effective_blocking_keys(snapshot_exact_pr_store(self.root))
+
+    def effective_publication(self, key: str):
+        """Return the pure effective publication view for ``key``."""
+        from .exact_pr_reconciliation import (
+            effective_publication,
+            snapshot_exact_pr_store,
+        )
+
+        return effective_publication(snapshot_exact_pr_store(self.root), key)
 
     def _legacy_partition_blocked(self) -> bool:
         try:

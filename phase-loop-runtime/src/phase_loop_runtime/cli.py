@@ -917,6 +917,29 @@ def build_parser() -> argparse.ArgumentParser:
     fabpub_rotate_sub.add_argument(
         "--json", action="store_true", default=argparse.SUPPRESS
     )
+    fabpub_reconcile_sub = subparsers.add_parser(
+        "fabpub-reconcile-exact-pr",
+        help="Validate or commit one immutable exact-PR reconciliation settlement.",
+    )
+    fabpub_reconcile_sub.add_argument("--worktree", required=True, metavar="PATH")
+    fabpub_reconcile_sub.add_argument("--authority-root", required=True, metavar="PATH")
+    fabpub_reconcile_sub.add_argument("--transaction-id", required=True)
+    fabpub_reconcile_sub.add_argument("--pr-url", required=True)
+    fabpub_reconcile_sub.add_argument("--disposition", required=True, metavar="PATH")
+    fabpub_reconcile_sub.add_argument("--check", action="store_true")
+    fabpub_reconcile_sub.add_argument(
+        "--json", action="store_true", default=argparse.SUPPRESS
+    )
+    fabpub_inspect_sub = subparsers.add_parser(
+        "fabpub-inspect-exact-pr",
+        help="Inspect raw and effective exact-PR state without provider or authority writes.",
+    )
+    fabpub_inspect_sub.add_argument("--worktree", required=True, metavar="PATH")
+    fabpub_inspect_sub.add_argument("--authority-root", required=True, metavar="PATH")
+    fabpub_inspect_sub.add_argument("--transaction-id", required=True)
+    fabpub_inspect_sub.add_argument(
+        "--json", action="store_true", default=argparse.SUPPRESS
+    )
 
     # run-train: cross-repo release-train coordinator (P3, #29).
     # Registered outside the common-args loop because it has its own argument
@@ -1609,6 +1632,10 @@ def _main(parser: argparse.ArgumentParser, args: argparse.Namespace, command: st
         return _fabpub_bootstrap_command(args=args)
     if command == "fabpub-rotate-partition":
         return _fabpub_rotate_partition_command(args=args)
+    if command == "fabpub-reconcile-exact-pr":
+        return _fabpub_reconcile_exact_pr_command(args=args)
+    if command == "fabpub-inspect-exact-pr":
+        return _fabpub_inspect_exact_pr_command(args=args)
     if command == "run-train":
         return _run_train_command(parser=parser, args=args)
     if command == "train-status":
@@ -5024,6 +5051,59 @@ def _fabpub_rotate_partition_command(*, args: argparse.Namespace) -> int:
         ),
     }
     print(json.dumps(result, indent=2, sort_keys=True) if args.json else json.dumps(result, sort_keys=True))
+    return 0
+
+
+def _fabpub_reconcile_exact_pr_command(*, args: argparse.Namespace) -> int:
+    from .convergence.broker.exact_pr_reconciliation import (
+        ExactPRReconciliationRefused,
+        load_strict_json_file,
+        reconcile_exact_pr,
+    )
+
+    try:
+        disposition = load_strict_json_file(
+            args.disposition, label="exact-PR disposition"
+        )
+        result = reconcile_exact_pr(
+            args.worktree,
+            authority_root=args.authority_root,
+            transaction_id=args.transaction_id,
+            pr_url=args.pr_url,
+            disposition=disposition,
+            check=bool(args.check),
+        )
+    except (ExactPRReconciliationRefused, PermissionError, OSError, ValueError) as exc:
+        print(f"phase-loop fabpub-reconcile-exact-pr: {exc}", file=sys.stderr)
+        return 1
+    print(
+        json.dumps(result, indent=2, sort_keys=True)
+        if bool(getattr(args, "json", False))
+        else json.dumps(result, sort_keys=True)
+    )
+    return 0
+
+
+def _fabpub_inspect_exact_pr_command(*, args: argparse.Namespace) -> int:
+    from .convergence.broker.exact_pr_reconciliation import (
+        ExactPRReconciliationRefused,
+        inspect_exact_pr,
+    )
+
+    try:
+        result = inspect_exact_pr(
+            args.worktree,
+            authority_root=args.authority_root,
+            transaction_id=args.transaction_id,
+        )
+    except (ExactPRReconciliationRefused, PermissionError, OSError, ValueError) as exc:
+        print(f"phase-loop fabpub-inspect-exact-pr: {exc}", file=sys.stderr)
+        return 1
+    print(
+        json.dumps(result, indent=2, sort_keys=True)
+        if bool(getattr(args, "json", False))
+        else json.dumps(result, sort_keys=True)
+    )
     return 0
 
 

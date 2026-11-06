@@ -1062,6 +1062,7 @@ class RotatedPartitionReceipt:
     legacy_root_inventory: tuple = ()
     ambiguous: bool = False
     zero_source: bool = False
+    exact_pr_settlement_snapshot_sha256: str = ""
 
     SCHEMA = "LegacyRepositoryPartitionReceipt.v3"
 
@@ -1070,7 +1071,7 @@ class RotatedPartitionReceipt:
         return self.cutover_id
 
     def payload(self) -> dict:
-        return {
+        payload = {
             "schema": self.SCHEMA,
             "cutover_id": self.cutover_id,
             "rotation_cutover_id": self.cutover_id,
@@ -1093,6 +1094,14 @@ class RotatedPartitionReceipt:
             "ambiguous": self.ambiguous,
             "zero_source": self.zero_source,
         }
+        # Optional for byte compatibility with receipts sealed before the
+        # exact-PR overlay existed.  A predecessor that actually contains a
+        # settlement is rejected below unless the field is present.
+        if self.exact_pr_settlement_snapshot_sha256:
+            payload["exact_pr_settlement_snapshot_sha256"] = (
+                self.exact_pr_settlement_snapshot_sha256
+            )
+        return payload
 
     def digest(self) -> str:
         return hashlib.sha256(canonical_bytes(self.payload())).hexdigest()
@@ -1143,6 +1152,9 @@ def _rotation_receipt_from_partition(
             legacy_root_inventory=tuple(sealed.get("legacy_root_inventory", ())),
             ambiguous=bool(partition.get("ambiguous", False)),
             zero_source=False,
+            exact_pr_settlement_snapshot_sha256=str(
+                partition.get("exact_pr_settlement_snapshot_sha256", "")
+            ),
         )
     except (KeyError, TypeError, ValueError, AttributeError) as exc:
         raise LegacyCutoverConflict(
@@ -1184,6 +1196,29 @@ def _require_rotation_receipt_binds(
                 f"rotation {expected.cutover_id!r} sealed it ({name}); generation {generation} is "
                 "not routable"
             )
+    settlement_files, observation_bytes = _snapshot_exact_pr_side_files(predecessor)
+    expected_settlement_snapshot = expected.exact_pr_settlement_snapshot_sha256
+    if settlement_files:
+        from .exact_pr_reconciliation import exact_pr_side_snapshot_sha256
+
+        actual_settlement_snapshot = exact_pr_side_snapshot_sha256(
+            settlement_files, observation_bytes
+        )
+        if not expected_settlement_snapshot:
+            raise PartitionRoutingRefused(
+                f"predecessor generation {generation - 1} contains exact-PR settlements "
+                "that the successor receipt omitted"
+            )
+        if actual_settlement_snapshot != expected_settlement_snapshot:
+            raise PartitionRoutingRefused(
+                f"predecessor generation {generation - 1} exact-PR settlement snapshot "
+                "drifted since the successor sealed it"
+            )
+    elif expected_settlement_snapshot:
+        raise PartitionRoutingRefused(
+            f"predecessor generation {generation - 1} lost the exact-PR settlement "
+            "snapshot its successor receipt sealed"
+        )
     return predecessor
 
 
@@ -1427,7 +1462,7 @@ def authenticated_partition_floor(store_root: Path) -> int:
 
 
 def partition_is_ambiguity_blocked(store_root: Path) -> bool:
-    """True when this partition inherited permanent archived ambiguity.
+    """True when inherited or locally unresolved ambiguity blocks the partition.
 
     Any authentication failure is itself a block — fail closed, never open.
     """
@@ -1435,7 +1470,17 @@ def partition_is_ambiguity_blocked(store_root: Path) -> bool:
         receipt = load_partition_receipt(Path(store_root))
     except (LegacyCutoverConflict, PermissionError):
         return True
-    return bool(receipt is not None and receipt.ambiguous)
+    if receipt is not None and receipt.ambiguous:
+        return True
+    try:
+        from .exact_pr_reconciliation import (
+            effective_blocking_keys,
+            snapshot_exact_pr_store,
+        )
+
+        return bool(effective_blocking_keys(snapshot_exact_pr_store(Path(store_root))))
+    except (OSError, PermissionError, ValueError):
+        return True
 
 
 def _read_receipt_inventory(receipt) -> tuple[Path, dict | None]:
@@ -4517,6 +4562,8 @@ class _PredecessorSnapshot:
     root: Path
     files: dict
     digests: dict
+    exact_pr_settlement_files: dict
+    post_ambiguity_observation_bytes: bytes | None
 
     def text(self, name: str) -> str | None:
         """The snapshot's bytes of ``name`` as text; ``None`` when the file was absent."""
@@ -4527,6 +4574,36 @@ class _PredecessorSnapshot:
             return raw.decode("utf-8")
         except UnicodeDecodeError as error:
             raise LegacyCutoverConflict(f"{name} under {self.root} is not UTF-8: {error}") from error
+
+
+def _snapshot_exact_pr_side_files(generation_root: Path) -> tuple[dict[str, bytes], bytes | None]:
+    """Read the dynamic settlement map and compatibility observations once."""
+    root = Path(generation_root)
+    directory = root / "exact-pr-settlements"
+    files: dict[str, bytes] = {}
+    if os.path.lexists(directory):
+        if directory.is_symlink() or not directory.is_dir():
+            raise LegacyCutoverConflict(
+                f"exact-PR settlement path is not a directory: {directory}"
+            )
+        for candidate in sorted(directory.iterdir(), key=lambda item: item.name):
+            if candidate.name.startswith(".") and candidate.name.endswith(".tmp"):
+                continue
+            if candidate.is_symlink() or not candidate.is_file() or not candidate.name.endswith(".json"):
+                raise LegacyCutoverConflict(
+                    f"unsupported exact-PR settlement entry: {candidate}"
+                )
+            files[candidate.name] = candidate.read_bytes()
+    observations = root / "post-ambiguity-observations.jsonl"
+    if observations.is_symlink():
+        raise LegacyCutoverConflict(
+            f"post-ambiguity observation path is a symlink: {observations}"
+        )
+    try:
+        observation_bytes = observations.read_bytes()
+    except FileNotFoundError:
+        observation_bytes = None
+    return files, observation_bytes
 
 
 def _snapshot_predecessor(store_root: Path) -> _PredecessorSnapshot:
@@ -4545,7 +4622,8 @@ def _snapshot_predecessor(store_root: Path) -> _PredecessorSnapshot:
     digests = {
         name: hashlib.sha256(raw if raw is not None else b"").hexdigest() for name, raw in files.items()
     }
-    return _PredecessorSnapshot(root, files, digests)
+    settlements, observations = _snapshot_exact_pr_side_files(root)
+    return _PredecessorSnapshot(root, files, digests, settlements, observations)
 
 
 def _read_predecessor_ledger(snapshot: _PredecessorSnapshot) -> _PredecessorLedger:
@@ -4756,6 +4834,7 @@ def _derive_rotation_inventory(
     effects: dict,
     high_water: int,
     carried: dict,
+    exact_pr_settlement_snapshot_sha256: str = "",
 ) -> dict:
     """The inventory a rotation seals over a validated predecessor and attestation.
 
@@ -4776,10 +4855,17 @@ def _derive_rotation_inventory(
         "predecessor_receipt_sha256": predecessor_digests[RECEIPT_FILENAME],
         "adjudicated_effect_dispositions": {
             key: {
-                "disposition": entry["disposition"],
-                "observed_head": entry.get("observed_head"),
-                "evidence_url": entry["evidence_url"],
-                "attestation_digest": digest,
+                **{
+                    "disposition": entry["disposition"],
+                    "observed_head": entry.get("observed_head"),
+                    "evidence_url": entry["evidence_url"],
+                    "attestation_digest": digest,
+                },
+                **(
+                    {"settlement_digest": entry["settlement_digest"]}
+                    if "settlement_digest" in entry
+                    else {}
+                ),
             }
             for key, entry in effects.items()
         },
@@ -4789,6 +4875,10 @@ def _derive_rotation_inventory(
         "ambiguous": False,
         "zero_source": False,
     }
+    if exact_pr_settlement_snapshot_sha256:
+        partition["exact_pr_settlement_snapshot_sha256"] = (
+            exact_pr_settlement_snapshot_sha256
+        )
     sealed = {
         "schema": ROTATION_INVENTORY_SCHEMA,
         "cutover_id": cutover_id,
@@ -4842,13 +4932,53 @@ def _write_active_pointer(generations: Path, generation: int) -> None:
 
 
 def _rotation_carried_effects(
-    active_receipt, ledger: _PredecessorLedger, effects: dict, identity: str, generation: int, digest: str
+    active_receipt,
+    snapshot: _PredecessorSnapshot,
+    ledger: _PredecessorLedger,
+    effects: dict,
+    identity: str,
+    generation: int,
+    digest: str,
 ) -> dict:
+    from .exact_pr_reconciliation import (
+        ExactPRStoreSnapshot,
+        ExactPRTypedRefusal,
+        ValidExactPRSettlement,
+        read_exact_pr_settlement,
+    )
+
     try:
         carried = {key: dict(value) for key, value in sealed_partition_effects(active_receipt).items()}
     except LegacyCutoverConflict as error:
         raise PartitionRotationRefused(f"predecessor sealed effects do not authenticate: {error}") from error
+    exact_snapshot = ExactPRStoreSnapshot(
+        root=snapshot.root,
+        # Only direct predecessor files are adjudicated here.  Receipt-carried
+        # effects were authenticated in the one sealed_partition_effects read
+        # above and are preserved from ``carried`` unchanged.
+        receipt=None,
+        receipt_bytes=snapshot.files[RECEIPT_FILENAME],
+        evidence_bytes=snapshot.files["evidence.jsonl"],
+        observation_bytes=snapshot.post_ambiguity_observation_bytes,
+        settlement_files=snapshot.exact_pr_settlement_files,
+        temporary_files=(),
+        generation=generation,
+    )
+    settlements: dict[str, ValidExactPRSettlement] = {}
+    for key in ledger.blocked:
+        settled = read_exact_pr_settlement(exact_snapshot, key)
+        if isinstance(settled, ExactPRTypedRefusal):
+            raise PartitionRotationRefused(
+                f"exact-PR settlement for {key!r} does not authenticate: {settled.reason}"
+            )
+        if isinstance(settled, ValidExactPRSettlement):
+            settlements[key] = settled
+
     for key, reference in ledger.terminals.items():
+        if isinstance(carried.get(key), dict) and "exact_pr_settlement" in carried[key]:
+            raise PartitionRotationRefused(
+                f"predecessor terminal for {key!r} would overwrite carried exact-PR provenance"
+            )
         carried[key] = {
             "serialized_repository": identity,
             "evidence_reference": reference,
@@ -4856,7 +4986,49 @@ def _rotation_carried_effects(
             "disposition": "effect_terminal_observed",
         }
     for key, entry in effects.items():
+        settled = settlements.get(key)
+        if settled is not None:
+            disposition = settled.payload["disposition"]
+            if (
+                entry["disposition"] != DISPOSITION_OBSERVED_LANDED
+                or entry.get("observed_head") != disposition["head_sha"]
+                or entry.get("evidence_url") != disposition["pr_url"]
+                or entry.get("settlement_digest") != settled.settlement_digest
+            ):
+                raise PartitionRotationRefused(
+                    f"attestation for settled effect {key!r} must carry its exact observed "
+                    "head, pull-request URL and settlement digest"
+                )
+            prior = carried.get(key)
+            if isinstance(prior, dict) and "exact_pr_settlement" in prior:
+                if (
+                    prior.get("settlement_digest") != settled.settlement_digest
+                    or prior.get("exact_pr_settlement") != settled.payload
+                ):
+                    raise PartitionRotationRefused(
+                        f"local settlement for {key!r} conflicts with carried exact-PR provenance"
+                    )
+            carried[key] = {
+                "serialized_repository": identity,
+                "evidence_reference": disposition["pr_url"],
+                "observed_head": disposition["head_sha"],
+                "generation": generation,
+                "disposition": DISPOSITION_OBSERVED_LANDED,
+                "attestation_digest": digest,
+                "settlement_digest": settled.settlement_digest,
+                "exact_pr_settlement": settled.payload,
+            }
+            continue
+        if "settlement_digest" in entry:
+            raise PartitionRotationRefused(
+                f"attestation for {key!r} names a settlement digest but no exact-PR "
+                "settlement authenticates"
+            )
         if entry["disposition"] == DISPOSITION_OBSERVED_LANDED:
+            if isinstance(carried.get(key), dict) and "exact_pr_settlement" in carried[key]:
+                raise PartitionRotationRefused(
+                    f"attestation for {key!r} would overwrite carried exact-PR provenance"
+                )
             carried[key] = {
                 "serialized_repository": identity,
                 "evidence_reference": entry["evidence_url"],
@@ -4866,6 +5038,10 @@ def _rotation_carried_effects(
                 "attestation_digest": digest,
             }
         else:
+            if isinstance(carried.get(key), dict) and "exact_pr_settlement" in carried[key]:
+                raise PartitionRotationRefused(
+                    f"attestation for {key!r} cannot discard carried exact-PR provenance"
+                )
             carried.pop(key, None)
     return carried
 
@@ -4880,6 +5056,7 @@ class _RotationAdjudication:
     predecessor_digests: dict
     carried: dict
     high_water: int
+    exact_pr_settlement_snapshot_sha256: str
 
 
 def _require_receipt_is_snapshot(
@@ -4996,9 +5173,43 @@ def _adjudicate_rotation_predecessor(
                     f"attestation {field} for {key!r} does not match the adapter-start owner record"
                 )
 
-    carried = _rotation_carried_effects(predecessor_receipt, ledger, effects, identity, predecessor_generation, digest)
+    settlement_snapshot_digest = ""
+    if snapshot.exact_pr_settlement_files:
+        from .exact_pr_reconciliation import exact_pr_side_snapshot_sha256
+
+        settlement_snapshot_digest = exact_pr_side_snapshot_sha256(
+            snapshot.exact_pr_settlement_files,
+            snapshot.post_ambiguity_observation_bytes,
+        )
+        if attestation.get("exact_pr_settlement_snapshot_sha256") != settlement_snapshot_digest:
+            raise PartitionRotationRefused(
+                "attestation exact_pr_settlement_snapshot_sha256 does not bind the "
+                "predecessor settlement and observation snapshot"
+            )
+    elif "exact_pr_settlement_snapshot_sha256" in attestation:
+        raise PartitionRotationRefused(
+            "attestation carries an exact-PR settlement snapshot binding but the predecessor "
+            "has no direct settlements"
+        )
+
+    carried = _rotation_carried_effects(
+        predecessor_receipt,
+        snapshot,
+        ledger,
+        effects,
+        identity,
+        predecessor_generation,
+        digest,
+    )
     high_water = max(int(predecessor_receipt.legacy_epoch_high_water), _rotation_admissions_high_water(snapshot))
-    return _RotationAdjudication(effects, digest, expected_digests, carried, high_water)
+    return _RotationAdjudication(
+        effects,
+        digest,
+        expected_digests,
+        carried,
+        high_water,
+        settlement_snapshot_digest,
+    )
 
 
 def _require_sealed_inventory_derives(
@@ -5169,6 +5380,9 @@ def rotate_blocked_partition(
                 effects=adjudicated.effects,
                 high_water=adjudicated.high_water,
                 carried=adjudicated.carried,
+                exact_pr_settlement_snapshot_sha256=(
+                    adjudicated.exact_pr_settlement_snapshot_sha256
+                ),
             ),
             successor_generation=generation,
             generation=generation - 1,
@@ -5215,6 +5429,9 @@ def rotate_blocked_partition(
         effects=adjudicated.effects,
         high_water=adjudicated.high_water,
         carried=adjudicated.carried,
+        exact_pr_settlement_snapshot_sha256=(
+            adjudicated.exact_pr_settlement_snapshot_sha256
+        ),
     )
 
     sealed: dict | None = None
@@ -5324,6 +5541,28 @@ def rotate_blocked_partition(
                     raise PartitionRotationRefused(
                         "the predecessor store changed between attestation and drain; re-attest over "
                         "the current bytes"
+                    )
+                current_settlements, current_observations = _snapshot_exact_pr_side_files(active)
+                if adjudicated.exact_pr_settlement_snapshot_sha256:
+                    from .exact_pr_reconciliation import exact_pr_side_snapshot_sha256
+
+                    current_settlement_digest = exact_pr_side_snapshot_sha256(
+                        current_settlements, current_observations
+                    )
+                    if (
+                        current_settlement_digest
+                        != adjudicated.exact_pr_settlement_snapshot_sha256
+                    ):
+                        latch.resume_active()
+                        raise PartitionRotationRefused(
+                            "the predecessor exact-PR settlement or observation snapshot changed "
+                            "between attestation and drain; re-attest over the current bytes"
+                        )
+                elif current_settlements:
+                    latch.resume_active()
+                    raise PartitionRotationRefused(
+                        "an exact-PR settlement appeared between attestation and drain; re-attest "
+                        "over the current bytes"
                     )
                 # agent-harness#1591: the side file is not digested; a writer that
                 # recorded an observation before the drain is caught here.

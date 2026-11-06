@@ -1552,6 +1552,30 @@ def _observed_after_ambiguity_handoff(
     return fields
 
 
+def present_exact_pr_reconciliation(result: Mapping[str, Any]) -> dict[str, Any]:
+    """The honest, read-only publication view of an exact-PR settlement."""
+    return {
+        "schema": "ExactPRPublicationPresentation.v1",
+        "status": "publication_blocked",
+        "reason": "exact_pr_reconciled",
+        "effective_publication": True,
+        "pr_url": result["pr_url"],
+        "head_sha": result["head_sha"],
+        "branch": result["branch"],
+        "settlement_digest": result["settlement_digest"],
+        "settlement_provenance": result["settlement_provenance"],
+        "title_equal": result["title_equal"],
+        "body_equal": result["body_equal"],
+        "original_body_sha256": result["original_body_sha256"],
+        "observed_body_sha256": result["observed_body_sha256"],
+        "authorization_kind": result["authorization_kind"],
+        "creator_attribution": result["creator_attribution"],
+        "broker_created_pr": False,
+        "independently_approved": False,
+        "provider_call_made": False,
+    }
+
+
 def _human_publication_handoff(
     repo: Path,
     *,
@@ -1641,6 +1665,22 @@ def _human_publication_handoff(
                 "that the historical attempt had no effect"
             ),
             after_rotation="restart any broker process, then retry with the same plan and verification artifact",
+        )
+    if next_step == "inspect_exact_pr_reconciliation":
+        handoff.update(
+            recovery_procedure="docs/fabpub-partition-rotation-runbook.md exact-PR reconciliation section",
+            next_step_source=(
+                "a qualified runtime authenticated an immutable exact-PR settlement overlay; "
+                "the raw ambiguity remains permanent and this publish-resume path stays blocked"
+            ),
+            resume=(
+                "use phase-loop fabpub-inspect-exact-pr with the same qualified runtime and "
+                "transaction inputs; do not retry the original publish"
+            ),
+            runtime_requirement=(
+                "new publication and settlement-aware rotation require the runtime release that "
+                "contains exact-PR reconciliation; older loaded runtimes remain blocked"
+            ),
         )
     if next_step == "adjudicate_publication_by_partition_rotation":
         # agent-harness#1312: the key's evidence is outcome_ambiguous_blocked in
@@ -2257,9 +2297,13 @@ def publish_human_invoked_from_worktree(
                 result.get("terminal_state")
                 == TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED.value
             )
+            exact_pr = result.get("exact_pr_reconciliation")
             result["handoff"] = _human_publication_handoff(
                 repo,
                 next_step=(
+                    "inspect_exact_pr_reconciliation"
+                    if exact_pr is not None
+                    else
                     "review_scope_correction_outcome"
                     if ambiguous and scope_correction_from is not None
                     else "adjudicate_publication_by_partition_rotation"
@@ -2532,5 +2576,8 @@ def publish_from_worktree(
         observation = getattr(execution, "observed_after_ambiguity", None)
         if observation is not None:
             blocked["observed_after_ambiguity"] = {**observation.row(), "durable": observation.durable}
+        exact_pr = getattr(execution, "exact_pr_settlement", None)
+        if exact_pr is not None:
+            blocked["exact_pr_reconciliation"] = present_exact_pr_reconciliation(exact_pr)
         return blocked
     return {"status": "published", "branch": execution.publish_result.branch, "head_sha": execution.publish_result.head_sha, "pr_url": execution.publish_result.pr_url}

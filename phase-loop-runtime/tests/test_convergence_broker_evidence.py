@@ -4,6 +4,22 @@ from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore, 
 from phase_loop_runtime.convergence.provider_contracts import TerminalOutcomeState
 
 
+def test_exact_pr_effective_reader_delegates_without_opening_admissions_lock(
+    tmp_path, monkeypatch
+):
+    from phase_loop_runtime.convergence.broker import exact_pr_reconciliation as exact
+    from phase_loop_runtime.convergence.broker.evidence import BrokerEvidenceStore
+
+    snapshot = object()
+    calls = []
+    monkeypatch.setattr(exact, "snapshot_exact_pr_store", lambda root: calls.append(root) or snapshot)
+    monkeypatch.setattr(exact, "effective_blocking_keys", lambda value: ("other",) if value is snapshot else ())
+    store = object.__new__(BrokerEvidenceStore)
+    store.root = tmp_path
+    assert store.blocking_keys == ("other",)
+    assert calls == [tmp_path]
+
+
 def test_ambiguous_evidence_blocks_after_restart(tmp_path):
     store = BrokerEvidenceStore(tmp_path); store.record_intent("key")
     store.record_terminal(EvidenceRecord("key", TerminalOutcomeState.OUTCOME_AMBIGUOUS_BLOCKED, "test"))
