@@ -584,12 +584,17 @@ def test_an_unverifiable_merge_state_fails(tree, seam):
 # --------------------------------------------------------------------------------------
 
 REPO = Path(__file__).resolve().parents[2]
+WORKFLOW = REPO / ".github/workflows/test.yml"
+workflow_source = pytest.mark.skipif(
+    not WORKFLOW.is_file(),
+    reason="repo-only test workflow absent from standalone-from-wheel layout",
+)
 
 
 def _audit_step() -> dict:
     import yaml
 
-    workflow = yaml.safe_load((REPO / ".github/workflows/test.yml").read_text())
+    workflow = yaml.safe_load(WORKFLOW.read_text())
     job = workflow["jobs"]["lint"]
     assert job["name"] == "lint (pyflakes)"
     assert job.get("permissions", {}).get("pull-requests") == "read"
@@ -598,6 +603,7 @@ def _audit_step() -> dict:
     return steps[0]
 
 
+@workflow_source
 def test_the_required_lint_job_runs_audit_order_on_every_pull_request_and_push_to_main():
     step = _audit_step()
     assert step["if"] == ("github.event_name == 'pull_request' || (github.event_name == 'push'"
@@ -633,6 +639,7 @@ def _run_step(tree: "Tree", tmp_path: Path, base: str, head: str, event: str) ->
                           cwd=tree.root, env=env, capture_output=True, text=True, timeout=300)
 
 
+@workflow_source
 @pytest.mark.parametrize("event", ["pull_request", "push"])
 def test_the_ci_step_runs_the_base_trees_auditor(tree, tmp_path, event):
     """A landing that rewrites its own auditor to pass is still checked by the base's copy,
@@ -652,6 +659,7 @@ def test_the_ci_step_runs_the_base_trees_auditor(tree, tmp_path, event):
     assert "::warning::audit-order: this landing changes the auditor" in done.stdout
 
 
+@workflow_source
 def test_the_ci_step_runs_the_heads_auditor_only_for_the_seam_landing(tree, tmp_path):
     base = tree.commit(record=RECORD_HEAD)
     head = tree.commit(transport=Path(ct.__file__).read_text(),
@@ -668,6 +676,7 @@ def test_a_landing_that_removes_the_auditor_fails(tree, seam):
     assert audit(tree, seam, head) == 1
 
 
+@workflow_source
 def test_the_ci_step_runs_protected_mains_auditor_when_the_base_has_none(tree, tmp_path):
     """A base without the auditor does not fall back to the head's copy while protected
     main has one: main's copy audits the landing."""
