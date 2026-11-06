@@ -14,7 +14,7 @@ module. Names below are normative.
 
 A vendor joins the jail by adding one `JailProfile` to the registry in
 `phase_loop_runtime/seat_profiles.py` (`register(profile)`, `profile_for(leg)`,
-`registered_legs()`). `seat_jail.JAILED_LEGS` becomes `frozenset(registered_legs())`.
+`registered_legs()`) and one `seat_egress/<id>-allowlist.json`, and its own `<leg>_seat_*` codes in `seat_jail.NOTICES`, each with one additive `OD10_CLASSES` entry; no existing entry or descend set changes. `seat_jail.JAILED_LEGS` becomes `frozenset(registered_legs())`.
 
 ```python
 @dataclass(frozen=True)
@@ -96,8 +96,10 @@ The production `SeatCapacity` adapter wraps `seat_uid`'s seat-id lease. The retu
 
 `RouteRequest(leg, seat_key, host_class, run_kind, staged_tree_approved, env)`.
 The resolver derives vendor from the unique `kind="vendor"` readiness row for leg. For a
-registered profile, that value must equal `profile.vendor`. A missing, duplicate or mismatched
-binding ends terminally with `seat_route_identity_invalid` (OD-10 security); no caller-supplied
+registered profile, that value must equal `profile.vendor`. A duplicate row, or a registered
+profile with no such row or a vendor that does not equal it, ends terminally with
+`seat_route_identity_invalid` (OD-10 security). A leg with no `kind="vendor"` row and no
+registered profile is `seat_profile_unregistered`, not a security code. No caller-supplied
 vendor value is used for an exception, remote route, capacity grant or `RemoteRequest`.
 `run_kind` is one of `review`, `advisory_document` or `qualification_candidate`. Only `review`
 is governed by this walk. The other two keep their current routes unchanged
@@ -226,9 +228,10 @@ they respectively signal a failed private-inode boundary, retained credential/ou
 unconfined egress, or a failed containment/activity probe. New failure codes remain terminal
 unless explicitly added to a reviewed descend set.
 
-The table is `seat_route_contract.OD10_CLASSES`. The closure check against `mode_line_codes()`
-runs when `seat_route` is imported, so `seat_route_contract` keeps no import of `seat_jail`.
-Default rule: a code is terminal unless it is in `DESCEND_CODES`.
+The table is `seat_route_contract.OD10_CLASSES`. Importing `seat_route_contract` fails if one
+of its own `CODES` has no `OD10_CLASSES` entry. The closure check of those keys against
+`mode_line_codes()` runs when `seat_route` is imported, so `seat_route_contract` keeps no
+import of `seat_jail`. Default rule: a code is terminal unless it is in `DESCEND_CODES`.
 
 ## 4. Route codes (new; `seat_route_contract.CODES`)
 

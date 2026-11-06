@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: JAILCORE
 roadmap: specs/phase-plans-seats-v1.md
-roadmap_sha256: 29549f8845411c40c6dc817dda51d009132325fadb812b3a16c01aec564adc7a
+roadmap_sha256: 9dc889c61a8d682dde30af65bf1597c1dca9a0df094fac747194d3629939b16e
 automation:
   suite_command: ["timeout", "900", "env", "PYTEST_ADDOPTS=", "python3", "-m", "pytest", "-p", "no:cacheprovider", "-q", "phase-loop-runtime/tests/test_seat_route_contract.py", "phase-loop-runtime/tests/test_seat_egress_allowlists_jailcore.py", "phase-loop-runtime/tests/test_seat_qualification_key.py", "phase-loop-runtime/tests/test_seat_profiles.py", "phase-loop-runtime/tests/test_seat_route.py", "phase-loop-runtime/tests/test_seat_jail.py", "phase-loop-runtime/tests/test_seat_notices.py", "phase-loop-runtime/tests/test_seat_jail_autoqualify.py", "phase-loop-runtime/tests/test_gemini_seat_egress_1170.py", "phase-loop-runtime/tests/test_sealed_seat_never_counts.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py"]
 ---
@@ -20,7 +20,7 @@ INVENTORY and CLAUDE plans.
 **Frozen artifact.** `plans/seats-jailcore-route-contract.md` is normative for the profile
 fields, the resolver walk, the descend list, route codes, the qualification key, the route
 policy and per-provider egress, at sha256
-`d912090c88ba431de10e82f83fea40a54bf422d3d1c91a2621d421dad91ddd9b`. This plan points at its
+`001ed2e853aa00aae9406434c0945add701d71c15b0710f66a62a2cf573339d9`. This plan points at its
 sections (§1–§8) and does not repeat them. CODEX, GROK, PI, CLAUDENET and REMOTE plan against that file in parallel straight away.
 
 **Base (current main).** FIRSTSEAT L1–L5 and the CLAUDE lanes have landed. FIRSTSEAT lanes A,
@@ -122,7 +122,7 @@ SL-4 — Documentation and inventory reducer (SL-docs)
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-0.1 | test | — | `phase-loop-runtime/tests/test_seat_route_contract.py` | Literal equality of `DESCEND_CODES`, `REMOTE_DESCEND_CODES`, `CAPACITY_CODES` and the security set, against constants in the test. Every `CODES` entry has a class, non-empty what/why/fix and no fix line naming a sealed, inline or key route. The OD-10 table's keys equal `mode_line_codes()` exactly; its security members include the frozen §3 set and every security entry of `claude_seat_transport.CODES`. Deleting any classification or adding an unclassified code fails import and the test. `key_digest` changes when any `QualificationKey` field changes. `validate_route_policy` rejects an overlay that sets anything but `capacity_offload`, and rejects a wildcard vendor. The module imports no I/O module. | `V0` |
+| SL-0.1 | test | — | `phase-loop-runtime/tests/test_seat_route_contract.py` | Literal equality of `DESCEND_CODES`, `REMOTE_DESCEND_CODES`, `CAPACITY_CODES` and the security set, against constants in the test. Every `CODES` entry has a class, non-empty what/why/fix and no fix line naming a sealed, inline or key route. `OD10_CLASSES` security members include the frozen §3 set and every security entry of `claude_seat_transport.CODES`. A `seat_route_contract.CODES` entry missing from `OD10_CLASSES` fails that module's import and this test. Equality of `OD10_CLASSES` with `mode_line_codes()` fails `seat_route` import, which SL-3.3 covers, because SL-0's module imports no `seat_jail`. `key_digest` changes when any `QualificationKey` field changes. `validate_route_policy` rejects an overlay that sets anything but `capacity_offload`, and rejects a wildcard vendor. The module imports no I/O module. | `V0` |
 | SL-0.2 | impl | SL-0.1 | `phase-loop-runtime/src/phase_loop_runtime/seat_route_contract.py` | — | — |
 | SL-0.3 | verify | SL-0.2 | SL-0 files | all SL-0 tests | `V0` |
 
@@ -203,8 +203,11 @@ seat-mode builder, with recording fakes for the remote and native rungs.
   Mutation control: an acquire/release availability probe before the real acquire fails.
 - The current matrix's remote inventory rows do not route any candidate local vendor row
   remote. One vendor can be local on one host class and remote on another.
-- A request/profile/readiness-row vendor mismatch is terminal
-  `seat_route_identity_invalid`; no remote, native or exception path is entered.
+- A request/profile/readiness-row vendor mismatch, or a registered profile with no unique
+  `kind="vendor"` row, is terminal `seat_route_identity_invalid`; no remote, native or
+  exception path is entered. A leg with no vendor row and no profile, including opencode
+  and cursor, stays `seat_profile_unregistered`.
+- Importing `seat_route` fails when `OD10_CLASSES` keys differ from `mode_line_codes()`.
 - (i) Store: a v2 pass under key K is refused under K′ for each part. A v1 record is not
   honoured.
 - (j) `advisory_document`, `qualification_candidate` and `under_claude_code` keep their
@@ -256,14 +259,26 @@ The fix belongs to CLAUDENET (digest) or CLAUDE (transport argv), not here.
 - **Single-writer files.** `seat_jail.py`, `panel_invoker.py`, `seat_preflight.py`,
   `seat_uid.py` and the qualification store modules belong to SL-3. `seat_egress_proxy.py`
   belongs to SL-1. `seat_route_contract.py` belongs to SL-0; later phases change it only by
-  plan amendment. `panel_invoker.py` is also written by TEAMHOST lane A and v11 PANELSPLIT;
+  plan amendment, except the additive `OD10_CLASSES` entries for their own codes (below). `panel_invoker.py` is also written by TEAMHOST lane A and v11 PANELSPLIT;
   whichever lands second rebases. If PANELSPLIT has moved the seat-launch code, SL-3 edits
   the named successor modules and records the path change in its PR.
   `docs/review-seats-readiness.md` and `seat_window.py` are read-only here.
+- **TEAMHOST shared edits (agent-harness#1859, its contract §8).** TEAMHOST may edit only
+  these named parts of JAILCORE-owned files, and nothing else in them:
+  - `seat_uid.py`: `seat_runtime_dir`, and the `subordinate_range` conjunct of the L3
+    prerequisite (today in `seat_uid_available`);
+  - `seat_jail_autoqualify.py`: `fix_for`;
+  - `seat_egress/proxy.mjs`: the front parser, meaning `clientHelloSNI` and the `front`
+    connection handler;
+  - `seat_jail.py`: the Gemini overlay, meaning `GEMINI_WRITABLE_CONFIG_DIRS`,
+    `GEMINI_WRITABLE_DOTDIR_DIRS` and `_gemini_binds`, in their registered Gemini-profile
+    form once SL-3 moves them to `seat_profiles.py`.
+
+  Whichever of JAILCORE and TEAMHOST lands second rebases.
 - **Interfaces downstream phases add.** Each later phase adds exactly the following, with no
   core edit:
   - CODEX, GROK and PI each add one `JailProfile` in `seat_profiles.py` and one
-    `seat_egress/<id>-allowlist.json`.
+    `seat_egress/<id>-allowlist.json`, and its own `<leg>_seat_*` codes in `seat_jail.NOTICES`, each with one additive `OD10_CLASSES` entry; no existing entry or descend set changes.
   - CLAUDENET sets Claude's `allowlist_id` and containment fields.
   - REMOTE replaces `INACTIVE_REMOTE_RUNG`, and fills `REMOTE_DESCEND_CODES` only under
     security review.
@@ -308,7 +323,7 @@ The fix belongs to CLAUDENET (digest) or CLAUDE (transport argv), not here.
 ## Acceptance Criteria
 
 - [ ] EC-JAILCORE-1 — proven by `V3` (`test_seat_profiles.py -k digest`) and by `plans/evidence/seat-jailcore/digest-equality.json` from `python -m phase_loop_runtime.seat_profiles digest-receipt` run on base and head on one host. Falsified by the one-bind mutation control passing, or by the synthetic third profile needing a core edit. Path-entered control: the mutation enters through the real `build_seat_jail` and `actual_profile_digest`.
-- [ ] EC-JAILCORE-2 — proven by `V4` (`test_seat_route.py` cases a–d, f–h, the lease and identity cases after (h), and j). Falsified by any non-descend code entering a recording rung, or by a sealed mode for a review seat. Path-entered control: each code enters at its step through `_seat_route_for_spawn`.
+- [ ] EC-JAILCORE-2 — proven by `V4` (`test_seat_route.py` cases a–d, f–h, the lease, matrix-reduction and identity cases after (h), and j). Falsified by any non-descend code entering a recording rung, or by a sealed mode for a review seat. Path-entered control: each code enters at its step through `_seat_route_for_spawn`.
 - [ ] EC-JAILCORE-3 — proven by `V1` (`test_seat_egress_allowlists_jailcore.py`) and `VL`. Falsified by fixture allowlist A's proxy admitting B's host or an unlisted host, or by a profile with no allowlist launching outside its exception. Path-entered control: requests enter through the real `proxy.mjs` and the jailed tool command.
 - [ ] EC-JAILCORE-4 — proven by `V2` (`test_seat_qualification_key.py`) and `V4` case i. Falsified by a pass honoured across any changed key part. Path-entered control: through `pass_record_verdict` on a private fixture store.
 - [ ] EC-JAILCORE-5 — proven by `V4` case e. Falsified by Pi or any profile-less leg reaching `unconfined` outside an unexpired exception. Path-entered control: through the seat-mode builder and `_default_spawn` with an injected clock.
