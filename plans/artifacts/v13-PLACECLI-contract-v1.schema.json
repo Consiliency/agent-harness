@@ -92,6 +92,15 @@
     "pi_runner_request": "A pi-runner ReserveRequest names full-remote-pi-runner as the ranked-workload policy profile. Before admission, the trusted target binding resolves an openshell attempt to that vector and a local attempt to minimal-without-app. The admitted Reservation is authoritative and records the actual resolved name and digest; no policy changes after admission.",
     "pi_runner_local": "The local admission uses minimal-without-app, returns bridge null, consumes one live_sandboxes slot before success, and remains subject to every shared local-headroom threshold. The reservation policy_vector and policy_digest name that resolved local vector."
   },
+  "x-provider-egress": {
+    "request_surface": "ReserveRequest.providers is required, non-empty and unique. Every item is interpreted solely as an operator-configured provider-name key, never as a URL, hostname, endpoint or model name; endpoint syntax is rejected. Model selection within a provider remains the client harness's concern and is not represented in this protocol.",
+    "registry": "The selected per-client operator configuration chooses an operator-owned provider allowlist, either directly or by reference to a reviewed artifact under contracts/placement/vectors/. config_sha256 binds the chosen name-to-endpoint mapping. An unknown name, a name not permitted for the selected client or workload, or a name not permitted by the resolved target policy_vector refuses before any capacity probe, coordinator call or lease effect with outcome refused and code sandbox_placement_provider_refused.",
+    "effective_egress": "For every target, the effective egress set is exactly the resolved policy_vector baseline union the allowlisted endpoint set for each declared provider, with duplicates removed, and contains nothing else. The same provider resolution and effective set apply to local sandboxes. The request never carries a hostname, URL, endpoint or inline egress rule.",
+    "digest": "Reservation.providers records the declared names. Reservation.egress_sha256 is sha256: plus the lowercase hex SHA-256 of the UTF-8 RFC 8785 serialization of the effective egress grant after provider names and endpoint/rule records are sorted lexicographically and duplicates are removed. No credential or credential-derived value enters the grant or digest.",
+    "launch_binding": "LANEEXEC must set admitted_launch_envelope.v2 launch.grants.egress_policy_sha256 to {canonical_form: rfc8785, sha256: Reservation.egress_sha256} and refuse launch_input_unbound if the reservation providers, resolved grant and digest do not agree. This binds the effective set into the launch envelope without adding provider or model fields to that external contract.",
+    "credentials": "The placement service holds no model-provider key, token or refresh token, and none enters a sandbox. Model connection bytes go to the requester's credential proxy over the admitted client link; a remote link uses the reservation bridge, while a local launcher uses the same requester-owned proxy boundary in process and keeps Reservation.bridge null. The sandbox holds placeholders only. The Pi reference is Consiliency/agent-toolkit commit 9304a5b92c8c409473ca3d2182557b8592697476, harnesses/pi/sandbox/cred-proxy.mjs and docs/remote-placement.md. Other multi-vendor harnesses, including OpenCode, provide the same requester-owned boundary.",
+    "target_clearance": "An owned-host target such as ai needs the generic egress-and-credential probe receipt for the resolved set. A third-party target such as E2B additionally needs a current OD-7 clearance for every declared provider; one missing clearance refuses that target with sandbox_placement_provider_refused. E2B remains disabled until its separate activation gates pass."
+  },
   "x-identity-inventories": [
     {
       "client": "agent-harness",
@@ -138,16 +147,16 @@
       "local only when every published headroom threshold admits",
       "e2b only after a later owner account-and-spend activation"
     ],
-    "workload_rank_policy": "pi-runner is the only workload on agent_and_executor_order. leg, qualification and implementation are the existing seat workloads. For those three, reserve does not rank and does not probe. It admits only the single target already chosen by the landed SEATS JAILCORE route decision in trusted operator configuration. A missing decision refuses with sandbox_placement_workload_unsupported before any probe. An owned-host remote seat target also requires the current generic egress-and-credential probe receipt. A third-party seat target also requires that vendor's OD-7 record. The request carries no target, rank, certificate or route decision.",
+    "workload_rank_policy": "pi-runner is the only workload on agent_and_executor_order. leg, qualification and implementation are the existing seat workloads. For those three, reserve does not rank and does not probe. It admits only the single target already chosen by the landed SEATS JAILCORE route decision in trusted operator configuration. A missing decision refuses with sandbox_placement_workload_unsupported before any probe. An owned-host remote seat target also requires the current generic egress-and-credential probe receipt for the declared providers. A third-party seat target also requires a current OD-7 record for every declared provider. The request carries no target, rank, certificate or route decision.",
     "reserve_idempotency": "The same request_id and the same canonical request body return the original response and do not create a second reservation. The same request_id with a different canonical body refuses with sandbox_placement_refused and creates nothing. Reap is not the retry path for one lost reserve response.",
     "release_binding": "release loads the stored reservation by reservation_id from the inventory selected by --client. A client mismatch or any supplied reservation field that differs from the stored record returns state rejected and code sandbox_placement_refused, releases nothing, changes no stored flag, arms no barrier and leaves the lease held. A repeated release of the same journaled reservation returns released while its tombstone remains, or unknown_reservation after tombstone expiry; neither state creates an admission barrier.",
     "outcomes_and_effects": "unreachable means a certain failure with nothing held. timeout means an effect may be held. A failure after a request may have been sent is timeout, never unreachable. Its barrier applies only to that reservation in the selected client inventory; it blocks later targets or retries for that reserve walk until release confirms the barrier, but never blocks another reservation, another client or the host.",
-    "bridge_bytes": "For pi-runner on openshell the runtime creates one directory in its own state directory, mode 0700, containing one Unix socket, mode 0600. The socket is a bidirectional raw byte pipe of the admitted ForwardTcp stream. The toolkit keeps link framing, relay and credentials. The caller does not supply the path, service name, host or port. Every other reservation has bridge null.",
+    "bridge_bytes": "For pi-runner on openshell the runtime creates one directory in its own state directory, mode 0700, containing one Unix socket, mode 0600. The socket is a bidirectional raw byte pipe of the admitted ForwardTcp stream, including model connection bytes carried to the requester's credential proxy. The toolkit keeps link framing, relay and credentials; the placement service and sandbox hold no provider credential. The caller does not supply the path, service name, host or port. Every other reservation has bridge null; local launchers use their requester-owned credential proxy in process.",
     "local_pressure_admission": "A local target admits only when one observation, no older than the configured maximum age, satisfies every threshold from the selected host's operator configuration: MemAvailable is at least max(the byte floor, ceil(MemTotal times the configured fraction)); one-minute load per online CPU as percent is below its exclusive cap; /proc/pressure/io full avg10 and /proc/pressure/memory some avg10 are each below their exclusive caps; and live sandboxes are below their exclusive cap. Any unknown or stale dimension, or missing, unreadable or malformed PSI file/line, is at_capacity.",
     "local_cgroup_execution": "Every local reservation runs in its own delegated cgroup. Host operator configuration supplies memory.max, cpu.weight and either io.weight or an io.max bandwidth cap. The effective config_sha256 binds those caps. Before local admission, missing cgroup delegation, a missing required cpu/memory/io controller or an invalid cap refuses with outcome refused and code sandbox_placement_capability_unmet; the workload never runs uncapped. LANEEXEC applies the caps to placed workloads. The SEATS seat launcher must apply the same host caps before the coordinator may route a local seat launch.",
     "reap_scope_and_order": "reap examines only the inventory selected by --client and returns exactly one InventoryReapResult whose client and inventory match that selection. It can never inspect or mutate the other client's inventory. Within that inventory, eligible journal entries are attempted by created_at then reservation_id, max_items bounds attempts, and an uncertain item remains cleanup_pending without creating a host-wide or client-wide admission barrier.",
     "before_admission": "reserve may make a fresh admission attempt at each ranked target and records every attempt in trail. A typed at_capacity result authorizes only a new admission attempt.",
-    "after_admission": "The reservation binds exactly one target and transport_id. The admitted launch envelope must name that transport_id. No route, transport, executable, environment, policy or deadline fallback is allowed after admission; a change requires a new envelope and a new reserve request_id.",
+    "after_admission": "The reservation binds exactly one target, transport_id, provider-name list and effective egress digest. The admitted launch envelope must name that transport_id and bind the same egress_sha256 through launch.grants.egress_policy_sha256 with canonical_form rfc8785. No route, transport, executable, environment, policy, provider, egress or deadline fallback is allowed after admission; a change requires a new envelope and a new reserve request_id.",
     "uncertain_cleanup": "A bare failure after a request may have taken effect blocks every later target of that reserve walk until release confirms its per-reservation, per-client barrier. Independent reservations continue.",
     "caller_context": "Opaque metadata echoed exactly and never used for identity, authority, routing, policy, correlation or launch input. It must contain no secret value or secret-derived digest.",
     "remote_writer_tier": "provider_readonly_patch_return_audit",
@@ -174,6 +183,20 @@
     "OpaqueId": {
       "type": "string",
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"
+    },
+    "ProviderName": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+      "description": "Operator-configured provider-name key only. Dots, slashes and colons are excluded; the value is never interpreted as a hostname, URL, endpoint or model name."
+    },
+    "ProviderNames": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/ProviderName"
+      }
     },
     "Timestamp": {
       "type": "string",
@@ -341,6 +364,7 @@
         "sandbox_placement_local_release_unconfirmed",
         "sandbox_placement_not_enrolled",
         "sandbox_placement_identity_mismatch",
+        "sandbox_placement_provider_refused",
         "sandbox_placement_workload_unsupported",
         "sandbox_placement_lost_after_launch",
         "sandbox_placement_end_reached"
@@ -571,6 +595,8 @@
         "image_digest",
         "policy_vector",
         "policy_digest",
+        "providers",
+        "egress_sha256",
         "client",
         "inventory",
         "rank_policy",
@@ -602,6 +628,12 @@
           "$ref": "#/$defs/PolicyVector"
         },
         "policy_digest": {
+          "$ref": "#/$defs/Sha256Digest"
+        },
+        "providers": {
+          "$ref": "#/$defs/ProviderNames"
+        },
+        "egress_sha256": {
           "$ref": "#/$defs/Sha256Digest"
         },
         "client": {
@@ -796,6 +828,7 @@
         "ttl_s",
         "image_digest",
         "policy_vector",
+        "providers",
         "deadline_ms",
         "caller_context"
       ],
@@ -819,6 +852,9 @@
         },
         "policy_vector": {
           "$ref": "#/$defs/PolicyVector"
+        },
+        "providers": {
+          "$ref": "#/$defs/ProviderNames"
         },
         "deadline_ms": {
           "type": "integer",

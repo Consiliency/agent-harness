@@ -14623,11 +14623,11 @@
       "file": "plans/phase-plan-v13-PLACECLI.md",
       "frozen_inputs": {
         "plans/artifacts/v13-PLACECLI-contract-v1.schema.json": {
-          "sha256": "fcb45536d18fe074d00b3607dc20a05bfce296ba71536f0d294667e30b2370a0"
+          "sha256": "82668b3871d6697444bc3da2cbdbf910d3c63d541b5d2cedeeabc8856949592a"
         }
       },
       "gate_status": "declared_not_produced",
-      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20261106T180459Z-v13-PLACECLI-headroom.md",
+      "handoff_ref": ".dev-skills/handoffs/codex-plan-phase/20261106T183516Z-v13-PLACECLI-provider-egress.md",
       "if_gates_produced": [
         "IF-0-PLACECLI-1",
         "IF-0-PLACECLI-2"
@@ -14642,7 +14642,7 @@
       "owner_skill": "codex-plan-phase",
       "phase_alias": "PLACECLI",
       "planning_artifact_only": true,
-      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/718db1cd/t3-placement-consolidation-roadmap/20261106T180459Z-v13-PLACECLI-headroom.md",
+      "reflection_ref": "/home/viperjuice/.codex/skills/codex-plan-phase/reflections/718db1cd/t3-placement-consolidation-roadmap/20261106T183516Z-v13-PLACECLI-provider-egress.md",
       "review_status": "pending",
       "roadmap_ref": {
         "file": "specs/phase-plans-v13.md",
@@ -14652,9 +14652,9 @@
       },
       "slug": "v13-PLACECLI",
       "status": "committed",
-      "task_summary": "Placement process boundary, per-host fail-closed headroom, explicit client config, caller-scoped lifecycle and ForwardTcp bridge.",
+      "task_summary": "Placement process boundary, named-provider egress binding, credential-proxy bridge, fail-closed headroom and caller-scoped lifecycle.",
       "type": "phase",
-      "updated_at": "2026-11-06T18:04:59Z"
+      "updated_at": "2026-11-06T18:35:16Z"
     }
   ],
   "schema_version": 1
