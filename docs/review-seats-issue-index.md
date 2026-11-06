@@ -91,25 +91,26 @@ roadmap itself separates parts.
 
 ## Outstanding records
 
-`plans/evidence/seat-inventory/dispositions.json` holds the receipts. No GitHub record below
-has been written yet, so EC-INVENTORY-3, EC-INVENTORY-4 and EC-INVENTORY-6 stay open.
+`plans/evidence/seat-inventory/dispositions.json` holds the receipts. The disposition
+comments, the Pi issue and the agent-harness#896 retirement comment are posted and
+hash-checked. EC-INVENTORY-3 stays open until the four owner closures land in later phases.
 
 | Record | Target | Owner | State |
 | --- | --- | --- | --- |
-| disposition comment | agent-harness#1740 | EC-INVENTORY-3 | pending |
-| owner closure | agent-harness#1740 | EC-CLAUDE-2 | pending |
-| disposition comment | agent-harness#1744 | EC-INVENTORY-3 | pending |
-| owner closure | agent-harness#1744 | EC-CLAUDE-3 | pending |
-| disposition comment | agent-harness#1641 | EC-INVENTORY-3 | pending |
-| owner closure | agent-harness#1641 | EC-CLAUDETUI-1 | pending |
-| disposition comment | agent-harness#1623 | EC-INVENTORY-3 | pending |
-| owner closure | agent-harness#1623 | EC-CLAUDETUI-1 | pending |
-| disposition comment | agent-harness#1644 | EC-INVENTORY-3 | pending |
-| phase closure | agent-harness#1644 | EC-INVENTORY-3 | pending |
-| disposition comment | agent-harness#1731 | EC-INVENTORY-3 | pending |
-| phase closure | agent-harness#1731 | EC-INVENTORY-3 | pending |
-| file issue | Pi review-seat issue | EC-INVENTORY-4 | pending |
-| retirement comment | agent-harness#896 | EC-INVENTORY-6 | pending |
+| disposition comment | agent-harness#1740 | EC-INVENTORY-3 | [posted](https://github.com/Consiliency/agent-harness/pull/1740#issuecomment-6690192078) |
+| owner closure | agent-harness#1740 | EC-CLAUDE-2 | pending (PR open) |
+| disposition comment | agent-harness#1744 | EC-INVENTORY-3 | [posted](https://github.com/Consiliency/agent-harness/pull/1744#issuecomment-6690192495) |
+| owner closure | agent-harness#1744 | EC-CLAUDE-3 | pending (PR open) |
+| disposition comment | agent-harness#1641 | EC-INVENTORY-3 | [posted](https://github.com/Consiliency/agent-harness/pull/1641#issuecomment-6690192894) |
+| owner closure | agent-harness#1641 | EC-CLAUDETUI-1 | pending (PR open) |
+| disposition comment | agent-harness#1623 | EC-INVENTORY-3 | [posted](https://github.com/Consiliency/agent-harness/pull/1623#issuecomment-6690193407) |
+| owner closure | agent-harness#1623 | EC-CLAUDETUI-1 | pending (PR open) |
+| disposition comment | agent-harness#1644 | EC-INVENTORY-3 | [posted](https://github.com/Consiliency/agent-harness/pull/1644#issuecomment-6690193918) |
+| phase closure | agent-harness#1644 | EC-INVENTORY-3 | closed |
+| disposition comment | agent-harness#1731 | EC-INVENTORY-3 | [posted](https://github.com/Consiliency/agent-harness/pull/1731#issuecomment-6690194320) |
+| phase closure | agent-harness#1731 | EC-INVENTORY-3 | closed |
+| file issue | [Pi review-seat issue](https://github.com/Consiliency/agent-harness/issues/1854) | EC-INVENTORY-4 | filed as agent-harness#1854 |
+| retirement comment | agent-harness#896 | EC-INVENTORY-6 | [posted](https://github.com/Consiliency/agent-harness/issues/896#issuecomment-6690196586) |
 
 agent-harness#1781 takes no action. The proposal banner for agent-harness#848 is in place.
 
