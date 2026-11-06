@@ -1356,6 +1356,11 @@ def test_seats_firstseat_teamhost_containment_mutants(mutant, tmp_path):
         changed = dataclasses.replace(inputs, measured=_firstseat_leg_event(
             measured, get_userinfo))
         assert q.reduce_containment(changed).containment["refresh_detection"] == "pass"
+        outside = dataclasses.replace(measured.stream, outside_events=(event,))
+        changed = dataclasses.replace(inputs, measured=dataclasses.replace(
+            measured, stream=outside))
+        assert q.reduce_containment(changed).containment[
+            "refresh_detection"] == "gemini_seat_token_refreshed_in_jail"
         allowed = dataclasses.replace(event, decision="allow")
         stream = dataclasses.replace(expired.stream, outside_events=(allowed,))
         changed = dataclasses.replace(inputs, expired_copy=dataclasses.replace(

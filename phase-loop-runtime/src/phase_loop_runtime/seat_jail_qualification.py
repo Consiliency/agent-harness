@@ -2240,10 +2240,18 @@ def _bracket_valid(result: WindowLaunchResult) -> bool:
 
 def _leg_token_events(result: WindowLaunchResult | None
                       ) -> tuple[seat_egress_proxy.RequestEvent, ...]:
-    if result is None:
+    if result is None or result.stream is None:
         return ()
-    leg = _window(result.stream, "leg")
-    return tuple(event for event in (leg.events if leg is not None else ())
+    return tuple(event for window in result.stream.windows if window.label == "leg"
+                 for event in window.events
+                 if _request_is_token_endpoint(event))
+
+
+def _outside_token_events(result: WindowLaunchResult | None
+                          ) -> tuple[seat_egress_proxy.RequestEvent, ...]:
+    if result is None or result.stream is None:
+        return ()
+    return tuple(event for event in result.stream.outside_events
                  if _request_is_token_endpoint(event))
 
 
@@ -2255,12 +2263,12 @@ def _token_endpoint_events(result: WindowLaunchResult | None
 
 def _unexpected_bracket_token_events(result: WindowLaunchResult | None
                                      ) -> tuple[seat_egress_proxy.RequestEvent, ...]:
-    if result is None:
+    if result is None or result.stream is None:
         return ()
-    bracket = _window(result.stream, "bracket")
-    token_events = tuple(event for event in (bracket.events if bracket is not None else ())
+    brackets = tuple(window for window in result.stream.windows if window.label == "bracket")
+    token_events = tuple(event for window in brackets for event in window.events
                          if _request_is_token_endpoint(event))
-    if (len(token_events) == 1 and token_events[0].decision == "deny"
+    if (len(brackets) == 1 and len(token_events) == 1 and token_events[0].decision == "deny"
             and result.bracket is not None and result.bracket.post_refused):
         return ()
     return token_events
@@ -2435,6 +2443,7 @@ def reduce_containment(inputs: ContainmentInputs) -> ContainmentReduction:
     credential_positive = bool((measured and _credential_event(measured))
                                or (expired and _credential_event(expired)))
     refresh_positive = bool(credential_positive or _leg_token_events(measured)
+                            or _outside_token_events(measured)
                             or _unexpected_bracket_token_events(measured)
                             or any(event.decision == "allow"
                                    for event in _token_endpoint_events(expired)))
@@ -2472,6 +2481,7 @@ def reduce_containment(inputs: ContainmentInputs) -> ContainmentReduction:
         (observed_measured is not None and _credential_event(observed_measured))
         or (observed_expired is not None and _credential_event(observed_expired))
         or _leg_token_events(observed_measured)
+        or _outside_token_events(observed_measured)
         or _unexpected_bracket_token_events(observed_measured)
         or any(event.decision == "allow"
                for event in _token_endpoint_events(observed_expired))
@@ -2549,6 +2559,7 @@ def reduce_containment(inputs: ContainmentInputs) -> ContainmentReduction:
             if any(event.host in values for values in inputs.layout.canary_hosts.values())),
         "token_endpoint_events": {
             "measured_leg": _leg_token_events(observed_measured),
+            "measured_outside": _outside_token_events(observed_measured),
             "measured_bracket_unexpected": _unexpected_bracket_token_events(
                 observed_measured),
             "expired_leg": _token_endpoint_events(observed_expired),
