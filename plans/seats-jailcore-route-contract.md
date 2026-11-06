@@ -78,10 +78,27 @@ documents for `claude` and `gemini` before and after the registry change.
 ## 2. Resolver walk (EC-JAILCORE-2, EC-JAILCORE-5)
 
 `seat_route.resolve(request: RouteRequest, *, policy: RoutePolicy, remote: RemoteRung,
-native: NativeFillRung) -> RouteDecision`. It runs before launch only and is the one decision
-`_seat_route_for_spawn` and the seat-mode line both read. It has no `leg ==` branch.
+native: NativeFillRung, capacity: SeatCapacity) -> RouteDecision`. It runs before launch only
+and is the one decision `_seat_route_for_spawn` and the seat-mode line both read. It has no
+`leg ==` branch.
 
-`RouteRequest(leg, vendor, seat_key, host_class, run_kind, staged_tree_approved, env)`.
+```python
+class SeatLease(Protocol):
+    seat_id: int
+    def release(self) -> None: ...      # idempotent
+
+class SeatCapacity(Protocol):
+    def try_lease(self) -> SeatLease | None: ...   # nonblocking; None means no free seat id
+```
+
+The production `SeatCapacity` adapter wraps `seat_uid`'s seat-id lease. The returned
+`RouteDecision` owns the optional lease (`RouteDecision.lease`).
+
+`RouteRequest(leg, seat_key, host_class, run_kind, staged_tree_approved, env)`.
+The resolver derives vendor from the unique `kind="vendor"` readiness row for leg. For a
+registered profile, that value must equal `profile.vendor`. A missing, duplicate or mismatched
+binding ends terminally with `seat_route_identity_invalid` (OD-10 security); no caller-supplied
+vendor value is used for an exception, remote route, capacity grant or `RemoteRequest`.
 `run_kind` is one of `review`, `advisory_document` or `qualification_candidate`. Only `review`
 is governed by this walk. The other two keep their current routes unchanged
 (agent-harness#802, agent-harness#1170). A Claude seat deferred to the driving session
@@ -98,19 +115,21 @@ Local rung, in order; the first step that yields a code ends the rung:
 | L4 | `profile.variant` (Claude transport selector) | `panel_claude_route_invalid` / `panel_claude_transport_not_admitted` |
 | L5 | `profile.credential_present()` | `profile.credential_missing_code` |
 | L6 | `profile.preconditions` in order | the precondition's code |
-| L7 | allowlist set: `seat_egress_proxy.unavailable_code()` is None. Unset: unexpired `open egress` exception | `seat_egress_not_installed` / `seat_egress_integrity_failed` / `seat_egress_tls_unterminated`. Unset with no exception: `seat_egress_allowlist_missing`; expired: `seat_route_exception_expired` |
+| L7 | allowlist set: `seat_egress_proxy.unavailable_code()` is None. Unset: unexpired `open egress` exception | `seat_egress_not_installed` / `seat_egress_integrity_failed` / `seat_egress_tls_unterminated` / `seat_egress_start_failed`. Unset with no exception: `seat_egress_allowlist_missing`; expired: `seat_route_exception_expired` |
 | L8 | qualification pass for the §5 key (EC-EXECFIND-2; A2 auto-qualify) | `seat_jail_qualification_failed` / `seat_sandbox_refused:jail_unqualified` / `seat_sandbox_refused:pass_store_unsafe` |
-| L9 | free seat id (`seat_uid` lease available); runs only after L0–L8 pass | `seat_local_capacity_exhausted` |
+| L9 | atomically acquire and hold one seat-id lease; runs only after L0-L8 pass | `seat_local_capacity_exhausted` |
 
-L9 splits today's `seat_uid_available()`. Missing helpers, range or a uid-0 operator stays
-`seat_sandbox_unavailable_seat_uid` at L3. No free seat id is capacity, not host capability,
-and it is checked last so it never hides another step's code. A lease that fails at launch
-after L9 saw a free id is also `seat_local_capacity_exhausted`, before launch.
+L3 checks only the helpers, ranges and non-root operator prerequisite. L9 calls the injected
+seat-capacity adapter's nonblocking `try_lease()` exactly once. A successful reservation is
+returned with the local decision and remains held through provider launch and the leg's
+lifetime; the caller releases it on every exit. No availability probe acquires and releases a
+lease before the real acquisition. Failure to acquire is the one pre-launch capacity event
+that can enter §6.
 
 Walk rules (each is a test):
 
 - **W1.** A later rung is entered only when the local code is in `DESCEND_CODES` (§3), or
-  the policy routes the vendor remote (§6, R-routed), or the capacity gate opens (§6).
+  `(vendor, host_class) in routed_remote` (§6, R-routed), or the capacity gate opens (§6).
   Any other code yields mode `degraded` with that code, and no later rung is consulted.
 - **W2.** Remote rung: `remote.admit(RemoteRequest(leg, vendor, host_class, trigger,
   trigger_code))` returns `RemoteAdmission(placed, code, activation_ref)`. JAILCORE ships
@@ -140,7 +159,7 @@ class RouteStep:
 @dataclass(frozen=True)
 class RouteDecision:
     leg: str
-    vendor: str
+    vendor: str                   # derived from the readiness row, never caller-supplied
     mode: Literal["jailed", "unconfined", "remote", "native", "degraded"]
     code: str | None              # the one mode-line code; None only for a clean `jailed`
     steps: tuple[RouteStep, ...]  # one entry per evaluated step that failed or skipped
@@ -148,6 +167,7 @@ class RouteDecision:
     variant: str | None           # Claude transport when jailed
     qualification_key: QualificationKey | None
     also: tuple[str, ...]         # sibling notices, e.g. seat_route_policy_ignored
+    lease: SeatLease | None       # held for a local `jailed` decision; released by the caller
 ```
 
 `seat_preflight` gains `MODE_REMOTE = "remote"`. Nothing emits it until REMOTE activates a
@@ -169,12 +189,17 @@ CAPACITY_CODES = frozenset({"seat_local_capacity_exhausted"})  # never descends;
 `gemini_seat_egress_unavailable` is split by cause, inside
 `seat_egress_proxy.unavailable_code()`:
 
-- `seat_egress_not_installed` means node or srt is absent: `_node()` fails, or
-  `verify_install` cannot read `package.json` or the lock file.
-- `seat_egress_integrity_failed` means an installed tree does not verify: wrong version, wrong
-  package record, a link, or a tree digest mismatch. It is terminal and `security`.
-- `seat_egress_tls_unterminated` means the proxy started without TLS inspection or without its
-  fail-closed front. It is terminal and `security`.
+- `seat_egress_not_installed` (ordinary, descend): trusted Node is absent, cannot execute or
+  is below the supported version, or the srt package/lock is absent.
+- `seat_egress_integrity_failed` (security, terminal): any present install record/tree or
+  existing CA artifact is unreadable, malformed, linked, wrongly owned/mode, wrong-version or
+  digest/integrity-mismatched.
+- `seat_egress_tls_unterminated` (security, terminal): the ready attestation does not prove
+  the fail-closed front, TLS termination and inner-SNI enforcement.
+- `seat_egress_start_failed` (ordinary, terminal): verified inputs exist but CA generation,
+  process spawn, readiness parsing or readiness timeout fails operationally.
+Every `EgressLayerUnavailable` raise site sets one of these codes directly; no caller maps
+free text to a code.
 
 The split names are vendor-neutral because the srt install is one host install for every
 allowlist. `gemini_seat_egress_unavailable` stays in `NOTICES` for record readback and is no
@@ -187,12 +212,23 @@ OD-10 `security` codes (private record and owner summary; never filed publicly):
 - `gemini_seat_token_in_output`, `gemini_seat_token_scope_excess`,
   `gemini_seat_egress_unconfined`, `gemini_seat_token_refreshed_in_jail`,
   `gemini_seat_credential_unusable`;
-- `seat_egress_integrity_failed`, `seat_egress_tls_unterminated`;
+- `seat_egress_integrity_failed`, `seat_egress_tls_unterminated`, `seat_route_identity_invalid`;
 - every `claude_seat_transport.CODES` entry whose class is `security`, read from that table
   and not restated.
 
-Every other code is `ordinary`. Default rule: a code is terminal unless it is in
-`DESCEND_CODES`. A new code is terminal by default.
+Every member of `mode_line_codes()` has an explicit OD-10 entry. Import fails on an
+unclassified code; no code becomes `ordinary` by omission. Unknown/unclassified codes are
+handled privately and terminally until classified. The security set additionally includes
+`seat_sandbox_refused:stage_not_private`, `seat_sandbox_retained_after_teardown`,
+`seat_output_retained_after_teardown`, `seat_sandbox_egress_opt_out`,
+`gemini_seat_stream_split_unavailable`, and `gemini_seat_subagent_or_unknown_event`, because
+they respectively signal a failed private-inode boundary, retained credential/output custody,
+unconfined egress, or a failed containment/activity probe. New failure codes remain terminal
+unless explicitly added to a reviewed descend set.
+
+The table is `seat_route_contract.OD10_CLASSES`. The closure check against `mode_line_codes()`
+runs when `seat_route` is imported, so `seat_route_contract` keeps no import of `seat_jail`.
+Default rule: a code is terminal unless it is in `DESCEND_CODES`.
 
 ## 4. Route codes (new; `seat_route_contract.CODES`)
 
@@ -206,11 +242,13 @@ includes all three. No fix line names a sealed or inline route, or a key-based c
 | `seat_egress_not_installed` | ordinary | descend | run `phase-loop seat-egress install`, then re-run |
 | `seat_egress_integrity_failed` | security | terminal | reinstall with `phase-loop seat-egress install`; report the outcome privately |
 | `seat_egress_tls_unterminated` | security | terminal | reinstall the egress layer; report the outcome privately |
+| `seat_egress_start_failed` | ordinary | terminal | check the private operator log, then reinstall with `phase-loop seat-egress install` or re-run |
+| `seat_route_identity_invalid` | security | terminal | the leg, its profile and its readiness row must name one vendor; report the outcome privately |
 | `seat_egress_allowlist_missing` | ordinary | terminal | the vendor phase registers its allowlist; the seat stays degraded until then |
 | `seat_profile_unregistered` | ordinary | terminal | the vendor has no jail profile yet; the seat stays degraded until its phase registers one |
 | `seat_route_exception_expired` | ordinary | terminal | only an owner record in the readiness matrix renews an exception |
 | `seat_local_capacity_exhausted` | ordinary | capacity | wait for a running seat to finish, then re-run |
-| `seat_route_row_remote` | ordinary | skip | the readiness matrix routes this vendor to the remote rung |
+| `seat_route_row_remote` | ordinary | skip | the readiness matrix routes this vendor on this host class to the remote rung |
 | `seat_remote_rung_inactive` | ordinary | skip | no remote route is active for this vendor on this host class |
 | `seat_native_fill_unavailable` | ordinary | skip | the driving session cannot fill this seat |
 | `seat_capacity_offloaded` | ordinary | notice | none (informational) |
@@ -244,7 +282,7 @@ auto-qualify cache and failure records are keyed by `key_digest`.
 @dataclass(frozen=True)
 class RoutePolicy:
     schema: Literal["seat_route_policy.v1"]
-    routed_remote: frozenset[str]                  # vendors the matrix marks remote-pending
+    routed_remote: frozenset[tuple[str, str]]      # (vendor, host_class) pairs explicitly routed remote
     exceptions: Mapping[str, NamedException]       # from seat_window.readiness_rows()
     capacity_offload: tuple[CapacityGrant, ...]    # default: ()
 
@@ -268,7 +306,10 @@ class CapacityGrant:
 
 Sources:
 
-- `exceptions` and `routed_remote` are read from `seat_window.readiness_rows()`, read-only.
+- `exceptions` and `routed_remote` are reduced only from unique `kind="vendor"` rows.
+  `kind="remote"` rows are activation inventory and never select routing. A vendor row selects
+  `(vendor, host_class)` only when that host class is explicitly remote-pending; a separate
+  remote-pending inventory row does not make the vendor skip its local route.
 - `capacity_offload` is the packaged default `()`. It can be overlaid only by an
   operator-private host file, `<state_home>/phase-loop/seat-route-policy.json`, under the
   same ownership and mode checks as the pass store (`pass_store_dir_problem`, private file
@@ -291,85 +332,42 @@ Gate. Capacity offload is entered only when all of these hold:
 
 Otherwise the seat keeps today's behaviour for a capacity code: `degraded` with
 `seat_local_capacity_exhausted` (W1). A placed seat carries `seat_capacity_offloaded`.
-R-routed: a vendor in `routed_remote` skips the local rung with one step (`L`, `skipped`,
-`seat_route_row_remote`) and walks R, then N, then D.
+R-routed: when `(vendor, host_class) in routed_remote`, the seat skips the local rung with one
+step (`L`, `skipped`, `seat_route_row_remote`) and walks R, then N, then D.
 
 Shipped state: no grants, the rung inactive and `REMOTE_DESCEND_CODES` empty, so no seat
 offloads for capacity. The owner's capacity rulings of 2026-11-06 (EC-JAILCORE-2 as amended,
 §8) take effect per host through an overlay and REMOTE's receipt, with no code change.
-Owner-controlled targets need the generic probe receipt. Third-party clouds need it and
+Owner-controlled targets need the generic probe receipt. Third-party targets need it and
 that vendor's OD-7 activation (condition 4); after OD-7 they may take capacity offload.
 
 ## 7. Per-provider egress (IF-0-JAILCORE-2)
 
 `seat_egress_proxy.allowlist_ref(allowlist_id) -> AllowlistRef(id, content_digest,
 request_set, probe_rows)` reads `seat_egress/<id>-allowlist.json`, schema
-`phase_loop_seat_egress_allowlist.v1`. `content_digest` is the sha256 of the canonical JSON of
-its `allow` array, with sorted keys and no whitespace. `gemini-allowlist.json` stays
+`phase_loop_seat_egress_allowlist.v1`. `content_digest` is the sha256 of canonical JSON containing exactly `schema`, `leg`, `allow`
+and `measured_and_refused`, with sorted keys and no whitespace. Therefore every change to an
+allowed request, the measured refusal set, or the derived `probe_rows` changes the
+QualificationKey and invalidates the v2 pass. `gemini-allowlist.json` stays
 byte-identical; its id is `gemini`. `probe_rows` are derived from `allow` and
 `measured_and_refused`: one allowed request per rule, one refused per measured-and-refused
 host, and an unlisted host.
 
-`start_proxy(*, allowlist_id: str, inner_sni_check: bool = True)` starts one process with one
-session token per call, bound to exactly that allowlist. It raises `EgressLayerUnavailable`
+`start_proxy(*, allowlist_id)` starts one process with one session token per call, bound to
+exactly that allowlist. The review-seat entry point always enables and attests the fail-closed
+front, TLS termination and inner-SNI check. None is caller-disableable. A test-only helper may
+inject failed attestations but is not exported or used by a profile. It raises `EgressLayerUnavailable`
 with `.code` set to a §3 egress code. `egress_evidence(proxy)` adds `allowlist_id` and
 `allowlist_digest`. `unavailable_code() -> str | None` sits beside the unchanged
 `unavailable_reason()`, which the CLI and doctor keep using. A seat never shares a proxy
 process or token. One proxy never serves two allowlists.
 
-## 8. Roadmap sentences amended for the capacity rulings (2026-11-06)
+## 8. Capacity owner ruling
 
-The owner's rulings of 2026-11-06:
-
-- On owner-controlled hosts, review seats may offload for capacity once the remote route
-  passes one generic egress-and-credential probe set.
-- Third-party clouds need the vendor's per-vendor OD-7 activation. After OD-7 they may also
-  take capacity offload.
-- Capacity offload ships disabled. Each host enables it by policy plus a probe receipt (§6).
-
-This contract implements the rulings as a policy input (§6) that ships disabled. The
-sentences below, quoted as they stood before the amendment, were amended in place in
-`specs/phase-plans-seats-v1.md` on the JAILCORE plan branch. The rest of each EC is
-unchanged. The owner also confirmed the vendor-neutral egress split codes (§3) and the
-separate seat-id capacity code (§2, L9). The CLAUDENET scope notes record the Claude
-open-egress exception's 2026-12-04 expiry as a known date.
-
-Capacity (required before any grant is honoured):
-
-1. Architecture North Star, rung 2: "(per-vendor owner activation; REMOTE). Never used for
-   capacity."
-2. Architecture North Star, rung 1 note: "only the closed descend list (host capability)
-   descends, only before launch"
-3. IF-0-JAILCORE-1: "It also fixes the closed descend list, the only codes that may move to a
-   later rung:"
-4. EC-JAILCORE-2: "Only codes on IF-0-JAILCORE-1's descend list move to a later rung, and only
-   before launch (the agent-harness#1250 precedent)."
-5. EC-JAILCORE-2: "The remote rung serves only rows and host classes the matrix routes there,
-   never capacity overflow."
-
-Activation scope (owner-controlled targets activate by the generic probe set; per-vendor OD-7
-stays for third-party clouds):
-
-6. Owner Decisions table, OD-7 row: "Approve the remote design; later, activate each vendor,
-   binding the digests EC-REMOTE-3 lists"
-7. Principle 1: "A remote row means the same on the remote rung after per-vendor activation."
-8. REMOTE Objective: "Give each row the matrix routes remote, and each host class without jail
-   prerequisites, a remote sandbox seat with provider-only egress, behind security review and
-   per-vendor owner activation."
-9. EC-REMOTE-3: "Each vendor's activation approval binds the digests of the vectors, the vector
-   map, the validator, the image, EC-REMOTE-6's guest invocation and delivered runtime, and the
-   credential module, plus the OpenShell and gateway versions."
-10. EC-REMOTE-4: "The remote rung is the resolver's step 2, disabled until per-vendor
-    activation, and refuses unwired dependency routes (agent-harness#1787)." and "The rung
-    refuses a vector with no activation record for its vendor."
-11. EC-REMOTE-5: "Then, with Stage 2's infrastructure live (LA-4) and per-vendor activation
-    under OD-7, every row the matrix routes remote reads `done-remote` from the activation
-    window."
-12. REMOTE Governance: "and per-vendor activation, which binds the EC-REMOTE-3 digests, before
-    EC-REMOTE-5 (a later change to any bound digest voids it)."
-13. Roadmap Acceptance Criteria: "Each row the matrix routes remote, and each host class with
-    no local jail, has a remote route activated per vendor under OD-7, after the Stage 2 proof
-    amendment."
-
-Resolved 2026-11-06: third-party targets may take capacity offload after that vendor's OD-7
-activation (§6 condition 4). Both target classes ship disabled.
+The binding 2026-11-06 ruling is: owner-controlled targets may take review seats for capacity
+after one current generic egress-and-credential probe set; per-vendor OD-7 activation applies
+only to third-party targets. Capacity offload remains disabled in packaged state and can be
+enabled only by the private policy grant and the bound, current probe receipt in §6. A
+third-party grant also requires its vendor's OD-7 activation reference. No wildcard grant is
+valid. This PR reconciles the roadmap text with that ruling; there is no later amendment or
+open owner question in the enablement path.
