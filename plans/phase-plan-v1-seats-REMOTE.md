@@ -19,7 +19,7 @@ roadmap depends on REMOTE.
 **Frozen artifact.** `plans/seats-remote-contract.md` is normative for the vectors, the map, the
 probe set, the credential table, the proxy and link, the codes, the rung, the invocation, the
 receipt and the window record. Its sha256 is
-`65af8f197a5c843a946cfa40e55821844e6f58ca9e40699a7455c2d649a990f2`.
+`1cea960ddd28ef5e1c4bf79083fa9f9938b2c99c2e29dbd937864944ca76d7e8`.
 This plan points at its sections (§0–§8) and does not repeat them.
 
 **Consumed, not rebuilt.** REMOTE adds only the review-seat layer.

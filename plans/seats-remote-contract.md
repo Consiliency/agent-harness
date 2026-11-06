@@ -251,8 +251,10 @@ instance per call. `routed_provider` comes from the leg's launch configuration: 
   `seat_remote_activation_ignored`.
 - `activation_digests(vendor)` is computed from installed bytes. It covers the vectors file, the
   vector map, `seat_remote_vectors.py`, the row's image digest, its invocation template and relay
-  module, and `seat_remote_credentials.py`, plus the OpenShell and gateway versions from the probe
-  evidence. An owner-controlled entry binds no digest list (EC-REMOTE-3).
+  module, and `seat_remote_credentials.py`, plus the target's OpenShell and gateway versions read
+  from the target at admission, never from stored probe evidence. A version that differs from the
+  approved one changes the digests, so the approval no longer matches and admission refuses. An
+  owner-controlled entry binds no digest list (EC-REMOTE-3).
 - **Deactivation** has its own file, `<state_home>/phase-loop/seat-remote-deactivated.json`
   (schema `seat_remote_deactivation.v1`, `{vendors: [vendor]}`), under the same checks. It covers
   both triggers.
