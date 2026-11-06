@@ -71,9 +71,13 @@ def main(argv):
         if mode == "second_result":
             emit(result)
     if record_path:
-        with open(record_path, "w", encoding="utf-8") as handle:
+        # Written whole or not at all: a refused leg kills this process at any moment, and a
+        # half-written record must never be read as one.
+        partial = record_path + ".partial"
+        with open(partial, "w", encoding="utf-8") as handle:
             json.dump({"argv": argv[1:], "env": dict(os.environ), "stdin": seen}, handle,
                       sort_keys=True)
+        os.replace(partial, record_path)
     return 7 if mode == "nonzero_exit" else 0
 
 
