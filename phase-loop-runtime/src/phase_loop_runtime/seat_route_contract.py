@@ -74,6 +74,7 @@ class OwnerPaths:
     token_fd: str | None
     seccomp_fd: str
     provider_bind: bool = True
+    provider_config: str | None = None
     egress_ca: str | None = None
     egress_proxy: str | None = None
     transport: str | None = None
@@ -180,7 +181,6 @@ class RemoteRequest:
     host_class: str
     trigger: Literal["routed", "descend", "capacity"]
     trigger_code: str
-    target: str | None = None
 
 
 @dataclass(frozen=True)
@@ -342,6 +342,7 @@ _ORDINARY_CODES = frozenset({
     "claude_seat_stream_unsafe", "claude_seat_token_missing",
     "claude_seat_token_rate_limited", "claude_seat_token_rejected",
     "claude_tui_journal_collection_refused", "claude_tui_workspace_trust_blocked",
+    "panel_claude_route_invalid", "panel_claude_transport_not_admitted",
     "executor_review_route_unsupported", "gemini_credential_awaiting_refresh",
     "gemini_credential_near_expiry", "gemini_credential_refresh_timeout",
     "gemini_seat_credential_missing", "gemini_seat_egress_unavailable",
@@ -407,7 +408,7 @@ def validate_route_policy(overlay: Mapping[str, object]) -> tuple[CapacityGrant,
     Exceptions, routed rows, and descend sets are packaged inputs and cannot be
     replaced by the host overlay.
     """
-    if set(overlay) != {"capacity_offload"}:
+    if not isinstance(overlay, Mapping) or set(overlay) != {"capacity_offload"}:
         raise ValueError("route-policy overlay may set capacity_offload only")
     raw_grants = overlay["capacity_offload"]
     if not isinstance(raw_grants, list):
@@ -432,7 +433,8 @@ def validate_route_policy(overlay: Mapping[str, object]) -> tuple[CapacityGrant,
         if target_class not in {"owner_controlled", "third_party"}:
             raise ValueError("capacity grant target_class is invalid")
         if (not isinstance(host_classes, list) or not host_classes
-                or any(not isinstance(item, str) or not item for item in host_classes)):
+                or any(not isinstance(item, str) or not item for item in host_classes)
+                or "*" in host_classes):
             raise ValueError("capacity grant host_classes are invalid")
         if (not isinstance(vendors, list) or not vendors
                 or any(not isinstance(item, str) or not item for item in vendors)

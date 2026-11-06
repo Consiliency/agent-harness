@@ -67,8 +67,15 @@ def test_route_codes_are_complete_classified_and_name_no_retired_route():
 
 
 def test_every_current_mode_line_code_has_an_explicit_class():
-    current = set(seat_jail.NOTICE_CODES) | set(claude_seat_transport.CODES) | set(contract.CODES)
+    claude_route_codes = {
+        "panel_claude_route_invalid", "panel_claude_transport_not_admitted",
+    }
+    current = (
+        set(seat_jail.NOTICE_CODES) | set(claude_seat_transport.CODES)
+        | set(contract.CODES) | claude_route_codes
+    )
     assert set(contract.OD10_CLASSES) == current
+    assert all(contract.OD10_CLASSES[code] == "ordinary" for code in claude_route_codes)
     assert all(value in {"security", "ordinary"} for value in contract.OD10_CLASSES.values())
     assert all(
         contract.OD10_CLASSES[code] == entry[0]
@@ -117,23 +124,22 @@ def test_route_policy_overlay_is_capacity_only_and_rejects_wildcards():
     ),)
     with pytest.raises(ValueError, match="vendors"):
         contract.validate_route_policy({"capacity_offload": [{**raw, "vendors": ["*"]}]})
+    with pytest.raises(ValueError, match="host_classes"):
+        contract.validate_route_policy({"capacity_offload": [{**raw, "host_classes": ["*"]}]})
+    with pytest.raises(ValueError, match="capacity_offload only"):
+        contract.validate_route_policy(["capacity_offload"])
 
 
 def test_contract_module_imports_no_io_or_runtime_module():
     source = Path(contract.__file__).read_text(encoding="utf-8")
     tree = ast.parse(source)
-    imports = {
-        alias.name.split(".")[0]
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Import)
-        for alias in node.names
-    }
-    imports |= {
-        (node.module or "").split(".")[0]
-        for node in ast.walk(tree)
-        if isinstance(node, ast.ImportFrom)
-    }
-    assert not imports & {
-        "os", "pathlib", "subprocess", "panel_invoker", "seat_jail",
-        "seat_egress_proxy", "seat_profiles",
-    }
+    imported: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported |= {alias.name for alias in node.names}
+        elif isinstance(node, ast.ImportFrom):
+            assert node.level == 0, "the contract module uses a relative import"
+            imported.add(node.module or "")
+    assert imported <= {
+        "__future__", "dataclasses", "datetime", "hashlib", "json", "types", "typing",
+    }, sorted(imported)
