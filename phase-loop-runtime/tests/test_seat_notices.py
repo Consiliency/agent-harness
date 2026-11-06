@@ -334,6 +334,9 @@ def test_governed_surface_renders_every_notice(code):
     findings = [f for f in _findings_from_panel(pi.PanelResult(legs=(leg,)), "a" * 40)
                 if f.code == "seat_notice"]
     what, why, fix = seat_jail.NOTICES[code]
+    if code in pi._claude_seat_transport.CODES:
+        # IF-0-CLAUDE-1: a jailed transport code also names its OD-10 class.
+        what = f"{what} (OD-10 {pi._claude_seat_transport.CODES[code][0]})"
     assert len(findings) == 1
     assert findings[0].severity == "warn"
     assert findings[0].reason == f"seat claude:a notice {code}: {what} / {why} / fix: {fix}"

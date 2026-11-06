@@ -267,6 +267,7 @@ PYEOF
       /plans/phase-plan-v10-FABPUB.md \
       /plans/phase-plan-v10-GOVLEAN.md \
       /plans/phase-plan-v10-PROOFGATE.md \
+      /plans/decision-claude-print-subscription-route-20261008.md \
       /skills-src/codex/codex-execute-phase/ \
       /skills-src/claude/claude-plan-phase/scripts/validate_plan_doc.py \
       '/skills-src/*/*-skill-improvement-planner/' \

@@ -315,6 +315,10 @@ jobs:
     name: lint (pyflakes)
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      # audit-order reads the merge state of the PRs that landed a cited record section.
+      pull-requests: read
     steps:
       - uses: actions/checkout@v4
 
@@ -342,6 +346,53 @@ jobs:
         run: |
           python -m pip install 'ruff==0.15.5'
           ruff check .
+
+      - name: Jailed Claude ratification order (audit-order, EC-CLAUDE-4)
+        # SEATS CLAUDE (agent-harness#1820): a landing that admits a jailed Claude transport
+        # or changes the jailed default must find its cited decision-record section, by
+        # digest, on the base tree, with the PR that landed it merged; it may not edit the
+        # record, whose sections are append-only. A step of this required job, not a new
+        # required check. It runs on every pull request (base: `pull_request.base.sha`) and
+        # on every push to main (base: the push's `before`), and FAILS (never skips) when
+        # the base cannot be fetched. It runs the BASE tree's copy of the auditor, so a
+        # landing cannot change the rules it is checked by. A base without one uses
+        # protected main's copy; only the seam landing, when main has none either, runs its
+        # own. The auditor refuses a landing that removes it. A landing that changes the
+        # auditor or this workflow is flagged for review by hand.
+        if: github.event_name == 'pull_request' || (github.event_name == 'push' && github.ref == 'refs/heads/main')
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          # A pull request's `github.sha` is its merge result, so a branch behind main is
+          # audited as what it would land, never as an undoing of what main already has.
+          HEAD_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "$BASE_SHA" "$HEAD_SHA"
+          AUDITOR=phase-loop-runtime/src/phase_loop_runtime/claude_seat_transport.py
+          if git cat-file -e "$BASE_SHA:$AUDITOR" 2>/dev/null; then
+            git show "$BASE_SHA:$AUDITOR" > "$RUNNER_TEMP/audit_order.py"
+          else
+            git fetch --no-tags --depth=1 origin "+refs/heads/main:refs/remotes/origin/main"
+            if git cat-file -e "refs/remotes/origin/main:$AUDITOR" 2>/dev/null; then
+              echo "::warning::audit-order: the base has no auditor; running protected main's copy"
+              git show "refs/remotes/origin/main:$AUDITOR" > "$RUNNER_TEMP/audit_order.py"
+            else
+              echo "::warning::audit-order: the base has no auditor yet (the seam landing); running the head's copy"
+              git show "$HEAD_SHA:$AUDITOR" > "$RUNNER_TEMP/audit_order.py"
+            fi
+          fi
+          if ! git diff --quiet "$BASE_SHA" "$HEAD_SHA" -- "$AUDITOR" .github/workflows/test.yml; then
+            echo "::warning::audit-order: this landing changes the auditor or its workflow step; review that change by hand"
+          fi
+          if [ "$EVENT_NAME" = pull_request ]; then
+            python -I "$RUNNER_TEMP/audit_order.py" audit-order --repo . \
+              --base "$BASE_SHA" --head "$HEAD_SHA" --event "$GITHUB_EVENT_PATH"
+          else
+            python -I "$RUNNER_TEMP/audit_order.py" audit-order --repo . \
+              --base "$BASE_SHA" --head "$HEAD_SHA"
+          fi
 
   pytest:
     name: pytest (py${{ matrix.python-version }})

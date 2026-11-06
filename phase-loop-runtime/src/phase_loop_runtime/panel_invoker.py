@@ -132,6 +132,7 @@ from . import seat_session_label as _seat_session_label
 from . import seat_tool_evidence as _seat_tool_evidence
 from . import seat_uid as _seat_uid
 from . import seat_preflight as _seat_preflight
+from . import claude_seat_transport as _claude_seat_transport
 from .executable_dependency import ExecutableDependencyError
 from .advisor_board.research import (
     RESEARCH_CAPABLE_LANES,
@@ -2035,9 +2036,13 @@ class PanelLegResult:
         among them."""
         codes = list(getattr(self, "_seat_notice_codes", ()))
         detail = self.detail
-        if isinstance(detail, str) and str.__str__(detail) in _seat_jail.NOTICE_CODES:
+        # The mode line accepts the jail's notices and the jailed transports' codes
+        # (`claude_seat_transport.CODES`, each rendered with its OD-10 class).
+        accepted = _claude_seat_transport.mode_line_codes()
+        if isinstance(detail, str) and str.__str__(detail) in accepted:
             codes.append(str.__str__(detail))
-        rendered = (_seat_jail.render_notice(code, self.seat_key) for code in dict.fromkeys(codes))
+        rendered = (_claude_seat_transport.render_notice(code, self.seat_key)
+                    for code in dict.fromkeys(codes))
         return tuple(notice for notice in rendered if notice is not None)
 
 
@@ -3032,6 +3037,10 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "claude_print_stalled", "panel_claude_route_invalid",
     # the transport seam (Stage 2): `sdk` is named but not admitted (EC-REVIEWTRUTH-18)
     "panel_claude_transport_not_admitted",
+    # the jailed transport seam (SEATS CLAUDE, IF-0-CLAUDE-1): `claude_seat_transport.CODES`
+    "claude_seat_api_key_source", "claude_sdk_closure_refused", "claude_seat_login_unproven",
+    "claude_seat_result_unproven", "claude_seat_stream_unsafe",
+    "claude_sdk_dependency_unavailable",
     # route / authorization refusals
     "missing HARDEN review authorization", "missing or forged HARDEN review authorization",
     "harden_advisory_execution_refused", "harden_review_capture_route_refused",
@@ -6316,6 +6325,10 @@ _BOARD_CANCEL: ContextVar["threading.Event | None"] = ContextVar("_BOARD_CANCEL"
 #: pinned to it), so the seat identity that names a Claude seat travels here instead. It is set
 #: inside the worker that runs the spawn: ``_run_legs`` uses a thread pool without copy_context.
 _SEAT_SESSION_SEAT: ContextVar[str | None] = ContextVar("_SEAT_SESSION_SEAT", default=None)
+#: The board's stream directory, where ``seat-modes.json`` was published (agent-harness#1255):
+#: a jailed Claude seat whose mode changes after publication republishes its own row there.
+#: Set in the worker that runs the seat, like ``_BOARD_CANCEL``.
+_SEAT_MODES_STREAM: ContextVar["Path | None"] = ContextVar("_SEAT_MODES_STREAM", default=None)
 
 
 def _sandbox_in(review_dir: Path | str | None) -> Path | None:
@@ -9254,6 +9267,7 @@ def _run_leg_with_liveness(
     retain_caps: "Sequence[str]" = (),
     child_scratch: str | None = None,
     stdout_guard: Callable[[bytes], bool] | None = None,
+    stderr_guard: Callable[[bytes], bool] | None = None,
     writable_tree: "Path | None" = None,
     writable_tree_checked: bool = False,
     broker_evidence: dict[str, object] | None = None,
@@ -9279,6 +9293,8 @@ def _run_leg_with_liveness(
     ``stdout_guard`` (the Claude print route's in-band subscription guard) sees every
     stdout chunk as it arrives; when it returns True the whole process group is
     terminated at once and the run returns ``rc or 1``. The guard records its own reason.
+    ``stderr_guard`` does the same for stderr chunks (a jailed transport's stderr cap and
+    token scan).
 
     ``seat_jail`` (agent-harness#1170, the jailed Gemini seat) launches ``cmd`` inside that
     jail, probed through ``probe_jail``, exactly as the jailed Claude seat launches; its
@@ -9455,8 +9471,8 @@ def _run_leg_with_liveness(
                     fd_map[fd].extend(chunk)
                     last_heartbeat = time.monotonic()
                     last_output_progress = last_heartbeat
-                    if (stdout_guard is not None and fd_map[fd] is out_buf
-                            and stdout_guard(chunk)):
+                    guard = stdout_guard if fd_map[fd] is out_buf else stderr_guard
+                    if guard is not None and guard(chunk):
                         _terminate_process_group(proc)
                         out_s, err_s = _decode()
                         return _LegRun(proc.returncode or 1, out_s, err_s)
@@ -11799,19 +11815,32 @@ def _validate_jail_dependency(leg, dependency):
 def _prepare_jailed_claude(
     review_dir: Path, seat_dir: Path, review_authorization: "ReviewIsolationAuthorization",
     seat_id: int, holder_pid: int, prompt_parts: tuple[str, str],
-    *, timeout_s: int | None = None,
+    *, timeout_s: int | None = None, transport: str | None = None,
 ) -> _JailedSeat:
-    """J7 step 5, in order: the pre-exec tree re-hash, the token read, the jail build (the
-    seccomp filter included), the pre-seed and the probe jail. The first failure raises
-    its ONE code and nothing has launched.
+    """J7 step 5, in order: the jailed transport (IF-0-CLAUDE-1), the pre-exec tree
+    re-hash, the token read, the jail build (the seccomp filter included), the pre-seed and
+    the probe jail. The first failure raises its ONE code and nothing has launched.
+
+    ``transport`` is the one the spawn resolved; ``None`` resolves it here. A refused
+    selection raises ``claude_seat_transport.TransportRefused`` before anything is created;
+    ``sdk`` without an admitted dependency session refuses
+    ``claude_sdk_dependency_unavailable`` before the credential is resolved.
 
     ``seat_dir`` (0700, operator-owned, beside the broker's stage rather than inside it)
     holds ``seat-home/`` and ``seat-out/``; the tree is the approved stage in
     ``review_dir``."""
+    if transport is None:
+        transport, refusal = _claude_seat_transport.resolve_jailed_claude_transport()
+        if refusal is not None:
+            raise _claude_seat_transport.TransportRefused(refusal)
+    elif not _claude_seat_transport.is_admitted(transport):
+        raise _claude_seat_transport.TransportRefused(_claude_seat_transport.NOT_ADMITTED)
     artifact, instructions = prompt_parts
     from .executable_dependency_startup import current_dependency_for_provider
 
     dependency = current_dependency_for_provider("claude")
+    if transport == "sdk" and dependency is None:
+        raise _claude_seat_transport.TransportRefused("claude_sdk_dependency_unavailable")
     _validate_jail_dependency("claude", dependency)
     executable = (
         Path(dependency.subject_source) if dependency is not None else None
@@ -11896,6 +11925,109 @@ def _prepare_jailed_claude(
             except BaseException as cleanup:
                 primary.add_note(f"jail preparation cleanup failed: {cleanup}")
         raise
+
+
+#: The single-use auth jails of the jailed login proof (IF-0-CLAUDE-4), under ``seat_dir``.
+_JAILED_CLAUDE_AUTH_DIRNAMES = ("seat-auth", "seat-auth-probe")
+_JAILED_CLAUDE_AUTH_TIMEOUT_S = 30
+
+
+def _build_claude_auth_jail(seat: _JailedSeat, directory: Path, token: bytes) -> "_seat_jail.SeatJail":
+    """A jail of the review seat's exact shape (image, projection, seat ids) over its own
+    empty directories, with fresh single-use descriptors: the review jail's are not spent."""
+    (directory / _seat_jail.HOST_TREE_DIRNAME).mkdir(mode=0o700, parents=True)
+    return _build_jail_with_owned_inputs(
+        "claude", directory, Path(seat.jail.provider_path), artifact=b"", instructions=b"",
+        token=token, seat_ids=seat.jail.seat_ids, dependency=seat.jail.dependency,
+    )
+
+
+def _jailed_claude_auth_probe(
+    seat: _JailedSeat, token: bytes, *, timeout_s: float = _JAILED_CLAUDE_AUTH_TIMEOUT_S,
+    quiescence_latch: _ProviderQuiescenceLatch | None = None,
+) -> "_seat_credentials.AuthProbeResult":
+    """ONE ``claude auth status --json`` in a single-use jail handed exactly ``token`` on the
+    seat-token pipe. Returns the digest of the bytes delivered and the raw stdout (bounded),
+    which only :func:`seat_credentials.jailed_login_proof` reads. A jail whose digest differs
+    from the review jail's, or a probe that cannot run, is a failed probe."""
+    digest = sha256(token).hexdigest()
+    failed = _seat_credentials.AuthProbeResult(digest, 1, b"")
+    directories = tuple(seat.seat_dir / name for name in _JAILED_CLAUDE_AUTH_DIRNAMES)
+    jails: list["_seat_jail.SeatJail"] = []
+    captured = bytearray()
+    overflow: list[bytes] = []
+
+    def _guard(chunk: bytes) -> bool:
+        if len(captured) + len(chunk) > _seat_credentials.PROBE_OUTPUT_CAP_BYTES:
+            # The overflowing chunk is still scanned: a token in it is the security code,
+            # not an ordinary unproven login.
+            overflow.append(bytes(captured) + chunk)
+            return True
+        captured.extend(chunk)
+        return False
+
+    try:
+        auth = _build_claude_auth_jail(seat, directories[0], token)
+        jails.append(auth)
+        probe = _build_claude_auth_jail(seat, directories[1], b"probe")
+        jails.append(probe)
+        if (auth.profile_digest != seat.jail.profile_digest
+                or auth.filter_digest != seat.jail.filter_digest
+                or auth.dependency_projection_digest != seat.jail.dependency_projection_digest):
+            return failed
+        run = _run_leg_with_liveness(
+            [auth.provider_argv0, "auth", "status", "--json"], cwd=Path(_seat_jail.SEAT_TREE),
+            env=dict(auth.env), deadline_s=float(timeout_s), stall_threshold_s=float(timeout_s),
+            stdout_guard=_guard, seat_jail=auth, probe_jail=probe,
+            **({"quiescence_latch": quiescence_latch} if quiescence_latch is not None else {}),
+        )
+        if overflow:
+            if _seat_jail.contains_secret(overflow[0], token):
+                return _seat_credentials.AuthProbeResult(digest, 1, overflow[0])
+            return failed
+        return _seat_credentials.AuthProbeResult(digest, run.returncode, bytes(captured))
+    except (ProviderProcessGroupQuiescenceError, _ReviewOperationCancelled):
+        raise
+    except (OSError, subprocess.SubprocessError, ValueError, _seat_jail.SeatSandboxRefused,
+            _sandbox_egress.SeatIdentityUnverified):
+        return failed
+    finally:
+        for jail in jails:
+            _seat_jail.close_jail_fds(jail)
+        retained: list[Path] = []
+        for root in directories:
+            if root.exists():
+                try:
+                    retained.extend(root / name
+                                    for name in _seat_uid.teardown_in_h(seat.holder_pid, str(root)))
+                except BaseException:
+                    retained.append(root)
+        for path in retained:
+            try:
+                _seat_uid.record_retention(path)
+            except BaseException:
+                pass
+        if retained:
+            seat.notices.append("seat_sandbox_retained_after_teardown")
+
+
+def _jailed_claude_login_proof(
+    seat: _JailedSeat, caller_env: Mapping[str, str] | None = None, *,
+    quiescence_latch: _ProviderQuiescenceLatch | None = None,
+) -> "_seat_credentials.LoginProof":
+    """IF-0-CLAUDE-4 for a prepared jailed seat, on every transport: the caller-credential
+    rejection, the subscription check on the same login context, and a single-use auth jail
+    on the exact credential the seat will use. A failure raises
+    ``claude_seat_transport.TransportRefused`` with its typed code; nothing has launched."""
+    credential = _seat_credentials.SeatCredential(seat.token, seat.source, seat.expires_at)
+    try:
+        return _seat_credentials.jailed_login_proof(
+            credential,
+            lambda token: _jailed_claude_auth_probe(seat, token, quiescence_latch=quiescence_latch),
+            dict(os.environ if caller_env is None else caller_env),
+        )
+    except _seat_credentials.LoginUnproven as exc:
+        raise _claude_seat_transport.TransportRefused(exc.code) from None
 
 
 def _exec_jailed_claude_leg(
@@ -12500,6 +12632,27 @@ def _await_claude_login(
 
 
 _LOGIN_WAIT_SLICE_S = 0.25
+
+
+def _republish_jailed_claude_mode(code: str) -> None:
+    """agent-harness#1255: a jailed Claude seat that will not run after its mode was published
+    (a timed-out login wait, a refused transport, an unproven login) republishes its own row
+    as degraded, with the code's literal why and fix. Best effort: no published record, or no
+    row for this seat, leaves the record as it is and is logged."""
+    stream = _SEAT_MODES_STREAM.get()
+    key = _SEAT_SESSION_SEAT.get()
+    if stream is None or not key:
+        return
+    if code in _seat_jail.NOTICES:
+        _what, why, fix = _seat_jail.NOTICES[code]
+    else:
+        _what, why, fix = _claude_seat_transport.notice_text(code)
+    try:
+        _seat_preflight.republish_seat_mode(stream, _seat_preflight.SeatMode(
+            key, "claude", _seat_preflight.MODE_DEGRADED, code, why, fix, None))
+    except (OSError, ValueError) as exc:
+        logging.getLogger(__name__).warning(
+            "seat claude [%s]: the seat mode was not republished (%s)", code, type(exc).__name__)
 
 
 def _claude_seat_login_margin_s(timeout_s: int | None) -> float:
@@ -13983,6 +14136,21 @@ def _default_spawn(
         return _BrokeredSpawnResult("DEGRADED", "", _HarnessCode(seat_refusal),
                                     seat_notices=(seat_refusal, *_ignored_override(leg)))
     jailed = seat_route is not None and seat_route.jailed
+    # IF-0-CLAUDE-1: the jailed Claude seat reads the selector, before any wait or staging.
+    # A refused value launches nothing, never falls back, and republishes the seat's mode.
+    claude_transport: str | None = None
+    if jailed and leg == "claude":
+        claude_transport, transport_refusal = (
+            _claude_seat_transport.resolve_jailed_claude_transport())
+        if transport_refusal is not None:
+            logging.getLogger(__name__).warning(
+                "seat claude [%s]: the selected jailed transport is refused; the seat will not "
+                "run", transport_refusal)
+            _republish_jailed_claude_mode(transport_refusal)
+            if base is not None:
+                shutil.rmtree(base, ignore_errors=True)
+            return _BrokeredSpawnResult("DEGRADED", "", _HarnessCode(transport_refusal),
+                                        seat_notices=_ignored_override(leg))
     # Plan amendment A3: a jailed Claude seat whose login is short of the launch margin
     # waits, read-only, for it to be renewed -- before staging, so no seat id or namespace is
     # held. A wait that ends short leaves the seat degraded and not run (A3b); nothing is run
@@ -14005,6 +14173,8 @@ def _default_spawn(
             logging.getLogger(__name__).warning(
                 "seat claude [%s]: the login was not renewed within the wait; the seat will "
                 "not run (fix: %s)", code, _seat_jail.NOTICES[code][2])
+            # agent-harness#1255: the published mode said "jailed, awaiting refresh".
+            _republish_jailed_claude_mode(code)
             if base is not None:
                 shutil.rmtree(base, ignore_errors=True)
             return _BrokeredSpawnResult("DEGRADED", "", _HarnessCode(code),
@@ -14354,21 +14524,41 @@ def _default_spawn(
                     nonlocal gemini_detail, leg_detail
                     if leg == "claude" and jailed:
                         claude_sink = []
+                        broker.evidence["claude_transport"] = claude_transport
                         try:
                             seat = _prepare_jailed_claude(
                                 review_dir, base / "seat", review_authorization, seat_id,
                                 _seat_uid.holder_pid_from_prefix(_EGRESS_LAUNCH_PREFIX.get()),
                                 (staged_bundle, staged_instructions),
-                                timeout_s=timeout_s,
+                                timeout_s=timeout_s, transport=claude_transport,
                             )
                         except _seat_jail.SeatSandboxRefused as exc:
                             leg_detail = _LegFailure(template=exc.code)
                             seat_notices.append(exc.code)
                             seat_notices.extend(exc.also)
                             return "DEGRADED", ""
+                        except _claude_seat_transport.TransportRefused as exc:
+                            leg_detail = _LegFailure(template=exc.code)
+                            if exc.code in _claude_seat_transport.CODES:
+                                seat_notices.append(exc.code)
+                            seat_notices.extend(exc.also)
+                            _republish_jailed_claude_mode(exc.code)
+                            return "DEGRADED", ""
+                        # IF-0-CLAUDE-1 / IF-0-CLAUDE-4: the login proof on every transport,
+                        # then exactly the one selected; a refusal or terminal code launches
+                        # no other transport.
+                        launched = False
+
+                        def _prove() -> "_seat_credentials.LoginProof":
+                            nonlocal launched
+                            proof = _jailed_claude_login_proof(seat, quiescence_latch=broker_latch)
+                            launched = True  # proven: whatever follows is the transport's own
+                            return proof
+
                         try:
-                            claude_status, claude_text = _exec_jailed_claude_leg(
-                                seat, timeout_s=leg_timeout, backstop_s=int(leg_deadline),
+                            claude_status, claude_text = _claude_seat_transport.launch_jailed(
+                                claude_transport, seat, prove_login=_prove,
+                                timeout_s=leg_timeout, backstop_s=int(leg_deadline),
                                 model=broker_model, effort=effort, prompt=sealed_prompt,
                                 env=env,
                                 broker_evidence=broker.evidence,
@@ -14379,10 +14569,16 @@ def _default_spawn(
                         except _seat_jail.SeatSandboxRefused as exc:
                             claude_sink.append(_LegFailure(template=exc.code))
                             claude_status, claude_text = "DEGRADED", ""
+                        except _claude_seat_transport.TransportRefused as exc:
+                            claude_sink.append(_LegFailure(template=exc.code))
+                            claude_status, claude_text = "DEGRADED", ""
+                            seat_notices.extend(exc.also)
+                            if not launched:
+                                _republish_jailed_claude_mode(exc.code)
                         seat_notices.extend(seat.notices)
                         if claude_status != "OK" and claude_sink:
                             leg_detail = claude_sink[-1]
-                            if claude_sink[-1].template in _seat_jail.NOTICE_CODES:
+                            if claude_sink[-1].template in _claude_seat_transport.mode_line_codes():
                                 seat_notices.append(claude_sink[-1].template)
                         return claude_status, claude_text
                     if leg == "gemini" and jailed:
@@ -16541,9 +16737,11 @@ def invoke_board(
             # agent-harness#1132 (r12): the board's cancellation reaches every seat, bounded
             # included (set here, in the worker thread that runs the seat).
             token = _BOARD_CANCEL.set(operation_cancel)
+            stream_token = _SEAT_MODES_STREAM.set(Path(stream_dir) if stream_dir is not None else None)
             try:
                 return _retain_panel_leg(_run_seat_policy(item))
             finally:
+                _SEAT_MODES_STREAM.reset(stream_token)
                 _BOARD_CANCEL.reset(token)
 
         def _run_seat_policy(item: Seat | tuple[int, Seat]) -> PanelLegResult:
