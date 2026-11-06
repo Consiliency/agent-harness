@@ -821,8 +821,11 @@ def _child_tmp_dir() -> ScratchLocation:
     shared = legacy_staging_root()
     candidates = [(cache / "phase-loop" / "tmp", cache)] if cache is not None else []
     candidates.append((shared / f"phase-loop-{uid}" / "tmp", shared))
+    from .seat_host_namespace import scratch_root_allowed
+
     for candidate, base in candidates:
-        if is_ram_backed(candidate) or not _private(candidate, base):
+        if (not scratch_root_allowed(candidate)
+                or is_ram_backed(candidate) or not _private(candidate, base)):
             continue
         try:
             if _free_bytes(candidate) < effective_floor_bytes(candidate):
@@ -839,7 +842,10 @@ def child_scratch_candidates() -> list[Path]:
     cache = _user_cache_dir()
     uid = os.getuid() if hasattr(os, "getuid") else "user"
     out = [cache / "phase-loop" / "tmp"] if cache is not None else []
-    return out + [legacy_staging_root() / f"phase-loop-{uid}" / "tmp"]
+    out += [legacy_staging_root() / f"phase-loop-{uid}" / "tmp"]
+    from .seat_host_namespace import scratch_root_allowed
+
+    return [candidate for candidate in out if scratch_root_allowed(candidate)]
 
 
 def _child_default_tmp(name: str, env: Mapping[str, str]) -> list[str]:

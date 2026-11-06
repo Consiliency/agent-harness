@@ -107,10 +107,13 @@ def _privileged_helper(path: str) -> bool:
 
 
 def seat_runtime_dir() -> Path:
+    from .seat_host_namespace import operator_private_dir
+
     runtime = os.environ.get("XDG_RUNTIME_DIR")
-    base = Path(runtime) if runtime and os.path.isabs(runtime) else Path(
-        tempfile.gettempdir()) / f"phase-loop-{os.getuid()}"
-    return base / "phase-loop" / "seat-uid"
+    target = ((Path(runtime) / "phase-loop" / "seat-uid")
+              if runtime and os.path.isabs(runtime)
+              else Path(tempfile.gettempdir()) / f"phase-loop-{os.getuid()}" / "phase-loop" / "seat-uid")
+    return operator_private_dir("seat_uid_leases", base=target)
 
 
 def seat_uid_available(
@@ -131,6 +134,10 @@ def seat_uid_available(
     uids = subordinate_range(subuid, uid)
     gids = subordinate_range(subgid, uid)
     if uids is None or gids is None:
+        return False
+    from .seat_host_namespace import subordinate_ranges_disjoint
+
+    if not subordinate_ranges_disjoint(uid, subuid=subuid, subgid=subgid):
         return False
     count = seat_id_count(uids, gids)
     try:
