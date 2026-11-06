@@ -19,7 +19,7 @@ PRs under principle 2. The file name follows the manifest pattern of the sibling
 2026-11-06.
 
 **Frozen artifact.** `plans/seats-teamhost-contract.md` is normative for every interface below
-(§1–§8) at sha256 `fccdf91d5bdf8d6aeec9e05da95d9a052a30b0164eef5915bb66ff7b5ad76846`. This plan points at its sections and does not repeat
+(§1–§8) at sha256 `de0563eee9378d52b6506da5f05c7cd989f2efc4cff4edf96ebb45003998004f`. This plan points at its sections and does not repeat
 them. Its input pins include the JAILCORE route contract
 (`235f1faded1d7f15d0ff69668b6a451cee7167e6438d258da57257faf7bdae81`). TEAMHOST consumes it
 only through IF-0-JAILCORE-1, IF-0-JAILCORE-2 and EC-JAILCORE-4.
@@ -66,7 +66,8 @@ from day one.
   `MANAGED_RELEASES_ROOT` and `MANAGED_AUTHORITY_PIN`. The resolution order is session lease →
   managed release → standalone. A managed release, or a failed guarded frontdoor, never falls
   back. Each downstream vendor phase specifies its leg's release declaration content (the
-  runtime file list and its pin entry) and adds one `register_provider_executable` call in
+  runtime file list and its v2 pin entry, including `authority_sha256`, `authority_id` and
+  `base_profile_sha256`) and adds one `register_provider_executable` call in
   its own module; it never edits `seat_subject.py`. Consiliency/dotfiles builds and ships the
   declaration under IF-XR-1.
 - [ ] IF-0-TEAMHOST-2 — Operator state (contract §2): `seat_host_namespace.operator_private_dir`,
@@ -93,7 +94,8 @@ from day one.
 
 - [ ] IF-XR-1 — Managed-release seat declarations (contract §7).
   - Each vendor phase specifies its leg's declaration content: the runtime file list and its
-    pin entry. SL-8 does this for Claude and Gemini.
+    v2 pin entry. SL-8's private Claude and Gemini declaration spec must emit
+    `authority_sha256`, `authority_id` and `base_profile_sha256` for dotfiles to build.
   - The coordinator routes each specification to Consiliency/dotfiles.
   - Dotfiles builds and ships the per-leg `authority.json` and `declaration.json` in each
     managed release that serves seats.
