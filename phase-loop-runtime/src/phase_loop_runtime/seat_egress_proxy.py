@@ -25,22 +25,33 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import stat
 import subprocess
 import tempfile
+import threading
+import time
 from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
-from typing import Iterator, Mapping
+from typing import Iterator, Literal, Mapping
 
 __all__ = [
     "EgressLayerUnavailable",
+    "FENCE_ACK_TIMEOUT_S",
+    "FENCE_QUIET_S",
+    "FenceResult",
+    "ProxyStream",
+    "ProxyWindow",
+    "RequestEvent",
     "SeatEgressProxy",
     "SRT_VERSION",
     "allowlist",
     "egress_evidence",
     "install",
+    "fence",
+    "proxy_stream",
     "start_proxy",
     "unavailable_reason",
 ]
@@ -60,6 +71,20 @@ INSTALL_FIX = "phase-loop seat-egress install"
 _DATA = "seat_egress"
 _READY_TIMEOUT_S = 60.0
 _CA_CAP_BYTES = 64 * 1024
+#: Contract section 14: the wrapper counts a fence only when its id is acknowledged within
+#: this bound; the proxy acknowledges after this quiet interval with no open connection.
+FENCE_ACK_TIMEOUT_S = 10.0
+FENCE_QUIET_S = 2.0
+#: Bound on the observation stream of one proxy instance; beyond it the stream is incomplete.
+_STREAM_ITEM_CAP = 16384
+#: The section 9 token-endpoint hosts. They are part of the event host vocabulary.
+TOKEN_ENDPOINT_HOSTS = frozenset({"oauth2.googleapis.com", "accounts.google.com",
+                                  "sts.googleapis.com", "iamcredentials.googleapis.com",
+                                  "www.googleapis.com"})
+_EVENT_METHODS = frozenset({"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS",
+                            "CONNECT", "<other>"})
+_CANARY_HOST = re.compile(r"[0-9a-f]{32}\.invalid")
+_FENCE_ID = re.compile(r"[0-9a-f]{32}")
 
 
 class EgressLayerUnavailable(RuntimeError):
@@ -298,6 +323,211 @@ class SeatEgressProxy:
     ca_sha256: str
     inner_sni_check: bool
     process: "subprocess.Popen[str]" = field(repr=False)
+    #: FROZEN-NEW (I-1): sha256 of the canonical JSON of the ``allow`` list passed to the
+    #: proxy; that of ``[]`` under ``refuse_all``.
+    allowlist_sha256: str = ""
+    _rules: tuple = field(default=(), repr=False)
+    _items: list = field(default_factory=list, repr=False)
+    _fences: list = field(default_factory=list, repr=False)
+    _protocol_error: bool = field(default=False, repr=False)
+    _eof: bool = field(default=False, repr=False)
+    _exited: bool = field(default=False, repr=False)
+    _outstanding: str | None = field(default=None, repr=False)
+    _acked: dict = field(default_factory=dict, repr=False)
+    _cond: threading.Condition = field(default_factory=threading.Condition, repr=False)
+    _fence_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _reader: threading.Thread | None = field(default=None, repr=False)
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class FenceResult:
+    """One fence (contract section 14). ``acked_ns`` is ``time.monotonic_ns()`` at the
+    acknowledgement."""
+
+    fence_id: str
+    acknowledged: bool
+    acked_ns: int | None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class RequestEvent:
+    """One request decision, in the proxy's closed vocabulary. ``host`` and ``path`` are
+    private-record fields."""
+
+    method: str
+    host: str
+    path: str | None
+    decision: Literal["allow", "deny"]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ProxyWindow:
+    label: Literal["leg", "bracket"]
+    start_acked: bool
+    end_acked: bool
+    events: tuple[RequestEvent, ...]
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ProxyStream:
+    """One instance's observation stream. ``final`` only once the proxy context has exited
+    and stdout reached EOF; events outside every window stay in ``outside_events``."""
+
+    final: bool
+    protocol_error: bool
+    windows: tuple[ProxyWindow, ...]
+    outside_events: tuple[RequestEvent, ...]
+    allowlist_sha256: str
+
+
+def fence(proxy: SeatEgressProxy, marker: Literal["start", "end"],
+          window: Literal["leg", "bracket"]) -> FenceResult:
+    """Send one fence with a fresh id and wait up to :data:`FENCE_ACK_TIMEOUT_S` for its
+    acknowledgement (contract section 14). Nothing is sent, and the result is
+    unacknowledged, while a fence is outstanding or the stream has a protocol error. A
+    timeout sets the protocol error."""
+    if marker not in ("start", "end") or window not in ("leg", "bracket"):
+        raise ValueError("unknown fence marker or window")
+    fence_id = secrets.token_hex(16)
+    if not proxy._fence_lock.acquire(blocking=False):
+        return FenceResult(fence_id=fence_id, acknowledged=False, acked_ns=None)
+    try:
+        with proxy._cond:
+            if proxy._outstanding is not None or proxy._protocol_error or proxy._eof:
+                return FenceResult(fence_id=fence_id, acknowledged=False, acked_ns=None)
+            proxy._outstanding = fence_id
+            proxy._fences.append((marker, window, fence_id))
+        try:
+            assert proxy.process.stdin is not None
+            proxy.process.stdin.write(json.dumps({"op": "fence", "id": fence_id},
+                                                 separators=(",", ":")) + "\n")
+            proxy.process.stdin.flush()
+        except (OSError, ValueError, AssertionError):
+            with proxy._cond:
+                proxy._outstanding = None
+                proxy._protocol_error = True
+            return FenceResult(fence_id=fence_id, acknowledged=False, acked_ns=None)
+        deadline = time.monotonic() + FENCE_ACK_TIMEOUT_S
+        with proxy._cond:
+            while fence_id not in proxy._acked and not proxy._eof:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                proxy._cond.wait(remaining)
+            if fence_id in proxy._acked:
+                return FenceResult(fence_id=fence_id, acknowledged=True,
+                                   acked_ns=proxy._acked[fence_id])
+            # A late acknowledgement is then unsolicited as well.
+            proxy._outstanding = None
+            proxy._protocol_error = True
+            return FenceResult(fence_id=fence_id, acknowledged=False, acked_ns=None)
+    finally:
+        proxy._fence_lock.release()
+
+
+def proxy_stream(proxy: SeatEgressProxy) -> ProxyStream:
+    """The instance's stream split into its fenced windows. An event belongs to a window
+    only between that window's start and end acknowledgements, in stdout order."""
+    with proxy._cond:
+        items = list(proxy._items)
+        fences = list(proxy._fences)
+        final = proxy._eof and proxy._exited
+        protocol_error = proxy._protocol_error
+    position = {item[1]: index for index, item in enumerate(items) if item[0] == "fence"}
+    windows: list[ProxyWindow] = []
+    covered: set[int] = set()
+    pending: dict[str, str] = {}
+    for marker, label, fence_id in fences:
+        if marker == "start":
+            pending[label] = fence_id
+            continue
+        start_id = pending.pop(label, None)
+        lo = position.get(start_id) if start_id else None
+        hi = position.get(fence_id)
+        events: tuple[RequestEvent, ...] = ()
+        if lo is not None and hi is not None and lo < hi:
+            covered.update(range(lo + 1, hi))
+            events = tuple(items[i][1] for i in range(lo + 1, hi) if items[i][0] == "request")
+        windows.append(ProxyWindow(label=label, start_acked=lo is not None,
+                                   end_acked=hi is not None, events=events))
+    for label, start_id in pending.items():
+        windows.append(ProxyWindow(label=label, start_acked=start_id in position,
+                                   end_acked=False, events=()))
+    outside = tuple(item[1] for index, item in enumerate(items)
+                    if item[0] == "request" and index not in covered)
+    return ProxyStream(final=final, protocol_error=protocol_error, windows=tuple(windows),
+                       outside_events=outside, allowlist_sha256=proxy.allowlist_sha256)
+
+
+def _read_stream(proxy: SeatEgressProxy) -> None:
+    assert proxy.process.stdout is not None
+    try:
+        for line in proxy.process.stdout:
+            _accept(proxy, line)
+    except (OSError, ValueError):
+        with proxy._cond:
+            proxy._protocol_error = True
+    finally:
+        with proxy._cond:
+            proxy._eof = True
+            proxy._cond.notify_all()
+
+
+def _accept(proxy: SeatEgressProxy, line: str) -> None:
+    try:
+        item = json.loads(line)
+    except ValueError:
+        item = None
+    with proxy._cond:
+        if len(proxy._items) >= _STREAM_ITEM_CAP:
+            proxy._protocol_error = True
+            return
+        if _valid_request_event(item, proxy._rules):
+            proxy._items.append(("request", RequestEvent(
+                method=item["method"], host=item["host"], path=item["path"],
+                decision=item["decision"])))
+        elif (isinstance(item, dict) and set(item) == {"event", "id"}
+              and item["event"] == "fence" and isinstance(item["id"], str)
+              and item["id"] == proxy._outstanding):
+            proxy._items.append(("fence", item["id"]))
+            proxy._acked[item["id"]] = time.monotonic_ns()
+            proxy._outstanding = None
+            proxy._cond.notify_all()
+        else:
+            # An unknown line, or a mismatched or unsolicited acknowledgement.
+            proxy._protocol_error = True
+
+
+def _digest(value) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"))
+                          .encode("utf-8")).hexdigest()
+
+
+def _path_templates(rules, host: str) -> set:
+    """The templated paths an event for ``host`` may carry (I-2's closed vocabulary)."""
+    paths = {"/oauth2/v2/userinfo", "/oauth2/*", "<other>", None}
+    paths.update(r["path"] if "path" in r else r.get("path_prefix", "") + "*"
+                 for r in rules if r["host"] == host)
+    return paths
+
+
+def _valid_request_event(item, rules) -> bool:
+    """The five-field request event, in the proxy's closed vocabulary, and nothing else."""
+    if not isinstance(item, dict) or set(item) != {"event", "method", "host", "path", "decision"}:
+        return False
+    host = item["host"]
+    if item["event"] != "request" or item["method"] not in _EVENT_METHODS:
+        return False
+    if item["decision"] not in ("allow", "deny"):
+        return False
+    if not isinstance(host, str) or not (
+            host == "<other>" or host in TOKEN_ENDPOINT_HOSTS
+            or any(r["host"] == host for r in rules) or _CANARY_HOST.fullmatch(host)):
+        return False
+    path = item["path"]
+    if path is not None and not isinstance(path, str):
+        return False
+    return path in _path_templates(rules, host)
 
 
 def ca_fingerprint(cert: Path) -> str:
@@ -308,22 +538,30 @@ def ca_fingerprint(cert: Path) -> str:
 
 
 @contextlib.contextmanager
-def start_proxy(*, inner_sni_check: bool = True) -> Iterator[SeatEgressProxy]:
+def start_proxy(*, inner_sni_check: bool = True,
+                refuse_all: bool = False) -> Iterator[SeatEgressProxy]:
     """Run the seat's proxy for the life of the context. Raises
-    :class:`EgressLayerUnavailable` before anything runs when the layer is unavailable."""
+    :class:`EgressLayerUnavailable` before anything runs when the layer is unavailable.
+
+    ``refuse_all`` (contract section 15, the credential-free controls) passes an empty
+    rule list through the proxy's existing configuration file; it can only narrow the
+    rules, and the production allowlist file is unchanged. The proxy's observation stream
+    and fences go through :func:`fence` and :func:`proxy_stream`."""
     node = _node()
     srt_index = verify_install()
     cert, key = ensure_ca(srt_index, node)
+    rules = [] if refuse_all is True else allowlist()["allow"]
     with tempfile.TemporaryDirectory(prefix="pl-seat-egress-") as work:
         config = Path(work) / "proxy.json"
         config.write_text(json.dumps({
-            "allow": allowlist()["allow"], "ca_cert": str(cert), "ca_key": str(key),
+            "allow": rules, "ca_cert": str(cert), "ca_key": str(key),
             "inner_sni_check": inner_sni_check,
         }), encoding="utf-8")
         process = subprocess.Popen(
             [node, str(_data_path("proxy.mjs")), str(srt_index), str(config)],
             stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
             env=_proxy_env(node, Path(work)), cwd=work, text=True, start_new_session=True)
+        proxy: SeatEgressProxy | None = None
         try:
             ready = _read_ready(process)
             if not ready.get("tls_inspection") or bool(ready.get("inner_sni_check")) != inner_sni_check:
@@ -331,13 +569,18 @@ def start_proxy(*, inner_sni_check: bool = True) -> Iterator[SeatEgressProxy]:
             if not ready.get("fail_closed_front"):
                 raise EgressLayerUnavailable("the proxy did not start its fail-closed front")
             token = str(ready["token"])
-            yield SeatEgressProxy(
+            proxy = SeatEgressProxy(
                 socket=str(ready["socket"]),
                 proxy_url=f"http://srt:{token}@127.0.0.1:{SEAT_PROXY_PORT}",
                 ca_cert=cert, ca_sha256=ca_fingerprint(cert),
-                inner_sni_check=inner_sni_check, process=process)
+                inner_sni_check=inner_sni_check, process=process,
+                allowlist_sha256=_digest(rules), _rules=tuple(rules))
+            proxy._reader = threading.Thread(target=_read_stream, args=(proxy,), daemon=True,
+                                             name="seat-egress-stream")
+            proxy._reader.start()
+            yield proxy
         finally:
-            with contextlib.suppress(OSError):
+            with contextlib.suppress(OSError, ValueError):
                 if process.stdin is not None:
                     process.stdin.close()
             try:
@@ -345,8 +588,15 @@ def start_proxy(*, inner_sni_check: bool = True) -> Iterator[SeatEgressProxy]:
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=5)
+            if proxy is not None and proxy._reader is not None:
+                proxy._reader.join(timeout=5)
+                with proxy._cond:
+                    proxy._exited = True
+                    if proxy._reader.is_alive():
+                        proxy._protocol_error = True
             if process.stdout is not None:
-                process.stdout.close()
+                with contextlib.suppress(OSError, ValueError):
+                    process.stdout.close()
 
 
 def _read_ready(process: "subprocess.Popen[str]") -> Mapping[str, object]:

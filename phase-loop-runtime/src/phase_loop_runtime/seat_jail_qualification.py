@@ -47,10 +47,12 @@ import sys
 import tempfile
 import threading
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Sequence
+from types import MappingProxyType
+from typing import Final, Literal, Mapping, Protocol, Sequence
 
-from . import __version__, review_stage, sandbox_egress, seat_jail, seat_uid
+from . import __version__, review_stage, sandbox_egress, seat_egress_proxy, seat_jail, seat_uid
 
 SCHEMA = "seat_jail_execfind2_qualification.v1"
 _SENTINEL_TEST = "tests/test_jail_sentinel.py"
@@ -479,6 +481,164 @@ def _write_private(path: Path, data: bytes) -> None:
     with os.fdopen(fd, "wb") as handle:
         handle.write(data)
     os.replace(temporary, path)
+
+
+# ======================================================================================
+# FIRSTSEAT W1 containment supplier (IF-0-FIRSTSEAT-5).
+#
+# Frozen inputs: plans/seats-firstseat-containment-contract.md (cited as sections 1-16) and
+# plans/artifacts/seats-firstseat-interfaces.md (cited as I-1 to I-15). Lane A owns I-1 to
+# I-10, I-13 and the OwnerSummary type of I-14. Nothing here is a W1 result: every live
+# measurement runs from lane E's `seat-window qualify` on an attended host.
+# ======================================================================================
+
+# --- I-9: the jailed step callable (type here, implementation in panel_invoker) --------
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class JailedStep:
+    """One trusted step run in a launch's own jail. ``stdout`` stays in memory only."""
+
+    exit_code: int | None
+    timed_out: bool
+    stdout: bytes = field(repr=False)
+
+
+class JailedRun(Protocol):
+    """Runs ``argv`` as the seat uid in the issuing launch's jail, namespace and proxy
+    instance, with ``/seat/tree`` as its working directory and exactly ``env`` (plus the
+    proxy variables when ``use_proxy``). ``stdout`` is capped at 65536 bytes."""
+
+    def __call__(self, argv: Sequence[str], *, env: Mapping[str, str], use_proxy: bool,
+                 timeout_s: float) -> JailedStep: ...
+
+
+# --- I-7: the bracket (sections 9 and 11) ----------------------------------------------
+
+BracketRowName = Literal["b_forbidden_hosts", "b_forbidden_paths", "b_tunnel_inner_host",
+                         "b_tunnel_inner_sni_and_host", "b_tunnel_inner_sni_only",
+                         "b_fail_closed_front", "b_direct_without_proxy", "f006_config_ancestor"]
+BRACKET_ROW_NAMES: Final[tuple[str, ...]] = (
+    "b_forbidden_hosts", "b_forbidden_paths", "b_tunnel_inner_host",
+    "b_tunnel_inner_sni_and_host", "b_tunnel_inner_sni_only", "b_fail_closed_front",
+    "b_direct_without_proxy", "f006_config_ancestor")
+
+#: The refusal signatures each section 11 row may report, frozen per row (section 11: a
+#: known client exit and that row's expected refusal signature). A step reports one of
+#: these only on positive evidence that it ran and was refused; anything else is
+#: ``unavailable``. A certificate failure is never a refusal.
+#: - ``proxy_connect_refused``: the proxy answered the CONNECT with 403.
+#: - ``request_filter_refused``: the proxy's request filter answered 403 inside the tunnel.
+#: - ``handshake_refused``: the proxy ended the TLS handshake after accepting the CONNECT.
+#: - ``no_upstream_bytes``: a completed attempt reported zero upstream bytes.
+#: - ``resolve_refused`` / ``connect_refused``: the client's resolve or connect refusal exit.
+#: - ``config_ancestor_read_only``: the config ancestor could not be renamed or written.
+BRACKET_SIGNATURES: Final[Mapping[str, frozenset[str]]] = MappingProxyType({
+    "b_forbidden_hosts": frozenset({"proxy_connect_refused"}),
+    "b_forbidden_paths": frozenset({"proxy_connect_refused", "request_filter_refused"}),
+    "b_tunnel_inner_host": frozenset({"proxy_connect_refused", "request_filter_refused",
+                                      "handshake_refused"}),
+    "b_tunnel_inner_sni_and_host": frozenset({"proxy_connect_refused", "request_filter_refused",
+                                              "handshake_refused"}),
+    "b_tunnel_inner_sni_only": frozenset({"proxy_connect_refused", "request_filter_refused",
+                                          "handshake_refused"}),
+    "b_fail_closed_front": frozenset({"no_upstream_bytes"}),
+    "b_direct_without_proxy": frozenset({"resolve_refused", "connect_refused"}),
+    "f006_config_ancestor": frozenset({"config_ancestor_read_only"}),
+})
+#: Section 9's token POST counts only when its client reported the proxy's CONNECT 403.
+TOKEN_POST_STEP: Final = "token_post"
+TOKEN_POST_SIGNATURE: Final = "proxy_connect_refused"
+
+#: Section 11's client rules for every bracket step: no seat-writable configuration is read.
+#: HOME, CURL_HOME and XDG_* name a path that cannot hold a file (under /dev/null), and a
+#: curl step puts ``-q`` first on its argv.
+BRACKET_EMPTY_HOME: Final = "/dev/null/phase-loop-bracket"
+BRACKET_STEP_ENV: Final[Mapping[str, str]] = MappingProxyType({
+    "PATH": "/usr/bin:/bin", "LC_ALL": "C", "HOME": BRACKET_EMPTY_HOME,
+    "CURL_HOME": BRACKET_EMPTY_HOME, "XDG_CONFIG_HOME": BRACKET_EMPTY_HOME,
+    "XDG_DATA_HOME": BRACKET_EMPTY_HOME, "XDG_CACHE_HOME": BRACKET_EMPTY_HOME,
+    "XDG_STATE_HOME": BRACKET_EMPTY_HOME, "XDG_RUNTIME_DIR": BRACKET_EMPTY_HOME,
+    "SSL_CERT_FILE": seat_jail.SEAT_EGRESS_CA,
+})
+
+
+class BracketStep(Protocol):
+    """One bracket step. It runs only through ``run`` (with :data:`BRACKET_STEP_ENV`) and
+    returns a member of its row's :data:`BRACKET_SIGNATURES` set (for the token POST,
+    :data:`TOKEN_POST_SIGNATURE`) on positive evidence of refusal, and ``None`` for any
+    other result. It sends no request that matches section 9's token-endpoint table,
+    except the token POST itself."""
+
+    def __call__(self, run: JailedRun) -> str | None: ...
+
+
+def _bracket_step_not_ported(name: str) -> BracketStep:
+    def step(run: JailedRun) -> str | None:
+        raise NotImplementedError(f"bracket step {name} is not ported yet")
+    step.__name__ = f"bracket_step_{name}"
+    return step
+
+
+#: The bracket's steps, in run order: section 9's token POST, then section 11's rows,
+#: each ported from plans/evidence/seat-jail-1132/probe_p4_containment_egress.py (pinned
+#: method input; that script is never executed). EMPTY until the port lands: every entry
+#: raises NotImplementedError, which :func:`run_bracket` reports as ``unavailable``.
+BRACKET_STEPS: Final[Mapping[str, BracketStep]] = MappingProxyType({
+    name: _bracket_step_not_ported(name) for name in (TOKEN_POST_STEP, *BRACKET_ROW_NAMES)})
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class BracketRow:
+    row: str
+    outcome: Literal["refused", "unavailable"]
+    signature: str | None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class BracketResult:
+    start: seat_egress_proxy.FenceResult
+    end: seat_egress_proxy.FenceResult
+    post_refused: bool
+    rows: tuple[BracketRow, ...]
+
+
+def _bracket_step(name: str, run: JailedRun) -> str | None:
+    step = BRACKET_STEPS.get(name)
+    if step is None:
+        return None
+    try:
+        signature = step(run)
+    except Exception:  # noqa: BLE001 - an unported or failed step is an unmade observation
+        return None
+    allowed = ({TOKEN_POST_SIGNATURE} if name == TOKEN_POST_STEP
+               else BRACKET_SIGNATURES.get(name, frozenset()))
+    return signature if isinstance(signature, str) and signature in allowed else None
+
+
+def run_bracket(proxy: seat_egress_proxy.SeatEgressProxy, run: JailedRun) -> BracketResult:
+    """The measured leg's control bracket (sections 9 and 11; I-7).
+
+    D calls it on ``measured`` only, after the leg's acknowledged end fence, process-group
+    absence, a ``True`` bridge wait and at least ``FENCE_QUIET_S`` since that fence's
+    ``acked_ns``. It fences its own ``bracket`` window and runs :data:`BRACKET_STEPS`
+    inside it: no step runs unless the start fence was acknowledged, so no probe request
+    falls outside the bracket. A row that did not report one of its signatures is
+    ``unavailable``."""
+    unsent = seat_egress_proxy.FenceResult(fence_id="", acknowledged=False, acked_ns=None)
+    start = seat_egress_proxy.fence(proxy, "start", "bracket")
+    if not start.acknowledged:
+        return BracketResult(start=start, end=unsent, post_refused=False, rows=tuple(
+            BracketRow(row=name, outcome="unavailable", signature=None)
+            for name in BRACKET_ROW_NAMES))
+    post_refused = _bracket_step(TOKEN_POST_STEP, run) == TOKEN_POST_SIGNATURE
+    rows = []
+    for name in BRACKET_ROW_NAMES:
+        signature = _bracket_step(name, run)
+        rows.append(BracketRow(row=name, outcome="refused" if signature else "unavailable",
+                               signature=signature))
+    end = seat_egress_proxy.fence(proxy, "end", "bracket")
+    return BracketResult(start=start, end=end, post_refused=post_refused, rows=tuple(rows))
 
 
 _ARGV_ACTIONS = {
