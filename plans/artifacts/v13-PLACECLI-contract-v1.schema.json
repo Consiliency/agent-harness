@@ -151,7 +151,7 @@
     "reserve_idempotency": "The same request_id and the same canonical request body return the original response and do not create a second reservation. The same request_id with a different canonical body refuses with sandbox_placement_refused and creates nothing. Reap is not the retry path for one lost reserve response.",
     "release_binding": "release loads the stored reservation by reservation_id from the inventory selected by --client. A client mismatch or any supplied reservation field that differs from the stored record returns state rejected and code sandbox_placement_refused, releases nothing, changes no stored flag, arms no barrier and leaves the lease held. A repeated release of the same journaled reservation returns released while its tombstone remains, or unknown_reservation after tombstone expiry; neither state creates an admission barrier.",
     "outcomes_and_effects": "unreachable means a certain failure with nothing held. timeout means an effect may be held. A failure after a request may have been sent is timeout, never unreachable. Its barrier applies only to that reservation in the selected client inventory; it blocks later targets or retries for that reserve walk until release confirms the barrier, but never blocks another reservation, another client or the host.",
-    "bridge_bytes": "For pi-runner on openshell the runtime creates one directory in its own state directory, mode 0700, containing one Unix socket, mode 0600. The socket is a bidirectional raw byte pipe of the admitted ForwardTcp stream, including model connection bytes carried to the requester's credential proxy. The toolkit keeps link framing, relay and credentials; the placement service and sandbox hold no provider credential. The caller does not supply the path, service name, host or port. Every other reservation has bridge null; local launchers use their requester-owned credential proxy in process.",
+    "bridge_bytes": "For pi-runner or leg on openshell the runtime creates one directory in its own state directory, mode 0700, containing one Unix socket, mode 0600. The socket is a bidirectional raw byte pipe of the admitted ForwardTcp stream, including model connection bytes carried to the requester's credential proxy. The toolkit keeps link framing, relay and credentials; the placement service and sandbox hold no provider credential. The caller does not supply the path, service name, host or port. Every other reservation, including a local pi-runner or local leg, has bridge null; local launchers use their requester-owned credential proxy in process.",
     "local_pressure_admission": "A local target admits only when one observation, no older than the configured maximum age, satisfies every threshold from the selected host's operator configuration: MemAvailable is at least max(the byte floor, ceil(MemTotal times the configured fraction)); one-minute load per online CPU as percent is below its exclusive cap; /proc/pressure/io full avg10 and /proc/pressure/memory some avg10 are each below their exclusive caps; and live sandboxes are below their exclusive cap. Any unknown or stale dimension, or missing, unreadable or malformed PSI file/line, is at_capacity.",
     "local_cgroup_execution": "Every local reservation runs in its own delegated cgroup. Host operator configuration supplies memory.max, cpu.weight and either io.weight or an io.max bandwidth cap. The effective config_sha256 binds those caps. Before local admission, missing cgroup delegation, a missing required cpu/memory/io controller or an invalid cap refuses with outcome refused and code sandbox_placement_capability_unmet; the workload never runs uncapped. LANEEXEC applies the caps to placed workloads. The SEATS seat launcher must apply the same host caps before the coordinator may route a local seat launch.",
     "reap_scope_and_order": "reap examines only the inventory selected by --client and returns exactly one InventoryReapResult whose client and inventory match that selection. It can never inspect or mutate the other client's inventory. Within that inventory, eligible journal entries are attempted by created_at then reservation_id, max_items bounds attempts, and an uncertain item remains cleanup_pending without creating a host-wide or client-wide admission barrier.",
@@ -737,7 +737,7 @@
           "if": {
             "properties": {
               "workload": {
-                "const": "pi-runner"
+                "enum": ["pi-runner", "leg"]
               },
               "target": {
                 "properties": {
@@ -754,9 +754,20 @@
             "properties": {
               "bridge": {
                 "$ref": "#/$defs/ForwardTcpUnixBridge"
-              },
-              "policy_vector": {
-                "const": "full-remote-pi-runner"
+              }
+            },
+            "if": {
+              "properties": {
+                "workload": {
+                  "const": "pi-runner"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "policy_vector": {
+                  "const": "full-remote-pi-runner"
+                }
               }
             }
           }
@@ -794,7 +805,7 @@
             "not": {
               "properties": {
                 "workload": {
-                  "const": "pi-runner"
+                  "enum": ["pi-runner", "leg"]
                 },
                 "target": {
                   "properties": {

@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: PLACECLI
 roadmap: specs/phase-plans-v13.md
-roadmap_sha256: 6c147d6583d653cf12d4b3c50f7eb8656fc3390f32c5b5895890c6a31d86397a
+roadmap_sha256: 8f34d506a8172e4d868b8f23bc0d2b7f228b1894575f75fff93c92dfb15ce679
 automation:
   suite_command: ["bash", "-lc", "cd phase-loop-runtime && PYTHONPATH=$PWD/src:$PWD/tests timeout 900 .venv/bin/python -m pytest -q -n 0 -p no:cacheprovider tests/test_placement_process_contract.py tests/test_placement_lifecycle_process.py tests/test_placement_bridge.py tests/test_placement_cli.py tests/test_sandbox_placement.py tests/test_placement_driver.py tests/test_placement_ladder_model.py tests/test_placement_lease.py tests/test_openshell_backend.py tests/test_openshell_channel.py tests/test_openshell_journal.py tests/test_openshell_transport.py tests/test_openshell_worker.py tests/test_advisor_board_config.py tests/test_sandbox_policy.py tests/test_agent_cli_scratch_inventory_1147.py tests/test_seat_launch_helpers_trusted.py tests/test_seat_reference_inventory.py tests/test_gate_a_wheel_isolation.py"]
 ---
@@ -15,7 +15,7 @@ This is the first phase of the owner-priority v13 placement consolidation. It
 implements the process boundary that agent-toolkit can consume without importing
 agent-harness Python. The frozen input is
 `plans/artifacts/v13-PLACECLI-contract-v1.schema.json`, sha256
-`82668b3871d6697444bc3da2cbdbf910d3c63d541b5d2cedeeabc8856949592a`.
+`7bf7781dd30de55e7b30200d70f6b90b49a7c7a9b73804892408fa7667181105`.
 The artifact fixes the stable console entry, required client/config flag,
 version response, exact message shapes, code vocabularies, target-bound policy
 and provider names, reservation egress digest, two isolated identities/inventories,
@@ -187,7 +187,7 @@ SL-3 — Process CLI, documentation and evidence reducer
 - **Interfaces consumed**: reservation and bridge records (SL-0); OpenShell service exposure, channel seams, toolkit fixture behavior (pre-existing)
 - **Parallel-safe**: no
 - **Tasks**:
-  - test: Port only request/response scenario vectors for L0–L9, unavailable/deadline/lost reply, snapshot expiry and duplicate binding. Start the real CLI as a subprocess against the fake coordinator; never import its internals into the shim test. Against a language-neutral fake of the roadmap-pinned agent-toolkit `cred-proxy.mjs`, prove declared-provider model bytes cross the remote bridge while placeholder credentials remain guest-side and no provider key/token appears in sandbox input, placement config, environment, messages, logs or evidence. Prove one 0700 directory and 0600 Unix socket per remote Pi reservation, no public listener, peer teardown on release/cancel, bounded setup, stale-socket refusal, cleanup-pending retention, and `bridge: null` for local Pi and every seat. A fake that branches on case ID is forbidden.
+  - test: Port only request/response scenario vectors for L0–L9, unavailable/deadline/lost reply, snapshot expiry and duplicate binding. Start the real CLI as a subprocess against the fake coordinator; never import its internals into the shim test. Against a language-neutral fake of the roadmap-pinned agent-toolkit `cred-proxy.mjs`, prove declared-provider model bytes cross the remote bridge while placeholder credentials remain guest-side and no provider key/token appears in sandbox input, placement config, environment, messages, logs or evidence. Prove one 0700 directory and 0600 Unix socket per remote Pi reservation, no public listener, peer teardown on release/cancel, bounded setup, stale-socket refusal, cleanup-pending retention, and `bridge: null` for local Pi and local seats. Prove a `leg` reservation on `openshell` receives exactly one such bridge to the requester's credential proxy. A fake that branches on case ID is forbidden.
   - impl: Bridge exactly the admitted ForwardTcp service to one Unix socket and return the frozen descriptor. Use trusted service exposure, not request-supplied host/port. Carry opaque model connection bytes to the requester-owned credential proxy; never resolve or hold a provider credential in placement. Bind lifetime to reservation release/reap, scrub descriptors/env, and record metadata-only bridge evidence. Keep agent-toolkit's Pi-specific `cred-proxy.mjs`, `remote-inner` and shim outside this repository; OpenCode and other clients retain their own compatible credential proxy.
   - verify: Run V2. Negative controls weaken directory/socket mode, reuse a socket, swap service exposure and drop teardown; production-path tests must fail.
 
