@@ -267,14 +267,14 @@ The fix belongs to CLAUDENET (digest) or CLAUDE (transport argv), not here.
   only; FIRSTSEAT lane E's landed code is its base.
 - **TEAMHOST shared edits (agent-harness#1859, its contract §8).** TEAMHOST may edit only
   these named parts of JAILCORE-owned files, and nothing else in them:
-  - `seat_uid.py`: `seat_runtime_dir`, and the `subordinate_range` conjunct of the L3
-    prerequisite (today in `seat_uid_available`);
-  - `seat_jail_autoqualify.py`: `fix_for`;
-  - `seat_egress/proxy.mjs`: the front parser, meaning `clientHelloSNI` and the `front`
-    connection handler;
-  - `seat_jail.py`: the Gemini overlay, meaning `GEMINI_WRITABLE_CONFIG_DIRS`,
-    `GEMINI_WRITABLE_DOTDIR_DIRS` and `_gemini_binds`, in their registered Gemini-profile
-    form once SL-3 moves them to `seat_profiles.py`.
+  - `seat_uid.py`: `seat_runtime_dir`, plus one range-disjointness check in the L3
+    prerequisite that JAILCORE splits from `seat_uid_available`;
+  - `seat_jail_autoqualify.py`: `fix_for` only;
+  - `seat_egress/proxy.mjs`: `clientHelloSNI`, `MAX_FIRST_RECORD`, the `front` connection
+    handler with its `inspect` closure, and one config read for the idle bound;
+  - the Gemini overlay: `GEMINI_WRITABLE_DOTDIR_DIRS` or its successor in the registered
+    profile, plus `_gemini_binds` only where needed;
+  - `phase-loop-runtime/tests/data/seat_profile_digests_jailcore.json`: Gemini entries only.
 
   Whichever of JAILCORE and TEAMHOST lands second rebases.
 - **Interfaces downstream phases add.** Each later phase adds exactly the following, with no
