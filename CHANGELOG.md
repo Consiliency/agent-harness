@@ -6,6 +6,24 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- The W0 bake-off kit (SEATS CLAUDE, agent-harness#1820): `python -m
+  phase_loop_runtime.claude_bakeoff` writes one closed, metadata-only
+  `claude-bakeoff-record.v1` record per run, validates a record directory (`validate`, V7,
+  which requires every W0 head to be on `main` and derives its TUI jail digest without running
+  that head's code) and prints the order-independent evidence digest an OD-3b record cites
+  (`digest`). Its `run` command is the owner's W0
+  window. Before the first meter reading it refuses a run plan that differs from the phase
+  plan, a lineup other than the plan's exact board (one Claude seat, no president), a checkout
+  that is not the clean W0 head on `main`, an artifact not committed there, and an arm that is
+  not activated and admitted. Each native record is built from the board's own observation of
+  its jailed launch (`PHASE_LOOP_CLAUDE_W0_OBSERVATIONS`), never from the leg's status alone.
+  Meter readings and raw request captures stay in private storage; a security-class outcome
+  stops its arm and publishes only `withheld_private`, with no diagnostic. The capture twin
+  runs on an unlinked copy of the W0 head in its own process group; its recorder
+  (`claude_bakeoff_recorder.mjs`, on the pinned srt install) records method, host and
+  templated path only, and a request set is complete only when every connection was
+  attributed and parsed.
+
 - `PHASE_LOOP_PANEL_CLAUDE_ROUTE=print` now runs the jailed Claude seat on the print transport
   (`claude_seat_print`, SEATS CLAUDE, agent-harness#1820): the jailed TUI command plus `-p`,
   stream-json with the prompt on stdin and `--no-session-persistence`, in the same jail,

@@ -98,6 +98,8 @@ INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
         RELOCATED, "panel_invoker.py:_jail_launch_env:child_scratch_env"),
     ("seat_jail_qualification.py", "_run_probe_in_jail"): (
         RELOCATED, "panel_invoker.py:_jail_launch_env:child_scratch_env"),
+    ("claude_bakeoff.py", "launch_capture_twin"): (
+        RELOCATED, "claude_bakeoff.py:twin_environment:CLAUDE_CODE_TMPDIR"),
     # -- the named exceptions --------------------------------------------------------
     ("agy_canary_evidence.py", "ProviderLaunchAuthority.preflight"): (
         EXCEPTION, "agy capture/qualification jail, frozen env (agent-harness#1179)"),
@@ -143,6 +145,13 @@ INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
         NOT_AGENT, "git"),
     ("baml_modular.py", "_spawn_popen"): (
         NOT_AGENT, "the BAML worker: this Python interpreter (-I -S) running the worker script"),
+    ("claude_bakeoff.py", "create_window_ca"): (
+        NOT_AGENT, "node running srt's private-CA generator"),
+    ("claude_bakeoff.py", "run_board"): (
+        NOT_AGENT, "this Python interpreter running phase-loop advisor-board; provider legs "
+                   "launch through the inventoried provider interface"),
+    ("claude_bakeoff.py", "run_capture_twin"): (
+        NOT_AGENT, "node running the W0 request recorder"),
     ("generated_outputs.py", "_run_bounded"): (
         NOT_AGENT, "the repository's declared build-output producers (closeout audit)"),
     # Launch functions passed as values (injectable runners); each one's callers launch

@@ -278,6 +278,7 @@ PYEOF
       /phase-loop-runtime/scripts/verify_supervised_contract_publication.py \
       /plans/artifacts/v12-SCHEMA-inputs.md \
       /plans/evidence/supervised-worker/SCHEMA.md \
+      /plans/evidence/seat-qualification/claude-w0/README.md \
       /phase-loop-runtime/images/review-runner/Containerfile \
       /plans/detailed-remote-seat-placement-896-20261010.md \
       /.agent-harness/advisor-boards.toml \

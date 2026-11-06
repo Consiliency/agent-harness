@@ -111,6 +111,7 @@ class GateAConformEvidenceScopeTest(unittest.TestCase):
             "/plans/phase-plan-v10-FABPUB.md",
             "/plans/phase-plan-v10-PROOFGATE.md",
             "/plans/decision-claude-print-subscription-route-20261008.md",
+            "/plans/evidence/seat-qualification/claude-w0/README.md",
             "/skills-src/codex/codex-execute-phase/",
             "/CHANGELOG.md",
         ):
