@@ -239,6 +239,8 @@ INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
     ("seat_uid.py", "map_holder"): (NOT_AGENT, "newuidmap / newgidmap"),
     ("seat_uid.py", "read_in_h"): (NOT_AGENT, "nsenter + this package's seat_uid helper"),
     ("seat_uid.py", "run_in_h"): (NOT_AGENT, "nsenter + this package's seat_uid helper"),
+    ("seat_uid.py", "scan_in_h"): (
+        NOT_AGENT, "nsenter + this package's read-only seat_uid scan helper"),
     ("seat_uid.py", "teardown_in_h"): (NOT_AGENT, "nsenter + this package's seat_uid helper"),
     ("train_runner.py", "_live_merge_pr"): (NOT_AGENT, "gh"),
     ("verification_evidence.py", "_interpreter_minor_version"): (NOT_AGENT, "python"),

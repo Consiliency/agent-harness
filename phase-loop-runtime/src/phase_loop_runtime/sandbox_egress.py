@@ -77,6 +77,8 @@ __all__ = [
     "enforcement_report",
     "require_egress_isolation",
     "isolated_network",
+    "BRIDGE_EXIT_TIMEOUT_S",
+    "wait_bridge_exit",
 ]
 
 # slirp4netns puts the uplink here. It sits INSIDE 10/8, so denying 10/8 without
@@ -325,6 +327,66 @@ def require_egress_isolation(available: bool | None = None) -> None:
 # Written into every holder work dir: the stale-scratch sweep reaps only a dir that carries
 # it, never a bystander that merely shares the `pl-egress-ns-` name prefix.
 EGRESS_WORK_MARKER = ".phase-loop-egress-holder"
+
+#: Contract section 14: before an end fence the parent waits this long, at most, for the
+#: launch bridge's forked per-connection children to exit.
+BRIDGE_EXIT_TIMEOUT_S = 10.0
+#: The proxy-only namespaces' live bridges, by holder pid, for :func:`wait_bridge_exit`.
+_BRIDGES: dict[str, "subprocess.Popen[bytes]"] = {}
+
+
+def _process_table() -> dict[int, tuple[int, str]]:
+    """``pid -> (ppid, state)`` for every visible process; a vanished entry is skipped."""
+    table: dict[int, tuple[int, str]] = {}
+    for entry in os.listdir("/proc"):
+        if not entry.isdigit():
+            continue
+        try:
+            text = Path("/proc", entry, "stat").read_text(encoding="ascii", errors="replace")
+        except OSError:
+            continue
+        fields = text.rsplit(")", 1)[-1].split()
+        if len(fields) >= 2 and fields[1].lstrip("-").isdigit():
+            table[int(entry)] = (int(fields[1]), fields[0])
+    return table
+
+
+def _bridge_children(listener: int) -> set[int]:
+    """Live descendants of the bridge's listening process (its per-connection forks)."""
+    table = _process_table()
+    found: set[int] = set()
+    frontier = [listener]
+    while frontier:
+        parent = frontier.pop()
+        for pid, (ppid, state) in table.items():
+            if ppid == parent and pid not in found:
+                found.add(pid)
+                frontier.append(pid)
+    return {pid for pid in found if table.get(pid, (0, "Z"))[1] not in ("Z", "X")}
+
+
+def wait_bridge_exit(prefix, *, timeout_s: float = BRIDGE_EXIT_TIMEOUT_S) -> bool:
+    """Wait until the launch bridge of the proxy-only namespace behind ``prefix`` has no
+    forked connection child left (contract section 14). ``False`` on a timeout, or when
+    ``prefix`` names no live bridge of this process: the stream is then incomplete. The
+    bridge itself keeps running."""
+    try:
+        items = list(prefix)
+        holder = items[items.index("-t") + 1]
+    except (ValueError, IndexError, TypeError):
+        return False
+    bridge = _BRIDGES.get(str(holder))
+    if bridge is None or bridge.poll() is not None:
+        return False
+    deadline = time.monotonic() + timeout_s
+    while True:
+        if bridge.poll() is not None:
+            return False
+        if not _bridge_children(bridge.pid):
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.05)
 
 
 def _write_namespace_resolver(work: Path) -> Path:
@@ -590,6 +652,7 @@ def isolated_network(
                         "public address is reachable without it"
                     )
                     return
+                _BRIDGES[nspid] = bridge
                 yield prefix
                 return
             resolved = False
@@ -619,6 +682,8 @@ def isolated_network(
             if owner_write is not None:
                 os.close(owner_write)
             if bridge is not None:
+                if _BRIDGES.get(nspid) is bridge:
+                    del _BRIDGES[nspid]
                 bridge.terminate()
                 try:
                     bridge.wait(timeout=2)

@@ -3,6 +3,12 @@
 // the host, outside the seat. argv: <srt dist/index.js> <config.json>. One JSON line on
 // stdout when ready; it exits when stdin closes.
 //
+// Observation (plans/seats-firstseat-containment-contract.md section 14). After the ready
+// line, stdout carries one metadata-only line per request decision -- method, host,
+// templated path, decision; never a query, header, body or credential -- and one
+// acknowledgement per fence read from stdin. Neither changes a decision, its reason, the
+// allowlist or the ready line.
+//
 // Why the front (F006/grok-A). srt's forward proxy decides to TERMINATE a CONNECT only when
 // the first flight looks like a TLS ClientHello (record type 0x16, legacy version <=0x0303);
 // anything else it OPAQUE-tunnels straight to the CONNECT target's address, running none of
@@ -40,12 +46,78 @@ function innerHost(request, url) {
 async function filterRequest(request) {
   const url = new URL(request.url);
   if (!innerHost(request, url)) {
+    observe(request.method, url.hostname, url.pathname, 'deny');
     return { action: 'deny', reason: 'the inner Host does not name the tunnel host' };
   }
   if (!allowed(request.method, url.hostname, url.pathname)) {
+    observe(request.method, url.hostname, url.pathname, 'deny');
     return { action: 'deny', reason: 'not on the seat request allowlist' };
   }
+  observe(request.method, url.hostname, url.pathname, 'allow');
   return { action: 'allow' };
+}
+
+// --- request observation and fences -----------------------------------------------------
+// Closed vocabulary: a host outside the allowlist, the token-endpoint table and the
+// reserved canary form is `<other>`; a path is the matching rule's template.
+const TOKEN_HOSTS = new Set(['oauth2.googleapis.com', 'accounts.google.com',
+  'sts.googleapis.com', 'iamcredentials.googleapis.com', 'www.googleapis.com']);
+const METHODS = new Set(['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD', 'OPTIONS', 'CONNECT']);
+const QUIET_MS = 2000;
+let openFront = 0;
+let openSrt = 0;
+let pendingFence = null;
+let quietFrom = 0;
+
+function observedHost(host) {
+  return hosts.has(host) || TOKEN_HOSTS.has(host) || /^[0-9a-f]{32}\.invalid$/.test(host)
+    ? host : '<other>';
+}
+
+function observedPath(host, path) {
+  if (path === null) return null;
+  const rule = rules.find(r => r.host === host
+    && (r.path !== undefined ? path === r.path : path.startsWith(r.path_prefix)));
+  if (rule) return rule.path !== undefined ? rule.path : rule.path_prefix + '*';
+  if (path === '/oauth2/v2/userinfo') return path;
+  return path.startsWith('/oauth2/') ? '/oauth2/*' : '<other>';
+}
+
+function observe(method, host, path, decision) {
+  const name = String(host || '').toLowerCase();
+  process.stdout.write(JSON.stringify({
+    event: 'request', method: METHODS.has(method) ? method : '<other>',
+    host: observedHost(name), path: observedPath(name, path), decision,
+  }) + '\n');
+  quietFrom = Date.now();
+}
+
+function activity() { quietFrom = Date.now(); }
+
+// A fence is acknowledged once no front client and no socket to srt is open and nothing
+// has been observed for QUIET_MS. It never closes the front or touches a decision.
+function checkFence() {
+  if (pendingFence === null) return;
+  if (openFront === 0 && openSrt === 0 && Date.now() - quietFrom >= QUIET_MS) {
+    const id = pendingFence;
+    pendingFence = null;
+    process.stdout.write(JSON.stringify({ event: 'fence', id }) + '\n');
+    return;
+  }
+  setTimeout(checkFence, 50);
+}
+
+function controlLine(line) {
+  let id = null;
+  try {
+    const doc = JSON.parse(line);
+    if (doc && typeof doc.id === 'string' && /^[0-9a-f]{32}$/.test(doc.id)
+        && line === JSON.stringify({ op: 'fence', id: doc.id })) id = doc.id;
+  } catch { /* not a fence: no output */ }
+  if (id === null || pendingFence !== null) return;
+  pendingFence = id;
+  quietFrom = Date.now();
+  setTimeout(checkFence, 50);
 }
 
 await SandboxManager.initialize({
@@ -147,6 +219,9 @@ function refuse(socket, status) {
 
 function spliceToSrt(client, target, firstFlight) {
   const up = connect({ path: srtSocket });
+  openSrt += 1;
+  activity();
+  up.once('close', () => { openSrt -= 1; activity(); });
   up.on('error', () => client.destroy());
   client.on('error', () => up.destroy());
   up.once('connect', () => {
@@ -173,6 +248,9 @@ function spliceToSrt(client, target, firstFlight) {
 }
 
 const front = createServer(client => {
+  openFront += 1;
+  activity();
+  client.once('close', () => { openFront -= 1; activity(); });
   client.on('error', () => client.destroy());
   let buf = Buffer.alloc(0);
   let phase = 'connect';
@@ -191,6 +269,7 @@ const front = createServer(client => {
       }
       const m = /^CONNECT[ \t]+([^\s:]+):(\d+)[ \t]/i.exec(line);
       if (!m || m[2] !== '443' || !hosts.has(m[1].toLowerCase())) {
+        observe(m ? 'CONNECT' : line.split(/[ \t]/)[0].toUpperCase(), m ? m[1] : '', null, 'deny');
         return refuse(client, '403 Forbidden');
       }
       target = m[1].toLowerCase();
@@ -204,13 +283,19 @@ const front = createServer(client => {
   function inspect() {
     const sni = clientHelloSNI(buf);
     if (sni === 'need-more') {
-      if (buf.length > MAX_FIRST_RECORD) client.destroy(); // never grow unbounded; fail closed
+      if (buf.length > MAX_FIRST_RECORD) { // never grow unbounded; fail closed
+        phase = 'refused';
+        observe('CONNECT', target, null, 'deny');
+        client.destroy();
+      }
       return;
     }
     if (sni && hosts.has(sni)) {
       phase = 'spliced';
       spliceToSrt(client, target, buf);
     } else {
+      phase = 'refused';
+      observe('CONNECT', target, null, 'deny');
       client.destroy(); // not a positively-inspected allowed-SNI ClientHello: no bytes upstream
     }
   }
@@ -224,6 +309,22 @@ front.listen(frontSocket, () => {
   }) + '\n');
 });
 front.unref();
+// The parent may stop reading; an observation write must never end the proxy.
+process.stdout.on('error', () => {});
+let control = '';
+let discarding = false;
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', chunk => {
+  control += chunk;
+  let at;
+  while ((at = control.indexOf('\n')) !== -1) {
+    const line = control.slice(0, at);
+    control = control.slice(at + 1);
+    if (discarding) { discarding = false; continue; }
+    controlLine(line);
+  }
+  if (control.length > 4096) { control = ''; discarding = true; } // over-long: never a fence
+});
 process.stdin.resume();
 process.stdin.on('end', async () => {
   try { front.close(); } catch { /* closing */ }
