@@ -129,8 +129,12 @@ def resolve_seat_subject(leg: str, env: Mapping[str, str]) -> SeatSubject:
 
             target = panel_invoker._frontdoor_target(last, leg)
             if target is None or not trusted:
-                raise ExecutableDependencyError("subject_mismatch", "guarded frontdoor")
-            return _managed_subject(leg, target)
+                if _inside_managed_root(candidate) or _frontdoor_names_managed_path(last):
+                    raise ExecutableDependencyError("subject_mismatch", "guarded frontdoor")
+                break
+            if _inside_managed_root(target):
+                return _managed_subject(leg, target)
+            break
         if _inside_managed_root(candidate):
             raise ExecutableDependencyError("subject_mismatch", "guarded frontdoor")
         match = _SHELL_WRAPPER_EXEC.fullmatch(last)
@@ -138,10 +142,13 @@ def resolve_seat_subject(leg: str, env: Mapping[str, str]) -> SeatSubject:
             _SHELL_WRAPPER_EXPORT.fullmatch(line) for line in lines[1:-1]
         ):
             break
+        named_target = Path(match.group(1))
         try:
-            candidate = Path(match.group(1)).resolve(strict=True)
+            candidate = named_target.resolve(strict=True)
         except OSError as exc:
-            raise ExecutableDependencyError("subject_mismatch", "wrapper target") from exc
+            if _inside_managed_root(named_target):
+                raise ExecutableDependencyError("subject_mismatch", "wrapper target") from exc
+            break
 
     # Preserve the existing standalone trust checks.  Passing an absolute source makes
     # its lookup independent of panel_invoker's legacy import-time PATH snapshot.
@@ -260,6 +267,20 @@ def _inside_managed_root(path: Path) -> bool:
         return Path(path).resolve(strict=True).is_relative_to(root)
     except OSError:
         return False
+
+
+def _frontdoor_names_managed_path(line: str) -> bool:
+    """Whether a frontdoor-shaped line names any path below the managed root."""
+
+    try:
+        root = MANAGED_RELEASES_ROOT.resolve(strict=True)
+    except OSError:
+        root = MANAGED_RELEASES_ROOT.absolute()
+    return any(
+        Path(token).absolute().is_relative_to(root)
+        for token in line.split()
+        if token.startswith("/")
+    )
 
 
 def _wrapper_lines(path: Path) -> tuple[list[str], bool]:
