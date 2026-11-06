@@ -2,9 +2,9 @@
 phase_loop_plan_version: 1
 phase: TEAMHOST
 roadmap: specs/phase-plans-seats-v1.md
-roadmap_sha256: 29549f8845411c40c6dc817dda51d009132325fadb812b3a16c01aec564adc7a
+roadmap_sha256: 9dc889c61a8d682dde30af65bf1597c1dca9a0df094fac747194d3629939b16e
 automation:
-  suite_command: ["timeout", "900", "uv", "run", "--quiet", "--project", "phase-loop-runtime", "--group", "test", "--python", "3.14", "--python-preference", "only-system", "--locked", "python", "-m", "pytest", "-p", "no:cacheprovider", "-q", "phase-loop-runtime/tests/test_seats_teamhost_subject.py", "phase-loop-runtime/tests/test_seats_teamhost_accounts.py", "phase-loop-runtime/tests/test_seats_teamhost_gemini.py", "phase-loop-runtime/tests/test_seats_teamhost_integration.py", "phase-loop-runtime/tests/test_seats_teamhost_doctor.py", "phase-loop-runtime/tests/test_seat_jail_prerequisites_1357.py", "phase-loop-runtime/tests/test_agy_self_qualification.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py"]
+  suite_command: ["timeout", "900", "uv", "run", "--quiet", "--project", "phase-loop-runtime", "--group", "test", "--python", "3.14", "--python-preference", "only-system", "--locked", "python", "-m", "pytest", "-p", "no:cacheprovider", "-q", "phase-loop-runtime/tests/test_seats_teamhost_subject.py", "phase-loop-runtime/tests/test_seats_teamhost_accounts.py", "phase-loop-runtime/tests/test_seats_teamhost_gemini.py", "phase-loop-runtime/tests/test_seats_teamhost_integration.py", "phase-loop-runtime/tests/test_seats_teamhost_doctor.py", "phase-loop-runtime/tests/test_seats_teamhost_overlay.py", "phase-loop-runtime/tests/test_seats_teamhost_switchon.py", "phase-loop-runtime/tests/test_seat_jail_prerequisites_1357.py", "phase-loop-runtime/tests/test_agy_self_qualification.py", "phase-loop-runtime/tests/test_seat_host_uid_1098.py", "phase-loop-runtime/tests/test_sandbox_policy.py", "phase-loop-runtime/tests/test_agy_integrity_seat_admission.py", "phase-loop-runtime/tests/test_doctor_bom.py", "phase-loop-runtime/tests/test_seat_profiles.py", "phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py", "phase-loop-runtime/tests/test_seat_launch_helpers_trusted.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py"]
 ---
 
 # TEAMHOST: Team Hosts and Gemini Follow-ups
@@ -19,9 +19,9 @@ PRs under principle 2. The file name follows the manifest pattern of the sibling
 2026-11-06.
 
 **Frozen artifact.** `plans/seats-teamhost-contract.md` is normative for every interface below
-(§1–§8) at sha256 `696accd571b94119652225207de9e20fcc6c234271a75cf19dcf169640ed7ed0`. This plan points at its sections and does not repeat
+(§1–§8) at sha256 `0ceeed6f9bdfbb0d23498e516466d22b234bc88fc4c0191747ad1c45c4eb4f3e`. This plan points at its sections and does not repeat
 them. Its input pins include the JAILCORE route contract
-(`d912090c88ba431de10e82f83fea40a54bf422d3d1c91a2621d421dad91ddd9b`). TEAMHOST consumes it
+(`235f1faded1d7f15d0ff69668b6a451cee7167e6438d258da57257faf7bdae81`). TEAMHOST consumes it
 only through IF-0-JAILCORE-1, IF-0-JAILCORE-2 and EC-JAILCORE-4.
 
 **Base.** Current main plus the agent-harness#1852 roadmap bytes. FIRSTSEAT L1–L5 and the CLAUDE
@@ -62,10 +62,11 @@ All shapes, codes and rules are frozen now in the contract. Lanes implement agai
 from day one.
 
 - [ ] IF-0-TEAMHOST-1 — Seat subject (contract §1): `seat_subject.resolve_seat_subject`,
-  `SeatSubject`, `open_managed_authority`, `deployment_kind`, `MANAGED_RELEASES_ROOT` and
-  `MANAGED_AUTHORITY_PIN`. The resolution order is session lease → managed release →
-  standalone. A managed release never falls back. Downstream vendor phases add a release
-  declaration, not code.
+  `SeatSubject`, `open_managed_authority`, `deployment_kind`, `register_provider_executable`,
+  `MANAGED_RELEASES_ROOT` and `MANAGED_AUTHORITY_PIN`. The resolution order is session lease →
+  managed release → standalone. A managed release, or a failed guarded frontdoor, never falls
+  back. Downstream vendor phases add a release declaration and one
+  `register_provider_executable` call in their own module, and never edit `seat_subject.py`.
 - [ ] IF-0-TEAMHOST-2 — Operator state (contract §2): `seat_host_namespace.operator_private_dir`,
   `write_private_atomic`, `subordinate_ranges_disjoint`, `scratch_root_allowed`, plus the closed
   agent-harness#1108 disposition table.
@@ -122,8 +123,18 @@ SL-5 — C: Doctor, admission agreement and checklist
   Parallel-safe: no
 
 SL-6 — SL-docs: Documentation and spec reconciliation
-  Depends on: SL-1, SL-2, SL-3, SL-4, SL-5
+  Depends on: SL-1, SL-2, SL-3, SL-4, SL-5, SL-7, SL-8
   Blocks: (none)
+  Parallel-safe: no
+
+SL-7 — D2: Gemini overlay (gate G-D)
+  Depends on: SL-3
+  Blocks: SL-6
+  Parallel-safe: yes
+
+SL-8 — A3: Managed-release switch-on (gate G-A)
+  Depends on: SL-4, SL-5
+  Blocks: SL-6
   Parallel-safe: no
 
 ## Lanes
@@ -163,8 +174,8 @@ SL-6 — SL-docs: Documentation and spec reconciliation
 ### SL-2 — B: Operator isolation
 
 - **Scope**: Implement IF-0-TEAMHOST-2 and EC-TEAMHOST-2 at the seat-uid, scratch and native-fill sites, and record the agent-harness#1108 dispositions.
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_host_namespace.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_uid.py`, `phase-loop-runtime/src/phase_loop_runtime/sandbox_policy.py`, `phase-loop-runtime/src/phase_loop_runtime/president_operation.py`, `phase-loop-runtime/tests/test_seats_teamhost_accounts.py`, `phase-loop-runtime/tests/test_seat_host_uid_1098.py`, `phase-loop-runtime/tests/test_sandbox_policy.py`
-- **Ownership note**: `seat_uid.py` is edited only in `seat_runtime_dir` and the L3 range conjunct (contract §8). `sandbox_policy.py` is edited only in `_child_tmp_dir` and `child_scratch_candidates`, and `president_operation.py` only at its pending/ruling writer.
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_host_namespace.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_uid.py`, `phase-loop-runtime/src/phase_loop_runtime/sandbox_policy.py`, `phase-loop-runtime/src/phase_loop_runtime/cli.py`, `phase-loop-runtime/src/phase_loop_runtime/governed_review.py`, `phase-loop-runtime/tests/test_seats_teamhost_accounts.py`, `phase-loop-runtime/tests/test_seat_host_uid_1098.py`, `phase-loop-runtime/tests/test_sandbox_policy.py`
+- **Ownership note**: `seat_uid.py` is edited only in `seat_runtime_dir` and the L3 range conjunct (contract §8). `sandbox_policy.py` is edited only in `_child_tmp_dir` and `child_scratch_candidates`, `cli.py` only in `_advisor_board_command`'s native-fill writes, and `governed_review.py` only in `governed_board_gate`'s native-fill directory. `test_governed_review.py` stays untouched; SL-2's native-fill cases live in `test_seats_teamhost_accounts.py`.
 - **Interfaces provided**: IF-0-TEAMHOST-2
 - **Interfaces consumed**: `seat_uid.lease_seat_id` (pre-existing), `seat_uid.subordinate_range` (pre-existing), IF-0-JAILCORE-1 (pre-existing roadmap contract)
 - **Parallel-safe**: yes
@@ -173,14 +184,15 @@ SL-6 — SL-docs: Documentation and spec reconciliation
 |---|---|---|---|---|---|
 | SL-2.1 | test | — | `phase-loop-runtime/tests/test_seats_teamhost_accounts.py` | `seats_teamhost_accounts` (see below) | `V-B` |
 | SL-2.2 | impl | SL-2.1 | `phase-loop-runtime/src/phase_loop_runtime/seat_host_namespace.py` | — | — |
-| SL-2.3 | impl | SL-2.2 | `phase-loop-runtime/src/phase_loop_runtime/seat_uid.py`, `phase-loop-runtime/src/phase_loop_runtime/sandbox_policy.py`, `phase-loop-runtime/src/phase_loop_runtime/president_operation.py` | — | — |
+| SL-2.3 | impl | SL-2.2 | `phase-loop-runtime/src/phase_loop_runtime/seat_uid.py`, `phase-loop-runtime/src/phase_loop_runtime/sandbox_policy.py`, `phase-loop-runtime/src/phase_loop_runtime/cli.py`, `phase-loop-runtime/src/phase_loop_runtime/governed_review.py` | — | — |
 | SL-2.4 | verify | SL-2.3 | SL-2 files | all SL-2 tests | `V-B` |
 
 **`seats_teamhost_accounts` cases.**
 - **Two concurrent identities.** Use distinct euids (substituted the way
   `test_seat_host_uid_1098.py` does it), distinct `HOME`, `XDG_*` and `TMPDIR`. Each runs the
-  real seat-id lease, scratch resolution and native-fill writer concurrently. Assert that no
-  path, lock or descriptor is shared.
+  real seat-id lease, scratch resolution, native-fill writers and per-leg exec-record writer
+  (IF-0-FIRSTSEAT-3) concurrently. Assert that no path, lock or descriptor is shared, and that
+  neither identity can open the other's exec records or seat state.
 - **Foreign state is refused.** A foreign-owned, group-writable or linked state directory, a
   pre-created fallback directory and a planted `native-fill` link each refuse with
   `seat_sandbox_refused:identity`.
@@ -193,8 +205,8 @@ SL-6 — SL-docs: Documentation and spec reconciliation
 ### SL-3 — D: Gemini follow-ups and agy key
 
 - **Scope**: Implement IF-0-TEAMHOST-4 for EC-TEAMHOST-7 and IF-0-TEAMHOST-5 for EC-TEAMHOST-6.
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/agy_qualification.py`, `phase-loop-runtime/src/phase_loop_runtime/gemini_heartbeat.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_egress/proxy.mjs`, `phase-loop-runtime/src/phase_loop_runtime/seat_jail.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_profiles.py`, `plans/evidence/seat-jail-1132/run_mutation_receipts_1170.py`, `plans/evidence/seat-jail-1132/mutation-receipts-1170.json`, `plans/evidence/seat-teamhost/gemini-config-writes.json`, `phase-loop-runtime/tests/test_seats_teamhost_gemini.py`, `phase-loop-runtime/tests/test_agy_self_qualification.py`, `phase-loop-runtime/tests/test_agy_integrity_seat_admission.py`
-- **Ownership note**: `proxy.mjs` is edited only in the ClientHello parser and the front connection handler. `seat_jail.py` and `seat_profiles.py` are edited only in the Gemini writable-overlay data and the Gemini bind builder, under gate G-D (contract §8). `seat_profiles.py` is JAILCORE's new module; it is touched only if registration placed the Gemini overlay there. `test_seat_jail.py` and `test_seat_profiles.py` stay untouched (JAILCORE SL-3 owns them); SL-3's overlay cases live in `test_seats_teamhost_gemini.py`.
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/agy_qualification.py`, `phase-loop-runtime/src/phase_loop_runtime/gemini_heartbeat.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_egress/proxy.mjs`, `plans/evidence/seat-jail-1132/run_mutation_receipts_1170.py`, `plans/evidence/seat-jail-1132/mutation-receipts-1170.json`, `phase-loop-runtime/tests/test_seats_teamhost_gemini.py`, `phase-loop-runtime/tests/test_agy_self_qualification.py`, `phase-loop-runtime/tests/test_agy_integrity_seat_admission.py`
+- **Ownership note**: `proxy.mjs` is edited only in the ClientHello parser and the front connection handler. Contract §6 item 6 (the Gemini overlay) is lane SL-7.
 - **Interfaces provided**: IF-0-TEAMHOST-4, IF-0-TEAMHOST-5
 - **Interfaces consumed**: `agy_qualification.ensure_admitted` (pre-existing), `gemini_heartbeat.owned_profile` (pre-existing), `seat_egress_proxy.start_proxy` (pre-existing), IF-0-JAILCORE-1 (pre-existing roadmap contract), IF-0-JAILCORE-2 (pre-existing roadmap contract)
 - **Parallel-safe**: yes
@@ -204,8 +216,7 @@ SL-6 — SL-docs: Documentation and spec reconciliation
 | SL-3.1 | test | — | `phase-loop-runtime/tests/test_seats_teamhost_gemini.py`, `phase-loop-runtime/tests/test_agy_self_qualification.py` | `seats_teamhost_agy_key` and `seats_teamhost_1706` (see below) | `V-D` |
 | SL-3.2 | impl | SL-3.1 | `phase-loop-runtime/src/phase_loop_runtime/agy_qualification.py`, `phase-loop-runtime/src/phase_loop_runtime/gemini_heartbeat.py` | — | — |
 | SL-3.3 | impl | SL-3.2 | `phase-loop-runtime/src/phase_loop_runtime/seat_egress/proxy.mjs`, `plans/evidence/seat-jail-1132/run_mutation_receipts_1170.py`, `plans/evidence/seat-jail-1132/mutation-receipts-1170.json` | — | — |
-| SL-3.4 | impl | SL-3.3 | `phase-loop-runtime/src/phase_loop_runtime/seat_jail.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_profiles.py`, `plans/evidence/seat-teamhost/gemini-config-writes.json` | — | — |
-| SL-3.5 | verify | SL-3.4 | SL-3 files | all SL-3 tests | `V-D` |
+| SL-3.4 | verify | SL-3.3 | SL-3 files | all SL-3 tests | `V-D` |
 
 **`seats_teamhost_agy_key` cases.**
 - These cases replace the version-in-key cells of `test_agy_self_qualification.py`; every
@@ -223,12 +234,11 @@ SL-6 — SL-docs: Documentation and spec reconciliation
 
 **`seats_teamhost_1706` cases** are the contract §6 rows. Each has a neutralising mutant.
 
-**SL-3.4.** This task holds gate G-D and runs last. Without a recorded measurement, item 6 is
-deferred with the contract's reason and SL-3.4 changes only the evidence record.
+**Item 6** is lane SL-7 (gate G-D).
 
 ### SL-4 — A2: Seat integration
 
-- **Scope**: The sole TEAMHOST writer of `panel_invoker.py`; it wires IF-0-TEAMHOST-1, -2 and -4 at the contract §8 call sites, and switches registered profiles to managed-release projection under gate G-A.
+- **Scope**: The first of two serial TEAMHOST writers of `panel_invoker.py` (SL-4, then SL-8). It wires IF-0-TEAMHOST-1, -2 and -4 at the contract §8 call sites; the switch-on is SL-8.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `phase-loop-runtime/tests/test_seats_teamhost_integration.py`
 - **Ownership note**: `test_panel_invoker.py` stays untouched; JAILCORE SL-3 owns it, and TEAMHOST integration tests live in the new file.
 - **Interfaces provided**: `integrated_seat_subject`, `board_preflight_requalify`
@@ -239,8 +249,7 @@ deferred with the contract's reason and SL-3.4 changes only the evidence record.
 |---|---|---|---|---|---|
 | SL-4.1 | test | — | `phase-loop-runtime/tests/test_seats_teamhost_integration.py` | `seats_teamhost_integration` (see below) | `V-I` |
 | SL-4.2 | impl | SL-4.1 | `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py` | — | — |
-| SL-4.3 | impl | SL-4.2 | `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py` | — | — |
-| SL-4.4 | verify | SL-4.3 | SL-4 files | all SL-4 tests | `V-I`, `V-R` |
+| SL-4.3 | verify | SL-4.2 | SL-4 files | all SL-4 tests | `V-I`, `V-R` |
 
 **`seats_teamhost_integration` cases.** These enter `seat_profile`, `_prepare_jailed_gemini`,
 `_prepare_jailed_claude` and `invoke_board` with stub providers.
@@ -251,13 +260,8 @@ deferred with the contract's reason and SL-3.4 changes only the evidence record.
 - **Requalify once.** A board composing a jailed Gemini seat calls `requalify_once` before
   composition and never afterwards.
 - **agy admission.** A Gemini subject from any source passes agy admission.
-- **After G-A.** A registered profile with projection `optional` launches the
-  managed-release subject at its declared destination, and its profile digest is unchanged.
 
-**Integration tasks.**
-- **SL-4.2** lands everything except the switch-on.
-- **SL-4.3** is the switch-on and holds gate G-A. Until EC-JAILCORE-4's per-profile
-  projection is on its base, SL-4.3 does not start, and SL-4 stays open.
+**Integration tasks.** SL-4.2 lands everything except the switch-on, which is lane SL-8.
 
 ### SL-5 — C: Doctor, admission agreement and checklist
 
@@ -285,10 +289,13 @@ deferred with the contract's reason and SL-3.4 changes only the evidence record.
     LA1-RELEASE. The existing pins in `test_seat_jail_prerequisites_1357.py` move to the
     sentence form.
   - **Schema.** The golden file validates.
+  - **`fix_for`.** A missing `pytest` on a host that is not ready returns only the pytest
+    sentence. The host text appears once the operator has fixed pytest.
 - **`seats_teamhost_agreement`.** A fixture table covers:
   - a release agy, a valid local record, a record whose MAC fails, a provenance-less record
     and no record;
   - an untrusted Grok surface;
+  - a missing credential, an uninstalled egress layer and a failed guarded frontdoor;
   - each host-capability code;
   - stale and valid jail passes.
   
@@ -318,17 +325,49 @@ deferred with the contract's reason and SL-3.4 changes only the evidence record.
 | SL-docs.4 | docs | SL-docs.3 | `specs/phase-plans-seats-v1.md`, prior plans | Append `### Post-execution amendments` where a freeze proved wrong. |
 | SL-docs.5 | verify | SL-docs.4 | — | `V-R`, `V-S`. |
 
+### SL-7 — D2: Gemini overlay (gate G-D)
+
+- **Scope**: Contract §6 item 6, on a base that holds the IF-0-JAILCORE-1 registration of the Gemini profile.
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_jail.py`, `phase-loop-runtime/src/phase_loop_runtime/seat_profiles.py`, `phase-loop-runtime/tests/data/seat_profile_digests_jailcore.json`, `plans/evidence/seat-teamhost/gemini-config-writes.json`, `phase-loop-runtime/tests/test_seats_teamhost_overlay.py`
+- **Ownership note**: Edited only at the contract §8 names. `test_seat_jail.py` and `test_seat_profiles.py` stay untouched (JAILCORE SL-3 owns them).
+- **Interfaces provided**: (none)
+- **Interfaces consumed**: IF-0-TEAMHOST-5, IF-0-JAILCORE-1 (pre-existing roadmap contract)
+- **Parallel-safe**: yes
+
+| Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
+|---|---|---|---|---|---|
+| SL-7.1 | test | — | `phase-loop-runtime/tests/test_seats_teamhost_overlay.py` | `seats_teamhost_overlay`: each recorded write is admitted and a write outside the narrowed overlay is refused, through the real Gemini bind builder; mutant: restore the whole-directory overlay | `V-O` |
+| SL-7.2 | impl | SL-7.1 | the SL-7 source and data files | — | — |
+| SL-7.3 | verify | SL-7.2 | SL-7 files | all SL-7 tests | `V-O`, `V-D` |
+
+Without a recorded measurement, item 6 is deferred with the contract's reason, and SL-7 changes only the evidence record.
+
+### SL-8 — A3: Managed-release switch-on (gate G-A)
+
+- **Scope**: The contract §1 switch-on and the §3 authority gate, on a base that holds EC-JAILCORE-4's per-profile projection.
+- **Owned files**: `phase-loop-runtime/tests/test_seats_teamhost_switchon.py`
+- **Ownership note**: Serial after SL-4; edited only at the contract §8 names. SL-8 also edits `panel_invoker.py`, but only after SL-4 has merged and only at those names. The file is listed under SL-4 alone because `validate_plan_doc` check (D) has no form for serial ownership (coordinator decision, 2026-11-06).
+- **Interfaces provided**: (none)
+- **Interfaces consumed**: IF-0-TEAMHOST-1, IF-0-TEAMHOST-3, `integrated_seat_subject`, IF-0-JAILCORE-1 (pre-existing roadmap contract)
+- **Parallel-safe**: no
+
+| Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
+|---|---|---|---|---|---|
+| SL-8.1 | test | — | `phase-loop-runtime/tests/test_seats_teamhost_switchon.py` | `seats_teamhost_switchon`: a registered profile with projection `optional` launches the managed-release subject at its declared destination with its profile digest unchanged; a missing pin, a missing entry or a digest mismatch refuses its §1 code, launches nothing and never falls back; the doctor and the seat agree on each state | `V-G` |
+| SL-8.2 | impl | SL-8.1 | `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py` | — | — |
+| SL-8.3 | verify | SL-8.2 | SL-8 files | all SL-8 tests | `V-G`, `V-I`, `V-C` |
+
 ## Execution Notes
 
 - **Parallelism.**
   - SL-1, SL-2 and SL-3 are roots. SL-4 integrates them, and SL-5 compares the doctor with the
     integrated launch path.
   - Every lane executes after FIRSTSEAT exits (gate G-F) and in parallel with JAILCORE.
-- **Cross-phase gates.** These are contract §8's G-A (SL-4.3) and G-D (SL-3.4). They are not
-  lane-DAG edges, and no TEAMHOST dependant waits longer for them.
+- **Cross-phase gates.** Contract §8's G-A holds lane SL-8 and G-D holds lane SL-7. Only those
+  two lanes, and SL-6 after them, wait for JAILCORE.
 - **Single-writer files.**
-  - `panel_invoker.py` → SL-4. `seat_uid.py` → SL-2. `seat_jail_autoqualify.py` → SL-5.
-    `seat_jail.py` and `proxy.mjs` → SL-3.
+  - `panel_invoker.py` → SL-4, then SL-8. `seat_uid.py`, `cli.py` and `governed_review.py` → SL-2.
+    `seat_jail_autoqualify.py` → SL-5. `proxy.mjs` → SL-3. `seat_jail.py` and `seat_profiles.py` → SL-7.
   - Each is also written by another phase, only at the functions contract §8 names; the
     second lander rebases.
   - v11 shares three modules: PANELSPLIT `panel_invoker.py`, GOVSETUP `doctor.py`, and
@@ -345,10 +384,13 @@ deferred with the contract's reason and SL-3.4 changes only the evidence record.
   rebase. Silent `git reset --hard` or `git checkout HEAD~N -- …` in a stale worktree produces
   commits that destroy peer-lane work on `--no-ff` merge.
 - **Gemini transition.** All Gemini key changes name the first row window after TEAMHOST
-  exits (principle 4). SL-4.3 changes Claude's qualification key through its projection
+  exits (principle 4). SL-8 changes Claude's qualification key through its projection
   digest, but not its profile digest. Claude stays `candidate` until CLAUDENET.
-- **agent-harness#1602.** Its L5 must adopt IF-0-TEAMHOST-4's key, or amend it, before it
-  re-keys agy.
+- **agent-harness#1602.** Its pinned plan keys on module digests, and only its watcher
+  qualifies. IF-0-TEAMHOST-4 keys on a declared digest and lets the pre-composition preflight
+  requalify once (EC-TEAMHOST-7). SL-docs records this divergence as a comment on
+  agent-harness#1602, so its L5 adopts or amends IF-0-TEAMHOST-4 before re-keying agy.
+  TEAMHOST does not edit that plan.
 - **Shared-host limits.** Check `uptime` and IO pressure first. Run targeted files serially
   under `timeout 900`, with `-p no:cacheprovider` and without `-n`. Never use
   `local_check.py --full`. Jail-touching cases need system Python 3.14.4, hence
@@ -366,16 +408,16 @@ deferred with the contract's reason and SL-3.4 changes only the evidence record.
 - target surfaces: `docs/TEAM-ONBOARDING.md`, `docs/advisor-board-capabilities-card.md`, `docs/team-host-admin.md`
 - evidence paths: `plans/evidence/seat-teamhost/`
 - redaction posture: `metadata_only`
-- downstream handling: `roadmap amendment` (record gates G-A and G-D beside TEAMHOST's dependency line, if the coordinator ratifies them)
+- downstream handling: `roadmap amendment` (record gates G-A and G-D, which hold lanes SL-8 and SL-7, beside TEAMHOST's dependency line; accepted by the coordinator on 2026-11-06)
 
 ## Acceptance Criteria
 
-- [ ] EC-TEAMHOST-1 — proven by `V-A` and `V-I` (`seats_teamhost_subject`, `seats_teamhost_integration`), falsified by a stub CLI that never runs below the 0o111 ancestor, a refused managed release that launches a standalone or ambient subject, or a self-hashed authority admitted, each path-entered through the real `auth_ok_for` / `resolve_seat_subject` / `seat_profile` path.
-- [ ] EC-TEAMHOST-2 — proven by `V-B` (`seats_teamhost_accounts`), falsified by a shared path, lock or descriptor between the two identities, or a foreign-owned state directory or overlapping range accepted by the real lease, scratch or native-fill code.
+- [ ] EC-TEAMHOST-1 — proven by `V-A`, `V-I` and `V-G` (`seats_teamhost_subject`, `seats_teamhost_integration`), falsified by a stub CLI that never runs below the 0o111 ancestor, a refused managed release that launches a standalone or ambient subject, or a self-hashed authority admitted, each path-entered through the real `auth_ok_for` / `resolve_seat_subject` / `seat_profile` path.
+- [ ] EC-TEAMHOST-2 — proven by `V-B` (`seats_teamhost_accounts`), falsified by a shared path, lock or descriptor between the two identities, one identity opening the other's exec records or seat state, or a foreign-owned state directory or overlapping range accepted by the real lease, scratch or native-fill code.
 - [ ] EC-TEAMHOST-3 — proven by `V-C` (`seats_teamhost_doctor`), with `plans/evidence/seat-teamhost/doctor-receipts.json` as supporting team-host evidence, falsified by a spawn off Linux, a row whose status disagrees with its route predicate, or a multi-sentence or managed-branch-less fix from the real `doctor.run_doctor`.
 - [ ] EC-TEAMHOST-4 — proven by `V-C` (`seats_teamhost_checklist`), falsified by an LA-1 root action missing from `docs/team-host-admin.md` or any exec reached from `seat_host_admin`.
 - [ ] EC-TEAMHOST-5 — proven by `V-C` (`seats_teamhost_agreement`), falsified by a doctor `admits` for a fixture state the real seat preparation refuses.
-- [ ] EC-TEAMHOST-6 — proven by `V-D` (`seats_teamhost_1706`), falsified by a neutralised check that stays green, or an agent-harness#1706 item with no closure or recorded deferral.
+- [ ] EC-TEAMHOST-6 — proven by `V-D` and `V-O` (`seats_teamhost_1706`), falsified by a neutralised check that stays green, or an agent-harness#1706 item with no closure or recorded deferral.
 - [ ] EC-TEAMHOST-7 — proven by `V-D` (`seats_teamhost_agy_key`), falsified by a lost record after a version bump or release-set edit, or an `ensure_admitted` call after composition, through the real `lookup` and `invoke_board` preflight.
 
 ## Verification
@@ -392,6 +434,10 @@ P phase-loop-runtime/tests/test_seats_teamhost_accounts.py phase-loop-runtime/te
 P phase-loop-runtime/tests/test_seats_teamhost_gemini.py phase-loop-runtime/tests/test_agy_self_qualification.py phase-loop-runtime/tests/test_agy_integrity_seat_admission.py
 # V-I
 P phase-loop-runtime/tests/test_seats_teamhost_integration.py
+# V-O
+P phase-loop-runtime/tests/test_seats_teamhost_overlay.py phase-loop-runtime/tests/test_seat_profiles.py
+# V-G
+P phase-loop-runtime/tests/test_seats_teamhost_switchon.py
 # V-C
 P phase-loop-runtime/tests/test_seats_teamhost_doctor.py phase-loop-runtime/tests/test_seat_jail_prerequisites_1357.py phase-loop-runtime/tests/test_doctor_bom.py
 # V-R

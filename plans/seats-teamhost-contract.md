@@ -7,8 +7,8 @@ amendment. Sections are cited as §1–§8.
 
 | Input | sha256 |
 |---|---|
-| `specs/phase-plans-seats-v1.md` | `29549f8845411c40c6dc817dda51d009132325fadb812b3a16c01aec564adc7a` |
-| `plans/seats-jailcore-route-contract.md` (JAILCORE; consumed only through IF-0-JAILCORE-1, IF-0-JAILCORE-2 and EC-JAILCORE-4) | `d912090c88ba431de10e82f83fea40a54bf422d3d1c91a2621d421dad91ddd9b` |
+| `specs/phase-plans-seats-v1.md` | `9dc889c61a8d682dde30af65bf1597c1dca9a0df094fac747194d3629939b16e` |
+| `plans/seats-jailcore-route-contract.md` (JAILCORE; consumed only through IF-0-JAILCORE-1, IF-0-JAILCORE-2 and EC-JAILCORE-4) | `235f1faded1d7f15d0ff69668b6a451cee7167e6438d258da57257faf7bdae81` |
 | `docs/executable-dependency-projection.md` (roadmap External Input) | `c3e955fcdcae3d36dc59c60c293d84cb4df5df3fbcb6efdc3abe9e86ba1a8d9c` |
 | `.consiliency/plans/detailed-lkg-cli-qualification-1602-20261014-0359.md` (reference only; agent-harness#1602 owns its lifecycle) | `9fbfb9d08c3ae69dfc400db2a3a7ca9db0f558d0a5a597c3ddcccfa3ccb0a63b` |
 | `agy_diagnosis.py` at commit `782c97c0` (row wording only; its logic is not salvaged) | `062d377b4ac99519795a7972c47fa357bb8b7e1b04aacd9cedc1cf70f59d1bb1` |
@@ -48,18 +48,21 @@ class SeatSubject:
 def resolve_seat_subject(leg: str, env: Mapping[str, str]) -> SeatSubject
 def open_managed_authority(subject: SeatSubject) -> tuple[int, str]  # borrowed fd, expected sha256
 def deployment_kind() -> Literal["managed", "uv_tool", "pip", "source", "unknown"]
+def register_provider_executable(leg: str, executable: str) -> None  # today's legs built in; a conflicting re-registration raises
 ```
 
 **Resolution order** (first match wins):
 
 1. A bound task lease for `leg` (pre-existing `current_dependency_for_provider`) gives
    `session_lease`. That path is unchanged.
-2. Otherwise the leg's provider is looked up on `env["PATH"]` at call time, never an
-   import-time snapshot. If it resolves through a guarded frontdoor (the pre-existing
-   agent-harness#1798 checks) into a release directly under `MANAGED_RELEASES_ROOT`, the
-   result is `managed_release`. The subject is the release's native provider target only:
-   the selected subject (roadmap Assumption 2). No interpreter, launcher or adjacent file is
-   part of it.
+2. Otherwise the leg's provider executable (registered with `register_provider_executable`)
+   is looked up on `env["PATH"]` at call time, never an import-time snapshot. If it resolves
+   through a guarded frontdoor (the pre-existing agent-harness#1798 checks) into a release
+   directly under `MANAGED_RELEASES_ROOT`, the result is `managed_release`. The subject is the
+   release's native provider target only: the selected subject (roadmap Assumption 2). No
+   interpreter, launcher or adjacent file is part of it. A hit that has the frontdoor form, or
+   whose resolved path or any wrapper hop's target lies under `MANAGED_RELEASES_ROOT`, but that
+   fails any agent-harness#1798 check, refuses `subject_mismatch`. It is never `standalone`.
 3. Otherwise the result is `standalone`: today's trust-checked resolution, unchanged.
 
 **Managed-release authority (IF-XR-1).**
@@ -68,9 +71,18 @@ def deployment_kind() -> Literal["managed", "uv_tool", "pip", "source", "unknown
   packaged schemas.
 - The expected authority digest comes only from `MANAGED_AUTHORITY_PIN`. That file must be a
   regular file owned by uid 0, not group- or world-writable, with every ancestor owned by
-  uid 0. It is RFC 8785 JSON:
+  uid 0 and not group- or world-writable. It is reached by an `O_PATH|O_NOFOLLOW` walk from
+  `/` and read from that one descriptor. It is RFC 8785 JSON:
   `{"schema":"seat_authority_pin.v1","releases":{"<release_id>":{"<leg>":"<sha256>"}}}`.
   The release's own bytes never establish their authority.
+- `SeatSubject.requirement` is built independently of the release bytes:
+  - `provider` comes from the leg;
+  - `selected_executable` comes from the resolved `subject_path`;
+  - `expected_authority_sha256` comes from the pin;
+  - the adapter and policy fields are runtime constants.
+- `open_managed_authority` returns a caller-owned, read-only descriptor on the leg's
+  `authority.json` and the pin's digest. The caller lends it to `admit_executable_dependency`
+  (which duplicates it) and then closes it.
 - A missing pin, or no entry for (release, leg), gives `authority_missing`. An unsafe pin or a
   digest mismatch gives `authority_invalid`. A subject that differs from the declaration's
   gives `subject_mismatch`. These are the existing `ExecutableDependencyError` codes.
@@ -87,25 +99,33 @@ def deployment_kind() -> Literal["managed", "uv_tool", "pip", "source", "unknown
 **Switch-on (gate G-A, §8).** Registered profiles (IF-0-JAILCORE-1) whose projection
 requirement is `optional` or `required` admit the `managed_release` requirement through
 EC-JAILCORE-4's per-profile projection, and the subject launches at the profile's declared
-destination. Before gate G-A, `resolve_seat_subject` returns `managed_release`, but launch
-sites keep today's resolution. Profile digests are unchanged, because dependency mounts are
-outside the digest. A projected launch changes the row's qualification key through
-`dependency_projection_digest` (EC-JAILCORE-4), so the affected rows return to `candidate`.
+destination. Before gate G-A, every launch site resolves through `resolve_seat_subject`, and a
+`managed_release` subject binds its `subject_path` exactly as the agent-harness#1798
+resolution does today, with no authority opened. A refusal from `resolve_seat_subject`
+refuses both before and after G-A. From G-A on, a `managed_release` subject launches only after
+`open_managed_authority` and admission succeed, never falling back, and lane A3 registers the
+§3 authority gate in the same change. Profile digests are unchanged, because dependency mounts
+are outside the digest. A projected launch changes the row's qualification key through
+`QualificationKey.projection_digest` (EC-JAILCORE-4), so the affected rows return to `candidate`.
 
 **Further requirements.**
 - Every Gemini subject, whatever its source, passes §5's agy admission before launch.
 - Codex and Grok keep their named-exception routes (EC-JAILCORE-5) until CODEX and GROK
-  register profiles. Those phases consume this interface without editing this module.
+  register profiles. Those phases consume this interface without editing this module: each
+  calls `register_provider_executable` from the module that registers its `JailProfile`.
 - The keyring helper the generic seat binds goes through the same bind-source checks as
   every other seat bind.
+- `seat_subject` imports `panel_invoker._frontdoor_target` inside the function that uses it,
+  never at module level, so `panel_invoker` can import `seat_subject` without a cycle.
 
 **Search-only workspace.** With `TMPDIR` and the cwd below an ancestor of mode `0o111` that
 the operator owns, the real auth-probe path must reach the CLI. That path is
-`executor_availability.auth_ok_for` → `_run_probe` → `_seat_probe_marker` →
-`_seat_bind_source`. The test requires a non-root euid. Under euid 0 it fails rather than
-skips, because root ignores the mode bits and the pass would be vacuous. If the probe raises
-inside `executable_dependency.py`, lane A stops and reports to JAILCORE's owner of that file
-(§8). It does not edit the file.
+`executor_availability.auth_ok_for` → `_run_probe` → `panel_invoker._seat_probe_marker` →
+`panel_invoker._seat_bind_source`. The test requires a non-root euid. Under euid 0 it fails rather than
+skips, because root ignores the mode bits and the pass would be vacuous. If the case is red on
+lane A1's base inside `panel_invoker.py`, lane A2 fixes it at the §8 functions. If the probe
+raises inside `executable_dependency.py` or `executable_dependency_startup.py`, lane A stops
+and reports to JAILCORE's owner of those files. It does not edit them.
 
 ## 2. Operator state (IF-0-TEAMHOST-2, lane B)
 
@@ -123,14 +143,27 @@ def scratch_root_allowed(path: Path) -> bool
 
 - **`operator_private_dir`.** Creates the directory with mode 0700, or accepts an existing
   one only if it is owned by the euid, has mode exactly 0700 and is not a link. Every
-  component is opened `O_PATH|O_NOFOLLOW`, so search-only ancestors are allowed. Any other
-  case raises `SeatSandboxRefused("seat_sandbox_refused:identity")`.
-- **`write_private_atomic`.** Writes a 0600 temporary file with
-  `O_CREAT|O_EXCL|O_NOFOLLOW`, fsyncs it and renames it into place. It refuses a directory
-  that `operator_private_dir` would refuse.
-- **`subordinate_ranges_disjoint`.** Is true only when the operator's `/etc/subuid` and
-  `/etc/subgid` ranges each intersect no other entry's range. An unreadable file is false.
-- **`scratch_root_allowed`.** Is false for any path at or below `/dev`, `/proc` or `/sys`.
+  component is opened `O_PATH|O_NOFOLLOW`, so search-only ancestors are allowed.
+  - Every component from `base` (including a `/tmp/phase-loop-<uid>` fallback) down to the
+    leaf must also be owned by the euid and have mode 0700.
+  - A group- or world-writable ancestor must be sticky and owned by uid 0.
+  - Any other case raises `SeatSandboxRefused("seat_sandbox_refused:identity")`.
+- **`write_private_atomic`.** Opens `directory` once by the same walk and verifies that it is
+  owned by the euid, not a link, and not group- or world-writable. Relative to that one
+  descriptor it then:
+  - creates a 0600 temporary file with an unpredictable name and
+    `O_CREAT|O_EXCL|O_NOFOLLOW`;
+  - fsyncs the file, `renameat`s it into place and fsyncs the directory;
+  - removes the temporary file on any failure.
+
+  Mode 0700 is not required of `directory`, because native-fill directories are chosen by the
+  operator.
+- **`subordinate_ranges_disjoint`.** Is true only when each of the operator's `/etc/subuid`
+  and `/etc/subgid` ranges intersects no range of another account and contains no uid in
+  `/etc/passwd` and no gid in `/etc/group`. Entries by name and by uid both count as the
+  operator's. An unreadable or malformed file is false.
+- **`scratch_root_allowed`.** Is false for any path whose resolved form (`os.path.realpath`)
+  is at or below `/dev`, `/proc` or `/sys`.
 
 **Construction sites.**
 - `seat_uid.seat_runtime_dir`'s `/tmp/phase-loop-<uid>` fallback goes through
@@ -139,8 +172,13 @@ def scratch_root_allowed(path: Path) -> bool
   (JAILCORE step L3). Lease semantics stay JAILCORE's (step L9).
 - `sandbox_policy._child_tmp_dir` and `child_scratch_candidates` skip any `TMPDIR` that
   `scratch_root_allowed` rejects.
-- The native-fill writers (`panel_invoker._write_json_atomically` and
-  `president_operation`'s pending/ruling writer) use `write_private_atomic`. The directory
+- The native-fill writers use `write_private_atomic`:
+  - `panel_invoker._write_json_atomically`, for the president pending and ruling records
+    (lane A2);
+  - the native-fill request writes in `cli._advisor_board_command` (lane B);
+  - the native-fill directory and files in `governed_review.governed_board_gate` (lane B).
+
+  `president_operation.py` holds only a file-name constant and is not edited. The directory
   layout and file names are unchanged, because external fillers read them.
 
 **agent-harness#1108 disposition (closed list).**
@@ -180,8 +218,16 @@ def verdict(leg: str, env: Mapping[str, str], *, execute: bool = False) -> Verdi
 ```
 
 **Built-in gates**, in launch order. Each calls the same function the launch path calls:
+0. Subject: `seat_subject.resolve_seat_subject`, for every registered leg. From gate G-A on,
+   lane A3 also registers the managed-authority gate (`open_managed_authority` plus the digest
+   check).
 1. Host capability: `seat_jail.seat_sandbox_capable()`, which is JAILCORE step L3 once that
-   lands. Applies to `claude` and `gemini`.
+   lands. Applies to every leg with a registered profile (IF-0-JAILCORE-1), and to `claude`
+   and `gemini` before that registry lands.
+1a. Credential: the profile's `credential_present()`, refusing `credential_missing_code`
+   (step L5); before the registry lands, the existing Claude and Gemini presence checks.
+1b. Egress: `seat_egress_proxy.unavailable_code()` for a profile with an allowlist (step L7).
+   With `execute=False`, a check that would spawn returns `unknown` (`launch_measurement`).
 2. Jail pass record for the leg's live key. This is lookup only and never auto-qualifies.
    It is the pre-existing `pass_record_verdict`, or JAILCORE step L8's store once that lands.
 3. `gemini`: §5's `admission_verdict`, on the `subject_path` that `resolve_seat_subject`
@@ -190,6 +236,9 @@ def verdict(leg: str, env: Mapping[str, str], *, execute: bool = False) -> Verdi
    `grok_tool_surface_unverified`.
 
 **Gate rules.**
+- **Registration.** A vendor phase registers its gate in the module that registers its
+  `JailProfile`, at import. `registered_legs()` includes every leg that
+  `seat_profiles.registered_legs()` lists.
 - **`execute=False`.** No provider binary is spawned. A gate that would spawn one returns
   `unknown` with reason `launch_measurement`. Host-capability probing may spawn `unshare`, as
   the route does, and only on Linux.
@@ -197,7 +246,10 @@ def verdict(leg: str, env: Mapping[str, str], *, execute: bool = False) -> Verdi
   spawned.
 - **Agreement (EC-TEAMHOST-5).** For every fixture state:
   - doctor `admits` implies that the real seat preparation admits;
-  - doctor `refuses` carries the seat's own refusal code.
+  - doctor `refuses` carries the seat's own refusal code;
+  - completeness: the test lists every pre-launch refusal code the leg's real preparation can
+    return (route steps L1–L8 once JAILCORE lands, plus the leg's own preparation, excluding
+    staged-tree and capacity codes), and fails when a code has no fixture row.
   
   A vendor phase that registers a gate adds its own agreement rows.
 
@@ -219,11 +271,12 @@ def verdict(leg: str, env: Mapping[str, str], *, execute: bool = False) -> Verdi
   - `subordinate_ids`: present only when the ranges exist and `subordinate_ranges_disjoint()`
   - `machine_id`
 
-  Every row reads `present` exactly when `seat_sandbox_capable()` is `None` and the
-  qualification prerequisites hold.
+  Each row reports its own predicate. All rows read `present` together exactly when
+  `seat_sandbox_capable()` is `None` and the qualification prerequisites hold.
 - `seat_cli_qualification[]` (new, optional) items are
-  `{leg, status, code?, fix?, reason?}`, one per registered leg. No row says `qualified` or
-  `locally_qualified`.
+  `{leg, status, code?, fix?, reason?}`, one per registered leg.   No row says `qualified` or
+  `locally_qualified`. Its field and status wording is salvaged from the pinned
+  `agy_diagnosis.py`; its logic is not.
 - The golden file is updated in the same change.
 
 ## 4. Fix sentences and the LA-1 checklist (lane C)
@@ -259,9 +312,16 @@ read-only check command and the root action as text.
 | LA1-RELEASE | A managed release that carries the runtime's declared seat dependencies (EC-TEAMHOST-3) |
 | LA1-AUTHORITY-PIN | §1's root-owned pin file, with one entry per release and leg |
 
-**Print-only module.** `python3 -m phase_loop_runtime.seat_host_admin [--all]` prints the
-root actions as text. By default it covers the items the doctor rows report missing; `--all`
-prints every item.
+Operators on hosts that reach `$HOME` or an XDG directory through a symlink (bind-alias
+hosts) set those variables to the resolved path. §2's `O_NOFOLLOW` walk refuses a linked
+ancestor.
+
+**Print-only module.** `python3 -m phase_loop_runtime.seat_host_admin [--all | DOCTOR_JSON]`
+prints the root actions as text.
+- Given a `phase-loop doctor --json` file (`-` for stdin), it covers the items whose rows that
+  file reports missing.
+- `--all`, the default, prints every item.
+- It computes no row itself.
 - It reads files only. It imports no `subprocess`, `pty` or `os.exec*/system/spawn*`.
 - No runtime module imports it, and it never runs a root action.
 - Falsifiers: an AST import scan, a runtime import-graph scan, and a run with spy executables
@@ -272,7 +332,7 @@ prints every item.
 In `agy_qualification.py` and `gemini_heartbeat.py`:
 
 ```python
-OPERATIONS_CONTRACT: tuple[Operation, ...]  # closed: operation id, argv template, env-name set
+OPERATIONS_CONTRACT: tuple[Operation, ...]  # closed: operation id, argv template, env-name set, pass-predicate id
 def agy_profile_digest() -> str
 def qualification_key(image_sha256: str, help_sha256: str, host: str) -> dict[str, str]
 def has_record(image_sha256: str, *, store: Store | None = None) -> bool  # read-only; executes nothing
@@ -293,14 +353,21 @@ def last_known_good() -> VerifiedImage | None
   `{profile_id: gemini_heartbeat.PROFILE_ID, profile: <the owned heartbeat profile
   description rendered with an <image> placeholder>, operations: OPERATIONS_CONTRACT}`.
 - It excludes `__version__`, the shipped release set, file paths and file hashes.
-- Every entry type is keyed by
-  `{image_sha256, platform, help_sha256, host, agy_profile_digest}`.
+- Each entry type keeps its existing context, with `runtime` replaced by
+  `agy_profile_digest`.
+  - `qualified` is keyed by
+    `{image_sha256, platform (host name), profile_id, help_sha256, agy_profile_digest}`.
+  - `failed`, `transient` and `provenance` stay keyed without `help_sha256`, so a refusal
+    and `has_record` need no execution.
 - `written_under` (`__version__`) is MAC-bound and used for reporting only.
 - Entries under the old key are ignored, never translated.
 - **Rendering rule.** The qualification operations render argv and environment only from
   `OPERATIONS_CONTRACT` and the owned profile. A test pins that:
   - editing either changes `agy_profile_digest()`;
-  - a version bump or a release-set edit does not.
+  - a version bump or a release-set edit does not;
+  - a mutant that changes, for a fixed fixture image, the argv or environment-name set an
+    operation actually renders, or the predicate that decides its pass, without editing
+    `OPERATIONS_CONTRACT` turns the test red.
 
 **`requalify_once`.**
 - It runs only from two places:
@@ -316,9 +383,12 @@ def last_known_good() -> VerifiedImage | None
   (projection contract).
 - Login renewal uses the existing wait-and-renew path, so no manual `agy models` is needed.
 
-**Last-known-good.** Suppose the subject image has no record under the live key, and
-`last_known_good()` returns an image with a valid record. Then admission admits the
-last-known-good image as `locally_qualified`, with `Admission.source = "lkg"`.
+**Last-known-good.** Suppose the subject image has no record under the live key. Suppose also
+that `last_known_good()` returns an image whose own `image_sha256`, re-hashed from its
+verified bytes, has a `qualified` entry under the live key and no `failed` entry. Then
+admission admits that image, not the subject, as `locally_qualified`.
+- `Admission` gains `source` (`"lkg"`, otherwise `"subject"`).
+- `register_last_known_good` accepts one provider per process; a second call raises.
 - With no provider registered, the function returns `None` and behaviour is unchanged.
 - agent-harness#1602 registers its provider later and needs no TEAMHOST file.
 
@@ -343,19 +413,21 @@ red.
 | 2 CA key | Closed. Build the jailed Gemini seat view and scan every seat-visible bound file: the CA key bytes appear nowhere. Mutant: the CA writer places the key in the bound CA directory. |
 | 3 Docs | Closed. (a) `run_mutation_receipts_1170.py` labels each run with the base it ran on; runs the file cannot attribute read `unattributed` and cite agent-harness#1555, with no head invented. (b) The red-on-main counts are recorded only for runs the file holds. (c) The J7 step-4 wording matches the resolver as landed; SL-docs edits CONTRACTS.md from text lane D supplies. |
 | 4 Strict lengths | Closed. An extension or `server_name_list` length that exceeds its enclosing length is refused, never clamped. Mutant: restore the clamp. |
-| 5 Bounds | Closed. Before the splice the front buffers at most one ClientHello record (`FRONT_MAX_HELLO_BYTES = 16389`), and after it nothing. An idle front connection closes after `FRONT_IDLE_MS = 30000`. This is a proxy argument with that default, which the production wrapper never passes. |
+| 5 Bounds | Closed. Before the splice the front buffers at most one ClientHello record (`FRONT_MAX_HELLO_BYTES = 16389`), and after it nothing. An idle front connection closes after `FRONT_IDLE_MS = 30000`. This is a proxy argument with that default, which the production wrapper never passes. A value outside 1–30000 refuses startup, so the bound cannot be disabled. |
 | 6 Overlay | Closed if measured. The writable `.gemini/config` overlay is narrowed to the subpaths agy writes, measured on a developer host with the developer's own login (principle 5) and recorded as metadata in `plans/evidence/seat-teamhost/gemini-config-writes.json`. If no measurement can be made, the item is deferred with that reason recorded. Lands under gate G-D. |
 | 7 Probe | Shape-(b) row: closed as a row in the behavioural front suite, with an offline fixture plus a live variant where the egress layer is installed. The pinned FIRSTSEAT probes are unchanged. Live re-witness: deferred to the first Gemini row window, because the window kit (IF-0-FIRSTSEAT-2) is the single qualification procedure and the p4 probe is a pinned FIRSTSEAT method input. |
 
-**Gemini transition.** Items 4–6 and §5 change the Gemini qualification key, so the Gemini row
-returns to `candidate`. Every such change names the first row window after TEAMHOST exits.
+**Gemini transition.** These change a Gemini qualification-key part: item 6, §5 and, if the
+Gemini profile's projection is `optional` or `required`, gate G-A. Items 4–5 change front code
+outside the key. SL-docs returns the Gemini row to `candidate` once for all of them, by a
+matrix edit. Every such change names the first row window after TEAMHOST exits.
 TEAMHOST runs no window.
 
 ## 7. Cross-repo (IF-XR-1)
 
 Consiliency/dotfiles builds the managed releases. A release that serves review seats ships
 §1's per-leg `authority.json` and `declaration.json`. The host administrator writes §1's pin
-file (LA1-AUTHORITY-PIN). Until both exist on a host:
+file (LA1-AUTHORITY-PIN). From gate G-A on, until both exist on a host:
 - that host's seats resolve `managed_release` and refuse with `authority_missing`;
 - the doctor reports the checklist item.
 
@@ -365,19 +437,21 @@ TEAMHOST lands no dotfiles change.
 
 | File | Also written by | TEAMHOST scope |
 |---|---|---|
-| `panel_invoker.py` | JAILCORE SL-3, v11 PANELSPLIT | Lane A2 only. `_FRONTDOOR_RELEASES` aliases `MANAGED_RELEASES_ROOT`. Subject resolution in `_seat_provider_source`, `seat_profile` and `_seat_command_profile`; the keyring-helper bind; `_write_json_atomically`; the subject seam in `_prepare_jailed_gemini` and `_prepare_jailed_claude`; the preflight call in `_preflight_gemini_heartbeat` and `invoke_board`. |
-| `seat_uid.py` | JAILCORE SL-3 (L9 split) | Lane B: `seat_runtime_dir`, plus the range conjunct of the L3 prerequisite. |
+| `panel_invoker.py` | JAILCORE SL-3, v11 PANELSPLIT | Lanes A2 then A3 (plan SL-4, SL-8), serially. `_FRONTDOOR_RELEASES` aliases `MANAGED_RELEASES_ROOT`. Subject resolution in `_seat_provider_source`, `seat_profile`, `_seat_command_profile` and `_resolve_claude_executable`, and removal of the import-time `_PROVIDER_SEARCH_PATH`; the keyring-helper bind; `_write_json_atomically`; the subject seam in `_prepare_jailed_gemini` and `_prepare_jailed_claude`; the preflight call in `_preflight_gemini_heartbeat` and `invoke_board`; `_trusted_host_path`, `_seat_bind_source` and `_seat_probe_marker` only if V-A's search-only case is red on its base. |
+| `seat_uid.py` | JAILCORE SL-3 (L9 split) | Lane B: `seat_runtime_dir`; and, in the L3 prerequisite predicate that JAILCORE's L9 split derives from `seat_uid_available`, one added `seat_host_namespace.subordinate_ranges_disjoint` conjunct beside its `subordinate_range` checks. No other function. |
+| `cli.py` | — | Lane B: the native-fill writes in `_advisor_board_command` only. |
+| `governed_review.py` | PI (key file) | Lane B: the native-fill directory and files in `governed_board_gate` only. |
 | `seat_jail_autoqualify.py` | JAILCORE SL-3 | Lane C: `fix_for` only. |
-| `seat_jail.py`, `seat_profiles.py` | JAILCORE SL-3 | Lane D: the Gemini writable-overlay data and the Gemini bind builder only. |
-| `seat_egress/proxy.mjs` | JAILCORE SL-1 | Lane D: the ClientHello parser and the front connection handler only. |
+| `seat_jail.py`, `seat_profiles.py`, `tests/data/seat_profile_digests_jailcore.json` | JAILCORE SL-3 | Lane D2 (plan SL-7) only:<br>• `GEMINI_WRITABLE_DOTDIR_DIRS`, or its successor in the registered Gemini `JailProfile` (`home_dirs`, `owner_binds`);<br>• `_gemini_binds`, only if a narrowed subpath needs a different bind form;<br>• the data file's Gemini entries, regenerated by `python -m phase_loop_runtime.seat_profiles digest-receipt`. |
+| `seat_egress/proxy.mjs` | JAILCORE SL-1 | Lane D only:<br>• `clientHelloSNI`;<br>• `MAX_FIRST_RECORD`, replaced by `FRONT_MAX_HELLO_BYTES`;<br>• the `createServer` callback assigned to `front`, including its `inspect` closure;<br>• one read of the idle bound from the config object.<br>Not `filterRequest`, `innerHost`, `spliceToSrt`, the ready line or the attestations. |
 | `doctor.py` | v11 GOVSETUP | Lane C: the seat rows only. |
 | `CHANGELOG.md`, `advisor_board/CONTRACTS.md`, the capabilities card, `tests/data/seat_launch_references.json` | JAILCORE SL-4 | SL-docs: TEAMHOST entries and sections only, union-resolved. |
 
-**Gates** (cross-phase; not lane-DAG edges):
+**Gates** (cross-phase; each holds one whole lane):
 - **G-F.** Every lane executes after FIRSTSEAT exits (roadmap scope).
-- **G-A.** Lane A2's switch-on lands only on a base that contains EC-JAILCORE-4's per-profile
+- **G-A.** Lane A3 (plan SL-8) lands only on a base that contains EC-JAILCORE-4's per-profile
   projection under IF-0-JAILCORE-1.
-- **G-D.** Lane D's item-6 overlay change lands only on a base that contains the
+- **G-D.** Lane D2 (plan SL-7) lands only on a base that contains the
   IF-0-JAILCORE-1 registration of the Gemini profile. It edits that registered form.
 
 No TEAMHOST dependant waits longer because of G-A or G-D: CODEX, GROK, PI and CLAUDENET
