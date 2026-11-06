@@ -1008,7 +1008,7 @@ class SeatWatch:
                 self._add_credential(paths.delivered_credential)
         except (OSError, ValueError, WatchUnavailable, AttributeError) as exc:
             self._close_fd()
-            raise WatchUnavailable("watch could not be armed") from exc
+            raise WatchUnavailable("watch could not be armed") from None
 
     def _watch(self, path: Path, mask: int) -> int:
         wd = self._libc.inotify_add_watch(self._fd, os.fsencode(path), mask | _IN_DONT_FOLLOW)
@@ -1577,7 +1577,7 @@ def _helper_row_spec(row: PlantRow, paths: HostPathMap, seat_root: Path
     try:
         inside = target.relative_to(seat_root)
     except ValueError as exc:
-        raise PlantLayoutRefused("seat-owned row is outside the seat root") from exc
+        raise PlantLayoutRefused("seat-owned row is outside the seat root") from None
     return "seat", inside.as_posix().rstrip("/")
 
 
@@ -1644,7 +1644,8 @@ def scan_seat(holder_pid: int, seat_root: str, layout: PlantLayout, paths: HostP
             state = "directory"
         elif kind == "missing":
             state = "absent"
-        elif kind in ("link", "other") or kind == "dir":
+        elif kind == "link" or (kind == "other" and mode is not None) or (
+                kind == "dir" and not relative.endswith("/")):
             state = "non_regular"
         else:
             state = "unread"
@@ -1880,8 +1881,7 @@ def _lookup_is_known(layout: PlantLayout, lookup: TracedPath) -> bool:
             if row_id.startswith(lookup.location + ":")]
     if relative in _LOOKUP_EXCLUSIONS or not relative:
         return True
-    return any(relative == row or relative.startswith(row + "/")
-               or row.startswith(relative + "/") for row in rows)
+    return any(relative == row or row.startswith(relative + "/") for row in rows)
 
 
 def _names_loader_config(path: str) -> bool:
@@ -2174,7 +2174,7 @@ def _row_post_changed(result: WindowLaunchResult, definitions: DefinitionResult)
         elif (state.state in ("regular", "directory") and state.sha256 != before
               and not baseline_match):
             changed.add(row_id)
-        if state.state in ("regular", "directory") and not baseline_match:
+        if state.state in ("regular", "directory"):
             location, relative = _row_parts(row_id)
             readonly = (location == "provider_config"
                         or location == "home" and relative.startswith(".gemini/")
@@ -2184,6 +2184,21 @@ def _row_post_changed(result: WindowLaunchResult, definitions: DefinitionResult)
             if state.mode != expected_mode:
                 changed.add(row_id)
     return changed
+
+
+def _runtime_or_home_change(result: WindowLaunchResult,
+                            definitions: DefinitionResult) -> bool:
+    """Section 8: not_loaded requires no change at a defined workdir, home, or
+    provider_config row, and none at section 3's home row."""
+    home = "home:.gemini/config/mcp_config.json"
+    defined = set(definitions.defined_rows)
+    for row_id in _row_post_changed(result, definitions):
+        if row_id == home:
+            return True
+        location, _relative = _row_parts(row_id)
+        if location in ("workdir", "home", "provider_config") and row_id in defined:
+            return True
+    return False
 
 
 def _positive_surfaces(layout: PlantLayout, result: WindowLaunchResult | None,
@@ -2416,6 +2431,8 @@ def reduce_containment(inputs: ContainmentInputs) -> ContainmentReduction:
                 _add_reason(reasons, surface, "incomplete_scan")
         elif not measured_stream_complete:
             _add_reason(reasons, surface, "incomplete_stream")
+        elif _runtime_or_home_change(measured, definitions):
+            pass
         else:
             outcomes[surface] = "not_loaded"
 

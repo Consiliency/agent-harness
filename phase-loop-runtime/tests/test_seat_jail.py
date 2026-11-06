@@ -1011,6 +1011,36 @@ def test_seats_firstseat_teamhost_containment_scan_wrapper(tmp_path, monkeypatch
     assert any(state.state == "directory" for state in result.rows.values())
 
 
+def test_seats_firstseat_teamhost_containment_scan_incomplete_rows_stay_unread(
+        tmp_path, monkeypatch):
+    from phase_loop_runtime import seat_jail_qualification as q
+
+    layout = q.plant_layout(plugin_form="plugin_json")
+    paths = _firstseat_paths(tmp_path)
+
+    def scan_in_h(_holder, _seat_root, _tree, rows, *, token, **_kw):
+        assert token is None
+        payload = {}
+        for row_id in rows:
+            if row_id.endswith("/"):
+                payload[row_id] = {"kind": "dir", "digest": None, "mode": 0o700}
+            else:
+                payload[row_id] = {"kind": "other", "digest": None, "mode": None}
+        return {"schema": "seat_scan.v1", "scan_complete": False, "entries": 0,
+                "tree_manifest": None, "counts": {"field_names": 0, "delivered_token": 0},
+                "rows": payload}
+
+    monkeypatch.setattr(q.seat_uid, "scan_in_h", scan_in_h)
+    result = q.scan_seat(17, str(paths.seat_home.parent), layout, paths, delivered=None)
+    assert result.scan_complete is False
+    helper_ids = {row.row_id for row in layout.rows
+                  if row.location in ("workdir", "home")
+                  and not (row.location == "home" and row.row_id.split(":", 1)[1].startswith(".gemini/")
+                           and not row.row_id.split(":", 1)[1].startswith(".gemini/config/"))}
+    assert helper_ids
+    assert all(result.rows[row_id].state == "unread" for row_id in helper_ids)
+
+
 def test_seats_firstseat_teamhost_containment_scan_walker_is_bounded_and_counts_names(
         tmp_path, monkeypatch):
     from phase_loop_runtime import seat_uid
@@ -1383,6 +1413,24 @@ def test_seats_firstseat_teamhost_containment_mutants(mutant, tmp_path):
         watch = dataclasses.replace(measured.watch, changed_rows=(row.row_id,))
         changed = dataclasses.replace(inputs, measured=dataclasses.replace(measured, watch=watch))
         assert q.reduce_containment(changed).containment[row.role] == "loaded"
+        defined = _firstseat_map_controls(inputs, lambda item: dataclasses.replace(
+            item, watch=dataclasses.replace(
+                item.watch, opened_rows=(*item.watch.opened_rows, row.row_id))
+            if item.watch is not None else None))
+        defined = dataclasses.replace(
+            defined, measured=dataclasses.replace(measured, watch=watch))
+        result = q.reduce_containment(defined)
+        assert row.row_id in q.definition_probe(defined.layout, defined.controls).defined_rows
+        assert result.containment[row.role] == "loaded"
+        assert all(result.containment[surface] != "not_loaded" for surface in q._SURFACES)
+        home = "home:.gemini/config/mcp_config.json"
+        rows = dict(measured.scan.rows)
+        rows[home] = dataclasses.replace(rows[home], mode=0o644)
+        mode_measured = dataclasses.replace(
+            measured, scan=dataclasses.replace(measured.scan, rows=rows))
+        mode_result = q.reduce_containment(dataclasses.replace(inputs, measured=mode_measured))
+        assert mode_result.containment["mcp_servers"] != "not_loaded"
+        assert home in mode_result.private["rows"]["measured_changed"]
     elif mutant == "16_unknown_lookup_ignored":
         lookup = q.TracedPath(location="tree", relpath=".agents/unknown-loader.json")
         changed = _firstseat_map_controls(inputs, lambda item: dataclasses.replace(
@@ -1390,6 +1438,12 @@ def test_seats_firstseat_teamhost_containment_mutants(mutant, tmp_path):
         result = q.reduce_containment(changed)
         assert result.containment["project_settings"] == "unavailable"
         assert all(value == 1 for value in result.owner_summary.counted_lookups.values())
+        nested = q.TracedPath(location="tree", relpath=".agent/plugins/p/nested/AGENTS.md")
+        nested_inputs = _firstseat_map_controls(inputs, lambda item: dataclasses.replace(
+            item, lookups=(nested,)))
+        nested_result = q.reduce_containment(nested_inputs)
+        assert nested_result.containment["project_settings"] == "unavailable"
+        assert all(value == 1 for value in nested_result.owner_summary.counted_lookups.values())
     elif mutant == "17_expired_copy_error_passes":
         changed = dataclasses.replace(inputs, expired_copy=dataclasses.replace(
             expired, error="jail_unavailable"))
@@ -1496,7 +1550,9 @@ def test_seats_firstseat_teamhost_containment_mutants(mutant, tmp_path):
         controls = _firstseat_map_controls(inputs, lambda item: dataclasses.replace(item, created=()))
         watch = dataclasses.replace(measured.watch, changed_rows=(home,))
         changed = dataclasses.replace(controls, measured=dataclasses.replace(measured, watch=watch))
-        assert q.reduce_containment(changed).containment["mcp_servers"] == "loaded"
+        result = q.reduce_containment(changed)
+        assert result.containment["mcp_servers"] == "loaded"
+        assert all(result.containment[surface] != "not_loaded" for surface in q._SURFACES)
         lookup = q.TracedPath(location="home", relpath="private/mcp_config.json")
         changed = _firstseat_map_controls(inputs, lambda item: dataclasses.replace(
             item, lookups=(lookup,)))

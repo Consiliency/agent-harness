@@ -559,6 +559,15 @@ def test_seats_firstseat_proxy_fence_live_wrapper_round_trip():
     _layer_or_skip()
     with seat_egress_proxy.start_proxy(refuse_all=True) as proxy:
         assert proxy.process.stdin is not None
+        import socket
+        client = socket.socket(socket.AF_UNIX)
+        client.settimeout(5)
+        client.connect(proxy.socket)
+        client.sendall(
+            b"CONNECT phase-loop-bridge-check.invalid:443 HTTP/1.1\r\n"
+            b"Host: phase-loop-bridge-check.invalid:443\r\n\r\n")
+        assert client.recv(64).startswith(b"HTTP/1.1 407")
+        client.close()
         proxy.process.stdin.write("malformed\n")
         proxy.process.stdin.flush()
         start = seat_egress_proxy.fence(proxy, "start", "leg")
@@ -567,6 +576,27 @@ def test_seats_firstseat_proxy_fence_live_wrapper_round_trip():
     assert start.acknowledged and end.acknowledged
     assert stream.final and not stream.protocol_error
     assert stream.allowlist_sha256 == seat_egress_proxy._digest([])
+
+
+def test_seats_firstseat_proxy_bridge_exit_follows_connection_children(monkeypatch):
+    class Bridge:
+        pid = 50
+
+        def poll(self):
+            return None
+
+    sandbox_egress._BRIDGES["7"] = Bridge()
+    table = {50: (1, "S"), 51: (50, "S"), 52: (50, "Z")}
+    monkeypatch.setattr(sandbox_egress, "_process_table", lambda: dict(table))
+    try:
+        assert sandbox_egress.wait_bridge_exit(
+            ["nsenter", "--net", "-t", "7"], timeout_s=0.0) is False
+        table.pop(51)
+        assert sandbox_egress.wait_bridge_exit(
+            ["nsenter", "--net", "-t", "7"], timeout_s=0.0) is True
+        assert sandbox_egress.wait_bridge_exit(["nsenter"], timeout_s=0.0) is False
+    finally:
+        sandbox_egress._BRIDGES.pop("7", None)
 
 
 # --------------------------------------------------------------------------------------
