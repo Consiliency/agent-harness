@@ -6,6 +6,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- `sdk` stays refused on the jailed seat (SEATS CLAUDE, agent-harness#1820), and the jailed default
+  stays the TUI. Its host-side worker (EC-CLAUDE-3) is a later landing, and it needs the ratified
+  OD-3a amendment first.
+
 - The W0 bake-off kit (SEATS CLAUDE, agent-harness#1820): `python -m
   phase_loop_runtime.claude_bakeoff` writes one closed, metadata-only
   `claude-bakeoff-record.v1` record per run, validates a record directory (`validate`, V7,
