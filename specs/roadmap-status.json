@@ -33,6 +33,10 @@
       "status": "superseded"
     },
     {
+      "path": "specs/phase-plans-v13.md",
+      "status": "advisory"
+    },
+    {
       "path": "specs/phase-plans-v2.md",
       "status": "superseded"
     },
