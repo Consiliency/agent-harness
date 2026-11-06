@@ -108,9 +108,10 @@ access-only credential copy (`_SEAT_CREDENTIAL_SHAPE["grok"]`) live in `panel_in
     to `staged_tree_sha256` before launch (otherwise `seat_sandbox_refused:stage_changed`),
     passed as `build_seat_jail(tree=…)` and writable by the seat. It is removed when the leg
     ends. Neither the authorized stage nor another seat's tree is bound into a Grok jail.
-  - **Gate.** Immediately before spawn, `grok_tool_gate` runs on the provider argv the
-    profile built, with argv[0] set to the host binary that is bound at `/seat/bin/grok`. A non-pass ends the leg with
-    `grok_tool_surface_unverified` before any process starts.
+  - **Gate.** Immediately before spawn, main's unchanged `require_grok_admission` checks the
+    exact final provider argv and resolved host binary bound at `/seat/bin/grok`; neither may
+    change afterward. A non-pass ends the leg with `grok_tool_surface_unverified` before any
+    process starts.
   - **Output and refresh.** Seat output is scanned for every `GrokSeatCredential.secrets`
     value in each `contains_secret` encoding. A hit yields `grok_seat_token_in_output`. Then
     `grok_seat_credential_after` runs.
@@ -166,7 +167,7 @@ Raw logs stay private. `containment.json` holds record ids and digests only.
 
 ### SL-2 — Grok profile, tree and launch (roadmap lane A)
 
-- **Scope**: Build the IF-0-GROK-2 profile, with its window rows, and the jailed launch site. Prove the tree, argv, gate, config and output behaviour, then register the profile and update the Grok doc row in one enabling commit.
+- **Scope**: Build the IF-0-GROK-2 profile, with its window rows, and the jailed launch site. Prove the tree, argv, gate, config and output behaviour, then register the profile and update the Grok doc row together when enabling the route.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_profiles.py`, `phase-loop-runtime/src/phase_loop_runtime/panel_invoker.py`, `docs/review-seats-readiness.md`, `phase-loop-runtime/tests/test_grok_seat_jail.py`, `phase-loop-runtime/tests/test_grok_sandbox_seat_approval.py`, `phase-loop-runtime/tests/test_panel_invoker.py`, `phase-loop-runtime/tests/test_seat_profiles.py`, `phase-loop-runtime/tests/test_seat_jail_qualification_entry.py`, `phase-loop-runtime/tests/test_seat_qualification_host_context.py`, `phase-loop-runtime/tests/test_seat_notices.py`, `phase-loop-runtime/tests/data/seat_launch_references.json`, `plans/evidence/seat-grok/write-confinement.json`, `plans/evidence/seat-grok/tool-surface.json`, `plans/evidence/seat-grok/provider-free.json`
 - **Interfaces provided**: IF-0-GROK-2
 - **Interfaces consumed**: IF-0-GROK-1 (SL-1). From IF-0-JAILCORE-1 to IF-0-JAILCORE-3: `JailProfile` (pre-existing), `register` (pre-existing), `seat_route.resolve` (pre-existing), `build_seat_jail` (pre-existing), `start_proxy` (pre-existing), `key_for_launch` (pre-existing). From FIRSTSEAT: `grok_tool_gate` (pre-existing), `grok_runtime_forms` (pre-existing), `probe_grok_tools` (pre-existing), `readiness_rows` (pre-existing)
@@ -204,7 +205,9 @@ Grok launch site, with recording runners unless marked `live_jail` (VL) or `live
 - (c) **Tree.** A copy that differs from `staged_tree_sha256` refuses before launch. In
   `live_jail`, a probe write lands in the copy only, and the authorized stage hash and a
   sibling seat's tree are unchanged (agent-harness#1686).
-- (d) **Gate.** The outer argv starts at bwrap. Each of these ends with
+- (d) **Gate.** The outer argv starts at bwrap. The test asserts unchanged
+  `require_grok_admission` receives that exact final provider argv and binary immediately
+  before spawn, with no later mutation. Each of these ends with
   `grok_tool_surface_unverified` and spawns nothing:
   - no receipt;
   - a receipt for another binary digest;
@@ -229,9 +232,9 @@ Grok launch site, with recording runners unless marked `live_jail` (VL) or `live
   no kit-code edit. The kit's Grok row reads route `jailed` and allowlist `grok`, and the
   readiness doc's Grok row agrees. Gemini's kit records stay byte-identical.
 
-**SL-2.3 is the enabling commit.** It rebases onto SL-1's merge and lands only after `VK`
-passes on the pinned version. It registers the profile with its `window` data, updates the
-Grok doc row and records the launch-reference inventory decision.
+**SL-2.3 enables the route.** It consumes IF-0-GROK-1 and runs only after `VK` passes on
+the pinned version. It registers the profile with its `window` data, updates the Grok doc
+row and records the launch-reference inventory decision.
 
 ### SL-3 — Documentation reducer (SL-docs)
 
@@ -257,8 +260,8 @@ Grok doc row and records the launch-reference inventory decision.
   in `seat_window.readiness_rows()` that still lists Grok as `unconfined`. Registration ends
   the exception in effect, because L1 finds the profile (EC-JAILCORE-5). Under the data-only
   rule, though, no GROK lane may remove the literal, so the kit row would keep showing an
-  exception that expires 2026-12-04. Proposed fix: the kit omits the named exception of any
-  vendor with a registered profile. CODEX and CLAUDENET need the same. Until S-2 is settled,
+  exception that expires 2026-12-04. Proposed fix: omit `unconfined` only when a profile is registered, and `open egress` only
+  when its profile has an allowlist. CODEX and CLAUDENET need those respective rules. Until S-2 is settled,
   SL-2.3 records the exception's end in the readiness doc only.
 - **Other STOP conditions.** In each case, report the exact sentence. The row stays on its
   exception, and then OD-9 applies. Do not register the profile.
@@ -302,11 +305,8 @@ Grok doc row and records the launch-reference inventory decision.
 - **OD-10.** A containment or security finding is reported privately under the operator's
   private state. It never appears in a PR, commit, code comment or test name. Test names
   state required behaviour.
-- **Skill deviations.**
-  - Reconnaissance and architecture ran in-thread, since the context was already gathered.
-  - `advisor()` and `TaskCreate` are unavailable to this delegate. The lane DAG above is the
-    hand-off surface.
-  - The plan goes to the cross-vendor review round.
+- **Skill deviations.** Reconnaissance ran in-thread. `advisor()` and `TaskCreate` were
+  unavailable, so the lane DAG is the hand-off surface. One cross-vendor review round ran.
 
 ## Spec Closeout Plan
 
