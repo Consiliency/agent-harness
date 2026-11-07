@@ -621,6 +621,8 @@ def drive_owned(test: SealedInstall, tmp_path: Path, *, mode: str = "ok",
         bindings={}, directory=test.state, manifest_raw=test.manifest_raw)
     seat = types.SimpleNamespace(jail=types.SimpleNamespace(seat_ids=None), probe_jail=None)
     with contextlib.ExitStack() as stack:
+        from phase_loop_runtime.seat_resource_caps import _seat_scope
+        stack.enter_context(_seat_scope("test:claude-sdk-owned-capture"))
         stack.enter_context(_replaced(pi, "_launch_claude_sdk_worker", launch_worker))
         stack.enter_context(_replaced(pi, "launch_provider", launch_cli))
         prefix = stack.enter_context(sandbox_egress.isolated_network(

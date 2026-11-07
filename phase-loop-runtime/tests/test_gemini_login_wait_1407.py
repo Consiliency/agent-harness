@@ -800,11 +800,12 @@ def test_the_notices_say_what_happens_when_it_ends_and_the_command():
     assert pi._GEMINI_LOGIN_AWAITING in seat_jail.NOTICE_CODES
     assert pi._GEMINI_LOGIN_AWAITING in pi._HARNESS_DETAIL_CODES
     # main's 75, agent-harness#1492's 21 placement codes, agent-harness#1170's egress and
-    # qualification-candidate codes, and agent-harness#1791's local-release code
+    # qualification-candidate codes, agent-harness#1791's local-release code, and SL-5's
+    # resource-cap refusal
     firstseat = {"leg_auth_signed_out", "leg_auth_unavailable", "leg_execution_failed",
                  "leg_exec_record_unavailable", "grok_tool_surface_unverified"}
     assert firstseat <= seat_jail.NOTICES.keys()
-    assert len(seat_jail.NOTICES.keys() - firstseat) == 99
+    assert len(seat_jail.NOTICES.keys() - firstseat) == 100
 
 
 def test_the_suite_never_sleeps_through_a_real_long_gemini_login_sleep(host):

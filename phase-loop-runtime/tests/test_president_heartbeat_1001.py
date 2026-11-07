@@ -219,6 +219,7 @@ def test_seats_firstseat_president_tui_open_turn_resets_clock(tmp_path, monkeypa
         contextlib.nullcontext((command, panel_invoker.SeatProfile(env=kw["env"]))))
     launched = []
     def launch(command, *, profile, role, **kw):
+        assert kw.pop("seat_caps").startswith("president:claude:")
         kw.update(stdin=profile.terminal_fd, stdout=profile.terminal_fd, stderr=profile.terminal_fd)
         proc = subprocess.Popen(command, **kw)
         launched.append(proc)

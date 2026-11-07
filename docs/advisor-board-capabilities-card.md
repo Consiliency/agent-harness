@@ -739,6 +739,12 @@ same modes are written to `seat-modes.json` in the stream directory.
 conventional). The runtime never runs these. Without them the seat is degraded and does not
 run, with `seat_sandbox_unavailable_seat_uid`. The host must also have `dev.tty.legacy_tiocsti = 0`.
 
+Each local review seat is additionally bounded by one capped cgroup parent per `seat_key`.
+Provider and SDK-worker child scopes share that parent. Missing delegation, an unsafe caps
+record, an unsupported I/O device or a differing child-side readback leaves the seat degraded
+with `seat_resource_caps_unavailable`; nothing runs uncapped. Host setup, defaults and the
+opt-in probe are in [Per-seat resource caps](seat-resource-caps.md).
+
 The runtime's own environment must also contain `pytest`: qualification runs a real falsifier run
 whose wrapper imports it (agent-harness#1357). Releases after 0.7.25 depend on it, and on the
 backports it needs when `/usr/bin/python3` is older than 3.11 (`exceptiongroup`, `tomli`,
