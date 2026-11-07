@@ -9,6 +9,11 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - Jailed-seat qualification keys are built from the live profile, allowlist,
   falsifier-layout, projection, variant and host inputs, and dependency projections are
   admitted per profile declaration (SEATS JAILCORE SL-2, agent-harness#1820).
+- TEAMHOST launch integration resolves registered provider names against the call-time
+  environment, so standalone Claude no longer places `/usr/local/bin:/usr/bin:/bin` ahead
+  of the supplied `PATH`; Gemini preflight carries the resolved native subject and keeps a
+  bounded refusal local to that seat (SEATS TEAMHOST SL-4, agent-harness#1820).
+
 - TEAMHOST operator state now uses descriptor-checked private directories for seat-id leases,
   native-fill requests, and child scratch; subordinate uid/gid ranges must be disjoint before
   the seat route can proceed (SEATS TEAMHOST SL-2, agent-harness#1820).

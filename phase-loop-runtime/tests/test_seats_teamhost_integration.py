@@ -123,7 +123,7 @@ def test_native_fill_json_uses_private_atomic_writer(tmp_path, monkeypatch):
     ]
 
 
-def test_jailed_claude_resolves_subject_before_credentials_or_launch(tmp_path, monkeypatch):
+def test_jailed_claude_subject_refusal_launches_nothing(tmp_path, monkeypatch):
     refusal = ExecutableDependencyError("authority_missing")
     monkeypatch.setattr(
         panel,
@@ -133,13 +133,18 @@ def test_jailed_claude_resolves_subject_before_credentials_or_launch(tmp_path, m
     monkeypatch.setattr(
         panel._seat_credentials,
         "resolve_claude_seat_credential",
-        lambda *_args, **_kwargs: pytest.fail("credential read after subject refusal"),
+        lambda *_args, **_kwargs: SimpleNamespace(
+            token=b"synthetic-token", notices=[], source="login", expires_at=None
+        ),
     )
     monkeypatch.setattr(
         panel,
         "launch_provider",
         lambda *_args, **_kwargs: pytest.fail("provider spawned after subject refusal"),
     )
+
+    (tmp_path / "review" / panel._seat_jail.HOST_TREE_DIRNAME).mkdir(parents=True)
+    monkeypatch.setattr(panel._seat_jail, "tree_manifest_sha256_at", lambda _fd: "0" * 64)
 
     with pytest.raises(ExecutableDependencyError) as caught:
         panel._prepare_jailed_claude(
@@ -254,7 +259,8 @@ def test_invoke_board_requalifies_once_before_composition(tmp_path, monkeypatch)
     monkeypatch.setattr(
         agy_qualification,
         "requalify_once",
-        lambda *_args, **_kwargs: events.append("requalify") or Admission(),
+        lambda *_args, **kwargs: events.append(("requalify", kwargs["subject_path"]))
+        or Admission(),
     )
 
     result = panel.invoke_board(
@@ -265,5 +271,113 @@ def test_invoke_board_requalifies_once_before_composition(tmp_path, monkeypatch)
         spawn=lambda *_args, **_kwargs: pytest.fail("direct spawn executed"),
     )
 
-    assert events == ["requalify", "close"]
+    assert events == [("requalify", executable), "close"]
     assert result.legs[0].status == "UNAVAILABLE"
+
+
+def test_bounded_board_without_agy_returns_a_result(tmp_path):
+    result = panel.invoke_board(
+        DEFAULT_BOARD,
+        "fixture",
+        base_env={"HOME": str(tmp_path), "PATH": str(tmp_path)},
+        monitoring_policy="bounded",
+        spawn=lambda *_args, **_kwargs: (1, "", "stub"),
+    )
+    assert len(result.legs) == len(DEFAULT_BOARD.seats)
+
+
+def test_bounded_preflight_failure_refuses_only_the_gemini_leg(tmp_path, monkeypatch):
+    executable = tmp_path / "agy"
+    executable.write_bytes(b"fixture agy")
+    executable.chmod(0o700)
+    monkeypatch.setattr(
+        panel,
+        "integrated_seat_subject",
+        lambda leg, _env: _subject(leg, "standalone", executable),
+    )
+    monkeypatch.setattr(
+        agy_qualification,
+        "requalify_once",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            ValueError("agy_image_unqualified")
+        ),
+    )
+    panel.board_preflight_requalify(
+        DEFAULT_BOARD, {"HOME": str(tmp_path), "PATH": str(tmp_path)}
+    )
+    with pytest.raises(ValueError, match="agy_image_unqualified"):
+        panel.board_preflight_requalify(
+            DEFAULT_BOARD,
+            {"HOME": str(tmp_path), "PATH": str(tmp_path)},
+            heartbeat=True,
+        )
+
+
+def test_jailed_gemini_refuses_an_admission_without_a_path(tmp_path, monkeypatch):
+    executable = tmp_path / "agy"
+    executable.write_bytes(b"fixture agy")
+    executable.chmod(0o700)
+    monkeypatch.setattr(
+        panel,
+        "integrated_seat_subject",
+        lambda leg, _env: _subject(leg, "standalone", executable),
+    )
+    monkeypatch.setattr(panel, "_approved_stage_or_refuse", lambda *_args: tmp_path / "tree")
+    closed = []
+    admission = SimpleNamespace(
+        path=None,
+        image=SimpleNamespace(sha256="f" * 64),
+        admission_class="locally_qualified",
+        close=lambda: closed.append(True),
+    )
+    monkeypatch.setattr(panel.gemini_heartbeat, "admit", lambda *_args, **_kwargs: admission)
+    with pytest.raises(ValueError, match="gemini_heartbeat_capability_unavailable"):
+        panel._prepare_jailed_gemini(
+            tmp_path / "review",
+            tmp_path / "seat-pathless",
+            SimpleNamespace(staged_tree_sha256="0" * 64),
+            1,
+            os.getpid(),
+            ("artifact", "instructions"),
+            SimpleNamespace(),
+            env={"HOME": str(tmp_path), "PATH": str(tmp_path)},
+            credential="none",
+        )
+    assert closed == [True]
+
+
+def test_jailed_gemini_lease_requires_the_admitted_subject_digest(tmp_path, monkeypatch):
+    executable = tmp_path / "leased-agy"
+    executable.write_bytes(b"fixture leased agy")
+    executable.chmod(0o700)
+    dependency = SimpleNamespace(
+        subject_source=str(executable), subject_sha256="a" * 64
+    )
+    monkeypatch.setattr(
+        executable_dependency_startup,
+        "current_dependency_for_provider",
+        lambda *_args, **_kwargs: dependency,
+    )
+    monkeypatch.setattr(panel, "_validate_jail_dependency", lambda *_args: None)
+    monkeypatch.setattr(panel, "_approved_stage_or_refuse", lambda *_args: tmp_path / "tree")
+    closed = []
+    admission = SimpleNamespace(
+        path=executable,
+        image=SimpleNamespace(sha256="b" * 64),
+        admission_class="locally_qualified",
+        close=lambda: closed.append(True),
+    )
+    monkeypatch.setattr(panel.gemini_heartbeat, "admit", lambda *_args, **_kwargs: admission)
+    with pytest.raises(ValueError, match="gemini_heartbeat_capability_unavailable"):
+        panel._prepare_jailed_gemini(
+            tmp_path / "review",
+            tmp_path / "seat-mismatched-lease",
+            SimpleNamespace(staged_tree_sha256="0" * 64),
+            1,
+            os.getpid(),
+            ("artifact", "instructions"),
+            SimpleNamespace(),
+            env={"HOME": str(tmp_path), "PATH": str(tmp_path)},
+            credential="none",
+        )
+    assert closed == [True]
