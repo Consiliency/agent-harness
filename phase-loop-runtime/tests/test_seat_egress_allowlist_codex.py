@@ -807,12 +807,12 @@ def test_measured_turn_completes_over_https_through_the_codex_proxy(tmp_path):
                        "cwd": str(work / "workspace"),
                        "prompt": str(work / "prompt.txt"), "stdout": str(work / "out" / "stdout"),
                        "stderr": str(work / "out" / "stderr"),
-                       "version_out": str(work / "out" / "version"), "timeout_s": 900}, handle)
+                       "version_out": str(work / "out" / "version"), "timeout_s": 600}, handle)
         start = seat_egress_proxy.fence(proxy, "start", "leg")
         done = subprocess.run(
             [shutil.which("unshare"), "--map-root-user", "--net", "--", sys.executable, "-I", "-c",
              _MEASURE_RUNNER, str(spec)],
-            capture_output=True, timeout=1200, stdin=subprocess.DEVNULL,
+            capture_output=True, timeout=720, stdin=subprocess.DEVNULL,
             env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"})
         end = seat_egress_proxy.fence(proxy, "end", "leg")
     duration_s = round(time.monotonic() - started, 1)
