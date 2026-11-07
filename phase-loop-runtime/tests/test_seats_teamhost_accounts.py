@@ -381,11 +381,13 @@ def test_native_fill_request_directory_keeps_the_operator_chosen_root(tmp_path):
 
     existing = tmp_path / "older" / "native-fill" / "request-id"
     existing.mkdir(parents=True)
+    existing.parent.chmod(0o755)
     existing.chmod(0o755)
     assert hostns.operator_private_dir("native_fill", base=existing) == existing
 
     shared = tmp_path / "shared" / "native-fill" / "request-id"
     shared.mkdir(parents=True)
+    shared.parent.chmod(0o755)
     shared.chmod(0o775)
     with pytest.raises(seat_jail.SeatSandboxRefused):
         hostns.operator_private_dir("native_fill", base=shared)
