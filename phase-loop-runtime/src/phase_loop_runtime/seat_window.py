@@ -85,7 +85,7 @@ def readiness_rows() -> list[dict]:
                 "profile_digest": None, "allowlist_id": "gemini" if vendor == "gemini" else None,
                 "allowlist_digest": None, "tool_surface": None,
                 "credential_lane": "subscription", "projection": None,
-                "host_classes": ["team", "standard"], "qualification_record": None,
+                "host_classes": ["standard"], "qualification_record": None,
                 "live_evidence_digest": None,
                 "status": "remote-pending" if kind == "remote" else "candidate",
                 "exception": exception, "expiry": _EXPIRES if exception else None,
@@ -100,10 +100,12 @@ def readiness_rows() -> list[dict]:
 
 
 def candidates(rows, host_class):
+    """Select a context's rows: `host_classes` names where a row qualifies (OD-12), and a
+    team context re-runs those same rows only for later `done-team` validation."""
     if host_class not in {"team", "standard"}:
         raise ValueError("window host class unavailable")
     return [row for row in rows if row["status"] == "candidate"
-            and host_class in row["host_classes"]]
+            and "standard" in row["host_classes"]]
 
 
 def candidate_observations(rows, evidence):
@@ -357,8 +359,9 @@ def _valid_record(record, now, source_root=None):
         or type(record["operator_id"]) is not int or record["operator_id"] < 0
         or record["admission"] != "admitted" or record["board_outcome"] != "terminated"
         or record["gemini_route"] != "jailed"
-        or any(record[key] is not True for key in (
-            "canonical_gemini", "staged_read", "account_isolation"))):
+        or any(record[key] is not True for key in ("canonical_gemini", "staged_read"))
+        # A one-account host has no peer record; a team context needs a passing peer probe.
+        or record["account_isolation"] is not (True if record["host_class"] == "team" else None)):
         return False
     if (type(record["co_seats"]) is not list or set(record["co_seats"]) != {"codex", "grok"}
         or len(record["co_seats"]) != 2):
@@ -393,23 +396,21 @@ def _valid_record(record, now, source_root=None):
             and _reconcile_sources(record, root=source_root))
 
 
+def _standard_records(records) -> list[dict]:
+    """Return the contexts `done-local` reads: the designated standard host alone (OD-12).
+
+    Every other context is ignored here, whatever its shape; later `done-team` validation
+    owns the retained team fields and peer observations.
+    """
+    return [record for record in records
+            if type(record) is dict and record.get("host_class") == "standard"]
+
+
 def verify_records(records, *, now=None, source_root=None) -> dict:
     now = now or _now()
     try:
-        valid = bool(records) and all(_valid_record(record, now, source_root)
-                                      for record in records)
-        contexts = {record["context_id"] for record in records}
-        team = [record for record in records if record["host_class"] == "team"]
-        pairs = {(record["host_digest"], record["operator_id"]) for record in records}
-        labels = {(record["host_digest"], record["account_label"]) for record in records}
-        team_hosts = {record["host_digest"] for record in team}
-        coverage = (len(team_hosts) == 1 and len({record["operator_id"] for record in team}) >= 2
-            and any(record["host_class"] == "standard"
-                    and record["host_digest"] not in team_hosts for record in records)
-            and len(contexts) == len(records) == len(pairs) == len(labels)
-            == len({record["source_attempt"] for record in records})
-            == len({record["exec_record_digest"] for record in records}))
-        passed = bool(valid and coverage)
+        standard = _standard_records(records)
+        passed = len(standard) == 1 and _valid_record(standard[0], now, source_root)
     except (KeyError, TypeError, ValueError):
         passed = False
     return {"schema": "seat_window_verification.v1", "window": "W1", "passed": passed,
@@ -421,6 +422,8 @@ def reduce_readiness(records, *, now=None, source_root=None) -> list[dict]:
     rows = readiness_rows()
     if not verify_records(records, now=now, source_root=source_root)["passed"]:
         return rows
+    # A team context never sets a row status, and no path here emits `done-team`.
+    records = _standard_records(records)
     evidence = digest(sorted(record["record_digest"] for record in records))
     for row in rows:
         observed = []
@@ -441,6 +444,7 @@ def reduce_readiness(records, *, now=None, source_root=None) -> list[dict]:
 def export_records(records, destination: Path, *, reviewed=False, source_root=None):
     if reviewed is not True or not verify_records(records, source_root=source_root)["passed"]:
         raise ValueError("window export unavailable")
+    records = _standard_records(records)
     public = {"schema": "seat_window_export.v1", "window": "W1", "pre_post_reviewed": True,
         "contexts": [{key: record[key] for key in (
             "context_id", "account_label", "host_class", "record_digest")} for record in records],
@@ -627,7 +631,7 @@ def run_native_window(*, repo, monitoring_policy, host_class, model=None):
     return record
 
 
-def qualify(*, window, monitoring_policy, repo=".", host_class="team", attended=False,
+def qualify(*, window, monitoring_policy, repo=".", host_class="standard", attended=False,
             peer_record=None, model=None):
     from . import president_adapter
     if window != "W1" or monitoring_policy != "bounded":
@@ -657,7 +661,7 @@ def register_parser(subparsers):
     parser.add_argument("action", choices=("qualify", "verify", "export", "probe-tools", "matrix"))
     parser.add_argument("--window", default="W1", choices=("W1",))
     parser.add_argument("--monitoring-policy", default="bounded", choices=("bounded",))
-    parser.add_argument("--host-class", default="team", choices=("team", "standard"))
+    parser.add_argument("--host-class", default="standard", choices=("team", "standard"))
     parser.add_argument("--attended", action="store_true")
     parser.add_argument("--reviewed", action="store_true")
     parser.add_argument("--record", action="append", default=[])
