@@ -18,7 +18,7 @@ after a reservation. agent-toolkit#54 already reserves through PLACECLI, but it
 cannot run a remote Pi end to end until these launch inputs exist.
 
 **Frozen artifact.** `plans/artifacts/v13-LANEEXEC-contract-v1.schema.json`,
-sha256 `6630c7f4bb363f57b5ad96693765a6898318e3c4cf9039ba264a8e61b713bdcd`,
+sha256 `26d397056413051f3a62ee19f608f8a368aabe5f5c5f1d1b66d553886ce0e24e`,
 holds IF-0-LANEEXEC-1. It covers:
 
 - the process entry `agent-harness-launch --client … launch|status|cancel|version`
@@ -202,7 +202,7 @@ The artifact's `x-contract-pins` carries every full digest and source revision.
   `x-contract-pins.run_status`).
 - agent-toolkit files through the pins manifest
   `harnesses/pi/contracts/pins.json` (`toolkit_pins.v1`, sha256
-  `72b7f4ff89d6fc7305710e9a27b5d09432eac3d5249630aad53a046b6eeb5608`), whose
+  `92dfdb186065d55d47a4aba3dd24836ca3005317222af2fb86624ae9db84965b`), whose
   source revision is `x-contract-pins.toolkit_pins.toolkit_commit`. At that
   revision, `writer-snapshot.mjs` and `cred-proxy.mjs` have the same bytes as at
   the roadmap-cited revision. All of these are design inputs that are read and
@@ -216,7 +216,8 @@ The artifact's `x-contract-pins` carries every full digest and source revision.
     `openshell-cli.mjs`, `openshell.mjs` and `loopback.mjs`;
   - the `image/Dockerfile` and `image/build-runner-image.mjs` runner-image
     recipe;
-  - the other eight files of the `remote-inner.mjs` import closure, under
+  - the other ten files of the 16-file `remote-inner.mjs` runtime closure,
+    including `git-adapter.mjs` and `guest-bin/git`, under
     `remote_inner_closure:<path>` roles.
 
 No future implementation SHA, commit count or landing topology is pinned.
