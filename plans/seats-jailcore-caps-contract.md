@@ -74,7 +74,10 @@ entry. A host whose workspace volume differs from its staging root lists that vo
 
 - a partition maps to its whole disk, through `/sys/dev/block/MAJ:MIN/partition` and the parent
   directory, because `io.max` takes whole devices only;
-- a device-mapper device is used as it is;
+- a device-mapper device resolves through its `/sys/dev/block/MAJ:MIN/slaves` chain, repeatedly,
+  to the backing whole disk, because systemd writes `io.max` for that disk and not for the
+  mapped device. A chain with more than one backing disk, or one that cannot be resolved,
+  refuses;
 - major 0 (tmpfs, overlay and other anonymous devices) has no block device to verify, so it cannot
   carry `io.max`. An automatic path (staging root or child scratch) on major 0 refuses explicitly:
   that host is unsupported for local seats until both sit on a block-backed filesystem. An
@@ -219,7 +222,8 @@ fake `systemd-run` executable:
 - (c) Readiness: a tree without the unified hierarchy, without the user manager cgroup, without
   each `REQUIRED_CONTROLLERS` member in turn, without `systemd-run`, or without the bus socket
   each returns `CODE`; the complete tree returns `None`.
-- (d) Devices: a whole disk, a partition mapped to its parent, a device-mapper device, and major 0
+- (d) Devices: a whole disk, a partition mapped to its parent, a stacked device-mapper chain
+  resolved to its backing whole disk, a multi-disk or unresolvable chain refusing, and major 0
   refusing, including an automatic path on major 0 beside a block-backed `io_paths` entry.
 - (e) Readback through the real helper: each §4 file absent or differing in turn, including
   `io.weight` and `io.max` absent while `memory.max` matches, writes no byte, and the target
