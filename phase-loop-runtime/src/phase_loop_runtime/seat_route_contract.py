@@ -310,6 +310,11 @@ _SECURITY_CODES = frozenset({
     "claude_sdk_worker_contract_violation",
     "claude_seat_api_key_source",
     "claude_seat_token_in_output",
+    # SEATS CODEX, IF-0-CODEX-5
+    "codex_seat_token_in_output",
+    "codex_seat_token_refreshed_in_jail",
+    "codex_seat_token_scope_excess",
+    "codex_seat_unknown_event",
     "gemini_seat_credential_unusable",
     "gemini_seat_egress_unconfined",
     "gemini_seat_stream_split_unavailable",
@@ -342,6 +347,9 @@ _ORDINARY_CODES = frozenset({
     "claude_seat_stream_unsafe", "claude_seat_token_missing",
     "claude_seat_token_rate_limited", "claude_seat_token_rejected",
     "claude_tui_journal_collection_refused", "claude_tui_workspace_trust_blocked",
+    # SEATS CODEX, IF-0-CODEX-5
+    "codex_seat_api_key_refused", "codex_seat_cli_shape", "codex_seat_credential_missing",
+    "codex_seat_token_expiring", "codex_seat_tools_unavailable",
     "panel_claude_route_invalid", "panel_claude_transport_not_admitted",
     "executor_review_route_unsupported", "gemini_credential_awaiting_refresh",
     "gemini_credential_near_expiry", "gemini_credential_refresh_timeout",
