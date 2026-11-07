@@ -28,8 +28,8 @@ pins a SHA this phase will create.
 
 **Owner rulings in force (2026-11-06).**
 
-- One host class runs sandboxed review seats. The owner's private roster names the host. The
-  shared developer host is being unloaded: it is not a seat host, and no CLOSEOUT live step,
+- The owner's designated standard host is the only sandboxed review-seat host, run by one
+  operator. The owner's private roster names it (OD-C1). The shared developer host is being unloaded: it is not a seat host, and no CLOSEOUT live step,
   window or `VD` run takes place on it. The public text names host classes only (principle 8).
 - Capacity offload ships disabled on every host. CLOSEOUT adds no `CapacityGrant` and no
   private host policy. The final matrix records "capacity offload: disabled" for each host
@@ -197,21 +197,12 @@ SL-3 — Matrix, ledger, issues and docs reducer (lane C, SL-docs)
   on the seat host (principle 5).
 - **Owner decisions.** OD-8 gates the merge of SL-1 and SL-2, not their draft implementation or
   review.
-  **OD-C1 (roadmap-level).** Principle 1, EC-FIRSTSEAT-7, and `seat_window.verify_records`
-  require one team host under two operator accounts and a distinct standard host. The current
-  owner roster supplies only one seat-host class, so no row can reach `done-local` until the
-  missing coverage is provisioned or the owner amends the roadmap and reducer. OD-C1 therefore
-  gates W1, each vendor row window, E1, and EC-CLOSEOUT-2—not only SL-3.3. Do not assert
-  operator-account cardinality without an owner record. OD-C1 is an open owner gate with two
-  options:
-  - **Provision coverage.** Provision the missing standard-host context and, if needed, the
-    second team-host operator account, with LA-1, LA-2, and a passing caps `VC`. That preserves
-    the roadmap and all pins.
-  - **Amend the roadmap.** If the owner intends the rule to mean "every roster host class" and
-    accepts a single-host roster, this is a roadmap contract change, not a CLOSEOUT-plan
-    interpretation. Add a blocking owner decision to the roadmap; amend principle 1,
-    EC-FIRSTSEAT-7, and `seat_window.verify_records` together; then re-pin every SEATS plan
-    plus `index.json` and `dispositions.json`. Changing only this paragraph is insufficient.
+  **OD-C1 (roadmap-level): RESOLVED** by owner ruling, recorded in the roadmap amendment that
+  redefines `done-local`. `done-local` means qualified on the owner's designated standard host,
+  with one operator. Team-host coverage is a separate later status that no CLOSEOUT check, entry
+  check or EC requires. W1, each vendor row window, E1 and EC-CLOSEOUT-2 apply the amended rule.
+  That amendment changes the roadmap's bytes, so this plan's `roadmap_sha256` is re-pinned when
+  it merges. Until then, SL-3.3 settles no row.
 - **Load limits.** Run the targeted files serially under `timeout 900`. The full suite runs on
   hosted CI only, and Gate A follows the sprint policy in force at landing.
 - **Known destructive changes**: SL-1 and SL-2 remove the routes EC-CLOSEOUT-1 and
