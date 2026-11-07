@@ -8,6 +8,17 @@
       "evidence": [
         "plans/phase-plan-v10-FABPUB.md#sl-2---shared-broker-service-and-recoverable-publish-transaction"
       ]
+    },
+    {
+      "surface": "seat-route",
+      "decision": "docs_updated",
+      "reason": "JAILCORE SL-4 updates the contract and capabilities documentation for the shipped four-rung route resolver, closed descend list, named exceptions, inactive remote mode and disabled-by-default capacity gate. The docs-catalog rescan helper is unavailable; a manual catalog audit found no catalog or launch-reference changes.",
+      "evidence": [
+        "plans/phase-plan-v1-seats-JAILCORE.md#sl-4--documentation-and-inventory-reducer-sl-docs",
+        "phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md",
+        "docs/advisor-board-capabilities-card.md",
+        "CHANGELOG.md"
+      ]
     }
   ]
 }
