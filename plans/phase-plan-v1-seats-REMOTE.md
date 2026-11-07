@@ -128,7 +128,7 @@ other roadmap.
   - one bounded non-patch result, as a non-writer route (EC-LANEEXEC-1).
 
   Frozen by `plans/artifacts/v13-LANEEXEC-contract-v1.schema.json`, sha256
-  `35e50428847ba44050eaea83fabe34da29b44ffb0b6bc8b26b1c854ba3eb6193`
+  `04549790f83e0b679e1f379d14adb84d76b6f721fe9c5edcca6bae9c58c5195b`
   (`x-argv-templates.per_vendor_seat_templates`, `x-snapshot.full_mode`, `x-return.result`, and the
   in-process `pre_exec` and `withhold` hooks). The agent-harness#1899 amendment leaves those
   sections unchanged: a `leg` request sets the new `seed` member to `[]`, and responses gain

@@ -324,7 +324,7 @@
           "guest_port": 17690
         },
         "guest_endpoint": "remote-inner listens on 127.0.0.1:17690 inside the sandbox (LINK_PORT of x-contract-pins.toolkit_openshell_cli). The reservation's ForwardTcpUnixBridge forwards exactly that service to the client's 0600 socket. A bridge forwarding another port refuses sandbox_launch_input_mismatch before upload.",
-        "guest_layout": "One upload of /work/<run_id>: fs followed by snapshot.root holds the execution tree with its .git, inputs/landlock-policy.bin holds the manifest, and scratch/ (<policy dir>/../scratch, the attempt's scratch_path) holds exactly the verified seed set of x-seed, provisioned as x-seed.provisioning. There is no link seed-down step: every tree the runner needs (HOME, session and run directories, runner configuration, placeholders) is either declared in the seed set or created empty by remote-inner below scratch/. A hello naming a tree elsewhere, or a scratch directory other than scratch_path, fails in the guest.",
+        "guest_layout": "One upload of /work/<run_id>: fs followed by snapshot.root holds the execution tree with its .git, inputs/landlock-policy.bin holds the manifest, and scratch/ (<policy dir>/../scratch, the attempt's scratch_path) holds exactly the verified seed set of x-seed at exec, provisioned as x-seed.provisioning. The seed set is the initial content of the guest-owned (up-direction) files; trees the runner needs that it does not declare are created empty by remote-inner below scratch/. LaneExec has no seed-down step; the toolkit link's own down-direction mirroring is unchanged and outside this contract. A hello naming a tree elsewhere, or a scratch directory other than scratch_path, fails in the guest.",
         "manifest_rules": "LaneExec writes the manifest in the x-contract-pins.toolkit_landlock_manifest format: MANIFEST_VERSION 1, at most 512 rules, at most 1048576 bytes. It is read-only for the full-remote-pi-runner read_only paths, the image runtime trees and inputs/, and read-write for /dev/null, /tmp, scratch/ and the execution tree.",
         "environment_policy": "constructed and empty, apart from the evidence variable landlock-exec sets; the runner's environment arrives in the client's link hello",
         "references": [
@@ -445,10 +445,10 @@
     "refusal": "Every snapshot refusal is state refused, code sandbox_launch_snapshot_refused with snapshot_reason, exec not claimed. No fallback after a reservation exists: the client releases and may start a new reserve, which is a new admission."
   },
   "x-seed": {
-    "rule": "Activation ruling (agent-harness#1899). The requester declares the exact initial content of scratch/ as LaunchRequest.seed, a list of {relpath, sha256, size} with relpath relative to scratch/. LaneExec verifies every entry and writes the files under scratch/ before the single exec. Undeclared content never arrives, and the pi-runner templates have no link seed-down step. Every workload other than pi-runner declares seed [].",
-    "source": "Seed bytes are read from <seed_root>/<request_id>/<relpath>. seed_root is a per-client operator value that config_sha256 binds and version reports: an absolute directory for agent-toolkit, null for agent-harness. The requester writes the files there before launch. The source is hostile and only read. Each component is opened through a descriptor without following a symlink, and only declared relpaths are opened, so an undeclared file under the source is never read or copied.",
-    "path_rules": "relpath is a RepoPath of at most 255 characters, so an absolute path, a '.' or '..' segment, an empty segment, a backslash, ':' or a control character is schema-invalid (exit 70). LaneExec also refuses unsafe_path for a non-NFC relpath, a duplicate relpath, or a relpath that is a proper prefix directory of another. Invalid input is refused, never normalized. A symlink at any component of the source, seed_root and <request_id> included, refuses symlink. Any other entry that is not a regular file refuses not_regular_file.",
-    "limits": "max_entries 256, entry_max_bytes 16777216 and max_bytes 67108864 (the sum of sizes) by default. Operator configuration may only lower them, per workload or target, and config_sha256 binds the effective values. The schema holds the defaults as ceilings. A declaration above an effective cap refuses too_large before any source byte is read. The 65536-byte input bound of x-cli.input also bounds the declaration.",
+    "rule": "Activation ruling (agent-harness#1899). The requester declares the initial content of the guest-owned (up-direction) files below scratch/ as LaunchRequest.seed, a list of {relpath, sha256, size} with relpath relative to scratch/. LaneExec verifies every entry and writes the files under scratch/ before the single exec, and no undeclared content arrives through LaneExec. LaneExec has no seed-down step; the toolkit link's own down-direction mirroring is unchanged and outside this contract. Every workload other than pi-runner declares seed [].",
+    "source": "Seed bytes are read from <seed_root>/<request_id>/<relpath>. seed_root is a per-client operator value that config_sha256 binds and version reports: an absolute directory for agent-toolkit, null for agent-harness. The requester writes the files there before launch. LaneExec reads <seed_root>/<request_id>/ only during the launch call, up to and including recheck_before_start, and never after the LaunchResponse; status, cancel, release and reap never open it. The requester may delete it once the response returns. seed_root must be owned by the requester's uid, mode 0700 and not a symlink, and no ancestor may be group- or other-writable. The local LaneExec reader runs as that same uid. A different owner or uid, another mode, or a group- or other-writable ancestor refuses sandbox_launch_seed_refused with seed_reason seed_root_untrusted, checked at capture and again at recheck_before_start. The source is hostile and only read. Each component is opened through a descriptor without following a symlink, and only declared relpaths are opened, so an undeclared file under the source is never read or copied.",
+    "path_rules": "relpath is a RepoPath of at most 1024 characters with every segment at most 255 characters, so an absolute path, a '.' or '..' segment, an empty segment, a longer path or segment, a backslash, ':' or a control character is schema-invalid (exit 70). Seed relpaths mirror full host paths below scratch/ (IF-XR-1). LaneExec also refuses unsafe_path for a non-NFC relpath, a duplicate relpath, or a relpath that is a proper prefix directory of another. Invalid input is refused, never normalized. A symlink at any component of the source, seed_root and <request_id> included, refuses symlink. Any other entry that is not a regular file refuses not_regular_file.",
+    "limits": "max_entries 256, entry_max_bytes 16777216 and max_bytes 67108864 (the sum of sizes) by default. Operator configuration may only lower them, per workload or target, and config_sha256 binds the effective values, which version reports as seed_limits beside seed_root. The schema holds the defaults as ceilings. A declaration above an effective cap refuses too_large before any source byte is read. The 65536-byte input bound of x-cli.input also bounds the declaration.",
     "verify": "Each entry's byte length must equal size and the SHA-256 of the bytes read must equal sha256, else digest_mismatch; the read stops at size + 1 bytes. Verified bytes are captured into a private staging directory under the client's LaneExec state directory (directories 0700, files 0600), and every later write uses the captured bytes. Capture counts against the attempt's snapshot budget (x-lifetime), else timeout.",
     "binding": "Each entry becomes one launch.references entry of role config, after the template's references and in relpath order: sha256 and byte_length are the verified values, and source is {namespace: declared_root, root: laneexec_seed, path: <request_id>/<relpath>}. The seed set is therefore part of the admitted envelope and of envelope_digest, and recheck_before_start rechecks it under the pinned reference rule; a difference refuses source_changed. For a process client, assignment_digest also covers seed because it hashes the LaunchRequest. launch.trusted_policy.config_sha256 is unchanged (x-launch-inputs.config_binding).",
     "provisioning": "LaneExec creates scratch/ new, never reused: a directory, not a symlink, owned by the uid the exec runs as, mode 0700. It writes each captured file at its relpath (missing directories 0700, files 0600) and confirms that scratch/ holds exactly the declared set. local: after pre_exec and before the exec claim, as the attempt's scratch directory under the client's LaneExec state directory. Every ancestor is owned by root or by the LaneExec uid, and none is group- or other-writable or a symlink. openshell: the captured set is staged before the claim and travels in the one upload of /work/<run_id> (x-snapshot.upload). /, /work and /work/<run_id> are root-owned, not group- or other-writable and not symlinks. A coordinator refusal of the provisioning before any byte is stored is a certain upload failure, and it rolls the claim back (x-exec.claim_rollback) with code sandbox_launch_seed_refused and seed_reason scratch_unprovisioned. An unknown provisioning result is state uncertain with sandbox_launch_upload_refused, as an unknown upload is.",
@@ -579,7 +579,7 @@
     "C7 bridge, status, cancel, release, reap: bridge loss ending the attempt, cancel only through verified owner identity, release cancelling a live attempt then cleanup_pending, caller-scoped reap of LaneExec state, other inventory invisible.",
     "C8 return: patch cap, masked-path and audit withholding, result.json bound and strictness, withhold predicate, descriptor modes, no raw output in records.",
     "C9 routes: the target-specific Pi template selection, with openshell taking pi-runner.openshell.v1 and local taking pi-runner.local.v1. Each template's argv expands to exactly its frozen form, with relay_endpoint as the single argument 127.0.0.1:17690 and manifest_digest as sha256:<hex>. Naming the other target's template, or a template_sha256 mismatch, refuses before effects. The local link accepts one connection within 120 s, and none ends the attempt with sandbox_launch_bridge_lost. A Pi lane goes through the toolkit shim to agent-toolkit/pi-runner, other executors to agent-harness/implementation, reducer and review units never reaching the site, lane_placement disabled leaving the existing launch unchanged, toolkit_interim refusing local pi-runner.",
-    "C10 seed and scratch (x-seed, x-scratch-path). Each refusal below is state refused, exit 10, code sandbox_launch_seed_refused with its seed_reason, worker_invocations 0, LeaseFlags.exec_claimed false after the call and the staged capture deleted. Path confinement: an absolute relpath, a '.' or '..' segment, an empty segment and a relpath over 255 characters are schema-invalid (exit 70, no effect), as is a non-empty seed for a workload other than pi-runner. A non-NFC relpath, a duplicate relpath and a relpath that is a prefix directory of another refuse unsafe_path. Symlink refusal: a symlink as the file, as an intermediate directory, as <request_id> and as seed_root each refuse symlink, and a sentinel at the symlink target is never opened. A FIFO or device refuses not_regular_file without blocking. Digest mismatch: one changed byte, and a size wrong in either direction, refuse digest_mismatch. A source file changed after capture refuses source_changed at recheck_before_start, with no claim. Size cap: max_entries, entry_max_bytes and max_bytes, each exceeded by one at the default and at an operator-lowered value, refuse too_large before any source byte is read, and each launches exactly at the cap. Undeclared content: a file under <seed_root>/<request_id> that is not declared is never opened (descriptor trace) and is absent from scratch/. On both targets scratch/ holds exactly the declared set by tree manifest, and a pre-existing scratch directory is never reused. Binding: launch.references holds one config entry per seed entry, in relpath order, with the declared_root source. envelope_digest changes when any seed byte, relpath or size changes, and config_sha256 does not change with the seed set. Mode and ownership: scratch/ is a directory owned by the exec uid with mode 0700, its directories 0700 and its files 0600. On local, a group-writable, foreign-owned or symlinked ancestor refuses scratch_unprovisioned before the claim. On openshell, a fake coordinator that refuses provisioning before storing a byte rolls the claim back (claim_rolled_back journaled, and a new request_id launches), and an unknown provisioning result is uncertain with sandbox_launch_upload_refused and keeps the claim. scratch_path echo: a refused launch carries null. Status queued, running and cancelling and the finished launch carry the same absolute path: on openshell the manifest slot's directory's parent joined with scratch (/work/<attempt_id>/scratch), and on local the bound scratch slot. A LaunchRequest with a scratch member is schema-invalid. The check that a hello naming another scratch directory ends the run is an agent-toolkit test. Mutation controls, each of which must fail: following a symlink in the source, re-reading seed bytes after capture, skipping the size check, and dropping seed entries from launch.references."
+    "C10 seed and scratch (x-seed, x-scratch-path). Each refusal below is state refused, exit 10, code sandbox_launch_seed_refused with its seed_reason, worker_invocations 0, LeaseFlags.exec_claimed false after the call and the staged capture deleted. Path confinement: an absolute relpath, a '.' or '..' segment, an empty segment, a relpath over 1024 characters and a segment over 255 characters are schema-invalid, while a 1024-character relpath of 255-character segments is valid (exit 70, no effect), as is a non-empty seed for a workload other than pi-runner. A non-NFC relpath, a duplicate relpath and a relpath that is a prefix directory of another refuse unsafe_path. Symlink refusal: a symlink as the file, as an intermediate directory, as <request_id> and as seed_root each refuse symlink, and a sentinel at the symlink target is never opened. A FIFO or device refuses not_regular_file without blocking. Source ownership: a seed_root owned by another uid, a reader uid that differs from the owner, a seed_root mode other than 0700 and a group-writable ancestor each refuse seed_root_untrusted. Source lifetime: after the LaunchResponse, the source is deleted or replaced and status, cancel, release and reap open nothing below seed_root (descriptor trace); a source changed after recheck_before_start has no effect on the attempt. Digest mismatch: one changed byte, and a size wrong in either direction, refuse digest_mismatch. A source file changed after capture refuses source_changed at recheck_before_start, with no claim. Size cap: max_entries, entry_max_bytes and max_bytes, each exceeded by one at the default and at an operator-lowered value, refuse too_large before any source byte is read, and each launches exactly at the cap. Undeclared content: a file under <seed_root>/<request_id> that is not declared is never opened (descriptor trace) and is absent from scratch/ at exec. On both targets scratch/ holds exactly the declared set by tree manifest, and a pre-existing scratch directory is never reused. Binding: launch.references holds one config entry per seed entry, in relpath order, with the declared_root source. envelope_digest changes when any seed byte, relpath or size changes, and config_sha256 does not change with the seed set. Mode and ownership: scratch/ is a directory owned by the exec uid with mode 0700, its directories 0700 and its files 0600. On local, a group-writable, foreign-owned or symlinked ancestor refuses scratch_unprovisioned before the claim. On openshell, a fake coordinator that refuses provisioning before storing a byte rolls the claim back (claim_rolled_back journaled, and a new request_id launches), and an unknown provisioning result is uncertain with sandbox_launch_upload_refused and keeps the claim. scratch_path echo: a refused launch carries null. Status queued, running and cancelling and the finished launch carry the same absolute path: on openshell the manifest slot's directory's parent joined with scratch (/work/<attempt_id>/scratch), and on local the bound scratch slot. A LaunchRequest with a scratch member is schema-invalid. The check that a hello naming another scratch directory ends the run is an agent-toolkit test. Mutation controls, each of which must fail: following a symlink in the source, re-reading seed bytes after capture, skipping the size check, and dropping seed entries from launch.references."
   ],
   "$defs": {
     "RepoPath": {
@@ -630,6 +630,7 @@
       "enum": [
         "unsafe_path",
         "symlink",
+        "seed_root_untrusted",
         "not_regular_file",
         "digest_mismatch",
         "too_large",
@@ -735,7 +736,8 @@
       "properties": {
         "relpath": {
           "$ref": "#/$defs/RepoPath",
-          "maxLength": 255
+          "maxLength": 1024,
+          "pattern": "^(?!.*[^/]{256})"
         },
         "sha256": {
           "$ref": "https://github.com/Consiliency/agent-harness/plans/artifacts/v13-PLACECLI-contract-v1.schema.json#/$defs/HexSha256"
@@ -744,6 +746,32 @@
           "type": "integer",
           "minimum": 0,
           "maximum": 16777216
+        }
+      }
+    },
+    "SeedLimits": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_entries",
+        "entry_max_bytes",
+        "max_bytes"
+      ],
+      "properties": {
+        "max_entries": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 256
+        },
+        "entry_max_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 16777216
+        },
+        "max_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 67108864
         }
       }
     },
@@ -1877,6 +1905,7 @@
         "local_pi_runner_launcher",
         "local_link_root",
         "seed_root",
+        "seed_limits",
         "templates"
       ],
       "properties": {
@@ -1924,6 +1953,16 @@
             }
           ]
         },
+        "seed_limits": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/SeedLimits"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "templates": {
           "type": "array",
           "maxItems": 64,
@@ -1931,7 +1970,35 @@
             "$ref": "#/$defs/TemplateSummary"
           }
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "seed_root": {
+                "type": "null"
+              }
+            },
+            "required": [
+              "seed_root"
+            ]
+          },
+          "then": {
+            "properties": {
+              "seed_limits": {
+                "type": "null"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "seed_limits": {
+                "$ref": "#/$defs/SeedLimits"
+              }
+            }
+          }
+        }
+      ]
     }
   }
 }
