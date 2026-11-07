@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: CODEX
 roadmap: specs/phase-plans-seats-v1.md
-roadmap_sha256: 8aeebdf2c0a00b82df75e3af6ef1d4593073a1979bec1f2ed04e977e299cf005
+roadmap_sha256: 785e5ada02bc80319d23f9f5cfb577aa5fdefcb425cca9bf4f779962a01c16f9
 automation:
   suite_command: ["timeout", "900", "env", "PYTEST_ADDOPTS=", "python3", "-m", "pytest", "-p", "no:cacheprovider", "-q", "phase-loop-runtime/tests/test_seat_codex_vocabulary.py", "phase-loop-runtime/tests/test_seat_codex_runtime.py", "phase-loop-runtime/tests/test_seat_codex_credential.py", "phase-loop-runtime/tests/test_executor_availability.py", "phase-loop-runtime/tests/test_seat_egress_allowlist_codex.py", "phase-loop-runtime/tests/test_seat_codex_cli_shape.py", "phase-loop-runtime/tests/test_seat_profile_codex.py", "phase-loop-runtime/tests/test_seat_codex_evidence.py", "phase-loop-runtime/tests/test_seat_codex_leg.py", "phase-loop-runtime/tests/test_seat_codex_route_gate.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py"]
 ---

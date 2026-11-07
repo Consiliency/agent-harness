@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: PI
 roadmap: specs/phase-plans-seats-v1.md
-roadmap_sha256: 8aeebdf2c0a00b82df75e3af6ef1d4593073a1979bec1f2ed04e977e299cf005
+roadmap_sha256: 785e5ada02bc80319d23f9f5cfb577aa5fdefcb425cca9bf4f779962a01c16f9
 automation:
   suite_command: ["timeout", "900", "env", "PYTEST_ADDOPTS=", "python3", "-m", "pytest", "-p", "no:cacheprovider", "-q", "phase-loop-runtime/tests/test_pi_panel_leg.py", "phase-loop-runtime/tests/test_panel_invoker.py", "phase-loop-runtime/tests/test_advisor_board_backing_homebrew.py", "phase-loop-runtime/tests/test_panel_per_leg_model_66.py", "phase-loop-runtime/tests/test_pi_seat_profile.py", "phase-loop-runtime/tests/test_seat_profiles.py", "phase-loop-runtime/tests/test_seat_jail.py", "phase-loop-runtime/tests/test_seat_route_contract.py", "phase-loop-runtime/tests/test_seat_notices.py", "phase-loop-runtime/tests/test_executable_dependency.py", "phase-loop-runtime/tests/test_pi_routed_identity.py", "phase-loop-runtime/tests/test_advisor_board_composition.py", "phase-loop-runtime/tests/test_governed_review.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py"]
 ---

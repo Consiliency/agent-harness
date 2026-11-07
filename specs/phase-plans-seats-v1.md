@@ -746,7 +746,8 @@ Run the Codex seat inside its per-seat jail, with the jail as its only boundary
   (agent-harness#1472). Lanes B and C land before lane A enables the route.
 - The `setfcap` retention in `sandbox_egress.py` does not carry into the jailed route, and
   it retires when agent-harness#1335 closes.
-- Expected to close agent-harness#1335, agent-harness#1003 and agent-harness#941.
+- agent-harness#1335 stays open as later `done-team` evidence. Expected to close agent-harness#1003 and
+  agent-harness#941.
 
 **Governance**
 - Principle 2. OD-4 is required before lane A enables the route; lanes B and C do not wait

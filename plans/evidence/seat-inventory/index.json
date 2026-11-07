@@ -1,5 +1,5 @@
 {
-  "roadmap_sha256": "8aeebdf2c0a00b82df75e3af6ef1d4593073a1979bec1f2ed04e977e299cf005",
+  "roadmap_sha256": "785e5ada02bc80319d23f9f5cfb577aa5fdefcb425cca9bf4f779962a01c16f9",
   "rows": [
     {"number": 826, "part": "whole", "kind": "reference", "owner_ec": null, "rationale": "Cited as the source of the standing no-silence-kill policy under OD-11.", "links": ["https://github.com/Consiliency/agent-harness/issues/826"]},
     {"number": 848, "part": "whole", "kind": "owned", "owner_ec": "EC-INVENTORY-4", "rationale": "The proposal issue this phase marks superseded.", "links": ["https://github.com/Consiliency/agent-harness/issues/848"]},

@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: FIRSTSEAT
 roadmap: specs/phase-plans-seats-v1.md
-roadmap_sha256: 8aeebdf2c0a00b82df75e3af6ef1d4593073a1979bec1f2ed04e977e299cf005
+roadmap_sha256: 785e5ada02bc80319d23f9f5cfb577aa5fdefcb425cca9bf4f779962a01c16f9
 automation:
   suite_command:
     - 'timeout'
@@ -375,7 +375,8 @@ SL-4 — E: Window kit, matrix and documentation reducer
 ### SL-4 — E: Window kit, matrix and documentation reducer
 
 - **Scope**: Implement EC-FIRSTSEAT-6 and EC-FIRSTSEAT-7 and reconcile all producer evidence.
-- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_window.py`, `phase-loop-runtime/src/phase_loop_runtime/cli.py`, `phase-loop-runtime/src/phase_loop_runtime/executable_dependency_startup.py`, `phase-loop-runtime/tests/test_executable_dependency_startup.py`, `phase-loop-runtime/tests/test_seat_jail_qualification_entry.py`, `phase-loop-runtime/tests/test_seat_qualification_host_context.py`, `docs/review-seats-readiness.md`, `phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md`, `docs/advisor-board-capabilities-card.md`, `plans/evidence/seat-qualification/*`, `CHANGELOG.md`, `phase-loop-runtime/tests/data/seat_launch_references.json`, `phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py`
+- **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/seat_window.py`, `phase-loop-runtime/src/phase_loop_runtime/cli.py`, `phase-loop-runtime/src/phase_loop_runtime/executable_dependency_startup.py`, `phase-loop-runtime/tests/test_executable_dependency_startup.py`, `phase-loop-runtime/tests/test_seat_jail_qualification_entry.py`, `phase-loop-runtime/tests/test_seat_qualification_host_context.py`, `docs/review-seats-readiness.md`, `phase-loop-runtime/src/phase_loop_runtime/advisor_board/CONTRACTS.md`, `docs/advisor-board-capabilities-card.md`, `plans/evidence/seat-qualification/*`, `CHANGELOG.md`, `phase-loop-runtime/tests/data/seat_launch_references.json`, `phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py`, `plans/evidence/seat-qualification/README.md`
+- **Ownership amendment (2026-11-07):** Lane C's code has landed, so E takes the one `host_classes` literal in `phase-loop-runtime/src/phase_loop_runtime/president_adapter.py`. SL-2 keeps the rest of that file.
 - **Ownership amendment (2026-11-05):** `executable_dependency_startup.py` is owned only to add the `seat-window` command to its closed CLI command inventory with the correct route class and a regression; no other inventory entry or rule changes.
 - **Ownership amendment (2026-11-05, inventories):** E owns `CHANGELOG.md`, `seat_launch_references.json` and the `INVENTORY` of `test_agent_cli_scratch_inventory_1147.py` entry by entry. Each lane's change carries the entries for its own sites, with existing roles; no other entry, rule or assertion changes.
 - **Interfaces provided**: IF-0-FIRSTSEAT-1, IF-0-FIRSTSEAT-2, IF-0-FIRSTSEAT-3.
@@ -426,7 +427,7 @@ SL-4 — E: Window kit, matrix and documentation reducer
     admission; never invent host readiness or owner actions. Reconcile vendor,
     remote and president rows from every producer; name exceptions and expiries.
     A later EC-JAILCORE-6 failure returns Gemini to `candidate`.
-  - impl: The overlap with JAILCORE SL-3.5 (agent-harness#1890) covers `seat_window.readiness_rows()` and the Gemini goldens. Whichever PR lands second reruns both the FIRSTSEAT W1 receipt tests and JAILCORE's vendor-neutral window-kit tests. JAILCORE's golden is captured from the merged OD-12 FIRSTSEAT base. The result keeps `JailProfile.window` vendor-neutral, and coverage and CLI host class default to `standard`.
+  - impl: The overlap with JAILCORE SL-3.5 (agent-harness#1890) covers `seat_window.readiness_rows()` and the Gemini goldens: whichever of the two lands second captures the Gemini golden from the merged base containing both, and reruns both phases' window-kit tests. The result keeps `JailProfile.window` vendor-neutral, and coverage and CLI host class default to `standard`.
   - verify: Run V-E and V-W, execute one window run on the designated standard host under its operator account, then `phase-loop seat-window verify --window W1`.
     Publish reviewed metadata and update status only from validated evidence.
 
