@@ -12,6 +12,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - TEAMHOST operator state now uses descriptor-checked private directories for seat-id leases,
   native-fill requests, and child scratch; subordinate uid/gid ranges must be disjoint before
   the seat route can proceed (SEATS TEAMHOST SL-2, agent-harness#1820).
+- Gemini TEAMHOST follow-ups bind each qualification operation to its pass predicate,
+  carry a resolved native subject through first-use qualification, align doctor admission
+  with the seat route, move last-known-good fallback to that route, and harden the jailed
+  egress front and its offline proofs (SEATS TEAMHOST SL-3, agent-harness#1820).
 
 - JAILCORE publishes the frozen jailed-seat profile and route-resolver contracts, and seat
   egress selects one packaged allowlist per proxy, binds its canonical content digest and

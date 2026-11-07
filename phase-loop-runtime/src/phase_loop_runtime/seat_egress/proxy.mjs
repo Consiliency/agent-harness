@@ -219,7 +219,6 @@ function clientHelloSNI(buf) {
     }
     p += len;
   }
-  if (p !== extEnd) return null;
   return null; // no SNI: cannot positively inspect an allowed-SNI ClientHello -> refuse
 }
 
@@ -268,6 +267,7 @@ const front = createServer(client => {
   let phase = 'connect';
   let target = null;
   client.on('data', chunk => {
+    if (phase === 'spliced') return; // nothing is buffered after the splice
     idle.refresh();
     buf = Buffer.concat([buf, chunk]);
     if (phase === 'connect') {

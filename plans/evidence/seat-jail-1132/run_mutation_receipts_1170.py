@@ -200,6 +200,25 @@ def _tests(nodes) -> dict[str, object]:
     return {"returncode": done.returncode, "summary": tail[-1] if tail else done.stdout[-300:]}
 
 
+def _run_base() -> str:
+    """Return the exact checkout base this run can attribute, never a guessed head."""
+    return (subprocess.run(
+        ["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True, text=True)
+        .stdout.strip() or "unattributed")
+
+
+def _document(receipts: list[dict[str, object]], base: str | None = None) -> dict[str, object]:
+    document: dict[str, object] = {
+        "schema": "seat_jail_mutation_receipts.v1",
+        "issue": "agent-harness#1170",
+        "base": base or _run_base(),
+        "receipts": receipts,
+    }
+    if document["base"] == "unattributed":
+        document["attribution_note"] = "Run base unavailable; see agent-harness#1555."
+    return document
+
+
 def main(argv: list[str]) -> int:
     only = set(argv[argv.index("--only") + 1:]) if "--only" in argv else None
     receipts = json.loads(OUT.read_text())["receipts"] if (only and OUT.exists()) else []
@@ -253,14 +272,9 @@ def main(argv: list[str]) -> int:
         receipt["result"] = "red_as_required" if red else "SURVIVED"
         print(mutation["id"], receipt["result"], flush=True)
         receipts.append(receipt)
-    base = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True,
-                          text=True).stdout.strip() or "unattributed"
     order = [m["id"] for m in MUTATIONS]
     receipts.sort(key=lambda r: order.index(r["id"]))
-    document = {"schema": "seat_jail_mutation_receipts.v1", "issue": "agent-harness#1170",
-                "base": base, "receipts": receipts}
-    if base == "unattributed":
-        document["attribution_note"] = "Run base unavailable; see agent-harness#1555."
+    document = _document(receipts)
     OUT.write_text(json.dumps(document, indent=2) + "\n")
     survived = [r["id"] for r in receipts if r["result"] != "red_as_required"]
     print("survived:", survived)

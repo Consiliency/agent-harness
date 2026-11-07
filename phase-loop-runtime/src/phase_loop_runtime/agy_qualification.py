@@ -70,6 +70,11 @@ OPERATIONS_CONTRACT: tuple[Operation, ...] = (
     Operation("owner-loss", _HEARTBEAT_ARGV, _HEARTBEAT_ENV_NAMES, "owner_loss_cleanup_v1"),
 )
 OPERATIONS = tuple(operation.operation_id for operation in OPERATIONS_CONTRACT)
+_PASS_PREDICATES = {
+    "completion": "terminal_agreement_v1",
+    "cancel": "explicit_cancel_v1",
+    "owner-loss": "owner_loss_cleanup_v1",
+}
 _SHIM = Path(__file__).resolve().parents[2] / "scripts" / "qualify_gemini_heartbeat.py"
 _SRC = Path(__file__).resolve().parents[1]
 
@@ -147,6 +152,7 @@ def validate_records(record, *, expected_source_sha256, expected_image_sha256,
         require(record["schema"] == "gemini_heartbeat_qualification.v1")
         operation = record["operation"]
         require(operation in ("completion", "cancel", "owner-loss"))
+        require(_operation(operation).pass_predicate_id == _PASS_PREDICATES[operation])
         require(record["source_sha256"] == expected_source_sha256 and bool(expected_source_sha256))
         require(record["image_sha256"] == expected_image_sha256)
         require(record["help_sha256"] == expected_help_sha256)
@@ -1198,23 +1204,28 @@ def admission_verdict(env, subject_path: Path | None, *, execute: bool) -> AgyVe
     if path is None:
         return AgyVerdict("unknown", None, "provider_absent")
     if execute:
+        from . import agy_integrity
+
         try:
-            admission = gh.admit(env, subject_path=Path(path))
-        except ValueError as exc:
-            code = str(exc)
-            known = {gh._CAPABILITY, SELF_QUALIFICATION_FAILED, SELF_QUALIFICATION_UNAVAILABLE,
-                     "agy_image_unqualified"}
-            return AgyVerdict("refuses", code if code in known else gh._CAPABILITY, None)
+            image = agy_integrity.admit_for_seat(Path(path), env)
+        except agy_integrity.AgyImageUnqualified:
+            return AgyVerdict("refuses", "agy_image_unqualified", None)
+        except (OSError, ValueError, RuntimeError) as exc:
+            code = getattr(exc, "code", None) or str(exc)
+            return AgyVerdict("refuses", code, None)
         else:
-            admission.close()
+            image.close()
             return AgyVerdict("admits", None, None)
     try:
+        gh._local_capabilities()
         data = gh._read_image(path)
-    except (OSError, ValueError):
-        return AgyVerdict("refuses", gh._CAPABILITY, None)
+    except (OSError, ValueError, gh.AgyCanaryEvidenceError):
+        return AgyVerdict("refuses", "agy_image_unqualified", None)
     image_sha256 = sha256(data).hexdigest()
     if image_sha256 in gh.QUALIFIED_IMAGES:
         return AgyVerdict("admits", None, None)
+    if not self_qualification_enabled():
+        return AgyVerdict("refuses", "agy_image_unqualified", None)
     store = Store()
     if store.status() != "ok":
         return AgyVerdict("refuses", "agy_image_unqualified", None)
@@ -1224,18 +1235,34 @@ def admission_verdict(env, subject_path: Path | None, *, execute: bool) -> AgyVe
         return AgyVerdict("refuses", "agy_image_unqualified", None)
     profile_digest = agy_profile_digest()
     if store.get_failed(image_sha256, host, profile_digest) is not None:
-        return AgyVerdict("refuses", SELF_QUALIFICATION_FAILED, None)
-    if store.get_provenance(image_sha256, host, profile_digest) is None:
         return AgyVerdict("refuses", "agy_image_unqualified", None)
-    return AgyVerdict("unknown", None, "launch_measurement")
+    if store.get_provenance(image_sha256, host, profile_digest) is not None:
+        return AgyVerdict("unknown", None, "launch_measurement")
+    if _last_known_good_recorded(store, host, profile_digest):
+        return AgyVerdict("unknown", None, "launch_measurement")
+    return AgyVerdict("refuses", "agy_image_unqualified", None)
 
 
-def requalify_once(env, *, cancel_event=None, heartbeat=None):
+def _last_known_good_recorded(store, host, profile_digest):
+    """Whether the last-known-good image passes everything but the help measurement."""
+    image = last_known_good()
+    if image is None:
+        return False
+    try:
+        return (isinstance(image, gh.VerifiedImage) and image.fd is not None
+                and store.get_failed(image.sha256, host, profile_digest) is None
+                and store.get_provenance(image.sha256, host, profile_digest) is not None)
+    finally:
+        image.close()
+
+
+def requalify_once(env, *, cancel_event=None, heartbeat=None, subject_path=None):
     """Run the first-use qualifier once before board composition is fixed."""
     from .executable_dependency_startup import refuse_unwired_dependency_route
     refuse_unwired_dependency_route("Gemini heartbeat image admission")
     store = Store()
-    path = shutil.which("agy", path=env.get("PATH", os.defpath))
+    path = (os.fspath(subject_path) if subject_path is not None
+            else shutil.which("agy", path=env.get("PATH", os.defpath)))
     image_sha256 = "<provider-absent>"
     if path is not None:
         try:
@@ -1246,9 +1273,16 @@ def requalify_once(env, *, cancel_event=None, heartbeat=None):
     with _REQUALIFIED_LOCK:
         first = key not in _REQUALIFIED
         _REQUALIFIED.add(key)
-    if first:
-        return ensure_admitted(env, cancel_event, heartbeat, store=store)
-    return gh.admit(env)
+    if not first:
+        return gh.admit(env, subject_path=subject_path)
+    try:
+        return ensure_admitted(
+            env, cancel_event, heartbeat, store=store, subject_path=subject_path)
+    except ValueError as exc:
+        if str(exc) == CANCELLED:  # a cancelled preflight used no attempt
+            with _REQUALIFIED_LOCK:
+                _REQUALIFIED.discard(key)
+        raise
 
 
 # Help measured from a VerifiedImage memfd, per (image digest, runtime identity), so a
@@ -1329,6 +1363,10 @@ def lookup(env, data, path, *, store=None):
                     handed_off = True
                     return gh.Admission(image, help_sha256, "locally_qualified", Path(path),
                                         source="subject")
+            if not has_record(image.sha256, store=store):
+                fallback = _admit_last_known_good(env, store=store)
+                if fallback is not None:
+                    return fallback
         handed_off = True
         raise gh.AdmissionMiss(image, path)
     finally:
@@ -1337,7 +1375,7 @@ def lookup(env, data, path, *, store=None):
 
 
 def ensure_admitted(env, cancel_event=None, heartbeat=None, *, store=None, transport=None,
-                    qualify=None):
+                    qualify=None, subject_path=None):
     """``admit``, and on a miss the first-use path (agent-harness#1076).
 
     Called only by the whole-board preflight and by ``agy-qualification run``. Phase 1
@@ -1347,7 +1385,7 @@ def ensure_admitted(env, cancel_event=None, heartbeat=None, *, store=None, trans
     fetch failures write nothing.
     """
     try:
-        return gh.admit(env, keep_miss=True)
+        return gh.admit(env, subject_path=subject_path, keep_miss=True)
     except gh.AdmissionMiss as miss:
         image, path = miss.image, miss.path
     try:
@@ -1763,10 +1801,12 @@ def cli_main(args):
         print(json.dumps({"removed": removed}))
         return 0
     env = _panel()._broker_subscription_env()
+    from .executable_dependency import ExecutableDependencyError
+
     try:
         admission = requalify_once(
             env, heartbeat=lambda phase: print(f"agy-qualification: {phase}", file=sys.stderr))
-    except ValueError as exc:
+    except (ValueError, ExecutableDependencyError) as exc:
         print(f"phase-loop agy-qualification run: {exc}", file=sys.stderr)
         return 1
     try:

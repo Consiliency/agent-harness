@@ -2756,3 +2756,18 @@ def test_the_allowlist_oracle_rejects_disguised_api_writes(argv):
     runner = _Runner()
     runner.calls.append(argv)
     assert runner.outside_allowlist() == [argv]
+
+
+def test_requalify_once_failure_is_recorded_and_a_later_board_runs_nothing(world, monkeypatch):
+    q._REQUALIFIED.clear()
+    monkeypatch.setattr(prov, "_Transport", lambda: world.transport)
+    world.outcome = {"status": "failed", "operation": "completion",
+                     "reason": "operation_validation_failed"}
+    with pytest.raises(ValueError, match=q.SELF_QUALIFICATION_FAILED):
+        q.requalify_once(world.env)
+    assert "failed" in _entries(world)
+    assert world.counter.qualify == 1
+    q._REQUALIFIED.clear()  # the second board is a new process
+    with pytest.raises(ValueError, match=q.SELF_QUALIFICATION_FAILED):
+        q.requalify_once(world.env)
+    assert world.counter.qualify == 1

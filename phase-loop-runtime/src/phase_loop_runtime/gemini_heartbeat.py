@@ -209,10 +209,6 @@ def admit(env, *, subject_path=None, keep_miss=False):
     try:
         return agy_qualification.lookup(env, data, path)
     except AdmissionMiss as miss:
-        fallback = agy_qualification._admit_last_known_good(env)
-        if fallback is not None:
-            miss.image.close()
-            return fallback
         # Only ensure_admitted takes the miss's image for first use; every lookup-only
         # caller closes it here, so a refusal never leaks a memfd (codex B2).
         if keep_miss:
