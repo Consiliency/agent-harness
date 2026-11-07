@@ -165,22 +165,35 @@ def test_seat_modes_name_a_sealed_route_degraded_with_its_fix(monkeypatch):
     monkeypatch.setattr(pi._seat_credentials, "override_decision",
                         lambda adapter=None: pi._seat_credentials.OverrideDecision(False))
     monkeypatch.setattr(pi._seat_credentials, "login_seconds_left", lambda margin_s, **_k: None)
-    modes = pi._seat_launch_modes(_board(), mode="review", review_authorization=_auth(True),
-                                  base_env={})
-    gemini = next(m for m in modes if m.leg == "gemini")
-    assert (gemini.mode, gemini.code) == ("degraded", STOP)
-    assert gemini.fix == seat_jail.NOTICES[STOP][2] and gemini.fix
-    assert "will not run" in gemini.render()
-    assert not [m for m in modes if m.mode == "sealed"]
+    authorization = _auth(True)
+    try:
+        modes = pi._seat_launch_modes(
+            _board(), mode="review", review_authorization=authorization, base_env={}
+        )
+        gemini = next(m for m in modes if m.leg == "gemini")
+        assert (gemini.mode, gemini.code) == ("degraded", STOP)
+        assert gemini.fix == seat_jail.NOTICES[STOP][2] and gemini.fix
+        assert "will not run" in gemini.render()
+        assert not [m for m in modes if m.mode == "sealed"]
+    finally:
+        pi._release_cached_routes(authorization)
 
 
 def test_seat_modes_with_no_staged_tree_are_all_degraded(monkeypatch):
-    # The production route decision: no stub.
-    modes = pi._seat_launch_modes(_board(), mode="review", review_authorization=_auth(False),
-                                  base_env={})
-    assert [(m.leg, m.mode, m.code) for m in modes] == [
-        (leg, "degraded", "seat_sandbox_not_staged") for leg in ("claude", "gemini", "codex", "grok")]
-    assert all(m.fix == seat_jail.NOTICES["seat_sandbox_not_staged"][2] for m in modes)
+    # The production route decision: no stub. L0's staged-tree check precedes the profile's
+    # host, credential, egress, authority and pass-record gates.
+    authorization = _auth(False)
+    try:
+        modes = pi._seat_launch_modes(
+            _board(), mode="review", review_authorization=authorization, base_env={}
+        )
+        assert [(m.leg, m.mode, m.code) for m in modes] == [
+            (leg, "degraded", "seat_sandbox_not_staged")
+            for leg in ("claude", "gemini", "codex", "grok")
+        ]
+        assert all(m.fix == seat_jail.NOTICES["seat_sandbox_not_staged"][2] for m in modes)
+    finally:
+        pi._release_cached_routes(authorization)
 
 
 # --------------------------------------------------------------------------------------
