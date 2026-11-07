@@ -19,7 +19,7 @@ PRs under principle 2. The file name follows the manifest pattern of the sibling
 2026-11-06.
 
 **Frozen artifact.** `plans/seats-teamhost-contract.md` is normative for every interface below
-(§1–§8) at sha256 `d0c639548a5e0e71e53dc73cb9e6215618112b57135f8bc202860b2cdc50402d`. This plan points at its sections and does not repeat
+(§1–§8) at sha256 `592795e78260a1162d0fed503454ae6ddee8cea5b205f87f02d9b7b6a97c923f`. This plan points at its sections and does not repeat
 them. Its input pins include the JAILCORE route contract
 (`235f1faded1d7f15d0ff69668b6a451cee7167e6438d258da57257faf7bdae81`). TEAMHOST consumes it
 only through IF-0-JAILCORE-1, IF-0-JAILCORE-2 and EC-JAILCORE-4.
