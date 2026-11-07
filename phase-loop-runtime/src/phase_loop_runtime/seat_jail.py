@@ -567,9 +567,47 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "run `phase-loop agy-qualification run` to qualify it on this host, or re-enable "
         "`[agy] self_qualification` in your user board config if you opted out "
         "(see `phase-loop agy-qualification status`)"),
+    # SEATS CODEX (agent-harness#1820), IF-0-CODEX-5: the jailed Codex seat's own codes. Each
+    # has one OD-10 entry in `seat_route_contract.OD10_CLASSES`; all are terminal.
+    "codex_seat_credential_missing": (
+        "seat unavailable", "the codex CLI is not logged in", "run `codex login`, then re-run"),
+    "codex_seat_api_key_refused": (
+        "seat unavailable", "the codex CLI login is not a subscription sign-in",
+        "sign in to the CLI with your subscription, then re-run"),
+    "codex_seat_token_expiring": (
+        "seat unavailable", "the codex login does not last long enough for a seat",
+        "run the codex CLI as yourself to renew the login, then re-run"),
+    "codex_seat_token_scope_excess": (
+        "seat unavailable", "the codex token's scopes go beyond the recorded baseline",
+        "report the outcome privately; the seat stays degraded"),
+    "codex_seat_token_in_output": (
+        "leg rejected", "seat tried to publish its credential", "report the outcome privately"),
+    "codex_seat_token_refreshed_in_jail": (
+        "leg ended", "the codex CLI renewed its login inside the jail",
+        "report the outcome privately"),
+    "codex_seat_cli_shape": (
+        "seat unavailable", "the installed codex CLI does not accept the jailed command",
+        "upgrade the codex CLI so `codex exec --help` matches the jailed argv, then re-run"),
+    "codex_seat_tools_unavailable": (
+        "leg not counted", "the seat's tools did not run",
+        "read the leg's exec record; the seat did not count as a review"),
+    "codex_seat_unknown_event": (
+        "leg ended", "unrecorded codex activity", "report the outcome privately"),
 }
 
 NOTICE_CODES: frozenset[str] = frozenset(NOTICES)
+
+#: SEATS CODEX IF-0-CODEX-5: the jailed Codex seat's nine codes, each a row above. The
+#: closed detail vocabulary (`panel_invoker._HARNESS_DETAIL_CODES`) takes them from here.
+CODEX_SEAT_CODES: frozenset[str] = frozenset({
+    "codex_seat_credential_missing", "codex_seat_api_key_refused", "codex_seat_token_expiring",
+    "codex_seat_token_scope_excess", "codex_seat_token_in_output",
+    "codex_seat_token_refreshed_in_jail", "codex_seat_cli_shape",
+    "codex_seat_tools_unavailable", "codex_seat_unknown_event",
+})
+if not CODEX_SEAT_CODES <= NOTICE_CODES:
+    raise RuntimeError(
+        f"codex seat codes without a notice: {sorted(CODEX_SEAT_CODES - NOTICE_CODES)}")
 
 # The leg details that mean the provider refused the seat token's subscription for a rate
 # or usage limit. ``usage_limit`` and ``usage_limit (resets ...)`` are the shared tail

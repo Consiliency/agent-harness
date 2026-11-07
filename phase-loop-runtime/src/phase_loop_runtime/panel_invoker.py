@@ -3343,7 +3343,7 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "network namespace did not come up; launch is UNISOLATED",
     "the namespace came up but cannot resolve a hostname; a seat here could reach raw IPs "
     "and nothing else (round-6 failure mode)",
-}) | frozenset(_seat_route_contract.CODES)
+}) | frozenset(_seat_route_contract.CODES) | _seat_jail.CODEX_SEAT_CODES  # IF-0-CODEX-5
 # Closed token sets for the parametrized harness codes (agent-harness#1102 r8: every field is
 # enumerated, an integer, or validated by its producer against the run's own values).
 _REGISTRY_HARNESSES: tuple[str, ...] = ("claude", "codex", "gemini", "grok", "opencode", "pi", "cursor")
