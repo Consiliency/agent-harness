@@ -6,6 +6,20 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+## [0.7.28] - Unreleased candidate
+
+### Release preparation (agent-harness#1779)
+
+- Re-cut the source-only 0.7.28 candidate from `origin/main` at
+  `e6df14de50479877911b01305822f4e03dd7b3b9`. This preparation updates release
+  metadata and preserves the complete change record since v0.7.27.
+- The locally built wheel and source archive remain unpublished. Tagging,
+  publication, deployment, installation and release-workflow dispatch are outside
+  this preparation.
+- FABPUB exact pull-request reconciliation preserves the legacy `RECORD` hash
+  literal with its narrow scanner allowlist, completing the runtime side required
+  by dotfiles settlement (agent-harness#1849; PR agent-harness#1876).
+
 - Jailed-seat qualification keys are built from the live profile, allowlist,
   falsifier-layout, projection, variant and host inputs, and dependency projections are
   admitted per profile declaration (SEATS JAILCORE SL-2, agent-harness#1820).

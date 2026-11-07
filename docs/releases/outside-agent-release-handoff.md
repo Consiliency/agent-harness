@@ -5,7 +5,22 @@ outside-agent conformance runtime. It is metadata-only: the document itself did
 not publish a package, create a tag, dispatch a workflow, edit governed-pipeline,
 or make production merge enforcement live.
 
-## Package Identity
+## 0.7.28 source preparation
+
+- Source base: `e6df14de50479877911b01305822f4e03dd7b3b9`
+- Package: `phase-loop-runtime`
+- Version: `0.7.28`
+- Runtime `phase_loop_runtime.__version__`: `0.7.28`
+- Candidate release pin: `v0.7.28`
+- Unpublished wheel: `phase_loop_runtime-0.7.28-py3-none-any.whl`
+- Unpublished source archive: `phase_loop_runtime-0.7.28.tar.gz`
+
+This is source preparation tracked by agent-harness#1779. The candidate artifacts
+are local outputs only; no tag, publication, deployment, installation or release
+workflow dispatch is claimed. Release acceptance and publication authorization
+remain separate from these package checks.
+
+## Historical published package identity — 0.7.27
 
 - Package: `phase-loop-runtime`
 - Version: `0.7.27`
