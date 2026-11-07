@@ -14,7 +14,7 @@ import select
 import stat
 import subprocess
 import threading
-from typing import Literal, Mapping, Sequence
+from typing import Literal, Sequence
 
 
 SCHEMA = "seat_resource_caps.v1"
