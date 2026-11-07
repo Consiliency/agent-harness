@@ -17620,7 +17620,7 @@ def invoke_board(
             # here, before minting or any launch (agent-harness#908 board r4 (d)).
             native_fill_requested=bool(native_leg_fills),
         )
-        if monitoring_policy != "heartbeat_only":
+        if monitoring_policy != "heartbeat_only" and agy_canary_capture is None:
             board_preflight_requalify(
                 board, base_env, cancel_event, stream_dir, heartbeat=False
             )
