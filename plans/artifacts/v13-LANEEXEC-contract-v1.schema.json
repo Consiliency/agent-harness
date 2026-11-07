@@ -69,9 +69,9 @@
     },
     "seat_resource_caps": {
       "path": "plans/seats-jailcore-caps-contract.md",
-      "sha256": "01abb145297bbfc98fd977769f67322c666c798628906af8c6da42063c70c190",
+      "sha256": "e614d3855320fe4c8a1d8b9a335181b2c493da45510062d2f8432ee30c362445",
       "schema": "seat_resource_caps.v1",
-      "amendment": "§1a tmpfs carve-out, applied to the main digest a2fe08ef0e3a6b7d888e948a10e22f7c70c11258db355a551063cf69c2c2a1f2"
+      "amendment": "§1a tmpfs carve-out, applied to the main digest b8278120e408786bdd3ad120ae51a9f3b70a28736ee2926220156098c875151c"
     },
     "seats_remote_contract": {
       "path": "plans/seats-remote-contract.md",

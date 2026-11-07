@@ -18,7 +18,7 @@ after a reservation. agent-toolkit#54 already reserves through PLACECLI, but it
 cannot run a remote Pi end to end until these launch inputs exist.
 
 **Frozen artifact.** `plans/artifacts/v13-LANEEXEC-contract-v1.schema.json`,
-sha256 `d5388314aa784c51fa7e5831f2ac4cd087dcc4b336bec5fc4d15eeda298814c7`,
+sha256 `b3e129de00095621f5e53e17af940e13472e0e07ae414728bb8c5898897988e8`,
 holds IF-0-LANEEXEC-1. It covers:
 
 - the process entry `agent-harness-launch --client … launch|status|cancel|version`
@@ -187,7 +187,7 @@ The artifact's `x-contract-pins` carries every full digest and source revision.
   `130a894df327ddca2eebf83c8b52e068b25176320af3e0a4e15319a315ba83ea`.
 - `seat_resource_caps.v1`: `plans/seats-jailcore-caps-contract.md` with the §1a
   amendment this PR applies to the main digest. The new digest is sha256
-  `01abb145297bbfc98fd977769f67322c666c798628906af8c6da42063c70c190`.
+  `e614d3855320fe4c8a1d8b9a335181b2c493da45510062d2f8432ee30c362445`.
 - SEATS REMOTE: `plans/seats-remote-contract.md`, sha256
   `1cea960ddd28ef5e1c4bf79083fa9f9938b2c99c2e29dbd937864944ca76d7e8`.
 - Admitted launch envelope v2 and run status at the roadmap-pinned

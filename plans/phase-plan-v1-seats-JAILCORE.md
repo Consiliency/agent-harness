@@ -56,7 +56,7 @@ into this PR's roadmap amendment; no later plan or code amendment enables it.
 in CPU or in disk bandwidth ("Pressure gates + per-sandbox caps"). SL-5 owns the per-seat caps
 half as an additive lane after SL-3. No other lane's scope, shape or test changes.
 `plans/seats-jailcore-caps-contract.md` is normative for SL-5, at sha256
-`b8278120e408786bdd3ad120ae51a9f3b70a28736ee2926220156098c875151c`. The route contract and its digest above are unchanged, and the roadmap is not edited, so
+`e614d3855320fe4c8a1d8b9a335181b2c493da45510062d2f8432ee30c362445`. The route contract and its digest above are unchanged, and the roadmap is not edited, so
 every pin of either stands. AC-7 is therefore a plan-local criterion. Pressure gates stay with
 v13 (EC-PLACECLI-5 on agent-harness#1853). The owner accepted the caps contract §1 default caps
 as written (2026-11-06).
