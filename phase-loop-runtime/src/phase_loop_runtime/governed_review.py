@@ -719,25 +719,41 @@ def governed_board_gate(
 
     if emit_native_request:
         # Emit arm: no authorization, no seat, no digest binding beyond the read-back bytes.
+        from .seat_host_namespace import operator_private_dir, write_private_atomic
+        from .seat_jail import SeatSandboxRefused
+
         try:
             brief_text = _pi._resolve_brief("review", brief_ref)
-            out_root = Path(native_fill_dir) if native_fill_dir is not None else Path(tempfile.mkdtemp(prefix="native-fill-"))
+            out_root = (
+                Path(native_fill_dir)
+                if native_fill_dir is not None
+                else Path(tempfile.mkdtemp(prefix="native-fill-"))
+            ).resolve()
             payload = _pi.native_fill_request_payload(board, artifact, brief_ref=brief_ref)
-            out_dir = out_root / "native-fill" / str(payload["request_id"])
-            out_dir.mkdir(parents=True, exist_ok=True)
+            out_dir = operator_private_dir(
+                "native_fill", base=out_root / "native-fill" / str(payload["request_id"]),
+            )
             artifact_path = out_dir / _pi.NATIVE_FILL_ARTIFACT_FILE
-            artifact_path.write_text(artifact, encoding="utf-8")
+            write_private_atomic(
+                out_dir, _pi.NATIVE_FILL_ARTIFACT_FILE, artifact.encode("utf-8"),
+            )
             # Digest the READ-BACK text (universal newlines), exactly as the invoke arm stages it.
             payload["artifact_sha256"] = _pi.content_sha256(artifact_path.read_text(encoding="utf-8"))
             instructions_path = out_dir / _pi.NATIVE_FILL_INSTRUCTIONS_FILE
-            instructions_path.write_text(brief_text, encoding="utf-8")
+            write_private_atomic(
+                out_dir, _pi.NATIVE_FILL_INSTRUCTIONS_FILE, brief_text.encode("utf-8"),
+            )
             payload["artifact_path"] = str(artifact_path)
             payload["instructions_path"] = str(instructions_path)
             payload["composition_excluded"] = [item.as_json() for item in unavailable]
             request_path = out_dir / _pi.NATIVE_FILL_REQUEST_FILE
-            request_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            write_private_atomic(
+                out_dir,
+                _pi.NATIVE_FILL_REQUEST_FILE,
+                (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+            )
             payload["request_path"] = str(request_path)
-        except (OSError, UnicodeError, ValueError) as exc:
+        except (OSError, UnicodeError, ValueError, SeatSandboxRefused) as exc:
             return _block_result(
                 "native_fill_request_unavailable",
                 "governed_board_native_fill_request_unavailable",

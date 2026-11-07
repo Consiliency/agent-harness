@@ -2347,27 +2347,37 @@ def _advisor_board_command(*, args: argparse.Namespace, _advisory_root: Path | N
             NATIVE_FILL_ARTIFACT_FILE, NATIVE_FILL_INSTRUCTIONS_FILE, NATIVE_FILL_REQUEST_FILE,
             content_sha256, native_fill_request_payload,
         )
+        from .seat_host_namespace import operator_private_dir, write_private_atomic
+        from .seat_jail import SeatSandboxRefused
+
         try:
             artifact_text = artifact_path.read_text(encoding="utf-8")
             payload = native_fill_request_payload(
                 board, artifact_text, **({"brief_ref": advisory_brief_ref} if advisory else {}),
             )
-            root = Path(getattr(args, "native_fill_dir", None) or artifact_path.resolve().parent)
-            out_dir = root / "native-fill" / str(payload["request_id"])
-            out_dir.mkdir(parents=True, exist_ok=True)
+            root = Path(getattr(args, "native_fill_dir", None) or artifact_path.parent).resolve()
+            out_dir = operator_private_dir(
+                "native_fill", base=root / "native-fill" / str(payload["request_id"]),
+            )
             staged = out_dir / NATIVE_FILL_ARTIFACT_FILE
-            staged.write_text(artifact_text, encoding="utf-8")
+            write_private_atomic(out_dir, NATIVE_FILL_ARTIFACT_FILE, artifact_text.encode("utf-8"))
             payload["artifact_sha256"] = content_sha256(staged.read_text(encoding="utf-8"))
             instructions = out_dir / NATIVE_FILL_INSTRUCTIONS_FILE
-            instructions.write_text(str(payload["instructions"]), encoding="utf-8")
+            write_private_atomic(
+                out_dir, NATIVE_FILL_INSTRUCTIONS_FILE, str(payload["instructions"]).encode("utf-8"),
+            )
             payload["artifact_path"] = str(staged)
             payload["instructions_path"] = str(instructions)
             # agent-harness#1431: the request names the seats this composition left out.
             payload["composition_excluded"] = composition_json["excluded"]
             request = out_dir / NATIVE_FILL_REQUEST_FILE
-            request.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+            write_private_atomic(
+                out_dir,
+                NATIVE_FILL_REQUEST_FILE,
+                (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8"),
+            )
             payload["request_path"] = str(request)
-        except (OSError, UnicodeError, ValueError) as exc:
+        except (OSError, UnicodeError, ValueError, SeatSandboxRefused) as exc:
             print(f"advisor-board: native fill request could not be emitted: {exc}", file=sys.stderr)
             return 2
         record = {"status": "native_fill_requested", "request_path": payload["request_path"],
