@@ -11,7 +11,6 @@ import argparse
 import json
 import os
 from pathlib import Path
-import sys
 
 
 def _own_cgroup(root: Path, proc_cgroup: Path) -> Path:
