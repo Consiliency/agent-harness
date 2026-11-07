@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 from types import SimpleNamespace
 
@@ -9,7 +8,7 @@ import pytest
 from executable_dependency_test_support import build_fixture
 from phase_loop_runtime import seat_qualification_key
 from phase_loop_runtime.executable_dependency import ExecutableDependencyError
-from phase_loop_runtime.seat_route_contract import key_digest, record_binding
+from phase_loop_runtime.seat_route_contract import QualificationKey, key_digest, record_binding
 
 
 def _profile(*, leg: str = "claude", projection: str = "optional") -> SimpleNamespace:
@@ -83,29 +82,60 @@ def test_each_live_key_part_changes_digest_and_record_binding(
     assert dict(record_binding(candidate)) != dict(record_binding(baseline))
 
 
-def _allowlist_digest(refused: list[str]) -> str:
-    payload = {
-        "schema": "seat-egress-allowlist.v1",
-        "leg": "fixture",
-        "allow": [{"host": "api.example", "methods": ["POST"], "paths": ["/v1"]}],
-        "measured_and_refused": refused,
-    }
-    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+def test_live_inputs_land_in_their_own_key_fields(monkeypatch):
+    jail = seat_qualification_key.seat_jail
+    monkeypatch.setattr(jail, "host_identity", lambda: "h" * 64)
+    key = seat_qualification_key.key_for_launch(
+        _profile(leg="gemini", projection="optional"),
+        variant="variant-sentinel",
+        allowlist_digest="a" * 64,
+        projection=_projection("d" * 64),
+    )
+    assert key == QualificationKey(
+        profile_digest=jail.jail_profile_digest("gemini"),
+        allowlist_digest="a" * 64,
+        falsifier_layout=jail.falsifier_layout_identity(),
+        projection_digest="d" * 64,
+        variant="variant-sentinel",
+        host_identity="h" * 64,
+    )
+    assert key.profile_digest != jail.jail_profile_digest("claude")
 
 
-def test_widened_refusal_layout_and_switched_transport_invalidate_old_pass(monkeypatch):
+def _allowlist_digest(monkeypatch, tmp_path, refused_extra: tuple[str, ...]) -> str:
+    """The real SL-1 content digest of the packaged Gemini allowlist, widened by
+    ``refused_extra`` measured-and-refused hosts."""
+    from phase_loop_runtime import seat_egress_proxy
+
+    real_data_path = seat_egress_proxy._data_path
+    document = json.loads(real_data_path("gemini-allowlist.json").read_text(encoding="utf-8"))
+    document["measured_and_refused"] = [*document["measured_and_refused"], *refused_extra]
+    fixture = tmp_path / f"gemini-allowlist-{len(refused_extra)}.json"
+    fixture.write_text(json.dumps(document), encoding="utf-8")
+    monkeypatch.setattr(
+        seat_egress_proxy, "_data_path",
+        lambda name: fixture if name == "gemini-allowlist.json" else real_data_path(name),
+    )
+    try:
+        return seat_egress_proxy.allowlist_ref("gemini").content_digest
+    finally:
+        monkeypatch.setattr(seat_egress_proxy, "_data_path", real_data_path)
+
+
+def test_widened_refusal_layout_and_switched_transport_invalidate_old_pass(
+    monkeypatch, tmp_path
+):
     _live_inputs(monkeypatch)
     old = seat_qualification_key.key_for_launch(
         _profile(),
         variant="tui",
-        allowlist_digest=_allowlist_digest(["refused.example"]),
+        allowlist_digest=_allowlist_digest(monkeypatch, tmp_path, ()),
         projection=None,
     )
     widened = seat_qualification_key.key_for_launch(
         _profile(),
         variant="tui",
-        allowlist_digest=_allowlist_digest(["refused.example", "also-refused.example"]),
+        allowlist_digest=_allowlist_digest(monkeypatch, tmp_path, ("also-refused.invalid",)),
         projection=None,
     )
     switched = seat_qualification_key.key_for_launch(
