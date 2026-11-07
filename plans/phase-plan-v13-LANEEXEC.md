@@ -18,7 +18,7 @@ after a reservation. agent-toolkit#54 already reserves through PLACECLI, but it
 cannot run a remote Pi end to end until these launch inputs exist.
 
 **Frozen artifact.** `plans/artifacts/v13-LANEEXEC-contract-v1.schema.json`,
-sha256 `26d397056413051f3a62ee19f608f8a368aabe5f5c5f1d1b66d553886ce0e24e`,
+sha256 `410bb7cd1405ef39097a27084bc464fd56117f2f145c4de7a7c1607f03f95f85`,
 holds IF-0-LANEEXEC-1. It covers:
 
 - the process entry `agent-harness-launch --client … launch|status|cancel|version`
@@ -32,7 +32,7 @@ holds IF-0-LANEEXEC-1. It covers:
 - one exec, the per-reservation local cgroup, lifetime, bridge, status/cancel,
   release/reap interplay, return and evidence;
 - activation defaults, the code vocabulary, in-process signatures and test
-  obligations C1–C9.
+  obligations C1–C10.
 
 This plan points at sections of the artifact and does not repeat them. The
 artifact is read-only during execution. A needed change is an artifact
@@ -44,6 +44,60 @@ manifest, `x-contract-pins.toolkit_pins`, instead of a digest per file. The 17
 role names are unchanged, and each one maps to its manifest entry. A missing
 role fails closed. Test obligation C2 covers the checks, which SL-3.1 tests
 with the other C2 refusals.
+
+**Amendment (2026-11-07): Pi activation rulings (agent-harness#1899).** The
+artifact freezes the three coordinator rulings given to agent-toolkit:
+
+1. *`scratch_path`* (`x-scratch-path`). LaneExec reports the attempt's resolved
+   absolute scratch directory in `LaunchResponse` and `StatusResponse`. On
+   `pi-runner.openshell.v1` it is `<policy dir>/../scratch`. The shim puts
+   exactly that value in the link hello, and remote-inner checks it against its
+   own derivation. The requester never chooses it.
+2. *Seed set* (`x-seed`). The seed set declares the initial content of the
+   guest-owned (up-direction) files below `scratch/`. `LaunchRequest.seed` is
+   `null` or `{manifest_sha256, entries, total_bytes}`. The entry list
+   (`{relpath, sha256, size}`) is the RFC 8785 manifest
+   `<seed_root>/<request_id>.seed.json`, which sits beside the entry directory
+   `<request_id>/`, not inside it. LaneExec checks the manifest byte-exactly
+   against `manifest_sha256` before opening any entry, and a non-canonical form
+   or an `entries`/`total_bytes` disagreement refuses `manifest_invalid`.
+   Relpaths are at most 1024 characters, with segments at most 255. The caps
+   are 4096 entries, 16 MiB per entry, 64 MiB in total and a 1 MiB manifest.
+   The manifest cap is the combined bound on count and relpath length.
+   Operators may only lower the caps, and `version` reports the effective
+   `seed_limits`. LaneExec keeps one workspace root and adds no snapshot root.
+   It verifies every digest and writes the files under `scratch/` before the
+   one exec. Relpaths are confined, symlinks refuse and no undeclared content
+   arrives through LaneExec. LaneExec has no seed-down step; the toolkit link's
+   own down-direction mirroring is unchanged and outside this contract.
+
+   Binding: the manifest is one `config` reference of the admitted envelope,
+   so `envelope_digest` binds every entry through it. Per-entry references are
+   not used, because envelope v2 sets no `launch.references` limit that clearly
+   allows 4096, and the v12 seam's `envelope_cap` bounds the envelope. The
+   `config_sha256` binding is unchanged. Seeded copies are writable in the
+   fresh per-attempt `scratch/`, and a run's changes last for that attempt
+   only.
+
+   LaneExec reads the manifest and entry directory only during the launch
+   call, through `recheck_before_start`, and never after the response, so the
+   requester may then delete them. `seed_root` is owned by the requester's
+   uid, which is also the local reader's, mode 0700, not a symlink, with no
+   group- or other-writable ancestor. The manifest is a regular file owned by
+   that uid and not group- or other-writable. Otherwise the launch refuses
+   `seed_root_untrusted`.
+3. *Provisioning* (`x-seed.provisioning`). `scratch/` is created new, owned by
+   the exec uid, mode 0700 and not a symlink, under trusted parents. A failure
+   refuses with the one additive code `sandbox_launch_seed_refused` and a
+   `seed_reason`.
+
+Seed capture runs after the snapshot. Local provisioning runs after `pre_exec`
+and before the exec claim. Openshell stages the set before the claim and sends
+it in the one upload. A refusal before the claim leaves no claim record. An
+openshell guest provisioning refusal before any byte is stored takes the claim
+and rolls it back, journaling `claim_rolled_back` (`x-exec.claim_rollback`).
+Changing `seed_root` or a seed limit changes `config_sha256`. Obligation C10 holds the tests. SL-0.1 runs its
+schema cases, SL-1.1 its source cases and SL-3.1 the rest.
 
 **Resolved toolkit gaps** (artifact `x-placecli-clarifications`):
 
@@ -229,7 +283,8 @@ No future implementation SHA, commit count or landing topology is pinned.
   routes, the writer-route rule and executor resolution before reserve;
   template registration, the hash rule, the slots and the two concrete
   `pi-runner` templates; git/full snapshot construction, masks,
-  limits and upload; envelope field derivation, including the egress grant from
+  limits and upload; the declared seed set, `scratch/` provisioning and the
+  `scratch_path` report; envelope field derivation, including the egress grant from
   `Reservation.egress_sha256`; one exec claim and route entries; the
   per-reservation capped parent; the fixed deadline with fail-closed
   latest-success lease renewal; bridge attach and loss, and the local Pi link; status, cancel, release and reap
@@ -238,7 +293,7 @@ No future implementation SHA, commit count or landing topology is pinned.
 
 Production signatures freeze as listed in the artifact's `x-in-process-api`:
 `decode_launch_request`, `encode_launch_response`, `build_launch_service`,
-`LaunchService.launch|status|cancel`, `build_snapshot`, `lane_launch.place_lane`,
+`LaunchService.launch|status|cancel`, `build_snapshot`, `build_seed`, `lane_launch.place_lane`,
 `launch_cli.main` and `launch_cli.version_response`. Record fields come only from
 the schema. Exceptions translate to closed codes `from None`. Input values,
 returned bytes, policy bodies and credential material never enter messages,
@@ -249,8 +304,11 @@ diagnostics or evidence.
 - [ ] IF-XR-1 (agent-toolkit, consumer) — The toolkit:
   - vendors this artifact by sha256 and refuses on a `version` mismatch;
   - launches `openshell` `pi-runner` reservations through `agent-harness-launch`
-    with `pi-runner.openshell.v1`. Its link hello places every runner tree below
-    `scratch/` and expects `result_kind` `none`. Under `laneexec` it connects to
+    with `pi-runner.openshell.v1`. Its link hello names `scratch_path` from
+    `status` as its scratch directory and places every runner tree below it. It
+    declares the initial content of its guest-owned (up-direction) files as a
+    seed manifest and entry directory under `seed_root` and expects `result_kind` `none`. Its link's own
+    down-direction mirroring is unchanged. Under `laneexec` it connects to
     the `pi-runner.local.v1` link socket within 120 s;
   - keeps its capped bwrap launcher for local `pi-runner` while
     `local_pi_runner_launcher` is `toolkit_interim`. That route applies the full
@@ -326,21 +384,21 @@ SL-6 — Documentation, receipt and spec reconciliation
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-0.1 | test | — | `tests/test_launch_process_contract.py`, `tests/test_gate_a_wheel_isolation.py` | Obligation C1. Valid examples for all seven families. Path-entered negatives for every enum and conditional, including `RepoPath` grammar, the workload/action/result_kind pairs, refused→zero invocations and the snapshot_reason/admission_diagnostic pairing. Pi cases: one valid remote Pi request (openshell, `full-remote-pi-runner`, `none`) and one valid local Pi request (local, `minimal-without-app`, `none`). Both crossed policy/target pairs decode as schema-valid and are left to the SL-3 binding refusal, and `patch` with `pi-runner` is refused. Packaged bytes equal the artifact. Reservation resolves through the PLACECLI `$id`. Installed-wheel load. | `V0` |
+| SL-0.1 | test | — | `tests/test_launch_process_contract.py`, `tests/test_gate_a_wheel_isolation.py` | Obligation C1. Valid examples for all seven families. Path-entered negatives for every enum and conditional, including `RepoPath` grammar, the workload/action/result_kind pairs, refused→zero invocations and the snapshot_reason/admission_diagnostic pairing. Pi cases: one valid remote Pi request (openshell, `full-remote-pi-runner`, `none`) and one valid local Pi request (local, `minimal-without-app`, `none`). Both crossed policy/target pairs decode as schema-valid and are left to the SL-3 binding refusal, and `patch` with `pi-runner` is refused. The C10 schema cases: the `SeedDeclaration` ceilings (4097 entries refused), the `SeedManifest` relpath grammar and length, a non-null `seed` outside `pi-runner`, a `scratch` request member, the `seed_reason` pairing and the `scratch_path` presence rules. Packaged bytes equal the artifact. Reservation resolves through the PLACECLI `$id`. Installed-wheel load. | `V0` |
 | SL-0.2 | impl | SL-0.1 | `launch_process_contract.py`, `contracts/placement/launch-v1.schema.json` | — | — |
 | SL-0.3 | verify | SL-0.2 | SL-0 files | SL-0 tests | `V0`; mutating the packaged bytes while updating only a test expectation must still fail. |
 
 ### SL-1 — Snapshot construction
 
-- **Scope**: Build git and full snapshots of a hostile source exactly as `x-snapshot` states, with no network and no source-repository git execution.
+- **Scope**: Build git and full snapshots of a hostile source exactly as `x-snapshot` states, with no network and no source-repository git execution, and capture the declared seed set as `x-seed` states.
 - **Owned files**: `phase-loop-runtime/src/phase_loop_runtime/launch_snapshot.py`, `phase-loop-runtime/tests/test_launch_snapshot.py`, `phase-loop-runtime/tests/fixtures/launch-snapshot/**`
-- **Interfaces provided**: `build_snapshot`, `SnapshotHandle` (execution tree, descriptor bytes, `SnapshotEvidence`)
+- **Interfaces provided**: `build_snapshot`, `SnapshotHandle` (execution tree, descriptor bytes, `SnapshotEvidence`); `build_seed`, `SeedHandle` (staged capture, references)
 - **Interfaces consumed**: `Snapshot` record (SL-0); `openshell_artifacts.Bound`, `safe_path` (pre-existing)
 - **Tasks**:
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-1.1 | test | — | `tests/test_launch_snapshot.py`, fixtures | Obligation C3 on generated temporary repositories: each inventory class; a self-contained `.git` with only B-reachable objects and none of the reference's excluded material; skip-worktree masks; the always-on secret matcher; full mode only where permitted; a non-work-tree root; each cap; a mid-copy mutation giving `source_changed`; each path rule; `untracked_input` for patch. A planted hostile `.git/config` (hooks, fsmonitor, filter) must leave a marker unexecuted. | `V1` |
+| SL-1.1 | test | — | `tests/test_launch_snapshot.py`, fixtures | Obligation C3 on generated temporary repositories: each inventory class; a self-contained `.git` with only B-reachable objects and none of the reference's excluded material; skip-worktree masks; the always-on secret matcher; full mode only where permitted; a non-work-tree root; each cap; a mid-copy mutation giving `source_changed`; each path rule; a linked-worktree root whose `.git` file points to a common directory outside `snapshot.root`, with only B-reachable objects uploaded; `untracked_input` for patch. The C10 source cases through `build_seed`: the manifest digest mismatch with no entry opened, a non-canonical manifest, a symlinked or foreign-owned manifest, a manifest over its cap, 4096 entries accepted, unsafe paths, each symlink position with an unopened sentinel, `not_regular_file`, digest and size mismatches, each cap, undeclared files never opened, and the `seed_root` ownership, mode and ancestor refusals. A planted hostile `.git/config` (hooks, fsmonitor, filter) must leave a marker unexecuted. | `V1` |
 | SL-1.2 | impl | SL-1.1 | `launch_snapshot.py` | — | — |
 | SL-1.3 | verify | SL-1.2 | SL-1 files | SL-1 tests | `V1` |
 
@@ -368,9 +426,9 @@ SL-6 — Documentation, receipt and spec reconciliation
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-3.1 | test | — | SL-3 test files | Obligations C2, C4–C7 through `build_launch_service` with a fake coordinator, fake cgroupfs/sysfs and fake `systemd-run` (`real_seat_caps` marker). (1) Every refusal through `pre_exec` with zero snapshot, upload, envelope or invocation counters. (2) The egress grant equals the reservation digest's hex. (3) Exec claim order, rollback and the effective configuration digest (obligation C4). Refusals through `pre_exec` take no claim, and a new request_id then launches. The certain post-claim failures roll the claim back. An unknown upload, or a crash after the claim, keeps it. A changed referenced policy, mapping, threshold or cap record refuses `sandbox_launch_input_mismatch`. (4) Missing controllers each refuse capability_unmet, and the caps contract §1a cases hold on LaneExec's automatic paths: tmpfs is accepted only with `memory.max` and `memory.swap.max` read back, every other major-0 type refuses, and tmpfs content is removed before the parent is collected. (5) A readback mismatch gives finished/failed_to_start with no target marker. (6) Renewal on an injected clock. An attempt longer than `ttl_s` stays live through confirmed renewals, the next renewal starts by `h + T/3`, and the stored Reservation stays byte-identical. A renewal timeout, lost acknowledgement, rejection, malformed reply or lost connection each fences at exactly `h + 2T/3` and kills the group before `h + T`, with `sandbox_launch_liveness_lost`. Supervisor death ends a local chain and lets an openshell lease lapse. No re-admission overlaps a workload that may still run. `ttl_s` below 45 refuses before snapshot. (7) lifetime_exceeded ends the attempt timed_out. (8) Bridge loss ends it cancelled. (9) Cancel affects only the verified owner. (10) Release cancels a live attempt, then cleanup_pending. (11) Reap settles a dead supervisor in its own inventory only. (12) route_disabled is refused under the shipped defaults. (13) toolkit_interim refuses local `pi-runner`. (14) Both crossed Pi pairs refuse `sandbox_launch_input_mismatch` before effects. (15) Template selection is by target kind. The openshell and local Pi argv expand exactly to their frozen forms, with `relay_endpoint` as the single argument `127.0.0.1:17690`. The other target's template id, or a `template_sha256` mismatch, refuses before effects. The local link accepts one connection within 120 s, and no connection ends the attempt with `sandbox_launch_bridge_lost`. | `V3` |
+| SL-3.1 | test | — | SL-3 test files | Obligations C2, C4–C7 through `build_launch_service` with a fake coordinator, fake cgroupfs/sysfs and fake `systemd-run` (`real_seat_caps` marker). (1) Every refusal through `pre_exec` with zero snapshot, upload, envelope or invocation counters. (2) The egress grant equals the reservation digest's hex. (3) Exec claim order, rollback and the effective configuration digest (obligation C4). Refusals before the claim, through local scratch provisioning and openshell staging, leave no claim record, and a new request_id then launches. The certain post-claim failures, the openshell guest provisioning refusal included, take the claim and roll it back with a durable `claim_rolled_back` record. An unknown upload, or a crash after the claim, keeps it. A changed referenced policy, mapping, threshold, cap record, `seed_root` or seed limit refuses `sandbox_launch_input_mismatch`. (4) Missing controllers each refuse capability_unmet, and the caps contract §1a cases hold on LaneExec's automatic paths: tmpfs is accepted only with `memory.max` and `memory.swap.max` read back, every other major-0 type refuses, and tmpfs content is removed before the parent is collected. (5) A readback mismatch gives finished/failed_to_start with no target marker. (6) Renewal on an injected clock. An attempt longer than `ttl_s` stays live through confirmed renewals, the next renewal starts by `h + T/3`, and the stored Reservation stays byte-identical. A renewal timeout, lost acknowledgement, rejection, malformed reply or lost connection each fences at exactly `h + 2T/3` and kills the group before `h + T`, with `sandbox_launch_liveness_lost`. Supervisor death ends a local chain and lets an openshell lease lapse. No re-admission overlaps a workload that may still run. `ttl_s` below 45 refuses before snapshot. (7) lifetime_exceeded ends the attempt timed_out. (8) Bridge loss ends it cancelled. (9) Cancel affects only the verified owner. (10) Release cancels a live attempt, then cleanup_pending. (11) Reap settles a dead supervisor in its own inventory only. (12) route_disabled is refused under the shipped defaults. (13) toolkit_interim refuses local `pi-runner`. (14) Both crossed Pi pairs refuse `sandbox_launch_input_mismatch` before effects. (15) Template selection is by target kind. The openshell and local Pi argv expand exactly to their frozen forms, with `relay_endpoint` as the single argument `127.0.0.1:17690`. The other target's template id, or a `template_sha256` mismatch, refuses before effects. The local link accepts one connection within 120 s, and no connection ends the attempt with `sandbox_launch_bridge_lost`. (16) The remaining C10 cases: seed references and `envelope_digest` binding, `source_changed` at recheck, including request-directory and `seed_root` swaps, post-recheck staging isolation, `scratch/` mode and ownership, every local ancestor case (accepted root, LaneExec-uid and mixed chains; group-writable, other-writable, foreign-owned and symlinked refusals), each openshell parent case rolled back with `claim_rolled_back`, the unknown provisioning result, the exact declared set on both targets, seeded copies writable for that attempt only, no source read after the response, and the `scratch_path` echo in launch and status. | `V3` |
 | SL-3.2 | impl | SL-3.1 | `launch_service.py`, `launch_routes.py`, `sandbox_placement.py`, `placement_lease.py`, `openshell_backend.py` | — | — |
-| SL-3.3 | verify | SL-3.2 | SL-3 files | SL-3 tests | `V3`. Mutation controls, each failing through a production path: drop the capped parent, renew by rewriting the Reservation, skip the exec-claim journal, launch after `pre_exec` refuses, reach a coordinator under the shipped defaults, swallow a renewal failure, and accept a non-canonical template record. |
+| SL-3.3 | verify | SL-3.2 | SL-3 files | SL-3 tests | `V3`. Mutation controls, each failing through a production path: drop the capped parent, renew by rewriting the Reservation, skip the exec-claim journal, launch after `pre_exec` refuses, reach a coordinator under the shipped defaults, swallow a renewal failure, accept a non-canonical template record, and the six C10 seed mutations. |
 
 ### SL-4 — Phase-loop lane placement site
 
@@ -396,7 +454,7 @@ SL-6 — Documentation, receipt and spec reconciliation
 
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
-| SL-5.1 | test | — | SL-5 test files | Spawn the installed entry and module path with isolated imports, controlled HOME/config and hostile selection variables. Assert the required `--client`, the exit classes (70 for schema-invalid input with stdout absent), one JSON line, empty ordinary stderr and no sentinel leakage. Assert `version` reports both protocol digests, `config_sha256`, `seat_caps_sha256`, `local_pi_runner_launcher` and templates. Classify new rows: helpers launch via `seat_uid.trusted_module_argv`, never `-m`. | `V5` |
+| SL-5.1 | test | — | SL-5 test files | Spawn the installed entry and module path with isolated imports, controlled HOME/config and hostile selection variables. Assert the required `--client`, the exit classes (70 for schema-invalid input with stdout absent), one JSON line, empty ordinary stderr and no sentinel leakage. Assert `version` reports both protocol digests, `config_sha256`, `seat_caps_sha256`, `local_pi_runner_launcher`, `seed_root`, the effective `seed_limits` (null with a null `seed_root`) and templates. Classify new rows: helpers launch via `seat_uid.trusted_module_argv`, never `-m`. | `V5` |
 | SL-5.2 | impl | SL-5.1 | `launch_cli.py`, `pyproject.toml`, `uv.lock`, `seat_launch_references.json` | — | — |
 | SL-5.3 | verify | SL-5.2 | SL-5 files | SL-5 tests | `V5` |
 
@@ -411,7 +469,7 @@ SL-6 — Documentation, receipt and spec reconciliation
 | Task ID | Type | Depends on | Files in scope | Tests owned | Test command |
 |---|---|---|---|---|---|
 | SL-6.1 | test | — | `tests/test_laneexec_receipt.py` | The closed receipt parser refuses missing or skipped-only results, stale artifact hashes, an enabled live route or a `laneexec` launcher default. | `V6` |
-| SL-6.2 | docs | SL-6.1 | docs, README, catalog | Document messages, exit classes, routes, templates, snapshot modes and masks, lifetime (no renew), caps, the interim local route and switch, and return. Also state that providers name egress only and credentials stay with the requester. Rescan the catalog. | — |
+| SL-6.2 | docs | SL-6.1 | docs, README, catalog | Document messages, exit classes, routes, templates, snapshot modes and masks, the seed set and `scratch_path`, lifetime (no renew), caps, the interim local route and switch, and return. Also state that providers name egress only and credentials stay with the requester. Rescan the catalog. | — |
 | SL-6.3 | docs | SL-6.2 | `CHANGELOG.md`, `.doc-decisions.json`, `plans/manifest.json`, evidence | Add one Unreleased entry. Write actual V0–V7 outcomes and hashes to the receipt. Append manifest lifecycle without editing frozen inputs. Record any freeze correction as a dated amendment request, never as an in-place edit. | — |
 | SL-6.4 | verify | SL-6.3 | SL-6 files | receipt test | `V6`, then `V7` |
 
@@ -462,7 +520,7 @@ SL-6 — Documentation, receipt and spec reconciliation
 ## Acceptance Criteria
 
 - [ ] EC-LANEEXEC-1 — proven by `V3`, `V4` and `V5` through `build_launch_service`, `place_lane` and the installed entry for every `x-client-routes` row; falsified by a path-entered reducer or review unit reaching `place_lane`, a provider or executor change after reserve, or a second launch for one reservation reaching the launch-chain counter.
-- [ ] EC-LANEEXEC-2 — proven by `V1`, `V2` and `V3` (snapshot, envelope derivation, one exec, local caps before exec, return bounds); falsified by a path-entered omitted or mismatched egress grant, a crossed Pi policy/target pair or a non-selected Pi template reaching snapshot, an undeclared launch input entering argv, a target marker running before readback, a `not_armed` placed attempt, or a proposal over cap returned.
+- [ ] EC-LANEEXEC-2 — proven by `V1`, `V2` and `V3` (snapshot, envelope derivation, one exec, local caps before exec, return bounds); falsified by a path-entered omitted or mismatched egress grant, a crossed Pi policy/target pair or a non-selected Pi template reaching snapshot, an undeclared launch input entering argv, an undeclared or unverified seed file reaching `scratch/`, a target marker running before readback, a `not_armed` placed attempt, or a proposal over cap returned.
 - [ ] EC-LANEEXEC-3 — proven by `V3` and `V5` (`pi-runner` identity and inventory, bridge only on `openshell`, local `bridge: null`, capability_unmet with nothing run, caller-scoped reap, inventory rows for agent-harness#1787 to agent-harness#1790 controls); falsified by a path-entered credential sentinel in the sandbox, template, environment, record or evidence, a local bridge, cross-inventory reap or an uncapped local start.
 - [ ] EC-LANEEXEC-4 — proven by `V3` and `V4` fake-coordinator, egress-digest, headroom-refusal, bridge-loss, cancel, timeout, crash/restart and return mutations at the production construction sites; falsified by any coordinator connection under shipped configuration, a swallowed renewal failure or a target process alive at `h + T`, or by a test that replaces `build_launch_service` or `build_snapshot`.
 - [ ] EC-LANEEXEC-5 — proven by `V4` (lane_placement disabled leaves the existing launch byte-identical) and `V3` (toolkit_interim refuses local `pi-runner` with zero invocations), plus the `V6` receipt showing both shipped defaults; falsified by a shipped `laneexec` or `enabled` default, or by the existing local route being removed.
