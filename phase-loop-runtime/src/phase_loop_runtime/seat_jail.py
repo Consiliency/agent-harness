@@ -122,6 +122,10 @@ CLAUDE_TOKEN_FD_ENV = "CLAUDE_CODE_OAUTH_TOKEN_FILE_DESCRIPTOR"
 REFUSED_PREFIX = "seat_sandbox_refused:"
 
 NOTICES: Mapping[str, tuple[str, str, str]] = {
+    "seat_resource_caps_unavailable": (
+        "seat unavailable", "the host could not prove the required per-seat resource caps",
+        "install the delegated-cgroup host prerequisite and check "
+        "/etc/consiliency/tooling/seat-resource-caps.json"),
     "grok_tool_surface_unverified": (
         "leg deferred", "installed tool surface has no passing receipt",
         "run phase-loop seat-window probe-tools --vendor grok and review the private result"),
@@ -606,7 +610,7 @@ SEALED_FALLBACK_CODES: frozenset[str] = frozenset({
 JAIL_NOT_RUN_CODES: frozenset[str] = frozenset({
     "claude_seat_token_missing", "seat_jail_qualification_failed",
     "claude_seat_login_token_expiring",
-    "gemini_seat_egress_unavailable",
+    "gemini_seat_egress_unavailable", "seat_resource_caps_unavailable",
 })
 
 

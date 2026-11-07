@@ -369,6 +369,7 @@ _ORDINARY_CODES = frozenset({
     "seat_keyring_unavailable", "seat_launch_owner_required",
     "seat_output_inside_readonly_input", "seat_output_path_unavailable",
     "seat_owner_unavailable", "seat_placement_waiting", "seat_profile_unavailable",
+    "seat_resource_caps_unavailable",
     "seat_prompt_over_cap", "seat_provider_unavailable", "seat_sandbox_not_staged",
     "seat_sandbox_refused:gemini_credential_unsafe", "seat_sandbox_refused:jail_build",
     "seat_sandbox_refused:jail_unqualified", "seat_sandbox_refused:namespace",

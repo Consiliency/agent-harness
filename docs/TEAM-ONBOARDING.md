@@ -25,6 +25,11 @@ choices; use answers the operator has already supplied and ask for what is missi
 | One provider / several providers | One authenticated executor can do autonomous work where allowed. Multiple accounts with the same vendor do not provide cross-vendor independence. |
 | Isolated / governed review | Separate from installation. Requires the selected reviewers, authentication and supported sandbox/network isolation. Linux review isolation uses host facilities such as bubblewrap and namespaces; a successful macOS install does not certify that route. Refusals and unavailable seats remain failures to satisfy the gate. |
 
+Linux hosts that run local review seats also need delegated per-seat cgroup controllers and a
+passing opt-in host probe. See [Per-seat resource caps](seat-resource-caps.md) for the root
+drop-in, record sources, defaults and exact probe command. A host without that prerequisite
+refuses local seats; it never runs them uncapped.
+
 Do not select autonomous mode just to pass a required governed gate, silently
 substitute a reviewer, or claim a review from a successful installation. The public
 CLI currently composes its board; `--board`, `--seats` and a TOML `default_board`
