@@ -466,8 +466,9 @@ _REFRESH_AGES_D = (0, 7, 9, 29)
 
 def _measure_codex(native: str, target: Path, codex_home: Path, workdir: Path) -> dict:
     """One turn of the developer's own CLI with only the private ``CODEX_HOME``: no user
-    config, rules or session files, and no inherited environment."""
-    import subprocess
+    config, rules or session files, and no inherited environment. It starts through the
+    runtime's owned executor launch, the route the operator's own CLI takes on the host."""
+    from phase_loop_runtime.panel_invoker import run_provider
 
     env = {
         "PATH": f"{target}/codex-path:/usr/bin:/bin", "HOME": str(codex_home.parent),
@@ -475,12 +476,12 @@ def _measure_codex(native: str, target: Path, codex_home: Path, workdir: Path) -
     }
     before = (codex_home / "auth.json").read_bytes()
     started = time.monotonic()
-    done = subprocess.run(
+    done = run_provider(
         [native, "exec", "--ignore-user-config", "--ignore-rules", "--ephemeral", "--json",
          "--skip-git-repo-check", "--cd", str(workdir), "--sandbox", "read-only",
          "-c", 'approval_policy="never"', "-c", 'cli_auth_credentials_store="file"', "-"],
-        env=env, input=_MEASURE_PROMPT, text=True, capture_output=True, check=False,
-        timeout=300, cwd=str(workdir))
+        executor=True, env=env, input=_MEASURE_PROMPT, text=True, capture_output=True,
+        check=False, timeout=300, cwd=str(workdir))
     events: dict[str, int] = {}
     for line in (done.stdout or "").splitlines():
         try:
