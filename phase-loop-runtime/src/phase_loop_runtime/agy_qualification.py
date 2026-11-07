@@ -1789,10 +1789,15 @@ def cli_main(args):
     store = Store()
     if args.action == "status":
         env = _panel()._broker_subscription_env()
+        from .seat_subject import resolve_seat_subject
+
+        subject = resolve_seat_subject("gemini", env)
         print(json.dumps({"store": str(store.host_dir), "store_status": store.status(),
                           "entries": store.entries(), "self_qualification": self_qualification_enabled(),
                           "key": agy_profile_digest(), "written_under": __version__,
-                          "verdict": admission_verdict(env, None, execute=True)._asdict()},
+                          "verdict": admission_verdict(
+                              env, subject.subject_path, execute=True
+                          )._asdict()},
                          sort_keys=True))
         return 0
     if args.action == "clear":
@@ -1802,10 +1807,15 @@ def cli_main(args):
         return 0
     env = _panel()._broker_subscription_env()
     from .executable_dependency import ExecutableDependencyError
+    from .seat_subject import resolve_seat_subject
 
     try:
+        subject = resolve_seat_subject("gemini", env)
         admission = requalify_once(
-            env, heartbeat=lambda phase: print(f"agy-qualification: {phase}", file=sys.stderr))
+            env,
+            heartbeat=lambda phase: print(f"agy-qualification: {phase}", file=sys.stderr),
+            subject_path=subject.subject_path,
+        )
     except (ValueError, ExecutableDependencyError) as exc:
         print(f"phase-loop agy-qualification run: {exc}", file=sys.stderr)
         return 1

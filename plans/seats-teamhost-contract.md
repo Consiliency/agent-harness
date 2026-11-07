@@ -346,7 +346,10 @@ class AgyVerdict(NamedTuple):  # lane C maps it onto §3's Verdict
     code: str | None
     reason: Literal["launch_measurement", "provider_absent"] | None
 def admission_verdict(env, subject_path: Path | None, *, execute: bool) -> AgyVerdict
-def requalify_once(env, *, cancel_event=None, heartbeat=None) -> Admission | None
+def requalify_once(env, *, cancel_event=None, heartbeat=None,
+                   subject_path: Path | None = None) -> Admission | None
+def ensure_admitted(env, cancel_event=None, heartbeat=None, *, store=None, transport=None,
+                    qualify=None, subject_path: Path | None = None) -> Admission
 LkgProvider = Callable[[], VerifiedImage | None]
 def register_last_known_good(provider: LkgProvider) -> None
 def last_known_good() -> VerifiedImage | None

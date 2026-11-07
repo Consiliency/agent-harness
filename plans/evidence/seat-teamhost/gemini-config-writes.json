@@ -1,0 +1,18 @@
+{
+  "closure": "closed",
+  "measurement": {
+    "agy_version": "1.2.13",
+    "host_class": "developer_host",
+    "login": "developer_own",
+    "recorded_at": "2026-09-29T17:12:41+00:00",
+    "source": "plans/evidence/seat-jail-1132/p4-agy-d7-credential.json"
+  },
+  "minimum_directory_overlay": ".gemini/config",
+  "observed_writes": [
+    ".gemini/config/.migrated",
+    ".gemini/config/mcp_config.json",
+    ".gemini/config/projects/default-cli-project.json.<id>.tmp"
+  ],
+  "reason": "Measured atomic writes occur directly below config and below config/projects, so config is the narrowest directory bind that admits the closed write set.",
+  "schema": "seat_teamhost_gemini_config_writes.v1"
+}
