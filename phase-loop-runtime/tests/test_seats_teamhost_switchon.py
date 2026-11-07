@@ -2,13 +2,12 @@
 
 from __future__ import annotations
 
-import ast
+import datetime as dt
 from dataclasses import replace
-import inspect
 import os
 from pathlib import Path
 import sys
-import textwrap
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,9 +15,12 @@ from executable_dependency_test_support import build_fixture
 from phase_loop_runtime import claude_seat_transport
 from phase_loop_runtime import executable_dependency_startup
 from phase_loop_runtime import panel_invoker
+from phase_loop_runtime import sandbox_egress
 from phase_loop_runtime import seat_admission
+from phase_loop_runtime import seat_egress_proxy
 from phase_loop_runtime import seat_jail
 from phase_loop_runtime import seat_profiles
+from phase_loop_runtime import seat_route
 from phase_loop_runtime import seat_subject
 from phase_loop_runtime.executable_dependency import (
     ExecutableDependencyError,
@@ -136,9 +138,8 @@ def test_managed_authority_doctor_and_launch_agree(
     assert (doctor.status, doctor.code) == expected
     assert (launch.status, launch.code) == expected
     if resolver_code is None:
-        assert events.index("authority") < events.index("host") if "host" in events else True
-    if authority_code is not None:
-        assert "host" not in events
+        # Launch (seat_route L3 before _projection_for_launch) checks the host first.
+        assert events.index("host") < events.index("authority")
 
 
 def test_optional_profile_launches_the_declared_subject_without_changing_profile_digest(
@@ -192,33 +193,205 @@ def test_subject_only_declaration_admits_without_auxiliary_projection_entries(tm
         fixture.close()
 
 
-def test_removing_the_managed_authority_gate_breaks_doctor_launch_agreement(
-    tmp_path, monkeypatch
+# The JAILCORE route refuses every projection admission failure with its typed identity
+# code (``test_seat_route.test_dependency_admission_failure_is_a_typed_identity_refusal``);
+# the doctor names the specific authority code so LA1-AUTHORITY-PIN is selected.
+_SEAT_CODE = {
+    "authority_missing": "seat_sandbox_refused:identity",
+    "authority_invalid": "seat_sandbox_refused:identity",
+}
+
+
+def _production_world(
+    tmp_path,
+    monkeypatch,
+    *,
+    authority_code=None,
+    resolver_code=None,
+    host_code=None,
+    credential=True,
 ):
-    fixture, _subject, _events = _managed_world(
-        tmp_path, monkeypatch, authority_code="authority_invalid"
+    fixture, _subject, events = _managed_world(
+        tmp_path,
+        monkeypatch,
+        authority_code=authority_code,
+        resolver_code=resolver_code,
     )
-    source = textwrap.dedent(inspect.getsource(seat_admission._base_verdict))
-    tree = ast.parse(source)
-    function = tree.body[0]
-    assert isinstance(function, ast.FunctionDef)
-    managed_gates = [
-        node
-        for node in function.body
-        if isinstance(node, ast.If)
-        and ast.unparse(node.test) == "subject.source == 'managed_release'"
-    ]
-    assert len(managed_gates) == 1
-    function.body.remove(managed_gates[0])
-    namespace = dict(seat_admission.__dict__)
-    exec(compile(ast.fix_missing_locations(tree), "<missing-managed-authority-gate>", "exec"), namespace)
-    monkeypatch.setattr(seat_admission, "_base_verdict", namespace["_base_verdict"])
+    real = seat_profiles.profile_for("claude")
+    profile = replace(
+        real,
+        credential_present=lambda: credential,
+        preconditions=(),
+        recorded_stop=None,
+        variant=None,
+    )
+    monkeypatch.setattr(seat_admission, "_profile_for", lambda _leg: profile)
+    monkeypatch.setattr(
+        seat_profiles, "profile_for", lambda leg: profile if leg == "claude" else None
+    )
+
+    def host_capability():
+        events.append("host")
+        return host_code
+
+    monkeypatch.setattr(seat_jail, "seat_sandbox_capable", host_capability)
+    monkeypatch.setattr(sandbox_egress, "egress_required", lambda: True)
+    monkeypatch.setattr(seat_egress_proxy, "unavailable_code", lambda: None)
+    return fixture
+
+
+def _production_refusal():
+    _route, _notices, refusal = panel_invoker._seat_route_for_spawn(
+        "claude",
+        SimpleNamespace(staged_tree_sha256="0" * 64, instructions_sha256=None),
+        eligible=True,
+    )
+    return refusal
+
+
+_PRODUCTION_STATES = [
+    ("authority_missing", "authority_missing", None, None, True, "authority_missing"),
+    ("authority_invalid", "authority_invalid", None, None, True, "authority_invalid"),
+    ("subject_authority_missing", None, "authority_missing", None, True,
+     "authority_missing"),
+    ("subject_authority_invalid", None, "authority_invalid", None, True,
+     "authority_invalid"),
+    ("host_and_authority", "authority_invalid", None, "seat_sandbox_unavailable_host", True,
+     "seat_sandbox_unavailable_host"),
+    ("host_and_subject_authority", None, "authority_invalid",
+     "seat_sandbox_unavailable_host", True, "seat_sandbox_unavailable_host"),
+    ("credential_and_authority", "authority_missing", None, None, False,
+     "claude_seat_token_missing"),
+]
+
+
+def _agrees(doctor, production):
+    return doctor.status == "refuses" and _SEAT_CODE.get(doctor.code, doctor.code) == production
+
+
+@pytest.mark.parametrize(
+    ("state", "authority_code", "resolver_code", "host_code", "credential", "doctor_code"),
+    _PRODUCTION_STATES,
+    ids=[row[0] for row in _PRODUCTION_STATES],
+)
+def test_managed_authority_gate_agrees_with_the_production_route(
+    tmp_path,
+    monkeypatch,
+    state,
+    authority_code,
+    resolver_code,
+    host_code,
+    credential,
+    doctor_code,
+):
+    fixture = _production_world(
+        tmp_path, monkeypatch,
+        authority_code=authority_code,
+        resolver_code=resolver_code,
+        host_code=host_code,
+        credential=credential,
+    )
     env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
     try:
         doctor = seat_admission.verdict("claude", env, execute=True)
-        launch = _launch_verdict(env)
+        production = _production_refusal()
     finally:
         fixture.close()
+    assert (doctor.status, doctor.code) == ("refuses", doctor_code)
+    assert _agrees(doctor, production), (state, doctor, production)
 
+
+def test_doctor_pass_record_uses_the_projected_launch_key(tmp_path, monkeypatch):
+    fixture, _subject, _events = _managed_world(tmp_path, monkeypatch)
+    observed = []
+    monkeypatch.setattr(
+        seat_jail,
+        "pass_record_verdict",
+        lambda key: (observed.append(key) or True, "passed"),
+    )
+    monkeypatch.setattr(seat_jail, "host_identity", lambda: "host-fixture")
+    monkeypatch.setattr(seat_jail, "falsifier_layout_identity", lambda: "layout-fixture")
+    try:
+        verdict = seat_admission.verdict(
+            "claude", {"PATH": str(tmp_path), "HOME": str(tmp_path)}, execute=True
+        )
+    finally:
+        fixture.close()
+    assert verdict.status == "admits"
+    assert len(observed) == 1
+    assert observed[0].projection_digest
+    assert observed[0].profile_digest == "d" * 64
+
+
+@pytest.mark.parametrize(
+    ("exceptions", "expected"),
+    [
+        ({}, "seat_egress_allowlist_missing"),
+        (
+            {
+                "claude": SimpleNamespace(
+                    kind="open egress",
+                    expiry=dt.datetime(2000, 1, 1, tzinfo=dt.timezone.utc),
+                )
+            },
+            "seat_route_exception_expired",
+        ),
+    ],
+)
+def test_doctor_applies_the_claude_route_egress_exception(
+    tmp_path, monkeypatch, exceptions, expected
+):
+    fixture, _subject, events = _managed_world(tmp_path, monkeypatch)
+    monkeypatch.setattr(
+        seat_route,
+        "load_route_policy",
+        lambda: SimpleNamespace(exceptions=exceptions),
+    )
+    try:
+        verdict = seat_admission.verdict(
+            "claude", {"PATH": str(tmp_path), "HOME": str(tmp_path)}, execute=True
+        )
+    finally:
+        fixture.close()
+    assert (verdict.status, verdict.code) == ("refuses", expected)
+    assert "authority" not in events
+
+
+def test_removing_the_managed_authority_gate_breaks_doctor_launch_agreement(
+    tmp_path, monkeypatch
+):
+    fixture = _production_world(tmp_path, monkeypatch, authority_code="authority_invalid")
+    monkeypatch.setattr(seat_admission, "_managed_authority", lambda *_args: None)
+    env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
+    try:
+        doctor = seat_admission.verdict("claude", env, execute=True)
+        production = _production_refusal()
+    finally:
+        fixture.close()
     assert (doctor.status, doctor.code) == ("admits", None)
-    assert (launch.status, launch.code) == ("refuses", "authority_invalid")
+    assert production == "seat_sandbox_refused:identity"
+    assert not _agrees(doctor, production)
+
+
+def test_authority_before_host_mutant_breaks_doctor_launch_agreement(tmp_path, monkeypatch):
+    fixture = _production_world(
+        tmp_path, monkeypatch,
+        authority_code="authority_invalid", host_code="seat_sandbox_unavailable_host",
+    )
+    real_base = seat_admission._base_verdict
+
+    def authority_first(leg, env, execute):
+        subject = seat_subject.resolve_seat_subject(leg, env)
+        early = seat_admission._managed_authority(leg, subject, seat_admission._profile_for(leg))
+        return early if early is not None else real_base(leg, env, execute)
+
+    monkeypatch.setattr(seat_admission, "_base_verdict", authority_first)
+    env = {"PATH": str(tmp_path), "HOME": str(tmp_path)}
+    try:
+        doctor = seat_admission.verdict("claude", env, execute=True)
+        production = _production_refusal()
+    finally:
+        fixture.close()
+    assert (doctor.status, doctor.code) == ("refuses", "authority_invalid")
+    assert production == "seat_sandbox_unavailable_host"
+    assert not _agrees(doctor, production)

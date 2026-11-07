@@ -71,12 +71,14 @@ def _refuses(leg: str, code: str) -> Verdict:
     return Verdict(leg, "refuses", code=code, fix=_fix(code))
 
 
-def _pass_record(leg: str) -> Verdict | None:
+def _pass_record(leg: str, qualification_key=None) -> Verdict | None:
     from . import seat_jail
 
     try:
-        profile_digest = seat_jail.jail_profile_digest(leg)
-        passed, reason = seat_jail.pass_record_verdict(profile_digest)
+        key = qualification_key
+        if key is None:
+            key = seat_jail.jail_profile_digest(leg)
+        passed, reason = seat_jail.pass_record_verdict(key)
     except Exception:  # noqa: BLE001 - an unreadable inventory is a doctor state
         return Verdict(leg, "unknown", reason="inventory_failed")
     if passed:
@@ -93,49 +95,90 @@ def _pass_record(leg: str) -> Verdict | None:
     return Verdict(leg, "unknown", reason="launch_measurement")
 
 
-def _base_verdict(leg: str, env: Mapping[str, str], execute: bool) -> Verdict | None:
-    from . import seat_jail, seat_subject
+def _managed_authority(leg: str, subject, profile) -> Verdict | object | None:
+    """Gate G-A: open the pinned authority and admit the profile projection.
+
+    Launch evaluates this after the egress step and before the pass record
+    (``seat_route._projection_for_launch``), so the doctor does too.
+    """
+    from os import close as close_fd
+    from types import SimpleNamespace
+
+    from . import seat_subject
+    from .seat_qualification_key import admit_profile_projection
 
     try:
-        subject = seat_subject.resolve_seat_subject(leg, env)
-    except FileNotFoundError:
-        return Verdict(leg, "unknown", reason="provider_absent")
+        descriptor, expected = seat_subject.open_managed_authority(subject)
+        dependency = None
+        projection = None
+        try:
+            dependency = admit_profile_projection(
+                profile,
+                SimpleNamespace(
+                    requirement=subject.requirement,
+                    borrowed_authority_fd=descriptor,
+                    expected_authority_sha256=expected,
+                ),
+            )
+            if dependency is not None:
+                projection = SimpleNamespace(
+                    projection_digest=dependency.projection_digest,
+                )
+        finally:
+            try:
+                if dependency is not None:
+                    dependency.close()
+            finally:
+                close_fd(descriptor)
     except ExecutableDependencyError as exc:
         return _refuses(leg, exc.code)
     except Exception:  # noqa: BLE001 - doctor inventory degrades rather than raising
         return Verdict(leg, "unknown", reason="inventory_failed")
+    return projection
 
-    profile = _profile_for(leg)
-    if subject.source == "managed_release":
-        if profile is None:
-            return Verdict(leg, "unknown", reason="inventory_failed")
-        from os import close as close_fd
-        from types import SimpleNamespace
 
-        from .seat_qualification_key import admit_profile_projection
+def _profile_egress(leg: str, profile, execute: bool) -> tuple[Verdict | None, str | None]:
+    """Evaluate L7 and return the digest production binds into the launch key."""
+
+    if profile.allowlist_id is None:
+        from . import seat_route
 
         try:
-            descriptor, expected = seat_subject.open_managed_authority(subject)
-            dependency = None
-            try:
-                dependency = admit_profile_projection(
-                    profile,
-                    SimpleNamespace(
-                        requirement=subject.requirement,
-                        borrowed_authority_fd=descriptor,
-                        expected_authority_sha256=expected,
-                    ),
-                )
-            finally:
-                try:
-                    if dependency is not None:
-                        dependency.close()
-                finally:
-                    close_fd(descriptor)
-        except ExecutableDependencyError as exc:
-            return _refuses(leg, exc.code)
+            exception = seat_route.load_route_policy().exceptions.get(profile.vendor)
+            if exception is None or exception.kind != "open egress":
+                return _refuses(leg, "seat_egress_allowlist_missing"), None
+            if seat_route._now() >= exception.expiry:
+                return _refuses(leg, "seat_route_exception_expired"), None
         except Exception:  # noqa: BLE001 - doctor inventory degrades rather than raising
-            return Verdict(leg, "unknown", reason="inventory_failed")
+            return Verdict(leg, "unknown", reason="inventory_failed"), None
+        return None, None
+
+    if not execute:
+        return Verdict(leg, "unknown", reason="launch_measurement"), None
+
+    from . import seat_egress_proxy
+
+    try:
+        unavailable = getattr(seat_egress_proxy, "unavailable_code", None)
+        code = unavailable() if unavailable is not None else (
+            "gemini_seat_egress_unavailable"
+            if seat_egress_proxy.unavailable_reason() is not None
+            else None
+        )
+        if code is not None:
+            return _refuses(leg, code), None
+        digest = seat_egress_proxy.allowlist_ref(profile.allowlist_id).content_digest
+    except seat_egress_proxy.EgressLayerUnavailable as exc:
+        return _refuses(leg, exc.code), None
+    except Exception:  # noqa: BLE001 - doctor inventory degrades rather than raising
+        return Verdict(leg, "unknown", reason="inventory_failed"), None
+    return None, digest
+
+
+def _base_verdict(leg: str, env: Mapping[str, str], execute: bool) -> Verdict | None:
+    from . import seat_jail, seat_subject
+
+    profile = _profile_for(leg)
 
     for gate in _GATES.get(leg, ()):
         try:
@@ -187,7 +230,12 @@ def _base_verdict(leg: str, env: Mapping[str, str], execute: bool) -> Verdict | 
                 return _refuses(leg, "gemini_seat_credential_missing")
             has_egress = True
 
-        if has_egress:
+        allowlist_digest = None
+        if profile is not None:
+            egress, allowlist_digest = _profile_egress(leg, profile, execute)
+            if egress is not None:
+                return egress
+        elif has_egress:
             if not execute:
                 return Verdict(leg, "unknown", reason="launch_measurement")
             from . import seat_egress_proxy
@@ -201,9 +249,54 @@ def _base_verdict(leg: str, env: Mapping[str, str], execute: bool) -> Verdict | 
             if code is not None:
                 return _refuses(leg, code)
 
-        passed = _pass_record(leg)
+        try:
+            subject = seat_subject.resolve_seat_subject(leg, env)
+        except FileNotFoundError:
+            return Verdict(leg, "unknown", reason="provider_absent")
+        except ExecutableDependencyError as exc:
+            return _refuses(leg, exc.code)
+        except Exception:  # noqa: BLE001 - doctor inventory degrades rather than raising
+            return Verdict(leg, "unknown", reason="inventory_failed")
+        if subject.source == "managed_release" and profile is None:
+            return Verdict(leg, "unknown", reason="inventory_failed")
+
+        projection = None
+        if profile is not None and subject.source == "managed_release":
+            managed = _managed_authority(leg, subject, profile)
+            if isinstance(managed, Verdict):
+                return managed
+            projection = managed
+
+        qualification_key = None
+        if profile is not None:
+            from .seat_qualification_key import key_for_launch
+
+            try:
+                variant = None
+                if profile.variant is not None:
+                    variant, _code = profile.variant(env)
+                qualification_key = key_for_launch(
+                    profile,
+                    variant=variant,
+                    allowlist_digest=allowlist_digest,
+                    projection=projection,
+                )
+            except Exception:  # noqa: BLE001 - doctor inventory degrades rather than raising
+                return Verdict(leg, "unknown", reason="inventory_failed")
+
+        passed = _pass_record(leg, qualification_key)
         if passed is not None:
             return passed
+
+    else:
+        try:
+            subject = seat_subject.resolve_seat_subject(leg, env)
+        except FileNotFoundError:
+            return Verdict(leg, "unknown", reason="provider_absent")
+        except ExecutableDependencyError as exc:
+            return _refuses(leg, exc.code)
+        except Exception:  # noqa: BLE001 - doctor inventory degrades rather than raising
+            return Verdict(leg, "unknown", reason="inventory_failed")
 
     if leg == "claude":
         from . import claude_seat_transport
