@@ -74,9 +74,13 @@ entry. A host whose workspace volume differs from its staging root lists that vo
 
 - a partition maps to its whole disk, through `/sys/dev/block/MAJ:MIN/partition` and the parent
   directory, because `io.max` takes whole devices only;
-- a device-mapper device resolves through its `/sys/dev/block/MAJ:MIN/slaves` chain, repeatedly,
-  to the backing whole disk, because systemd writes `io.max` for that disk and not for the
-  mapped device. A chain with more than one backing disk, or one that cannot be resolved,
+- resolution applies at every node, including nodes reached through `slaves`: a partition maps
+  through `/sys/dev/block/MAJ:MIN/partition` to its parent, and resolution continues from that
+  parent;
+- a device-mapper node must have exactly one slave; resolution follows that slave and repeats until
+  reaching a non-partition whole disk. This matches systemd's supported simple 1:1
+  originating-device discovery and where it writes `io.max`, rather than the mapped device. A
+  device-mapper node with zero or more than one slave, a cycle, or any otherwise unresolvable chain
   refuses;
 - major 0 (tmpfs, overlay and other anonymous devices) has no block device to verify, so it cannot
   carry `io.max`. An automatic path (staging root or child scratch) on major 0 refuses explicitly:
@@ -222,9 +226,11 @@ fake `systemd-run` executable:
 - (c) Readiness: a tree without the unified hierarchy, without the user manager cgroup, without
   each `REQUIRED_CONTROLLERS` member in turn, without `systemd-run`, or without the bus socket
   each returns `CODE`; the complete tree returns `None`.
-- (d) Devices: a whole disk, a partition mapped to its parent, a stacked device-mapper chain
-  resolved to its backing whole disk, a multi-disk or unresolvable chain refusing, and major 0
-  refusing, including an automatic path on major 0 beside a block-backed `io_paths` entry.
+- (d) Devices: a whole disk, a partition mapped to its parent, and a stacked one-slave
+  device-mapper chain containing an intermediate partition and resolving to its backing whole disk;
+  a device-mapper node with zero or more than one slave, a cycle, and an otherwise unresolvable
+  chain each refuse; major 0 refuses, including an automatic path on major 0 beside a block-backed
+  `io_paths` entry.
 - (e) Readback through the real helper: each §4 file absent or differing in turn, including
   `io.weight` and `io.max` absent while `memory.max` matches, writes no byte, and the target
   marker never runs.
