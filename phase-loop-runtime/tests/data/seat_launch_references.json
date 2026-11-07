@@ -1176,6 +1176,7 @@
   {"count": 2, "function": "_open_directory", "module": "seat_host_namespace", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "_range_inventory", "module": "seat_host_namespace", "primitive": "io.read_text", "role": "host-io"},
   {"count": 1, "function": "write_private_atomic", "module": "seat_host_namespace", "primitive": "io.open", "role": "host-io"},
+  {"count": 1, "function": "_read", "module": "seat_host_admin", "primitive": "io.read_text", "role": "host-io"},
   {"count": 1, "function": "_trusted_host_path", "module": "panel_invoker", "primitive": "io.lstat", "role": "host-io"},
   {"count": 1, "function": "_read_seat_raw_text", "module": "panel_invoker", "primitive": "io.open", "role": "host-io"},
   {"count": 3, "function": "_SeatClaudeJournal._read_journal", "module": "panel_invoker", "primitive": "io.stat", "role": "host-io"},

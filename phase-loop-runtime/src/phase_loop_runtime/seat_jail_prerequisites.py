@@ -1,37 +1,67 @@
-"""Prerequisites of the seat jail's qualification that live in the runtime's own environment.
-
-The qualification runs a real falsifier run (agent-harness#1132), and the run's trusted wrapper
-imports `pytest`. The run executes without site processing, so its dependencies are copied from
-the runtime's environment (or the system interpreter's site-packages) by
-`review_stage._snapshot_falsifier_dependencies`, which skips what it cannot find and leaves the
-failure to the run. Until `pytest` became a runtime dependency (agent-harness#1357), a host
-installed from the published package had no `pytest` anywhere, so the qualification could not
-start and the failure read as "report a defect".
-
-This module is the one place that knows what is needed and what to tell the operator, so the
-qualification, the typed reason and `phase-loop doctor` cannot disagree. Its text carries no
-absolute path: `doctor` output is metadata-only.
-"""
+"""Host prerequisites shared by seat qualification and ``phase-loop doctor``."""
 
 from __future__ import annotations
 
+import os
 import subprocess
-from typing import Any
+import sys
+from typing import Any, Callable, Mapping
 
-#: What the operator should run when `pytest` is missing from the runtime's environment.
-PYTEST_FIX = (
-    "pytest is not installed in the runtime's environment, and the seat jail's falsifier run "
-    "needs it (releases after 0.7.25 depend on it). Upgrade the runtime: "
-    "`uv tool upgrade phase-loop-runtime` for a uv tool install, or "
-    "`pip install --upgrade phase-loop-runtime` in the runtime's environment. Then run "
-    "`phase-loop seat-sandbox qualify`"
-)
 
-_UNLOCKS = "seat-jail qualification (jailed Claude review seats)"
+_QUALIFY = "then run `phase-loop seat-sandbox qualify`"
+_UNLOCKS = "seat-jail qualification (jailed review seats)"
+
+CHECKLIST_BY_NAME: dict[str, str] = {
+    "pytest": "LA1-RELEASE",
+    "bwrap": "LA1-PACKAGES",
+    "setpriv": "LA1-PACKAGES",
+    "nsenter": "LA1-PACKAGES",
+    "egress_isolation": "LA1-PACKAGES",
+    "legacy_tiocsti": "LA1-TIOCSTI",
+    "subordinate_ids": "LA1-SUBID",
+    "machine_id": "LA1-MACHINE-ID",
+}
+
+_INSTALL_FIXES = {
+    "managed": (
+        "Ask the host administrator to install a managed release that carries the seat "
+        "dependencies (`docs/team-host-admin.md`, item LA1-RELEASE), {qualify}."
+    ),
+    "uv_tool": "Run `uv tool upgrade phase-loop-runtime`, {qualify}.",
+    "pip": (
+        "Run `pip install --upgrade phase-loop-runtime` in the runtime's environment, "
+        "{qualify}."
+    ),
+    "source": "Run `uv sync --project phase-loop-runtime` in the checkout, {qualify}.",
+    "unknown": (
+        "Reinstall `phase-loop-runtime` with the installer that installed it, {qualify}."
+    ),
+}
+
+
+def fix_sentence(name: str, *, deployment: str) -> str:
+    """Return the single operator sentence for a missing prerequisite."""
+
+    if name not in CHECKLIST_BY_NAME:
+        raise ValueError(f"unknown seat prerequisite: {name}")
+    if name == "pytest":
+        template = _INSTALL_FIXES.get(deployment, _INSTALL_FIXES["unknown"])
+        return template.format(qualify=_QUALIFY)
+    checklist = CHECKLIST_BY_NAME[name]
+    return (
+        "Ask the host administrator to complete `docs/team-host-admin.md`, item "
+        f"{checklist}, {_QUALIFY}."
+    )
+
+
+# Compatibility for callers that render one fixed sentence outside doctor.  The qualification
+# path below selects the sentence for the running deployment kind.
+PYTEST_FIX = fix_sentence("pytest", deployment="uv_tool")
 
 
 def pytest_status() -> str:
-    """``present``, ``missing`` or ``unknown`` (the dependency inventory could not run)."""
+    """``present``, ``missing`` or ``unknown`` when inventory cannot run."""
+
     from . import review_stage
 
     try:
@@ -40,15 +70,68 @@ def pytest_status() -> str:
         return "unknown"
 
 
+def _predicates() -> dict[str, Callable[[], bool | str]]:
+    from . import sandbox_egress, seat_host_namespace, seat_jail, seat_uid
+
+    return {
+        "pytest": pytest_status,
+        "bwrap": lambda: os.access("/usr/bin/bwrap", os.X_OK),
+        "setpriv": lambda: os.access("/usr/bin/setpriv", os.X_OK),
+        "nsenter": lambda: os.access("/usr/bin/nsenter", os.X_OK),
+        "egress_isolation": sandbox_egress.egress_isolation_available,
+        "legacy_tiocsti": seat_jail.tiocsti_safe,
+        "subordinate_ids": lambda: (
+            seat_uid.subordinate_range(seat_uid.SUBUID_FILE) is not None
+            and seat_uid.subordinate_range(seat_uid.SUBGID_FILE) is not None
+            and seat_host_namespace.subordinate_ranges_disjoint()
+        ),
+        "machine_id": lambda: seat_jail.host_identity() is not None,
+    }
+
+
 def missing() -> list[str]:
-    """The names of the prerequisites known to be missing (never raises)."""
-    return ["pytest"] if pytest_status() == "missing" else []
+    """Names known to be missing without raising."""
+
+    return [row["name"] for row in check() if row["status"] == "missing"]
 
 
-def check() -> list[dict[str, Any]]:
-    """The prerequisite report `phase-loop doctor` embeds. Metadata-only: no paths."""
-    status = pytest_status()
-    entry: dict[str, Any] = {"name": "pytest", "status": status, "unlocks": _UNLOCKS}
-    if status == "missing":
-        entry["fix"] = PYTEST_FIX
-    return [entry]
+def check(
+    *,
+    deployment: str | None = None,
+    predicates: Mapping[str, Callable[[], bool | str]] | None = None,
+    platform: str | None = None,
+) -> list[dict[str, Any]]:
+    """Return the closed prerequisite rows used by doctor and qualification advice."""
+
+    from . import seat_subject
+
+    deployment = deployment or seat_subject.deployment_kind()
+    platform = sys.platform if platform is None else platform
+    probes = dict(predicates or _predicates())
+    rows: list[dict[str, Any]] = []
+    for name, checklist in CHECKLIST_BY_NAME.items():
+        row: dict[str, Any] = {
+            "name": name,
+            "status": "unknown",
+            "unlocks": _UNLOCKS,
+            "checklist": checklist,
+        }
+        if not platform.startswith("linux"):
+            row["reason"] = "platform_unsupported"
+            rows.append(row)
+            continue
+        try:
+            observed = probes[name]()
+            if observed in {"present", "missing", "unknown"}:
+                row["status"] = observed
+            else:
+                row["status"] = "present" if observed else "missing"
+        except Exception:  # noqa: BLE001 - doctor inventory degrades to unknown
+            row["status"] = "unknown"
+            row["reason"] = "inventory_failed"
+        if row["status"] == "unknown" and "reason" not in row:
+            row["reason"] = "inventory_failed"
+        if row["status"] == "missing":
+            row["fix"] = fix_sentence(name, deployment=deployment)
+        rows.append(row)
+    return rows

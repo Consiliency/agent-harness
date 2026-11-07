@@ -23,6 +23,34 @@ from phase_loop_runtime import doctor
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
+@pytest.fixture(autouse=True)
+def _provider_free_seat_inventory(monkeypatch):
+    monkeypatch.setattr(
+        doctor.seat_jail_prerequisites,
+        "check",
+        lambda: [
+            {
+                "name": "pytest",
+                "status": "present",
+                "unlocks": "seat-jail qualification (jailed review seats)",
+                "checklist": "LA1-RELEASE",
+            }
+        ],
+    )
+    monkeypatch.setattr(doctor, "_seat_cli_qualification", lambda: [])
+    monkeypatch.setattr(
+        doctor,
+        "build_worktree_divergence",
+        lambda _root: {
+            "base_ref": "origin/main",
+            "worktree_count": 0,
+            "max_commits_ahead": 0,
+            "threshold": 20,
+            "verdict": "ok",
+        },
+    )
+
+
 def _schema() -> dict:
     return json.loads(
         (files("phase_loop_runtime") / "schemas" / "phase-loop-doctor.v1.schema.json").read_text()

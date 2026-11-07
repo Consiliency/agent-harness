@@ -97,7 +97,19 @@
     {
       "name": "pytest",
       "status": "present",
-      "unlocks": "seat-jail qualification (jailed Claude review seats)"
-    }
+      "unlocks": "seat-jail qualification (jailed review seats)",
+      "checklist": "LA1-RELEASE"
+    },
+    { "name": "bwrap", "status": "present", "unlocks": "seat-jail qualification (jailed review seats)", "checklist": "LA1-PACKAGES" },
+    { "name": "setpriv", "status": "present", "unlocks": "seat-jail qualification (jailed review seats)", "checklist": "LA1-PACKAGES" },
+    { "name": "nsenter", "status": "present", "unlocks": "seat-jail qualification (jailed review seats)", "checklist": "LA1-PACKAGES" },
+    { "name": "egress_isolation", "status": "present", "unlocks": "seat-jail qualification (jailed review seats)", "checklist": "LA1-PACKAGES" },
+    { "name": "legacy_tiocsti", "status": "present", "unlocks": "seat-jail qualification (jailed review seats)", "checklist": "LA1-TIOCSTI" },
+    { "name": "subordinate_ids", "status": "present", "unlocks": "seat-jail qualification (jailed review seats)", "checklist": "LA1-SUBID" },
+    { "name": "machine_id", "status": "present", "unlocks": "seat-jail qualification (jailed review seats)", "checklist": "LA1-MACHINE-ID" }
+  ],
+  "seat_cli_qualification": [
+    { "leg": "claude", "status": "admits" },
+    { "leg": "gemini", "status": "unknown", "reason": "launch_measurement" }
   ]
 }

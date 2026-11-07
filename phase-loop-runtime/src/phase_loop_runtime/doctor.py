@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from . import repo_validation
+from . import seat_admission
 from . import seat_jail_prerequisites
 from .install_status import _assert_redacted, build_install_status
 
@@ -470,6 +471,19 @@ def _summary(tools: list[dict[str, Any]], bom: list[dict[str, Any]]) -> str:
     )
 
 
+def _seat_cli_qualification() -> list[dict[str, Any]]:
+    rows = []
+    for leg in seat_admission.registered_legs():
+        verdict = seat_admission.verdict(leg, os.environ, execute=False)
+        row: dict[str, Any] = {"leg": leg, "status": verdict.status}
+        for name in ("code", "fix", "reason"):
+            value = getattr(verdict, name)
+            if value is not None:
+                row[name] = value
+        rows.append(row)
+    return rows
+
+
 def build_doctor_report(
     repo: Path,
     *,
@@ -501,8 +515,9 @@ def build_doctor_report(
         # PUSHFLOW: ahead-of-origin divergence aggregate (counts only, no paths).
         "worktree_divergence": build_worktree_divergence(root),
         # agent-harness#1357: what the seat jail's qualification needs from the runtime's own
-        # environment (today: pytest). Status only, with the literal fix when missing.
+        # environment and the provider-independent admission verdicts.
         "seat_jail_prerequisites": seat_jail_prerequisites.check(),
+        "seat_cli_qualification": _seat_cli_qualification(),
     }
     # Metadata-only guarantee: no absolute paths, no secrets. Reuses the same
     # redaction contract as phase-loop-install-status.v1.
@@ -559,6 +574,15 @@ def _print_doctor(report: dict[str, Any]) -> None:
         print("Seat jail prerequisites (needed to qualify jailed review seats):")
         for item in prerequisites:
             print(f"  {item['name']:<10} {item['status']}   → {item['unlocks']}")
+            if item.get("fix"):
+                print(f"    fix: {item['fix']}")
+    qualifications = report.get("seat_cli_qualification")
+    if qualifications:
+        print("")
+        print("Seat CLI qualification:")
+        for item in qualifications:
+            detail = item.get("code") or item.get("reason") or "ready"
+            print(f"  {item['leg']:<10} {item['status']}   → {detail}")
             if item.get("fix"):
                 print(f"    fix: {item['fix']}")
     div = report.get("worktree_divergence")
