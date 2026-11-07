@@ -333,6 +333,7 @@ SL-8 — A3: Managed-release switch-on (gate G-A)
 | SL-docs.3 | docs | SL-docs.2 | `plans/evidence/seat-teamhost/doctor-receipts.json` | A provider-free `phase-loop doctor --json` from the first released runtime that carries this phase, on one team host and one standard host, recorded metadata-only (host classes, never host names). It is supporting evidence; V-C is the proof. |
 | SL-docs.4 | docs | SL-docs.3 | `specs/phase-plans-seats-v1.md`, prior plans | Append `### Post-execution amendments` where a freeze proved wrong. |
 | SL-docs.5 | verify | SL-docs.4 | — | `V-R`, `V-S`. |
+| SL-docs.6 | docs | SL-docs.5 | — | Owner action LA-3, tracked: open an issue in Consiliency/agent-harness for the first post-TEAMHOST Gemini row-window PR, which carries the live agy requalification after SL-3. That PR updates the Gemini row and closes the issue. Its window record's `qualification_keys` equal the live EC-JAILCORE-4 key. TEAMHOST itself still runs no window. |
 
 ### SL-7 — D2: Gemini overlay (gate G-D)
 
