@@ -5070,10 +5070,18 @@ def _frontdoor_target(line: str, provider: str | None) -> Path | None:
     return image
 
 
+def _absolute_search_path(search_path: str) -> str:
+    """The entries of a provider search path that do not depend on the working directory."""
+
+    return os.pathsep.join(
+        item for item in search_path.split(os.pathsep) if item and Path(item).is_absolute()
+    )
+
+
 def _seat_provider_source(command, env):
     name = Path(command).name.lower()
     harness = _PROVIDER_HARNESSES.get(name, name)
-    search_path = _PROVIDER_SEARCH_PATH or env.get("PATH", os.defpath)
+    search_path = _absolute_search_path(_PROVIDER_SEARCH_PATH or env.get("PATH", os.defpath))
     if (not Path(command).is_absolute() and name in {"claude", "agy"}
             and _FRONTDOOR_RELEASES == _seat_subject.MANAGED_RELEASES_ROOT):
         subject_env = dict(env)
@@ -12493,7 +12501,9 @@ def _resolve_claude_executable(env: Mapping[str, str] | None = None) -> Path:
     selected_env = os.environ if env is None else env
     if _PROVIDER_SEARCH_PATH is not None:
         selected_env = {**selected_env, "PATH": _PROVIDER_SEARCH_PATH}
-    found = shutil.which("claude", path=selected_env.get("PATH", os.defpath))
+    found = shutil.which(
+        "claude", path=_absolute_search_path(selected_env.get("PATH", os.defpath))
+    )
     if found is not None and (
         Path(found).name != "claude"
         or _FRONTDOOR_RELEASES != _seat_subject.MANAGED_RELEASES_ROOT

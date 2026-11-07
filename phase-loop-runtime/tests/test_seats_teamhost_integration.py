@@ -381,3 +381,22 @@ def test_jailed_gemini_lease_requires_the_admitted_subject_digest(tmp_path, monk
             credential="none",
         )
     assert closed == [True]
+
+
+def test_provider_lookups_use_only_absolute_path_entries(tmp_path, monkeypatch):
+    work = tmp_path / "work"
+    trusted = tmp_path / "trusted"
+    work.mkdir()
+    trusted.mkdir()
+    for name in ("claude", "codex", "gemini"):
+        for directory in (work, trusted):
+            path = directory / name
+            path.write_bytes(b"#!/bin/sh\nexit 0\n")
+            path.chmod(0o755)
+    monkeypatch.chdir(work)
+    env = {"PATH": os.pathsep.join((".", "", str(trusted)))}
+
+    assert panel._resolve_claude_executable(env) == (trusted / "claude").resolve()
+    for name in ("codex", "gemini"):
+        _harness, source = panel._seat_provider_source(name, env)
+        assert Path(source).resolve() == (trusted / name).resolve()
