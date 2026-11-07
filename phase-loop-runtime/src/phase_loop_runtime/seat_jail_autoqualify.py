@@ -235,15 +235,16 @@ def classify_failure(exc: BaseException) -> str:
     return "error"
 
 
-def _default_qualify(leg: str) -> Mapping[str, object]:
+def _default_qualify(leg: str, qualification_key=None) -> Mapping[str, object]:
     from . import seat_jail_qualification
 
-    return seat_jail_qualification.qualify(leg)
+    return seat_jail_qualification.qualify(leg, qualification_key=qualification_key)
 
 
 def ensure_qualified(
     leg: str, *,
-    verdict: Callable[[str], tuple[bool, str]] | None = None,
+    qualification_key=None,
+    verdict: Callable[[object], tuple[bool, str]] | None = None,
     qualify: Callable[[str], Mapping[str, object]] | None = None,
     now: Callable[[], float] | None = None,
     retry_after_s: float | None = None,
@@ -254,8 +255,12 @@ def ensure_qualified(
     qualify = qualify or _default_qualify
     now = now or time.time
     retry_after = retry_s() if retry_after_s is None else retry_after_s
-    digest = seat_jail.jail_profile_digest(leg)
-    passed, why = verdict(digest)
+    from .seat_route_contract import key_digest
+
+    digest = (key_digest(qualification_key) if qualification_key is not None
+              else seat_jail.jail_profile_digest(leg))
+    verdict_input = qualification_key if qualification_key is not None else digest
+    passed, why = verdict(verdict_input)
     if passed:
         return _remember(digest, Outcome(QUALIFIED))
     if why.startswith(("store_unsafe:", "error:")):
@@ -274,17 +279,18 @@ def ensure_qualified(
         return _remember(digest, Outcome(FAILED, "error"))
     try:
         # Another process may have finished while this one waited.
-        if verdict(digest)[0]:
+        if verdict(verdict_input)[0]:
             return _remember(digest, Outcome(QUALIFIED_NOW))
         cached = cached_failure(digest, now=now(), retry_after_s=retry_after)
         if cached is not None:
             return _remember(digest, Outcome(FAILED, cached))
         try:
-            evidence = qualify(leg)
+            evidence = (_default_qualify(leg, qualification_key)
+                        if qualify is _default_qualify else qualify(leg))
             reason = None if evidence.get("result") == "pass" else "falsifiers_failed"
         except Exception as exc:  # every failure is typed; the seat is degraded, not run
             reason = classify_failure(exc)
-        if reason is None and verdict(digest)[0]:
+        if reason is None and verdict(verdict_input)[0]:
             return _remember(digest, Outcome(QUALIFIED_NOW))
         reason = reason or "error"
         _record_failure(digest, reason, now())

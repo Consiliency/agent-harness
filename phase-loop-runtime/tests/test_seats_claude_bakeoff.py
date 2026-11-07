@@ -358,15 +358,19 @@ RUNTIME = "phase-loop-runtime/src/phase_loop_runtime"
 
 
 def _runtime_head(repo: Path, tmp_path: Path, *, jail_source: bytes | None = None) -> tuple[str, Path]:
-    """A commit carrying this runtime's own ``seat_jail.py`` (or ``jail_source``) and a
-    package ``__init__`` that, if anything ever ran it, would write a marker file."""
+    """A commit carrying this runtime's declared jail-digest sources (with an optional
+    ``seat_jail.py`` replacement) and a package ``__init__`` that would write a marker if
+    any code from the revision ever ran."""
     marker = tmp_path / "executed.marker"
     package = repo / RUNTIME
     package.mkdir(parents=True, exist_ok=True)
     (package / "__init__.py").write_text(
         f"from pathlib import Path\nPath({str(marker)!r}).write_text('ran')\n")
-    own = Path(bk.__file__).with_name("seat_jail.py").read_bytes()
-    (package / "seat_jail.py").write_bytes(jail_source if jail_source is not None else own)
+    own = Path(bk.__file__).resolve().parent
+    for name in bk.JAIL_PROFILE_SOURCES:
+        source = jail_source if name == "seat_jail.py" and jail_source is not None else (
+            own / name).read_bytes()
+        (package / name).write_bytes(source)
     _git(repo, "add", "-A")
     _git(repo, "-c", "commit.gpgsign=false", "commit", "-qm", "runtime")
     return _head(repo), marker

@@ -665,7 +665,8 @@ def test_seats_firstseat_exec_record_window_launch_uses_fresh_seat_directory(
         yield 2
 
     @contextmanager
-    def start_proxy(*, refuse_all=False):
+    def start_proxy(*, allowlist_id, refuse_all=False):
+        assert allowlist_id == "gemini"
         yield Proxy(socket="proxy.sock", allowlist_sha256="b" * 64)
 
     @contextmanager
@@ -819,7 +820,8 @@ def test_seats_firstseat_exec_record_window_board_uses_fresh_gemini_seat(
         yield 2
 
     @contextmanager
-    def start_proxy(*, refuse_all=False):
+    def start_proxy(*, allowlist_id, refuse_all=False):
+        assert allowlist_id == "gemini"
         yield Proxy(socket="proxy.sock", allowlist_sha256="b" * 64)
 
     @contextmanager

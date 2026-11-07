@@ -46,7 +46,7 @@ from enum import Enum
 from functools import lru_cache, wraps
 from hashlib import sha256
 from pathlib import Path
-from types import MappingProxyType
+from types import MappingProxyType, SimpleNamespace
 from typing import TYPE_CHECKING, Callable, Literal, Mapping, Sequence, TypeVar, cast
 
 if TYPE_CHECKING:
@@ -146,7 +146,10 @@ from . import seat_subject as _seat_subject
 from . import seat_tool_evidence as _seat_tool_evidence
 from . import seat_uid as _seat_uid
 from . import seat_preflight as _seat_preflight
+from . import seat_route as _seat_route
+from . import seat_profiles as _seat_profiles
 from . import claude_seat_transport as _claude_seat_transport
+from . import seat_route_contract as _seat_route_contract
 from .executable_dependency import ExecutableDependencyError
 from .advisor_board.research import (
     RESEARCH_CAPABLE_LANES,
@@ -2080,16 +2083,24 @@ def _publish_seat_preflight(
     if not pointer_brief:
         return ()
     brokered_route = mode == "review" and review_authorization is not None
-    jailed_by_leg: dict[str, bool] = {}
+    jailed_by_leg: dict[str, list[bool]] = {}
+    for seat in board.seats:
+        leg = (getattr(seat, "harness", None) or "").lower()
+        key = str(getattr(seat, "seat_key", "") or leg)
+        brokered = (brokered_route
+                    and not _has_injected_review_execution_seam(leg=leg))
+        if leg == "claude" and seat.model is not None and _under_claude_code(base_env):
+            continue
+        jailed_by_leg.setdefault(leg, []).append(_seat_jailed_at_launch(
+            leg, review_authorization, brokered=brokered, seat_key=key, env=base_env,
+            timeout_s=(timeouts_by_leg or {}).get(leg),
+        ))
 
     def _usable_by(leg: str | None, brokered: bool) -> bool:
         # agent-harness#1132: a seat whose launch takes the jailed route has its tools in
         # the staged tree, so it CAN read the brief's files.
-        if leg is not None and leg not in jailed_by_leg:
-            jailed_by_leg[leg] = _seat_jailed_at_launch(
-                leg, review_authorization, brokered=brokered,
-                timeout_s=(timeouts_by_leg or {}).get(leg))
-        return sandbox_usable_by(leg, brokered, jailed=bool(leg and jailed_by_leg[leg]))
+        jailed = bool(leg and jailed_by_leg.get(leg) and all(jailed_by_leg[leg]))
+        return sandbox_usable_by(leg, brokered, jailed=jailed)
 
     notices = _seat_preflight.pointer_brief_preflight(
         board.seats,
@@ -2146,7 +2157,8 @@ def _seat_launch_modes(
     qualified_now: dict[str, bool] = {}
     # Per board: each leg's route, decided once (a first-use qualification that timed out
     # is not cached, so it must not be waited for again by every seat of that leg).
-    routes: dict[str, tuple] = {}
+    routes: dict[tuple[str, str], tuple] = {}
+    native_rung = _NativeFillAdapter(board, base_env)
 
     def _claude_credential(leg: str) -> tuple:
         # Read-only, against the SAME margin the launch will use (`_claude_seat_login_margin_s`,
@@ -2186,7 +2198,14 @@ def _seat_launch_modes(
         key = str(getattr(seat, "seat_key", "") or leg)
 
         def _coded(kind: str, code: str, source: str | None = None) -> "_seat_preflight.SeatMode":
-            _what, why, fix = _seat_jail.NOTICES[code]
+            if code in _seat_jail.NOTICES:
+                _what, why, fix = _seat_jail.NOTICES[code]
+            elif code in _seat_route_contract.CODES:
+                _classification, _what, why, fix = _seat_route_contract.CODES[code]
+            elif code in _claude_seat_transport.CODES:
+                _classification, _what, why, fix = _claude_seat_transport.CODES[code]
+            else:
+                _what, why, fix = "seat unavailable", code, "report the typed code"
             return sp.SeatMode(key, leg, kind, code, why, fix, source, position)
 
         if leg == "claude" and seat.model is not None and _under_claude_code(base_env):
@@ -2198,9 +2217,27 @@ def _seat_launch_modes(
                                      "not a brokered review launch: no seat sandbox applies",
                                      "", None, position))
             continue
-        if leg not in routes:
-            routes[leg] = _seat_route_for_spawn(leg, review_authorization, eligible=True)
-        route, _notices, refusal = routes[leg]
+        route_key = (leg, key)
+        if route_key not in routes:
+            routes[route_key] = _seat_route_for_spawn(
+                leg,
+                review_authorization,
+                eligible=True,
+                seat_key=key,
+                env=base_env,
+                native=native_rung,
+                cache_decision=True,
+            )
+        route, _notices, refusal = routes[route_key]
+        resolved = getattr(route, "decision", None)
+        if resolved is not None and resolved.mode in (sp.MODE_NATIVE, sp.MODE_REMOTE):
+            code = resolved.code or (
+                "seat_native_fill_unavailable" if resolved.mode == sp.MODE_NATIVE
+                else "seat_remote_rung_inactive"
+            )
+            rendered = _coded(resolved.mode, code)
+            modes.append(replace(rendered, also=tuple(resolved.also)))
+            continue
         if route is None and refusal is None:
             if getattr(review_authorization, "staged_tree_sha256", None) is None:
                 # Only an advisory run reaches this (agent-harness#802). The agy qualification
@@ -2214,7 +2251,10 @@ def _seat_launch_modes(
                                          "this route has no file tools", "", None, position))
         elif refusal == "seat_jail_qualification_failed":
             # Plan amendments A2 + A3b: degraded and not run, with the typed reason and its fix.
-            outcome = _seat_jail_autoqualify.recent_outcome(_seat_jail.jail_profile_digest(leg))
+            profile = _seat_profiles.profile_for(leg)
+            outcome = (_seat_jail_autoqualify.recent_outcome(
+                _seat_jail.jail_profile_digest(leg)
+            ) if profile is not None else None)
             reason = outcome.reason if outcome is not None and outcome.reason else "error"
             _what, why, _fix = _seat_jail.NOTICES[refusal]
             modes.append(sp.SeatMode(key, leg, sp.MODE_DEGRADED, refusal,
@@ -2241,10 +2281,12 @@ def _seat_launch_modes(
                     continue
             kind, code, source, left, also = (_claude_credential(leg) if leg == "claude"
                                               else (sp.MODE_JAILED, None, None, None, ()))
-            if leg not in qualified_now:
+            profile = _seat_profiles.profile_for(leg)
+            if leg not in qualified_now and profile is not None:
                 outcome = _seat_jail_autoqualify.recent_outcome(_seat_jail.jail_profile_digest(leg))
                 qualified_now[leg] = (outcome is not None
                                       and outcome.state == _seat_jail_autoqualify.QUALIFIED_NOW)
+            qualified_now.setdefault(leg, False)
             if code == _CLAUDE_LOGIN_AWAITING:
                 _what, why, fix = _seat_jail.NOTICES[code]
                 modes.append(sp.SeatMode(
@@ -2273,8 +2315,11 @@ def _seat_launch_modes(
     # second refusal code.
     # A seat refused before any credential read (an unready or unadmitted `sdk`) reads none
     # here either.
+    precredential = {"panel_claude_route_invalid", "panel_claude_transport_not_admitted"}
     ignored = _ignored_override("claude") if any(
-        m.leg == "claude" and m.position not in sdk_refused for m in modes) else ()
+        m.leg == "claude" and m.position not in sdk_refused and m.code not in precredential
+        for m in modes
+    ) else ()
     if ignored:
         modes = [replace(m, also=(*m.also, *ignored))
                  if (m.leg == "claude" and m.mode in (sp.MODE_JAILED, sp.MODE_DEGRADED)
@@ -3297,7 +3342,7 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "network namespace did not come up; launch is UNISOLATED",
     "the namespace came up but cannot resolve a hostname; a seat here could reach raw IPs "
     "and nothing else (round-6 failure mode)",
-})
+}) | frozenset(_seat_route_contract.CODES)
 # Closed token sets for the parametrized harness codes (agent-harness#1102 r8: every field is
 # enumerated, an integer, or validated by its producer against the run's own values).
 _REGISTRY_HARNESSES: tuple[str, ...] = ("claude", "codex", "gemini", "grok", "opencode", "pi", "cursor")
@@ -4599,7 +4644,12 @@ def _require_qualified_jail(jail: "_seat_jail.SeatJail",
     The route gate admitted a digest earlier; if the host layout (or anything else) changed
     in between, the built jail's digest differs and has no pass -- refused, never launched."""
     _require_canonical_jail(jail)
-    refusal = _pass_refusal(_seat_jail.actual_profile_digest(jail), pass_recorded)
+    actual = _seat_jail.actual_profile_digest(jail)
+    key = getattr(jail, "qualification_key", None)
+    if key is not None and getattr(key, "profile_digest", None) != actual:
+        raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("identity"),
+                                            "jail is not the route's qualified profile")
+    refusal = _pass_refusal(key if key is not None else actual, pass_recorded)
     if refusal is not None:
         code, reason = refusal
         raise _seat_jail.SeatSandboxRefused(
@@ -6496,9 +6546,15 @@ def _jailed_gemini_command(model: str) -> list[str]:
     the jail, and no ``--add-dir`` -- the tree is read by path, never made a workspace, so no
     workspace file of the tree is loaded (P3). ``--sandbox`` is absent: agy's own sandbox
     needs a nested namespace, which the jail's filter refuses."""
+    profile = _seat_profiles.profile_for("gemini")
+    if profile is None:
+        raise ValueError("the Gemini jail profile is unavailable")
+    provider = profile.argv(_seat_route_contract.ArgvInputs(
+        provider_argv0=f"{_seat_jail.SEAT_BIN}/gemini", model=model,
+    ))
     return [
         "/usr/bin/env", f"--chdir={_seat_jail.SEAT_GEMINI_WORKSPACE}",
-        f"{_seat_jail.SEAT_BIN}/gemini", "--model", model, "--dangerously-skip-permissions",
+        *provider,
         "--disable-slash-commands", "--input-format", "stream-json",
         "--output-format", "stream-json", "--print=", "--print-timeout", "0",
     ]
@@ -7897,8 +7953,17 @@ def _broker_claude_tui_command(
     if sandboxed is not None:
         if sandboxed.leg != "claude" or not sandboxed.provider_argv0:
             raise ValueError("a jailed claude argv needs a claude seat jail")
+        profile = _seat_profiles.profile_for(sandboxed.leg)
+        if profile is None:
+            raise ValueError("a jailed claude argv needs a registered profile")
+        provider = profile.argv(_seat_route_contract.ArgvInputs(
+            provider_argv0=sandboxed.provider_argv0,
+            model=model or HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["claude"],
+            effort=effort,
+            transport="tui",
+        ))
         jailed = [
-            sandboxed.provider_argv0, "--ax-screen-reader", "--safe-mode", "--no-chrome",
+            *provider,
             "--disable-slash-commands",
             "--model", model or HARDEN_SUPPORTED_SUBSCRIPTION_ROUTES["claude"],
             "--session-id", session_id, *effort_args,
@@ -12466,6 +12531,17 @@ def _cleanup_jailed_seat(
             _seat_jail.close_jail_fds(jail)
         except BaseException as exc:
             failures.append(exc)
+    dependencies = {
+        id(dependency): dependency
+        for jail in (seat.jail, seat.probe_jail)
+        if (dependency := getattr(jail, "dependency", None)) is not None
+        and getattr(dependency, "_jailcore_owned", False)
+    }
+    for dependency in dependencies.values():
+        try:
+            dependency.close()
+        except BaseException as exc:
+            failures.append(exc)
     for parent in (seat.review_dir, seat.seat_dir, seat.seat_dir / _JAIL_PROBE_DIRNAME):
         try:
             retained.extend(
@@ -12629,6 +12705,44 @@ def _validate_jail_dependency(leg, dependency):
         dependency.revalidate()
 
 
+def _resolved_jail_subject(leg: str, env: Mapping[str, str]):
+    """Resolve TEAMHOST's subject and admit its declared profile projection."""
+    from .executable_dependency_startup import current_dependency_for_provider
+    from .seat_qualification_key import admit_profile_projection
+    from .seat_subject import open_managed_authority, resolve_seat_subject
+
+    profile = _seat_profiles.profile_for(leg)
+    if profile is None:
+        raise FileNotFoundError("seat_profile_unregistered")
+    subject = resolve_seat_subject(leg, env)
+    dependency = current_dependency_for_provider(leg)
+    if dependency is not None:
+        return subject, admit_profile_projection(profile, dependency)
+    if subject.source != "managed_release":
+        return subject, admit_profile_projection(profile, None)
+    descriptor, expected = open_managed_authority(subject)
+    try:
+        dependency = admit_profile_projection(profile, SimpleNamespace(
+            requirement=subject.requirement,
+            borrowed_authority_fd=descriptor,
+            expected_authority_sha256=expected,
+        ))
+    finally:
+        os.close(descriptor)
+    if dependency is not None:
+        setattr(dependency, "_jailcore_owned", True)
+    return subject, dependency
+
+
+def _bind_route_qualification(seat: "_JailedSeat", route: object) -> "_JailedSeat":
+    """Carry the route decision's qualification key onto the jails it admitted."""
+    key = getattr(getattr(route, "decision", None), "qualification_key", None)
+    if key is not None:
+        seat.jail = replace(seat.jail, qualification_key=key)
+        seat.probe_jail = replace(seat.probe_jail, qualification_key=key)
+    return seat
+
+
 def _prepare_jailed_claude(
     review_dir: Path, seat_dir: Path, review_authorization: "ReviewIsolationAuthorization",
     seat_id: int, holder_pid: int, prompt_parts: tuple[str, str],
@@ -12656,14 +12770,19 @@ def _prepare_jailed_claude(
     elif not _claude_seat_transport.is_admitted(transport):
         raise _claude_seat_transport.TransportRefused(_claude_seat_transport.NOT_ADMITTED)
     artifact, instructions = prompt_parts
-    from .executable_dependency_startup import current_dependency_for_provider
-
     if transport == "sdk" and sdk_prepared is None:
         # IF-0-CLAUDE-3: worker readiness and provenance, before the leg's credential.
         sdk_prepared = _claude_sdk_preflight()
-    dependency = current_dependency_for_provider("claude")
+    subject_refusal = None
+    try:
+        subject, dependency = _resolved_jail_subject("claude", os.environ)
+    except (FileNotFoundError, ExecutableDependencyError):
+        # No admissible subject: refused typed at the jail build, after the credential
+        # step, exactly where an unresolvable executable has always been refused.
+        subject, dependency, subject_refusal = None, None, "jail_build"
     _validate_jail_dependency("claude", dependency)
-    executable = Path(dependency.subject_source) if dependency is not None else None
+    executable = (Path(dependency.subject_source) if dependency is not None
+                  else None if subject is None else subject.subject_path)
     tree = review_dir / _seat_jail.HOST_TREE_DIRNAME
     try:
         seat_dir.mkdir(mode=0o700)
@@ -12692,7 +12811,8 @@ def _prepare_jailed_claude(
         # the credential's notices as siblings of its one refusal code.
         try:
             if executable is None:
-                executable = _resolve_claude_executable()
+                raise _seat_jail.SeatSandboxRefused(
+                    _seat_jail.refused(subject_refusal or "identity"))
             token = credential.token
             jail = _build_jail_with_owned_inputs(
                 "claude", seat_dir, executable, tree=tree,
@@ -12744,6 +12864,8 @@ def _prepare_jailed_claude(
                 shutil.rmtree(seat_dir)
             except BaseException as cleanup:
                 primary.add_note(f"jail preparation cleanup failed: {cleanup}")
+            if getattr(dependency, "_jailcore_owned", False):
+                dependency.close()
         raise
 
 
@@ -13104,22 +13226,21 @@ def _prepare_jailed_gemini(
     margin of life, the config directory and CA certificate, the jail and its probe jail.
     The first failure raises its one code and nothing has launched."""
     artifact, instructions = prompt_parts
-    from .executable_dependency_startup import current_dependency_for_provider
-
     if credential not in {"none", "live", "expired"}:
         raise ValueError("contract_bug")
-    dependency = current_dependency_for_provider("gemini")
+    try:
+        subject, dependency = _resolved_jail_subject(
+            "gemini", _broker_subscription_env(env),
+        )
+    except (FileNotFoundError, ExecutableDependencyError) as exc:
+        raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build")) from exc
     _validate_jail_dependency("gemini", dependency)
     subscription_env = _broker_subscription_env(env)
-    if dependency is None:
-        subject = integrated_seat_subject("gemini", subscription_env)
-        if subject.subject_path is None:
-            raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build"))
-        subject_path = subject.subject_path
-    else:
-        subject_path = Path(dependency.subject_source)
+    subject_path = (Path(dependency.subject_source) if dependency is not None
+                    else subject.subject_path)
+    if subject_path is None:
+        raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("jail_build"))
     if dependency is not None and credential != "none":
-        from .executable_dependency import ExecutableDependencyError
         home = Path(subscription_env.get("HOME", str(Path.home())))
         if not _gemini_credential_fresh(home):
             raise ExecutableDependencyError("dependency_route_unwired", "Gemini host credential refresh")
@@ -13136,7 +13257,7 @@ def _prepare_jailed_gemini(
                 if admission.image.sha256 != dependency.subject_sha256:
                     raise ValueError("gemini_heartbeat_capability_unavailable")
                 executable = Path(dependency.subject_source)
-            elif admission.path is None:
+            elif admission.path is None or subject.subject_path is None:
                 raise ValueError("gemini_heartbeat_capability_unavailable")
             else:
                 executable = Path(os.path.realpath(admission.path))
@@ -13213,6 +13334,8 @@ def _prepare_jailed_gemini(
                 shutil.rmtree(seat_dir)
             except BaseException as cleanup:
                 primary.add_note(f"jail preparation cleanup failed: {cleanup}")
+            if getattr(dependency, "_jailcore_owned", False):
+                dependency.close()
         raise
 
 
@@ -13406,6 +13529,7 @@ def _open_window_launch(spec: WindowLaunchSpec):
             _seat_uid.lease_seat_id(_seat_uid.seat_id_count(uids, gids))
         )
         proxy = stack.enter_context(_seat_egress_proxy.start_proxy(
+            allowlist_id="gemini",
             refuse_all=spec.kind in {"help", "plugin_validation", *_WINDOW_CONTROL_KINDS}
             and spec.kind not in _WINDOW_CREDENTIAL_KINDS,
         ))
@@ -15623,7 +15747,24 @@ class _BrokeredSpawnResult(tuple):
         return result
 
 
-def _seat_route_for_spawn(
+_JAILCORE_ROUTE_CACHE: dict[tuple[int, str, str], _seat_jail.SeatRoute] = {}
+_JAILCORE_ROUTE_CACHE_LOCK = threading.Lock()
+
+
+class _NativeFillAdapter:
+    """The resolver's W3 adapter over the already-established native-fill routing."""
+
+    def __init__(self, board: Board, env: Mapping[str, str] | None) -> None:
+        self._seats = frozenset(
+            (str(seat.seat_key), (seat.harness or "").lower())
+            for seat in _native_fillable_seats(board, env)
+        )
+
+    def offer(self, seat_key: str, leg: str) -> bool:
+        return (seat_key, leg) in self._seats
+
+
+def _legacy_seat_route_for_spawn(
     leg: str, review_authorization: "ReviewIsolationAuthorization | None", *, eligible: bool,
     decide: "Callable[..., _seat_jail.SeatRoute | None] | None" = None,
     pass_recorded: "Callable[[str], bool] | None" = None,
@@ -15689,6 +15830,123 @@ def _seat_route_for_spawn(
     return route, [], "seat_jail_qualification_failed"
 
 
+def _release_seat_route(route: "_seat_jail.SeatRoute | None") -> None:
+    lease = getattr(route, "lease", None)
+    if lease is not None:
+        lease.release()
+
+
+def _release_cached_routes(
+    review_authorization: "ReviewIsolationAuthorization | None",
+) -> None:
+    if review_authorization is None:
+        return
+    authority = id(review_authorization)
+    with _JAILCORE_ROUTE_CACHE_LOCK:
+        routes = [route for key, route in list(_JAILCORE_ROUTE_CACHE.items())
+                  if key[0] == authority]
+        for key in [key for key in _JAILCORE_ROUTE_CACHE if key[0] == authority]:
+            _JAILCORE_ROUTE_CACHE.pop(key, None)
+    for route in routes:
+        _release_seat_route(route)
+
+
+def _seat_route_for_spawn(
+    leg: str,
+    review_authorization: "ReviewIsolationAuthorization | None",
+    *,
+    eligible: bool,
+    decide: "Callable[..., _seat_jail.SeatRoute | None] | None" = None,
+    pass_recorded: "Callable[[str], bool] | None" = None,
+    qualify_on_first_use: "Callable[[str], _seat_jail_autoqualify.Outcome] | None" = None,
+    seat_key: str | None = None,
+    env: Mapping[str, str] | None = None,
+    native=None,
+    cache_decision: bool = False,
+) -> "tuple[_seat_jail.SeatRoute | None, list[str], str | None]":
+    """Adapt the JAILCORE decision to the retained launch tuple surface.
+
+    Explicit legacy seams stay available to the pre-JAILCORE regression suite.  Production
+    calls always use one cached resolver decision for the published mode and the launch.
+    """
+    if decide is not None or pass_recorded is not None or qualify_on_first_use is not None:
+        return _legacy_seat_route_for_spawn(
+            leg,
+            review_authorization,
+            eligible=eligible,
+            decide=decide,
+            pass_recorded=pass_recorded,
+            qualify_on_first_use=qualify_on_first_use,
+        )
+    if not eligible:
+        return None, [], None
+    key = (id(review_authorization), leg, seat_key or leg)
+    with _JAILCORE_ROUTE_CACHE_LOCK:
+        cached = (_JAILCORE_ROUTE_CACHE.get(key) if cache_decision
+                  else _JAILCORE_ROUTE_CACHE.pop(key, None))
+    if cached is not None:
+        decision = cached.decision
+        route = cached
+    else:
+        run_kind = (
+            "qualification_candidate" if _measuring_qualification_candidate()
+            else "advisory_document" if _advisory_document_run(review_authorization)
+            else "review"
+        )
+        host_class = os.environ.get("PHASE_LOOP_SEAT_HOST_CLASS", "standard")
+        if host_class not in {"team", "standard"}:
+            host_class = "standard"
+        decision = _seat_route.resolve(
+            _seat_route_contract.RouteRequest(
+                leg=leg,
+                seat_key=seat_key or leg,
+                host_class=host_class,
+                run_kind=run_kind,
+                staged_tree_approved=(
+                    getattr(review_authorization, "staged_tree_sha256", None) is not None
+                ),
+                env=dict(env or os.environ),
+            ),
+            policy=_seat_route.load_route_policy(),
+            remote=_seat_route.INACTIVE_REMOTE_RUNG,
+            native=native or _seat_route.NO_NATIVE_FILL,
+            capacity=_seat_uid.SeatIdCapacity(),
+        )
+        route = _seat_jail.SeatRoute(
+            decision.mode == _seat_preflight.MODE_JAILED,
+            decision.code,
+            lease=decision.lease,
+            decision=decision,
+        )
+        if cache_decision:
+            with _JAILCORE_ROUTE_CACHE_LOCK:
+                previous = _JAILCORE_ROUTE_CACHE.pop(key, None)
+                _JAILCORE_ROUTE_CACHE[key] = route
+            _release_seat_route(previous)
+    assert decision is not None
+    notices = list(decision.also)
+    if decision.mode == _seat_preflight.MODE_JAILED:
+        return route, notices, None
+    if decision.mode == _seat_preflight.MODE_UNCONFINED:
+        return None, [*notices, *(() if decision.code is None else (decision.code,))], None
+    if decision.mode in {_seat_preflight.MODE_NATIVE, _seat_preflight.MODE_REMOTE}:
+        window_data = _seat_profiles.window_data_for(decision.vendor)
+        if (decision.mode == _seat_preflight.MODE_NATIVE
+                and _measuring_qualification_candidate()
+                and window_data is not None and window_data.leg == leg
+                and decision.code == window_data.qualification_candidate_code):
+            # The qualification worker's measured leg keeps its current route.
+            return route, [*notices, decision.code], None
+        # This process has no placement consumer for a selected later rung.  Keep the
+        # resolver's decision on the published mode line, but refuse the local launch with
+        # the established neutral confinement code.  A route decision is never permission
+        # to run that seat through the ordinary local provider branch.
+        return route, notices, _seat_jail.refused("identity")
+    if decision.mode == _seat_preflight.MODE_DEGRADED:
+        return route, notices, decision.code
+    return route, notices, decision.code
+
+
 def _advisory_document_run(review_authorization: object) -> bool:
     """Is this authorization bound to the advisory contract (agent-harness#802)? Its
     instructions digest is a sealed field of the authorization."""
@@ -15715,13 +15973,18 @@ def _ignored_override(leg: str) -> tuple[str, ...]:
 
 
 def _seat_jailed_at_launch(leg: str, review_authorization: "ReviewIsolationAuthorization | None",
-                           *, brokered: bool, timeout_s: int | None = None) -> bool:
+                           *, brokered: bool, seat_key: str | None = None,
+                           env: Mapping[str, str] | None = None,
+                           timeout_s: int | None = None) -> bool:
     """Will this seat's production brokered launch take the jailed route? The same J7
     decision and EC-EXECFIND-2 gate ``_default_spawn`` applies; a jail that would be refused
     is not jailed (that seat does not launch at all)."""
     if not brokered:
         return False
-    route, _notices, refusal = _seat_route_for_spawn(leg, review_authorization, eligible=True)
+    route, _notices, refusal = _seat_route_for_spawn(
+        leg, review_authorization, eligible=True, seat_key=seat_key, env=env,
+        cache_decision=True,
+    )
     if route is None or not route.jailed or refusal is not None:
         return False
     # Plan amendment A3/A3b: a short login with no wait allowed does not run. (With a wait,
@@ -15926,8 +16189,14 @@ def _default_spawn(
             and not (leg == "claude" and model is not None and _under_claude_code(env))
             and agy_capture is None and research_seat is None
         ),
+        seat_key=seat_key,
+        env=env,
     )
     if seat_refusal is not None:
+        if leg == "claude" and seat_refusal in {
+            "panel_claude_route_invalid", "panel_claude_transport_not_admitted",
+        }:
+            _republish_jailed_claude_mode(seat_refusal)
         if base is not None:
             shutil.rmtree(base, ignore_errors=True)
         return _BrokeredSpawnResult("DEGRADED", "", _HarnessCode(seat_refusal),
@@ -15946,6 +16215,7 @@ def _default_spawn(
             _republish_jailed_claude_mode(transport_refusal)
             if base is not None:
                 shutil.rmtree(base, ignore_errors=True)
+            _release_seat_route(seat_route)
             return _BrokeredSpawnResult("DEGRADED", "", _HarnessCode(transport_refusal),
                                         seat_notices=_ignored_override(leg))
     # IF-0-CLAUDE-3: an admitted `sdk` runs its worker preflight here, before the login wait
@@ -15961,6 +16231,7 @@ def _default_spawn(
             _republish_jailed_claude_mode(exc.code)
             if base is not None:
                 shutil.rmtree(base, ignore_errors=True)
+            _release_seat_route(seat_route)
             # No credential store is read for a seat whose worker is not ready.
             notices = ((exc.code,) if exc.code in _claude_seat_transport.CODES else ())
             return _BrokeredSpawnResult("DEGRADED", "", _HarnessCode(exc.code),
@@ -15976,6 +16247,7 @@ def _default_spawn(
         except BaseException as exc:
             if base is not None:
                 shutil.rmtree(base, ignore_errors=True)
+            _release_seat_route(seat_route)
             if isinstance(exc, _seat_credentials.LoginWaitCancelled):
                 raise _ReviewOperationCancelled("review_operation_cancelled") from exc
             raise
@@ -15991,6 +16263,7 @@ def _default_spawn(
             _republish_jailed_claude_mode(code)
             if base is not None:
                 shutil.rmtree(base, ignore_errors=True)
+            _release_seat_route(seat_route)
             return _BrokeredSpawnResult("DEGRADED", "", _HarnessCode(code),
                                         seat_notices=(code, *_ignored_override(leg)))
         elif login_wait.outcome == _seat_credentials.LOGIN_REFRESHED:
@@ -16004,6 +16277,8 @@ def _default_spawn(
     # `try` so the `finally` releases whatever exists, however the leg exits.
     placement: "_sandbox_placement.LegPlacement | None" = None
     egress_stack = contextlib.ExitStack()
+    if jailed:
+        egress_stack.callback(_release_seat_route, seat_route)
     gemini_egress: "_seat_egress_proxy.SeatEgressProxy | None" = None
     broker: ParentUnixBroker | None = None
     quiescence_failed = False
@@ -16137,21 +16412,33 @@ def _default_spawn(
             if jailed:
                 # D8: lease a seat id for the life of the leg, then hold the UNMAPPED
                 # holder variant that the parent maps onto the subordinate range.
-                uids = _seat_uid.subordinate_range(_seat_uid.SUBUID_FILE)
-                gids = _seat_uid.subordinate_range(_seat_uid.SUBGID_FILE)
-                if uids is None or gids is None:
-                    raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("namespace"))
-                seat_id = egress_stack.enter_context(
-                    _seat_uid.lease_seat_id(_seat_uid.seat_id_count(uids, gids)))
-            if jailed and leg == "gemini":
-                # agent-harness#1170: the seat's only way out is this proxy, run on the host
-                # for the life of the leg; its namespace has no uplink.
+                lease = getattr(seat_route, "lease", None)
+                if lease is None:
+                    # Compatibility for injected legacy route seams. Production resolver
+                    # decisions reserve at L9 and must always carry their held lease.
+                    if getattr(seat_route, "decision", None) is not None:
+                        raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("namespace"))
+                    uids = _seat_uid.subordinate_range(_seat_uid.SUBUID_FILE)
+                    gids = _seat_uid.subordinate_range(_seat_uid.SUBGID_FILE)
+                    if uids is None or gids is None:
+                        raise _seat_jail.SeatSandboxRefused(_seat_jail.refused("namespace"))
+                    seat_id = egress_stack.enter_context(
+                        _seat_uid.lease_seat_id(_seat_uid.seat_id_count(uids, gids))
+                    )
+                else:
+                    seat_id = lease.seat_id
+            profile = _seat_profiles.profile_for(leg) if jailed else None
+            if profile is not None and profile.allowlist_id is not None:
+                # One allowlisting proxy and token per seat.  The namespace has no other
+                # uplink, and the key was bound to this allowlist's content digest at L7.
                 try:
-                    gemini_egress = egress_stack.enter_context(_seat_egress_proxy.start_proxy())
+                    gemini_egress = egress_stack.enter_context(
+                        _seat_egress_proxy.start_proxy(allowlist_id=profile.allowlist_id)
+                    )
                 except _seat_egress_proxy.EgressLayerUnavailable as exc:
                     logging.getLogger(__name__).warning(
-                        "seat gemini: egress layer unavailable (%s)", exc)
-                    raise _seat_jail.SeatSandboxRefused("gemini_seat_egress_unavailable") from exc
+                        "seat %s: egress layer unavailable (%s)", leg, exc)
+                    raise _seat_jail.SeatSandboxRefused(exc.code) from exc
             egress_ctx = _sandbox_egress.isolated_network(
                 # Outlive the leg: the namespace must not expire under a long review.
                 timeout_s=None if review_monitor is not None else float(_LEG_TIMEOUT_MAX_S) + 300.0,
@@ -16351,10 +16638,15 @@ def _default_spawn(
                                 timeout_s=timeout_s, transport=claude_transport,
                                 sdk_prepared=sdk_prepared,
                             )
+                            seat = _bind_route_qualification(seat, seat_route)
                         except _seat_jail.SeatSandboxRefused as exc:
                             leg_detail = _LegFailure(template=exc.code)
                             seat_notices.append(exc.code)
                             seat_notices.extend(exc.also)
+                            seat_notices.extend(
+                                notice for notice in _ignored_override(leg)
+                                if notice not in seat_notices
+                            )
                             return "DEGRADED", ""
                         except _claude_seat_transport.TransportRefused as exc:
                             leg_detail = _LegFailure(template=exc.code)
@@ -16411,6 +16703,7 @@ def _default_spawn(
                                 (staged_bundle, staged_instructions), gemini_egress, env=env,
                                 review_monitor=review_monitor, quiescence_latch=broker_latch,
                             )
+                            seat = _bind_route_qualification(seat, seat_route)
                         except _seat_jail.SeatSandboxRefused as exc:
                             leg_detail = _LegFailure(template=exc.code)
                             seat_notices.append(exc.code)
@@ -18722,6 +19015,7 @@ def invoke_board(
         return panel_result
     finally:
         try:
+            _release_cached_routes(review_authorization)
             if review_instruction_token is not None:
                 reset_review_instruction_digest(review_instruction_token)
             if review_lease_active:

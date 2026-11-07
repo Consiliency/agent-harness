@@ -8,6 +8,7 @@ text summary. The governed-path surface is lane L4b and waits on agent-harness#1
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import io
 import json
 import os
@@ -168,7 +169,7 @@ def test_rendered_fields_are_the_table_literals():
     notice = seat_jail.render_notice("seat_sandbox_unavailable_seat_uid", "claude:a")
     assert notice.as_json() == {
         "code": "seat_sandbox_unavailable_seat_uid", "seat_key": "claude:a",
-        "what": "inline fallback", "why": "no subordinate seat uid on this host",
+        "what": "seat unavailable", "why": "no subordinate seat uid on this host",
         "fix": seat_jail.NOTICES["seat_sandbox_unavailable_seat_uid"][2],
     }
     assert seat_jail.render_notice("seat_sandbox_refused:bogus", "x") is None
@@ -234,10 +235,9 @@ def test_a_jail_whose_first_use_qualification_fails_does_not_run(monkeypatch, tm
     from phase_loop_runtime import seat_jail_autoqualify as aq
 
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "empty-state"))
-    monkeypatch.setattr(pi._seat_jail, "decide_seat_route",
-                        lambda leg, **k: seat_jail.SeatRoute(True))
+    _install_path_entered_claude_route(monkeypatch)
     monkeypatch.setattr(pi._seat_jail_autoqualify, "ensure_qualified",
-                        lambda leg: aq.Outcome(aq.FAILED, "falsifiers_failed"))
+                        lambda leg, **_kwargs: aq.Outcome(aq.FAILED, "falsifiers_failed"))
     spawned = _brokered(monkeypatch, tmp_path, "claude", "a" * 64)
     assert _FakeBroker.invoked == 0                        # nothing launched, sealed or jailed
     assert tuple(spawned)[0] == "DEGRADED" and tuple(spawned)[1] == ""
@@ -809,25 +809,67 @@ def _mode_board():
         for leg in ("claude", "gemini", "codex", "grok")])
 
 
-def _route(leg, **_k):
-    if leg == "claude":
-        return seat_jail.SeatRoute(True)
-    if leg == "gemini":
-        return seat_jail.SeatRoute(False, "gemini_seat_egress_unconfined")
-    return None
+class _ResolverLease:
+    def __init__(self):
+        self.seat_id = 7
+        self.released = False
+
+    def release(self):
+        self.released = True
 
 
-def _modes(monkeypatch, *, qualified=True, credential=None, route=_route, env=None,
+class _ResolverCapacity:
+    def try_lease(self):
+        return _ResolverLease()
+
+
+def _install_path_entered_claude_route(monkeypatch, *, credential_present=True):
+    """Admit the test's Claude profile through the real L0-L9 resolver."""
+    from phase_loop_runtime import seat_profiles, seat_route
+
+    monkeypatch.setitem(
+        seat_profiles._REGISTRY,
+        "claude",
+        dataclasses.replace(
+            seat_profiles.CLAUDE,
+            credential_present=lambda: credential_present,
+            variant=lambda _env: ("print", None),
+        ),
+    )
+    # Preserve the old mode fixture's explicit Gemini terminal while still entering L0-L2.
+    monkeypatch.setitem(
+        seat_profiles._REGISTRY,
+        "gemini",
+        dataclasses.replace(
+            seat_profiles.GEMINI,
+            recorded_stop="gemini_seat_egress_unconfined",
+        ),
+    )
+    monkeypatch.setattr(pi._seat_jail, "seat_sandbox_capable", lambda: None)
+    monkeypatch.setattr(
+        seat_route,
+        "_projection_for_launch",
+        lambda _profile, _env: types.SimpleNamespace(projection_digest="test-projection"),
+    )
+    monkeypatch.setattr(pi._seat_uid, "SeatIdCapacity", _ResolverCapacity)
+
+
+def _modes(monkeypatch, *, qualified=True, credential=None, profile_credential=True, env=None,
            seconds_left=None):
     from phase_loop_runtime import seat_jail_autoqualify as aq
 
-    monkeypatch.setattr(pi._seat_jail, "decide_seat_route", route)
+    for cached in list(pi._JAILCORE_ROUTE_CACHE.values()):
+        pi._release_seat_route(cached)
+    pi._JAILCORE_ROUTE_CACHE.clear()
+    _install_path_entered_claude_route(
+        monkeypatch, credential_present=profile_credential,
+    )
     # `qualified`: True (a pass is recorded), "now" (qualified on first use), or False (the
     # first-use qualification failed).
     outcome = {True: aq.Outcome(aq.QUALIFIED), "now": aq.Outcome(aq.QUALIFIED_NOW),
                False: aq.Outcome(aq.FAILED, "prerequisite_missing")}[qualified]
 
-    def _ensure(leg):
+    def _ensure(leg, **_kwargs):
         return aq._remember(seat_jail.jail_profile_digest(leg), outcome)
 
     monkeypatch.setattr(pi._seat_jail_autoqualify, "ensure_qualified", _ensure)
@@ -846,10 +888,13 @@ def _modes(monkeypatch, *, qualified=True, credential=None, route=_route, env=No
     monkeypatch.setattr(pi._seat_credentials, "resolve_claude_seat_credential", _resolve)
     monkeypatch.setattr(pi._seat_credentials, "login_seconds_left",
                         lambda margin_s, **_k: seconds_left)
-    return pi._seat_launch_modes(
+    authorization = types.SimpleNamespace(staged_tree_sha256="a" * 64)
+    modes = pi._seat_launch_modes(
         _mode_board(), mode="review",
-        review_authorization=types.SimpleNamespace(staged_tree_sha256="a" * 64),
+        review_authorization=authorization,
         base_env=env or {})
+    pi._release_cached_routes(authorization)
+    return modes
 
 
 def _by_leg(modes):
@@ -915,11 +960,9 @@ def test_a_jail_qualified_now_says_so_on_every_seat_of_the_board(monkeypatch):
 
 
 def test_no_login_and_no_override_is_degraded_and_will_not_run(monkeypatch):
-    def _no_credential(leg, **k):
-        return (seat_jail.SeatRoute(False, "claude_seat_token_missing") if leg == "claude"
-                else _route(leg))
-
-    claude = next(m for m in _modes(monkeypatch, route=_no_credential) if m.leg == "claude")
+    claude = next(
+        m for m in _modes(monkeypatch, profile_credential=False) if m.leg == "claude"
+    )
     assert (claude.mode, claude.code) == ("degraded", "claude_seat_token_missing")
     assert claude.fix == "run `claude auth login`, then re-run"
 
@@ -985,7 +1028,13 @@ def _launch_outcome(monkeypatch, tmp_path, timeout_s):
     """What `_prepare_jailed_claude` does with this login for a leg with ``timeout_s``."""
     monkeypatch.setattr(pi._seat_jail, "tree_manifest_sha256_at", lambda fd: "a" * 64)
     # A host without the Claude CLI (CI) must not refuse the build before it is reached.
-    monkeypatch.setattr(pi, "_resolve_claude_executable", lambda: Path("/usr/bin/true"))
+    from phase_loop_runtime import seat_subject
+    monkeypatch.setattr(
+        seat_subject, "resolve_seat_subject",
+        lambda leg, _env: seat_subject.SeatSubject(
+            leg, "standalone", Path("/usr/bin/true"), None, None,
+        ),
+    )
     monkeypatch.setattr(pi._seat_jail, "build_seat_jail",
                         lambda *a, **k: (_ for _ in ()).throw(AssertionError("launchable")))
     review = tmp_path / "launch" / "review"
@@ -1008,9 +1057,9 @@ def test_the_seat_mode_and_the_launch_agree_on_the_login_margin(monkeypatch, tmp
                                                                 seconds_left, timeout_s, wait_s):
     _login_store(monkeypatch, tmp_path, seconds_left)
     monkeypatch.setenv(pi._seat_credentials.WAIT_ENV, wait_s)
-    monkeypatch.setattr(pi._seat_jail, "decide_seat_route", _route)
+    _install_path_entered_claude_route(monkeypatch)
     monkeypatch.setattr(pi._seat_jail_autoqualify, "ensure_qualified",
-                        lambda leg: pi._seat_jail_autoqualify.Outcome("qualified"))
+                        lambda leg, **_kwargs: pi._seat_jail_autoqualify.Outcome("qualified"))
     board = types.SimpleNamespace(seats=[
         types.SimpleNamespace(harness="claude", seat_key="claude:a", model="m")])
     timeouts = {} if timeout_s is None else {"claude": timeout_s}
@@ -1057,16 +1106,16 @@ def test_the_spawn_hands_its_leg_timeout_to_the_jailed_launch(monkeypatch, tmp_p
         (tree / ".git" / "phase-loop-source-commit").write_text("c" * 40)
         return tree
 
-    monkeypatch.setattr(pi._seat_jail, "decide_seat_route", lambda leg, **k: seat_jail.SeatRoute(True))
+    _install_path_entered_claude_route(monkeypatch)
     monkeypatch.setattr(pi._seat_jail_autoqualify, "ensure_qualified",
-                        lambda leg: pi._seat_jail_autoqualify.Outcome("qualified"))
+                        lambda leg, **_kwargs: pi._seat_jail_autoqualify.Outcome("qualified"))
     monkeypatch.setattr(pi._sandbox_policy, "select_sandbox_root",
                         lambda **k: pi._sandbox_policy.SandboxRootChoice(
                             host=None, path=tmp_path, fell_back=False, reason=""))
     monkeypatch.setattr(pi._sandbox_policy, "ensure_staging_space", lambda *a, **k: None)
     monkeypatch.setattr(pi._review_stage, "stage_review_tree", _stage)
     monkeypatch.setattr(pi._sandbox_retention, "mark_as_sandbox", lambda *a, **k: None)
-    monkeypatch.setattr(pi._seat_uid, "subordinate_range", lambda _f: (100000, 65536))
+    monkeypatch.setattr(pi._seat_uid, "subordinate_range", lambda _f, *_a: (100000, 65536))
     monkeypatch.setattr(pi._seat_uid, "seat_id_count", lambda *a: 1)
     monkeypatch.setattr(pi._seat_uid, "lease_seat_id", lambda _n: _contextlib.nullcontext(7))
     monkeypatch.setattr(pi._sandbox_egress, "isolated_network",
@@ -1213,17 +1262,18 @@ def test_a_seat_refused_for_no_credential_says_its_override_was_ignored(monkeypa
 
     _override_bound_elsewhere(monkeypatch, tmp_path)
     monkeypatch.setattr(sc, "read_login_token", lambda: None)            # no login either
-    real_decide = pi._seat_jail.decide_seat_route
+    _install_path_entered_claude_route(monkeypatch, credential_present=False)
+    real_resolve = pi._seat_route.resolve
     calls = []
 
-    def decide(leg, **kwargs):
-        calls.append(leg)
-        return real_decide(leg, capable=lambda: None, **kwargs)
+    def resolve(request, **kwargs):
+        calls.append(request.leg)
+        return real_resolve(request, **kwargs)
 
     def forbidden(*args, **kwargs):
         pytest.fail("a credential-refused seat must not qualify or prepare a jail")
 
-    monkeypatch.setattr(pi._seat_jail, "decide_seat_route", decide)
+    monkeypatch.setattr(pi._seat_route, "resolve", resolve)
     monkeypatch.setattr(pi._seat_jail_autoqualify, "ensure_qualified", forbidden)
     monkeypatch.setattr(pi, "_prepare_jailed_claude", forbidden)
     spawned = _brokered(monkeypatch, tmp_path, "claude", "a" * 64)
@@ -1272,10 +1322,9 @@ def test_a_seat_whose_login_wait_ends_short_says_its_override_was_ignored(monkey
     from phase_loop_runtime import seat_jail_autoqualify as aq
 
     _override_bound_elsewhere(monkeypatch, tmp_path)
-    monkeypatch.setattr(pi._seat_jail, "decide_seat_route",
-                        lambda leg, **k: seat_jail.SeatRoute(True))
+    _install_path_entered_claude_route(monkeypatch)
     monkeypatch.setattr(pi._seat_jail_autoqualify, "ensure_qualified",
-                        lambda leg: aq.Outcome(aq.QUALIFIED))
+                        lambda leg, **_kwargs: aq.Outcome(aq.QUALIFIED))
     monkeypatch.setattr(pi, "_await_claude_login",
                         lambda *a, **k: sc.LoginWait(outcome, 1.0))
     spawned = _brokered(monkeypatch, tmp_path, "claude", "a" * 64)
@@ -1370,10 +1419,11 @@ def test_degraded_spawn_keeps_the_ignored_override(monkeypatch, tmp_path, bounda
                             ["nsenter", "-t", "4242", "-U", "--net", "setpriv"]))
     monkeypatch.setattr(seat_jail, "tree_manifest_sha256_at", lambda fd: "a" * 64)
 
-    def no_executable():
-        raise seat_jail.SeatSandboxRefused("seat_sandbox_refused:jail_build")
-
-    monkeypatch.setattr(pi, "_resolve_claude_executable", no_executable)
+    from phase_loop_runtime import seat_subject
+    monkeypatch.setattr(
+        seat_subject, "resolve_seat_subject",
+        lambda *_a, **_k: (_ for _ in ()).throw(FileNotFoundError("provider unavailable")),
+    )
     spawned = _brokered(monkeypatch, tmp_path, "claude", "a" * 64)
     assert spawned[0] == "DEGRADED"
     expected = "jail_build" if boundary == "prepare" else "namespace"

@@ -506,10 +506,11 @@ def _jailed_route(leg, **_k):
 ])
 def test_a_jailed_claude_seat_is_not_marked_unreadable(monkeypatch, qualified, unreadable):
     from phase_loop_runtime import seat_jail_autoqualify as aq
+    from test_seat_login_wait_a3_1166 import _route_claude_jailed
 
-    monkeypatch.setattr(pi._seat_jail, "decide_seat_route", _jailed_route)
+    _route_claude_jailed(monkeypatch)
     monkeypatch.setattr(pi._seat_jail_autoqualify, "ensure_qualified",
-                        lambda leg: aq.Outcome(aq.QUALIFIED) if qualified
+                        lambda *a, **k: aq.Outcome(aq.QUALIFIED) if qualified
                         else aq.Outcome(aq.FAILED, "falsifiers_failed"))
     board = types.SimpleNamespace(seats=[_seat("claude"), _seat("gemini"), _seat("codex")])
     notices = pi._publish_seat_preflight(

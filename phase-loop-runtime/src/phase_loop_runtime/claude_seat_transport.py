@@ -987,6 +987,13 @@ SDK_PROOF_FILES: tuple[str, ...] = (
     f"{RUNTIME_DIR}/claude_seat_sdk.py",
     f"{RUNTIME_DIR}/claude_seat_transport.py",
     f"{RUNTIME_DIR}/claude_seat_print.py",
+    # JAILCORE and TEAMHOST inputs now used to resolve and bind the jailed provider subject.
+    f"{RUNTIME_DIR}/executable_dependency_startup.py",
+    f"{RUNTIME_DIR}/seat_profiles.py",
+    f"{RUNTIME_DIR}/seat_qualification_key.py",
+    f"{RUNTIME_DIR}/seat_route.py",
+    f"{RUNTIME_DIR}/seat_route_contract.py",
+    f"{RUNTIME_DIR}/seat_subject.py",
     *(path for name, path in SDK_INSTALLED_BINDINGS.items() if name != "seat_module_sha256"),
     "phase-loop-runtime/tests/data/seats_claude_sdk/launch-v1.json",
     "phase-loop-runtime/tests/data/seats_claude_sdk/fake_cli.py",
@@ -1000,6 +1007,7 @@ SDK_PROOF_REGIONS: Mapping[str, tuple[str, ...]] = MappingProxyType({
     _PI: (
         # The jailed CLI's command, launch, liveness and teardown.
         "_broker_claude_tui_command", "_claude_panel_settings", "_prepare_jailed_claude",
+        "_resolved_jail_subject",
         "_run_leg_with_liveness", "launch_provider", "_cleanup_jailed_seat",
         "_JailedSeat", "_BROKER_CLAUDE_DIRECT_REQUEST", "_JAILED_CLAUDE_TOOL_CONTROLS",
         # The host worker's launcher and duplex leg, and what they call.

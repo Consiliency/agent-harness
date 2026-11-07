@@ -557,7 +557,7 @@ def test_seats_firstseat_proxy_fence_keeps_outside_events_outside():
 
 def test_seats_firstseat_proxy_fence_live_wrapper_round_trip():
     _layer_or_skip()
-    with seat_egress_proxy.start_proxy(refuse_all=True) as proxy:
+    with seat_egress_proxy.start_proxy(allowlist_id="gemini", refuse_all=True) as proxy:
         assert proxy.process.stdin is not None
         import socket
         client = socket.socket(socket.AF_UNIX)
@@ -633,7 +633,7 @@ def test_live_proxy_containment_rows(url, extra, method, refused):
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
-    with seat_egress_proxy.start_proxy() as proxy:
+    with seat_egress_proxy.start_proxy(allowlist_id="gemini") as proxy:
         bridge = subprocess.Popen(["socat", f"TCP4-LISTEN:{port},bind=127.0.0.1,fork,reuseaddr",
                                    f"UNIX-CONNECT:{proxy.socket}"])
         try:
@@ -685,7 +685,7 @@ def test_live_fail_closed_front_lets_no_bytes_reach_a_non_allowlisted_service(la
     with socket.socket() as probe:
         probe.bind(("127.0.0.1", 0))
         port = probe.getsockname()[1]
-    with seat_egress_proxy.start_proxy() as proxy:
+    with seat_egress_proxy.start_proxy(allowlist_id="gemini") as proxy:
         token = proxy.proxy_url.split("srt:")[1].split("@")[0]
         auth = base64.b64encode(f"srt:{token}".encode()).decode()
         bridge = subprocess.Popen(["socat", f"TCP4-LISTEN:{port},bind=127.0.0.1,fork,reuseaddr",
@@ -748,6 +748,12 @@ def test_the_agy_qualification_worker_keeps_its_gemini_seat_on_the_heartbeat_rou
     code = "gemini_seat_qualification_candidate"
     assert _capable_spawn_route(monkeypatch, "gemini") == (
         seat_jail.SeatRoute(False, code), [code], None)
+    pi._JAILCORE_ROUTE_CACHE.clear()
+    auth = types.SimpleNamespace(staged_tree_sha256="a" * 64)
+    route, notices, refusal = pi._seat_route_for_spawn(
+        "gemini", auth, eligible=True,
+    )
+    assert (not route.jailed, notices, refusal) == (True, [code], None)
     # A Claude seat in the same process is unaffected.
     route, _notices, refusal = _capable_spawn_route(monkeypatch, "claude")
     assert route == seat_jail.SeatRoute(True) and refusal is None

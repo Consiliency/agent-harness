@@ -1,5 +1,6 @@
 """Private per-launch subscription profiles contain only declared state."""
 
+import dataclasses
 import json
 import hashlib
 import os
@@ -293,3 +294,148 @@ def test_other_profiles_do_not_gain_the_claude_or_opencode_flags(operator_home, 
     with panel_invoker.seat_profile(harness=harness, executable="/usr/bin/true",
                                    env={"HOME": str(operator_home)}, cwd=tmp_path) as (_, profile):
         assert not {"DISABLE_UPDATES", "OPENCODE_DISABLE_AUTOUPDATE"} & set(profile.env)
+
+
+# JAILCORE SL-3: the provider registry is a policy input to generic jail builders.
+
+def test_jailcore_profile_digests_are_byte_identical_to_the_unmodified_base(monkeypatch):
+    from phase_loop_runtime import seat_profiles
+
+    golden = json.loads(
+        (Path(__file__).parent / "data/seat_profile_digests_jailcore.json").read_text()
+    )
+    monkeypatch.setattr(seat_jail, "_system_mounts", lambda: [
+        "--ro-bind", "/fixed/usr", "/usr", "--perms", "0755", "--dir", "/etc",
+        "--ro-bind", "/fixed/etc/hosts", "/etc/hosts",
+    ])
+    assert set(seat_profiles.registered_legs()) == {"claude", "gemini"}
+    for arch, rows in golden.items():
+        for leg, expected in rows.items():
+            assert seat_jail.jail_profile_digest(leg, arch) == expected
+
+
+def test_jailcore_registered_profiles_declare_closed_containment():
+    from phase_loop_runtime import seat_profiles
+    from phase_loop_runtime.seat_route_contract import OD10_CLASSES
+
+    for leg in seat_profiles.registered_legs():
+        profile = seat_profiles.profile_for(leg)
+        assert profile is not None
+        assert profile.config_surface.closed is True
+        assert callable(profile.auth_probe)
+        assert profile.auth_probe() in {"healthy", "signed_out", "unavailable"}
+        assert OD10_CLASSES[profile.output_secret_code] == "security"
+        assert profile.containment is not None
+    assert seat_profiles.profile_for("claude").containment.deferred_to == "EC-CLAUDENET-3"
+
+
+def test_jailcore_core_builders_have_no_leg_literal_branch():
+    import ast
+    import inspect
+    from phase_loop_runtime import seat_route
+
+    names = (
+        "jail_profile_digest", "actual_profile_digest", "seat_env", "_owner_argv",
+        "build_seat_jail", "expected_mount_points",
+    )
+    sources = [inspect.getsource(getattr(seat_jail, name)) for name in names]
+    sources.append(Path(seat_route.__file__).read_text(encoding="utf-8"))
+    for source in sources:
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Compare):
+                continue
+            values = [node.left, *node.comparators]
+            has_leg = any(
+                isinstance(value, ast.Name) and value.id == "leg"
+                or isinstance(value, ast.Attribute) and value.attr == "leg"
+                for value in values
+            )
+            has_literal = any(
+                isinstance(value, ast.Constant) and isinstance(value.value, str)
+                for value in values
+            )
+            assert not (has_leg and has_literal), ast.unparse(node)
+
+
+def test_jailcore_synthetic_third_profile_builds_digests_and_resolves(
+    tmp_path, monkeypatch,
+):
+    from types import MappingProxyType, SimpleNamespace
+
+    from phase_loop_runtime import sandbox_egress, seat_egress_proxy
+    from phase_loop_runtime import seat_jail_autoqualify, seat_profiles, seat_route
+    from phase_loop_runtime.seat_route_contract import RoutePolicy, RouteRequest
+
+    profile = dataclasses.replace(
+        seat_profiles.profile_for("claude"),
+        leg="fixture",
+        vendor="fixture",
+        credential_present=lambda: True,
+        allowlist_id="gemini",
+        variant=None,
+        window=None,
+    )
+    monkeypatch.setitem(seat_profiles._REGISTRY, "fixture", profile)
+    review = tmp_path / "review"
+    tree = review / seat_jail.HOST_TREE_DIRNAME
+    tree.mkdir(parents=True)
+    bundle = seat_jail.memfd_with("fixture-bundle", b"bundle")
+    instructions = seat_jail.memfd_with("fixture-instructions", b"instructions")
+    token = seat_jail.token_pipe(b"token")
+    jail = seat_jail.build_seat_jail(
+        "fixture", review, Path("/usr/bin/true"), tree=tree,
+        bundle_memfd=bundle, instructions_memfd=instructions, token_fd=token,
+        seat_ids=(1, 1),
+    )
+    try:
+        canonical = seat_jail.jail_profile_digest("fixture")
+        assert jail.profile_digest == canonical
+        assert seat_jail.actual_profile_digest(jail) == canonical
+        mutated = dataclasses.replace(
+            jail,
+            process_owner=(*jail.process_owner, "--bind", str(tree), "/unexpected"),
+        )
+        assert seat_jail.actual_profile_digest(mutated) != canonical
+    finally:
+        seat_jail.close_jail_fds(jail)
+
+    monkeypatch.setattr(seat_jail, "seat_sandbox_capable", lambda: None)
+    monkeypatch.setattr(sandbox_egress, "egress_required", lambda: True)
+    monkeypatch.setattr(seat_egress_proxy, "unavailable_code", lambda: None)
+    monkeypatch.setattr(seat_route, "_projection_for_launch", lambda *_: None)
+    monkeypatch.setattr(
+        seat_jail_autoqualify, "ensure_qualified",
+        lambda *a, **k: seat_jail_autoqualify.Outcome(seat_jail_autoqualify.QUALIFIED),
+    )
+    lease = SimpleNamespace(seat_id=23, release=lambda: None)
+    decision = seat_route.resolve(
+        RouteRequest("fixture", "fixture:a", "standard", "review", True, {}),
+        policy=RoutePolicy(
+            "seat_route_policy.v1", frozenset(), MappingProxyType({}), (),
+        ),
+        remote=seat_route.INACTIVE_REMOTE_RUNG,
+        native=seat_route.NO_NATIVE_FILL,
+        capacity=SimpleNamespace(try_lease=lambda: lease),
+    )
+    assert decision.mode == "jailed"
+    assert decision.lease is lease
+
+
+def test_live_jail_registered_profiles_pass_provider_free_falsifiers(monkeypatch, tmp_path):
+    """VL: both production profile shapes cross the real D8 jail without a provider call."""
+    if os.environ.get("PHASE_LOOP_REQUIRE_LIVE_JAIL") != "1":
+        pytest.skip("set PHASE_LOOP_REQUIRE_LIVE_JAIL=1 on a jail-capable host")
+    from phase_loop_runtime import sandbox_egress, seat_jail_qualification, seat_profiles, seat_uid
+
+    missing = []
+    if not seat_uid.seat_uid_available():
+        missing.append(seat_uid.PREREQUISITE)
+    if not sandbox_egress.egress_isolation_available():
+        missing.append("egress isolation unavailable")
+    if missing:
+        pytest.fail("live jail unavailable: " + "; ".join(missing))
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
+    for leg in seat_profiles.registered_legs():
+        evidence = seat_jail_qualification.qualify(leg, record=False)
+        assert evidence["result"] == "pass", (leg, evidence.get("checks"))

@@ -255,7 +255,7 @@ def _find_host_pid(marker: str, deadline: float) -> int:
 
 
 def qualify(leg: str = "claude", *, record: bool = True, provider: Path | None = None,
-            _mutate_jail=None) -> dict[str, object]:
+            qualification_key=None, _mutate_jail=None) -> dict[str, object]:
     """Run the EC-EXECFIND-2 jail falsifiers on this host. Returns the evidence; on a pass
     (and ``record``), writes the evidence and pass record to this host's store."""
     if leg not in seat_jail.JAILED_LEGS:
@@ -391,7 +391,7 @@ def qualify(leg: str = "claude", *, record: bool = True, provider: Path | None =
             review_stage.remove_review_stage(staged)
         shutil.rmtree(base, ignore_errors=True)
     if record and evidence.get("result") == "pass":
-        evidence["recorded_pass"] = str(_record_pass(evidence))
+        evidence["recorded_pass"] = str(_record_pass(evidence, qualification_key))
     return evidence
 
 
@@ -453,7 +453,7 @@ def _gemini_shape(seat_dir: Path) -> dict[str, object]:
             "egress_proxy": "http://srt:qualification@127.0.0.1:3128"}
 
 
-def _record_pass(evidence: dict[str, object]) -> Path:
+def _record_pass(evidence: dict[str, object], qualification_key=None) -> Path:
     store = seat_jail.jail_pass_dir()
     for directory in (seat_jail.state_home(), seat_jail.state_home() / "phase-loop", store):
         try:
@@ -466,15 +466,32 @@ def _record_pass(evidence: dict[str, object]) -> Path:
                     f"{directory} must be a directory you own that is not other-writable, "
                     f"and not group-writable unless its group is your user-private group "
                     f"(e.g. chmod go-w {directory}); no pass recorded")
+    from .seat_route_contract import QualificationKey, key_digest, record_binding
+
     digest = str(evidence["profile_digest"])
+    if qualification_key is not None and not isinstance(qualification_key, QualificationKey):
+        raise QualificationError("qualification key unavailable")
+    identity = key_digest(qualification_key) if qualification_key is not None else digest
+    if qualification_key is not None:
+        measured = {name: evidence.get(name)
+                    for name in ("profile_digest", "host_identity", "falsifier_layout")}
+        if measured != {"profile_digest": qualification_key.profile_digest,
+                        "host_identity": qualification_key.host_identity,
+                        "falsifier_layout": qualification_key.falsifier_layout}:
+            raise QualificationError("qualification evidence does not match the route key")
+        evidence.update(record_binding(qualification_key))
+        evidence["key_digest"] = identity
     raw = json.dumps(evidence, indent=2, sort_keys=True).encode("utf-8")
-    evidence_name = f"{digest}.evidence.json"
+    evidence_name = f"{identity}.evidence.json"
     _write_private(store / evidence_name, raw)
     record = {"schema": seat_jail.PASS_RECORD_SCHEMA, "profile_digest": digest, "result": "pass",
               "host_identity": evidence["host_identity"],
               "falsifier_layout": evidence["falsifier_layout"],
               "evidence": evidence_name, "evidence_sha256": hashlib.sha256(raw).hexdigest()}
-    path = store / f"{digest}.json"
+    if qualification_key is not None:
+        record.update(record_binding(qualification_key))
+        record["key_digest"] = identity
+    path = store / f"{identity}.json"
     _write_private(path, json.dumps(record, indent=2, sort_keys=True).encode("utf-8"))
     return path
 
@@ -610,14 +627,29 @@ def _row_parts(row_id: str) -> tuple[Location, str]:
     return location, relative  # type: ignore[return-value]
 
 
-def plant_layout(*, plugin_form: Literal["nested", "plugin_json"]) -> PlantLayout:
+def plant_layout(*, plugin_form: Literal["nested", "plugin_json"], window=None) -> PlantLayout:
     """Return the complete section 2/3 layout without touching a filesystem."""
     if plugin_form not in ("nested", "plugin_json"):
         raise ValueError("plugin_form must be nested or plugin_json")
+    if window is None:
+        locations = _LOCATIONS
+        tree_rows = tuple(TREE_ROWS.items())
+        runtime_rows = tuple(RUNTIME_ROWS.items())
+    else:
+        locations = tuple(row[0] for row in window.plant_locations)
+        tree_rows = tuple(window.tree_rows)
+        if (locations != _LOCATIONS or tree_rows != tuple(TREE_ROWS.items())):
+            runtime_rows = ()
+        else:
+            runtime_rows = tuple(RUNTIME_ROWS.items())
+        if (not locations or len(set(locations)) != len(locations)
+                or any(location not in _LOCATIONS for location in locations)
+                or any(role not in _SURFACES for _path, role in tree_rows)):
+            raise PlantLayoutRefused("plant rows are outside the profile window")
     rows: list[PlantRow] = []
     canaries: dict[Surface, list[str]] = {surface: [] for surface in _SURFACES}
-    for location in _LOCATIONS:
-        for relative, role in TREE_ROWS.items():
+    for location in locations:
+        for relative, role in tree_rows:
             nonce = secrets.token_hex(16)
             rows.append(PlantRow(row_id=f"{location}:{relative}", location=location,
                                  role=role, nonce=nonce))
@@ -625,7 +657,7 @@ def plant_layout(*, plugin_form: Literal["nested", "plugin_json"]) -> PlantLayou
                 canaries[role].append(f"{nonce}.invalid")
             if relative == ".gemini/settings.json":
                 canaries["mcp_servers"].append(f"{nonce}.invalid")
-    for (location, relative), role in RUNTIME_ROWS.items():
+    for (location, relative), role in runtime_rows:
         nonce = secrets.token_hex(16)
         rows.append(PlantRow(row_id=f"{location}:{relative}", location=location,
                              role=role, nonce=nonce))

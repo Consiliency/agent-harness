@@ -138,16 +138,16 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "leg ended", "provider execution did not complete",
         "check the private operator record and re-run"),
     "seat_sandbox_unavailable_host": (
-        "inline fallback", "host capability missing",
+        "seat unavailable", "host capability missing",
         "install bwrap, slirp4netns and unshare; enable unprivileged user namespaces"),
     "seat_sandbox_unavailable_seat_uid": (
-        "inline fallback", "no subordinate seat uid on this host",
+        "seat unavailable", "no subordinate seat uid on this host",
         "root once: apt install uidmap, and usermod --add-subuids/--add-subgids for the operator"),
     "seat_sandbox_unavailable_tiocsti": (
-        "inline fallback", "host allows keystroke injection",
+        "seat unavailable", "host allows keystroke injection",
         "kernel >= 6.2 and dev.tty.legacy_tiocsti=0"),
     "seat_sandbox_not_staged": (
-        "inline fallback", "caller requested no tree",
+        "seat unavailable", "caller requested no tree",
         "unset PHASE_LOOP_SANDBOX_DISABLE so the review stages a tree for its seats, or pass a "
         "staged-tree authorization"),
     "seat_sandbox_refused:jail_build": (
@@ -164,8 +164,8 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "no EC-EXECFIND-2 pass is recorded on this host for this jail's profile digest (a new "
         "host, a changed host layout, or a changed jail)",
         "run the per-host EC-EXECFIND-2 jail qualification, which records the pass at "
-        "$XDG_STATE_HOME/phase-loop/seat-jail-passes/<digest>.json; or remove the seat token "
-        "to use the sealed route"),
+        "$XDG_STATE_HOME/phase-loop/seat-jail-passes/<digest>.json; the seat stays degraded "
+        "until the qualification passes"),
     "seat_sandbox_refused:pass_store_unsafe": (
         "leg refused",
         "the pass store or one of its parent directories is a link, not yours, "
@@ -328,7 +328,7 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "not jailed yet", "agent-harness#895 follow-up"),
     "seat_tool_denied": (
         "tool use denied", "agy auto-denied a tool",
-        "on the tooled profile a defect; on the sealed route expected"),
+        "on a jailed review profile this is a defect; inspect the private leg record"),
     # agent-harness#1335: from the runtime's own probe of the CLI's command sandbox, made
     # before the seat runs.
     "seat_tool_sandbox_unavailable": (
@@ -397,15 +397,15 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
     "claude_tui_workspace_trust_blocked": (
         "leg refused", "pre-seed stale for this CLI", "upgrade runtime"),
     "gemini_seat_credential_missing": (
-        "sealed route", "agy not logged in", "log in to agy"),
+        "seat unavailable", "agy not logged in", "log in to agy"),
     "gemini_seat_credential_unusable": (
-        "sealed route", "agy cannot run tooled on the stripped credential",
+        "seat unavailable", "agy cannot run tooled on the stripped credential",
         "none until agy changes"),
     "gemini_seat_token_scope_excess": (
-        "sealed route", "the stripped agy token's scopes go beyond inference",
+        "seat unavailable", "the stripped agy token's scopes go beyond inference",
         "maintainer ruling on the measured scopes, then re-run P4"),
     "gemini_seat_stream_split_unavailable": (
-        "sealed route",
+        "seat unavailable",
         "agy tool and subagent activity or workspace config cannot be controlled",
         "none until agy changes"),
     "gemini_seat_egress_unavailable": (
@@ -414,19 +414,19 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "pinned package, node older than 22.12, or the egress CA directory not private)",
         "run `phase-loop seat-egress install` (needs node 22.12+ and npm), then re-run"),
     "gemini_seat_egress_unconfined": (
-        "sealed route",
+        "seat unavailable",
         "jail egress cannot be limited to agy's inference hosts, so the token's cloud-platform "
         "scope is not contained",
         "host-level egress filtering for the seat; then re-run the P4 containment probe"),
     "gemini_seat_token_refreshed_in_jail": (
-        "sealed route", "agy obtained or refreshed a token inside the jail",
+        "seat unavailable", "agy obtained or refreshed a token inside the jail",
         "none until agy changes; re-run the P4 containment probe"),
     "gemini_seat_profile_unqualified": (
-        "sealed route", "image not qualified for the tooled profile", "requalify"),
+        "seat unavailable", "image not qualified for the tooled profile", "requalify"),
     # agent-harness#1170: only the agy qualification worker's own Gemini leg, on a host that
     # could jail it, carries this; it measures the heartbeat route and is never a vote.
     "gemini_seat_qualification_candidate": (
-        "sealed route", "the agy qualification worker measures a candidate image on the "
+        "qualification candidate", "the agy qualification worker measures a candidate image on the "
         "heartbeat route; that leg is never a review or a vote", "none: it is not a review"),
     "gemini_seat_token_expired": (
         "leg ended", "short-lived seat credential expired", "re-run"),
@@ -442,7 +442,7 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "seat deferred to the driving session", "nested TUI unavailable",
         "fill natively or run from a plain shell"),
     "seat_prompt_over_cap": (
-        "leg refused", "inline fallback cannot carry this bundle",
+        "leg refused", "the review input exceeds the bounded delivery surface",
         "run where a jail is available"),
     "seat_identity_unverified": (
         "leg refused", "seat not provably the operator, locked down", "report a defect"),
@@ -532,7 +532,7 @@ NOTICES: Mapping[str, tuple[str, str, str]] = {
         "or is not a completed review, or the session journal was not admitted",
         "re-run the seat; if it repeats, report a defect with the leg log"),
     # agent-harness#1333: per-host CLI qualification (all harnesses). Each is a terminal
-    # degraded refusal with its fix line, never a sealed or inline fallback.
+    # degraded refusal with its fix line, never an alternate review route.
     "seat_cli_unqualified": (
         "leg refused", "the provider CLI is not the bytes that were admitted for this seat",
         "re-run the board so its preflight admits the installed CLI; see "
@@ -588,7 +588,7 @@ def is_limit_detail(detail: object) -> bool:
             return True
     return False
 
-# Codes that send a seat to the sealed route (J7 steps 0-4) rather than refusing it.
+# Legacy codes retained for record readback; JAILCORE review seats degrade on them.
 SEALED_FALLBACK_CODES: frozenset[str] = frozenset({
     "seat_sandbox_not_staged",
     "gemini_seat_credential_unusable", "gemini_seat_token_scope_excess",
@@ -847,7 +847,9 @@ def seat_sandbox_capable(
 # J7: the route decision, in a fixed order.
 # --------------------------------------------------------------------------------------
 
-JAILED_LEGS: frozenset[str] = frozenset({"claude", "gemini"})
+from .seat_profiles import registered_legs as _registered_jail_legs
+
+JAILED_LEGS: frozenset[str] = frozenset(_registered_jail_legs())
 """Legs with a jailed route in this runtime. Gemini joined with its egress layer
 (agent-harness#1170) once P4 containment and P3 passed; codex and grok follow under
 agent-harness#895."""
@@ -877,16 +879,25 @@ def _gemini_egress_unavailable() -> str | None:
 
 @dataclass(frozen=True)
 class SeatRoute:
-    """The outcome of J7 steps 0-4. ``jailed`` or sealed; a sealed route always carries
-    exactly one notice code."""
+    """Compatibility adapter for a JAILCORE route decision.
+
+    A non-jailed review route carries exactly one typed mode-line code.
+    """
 
     jailed: bool
     code: str | None = None
+    lease: object | None = dataclasses.field(default=None, compare=False, repr=False)
+    decision: object | None = dataclasses.field(default=None, compare=False, repr=False)
 
     def __post_init__(self) -> None:
         if self.jailed and self.code is not None:
             raise ValueError("a jailed route carries no fallback code")
-        if not self.jailed and self.code not in SEALED_FALLBACK_CODES | JAIL_NOT_RUN_CODES:
+        from .seat_route_contract import OD10_CLASSES
+
+        # Every mode-line code is classified (seat_route import closure), so any typed
+        # resolver code may describe a route that is not jailed.
+        if (not self.jailed
+                and self.code not in SEALED_FALLBACK_CODES | JAIL_NOT_RUN_CODES | set(OD10_CLASSES)):
             raise ValueError(f"a sealed route needs a fallback code, got {self.code!r}")
 
 
@@ -1299,6 +1310,10 @@ class SeatJail:
     dependency_mount_points: tuple[str, ...] = ()
     dependency_projection_digest: str = ""
     dependency: object | None = field(default=None, repr=False)
+    #: The route's JAILCORE qualification key (contract section 5). The launch gate
+    #: re-establishes the v2 pass for exactly this key; ``None`` keeps the profile-digest
+    #: read for callers that do not carry a route decision.
+    qualification_key: object | None = field(default=None, repr=False, compare=False)
 
     def redacted_owner(self) -> list[str]:
         """The owner argv with every descriptor number replaced by a placeholder, for
@@ -1411,16 +1426,21 @@ def jail_profile_digest(leg: str, arch: str | None = None) -> str:
     """The digest of the canonical jail for ``leg`` on this host: the production owner argv
     (placeholders for the per-launch values) and the production filter. EC-EXECFIND-2's pass
     is recorded against exactly this digest, and every launch must reproduce it."""
+    from .seat_profiles import profile_for
+
+    profile = profile_for(leg)
+    if profile is None:
+        raise SeatSandboxRefused(refused("jail_build"), f"no jail for leg {leg!r}")
     arch = arch or host_arch()
     owner = _owner_argv(leg, tree=_PLACEHOLDERS["tree"], home=_PLACEHOLDERS["home"],
                         out=_PLACEHOLDERS["out"], provider=_PLACEHOLDERS["provider"],
                         bundle_fd=_PLACEHOLDERS["bundle_fd"],
                         instructions_fd=_PLACEHOLDERS["instructions_fd"],
-                        token_fd=_PLACEHOLDERS["token_fd"] if leg == "claude" else None,
+                        token_fd=_PLACEHOLDERS["token_fd"] if profile.token_fd else None,
                         seccomp_fd=_PLACEHOLDERS["seccomp_fd"],
-                        **({"gemini_config": _PLACEHOLDERS["gemini_config"],
-                            "egress_ca": _PLACEHOLDERS["egress_ca"],
-                            "egress_proxy": _PLACEHOLDERS["egress_proxy"]} if leg == "gemini" else {}))
+                        gemini_config=_PLACEHOLDERS["gemini_config"],
+                        egress_ca=_PLACEHOLDERS["egress_ca"],
+                        egress_proxy=_PLACEHOLDERS["egress_proxy"])
     return _profile_digest_of(leg, owner, production_filter_digest(arch), arch)
 
 
@@ -1442,6 +1462,12 @@ def actual_profile_digest(jail: "SeatJail", arch: str | None = None) -> str:
     Dependency mounts are separately destination-checked and digest-bound, then
     removed only so the already-qualified base profile remains comparable.
     """
+    from .seat_profiles import profile_for
+    from .seat_route_contract import OwnerPaths
+
+    profile = profile_for(jail.leg)
+    if profile is None:
+        raise SeatSandboxRefused(refused("identity"), "jail profile disappeared")
     arch = arch or host_arch()
     substitute = {jail.tree_dir: _PLACEHOLDERS["tree"],
                   str(Path(jail.review_dir) / HOST_HOME_DIRNAME): _PLACEHOLDERS["home"],
@@ -1452,14 +1478,20 @@ def actual_profile_digest(jail: "SeatJail", arch: str | None = None) -> str:
                   str(jail.seccomp_fd): _PLACEHOLDERS["seccomp_fd"]}
     if jail.token_fd is not None:
         substitute[str(jail.token_fd)] = _PLACEHOLDERS["token_fd"]
-    if jail.leg == "gemini":
-        home = str(Path(jail.review_dir) / HOST_HOME_DIRNAME)
-        substitute.update({jail.gemini_config_dir: _PLACEHOLDERS["gemini_config"],
-                           jail.egress_ca: _PLACEHOLDERS["egress_ca"],
-                           jail.egress_proxy: _PLACEHOLDERS["egress_proxy"],
-                           **{_gemini_writable_source(home, name):
-                              _gemini_writable_source(_PLACEHOLDERS["home"], name)
-                              for name in (*GEMINI_WRITABLE_CONFIG_DIRS, *GEMINI_WRITABLE_DOTDIR_DIRS)}})
+    home = str(Path(jail.review_dir) / HOST_HOME_DIRNAME)
+    substitute.update(profile.digest_placeholders(OwnerPaths(
+        tree=jail.tree_dir,
+        home=home,
+        out=str(Path(jail.review_dir) / HOST_OUT_DIRNAME),
+        provider=jail.provider_path,
+        bundle_fd=str(jail.bundle_fd),
+        instructions_fd=str(jail.instructions_fd),
+        token_fd=None if jail.token_fd is None else str(jail.token_fd),
+        seccomp_fd=str(jail.seccomp_fd),
+        provider_config=jail.gemini_config_dir or None,
+        egress_ca=jail.egress_ca or None,
+        egress_proxy=jail.egress_proxy or None,
+    )))
     owner = list(jail.process_owner)
     if jail.dependency_mount_args:
         parsed_destinations = _dependency_mount_destinations(jail.dependency_mount_args)
@@ -1499,6 +1531,12 @@ def seat_env(leg: str, *, token_fd: int | None, lang: str = "C.UTF-8",
              term: str = "xterm-256color", egress_proxy: str | None = None) -> dict[str, str]:
     """The exact jail environment. Non-secret values only: a token fd's NUMBER, never its
     bytes. A Gemini seat's ``egress_proxy`` carries only the proxy's session token."""
+    from .seat_profiles import profile_for
+    from .seat_route_contract import EnvInputs
+
+    profile = profile_for(leg)
+    if profile is None:
+        raise SeatSandboxRefused(refused("jail_build"), f"no jail for leg {leg!r}")
     env = {
         "HOME": SEAT_HOME,
         "XDG_CONFIG_HOME": SEAT_HOME + "/.config",
@@ -1511,17 +1549,13 @@ def seat_env(leg: str, *, token_fd: int | None, lang: str = "C.UTF-8",
         "TERM": term,
         "DISABLE_AUTOUPDATER": "1",
     }
-    if leg == "claude":
-        env["CLAUDE_CONFIG_DIR"] = SEAT_CLAUDE_CONFIG
-        env["CLAUDE_CODE_TMPDIR"] = SEAT_TMP
-        if token_fd is not None:
-            env[CLAUDE_TOKEN_FD_ENV] = str(token_fd)
-    if leg == "gemini" and egress_proxy is not None:
-        # agy (Go) routes through HTTPS_PROXY and trusts SSL_CERT_FILE alone; the namespace
-        # has no other route. The bus address names no bus, so agy reads its file credential.
-        env["HTTPS_PROXY"] = egress_proxy
-        env["SSL_CERT_FILE"] = SEAT_EGRESS_CA
-        env["DBUS_SESSION_BUS_ADDRESS"] = "unix:path=/dev/null"
+    env.update(profile.env(EnvInputs(
+        token_fd=token_fd,
+        lang=lang,
+        term=term,
+        egress_proxy=egress_proxy,
+        egress_ca=SEAT_EGRESS_CA if egress_proxy is not None else None,
+    )))
     return env
 
 
@@ -1568,6 +1602,26 @@ def _owner_argv(leg: str, *, tree: str, home: str, out: str, provider: str, bund
                 provider_bind: bool = True) -> list[str]:
     """The bwrap owner argv, as a pure function of its per-launch values, so the canonical
     profile (placeholders) and every real launch are built by the same code."""
+    from .seat_profiles import profile_for
+    from .seat_route_contract import OwnerPaths
+
+    profile = profile_for(leg)
+    if profile is None:
+        raise SeatSandboxRefused(refused("jail_build"), f"no jail for leg {leg!r}")
+    paths = OwnerPaths(
+        tree=tree,
+        home=home,
+        out=out,
+        provider=provider,
+        bundle_fd=bundle_fd,
+        instructions_fd=instructions_fd,
+        token_fd=token_fd,
+        seccomp_fd=seccomp_fd,
+        provider_bind=provider_bind,
+        provider_config=gemini_config,
+        egress_ca=egress_ca,
+        egress_proxy=egress_proxy,
+    )
     owner: list[str] = [
         BWRAP, "--die-with-parent", "--unshare-pid", "--unshare-ipc", "--unshare-uts",
         "--unshare-cgroup-try",
@@ -1590,19 +1644,17 @@ def _owner_argv(leg: str, *, tree: str, home: str, out: str, provider: str, bund
         "--bind", tree, SEAT_TREE,
         "--bind", home, SEAT_HOME,
         "--bind", out, SEAT_OUT,
-        *(_gemini_binds(home, gemini_config, egress_ca) if leg == "gemini" else ()),
+        *profile.owner_binds(paths),
         *dependency_mount_args,
         "--remount-ro", "/",
         # No `--chdir`: with no DAC capability, H-root cannot enter the seat's 0700 tree.
         # The cwd is entered after the drop, as the seat (`seat_cwd`).
         "--clearenv",
     ]
-    env = seat_env(leg, token_fd=None, egress_proxy=egress_proxy)
-    if leg == "claude" and token_fd is not None:
-        env[CLAUDE_TOKEN_FD_ENV] = token_fd
+    env = seat_env(leg, token_fd=token_fd, egress_proxy=egress_proxy)
     for key in sorted(env):
         owner += ["--setenv", key, env[key]]
-    if leg == "gemini":
+    if profile.new_session:
         owner.append("--new-session")
     owner += ["--seccomp", seccomp_fd]
     return owner
@@ -1655,7 +1707,10 @@ def build_seat_jail(
     ``egress_proxy`` (the in-seat proxy URL); its writable config subdirectories are created
     here under ``seat-home``.
     """
-    if leg not in ("claude", "gemini"):
+    from .seat_profiles import profile_for
+
+    profile = profile_for(leg)
+    if profile is None:
         raise SeatSandboxRefused(refused("jail_build"), f"no jail for leg {leg!r}")
     dependency_projection = None
     seccomp_fd = None
@@ -1675,13 +1730,8 @@ def build_seat_jail(
         out = review_dir / HOST_OUT_DIRNAME
         if not tree.is_dir() or tree.is_symlink():
             raise SeatSandboxRefused(refused("jail_build"), "staged tree missing")
-        directories = [home, out, home / SEAT_TMP_DIRNAME]
-        if leg == "gemini":
-            # `.gemini` and `antigravity-cli` are the read-only bind (F006); only the empty
-            # workspace cwd and the writable bin/cache/log sources are created under seat-home.
-            directories += [home / "workspace", home / HOST_GEMINI_WRITABLE_DIRNAME,
-                            *(home / HOST_GEMINI_WRITABLE_DIRNAME / name
-                              for name in (*GEMINI_WRITABLE_CONFIG_DIRS, *GEMINI_WRITABLE_DOTDIR_DIRS))]
+        directories = [home, out, home / SEAT_TMP_DIRNAME,
+                       *(home / item for item in profile.home_dirs)]
         for directory in directories:
             try:
                 os.mkdir(directory, 0o700)
@@ -1774,16 +1824,31 @@ def expected_mount_points(jail: SeatJail) -> list[str]:
     """J1: the DECLARED mount set, from the profile's constants and this host's layout --
     independently of the argv the launch uses, so an extra bind in that argv is a mismatch,
     not a new expectation."""
+    from .seat_profiles import profile_for
+    from .seat_route_contract import OwnerPaths
+
+    profile = profile_for(jail.leg)
+    if profile is None:
+        raise SeatSandboxRefused(refused("identity"), "jail profile disappeared")
     points = {"/", "/proc", "/dev", *BWRAP_DEV_MOUNTS, "/tmp", "/dev/shm",
               SEAT_BUNDLE, SEAT_INSTRUCTIONS, SEAT_TREE, SEAT_HOME,
               SEAT_OUT}
     if not jail.dependency_destinations:
         points.add(f"{SEAT_BIN}/{jail.leg}")
     points.update(jail.dependency_mount_points)
-    if jail.leg == "gemini":
-        points |= {SEAT_GEMINI_DOTDIR, SEAT_EGRESS_CA,
-                   *(f"{SEAT_GEMINI_CONFIG}/{name}" for name in GEMINI_WRITABLE_CONFIG_DIRS),
-                   *(f"{SEAT_GEMINI_DOTDIR}/{name}" for name in GEMINI_WRITABLE_DOTDIR_DIRS)}
+    points.update(profile.mount_points(OwnerPaths(
+        tree=jail.tree_dir,
+        home=str(Path(jail.review_dir) / HOST_HOME_DIRNAME),
+        out=str(Path(jail.review_dir) / HOST_OUT_DIRNAME),
+        provider=jail.provider_path,
+        bundle_fd=str(jail.bundle_fd),
+        instructions_fd=str(jail.instructions_fd),
+        token_fd=None if jail.token_fd is None else str(jail.token_fd),
+        seccomp_fd=str(jail.seccomp_fd),
+        provider_config=jail.gemini_config_dir or None,
+        egress_ca=jail.egress_ca or None,
+        egress_proxy=jail.egress_proxy or None,
+    )))
     for path in SYSTEM_READONLY_PATHS:
         if os.path.isdir(path) and not os.path.islink(path):
             points.add(path)
@@ -1916,7 +1981,7 @@ def falsifier_layout_identity() -> str:
     digest = hashlib.sha256("\0".join(parts).encode("utf-8")).hexdigest()
     return f"execfind-falsifier-layout.v1:{digest}"
 
-PASS_RECORD_SCHEMA = "seat_jail_pass.v1"
+PASS_RECORD_SCHEMA = "seat_jail_pass.v2"
 _PASS_RECORD_CAP = 64 * 1024
 _PASS_EVIDENCE_CAP = 16 * 1024 * 1024
 _MACHINE_ID = Path("/etc/machine-id")
@@ -2024,7 +2089,7 @@ def _parse_json(data: bytes | None) -> object:
         return None
 
 
-def execfind_pass_recorded(profile_digest: str, *, root: Path | None = None,
+def execfind_pass_recorded(profile_digest, *, root: Path | None = None,
                            layout: str | None = None, host: str | None = None) -> bool:
     """Is there a qualification of exactly this jail on THIS host from the EC-EXECFIND-2
     falsifier run? Every rejection is a plain ``False`` and nothing here blocks or raises;
@@ -2056,7 +2121,7 @@ def execfind_pass_recorded(profile_digest: str, *, root: Path | None = None,
     return pass_record_verdict(profile_digest, root=root, layout=layout, host=host)[0]
 
 
-def pass_record_verdict(profile_digest: str, *, root: Path | None = None,
+def pass_record_verdict(profile_digest, *, root: Path | None = None,
                         layout: str | None = None, host: str | None = None) -> tuple[bool, str]:
     """``(passed, reason)``. ``reason`` is ``"pass"``, one of ``no_record``,
     ``binding_mismatch``, ``evidence_mismatch``, ``store_unsafe:<problem>:<directory>``, or
@@ -2069,12 +2134,28 @@ def pass_record_verdict(profile_digest: str, *, root: Path | None = None,
         return False, f"error:{type(exc).__name__}"
 
 
-def _evaluate_pass_record(profile_digest: str, *, root: Path | None, layout: str | None,
+def _evaluate_pass_record(profile_digest, *, root: Path | None, layout: str | None,
                           host: str | None) -> tuple[bool, str]:
+    from .seat_route_contract import QualificationKey, key_digest, record_binding
+
+    key = profile_digest if isinstance(profile_digest, QualificationKey) else None
+    if key is not None:
+        record_name = key_digest(key)
+        expected_binding = dict(record_binding(key))
+        profile_value = key.profile_digest
+        layout = key.falsifier_layout
+        host = key.host_identity
+    else:
+        # Transitional read surface for pre-JAILCORE callers.  A literal v1 schema is still
+        # refused; production routing always supplies a QualificationKey and takes the
+        # closed v2 path above.
+        record_name = profile_digest
+        expected_binding = None
+        profile_value = profile_digest
     if layout is None:
         layout = falsifier_layout_identity()
     host = host if host is not None else host_identity()
-    if not layout or not host or not re.fullmatch(r"[0-9a-f]{64}", profile_digest or ""):
+    if not layout or not host or not re.fullmatch(r"[0-9a-f]{64}", profile_value or ""):
         return False, "binding_mismatch"
     base = root if root is not None else jail_pass_dir()
     chain = [base] if root is not None else [state_home(), state_home() / "phase-loop", base]
@@ -2084,11 +2165,18 @@ def _evaluate_pass_record(profile_digest: str, *, root: Path | None, layout: str
             return False, "no_record"
         if problem is not None:
             return False, f"store_unsafe:{problem}:{directory}"
-    record = _parse_json(_read_private_file(base, f"{profile_digest}.json", _PASS_RECORD_CAP))
+    record = _parse_json(_read_private_file(base, f"{record_name}.json", _PASS_RECORD_CAP))
     if not isinstance(record, dict):
         return False, "no_record"
-    bound = {"schema": PASS_RECORD_SCHEMA, "profile_digest": profile_digest, "result": "pass",
+    bound = {"schema": PASS_RECORD_SCHEMA, "profile_digest": profile_value, "result": "pass",
              "host_identity": host, "falsifier_layout": layout}
+    if expected_binding is not None:
+        bound = {
+            "schema": PASS_RECORD_SCHEMA,
+            "key_digest": record_name,
+            "result": "pass",
+            **expected_binding,
+        }
     if any(record.get(key) != value for key, value in bound.items()):
         return False, "binding_mismatch"
     evidence_name, evidence_sha = record.get("evidence"), record.get("evidence_sha256")
@@ -2098,7 +2186,11 @@ def _evaluate_pass_record(profile_digest: str, *, root: Path | None, layout: str
     if evidence_bytes is None or hashlib.sha256(evidence_bytes).hexdigest() != evidence_sha:
         return False, "evidence_mismatch"
     evidence = _parse_json(evidence_bytes)
-    if isinstance(evidence, dict) and all(
-            evidence.get(key) == value for key, value in bound.items() if key != "schema"):
+    evidence_bound = {
+        key: value for key, value in bound.items()
+        if key not in {"schema", "result"}
+    }
+    if isinstance(evidence, dict) and evidence.get("result") == "pass" and all(
+            evidence.get(key) == value for key, value in evidence_bound.items()):
         return True, "pass"
     return False, "evidence_mismatch"

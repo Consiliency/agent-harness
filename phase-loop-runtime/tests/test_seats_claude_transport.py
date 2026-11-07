@@ -663,10 +663,19 @@ def test_the_sdk_worker_preflight_refuses_before_the_credential(monkeypatch, tmp
 
 def test_the_sdk_preflight_runs_first_and_needs_no_dependency_session(monkeypatch, tmp_path):
     from phase_loop_runtime import executable_dependency_startup as eds
+    from phase_loop_runtime import seat_subject
 
     events: list[str] = []
     _sdk_with_preflight(monkeypatch, lambda: events.append("preflight") or "the install")
     monkeypatch.setattr(eds, "current_dependency_for_provider", lambda provider: None)
+    # This is an offline transport-order test.  Inject TEAMHOST's subject resolver at its
+    # module boundary so production carries no function-identity test seam.
+    monkeypatch.setattr(
+        seat_subject, "resolve_seat_subject",
+        lambda leg, _env: seat_subject.SeatSubject(
+            leg, "standalone", Path("/provider-free/claude"), None, None,
+        ),
+    )
     tree = tmp_path / seat_jail.HOST_TREE_DIRNAME
     tree.mkdir()
     descriptor = seat_jail.open_dir_nofollow(tree)
@@ -688,6 +697,46 @@ def test_the_sdk_preflight_runs_first_and_needs_no_dependency_session(monkeypatc
                                   types.SimpleNamespace(staged_tree_sha256=staged), 1, 1, ("", ""),
                                   transport="sdk")
     assert events == ["preflight", "credential"]
+
+
+@pytest.mark.parametrize("leg", ["claude", "gemini"])
+def test_subject_resolution_refuses_with_a_typed_jail_code(monkeypatch, tmp_path, leg):
+    from phase_loop_runtime.executable_dependency import ExecutableDependencyError
+    from phase_loop_runtime import seat_subject
+
+    monkeypatch.setattr(
+        seat_subject, "resolve_seat_subject",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            ExecutableDependencyError("authority_missing")
+        ),
+    )
+    tree = tmp_path / seat_jail.HOST_TREE_DIRNAME
+    tree.mkdir()
+    descriptor = seat_jail.open_dir_nofollow(tree)
+    try:
+        staged = seat_jail.tree_manifest_sha256_at(descriptor)
+    finally:
+        os.close(descriptor)
+    authorization = types.SimpleNamespace(staged_tree_sha256=staged)
+    with pytest.raises(seat_jail.SeatSandboxRefused) as caught:
+        if leg == "gemini":
+            pi._prepare_jailed_gemini(
+                tmp_path, tmp_path / "gemini-seat", authorization, 1, 1, ("", ""),
+                types.SimpleNamespace(),
+            )
+        else:
+            monkeypatch.setattr(
+                pi._seat_credentials, "resolve_claude_seat_credential",
+                lambda *_a, **_k: types.SimpleNamespace(
+                    token=b"fixture", source=pi._seat_credentials.SOURCE_LOGIN,
+                    expires_at=None, notices=(),
+                ),
+            )
+            pi._prepare_jailed_claude(
+                tmp_path, tmp_path / "claude-seat", authorization, 1, 1, ("", ""),
+                transport="tui",
+            )
+    assert caught.value.code == seat_jail.refused("jail_build")
 
 
 # --------------------------------------------------------------------------------------
@@ -908,10 +957,15 @@ def live_call_site(monkeypatch, tmp_path: Path, transport: str, *, widen=None):
 
     monkeypatch.setattr(pi._seat_uid, "teardown_in_h", teardown)
     monkeypatch.setattr(pi._claude_seat_transport, "launch_jailed", launch)
-    monkeypatch.setattr(pi, "_resolve_claude_executable", lambda: subject)
-    monkeypatch.setattr(pi._seat_jail, "decide_seat_route", lambda leg, **k: seat_jail.SeatRoute(True))
-    monkeypatch.setattr(pi._seat_jail_autoqualify, "ensure_qualified",
-                        lambda leg: pi._seat_jail_autoqualify.Outcome("qualified"))
+    from phase_loop_runtime import seat_subject
+    monkeypatch.setattr(
+        seat_subject, "resolve_seat_subject",
+        lambda leg, _env: seat_subject.SeatSubject(
+            leg, "standalone", subject, None, None,
+        ),
+    )
+    from test_seat_login_wait_a3_1166 import _route_claude_jailed
+    _route_claude_jailed(monkeypatch, fake_capacity=False)
     monkeypatch.setattr(pi, "ParentUnixBroker", _FakeBroker)
     monkeypatch.setattr(pi, "revalidate_review_isolation_authorization", lambda *a, **k: None)
     monkeypatch.setattr(pi, "derive_review_leg_authorization",
@@ -1645,12 +1699,13 @@ def _modes_board():
 
 def _modes(monkeypatch, events):
     from phase_loop_runtime import seat_jail_autoqualify as aq
+    from test_seat_login_wait_a3_1166 import _route_claude_jailed
 
-    monkeypatch.setattr(aq, "ensure_qualified", lambda *a: aq.Outcome(aq.QUALIFIED))
+    _route_claude_jailed(monkeypatch)
+    monkeypatch.setattr(aq, "ensure_qualified", lambda *a, **k: aq.Outcome(aq.QUALIFIED))
     monkeypatch.setattr(aq, "recent_outcome", lambda digest: None)
     monkeypatch.setattr(pi, "_under_claude_code", lambda *a: False)
     monkeypatch.setattr(pi, "_claude_code_support_status", lambda *a, **k: (True, "supported"))
-    monkeypatch.setattr(seat_jail, "decide_seat_route", lambda *a, **k: seat_jail.SeatRoute(True))
     monkeypatch.setattr(sc, "override_decision",
                         lambda *a, **k: events.append("credential") or types.SimpleNamespace(
                             applies=False, refusal=None, notice=None))

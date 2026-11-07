@@ -608,7 +608,8 @@ def _window_frozen_interface_harness(
     def ordered(value):
         return dict(reversed(tuple(value.items()))) if reverse_mappings else value
 
-    def plant_layout(*, plugin_form):
+    def plant_layout(*, plugin_form, window):
+        assert window is not None
         calls.append(("layout", plugin_form))
         return _PlantLayout(rows=(), canary_hosts={}, plugin_form=plugin_form,
                             layout_sha256="1" * 64)
@@ -757,7 +758,7 @@ def _window_frozen_interface_harness(
     monkeypatch.setattr(window, "_find_exec_source_attempt", lambda digest, root=None: "f" * 32)
     monkeypatch.setattr(window, "_host_digest", lambda: "0" * 64)
     monkeypatch.setattr(window, "account_isolation", lambda peer: True)
-    monkeypatch.setattr(window, "_dependency_binding", lambda: (None, None))
+    monkeypatch.setattr(window, "_dependency_binding", lambda _provider: (None, None))
     monkeypatch.setattr(window.sandbox_policy, "staging_root", lambda: tmp_path)
 
     def write(name, value, **kwargs):

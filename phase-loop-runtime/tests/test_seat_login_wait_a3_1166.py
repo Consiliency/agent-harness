@@ -200,18 +200,64 @@ def test_the_monitor_cancel_interrupts_the_production_wait(monkeypatch, tmp_path
 # Through the production spawn: renewed -> jailed; not renewed -> sealed; cancelled.
 # --------------------------------------------------------------------------------------
 
+def _route_claude_jailed(monkeypatch, *, fake_capacity=True):
+    """Configure the real JAILCORE resolver for a provider-free jailed Claude seat."""
+    import dataclasses
+
+    from phase_loop_runtime import seat_jail_autoqualify, seat_profiles, seat_route
+
+    profile = dataclasses.replace(
+        seat_profiles.profile_for("claude"), credential_present=lambda: True,
+        preconditions=(),
+    )
+    monkeypatch.setitem(seat_profiles._REGISTRY, "claude", profile)
+    monkeypatch.setattr(seat_jail, "seat_sandbox_capable", lambda: None)
+    monkeypatch.setattr(seat_route, "_projection_for_launch", lambda *_a, **_k: None)
+    monkeypatch.setattr(
+        seat_jail_autoqualify, "ensure_qualified",
+        lambda *a, **k: seat_jail_autoqualify.Outcome(seat_jail_autoqualify.QUALIFIED),
+    )
+
+    class Lease:
+        seat_id = 7
+
+        def release(self):
+            return None
+
+    class Capacity:
+        def try_lease(self):
+            return Lease()
+
+    if fake_capacity:
+        monkeypatch.setattr(pi._seat_uid, "SeatIdCapacity", Capacity)
+    pi._JAILCORE_ROUTE_CACHE.clear()
+
 def _spawn(monkeypatch, tmp_path, outcome, *, review_monitor=None, waited=30.0, jailed_leg=None,
            login_proof=None, prepare=None):
     from test_seat_notices import _FakeBroker
 
     calls = {"prepare": 0}
 
+    def _route_jail():
+        return seat_jail.SeatJail(
+            leg="claude", process_owner=(), path_map={}, env={}, pass_fds=(),
+            seccomp_fd=-1, profile_id=seat_jail.PROFILE_ID,
+            profile_digest=seat_jail.jail_profile_digest("claude"), filter_digest="",
+        )
+
+    def _with_route_jails(seat):
+        if not hasattr(seat, "jail"):
+            seat.jail = _route_jail()
+        if not hasattr(seat, "probe_jail"):
+            seat.probe_jail = _route_jail()
+        return seat
+
     def _prepare(*_a, **_k):
         calls["prepare"] += 1
         if prepare is not None:
-            return prepare(*_a, **_k)
+            return _with_route_jails(prepare(*_a, **_k))
         if jailed_leg is not None:
-            return types.SimpleNamespace(notices=[])
+            return _with_route_jails(types.SimpleNamespace(notices=[]))
         raise seat_jail.SeatSandboxRefused("seat_sandbox_refused:jail_build")
 
     def _stage(_repo, review_dir):
@@ -226,9 +272,7 @@ def _spawn(monkeypatch, tmp_path, outcome, *, review_monitor=None, waited=30.0, 
         return sc.LoginWait(outcome, waited)
 
     monkeypatch.setattr(pi, "_await_claude_login", _wait)
-    monkeypatch.setattr(pi._seat_jail, "decide_seat_route", lambda leg, **k: seat_jail.SeatRoute(True))
-    monkeypatch.setattr(pi._seat_jail_autoqualify, "ensure_qualified",
-                        lambda leg: pi._seat_jail_autoqualify.Outcome("qualified"))
+    _route_claude_jailed(monkeypatch)
     monkeypatch.setattr(pi._sandbox_policy, "select_sandbox_root",
                         lambda **k: pi._sandbox_policy.SandboxRootChoice(
                             host=None, path=tmp_path, fell_back=False, reason=""))
@@ -279,6 +323,31 @@ def test_a_renewed_login_launches_the_seat_jailed(monkeypatch, tmp_path, outcome
     assert calls == {"prepare": 1, "launched": 1}     # the jailed route is taken
 
 
+def test_a_post_launch_terminal_code_never_reenters_the_route_walk(monkeypatch, tmp_path):
+    from phase_loop_runtime import seat_route
+
+    resolved = []
+    real = seat_route.resolve
+
+    def resolve_once(*args, **kwargs):
+        resolved.append(args[0])
+        if len(resolved) > 1:
+            raise AssertionError("a post-launch code re-entered the route walk")
+        return real(*args, **kwargs)
+
+    def terminal(*_args, **_kwargs):
+        raise seat_jail.SeatSandboxRefused(seat_jail.refused("output_unsafe"))
+
+    monkeypatch.setattr(seat_route, "resolve", resolve_once)
+    spawned, calls = _spawn(
+        monkeypatch, tmp_path, sc.LOGIN_READY, jailed_leg=terminal,
+    )
+    assert len(resolved) == 1
+    assert calls == {"prepare": 1, "launched": 1}
+    assert tuple(spawned)[:2] == ("DEGRADED", "")
+    assert tuple(spawned)[2].template == seat_jail.refused("output_unsafe")
+
+
 @pytest.mark.parametrize("outcome, code", [
     (sc.LOGIN_TIMEOUT, "claude_seat_login_token_expiring"),
     (sc.LOGIN_MISSING, "claude_seat_token_missing"),
@@ -294,9 +363,15 @@ def test_a_login_not_renewed_is_degraded_and_not_run(monkeypatch, tmp_path, outc
 
 
 def test_a_seat_with_no_credential_is_degraded_and_not_run(monkeypatch, tmp_path):
+    import dataclasses
+    from phase_loop_runtime import seat_profiles
+
     spawned, calls = _spawn(monkeypatch, tmp_path, sc.LOGIN_READY)
-    monkeypatch.setattr(pi._seat_jail, "decide_seat_route",
-                        lambda leg, **k: seat_jail.SeatRoute(False, "claude_seat_token_missing"))
+    profile = dataclasses.replace(
+        seat_profiles.profile_for("claude"), credential_present=lambda: False,
+    )
+    monkeypatch.setitem(seat_profiles._REGISTRY, "claude", profile)
+    pi._JAILCORE_ROUTE_CACHE.clear()
     from test_seat_notices import _FakeBroker
 
     monkeypatch.setattr(_FakeBroker, "invoked", 0)

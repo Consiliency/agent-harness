@@ -560,7 +560,7 @@ def test_start_proxy_checks_every_startup_integrity_gate_before_spawn(monkeypatc
     monkeypatch.setattr(
         subprocess, "Popen", lambda *_a, **_kw: pytest.fail("proxy spawned past failed gate"))
     with pytest.raises(seat_egress_proxy.EgressLayerUnavailable, match=failed):
-        with seat_egress_proxy.start_proxy():
+        with seat_egress_proxy.start_proxy(allowlist_id="gemini"):
             pass
 
 
@@ -584,7 +584,7 @@ def test_start_proxy_refuses_each_missing_runtime_integrity_fact(tmp_path, monke
     monkeypatch.setattr(subprocess, "Popen", lambda *_a, **_kw: process)
     monkeypatch.setattr(seat_egress_proxy, "_read_ready", lambda _process: ready)
     with pytest.raises(seat_egress_proxy.EgressLayerUnavailable) as refused:
-        with seat_egress_proxy.start_proxy():
+        with seat_egress_proxy.start_proxy(allowlist_id="gemini"):
             pass
     assert refused.value.code == seat_egress_proxy.TLS_UNTERMINATED_CODE
 
@@ -632,7 +632,7 @@ def test_shape_b_nonstandard_record_is_refused_by_the_installed_front():
     reason = seat_egress_proxy.unavailable_reason()
     if reason is not None:
         pytest.skip(reason)
-    with seat_egress_proxy.start_proxy() as proxy:
+    with seat_egress_proxy.start_proxy(allowlist_id="gemini") as proxy:
         parsed = urlsplit(proxy.proxy_url)
         auth = __import__("base64").b64encode(
             f"{parsed.username}:{parsed.password}".encode("utf-8"))

@@ -10,9 +10,11 @@ from types import SimpleNamespace
 
 import pytest
 
+from executable_dependency_test_support import build_fixture
 from phase_loop_runtime import agy_qualification
 from phase_loop_runtime import executable_dependency_startup
 from phase_loop_runtime import panel_invoker as panel
+from phase_loop_runtime import seat_qualification_key
 from phase_loop_runtime import seat_keyring_exec
 from phase_loop_runtime import seat_subject
 from phase_loop_runtime.advisor_board.fixtures import DEFAULT_BOARD
@@ -21,6 +23,38 @@ from phase_loop_runtime.executable_dependency import ExecutableDependencyError
 
 def _subject(leg: str, source: str, path: Path | None) -> seat_subject.SeatSubject:
     return seat_subject.SeatSubject(leg, source, path, None, None)  # type: ignore[arg-type]
+
+
+def _install_gemini_dependency(tmp_path, monkeypatch):
+    fixture = build_fixture(tmp_path / "dependency", provider="gemini")
+    carrier = SimpleNamespace(
+        requirement=fixture.requirement,
+        borrowed_authority_fd=fixture.authority_fd,
+        expected_authority_sha256=fixture.requirement.expected_authority_sha256,
+    )
+    admitted = []
+    real_admit = seat_qualification_key.admit_executable_dependency
+
+    def record_admission(*args, **kwargs):
+        dependency = real_admit(*args, **kwargs)
+        admitted.append(dependency)
+        return dependency
+
+    monkeypatch.setattr(
+        executable_dependency_startup,
+        "current_dependency_for_provider",
+        lambda *_args, **_kwargs: carrier,
+    )
+    monkeypatch.setattr(
+        seat_qualification_key, "admit_executable_dependency", record_admission,
+    )
+    return fixture, admitted
+
+
+def _close_gemini_dependency(fixture, admitted):
+    for dependency in admitted:
+        dependency.close()
+    fixture.close()
 
 
 def test_seat_provider_source_and_profile_use_the_subject_resolver(tmp_path, monkeypatch):
@@ -146,7 +180,7 @@ def test_jailed_claude_subject_refusal_launches_nothing(tmp_path, monkeypatch):
     (tmp_path / "review" / panel._seat_jail.HOST_TREE_DIRNAME).mkdir(parents=True)
     monkeypatch.setattr(panel._seat_jail, "tree_manifest_sha256_at", lambda _fd: "0" * 64)
 
-    with pytest.raises(ExecutableDependencyError) as caught:
+    with pytest.raises(panel._seat_jail.SeatSandboxRefused) as caught:
         panel._prepare_jailed_claude(
             tmp_path / "review",
             tmp_path / "seat",
@@ -156,7 +190,7 @@ def test_jailed_claude_subject_refusal_launches_nothing(tmp_path, monkeypatch):
             ("artifact", "instructions"),
             transport="tui",
         )
-    assert caught.value.code == "authority_missing"
+    assert caught.value.code == panel._seat_jail.refused("jail_build")
 
 
 @pytest.mark.parametrize("source", ["standalone", "managed_release"])
@@ -198,18 +232,8 @@ def test_jailed_gemini_admits_each_resolved_subject(tmp_path, monkeypatch, sourc
 
 
 def test_jailed_gemini_admits_a_session_lease_subject(tmp_path, monkeypatch):
-    executable = tmp_path / "leased-agy"
-    executable.write_bytes(b"fixture leased agy")
-    executable.chmod(0o700)
-    dependency = SimpleNamespace(subject_source=str(executable))
+    fixture, dependencies = _install_gemini_dependency(tmp_path, monkeypatch)
     admitted = []
-
-    monkeypatch.setattr(
-        executable_dependency_startup,
-        "current_dependency_for_provider",
-        lambda *_args, **_kwargs: dependency,
-    )
-    monkeypatch.setattr(panel, "_validate_jail_dependency", lambda *_args: None)
     monkeypatch.setattr(panel, "_approved_stage_or_refuse", lambda *_args: tmp_path / "tree")
 
     class Stop(RuntimeError):
@@ -221,19 +245,22 @@ def test_jailed_gemini_admits_a_session_lease_subject(tmp_path, monkeypatch):
 
     monkeypatch.setattr(panel.gemini_heartbeat, "admit", admit)
 
-    with pytest.raises(Stop):
-        panel._prepare_jailed_gemini(
-            tmp_path / "review",
-            tmp_path / "seat-session",
-            SimpleNamespace(staged_tree_sha256="0" * 64),
-            1,
-            os.getpid(),
-            ("artifact", "instructions"),
-            SimpleNamespace(),
-            env={"HOME": str(tmp_path), "PATH": str(tmp_path)},
-            credential="none",
-        )
-    assert admitted == [executable]
+    try:
+        with pytest.raises(Stop):
+            panel._prepare_jailed_gemini(
+                tmp_path / "review",
+                tmp_path / "seat-session",
+                SimpleNamespace(staged_tree_sha256="0" * 64),
+                1,
+                os.getpid(),
+                ("artifact", "instructions"),
+                SimpleNamespace(),
+                env={"HOME": str(tmp_path), "PATH": str(tmp_path)},
+                credential="none",
+            )
+        assert admitted == [fixture.subject]
+    finally:
+        _close_gemini_dependency(fixture, dependencies)
 
 
 def test_invoke_board_requalifies_once_before_composition(tmp_path, monkeypatch):
@@ -347,40 +374,32 @@ def test_jailed_gemini_refuses_an_admission_without_a_path(tmp_path, monkeypatch
 
 
 def test_jailed_gemini_lease_requires_the_admitted_subject_digest(tmp_path, monkeypatch):
-    executable = tmp_path / "leased-agy"
-    executable.write_bytes(b"fixture leased agy")
-    executable.chmod(0o700)
-    dependency = SimpleNamespace(
-        subject_source=str(executable), subject_sha256="a" * 64
-    )
-    monkeypatch.setattr(
-        executable_dependency_startup,
-        "current_dependency_for_provider",
-        lambda *_args, **_kwargs: dependency,
-    )
-    monkeypatch.setattr(panel, "_validate_jail_dependency", lambda *_args: None)
+    fixture, dependencies = _install_gemini_dependency(tmp_path, monkeypatch)
     monkeypatch.setattr(panel, "_approved_stage_or_refuse", lambda *_args: tmp_path / "tree")
     closed = []
     admission = SimpleNamespace(
-        path=executable,
+        path=fixture.subject,
         image=SimpleNamespace(sha256="b" * 64),
         admission_class="locally_qualified",
         close=lambda: closed.append(True),
     )
     monkeypatch.setattr(panel.gemini_heartbeat, "admit", lambda *_args, **_kwargs: admission)
-    with pytest.raises(ValueError, match="gemini_heartbeat_capability_unavailable"):
-        panel._prepare_jailed_gemini(
-            tmp_path / "review",
-            tmp_path / "seat-mismatched-lease",
-            SimpleNamespace(staged_tree_sha256="0" * 64),
-            1,
-            os.getpid(),
-            ("artifact", "instructions"),
-            SimpleNamespace(),
-            env={"HOME": str(tmp_path), "PATH": str(tmp_path)},
-            credential="none",
-        )
-    assert closed == [True]
+    try:
+        with pytest.raises(ValueError, match="gemini_heartbeat_capability_unavailable"):
+            panel._prepare_jailed_gemini(
+                tmp_path / "review",
+                tmp_path / "seat-mismatched-lease",
+                SimpleNamespace(staged_tree_sha256="0" * 64),
+                1,
+                os.getpid(),
+                ("artifact", "instructions"),
+                SimpleNamespace(),
+                env={"HOME": str(tmp_path), "PATH": str(tmp_path)},
+                credential="none",
+            )
+        assert closed == [True]
+    finally:
+        _close_gemini_dependency(fixture, dependencies)
 
 
 def test_provider_lookups_use_only_absolute_path_entries(tmp_path, monkeypatch):
