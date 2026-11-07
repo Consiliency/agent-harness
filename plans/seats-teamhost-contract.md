@@ -442,7 +442,18 @@ pin entry. The pin entry emits all three §1 fields: `authority_sha256`, `author
 supplies that specification together with the switch-on. The coordinator routes each
 specification to Consiliency/dotfiles. Dotfiles builds the managed releases, and every release
 that serves review seats ships §1's per-leg `authority.json` and `declaration.json`. The host
-administrator writes §1's pin file (LA1-AUTHORITY-PIN). From gate G-A on, until both exist on a host:
+administrator, or the administrator's root-owned release updater, writes §1's pin file
+(LA1-AUTHORITY-PIN). The updater may write an entry only for a release it built and admitted
+through the release runtime in the same run, before promotion. It takes `release_id` and all
+three entry values from that same admitted build record, binds the identity to the exact bytes
+built and admitted in that run, and refuses a reused identity whose bytes differ. All updater
+instances serialize on a root-owned exclusive lock held across re-reading, validating, merging
+or pruning, and atomically replacing the pin. A malformed pin or entry, or any absent required
+field, refuses; a conflicting release entry is never overwritten; only entries for releases
+confirmed no longer retained are pruned. The replacement is root-owned, mode 0644, and reached
+through root-only ancestors. Every written or pruned entry is logged to a root-owned,
+non-group-or-world-writable updater log. Release bytes never establish their own authority at seat
+time. From gate G-A on, until both exist on a host:
 - that host's seats resolve `managed_release` and refuse with
   `seat_sandbox_refused:identity`;
 - the doctor reports `authority_missing` or `authority_invalid`, which maps to that seat
