@@ -19,7 +19,7 @@ PRs under principle 2. The file name follows the manifest pattern of the sibling
 2026-11-06.
 
 **Frozen artifact.** `plans/seats-teamhost-contract.md` is normative for every interface below
-(§1–§8) at sha256 `592795e78260a1162d0fed503454ae6ddee8cea5b205f87f02d9b7b6a97c923f`. This plan points at its sections and does not repeat
+(§1–§8) at sha256 `23ac63d2a547f4b04f424c5a72f016ff1ff268c94fa4053547ccc6a0dc6fc10a`. This plan points at its sections and does not repeat
 them. Its input pins include the JAILCORE route contract
 (`235f1faded1d7f15d0ff69668b6a451cee7167e6438d258da57257faf7bdae81`). TEAMHOST consumes it
 only through IF-0-JAILCORE-1, IF-0-JAILCORE-2 and EC-JAILCORE-4.
@@ -99,7 +99,7 @@ from day one.
   - The coordinator routes each specification to Consiliency/dotfiles.
   - Dotfiles builds and ships the per-leg `authority.json` and `declaration.json` in each
     managed release that serves seats.
-  - The host administrator writes the root-owned pin (LA1-AUTHORITY-PIN).
+  - The host administrator, or the administrator’s root-owned release updater under contract §7, writes the root-owned pin (LA1-AUTHORITY-PIN).
   - Neither TEAMHOST nor a vendor phase lands a dotfiles change. From gate G-A on, until the
     declaration and the pin exist, a host's managed-release seats refuse
     `seat_sandbox_refused:identity`; the doctor's declared `authority_missing` or
