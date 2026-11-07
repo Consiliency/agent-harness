@@ -36,7 +36,9 @@ _PROC_MEMINFO = Path("/proc/meminfo")
 _PROC_CGROUP = Path("/proc/self/cgroup")
 _SYSTEMD_RUN = Path("/usr/bin/systemd-run")
 _SYSTEMCTL = Path("/usr/bin/systemctl")
+_DEV_BLOCK = Path("/dev/block")
 _TMPFS_MAGIC = 0x01021994
+_DIAGNOSTIC_CAP = 4096
 
 
 @dataclass(frozen=True)
@@ -432,13 +434,33 @@ def _parent_properties(caps: SeatResourceCaps, devices: Sequence[str], carved: S
     if carved:
         properties.append("MemorySwapMax=0")
     for device in devices:
+        # systemd's resource-control properties take a device-node path.  The
+        # kernel readback remains bound to the canonical MAJ:MIN.
+        systemd_device = _DEV_BLOCK / device
         properties.extend((
-            f"IOReadBandwidthMax={device} {caps.io_max.rbps}",
-            f"IOWriteBandwidthMax={device} {caps.io_max.wbps}",
-            f"IOReadIOPSMax={device} {caps.io_max.riops}",
-            f"IOWriteIOPSMax={device} {caps.io_max.wiops}",
+            f"IOReadBandwidthMax={systemd_device} {caps.io_max.rbps}",
+            f"IOWriteBandwidthMax={systemd_device} {caps.io_max.wbps}",
+            f"IOReadIOPSMax={systemd_device} {caps.io_max.riops}",
+            f"IOWriteIOPSMax={systemd_device} {caps.io_max.wiops}",
         ))
     return properties
+
+
+def _helper_failure(process: "subprocess.Popen[bytes]", diagnostic_fd: int) -> str:
+    """Return only the helper's bounded, purpose-built failure diagnostic."""
+    diagnostic = os.read(diagnostic_fd, _DIAGNOSTIC_CAP).decode("utf-8", "replace").strip()
+    stderr = ""
+    if process.stderr is not None:
+        captured = process.stderr.read(_DIAGNOSTIC_CAP)
+        if isinstance(captured, bytes):
+            captured = captured.decode("utf-8", "replace")
+        if isinstance(captured, str) and captured.startswith("seat cap attestation failed:"):
+            stderr = captured.strip()
+    if stderr:
+        return f"child stderr: {stderr}"
+    if diagnostic:
+        return f"child diagnostic: {diagnostic}"
+    return ""
 
 
 def _acquire_parent(seat_key: str, caps: SeatResourceCaps, devices: Sequence[str],
@@ -532,19 +554,20 @@ def capped_popen(command, *, seat_key: str, **popen_kwargs) -> "subprocess.Popen
         finally:
             os.close(env_write)
         read_fd, write_fd = os.pipe()
+        diagnostic_read, diagnostic_write = os.pipe()
         expected = json.dumps(_expected(caps, devices, carved), sort_keys=True, separators=(",", ":"))
         helper = Path(__file__).with_name("seat_resource_caps_enter.py")
         argv = [
             str(_SYSTEMD_RUN), "--user", "--scope", "--quiet", "--collect",
             f"--unit={child_unit}", f"--slice={parent.unit}", "--same-dir", "--",
             "/usr/bin/python3", "-I", "-S", str(helper), "--attest-fd", str(write_fd),
-            "--env-fd", str(env_read),
+            "--env-fd", str(env_read), "--diagnostic-fd", str(diagnostic_write),
             "--expected", expected, "--cgroup-root", str(_CGROUP_ROOT),
             "--proc-cgroup", str(_PROC_CGROUP), "--proc-swaps", str(_PROC_SWAPS),
             "--", *[os.fsdecode(item) for item in command],
         ]
         pass_fds = set(popen_kwargs.get("pass_fds", ()))
-        pass_fds.update((write_fd, env_read))
+        pass_fds.update((write_fd, env_read, diagnostic_write))
         popen_kwargs["pass_fds"] = tuple(sorted(pass_fds))
         popen_kwargs.setdefault("close_fds", True)
         try:
@@ -552,10 +575,12 @@ def capped_popen(command, *, seat_key: str, **popen_kwargs) -> "subprocess.Popen
                 process = subprocess.Popen(argv, **popen_kwargs)
             except BaseException:
                 os.close(read_fd)
+                os.close(diagnostic_read)
                 raise
         finally:
             os.close(write_fd)
             os.close(env_read)
+            os.close(diagnostic_write)
         try:
             readable, _, _ = select.select([read_fd], [], [], _ATTEST_TIMEOUT_S)
             attested = bool(readable and os.read(read_fd, 1) == b"1")
@@ -569,7 +594,13 @@ def capped_popen(command, *, seat_key: str, **popen_kwargs) -> "subprocess.Popen
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(timeout=5)
-            _refuse("the child did not attest its effective caps")
+            try:
+                detail = _helper_failure(process, diagnostic_read)
+            finally:
+                os.close(diagnostic_read)
+            suffix = f"; {detail}" if detail else ""
+            _refuse(f"the child did not attest its effective caps{suffix}")
+        os.close(diagnostic_read)
 
         def reap() -> None:
             try:

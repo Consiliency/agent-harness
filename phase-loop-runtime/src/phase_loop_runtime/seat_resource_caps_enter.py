@@ -78,6 +78,7 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--attest-fd", type=int, required=True)
     parser.add_argument("--env-fd", type=int, required=True)
+    parser.add_argument("--diagnostic-fd", type=int, required=True)
     parser.add_argument("--expected", required=True)
     parser.add_argument("--cgroup-root", default="/sys/fs/cgroup")
     parser.add_argument("--proc-cgroup", default="/proc/self/cgroup")
@@ -96,16 +97,27 @@ def main(argv: list[str] | None = None) -> int:
         if not isinstance(target_env, dict) or not all(
                 isinstance(key, str) and isinstance(value, str)
                 for key, value in target_env.items()):
-            return 125
+            raise ValueError("target environment is invalid")
         expected = json.loads(args.expected)
         if not isinstance(expected, dict):
-            return 125
+            raise ValueError("expected caps are invalid")
         verify(expected, root=Path(args.cgroup_root), proc_cgroup=Path(args.proc_cgroup),
                proc_swaps=Path(args.proc_swaps))
         os.write(args.attest_fd, b"1")
         os.close(args.attest_fd)
+        os.close(args.diagnostic_fd)
         os.execvpe(command[0], command, target_env)
-    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+        message = f"seat cap attestation failed: {exc}"
+        encoded = message.encode("utf-8", "replace")[:4096]
+        try:
+            os.write(args.diagnostic_fd, encoded)
+        except OSError:
+            pass
+        try:
+            os.write(2, encoded + b"\n")
+        except OSError:
+            pass
         return 125
     return 125
 
