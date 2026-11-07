@@ -259,31 +259,48 @@ def test_every_unavailable_raise_site_sets_a_literal_typed_code():
     )
 
 
-def test_real_front_refuses_another_allowlists_host_and_an_unlisted_host(monkeypatch):
-    reason = seat_egress_proxy.unavailable_reason()
-    if reason is not None:
-        pytest.skip(f"the local seat egress layer is unavailable: {reason}")
-    selected = AllowlistRef(
-        id="fixture-a", content_digest="a" * 64,
+def _fixture_ref(allowlist_id: str) -> AllowlistRef:
+    return AllowlistRef(
+        id=allowlist_id, content_digest=hashlib.sha256(allowlist_id.encode()).hexdigest(),
         request_set=({
-            "host": "fixture-a.invalid", "port": 443, "method": "GET", "path": "/",
+            "host": f"{allowlist_id}.invalid", "port": 443, "method": "GET", "path": "/",
         },),
         probe_rows=(),
     )
-    monkeypatch.setattr(seat_egress_proxy, "allowlist_ref", lambda _id: selected)
-    with seat_egress_proxy.start_proxy(allowlist_id="fixture-a") as proxy:
-        token = urllib.parse.urlsplit(proxy.proxy_url).password
-        assert token
-        authorization = base64.b64encode(f"srt:{token}".encode()).decode()
-        for host in ("fixture-b.invalid", "not-listed.invalid"):
-            with socket.socket(socket.AF_UNIX) as client:
-                client.settimeout(5)
-                client.connect(proxy.socket)
-                client.sendall(
-                    f"CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n"
-                    f"Proxy-Authorization: Basic {authorization}\r\n\r\n".encode()
-                )
-                assert client.recv(128).startswith(b"HTTP/1.1 403")
+
+
+def _connect_status(proxy, host: str) -> bytes:
+    token = urllib.parse.urlsplit(proxy.proxy_url).password
+    assert token
+    authorization = base64.b64encode(f"srt:{token}".encode()).decode()
+    with socket.socket(socket.AF_UNIX) as client:
+        client.settimeout(5)
+        client.connect(proxy.socket)
+        client.sendall(
+            f"CONNECT {host}:443 HTTP/1.1\r\nHost: {host}:443\r\n"
+            f"Proxy-Authorization: Basic {authorization}\r\n\r\n".encode()
+        )
+        return client.recv(128)
+
+
+def test_real_front_binds_each_process_to_its_own_allowlist(monkeypatch):
+    reason = seat_egress_proxy.unavailable_reason()
+    if reason is not None:
+        pytest.skip(f"the local seat egress layer is unavailable: {reason}")
+    refs = {name: _fixture_ref(name) for name in ("fixture-a", "fixture-b")}
+    monkeypatch.setattr(seat_egress_proxy, "allowlist_ref", lambda allowlist_id: refs[allowlist_id])
+    with seat_egress_proxy.start_proxy(allowlist_id="fixture-a") as first, \
+            seat_egress_proxy.start_proxy(allowlist_id="fixture-b") as second:
+        assert first.process.pid != second.process.pid
+        assert first.proxy_url != second.proxy_url
+        assert (first.allowlist_id, second.allowlist_id) == ("fixture-a", "fixture-b")
+        # Positive control: each process admits its own listed host, so a refusal below
+        # is the allowlist binding, not a proxy that refuses everything.
+        assert _connect_status(first, "fixture-a.invalid").startswith(b"HTTP/1.1 200")
+        assert _connect_status(second, "fixture-b.invalid").startswith(b"HTTP/1.1 200")
+        for proxy, host in ((first, "fixture-b.invalid"), (second, "fixture-a.invalid"),
+                            (first, "not-listed.invalid"), (second, "not-listed.invalid")):
+            assert _connect_status(proxy, host).startswith(b"HTTP/1.1 403")
 
 
 def test_allowlist_id_cannot_escape_packaged_data():
