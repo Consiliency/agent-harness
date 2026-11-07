@@ -32,6 +32,7 @@ import sys
 import tempfile
 import threading
 import time
+from typing import Callable, Literal, NamedTuple
 
 from . import __version__
 from . import agy_provenance
@@ -47,7 +48,33 @@ SELF_QUALIFICATION_FAILED = "gemini_heartbeat_self_qualification_failed"
 SELF_QUALIFICATION_UNAVAILABLE = "gemini_heartbeat_self_qualification_unavailable"
 STORE_UNSAFE = "gemini_heartbeat_self_qualification_store_unsafe"
 CANCELLED = "review_operation_cancelled"
-OPERATIONS = ("completion", "cancel", "owner-loss")
+class Operation(NamedTuple):
+    operation_id: str
+    argv_template: tuple[str, ...]
+    env_names: tuple[str, ...]
+    pass_predicate_id: str
+
+
+_HEARTBEAT_ARGV = (
+    "<executable>", "--model", "<model>", "--sandbox", "--mode", "plan",
+    "--disable-slash-commands", "--input-format", "stream-json",
+    "--output-format", "stream-json", "--print=", "--print-timeout", "0",
+)
+_HEARTBEAT_ENV_NAMES = (
+    "HOME", "LANG", "LC_ALL", "LC_CTYPE", "NO_COLOR", "PATH", "TERM",
+    "XDG_CONFIG_HOME",
+)
+OPERATIONS_CONTRACT: tuple[Operation, ...] = (
+    Operation("completion", _HEARTBEAT_ARGV, _HEARTBEAT_ENV_NAMES, "terminal_agreement_v1"),
+    Operation("cancel", _HEARTBEAT_ARGV, _HEARTBEAT_ENV_NAMES, "explicit_cancel_v1"),
+    Operation("owner-loss", _HEARTBEAT_ARGV, _HEARTBEAT_ENV_NAMES, "owner_loss_cleanup_v1"),
+)
+OPERATIONS = tuple(operation.operation_id for operation in OPERATIONS_CONTRACT)
+_PASS_PREDICATES = {
+    "completion": "terminal_agreement_v1",
+    "cancel": "explicit_cancel_v1",
+    "owner-loss": "owner_loss_cleanup_v1",
+}
 _SHIM = Path(__file__).resolve().parents[2] / "scripts" / "qualify_gemini_heartbeat.py"
 _SRC = Path(__file__).resolve().parents[1]
 
@@ -82,6 +109,21 @@ def runtime_identity(package_dir=None):
             "route_core": {name: file_hash(package_dir / name) for name in ROUTE_CORE}}
 
 
+def _operation(operation_id: str) -> Operation:
+    try:
+        return next(operation for operation in OPERATIONS_CONTRACT
+                    if operation.operation_id == operation_id)
+    except StopIteration as exc:
+        raise ValueError("unknown Gemini qualification operation") from exc
+
+
+def render_operation_argv(operation_id: str, model: str) -> list[str]:
+    """Render the measured provider argv from the closed operations contract."""
+    operation = _operation(operation_id)
+    values = {"<executable>": gh.PRIVATE_HOME + "/agy", "<model>": model}
+    return [values.get(part, part) for part in operation.argv_template]
+
+
 # Driver reasons the failure classifier treats as transients (claude N2 on agent-harness#1130
 # r2): named once here and used both where they are raised and by _classify_failure.
 ENDED_BEFORE_ADMISSION = "qualification ended before complete admission observation"
@@ -110,6 +152,7 @@ def validate_records(record, *, expected_source_sha256, expected_image_sha256,
         require(record["schema"] == "gemini_heartbeat_qualification.v1")
         operation = record["operation"]
         require(operation in ("completion", "cancel", "owner-loss"))
+        require(_operation(operation).pass_predicate_id == _PASS_PREDICATES[operation])
         require(record["source_sha256"] == expected_source_sha256 and bool(expected_source_sha256))
         require(record["image_sha256"] == expected_image_sha256)
         require(record["help_sha256"] == expected_help_sha256)
@@ -172,9 +215,8 @@ def validate_records(record, *, expected_source_sha256, expected_image_sha256,
                     for h in observer["helpers"]))
         argv = observer["argv"]
         require(isinstance(argv, list) and len(argv) == 14)
-        require(argv == [gh.PRIVATE_HOME + "/agy", "--model", _harden_subscription_model("gemini", argv[2], None),
-                         "--sandbox", "--mode", "plan", "--disable-slash-commands", "--input-format", "stream-json",
-                         "--output-format", "stream-json", "--print=", "--print-timeout", "0"])
+        require(argv == render_operation_argv(
+            operation, _harden_subscription_model("gemini", argv[2], None)))
         request = record["request"]
         for key in ("artifact_sha256", "instructions_sha256", "provider_input_sha256", "provider_transport_sha256"):
             hash_value(request[key])
@@ -757,6 +799,26 @@ def _canonical(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
 
 
+def agy_profile_digest() -> str:
+    """Digest only the owned profile and qualification operations that affect admission."""
+    document = {
+        "profile_id": gh.PROFILE_ID,
+        "profile": profile_description("<image>"),
+        "operations": [operation._asdict() for operation in OPERATIONS_CONTRACT],
+    }
+    return sha256(_canonical(document)).hexdigest()
+
+
+def qualification_key(image_sha256: str, help_sha256: str, host: str) -> dict[str, str]:
+    return {
+        "image_sha256": image_sha256,
+        "platform": host,
+        "profile_id": gh.PROFILE_ID,
+        "help_sha256": help_sha256,
+        "agy_profile_digest": agy_profile_digest(),
+    }
+
+
 def read_machine_id(path="/etc/machine-id"):
     try:
         value = Path(path).read_text().strip()
@@ -955,75 +1017,93 @@ class Store:
 
     # -- typed entries (agent-harness#1076; claude 5.1/5.3 on agent-harness#1118) --------
     @staticmethod
-    def _base(image_sha256, platform, runtime):
-        return {"image_sha256": image_sha256, "platform": platform, "runtime": runtime}
+    def _base(image_sha256, platform, profile_digest):
+        return {"image_sha256": image_sha256, "platform": platform,
+                "agy_profile_digest": profile_digest}
 
-    def put_provenance(self, prov, runtime):
-        context = {**self._base(prov.image_sha256, prov.platform, runtime), "asset": prov.asset.name}
+    @staticmethod
+    def _reported(payload):
+        return {**payload, "written_under": __version__}
+
+    def put_provenance(self, prov, profile_digest):
+        context = {**self._base(prov.image_sha256, prov.platform, profile_digest),
+                   "asset": prov.asset.name}
         self.put("provenance", context, context,
-                 {"release_version": prov.asset.version, "asset_sha256": prov.asset.digest})
+                 self._reported({"release_version": prov.asset.version,
+                                 "asset_sha256": prov.asset.digest}))
 
-    def get_provenance(self, image_sha256, host, runtime):
-        context = {**self._base(image_sha256, host.name, runtime), "asset": host.asset}
+    def get_provenance(self, image_sha256, host, profile_digest):
+        context = {**self._base(image_sha256, host.name, profile_digest), "asset": host.asset}
         return self.get("provenance", context, context)
 
-    def _qualified_contexts(self, image_sha256, help_sha256, host, runtime):
-        name = {**self._base(image_sha256, host.name, runtime), "profile_id": gh.PROFILE_ID}
-        return name, {**name, "help_sha256": help_sha256}
+    def _qualified_contexts(self, image_sha256, help_sha256, host, profile_digest):
+        context = qualification_key(image_sha256, help_sha256, host.name)
+        if profile_digest != context["agy_profile_digest"]:
+            context["agy_profile_digest"] = profile_digest
+        return context, context
 
-    def put_qualified(self, image_sha256, help_sha256, host, runtime, release_version):
-        name, context = self._qualified_contexts(image_sha256, help_sha256, host, runtime)
-        self.put("qualified", name, context, {"operations": {op: "passed" for op in OPERATIONS},
-                                              "release_version": release_version})
+    def put_qualified(self, image_sha256, help_sha256, host, profile_digest, release_version):
+        name, context = self._qualified_contexts(image_sha256, help_sha256, host, profile_digest)
+        self.put("qualified", name, context, self._reported({
+            "operations": {op: "passed" for op in OPERATIONS},
+            "release_version": release_version,
+        }))
 
-    def get_qualified(self, image_sha256, help_sha256, host, runtime):
-        name, context = self._qualified_contexts(image_sha256, help_sha256, host, runtime)
+    def get_qualified(self, image_sha256, help_sha256, host, profile_digest):
+        name, context = self._qualified_contexts(image_sha256, help_sha256, host, profile_digest)
         payload = self.get("qualified", name, context)
         if payload is None or payload.get("operations") != {op: "passed" for op in OPERATIONS}:
             return None
         return payload
 
-    def _failed_context(self, image_sha256, host, runtime):
+    def _failed_context(self, image_sha256, host, profile_digest):
         # Keyed WITHOUT the help digest (it rides as MAC-bound payload), so a refusal on a
         # failed image needs no execution at all.
-        return {**self._base(image_sha256, host.name, runtime), "profile_id": gh.PROFILE_ID}
+        return {**self._base(image_sha256, host.name, profile_digest), "profile_id": gh.PROFILE_ID}
 
-    def put_failed(self, image_sha256, help_sha256, host, runtime, operation, reason):
-        context = self._failed_context(image_sha256, host, runtime)
-        self.put("failed", context, context, {"help_sha256": help_sha256, "operation": operation,
-                                              "reason": reason, "status": "failed"})
+    def put_failed(self, image_sha256, help_sha256, host, profile_digest, operation, reason):
+        context = self._failed_context(image_sha256, host, profile_digest)
+        self.put("failed", context, context, self._reported({
+            "help_sha256": help_sha256, "operation": operation,
+            "reason": reason, "status": "failed",
+        }))
 
-    def get_failed(self, image_sha256, host, runtime):
-        context = self._failed_context(image_sha256, host, runtime)
+    def get_failed(self, image_sha256, host, profile_digest):
+        context = self._failed_context(image_sha256, host, profile_digest)
         return self.get("failed", context, context)
 
-    def note_transient(self, image_sha256, host, runtime, *, now=None):
+    def note_transient(self, image_sha256, host, profile_digest, *, now=None):
         """Count one consecutive transient attempt for this key; return the new count."""
-        context = self._failed_context(image_sha256, host, runtime)
+        context = self._failed_context(image_sha256, host, profile_digest)
         payload = self.get("transient", context, context) or {}
         count = payload.get("count") if isinstance(payload.get("count"), int) else 0
-        self.put("transient", context, context, {"count": count + 1, "at": time.time() if now is None else now})
+        self.put("transient", context, context, self._reported({
+            "count": count + 1, "at": time.time() if now is None else now,
+        }))
         return count + 1
 
-    def last_transient_at(self, image_sha256, host, runtime):
-        context = self._failed_context(image_sha256, host, runtime)
+    def last_transient_at(self, image_sha256, host, profile_digest):
+        context = self._failed_context(image_sha256, host, profile_digest)
         payload = self.get("transient", context, context) or {}
         value = payload.get("at")
         return float(value) if isinstance(value, (int, float)) else None
 
-    def reset_transients(self, image_sha256, host, runtime):
-        self._path("transient", self._failed_context(image_sha256, host, runtime)).unlink(missing_ok=True)
+    def reset_transients(self, image_sha256, host, profile_digest):
+        self._path("transient", self._failed_context(image_sha256, host, profile_digest)).unlink(missing_ok=True)
 
-    def _member_context(self, asset, host, runtime):
-        return {"asset": asset.name, "asset_sha256": asset.digest, "platform": host.name, "runtime": runtime}
+    def _member_context(self, asset, host, profile_digest):
+        return {"asset": asset.name, "asset_sha256": asset.digest, "platform": host.name,
+                "agy_profile_digest": profile_digest}
 
-    def put_member(self, asset, member_sha256, host, runtime):
-        context = self._member_context(asset, host, runtime)
-        self.put("member_cache", context, context, {"member_sha256": member_sha256, "release_version": asset.version})
+    def put_member(self, asset, member_sha256, host, profile_digest):
+        context = self._member_context(asset, host, profile_digest)
+        self.put("member_cache", context, context, self._reported({
+            "member_sha256": member_sha256, "release_version": asset.version,
+        }))
 
-    def get_member(self, asset, host, runtime):
-        payload = self.get("member_cache", self._member_context(asset, host, runtime),
-                           self._member_context(asset, host, runtime))
+    def get_member(self, asset, host, profile_digest):
+        payload = self.get("member_cache", self._member_context(asset, host, profile_digest),
+                           self._member_context(asset, host, profile_digest))
         value = payload.get("member_sha256") if payload else None
         return value if isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value) else None
 
@@ -1041,6 +1121,168 @@ def self_qualification_enabled():
         return load_agy_self_qualification()
     except Exception:  # noqa: BLE001 - any config failure restores today's refusal
         return False
+
+
+class AgyVerdict(NamedTuple):
+    status: Literal["admits", "refuses", "unknown"]
+    code: str | None
+    reason: Literal["launch_measurement", "provider_absent"] | None
+
+
+LkgProvider = Callable[[], gh.VerifiedImage | None]
+_LAST_KNOWN_GOOD_PROVIDER: LkgProvider | None = None
+_REQUALIFIED: set[tuple[str, str, str]] = set()
+_REQUALIFIED_LOCK = threading.Lock()
+
+
+def register_last_known_good(provider: LkgProvider) -> None:
+    """Register the process's sole source of a previously admitted agy image."""
+    global _LAST_KNOWN_GOOD_PROVIDER
+    if _LAST_KNOWN_GOOD_PROVIDER is not None:
+        raise RuntimeError("Gemini last-known-good provider is already registered")
+    if not callable(provider):
+        raise TypeError("Gemini last-known-good provider must be callable")
+    _LAST_KNOWN_GOOD_PROVIDER = provider
+
+
+def last_known_good() -> gh.VerifiedImage | None:
+    return None if _LAST_KNOWN_GOOD_PROVIDER is None else _LAST_KNOWN_GOOD_PROVIDER()
+
+
+def has_record(image_sha256: str, *, store: Store | None = None) -> bool:
+    """Whether the image has any live-key admission state, without executing it."""
+    store = store or Store()
+    if store.status() != "ok":
+        return False
+    try:
+        host = _host()
+    except ValueError:
+        return False
+    profile_digest = agy_profile_digest()
+    return (store.get_failed(image_sha256, host, profile_digest) is not None
+            or store.get_provenance(image_sha256, host, profile_digest) is not None)
+
+
+def _admit_last_known_good(env, *, store=None):
+    image = last_known_good()
+    if image is None:
+        return None
+    admitted = False
+    try:
+        if not isinstance(image, gh.VerifiedImage) or image.fd is None:
+            return None
+        descriptor = image.reopen()
+        try:
+            if gh._fd_digest(descriptor) != image.sha256:
+                return None
+        finally:
+            os.close(descriptor)
+        store = store or Store()
+        if store.status() != "ok":
+            return None
+        host = _host()
+        profile_digest = agy_profile_digest()
+        if store.get_failed(image.sha256, host, profile_digest) is not None:
+            return None
+        if store.get_provenance(image.sha256, host, profile_digest) is None:
+            return None
+        help_sha256 = sha256(measure_help(image, env, profile_digest)).hexdigest()
+        if store.get_qualified(image.sha256, help_sha256, host, profile_digest) is None:
+            return None
+        admitted = True
+        return gh.Admission(image, help_sha256, "locally_qualified", image.path, source="lkg")
+    except (OSError, ValueError):
+        return None
+    finally:
+        if not admitted:
+            image.close()
+
+
+def admission_verdict(env, subject_path: Path | None, *, execute: bool) -> AgyVerdict:
+    """Report the admission decision while keeping doctor-mode checks spawn-free."""
+    path = subject_path or shutil.which("agy", path=env.get("PATH", os.defpath))
+    if path is None:
+        return AgyVerdict("unknown", None, "provider_absent")
+    if execute:
+        from . import agy_integrity
+
+        try:
+            image = agy_integrity.admit_for_seat(Path(path), env)
+        except agy_integrity.AgyImageUnqualified:
+            return AgyVerdict("refuses", "agy_image_unqualified", None)
+        except (OSError, ValueError, RuntimeError) as exc:
+            code = getattr(exc, "code", None) or str(exc)
+            return AgyVerdict("refuses", code, None)
+        else:
+            image.close()
+            return AgyVerdict("admits", None, None)
+    try:
+        data = gh._read_image(path)
+        gh.VerifiedImage.from_bytes(data, path).close()
+    except (OSError, ValueError, gh.AgyCanaryEvidenceError):
+        return AgyVerdict("refuses", "agy_image_unqualified", None)
+    image_sha256 = sha256(data).hexdigest()
+    if image_sha256 in gh.QUALIFIED_IMAGES:
+        return AgyVerdict("admits", None, None)
+    if not self_qualification_enabled():
+        return AgyVerdict("refuses", "agy_image_unqualified", None)
+    store = Store()
+    if store.status() != "ok":
+        return AgyVerdict("refuses", "agy_image_unqualified", None)
+    try:
+        host = _host()
+    except ValueError:
+        return AgyVerdict("refuses", "agy_image_unqualified", None)
+    profile_digest = agy_profile_digest()
+    if store.get_failed(image_sha256, host, profile_digest) is not None:
+        return AgyVerdict("refuses", "agy_image_unqualified", None)
+    if store.get_provenance(image_sha256, host, profile_digest) is not None:
+        return AgyVerdict("unknown", None, "launch_measurement")
+    if _last_known_good_recorded(store, host, profile_digest):
+        return AgyVerdict("unknown", None, "launch_measurement")
+    return AgyVerdict("refuses", "agy_image_unqualified", None)
+
+
+def _last_known_good_recorded(store, host, profile_digest):
+    """Whether the last-known-good image passes everything but the help measurement."""
+    image = last_known_good()
+    if image is None:
+        return False
+    try:
+        return (isinstance(image, gh.VerifiedImage) and image.fd is not None
+                and store.get_failed(image.sha256, host, profile_digest) is None
+                and store.get_provenance(image.sha256, host, profile_digest) is not None)
+    finally:
+        image.close()
+
+
+def requalify_once(env, *, cancel_event=None, heartbeat=None, subject_path=None):
+    """Run the first-use qualifier once before board composition is fixed."""
+    from .executable_dependency_startup import refuse_unwired_dependency_route
+    refuse_unwired_dependency_route("Gemini heartbeat image admission")
+    store = Store()
+    path = (os.fspath(subject_path) if subject_path is not None
+            else shutil.which("agy", path=env.get("PATH", os.defpath)))
+    image_sha256 = "<provider-absent>"
+    if path is not None:
+        try:
+            image_sha256 = sha256(gh._read_image(path)).hexdigest()
+        except (OSError, ValueError):
+            image_sha256 = "<provider-unreadable>"
+    key = (str(store.host_dir), agy_profile_digest(), image_sha256)
+    with _REQUALIFIED_LOCK:
+        first = key not in _REQUALIFIED
+        _REQUALIFIED.add(key)
+    if not first:
+        return gh.admit(env, subject_path=subject_path)
+    try:
+        return ensure_admitted(
+            env, cancel_event, heartbeat, store=store, subject_path=subject_path)
+    except ValueError as exc:
+        if str(exc) == CANCELLED:  # a cancelled preflight used no attempt
+            with _REQUALIFIED_LOCK:
+                _REQUALIFIED.discard(key)
+        raise
 
 
 # Help measured from a VerifiedImage memfd, per (image digest, runtime identity), so a
@@ -1076,8 +1318,8 @@ def _run_help(image, env):
         admission.close()
 
 
-def measure_help(image, env, runtime):
-    key = (image.sha256, sha256(_canonical(runtime)).hexdigest())
+def measure_help(image, env, profile_digest):
+    key = (image.sha256, profile_digest)
     with _HELP_LOCK:
         if key not in _HELP_MEMO:
             _HELP_MEMO[key] = _run_help(image, env)
@@ -1111,15 +1353,20 @@ def lookup(env, data, path, *, store=None):
         except ValueError:
             handed_off = True
             raise gh.AdmissionMiss(image, path) from None
-        runtime = runtime_identity()
+        profile_digest = agy_profile_digest()
         if store.status() == "ok":
-            if store.get_failed(image.sha256, host, runtime) is not None:
+            if store.get_failed(image.sha256, host, profile_digest) is not None:
                 raise ValueError(SELF_QUALIFICATION_FAILED)
-            if store.get_provenance(image.sha256, host, runtime) is not None:
-                help_sha256 = sha256(measure_help(image, env, runtime)).hexdigest()
-                if store.get_qualified(image.sha256, help_sha256, host, runtime) is not None:
+            if store.get_provenance(image.sha256, host, profile_digest) is not None:
+                help_sha256 = sha256(measure_help(image, env, profile_digest)).hexdigest()
+                if store.get_qualified(image.sha256, help_sha256, host, profile_digest) is not None:
                     handed_off = True
-                    return gh.Admission(image, help_sha256, "locally_qualified", Path(path))
+                    return gh.Admission(image, help_sha256, "locally_qualified", Path(path),
+                                        source="subject")
+            if not has_record(image.sha256, store=store):
+                fallback = _admit_last_known_good(env, store=store)
+                if fallback is not None:
+                    return fallback
         handed_off = True
         raise gh.AdmissionMiss(image, path)
     finally:
@@ -1128,7 +1375,7 @@ def lookup(env, data, path, *, store=None):
 
 
 def ensure_admitted(env, cancel_event=None, heartbeat=None, *, store=None, transport=None,
-                    qualify=None):
+                    qualify=None, subject_path=None):
     """``admit``, and on a miss the first-use path (agent-harness#1076).
 
     Called only by the whole-board preflight and by ``agy-qualification run``. Phase 1
@@ -1138,7 +1385,7 @@ def ensure_admitted(env, cancel_event=None, heartbeat=None, *, store=None, trans
     fetch failures write nothing.
     """
     try:
-        return gh.admit(env, keep_miss=True)
+        return gh.admit(env, subject_path=subject_path, keep_miss=True)
     except gh.AdmissionMiss as miss:
         image, path = miss.image, miss.path
     try:
@@ -1154,56 +1401,59 @@ def ensure_admitted(env, cancel_event=None, heartbeat=None, *, store=None, trans
             store.create()
         wait_started = time.time()
         with store.lock(cancel_event, heartbeat):
-            runtime = runtime_identity()
-            if store.get_failed(image.sha256, host, runtime) is not None:
+            profile_digest = agy_profile_digest()
+            if store.get_failed(image.sha256, host, profile_digest) is not None:
                 raise ValueError(SELF_QUALIFICATION_FAILED)
-            last = store.last_transient_at(image.sha256, host, runtime)
+            last = store.last_transient_at(image.sha256, host, profile_digest)
             if last is not None and last >= wait_started:
                 # Another holder hit a transient while we waited: refuse, run nothing, count nothing.
                 raise ValueError(SELF_QUALIFICATION_UNAVAILABLE)
-            if store.get_provenance(image.sha256, host, runtime) is None:
+            if store.get_provenance(image.sha256, host, profile_digest) is None:
                 if heartbeat is not None:
                     heartbeat("agy_qualification_provenance")
                 try:
                     prov = agy_provenance.find_provenance(
                         image.sha256, host=host, transport=transport,
-                        cached_member=lambda asset: store.get_member(asset, host, runtime),
-                        remember_member=lambda asset, member: store.put_member(asset, member, host, runtime),
+                        cached_member=lambda asset: store.get_member(asset, host, profile_digest),
+                        remember_member=lambda asset, member: store.put_member(
+                            asset, member, host, profile_digest),
                     )
                 except agy_provenance.ProvenanceError as exc:
                     raise ValueError(str(exc)) from exc
-                store.put_provenance(prov, runtime)
-            provenance = store.get_provenance(image.sha256, host, runtime)
+                store.put_provenance(prov, profile_digest)
+            provenance = store.get_provenance(image.sha256, host, profile_digest)
             if provenance is None:
                 raise ValueError(STORE_UNSAFE)
             # Phase 2: only now does anything execute, and only the verified memfd.
             if heartbeat is not None:
                 heartbeat("agy_qualification_help")
-            help_bytes = measure_help(image, env, runtime)
+            help_bytes = measure_help(image, env, profile_digest)
             help_sha256 = sha256(help_bytes).hexdigest()
-            if store.get_qualified(image.sha256, help_sha256, host, runtime) is None:
+            if store.get_qualified(image.sha256, help_sha256, host, profile_digest) is None:
                 if cancel_event is not None and cancel_event.is_set():
                     raise ValueError(CANCELLED)
                 outcome = (qualify or qualify_image)(image, help_bytes, cancel_event=cancel_event,
                                                      heartbeat=heartbeat, store=store)
                 if outcome["status"] == "passed":
-                    store.put_qualified(image.sha256, help_sha256, host, runtime, provenance["release_version"])
-                    store.reset_transients(image.sha256, host, runtime)
+                    store.put_qualified(image.sha256, help_sha256, host, profile_digest,
+                                        provenance["release_version"])
+                    store.reset_transients(image.sha256, host, profile_digest)
                 elif outcome["status"] == "failed":
-                    store.put_failed(image.sha256, help_sha256, host, runtime,
+                    store.put_failed(image.sha256, help_sha256, host, profile_digest,
                                      outcome.get("operation"), outcome.get("reason", "qualification_failed"))
                     raise ValueError(SELF_QUALIFICATION_FAILED)
                 elif outcome["status"] == "cancelled":
                     raise ValueError(CANCELLED)
                 else:
-                    if store.note_transient(image.sha256, host, runtime) >= MAX_TRANSIENT_ATTEMPTS:
-                        store.put_failed(image.sha256, help_sha256, host, runtime,
+                    if store.note_transient(image.sha256, host, profile_digest) >= MAX_TRANSIENT_ATTEMPTS:
+                        store.put_failed(image.sha256, help_sha256, host, profile_digest,
                                          outcome.get("operation"), "repeated_transient")
                         raise ValueError(SELF_QUALIFICATION_FAILED)
                     raise ValueError(SELF_QUALIFICATION_UNAVAILABLE)
-            if store.get_qualified(image.sha256, help_sha256, host, runtime) is None:
+            if store.get_qualified(image.sha256, help_sha256, host, profile_digest) is None:
                 raise ValueError(STORE_UNSAFE)
-            return gh.Admission(image, help_sha256, "locally_qualified", Path(path))
+            return gh.Admission(image, help_sha256, "locally_qualified", Path(path),
+                                source="subject")
     except OSError as exc:
         image.close()
         raise ValueError(SELF_QUALIFICATION_UNAVAILABLE) from exc
@@ -1425,7 +1675,7 @@ def provenance_gate(image_sha256, *, store=None):
     except agy_provenance.ProvenanceError:
         return False
     store = store or Store()
-    return store.get_provenance(image_sha256, host, runtime_identity()) is not None
+    return store.get_provenance(image_sha256, host, agy_profile_digest()) is not None
 
 
 def _set_parent_death_signal():
@@ -1538,9 +1788,12 @@ def cli_main(args):
                               base_ref=getattr(args, "base_ref", "origin/main"))
     store = Store()
     if args.action == "status":
+        env = _panel()._broker_subscription_env()
         print(json.dumps({"store": str(store.host_dir), "store_status": store.status(),
                           "entries": store.entries(), "self_qualification": self_qualification_enabled(),
-                          "runtime": runtime_identity()}, sort_keys=True))
+                          "key": agy_profile_digest(), "written_under": __version__,
+                          "verdict": admission_verdict(env, None, execute=True)._asdict()},
+                         sort_keys=True))
         return 0
     if args.action == "clear":
         removed = store.remove(_ENTRY_TYPES if args.all else ("failed", "transient"))
@@ -1548,9 +1801,12 @@ def cli_main(args):
         print(json.dumps({"removed": removed}))
         return 0
     env = _panel()._broker_subscription_env()
+    from .executable_dependency import ExecutableDependencyError
+
     try:
-        admission = ensure_admitted(env, heartbeat=lambda phase: print(f"agy-qualification: {phase}", file=sys.stderr))
-    except ValueError as exc:
+        admission = requalify_once(
+            env, heartbeat=lambda phase: print(f"agy-qualification: {phase}", file=sys.stderr))
+    except (ValueError, ExecutableDependencyError) as exc:
         print(f"phase-loop agy-qualification run: {exc}", file=sys.stderr)
         return 1
     try:

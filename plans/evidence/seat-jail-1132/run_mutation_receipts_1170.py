@@ -55,7 +55,7 @@ FRONT_FORWARDS_ANYTHING = (
     "      client.destroy(); // not a positively-inspected allowed-SNI ClientHello: no bytes upstream",
     "      phase = 'spliced'; spliceToSrt(client, target, buf); // neutralised guard")
 # both SNI walls: the front's allow-check and srt's SNICallback hook.
-FRONT_ANY_SNI = ("    if (sni && hosts.has(sni)) {", "    if (sni) {")
+FRONT_ANY_SNI = ("    if (sni && sni === target && hosts.has(sni)) {", "    if (sni) {")
 
 MUTATIONS: list[dict[str, object]] = [
     # -- live probe rows -------------------------------------------------------------------
@@ -200,6 +200,25 @@ def _tests(nodes) -> dict[str, object]:
     return {"returncode": done.returncode, "summary": tail[-1] if tail else done.stdout[-300:]}
 
 
+def _run_base() -> str:
+    """Return the exact checkout base this run can attribute, never a guessed head."""
+    return (subprocess.run(
+        ["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True, text=True)
+        .stdout.strip() or "unattributed")
+
+
+def _document(receipts: list[dict[str, object]], base: str | None = None) -> dict[str, object]:
+    document: dict[str, object] = {
+        "schema": "seat_jail_mutation_receipts.v1",
+        "issue": "agent-harness#1170",
+        "base": base or _run_base(),
+        "receipts": receipts,
+    }
+    if document["base"] == "unattributed":
+        document["attribution_note"] = "Run base unavailable; see agent-harness#1555."
+    return document
+
+
 def main(argv: list[str]) -> int:
     only = set(argv[argv.index("--only") + 1:]) if "--only" in argv else None
     receipts = json.loads(OUT.read_text())["receipts"] if (only and OUT.exists()) else []
@@ -253,12 +272,10 @@ def main(argv: list[str]) -> int:
         receipt["result"] = "red_as_required" if red else "SURVIVED"
         print(mutation["id"], receipt["result"], flush=True)
         receipts.append(receipt)
-    head = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True,
-                          text=True).stdout.strip()
     order = [m["id"] for m in MUTATIONS]
     receipts.sort(key=lambda r: order.index(r["id"]))
-    OUT.write_text(json.dumps({"schema": "seat_jail_mutation_receipts.v1", "issue": "agent-harness#1170",
-                               "head": head, "receipts": receipts}, indent=2) + "\n")
+    document = _document(receipts)
+    OUT.write_text(json.dumps(document, indent=2) + "\n")
     survived = [r["id"] for r in receipts if r["result"] != "red_as_required"]
     print("survived:", survived)
     return 1 if survived else 0

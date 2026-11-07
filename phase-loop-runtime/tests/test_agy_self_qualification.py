@@ -400,19 +400,15 @@ def test_worker_refuses_sealed_unverified_bytes_without_provenance(world, monkey
     assert launches == []
 
 
-@pytest.mark.parametrize("change", ["version", "route_core_digest"])
-def test_worker_gate_and_member_cache_are_bound_to_the_runtime_identity(world, monkeypatch, change):
-    """Worker bypass: a provenance entry differing only in __version__ or one ROUTE_CORE
-    digest does not admit, and forces a fresh download. Mutation: keying either on the
-    image digest alone."""
+@pytest.mark.parametrize("change", ["profile", "operations"])
+def test_worker_gate_and_member_cache_are_bound_to_the_profile_digest(world, monkeypatch, change):
+    """A live profile/operations change invalidates provenance and the member cache."""
     _ensure(world)
-    real = q.runtime_identity()
-    other = dict(real, route_core=dict(real["route_core"]))
-    if change == "version":
-        other["version"] = "0.0.0"
+    if change == "profile":
+        monkeypatch.setattr(gh, "PROFILE_ID", "agy_memfd_home_deny_all_v2")
     else:
-        other["route_core"]["agy_provenance.py"] = "0" * 64
-    monkeypatch.setattr(q, "runtime_identity", lambda package_dir=None: other)
+        operation = q.OPERATIONS_CONTRACT[0]._replace(pass_predicate_id="other_predicate")
+        monkeypatch.setattr(q, "OPERATIONS_CONTRACT", (operation, *q.OPERATIONS_CONTRACT[1:]))
     assert q.provenance_gate(world.digest) is False
     before = len(world.transport.calls)
     q._HELP_MEMO.clear()
@@ -649,10 +645,10 @@ def test_entry_type_and_operation_status_are_mac_bound(world):
     with pytest.raises(ValueError, match=gh._CAPABILITY):
         _admit(world)
     # the same bytes relabelled as a failed entry: its type is in the MAC context
-    failed = store._path("failed", store._failed_context(world.digest, HOST, q.runtime_identity()))
+    failed = store._path("failed", store._failed_context(world.digest, HOST, q.agy_profile_digest()))
     failed.write_text(json.dumps(dict(raw, type="failed")))
     failed.chmod(0o600)
-    assert store.get_failed(world.digest, HOST, q.runtime_identity()) is None
+    assert store.get_failed(world.digest, HOST, q.agy_profile_digest()) is None
 
 
 def test_member_cache_is_domain_separated_by_type(world):
@@ -685,17 +681,14 @@ def test_forged_qualified_entry_without_authenticated_provenance_executes_nothin
 
 # ------------------------------------------------------------------------------ D2 key
 
-@pytest.mark.parametrize("field", ["version", "route_core", "profile_id", "platform", "help"])
+@pytest.mark.parametrize("field", ["operations", "profile_id", "platform", "help"])
 def test_record_differing_in_one_key_field_is_absent(world, monkeypatch, field):
     """D2. Mutation: dropping that field from the qualified entry's MAC context."""
     _ensure(world)
     q._HELP_MEMO.clear()
-    real = q.runtime_identity()
-    if field == "version":
-        monkeypatch.setattr(q, "runtime_identity", lambda package_dir=None: dict(real, version="9.9.9"))
-    elif field == "route_core":
-        rc = dict(real["route_core"], **{"gemini_heartbeat.py": "0" * 64})
-        monkeypatch.setattr(q, "runtime_identity", lambda package_dir=None: dict(real, route_core=rc))
+    if field == "operations":
+        operation = q.OPERATIONS_CONTRACT[0]._replace(pass_predicate_id="other_predicate")
+        monkeypatch.setattr(q, "OPERATIONS_CONTRACT", (operation, *q.OPERATIONS_CONTRACT[1:]))
     elif field == "profile_id":
         monkeypatch.setattr(gh, "PROFILE_ID", "agy_memfd_home_deny_all_v2")
     elif field == "platform":
@@ -709,13 +702,14 @@ def test_record_differing_in_one_key_field_is_absent(world, monkeypatch, field):
 def test_record_for_image_a_under_image_b_lookup_name_is_absent(world):
     _ensure(world)
     store = q.Store()
-    host, runtime = HOST, q.runtime_identity()
+    host, runtime = HOST, q.agy_profile_digest()
     other = sha256(b"image B").hexdigest()
+    help_sha256 = sha256(b"synthetic help\n").hexdigest()
     for kind, name_a, name_b in (
         ("provenance", {**store._base(world.digest, host.name, runtime), "asset": host.asset},
          {**store._base(other, host.name, runtime), "asset": host.asset}),
-        ("qualified", store._qualified_contexts(world.digest, "x", host, runtime)[0],
-         store._qualified_contexts(other, "x", host, runtime)[0]),
+        ("qualified", store._qualified_contexts(world.digest, help_sha256, host, runtime)[0],
+         store._qualified_contexts(other, help_sha256, host, runtime)[0]),
     ):
         store._path(kind, name_b).write_bytes(store._path(kind, name_a).read_bytes())
         store._path(kind, name_b).chmod(0o600)
@@ -735,17 +729,15 @@ def test_verifier_and_runtime_share_one_route_core_tuple():
     assert "agy_watch.py" not in q.ROUTE_CORE
 
 
-def test_runtime_identity_is_the_installed_package_never_the_reviewed_tree(world, tmp_path, monkeypatch):
-    """claude section 3: boards admit with the installed base runtime. Mutation: resolving
-    route-core from the cwd / repo_dir."""
-    before = q.runtime_identity()
+def test_profile_digest_is_independent_of_the_reviewed_tree(world, tmp_path, monkeypatch):
+    before = q.agy_profile_digest()
     fake = tmp_path / "reviewed" / "phase-loop-runtime/src/phase_loop_runtime"
     fake.mkdir(parents=True)
     for name in q.ROUTE_CORE:
         (fake / name).write_text("# reviewed tree\n")
     monkeypatch.chdir(fake)
     monkeypatch.syspath_prepend(str(fake.parent))
-    assert q.runtime_identity() == before
+    assert q.agy_profile_digest() == before
 
 
 # -------------------------------------------------------------- I2, negative records
@@ -1841,25 +1833,28 @@ def test_a_differently_named_agy_leg_is_still_classified(monkeypatch):
     assert q.counts_toward_landing(leg) is False
 
 
-@pytest.mark.parametrize("field", ["version", "route_core", "profile_id", "platform"])
+@pytest.mark.parametrize("field", ["profile_digest", "operations", "profile_id", "platform"])
 def test_qualified_mac_alone_binds_each_key_field(world, monkeypatch, field):
     """claude r1 (D2 weak mapping): a genuine qualified entry written under a key differing
     only in ``field``, then moved to the LIVE key's filename (valid provenance present), is
     absent. Mutation: dropping that field from the qualified MAC context."""
     _ensure(world)
-    store, runtime, host = q.Store(), q.runtime_identity(), HOST
+    store, runtime, host = q.Store(), q.agy_profile_digest(), HOST
     help_sha = sha256(b"synthetic help\n").hexdigest()
     live_path = store._path("qualified", store._qualified_contexts(world.digest, help_sha, host, runtime)[0])
     other_runtime, other_host = runtime, host
-    if field == "version":
-        other_runtime = dict(runtime, version="0.0.0")
-    elif field == "route_core":
-        other_runtime = dict(runtime, route_core=dict(runtime["route_core"], **{"agy_provenance.py": "0" * 64}))
+    if field == "profile_digest":
+        other_runtime = "0" * 64
     elif field == "platform":
         other_host = prov.HostPlatform("linux", "x64", "musl")
     with monkeypatch.context() as scoped:
         if field == "profile_id":
             scoped.setattr(gh, "PROFILE_ID", "other_profile")
+            other_runtime = q.agy_profile_digest()
+        elif field == "operations":
+            operation = q.OPERATIONS_CONTRACT[0]._replace(pass_predicate_id="other_predicate")
+            scoped.setattr(q, "OPERATIONS_CONTRACT", (operation, *q.OPERATIONS_CONTRACT[1:]))
+            other_runtime = q.agy_profile_digest()
         store.put_qualified(world.digest, help_sha, other_host, other_runtime, "1.2.99")
         other_path = store._path("qualified",
                                  store._qualified_contexts(world.digest, help_sha, other_host, other_runtime)[0])
@@ -1943,11 +1938,11 @@ def test_a_lock_waiter_after_a_transient_refuses_without_running_or_counting(wor
         thread.start()
         assert waiting.wait(10)  # the waiter is now blocked on the lock
         # the holder's attempt ends in a transient while the waiter waits
-        store.note_transient(world.digest, HOST, q.runtime_identity())
+        store.note_transient(world.digest, HOST, q.agy_profile_digest())
     thread.join(10)
     assert result == {"error": q.SELF_QUALIFICATION_UNAVAILABLE}
     assert world.counter.qualify == 0 and world.counter.help == 0
-    context = store._failed_context(world.digest, HOST, q.runtime_identity())
+    context = store._failed_context(world.digest, HOST, q.agy_profile_digest())
     assert store.get("transient", context, context)["count"] == 1
 
 
@@ -2761,3 +2756,18 @@ def test_the_allowlist_oracle_rejects_disguised_api_writes(argv):
     runner = _Runner()
     runner.calls.append(argv)
     assert runner.outside_allowlist() == [argv]
+
+
+def test_requalify_once_failure_is_recorded_and_a_later_board_runs_nothing(world, monkeypatch):
+    q._REQUALIFIED.clear()
+    monkeypatch.setattr(prov, "_Transport", lambda: world.transport)
+    world.outcome = {"status": "failed", "operation": "completion",
+                     "reason": "operation_validation_failed"}
+    with pytest.raises(ValueError, match=q.SELF_QUALIFICATION_FAILED):
+        q.requalify_once(world.env)
+    assert "failed" in _entries(world)
+    assert world.counter.qualify == 1
+    q._REQUALIFIED.clear()  # the second board is a new process
+    with pytest.raises(ValueError, match=q.SELF_QUALIFICATION_FAILED):
+        q.requalify_once(world.env)
+    assert world.counter.qualify == 1
