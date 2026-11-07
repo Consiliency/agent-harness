@@ -334,8 +334,8 @@ def test_the_qualification_worker_keeps_the_gemini_route_and_nothing_else(monkey
     route, notices, refusal = pi._seat_route_for_spawn(
         "gemini", _auth(True), eligible=True,
     )
-    assert route.code == "gemini_seat_qualification_candidate"
-    assert notices == [] and refusal == seat_jail.refused("identity")
+    assert not route.jailed and route.code == "gemini_seat_qualification_candidate"
+    assert notices == ["gemini_seat_qualification_candidate"] and refusal is None
     # Only the Gemini leg: any other seat in that process is still refused.
     _route, _notices, refusal = pi._seat_route_for_spawn(
         "claude", _auth(True), eligible=True, decide=_stopped)

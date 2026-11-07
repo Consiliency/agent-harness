@@ -748,6 +748,12 @@ def test_the_agy_qualification_worker_keeps_its_gemini_seat_on_the_heartbeat_rou
     code = "gemini_seat_qualification_candidate"
     assert _capable_spawn_route(monkeypatch, "gemini") == (
         seat_jail.SeatRoute(False, code), [code], None)
+    pi._JAILCORE_ROUTE_CACHE.clear()
+    auth = types.SimpleNamespace(staged_tree_sha256="a" * 64)
+    route, notices, refusal = pi._seat_route_for_spawn(
+        "gemini", auth, eligible=True,
+    )
+    assert (not route.jailed, notices, refusal) == (True, [code], None)
     # A Claude seat in the same process is unaffected.
     route, _notices, refusal = _capable_spawn_route(monkeypatch, "claude")
     assert route == seat_jail.SeatRoute(True) and refusal is None

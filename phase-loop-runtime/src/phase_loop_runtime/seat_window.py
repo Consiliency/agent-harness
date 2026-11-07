@@ -420,8 +420,9 @@ def _valid_record(record, now, source_root=None):
         # A one-account host has no peer record; a team context needs a passing peer probe.
         or record["account_isolation"] is not (True if record["host_class"] == "team" else None)):
         return False
-    if (type(record["co_seats"]) is not list or set(record["co_seats"]) != {"codex", "grok"}
-        or len(record["co_seats"]) != 2):
+    if (type(record["co_seats"]) is not list
+            or set(record["co_seats"]) != set(data.co_seats)
+            or len(record["co_seats"]) != len(data.co_seats)):
         return False
     expected = {row["id"] for row in candidates(readiness_rows(), record["host_class"])}
     if (type(record["rows"]) is not list or set(record["rows"]) != expected

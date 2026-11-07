@@ -280,7 +280,7 @@ def _gemini_seat_off_the_host_jail(monkeypatch):
         if route_request.leg != "gemini" or profile is not seat_profiles.GEMINI:
             return real(route_request, **kwargs)
         # Pin the host fact at L3 while leaving the whole production L0-L3 resolver path
-        # live.  Integration tests that install another profile or host fact bypass this
+        # live.  Integration tests that install another profile or host fact skip this
         # default and can reach the remaining rungs, including real capacity acquisition.
         with mock.patch.object(
             seat_jail,

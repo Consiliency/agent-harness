@@ -521,6 +521,54 @@ def test_seat_capacity_holds_every_lease_until_explicit_release(tmp_path):
     second.release()
 
 
+def test_capacity_gate_then_released_lease_is_held_until_route_teardown(
+    tmp_path, monkeypatch, ready_gemini,
+):
+    capacity_type = seat_uid.SeatIdCapacity
+    capacity = capacity_type(count=2, directory=tmp_path)
+    monkeypatch.setattr(
+        panel_invoker._seat_uid,
+        "SeatIdCapacity",
+        lambda: capacity_type(count=2, directory=tmp_path),
+    )
+    remote = Remote()
+    monkeypatch.setattr(seat_route, "INACTIVE_REMOTE_RUNG", remote)
+    monkeypatch.setattr(seat_route, "load_route_policy", lambda: policy())
+    panel_invoker._JAILCORE_ROUTE_CACHE.clear()
+    auth = SimpleNamespace(staged_tree_sha256="a" * 64)
+    first = capacity.try_lease()
+    second = capacity.try_lease()
+    assert first is not None and second is not None
+    route = None
+    replacement = None
+    try:
+        route, notices, refusal = panel_invoker._seat_route_for_spawn(
+            "gemini", auth, eligible=True, seat_key="g:a", env={},
+        )
+        assert not route.jailed and notices == []
+        assert refusal == "seat_local_capacity_exhausted"
+        assert remote.calls == []
+
+        first.release()
+        route, notices, refusal = panel_invoker._seat_route_for_spawn(
+            "gemini", auth, eligible=True, seat_key="g:a", env={},
+        )
+        assert route.jailed and route.decision.lease.seat_id == 1
+        assert notices == [] and refusal is None and remote.calls == []
+        assert capacity.try_lease() is None
+
+        panel_invoker._release_seat_route(route)
+        route = None
+        replacement = capacity.try_lease()
+        assert replacement is not None and replacement.seat_id == 1
+    finally:
+        panel_invoker._release_seat_route(route)
+        if replacement is not None:
+            replacement.release()
+        first.release()
+        second.release()
+
+
 def test_registered_profile_readiness_mismatch_is_terminal(
     monkeypatch, ready_gemini,
 ):
@@ -794,6 +842,10 @@ def test_every_typed_degraded_code_reaches_the_launch_tuple(monkeypatch, code):
 
     monkeypatch.setattr(seat_route, "resolve", resolve)
     monkeypatch.setattr(seat_route, "load_route_policy", lambda: policy())
+    remote = Remote()
+    native = Native()
+    monkeypatch.setattr(seat_route, "INACTIVE_REMOTE_RUNG", remote)
+    monkeypatch.setattr(panel_invoker, "_NativeFillAdapter", lambda *_a: native)
     _production_adapter(monkeypatch)
     auth = SimpleNamespace(staged_tree_sha256="a" * 64)
     board = SimpleNamespace(seats=[
@@ -809,6 +861,8 @@ def test_every_typed_degraded_code_reaches_the_launch_tuple(monkeypatch, code):
     assert (rendered.mode, rendered.code) == ("degraded", code)
     assert not route.jailed and route.decision.mode == "degraded"
     assert route.decision.code == code and notices == [] and refusal == code
+    assert remote.calls == [] and native.calls == []
+    assert route.decision.steps[-1].step == "L2"
     assert len(calls) == 1
 
 
@@ -910,11 +964,15 @@ def test_open_egress_exception_expiry_is_path_entered_with_an_injected_clock(mon
 
 @pytest.mark.parametrize("mode,code", [
     ("native", "seat_native_fill_unavailable"),
+    ("native", "gemini_seat_qualification_candidate"),
     ("remote", "seat_capacity_offloaded"),
 ])
 def test_nonlocal_decision_is_published_but_never_runs_locally(
     monkeypatch, tmp_path, mode, code,
 ):
+    from phase_loop_runtime import gemini_heartbeat
+
+    monkeypatch.setattr(gemini_heartbeat, "_CANDIDATE", None)
     decision = RouteDecision(
         leg="gemini", vendor="gemini", mode=mode, code=code, steps=(),
         exception=None, variant=None, qualification_key=None, also=(), lease=None,
@@ -959,6 +1017,28 @@ def test_nonlocal_decision_is_published_but_never_runs_locally(
     assert tuple(spawned) == ("DEGRADED", "", seat_jail.refused("identity"))
     public = " ".join(seat_jail.NOTICES[seat_jail.refused("identity")]).lower()
     assert all(route_word not in public for route_word in ("remote", "native", "local"))
+
+
+def test_approved_gemini_heartbeat_executor_keeps_its_native_route(monkeypatch):
+    from phase_loop_runtime import gemini_heartbeat
+
+    monkeypatch.setattr(gemini_heartbeat, "_CANDIDATE", None)
+    code = "seat_sandbox_unavailable_host"
+    decision = RouteDecision(
+        leg="gemini", vendor="gemini", mode="native", code=code, steps=(),
+        exception=None, variant=None, qualification_key=None, also=(), lease=None,
+    )
+    monkeypatch.setattr(seat_route, "resolve", lambda *a, **k: decision)
+    monkeypatch.setattr(seat_route, "load_route_policy", lambda: policy())
+    panel_invoker._JAILCORE_ROUTE_CACHE.clear()
+    route, notices, refusal = panel_invoker._seat_route_for_spawn(
+        "gemini",
+        SimpleNamespace(staged_tree_sha256="a" * 64),
+        eligible=True,
+        approved_local_native_executor=True,
+    )
+    assert route.decision is decision
+    assert notices == [code] and refusal is None
 
 
 def test_same_leg_mode_cache_is_keyed_per_seat(monkeypatch):

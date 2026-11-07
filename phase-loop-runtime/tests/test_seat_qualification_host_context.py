@@ -639,6 +639,7 @@ def test_jailcore_window_record_vocabulary_is_per_vendor_data(monkeypatch):
         route_literal="contained",
         model_leg="fixture",
         dependency_provider="fixture",
+        co_seats=frozenset({"gemini", "claude"}),
         qualification_candidate_code=None,
         default=False,
     )
@@ -666,7 +667,8 @@ def test_jailcore_window_kit_has_no_vendor_named_launch_or_record_branch():
         window._egress_observation,
         window._dependency_binding,
     ):
-        assert "gemini" not in inspect.getsource(function).lower()
+        source = inspect.getsource(function)
+        assert all(f'"{vendor}"' not in source for vendor in window.VENDORS)
 
 
 def test_jailcore_registered_vendor_loses_unconfined_and_allowlisted_open_egress(

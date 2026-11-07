@@ -49,6 +49,7 @@ class WindowVendorData:
     board_launcher: str
     model_leg: str
     dependency_provider: str
+    co_seats: frozenset[str]
     qualification_candidate_code: str | None = None
     default: bool = False
 
@@ -97,6 +98,8 @@ def register_window_data(data: WindowVendorData) -> WindowVendorData:
         "mcp_servers", "provider_overrides",
     }:
         raise ValueError("window data outcome fields unavailable")
+    if not data.co_seats or data.leg in data.co_seats:
+        raise ValueError("window data co-seats unavailable")
     previous = _WINDOW_DATA.get(data.vendor)
     if previous is not None and previous != data:
         raise ValueError(f"window data already registered for {data.vendor}")
@@ -312,6 +315,7 @@ GEMINI_WINDOW_DATA = register_window_data(WindowVendorData(
     board_launcher="window_board_launch",
     model_leg="gemini",
     dependency_provider="gemini",
+    co_seats=frozenset({"codex", "grok"}),
     qualification_candidate_code="gemini_seat_qualification_candidate",
     default=True,
 ))
