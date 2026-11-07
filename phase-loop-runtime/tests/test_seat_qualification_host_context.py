@@ -15,6 +15,9 @@ from __future__ import annotations
 
 import copy
 import datetime as dt
+import dataclasses
+import hashlib
+import json
 import pytest
 
 
@@ -557,3 +560,72 @@ def test_an_owned_leg_inside_a_board_reuses_its_namespace(tmp_path, monkeypatch)
     finally:
         pi._EGRESS_LAUNCH_PREFIX.reset(token)
     assert seen == [_HOLDER]
+
+
+def test_jailcore_gemini_window_rows_are_byte_identical_to_lane_e():
+    from phase_loop_runtime import seat_profiles
+    from phase_loop_runtime import seat_window as window
+
+    rows = [row for row in window.readiness_rows() if row.get("vendor") == "gemini"]
+    raw = json.dumps(rows, sort_keys=True, separators=(",", ":")).encode()
+    assert hashlib.sha256(raw).hexdigest() == (
+        "a76cd487259539182716d41be1573a95431c058fdcec02fe2553de39a65d9515"
+    )
+    profile_rows = seat_profiles.profile_for("gemini").window
+    assert profile_rows.canonical_record_field == "canonical_gemini"
+    assert profile_rows.route_record_field == "gemini_route"
+    assert profile_rows.route_literal == "jailed"
+
+
+def test_jailcore_synthetic_profile_reaches_window_kit_as_data(monkeypatch):
+    from phase_loop_runtime import seat_jail_qualification as qualification
+    from phase_loop_runtime import seat_profiles
+    from phase_loop_runtime import seat_window as window
+    from phase_loop_runtime.seat_route_contract import WindowRows
+
+    synthetic_rows = WindowRows(
+        canonical_record_field="canonical_fixture",
+        route_record_field="fixture_route",
+        route_literal="jailed",
+        plant_locations=(("tree", "/seat/tree", "reviewed-tree"),),
+        tree_rows=(("FIXTURE.md", "provider_overrides"),),
+    )
+    profile = dataclasses.replace(
+        seat_profiles.profile_for("gemini"),
+        leg="fixture",
+        vendor="fixture",
+        allowlist_id="fixture",
+        window=synthetic_rows,
+    )
+    monkeypatch.setitem(seat_profiles._REGISTRY, "fixture", profile)
+    assert window.window_rows_for("fixture") is synthetic_rows
+    row = next(row for row in window.readiness_rows() if row["id"] == "vendor:fixture")
+    assert (row["route"], row["allowlist_id"], row["exception"]) == (
+        "jailed", "fixture", None
+    )
+    layout = qualification.plant_layout(plugin_form="nested", window=synthetic_rows)
+    assert [item.row_id for item in layout.rows] == ["tree:FIXTURE.md"]
+
+
+def test_jailcore_registered_vendor_loses_unconfined_and_allowlisted_open_egress(
+    monkeypatch,
+):
+    from phase_loop_runtime import seat_profiles
+    from phase_loop_runtime import seat_window as window
+
+    codex = dataclasses.replace(
+        seat_profiles.profile_for("gemini"),
+        leg="codex",
+        vendor="codex",
+        allowlist_id="codex",
+        window=None,
+    )
+    claude = dataclasses.replace(
+        seat_profiles.profile_for("claude"), allowlist_id="claude"
+    )
+    monkeypatch.setitem(seat_profiles._REGISTRY, "codex", codex)
+    monkeypatch.setitem(seat_profiles._REGISTRY, "claude", claude)
+    rows = {row["vendor"]: row for row in window.readiness_rows()
+            if row["kind"] == "vendor"}
+    assert rows["codex"]["exception"] is None
+    assert rows["claude"]["exception"] is None

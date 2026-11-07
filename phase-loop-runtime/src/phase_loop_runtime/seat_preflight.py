@@ -187,7 +187,9 @@ MODE_UNCONFINED = "unconfined"  # tools on the staged tree, not jailed (codex, g
 MODE_SEALED = "sealed"          # no tools: the bundle is inlined
 MODE_DEGRADED = "degraded"      # refused before launch
 MODE_NATIVE = "native"          # filled by the driving session
-SEAT_MODES = (MODE_JAILED, MODE_UNCONFINED, MODE_SEALED, MODE_DEGRADED, MODE_NATIVE)
+MODE_REMOTE = "remote"          # placed by an activated remote rung
+SEAT_MODES = (MODE_JAILED, MODE_UNCONFINED, MODE_SEALED, MODE_DEGRADED, MODE_NATIVE,
+              MODE_REMOTE)
 
 MODES_FILE = "seat-modes.json"
 MODES_SCHEMA = "seat_modes.v1"

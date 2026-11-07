@@ -1,0 +1,32 @@
+{
+  "schema": "seat_jailcore_digest_equality.v1",
+  "base": "origin/main",
+  "head": "SL-3 working tree",
+  "command": "python -m phase_loop_runtime.seat_profiles digest-receipt",
+  "host_receipts_equal": true,
+  "host_receipt": {
+    "schema": "seat_jail_profile_digest_receipt.v1",
+    "profiles": {
+      "claude": {
+        "aarch64": "32a757572fd9b595cde5496b031abac39ff3edf32fef66db8a021c7ad91c8790",
+        "x86_64": "5ccd7e8669f41716754787d8bde9bb6a64450774e2c5bf9b8862d7e0acaa2b00"
+      },
+      "gemini": {
+        "aarch64": "a2e011d46ba4b8d15a48a5c310faba14dedcd98a326eacb47481761ff2ca65e9",
+        "x86_64": "09827a0ed4f51ac2bfac6510e9d0f5b111abcf33a66638046e67ebdca2d097c2"
+      }
+    }
+  },
+  "fixed_system_mount_receipts_equal": true,
+  "fixed_system_mount_receipt": {
+    "aarch64": {
+      "claude": "7b6b8613ffb5d9475d72b69adc98338da9d164f14e2d1d5d8ccb061cd6dbf5e6",
+      "gemini": "317e6e6419b857a8d5d0caa542338cd5a959c3e8d8855d74e158f465f571495a"
+    },
+    "x86_64": {
+      "claude": "91ce53149412560377a29c01d9ef74af09d00769982cee7240f36e50caa3d543",
+      "gemini": "62fc4258995145850bd2bab41642093b2c3dffd647063d7d660587ea74ab33b2"
+    }
+  },
+  "mutation_control": "one changed owner bind changes actual_profile_digest and is refused"
+}

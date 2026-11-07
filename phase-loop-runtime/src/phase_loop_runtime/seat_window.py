@@ -73,16 +73,31 @@ def measurement(checks: dict, *, observation_digest=None) -> dict:
 def readiness_rows() -> list[dict]:
     """Return the complete matrix; rows remain candidate until reduced W1 evidence passes."""
     from . import president_adapter
+    from .seat_profiles import profile_for, registered_legs
+
+    profiles = {
+        profile.vendor: profile
+        for leg in registered_legs()
+        if (profile := profile_for(leg)) is not None
+    }
+    vendors = (*VENDORS, *(vendor for vendor in sorted(profiles) if vendor not in VENDORS))
     rows = []
     exceptions = {"claude": "open egress", "codex": "unconfined", "grok": "unconfined"}
     for kind in ("vendor", "remote"):
-        for vendor in VENDORS:
+        for vendor in vendors:
+            profile = profiles.get(vendor)
             exception = exceptions.get(vendor) if kind == "vendor" else None
+            if profile is not None and (
+                exception == "unconfined"
+                or exception == "open egress" and profile.allowlist_id is not None
+            ):
+                exception = None
             rows.append({"id": f"{kind}:{vendor}", "kind": kind, "vendor": vendor,
                 "route": "remote" if kind == "remote" else (
-                    "jailed" if vendor == "gemini" else "local"),
+                    "jailed" if profile is not None else "local"),
                 "claude_transport": "print" if vendor == "claude" else None,
-                "profile_digest": None, "allowlist_id": "gemini" if vendor == "gemini" else None,
+                "profile_digest": None,
+                "allowlist_id": profile.allowlist_id if profile is not None else None,
                 "allowlist_digest": None, "tool_surface": None,
                 "credential_lane": "subscription", "projection": None,
                 "host_classes": ["standard"], "qualification_record": None,
@@ -97,6 +112,18 @@ def readiness_rows() -> list[dict]:
         base.update(entry, id=f"president:{entry['rung']}:{entry['route']}", kind="president")
         rows.append(base)
     return rows
+
+
+def window_rows_for(vendor: str):
+    """Return the unique registered vendor's window-kit rows, or ``None``."""
+    from .seat_profiles import profile_for, registered_legs
+
+    matches = [profile.window for leg in registered_legs()
+               if (profile := profile_for(leg)) is not None
+               and profile.vendor == vendor and profile.window is not None]
+    if len(matches) > 1:
+        raise ValueError("window vendor profile is ambiguous")
+    return matches[0] if matches else None
 
 
 def candidates(rows, host_class):
@@ -528,11 +555,22 @@ def _required_interfaces(jailq, panel):
         hasattr(panel, name) for name in panel_names)
 
 
-def run_native_window(*, repo, monitoring_policy, host_class, model=None):
+def _profile_plant_layout(jailq, *, plugin_form, window_rows):
+    """Pass profile rows to the real kit while retaining frozen supplier test doubles."""
+    try:
+        return jailq.plant_layout(plugin_form=plugin_form, window=window_rows)
+    except TypeError as exc:
+        if "unexpected keyword argument 'window'" not in str(exc):
+            raise
+        return jailq.plant_layout(plugin_form=plugin_form)
+
+
+def run_native_window(*, repo, monitoring_policy, host_class, model=None, vendor="gemini"):
     """Run frozen I-15 and assemble the sole input to the containment reducer."""
     from . import panel_invoker as panel, president_adapter
     from . import seat_jail_qualification as jailq
-    if not _required_interfaces(jailq, panel):
+    window_rows = window_rows_for(vendor)
+    if window_rows is None or not _required_interfaces(jailq, panel):
         return {"status": "candidate", "code": "window_supplier_unavailable"}
     if host_class not in {"team", "standard"} or monitoring_policy != "bounded":
         raise ValueError("window policy unavailable")
@@ -544,7 +582,9 @@ def run_native_window(*, repo, monitoring_policy, host_class, model=None):
     with tempfile.TemporaryDirectory(prefix="phase-loop-window-",
                                      dir=sandbox_policy.staging_root()) as temporary:
         base = Path(temporary)
-        layout = jailq.plant_layout(plugin_form="nested")
+        layout = _profile_plant_layout(
+            jailq, plugin_form="nested", window_rows=window_rows,
+        )
         q0 = jailq.build_qualification_input(layout, base)
 
         def launch(kind, qualification_input):
@@ -557,7 +597,9 @@ def run_native_window(*, repo, monitoring_policy, host_class, model=None):
         if help_result.help_lists_plugin is True:
             plugin_result = launch("plugin_validation", q0)
         else:
-            layout = jailq.plant_layout(plugin_form="plugin_json")
+            layout = _profile_plant_layout(
+                jailq, plugin_form="plugin_json", window_rows=window_rows,
+            )
         qualification_input = jailq.build_qualification_input(layout, base)
         controls = [launch("tree_control", qualification_input),
                     launch("runtime_control", qualification_input)]
@@ -632,7 +674,7 @@ def run_native_window(*, repo, monitoring_policy, host_class, model=None):
 
 
 def qualify(*, window, monitoring_policy, repo=".", host_class="standard", attended=False,
-            peer_record=None, model=None):
+            peer_record=None, model=None, vendor="gemini"):
     from . import president_adapter
     if window != "W1" or monitoring_policy != "bounded":
         raise ValueError("window policy unavailable")
@@ -643,11 +685,17 @@ def qualify(*, window, monitoring_policy, repo=".", host_class="standard", atten
         return {"status": "candidate", "code": outcome.code}
     if not attended:
         return {"status": "candidate", "code": "window_attendance_required"}
-    if (not seat_jail.execfind_pass_recorded(seat_jail.jail_profile_digest("gemini"))
-        or seat_egress_proxy.unavailable_reason() is not None):
+    from .seat_profiles import profile_for, registered_legs
+
+    profiles = [profile for leg in registered_legs()
+                if (profile := profile_for(leg)) is not None and profile.vendor == vendor]
+    profile = profiles[0] if len(profiles) == 1 else None
+    if (profile is None or profile.window is None
+        or not seat_jail.execfind_pass_recorded(seat_jail.jail_profile_digest(profile.leg))
+        or profile.allowlist_id is not None and seat_egress_proxy.unavailable_reason() is not None):
         return {"status": "candidate", "code": "window_host_readiness_required"}
     record = run_native_window(repo=Path(repo), monitoring_policy=monitoring_policy,
-                               host_class=host_class, model=model)
+                               host_class=host_class, model=model, vendor=vendor)
     if record.get("schema") != SCHEMA:
         return record
     record["account_isolation"] = account_isolation(Path(peer_record) if peer_record else None)

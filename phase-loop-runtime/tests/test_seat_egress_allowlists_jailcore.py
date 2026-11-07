@@ -45,6 +45,22 @@ def test_gemini_allowlist_bytes_and_content_digest_are_frozen(tmp_path, monkeypa
     assert widened.probe_rows != baseline.probe_rows
 
 
+@pytest.mark.parametrize("port", [80, 444])
+def test_provider_allowlists_are_tls_443_only(tmp_path, monkeypatch, port):
+    document = json.loads(
+        seat_egress_proxy._data_path("gemini-allowlist.json").read_text(encoding="utf-8")
+    )
+    document["leg"] = "fixture"
+    document["allow"][0]["port"] = port
+    fixture = tmp_path / "fixture-allowlist.json"
+    fixture.write_text(json.dumps(document), encoding="utf-8")
+    monkeypatch.setattr(seat_egress_proxy, "_data_path", lambda _name: fixture)
+    _assert_code(
+        seat_egress_proxy.INTEGRITY_CODE,
+        lambda: seat_egress_proxy.allowlist_ref("fixture"),
+    )
+
+
 def test_public_proxy_api_cannot_disable_any_attestation():
     parameters = inspect.signature(seat_egress_proxy.start_proxy).parameters
     assert list(parameters) == ["allowlist_id", "refuse_all"]
@@ -153,7 +169,7 @@ def test_process_spawn_and_readiness_failures_are_start_failed(tmp_path, monkeyp
     )
     _assert_code(
         seat_egress_proxy.START_FAILED_CODE,
-        lambda: seat_egress_proxy.start_proxy().__enter__(),
+        lambda: seat_egress_proxy.start_proxy(allowlist_id="gemini").__enter__(),
     )
 
     process = _FakeProcess()
@@ -191,7 +207,7 @@ def test_missing_or_false_ready_attestation_is_tls_unterminated(
         ready[missing] = value
     monkeypatch.setattr(seat_egress_proxy, "_read_ready", lambda _process: ready)
     with pytest.raises(seat_egress_proxy.EgressLayerUnavailable) as caught:
-        with seat_egress_proxy.start_proxy():
+        with seat_egress_proxy.start_proxy(allowlist_id="gemini"):
             pass
     assert caught.value.code == seat_egress_proxy.TLS_UNTERMINATED_CODE
 

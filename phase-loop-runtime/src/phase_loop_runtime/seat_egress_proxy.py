@@ -154,7 +154,7 @@ def _validate_allowlist_document(allowlist_id: str, document: Mapping[str, objec
         ):
             raise EgressLayerUnavailable(INTEGRITY_CODE, "the seat egress allowlist rule is invalid")
         if (not isinstance(rule["host"], str) or not rule["host"]
-                or type(rule["port"]) is not int or not 1 <= rule["port"] <= 65535
+                or type(rule["port"]) is not int or rule["port"] != 443
                 or not isinstance(rule["method"], str) or not rule["method"]):
             raise EgressLayerUnavailable(INTEGRITY_CODE, "the seat egress allowlist rule is invalid")
         path_key = "path" if "path" in rule else "path_prefix"
@@ -667,7 +667,7 @@ def ca_fingerprint(cert: Path) -> str:
 
 
 @contextlib.contextmanager
-def start_proxy(*, allowlist_id: str = "gemini",
+def start_proxy(*, allowlist_id: str,
                 refuse_all: bool = False) -> Iterator[SeatEgressProxy]:
     """Run the seat's proxy for the life of the context. Raises
     :class:`EgressLayerUnavailable` before anything runs when the layer is unavailable.

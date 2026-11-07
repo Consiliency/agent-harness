@@ -1,0 +1,23 @@
+{
+  "schema": "seat_jailcore_terminal_codes.v1",
+  "mode_line_code_count": 128,
+  "mode_line_codes_sha256": "dc3bd95d0adda6ed1ef7abdd51a76e370f9b6dc1f6587815363e3c1c60e2fae9",
+  "od10_classes_sha256": "a297e62877ad7e701a89a0602ce884fdc3688421ada5c9ff3708ad8eea6c4fe3",
+  "od10_class_counts": {
+    "ordinary": 106,
+    "security": 22
+  },
+  "descend_codes": [
+    "seat_egress_not_installed",
+    "seat_sandbox_unavailable_host",
+    "seat_sandbox_unavailable_seat_uid",
+    "seat_sandbox_unavailable_tiocsti"
+  ],
+  "remote_descend_codes": [],
+  "capacity_codes": [
+    "seat_local_capacity_exhausted"
+  ],
+  "default_rule": "terminal unless explicitly listed in descend_codes",
+  "closure": "mode_line_codes equals OD10_CLASSES keys",
+  "review_fallback": "degraded; no review route emits sealed"
+}

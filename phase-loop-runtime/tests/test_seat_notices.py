@@ -168,7 +168,7 @@ def test_rendered_fields_are_the_table_literals():
     notice = seat_jail.render_notice("seat_sandbox_unavailable_seat_uid", "claude:a")
     assert notice.as_json() == {
         "code": "seat_sandbox_unavailable_seat_uid", "seat_key": "claude:a",
-        "what": "inline fallback", "why": "no subordinate seat uid on this host",
+        "what": "seat unavailable", "why": "no subordinate seat uid on this host",
         "fix": seat_jail.NOTICES["seat_sandbox_unavailable_seat_uid"][2],
     }
     assert seat_jail.render_notice("seat_sandbox_refused:bogus", "x") is None

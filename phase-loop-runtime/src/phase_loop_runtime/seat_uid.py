@@ -125,8 +125,11 @@ def seat_uid_available(
     newuidmap: str = NEWUIDMAP,
     newgidmap: str = NEWGIDMAP,
 ) -> bool:
-    """J7 step 2, the seat-uid half: setuid helpers, a range for uid AND gid, a free seat
-    id, and an operator that is not uid 0."""
+    """Whether the host has the seat-uid prerequisites (capacity is checked at L9).
+
+    This deliberately does not acquire and release a seat-id lease.  Availability probes
+    raced the real acquisition and conflated a configured host with exhausted capacity.
+    """
     uid = os.getuid() if uid is None else uid
     if uid == 0:
         return False
@@ -140,14 +143,10 @@ def seat_uid_available(
 
     if not subordinate_ranges_disjoint(uid, subuid=subuid, subgid=subgid):
         return False
-    count = seat_id_count(uids, gids)
-    try:
-        with lease_seat_id(count):
-            return True
-    except SeatIdsExhausted:
-        return False
-    except OSError:
-        return False
+    return seat_id_count(uids, gids) > 0
+
+
+seat_uid_prerequisites_available = seat_uid_available
 
 
 def seat_id_count(uids: SubordinateRange, gids: SubordinateRange) -> int:
@@ -157,6 +156,48 @@ def seat_id_count(uids: SubordinateRange, gids: SubordinateRange) -> int:
 
 class SeatIdsExhausted(RuntimeError):
     pass
+
+
+class SeatIdLease:
+    """A nonblocking lease whose lifetime is explicit and whose release is idempotent."""
+
+    def __init__(self, manager, seat_id: int):
+        self._manager = manager
+        self.seat_id = seat_id
+        self._released = False
+
+    def release(self) -> None:
+        if not self._released:
+            self._released = True
+            self._manager.__exit__(None, None, None)
+
+
+class SeatIdCapacity:
+    """Production adapter for the resolver's ``SeatCapacity`` protocol."""
+
+    def __init__(self, count: int | None = None, *, directory: Path | None = None):
+        self._count = count
+        self._directory = directory
+
+    def _seat_count(self) -> int | None:
+        if self._count is not None:
+            return self._count
+        uids = subordinate_range(SUBUID_FILE)
+        gids = subordinate_range(SUBGID_FILE)
+        if uids is None or gids is None:
+            return None
+        return seat_id_count(uids, gids)
+
+    def try_lease(self) -> SeatIdLease | None:
+        count = self._seat_count()
+        if count is None:
+            return None
+        manager = lease_seat_id(count, directory=self._directory)
+        try:
+            seat_id = manager.__enter__()
+        except (SeatIdsExhausted, OSError):
+            return None
+        return SeatIdLease(manager, seat_id)
 
 
 @contextlib.contextmanager
