@@ -367,8 +367,7 @@ def readiness_code() -> str | None:
     try:
         if not (_CGROUP_ROOT / "cgroup.controllers").is_file():
             return CODE
-        manager = (_CGROUP_ROOT / "user.slice" / f"user-{os.getuid()}.slice"
-                   / f"user@{os.getuid()}.service")
+        manager = _manager_cgroup()
         controllers = set((manager / "cgroup.controllers").read_text(encoding="ascii").split())
         if not REQUIRED_CONTROLLERS <= controllers:
             return CODE
@@ -399,6 +398,44 @@ def _expected(caps: SeatResourceCaps, devices: Sequence[str], carved: Sequence[P
     if carved:
         value["memory.swap.max"] = "0"
     return value
+
+
+def _manager_cgroup() -> Path:
+    return (_CGROUP_ROOT / "user.slice" / f"user-{os.getuid()}.slice"
+            / f"user@{os.getuid()}.service")
+
+
+def _seat_slice_chain(unit: str) -> tuple[Path, ...]:
+    """Return the user-manager root through this generated seat slice."""
+    if not unit.startswith("phase-loop-seat-") or not unit.endswith(".slice"):
+        _refuse("the capped parent unit is invalid")
+    parts = unit.removesuffix(".slice").split("-")
+    current = _manager_cgroup()
+    chain = [current]
+    for index in range(1, len(parts) + 1):
+        current /= "-".join(parts[:index]) + ".slice"
+        chain.append(current)
+    return tuple(chain)
+
+
+def _realized_parent_ready(unit: str, carved: Sequence[Path]) -> bool:
+    """Check controller propagation and files after systemd realizes the empty parent."""
+    try:
+        chain = _seat_slice_chain(unit)
+        for path in chain:
+            controllers = set((path / "cgroup.controllers").read_text(encoding="ascii").split())
+            if not REQUIRED_CONTROLLERS <= controllers:
+                return False
+        for path in chain[:-1]:
+            enabled = set((path / "cgroup.subtree_control").read_text(encoding="ascii").split())
+            if not REQUIRED_CONTROLLERS <= enabled:
+                return False
+        names = {"memory.max", "cpu.weight", "cpu.max", "io.weight", "io.max", "pids.max"}
+        if carved:
+            names.add("memory.swap.max")
+        return all((chain[-1] / name).is_file() for name in names)
+    except (CapsUnavailable, OSError, ValueError):
+        return False
 
 
 @dataclass
@@ -446,9 +483,10 @@ def _parent_properties(caps: SeatResourceCaps, devices: Sequence[str], carved: S
     return properties
 
 
-def _helper_failure(process: "subprocess.Popen[bytes]", diagnostic_fd: int) -> str:
+def _helper_failure(process: "subprocess.Popen[bytes]", diagnostic_bytes: bytes) -> str:
     """Return only the helper's bounded, purpose-built failure diagnostic."""
-    diagnostic = os.read(diagnostic_fd, _DIAGNOSTIC_CAP).decode("utf-8", "replace").strip()
+    diagnostic = diagnostic_bytes.decode("utf-8", "replace").strip()
+    _kind, _separator, diagnostic = diagnostic.partition("\n")
     stderr = ""
     if process.stderr is not None:
         captured = process.stderr.read(_DIAGNOSTIC_CAP)
@@ -472,10 +510,21 @@ def _acquire_parent(seat_key: str, caps: SeatResourceCaps, devices: Sequence[str
             unit = f"phase-loop-seat-{_unit_key(seat_key)}.slice"
             _systemctl("set-property", "--runtime", unit,
                        *_parent_properties(caps, devices, carved))
+            _systemctl("start", unit)
+            if not _realized_parent_ready(unit, carved):
+                try:
+                    _systemctl("stop", unit)
+                except CapsUnavailable:
+                    logging.getLogger(__name__).warning(
+                        "unready seat resource-cap parent collection failed for %s", unit,
+                    )
+                _refuse("the host does not provide delegated seat controllers")
             parent = _Parent(unit=unit, digest=digest)
             _PARENTS[seat_key] = parent
         elif parent.digest != digest:
             _refuse("a second independent capped parent was requested")
+        elif not _realized_parent_ready(parent.unit, carved):
+            _refuse("the host does not provide delegated seat controllers")
         parent.refs += 1
         if not child:
             return parent, None
@@ -595,9 +644,12 @@ def capped_popen(command, *, seat_key: str, **popen_kwargs) -> "subprocess.Popen
                 process.kill()
                 process.wait(timeout=5)
             try:
-                detail = _helper_failure(process, diagnostic_read)
+                diagnostic = os.read(diagnostic_read, _DIAGNOSTIC_CAP)
             finally:
                 os.close(diagnostic_read)
+            if diagnostic.startswith(b"controller_unavailable\n"):
+                _refuse("the host does not provide delegated seat controllers")
+            detail = _helper_failure(process, diagnostic)
             suffix = f"; {detail}" if detail else ""
             _refuse(f"the child did not attest its effective caps{suffix}")
         os.close(diagnostic_read)

@@ -8,6 +8,7 @@
   {"count": 1, "function": "_mount_type", "module": "seat_resource_caps", "primitive": "io.read_text", "role": "host-io"},
   {"count": 1, "function": "_read_dev", "module": "seat_resource_caps", "primitive": "io.read_text", "role": "host-io"},
   {"count": 1, "function": "_read_regular", "module": "seat_resource_caps", "primitive": "io.open", "role": "host-io"},
+  {"count": 2, "function": "_realized_parent_ready", "module": "seat_resource_caps", "primitive": "io.read_text", "role": "host-io"},
   {"count": 1, "function": "_systemctl", "module": "seat_resource_caps", "primitive": "subprocess.run", "role": "host-helper"},
   {"count": 1, "function": "_systemd_run_ready", "module": "seat_resource_caps", "primitive": "io.stat", "role": "host-io"},
   {"count": 1, "function": "_tmpfs_carveout", "module": "seat_resource_caps", "primitive": "io.open", "role": "host-io"},
