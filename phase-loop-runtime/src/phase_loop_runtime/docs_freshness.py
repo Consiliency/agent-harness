@@ -480,7 +480,10 @@ def scan_docs_freshness(
 CATALOG_PATH_REL = ".claude/docs-catalog.json"
 CATALOG_ROOT_DOCS: tuple[str, ...] = ("README.md", "CHANGELOG.md")
 CATALOG_CONTRACT_DOCS_DIR = "phase-loop-runtime/src/phase_loop_runtime/_contract_docs"
-CATALOG_EXTRA_DOCS: tuple[str, ...] = ("phase-loop-runtime/README.md",)
+CATALOG_EXTRA_DOCS: tuple[str, ...] = (
+    "docs/team-host-admin.md",
+    "phase-loop-runtime/README.md",
+)
 
 
 @dataclass(frozen=True)

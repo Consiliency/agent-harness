@@ -27,7 +27,7 @@ designated seat host; source-checkout tests do not establish host readiness.
 | Row | Route | Status | Named exception | Expiry / end condition |
 | --- | --- | --- | --- | --- |
 | Claude | local | candidate | open egress | 2026-12-04 UTC or CLAUDENET exit, whichever is first |
-| Gemini | jailed | candidate | none | W1 required |
+| Gemini | jailed | candidate | none | First post-TEAMHOST row window (agent-harness#1903) |
 | Codex | local | candidate | unconfined | 2026-12-04 UTC or CODEX exit, whichever is first |
 | Grok | local | candidate | unconfined | 2026-12-04 UTC or GROK exit, whichever is first |
 | Pi | local | candidate | none | PI window required |

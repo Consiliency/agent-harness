@@ -740,6 +740,29 @@ implementation supplies a valid operator-private grant and receipt. The complete
 egress code vocabulary is closed in `seat_route_contract.CODES`; unknown codes do not gain
 a fallback.
 
+**Managed-release seat subject.** A registered seat resolves the subject selected for this
+launch, rather than importing a provider path at module load: an active dependency lease wins,
+then a guarded front door into a managed release, then an absolute standalone executable found
+on the call-time `PATH`. Relative `PATH` entries are ignored. A refused managed release never
+falls back to the standalone executable. Its provider bytes launch only through the profile's
+declared projection after the independent authority named by contract §7 is admitted; the
+release cannot establish its own authority.
+
+**Doctor vocabulary for seats.** `phase-loop doctor --json` reports the closed
+`seat_jail_prerequisites[]` list with `present`, `missing` or `unknown`, plus a checklist id and
+one fix sentence where applicable. Its `seat_cli_qualification[]` rows say `admits`, `refuses`
+or `unknown`: `unknown` records a provider or launch measurement the provider-free doctor did
+not perform, never a pass. The checks follow launch order—host, credential, egress, subject and
+authority, jail pass, then vendor admission. `authority_missing` and `authority_invalid` are
+doctor refinements that select LA1-AUTHORITY-PIN; the corresponding seat launch refuses
+`seat_sandbox_refused:identity`. The [team-host administrator checklist](team-host-admin.md)
+contains every root action, and its renderer is print-only.
+
+The Gemini writable overlay remains `.gemini/config`. Narrowing below that directory is deferred
+to the next agy requalification window: it requires pre-seeded files and a fresh measurement on
+a qualified agy release, while the retained measurement used agy 1.2.13 outside the qualified
+set. The first post-TEAMHOST row window is tracked by agent-harness#1903.
+
 **Host prerequisite (maintainer, root, once per host).** `apt install uidmap`, then
 `usermod --add-subuids <start>-<end> --add-subgids <start>-<end> <operator>` (65536 ids is
 conventional). The runtime never runs these. Without them the seat is degraded and does not

@@ -669,11 +669,24 @@ truthful, and finish the Gemini follow-ups.
 **Depends on**
 - FIRSTSEAT
 
+Gate note: G-A (managed-release switch-on) waits for the registered per-profile projection,
+and G-D (Gemini overlay) waits for the registered Gemini profile. These interface gates do
+not add a whole-phase dependency; the remaining lanes run in parallel with their producer.
+
 **Produces**
 - (none)
 
 **Spec closeout policy**
 schema: `spec_delta_closeout.v1`; expected decision: `canonical_spec_update`; target surfaces: `docs/TEAM-ONBOARDING.md`, the capabilities card; evidence paths: provider-free receipts; `redaction_posture: metadata_only`; missing or malformed evidence routes non-human `blocker_class=contract_bug`.
+
+### Post-execution amendments
+
+- 2026-11-07: SL-docs.3 remains pending until phase-loop-runtime 0.7.29 is published. CLOSEOUT
+  tracks the owner-gated `phase-loop doctor --json` receipt from the designated standard host;
+  a team-host observation is not a substitute.
+- 2026-11-07: Gemini keeps the `.gemini/config` overlay. Narrowing below `config` is deferred
+  to the next agy requalification window because it requires pre-seeded files and a fresh
+  measurement on a qualified agy release; agent-harness#1903 tracks that window.
 
 ---
 

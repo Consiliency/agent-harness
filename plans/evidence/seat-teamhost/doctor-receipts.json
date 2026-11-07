@@ -1,0 +1,15 @@
+{
+  "schema": "seat_teamhost_doctor_receipts.v1",
+  "receipts": [],
+  "pending": [
+    {
+      "status": "pending",
+      "summary": "pending: post-0.7.29 runtime qualification on the designated standard host",
+      "runtime_version": "0.7.29",
+      "host_class": "standard",
+      "command": "phase-loop doctor --json",
+      "reason": "post-0.7.29 runtime qualification on the designated standard host",
+      "tracked_by": "CLOSEOUT"
+    }
+  ]
+}

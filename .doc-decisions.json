@@ -19,6 +19,19 @@
         "docs/advisor-board-capabilities-card.md",
         "CHANGELOG.md"
       ]
+    },
+    {
+      "surface": "seat-teamhost",
+      "decision": "docs_updated",
+      "reason": "TEAMHOST SL-6 reconciles the managed-release subject, doctor vocabulary, administrator checklist, Gemini transition and deferred post-0.7.29 standard-host receipt with the landed route and authority contracts.",
+      "evidence": [
+        "plans/phase-plan-v1-seats-TEAMHOST.md#sl-6--sl-docs-documentation-and-spec-reconciliation",
+        "docs/TEAM-ONBOARDING.md",
+        "docs/advisor-board-capabilities-card.md",
+        "docs/team-host-admin.md",
+        "plans/evidence/seat-teamhost/doctor-receipts.json",
+        "agent-harness#1903"
+      ]
     }
   ]
 }
