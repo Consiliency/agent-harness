@@ -19,7 +19,7 @@ PRs under principle 2. The file name follows the manifest pattern of the sibling
 2026-11-06.
 
 **Frozen artifact.** `plans/seats-teamhost-contract.md` is normative for every interface below
-(§1–§8) at sha256 `de0563eee9378d52b6506da5f05c7cd989f2efc4cff4edf96ebb45003998004f`. This plan points at its sections and does not repeat
+(§1–§8) at sha256 `1dd46b22829d67d8cd7a29c4e4326e7773645dc8863c7677367359424b2e3422`. This plan points at its sections and does not repeat
 them. Its input pins include the JAILCORE route contract
 (`235f1faded1d7f15d0ff69668b6a451cee7167e6438d258da57257faf7bdae81`). TEAMHOST consumes it
 only through IF-0-JAILCORE-1, IF-0-JAILCORE-2 and EC-JAILCORE-4.
@@ -304,7 +304,6 @@ SL-8 — A3: Managed-release switch-on (gate G-A)
 - **`seats_teamhost_agreement`.** A fixture table covers:
   - a release agy, a valid local record, a record whose MAC fails, a provenance-less record
     and no record;
-  - an untrusted Grok surface;
   - a missing credential, an uninstalled egress layer and a failed guarded frontdoor;
   - each host-capability code;
   - stale and valid jail passes.
