@@ -18,7 +18,7 @@ after a reservation. agent-toolkit#54 already reserves through PLACECLI, but it
 cannot run a remote Pi end to end until these launch inputs exist.
 
 **Frozen artifact.** `plans/artifacts/v13-LANEEXEC-contract-v1.schema.json`,
-sha256 `c7284167c6dac6e68556e4ea3a0178268abd3ae058830ee76a7194ba13ff8ad8`,
+sha256 `6630c7f4bb363f57b5ad96693765a6898318e3c4cf9039ba264a8e61b713bdcd`,
 holds IF-0-LANEEXEC-1. It covers:
 
 - the process entry `agent-harness-launch --client … launch|status|cancel|version`
