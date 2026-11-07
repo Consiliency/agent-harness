@@ -6,6 +6,25 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- The jailed Claude seat's `sdk` bridge parses each CLI stdout line once, still unadmitted
+  (SEATS CLAUDE SL-3, agent-harness#1820). Every line now goes through `print`'s stream
+  admission under the `sdk` route's own parse policy (`claude_seat_sdk.parse_policy()`):
+  - a duplicate key refuses in every frame;
+  - every decoded key and string value is scanned, including a value a duplicate key drops;
+  - a frame only that policy refuses, or one outside the frozen inbound vocabulary, is
+    `claude_sdk_worker_contract_violation`.
+
+  The bridge receives admission's own parsed object through `on_frame` and forwards that
+  object; it no longer keeps its own line buffer or a second strict parse.
+
+  The launch fixture (`launch-v1.json` and its packaged copy) is recaptured offline through
+  the owned launcher. `panel_invoker._run_claude_sdk_leg` runs the worker in its sandbox in
+  a seat-uid holder, with the fake CLI and the parent bridge. The recaptured frames,
+  CLI argv and environment are unchanged. The capture now records its method and the
+  worker's identity and confinement, observed from outside while the leg ran.
+  `python tests/test_seats_claude_sdk.py capture` refuses on a host without the live
+  worker's prerequisites, and an unsandboxed leg must still reproduce every recorded frame
+  on every host.
 - The jailed Claude seat's `sdk` host worker gets its launcher and duplex leg, still
   unadmitted (SEATS CLAUDE SL-1, agent-harness#1820). `panel_invoker._run_claude_sdk_leg`
   leases the worker its own seat id and starts it inside the leg's seat-uid holder:

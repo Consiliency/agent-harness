@@ -95,7 +95,7 @@
    }
   ],
   "cli_stdin_closed_after": "end_input",
-  "method": "offline: real pinned SDK in the real worker payload, fake CLI, parent bridge",
+  "method": "offline: real pinned SDK in the real worker payload, started by the owned launcher (panel_invoker._run_claude_sdk_leg) in its sandbox in a seat-uid holder; fake CLI; parent bridge",
   "outcome": [
    "admitted",
    "<RESULT_TEXT>"
@@ -261,6 +261,15 @@
     "seq": 6
    }
   ],
+  "worker_observed": {
+   "capabilities": "empty",
+   "groups": "",
+   "no_new_privs": "1",
+   "pid_namespace": "own",
+   "seccomp": "2",
+   "uid": "leased seat id",
+   "worker_processes": 1
+  },
   "worker_to_parent": [
    {
     "body": {},

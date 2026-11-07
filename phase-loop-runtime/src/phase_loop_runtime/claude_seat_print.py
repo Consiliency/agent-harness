@@ -272,9 +272,9 @@ class StreamAdmission:
         try:
             self._parse(raw)
         except (_Unsafe, RecursionError):
-            self._stop(STREAM_UNSAFE)
+            self._stop(self.policy.frame_violation)
         except Exception:  # any hostile value is a typed refusal, never an untyped failure
-            self._stop(STREAM_UNSAFE)
+            self._stop(self.policy.frame_violation)
         parsed, self._parsed = self._parsed, None
         if parsed is None or self.violation is not None or self._on_frame is None:
             return
@@ -317,20 +317,26 @@ class StreamAdmission:
         if deep:
             # Too deep to parse safely: refused whatever the frame claims to be.
             raise _Unsafe("nesting")
+        # One decode per line. A strict line that does not open as JSON but carries an
+        # object after a prefix is decoded only from that object, and only to refuse an
+        # embedded ``system`` or ``result`` frame: no other line of that shape can parse
+        # whole, since a JSON scalar holding ``{`` is a string, which ends in a quote.
+        opens = raw.lstrip()[:1] in (b"{", b"[")
+        start = raw.find(b"{")
+        if strict and not opens and start > 0:
+            try:
+                embedded = json.loads(raw[start:].decode("utf-8", errors="strict"))
+            except (UnicodeDecodeError, ValueError):
+                return  # not a frame; it supplies nothing and admits nothing
+            if isinstance(embedded, dict) and embedded.get("type") in ("system", "result"):
+                raise _Unsafe("malformed")
+            return
         try:
             event = json.loads(text, object_pairs_hook=unique)
         except ValueError:
             if not strict:
                 raise _Unsafe("utf-8") from None
-            start = raw.find(b"{")
-            if start > 0:
-                try:
-                    embedded = json.loads(raw[start:].decode("utf-8", errors="strict"))
-                except (UnicodeDecodeError, ValueError):
-                    embedded = None
-                if isinstance(embedded, dict) and embedded.get("type") in ("system", "result"):
-                    raise _Unsafe("malformed") from None
-            if raw.lstrip()[:1] in (b"{", b"["):
+            if opens:
                 raise _Unsafe("malformed") from None  # a frame that does not parse
             return  # not a frame; it supplies nothing and admits nothing
         if not isinstance(event, dict):
