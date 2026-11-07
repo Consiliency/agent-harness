@@ -7,6 +7,7 @@ from typing import Mapping
 
 import pytest
 
+from phase_loop_runtime import __version__
 from phase_loop_runtime import executable_dependency_startup as startup
 from phase_loop_runtime import seat_jail_qualification as qualification
 from phase_loop_runtime.executable_dependency_startup import (
@@ -358,7 +359,7 @@ NONCANONICAL_INFORMATIONAL_ARGV = [
 def _runtime_package() -> QualifiedRuntimePackage:
     return QualifiedRuntimePackage(
         distribution="phase-loop-runtime",
-        version="0.7.27",
+        version=__version__,
         install_root="/synthetic/runtime",
         install_root_device=1,
         install_root_inode=2,
@@ -434,7 +435,7 @@ def test_managed_help_and_version_are_effect_free_provider_free_commands(
         output = capsys.readouterr()
         assert output.err == ""
         if argv == ["--version"]:
-            assert output.out == "phase-loop-seat-jail-qualification 0.7.27\n"
+            assert output.out == f"phase-loop-seat-jail-qualification {__version__}\n"
         else:
             assert "usage: phase-loop-seat-jail-qualification" in output.out
         assert dependency.revalidations == 0

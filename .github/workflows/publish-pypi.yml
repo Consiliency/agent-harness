@@ -63,9 +63,41 @@ jobs:
           echo "tag=$tag  pyproject=$ver"
           [ "$tag" = "$ver" ] || { echo "::error::tag v$tag does not match pyproject version $ver"; exit 1; }
       - name: Build sdist + wheel
+        # Reproducible archives: archive timestamps come from the built commit's
+        # committer time, and member modes from a fixed umask.
         run: |
           python -m pip install --upgrade build uv
+          SOURCE_DATE_EPOCH="$(git log -1 --format=%ct HEAD)"
+          export SOURCE_DATE_EPOCH
+          echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"
+          umask 022
           python -m build --sdist --wheel --outdir dist phase-loop-runtime
+          # setuptools stamps sdist members with checkout mtimes and the gzip header
+          # with the wall clock; rewrite both from SOURCE_DATE_EPOCH, keeping order.
+          python - "$SOURCE_DATE_EPOCH" dist/*.tar.gz <<'PY'
+          import gzip
+          import io
+          import sys
+          import tarfile
+
+          epoch = int(sys.argv[1])
+          for path in sys.argv[2:]:
+              out = io.BytesIO()
+              with tarfile.open(path, "r:gz") as src, tarfile.open(
+                  fileobj=out, mode="w", format=tarfile.PAX_FORMAT
+              ) as dst:
+                  for member in src.getmembers():
+                      member.mtime = min(int(member.mtime), epoch)
+                      member.uid = member.gid = 0
+                      member.uname = member.gname = ""
+                      member.pax_headers = {}
+                      data = src.extractfile(member) if member.isfile() else None
+                      dst.addfile(member, data)
+              with open(path, "wb") as raw, gzip.GzipFile(
+                  filename="", mode="wb", fileobj=raw, mtime=epoch, compresslevel=9
+              ) as gz:
+                  gz.write(out.getvalue())
+          PY
       - name: Verify exact wheel in an isolated locked environment
         run: |
           python -m venv /tmp/phase-loop-release-wheel
