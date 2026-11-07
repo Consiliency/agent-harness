@@ -188,20 +188,33 @@ def test_a_changed_codex_allowlist_moves_its_digest(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------------------
 
 _DIAL_HOOK = r"""
-// Test-only: every TCP dial to port 443 from the proxy goes to the fixture upstream.
+// Test-only: every TCP dial to port 443 from the proxy goes to the fixture upstream. srt
+// dials twice per upstream: a vetting probe through net.connect, then the request through
+// https, whose agent opens its socket with tls.connect and `path: null`. Both entry points
+// are redirected; a unix-socket dial (a string `path`) is left alone.
 import net from 'node:net';
+import tls from 'node:tls';
+import { syncBuiltinESMExports } from 'node:module';
 const port = Number(process.env.PHASE_LOOP_FIXTURE_UPSTREAM_PORT);
-const connect = net.Socket.prototype.connect;
-net.Socket.prototype.connect = function (...args) {
-  const options = Array.isArray(args[0]) ? args[0][0] : args[0];
-  if (options !== null && typeof options === 'object' && options.path === undefined
-      && Number(options.port) === 443) {
+function redirect(options) {
+  if (options !== null && typeof options === 'object' && options.path == null
+      && options.socket == null && Number(options.port) === 443) {
     options.host = '127.0.0.1';
     options.port = port;
     delete options.lookup;
   }
+}
+const connect = net.Socket.prototype.connect;
+net.Socket.prototype.connect = function (...args) {
+  redirect(Array.isArray(args[0]) ? args[0][0] : args[0]);
   return connect.apply(this, args);
 };
+const tlsConnect = tls.connect;
+tls.connect = function (...args) {
+  redirect(args[0]);
+  return tlsConnect.apply(this, args);
+};
+syncBuiltinESMExports();
 """
 
 
@@ -640,13 +653,14 @@ def test_live_jail_codex_refused_rows_from_a_jailed_tool_command(
     assert done.returncode == 0, done.stderr[-400:]
     results = json.loads(done.stdout.strip().splitlines()[-1])
     assert len(results) == len(targets)
-    signatures = {}
+    signatures, observed = {}, {}
     for (label, _url), result in zip(targets, results):
         step = qualification.JailedStep(
             exit_code=result["exit_code"], timed_out=False,
             stdout=base64.b64decode(result["stdout"]))
         signatures[label] = qualification._curl_refusal(step)
-    assert signatures == {label: "proxy_connect_refused" for label, _url in targets}
+        observed[label] = (step.exit_code, step.stdout.rpartition(b"PHASE_LOOP_CURL ")[2].strip())
+    assert signatures == {label: "proxy_connect_refused" for label, _url in targets}, observed
     assert start.acknowledged and end.acknowledged
     assert stream.final and not stream.protocol_error
     window = [item for item in stream.windows if item.label == "leg"]
@@ -742,6 +756,92 @@ def _measurement_copy(raw: bytes) -> tuple[dict, tuple[str, ...]]:
     return copy, secrets_kept
 
 
+#: An observation row: the proxy accepts the CONNECT, so the host is named in the event
+#: stream, and refuses every request inside the tunnel (no upstream is dialed).
+OBSERVE_ONLY_PATH = "/phase-loop-observe-only"
+_OBSERVATION_DIR = Path.home() / ".local" / "state" / "agent-harness" / "codex-sl2"
+
+
+def _observation_ref(path: Path):
+    """Turn (a)'s private, uncommitted observation allowlist, bound like the packaged one."""
+    from phase_loop_runtime.seat_route_contract import AllowlistRef
+
+    resolved = path.resolve()
+    if not resolved.is_relative_to(_OBSERVATION_DIR.resolve()):
+        pytest.fail(f"the observation allowlist must live under {_OBSERVATION_DIR}")
+    document = json.loads(_private_file(resolved))
+    seat_egress_proxy._validate_allowlist_document("codex", document)
+    rules = document["allow"]
+    token_rows = [rule for rule in rules if rule["host"] == CODEX_TOKEN_ENDPOINT_HOST]
+    if not token_rows or any(rule.get("path") != OBSERVE_ONLY_PATH for rule in token_rows):
+        pytest.fail("the token endpoint host may carry observe-only rows alone")
+    if any(rule.get("path_prefix") == "/" or "*" in rule["host"] for rule in rules):
+        pytest.fail("the observation allowlist has a wildcard host or a / prefix")
+    bound = {key: document[key] for key in ("schema", "leg", "allow", "measured_and_refused")}
+    return AllowlistRef(
+        id="codex", content_digest=seat_egress_proxy._digest(bound),
+        request_set=tuple(dict(rule) for rule in rules),
+        probe_rows=seat_egress_proxy._probe_rows(rules, document["measured_and_refused"]))
+
+
+def _observation_document() -> dict:
+    document = _document("codex-allowlist.json")
+    document["allow"] = [
+        *document["allow"],
+        {"host": CODEX_TOKEN_ENDPOINT_HOST, "port": 443, "method": "POST",
+         "path": OBSERVE_ONLY_PATH},
+    ]
+    document["measured_and_refused"] = []
+    return document
+
+
+def _write_observation(directory: Path, document: dict, mode: int = 0o600) -> Path:
+    directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = directory / "observation-allowlist.json"
+    path.write_text(json.dumps(document), encoding="utf-8")
+    path.chmod(mode)
+    return path
+
+
+def test_the_observation_allowlist_loader_binds_and_refuses(tmp_path, monkeypatch):
+    monkeypatch.setattr(sys.modules[__name__], "_OBSERVATION_DIR", tmp_path / "private")
+    good = _write_observation(tmp_path / "private", _observation_document())
+    ref = _observation_ref(good)
+    assert ref.id == "codex" and ref.content_digest != CODEX.content_digest
+    assert any(rule["host"] == CODEX_TOKEN_ENDPOINT_HOST for rule in ref.request_set)
+    opened = _observation_document()
+    opened["allow"][-1]["path"] = "/oauth/token"
+    for path in (_write_observation(tmp_path / "private" / "a", opened),
+                 _write_observation(tmp_path / "elsewhere", _observation_document()),
+                 _write_observation(tmp_path / "private" / "b", _observation_document(), 0o644)):
+        with pytest.raises(pytest.fail.Exception):
+            _observation_ref(path)
+
+
+def test_an_observe_only_row_names_its_host_and_dials_nothing(codex_front, tmp_path,
+                                                               monkeypatch):
+    upstream = codex_front()
+    monkeypatch.setattr(sys.modules[__name__], "_OBSERVATION_DIR", tmp_path / "private")
+    ref = _observation_ref(_write_observation(tmp_path / "private", _observation_document()))
+    real_ref = seat_egress_proxy.allowlist_ref
+    monkeypatch.setattr(seat_egress_proxy, "allowlist_ref",
+                        lambda allowlist_id: ref if allowlist_id == "codex"
+                        else real_ref(allowlist_id))
+    with seat_egress_proxy.start_proxy(allowlist_id="codex") as proxy:
+        assert proxy.allowlist_digest == ref.content_digest
+        start = seat_egress_proxy.fence(proxy, "start", "leg")
+        status, reply = _exchange(proxy, CODEX_TOKEN_ENDPOINT_HOST,
+                                  _http("POST", CODEX_TOKEN_ENDPOINT_HOST, "/oauth/token"))
+        end = seat_egress_proxy.fence(proxy, "end", "leg")
+    assert status.startswith(b"HTTP/1.1 200") and reply.startswith(b"HTTP/1.1 403"), reply[:80]
+    assert upstream.connections == 0 and upstream.requests == []
+    stream = seat_egress_proxy.proxy_stream(proxy)
+    assert start.acknowledged and end.acknowledged and not stream.protocol_error
+    events = [item for item in stream.windows if item.label == "leg"][0].events
+    assert [(e.method, e.host, e.decision) for e in events] == [
+        ("POST", CODEX_TOKEN_ENDPOINT_HOST, "deny")]
+
+
 def _events(stream: bytes) -> list[dict]:
     events = []
     for line in stream.splitlines():
@@ -755,9 +855,18 @@ def _events(stream: bytes) -> list[dict]:
 
 
 @pytest.mark.host_seat_credentials
-def test_measured_turn_completes_over_https_through_the_codex_proxy(tmp_path):
+def test_measured_turn_completes_over_https_through_the_codex_proxy(tmp_path, monkeypatch):
+    """Turn (a) with ``PHASE_LOOP_CODEX_MEASURE_ALLOWLIST`` naming the private observation
+    allowlist; turn (b) without it, through the committed ``codex-allowlist.json``."""
     if os.environ.get("PHASE_LOOP_CODEX_MEASURE") != "1":
         pytest.skip("set PHASE_LOOP_CODEX_MEASURE=1 on a developer host with a codex login")
+    observation = os.environ.get("PHASE_LOOP_CODEX_MEASURE_ALLOWLIST")
+    selected = _observation_ref(Path(observation)) if observation else CODEX
+    if observation:
+        real_ref = seat_egress_proxy.allowlist_ref
+        monkeypatch.setattr(seat_egress_proxy, "allowlist_ref",
+                            lambda allowlist_id: selected if allowlist_id == "codex"
+                            else real_ref(allowlist_id))
     reason = seat_egress_proxy.unavailable_reason()
     cli = os.environ.get("PHASE_LOOP_CODEX_MEASURE_CLI", "")
     missing = [name for name in ("unshare", "ip", "socat") if shutil.which(name) is None]
@@ -792,6 +901,7 @@ def test_measured_turn_completes_over_https_through_the_codex_proxy(tmp_path):
     runtime_path = Path(cli).resolve().parent.parent / "codex-path"
     started = time.monotonic()
     with seat_egress_proxy.start_proxy(allowlist_id="codex") as proxy:
+        assert proxy.allowlist_digest == selected.content_digest
         env = {
             "CODEX_HOME": str(work / "codex-home"), "HOME": str(work / "home"),
             "TMPDIR": str(work / "tmp"), "LANG": "C.UTF-8",
@@ -840,6 +950,7 @@ def test_measured_turn_completes_over_https_through_the_codex_proxy(tmp_path):
     record = {
         "cli_version": (work / "out" / "version").read_text(encoding="utf-8").strip()
         if (work / "out" / "version").exists() else None,
+        "turn": "a-observation" if observation else "b-committed",
         "allowlist_digest": proxy.allowlist_digest, "model": model, "effort": "low",
         "upgrades": "refused by srt inside every terminated tunnel",
         "exit_code": done.returncode, "duration_s": duration_s,
