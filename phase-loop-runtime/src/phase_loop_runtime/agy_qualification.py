@@ -1789,15 +1789,21 @@ def cli_main(args):
     store = Store()
     if args.action == "status":
         env = _panel()._broker_subscription_env()
+        from .executable_dependency import ExecutableDependencyError
         from .seat_subject import resolve_seat_subject
 
-        subject = resolve_seat_subject("gemini", env)
+        try:
+            subject = resolve_seat_subject("gemini", env)
+        except FileNotFoundError:
+            verdict = AgyVerdict("unknown", None, "provider_absent")
+        except ExecutableDependencyError as exc:
+            verdict = AgyVerdict("refuses", exc.code, None)
+        else:
+            verdict = admission_verdict(env, subject.subject_path, execute=True)
         print(json.dumps({"store": str(store.host_dir), "store_status": store.status(),
                           "entries": store.entries(), "self_qualification": self_qualification_enabled(),
                           "key": agy_profile_digest(), "written_under": __version__,
-                          "verdict": admission_verdict(
-                              env, subject.subject_path, execute=True
-                          )._asdict()},
+                          "verdict": verdict._asdict()},
                          sort_keys=True))
         return 0
     if args.action == "clear":
@@ -1810,7 +1816,10 @@ def cli_main(args):
     from .seat_subject import resolve_seat_subject
 
     try:
-        subject = resolve_seat_subject("gemini", env)
+        try:
+            subject = resolve_seat_subject("gemini", env)
+        except FileNotFoundError as exc:
+            raise ValueError("seat_provider_unavailable") from exc
         admission = requalify_once(
             env,
             heartbeat=lambda phase: print(f"agy-qualification: {phase}", file=sys.stderr),

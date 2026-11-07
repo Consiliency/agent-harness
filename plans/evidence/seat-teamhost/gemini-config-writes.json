@@ -1,10 +1,20 @@
 {
   "closure": "closed",
+  "closure_granularity": "directory",
   "measurement": {
     "agy_version": "1.2.13",
-    "host_class": "developer_host",
-    "login": "developer_own",
+    "host_class": {
+      "provenance": "inferred",
+      "source_commit": "f2ba98dcc4b1b9ef2171d7d0be6e1e42b682b2fb",
+      "value": "developer_host"
+    },
+    "login": {
+      "provenance": "inferred",
+      "source_commit": "f2ba98dcc4b1b9ef2171d7d0be6e1e42b682b2fb",
+      "value": "developer_own"
+    },
     "recorded_at": "2026-09-29T17:12:41+00:00",
+    "recorded_calls": "openat with O_WRONLY or O_RDWR under the seat home",
     "source": "plans/evidence/seat-jail-1132/p4-agy-d7-credential.json"
   },
   "minimum_directory_overlay": ".gemini/config",
@@ -13,6 +23,11 @@
     ".gemini/config/mcp_config.json",
     ".gemini/config/projects/default-cli-project.json.<id>.tmp"
   ],
-  "reason": "Measured atomic writes occur directly below config and below config/projects, so config is the narrowest directory bind that admits the closed write set.",
+  "subpath_narrowing": {
+    "reason": "Narrowing below config requires pre-seeded files and a fresh measurement on a qualified agy release; the recorded agy 1.2.13 image is not in the qualified set.",
+    "status": "deferred",
+    "window": "next agy requalification window"
+  },
+  "reason": "In a fresh seat home agy creates new files directly below config (.migrated, mcp_config.json) and writes atomically below config/projects. A bind that admits creating files in config, without pre-seeding files agy reads, must be the config directory, so config is the narrowest overlay that admits the recorded write set.",
   "schema": "seat_teamhost_gemini_config_writes.v1"
 }

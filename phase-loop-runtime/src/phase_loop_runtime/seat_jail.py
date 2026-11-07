@@ -72,9 +72,9 @@ SEAT_GEMINI_CONFIG = SEAT_GEMINI_DOTDIR + "/antigravity-cli"
 # cache and its log); `.gemini/config` is agy's own project/runtime state (a different
 # directory from the credential config), without which agy cannot start a conversation.
 # The credential files themselves stay read-only, so the config dir is never writable
-# "beyond bin/cache/log" (agent-harness#1170 F006).  TEAMHOST's recorded write set includes
-# atomic writes directly below ``config`` as well as below ``config/projects``; ``config`` is
-# therefore the narrowest directory overlay that admits the measured writes.
+# "beyond bin/cache/log" (agent-harness#1170 F006).  TEAMHOST's recorded write set creates
+# files directly below ``config`` and writes atomically below ``config/projects``; ``config``
+# is therefore the narrowest overlay that admits the measured writes.
 GEMINI_WRITABLE_CONFIG_DIRS: tuple[str, ...] = ("bin", "cache", "log")
 GEMINI_WRITABLE_DOTDIR_DIRS: tuple[str, ...] = ("config",)
 HOST_GEMINI_WRITABLE_DIRNAME = ".agy-rw"

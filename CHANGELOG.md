@@ -6,9 +6,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
-- TEAMHOST closes the measured Gemini configuration overlay to `.gemini/config`, proves
-  writes outside that bind stay read-only, and carries the resolved agy subject through
-  qualification `run` and `status` (SEATS TEAMHOST SL-7, agent-harness#1820).
+- TEAMHOST records the measured Gemini configuration writes, keeps the writable overlay at
+  `.gemini/config` (the narrowest bind that admits them), proves writes outside that bind
+  stay read-only, and carries the resolved agy subject through qualification `run` and
+  `status` (SEATS TEAMHOST SL-7, agent-harness#1820).
 - JAILCORE documents the closed local/remote/native/degraded review-seat resolver, its four
   descend codes and expiring exceptions, with the remote mode and capacity offload shipped
   inactive (SEATS JAILCORE SL-4, agent-harness#1820).
