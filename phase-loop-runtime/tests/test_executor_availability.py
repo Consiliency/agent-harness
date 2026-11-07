@@ -149,3 +149,72 @@ def test_auth_ok_fails_closed_when_first_probe_times_out_before_later_pass():
         return _completed(0)
 
     assert ea.auth_ok_for("gemini", probes, runner=runner) is False
+
+
+# --- codex logged-out probe (agent-harness#1528, SEATS CODEX SL-1.3) --------------
+
+_CODEX_PROBES = ("codex --version", "codex --help", "codex login status")
+
+
+def _codex_status(stdout: str = "", stderr: str = "", returncode: int = 0):
+    def runner(probe):
+        if probe == "codex login status":
+            return _completed(returncode, stdout=stdout, stderr=stderr)
+        return _completed(0)
+
+    return runner
+
+
+import pytest  # noqa: E402
+
+
+@pytest.mark.parametrize("status", (
+    "Not logged in", "not logged in", "NOT LOGGED IN", "Not logged in\n", "  Not  logged\nin ",
+    "Not signed in",
+))
+@pytest.mark.parametrize("stream", ("stdout", "stderr"))
+def test_codex_not_logged_in_is_a_logged_out_probe(status, stream):
+    ea.clear_auth_cache()
+    runner = _codex_status(**{stream: status})
+    assert ea.auth_ok_for("codex", _CODEX_PROBES, runner=runner) is False
+    refusal = ea.auth_refusal_for("codex", _CODEX_PROBES)
+    assert refusal is not None
+    assert (refusal.kind, refusal.probe) == ("not_logged_in", "codex login status")
+
+
+@pytest.mark.parametrize("status", ("Logged in using ChatGPT", "Logged in using an API key"))
+def test_codex_logged_in_status_passes(status):
+    ea.clear_auth_cache()
+    assert ea.auth_ok_for("codex", _CODEX_PROBES, runner=_codex_status(stderr=status)) is True
+    assert ea.auth_refusal_for("codex", _CODEX_PROBES) is None
+
+
+def test_codex_logged_out_with_a_failing_exit_stays_refused():
+    ea.clear_auth_cache()
+    runner = _codex_status(stderr="Not logged in", returncode=1)
+    assert ea.auth_ok_for("codex", _CODEX_PROBES, runner=runner) is False
+    assert ea.auth_refusal_for("codex", _CODEX_PROBES).kind == "nonzero_exit"
+
+
+def test_the_codex_record_gate_reads_not_logged_in_as_logged_out(monkeypatch):
+    # Path-entered: the registry's own auth_ok closure, through auth_ok_for and the probe
+    # verdict, with only the process launch replaced.
+    ea.clear_auth_cache()
+    seen: list[str] = []
+
+    def probe(command):
+        seen.append(command)
+        return _completed(0, stdout="Not logged in") if command == "codex login status" \
+            else _completed(0)
+
+    monkeypatch.setattr(ea, "_run_probe", probe)
+    record = capability_registry()["codex"]
+    assert record.auth_ok() is False
+    assert "codex login status" in seen
+    ea.clear_auth_cache()
+    monkeypatch.setattr(
+        ea, "_run_probe",
+        lambda command: _completed(0, stderr="Logged in using ChatGPT")
+        if command == "codex login status" else _completed(0))
+    assert record.auth_ok() is True
+    ea.clear_auth_cache()

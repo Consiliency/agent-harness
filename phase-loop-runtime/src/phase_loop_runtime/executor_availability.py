@@ -108,6 +108,17 @@ def _run_probe(probe: str) -> subprocess.CompletedProcess:
     )
 
 
+def codex_status_logged_in(status: str) -> bool:
+    """Does ``codex login status`` output report a login (agent-harness#1528)?
+
+    "Not logged in" (or "not signed in"), in any letter case, is a logged-out probe even
+    though it contains the words "logged in"."""
+    text = " ".join(status.lower().split())
+    if "not logged in" in text or "not signed in" in text:
+        return False
+    return "logged in" in text
+
+
 def _typed_refusal_code(exc: BaseException) -> str | None:
     """The code of a typed refusal of ours, decided by type and table, never by shape.
 
@@ -155,7 +166,7 @@ def _probes_verdict(
             return False, ProbeRefusal("nonzero_exit", probe, returncode=completed.returncode)
         outputs[probe] = ((completed.stdout or "") + " " + (completed.stderr or "")).strip().lower()
     if executor == "codex":
-        if "logged in" in outputs.get("codex login status", ""):
+        if codex_status_logged_in(outputs.get("codex login status", "")):
             return True, None
         return False, ProbeRefusal("not_logged_in", "codex login status")
     if executor == "claude":
@@ -177,10 +188,12 @@ def auth_ok_for(
     *,
     now: float | None = None,
     ttl_seconds: float = _AUTH_TTL_SECONDS,
-    runner: Callable[[str], subprocess.CompletedProcess] = _run_probe,
+    runner: Callable[[str], subprocess.CompletedProcess] | None = None,
 ) -> bool:
     """Cached, bounded auth gate for an executor. Re-runs the probes only after
-    the TTL elapses; within the window returns the cached verdict."""
+    the TTL elapses; within the window returns the cached verdict. ``runner`` defaults
+    to :func:`_run_probe`, looked up when the gate runs."""
+    runner = _run_probe if runner is None else runner
     stamp = time.monotonic() if now is None else now
     key = (executor, tuple(probes))
     cached = _auth_cache.get(key)
