@@ -1,0 +1,1369 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Consiliency/agent-harness/plans/artifacts/v13-PLACECLI-contract-v1.schema.json",
+  "title": "agent-harness placement process protocol v1",
+  "description": "Frozen JSON process contract for placement reserve, release, reap and version. This planning artifact is not a live activation record.",
+  "oneOf": [
+    {
+      "$ref": "#/$defs/ReserveRequest"
+    },
+    {
+      "$ref": "#/$defs/ReserveResponse"
+    },
+    {
+      "$ref": "#/$defs/ReleaseRequest"
+    },
+    {
+      "$ref": "#/$defs/ReleaseResponse"
+    },
+    {
+      "$ref": "#/$defs/ReapRequest"
+    },
+    {
+      "$ref": "#/$defs/ReapResponse"
+    },
+    {
+      "$ref": "#/$defs/VersionResponse"
+    }
+  ],
+  "x-cli": {
+    "argv": [
+      "agent-harness-placement",
+      "--client",
+      "<agent-harness|agent-toolkit>",
+      "<reserve|release|reap|version>"
+    ],
+    "client_flag": "--client is required and selects exactly one per-client operator configuration, certificate and inventory. agent-toolkit accepts only pi-runner; agent-harness accepts only leg, qualification and implementation. Environment variables never select or override client, configuration, certificate or inventory.",
+    "input": "reserve, release and reap read exactly one UTF-8 JSON object from stdin followed by EOF, maximum 65536 bytes; duplicate keys, non-finite numbers, trailing data and invalid UTF-8 refuse before effects. version requires empty stdin.",
+    "output": "Exactly one compact UTF-8 JSON response object followed by LF on stdout; stdout carries no other text. version emits VersionResponse before any placement effect.",
+    "stderr": "Empty for schema-valid protocol outcomes; bounded closed harness diagnostics only for invocation or internal failures; never input values, credentials, policy documents or exception chains.",
+    "exit_codes": {
+      "0": "Schema-valid and settled: version response emitted; reserve outcome admitted; release state released; or reap state complete.",
+      "10": "Schema-valid and this call created no lease: reserve outcome at_capacity, refused or unreachable; or release state unknown_reservation or rejected. unknown_reservation means no stored lease. rejected means the release body did not match the stored reservation, the stored lease and flags are unchanged, and no barrier is armed; send a new request_id with the stored reservation. Do not allocate a new request_id for a retry of that same reserve attempt.",
+      "20": "Schema-valid and an effect may remain: reserve outcome timeout, release state cleanup_pending, or reap state cleanup_pending. Reserve/release barriers key on selected client plus reservation_id, or selected client plus request_id until a reservation_id is known; each reap-pending journal entry keeps its own such key. Retry that request_id or release that reservation. Other reservations, including concurrent reservations for the same client, remain admissible.",
+      "70": "Internal or protocol failure. Stdout is absent. Retry the same request_id once. Reap is caller-inventory maintenance, not recovery for one lost reserve response."
+    }
+  },
+  "x-contract-pins": {
+    "placement_contract_baml": {
+      "path": "phase-loop-runtime/src/phase_loop_runtime/baml_src/placement_contract.baml",
+      "sha256": "f662ea044dbe37a65c8bd782aeb7a5b2dd75b5851944c05b4f055061fcd27ace"
+    },
+    "sandbox_placement": {
+      "path": "phase-loop-runtime/src/phase_loop_runtime/sandbox_placement.py",
+      "sha256": "67cc485236c57f1f70ea67062a54e4008248da94e16a414ff50bbbb9611ca6e6",
+      "runtime_equality": false
+    },
+    "policy_vectors": {
+      "path": "phase-loop-runtime/src/phase_loop_runtime/contracts/placement/vectors/policies.json",
+      "sha256": "5b3bc7f515bd2a4cbc10a18d98465d511f65e8089213ceb8c21f9cce2409020f"
+    },
+    "placement_driver_defaults": {
+      "path": "phase-loop-runtime/src/phase_loop_runtime/advisor_board/fixtures/placement-driver.defaults.toml",
+      "sha256": "0d587cbe6d5943e368bbcc4f0809e2af7e34cb47443a4fade1245d9680e06e24",
+      "runtime_equality": false
+    },
+    "admitted_launch_envelope_v2": {
+      "repository": "Consiliency/consiliency-contract",
+      "commit": "2b91ef85bfdc76239ae52806b3318513951543ab",
+      "path": "core/supervised-run/admitted-launch-envelope.v2.schema.json",
+      "sha256": "6d6b2f89c55d160c2c132c29b3aa330a0a91c40ab017707040478a60b469194f"
+    },
+    "run_status": {
+      "repository": "Consiliency/consiliency-contract",
+      "commit": "2b91ef85bfdc76239ae52806b3318513951543ab",
+      "path": "core/supervised-run/run-status.schema.json",
+      "sha256": "5118c1ab8604e85990150d66bf6b8c1af979dcc404fc84ee5a3c4ba4fead9a30"
+    }
+  },
+  "x-policy-resolution": {
+    "source": "phase-loop-runtime/src/phase_loop_runtime/contracts/placement/vectors/policies.json",
+    "accepted_names_at_this_version": [
+      "minimal-with-app",
+      "minimal-without-app",
+      "full-remote-pi-runner"
+    ],
+    "rule": "policy_vector is a name, never an inline policy. A name in valid resolves to that vector's recorded digest, including while file status is pending_qualification. An unknown name, or a name in refused, refuses before any capacity probe or lease call. pending_qualification refuses a live coordinator connection, an image pull and any E2B call. Adding a name, renaming a name, or moving a name between valid and refused requires a new protocol artifact version. A status change belongs to ACTIVATE and repins this artifact.",
+    "pi_runner_target_bindings": {
+      "openshell": "full-remote-pi-runner",
+      "local": "minimal-without-app",
+      "e2b": "disabled"
+    },
+    "pi_runner_request": "A pi-runner ReserveRequest names full-remote-pi-runner as the ranked-workload policy profile. Before admission, the trusted target binding resolves an openshell attempt to that vector and a local attempt to minimal-without-app. The admitted Reservation is authoritative and records the actual resolved name and digest; no policy changes after admission.",
+    "pi_runner_local": "The local admission uses minimal-without-app, returns bridge null, consumes one live_sandboxes slot before success, and remains subject to every shared local-headroom threshold. The reservation policy_vector and policy_digest name that resolved local vector."
+  },
+  "x-provider-egress": {
+    "request_surface": "ReserveRequest.providers is required, non-empty and unique. Every item is interpreted solely as an operator-configured provider-name key, never as a URL, hostname, endpoint or model name; endpoint syntax is rejected. Model selection within a provider remains the client harness's concern and is not represented in this protocol.",
+    "registry": "The selected per-client operator configuration chooses an operator-owned provider allowlist, either directly or by reference to a reviewed artifact under contracts/placement/vectors/. config_sha256 binds the chosen name-to-endpoint mapping. An unknown name, a name not permitted for the selected client or workload, or a name not permitted by the resolved target policy_vector refuses before any capacity probe, coordinator call or lease effect with outcome refused and code sandbox_placement_provider_refused.",
+    "effective_egress": "For every target, the effective egress set is exactly the resolved policy_vector baseline union the allowlisted endpoint set for each declared provider, with duplicates removed, and contains nothing else. The same provider resolution and effective set apply to local sandboxes. The request never carries a hostname, URL, endpoint or inline egress rule.",
+    "digest": "Reservation.providers records the declared names. Reservation.egress_sha256 is sha256: plus the lowercase hex SHA-256 of the UTF-8 RFC 8785 serialization of the effective egress grant after provider names and endpoint/rule records are sorted lexicographically and duplicates are removed. No credential or credential-derived value enters the grant or digest.",
+    "launch_binding": "LANEEXEC must set admitted_launch_envelope.v2 launch.grants.egress_policy_sha256 to {canonical_form: rfc8785, sha256: Reservation.egress_sha256} and refuse launch_input_unbound if the reservation providers, resolved grant and digest do not agree. This binds the effective set into the launch envelope without adding provider or model fields to that external contract.",
+    "credentials": "The placement service holds no model-provider key, token or refresh token, and none enters a sandbox. Model connection bytes go to the requester's credential proxy over the admitted client link; a remote link uses the reservation bridge, while a local launcher uses the same requester-owned proxy boundary in process and keeps Reservation.bridge null. The sandbox holds placeholders only. The Pi reference is Consiliency/agent-toolkit commit 9304a5b92c8c409473ca3d2182557b8592697476, harnesses/pi/sandbox/cred-proxy.mjs and docs/remote-placement.md. Other multi-vendor harnesses, including OpenCode, provide the same requester-owned boundary.",
+    "target_clearance": "An owned-host target such as ai needs the generic egress-and-credential probe receipt for the resolved set. A third-party target such as E2B additionally needs a current OD-7 clearance for every declared provider; one missing clearance refuses that target with sandbox_placement_provider_refused. E2B remains disabled until its separate activation gates pass."
+  },
+  "x-identity-inventories": [
+    {
+      "client": "agent-harness",
+      "certificate_ou": "agent-harness",
+      "workloads": [
+        "leg",
+        "qualification",
+        "implementation"
+      ],
+      "inventory": "agent-harness"
+    },
+    {
+      "client": "agent-toolkit",
+      "certificate_ou": "agent-toolkit",
+      "workloads": [
+        "pi-runner"
+      ],
+      "inventory": "agent-toolkit"
+    }
+  ],
+  "x-local-headroom-defaults": {
+    "configuration_scope": "per_host_operator_config",
+    "config_binding": "These values are defaults. Each host may override every threshold in operator configuration; config_sha256 binds the effective values and version reports them.",
+    "memory_available_bytes_minimum_floor": 4294967296,
+    "memory_available_total_ram_fraction_minimum": 0.1,
+    "memory_available_threshold_rule": "MemAvailable_bytes >= max(memory_available_bytes_minimum_floor, ceil(MemTotal_bytes * memory_available_total_ram_fraction_minimum))",
+    "load_per_cpu_percent_maximum_exclusive": 70,
+    "io_pressure_full_avg10_percent_maximum_exclusive": 10,
+    "memory_pressure_some_avg10_percent_maximum_exclusive": 10,
+    "pressure_sources": {
+      "io": "/proc/pressure/io full avg10",
+      "memory": "/proc/pressure/memory some avg10"
+    },
+    "live_sandboxes_maximum_exclusive": 4,
+    "observation_age_seconds_maximum": 5,
+    "unknown_or_stale_dimension": "at_capacity",
+    "missing_unreadable_or_malformed_psi": "at_capacity",
+    "source": "phase-loop-runtime/src/phase_loop_runtime/advisor_board/fixtures/placement-driver.defaults.toml"
+  },
+  "x-placement-semantics": {
+    "trusted_configuration": "The request contains no owner, client, target, target list, certificate selector, inline policy or fallback list. The required --client flag selects exactly one operator-owned configuration bound by config_sha256; the environment is ignored for selection.",
+    "agent_and_executor_order": [
+      "ai by authoritative capacity",
+      "local only when every published headroom threshold admits",
+      "e2b only after a later owner account-and-spend activation"
+    ],
+    "workload_rank_policy": "pi-runner is the only workload on agent_and_executor_order. leg, qualification and implementation are the existing seat workloads. For those three, reserve does not rank and does not probe. It admits only the single target already chosen by the landed SEATS JAILCORE route decision in trusted operator configuration. A missing decision refuses with sandbox_placement_workload_unsupported before any probe. An owned-host remote seat target also requires the current generic egress-and-credential probe receipt for the declared providers. A third-party seat target also requires a current OD-7 record for every declared provider. The request carries no target, rank, certificate or route decision.",
+    "reserve_idempotency": "The same request_id and the same canonical request body return the original response and do not create a second reservation. The same request_id with a different canonical body refuses with sandbox_placement_refused and creates nothing. Reap is not the retry path for one lost reserve response.",
+    "release_binding": "release loads the stored reservation by reservation_id from the inventory selected by --client. A client mismatch or any supplied reservation field that differs from the stored record returns state rejected and code sandbox_placement_refused, releases nothing, changes no stored flag, arms no barrier and leaves the lease held. A repeated release of the same journaled reservation returns released while its tombstone remains, or unknown_reservation after tombstone expiry; neither state creates an admission barrier.",
+    "outcomes_and_effects": "unreachable means a certain failure with nothing held. timeout means an effect may be held. A failure after a request may have been sent is timeout, never unreachable. Its barrier applies only to that reservation in the selected client inventory; it blocks later targets or retries for that reserve walk until release confirms the barrier, but never blocks another reservation, another client or the host.",
+    "bridge_bytes": "For pi-runner or leg on openshell the runtime creates one directory in its own state directory, mode 0700, containing one Unix socket, mode 0600. The socket is a bidirectional raw byte pipe of the admitted ForwardTcp stream, including model connection bytes carried to the requester's credential proxy. The toolkit keeps link framing, relay and credentials; the placement service and sandbox hold no provider credential. The caller does not supply the path, service name, host or port. Every other reservation, including a local pi-runner or local leg, has bridge null; local launchers use their requester-owned credential proxy in process.",
+    "local_pressure_admission": "A local target admits only when one observation, no older than the configured maximum age, satisfies every threshold from the selected host's operator configuration: MemAvailable is at least max(the byte floor, ceil(MemTotal times the configured fraction)); one-minute load per online CPU as percent is below its exclusive cap; /proc/pressure/io full avg10 and /proc/pressure/memory some avg10 are each below their exclusive caps; and live sandboxes are below their exclusive cap. Any unknown or stale dimension, or missing, unreadable or malformed PSI file/line, is at_capacity.",
+    "local_cgroup_execution": "Every local reservation runs in its own delegated cgroup. Host operator configuration supplies memory.max, cpu.weight and either io.weight or an io.max bandwidth cap. The effective config_sha256 binds those caps. Before local admission, missing cgroup delegation, a missing required cpu/memory/io controller or an invalid cap refuses with outcome refused and code sandbox_placement_capability_unmet; the workload never runs uncapped. LANEEXEC applies the caps to placed workloads. The SEATS seat launcher must apply the same host caps before the coordinator may route a local seat launch.",
+    "reap_scope_and_order": "reap examines only the inventory selected by --client and returns exactly one InventoryReapResult whose client and inventory match that selection. It can never inspect or mutate the other client's inventory. Within that inventory, eligible journal entries are attempted by created_at then reservation_id, max_items bounds attempts, and an uncertain item remains cleanup_pending without creating a host-wide or client-wide admission barrier.",
+    "before_admission": "reserve may make a fresh admission attempt at each ranked target and records every attempt in trail. A typed at_capacity result authorizes only a new admission attempt.",
+    "after_admission": "The reservation binds exactly one target, transport_id, provider-name list and effective egress digest. The admitted launch envelope must name that transport_id and bind the same egress_sha256 through launch.grants.egress_policy_sha256 with canonical_form rfc8785. No route, transport, executable, environment, policy, provider, egress or deadline fallback is allowed after admission; a change requires a new envelope and a new reserve request_id.",
+    "uncertain_cleanup": "A bare failure after a request may have taken effect blocks every later target of that reserve walk until release confirms its per-reservation, per-client barrier. Independent reservations continue.",
+    "caller_context": "Opaque metadata echoed exactly and never used for identity, authority, routing, policy, correlation or launch input. It must contain no secret value or secret-derived digest.",
+    "remote_writer_tier": "provider_readonly_patch_return_audit",
+    "e2b": "Represented but disabled until ai is live and the owner supplies an account and spend cap."
+  },
+  "x-cross-process-vocabulary": {
+    "placement": "Reserve trails and terminal placement results use AdmissionOutcome, AdmissionReason, CoordinatorErrorCode and PlacementCode only. TrailEntry.code is a required ResultCode, never null. A refusal before any target uses target preflight. seat_placement_waiting is a walk notice and is not a ResultCode.",
+    "admission": "supervised_worker_cli admission uses AdmissionDiagnostic only; placement does not relabel admission failures.",
+    "run": "Run status uses RunState and Termination. sandbox_placement_lost_after_launch and sandbox_placement_release_unconfirmed are attempt-evidence codes, not invented run states."
+  },
+  "$defs": {
+    "Sha256Digest": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "HexSha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "RequestId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$"
+    },
+    "OpaqueId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,255}$"
+    },
+    "ProviderName": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_-]{0,63}$",
+      "description": "Operator-configured provider-name key only. Dots, slashes and colons are excluded; the value is never interpreted as a hostname, URL, endpoint or model name."
+    },
+    "ProviderNames": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/ProviderName"
+      }
+    },
+    "Timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "CallerContext": {
+      "type": "object",
+      "maxProperties": 16,
+      "propertyNames": {
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
+      },
+      "additionalProperties": {
+        "oneOf": [
+          {
+            "type": "string",
+            "maxLength": 512
+          },
+          {
+            "type": "integer",
+            "minimum": -9007199254740991,
+            "maximum": 9007199254740991
+          },
+          {
+            "type": "boolean"
+          },
+          {
+            "type": "null"
+          }
+        ]
+      }
+    },
+    "LocalHeadroomConfig": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "memory_available_bytes_minimum_floor",
+        "memory_available_total_ram_fraction_minimum",
+        "load_per_cpu_percent_maximum_exclusive",
+        "io_pressure_full_avg10_percent_maximum_exclusive",
+        "memory_pressure_some_avg10_percent_maximum_exclusive",
+        "live_sandboxes_maximum_exclusive",
+        "observation_age_seconds_maximum"
+      ],
+      "properties": {
+        "memory_available_bytes_minimum_floor": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "memory_available_total_ram_fraction_minimum": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "load_per_cpu_percent_maximum_exclusive": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "io_pressure_full_avg10_percent_maximum_exclusive": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "memory_pressure_some_avg10_percent_maximum_exclusive": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 100
+        },
+        "live_sandboxes_maximum_exclusive": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "observation_age_seconds_maximum": {
+          "type": "number",
+          "minimum": 0
+        }
+      }
+    },
+    "Workload": {
+      "enum": [
+        "leg",
+        "qualification",
+        "implementation",
+        "pi-runner"
+      ]
+    },
+    "PolicyVector": {
+      "enum": [
+        "minimal-with-app",
+        "minimal-without-app",
+        "full-remote-pi-runner"
+      ]
+    },
+    "Client": {
+      "enum": [
+        "agent-harness",
+        "agent-toolkit"
+      ]
+    },
+    "TargetKind": {
+      "enum": [
+        "local",
+        "openshell",
+        "e2b"
+      ]
+    },
+    "AdmissionOutcome": {
+      "enum": [
+        "admitted",
+        "at_capacity",
+        "refused",
+        "unreachable",
+        "timeout"
+      ]
+    },
+    "AdmissionReason": {
+      "enum": [
+        "no_capacity",
+        "pressure",
+        "fairness_wait",
+        "reserved_for_other_client",
+        "recovering",
+        "telemetry_stale",
+        "slice_unbounded",
+        "untracked_vms",
+        "ledger_restored",
+        "internal"
+      ]
+    },
+    "CoordinatorErrorCode": {
+      "enum": [
+        "at_capacity",
+        "owner_mismatch",
+        "not_enrolled",
+        "unknown_lease",
+        "fenced",
+        "expired",
+        "lifetime_exceeded",
+        "digest_mismatch",
+        "duplicate_binding",
+        "snapshot_expired",
+        "invalid_request",
+        "workload_unsupported",
+        "deadline_exceeded",
+        "unavailable"
+      ]
+    },
+    "PlacementCode": {
+      "enum": [
+        "sandbox_placement_required_unavailable",
+        "sandbox_placement_driver_unavailable",
+        "sandbox_placement_ref_invalid",
+        "sandbox_placement_capability_undeclared",
+        "sandbox_placement_plugin_unavailable",
+        "sandbox_placement_backend_unregistered",
+        "sandbox_placement_unreachable",
+        "sandbox_placement_budget_spent",
+        "sandbox_placement_at_capacity",
+        "sandbox_placement_capacity_exhausted",
+        "sandbox_placement_refused",
+        "sandbox_placement_code_invalid",
+        "sandbox_placement_operation_timeout",
+        "sandbox_placement_capability_unmet",
+        "sandbox_placement_release_unconfirmed",
+        "sandbox_placement_local_release_unconfirmed",
+        "sandbox_placement_not_enrolled",
+        "sandbox_placement_identity_mismatch",
+        "sandbox_placement_provider_refused",
+        "sandbox_placement_workload_unsupported",
+        "sandbox_placement_lost_after_launch",
+        "sandbox_placement_end_reached"
+      ]
+    },
+    "ResultCode": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/CoordinatorErrorCode"
+        },
+        {
+          "$ref": "#/$defs/PlacementCode"
+        }
+      ]
+    },
+    "AdmissionDiagnostic": {
+      "enum": [
+        "envelope_schema_invalid",
+        "envelope_digest_mismatch",
+        "authority_foreign",
+        "authority_baseline_stale",
+        "locator_not_repo_relative",
+        "raw_output_in_record",
+        "dependency_digest_required",
+        "workspace_source_inconsistent",
+        "executable_chain_invalid",
+        "baseline_reference_required",
+        "target_map_outside_scope",
+        "tier_unqualified",
+        "route_not_qualified",
+        "constraint_unsupported",
+        "workspace_not_separate_copy",
+        "grant_unqualified",
+        "stop_policy_unbounded",
+        "timeout_over_declared_max",
+        "launch_instructions_mismatch",
+        "launch_reference_mismatch",
+        "launch_argv_mismatch",
+        "launch_executable_mismatch",
+        "launch_workspace_mismatch",
+        "launch_environment_mismatch",
+        "launch_policy_mismatch",
+        "launch_timeout_mismatch",
+        "launch_input_unbound",
+        "task_unbound",
+        "dependency_route_unwired",
+        "codec_unavailable"
+      ]
+    },
+    "RunState": {
+      "enum": [
+        "finished",
+        "refused"
+      ]
+    },
+    "Termination": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reason",
+        "signal",
+        "by"
+      ],
+      "properties": {
+        "reason": {
+          "enum": [
+            "completed",
+            "cancelled",
+            "timed_out",
+            "failed_to_start"
+          ]
+        },
+        "signal": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "maxLength": 32
+        },
+        "by": {
+          "enum": [
+            "worker",
+            "harness",
+            "operator"
+          ]
+        }
+      }
+    },
+    "PlacementTarget": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "kind",
+        "rank"
+      ],
+      "properties": {
+        "name": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "kind": {
+          "$ref": "#/$defs/TargetKind"
+        },
+        "rank": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 255
+        }
+      }
+    },
+    "TrailEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "target",
+        "outcome",
+        "code",
+        "reason"
+      ],
+      "properties": {
+        "target": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "outcome": {
+          "$ref": "#/$defs/AdmissionOutcome"
+        },
+        "code": {
+          "$ref": "#/$defs/ResultCode"
+        },
+        "reason": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/AdmissionReason"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      }
+    },
+    "LeaseFlags": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reserved",
+        "create_settled",
+        "ready",
+        "exec_claimed",
+        "fenced",
+        "destruction_observed",
+        "cleanup_pending",
+        "barrier_confirmed",
+        "expired"
+      ],
+      "properties": {
+        "reserved": {
+          "type": "boolean"
+        },
+        "create_settled": {
+          "type": "boolean"
+        },
+        "ready": {
+          "type": "boolean"
+        },
+        "exec_claimed": {
+          "type": "boolean"
+        },
+        "fenced": {
+          "type": "boolean"
+        },
+        "destruction_observed": {
+          "type": "boolean"
+        },
+        "cleanup_pending": {
+          "type": "boolean"
+        },
+        "barrier_confirmed": {
+          "type": "boolean"
+        },
+        "expired": {
+          "type": "boolean"
+        }
+      }
+    },
+    "ForwardTcpUnixBridge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "service_name",
+        "socket_path",
+        "directory_mode",
+        "socket_mode",
+        "lifetime"
+      ],
+      "properties": {
+        "kind": {
+          "const": "forward_tcp_unix"
+        },
+        "service_name": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "socket_path": {
+          "type": "string",
+          "pattern": "^/[^\\u0000\\r\\n]{1,4095}$"
+        },
+        "directory_mode": {
+          "const": "0700"
+        },
+        "socket_mode": {
+          "const": "0600"
+        },
+        "lifetime": {
+          "const": "reservation"
+        }
+      }
+    },
+    "Reservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "reservation_id",
+        "workload",
+        "target",
+        "transport_id",
+        "image_digest",
+        "policy_vector",
+        "policy_digest",
+        "providers",
+        "egress_sha256",
+        "client",
+        "inventory",
+        "rank_policy",
+        "lease_id",
+        "expires_at",
+        "config_sha256",
+        "bridge"
+      ],
+      "properties": {
+        "schema": {
+          "const": "placement.reservation.v1"
+        },
+        "reservation_id": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "workload": {
+          "$ref": "#/$defs/Workload"
+        },
+        "target": {
+          "$ref": "#/$defs/PlacementTarget"
+        },
+        "transport_id": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "image_digest": {
+          "$ref": "#/$defs/Sha256Digest"
+        },
+        "policy_vector": {
+          "$ref": "#/$defs/PolicyVector"
+        },
+        "policy_digest": {
+          "$ref": "#/$defs/Sha256Digest"
+        },
+        "providers": {
+          "$ref": "#/$defs/ProviderNames"
+        },
+        "egress_sha256": {
+          "$ref": "#/$defs/Sha256Digest"
+        },
+        "client": {
+          "$ref": "#/$defs/Client"
+        },
+        "inventory": {
+          "$ref": "#/$defs/Client"
+        },
+        "rank_policy": {
+          "enum": [
+            "agent_executor",
+            "seats_single_target"
+          ]
+        },
+        "lease_id": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/OpaqueId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "expires_at": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Timestamp"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "config_sha256": {
+          "$ref": "#/$defs/HexSha256"
+        },
+        "bridge": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ForwardTcpUnixBridge"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "workload": {
+                "const": "pi-runner"
+              }
+            },
+            "required": ["workload"]
+          },
+          "then": {
+            "properties": {
+              "client": {
+                "const": "agent-toolkit"
+              },
+              "inventory": {
+                "const": "agent-toolkit"
+              },
+              "rank_policy": {
+                "const": "agent_executor"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "workload": {
+                "enum": [
+                  "leg",
+                  "qualification",
+                  "implementation"
+                ]
+              }
+            },
+            "required": ["workload"]
+          },
+          "then": {
+            "properties": {
+              "client": {
+                "const": "agent-harness"
+              },
+              "inventory": {
+                "const": "agent-harness"
+              },
+              "rank_policy": {
+                "const": "seats_single_target"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "workload": {
+                "enum": ["pi-runner", "leg"]
+              },
+              "target": {
+                "properties": {
+                  "kind": {
+                    "const": "openshell"
+                  }
+                },
+                "required": ["kind"]
+              }
+            },
+            "required": ["workload", "target"]
+          },
+          "then": {
+            "properties": {
+              "bridge": {
+                "$ref": "#/$defs/ForwardTcpUnixBridge"
+              }
+            },
+            "if": {
+              "properties": {
+                "workload": {
+                  "const": "pi-runner"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "policy_vector": {
+                  "const": "full-remote-pi-runner"
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "workload": {
+                "const": "pi-runner"
+              },
+              "target": {
+                "properties": {
+                  "kind": {
+                    "const": "local"
+                  }
+                },
+                "required": ["kind"]
+              }
+            },
+            "required": ["workload", "target"]
+          },
+          "then": {
+            "properties": {
+              "bridge": {
+                "type": "null"
+              },
+              "policy_vector": {
+                "const": "minimal-without-app"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "not": {
+              "properties": {
+                "workload": {
+                  "enum": ["pi-runner", "leg"]
+                },
+                "target": {
+                  "properties": {
+                    "kind": {
+                      "const": "openshell"
+                    }
+                  },
+                  "required": ["kind"]
+                }
+              },
+              "required": ["workload", "target"]
+            }
+          },
+          "then": {
+            "properties": {
+              "bridge": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "ReserveRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "request_id",
+        "workload",
+        "ttl_s",
+        "image_digest",
+        "policy_vector",
+        "providers",
+        "deadline_ms",
+        "caller_context"
+      ],
+      "properties": {
+        "schema": {
+          "const": "placement.reserve.request.v1"
+        },
+        "request_id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "workload": {
+          "$ref": "#/$defs/Workload"
+        },
+        "ttl_s": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3600
+        },
+        "image_digest": {
+          "$ref": "#/$defs/Sha256Digest"
+        },
+        "policy_vector": {
+          "$ref": "#/$defs/PolicyVector"
+        },
+        "providers": {
+          "$ref": "#/$defs/ProviderNames"
+        },
+        "deadline_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 900000,
+          "description": "Budget for the whole reserve walk, in milliseconds. The cap is admit_wait_s plus transfer_allowance_s from the pinned driver defaults (600s + 300s). Each coordinator RPC uses a shorter deadline that does not exceed the remaining budget."
+        },
+        "caller_context": {
+          "$ref": "#/$defs/CallerContext"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "workload": {
+                "const": "pi-runner"
+              }
+            },
+            "required": ["workload"]
+          },
+          "then": {
+            "properties": {
+              "policy_vector": {
+                "const": "full-remote-pi-runner"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "ReserveResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "request_id",
+        "outcome",
+        "code",
+        "reason",
+        "reservation",
+        "trail",
+        "caller_context"
+      ],
+      "properties": {
+        "schema": {
+          "const": "placement.reserve.response.v1"
+        },
+        "request_id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "outcome": {
+          "$ref": "#/$defs/AdmissionOutcome"
+        },
+        "code": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ResultCode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reason": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/AdmissionReason"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "reservation": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/Reservation"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "trail": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "items": {
+            "$ref": "#/$defs/TrailEntry"
+          }
+        },
+        "caller_context": {
+          "$ref": "#/$defs/CallerContext"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "outcome": {
+                "const": "admitted"
+              }
+            },
+            "required": [
+              "outcome"
+            ]
+          },
+          "then": {
+            "properties": {
+              "code": {
+                "type": "null"
+              },
+              "reason": {
+                "type": "null"
+              },
+              "reservation": {
+                "$ref": "#/$defs/Reservation"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "code": {
+                "$ref": "#/$defs/ResultCode"
+              },
+              "reservation": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "ReleaseRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "request_id",
+        "reservation",
+        "deadline_ms",
+        "caller_context"
+      ],
+      "properties": {
+        "schema": {
+          "const": "placement.release.request.v1"
+        },
+        "request_id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "reservation": {
+          "$ref": "#/$defs/Reservation"
+        },
+        "deadline_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 30000
+        },
+        "caller_context": {
+          "$ref": "#/$defs/CallerContext"
+        }
+      }
+    },
+    "ReleaseResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "request_id",
+        "reservation_id",
+        "state",
+        "code",
+        "flags",
+        "caller_context"
+      ],
+      "properties": {
+        "schema": {
+          "const": "placement.release.response.v1"
+        },
+        "request_id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "reservation_id": {
+          "$ref": "#/$defs/OpaqueId"
+        },
+        "state": {
+          "enum": [
+            "released",
+            "cleanup_pending",
+            "unknown_reservation",
+            "rejected"
+          ]
+        },
+        "code": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/PlacementCode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "flags": {
+          "$ref": "#/$defs/LeaseFlags"
+        },
+        "caller_context": {
+          "$ref": "#/$defs/CallerContext"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "released"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "code": {
+                "type": "null"
+              },
+              "flags": {
+                "properties": {
+                  "cleanup_pending": {
+                    "const": false
+                  },
+                  "barrier_confirmed": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "code": {
+                "$ref": "#/$defs/PlacementCode"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "cleanup_pending"
+              }
+            },
+            "required": ["state"]
+          },
+          "then": {
+            "properties": {
+              "flags": {
+                "properties": {
+                  "cleanup_pending": {
+                    "const": true
+                  },
+                  "barrier_confirmed": {
+                    "const": false
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "unknown_reservation"
+              }
+            },
+            "required": ["state"]
+          },
+          "then": {
+            "properties": {
+              "code": {
+                "const": "sandbox_placement_refused"
+              },
+              "flags": {
+                "properties": {
+                  "reserved": {
+                    "const": false
+                  },
+                  "cleanup_pending": {
+                    "const": false
+                  },
+                  "barrier_confirmed": {
+                    "const": true
+                  }
+                }
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "rejected"
+              }
+            },
+            "required": ["state"]
+          },
+          "then": {
+            "properties": {
+              "code": {
+                "const": "sandbox_placement_refused"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "InventoryReapResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "client",
+        "inventory",
+        "examined",
+        "destroyed",
+        "pending",
+        "code"
+      ],
+      "properties": {
+        "client": {
+          "$ref": "#/$defs/Client"
+        },
+        "inventory": {
+          "$ref": "#/$defs/Client"
+        },
+        "examined": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "destroyed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "pending": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "code": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/PlacementCode"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "client": {
+                "const": "agent-harness"
+              }
+            },
+            "required": ["client"]
+          },
+          "then": {
+            "properties": {
+              "inventory": {
+                "const": "agent-harness"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "client": {
+                "const": "agent-toolkit"
+              }
+            },
+            "required": ["client"]
+          },
+          "then": {
+            "properties": {
+              "inventory": {
+                "const": "agent-toolkit"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "ReapRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "request_id",
+        "scope",
+        "deadline_ms",
+        "max_items",
+        "caller_context"
+      ],
+      "properties": {
+        "schema": {
+          "const": "placement.reap.request.v1"
+        },
+        "request_id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "scope": {
+          "const": "caller_inventory"
+        },
+        "deadline_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 30000
+        },
+        "max_items": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000
+        },
+        "caller_context": {
+          "$ref": "#/$defs/CallerContext"
+        }
+      }
+    },
+    "ReapResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "request_id",
+        "state",
+        "inventories",
+        "caller_context"
+      ],
+      "properties": {
+        "schema": {
+          "const": "placement.reap.response.v1"
+        },
+        "request_id": {
+          "$ref": "#/$defs/RequestId"
+        },
+        "state": {
+          "enum": [
+            "complete",
+            "cleanup_pending"
+          ]
+        },
+        "inventories": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": {
+            "$ref": "#/$defs/InventoryReapResult"
+          }
+        },
+        "caller_context": {
+          "$ref": "#/$defs/CallerContext"
+        }
+      }
+    },
+    "VersionResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "client",
+        "protocol_schema_sha256",
+        "config_sha256",
+        "local_headroom"
+      ],
+      "properties": {
+        "schema": {
+          "const": "placement.version.response.v1"
+        },
+        "client": {
+          "$ref": "#/$defs/Client"
+        },
+        "protocol_schema_sha256": {
+          "$ref": "#/$defs/HexSha256"
+        },
+        "config_sha256": {
+          "$ref": "#/$defs/HexSha256"
+        },
+        "local_headroom": {
+          "$ref": "#/$defs/LocalHeadroomConfig"
+        }
+      }
+    }
+  }
+}
