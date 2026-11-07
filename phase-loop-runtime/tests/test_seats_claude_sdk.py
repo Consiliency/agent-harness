@@ -1179,11 +1179,23 @@ def test_an_unapproved_inbound_frame_never_reaches_the_sdk(label, frame, code):
     assert not any(a[0] == sdk.TO_WORKER for a in actions)
 
 
-def test_a_duplicate_key_in_any_inbound_frame_is_refused():
+_SID = SESSION_ID.encode()
+
+
+@pytest.mark.parametrize("label, line", [
+    ("assistant", b'{"type":"assistant","message":{"a":1,"a":2}}\n'),
+    ("system/init", b'{"type":"system","subtype":"init","session_id":"' + _SID
+     + b'","apiKeySource":"none","apiKeySource":"none"}\n'),
+    ("result", b'{"type":"result","subtype":"success","is_error":false,"result":"a",'
+     b'"result":"b","session_id":"' + _SID + b'"}\n'),
+])
+def test_a_duplicate_key_in_any_inbound_frame_is_refused(label, line):
     bridge = _bridge()
     _through_user(bridge)
-    actions = bridge.cli_stdout(b'{"type":"assistant","message":{"a":1,"a":2}}\n')
+    forwarded = bridge.forwarded
+    actions = bridge.cli_stdout(line)
     assert actions == [(sdk.STOP, sdk.CONTRACT_VIOLATION)]
+    assert bridge.forwarded == forwarded
 
 
 def test_a_token_hidden_in_json_escapes_is_caught_after_decoding():
@@ -1195,12 +1207,28 @@ def test_a_token_hidden_in_json_escapes_is_caught_after_decoding():
     assert actions == [(sdk.STOP, sdk.TOKEN_IN_OUTPUT)]
 
 
-def test_a_token_in_a_value_a_duplicate_key_drops_is_still_caught():
+def _escaped_token() -> bytes:
+    return "".join(f"\\u{c:04x}" for c in SEAT_TOKEN).encode()
+
+
+@pytest.mark.parametrize("kind", ["assistant", "result"])
+def test_a_token_in_a_value_a_duplicate_key_drops_is_still_caught(kind):
+    """The token wins over the duplicate key's frame refusal, in either duplicate branch."""
     bridge = _bridge()
     _through_user(bridge)
-    escaped = "".join(f"\\u{c:04x}" for c in SEAT_TOKEN).encode()
-    actions = bridge.cli_stdout(
-        b'{"type":"assistant","message":{"a":"' + escaped + b'","a":"clean"}}\n')
+    actions = bridge.cli_stdout(b'{"type":"' + kind.encode() + b'","message":{"a":"'
+                                + _escaped_token() + b'","a":"clean"},"message":{}}\n')
+    assert actions == [(sdk.STOP, sdk.TOKEN_IN_OUTPUT)]
+
+
+@pytest.mark.parametrize("where", ["top level", "nested"])
+def test_a_token_hidden_in_a_decoded_key_is_caught(where):
+    bridge = _bridge()
+    _through_user(bridge)
+    key = b'"' + _escaped_token() + b'":1'
+    line = (b'{"type":"assistant",' + key + b'}\n' if where == "top level"
+            else b'{"type":"assistant","message":{' + key + b'}}\n')
+    actions = bridge.cli_stdout(line)
     assert actions == [(sdk.STOP, sdk.TOKEN_IN_OUTPUT)]
 
 
@@ -1217,18 +1245,27 @@ def test_the_cli_stream_is_admitted_under_the_sdk_parse_policy():
             cp.PRINT_POLICY.frame_violation) == (False, False, cp.STREAM_UNSAFE)
 
 
-def test_each_cli_line_is_parsed_once_and_that_object_is_forwarded(monkeypatch):
-    bridge = _bridge()
-    worker = _through_user(bridge)
-    bridge.worker_bytes(worker.frame("end_input", {}))
-    parsed, forwarded = [], []
+def _decoder_calls(monkeypatch) -> tuple[list, list]:
+    """Every attempt to decode JSON, counted before the real decoder runs (so a failed
+    attempt counts), and every object it returned."""
+    attempts, parsed = [], []
     real_loads = json.loads
 
     def loads(*args, **kwargs):
+        attempts.append(args[0] if args else kwargs.get("s"))
         value = real_loads(*args, **kwargs)
         parsed.append(value)
         return value
 
+    monkeypatch.setattr(json, "loads", loads)
+    return attempts, parsed
+
+
+def test_each_cli_line_is_parsed_once_and_that_object_is_forwarded(monkeypatch):
+    bridge = _bridge()
+    worker = _through_user(bridge)
+    bridge.worker_bytes(worker.frame("end_input", {}))
+    forwarded = []
     real_frame = bridge._frame
 
     def frame(kind, body):
@@ -1236,13 +1273,26 @@ def test_each_cli_line_is_parsed_once_and_that_object_is_forwarded(monkeypatch):
             forwarded.append(body)
         return real_frame(kind, body)
 
-    monkeypatch.setattr(json, "loads", loads)
+    attempts, parsed = _decoder_calls(monkeypatch)
     monkeypatch.setattr(bridge, "_frame", frame)
     actions = bridge.cli_stdout(_stream())
     monkeypatch.undo()
-    assert len(parsed) == 3 and len(forwarded) == 3
+    assert len(attempts) == 3 and len(parsed) == 3 and len(forwarded) == 3
     assert all(sent is read for sent, read in zip(forwarded, parsed))
     assert [a[0] for a in actions] == [sdk.TO_WORKER] * 3
+
+
+def test_a_prefixed_frame_is_decoded_once_and_refused(monkeypatch):
+    bridge = _bridge()
+    _through_user(bridge)
+    forwarded = bridge.forwarded
+    attempts, _parsed = _decoder_calls(monkeypatch)
+    actions = bridge.cli_stdout(b'diagnostic: {"type":"system","subtype":"init",'
+                                b'"session_id":"x","apiKeySource":"none"}\n')
+    monkeypatch.undo()
+    assert len(attempts) == 1
+    assert actions == [(sdk.STOP, sdk.CONTRACT_VIOLATION)]
+    assert bridge.forwarded == forwarded
 
 
 def test_a_refused_frame_stops_admission_and_forwards_nothing_after_it():
