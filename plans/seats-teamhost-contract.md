@@ -230,8 +230,9 @@ def verdict(leg: str, env: Mapping[str, str], *, execute: bool = False) -> Verdi
    (step L5); before the registry lands, the existing Claude and Gemini presence checks.
 1b. Egress: `seat_egress_proxy.unavailable_code()` for a profile with an allowlist (step L7).
    With `execute=False`, a check that would spawn returns `unknown` (`launch_measurement`).
-2. Jail pass record for the leg's live key. This is lookup only and never auto-qualifies.
-   It is the pre-existing `pass_record_verdict`, or JAILCORE step L8's store once that lands.
+2. Jail pass record for the leg's live key. The doctor reports `unknown`
+   (`launch_measurement`) for a missing or stale pass, and `refuses` only for
+   `pass_store_unsafe`. A valid pass lets the gate continue.
 3. `gemini`: §5's `admission_verdict`, on the `subject_path` that `resolve_seat_subject`
    returns.
 4. `grok`: the pre-existing `panel_invoker.require_grok_admission`, whose code is
@@ -271,6 +272,8 @@ def verdict(leg: str, env: Mapping[str, str], *, execute: bool = False) -> Verdi
   - `egress_isolation`
   - `legacy_tiocsti`
   - `subordinate_ids`: present only when the ranges exist and `subordinate_ranges_disjoint()`
+  - `uid_map_helpers`: present only when privileged `newuidmap` and `newgidmap` helpers exist
+  - `non_root_operator`: present only when the operator's effective uid is not 0
   - `machine_id`
 
   Each row reports its own predicate. All rows read `present` together exactly when
