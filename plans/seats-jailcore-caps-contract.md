@@ -87,6 +87,36 @@ entry. A host whose workspace volume differs from its staging root lists that vo
   that host is unsupported for local seats until both sit on a block-backed filesystem. An
   `io_paths` entry never substitutes for an automatic path, and one on major 0 refuses too.
 
+### 1a. tmpfs carve-out (amendment, 2026-11-07, v13 LANEEXEC)
+
+tmpfs is the single exception to the major-0 refusal above. The workload's tmpfs pages are memory
+charged to the capped parent's `memory.max`, so writing to tmpfs uses memory, not disk bandwidth.
+NFS, overlay, FUSE and anonymous-device btrfs do real I/O that `io.max` cannot bound here, so they
+still refuse. An automatic path on tmpfs is accepted only when all four conditions hold; otherwise
+it refuses with `CODE`, exactly as a major-0 path does:
+
+1. **Type, not major number.** The path is opened by descriptor, without following a symlink. Its
+   mount, located in `/proc/self/mountinfo` by that descriptor's `st_dev`, has filesystem type
+   exactly `tmpfs`, and `fstatfs` on the same descriptor returns `TMPFS_MAGIC` (`0x01021994`).
+   Major 0 alone never qualifies. `ramfs`, `devtmpfs`, `overlay`, `nfs`, `fuse` and `btrfs` do not
+   qualify, and neither does any disagreement between the two sources.
+2. **Memory cap applied.** The §4 helper's child-side readback of `memory.max` matched for this
+   launch.
+3. **No swap path to disk.** A launch with a carved-out path also applies `MemorySwapMax=0`, and the
+   §4 helper reads back `memory.swap.max` equal to `0` on the capped parent. When that file is
+   absent, `/proc/swaps` must list no active swap area. Otherwise tmpfs pages could reach a swap
+   device that `io.max` does not cover.
+4. **Teardown order.** Content the launch created on a carved-out path is removed before the
+   capped parent is collected, so no charged page outlives the parent.
+
+A carved-out path adds no device to `io_devices`. `io.weight` is still set and read back. An empty
+device set is valid only when every automatic path is carved out; `io.max` is then written for no
+device. An `io_paths` entry is never carved out, and one on tmpfs refuses as before. Pages placed
+on the path before the capped parent exists, such as a staged tree, are charged to the launcher.
+Their size is bounded by the caller's staging limits; for v13 that is the snapshot limits. The
+record, its bounds and `caps_sha256` are unchanged, because the applied `memory.swap.max` is a
+readback condition, not a record field.
+
 ## 2. Host sources
 
 First match wins:
@@ -257,6 +287,19 @@ fake `systemd-run` executable:
   edit. `jail_profile_digest` is unchanged for `claude` and `gemini`.
 - (i) A source scan finds no environment read or flag in `seat_resource_caps.py` that disables
   enforcement, paired with case (c): the environment of a refused launch cannot make it proceed.
+- (j) tmpfs carve-out (§1a), on fake mountinfo, `fstatfs`, `/proc/swaps` and cgroupfs:
+  - An automatic path with type `tmpfs` and `TMPFS_MAGIC` is accepted when `memory.max` and
+    `memory.swap.max` (`0`) read back, and also when `memory.swap.max` is absent and `/proc/swaps`
+    is empty. It adds no device, and `io.weight` is still read back.
+  - Each of the following refuses with `CODE` and leaves no target marker:
+    - a major-0 path of type `ramfs`, `devtmpfs`, `overlay`, `nfs`, `fuse` or `btrfs`;
+    - a tmpfs path whose `fstatfs` magic disagrees with mountinfo;
+    - `memory.swap.max` reading back non-zero;
+    - `memory.swap.max` absent while an active swap area is listed;
+    - `memory.max` differing;
+    - an `io_paths` entry on tmpfs.
+  - Mutation controls, each of which must fail: identifying tmpfs by major 0 alone; skipping the
+    swap readback; collecting the capped parent before the carved-out content is removed.
 
 The other test files need the same no-op, so the autouse fixture in
 `phase-loop-runtime/tests/conftest.py` replaces `readiness_code` and `capped_popen` by
@@ -266,8 +309,11 @@ monkeypatch. Tests marked `real_seat_caps` opt out. Production has no equivalent
 `PHASE_LOOP_SEAT_CAPS_PROBE=1`. It skips when not opted in or when `readiness_code()` refuses.
 Through real `systemd-run`, it asserts the readback, then that a direct write and a buffered
 fsynced write of 4 MiB each take at least one second under a 2 MiB/s `io.max`, that a 64 MiB
-`memory.max` ends a larger allocation, and that a 16 `pids.max` refuses further forks. Each probe
-is small and self-throttled, so it is safe on a shared host.
+`memory.max` ends a larger allocation, and that a 16 `pids.max` refuses further forks. When the
+host offers a tmpfs automatic path, it also asserts that writing 96 MiB there under a 64 MiB
+`memory.max` with `memory.swap.max` `0` does not complete, and that the scope's
+`memory.swap.current` stays `0`. Each probe is small and self-throttled, so it is safe on a
+shared host.
 
 ## 8. Host prerequisite
 

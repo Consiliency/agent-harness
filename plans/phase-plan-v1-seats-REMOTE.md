@@ -47,9 +47,10 @@ This plan points at its sections (§0–§8) and does not repeat them.
 
   The inputs are consumed at these content digests:
   - roadmap `specs/phase-plans-v13.md`, sha256
-    `8f34d506a8172e4d868b8f23bc0d2b7f228b1894575f75fff93c92dfb15ce679`;
+    `a5cd5f2bedbda38c99ad516113fd839dae8af6ea4482760e8efd18a5d413428d`;
   - artifact `plans/artifacts/v13-PLACECLI-contract-v1.schema.json`, sha256
-    `7bf7781dd30de55e7b30200d70f6b90b49a7c7a9b73804892408fa7667181105`.
+    `130a894df327ddca2eebf83c8b52e068b25176320af3e0a4e15319a315ba83ea`
+    (PLACECLI-v1-errata-1).
 
   If different bytes land, the plan is repinned before execution.
 - **The rest.** The guest wrapper is `landlock-exec` (agent-harness#1795 revision 14), the
@@ -119,11 +120,17 @@ other roadmap.
   REMOTE's activation file names the same one. Its provider allowlist references
   `seat-provider-vectors.json`, and its owner-controlled clearance reads REMOTE's probe receipt.
   REMOTE writes the data, and PLACECLI reads it.
-- **XR-3 (v13, open; closes before SL-4 and SL-5 start).** IF-0-LANEEXEC-1 accepts workload
+- **XR-3 (v13, frozen).** IF-0-LANEEXEC-1 accepts workload
   `leg` with the following inputs:
   - a fixed per-vendor argv template;
   - snapshot mode `full` under its size cap;
   - one bounded non-patch result, as a non-writer route (EC-LANEEXEC-1).
+
+  Frozen by `plans/artifacts/v13-LANEEXEC-contract-v1.schema.json`, sha256
+  `77e9c4e3ca4d03525d21aea6e7e673cc6b39a50eeb6bf247501dfaa9642421bf`
+  (`x-argv-templates.per_vendor_seat_templates`, `x-snapshot.full_mode`, `x-return.result`, and the
+  in-process `pre_exec` and `withhold` hooks). SL-4 and SL-5 still wait on the landed LANEEXEC
+  implementation (Upstream implementation, below).
 - **XR-4 (v13).** EC-ACTIVATE-2 consumes REMOTE's probe set; no second generic set is authored.
 - **Upstream implementation.** The JAILCORE resolver (EC-JAILCORE-2), PLACECLI after
   EXT-WORKER, and LANEEXEC.
