@@ -391,7 +391,7 @@
   {"count": 1, "function": "_fsync_directory", "module": "convergence/broker/verbs", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "_hold_owner_liveness", "module": "convergence/broker/verbs", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "_owner_writer_alive", "module": "convergence/broker/verbs", "primitive": "io.open", "role": "host-io"},
-  {"count": 2, "function": "BrokerService._owner_and_admission_under_one_lock", "module": "convergence/broker/verbs", "primitive": "io.read_bytes", "role": "host-io"},
+  {"count": 4, "function": "BrokerService._owner_and_admission_under_one_lock", "module": "convergence/broker/verbs", "primitive": "io.read_bytes", "role": "host-io"},
   {"count": 1, "function": "append_adapter_start_owner", "module": "convergence/broker/verbs", "primitive": "io.open", "role": "host-io"},
   {"count": 1, "function": "read_adapter_start_owner", "module": "convergence/broker/verbs", "primitive": "io.read_text", "role": "host-io"},
   {"count": 1, "function": "seal_adapter_start_owner", "module": "convergence/broker/verbs", "primitive": "io.open", "role": "host-io"},

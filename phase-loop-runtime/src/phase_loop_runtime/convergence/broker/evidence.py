@@ -339,7 +339,10 @@ class BrokerEvidenceStore:
             snapshot_exact_pr_store,
         )
 
-        return effective_blocking_keys(snapshot_exact_pr_store(self.root))
+        snapshot = snapshot_exact_pr_store(self.root)
+        # agent-harness#789: schema drift remains a typed refusal of the epoch gate.
+        self.replay(snapshot.evidence_bytes or b"")
+        return effective_blocking_keys(snapshot)
 
     def effective_publication(self, key: str):
         """Return the pure effective publication view for ``key``."""

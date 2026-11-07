@@ -1205,10 +1205,9 @@ def _require_rotation_receipt_binds(
             settlement_files, observation_bytes
         )
         if not expected_settlement_snapshot:
-            raise PartitionRoutingRefused(
-                f"predecessor generation {generation - 1} contains exact-PR settlements "
-                "that the successor receipt omitted"
-            )
+            # Sealed by a runtime without the exact-PR overlay: route the
+            # successor; exact_pr_reconciliation refuses each such key.
+            return predecessor
         if actual_settlement_snapshot != expected_settlement_snapshot:
             raise PartitionRoutingRefused(
                 f"predecessor generation {generation - 1} exact-PR settlement snapshot "

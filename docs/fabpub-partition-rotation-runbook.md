@@ -702,9 +702,11 @@ Future partition rotation also requires the settlement-aware runtime. For every
 settled blocked key, the attestation must use `observed_landed` with the exact PR
 URL, observed head and `settlement_digest`, and must bind the predecessor's
 `exact_pr_settlement_snapshot_sha256`. The successor inventory embeds the full
-settlement proof. `attested_not_landed`, a wrong binding, or an older rotation
-that drops the proof refuses. Later rotations for unrelated ambiguity preserve
-the embedded proof unchanged.
+settlement proof. `attested_not_landed` or a wrong binding refuses. A successor
+sealed by an older runtime loses the
+embedded proof; the settlement-aware runtime then refuses the settled key
+(typed, no provider entry) while routing unrelated work. Later qualified
+rotations for unrelated ambiguity preserve the embedded proof unchanged.
 
 ## 9. Residuals carried out of the 2026-09-09 preparation
 

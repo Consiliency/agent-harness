@@ -601,27 +601,22 @@ def _predecessor_direct_settlement_exists(snapshot: ExactPRStoreSnapshot, key: s
     """
     receipt = snapshot.receipt
     generation = getattr(receipt, "generation", 0)
-    predecessor_generation = getattr(receipt, "predecessor_generation", -1)
     if not isinstance(generation, int) or generation <= 0:
         return False
-    if predecessor_generation != generation - 1:
-        return False
-    container = snapshot.root.parents[1] if snapshot.root.parent.name == "generations" else snapshot.root
-    predecessor = (
-        container
-        if predecessor_generation == 0
-        else container / "generations" / str(predecessor_generation)
-    )
-    path = settlement_path(predecessor, key)
-    try:
-        status = os.lstat(path)
-    except FileNotFoundError:
-        return False
-    if stat.S_ISLNK(status.st_mode) or not stat.S_ISREG(status.st_mode):
-        raise ExactPRReconciliationRefused(
-            "predecessor exact-PR settlement path is not a regular file"
-        )
-    return True
+    from . import live
+
+    for earlier in range(generation - 1, -1, -1):
+        path = settlement_path(live.generation_store_root(snapshot.root, earlier), key)
+        try:
+            status = os.lstat(path)
+        except FileNotFoundError:
+            continue
+        if stat.S_ISLNK(status.st_mode) or not stat.S_ISREG(status.st_mode):
+            raise ExactPRReconciliationRefused(
+                "predecessor exact-PR settlement path is not a regular file"
+            )
+        return True
+    return False
 
 
 def read_exact_pr_settlement(
@@ -644,6 +639,16 @@ def read_exact_pr_settlement(
                 current_observation_bytes=snapshot.observation_bytes,
                 require_current_observation=True,
             )
+            if (
+                payload["disposition"]["generation"] != snapshot.generation
+                or payload["frozen_checkpoint"]["partition_receipt_sha256"]
+                != snapshot.receipt_sha256
+                or base64.b64decode(payload["ambiguity_row_b64"])
+                not in (snapshot.evidence_bytes or b"").split(b"\n")
+            ):
+                raise ExactPRReconciliationRefused(
+                    "settlement does not bind this generation's receipt and raw ambiguity"
+                )
             return ValidExactPRSettlement(
                 **{**valid.__dict__, "path": snapshot.root / SETTLEMENT_DIRECTORY / name}
             )
@@ -829,7 +834,7 @@ def _validate_local_inputs(inputs: _ReconciliationInputs, disposition: dict, wor
         raise ExactPRReconciliationRefused("worktree canonical identity differs from the disposition")
     if repository.common_dir != Path(disposition["repository_common_dir"]):
         raise ExactPRReconciliationRefused("worktree common directory differs from the disposition")
-    if snapshot.root != getattr(repository, "store_" + "root"):
+    if snapshot.root != repository.store_root:
         raise ExactPRReconciliationRefused("store root is not the worktree's active canonical generation")
     if snapshot.receipt is None:
         raise ExactPRReconciliationRefused("active store has no authenticated partition receipt")
@@ -1228,7 +1233,7 @@ def reconcile_exact_pr(
         raise ExactPRReconciliationRefused("command inputs differ from the disposition bindings")
     checkpoint_path, pointer_path = _find_checkpoint(authority, transaction_id)
     repository = live.repository_snapshot(worktree)
-    generation_root = getattr(repository, "store_" + "root")
+    generation_root = repository.store_root
     initial_snapshot = snapshot_exact_pr_store(generation_root)
     existing = _existing_identical(initial_snapshot, disposition)
     if existing is not None:
@@ -1413,7 +1418,7 @@ def inspect_exact_pr(
         checkpoint.get("branch", ""),
         checkpoint.get("committed_head_sha", ""),
     )
-    snapshot = snapshot_exact_pr_store(getattr(repository, "store_" + "root"))
+    snapshot = snapshot_exact_pr_store(repository.store_root)
     raw = _raw_evidence_records(snapshot.evidence_bytes).get(key)
     effective = effective_publication(snapshot, key)
     result = {

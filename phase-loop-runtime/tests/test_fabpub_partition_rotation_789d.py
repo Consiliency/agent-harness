@@ -771,6 +771,9 @@ def _save_pointer(p) -> dict:
 #: literal path segment; ``target_namespace`` — receipt field use.
 A0_ALLOW_LIST = (
     ("credsep.py", "GitHubBrokerAdapter._acquire_service_generation_lease", "store_root"),
+    ("exact_pr_reconciliation.py", "_validate_local_inputs", "store_root"),
+    ("exact_pr_reconciliation.py", "inspect_exact_pr", "store_root"),
+    ("exact_pr_reconciliation.py", "reconcile_exact_pr", "store_root"),
     ("live.py", "LegacyBrokerCutoverTransaction.receipt_for", "target_namespace"),
     ("live.py", "LegacyBrokerCutoverTransaction.revalidate_armed", "target_namespace"),
     ("live.py", "LegacyRepositoryPartitionReceipt", "target_namespace"),
@@ -832,6 +835,7 @@ A0_ALLOW_LIST = (
 A0_CLASSIFICATION = {
     "resolver": {
         "GitHubBrokerAdapter._acquire_service_generation_lease",
+        "_validate_local_inputs",
         "WriterGenerationLatch.for_store_root",
         "_RepositoryRoutingBrokerService._stores_for",
         "_is_canonical_container",
@@ -844,9 +848,11 @@ A0_CLASSIFICATION = {
         "authenticated_partition_floor",
         "fabpub_activation_barrier",
         "load_partition_receipt",
+        "inspect_exact_pr",
         "partition_is_ambiguity_blocked",
         "repository_broker_namespace",
         "require_current_generation",
+        "reconcile_exact_pr",
         "rotate_blocked_partition",
     },
     "container": {

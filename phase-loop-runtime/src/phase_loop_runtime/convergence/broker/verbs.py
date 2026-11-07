@@ -583,7 +583,17 @@ def require_unadmitted_prebuilt_witnesses(root: Path, transaction):
             receipt = live.load_partition_receipt(current)
             if receipt is None or receipt.canonical_repository_identity != transaction.canonical_repository_identity:
                 raise UnadmittedPrebuiltConflict("publication partition has no matching authenticated receipt")
-            live._require_receipt_is_snapshot(receipt, live._PredecessorSnapshot(current, files, digests), generation)
+            live._require_receipt_is_snapshot(
+                receipt,
+                live._PredecessorSnapshot(
+                    root=current,
+                    files=files,
+                    digests=digests,
+                    exact_pr_settlement_files={},
+                    post_ambiguity_observation_bytes=files["post-ambiguity-observations.jsonl"],
+                ),
+                generation,
+            )
             key, owner = _unadmitted_journal_witnesses(current, transaction, files)
             inherited = live.sealed_partition_effects(receipt)
             keys = set(receipt.legacy_completed_effect_keys) | set(inherited)
@@ -1258,6 +1268,9 @@ class BrokerService:
                     authorize=self.evidence_store._authorize,
                     lock_held=True,
                 )
+                recorded_owner_bytes = (
+                    owner_path.read_bytes() if recorded_owner == owner else None
+                )
                 held: list[int] = liveness_holder if liveness_holder is not None else []
                 try:
                     if recorded_owner == owner:
@@ -1275,7 +1288,13 @@ class BrokerService:
                     # Never retire an owner this attempt did not write.
                     if not isinstance(error, PublishCrashInjected) and recorded_owner == owner:
                         try:
-                            _restore_owner_bytes(self.evidence_store.root, prior_owner_bytes)
+                            if (
+                                recorded_owner_bytes is not None
+                                and owner_path.read_bytes() == recorded_owner_bytes
+                            ):
+                                _restore_owner_bytes(
+                                    self.evidence_store.root, prior_owner_bytes
+                                )
                         except OSError:
                             # The owner stays unsealed: today's fail-closed shape.
                             pass
