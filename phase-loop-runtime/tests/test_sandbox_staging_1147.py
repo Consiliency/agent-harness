@@ -868,7 +868,10 @@ class TestEveryAgentLaunchIsRelocated:
             raise OSError("stop at the launch")
 
         monkeypatch.setattr(panel_invoker, "_run_leg_with_liveness", _launch)
-        fake_self = SimpleNamespace(base_env={"PATH": "/usr/bin", "HOME": str(tmp_path)})
+        fake_self = SimpleNamespace(
+            base_env={"PATH": "/usr/bin", "HOME": str(tmp_path)},
+            invocation="fixture",
+        )
         with pytest.raises(OSError):
             president_adapter.PresidentInvoke._launch_gemini(
                 fake_self, "gemini-3.8-flash-high", "prompt", tmp_path)

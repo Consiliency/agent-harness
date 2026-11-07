@@ -32,6 +32,8 @@ from pathlib import Path
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("live_seat_attempt")
+
 from phase_loop_runtime import governed_review as gr
 from phase_loop_runtime import panel_invoker as pi
 from phase_loop_runtime import seat_jail
@@ -518,7 +520,7 @@ def test_a_cancel_during_the_probe_kills_it_and_the_leg_ends_cancelled(tmp_path,
         yield command, None
 
     def launch(command, **kwargs):
-        for key in ("role", "profile", "retain_caps", "child_scratch"):
+        for key in ("role", "profile", "retain_caps", "seat_caps", "child_scratch"):
             kwargs.pop(key, None)
         child = subprocess.Popen(["/usr/bin/python3", "-c", "import time; time.sleep(10)"], **kwargs)
         children.append(child)
@@ -531,10 +533,15 @@ def test_a_cancel_during_the_probe_kills_it_and_the_leg_ends_cancelled(tmp_path,
     latch = pi._ProviderQuiescenceLatch()
 
     def run():
+        from phase_loop_runtime.seat_resource_caps import _seat_scope
+
         token = pi._EGRESS_LAUNCH_PREFIX.set(("test-owned-network",))
         try:
-            results.append(pi._exec_leg("codex", review, out, timeout_s=1, artifact="x", env={},
-                                        quiescence_latch=latch))
+            with _seat_scope("test:codex-probe-cancel"):
+                results.append(pi._exec_leg(
+                    "codex", review, out, timeout_s=1, artifact="x", env={},
+                    quiescence_latch=latch,
+                ))
         except BaseException as error:
             errors.append(error)
         finally:
@@ -543,7 +550,7 @@ def test_a_cancel_during_the_probe_kills_it_and_the_leg_ends_cancelled(tmp_path,
     thread = threading.Thread(target=run)
     thread.start()
     try:
-        assert launched.wait(3)
+        assert launched.wait(3), errors
         assert children[0].poll() is None, "the probe must be running when the cancel arrives"
         latch.cancel()
         time.sleep(0.1)

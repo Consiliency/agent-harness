@@ -1337,6 +1337,21 @@ def test_invoke_panel_legs_get_distinct_live_keys(monkeypatch):
     assert all(key.startswith("panel:codex:") for key in seen)
 
 
+def test_provider_seam_reuses_an_owning_board_seat_key(monkeypatch):
+    seen = []
+
+    def spawn(leg, _artifact, **_kwargs):
+        seen.append((leg, caps.live_seat_key()))
+        return "OK", "review\nAGREE"
+
+    monkeypatch.setattr(panel_invoker, "_default_spawn", spawn)
+    with caps._seat_scope("codex:board-seat"):
+        result = panel_invoker._default_spawn_via_provider("codex", "artifact")
+
+    assert result == ("OK", "review\nAGREE")
+    assert seen == [("codex", "codex:board-seat")]
+
+
 def test_only_ruled_nonseat_callers_select_the_uncapped_probe_context():
     target = "_uncapped_nonseat_probe"
     counts = Counter()

@@ -11,6 +11,8 @@ import uuid
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("live_seat_attempt")
+
 from phase_loop_runtime import launcher, panel_invoker, sandbox_egress
 from phase_loop_runtime.advisor_board.backing import start_context_carrying_thread
 

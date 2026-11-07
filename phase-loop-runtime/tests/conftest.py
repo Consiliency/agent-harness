@@ -210,6 +210,19 @@ def _no_real_seat_resource_caps(monkeypatch, request):
     monkeypatch.setattr(seat_resource_caps, "capped_popen", capped)
 
 
+@pytest.fixture
+def live_seat_attempt(request):
+    """Give a direct internal-launch test the seat scope production enters above it.
+
+    This is deliberately opt-in.  Public-entry tests must obtain their key from the
+    production route itself, so they continue to expose missing or conflicting keys.
+    """
+    from phase_loop_runtime.seat_resource_caps import _seat_scope
+
+    with _seat_scope(f"test:{request.node.nodeid}"):
+        yield
+
+
 @pytest.fixture(autouse=True)
 def _no_long_real_login_wait(monkeypatch):
     """agent-harness#1132 (plan amendment A3): a jailed Claude seat whose login is short

@@ -33,6 +33,8 @@ from phase_loop_runtime import panel_invoker as pi
 from phase_loop_runtime import review_stage, sandbox_egress, sandbox_retention
 from phase_loop_runtime.advisor_board import backing
 
+pytestmark = pytest.mark.usefixtures("live_seat_attempt")
+
 needs_owner = pytest.mark.skipif(not os.path.exists("/usr/bin/bwrap") or os.getuid() == 0,
                                  reason="needs an unprivileged /usr/bin/bwrap")
 

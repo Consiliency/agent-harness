@@ -22,6 +22,8 @@ import pytest
 
 from phase_loop_runtime import panel_invoker as panel
 
+pytestmark = pytest.mark.usefixtures("live_seat_attempt")
+
 # Each fake provider below is a seat on the owned route (agent-harness#1222): it runs in the
 # filtered namespace and journals where Claude Code does, under its private config dir; the
 # host collects that exact journal (``_JOURNAL``).

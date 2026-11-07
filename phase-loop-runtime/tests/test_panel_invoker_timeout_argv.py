@@ -1873,7 +1873,7 @@ def test_capture_grok_preflight_publish_rejects_after_trip(tmp_path):
 
 @pytest.mark.skipif(os.name == "nt", reason="preflight registry needs POSIX groups")
 def test_capture_preflight_probe_is_swept_by_fatal_latch(
-    tmp_path, monkeypatch, owned_review_network,
+    tmp_path, monkeypatch, owned_review_network, live_seat_attempt,
 ):
     latch = pi._ProviderQuiescenceLatch()
     primary = pi.ProviderProcessGroupQuiescenceError("fatal preflight")

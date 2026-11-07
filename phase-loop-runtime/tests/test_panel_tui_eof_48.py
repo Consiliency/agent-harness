@@ -17,7 +17,7 @@ import pytest
 from phase_loop_runtime.panel_invoker import _classify_leg, _run_claude_tui_session
 
 pytestmark = [pytest.mark.skipif(shutil.which("sh") is None, reason="needs POSIX sh"),
-              pytest.mark.usefixtures("owned_review_network")]
+              pytest.mark.usefixtures("owned_review_network", "live_seat_attempt")]
 
 
 def test_claude_tui_leg_returns_promptly_on_pty_eof(tmp_path):

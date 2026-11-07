@@ -14,6 +14,8 @@ import time
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("live_seat_attempt")
+
 from phase_loop_runtime import panel_invoker as panel
 from test_review_seat_stall_1176 import _fast_tui, _provider, retries_exhausted
 

@@ -5,6 +5,8 @@ import subprocess
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures("live_seat_attempt")
+
 from phase_loop_runtime import sandbox_egress, sandbox_policy
 
 

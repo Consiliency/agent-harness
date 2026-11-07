@@ -13,7 +13,10 @@ from phase_loop_runtime import seat_jail
 from phase_loop_runtime import panel_invoker, gemini_heartbeat
 
 
-pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Linux seat profiles")
+pytestmark = [
+    pytest.mark.skipif(sys.platform != "linux", reason="Linux seat profiles"),
+    pytest.mark.usefixtures("live_seat_attempt"),
+]
 
 
 def test_environment_preparation_does_not_claim_completed_profile_cleanup():

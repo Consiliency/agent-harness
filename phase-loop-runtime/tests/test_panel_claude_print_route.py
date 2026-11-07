@@ -186,6 +186,7 @@ def owned_session(request):
     if shutil.which("sh") is None:
         pytest.skip("needs POSIX sh")
     request.getfixturevalue("owned_review_network")
+    request.getfixturevalue("live_seat_attempt")
 
 
 def _session(command, tmp_path, **kwargs):

@@ -40,6 +40,8 @@ def _direct_review_owner(request, tmp_path, monkeypatch):
     }
     if request.node.originalname not in direct and not broker:
         return
+    if request.node.originalname in direct:
+        request.getfixturevalue("live_seat_attempt")
     if not broker and request.node.originalname != 'test_heartbeat_launch_executes_prefix_and_provider':
         request.getfixturevalue('owned_review_network')
     if broker:
@@ -630,7 +632,7 @@ def test_signal_cancellation_joins_worker_and_child(tmp_path, signum):
     code = f'''
 import os,sys,threading
 from pathlib import Path
-from phase_loop_runtime import panel_invoker as p
+from phase_loop_runtime import panel_invoker as p, seat_resource_caps as caps
 from phase_loop_runtime.sandbox_egress import isolated_network
 event=threading.Event()
 monitor=p._ReviewMonitor(Path({str(tmp_path / 'monitor.json')!r}), 'test', 0, event)
@@ -643,9 +645,10 @@ def run(item):
     with isolated_network(timeout_s=None,required=True) as prefix:
         token=p._EGRESS_LAUNCH_PREFIX.set(prefix)
         try:
-            result=p._run_leg_with_liveness(
-                ['/usr/bin/python3', '-c', "from pathlib import Path; import time; Path({str(marker)!r}).write_text('ready'); time.sleep(60)"],
-                cwd=Path({str(tmp_path)!r}), env=os.environ, deadline_s=1, review_monitor=monitor)
+            with caps._seat_scope('test:signal-cancellation'):
+                result=p._run_leg_with_liveness(
+                    ['/usr/bin/python3', '-c', "from pathlib import Path; import time; Path({str(marker)!r}).write_text('ready'); time.sleep(60)"],
+                    cwd=Path({str(tmp_path)!r}), env=os.environ, deadline_s=1, review_monitor=monitor)
         finally:
             p._EGRESS_LAUNCH_PREFIX.reset(token)
     return p.PanelLegResult('codex', 'DEGRADED', detail=result.stderr)

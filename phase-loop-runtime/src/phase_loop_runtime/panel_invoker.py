@@ -17077,18 +17077,19 @@ def _default_spawn_via_provider(
             _SEAT_SESSION_SEAT.set(seat_key) if seat_key and agy_capture is None else None
         )
         try:
-            if seat_key:
-                from .seat_resource_caps import _seat_scope
-                with _seat_scope(seat_key):
-                    spawned = _default_spawn(
-                        leg, artifact, repo_dir=repo_dir, mode=mode, model=model, **extra
-                    )
-            else:
-                from .seat_resource_caps import _seat_scope
-                with _seat_scope(f"panel:{leg}:{uuid.uuid4().hex}"):
-                    spawned = _default_spawn(
-                        leg, artifact, repo_dir=repo_dir, mode=mode, model=model, **extra
-                    )
+            from .seat_resource_caps import _seat_scope, live_seat_key
+            # ``invoke_board`` already enters the resolved seat's scope before it reaches
+            # this provider seam.  Reuse that identity: replacing it with an unrelated
+            # ``panel:*`` key makes one seat attempt carry two keys and refuses before the
+            # native provider launch.  Bare ``invoke_panel`` legs have no outer identity,
+            # so they still receive their own unique key here.
+            effective_seat_key = (
+                seat_key or live_seat_key() or f"panel:{leg}:{uuid.uuid4().hex}"
+            )
+            with _seat_scope(effective_seat_key):
+                spawned = _default_spawn(
+                    leg, artifact, repo_dir=repo_dir, mode=mode, model=model, **extra
+                )
         except ProviderProcessGroupQuiescenceError as exc:
             # HomebrewAgentRuntimeProvider deliberately turns ordinary spawn
             # exceptions into failed turns.  Process-group quiescence is not an

@@ -24,7 +24,7 @@ from phase_loop_runtime.panel_invoker import _exec_claude_tui_leg, _run_claude_t
 from _owned_journal import journal_sh
 
 pytestmark = [pytest.mark.skipif(shutil.which("sh") is None, reason="needs POSIX sh"),
-              pytest.mark.usefixtures("owned_review_network")]
+              pytest.mark.usefixtures("owned_review_network", "live_seat_attempt")]
 
 
 @pytest.fixture(autouse=True)

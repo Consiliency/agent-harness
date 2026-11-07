@@ -11,7 +11,10 @@ import pytest
 from phase_loop_runtime import panel_invoker, sandbox_egress
 
 
-pytestmark = pytest.mark.skipif(sys.platform != "linux", reason="Linux seat-owner contract")
+pytestmark = [
+    pytest.mark.skipif(sys.platform != "linux", reason="Linux seat-owner contract"),
+    pytest.mark.usefixtures("live_seat_attempt"),
+]
 
 
 def test_owner_has_all_namespaces_and_keeps_filtered_network():

@@ -12,7 +12,10 @@ import pytest
 from phase_loop_runtime import panel_invoker, sandbox_egress
 
 
-pytestmark = pytest.mark.skipif(sys.platform != 'linux', reason='Linux IPC namespace contract')
+pytestmark = [
+    pytest.mark.skipif(sys.platform != 'linux', reason='Linux IPC namespace contract'),
+    pytest.mark.usefixtures("live_seat_attempt"),
+]
 
 
 @pytest.mark.parametrize('heartbeat', [False, True])
