@@ -209,8 +209,10 @@ def _layer_or_skip() -> None:
     reason = seat_egress_proxy.unavailable_reason()
     if reason is not None:
         pytest.skip(f"the seat egress layer is not installed here ({reason})")
-    if shutil.which("openssl") is None:
-        pytest.skip("openssl is unavailable")
+    # The pinned srt refuses to initialize without socat on Linux.
+    for name in ("socat", "openssl"):
+        if shutil.which(name, path="/usr/bin:/bin") is None:
+            pytest.skip(f"{name} is unavailable")
 
 
 def _openssl(*args: str, cwd: Path) -> None:
@@ -568,6 +570,8 @@ def _live_jail_or_fail():
     reason = seat_egress_proxy.unavailable_reason()
     if reason is not None:
         missing.append(reason)
+    if shutil.which("socat", path="/usr/bin:/bin") is None:
+        missing.append("socat is not installed (the pinned srt needs it)")
     if missing:
         pytest.fail("live jail unavailable: " + "; ".join(missing))
 
