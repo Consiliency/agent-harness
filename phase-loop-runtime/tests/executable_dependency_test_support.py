@@ -78,6 +78,7 @@ def build_fixture(
     *,
     layout: str = "layout-a",
     provider: str = "synthetic",
+    provider_destination: Path | None = None,
     subject_mode: int = 0o755,
     helper_mode: int = 0o644,
     directory_mode: int = 0o755,
@@ -88,7 +89,7 @@ def build_fixture(
     subject = release / "bin/tool"
     helper = release / "lib/helper"
     destination_root = Path("/fixture") / sha256(str(root).encode("utf-8"))[:12] / "runtime"
-    subject_destination = destination_root / "bin/tool"
+    subject_destination = provider_destination or destination_root / "bin/tool"
     helper_destination = destination_root / "lib/helper"
     subject.parent.mkdir(parents=True, mode=0o755)
     helper.parent.mkdir(parents=True, mode=0o755)
@@ -104,47 +105,53 @@ def build_fixture(
     base_profile = "1" * 64
     exclusions: list[dict[str, str]] = []
     exclusions_sha256 = sha256(rfc8785.dumps(exclusions))
-    entries: list[dict[str, Any]] = [
-        {
-            "source": None,
-            "destination": str(subject_destination.parent),
-            "kind": "directory",
-            "uid": uid,
-            "gid": gid,
-            "mode": f"0{directory_mode:03o}",
-            "nlink": None,
-            "size": None,
-            "sha256": None,
-            "link_text": None,
-            "target": None,
-        },
-        {
-            "source": None,
-            "destination": str(helper_destination.parent),
-            "kind": "directory",
-            "uid": uid,
-            "gid": gid,
-            "mode": f"0{directory_mode:03o}",
-            "nlink": None,
-            "size": None,
-            "sha256": None,
-            "link_text": None,
-            "target": None,
-        },
-        {
-            "source": str(helper),
-            "destination": str(helper_destination),
-            "kind": "file",
-            "uid": uid,
-            "gid": gid,
-            "mode": f"0{helper_mode:03o}",
-            "nlink": 1,
-            "size": helper.stat().st_size,
-            "sha256": sha256(helper.read_bytes()),
-            "link_text": None,
-            "target": None,
-        },
-    ]
+    entries: list[dict[str, Any]] = []
+    if provider_destination is None:
+        entries.append(
+            {
+                "source": None,
+                "destination": str(subject_destination.parent),
+                "kind": "directory",
+                "uid": uid,
+                "gid": gid,
+                "mode": f"0{directory_mode:03o}",
+                "nlink": None,
+                "size": None,
+                "sha256": None,
+                "link_text": None,
+                "target": None,
+            }
+        )
+    entries.extend(
+        [
+            {
+                "source": None,
+                "destination": str(helper_destination.parent),
+                "kind": "directory",
+                "uid": uid,
+                "gid": gid,
+                "mode": f"0{directory_mode:03o}",
+                "nlink": None,
+                "size": None,
+                "sha256": None,
+                "link_text": None,
+                "target": None,
+            },
+            {
+                "source": str(helper),
+                "destination": str(helper_destination),
+                "kind": "file",
+                "uid": uid,
+                "gid": gid,
+                "mode": f"0{helper_mode:03o}",
+                "nlink": 1,
+                "size": helper.stat().st_size,
+                "sha256": sha256(helper.read_bytes()),
+                "link_text": None,
+                "target": None,
+            },
+        ]
+    )
     if layout == "layout-b":
         entries.append(
             {
@@ -204,7 +211,11 @@ def build_fixture(
         "source_roots": [directory_identity(release)],
         "destination_policy": {
             "provider_destination": str(subject_destination),
-            "allowed_roots": [str(destination_root)],
+            "allowed_roots": (
+                [str(destination_root)]
+                if provider_destination is None
+                else [str(subject_destination.parent), str(destination_root)]
+            ),
         },
         "owner_mode_policy": {
             "allowed_uids": [uid],

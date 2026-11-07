@@ -6,12 +6,14 @@ import ast
 from dataclasses import dataclass
 import json
 from importlib.resources import files
+import os
 from pathlib import Path
 from types import SimpleNamespace
 
 import jsonschema
 import pytest
 
+from executable_dependency_test_support import build_fixture
 from phase_loop_runtime import agy_integrity
 from phase_loop_runtime import agy_qualification
 from phase_loop_runtime import claude_seat_transport
@@ -168,9 +170,27 @@ PRELAUNCH_REFUSAL_CODES = frozenset(
 
 
 def _configure_agreement_state(row, tmp_path, monkeypatch):
-    executable = tmp_path / ("claude" if row.leg == "claude" else "agy")
-    executable.write_bytes(b"fixture provider")
-    executable.chmod(0o700)
+    dependency_fixture = None
+    if row.state == "release_agy":
+        dependency_fixture = build_fixture(
+            tmp_path / "managed-release",
+            provider=row.leg,
+            provider_destination=Path(f"{seat_jail.SEAT_BIN}/{row.leg}"),
+        )
+        dependency_fixture.close()
+        executable = dependency_fixture.subject
+        monkeypatch.setattr(
+            seat_subject,
+            "open_managed_authority",
+            lambda _subject: (
+                os.open(dependency_fixture.authority_path, os.O_RDONLY | os.O_CLOEXEC),
+                dependency_fixture.requirement.expected_authority_sha256,
+            ),
+        )
+    else:
+        executable = tmp_path / ("claude" if row.leg == "claude" else "agy")
+        executable.write_bytes(b"fixture provider")
+        executable.chmod(0o700)
     monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
     source = "managed_release" if row.state == "release_agy" else "standalone"
 
@@ -186,8 +206,8 @@ def _configure_agreement_state(row, tmp_path, monkeypatch):
             leg,
             source,
             executable,
-            "fixture-release" if source == "managed_release" else None,
-            None,
+            dependency_fixture.release.name if dependency_fixture is not None else None,
+            dependency_fixture.requirement if dependency_fixture is not None else None,
         )
 
     monkeypatch.setattr(seat_subject, "resolve_seat_subject", resolve)
@@ -262,7 +282,13 @@ def _configure_agreement_state(row, tmp_path, monkeypatch):
             raise ValueError(agy_code)
         return SimpleNamespace(
             path=executable,
-            image=SimpleNamespace(sha256="a" * 64),
+            image=SimpleNamespace(
+                sha256=(
+                    dependency_fixture.requirement.selected_executable.sha256
+                    if dependency_fixture is not None
+                    else "a" * 64
+                )
+            ),
             admission_class="release_qualified" if source == "managed_release" else "locally_qualified",
             close=lambda: None,
         )
@@ -282,10 +308,17 @@ def _configure_agreement_state(row, tmp_path, monkeypatch):
             token=b"synthetic-token", notices=[], source="login", expires_at=None
         ),
     )
-    jail = lambda: SimpleNamespace(pass_fds=(), dependency_projection_digest=None)
-    monkeypatch.setattr(
-        panel_invoker, "_build_jail_with_owned_inputs", lambda *_args, **_kwargs: jail()
-    )
+
+    def jail(*_args, **kwargs):
+        dependency = kwargs.get("dependency")
+        return SimpleNamespace(
+            pass_fds=(),
+            dependency_projection_digest=(
+                None if dependency is None else dependency.projection_digest
+            ),
+        )
+
+    monkeypatch.setattr(panel_invoker, "_build_jail_with_owned_inputs", jail)
     monkeypatch.setattr(
         panel_invoker, "_approved_stage_or_refuse", lambda review, _auth: review / "tree"
     )
