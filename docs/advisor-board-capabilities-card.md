@@ -725,6 +725,7 @@ seat with a staged tree takes the jailed route.
 are:
 - `jailed`: tools inside the jail. `credential` names `login` or `seat_token`.
 - `unconfined`: tools on the staged tree without a jail (codex, grok).
+- `remote`: selected by the remote rung. JAILCORE publishes the mode but ships the rung off.
 - `sealed`: no tools; the bundle is inlined. A brokered review seat is never `sealed`: a
   route that is not jailed is `degraded` (agent-harness#1244).
 - `degraded`: will not run. The line reads `degraded — will not run [<code>]: <reason>;
@@ -733,6 +734,20 @@ are:
 
 Every mode other than `jailed` names its notice code, its reason and a one-line fix. The
 same modes are written to `seat-modes.json` in the stream directory.
+
+**Review-seat route order.** A brokered review tries four rungs: its registered local jail
+profile, remote placement, native fill, then degraded. A failed local rung descends only for
+`seat_sandbox_unavailable_host`, `seat_sandbox_unavailable_tiocsti`,
+`seat_sandbox_unavailable_seat_uid` or `seat_egress_not_installed`, unless a reviewed
+routed-remote row or capacity grant explicitly selects remote. All other route failures are
+terminal and retain their typed route code. The expiring named exceptions are Codex and Grok
+`unconfined`, and Claude `open egress`; an expired exception is a typed refusal.
+
+The `remote` mode is inactive in the shipped kit: its descend set and packaged capacity
+grants are empty. Local capacity exhaustion therefore remains degraded unless a later remote
+implementation supplies a valid operator-private grant and receipt. The complete route and
+egress code vocabulary is closed in `seat_route_contract.CODES`; unknown codes do not gain
+a fallback.
 
 **Host prerequisite (maintainer, root, once per host).** `apt install uidmap`, then
 `usermod --add-subuids <start>-<end> --add-subgids <start>-<end> <operator>` (65536 ids is

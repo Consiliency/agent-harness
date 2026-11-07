@@ -1710,12 +1710,25 @@ are recorded on agent-harness#1132.
   - **The failure cache:** failures are cached per host, digest and layout for
     `PHASE_LOOP_SEAT_JAIL_QUALIFY_RETRY_S` (default 3600 s). A lock timeout is not cached.
   - **The launch-time re-check** against the built jail still refuses an unrecorded digest.
+- **Closed route resolver (SEATS JAILCORE, agent-harness#1820).** A brokered review walks
+  four rungs before launch: the registered local jail profile, the remote rung, native fill,
+  then terminal degraded. Only `seat_sandbox_unavailable_host`,
+  `seat_sandbox_unavailable_tiocsti`, `seat_sandbox_unavailable_seat_uid` and
+  `seat_egress_not_installed` descend from a failed local rung. Every other failure is
+  terminal unless an explicit routed-remote row or the capacity gate selected the remote
+  rung. `MODE_REMOTE` is published as `remote`, but JAILCORE ships it inactive:
+  `REMOTE_DESCEND_CODES` and the packaged capacity grants are empty. Capacity exhaustion
+  therefore stays degraded unless an operator-private, receipt-bound grant is installed by
+  a later remote implementation. The named window exceptions are the expiring Codex and
+  Grok `unconfined` routes and Claude `open egress`; expiry is terminal and typed. Route,
+  egress and skip codes are the closed `seat_route_contract.CODES` table, and unclassified
+  codes fail closed.
 - **Seat modes (plan amendment A1).** Before any seat launches, every board publishes one
-  mode per seat: `jailed`, `unconfined`, `sealed`, `degraded` or `native` (a brokered review
-  seat is never `sealed`: such a route is `degraded`, agent-harness#1244). Each mode carries
-  its notice code, reason and fix, and the modes are delivered through `on_seat_modes`, the
-  log and `seat-modes.json`. The `advisor-board` CLI prints them to stderr and carries them as
-  `seat_modes` in `--json`.
+  mode per seat: `jailed`, `unconfined`, `remote`, `sealed`, `degraded` or `native` (a
+  brokered review seat is never `sealed`: such a route is `degraded`, agent-harness#1244).
+  Each mode carries its notice code, reason and fix where applicable, and the modes are
+  delivered through `on_seat_modes`, the log and `seat-modes.json`. The `advisor-board` CLI
+  prints them to stderr and carries them as `seat_modes` in `--json`.
 - **Launch helpers.** The pre-jail and in-namespace helpers (`seat_keyring_exec`, the
   `seat_uid` handoff and its in-namespace verbs) run from the installation the parent
   imported: `python -I` with this package's root put first on the import path
