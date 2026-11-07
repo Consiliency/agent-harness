@@ -7,17 +7,20 @@ rung. Every row includes `id`, `vendor`, `route`, `claude_transport`,
 `live_evidence_digest`, `status`, `exception`, `expiry`, `renewal_record`,
 `end_condition` and `interim_route`. President rows also include `rung`,
 `tool_mode` and `bound_s`. The documentation reducer changes a row to
-`done-local` only when that row is observed in every context of a complete,
-passing three-context W1 set. Unobserved vendor, remote and president rows retain
-their prior status.
+`done-local` only when that row is observed in the `standard` context of a
+passing W1 set: one run on the designated seat host, a standard host, under its
+one operator account (OD-12). Unobserved vendor, remote and president rows retain
+their prior status. `done-team` is a later status for a row also qualified on a
+shared team host under two operator accounts; no reducer path emits it, and no
+EC, gate or window requires it.
 
 `seat-window qualify` now implements the frozen per-context launch, board and
 containment-reduction sequence. Live use remains closed: it returns
 `window_owner_approval_required` before preflight or a provider call until an
 owner-approved source change opens W1. No W1 evidence has been collected. LA-1,
 LA-2 and LA-3 remain owner gates.
-Runtime and profile digests must come from the installed runtime on each host;
-source-checkout tests do not establish host readiness.
+Runtime and profile digests must come from the installed runtime on the
+designated seat host; source-checkout tests do not establish host readiness.
 
 | Row | Route | Status | Named exception | Expiry / end condition |
 | --- | --- | --- | --- | --- |
@@ -37,12 +40,12 @@ runtime-named entries; sealed provider routes remain in the inventory.
 
 | Rung | Runtime route | Tool mode | Bound (seconds) | Host classes | Status |
 | --- | --- | --- | ---: | --- | --- |
-| fable | native_fill_deferred | sealed | 300 | team, standard | candidate |
-| fable | _launch_claude:print | sealed | 300 | team, standard | candidate |
-| fable | _launch_claude:tui | sealed | 300 | team, standard | candidate |
-| sol | _exec_leg:codex | sealed | 300 | team, standard | candidate |
-| grok | _exec_leg:grok | sealed | 300 | team, standard | candidate |
-| gemini | _launch_gemini | sealed | 300 | team, standard | candidate |
+| fable | native_fill_deferred | sealed | 300 | standard | candidate |
+| fable | _launch_claude:print | sealed | 300 | standard | candidate |
+| fable | _launch_claude:tui | sealed | 300 | standard | candidate |
+| sol | _exec_leg:codex | sealed | 300 | standard | candidate |
+| grok | _exec_leg:grok | sealed | 300 | standard | candidate |
+| gemini | _launch_gemini | sealed | 300 | standard | candidate |
 
 The bound is the default no-output setting on `bounded`; its configured value
 must be finite, positive and at most 1800 seconds. `heartbeat_only` never has a
@@ -53,8 +56,9 @@ route is synthesized by the reducer.
 
 Use the [window kit](../plans/evidence/seat-qualification/README.md) for every
 candidate on a host. Records are private per operator. Mode 0600 does not isolate
-an unconfined co-seat running as the same operator. W1 must measure isolation
-between its two distinct operator accounts. Public account labels are opaque.
+an unconfined co-seat running as the same operator. W1 runs under one operator
+account, so its record has no peer observation; the two-account check stays only
+as offline validation for `done-team`. Public account labels are opaque.
 Reviews retain the T3 fallback under OD-10; offline checks do not close W1.
 Expired exceptions cannot support a passing window. Renewal requires a new
 owner record and matrix update; rerunning a command does not extend an expiry.

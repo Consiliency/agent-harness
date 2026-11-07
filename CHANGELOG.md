@@ -6,6 +6,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 
 ## [Unreleased]
 
+- The seat-window kit follows OD-12: one `standard` context under one operator account is
+  a passing W1 set, a one-account host has no peer record, and `--host-class` defaults to
+  `standard`. Team contexts and `--peer-record` stay as offline validation for the later
+  `done-team` status, which no reducer path emits (SEATS FIRSTSEAT lane E, agent-harness#1820).
 - Jailed-seat qualification keys are built from the live profile, allowlist,
   falsifier-layout, projection, variant and host inputs, and dependency projections are
   admitted per profile declaration (SEATS JAILCORE SL-2, agent-harness#1820).

@@ -31,11 +31,17 @@ def _window_sources(request, tmp_path, monkeypatch):
         monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "state"))
 
 
-def _window_records():
+# W1 is one run on the designated standard host under its one operator account (OD-12).
+_W1_CONTEXTS = (("standard", 1),)
+# Team contexts are only ever offline validation for the later `done-team` status.
+_DONE_TEAM_CONTEXTS = (("team", 1), ("team", 2), ("standard", 1))
+
+
+def _window_records(contexts=_W1_CONTEXTS):
     from phase_loop_runtime import seat_window as w
     from phase_loop_runtime import president_adapter as pa, panel_invoker as pi
     records = []
-    for index, (host, account) in enumerate((("team", 1), ("team", 2), ("standard", 1))):
+    for index, (host, account) in enumerate(contexts):
         checks = {name: True for name in w.CONTAINMENT_FIELDS}
         egress = {name: True for name in w.EGRESS_FIELDS}
         context_id = f"c{index:031x}"
@@ -44,7 +50,8 @@ def _window_records():
             "account_label": account_label, "host_class": host,
             "host_digest": ("a" if host == "team" else "b") * 64, "operator_id": account,
             "board_outcome": "terminated", "admission": "admitted", "canonical_gemini": True,
-            "staged_read": True, "gemini_route": "jailed", "account_isolation": True,
+            "staged_read": True, "gemini_route": "jailed",
+            "account_isolation": True if host == "team" else None,
             "co_seats": ["codex", "grok"],
             "rows": [r["id"] for r in w.candidates(w.readiness_rows(), host)],
             "observed_at": w._now().isoformat(),
@@ -69,7 +76,7 @@ def _window_records():
             "bracket": {}, "issuer": {}, "unavailable_reasons": {}}
         identity = w.digest(observation)
         pa.write_private_record("window-observation-" + identity + ".json", observation)
-        read = {"schema": "seat_window_read.v1", "tree_digest": ("def"[index] * 64),
+        read = {"schema": "seat_window_read.v1", "tree_digest": ("defab"[index] * 64),
             "access_observed": True, "tool_observed": True}
         record["tool_receipt_digest"] = w.digest(read)
         pa.write_private_record("window-read-" + w.digest(read) + ".json", read)
@@ -164,7 +171,7 @@ def test_seats_firstseat_w1_receipt_rejects_cross_field_containment_vocabularies
     assert not (tmp_path / "out.json").exists()
 
 
-@pytest.mark.parametrize("change", ["account", "isolation", "disclosure", "stale", "coverage", "expiry", "canonical", "route", "admission", "row", "digest"])
+@pytest.mark.parametrize("change", ["isolation", "disclosure", "stale", "coverage", "expiry", "canonical", "route", "admission", "row", "digest"])
 def test_seats_firstseat_w1_receipt_boundaries(change):
     from phase_loop_runtime import seat_window as w
     records = _window_records()
@@ -172,7 +179,6 @@ def test_seats_firstseat_w1_receipt_boundaries(change):
         records.pop()
     else:
         r = records[0]
-        if change == "account": records[1]["operator_id"] = 1
         if change == "isolation": r["account_isolation"] = False
         if change == "disclosure": r["co_seats"] = []
         if change == "stale": r["qualification_keys"]["profile_digest"] = "d" * 64
@@ -230,7 +236,7 @@ def test_seats_firstseat_w1_receipt_source_identity(field):
 
 def test_seats_firstseat_w1_receipt_source_contexts():
     from phase_loop_runtime import seat_window as w
-    records = _window_records()
+    records = _window_records(_DONE_TEAM_CONTEXTS)
     assert w.verify_records(records)["records_valid"]
     for record in records[1:]:
         for key in ("source_attempt", "exec_record_digest", "tool_receipt_digest", "containment", "egress"):
@@ -340,6 +346,114 @@ def test_seats_firstseat_w1_receipt_account_probe(tmp_path, monkeypatch, outcome
             return original(p, flags, *a, **kw)
         monkeypatch.setattr(w.os, "open", open_peer)
     assert w.account_isolation(path) is ({"readable": False, "denied": True, "missing": None}[outcome])
+
+def _reseal(record):
+    from phase_loop_runtime import seat_window as w
+    record.pop("record_digest")
+    record["record_digest"] = w.digest(record)
+
+
+def test_seats_firstseat_w1_receipt_one_standard_context_passes():
+    from phase_loop_runtime import seat_window as w
+    records = _window_records()
+    assert len(records) == 1 and records[0]["account_isolation"] is None
+    assert w.verify_records(records) == {
+        "schema": "seat_window_verification.v1", "window": "W1", "passed": True,
+        "records_valid": True, "status": "done-local", "code": "window_verified"}
+    rows = {row["id"]: row for row in w.reduce_readiness(records)}
+    assert rows["vendor:gemini"]["status"] == "done-local"
+
+
+@pytest.mark.parametrize("contexts", [
+    (("team", 1),),
+    (("team", 1), ("team", 2)),
+    (("team", 1), ("standard", 1)),
+    (("standard", 1), ("standard", 2)),
+])
+def test_seats_firstseat_w1_receipt_coverage_refuses(contexts):
+    from phase_loop_runtime import seat_window as w
+    records = _window_records(contexts)
+    result = w.verify_records(records)
+    assert (result["passed"], result["status"]) == (False, "candidate")
+    assert all(row["status"] != "done-local" for row in w.reduce_readiness(records))
+
+
+def test_seats_firstseat_w1_receipt_two_standard_hosts_refused():
+    from phase_loop_runtime import seat_window as w
+    records = _window_records((("standard", 1), ("standard", 2)))
+    records[1]["host_digest"] = "9" * 64
+    _reseal(records[1])
+    assert not w.verify_records(records)["passed"]
+
+
+@pytest.mark.parametrize("host,value", [
+    ("standard", True), ("standard", False), ("team", None), ("team", False),
+])
+def test_seats_firstseat_w1_receipt_isolation_follows_host_class(host, value):
+    from phase_loop_runtime import seat_window as w
+    records = _window_records(_W1_CONTEXTS if host == "standard" else _DONE_TEAM_CONTEXTS)
+    assert w.verify_records(records)["passed"]
+    records[0]["account_isolation"] = value
+    _reseal(records[0])
+    assert not w.verify_records(records)["passed"]
+
+
+@pytest.mark.parametrize("index,field,donor", [(1, "operator_id", 0), (2, "host_digest", 0)])
+def test_seats_firstseat_w1_receipt_two_account_validation_stays_offline(index, field, donor):
+    from phase_loop_runtime import seat_window as w
+    records = _window_records(_DONE_TEAM_CONTEXTS)
+    assert w.verify_records(records)["status"] == "done-local"
+    records[index][field] = records[donor][field]
+    _reseal(records[index])
+    assert not w.verify_records(records)["passed"]
+
+
+@pytest.mark.parametrize("contexts", [_W1_CONTEXTS, _DONE_TEAM_CONTEXTS])
+def test_seats_firstseat_w1_receipt_no_reducer_path_emits_done_team(tmp_path, contexts):
+    from phase_loop_runtime import seat_window as w
+    records = _window_records(contexts)
+    assert w.verify_records(records)["status"] != "done-team"
+    assert "done-team" not in {row["status"] for row in w.reduce_readiness(records)}
+    exported = w.export_records(records, tmp_path / "out.json", reviewed=True)
+    assert "done-team" not in {row["status"] for row in exported["rows"]}
+
+
+def test_seats_firstseat_w1_receipt_team_contexts_never_set_a_row_status():
+    from phase_loop_runtime import seat_window as w
+    records = _window_records(_DONE_TEAM_CONTEXTS)
+    gap = next(r for r in records[0]["row_observations"] if r["id"] == "vendor:claude")
+    gap.update(outcome="unavailable", exec_record_digest=None)
+    _reseal(records[0])
+    assert w.verify_records(records)["passed"]
+    rows = {row["id"]: row for row in w.reduce_readiness(records)}
+    assert rows["vendor:claude"]["status"] == "done-local"
+    designated = records[-1]
+    assert rows["vendor:gemini"]["qualification_record"] == w.digest([designated["record_digest"]])
+    assert rows["vendor:gemini"]["live_evidence_digest"] == w.digest(
+        [designated["exec_record_digest"]])
+
+
+def test_seats_firstseat_w1_receipt_rows_name_the_standard_class_only():
+    from phase_loop_runtime import seat_window as w
+    rows = w.readiness_rows()
+    assert rows and all(row["host_classes"] == ["standard"] for row in rows)
+    selected = {row["id"] for row in w.candidates(rows, "standard")}
+    assert selected == {row["id"] for row in rows if row["status"] == "candidate"}
+    assert {row["id"] for row in w.candidates(rows, "team")} == selected
+
+
+def test_seats_firstseat_w1_receipt_cli_defaults_to_standard():
+    import argparse
+    import inspect
+    from phase_loop_runtime import seat_window as w
+    root = argparse.ArgumentParser()
+    w.register_parser(root.add_subparsers(dest="command"))
+    parsed = root.parse_args(["seat-window", "qualify"])
+    assert parsed.host_class == "standard" and parsed.peer_record is None
+    assert inspect.signature(w.qualify).parameters["host_class"].default == "standard"
+    kept = root.parse_args(["seat-window", "qualify", "--host-class", "team", "--peer-record", "p"])
+    assert (kept.host_class, kept.peer_record) == ("team", "p")
+
 
 import contextlib
 

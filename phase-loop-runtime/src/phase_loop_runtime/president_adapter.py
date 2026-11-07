@@ -793,5 +793,5 @@ def president_rung_inventory() -> list[dict[str, object]]:
               "sol": ("_exec_leg:codex",), "grok": ("_exec_leg:grok",),
               "gemini": ("_launch_gemini",)}
     return [{"rung": rung, "route": route, "tool_mode": "sealed", "bound_s": 300,
-             "host_classes": ["team", "standard"], "status": "candidate"}
+             "host_classes": ["standard"], "status": "candidate"}
             for rung in panel_invoker.PRESIDENT_LADDER for route in routes[rung]]

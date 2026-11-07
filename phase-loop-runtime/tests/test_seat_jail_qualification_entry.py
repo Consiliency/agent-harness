@@ -41,7 +41,7 @@ def test_seats_firstseat_window_candidates_and_preflight(monkeypatch):
     rows = window.readiness_rows()
     assert {r["vendor"] for r in rows if r["kind"] == "vendor"} == {"claude", "gemini", "codex", "grok", "pi"}
     assert len([r for r in rows if r["kind"] == "remote"]) == 5
-    assert all(r["status"] == "candidate" for r in window.candidates(rows, "team"))
+    assert all(r["status"] == "candidate" for r in window.candidates(rows, "standard"))
     seen = []
     def available(vendor):
         seen.append(("available", vendor))
@@ -115,7 +115,7 @@ def test_seats_firstseat_window_probe_launch_forms(tmp_path, monkeypatch, capsys
 
 def test_seats_firstseat_window_row_observations():
     from phase_loop_runtime import panel_invoker as pi, seat_window as w
-    rows = w.candidates(w.readiness_rows(), "team")
+    rows = w.candidates(w.readiness_rows(), "standard")
     leg = pi.PanelLegResult("gemini", "OK", "AGREE")
     object.__setattr__(leg, "_leg_exec_metadata", {"record_digest": "e" * 64})
     observations = w.candidate_observations(rows, [leg])
@@ -779,8 +779,7 @@ def test_seats_firstseat_window_i15_order_board_input_launch4_and_owner_counts(
         help_lists_plugin=help_lists_plugin,
         credentialed_control_required=credentialed_control_required)
     result = window.qualify(window="W1", monitoring_policy="bounded", repo=tmp_path,
-                            host_class="team", attended=True, peer_record="peer",
-                            model="fixture-model")
+                            attended=True, model="fixture-model")
     assert result == {"status": "candidate", "code": "window_review_required"}
     calls = harness["calls"]
     assert calls[:3] == [("layout", "nested"), ("build", "nested"),
@@ -816,13 +815,32 @@ def test_seats_firstseat_window_i15_order_board_input_launch4_and_owner_counts(
     assert record["containment"]["checks"]["project_settings"] is False
 
 
+def test_seats_firstseat_window_w1_is_one_standard_context_with_no_peer_record(
+    tmp_path, monkeypatch,
+):
+    from phase_loop_runtime import seat_window as window
+
+    probe = window.account_isolation
+    harness = _window_frozen_interface_harness(tmp_path, monkeypatch)
+    monkeypatch.setattr(window, "account_isolation", probe)
+    assert window.qualify(window="W1", monitoring_policy="bounded", repo=tmp_path,
+                          attended=True) == {
+        "status": "candidate", "code": "window_review_required"}
+    writes = harness["writes"]
+    record = writes[next(name for name in writes if name.startswith("window-W1-"))]
+    assert record["host_class"] == "standard"
+    assert record["account_isolation"] is None
+    assert record["rows"] == [row["id"] for row in window.candidates(
+        window.readiness_rows(), "standard")]
+
+
 def test_seats_firstseat_window_reducer_mappings_are_order_independent(tmp_path, monkeypatch):
     from phase_loop_runtime import seat_window as window
 
     harness = _window_frozen_interface_harness(
         tmp_path, monkeypatch, reverse_mappings=True)
     result = window.qualify(window="W1", monitoring_policy="bounded", repo=tmp_path,
-                            host_class="team", attended=True, peer_record="peer")
+                            attended=True)
     assert result == {"status": "candidate", "code": "window_review_required"}
     assert any(name.startswith("window-W1-") for name in harness["writes"])
 
@@ -833,7 +851,7 @@ def test_seats_firstseat_window_board_input_mismatch_refuses_all_writes(tmp_path
     harness = _window_frozen_interface_harness(
         tmp_path, monkeypatch, board_input_matches=False)
     assert window.qualify(window="W1", monitoring_policy="bounded", repo=tmp_path,
-                          host_class="team", attended=True, peer_record="peer") == {
+                          attended=True) == {
         "status": "candidate", "code": "window_reduction_unavailable"}
     assert harness["calls"][-1][0] == "reduce"
     assert harness["writes"] == {}
@@ -846,7 +864,7 @@ def test_seats_firstseat_window_board_composition_refusal_skips_reducer_and_writ
 
     harness = _window_frozen_interface_harness(tmp_path, monkeypatch, composition="refused")
     assert window.run_native_window(repo=tmp_path, monitoring_policy="bounded",
-                                    host_class="team") == {
+                                    host_class="standard") == {
         "status": "candidate", "code": "review_composition_refused"}
     assert not any(call[0] == "reduce" for call in harness["calls"])
     assert harness["writes"] == {}

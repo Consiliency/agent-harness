@@ -8,11 +8,11 @@ reviewed export and probe-tools are implemented; no fixture or source-checkout r
 opens the live gate.
 
 W1 is an attended owner window, not a source-checkout test. Do not execute it
-until LA-1 host administration and managed release, LA-2 logins under each
-account, and LA-3 attendance are recorded. Run sequentially on two distinct
-team-host accounts and one standard host. All four vendors' availability and
-subscription auth are preflighted under each account before board launch.
-A composition refusal blocks that attempt for LA-2 remediation.
+until LA-1 host administration and managed release, LA-2 logins under the
+operator account, and LA-3 attendance are recorded. Run it once on the designated
+standard host under its one operator account (OD-12). All four vendors'
+availability and subscription auth are preflighted under that account before
+board launch. A composition refusal blocks that attempt for LA-2 remediation.
 
 ```
 phase-loop seat-sandbox qualify
@@ -27,10 +27,11 @@ phase-loop seat-window export --window W1 --reviewed \
 `seat_window.v1` holds the window, opaque context/account identifiers, host
 class, all selected candidate row identifiers, parent-computed runtime/profile/
 allowlist digests, board identity and admission, canonical Gemini review and
-staged-read tool receipt, exec-record digest, co-seat disclosures, account
-isolation observation, containment and observed egress measurements and their
-digests. Missing, unavailable, stale or failed measurements cannot support
-`done-local`. Static configuration reports are not observations.
+staged-read tool receipt, exec-record digest, co-seat disclosures, the account
+isolation observation (null on a one-account host, which has no peer record),
+containment and observed egress measurements and their digests. Missing,
+unavailable, stale or failed measurements cannot support `done-local`. Static
+configuration reports are not observations.
 
 Containment fields cover credential scope, refresh detection and planted project
 settings, hooks, MCP servers and provider overrides. Egress fields cover allowed
@@ -54,8 +55,9 @@ launches follow on the same qualification input. A composition refusal ends the
 attempt. Otherwise containment is copied only from `reduce_containment`, and the
 reducer's private observation and `owner-summary-W1-*.json` (including counted and
 uncounted-home lookup totals) are retained separately. The attended workflow uses
-`--attended`, `--host-class team|standard`
-and reciprocal `--peer-record PATH` observations under two real accounts.
+`--attended`; `--host-class` defaults to `standard`, and W1 passes no
+`--peer-record`. `--host-class team` and reciprocal `--peer-record PATH`
+observations under two real accounts stay for later `done-team` coverage.
 Never substitute a same-account file for that check.
 
 The following describes the record and reduction contract for future collection.
@@ -70,8 +72,12 @@ With no `--record`, these commands select the local window records. Export also
 requires `--reviewed --output plans/evidence/seat-qualification/W1.json`.
 No incomplete record is exported, and a non-passing result exits nonzero.
 
-The offline reducer requires two distinct operator IDs on the same team host
-and a separate standard host. It checks unique opaque context/account labels,
+The offline reducer requires one `standard` context under one operator, and that
+context passes alone. Team contexts are optional offline validation for `done-team`:
+any that are present need two distinct operator IDs on one team host, separate from
+the standard host, each with a passing isolation observation. They never set a row
+status, and no reducer path emits `done-team`.
+It checks unique opaque context/account labels,
 qualification keys and context identities against retained source bindings,
 receipt digests, complete candidate selection, canonical review and
 staged-read observations, co-seat disclosures and each measurement separately.
