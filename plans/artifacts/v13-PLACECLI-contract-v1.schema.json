@@ -34,14 +34,14 @@
       "<reserve|release|reap|version>"
     ],
     "client_flag": "--client is required and selects exactly one per-client operator configuration, certificate and inventory. agent-toolkit accepts only pi-runner; agent-harness accepts only leg, qualification and implementation. Environment variables never select or override client, configuration, certificate or inventory.",
-    "input": "reserve, release and reap read exactly one UTF-8 JSON object from stdin followed by EOF, maximum 65536 bytes; duplicate keys, non-finite numbers, trailing data and invalid UTF-8 refuse before effects. version requires empty stdin.",
+    "input": "reserve, release and reap read exactly one UTF-8 JSON object from stdin followed by EOF, maximum 65536 bytes; duplicate keys, non-finite numbers, trailing data and invalid UTF-8 refuse before effects, as the protocol failure of exit_codes 70. version requires empty stdin.",
     "output": "Exactly one compact UTF-8 JSON response object followed by LF on stdout; stdout carries no other text. version emits VersionResponse before any placement effect.",
     "stderr": "Empty for schema-valid protocol outcomes; bounded closed harness diagnostics only for invocation or internal failures; never input values, credentials, policy documents or exception chains.",
     "exit_codes": {
       "0": "Schema-valid and settled: version response emitted; reserve outcome admitted; release state released; or reap state complete.",
       "10": "Schema-valid and this call created no lease: reserve outcome at_capacity, refused or unreachable; or release state unknown_reservation or rejected. unknown_reservation means no stored lease. rejected means the release body did not match the stored reservation, the stored lease and flags are unchanged, and no barrier is armed; send a new request_id with the stored reservation. Do not allocate a new request_id for a retry of that same reserve attempt.",
       "20": "Schema-valid and an effect may remain: reserve outcome timeout, release state cleanup_pending, or reap state cleanup_pending. Reserve/release barriers key on selected client plus reservation_id, or selected client plus request_id until a reservation_id is known; each reap-pending journal entry keeps its own such key. Retry that request_id or release that reservation. Other reservations, including concurrent reservations for the same client, remain admissible.",
-      "70": "Internal or protocol failure. Stdout is absent. Retry the same request_id once. Reap is caller-inventory maintenance, not recovery for one lost reserve response."
+      "70": "Internal or protocol failure. Stdout is absent. Schema-invalid input is a protocol failure: input that breaks the input rules, exceeds 65536 bytes, fails schema validation for the verb, or is non-empty for version exits 70 with stdout absent and makes no effect. Retry the same request_id once only when the request was schema-valid; resending schema-invalid bytes returns the same failure. Reap is caller-inventory maintenance, not recovery for one lost reserve response."
     }
   },
   "x-contract-pins": {
@@ -186,13 +186,19 @@
             "member": "x-placement-semantics.reserve_idempotency, x-placement-semantics.reserve_replay, x-placement-semantics.replay_settle_allowance_ms",
             "class": "b",
             "rule": "Defines the replay response while an attempt is unsettled, replay after settlement, and the bound after which an uncertain attempt settles terminally. replay_settle_allowance_ms equals the pinned driver-default transfer allowance. Reap is still not the retry path."
+          },
+          {
+            "member": "x-cli.input, x-cli.exit_codes.70",
+            "class": "b",
+            "rule": "States the exit class of schema-invalid input, which the previous bytes left implicit: it is a protocol failure with exit 70, stdout absent and no effect, and a client retries once only a schema-valid request."
           }
         ],
         "test_obligations": [
           "R1 unsettled replay: a reserve whose create reply is lost, replayed with the same request_id and body before the settle bound, returns outcome timeout, code sandbox_placement_operation_timeout, reservation null and exit 20 on every replay, and the injected counters record zero create RPCs, target attempts, leases, journal reservations and bridges.",
           "R2 settled replay: after reconciliation confirms a held, ready lease, every later replay, including one after process restart, returns the byte-identical admitted response with exit 0; after reconciliation confirms nothing is held, every later replay returns the byte-identical unreachable response with code sandbox_placement_operation_timeout and exit 10; neither replay makes a target call.",
           "R3 settle bound: with the injected clock at the bound, past it, or earlier than the journaled start, the next replay settles terminally as timeout with code sandbox_placement_end_reached and exit 20, arms the barrier for that walk only, and later replays repeat that record byte for byte with zero target calls while an independent request_id admits. A reap between replays returns only an InventoryReapResult, and the following replay still returns the settled record. A mutation that removes the bound leaves the replay at operation_timeout and fails the test.",
-          "T1 trail conditional: an admitted TrailEntry with a null code validates; an admitted entry with any ResultCode, and a non-admitted entry with a null code, each fail schema validation through the production decoder."
+          "T1 trail conditional: an admitted TrailEntry with a null code validates; an admitted entry with any ResultCode, and a non-admitted entry with a null code, each fail schema validation through the production decoder.",
+          "T2 schema-invalid input: through both the installed entry and the module path, each case exits 70 with empty stdout, a bounded closed stderr diagnostic and zero lifecycle effects on the injected counters. The cases are: each input-rule breach (duplicate key, trailing data, invalid UTF-8, non-finite number), a 65537-byte body, a schema-invalid object for each verb, and non-empty stdin for version. A mutation that writes a JSON refusal to stdout for such input fails the test."
         ]
       }
     ]

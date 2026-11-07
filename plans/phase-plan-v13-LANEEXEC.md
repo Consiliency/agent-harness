@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: LANEEXEC
 roadmap: specs/phase-plans-v13.md
-roadmap_sha256: 78d0f987f7e5754ed1603291838c8aef8e5bb0ddb70fc32b38400d746d8c134f
+roadmap_sha256: 1b33da8ce3b43bf109e2a55aa3fece806aa9e0a4966eac64f23fad98ba0e05e0
 automation:
   suite_command: ["bash", "-lc", "cd phase-loop-runtime && PYTHONPATH=$PWD/src:$PWD/tests timeout 900 .venv/bin/python -m pytest -q -n 0 -p no:cacheprovider tests/test_launch_process_contract.py tests/test_gate_a_wheel_isolation.py tests/test_launch_snapshot.py tests/test_launch_return.py tests/test_launch_service.py tests/test_launch_local_caps.py tests/test_launch_lifetime.py tests/test_launch_release_reap.py tests/test_sandbox_placement.py tests/test_placement_lease.py tests/test_openshell_backend.py tests/test_phase_loop_lane_placement.py tests/test_phase_loop_lane_harnesses.py tests/test_launch_cli.py tests/test_agent_cli_scratch_inventory_1147.py tests/test_seat_launch_helpers_trusted.py tests/test_seat_reference_inventory.py tests/test_laneexec_receipt.py"]
 ---
@@ -18,7 +18,7 @@ after a reservation. agent-toolkit#54 already reserves through PLACECLI, but it
 cannot run a remote Pi end to end until these launch inputs exist.
 
 **Frozen artifact.** `plans/artifacts/v13-LANEEXEC-contract-v1.schema.json`,
-sha256 `819644eb66ff3970f4e404e2d4b35627189119dc3d40f229eff5d858844d0106`,
+sha256 `59fc9297514ffca33fa2fb4758e8c05c16b255e22cd751ed1f8e456cbb9d1e00`,
 holds IF-0-LANEEXEC-1. It covers:
 
 - the process entry `agent-harness-launch --client … launch|status|cancel|version`
@@ -86,8 +86,9 @@ agent-toolkit#54 also raised these, and the artifact settles them:
 
 - launch inputs (`x-launch-inputs`);
 - the caps schema (pinned below);
-- the exit class for schema-invalid input: exit 70, already the reading of
-  PLACECLI v1 and stated explicitly here.
+- the exit class for schema-invalid input: exit 70 with stdout absent and
+  no effect. This is written into the erratum (class b, obligation T2) and
+  stated for this CLI too.
 
 **Caps.** `seat_resource_caps.v1` from the pinned caps contract is the single
 cap schema. LaneExec applies the whole effective record to one capped parent per
@@ -141,7 +142,7 @@ The artifact's `x-contract-pins` carries every full digest and source revision.
 - LaneExec launch protocol v1: the artifact named in Context.
 - Placement process protocol v1 with PLACECLI-v1-errata-1:
   `plans/artifacts/v13-PLACECLI-contract-v1.schema.json`, sha256
-  `ddf3649953bc6ee28fc90466cd825a85e7c282188d84eb97aef107a77234fd57`.
+  `8b6fe858fc95894c39af8d8e091090074effb38e38acec95e71bd7b1d69576a1`.
 - `seat_resource_caps.v1`: `plans/seats-jailcore-caps-contract.md` with the §1a
   amendment this PR applies to the main digest. The new digest is sha256
   `01abb145297bbfc98fd977769f67322c666c798628906af8c6da42063c70c190`.

@@ -48,7 +48,7 @@
   "x-contract-pins": {
     "placement_process_v1": {
       "path": "plans/artifacts/v13-PLACECLI-contract-v1.schema.json",
-      "sha256": "ddf3649953bc6ee28fc90466cd825a85e7c282188d84eb97aef107a77234fd57",
+      "sha256": "8b6fe858fc95894c39af8d8e091090074effb38e38acec95e71bd7b1d69576a1",
       "errata": "PLACECLI-v1-errata-1"
     },
     "admitted_launch_envelope_v2": {
@@ -111,7 +111,7 @@
     "launch_inputs": "Resolved by $defs.LaunchRequest and x-launch-inputs.",
     "caps_schema": "Resolved by x-contract-pins.seat_resource_caps and x-local-cgroup.",
     "tmpfs_scratch": "Narrow carve-out, not a blanket major-0 exception: caps contract §1a, added by this freeze. A tmpfs automatic path is accepted when four conditions hold: the filesystem type is identified from both mountinfo and fstatfs; memory.max is read back; swap cannot carry the pages, because memory.swap.max reads back 0 or no swap area is active; and carved-out content is removed before the capped parent is collected. Major 0 alone, ramfs, devtmpfs, overlay, NFS, FUSE and btrfs still refuse, and an io_paths entry is never carved out.",
-    "schema_invalid_exit_class": "PLACECLI v1 x-cli already classes malformed input as a protocol failure (exit 70, stdout absent); errata-1 does not change that. This contract states the same rule explicitly for its own CLI."
+    "schema_invalid_exit_class": "Resolved by PLACECLI-v1-errata-1 (class b, x-cli.input and x-cli.exit_codes.70): schema-invalid input is a protocol failure, with exit 70, stdout absent and no effect. A client retries once only a schema-valid request. Test obligation T2 is in the errata entry. This contract states the same rule for its own CLI."
   },
   "x-client-routes": {
     "rule": "Identity follows the workload (PLACECLI v1 x-identity-inventories). Every route below reserves through agent-harness-placement or the same in-process PlacementLifecycle, then launches through the one LaunchService. No caller chooses a target, certificate or inventory.",
