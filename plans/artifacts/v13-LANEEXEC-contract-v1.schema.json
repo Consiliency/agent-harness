@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/Consiliency/agent-harness/plans/artifacts/v13-LANEEXEC-contract-v1.schema.json",
   "title": "agent-harness placement launch protocol v1",
-  "description": "Frozen IF-0-LANEEXEC-1 contract: the generic launch service every approved client uses after a placement reservation. It covers launch input, snapshot construction and upload, admitted launch envelope v2 construction, one restricted exec, the optional bridge, status and cancel, release and reap interplay, per-reservation local cgroup caps and bounded return. This planning artifact grants no live activation.",
+  "description": "Frozen IF-0-LANEEXEC-1 contract: the generic launch service every approved client uses after a placement reservation. It covers launch input, snapshot construction and upload, the declared scratch seed set and scratch provisioning, admitted launch envelope v2 construction, one restricted exec, the optional bridge, status and cancel, release and reap interplay, per-reservation local cgroup caps and bounded return. This planning artifact grants no live activation.",
   "oneOf": [
     {
       "$ref": "#/$defs/LaunchRequest"
@@ -237,13 +237,13 @@
     "further_clients": "OpenCode, Claude and Codex run as executors inside the routes above. A standalone harness with its own --client value is a PLACECLI Client enum change, so a new protocol artifact version."
   },
   "x-launch-inputs": {
-    "client_supplied": "Exactly: image_digest, command (an operator-registered argv template id and its sha256), policy_vector, providers, snapshot (root, mode, masks, mask_dirs, cwd), instructions, action, result_kind, timeout_seconds and caller_context, plus the reservation echo and request_id. Nothing else is a launch input.",
+    "client_supplied": "Exactly: image_digest, command (an operator-registered argv template id and its sha256), policy_vector, providers, snapshot (root, mode, masks, mask_dirs, cwd), instructions, seed (x-seed), action, result_kind, timeout_seconds and caller_context, plus the reservation echo and request_id. Nothing else is a launch input.",
     "reservation_echo": "Loaded by reservation_id from the inventory that --client selects and compared field by field with the stored record, as PLACECLI v1 release_binding does. Any difference refuses sandbox_launch_reservation_mismatch and changes nothing. A released, expired, fenced or never-journaled reservation refuses sandbox_launch_reservation_unknown.",
     "binding": "image_digest equals Reservation.image_digest and is on the operator image allowlist for (client, workload, target.kind), else sandbox_launch_image_refused. providers equals Reservation.providers as a set, else sandbox_launch_input_mismatch. policy_vector equals Reservation.policy_vector, which for pi-runner is the PLACECLI v1 target binding: an openshell reservation carries full-remote-pi-runner and a local one minimal-without-app. A crossed pair, meaning a schema-valid request naming the other vector, refuses sandbox_launch_input_mismatch before template resolution, snapshot or any effect. workload equals Reservation.workload, else sandbox_launch_refused. Reservation.config_sha256 equals the effective configuration digest of x-launch-inputs.config_binding, else sandbox_launch_input_mismatch. caller_context is echoed and never read.",
-    "config_binding": "The envelope's launch.trusted_policy.config_sha256 is the PLACECLI effective canonical configuration digest, never the hash of one configuration file. LaneExec captures one byte sequence: the UTF-8 RFC 8785 serialization of the selected client's effective configuration with every referenced artifact resolved, which PLACECLI hashes as config_sha256. It covers the provider name-to-endpoint mappings, the effective local-headroom thresholds, seat_caps_sha256, and this contract's template registry, image allowlist, snapshot limits and activation values. LaneExec reads its launch settings only from those bytes, so their raw-byte SHA-256, the form the pinned envelope requires, is that digest. The digest must equal Reservation.config_sha256 and the version response's config_sha256, else sandbox_launch_input_mismatch before snapshot. A change to any referenced policy, mapping, threshold, cap record or registry entry therefore changes the digest, and a reservation made under the earlier configuration cannot launch.",
+    "config_binding": "The envelope's launch.trusted_policy.config_sha256 is the PLACECLI effective canonical configuration digest, never the hash of one configuration file. LaneExec captures one byte sequence: the UTF-8 RFC 8785 serialization of the selected client's effective configuration with every referenced artifact resolved, which PLACECLI hashes as config_sha256. It covers the provider name-to-endpoint mappings, the effective local-headroom thresholds, seat_caps_sha256, and this contract's template registry, image allowlist, snapshot limits, seed limits and seed_root (x-seed), and activation values. LaneExec reads its launch settings only from those bytes, so their raw-byte SHA-256, the form the pinned envelope requires, is that digest. The digest must equal Reservation.config_sha256 and the version response's config_sha256, else sandbox_launch_input_mismatch before snapshot. A change to any referenced policy, mapping, threshold, cap record or registry entry therefore changes the digest, and a reservation made under the earlier configuration cannot launch.",
     "idempotency": "One launch per reservation. The same request_id and canonical body return the journaled LaunchResponse and start nothing; while the original attempt is not terminal, a replay observes it and returns its terminal record when journaled. A different body under the same request_id refuses sandbox_launch_refused. A second request_id for a reservation whose exec is claimed refuses sandbox_launch_exec_claimed. A refused launch takes no claim (x-exec.one_exec), so a new request_id may launch the same reservation, and replaying the refused request_id returns its journaled refusal.",
     "instructions": "none: stdin devnull and instructions {sha256 of empty bytes, byte_length 0, source null}. snapshot: a workspace source at that path in the captured tree, stdin input. inline: at most 32768 decoded bytes, stdin input, source null. Instructions never enter argv.",
-    "order": "decode, client/workload, reservation echo, binding (including x-launch-inputs.config_binding), activation (x-activation), template, lifetime budget (x-lifetime), caps readiness for a local target (x-local-cgroup), snapshot, envelope admission, recheck_before_start, pre_exec, exec claim, upload (openshell only), chain start. Every check through pre_exec refuses with no claim and zero launch-chain processes. No launch input is re-read or re-derived after recheck_before_start: the upload sends the captured bytes, and the chain starts from the captured argv, environment and executable chain. After the claim, only the failures of x-exec.claim_rollback can occur before the first chain process."
+    "order": "decode, client/workload, reservation echo, binding (including x-launch-inputs.config_binding), activation (x-activation), template, lifetime budget (x-lifetime), caps readiness for a local target (x-local-cgroup), snapshot, seed capture (x-seed.verify), envelope admission, recheck_before_start, pre_exec, scratch provisioning (x-seed.provisioning: local writes scratch/, openshell stages it), exec claim, upload (openshell only, carrying the staged scratch/), chain start. Every check through scratch provisioning refuses with no claim and zero launch-chain processes. No launch input is re-read or re-derived after recheck_before_start: the upload sends the captured bytes, the seed set included, and the chain starts from the captured argv, environment and executable chain. After the claim, only the failures of x-exec.claim_rollback can occur before the first chain process."
   },
   "x-argv-templates": {
     "record": "An operator-registered template is a closed JSON record {template_id, workload, target_kind, policy_vectors, action, result_kinds, image_digest, argv, executable_chain, ro_trees, link, environment_policy, references, max_timeout_seconds, result_schema_id}. argv items are literal strings or slot objects {slot}, and each slot expands to exactly one argument. executable_chain lists every entry the argv starts, outermost first, as {role, locator_kind, locator, sha256}; after the route entries of x-exec it becomes the envelope launch.executable_chain. ro_trees lists each read-only runtime tree a local template binds, as {path, tree_sha256}, where tree_sha256 is the rfc8785_tree_manifest digest. link is null or {mode, guest_port}.",
@@ -253,7 +253,7 @@
       "tree_dest": "snapshot.root: the path at which a local template binds the execution tree",
       "home": "private placeholder-only home",
       "out": "private output directory",
-      "scratch": "/work/<run_id>/scratch on openshell, and the attempt's private scratch directory on local",
+      "scratch": "/work/<run_id>/scratch on openshell, which is <policy dir>/../scratch for the directory of the manifest slot, and the attempt's private scratch directory on local. LaneExec resolves it and reports it as scratch_path (x-scratch-path); no client value names it",
       "run_id": "the attempt_id, which LaneExec generates under the envelope identifier grammar",
       "relay_port": "the in-guest relay port for a bridged seat reservation, otherwise refused at registration",
       "relay_endpoint": "the single argument 127.0.0.1:<guest_port> from the template's link.guest_port, valid only for a bridged reservation",
@@ -324,7 +324,7 @@
           "guest_port": 17690
         },
         "guest_endpoint": "remote-inner listens on 127.0.0.1:17690 inside the sandbox (LINK_PORT of x-contract-pins.toolkit_openshell_cli). The reservation's ForwardTcpUnixBridge forwards exactly that service to the client's 0600 socket. A bridge forwarding another port refuses sandbox_launch_input_mismatch before upload.",
-        "guest_layout": "One upload of /work/<run_id>: fs followed by snapshot.root holds the execution tree with its .git, inputs/landlock-policy.bin holds the manifest, and scratch/ is empty. Every other tree the runner needs (HOME, session and run directories, runner configuration, placeholders) arrives over the link as remote-inner down files below scratch/. A hello naming a tree elsewhere fails in the guest.",
+        "guest_layout": "One upload of /work/<run_id>: fs followed by snapshot.root holds the execution tree with its .git, inputs/landlock-policy.bin holds the manifest, and scratch/ (<policy dir>/../scratch, the attempt's scratch_path) holds exactly the verified seed set of x-seed, provisioned as x-seed.provisioning. There is no link seed-down step: every tree the runner needs (HOME, session and run directories, runner configuration, placeholders) is either declared in the seed set or created empty by remote-inner below scratch/. A hello naming a tree elsewhere, or a scratch directory other than scratch_path, fails in the guest.",
         "manifest_rules": "LaneExec writes the manifest in the x-contract-pins.toolkit_landlock_manifest format: MANIFEST_VERSION 1, at most 512 rules, at most 1048576 bytes. It is read-only for the full-remote-pi-runner read_only paths, the image runtime trees and inputs/, and read-write for /dev/null, /tmp, scratch/ and the execution tree.",
         "environment_policy": "constructed and empty, apart from the evidence variable landlock-exec sets; the runner's environment arrives in the client's link hello",
         "references": [
@@ -441,8 +441,25 @@
     "limits": "max_bytes 536870912, max_entries 200000 and untracked_blob_max_bytes 67108864 by default, from x-contract-pins.snapshot_limits_reference. Operator configuration may only lower them, per workload or target, and config_sha256 binds the effective values. Either cap exceeded refuses too_large. Construction time is bounded by the attempt's snapshot budget (x-lifetime), else timeout.",
     "recheck": "After the copy HEAD, the index bytes, the untracked listing and every copied entry's stamp are checked again; any change refuses source_changed. The execution tree's own diff against S must be empty.",
     "digests": "The envelope workspace_state.content_sha256 is the rfc8785_tree_manifest of the execution tree as the pinned envelope defines it, and base_commit is S, or null without a work tree. The snapshot descriptor bytes are the envelope's single baseline reference.",
-    "upload": "local: the execution tree is created under the LaneExec state directory for that client, mode 0700, and the worker runs in it. openshell: the execution tree is uploaded once through the reservation's coordinator session before exec. A certain upload failure, one the coordinator confirms stored nothing, rolls the claim back (x-exec.claim_rollback) and refuses sandbox_launch_upload_refused with nothing executed. An upload whose result is unknown is state uncertain with code sandbox_launch_upload_refused, and release reconciles it. snapshot_expired is a certain refusal. duplicate_binding means a binding already exists, so it keeps the claim and is state uncertain.",
+    "upload": "local: the execution tree is created under the LaneExec state directory for that client, mode 0700, and the worker runs in it. openshell: the execution tree, the manifest and the captured seed set under scratch/ (x-seed) are uploaded once through the reservation's coordinator session before exec. A certain upload failure, one the coordinator confirms stored nothing, rolls the claim back (x-exec.claim_rollback) and refuses sandbox_launch_upload_refused with nothing executed. An upload whose result is unknown is state uncertain with code sandbox_launch_upload_refused, and release reconciles it. snapshot_expired is a certain refusal. duplicate_binding means a binding already exists, so it keeps the claim and is state uncertain.",
     "refusal": "Every snapshot refusal is state refused, code sandbox_launch_snapshot_refused with snapshot_reason, exec not claimed. No fallback after a reservation exists: the client releases and may start a new reserve, which is a new admission."
+  },
+  "x-seed": {
+    "rule": "Activation ruling (agent-harness#1899). The requester declares the exact initial content of scratch/ as LaunchRequest.seed, a list of {relpath, sha256, size} with relpath relative to scratch/. LaneExec verifies every entry and writes the files under scratch/ before the single exec. Undeclared content never arrives, and the pi-runner templates have no link seed-down step. Every workload other than pi-runner declares seed [].",
+    "source": "Seed bytes are read from <seed_root>/<request_id>/<relpath>. seed_root is a per-client operator value that config_sha256 binds and version reports: an absolute directory for agent-toolkit, null for agent-harness. The requester writes the files there before launch. The source is hostile and only read. Each component is opened through a descriptor without following a symlink, and only declared relpaths are opened, so an undeclared file under the source is never read or copied.",
+    "path_rules": "relpath is a RepoPath of at most 255 characters, so an absolute path, a '.' or '..' segment, an empty segment, a backslash, ':' or a control character is schema-invalid (exit 70). LaneExec also refuses unsafe_path for a non-NFC relpath, a duplicate relpath, or a relpath that is a proper prefix directory of another. Invalid input is refused, never normalized. A symlink at any component of the source, seed_root and <request_id> included, refuses symlink. Any other entry that is not a regular file refuses not_regular_file.",
+    "limits": "max_entries 256, entry_max_bytes 16777216 and max_bytes 67108864 (the sum of sizes) by default. Operator configuration may only lower them, per workload or target, and config_sha256 binds the effective values. The schema holds the defaults as ceilings. A declaration above an effective cap refuses too_large before any source byte is read. The 65536-byte input bound of x-cli.input also bounds the declaration.",
+    "verify": "Each entry's byte length must equal size and the SHA-256 of the bytes read must equal sha256, else digest_mismatch; the read stops at size + 1 bytes. Verified bytes are captured into a private staging directory under the client's LaneExec state directory (directories 0700, files 0600), and every later write uses the captured bytes. Capture counts against the attempt's snapshot budget (x-lifetime), else timeout.",
+    "binding": "Each entry becomes one launch.references entry of role config, after the template's references and in relpath order: sha256 and byte_length are the verified values, and source is {namespace: declared_root, root: laneexec_seed, path: <request_id>/<relpath>}. The seed set is therefore part of the admitted envelope and of envelope_digest, and recheck_before_start rechecks it under the pinned reference rule; a difference refuses source_changed. For a process client, assignment_digest also covers seed because it hashes the LaunchRequest. launch.trusted_policy.config_sha256 is unchanged (x-launch-inputs.config_binding).",
+    "provisioning": "LaneExec creates scratch/ new, never reused: a directory, not a symlink, owned by the uid the exec runs as, mode 0700. It writes each captured file at its relpath (missing directories 0700, files 0600) and confirms that scratch/ holds exactly the declared set. local: after pre_exec and before the exec claim, as the attempt's scratch directory under the client's LaneExec state directory. Every ancestor is owned by root or by the LaneExec uid, and none is group- or other-writable or a symlink. openshell: the captured set is staged before the claim and travels in the one upload of /work/<run_id> (x-snapshot.upload). /, /work and /work/<run_id> are root-owned, not group- or other-writable and not symlinks. A coordinator refusal of the provisioning before any byte is stored is a certain upload failure, and it rolls the claim back (x-exec.claim_rollback) with code sandbox_launch_seed_refused and seed_reason scratch_unprovisioned. An unknown provisioning result is state uncertain with sandbox_launch_upload_refused, as an unknown upload is.",
+    "refusal": "Every seed or provisioning refusal is state refused, exit 10, code sandbox_launch_seed_refused with seed_reason, worker_invocations 0 and no claim held: a refusal before the claim takes none, and the openshell provisioning refusal rolls it back. The staged capture and any local scratch directory are deleted, the reservation stays held, and a new request_id may launch."
+  },
+  "x-scratch-path": {
+    "rule": "Activation ruling (agent-harness#1899). LaneExec reports the attempt's resolved absolute scratch directory, the value of x-argv-templates.slots.scratch, as scratch_path in LaunchResponse and StatusResponse. The requester never chooses it: LaunchRequest has no scratch member, and seed relpaths are relative to it.",
+    "openshell": "pi-runner.openshell.v1 fixes it at <policy dir>/../scratch, where the policy dir is the directory of the manifest slot, so it is /work/<run_id>/scratch.",
+    "local": "pi-runner.local.v1 reports the attempt's scratch directory, which bwrap binds at the same path.",
+    "presence": "Non-null while the attempt's exec claim is held: status queued, running and cancelling, and launch state finished. Null for launch state refused and for status unknown_attempt. A terminal status carries its launch record's value. An uncertain launch carries the attempt's value when it holds a claim, else null.",
+    "toolkit": "The toolkit shim reads scratch_path from status and puts exactly that value in the link hello as its scratch directory. It never derives or substitutes another value. On openshell, remote-inner checks it against its own derivation from its --landlock policy path and ends the run on a difference before it opens any tree."
   },
   "x-envelope-construction": {
     "rule": "LaneExec builds one admitted launch envelope v2 from one capture and admits it through the v12 admission seam (supervised_launch.prepare_launch with the trusted validator and codec binding). Admission refusal is state refused, code sandbox_launch_admission_refused with the pinned AdmissionDiagnostic, and placement never relabels it.",
@@ -454,7 +471,7 @@
       "launch.action": "LaunchRequest.action",
       "launch.transport_id": "Reservation.transport_id; one outside the envelope identifier grammar refuses sandbox_launch_input_mismatch",
       "launch.stdin and launch.instructions": "x-launch-inputs.instructions",
-      "launch.references": "the snapshot descriptor as role baseline, then each reference the template declares",
+      "launch.references": "the snapshot descriptor as role baseline, then each reference the template declares, then one config reference per seed entry (x-seed.binding)",
       "launch.argv": "the template argv with slots filled, as rfc8785_array_of_strings",
       "launch.executable_chain": "x-exec.route_entries",
       "launch.workspace_state": "x-snapshot.digests; cwd from snapshot.cwd; target_map an identity mapping of the locators for result_kind patch, otherwise []",
@@ -471,7 +488,7 @@
   "x-exec": {
     "supervisor": "launch starts one detached attempt supervisor in its own session, which owns the lease lock and the v12 launcher, and waits for its terminal record. The caller exiting never ends the attempt; only cancel, release, the fixed deadline or lifetime_exceeded do. A supervisor that is verifiably gone is settled by reap.",
     "one_exec": "Exactly one exec per reservation. LaneExec takes the claim after every refusal-producing check of x-launch-inputs.order, and before the upload (openshell) or the first chain process (local). The claim is one durable compare-and-set under the reservation's journal lock: it sets LeaseFlags.exec_claimed and reserves the attempt_id through the v12 journal. When two launches race for one reservation, the loser refuses sandbox_launch_exec_claimed with nothing claimed by its call. A crash after the claim makes any later launch for that reservation refuse sandbox_launch_exec_claimed. The launch is one supervised_worker_cli launch of the admitted envelope on the launching host, under the pinned recheck_before_start rule.",
-    "claim_rollback": "Only these certain failures can follow the claim, and none of them starts a process or leaves remote state: an openshell upload the coordinator confirms stored nothing (snapshot_expired, or a refusal answered before any byte was accepted); the capped_popen caps re-check at chain start refusing before its helper starts; and a local link socket that cannot be created. Each rolls the claim back in one durable write, which clears LeaseFlags.exec_claimed and journals claim_rolled_back for that launch request_id, and then returns state refused, exit 10, with the check's own code (sandbox_launch_upload_refused, sandbox_placement_capability_unmet or sandbox_launch_bridge_lost). A new request_id may then launch the reservation. Rollback is never inferred: an upload whose stored state is unknown, duplicate_binding, and any failure after the first chain process all keep the claim (state uncertain or finished). Crash-after-claim recovery is separate. A claim with neither a terminal record nor a claim_rolled_back record is never rolled back on restart; reap settles it through cancel and release, and later launches refuse sandbox_launch_exec_claimed.",
+    "claim_rollback": "Only these certain failures can follow the claim, and none of them starts a process or leaves remote state: an openshell upload the coordinator confirms stored nothing (snapshot_expired, or a refusal answered before any byte was accepted, including a refusal of the scratch provisioning of x-seed.provisioning); the capped_popen caps re-check at chain start refusing before its helper starts; and a local link socket that cannot be created. Each rolls the claim back in one durable write, which clears LeaseFlags.exec_claimed and journals claim_rolled_back for that launch request_id, and then returns state refused, exit 10, with the check's own code (sandbox_launch_upload_refused, sandbox_launch_seed_refused for the provisioning refusal, sandbox_placement_capability_unmet or sandbox_launch_bridge_lost). A new request_id may then launch the reservation. Rollback is never inferred: an upload whose stored state is unknown, duplicate_binding, and any failure after the first chain process all keep the claim (state uncertain or finished). Crash-after-claim recovery is separate. A claim with neither a terminal record nor a claim_rolled_back record is never rolled back on restart; reap settles it through cancel and release, and later launches refuse sandbox_launch_exec_claimed.",
     "route_entries": {
       "local": "The outermost chain entries are the trusted cgroup entry of x-local-cgroup, then the template argv (for pi-runner, the bwrap of pi-runner.local.v1). Every chain process is bound to the supervisor by a parent-death SIGKILL (bwrap --die-with-parent in the Pi template). bridge null.",
       "openshell": "One coordinator exec in the reserved sandbox of landlock-exec --policy {manifest} -- <template argv>. The landlock-exec helper path and digest come from the pinned review-runner image, never from the request. No second exec, upload, download or replacement link follows."
@@ -545,22 +562,24 @@
       "LaunchService.status(request) -> StatusResponse",
       "LaunchService.cancel(request, *, cancelled) -> CancelResponse",
       "build_snapshot(spec, *, policy, scratch, cancelled) -> SnapshotHandle",
+      "build_seed(seed, *, request_id, seed_root, limits, staging, cancelled) -> SeedHandle",
       "lane_launch.place_lane(unit, executor, *, cancelled) -> LaneLaunchOutcome",
       "launch_cli.main(argv: Sequence[str] | None = None) -> int",
       "launch_cli.version_response(client_config) -> LaunchVersionResponse"
     ],
-    "rule": "The console entry and every in-process caller use the one LaunchService that build_launch_service constructs; no caller builds a second service, snapshot builder or envelope. Records are the typed forms of this schema, and exceptions translate to closed codes from None."
+    "rule": "The console entry and every in-process caller use the one LaunchService that build_launch_service constructs; no caller builds a second service, snapshot builder, seed builder or envelope. Records are the typed forms of this schema, and exceptions translate to closed codes from None."
   },
   "x-test-obligations": [
     "C1 codec: every message family valid, every closed enum and conditional path-entered negative, PLACECLI Reservation reuse by $id, 64 KiB bound, strictness rules, exit 70 for schema-invalid input with stdout absent. One valid remote Pi request (openshell reservation, full-remote-pi-runner, result_kind none) and one valid local Pi request (local reservation, minimal-without-app, result_kind none) validate, and both crossed policy/target pairs are schema-valid, leaving their refusal to C2.",
     "C2 binding: each case refuses with zero snapshot reads, uploads, envelopes and invocations: reservation echo mismatch, unknown reservation, image off the allowlist, provider or policy disagreement, template id or sha mismatch, writer-route mismatch, and route_disabled. Both crossed Pi pairs, an openshell reservation with minimal-without-app and a local reservation with full-remote-pi-runner, refuse sandbox_launch_input_mismatch. Toolkit pins, each refusing sandbox_launch_template_refused. Each case runs at registration, with zero snapshot reads, uploads, envelopes and invocations. The cases: manifest bytes whose length or sha256 differ from x-contract-pins.toolkit_pins; a non-canonical serialization; a schema or toolkit_commit mismatch; files not sorted by path; a duplicate path; a malformed entry, meaning a missing, extra or non-string member; a hash of the wrong shape (wrong length, uppercase or non-hex); each required role missing, duplicated or at another path, one at a time across all 17; an unknown role, or a remote_inner_closure:<path> role naming another path; a listed file whose bytes differ; a chain or closure file the manifest does not list; an openshell recorded closure that adds or omits a file of the 16-file remote_inner_closure, and a local bound closure (the toolkit ro_trees tree manifest) that does the same. Each is run one file at a time: omitting each of the 16, including guest-bin/git and git-adapter.mjs, and adding one unlisted file. Cases that only well-formed pinned bytes could otherwise mask run against a fixture manifest that a test configuration pins, so each case reaches its own check past the digest. Recheck: a listed file mutated, or the manifest bytes swapped, between registration and start refuses at recheck_before_start. That happens after the snapshot and admission, with state refused, exit 10, no claim, no upload and worker_invocations 0. The snapshot capture is deleted, the admission is never consumed and the reservation stays held. Once the bytes are restored, a new request_id launches. Positive case: the pinned manifest itself, with every listed file matching, registers both Pi templates.",
     "C3 snapshot: git-mode inventory classes, a self-contained .git with only B-reachable objects and no hooks, remotes or alternates, masks omitted and skip-worktree, the secret matcher on without request control, full mode only where permitted, a non-work-tree root in full mode, too_large at each cap, source_changed from a mid-copy mutation, and each path rule.",
-    "C4 envelope: egress grant equals the reservation digest's hex, transport grammar refusal, not_armed refused, instructions never in argv, recheck_before_start difference refused, one exec claim across concurrent and restarted launches. Claim order: each refusal through pre_exec, path-entered, leaves LeaseFlags.exec_claimed false with no claim record, and a new request_id then launches the same reservation; racing launches leave exactly one claim. Each claim_rollback failure (upload confirmed empty, chain-start caps re-check, link socket creation) clears the claim in one durable write, and a new request_id then launches. An unknown upload, duplicate_binding and an injected crash between claim and chain start each keep the claim, so a new request_id refuses sandbox_launch_exec_claimed and reap settles it. Configuration: trusted_policy.config_sha256 equals Reservation.config_sha256 and the raw-byte SHA-256 of the captured effective configuration. Changing a referenced provider mapping, a threshold, the seat_resource_caps record or a template registry entry between reserve and launch refuses sandbox_launch_input_mismatch before snapshot. Mutation controls, each of which must fail: claiming before pre_exec, rolling back an unknown upload, and hashing the raw client configuration file.",
+    "C4 envelope: egress grant equals the reservation digest's hex, transport grammar refusal, not_armed refused, instructions never in argv, recheck_before_start difference refused, one exec claim across concurrent and restarted launches. Claim order: each refusal through scratch provisioning, path-entered, leaves LeaseFlags.exec_claimed false with no claim record, and a new request_id then launches the same reservation; racing launches leave exactly one claim. Each claim_rollback failure (upload confirmed empty, openshell scratch provisioning refused before any byte is stored, chain-start caps re-check, link socket creation) clears the claim in one durable write, and a new request_id then launches. An unknown upload, duplicate_binding and an injected crash between claim and chain start each keep the claim, so a new request_id refuses sandbox_launch_exec_claimed and reap settles it. Configuration: trusted_policy.config_sha256 equals Reservation.config_sha256 and the raw-byte SHA-256 of the captured effective configuration. Changing a referenced provider mapping, a threshold, the seat_resource_caps record or a template registry entry between reserve and launch refuses sandbox_launch_input_mismatch before snapshot. Mutation controls, each of which must fail: claiming before pre_exec, rolling back an unknown upload, and hashing the raw client configuration file.",
     "C5 local caps: a capped parent per reservation with child readback; each missing controller or record field refusing capability_unmet with no target marker; no uncapped path. The §1a cases run on LaneExec's automatic paths: a tmpfs scratch accepted only with memory.max and memory.swap.max read back; ramfs, overlay, NFS, FUSE, btrfs and a magic/mountinfo disagreement refusing; and the execution tree on tmpfs removed before the parent is collected.",
     "C6 lifetime, on an injected clock and a fake coordinator and journal: Success: an attempt runs past ttl_s through confirmed renewals, and the stored Reservation stays byte-identical. Clock boundaries: renewal begins by h + T/3, and an unconfirmed renewal fences exactly at h + 2T/3. Fencing: a renewal timeout, a lost acknowledgement, a rejection, a malformed reply and a lost connection each fence the attempt and kill its process group before h + T, with code sandbox_launch_liveness_lost. Supervisor death: it ends every chain process locally, and the lease lapses on openshell. No overlap: no re-admission of the reservation happens while the workload may run. Other cases: lifetime_exceeded ending the attempt timed_out, budget refusal, and ttl_s below 45 refusing before snapshot. Mutation control: a mutation that swallows a renewal failure fails the test.",
     "C7 bridge, status, cancel, release, reap: bridge loss ending the attempt, cancel only through verified owner identity, release cancelling a live attempt then cleanup_pending, caller-scoped reap of LaneExec state, other inventory invisible.",
     "C8 return: patch cap, masked-path and audit withholding, result.json bound and strictness, withhold predicate, descriptor modes, no raw output in records.",
-    "C9 routes: the target-specific Pi template selection, with openshell taking pi-runner.openshell.v1 and local taking pi-runner.local.v1. Each template's argv expands to exactly its frozen form, with relay_endpoint as the single argument 127.0.0.1:17690 and manifest_digest as sha256:<hex>. Naming the other target's template, or a template_sha256 mismatch, refuses before effects. The local link accepts one connection within 120 s, and none ends the attempt with sandbox_launch_bridge_lost. A Pi lane goes through the toolkit shim to agent-toolkit/pi-runner, other executors to agent-harness/implementation, reducer and review units never reaching the site, lane_placement disabled leaving the existing launch unchanged, toolkit_interim refusing local pi-runner."
+    "C9 routes: the target-specific Pi template selection, with openshell taking pi-runner.openshell.v1 and local taking pi-runner.local.v1. Each template's argv expands to exactly its frozen form, with relay_endpoint as the single argument 127.0.0.1:17690 and manifest_digest as sha256:<hex>. Naming the other target's template, or a template_sha256 mismatch, refuses before effects. The local link accepts one connection within 120 s, and none ends the attempt with sandbox_launch_bridge_lost. A Pi lane goes through the toolkit shim to agent-toolkit/pi-runner, other executors to agent-harness/implementation, reducer and review units never reaching the site, lane_placement disabled leaving the existing launch unchanged, toolkit_interim refusing local pi-runner.",
+    "C10 seed and scratch (x-seed, x-scratch-path). Each refusal below is state refused, exit 10, code sandbox_launch_seed_refused with its seed_reason, worker_invocations 0, LeaseFlags.exec_claimed false after the call and the staged capture deleted. Path confinement: an absolute relpath, a '.' or '..' segment, an empty segment and a relpath over 255 characters are schema-invalid (exit 70, no effect), as is a non-empty seed for a workload other than pi-runner. A non-NFC relpath, a duplicate relpath and a relpath that is a prefix directory of another refuse unsafe_path. Symlink refusal: a symlink as the file, as an intermediate directory, as <request_id> and as seed_root each refuse symlink, and a sentinel at the symlink target is never opened. A FIFO or device refuses not_regular_file without blocking. Digest mismatch: one changed byte, and a size wrong in either direction, refuse digest_mismatch. A source file changed after capture refuses source_changed at recheck_before_start, with no claim. Size cap: max_entries, entry_max_bytes and max_bytes, each exceeded by one at the default and at an operator-lowered value, refuse too_large before any source byte is read, and each launches exactly at the cap. Undeclared content: a file under <seed_root>/<request_id> that is not declared is never opened (descriptor trace) and is absent from scratch/. On both targets scratch/ holds exactly the declared set by tree manifest, and a pre-existing scratch directory is never reused. Binding: launch.references holds one config entry per seed entry, in relpath order, with the declared_root source. envelope_digest changes when any seed byte, relpath or size changes, and config_sha256 does not change with the seed set. Mode and ownership: scratch/ is a directory owned by the exec uid with mode 0700, its directories 0700 and its files 0600. On local, a group-writable, foreign-owned or symlinked ancestor refuses scratch_unprovisioned before the claim. On openshell, a fake coordinator that refuses provisioning before storing a byte rolls the claim back (claim_rolled_back journaled, and a new request_id launches), and an unknown provisioning result is uncertain with sandbox_launch_upload_refused and keeps the claim. scratch_path echo: a refused launch carries null. Status queued, running and cancelling and the finished launch carry the same absolute path: on openshell the manifest slot's directory's parent joined with scratch (/work/<attempt_id>/scratch), and on local the bound scratch slot. A LaunchRequest with a scratch member is schema-invalid. The check that a hello naming another scratch directory ends the run is an agent-toolkit test. Mutation controls, each of which must fail: following a symlink in the source, re-reading seed bytes after capture, skipping the size check, and dropping seed entries from launch.references."
   ],
   "$defs": {
     "RepoPath": {
@@ -607,6 +626,18 @@
         "timeout"
       ]
     },
+    "SeedReason": {
+      "enum": [
+        "unsafe_path",
+        "symlink",
+        "not_regular_file",
+        "digest_mismatch",
+        "too_large",
+        "source_changed",
+        "timeout",
+        "scratch_unprovisioned"
+      ]
+    },
     "LaunchAction": {
       "enum": [
         "execution",
@@ -634,6 +665,7 @@
         "sandbox_launch_local_route_interim",
         "sandbox_launch_lifetime_unbounded",
         "sandbox_launch_snapshot_refused",
+        "sandbox_launch_seed_refused",
         "sandbox_launch_admission_refused",
         "sandbox_launch_pre_exec_refused",
         "sandbox_launch_upload_refused",
@@ -689,6 +721,29 @@
         },
         "cwd": {
           "$ref": "#/$defs/CwdPath"
+        }
+      }
+    },
+    "SeedEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "relpath",
+        "sha256",
+        "size"
+      ],
+      "properties": {
+        "relpath": {
+          "$ref": "#/$defs/RepoPath",
+          "maxLength": 255
+        },
+        "sha256": {
+          "$ref": "https://github.com/Consiliency/agent-harness/plans/artifacts/v13-PLACECLI-contract-v1.schema.json#/$defs/HexSha256"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 16777216
         }
       }
     },
@@ -774,6 +829,7 @@
         "result_kind",
         "snapshot",
         "instructions",
+        "seed",
         "timeout_seconds",
         "caller_context"
       ],
@@ -813,6 +869,14 @@
         },
         "instructions": {
           "$ref": "#/$defs/Instructions"
+        },
+        "seed": {
+          "type": "array",
+          "maxItems": 256,
+          "uniqueItems": true,
+          "items": {
+            "$ref": "#/$defs/SeedEntry"
+          }
         },
         "timeout_seconds": {
           "type": "integer",
@@ -870,6 +934,9 @@
               },
               "result_kind": {
                 "const": "patch"
+              },
+              "seed": {
+                "maxItems": 0
               }
             }
           }
@@ -895,6 +962,9 @@
               },
               "result_kind": {
                 "const": "result"
+              },
+              "seed": {
+                "maxItems": 0
               }
             }
           }
@@ -1222,10 +1292,12 @@
         "state",
         "code",
         "snapshot_reason",
+        "seed_reason",
         "admission_diagnostic",
         "termination",
         "worker_invocations",
         "envelope_digest",
+        "scratch_path",
         "return",
         "evidence",
         "caller_context"
@@ -1277,6 +1349,16 @@
             }
           ]
         },
+        "seed_reason": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/SeedReason"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "admission_diagnostic": {
           "oneOf": [
             {
@@ -1306,6 +1388,16 @@
           "oneOf": [
             {
               "$ref": "https://github.com/Consiliency/agent-harness/plans/artifacts/v13-PLACECLI-contract-v1.schema.json#/$defs/HexSha256"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "scratch_path": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/AbsolutePath"
             },
             {
               "type": "null"
@@ -1361,6 +1453,9 @@
               },
               "return": {
                 "type": "null"
+              },
+              "scratch_path": {
+                "type": "null"
               }
             }
           }
@@ -1395,6 +1490,9 @@
               },
               "admission_diagnostic": {
                 "type": "null"
+              },
+              "scratch_path": {
+                "$ref": "#/$defs/AbsolutePath"
               }
             }
           }
@@ -1452,6 +1550,32 @@
           "else": {
             "properties": {
               "snapshot_reason": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "code": {
+                "const": "sandbox_launch_seed_refused"
+              }
+            },
+            "required": [
+              "code"
+            ]
+          },
+          "then": {
+            "properties": {
+              "seed_reason": {
+                "$ref": "#/$defs/SeedReason"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "seed_reason": {
                 "type": "null"
               }
             }
@@ -1523,6 +1647,7 @@
         "launch_request_id",
         "state",
         "launch",
+        "scratch_path",
         "caller_context"
       ],
       "properties": {
@@ -1559,6 +1684,16 @@
             }
           ]
         },
+        "scratch_path": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/AbsolutePath"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
         "caller_context": {
           "$ref": "https://github.com/Consiliency/agent-harness/plans/artifacts/v13-PLACECLI-contract-v1.schema.json#/$defs/CallerContext"
         }
@@ -1589,6 +1724,48 @@
           "else": {
             "properties": {
               "launch": {
+                "type": "null"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "enum": [
+                  "queued",
+                  "running",
+                  "cancelling"
+                ]
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "scratch_path": {
+                "$ref": "#/$defs/AbsolutePath"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "state": {
+                "const": "unknown_attempt"
+              }
+            },
+            "required": [
+              "state"
+            ]
+          },
+          "then": {
+            "properties": {
+              "scratch_path": {
                 "type": "null"
               }
             }
@@ -1699,6 +1876,7 @@
         "seat_caps_sha256",
         "local_pi_runner_launcher",
         "local_link_root",
+        "seed_root",
         "templates"
       ],
       "properties": {
@@ -1727,6 +1905,16 @@
           ]
         },
         "local_link_root": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/AbsolutePath"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "seed_root": {
           "oneOf": [
             {
               "$ref": "#/$defs/AbsolutePath"

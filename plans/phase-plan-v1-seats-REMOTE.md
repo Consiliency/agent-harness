@@ -128,9 +128,11 @@ other roadmap.
   - one bounded non-patch result, as a non-writer route (EC-LANEEXEC-1).
 
   Frozen by `plans/artifacts/v13-LANEEXEC-contract-v1.schema.json`, sha256
-  `26d397056413051f3a62ee19f608f8a368aabe5f5c5f1d1b66d553886ce0e24e`
+  `35e50428847ba44050eaea83fabe34da29b44ffb0b6bc8b26b1c854ba3eb6193`
   (`x-argv-templates.per_vendor_seat_templates`, `x-snapshot.full_mode`, `x-return.result`, and the
-  in-process `pre_exec` and `withhold` hooks). SL-4 and SL-5 still wait on the landed LANEEXEC
+  in-process `pre_exec` and `withhold` hooks). The agent-harness#1899 amendment leaves those
+  sections unchanged: a `leg` request sets the new `seed` member to `[]`, and responses gain
+  `scratch_path` and `seed_reason`. SL-4 and SL-5 still wait on the landed LANEEXEC
   implementation (Upstream implementation, below).
 - **XR-4 (v13).** EC-ACTIVATE-2 consumes REMOTE's probe set; no second generic set is authored.
 - **Upstream implementation.** The JAILCORE resolver (EC-JAILCORE-2), PLACECLI after
