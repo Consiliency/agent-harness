@@ -20,19 +20,6 @@ REPO = Path(__file__).resolve().parents[2]
 EVIDENCE = REPO / "plans" / "evidence"
 CATALOG = EVIDENCE / "qualified-provider-images.json"
 
-AGY_1211 = "ec7cf797ecb0e1d91ddf3b6d9d6c1d616bb89f78a5b0e43536b72a7fce695f56"
-AGY_1212 = "ce6fdd9e7621ee9ac6eedaa337731ca1f235e412ff57cf9eabcd2aa23b3576ca"
-HELP_1211_1212 = "83e3a0c36269f23972ba33d0013b9a6b2933ddb07cde268fa40e0fb1a5f33755"
-AGY_1214 = "0d0d3eba22daf29504dd290151c7ed9a4d33b0c6aa0acfc5da27bc3b01d2f029"
-AGY_1215 = "5f9c16b286895f8f7fdecd423883ca256a85077b8acf9a6bc1111761d34df164"
-HELP_1215 = "8fcf40227fe84704f7f8155b3b5ebcee79dfdc5208fde6e8b07569c24425f976"
-AGY_1216 = "a759ce7c7a235d9b6c281a25ead97cbbf2e92314a3ffd224e2f9144f3fae7a86"
-AGY_1217 = "c54ef90651a8646ae67334d39212c81f5946feec373ad6aa335f9ef401662bc5"
-AGY_130 = "19be6af38f7beeaa0db415df9297e314ab3d33fdd6f853434d49f88819bc68e4"
-AGY_131 = "ce1bdaed3201bb84f35d69d2773caec4f18af52af00e8c25f6cace07e4359615"
-AGY_132 = "32f9478e47d1d456e090f7ed0a297fcde2fa45ec10839904f03ea1ba00645e49"
-AGY_133 = "d97edcf90eda1799cd6cedc92616ef402f23c9752a723e8b8ae3e8f062ce458b"
-AGY_134 = "5b93565c5f04ea4f7b79d49d5c3237449bf6ce47b6779e8cf46c1fae97957c98"
 AGY_135 = "b5385638174a5e720e904f3a2678752534fb8414d10c2c302fa16daf56cbcfc9"
 HELP_135 = "a12355e8fc064b330eeb25ba52de596406582752442e293083bcda6388a63b78"
 
@@ -44,12 +31,7 @@ needs_repo = pytest.mark.skipif(
 
 def test_the_qualified_image_set_is_exactly_the_reviewed_members():
     """Golden: widening or narrowing the admitted set is a reviewed change to this test."""
-    assert gh.QUALIFIED_IMAGES == {AGY_1211: HELP_1211_1212, AGY_1212: HELP_1211_1212,
-                                    AGY_1214: HELP_1211_1212, AGY_1215: HELP_1215,
-                                    AGY_1216: HELP_1215, AGY_1217: HELP_1215,
-                                    AGY_130: HELP_1215, AGY_131: HELP_1215,
-                                    AGY_132: HELP_1215, AGY_133: HELP_1215,
-                                    AGY_134: HELP_1215, AGY_135: HELP_135}
+    assert gh.QUALIFIED_IMAGES == {AGY_135: HELP_135}
 
 
 @pytest.fixture
@@ -64,7 +46,7 @@ def verifier():
 def test_every_runtime_member_has_its_own_catalogued_record(verifier):
     records = verifier.validate_records(verify_sources=False)
     assert {(r["image_sha256"], r["help_sha256"]) for r in records} == set(gh.QUALIFIED_IMAGES.items())
-    assert sorted(r["release_version"] for r in records) == ["1.2.11", "1.2.12", "1.2.14", "1.2.15", "1.2.16", "1.2.17", "1.3.0", "1.3.1", "1.3.2", "1.3.3", "1.3.4", "1.3.5"]
+    assert [r["release_version"] for r in records] == ["1.3.5"]
 
 
 @needs_repo
@@ -102,7 +84,7 @@ def test_the_private_copy_validates(verifier, evidence):
 
 @needs_repo
 def test_a_runtime_digest_without_a_catalogued_record_refuses(verifier, evidence, monkeypatch):
-    widened = {**gh.QUALIFIED_IMAGES, "f" * 64: HELP_1211_1212}
+    widened = {**gh.QUALIFIED_IMAGES, "f" * 64: HELP_135}
     monkeypatch.setattr(verifier, "image_constants",
                         lambda: {"QUALIFIED_IMAGES": widened, "PROFILE_ID": gh.PROFILE_ID})
     with pytest.raises(ValueError, match="differs from the catalog"):
@@ -119,44 +101,53 @@ def test_a_catalogued_member_the_runtime_does_not_admit_refuses(verifier, eviden
 
 
 @needs_repo
-@pytest.mark.parametrize("release", ["1.2.11", "1.2.12"])
-def test_each_member_is_checked_against_its_own_record(verifier, evidence, release):
-    name = f"agy-{release}-linux-x64-qualification.json"
+def test_each_member_is_checked_against_its_own_record(verifier, evidence):
+    name = "agy-1.3.5-linux-x64-qualification.json"
     (evidence / name).unlink()
     with pytest.raises(FileNotFoundError):
         verifier.validate_records(verify_sources=False)
 
 
 @needs_repo
-@pytest.mark.parametrize("release", ["1.2.11", "1.2.12"])
 @pytest.mark.parametrize("field,value", [
     ("image_sha256", "f" * 64), ("help_sha256", "f" * 64), ("release_version", "9.9.9"),
 ])
-def test_a_member_record_that_disagrees_with_its_catalog_entry_refuses(verifier, evidence, release, field, value):
-    _edit(evidence / f"agy-{release}-linux-x64-qualification.json", lambda v: v.__setitem__(field, value))
-    with pytest.raises(ValueError, match=f"agy-{release}-linux-x64-qualification.json {field} mismatch"):
+def test_a_member_record_that_disagrees_with_its_catalog_entry_refuses(verifier, evidence, field, value):
+    _edit(evidence / "agy-1.3.5-linux-x64-qualification.json", lambda v: v.__setitem__(field, value))
+    with pytest.raises(ValueError, match=f"agy-1.3.5-linux-x64-qualification.json {field} mismatch"):
         verifier.validate_records(verify_sources=False)
 
 
 @needs_repo
-@pytest.mark.parametrize("release", ["1.2.11", "1.2.12"])
-def test_a_member_record_with_a_failed_operation_set_refuses(verifier, evidence, release):
-    _edit(evidence / f"agy-{release}-linux-x64-qualification.json",
+def test_a_member_record_with_a_failed_operation_set_refuses(verifier, evidence):
+    _edit(evidence / "agy-1.3.5-linux-x64-qualification.json",
           lambda v: v.__setitem__("records", [r for r in v["records"] if r["operation"] != "owner-loss"]))
     with pytest.raises(ValueError, match="operations mismatch"):
         verifier.validate_records(verify_sources=False)
 
 
 @needs_repo
-@pytest.mark.parametrize("release", ["1.2.11", "1.2.12"])
-def test_each_member_record_must_pin_this_checkout(verifier, evidence, monkeypatch, release):
-    name = f"agy-{release}-linux-x64-qualification.json"
+def test_each_member_record_must_pin_this_checkout(verifier, evidence, monkeypatch):
+    name = "agy-1.3.5-linux-x64-qualification.json"
     actual = json.loads((evidence / name).read_text())["source_sha256"]
     monkeypatch.setattr(verifier, "actual_source_hashes", lambda: dict(actual))
     verifier.validate_records()
     _edit(evidence / name, lambda v: v["source_sha256"].__setitem__("panel_invoker.py", "0" * 64))
     with pytest.raises(ValueError, match=f"source hashes of {name} differ"):
         verifier.validate_records()
+
+
+@needs_repo
+def test_the_source_only_gate_reports_one_record(verifier, evidence, monkeypatch, capsys):
+    record = json.loads((evidence / "agy-1.3.5-linux-x64-qualification.json").read_text())
+    monkeypatch.setattr(verifier, "actual_source_hashes", lambda: dict(record["source_sha256"]))
+    monkeypatch.setattr(verifier.sys, "argv", [str(SCRIPT), "--source-only"])
+    verifier.main()
+    assert json.loads(capsys.readouterr().out) == {
+        "qualified_releases": ["1.3.5"],
+        "source_files": len(record["source_sha256"]),
+        "source_pins_verified": True,
+    }
 
 
 @needs_repo

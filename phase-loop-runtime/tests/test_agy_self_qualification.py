@@ -184,6 +184,17 @@ def test_first_use_qualifies_once_and_later_lookups_reuse_the_record(world):
     assert sorted(_entries(world)) == ["member_cache", "provenance", "qualified"]
 
 
+def test_an_image_retired_from_the_release_catalog_self_qualifies_on_first_use(world, monkeypatch):
+    monkeypatch.setattr(gh, "QUALIFIED_IMAGES", {
+        "b5385638174a5e720e904f3a2678752534fb8414d10c2c302fa16daf56cbcfc9":
+            "a12355e8fc064b330eeb25ba52de596406582752442e293083bcda6388a63b78",
+    })
+    assert world.digest not in gh.QUALIFIED_IMAGES
+    assert _ensure(world)[0] == "locally_qualified"
+    q._HELP_MEMO.clear()
+    assert _admit(world) == "locally_qualified"
+
+
 def test_admission_carries_exactly_one_known_class():
     """I5. Mutation: accepting an unknown class string."""
     image = gh.VerifiedImage.from_bytes(b"x")
