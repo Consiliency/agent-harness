@@ -9,6 +9,10 @@ versioning; the release tag, the package `version`, and this file are kept in lo
 - JAILCORE documents the closed local/remote/native/degraded review-seat resolver, its four
   descend codes and expiring exceptions, with the remote mode and capacity offload shipped
   inactive (SEATS JAILCORE SL-4, agent-harness#1820).
+- Local review seats now fail closed into one resource-capped cgroup parent per seat key,
+  with bounded memory, CPU, I/O and process count, strict managed/operator records, one-slave
+  device-mapper resolution and the verified tmpfs carve-out (SEATS JAILCORE SL-5,
+  agent-harness#1820).
 - The seat-window kit follows OD-12: one `standard` context under one operator account is
   a passing W1 set, a one-account host has no peer record, and `--host-class` defaults to
   `standard`. `done-local` verification, reduction and export ignore team contexts. A later

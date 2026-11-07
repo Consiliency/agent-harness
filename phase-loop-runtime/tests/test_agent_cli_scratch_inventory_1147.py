@@ -86,6 +86,10 @@ INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
     # -- the choke point -------------------------------------------------------------
     ("panel_invoker.py", "launch_provider"): (
         PROVIDER_INTERFACE, "panel_invoker.py:_child_scratch_kwargs:child_scratch_env"),
+    ("seat_resource_caps.py", "capped_popen"): (
+        RELOCATED, "panel_invoker.py:_child_scratch_kwargs:child_scratch_env"),
+    ("seat_resource_caps_enter.py", "main"): (
+        RELOCATED, "panel_invoker.py:_child_scratch_kwargs:child_scratch_env"),
     # -- agent CLIs launched outside the provider interface ------------------------------
     # agent-harness#1222: the convergence adapters, the executor, the auth / version probes
     # and the Claude agent-view calls now start through `launch_owned` / `run_provider`
@@ -128,12 +132,8 @@ INVENTORY: dict[tuple[str, str], tuple[str, str]] = {
     ("sandbox_egress.py", "egress_isolation_available"): (
         NOT_AGENT, "trusted unshare / slirp4netns / iptables capability probe"),
     ("sandbox_egress.py", "host_addresses"): (NOT_AGENT, "trusted `ip` address listing"),
-    # SEATS CLAUDE SL-1 (IF-0-CLAUDE-3): the `sdk` transport's host worker. Its argv is
-    # prlimit, the keyring helper, the seat-uid holder entry, bwrap and setpriv around the
-    # sealed interpreter running the SDK worker bootstrap -- never an agent CLI -- with an
-    # explicit two-variable environment; bwrap clears it and sets the fixture's own.
-    ("panel_invoker.py", "_launch_claude_sdk_worker"): (
-        NOT_AGENT, "the sdk host worker's sandbox (a Python bootstrap, not an agent CLI)"),
+    ("seat_resource_caps.py", "_systemctl"): (
+        NOT_AGENT, "systemctl configures or collects the transient capped parent"),
     ("seat_keyring_exec.py", "execute"): (
         NOT_AGENT, "the owned seat's final link: execs the chain `launch_owned` hands it, "
                    "with that launch's decided env"),
@@ -267,8 +267,6 @@ LAUNCH_COUNTS: dict[tuple[str, str], int] = {
     ('supervised_launch_binding.py', '_load_absolute'): 2,
     ('agy_canary_evidence.py', '_bootstrap_attest_opened'): 2,
     ('agy_canary_evidence.py', 'probe_capability'): 3,
-    # agent-harness#1132: the jailed seat's launch beside every other provider launch.
-    ('panel_invoker.py', 'launch_provider'): 3,
     # The timed holder (unshare) and its slirp4netns, the rules install and the name check
     # (nsenter). The long-lived holders and their slirp4netns, the seat-uid-mapped pair of
     # agent-harness#1132 included, go through `launch_provider` under

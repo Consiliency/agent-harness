@@ -192,6 +192,7 @@ markers = [
     "dotfiles_integration: test requires a dotfiles fleet tree (skipped standalone)",
     "quarantine(reason): known flake tracked by an OPEN issue; deselected on pull-request CI only (agent-harness#1029)",
     "host_seat_credentials: live jailed-seat test that reads the host's Claude login and seat-jail state (agent-harness#1132)",
+    "real_seat_caps: test exercises the real per-seat caps readiness and launch boundary",
 ]
 
 [tool.setuptools.data-files]

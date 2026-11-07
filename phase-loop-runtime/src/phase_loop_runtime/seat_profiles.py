@@ -8,7 +8,7 @@ do not grow a new ``leg == ...`` branch when another vendor registers a profile.
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 from types import MappingProxyType
 from typing import Mapping
@@ -67,6 +67,15 @@ def register(profile: JailProfile) -> JailProfile:
         raise ValueError("profile config surface must be closed")
     if OD10_CLASSES.get(profile.output_secret_code) != "security":
         raise ValueError("profile output-secret code must be OD-10 security")
+    from . import seat_resource_caps as caps
+    profile = replace(
+        profile,
+        preconditions=(
+            *(item for item in profile.preconditions if item.name != "resource_caps"),
+            Precondition("resource_caps", lambda: caps.readiness_code()),
+        ),
+        notice_codes=frozenset((*profile.notice_codes, caps.CODE)),
+    )
     unknown = set(profile.notice_codes) - set(OD10_CLASSES)
     if unknown:
         raise ValueError(f"profile notice codes are unclassified: {sorted(unknown)}")

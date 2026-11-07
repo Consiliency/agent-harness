@@ -3167,6 +3167,7 @@ _HARNESS_DETAIL_CODES: frozenset[str] = frozenset({
     "seat_placement_waiting",
     # agent-harness#1222: the seat-launch owner's refusals (typed notices in seat_jail.NOTICES)
     "seat_owner_unavailable", "seat_bind_source_unavailable", "seat_broker_socket_unavailable",
+    "seat_resource_caps_unavailable",
     "seat_launch_owner_required", "seat_output_path_unavailable", "seat_profile_unavailable",
     "seat_provider_unavailable", "seat_filtered_egress_unavailable",
     "executor_review_route_unsupported", "gemini_credential_near_expiry",
@@ -5995,7 +5996,8 @@ def _filtered_holder_namespace() -> int:
         raise _sandbox_egress.EgressUnavailable("seat_filtered_egress_unavailable") from exc
 
 
-def launch_owned(argv, *, role, profile: SeatProfile, supervisor=None, **kwargs):
+def launch_owned(argv, *, role, profile: SeatProfile, supervisor=None,
+                 seat_caps: str | None = None, **kwargs):
     role = SeatLaunchRole(role)
     if require_grok_admission(argv, kwargs.get("env")) and role is SeatLaunchRole.EXECUTOR_TRUSTED:
         argv = [_grok_binary_identity(argv, kwargs.get("env"))[0], *argv[1:]]
@@ -6104,7 +6106,13 @@ def launch_owned(argv, *, role, profile: SeatProfile, supervisor=None, **kwargs)
                 command = supervisor([*prefix, *command], kwargs.get("pass_fds", ()))
                 egress_token = _EGRESS_LAUNCH_PREFIX.set(())
                 stack.callback(_EGRESS_LAUNCH_PREFIX.reset, egress_token)
-            return launch_provider(command, dependency=profile.dependency, **kwargs)
+            return launch_provider(
+                command,
+                dependency=profile.dependency,
+                seat_caps=(seat_caps or "")
+                if role is SeatLaunchRole.PROVIDER_REVIEW else None,
+                **kwargs,
+            )
     finally:
         _OWNED_LAUNCH.reset(token)
 
@@ -6169,7 +6177,7 @@ def _child_scratch_kwargs(kwargs: dict, decision: str) -> None:
 
 
 def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None, dependency=None,
-                    probe_pass_fds=(),
+                    probe_pass_fds=(), seat_caps: str | None = None,
                     child_scratch=_sandbox_policy.CHILD_SCRATCH_RELOCATE,
                     trace_output: str | None = None,
                     **kwargs) -> "subprocess.Popen[bytes]":
@@ -6241,12 +6249,14 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
         kwargs["pass_fds"] = tuple(process_owner.pass_fds)
         kwargs["close_fds"] = True
         kwargs["env"] = env
-        if trace_output is not None:
-            jailed_process = subprocess.Popen(
-                _window_trace_argv(trace_output, prefix, argv), **kwargs,
-            )
-        else:
-            jailed_process = subprocess.Popen([*prefix, *argv], **kwargs)
+        from .seat_resource_caps import capped_popen
+        capped_command = (
+            _window_trace_argv(trace_output, prefix, argv)
+            if trace_output is not None else [*prefix, *argv]
+        )
+        jailed_process = capped_popen(
+            capped_command, seat_key=seat_caps or "", **kwargs,
+        )
         # A jailed provider is a local provider spawn like any other (agent-harness#896's
         # placement record counts it); counted once the process exists.
         _count_provider_spawn()
@@ -6264,7 +6274,11 @@ def launch_provider(argv, *, process_owner=(), retain_caps=(), probe_owner=None,
         )
     if dependency is not None:
         dependency.revalidate()
-    process = subprocess.Popen([*prefix, *argv], **kwargs)
+    if seat_caps is None:
+        process = subprocess.Popen([*prefix, *argv], **kwargs)
+    else:
+        from .seat_resource_caps import capped_popen
+        process = capped_popen([*prefix, *argv], seat_key=seat_caps, **kwargs)
     # Counted once the process exists: a launch that fails to exec is not a spawn.
     _count_provider_spawn()
     return process
@@ -10061,7 +10075,8 @@ class _ClaudeSdkWorker:
             self.feeder.join(5.0)
 
 
-def _launch_claude_sdk_worker(spec, *, worker_id: int, prepared) -> _ClaudeSdkWorker:
+def _launch_claude_sdk_worker(spec, *, worker_id: int, prepared,
+                              seat_key: str | None = None) -> _ClaudeSdkWorker:
     """Start one worker in its sandbox, inside the seat-uid holder the leg holds. Its payload
     is ``prepared.payload_bytes`` -- the bytes the pre-credential preflight read and verified
     -- sealed into memfds; the packaged payload is never reopened here. A missing holder,
@@ -10092,11 +10107,12 @@ def _launch_claude_sdk_worker(spec, *, worker_id: int, prepared) -> _ClaudeSdkWo
         argv = _claude_sdk_worker_argv(
             spec, worker_id=worker_id, in_fd=child_ends[0], out_fd=child_ends[1],
             enter_h=egress[:lockdown], payload_fds=payload_fds)
-        process = subprocess.Popen(
+        from .seat_resource_caps import capped_popen
+        process: subprocess.Popen[bytes] = capped_popen(
             argv, pass_fds=(*child_ends, *payload_fds.values()), close_fds=True, cwd="/",
             env={"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8"},
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
-            start_new_session=True,
+            start_new_session=True, seat_key=seat_key or "",
         )
     except (OSError, ValueError, KeyError) as exc:
         for fd in (*parent_to_worker, *worker_to_parent, *payload_fds.values()):
@@ -10270,7 +10286,10 @@ def _run_claude_sdk_leg(
             raise _claude_sdk_refused("claude_sdk_worker_unavailable") from exc
         if worker_id in (seat.jail.seat_ids or ()):
             raise _claude_sdk_refused("claude_sdk_worker_unavailable")
-        worker = _launch_claude_sdk_worker(spec, worker_id=worker_id, prepared=prepared)
+        worker = _launch_claude_sdk_worker(
+            spec, worker_id=worker_id, prepared=prepared,
+            seat_key="",
+        )
         stack.callback(worker.terminate)
         closure = next(destination for destination, source in spec.read_only.items()
                        if Path(source) == Path(install.closure_root))
@@ -17039,9 +17058,16 @@ def _default_spawn_via_provider(
             _SEAT_SESSION_SEAT.set(seat_key) if seat_key and agy_capture is None else None
         )
         try:
-            spawned = _default_spawn(
-                leg, artifact, repo_dir=repo_dir, mode=mode, model=model, **extra
-            )
+            if seat_key:
+                from .seat_resource_caps import _seat_scope
+                with _seat_scope(seat_key):
+                    spawned = _default_spawn(
+                        leg, artifact, repo_dir=repo_dir, mode=mode, model=model, **extra
+                    )
+            else:
+                spawned = _default_spawn(
+                    leg, artifact, repo_dir=repo_dir, mode=mode, model=model, **extra
+                )
         except ProviderProcessGroupQuiescenceError as exc:
             # HomebrewAgentRuntimeProvider deliberately turns ordinary spawn
             # exceptions into failed turns.  Process-group quiescence is not an
@@ -18733,18 +18759,20 @@ def invoke_board(
                     # this thread. `_default_spawn`'s own kwargs stay as they were (CS-0.8).
                     seat_token = _SEAT_SESSION_SEAT.set(str(seat.seat_key))
                     try:
-                        spawned = _default_spawn_via_provider(
-                            leg,
-                            artifact,
-                            repo_dir=repo_dir,
-                            mode=mode,
-                            model=seat.model,
-                            effort=seat.effort,
-                            env=seat_env,
-                            brief_ref=brief_ref,
-                            timeout_s=leg_timeouts.get(leg),
-                            **research_extra,
-                        )
+                        from .seat_resource_caps import _seat_scope
+                        with _seat_scope(str(seat.seat_key)):
+                            spawned = _default_spawn_via_provider(
+                                leg,
+                                artifact,
+                                repo_dir=repo_dir,
+                                mode=mode,
+                                model=seat.model,
+                                effort=seat.effort,
+                                env=seat_env,
+                                brief_ref=brief_ref,
+                                timeout_s=leg_timeouts.get(leg),
+                                **research_extra,
+                            )
                     finally:
                         _SEAT_SESSION_SEAT.reset(seat_token)
                 capture_quiescence.raise_if_set()

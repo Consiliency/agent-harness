@@ -188,6 +188,26 @@ def _no_real_first_use_jail_qualification(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def _no_real_seat_resource_caps(monkeypatch, request):
+    """Keep ordinary tests on their existing process seam.
+
+    Caps tests opt out with ``real_seat_caps`` and exercise the production resolver,
+    helper and launch path against their fake cgroupfs/systemd-run.  There is no
+    production switch corresponding to this test-only patch.
+    """
+    if request.node.get_closest_marker("real_seat_caps") is not None:
+        return
+    from phase_loop_runtime import seat_resource_caps
+
+    monkeypatch.setattr(seat_resource_caps, "readiness_code", lambda: None)
+    monkeypatch.setattr(
+        seat_resource_caps,
+        "capped_popen",
+        lambda command, *, seat_key, **kwargs: subprocess.Popen(command, **kwargs),
+    )
+
+
+@pytest.fixture(autouse=True)
 def _no_long_real_login_wait(monkeypatch):
     """agent-harness#1132 (plan amendment A3): a jailed Claude seat whose login is short
     waits up to 15 minutes for it to be renewed. A test that reaches that real wait with a
