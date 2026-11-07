@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: CLAUDETUI
 roadmap: specs/phase-plans-seats-v1.md
-roadmap_sha256: 33f3f073db869be2349cce35a6f7bd86f1280b3f713c8c6f8a4dfa43d4aa8cbd
+roadmap_sha256: 8aeebdf2c0a00b82df75e3af6ef1d4593073a1979bec1f2ed04e977e299cf005
 automation:
   suite_command: ["timeout", "900", "env", "PYTEST_ADDOPTS=", "python3", "-m", "pytest", "-p", "no:cacheprovider", "-q", "phase-loop-runtime/tests/test_claude_tui_terminal.py", "phase-loop-runtime/tests/test_panel_tui_workspace_trust_223.py", "phase-loop-runtime/tests/test_panel_tui_liveness_188.py", "phase-loop-runtime/tests/test_panel_tui_eof_48.py", "phase-loop-runtime/tests/test_seat_notices.py", "phase-loop-runtime/tests/test_claude_tui_gate.py", "phase-loop-runtime/tests/test_seats_claude_transport.py", "phase-loop-runtime/tests/test_claude_transport_seam.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py"]
 ---

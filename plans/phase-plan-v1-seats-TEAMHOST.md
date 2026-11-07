@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: TEAMHOST
 roadmap: specs/phase-plans-seats-v1.md
-roadmap_sha256: 33f3f073db869be2349cce35a6f7bd86f1280b3f713c8c6f8a4dfa43d4aa8cbd
+roadmap_sha256: 8aeebdf2c0a00b82df75e3af6ef1d4593073a1979bec1f2ed04e977e299cf005
 automation:
   suite_command: ["timeout", "900", "uv", "run", "--quiet", "--project", "phase-loop-runtime", "--group", "test", "--python", "3.14", "--python-preference", "only-system", "--locked", "python", "-m", "pytest", "-p", "no:cacheprovider", "-q", "phase-loop-runtime/tests/test_seats_teamhost_subject.py", "phase-loop-runtime/tests/test_seats_teamhost_accounts.py", "phase-loop-runtime/tests/test_seats_teamhost_gemini.py", "phase-loop-runtime/tests/test_seats_teamhost_integration.py", "phase-loop-runtime/tests/test_seats_teamhost_doctor.py", "phase-loop-runtime/tests/test_seats_teamhost_overlay.py", "phase-loop-runtime/tests/test_seats_teamhost_switchon.py", "phase-loop-runtime/tests/test_seat_jail_prerequisites_1357.py", "phase-loop-runtime/tests/test_agy_self_qualification.py", "phase-loop-runtime/tests/test_seat_host_uid_1098.py", "phase-loop-runtime/tests/test_sandbox_policy.py", "phase-loop-runtime/tests/test_agy_integrity_seat_admission.py", "phase-loop-runtime/tests/test_doctor_bom.py", "phase-loop-runtime/tests/test_seat_profiles.py", "phase-loop-runtime/tests/test_agent_cli_scratch_inventory_1147.py", "phase-loop-runtime/tests/test_seat_launch_helpers_trusted.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py"]
 ---
@@ -19,7 +19,7 @@ PRs under principle 2. The file name follows the manifest pattern of the sibling
 2026-11-06.
 
 **Frozen artifact.** `plans/seats-teamhost-contract.md` is normative for every interface below
-(§1–§8) at sha256 `e7e9df02b36bac14faab3ede4f15b36deae3d27b67939fb6a015b07335189264`. This plan points at its sections and does not repeat
+(§1–§8) at sha256 `c762a0a549f7ea341915d23e56a0c3dc7c77a37ec799a6979d3943f632555660`. This plan points at its sections and does not repeat
 them. Its input pins include the JAILCORE route contract
 (`235f1faded1d7f15d0ff69668b6a451cee7167e6438d258da57257faf7bdae81`). TEAMHOST consumes it
 only through IF-0-JAILCORE-1, IF-0-JAILCORE-2 and EC-JAILCORE-4.
@@ -330,7 +330,7 @@ SL-8 — A3: Managed-release switch-on (gate G-A)
 |---|---|---|---|---|
 | SL-docs.1 | docs | — | `.claude/docs-catalog.json` | Rescan the catalog; add `docs/team-host-admin.md`. |
 | SL-docs.2 | docs | SL-docs.1 | per catalog | TEAM-ONBOARDING links the checklist and the doctor rows. The card gets the doctor vocabulary and the managed-release subject. CONTRACTS gets the item-3(c) and item-4 wording. The matrix's Gemini row returns to `candidate`, naming the first row window after TEAMHOST exits. |
-| SL-docs.3 | docs | SL-docs.2 | `plans/evidence/seat-teamhost/doctor-receipts.json` | A provider-free `phase-loop doctor --json` from the first released runtime that carries this phase, on one team host and one standard host, recorded metadata-only (host classes, never host names). It is supporting evidence; V-C is the proof. |
+| SL-docs.3 | docs | SL-docs.2 | `plans/evidence/seat-teamhost/doctor-receipts.json` | A provider-free `phase-loop doctor --json` from the first released runtime that carries this phase, from the designated standard host only, recorded metadata-only (host classes, never host names). It is supporting evidence; V-C is the proof. |
 | SL-docs.4 | docs | SL-docs.3 | `specs/phase-plans-seats-v1.md`, prior plans | Append `### Post-execution amendments` where a freeze proved wrong. |
 | SL-docs.5 | verify | SL-docs.4 | — | `V-R`, `V-S`. |
 | SL-docs.6 | docs | SL-docs.5 | — | Owner action LA-3, tracked: open an issue in Consiliency/agent-harness for the first post-TEAMHOST Gemini row-window PR, which carries the live agy requalification after SL-3. That PR updates the Gemini row and closes the issue. Its window record's `qualification_keys` equal the live EC-JAILCORE-4 key. TEAMHOST itself still runs no window. |
@@ -424,7 +424,7 @@ Without a recorded measurement, item 6 is deferred with the contract's reason, a
 
 - [ ] EC-TEAMHOST-1 — proven by `V-A`, `V-I` and `V-G` (`seats_teamhost_subject`, `seats_teamhost_integration`), falsified by a stub CLI that never runs below the 0o111 ancestor, a refused managed release that launches a standalone or ambient subject, or a self-hashed authority admitted, each path-entered through the real `auth_ok_for` / `resolve_seat_subject` / `seat_profile` path.
 - [ ] EC-TEAMHOST-2 — proven by `V-B` (`seats_teamhost_accounts`), falsified by a shared path, lock or descriptor between the two identities, one identity opening the other's exec records or seat state, or a foreign-owned state directory or overlapping range accepted by the real lease, scratch or native-fill code.
-- [ ] EC-TEAMHOST-3 — proven by `V-C` (`seats_teamhost_doctor`), with `plans/evidence/seat-teamhost/doctor-receipts.json` as supporting team-host evidence, falsified by a spawn off Linux, a row whose status disagrees with its route predicate, or a multi-sentence or managed-branch-less fix from the real `doctor.run_doctor`.
+- [ ] EC-TEAMHOST-3 — proven by `V-C` (`seats_teamhost_doctor`), falsified by a spawn off Linux, a row whose status disagrees with its route predicate, or a multi-sentence or managed-branch-less fix from the real `doctor.run_doctor`.
 - [ ] EC-TEAMHOST-4 — proven by `V-C` (`seats_teamhost_checklist`), falsified by an LA-1 root action missing from `docs/team-host-admin.md` or any exec reached from `seat_host_admin`.
 - [ ] EC-TEAMHOST-5 — proven by `V-C` (`seats_teamhost_agreement`), falsified by a doctor `admits` for a fixture state the real seat preparation refuses.
 - [ ] EC-TEAMHOST-6 — proven by `V-D` and `V-O` (`seats_teamhost_1706`), falsified by a neutralised check that stays green, or an agent-harness#1706 item with no closure or recorded deferral.

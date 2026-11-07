@@ -3,7 +3,7 @@
 This index gives every issue and PR named in `specs/phase-plans-seats-v1.md` one owning
 exit criterion, or records it as a reference or out of scope. It is rendered from
 `plans/evidence/seat-inventory/index.json`, bound to roadmap SHA-256
-`33f3f073db869be2349cce35a6f7bd86f1280b3f713c8c6f8a4dfa43d4aa8cbd`.
+`8aeebdf2c0a00b82df75e3af6ef1d4593073a1979bec1f2ed04e977e299cf005`.
 
 Exit criteria are cited by ID; the roadmap is authoritative for their text. Other exit
 criteria may cite an item they do not own. An item has more than one row only where the

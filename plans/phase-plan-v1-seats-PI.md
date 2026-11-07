@@ -2,7 +2,7 @@
 phase_loop_plan_version: 1
 phase: PI
 roadmap: specs/phase-plans-seats-v1.md
-roadmap_sha256: 33f3f073db869be2349cce35a6f7bd86f1280b3f713c8c6f8a4dfa43d4aa8cbd
+roadmap_sha256: 8aeebdf2c0a00b82df75e3af6ef1d4593073a1979bec1f2ed04e977e299cf005
 automation:
   suite_command: ["timeout", "900", "env", "PYTEST_ADDOPTS=", "python3", "-m", "pytest", "-p", "no:cacheprovider", "-q", "phase-loop-runtime/tests/test_pi_panel_leg.py", "phase-loop-runtime/tests/test_panel_invoker.py", "phase-loop-runtime/tests/test_advisor_board_backing_homebrew.py", "phase-loop-runtime/tests/test_panel_per_leg_model_66.py", "phase-loop-runtime/tests/test_pi_seat_profile.py", "phase-loop-runtime/tests/test_seat_profiles.py", "phase-loop-runtime/tests/test_seat_jail.py", "phase-loop-runtime/tests/test_seat_route_contract.py", "phase-loop-runtime/tests/test_seat_notices.py", "phase-loop-runtime/tests/test_executable_dependency.py", "phase-loop-runtime/tests/test_pi_routed_identity.py", "phase-loop-runtime/tests/test_advisor_board_composition.py", "phase-loop-runtime/tests/test_governed_review.py", "phase-loop-runtime/tests/test_seat_reference_inventory.py"]
 ---
@@ -146,7 +146,7 @@ SL-4 — Evidence and documentation reducer (SL-docs)
 
 | Task | Type | Depends on | Action | Proof |
 |---|---|---|---|---|
-| SL-4.1 | evidence | SL-1, SL-2, SL-3 | On a TEAMHOST-qualified host, attach provider-free `VL0` receipts and set only the Pi row to `candidate`. Attach the owner's `VL1` row-window record and set `done-local` only when it binds the current qualification key. If the owner records OD-9 for a named host-class falsifier, set `remote-pending` with its interim route. | `VL0`, `VL1` |
+| SL-4.1 | evidence | SL-1, SL-2, SL-3 | On the designated seat host, after the TEAMHOST interfaces are available, attach provider-free `VL0` receipts and set only the Pi row to `candidate`. Attach the owner's `VL1` row-window record and set `done-local` only when it binds the current qualification key. If the owner records OD-9 for a named host-class falsifier, set `remote-pending` with its interim route. | `VL0`, `VL1` |
 | SL-4.2 | docs | SL-4.1 | Apply `canonical_spec_update` to the three required spec surfaces, inventory and changelog. Rescan the docs catalog. Evidence is metadata-only. | `V4` |
 | SL-4.3 | closeout | SL-4.2 | Emit `spec_delta_closeout.v1`; missing/malformed evidence uses `terminal_status=blocked`, `verification_status=blocked`, `blocker_class=contract_bug`. Otherwise record the supported terminal status with `verification_status=passed` and `blocker_class=none`. | `V4` |
 

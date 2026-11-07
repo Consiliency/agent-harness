@@ -77,8 +77,7 @@ after its own phase is ready.
   designated seat host, a standard host with one operator account. Team-host coverage, a
   shared team host under two operator accounts, becomes the later row status `done-team`,
   which nothing in this roadmap requires. This ruling amends principle 1 and every gate below.
-  Where a plan written before it asks a lane for team-host or two-account coverage, this
-  ruling governs, and that plan's next amendment corrects the text.
+  All extant SEATS plans are amended and repinned with this decision.
 
 **Readiness snapshot (input, origin/main at the External Inputs baseline).** FIRSTSEAT
 turns this into the maintained matrix (IF-0-FIRSTSEAT-1).
@@ -263,8 +262,9 @@ All pins are inputs. None is an output of this roadmap.
    records a diagnosis or a can't-hold determination. A can't-hold determination:
    - cites a failed jail falsifier on a named host class, OD-3b's record that no transport was
      admitted, or an OD-4 rejection, never an amendment count alone;
-   - is allowed only after the team-host work the row needs has landed (FIRSTSEAT lane A
-     for Gemini, TEAMHOST for the others), with LA-1 done or recorded impossible on that host;
+   - is allowed only after the prerequisite seat-host code and interfaces the row needs have landed
+     (FIRSTSEAT lane A for Gemini, TEAMHOST for the others), with LA-1 done or recorded impossible
+     on that host;
    - states the interim route: degraded by default, or an owner exception with an expiry
      (principle 3), never silently unconfined;
    - moves the row to `remote-pending`, an open deferral that REMOTE tracks. It does not
@@ -397,10 +397,11 @@ this roadmap gates it.
     `seat_window.py`, the `verify_records` coverage check, the `account_isolation` condition
     in `_valid_record` (a one-account host has no peer record), `host_classes` in
     `readiness_rows` and the `--host-class` default. It also covers the `host_classes` literal
-    in `president_adapter.py`, `docs/review-seats-readiness.md`, the window-kit README,
-    `test_seat_qualification_host_context.py` and this lane's plan text. The field and
+    in `president_adapter.py`, `docs/review-seats-readiness.md`, the window-kit README and
+    `test_seat_qualification_host_context.py`. The field and
     `--peer-record` stay for `done-team`, and no reducer path emits that status. JAILCORE's
-    window-kit edit shares `seat_window.py`; whichever lands second rebases.
+    window-kit edit shares `seat_window.py`; whichever lands second reruns both phases' window-kit
+    tests.
 - Any Gemini profile-digest change made here is qualified in W1 (principle 4).
 - agent-harness#1729, agent-harness#1821, agent-harness#1822 and agent-harness#1823 close
   when their ECs hold, not at CLOSEOUT.
