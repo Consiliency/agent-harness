@@ -77,6 +77,7 @@ def verify(expected: dict[str, object], *, root: Path, proc_cgroup: Path,
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--attest-fd", type=int, required=True)
+    parser.add_argument("--env-fd", type=int, required=True)
     parser.add_argument("--expected", required=True)
     parser.add_argument("--cgroup-root", default="/sys/fs/cgroup")
     parser.add_argument("--proc-cgroup", default="/proc/self/cgroup")
@@ -87,6 +88,15 @@ def main(argv: list[str] | None = None) -> int:
     if not command:
         return 125
     try:
+        chunks = []
+        while chunk := os.read(args.env_fd, 65536):
+            chunks.append(chunk)
+        os.close(args.env_fd)
+        target_env = json.loads(b"".join(chunks))
+        if not isinstance(target_env, dict) or not all(
+                isinstance(key, str) and isinstance(value, str)
+                for key, value in target_env.items()):
+            return 125
         expected = json.loads(args.expected)
         if not isinstance(expected, dict):
             return 125
@@ -94,7 +104,7 @@ def main(argv: list[str] | None = None) -> int:
                proc_swaps=Path(args.proc_swaps))
         os.write(args.attest_fd, b"1")
         os.close(args.attest_fd)
-        os.execvpe(command[0], command, dict(os.environ))
+        os.execvpe(command[0], command, target_env)
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
         return 125
     return 125

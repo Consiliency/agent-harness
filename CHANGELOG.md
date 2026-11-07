@@ -11,8 +11,8 @@ versioning; the release tag, the package `version`, and this file are kept in lo
   inactive (SEATS JAILCORE SL-4, agent-harness#1820).
 - Local review seats now fail closed into one resource-capped cgroup parent per seat key,
   with bounded memory, CPU, I/O and process count, strict managed/operator records, one-slave
-  device-mapper resolution and the verified tmpfs carve-out (SEATS JAILCORE SL-5,
-  agent-harness#1820).
+  device-mapper resolution, and typed refusal of tmpfs automatic paths until their staging
+  cleanup is wired (SEATS JAILCORE SL-5, agent-harness#1820).
 - The seat-window kit follows OD-12: one `standard` context under one operator account is
   a passing W1 set, a one-account host has no peer record, and `--host-class` defaults to
   `standard`. `done-local` verification, reduction and export ignore team contexts. A later

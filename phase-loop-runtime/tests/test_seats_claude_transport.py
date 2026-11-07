@@ -1270,7 +1270,10 @@ def test_a_worker_needs_the_seat_uid_holder(sealed_install, monkeypatch):
         token = pi._EGRESS_LAUNCH_PREFIX.set(prefix)
         try:
             with pytest.raises(ct.TransportRefused) as caught:
-                pi._launch_claude_sdk_worker(spec, worker_id=3, prepared=_prepared(sealed_install))
+                pi._launch_claude_sdk_worker(
+                    spec, worker_id=3, prepared=_prepared(sealed_install),
+                    seat_key="test:claude-sdk-holder",
+                )
         finally:
             pi._EGRESS_LAUNCH_PREFIX.reset(token)
         assert caught.value.code == "claude_sdk_worker_unavailable"
@@ -1326,15 +1329,17 @@ def _duplex_leg(monkeypatch, tmp_path, sealed_install, *, mode="ok", cli=None, d
     workers: list[object] = []
 
     def fake_launch(argv, *, process_owner, probe_owner, env, stdin, stdout, stderr,
-                    start_new_session, trace_output=None):
+                    start_new_session, trace_output=None, seat_caps):
         assert trace_output is None  # the duplex leg is never traced
+        assert seat_caps == "test:claude-sdk-duplex"
         launched.append(list(argv))
         script = cli if cli is not None else str(sdk_tests.FAKE_CLI)
         return subprocess.Popen([sys.executable, "-I", script, *argv[1:]],
                                 env={**env, "FAKE_CLI_MODE": mode}, stdin=stdin, stdout=stdout,
                                 stderr=stderr, start_new_session=start_new_session, cwd=tmp_path)
 
-    def launch_worker(spec, *, worker_id, prepared):
+    def launch_worker(spec, *, worker_id, prepared, seat_key):
+        assert seat_key == "test:claude-sdk-duplex"
         made = worker(tmp_path) if worker is not None else _unsandboxed_worker(tmp_path)
         workers.append(made)
         return made
@@ -1355,10 +1360,13 @@ def _duplex_leg(monkeypatch, tmp_path, sealed_install, *, mode="ok", cli=None, d
     bridge = sdk.SDKBridge(token=sdk_tests.SEAT_TOKEN, session_id=sdk_tests.SESSION_ID,
                            prompt=pi._BROKER_CLAUDE_DIRECT_REQUEST + sdk_tests.PROMPT)
     seat = types.SimpleNamespace(jail=types.SimpleNamespace(seat_ids=(5, 5)), probe_jail=None)
-    run = pi._run_claude_sdk_leg(
-        sdk_tests.owned_argv(sdk.sdk_cli_delta()), spec=spec, bridge=bridge,
-        prepared=_prepared(sealed_install), options=sdk_tests.leg_options(sdk.sdk_cli_delta()),
-        cwd=tmp_path, env=sdk.cli_env(sdk_tests.fake_jail()), deadline_s=deadline_s, seat=seat)
+    from phase_loop_runtime.seat_resource_caps import _seat_scope
+    with _seat_scope("test:claude-sdk-duplex"):
+        run = pi._run_claude_sdk_leg(
+            sdk_tests.owned_argv(sdk.sdk_cli_delta()), spec=spec, bridge=bridge,
+            prepared=_prepared(sealed_install),
+            options=sdk_tests.leg_options(sdk.sdk_cli_delta()), cwd=tmp_path,
+            env=sdk.cli_env(sdk_tests.fake_jail()), deadline_s=deadline_s, seat=seat)
     return run, bridge, launched, workers
 
 
@@ -1478,7 +1486,10 @@ def test_live_worker_runs_as_its_own_identity_and_is_reaped(sealed_install, monk
         bridge = sdk.SDKBridge(token=sdk_tests.SEAT_TOKEN, session_id=sdk_tests.SESSION_ID,
                                prompt="the sealed prompt")
         with pi._seat_uid.lease_seat_id(pi._claude_sdk_worker_count()) as worker_id:
-            worker = pi._launch_claude_sdk_worker(spec, worker_id=worker_id, prepared=prepared)
+            worker = pi._launch_claude_sdk_worker(
+                spec, worker_id=worker_id, prepared=prepared,
+                seat_key="test:claude-sdk-live-worker",
+            )
             try:
                 closure = next(d for d, s in spec.read_only.items()
                                if Path(s) == install.closure_root)
@@ -1539,11 +1550,14 @@ def test_live_parent_death_reaps_the_worker(tmp_path, sealed_install):
     state = sealed_install.state
     child = tmp_path / "board.py"
     child.write_text(textwrap.dedent(f"""
-        import sys
+        import subprocess, sys
         sys.path.insert(0, {str(Path(__file__).resolve().parent)!r})
         import test_seats_claude_sdk as T
         from phase_loop_runtime import claude_seat_sdk as sdk, panel_invoker as pi
-        from phase_loop_runtime import sandbox_egress, seat_uid
+        from phase_loop_runtime import sandbox_egress, seat_resource_caps, seat_uid
+        seat_resource_caps.capped_popen = (
+            lambda command, *, seat_key, **kwargs: subprocess.Popen(command, **kwargs)
+        )
         install = sdk.verify_install(__import__("pathlib").Path({str(state)!r}),
                                      manifest_raw=open({str(tmp_path / "manifest.json")!r}, "rb").read())
         spec = sdk.worker_launch_spec(install)
@@ -1553,7 +1567,10 @@ def test_live_parent_death_reaps_the_worker(tmp_path, sealed_install):
             with seat_uid.lease_seat_id(pi._claude_sdk_worker_count()) as worker_id:
                 payload = {{n: sdk.read_packaged(f"worker/{{n}}") for n in sdk.WORKER_PAYLOAD}}
                 prepared = sdk.PreparedSdkLaunch(install=install, payload_bytes=payload, bindings={{}})
-                worker = pi._launch_claude_sdk_worker(spec, worker_id=worker_id, prepared=prepared)
+                worker = pi._launch_claude_sdk_worker(
+                    spec, worker_id=worker_id, prepared=prepared,
+                    seat_key="test:claude-sdk-parent-death",
+                )
                 closure = next(d for d, s in spec.read_only.items() if s == str(install.closure_root))
                 worker.send(bridge.hello(filter_program=spec.filter_program, roots=[closure],
                                          inventory=install.inventory, excluded=list(install.excluded),
@@ -1610,7 +1627,10 @@ def test_the_launcher_seals_only_the_prepared_bytes(sealed_install, monkeypatch)
     monkeypatch.setattr(pi, "_claude_sdk_drop_tool_files", lambda root: {})
     token = pi._EGRESS_LAUNCH_PREFIX.set((*_ENTER_H, "/usr/bin/setpriv", "--"))
     try:
-        worker = pi._launch_claude_sdk_worker(spec, worker_id=3, prepared=prepared)
+        worker = pi._launch_claude_sdk_worker(
+            spec, worker_id=3, prepared=prepared,
+            seat_key="test:claude-sdk-sealed-bytes",
+        )
     finally:
         pi._EGRESS_LAUNCH_PREFIX.reset(token)
     worker.feeder.close()
