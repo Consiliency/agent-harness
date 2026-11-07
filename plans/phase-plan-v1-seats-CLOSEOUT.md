@@ -41,7 +41,7 @@ pins a SHA this phase will create.
 **Entry checks (by content, on the lane's base tree).**
 
 - E1. INVENTORY, CLAUDENET, CODEX, GROK, PI and CLAUDETUI have exited. Every vendor row is
-  `done-local` or is `remote-pending` under an OD-9 record with a typed-degraded interim route
+  `done-local`, is `done-remote` as EC-CLOSEOUT-2 admits, or is `remote-pending` under an OD-9 record with a typed-degraded interim route
   and an open REMOTE tracking issue; no vendor row is `candidate`. CLAUDETUI exits under OD-6
   and has no `remote-pending` path.
 - E2. `dispositions.json` has an empty `pending_actions`. Its four rows at the input pin belong
@@ -184,8 +184,9 @@ SL-3 — Matrix, ledger, issues and docs reducer (lane C, SL-docs)
 - **Critical path.** E1–E5, then SL-1 → SL-2 as drafts, then OD-8, then merge, then SL-3.3
   onward. SL-2 starts from a base that contains SL-1. SL-3 depends on SL-1 and SL-2 from SL-3.3
   onward; SL-3.1-SL-3.2 may start earlier.
-- **SL-2 named edits.** `panel_invoker.py` stays with SL-1 (check D). After SL-1 merges, SL-2
-  may edit only the president launch sites in it: the tools-off `_run_claude_print_session`
+- **SL-2 named edits.** `panel_invoker.py` stays with SL-1 (check D). SL-2 may edit only the
+  president launch sites in it, on a draft stacked on SL-1 before SL-1 merges (OD-8 still gates
+  both merges): the tools-off `_run_claude_print_session`
   president call, the TUI president session, and the president's `_exec_leg` throwaway-directory
   use, plus passing the board's staged tree to the president route. If PANELSPLIT moved them,
   SL-2 edits the named successors and records the path.
